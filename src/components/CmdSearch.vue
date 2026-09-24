@@ -134,7 +134,8 @@ function openSub(i) {
   if (!hasChildren(row)) { sub.value = null; return }
   active.value = i
   const el = listEl.value && listEl.value.querySelector('[data-row="' + i + '"]')
-  const top = el ? el.offsetTop : 0
+  // 5 = .ms-sub 1px 边 + 4px 内距：子菜单首行对齐父行；offsetTop 不含中间滚动容器的滚动量，列表滚过要扣掉
+  const top = el ? el.offsetTop - listEl.value.scrollTop - 5 : 0
   sub.value = { row: i, items: row.cmd.children, active: 0, top }
 }
 function closeSub() { sub.value = null }
@@ -249,12 +250,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* 框：标题栏正中，宽随窗口走；获焦时略放宽（Office 标题栏搜索框范式） */
-.ms { position: relative; width: clamp(240px, 30vw, 460px); transition: width .12s ease; align-self: center; }
+.ms { position: relative; width: clamp(240px, 30vw, 460px); transition: width var(--dur-2) var(--ease-out); align-self: center; }
 .ms.open { width: clamp(300px, 36vw, 560px); }
 .ms-box {
   display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px 0 8px;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-card);
   color: var(--text-muted); cursor: text;
+  transition: border-color var(--dur-1) linear, box-shadow var(--dur-1) linear;
 }
 .ms-box:hover { border-color: var(--border-strong); }
 .ms.open .ms-box { border-color: var(--accent-ui); box-shadow: 0 0 0 1px var(--accent-ui); color: var(--text); }
@@ -270,22 +272,25 @@ onBeforeUnmount(() => {
 .ms-x { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
 .ms-x:hover { background: var(--surface-2); color: var(--text); }
 
-/* 下拉：与框同宽，贴在框下 */
+/* 下拉：与框同宽，贴在框下。四周 4px 内距让高亮行成为与外框同心的圆角块（6 − 4 = 2）；
+   行的左右内距各减 4px，图标与文字 x 不动 */
 .ms-pop {
   position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: 120;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card);
-  box-shadow: var(--shadow-2); padding: 4px 0;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float);
+  box-shadow: var(--shadow-2); padding: 4px;
+  animation: ui-float-in var(--dur-2) var(--ease-out);
 }
 .ms-list { max-height: min(60vh, 520px); overflow-y: auto; }
-.ms-h { padding: 6px 12px 3px; font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-caps); color: var(--text-faint); }
+.ms-h { padding: 6px 8px 3px; font-size: var(--fs-2); font-weight: 400; letter-spacing: var(--ls-label); color: var(--text-faint); }
 .ms-h + .ms-row { margin-top: 1px; }
-.ms-sep { height: 1px; background: var(--border); margin: 4px 8px; }
+.ms-sep { height: 0; border-top: 1px solid var(--border); margin: 4px 4px; }
 .ms-row {
-  display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px 0 10px;
+  display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 6px; border-radius: var(--r-ctl);
   font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap;
 }
 .ms-row.on { background: var(--accent-ui); color: var(--bg); }
-.ms-row.dis, .ms-row.dis.on { background: transparent; color: var(--text-faint); }
+.ms-row.dis { color: var(--text-faint); }
+.ms-row.dis.on { background: var(--wash-hover); color: var(--text-faint); }   /* 键盘光标落在禁用项上仍可见，但不像可执行 */
 .ms-rico { width: 16px; flex: none; display: inline-flex; justify-content: center; color: var(--text-faint); }
 .ms-row.on .ms-rico { color: inherit; }
 .ms-lbl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -295,12 +300,12 @@ onBeforeUnmount(() => {
 .ms-grp { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-2); color: var(--text-faint); }
 .ms-ck, .ms-more { flex: none; display: inline-flex; color: var(--text-muted); }
 .ms-row.on .ms-ck, .ms-row.on .ms-more { color: inherit; }
-.ms-empty { padding: 8px 12px 6px; font-size: var(--fs-3); color: var(--text-faint); }
+.ms-empty { padding: 8px 8px 6px; font-size: var(--fs-3); color: var(--text-faint); }
 
-/* 子菜单：面板右侧、与父行顶对齐 */
+/* 子菜单：面板右侧、首行与父行齐平（top 由 openSub 扣掉边框 + 内距）；悬停即出，不加入场 */
 .ms-sub {
   position: absolute; left: calc(100% - 2px); min-width: 180px; z-index: 121;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card);
-  box-shadow: var(--shadow-2); padding: 4px 0;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float);
+  box-shadow: var(--shadow-2); padding: 4px;
 }
 </style>

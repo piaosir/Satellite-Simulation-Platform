@@ -30,7 +30,8 @@ export function ringCentroid(pts) {
 // 单时刻可见性：
 //   entries    — [{rec, name, noradId, group, slot?, _cc}]，_cc=true 表示按场景历元解算（自定义/合成星）；
 //                slot=GEO 定点标注（'110.5°E'，调用方预置，本核只透传）
-//   targets    — [{lat, lon}]，评估点集（站/点=1 个；航迹=点串；Polygon=质心），至少 1 个
+//   targets    — [{lat, lon, altKm?}]，评估点集（站/点=1 个；航迹=点串，排得出时刻的航迹 = 此刻载具那一点、飞行带实际高度；
+//                Polygon=质心），至少 1 个。altKm = 观测者大地高（缺省 0）
 //   times      — {now, gmst, ccNow, ccGmst}，调用方按双历元预备（真实星 now/gmst；_cc 星 ccNow/ccGmst）
 //   minElevDeg — 仰角门限（度）
 // 返回：仅可见卫星，按仰角降序
@@ -42,7 +43,8 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
   const obs = []
   for (const t of targets) {
     if (!Number.isFinite(t.lat) || !Number.isFinite(t.lon)) continue
-    obs.push({ lat: t.lat, lon: t.lon, gs: { longitude: t.lon * DEG, latitude: t.lat * DEG, height: 0 } })
+    const h = Number.isFinite(t.altKm) ? t.altKm : 0
+    obs.push({ lat: t.lat, lon: t.lon, h, gs: { longitude: t.lon * DEG, latitude: t.lat * DEG, height: h } })
   }
   if (!obs.length) return []
   const thr = Number.isFinite(minElevDeg) ? minElevDeg : 0
@@ -58,7 +60,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
     for (const o of obs) {
       const la = sat.ecfToLookAngles(o.gs, ecf)
       const elev = la.elevation / DEG
-      if (!best || elev > best.elevDeg) best = { elevDeg: elev, azDeg: la.azimuth / DEG, rangeKm: la.rangeSat, atLat: o.lat, atLon: o.lon }
+      if (!best || elev > best.elevDeg) best = { elevDeg: elev, azDeg: la.azimuth / DEG, rangeKm: la.rangeSat, atLat: o.lat, atLon: o.lon, atH: o.h }
     }
     if (!best || best.elevDeg < thr) continue
     const gd = sat.eciToGeodetic(pv.position, g)
@@ -68,7 +70,7 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
       const t2 = new Date(t.getTime() + 30000)
       const pv2 = posAt(e, t2)
       if (pv2 && pv2.position) {
-        const gs2 = { longitude: best.atLon * DEG, latitude: best.atLat * DEG, height: 0 }
+        const gs2 = { longitude: best.atLon * DEG, latitude: best.atLat * DEG, height: best.atH || 0 }
         const el2 = sat.ecfToLookAngles(gs2, sat.eciToEcf(pv2.position, sat.gstime(t2))).elevation / DEG
         rising = Math.abs(el2 - best.elevDeg) < 0.02 ? null : el2 > best.elevDeg
       }
@@ -96,17 +98,17 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
 //      这一档现在落在 satPos.posAtMs 里（它顺带认星历点序列：表对象走插值，同样不 new Date）。
 //   ③ 峰值黄金分割：单峰区间搜索每步仅新增 1 次传播（旧三分法每步 2 次）。
 
-// WGS84 地球（与 satellite.js geodeticToEcf 同参），预建观测者基：ox/oy/oz=站点 ECEF(h=0)；ux/uy/uz=当地天顶方向余弦。
+// WGS84 地球（与 satellite.js geodeticToEcf 同参），预建观测者基：ox/oy/oz=站点 ECEF（大地高 altKm，缺省 0）；ux/uy/uz=当地天顶方向余弦。
 // 仰角判据 El=asin( (satEcf−obsEcf)·ẑ_up / |satEcf−obsEcf| )，与 ecfToLookAngles 的 topZ/rangeSat 逐式等价。
 const WGS_A = 6378.137, WGS_B = 6356.7523142
 function buildObservers(targets) {
   const f = (WGS_A - WGS_B) / WGS_A, e2 = 2 * f - f * f, obs = []
   for (const t of targets || []) {
     if (!Number.isFinite(t.lat) || !Number.isFinite(t.lon)) continue
-    const lat = t.lat * DEG, lon = t.lon * DEG
+    const lat = t.lat * DEG, lon = t.lon * DEG, h = Number.isFinite(t.altKm) ? t.altKm : 0
     const sLat = Math.sin(lat), cLat = Math.cos(lat), sLon = Math.sin(lon), cLon = Math.cos(lon)
     const N = WGS_A / Math.sqrt(1 - e2 * sLat * sLat)
-    obs.push({ ox: N * cLat * cLon, oy: N * cLat * sLon, oz: N * (1 - e2) * sLat, ux: cLat * cLon, uy: cLat * sLon, uz: sLat })
+    obs.push({ ox: (N + h) * cLat * cLon, oy: (N + h) * cLat * sLon, oz: (N * (1 - e2) + h) * sLat, ux: cLat * cLon, uy: cLat * sLon, uz: sLat })
   }
   return obs
 }
@@ -130,56 +132,70 @@ const elevMaxAt = (rec, obs, tMs) => {
   return best
 }
 // 二分找仰角穿越门限的时刻（[aMs,bMs] 端点跨越；aAbove=a 端是否在门限之上）。18 次≈门限时刻精确到 90s/2¹⁸≈0.3ms。
-const bisectCross = (rec, obs, aMs, bMs, thr, aAbove) => {
+// ev(tMs) = 该星在 tMs 对目标的最大仰角（静止目标 = 固定观测者；移动目标 = 该时刻载具所在的观测者）
+const bisectCross = (ev, aMs, bMs, thr, aAbove) => {
   let lo = aMs, hi = bMs
-  for (let i = 0; i < 18; i++) { const m = (lo + hi) / 2; if ((elevMaxAt(rec, obs, m) >= thr) === aAbove) lo = m; else hi = m }
+  for (let i = 0; i < 18; i++) { const m = (lo + hi) / 2; if ((ev(m) >= thr) === aAbove) lo = m; else hi = m }
   return (lo + hi) / 2
 }
 // 窗内峰仰角时刻（AOS→LOS 间仰角单峰）：黄金分割搜索，每步仅新增 1 次传播；收敛到 ~0.25s 或 40 步止。
 const GR = (Math.sqrt(5) - 1) / 2   // 0.6180339…
-const peakInWindow = (rec, obs, aMs, bMs) => {
+const peakInWindow = (ev, aMs, bMs) => {
   let lo = aMs, hi = bMs
   let x1 = hi - GR * (hi - lo), x2 = lo + GR * (hi - lo)
-  let f1 = elevMaxAt(rec, obs, x1), f2 = elevMaxAt(rec, obs, x2)
+  let f1 = ev(x1), f2 = ev(x2)
   for (let i = 0; i < 40 && (hi - lo) > 250; i++) {
-    if (f1 < f2) { lo = x1; x1 = x2; f1 = f2; x2 = lo + GR * (hi - lo); f2 = elevMaxAt(rec, obs, x2) }
-    else { hi = x2; x2 = x1; f2 = f1; x1 = hi - GR * (hi - lo); f1 = elevMaxAt(rec, obs, x1) }
+    if (f1 < f2) { lo = x1; x1 = x2; f1 = f2; x2 = lo + GR * (hi - lo); f2 = ev(x2) }
+    else { hi = x2; x2 = x1; f2 = f1; x1 = hi - GR * (hi - lo); f1 = ev(x1) }
   }
   const tPeak = (lo + hi) / 2
-  return { peakMs: tPeak, peakEl: elevMaxAt(rec, obs, tPeak) }
+  return { peakMs: tPeak, peakEl: ev(tPeak) }
 }
 
-// entries:[{rec|eph,name,noradId,group,slot?,_cc}] · targets:[{lat,lon}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
+// entries:[{rec|eph,name,noradId,group,slot?,_cc}] · targets:[{lat,lon,altKm?}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
+// opts.targetsAt(tMs) → [{lat,lon,altKm?}]：目标随时刻移动（航迹载具，排得出时刻的航迹）时给，tMs 为真实时刻（UTC ms）；
+//   合成星按场景历元轴扫描，取目标时换回真实时刻（减 ccNow − now）。给了它 targets 可空
 // 返回 [{noradId,name,group,slot,windows:[{startMs,endMs,durMin,peakEl,peakMs,truncated}]}]，按首窗开始时刻排序。
 export function accessWindows(entries, targets, times, horizonSec, minElevDeg, opts) {
-  if (!entries || !entries.length || !targets || !targets.length) return []
+  const targetsAt = opts && typeof opts.targetsAt === 'function' ? opts.targetsAt : null
+  if (!entries || !entries.length || (!targetsAt && (!targets || !targets.length))) return []
   const step = ((opts && opts.coarseSec) || 90) * 1000
-  const obs = buildObservers(targets)
-  if (!obs.length) return []
+  const obs = targetsAt ? null : buildObservers(targets)
+  if (obs && !obs.length) return []
+  // 移动目标的观测者按真实时刻缓存：普通星的粗扫格点人人相同（base = now），一次解算全批复用；满了整盘清掉
+  const obsCache = targetsAt ? new Map() : null
+  const obsAt = (tReal) => {
+    let o = obsCache.get(tReal)
+    if (!o) { o = buildObservers(targetsAt(tReal)); if (obsCache.size > 8192) obsCache.clear(); obsCache.set(tReal, o) }
+    return o
+  }
+  const ccOff = times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
   const thr = Number.isFinite(minElevDeg) ? minElevDeg : 0
   const out = []
-  // 峰值种子 = 窗内粗采样最高的那格：黄金分割只在 [种子±step] 内精炼。多点目标「取各点最大仰角」在合并窗口内
-  // 可能双峰（先掠一点顶、再掠另一点顶），全窗单峰搜索会锁错峰；以粗扫全局最高格为种子则稳取真峰，且精炼区间更窄更快。
-  const seededPeak = (rec, seedMs, aMs, bMs) => peakInWindow(rec, obs, Math.max(aMs, seedMs - step), Math.min(bMs, seedMs + step))
   for (const e of entries) {
     const base = (e._cc ? times.ccNow : times.now).getTime(), end = base + horizonSec * 1000
     const rec = propOf(e)   // satrec 或星历点序列表（rec 星与改前逐位同路）
+    const off = e._cc ? ccOff : 0
+    const ev = obs ? (tMs) => elevMaxAt(rec, obs, tMs) : (tMs) => elevMaxAt(rec, obsAt(tMs - off), tMs)
+    // 峰值种子 = 窗内粗采样最高的那格：黄金分割只在 [种子±step] 内精炼。多点目标「取各点最大仰角」在合并窗口内
+    // 可能双峰（先掠一点顶、再掠另一点顶），全窗单峰搜索会锁错峰；以粗扫全局最高格为种子则稳取真峰，且精炼区间更窄更快。
+    const seededPeak = (seedMs, aMs, bMs) => peakInWindow(ev, Math.max(aMs, seedMs - step), Math.min(bMs, seedMs + step))
     const windows = []
-    const el0 = elevMaxAt(rec, obs, base)
+    const el0 = ev(base)
     let prevMs = base, prevAbove = el0 >= thr
     let startMs = prevAbove ? base : null, pkMs = base, pkEl = el0   // pkMs/pkEl：当前开窗内最高粗采样格
     for (let ms = base + step; ms <= end; ms += step) {
-      const el = elevMaxAt(rec, obs, ms), above = el >= thr
-      if (above && !prevAbove) { startMs = bisectCross(rec, obs, prevMs, ms, thr, false); pkMs = ms; pkEl = el }
+      const el = ev(ms), above = el >= thr
+      if (above && !prevAbove) { startMs = bisectCross(ev, prevMs, ms, thr, false); pkMs = ms; pkEl = el }
       else if (above && prevAbove) { if (el > pkEl) { pkEl = el; pkMs = ms } }
       else if (!above && prevAbove && startMs != null) {
-        const losMs = bisectCross(rec, obs, prevMs, ms, thr, true), pk = seededPeak(rec, pkMs, startMs, losMs)
+        const losMs = bisectCross(ev, prevMs, ms, thr, true), pk = seededPeak(pkMs, startMs, losMs)
         windows.push({ startMs, endMs: losMs, startMin: (startMs - base) / 60000, endMin: (losMs - base) / 60000, durMin: (losMs - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: false })
         startMs = null
       }
       prevMs = ms; prevAbove = above
     }
-    if (prevAbove && startMs != null) { const pk = seededPeak(rec, pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
+    if (prevAbove && startMs != null) { const pk = seededPeak(pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
     if (windows.length) out.push({ noradId: e.noradId, name: e.name, group: e.group, slot: e.slot || '', windows })   // slot=GEO 定点标注（调用方预置，纯透传）
   }
   out.sort((a, b) => a.windows[0].startMs - b.windows[0].startMs)

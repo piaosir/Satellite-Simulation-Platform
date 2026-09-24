@@ -15,7 +15,7 @@ import { binByTiles, tileUvToPx, tileWindow } from '../geo/tileBins.js'
 // 点标记序号徽标（圈 1、圈 2）：与 3D 球体共用同一支画笔，两视图观感一致
 import { paintNumBadge, BADGE_R } from '../markers/numBadge.js'
 // 标记符号（圆点/方块/三角/图钉…）：同上，2D 与 3D 共用同一支画笔
-import { paintMarkSymbol, symbolUp, symbolDown } from '../markers/markSymbols.js'
+import { paintMarkSymbol, symbolUp, symbolDown, PT_DOT_K } from '../markers/markSymbols.js'   // PT_DOT_K：点标记滑块值 → 视觉直径（3D / 页面同一份）
 // 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
@@ -262,10 +262,11 @@ export function createFlatCoverage(canvas) {
   let vehGen = 0
   // 拖放落点高亮（页面 dragover 期间给）：{ kind, id, px, color } | null；每帧按该实体【当前】屏幕位置画（实时层，不进快照）
   let dropHl = null
-  // 平面图上 2D 不画 3D 模型（本期口径）：只有标记图标，运动档载具随时钟挪、拖放命中与接收
+  // 挂了 3D 模型的站 / 点 / 载具：平面图画这件模型的俯视图（页面注入的出图器，见下方 sprAt 与 viz/flatmap/entitySprites.js）
   // 性能指标表的城市层（每张开着的表一层）：[{ key, color, width, markOn, labelOn, labelPt, labelAlign,
   //   items:[{ lon, lat, ring:[[lon,lat],…]|null, text }] }]。与标记同住文字快照（页面按表推、随天线移动重推）
   let cityBoxes = []
+  let boreRings = []   // 对星指向天线的目标星高亮环 [{ lat, lon, color, px }]（星下点处画空心环）
   let focusSats = []    // 聚焦卫星星下点列表 [{ lat, lon }...]（多选=每颗各一个图标，同款同大小，不分主次）
   let selGeomList = []  // 聚焦卫星几何列表 [{ footprint:[{lat,lon}...], track:[{lat,lon}...], sub:{lat,lon} }...]，与 3D 同源（多颗同时叠画）
   // 聚焦卫星显示样式（与 3D 同一份设置，由 3D 页 setFocusStyle 推入；线宽/图标尺寸口径与 3D 同为屏幕 px）
@@ -294,7 +295,6 @@ export function createFlatCoverage(canvas) {
     tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid', tjDot: 4, tjIconOn: true, tjIconPx: 26,
     tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff', tjNameBold: false
   }
-  const PT_DOT_K = 18 / 32 * 2.2     // 点标记：滑块值 → 视觉直径（沿用 3D 圆点精灵的占比换算，两视图同大小）
   // 与 3D 球体标记观感对齐：3D 的文字/圆点精灵都含画布留白（makeCovLabel 字号50→画布高66；dot 直径18的圆居中于32画布），
   // 其屏幕尺寸按整张画布计 → 实际可见的字/点偏小。2D 直接按字号/半径作画、无留白，故乘同等系数收小，两视图一致。
   const MK_FONT_K = 50 / 66      // 文字：3D 实际字高 = 字号 × 50/66 ≈ 0.76
@@ -325,6 +325,55 @@ export function createFlatCoverage(canvas) {
   const stationImg = new Image(); let stationReady = false
   stationImg.onload = () => { stationReady = true; invalidateStatic(); requestDraw() }
   stationImg.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
+
+  // ── 标记实体的模型俯视图 ──
+  // 载荷带 m2d = {id, px} 的站 / 点 / 载具（挂了 3D 模型且「卫星模型 · 显示」开着，页面给）不画通用符号，画这件模型的正射俯视图：
+  // 出图器由页面经 setEntitySprites 注入（viz/flatmap/entitySprites.js：同一份模型、同一套打光与深色描边，与 3D 球上的模型图标一致）。
+  // px = 包围球直径（与 3D 同一个值 = 这一类标记自己的图标大小，页面 entIconPxOf），这里再乘它顶替的那枚符号在平面图上的同一套系数：
+  // 克制版 iz，站 / 载具另乘 ST_ICON_K（两者的平面图符号都乘它，模型图不乘就比同一个设置下的符号大 18 %）。
+  // 出图器这一档还没出好时照画通用符号，一帧都不空着。
+  // ★ 画图、标注让位、拖拽 / 拖放命中都走 sprAt 这一支（命中用 'peek'：只看已出的图）—— 图上画多大就按多大抓、让多远
+  let entSpr = null
+  const stAims = new Map()   // 站 id → { az, el, park, gen }：挂了模型的站此刻对星的画面口径方位 / 仰角（页面 setStationAims 每拍推）
+  let aimGen = 0
+  const _spq = { id: '', kind: '', ent: '', rot: 0, aim: null, px: 0, scale: 1 }
+  // kind：'station' | 'point' | 'aircraft' | 'ship'；ent：实体键（出图器按它记跨帧状态）；rot：本体 +X 在图上的朝向（弧度，屏幕正上起顺时针）
+  function sprAt(kind, ent, e, rot, iz, mode) {
+    const m = e && e.m2d
+    if (!entSpr || !m || !m.id) return null
+    _spq.id = m.id; _spq.kind = kind; _spq.ent = ent; _spq.rot = rot
+    _spq.aim = kind === 'station' ? (stAims.get(e.id) || null) : null
+    _spq.px = (m.px > 0 ? m.px : 28) * iz * (kind === 'point' ? 1 : ST_ICON_K)
+    _spq.scale = compat && !rasterOut ? Math.max(4, dpr) : dpr   // 矢量 PDF 里它是位图：按 4 倍出，放大看不糊
+    return entSpr.get(_spq, mode || (compat ? 'sync' : 'draw'))
+  }
+  // 画一张：锚点平移 → 补转角零头 → 按描述铺开（CSS px）
+  function drawSpr(sp, x, y) {
+    ctx.save()
+    ctx.translate(x, y)
+    if (sp.rot) ctx.rotate(sp.rot)
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(sp.canvas, sp.dx, sp.dy, sp.dw, sp.dh)
+    ctx.restore()
+  }
+  // 这一趟画不画模型图：导出一律画；屏上只在平面图真显示着时画 —— 3D 视图下平面图画布是 display:none，页面每拍照样推标记、
+  // 它照样重画文字层，那时出的图谁也看不见（切回平面图时页面 feedFlat 重推标记，文字层当场重画）
+  const sprLive = () => !!entSpr && (compat || canvas.clientWidth > 0)
+  // 视口外（含一整枚的余量）不要图：屏外的站 / 载具不值得出一张图
+  const sprVisible = (x, y, e, iz) => {
+    const mg = Math.max(64, 1.5 * (e.m2d.px > 0 ? e.m2d.px : 28) * iz)
+    return x > -mg && x < cw + mg && y > -mg && y < ch + mg
+  }
+  // 正北在图上的朝向（弧度，屏幕正上起顺时针）：等距圆柱恒为 0；投影档沿经线前进一小步投到图上取走向（同 vehScreenRot）
+  const _nq = { lat: 0, lon: 0, headingDeg: 0 }
+  function northRot(lat, lon, x, y) {
+    if (PJ.identity) return 0
+    _nq.lat = lat; _nq.lon = lon
+    return vehScreenRot(_nq, x, y)
+  }
+  // 模型图的标注让位 / 命中几何（CSS px，相对锚点）：{ up, down, half } 与 stExtent 同形；cx / cy = 形体中心偏移，d = 直径
+  const sprExt = (sp) => ({ up: sp.u, down: sp.d, half: Math.max(sp.l, sp.r) })
+  const sprHit = (sp) => ({ cx: (sp.r - sp.l) * 0.5, cy: (sp.d - sp.u) * 0.5, d: Math.max(sp.l + sp.r, sp.u + sp.d) })
 
   // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名。可经 setMapDetail 换源(10m/50m)重建。
   // 边界抽稀（thin>0，单位度）：与 3D 一致地稀疏化各环顶点，低画质档减少 Path2D 顶点。
@@ -2055,7 +2104,7 @@ export function createFlatCoverage(canvas) {
     arc() {}
   }
   function packGeoInto(pk, geo) { _capPk = pk; PJ.path(geo, _capAdapt); pk.end(); _capPk = null }
-  // 数据线集合：波束线（geom.lines）→ 仰角线（satLayer 非 under 的线）→ 逐颗聚焦星的覆盖圈 / 轨迹（轨迹面时描两缘与圆盘轮廓），
+  // 数据线集合：波束线（geom.lines）→ 仰角线（satLayer 非 under 的线）→ 逐颗聚焦星的覆盖圈 / 轨迹（轨迹面时描扫过区域的轮廓），
   // 与 drawDataLines 的 Canvas2D 路同序同样式；实例按透明度分桶（见 glLines.js 文件头）。
   function packDataLines() {
     const pk = createLinePacker({ period: PJ.identity ? 360 : 0 })
@@ -2070,9 +2119,7 @@ export function createFlatCoverage(canvas) {
       if (focusCfg.trkOn && g.track && g.track.length > 1) {
         pk.style(trSt)
         if (focusCfg.trkMode === 'swath' && g.swath) {
-          if (g.swL) for (const pl of g.swL) if (pl && pl.length > 1) put(pl, false)
-          if (g.swR) for (const pl of g.swR) if (pl && pl.length > 1) put(pl, false)
-          if (g.swOutline && g.swRings) for (const ring of g.swRings) if (ring && ring.length > 2) put(ring, false)
+          if (g.swLines) for (const pl of g.swLines) if (pl && pl.length > 1) put(pl, false)
         } else put(g.track, false)
       }
     }
@@ -2738,16 +2785,33 @@ export function createFlatCoverage(canvas) {
     // 直径按 iz 联动、3D 侧按 zoomK 联动，同一条尺寸律（见 scene.setMarkers）。
     const idxD = idxDiam(iz)
     const idxFont = textFontLatin || textFont   // 编号是纯数字 → 走西文面（出 PDF 时字体族名跟着换）
+    // 挂了模型的点 / 站：画模型俯视图（出好了才画，否则照画符号）；画了的记下来，下面标注按模型图的外廓让位
+    const sprOn = sprLive()
+    if (sprOn) entSpr.beginPass()
+    const ptSp = sprOn ? new Map() : null, stSp = sprOn ? new Map() : null
     for (const p of mk.points) {
-      if (p.idx) paintNumBadge(ctx, PX(p.lon, p.lat), PY(p.lat, p.lon), idxD, p.idx, idxFont, ptBadgeOf(p))
-      else paintMarkSymbol(ctx, PX(p.lon, p.lat), PY(p.lat, p.lon), ptD, ptSymOf(p))
+      const x = PX(p.lon, p.lat), y = PY(p.lat, p.lon)
+      const sp = ptSp && p.m2d && sprVisible(x, y, p, iz) ? sprAt('point', 'pt:' + p.id, p, northRot(p.lat, p.lon, x, y), iz) : null
+      if (sp) {
+        ptSp.set(p, sp)
+        const sa = ctx.globalAlpha
+        if (markCfg.ptOpacity < 1) ctx.globalAlpha = sa * Math.max(0, markCfg.ptOpacity)
+        drawSpr(sp, x, y)
+        ctx.globalAlpha = sa
+      } else if (p.idx) paintNumBadge(ctx, x, y, idxD, p.idx, idxFont, ptBadgeOf(p))
+      else paintMarkSymbol(ctx, x, y, ptD, ptSymOf(p))
     }
     // 纵向锚点走 STATION_ANCHOR_Y（符号里那颗白色址点），不再是方框底边 —— 3D 侧的
     // sprite.center 用 1−STATION_ANCHOR_Y 对齐同一处，两视图的站址才落在同一个像素上。
-    if (stationReady) {
+    {
       const sa = ctx.globalAlpha
       if (markCfg.stOpacity < 1) ctx.globalAlpha = sa * Math.max(0, markCfg.stOpacity)
-      for (const s of mk.stations) ctx.drawImage(stationImg, PX(s.lon, s.lat) - si * STATION_ANCHOR_X, PY(s.lat, s.lon) - si * STATION_ANCHOR_Y, si, si)
+      for (const s of mk.stations) {
+        const x = PX(s.lon, s.lat), y = PY(s.lat, s.lon)
+        const sp = stSp && s.m2d && sprVisible(x, y, s, iz) ? sprAt('station', 'st:' + s.id, s, northRot(s.lat, s.lon, x, y), iz) : null
+        if (sp) { stSp.set(s, sp); drawSpr(sp, x, y) }
+        else if (stationReady) ctx.drawImage(stationImg, x - si * STATION_ANCHOR_X, y - si * STATION_ANCHOR_Y, si, si)
+      }
       ctx.globalAlpha = sa
     }
     // 地名层：字号随缩放联动，且与 3D 球体的「世界尺寸」地名严格一致。
@@ -2804,9 +2868,10 @@ export function createFlatCoverage(canvas) {
     for (const p of mk.points) {
       const pf = markCfg.ptFont * iz * MK_FONT_K   // 点标记文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
       const sh = markCfg.ptShape
-      // 带序号徽标时字心要让开圈（外沿比例 BADGE_R，与 3D 同一支）；没有徽标按该形状自己的外沿
-      const eUp = p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD, eDn = p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD
-      const ext = { up: eUp, down: eDn, half: (p.idx ? idxD : ptD) * 0.5 }
+      // 带序号徽标时字心要让开圈（外沿比例 BADGE_R，与 3D 同一支）；没有徽标按该形状自己的外沿；画的是模型图就按模型图的外廓
+      const sp = ptSp && ptSp.get(p)
+      const eUp = sp ? sp.u : (p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD), eDn = sp ? sp.d : (p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD)
+      const ext = sp ? sprExt(sp) : { up: eUp, down: eDn, half: (p.idx ? idxD : ptD) * 0.5 }
       const dU = Math.max(pf * MK_UP, eUp + pf * 0.7), dD = Math.max(pf * 0.9 * MK_UP, eDn + pf * 0.63)
       if (p.label) {
         const a = labelAt(ptPos, ext, pf, ptPos === 'down' ? dD : dU, pf * 1.2, 0)
@@ -2820,8 +2885,9 @@ export function createFlatCoverage(canvas) {
     for (const s of mk.stations) {
       const sf = markCfg.stFont * iz * MK_FONT_K   // 地球站文字：×MK_FONT_K 与 3D 字高对齐（与图标同用克制版 iz）
       // 锚点在址点上，符号还有一截落在锚点下方（址点那颗圆的下半 / 几何符号的下半），
-      // 字要整体让开这一截，否则与址点叠在一起
-      const ext = stExtent(si)
+      // 字要整体让开这一截，否则与址点叠在一起；画的是模型俯视图就按它的外廓让（锚点大致在图形中部）
+      const sp = stSp && stSp.get(s)
+      const ext = sp ? sprExt(sp) : stExtent(si)
       const gapD = ext.down + sf * 0.5 + 0.5 * iz, gapU = ext.up + sf * 0.5 + 0.5 * iz, step = sf + 3 * iz
       if (s.name) {
         const a = labelAt(stPos, ext, sf, stPos === 'up' ? gapU : gapD, step, 0)
@@ -3169,6 +3235,8 @@ export function createFlatCoverage(canvas) {
     }
     // 航迹头（末航点）上的载具图标：航行＝船、飞行＝飞机，形状与 3D 同一份（viz/vehicleSymbol.js）。
     // 朝向取末段在【图上】的走向 —— 2D 的航迹是按经纬度直连画的，图标得贴着那条线（口径见 flatHeading）。
+    // 载具挂了模型（载荷带 m2d）：画这件模型的俯视图、机头 / 船艏顺着同一个朝向（出图器没出好时照画剪影）
+    const trSp = sprLive() ? new Map() : null
     if (markCfg.tjIconOn !== false && (markCfg.tjIconPx == null || markCfg.tjIconPx > 0)) {
       const vi = (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) * iz * stIconK   // 与地球站图标同一条尺寸律
       const sa = ctx.globalAlpha
@@ -3177,17 +3245,16 @@ export function createFlatCoverage(canvas) {
         const tp = t.pts || []; if (!tp.length) continue
         // 运动档：画在此刻的状态位置，朝向取【屏幕】走向（沿大圆前进一小步投到图上）—— 任何投影档都贴着大圆线
         const vs = vehStates.size && t.id != null ? vehStates.get(t.id) : null
-        if (vs) {
-          const x = PX(vs.lon, vs.lat), y = PY(vs.lat, vs.lon)
-          drawVehicle(ctx, t.kind, x, y, vi, vehScreenRot(vs, x, y), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
-          continue
-        }
-        const hd = tp[tp.length - 1]
-        drawVehicle(ctx, t.kind, PX(hd.lon, hd.lat), PY(hd.lat, hd.lon), vi, flatHeading(tp[tp.length - 2], hd), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
+        let x, y, rot
+        if (vs) { x = PX(vs.lon, vs.lat); y = PY(vs.lat, vs.lon); rot = vehScreenRot(vs, x, y) }
+        else { const hd = tp[tp.length - 1]; x = PX(hd.lon, hd.lat); y = PY(hd.lat, hd.lon); rot = flatHeading(tp[tp.length - 2], hd) }
+        const sp = trSp && t.m2d && sprVisible(x, y, t, iz) ? sprAt(vehKind(t), 'tr:' + t.id, t, rot, iz) : null
+        if (sp) { trSp.set(t, sp); drawSpr(sp, x, y); continue }
+        drawVehicle(ctx, t.kind, x, y, vi, rot, hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
       }
       ctx.globalAlpha = sa
     }
-    // 航迹名（默认不画）：锚在航迹头上（运动档跟着载具走），让开载具图标那一截
+    // 航迹名（默认不画）：锚在航迹头上（运动档跟着载具走），让开载具图标那一截（画的是模型图就让开它朝上的外廓）
     if (markCfg.tjNameOn && markCfg.tjNameFont > 0) {
       const nf = markCfg.tjNameFont * iz * MK_FONT_K
       const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * stIconK
@@ -3195,10 +3262,13 @@ export function createFlatCoverage(canvas) {
         const tp = t.pts || []; if (!tp.length || !t.name) continue
         const vs = vehStates.size && t.id != null ? vehStates.get(t.id) : null
         const hd = vs || tp[tp.length - 1]
-        drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7), bold: !!markCfg.tjNameBold })
+        const sp = trSp && trSp.get(t)
+        drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -((sp ? sp.u : vi * 0.5) + nf * 0.7), bold: !!markCfg.tjNameBold })
       }
     }
   }
+  // 航迹载具的模型类别（= entityRuntime.trajEntityKind：飞行 → 飞机、其余 → 船）：锚点口径与吃水线裁剪按它
+  function vehKind(t) { return t && t.kind === 'flight' ? 'aircraft' : 'ship' }
   // 运动档载具在图上的朝向（弧度，屏幕正上起顺时针）：沿大圆前进 0.05° 投到图上取走向；那一步跨了世界接缝就改取后退一步反向
   const _aq = { lat: 0, lon: 0 }
   function vehScreenRot(vs, x, y) {
@@ -3242,15 +3312,24 @@ export function createFlatCoverage(canvas) {
   function entityGeom(kind, fn, only) {
     const iz = izNow()
     const pick = (id) => !only || only.id === id
+    // 画的是模型俯视图的：按那张图的外廓（peek：只看已出的图，与画面同一张）；否则按符号
     if (kind === 'station') {
       const si = stBox(iz), ext = stExtent(si), d = Math.max(ext.up + ext.down, ext.half * 2)
-      for (const s of mk.stations) if (s.id != null && pick(s.id) && Number.isFinite(s.lat) && Number.isFinite(s.lon)) fn(PX(s.lon, s.lat), PY(s.lat, s.lon) - (ext.up - ext.down) * 0.5, d, 'station', s.id)
+      for (const s of mk.stations) if (s.id != null && pick(s.id) && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+        const x = PX(s.lon, s.lat), y = PY(s.lat, s.lon)
+        const sp = s.m2d ? sprAt('station', 'st:' + s.id, s, northRot(s.lat, s.lon, x, y), iz, 'peek') : null
+        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'station', s.id) }
+        else fn(x, y - (ext.up - ext.down) * 0.5, d, 'station', s.id)
+      }
     } else if (kind === 'point') {
       const ptD = ptDiam(iz), idxD = idxDiam(iz), sh = markCfg.ptShape
       for (const p of mk.points) if (p.id != null && pick(p.id) && Number.isFinite(p.lat) && Number.isFinite(p.lon)) {
+        const x = PX(p.lon, p.lat), y = PY(p.lat, p.lon)
+        const sp = p.m2d ? sprAt('point', 'pt:' + p.id, p, northRot(p.lat, p.lon, x, y), iz, 'peek') : null
+        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'point', p.id); continue }
         const d = p.idx ? idxD : ptD
         const up = p.idx ? d * BADGE_R : symbolUp(sh) * d, dn = p.idx ? d * BADGE_R : symbolDown(sh) * d
-        fn(PX(p.lon, p.lat), PY(p.lat, p.lon) - (up - dn) * 0.5, Math.max(up + dn, d), 'point', p.id)
+        fn(x, y - (up - dn) * 0.5, Math.max(up + dn, d), 'point', p.id)
       }
     } else if (kind === 'vehicle') {
       const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * ST_ICON_K
@@ -3258,7 +3337,14 @@ export function createFlatCoverage(canvas) {
         if (t.id == null || !pick(t.id)) continue
         const ll = vehLL(t)
         if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lon)) continue
-        fn(PX(ll.lon, ll.lat), PY(ll.lat, ll.lon), vi, 'vehicle', t.id)
+        const x = PX(ll.lon, ll.lat), y = PY(ll.lat, ll.lon)
+        if (t.m2d && markCfg.tjIconOn !== false) {
+          const vs = vehStates.size ? vehStates.get(t.id) : null, tp = t.pts || []
+          const rot = vs ? vehScreenRot(vs, x, y) : flatHeading(tp[tp.length - 2], ll)
+          const sp = sprAt(vehKind(t), 'tr:' + t.id, t, rot, iz, 'peek')
+          if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'vehicle', t.id); continue }
+        }
+        fn(x, y, vi, 'vehicle', t.id)
       }
     }
   }
@@ -3349,12 +3435,10 @@ export function createFlatCoverage(canvas) {
       if (focusCfg.trkOn && g.track && g.track.length > 1) {
         ctx.globalAlpha = sa * Math.max(0, Math.min(1, focusCfg.trkOpacity))
         const w = Math.max(0.1, focusCfg.trkWidth), dash = DASH_2D[focusCfg.trkDash] || null
-        // 轨迹面：描的是带的两条边缘（左缘 / 右缘，按平移段切开的折线组），不再描中线；
-        // 整轨打转（GEO）且覆盖圈层关着时描圆盘轮廓（开着就与覆盖圈重合，不描）
+        // 轨迹面：描的是扫过区域的轮廓（两缘 + 首尾端帽弧，被别处覆盖压住的段已裁掉，见 focusSwath.swathOutline），不再描中线；
+        // 当前时刻那段端帽弧与覆盖圈重合，覆盖圈层开着时由它自己描
         if (focusCfg.trkMode === 'swath' && g.swath) {
-          if (g.swL) for (const pl of g.swL) if (pl && pl.length > 1) drawPolyline(pl, focusCfg.trkColor, w, false, dash)
-          if (g.swR) for (const pl of g.swR) if (pl && pl.length > 1) drawPolyline(pl, focusCfg.trkColor, w, false, dash)
-          if (g.swOutline && g.swRings) for (const ring of g.swRings) if (ring && ring.length > 2) drawPolyline(ring, focusCfg.trkColor, w, false, dash)
+          if (g.swLines) for (const pl of g.swLines) if (pl && pl.length > 1) drawPolyline(pl, focusCfg.trkColor, w, false, dash)
         } else drawPolyline(g.track, focusCfg.trkColor, w, false, dash)
       }
     }
@@ -3366,7 +3450,8 @@ export function createFlatCoverage(canvas) {
   //   绕极判据与 drawFocusFills 同：解缠后首尾经度差满一圈，补两点收到极点边上。
   // 横向断面只取到 8 段（步幅抽稀）：断面点在纬线图上只为极区拓扑与曲率服务，GEO 那几十段照搬是白画；
   // 屏幕外的切片（含 ±360 副本）整片跳过。
-  // ★ 打转步（sw.skip[i]，见 focusSwath.swathLayout）不围切片，该段由圆盘环（g.swRings）补上，进同一条路径一次 fill。
+  // ★ 打转步（sw.skip[i]，见 focusSwath.swathLayout）不围切片，该段由圆盘环（g.swRings）补上，进同一条路径一次 fill；
+  //   首尾端帽（当前时刻与轨迹末端的覆盖圈）也在 g.swRings 里。
   // ★ 覆盖圈填充开着时带面不叠到覆盖圈上（覆盖圈为准，与 3D 端模板缓冲同口径）：先按每个覆盖圈 evenodd 裁掉再填。
   //   svgcanvas 不认 evenodd 入参（见文件头），矢量导出不裁；裁剪成本按圈走，聚焦全部时圈数超 64 不裁。
   function drawFocusSwaths() {
@@ -3390,8 +3475,9 @@ export function createFlatCoverage(canvas) {
       const m = sw.K + 1, n = Math.floor(sw.ll.length / (m * 2))
       const rings = g.swRings || []
       if (n < 2 && !rings.length) continue
-      const step = Math.max(1, Math.ceil(sw.K / 8)), idx = []
-      for (let j = 0; j < sw.K; j += step) idx.push(j)
+      const step = Math.max(1, Math.ceil(sw.K / 8)), idx = [], mid = sw.K >> 1
+      for (let j = 0; j < sw.K; j += step) { if (j > mid && idx[idx.length - 1] < mid) idx.push(mid); idx.push(j) }
+      if (idx[idx.length - 1] < mid) idx.push(mid)   // 断面在星下点处折一下（两臂各自沿大圆，偏心轨道时两臂倾斜），抽稀时这一点不能跳过
       idx.push(sw.K)
       if (!PJ.identity) { fillSwathProj(sw.ll, m, n, idx, sw.skip, rings); continue }
       ctx.beginPath()
@@ -3521,6 +3607,21 @@ export function createFlatCoverage(canvas) {
   }
   // 聚焦卫星星下点图标（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时
   // 膨大、更贴 3D）；多选=每颗各一个。大小/颜色取聚焦设置，单点可用 px/colorHex 覆盖（对星分析用）。
+  // 对星指向（Sat-track）目标星高亮环：空心圆套在目标星星下点上，大小按 iz 联动（同卫星图标）
+  function drawBoreRings() {
+    if (!boreRings.length) return
+    const iz = Math.sqrt(scale) * SAT_ICON_K
+    ctx.save()
+    for (const p of boreRings) {
+      const x = PX(p.lon, p.lat), y = PY(p.lat, p.lon)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+      const r = Math.max(6, (Number(p.px) > 0 ? Number(p.px) : 26) * iz * 0.5)
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2)
+      ctx.lineWidth = Math.max(2.4, r * 0.2); ctx.strokeStyle = 'rgba(8,12,18,0.75)'; ctx.stroke()
+      ctx.lineWidth = Math.max(1.4, r * 0.12); ctx.strokeStyle = p.color || '#ffd27a'; ctx.stroke()
+    }
+    ctx.restore()
+  }
   function drawFocusIcons() {
     if (!focusCfg.subOn) return
     const iz = Math.sqrt(scale) * SAT_ICON_K
@@ -3672,6 +3773,7 @@ export function createFlatCoverage(canvas) {
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
     drawSubPoint()        // 星下点标记：压在最上面，任何图层都不许盖住它
     drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
+    drawBoreRings()       // 对星指向目标星高亮环
     ctx.restore()
     if (dropHl) drawDropRing()   // 拖放落点高亮（实时层：按目标此刻的屏幕位置，不进快照、不进导出）
     if (globalThis.__staticStat) globalThis.__staticStat.drawMs = +(performance.now() - _tIn).toFixed(1)
@@ -3796,12 +3898,23 @@ export function createFlatCoverage(canvas) {
     }
     // 次序＝图上的压盖次序反过来：地球站画在最上，先抓它；航点在最下，最后
     const si = stBox(iz), ptD = ptDiam(iz), idxD = idxDiam(iz)
+    // 画的是模型俯视图的：抓那张图的形体中心、按它的外廓定半径（与 entityGeom 同一支；屏幕偏移折回经纬差）
+    const sprTest = (kind, ent, e, target) => {
+      const x = PX(e.lon, e.lat), y = PY(e.lat, e.lon)
+      const sp = sprAt(kind, ent, e, northRot(e.lat, e.lon, x, y), iz, 'peek')
+      if (!sp) return false
+      const h = sprHit(sp), kk = Math.max(1e-6, k())
+      test(e.lon + h.cx / kk, e.lat - h.cy / kk, h.d, target)
+      return true
+    }
     if (dragOk('station')) for (const s of mk.stations) if (s.id) {
+      if (s.m2d && sprTest('station', 'st:' + s.id, s, { kind: 'station', id: s.id })) continue
       const ext = stExtent(si)
       // 天线/图钉这类「立在锚点上」的符号：抓取点按其形体中心（针尖上方半个身位），不然只有针尖那一点能抓
       test(s.lon, s.lat + (ext.up - ext.down) * 0.5 / Math.max(1e-6, k()), Math.max(ext.up + ext.down, ext.half * 2), { kind: 'station', id: s.id })
     }
     if (dragOk('point')) for (const p of mk.points) if (p.id) {
+      if (p.m2d && sprTest('point', 'pt:' + p.id, p, { kind: 'point', id: p.id })) continue
       const sh = markCfg.ptShape, d = p.idx ? idxD : ptD
       const up = p.idx ? d * BADGE_R : symbolUp(sh) * d, dn = p.idx ? d * BADGE_R : symbolDown(sh) * d
       test(p.lon, p.lat + (up - dn) * 0.5 / Math.max(1e-6, k()), Math.max(up + dn, d), { kind: 'point', id: p.id })
@@ -4358,6 +4471,31 @@ export function createFlatCoverage(canvas) {
       for (const [id, e] of vehStates) if (e.gen !== g) { vehStates.delete(id); changed = true }
       if (changed) { invalidateText(); requestDraw() }
     },
+    // 标记实体的模型俯视图出图器（viz/flatmap/entitySprites.js 的实例；null = 摘掉，一律画通用符号）。它出好一批图就回调 → 只重画文字层
+    setEntitySprites(p) {
+      if (entSpr === (p || null)) return
+      if (entSpr && entSpr.setOnChange) entSpr.setOnChange(null)
+      entSpr = p || null
+      if (entSpr && entSpr.setOnChange) entSpr.setOnChange(() => { if (!dead) { invalidateText(); requestDraw() } })
+      invalidateText(); requestDraw()
+    },
+    // 挂了模型的站此刻对星的画面口径方位 / 仰角（度）：list = [{ id, az, el, park }]（页面每拍推，只含挂了模型的站；条目复用）。
+    // 模型俯视图里碟面按它摆（出图器按 2° 分档出图）；变化不到 0.2° 不作废文字快照 —— 盯 GEO 的站每拍都是同一组角
+    setStationAims(list) {
+      const g = ++aimGen
+      let changed = false
+      const near = (a, b) => (a !== a && b !== b) || Math.abs(a - b) <= 0.2
+      if (Array.isArray(list)) for (const it of list) {
+        if (!it || it.id == null) continue
+        const az = Number.isFinite(it.az) ? +it.az : NaN, el = Number.isFinite(it.el) ? +it.el : NaN, pk = !!it.park
+        let e = stAims.get(it.id)
+        if (!e) { e = { az, el, park: pk, gen: g }; stAims.set(it.id, e); changed = true; continue }
+        if (!near(e.az, az) || !near(e.el, el) || e.park !== pk) { e.az = az; e.el = el; e.park = pk; changed = true }
+        e.gen = g
+      }
+      for (const [id, e] of stAims) if (e.gen !== g) { stAims.delete(id); changed = true }
+      if (changed && entSpr) { invalidateText(); requestDraw() }
+    },
     // 拖放命中（不受「调整位置」门控）：{ kind: 'station'|'point'|'vehicle', id, x, y, px } | null；kinds 里的 'sat' 忽略（2D 没有卫星拾取）
     entityAtScreen,
     // 拖放落点高亮：hit = entityAtScreen 的结果或 null；o.color 缺省 #4da3ff（页面传 accent）
@@ -4382,6 +4520,7 @@ export function createFlatCoverage(canvas) {
     },
     setOnMarkerDrag(fn) { onMarkerDrag = fn },
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
+    setBoreRings(p) { boreRings = (Array.isArray(p) ? p : []).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
     setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); dlDirty = true; requestDraw() },
@@ -4491,6 +4630,7 @@ export function createFlatCoverage(canvas) {
       drawFieldOverlays()
       drawSubPoint()
       drawFocusIcons()
+      drawBoreRings()
       ctx.restore()
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false; vecImg = null
       staticValid = false; requestDraw()

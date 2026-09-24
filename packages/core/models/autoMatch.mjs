@@ -4,7 +4,9 @@
 //   ① 碎片 / 火箭体（名字带 DEB、R/B）→ id:null（不配模型，页面照旧画点——给一块碎片套卫星外形是误导）
 //   ② 具名规则（≥ 60 条）：CelesTrak / SATCAT 名称正则（个别加 NORAD 号兜底）→ NASA 3D 模型；
 //      候选按优先顺序列出，available 里没有的自动试下一个；一个都没有就落到下一条规则（任务书口径）。
-//   ③ 大型平板 LEO 星座（按名称前缀或 entry.group）→ param:flat-leo
+//   ②′ 星座精模（2026-09-25，fleet/match.mjs）：星链 v1.0 / v1.5 / V2 Mini / 直连手机、一网、Kuiper、GPS IIR / IIR-M / IIF / III、
+//      北斗二号 / 三号各型、伽利略 IOV / FOC、格洛纳斯 M / K、铱星 NEXT、全球星、O3b / mPOWER → param:<型号>（运行时现生成，恒可用）
+//   ③ 大型平板 LEO 星座（按名称前缀或 entry.group）→ param:flat-leo（精模没接住的：国网、千帆）
 //   ④ 立方星（名字带 1U–12U / CUBESAT / 已知 3U 系列）→ param:cubesat-<n>u
 //   ⑤ 轨道类别 GEO（orbitKind，来自页面 cardFor().kind）→ prefs.geoDefault（缺省 = 默认卫星 param:default-sat；是 NASA id 但不可用时
 //      退回默认卫星；旧模板 id（别名表）按 paramTemplates.resolveParamModelId 静默换成现行 id）；
@@ -27,6 +29,7 @@
 //   CONSTELLATION_RULES / GEO_NAME_HINT / DEFAULT_MODEL_ID（= paramTemplates.DEFAULT_MODEL_ID）
 
 import { DEFAULT_MODEL_ID, resolveParamModelId } from './paramTemplates.mjs'
+import { matchFleet } from './fleet/match.mjs'
 
 export { DEFAULT_MODEL_ID }
 
@@ -170,6 +173,9 @@ export function match(sat, opts = {}) {
     if (id) return { id, rule: r.key }
     // 候选都不可用：落到下一条规则（通常最终落到星座 / GEO / 通用）
   }
+
+  const fl = matchFleet({ name: s.name, group, noradId: s.noradId })
+  if (fl) return fl
 
   for (const c of CONSTELLATION_RULES) {
     if ((name && c.re.test(name)) || c.groups.includes(group)) return { id: 'param:flat-leo', rule: `constellation:${c.key}` }

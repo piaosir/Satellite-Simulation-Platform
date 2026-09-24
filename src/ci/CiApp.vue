@@ -13,6 +13,7 @@
 // 本窗口是只读计算器：读三库与 GRD、不写回。算出的 C/I 要用到链路预算里由使用者自己搬。
 import { computed, onMounted } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
+import Icon from '../components/Icon.vue'
 import { fmtGeoSlot } from '../shared/orbitClass.js'
 import { useInterference } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
@@ -215,8 +216,8 @@ const run = () => {
           <table class="ci-tb">
             <thead>
               <tr>
-                <th class="w-chk"></th><th>名称</th><th>轨位 °E</th><th>下行 EIRP 密度 dBW/Hz</th>
-                <th>极化</th><th>XPD dB</th><th>重叠</th><th class="w-chk"></th>
+                <th class="w-chk"></th><th>名称</th><th class="n">轨位 °E</th><th class="n">下行 EIRP 密度 dBW/Hz</th>
+                <th>极化</th><th class="n">XPD dB</th><th class="n">重叠</th><th class="w-chk"></th>
               </tr>
             </thead>
             <tbody>
@@ -228,7 +229,7 @@ const run = () => {
                 <td><select v-model="s.polarization"><option value="">—</option><option>H</option><option>V</option><option>L</option><option>R</option></select></td>
                 <td><input v-model="s.xpdDb" type="number" step="0.5" placeholder="25" /></td>
                 <td><input v-model="s.overlapFactor" type="number" step="0.05" placeholder="1" /></td>
-                <td><button class="ci-x" title="删除" @click="I.removeSource(s._id)">×</button></td>
+                <td><button class="ci-x" title="删除" @click="I.removeSource(s._id)"><Icon name="x" :size="12" /></button></td>
               </tr>
             </tbody>
           </table>
@@ -242,16 +243,16 @@ const run = () => {
             </div>
             <!-- 逐站给定：首版漏了这张表，导致该模式每条都因缺值被跳过、算不出数 -->
             <table v-if="asi.uplinkMode === 'explicit'" class="ci-tb compact">
-              <thead><tr><th>干扰源</th><th>朝本星方向的离轴 EIRP 密度 dBW/Hz</th></tr></thead>
+              <thead><tr><th>干扰源</th><th class="n">朝本星方向的离轴 EIRP 密度 dBW/Hz</th></tr></thead>
               <tbody>
                 <tr v-for="s in asi.sources.filter((x) => x.enabled)" :key="s._id + 'e'">
                   <td class="ci-ro" data-i18n-skip>{{ s.name || s._id }}</td>
-                  <td><input v-model="s.offAxisEirpDensityDbWPerHz" type="number" step="0.1" placeholder="必填，缺则该条被跳过" /></td>
+                  <td><input v-model="s.offAxisEirpDensityDbWPerHz" type="number" step="0.1" placeholder="必填" /></td>
                 </tr>
               </tbody>
             </table>
             <table v-if="asi.uplinkMode === 'peer'" class="ci-tb compact">
-              <thead><tr><th>干扰站</th><th>口径 m</th><th>功放 W</th><th>带宽 Hz</th><th>馈损 dB</th><th>站经度</th><th>站纬度</th></tr></thead>
+              <thead><tr><th>干扰站</th><th class="n">口径 m</th><th class="n">功放 W</th><th class="n">带宽 Hz</th><th class="n">馈损 dB</th><th class="n">站经度</th><th class="n">站纬度</th></tr></thead>
               <tbody>
                 <tr v-for="s in asi.sources.filter((x) => x.enabled)" :key="s._id + 'p'">
                   <td class="ci-ro" data-i18n-skip>{{ s.name || s._id }}</td>
@@ -281,18 +282,18 @@ const run = () => {
             <div class="ci-split-l">
               <h3>下行逐源明细</h3>
               <table class="ci-tb res">
-                <thead><tr><th>干扰星</th><th>拓扑角 °</th><th>经度差 °</th><th>G(θ) dBi</th><th>鉴别度 dB</th><th>极化 dB</th><th>C/I dB</th><th>占比</th></tr></thead>
+                <thead><tr><th>干扰星</th><th class="n">拓扑角 °</th><th class="n">经度差 °</th><th class="n">G(θ) dBi</th><th class="n">鉴别度 dB</th><th class="n">极化 dB</th><th class="n">C/I dB</th><th class="n">占比</th></tr></thead>
                 <tbody>
                   <tr
                     v-for="s in (asi.result.downlink && asi.result.downlink.sources) || []" :key="s.id"
                     :class="{ hot: hoveredId === s.id, skip: s.skipped }"
                     @mouseenter="I.setHover(s.id)" @mouseleave="I.setHover('')">
                     <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="干扰星轨位（°E/°W）">{{ fSlot(s.lonDeg) }}</span></td>
-                    <td>{{ f(s.thetaDeg) }}</td>
-                    <td class="dim">{{ f(s.lonDiffDeg) }}</td>
-                    <td>{{ f(s.offAxisGainDbi) }}</td>
-                    <td>{{ f(s.discrimDb) }}</td>
-                    <td>{{ f(s.polDb, 1) }}</td>
+                    <td class="num">{{ f(s.thetaDeg) }}</td>
+                    <td class="dim num">{{ f(s.lonDiffDeg) }}</td>
+                    <td class="num">{{ f(s.offAxisGainDbi) }}</td>
+                    <td class="num">{{ f(s.discrimDb) }}</td>
+                    <td class="num">{{ f(s.polDb, 1) }}</td>
                     <td class="num">{{ s.skipped ? '—' : f(s.ciDb) }}</td>
                     <td class="num">{{ s.skipped ? s.skipped : fPct(s.sharePct) }}</td>
                   </tr>
@@ -301,7 +302,7 @@ const run = () => {
 
               <h3>上行逐源明细</h3>
               <table class="ci-tb res">
-                <thead><tr><th>干扰源</th><th>干扰站离轴角 °</th><th>干扰密度 dBW/Hz</th><th>来源</th><th>C/I dB</th><th>占比</th></tr></thead>
+                <thead><tr><th>干扰源</th><th class="n">干扰站离轴角 °</th><th class="n">干扰密度 dBW/Hz</th><th>来源</th><th class="n">C/I dB</th><th class="n">占比</th></tr></thead>
                 <tbody>
                   <tr
                     v-for="s in (asi.result.uplink && asi.result.uplink.sources) || []" :key="s.id + 'u'"
@@ -310,8 +311,8 @@ const run = () => {
                     <!-- 轨位标的是这一源所属的那颗干扰星（对等站模式下站址另有「站经度/站纬度」两列，别混） -->
                     <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="该源所属干扰星的轨位（°E/°W；非干扰站站址经度）">{{ fSlot(s.lonDeg) }}</span></td>
                     <!-- 施扰的是对方那座站：非共址时它看到的夹角与本站的拓扑角不是一个数 -->
-                    <td>{{ f(s.offAxisDeg) }}</td>
-                    <td>{{ f(s.interfererDensityDbWPerHz) }}</td>
+                    <td class="num">{{ f(s.offAxisDeg) }}</td>
+                    <td class="num">{{ f(s.interfererDensityDbWPerHz) }}</td>
                     <td class="dim">{{ s.maskBand ? 'S.524 ' + s.maskBand : (s.peer ? '对等站 Ø' + f(s.peer.diameterM, 1) + ' m' + (s.peer.coLocated ? '（共址）' : '') : '给定') }}</td>
                     <td class="num">{{ f(s.ciDb) }}</td>
                     <td class="num">{{ fPct(s.sharePct) }}</td>
@@ -376,13 +377,13 @@ const run = () => {
             <button class="ci-btn" @click="I.addCciPoint()">+ 取值点</button>
           </div>
           <table class="ci-tb compact pts">
-            <thead><tr><th>名称</th><th>经度 °E</th><th>纬度 °N</th><th class="w-chk"></th></tr></thead>
+            <thead><tr><th>名称</th><th class="n">经度 °E</th><th class="n">纬度 °N</th><th class="w-chk"></th></tr></thead>
             <tbody>
               <tr v-for="p in cci.points" :key="p._id">
                 <td><input v-model="p.name" type="text" /></td>
                 <td><input v-model="p.lon" type="number" step="0.0001" /></td>
                 <td><input v-model="p.lat" type="number" step="0.0001" /></td>
-                <td><button class="ci-x" @click="I.removeCciPoint(p._id)">×</button></td>
+                <td><button class="ci-x" title="删除" @click="I.removeCciPoint(p._id)"><Icon name="x" :size="12" /></button></td>
               </tr>
             </tbody>
           </table>
@@ -423,12 +424,12 @@ const run = () => {
               <template v-if="cci.result">
                 <div class="ci-tbwrap">
                   <table class="ci-tb res">
-                    <thead><tr><th>取值点</th><th>经度</th><th>纬度</th><th>服务波束</th><th>颜色</th><th>C/CCI dB</th></tr></thead>
+                    <thead><tr><th>取值点</th><th class="n">经度</th><th class="n">纬度</th><th>服务波束</th><th>颜色</th><th class="n">C/CCI dB</th></tr></thead>
                     <tbody>
                       <tr v-for="(r, i) in cci.result.rows" :key="i">
                         <td data-i18n-skip>{{ r.name }}</td>
-                        <td class="dim">{{ f(r.lon, 4) }}</td>
-                        <td class="dim">{{ f(r.lat, 4) }}</td>
+                        <td class="dim num">{{ f(r.lon, 4) }}</td>
+                        <td class="dim num">{{ f(r.lat, 4) }}</td>
                         <td>{{ r.servingIdx == null ? '—' : '#' + r.servingIdx }}</td>
                         <td>{{ r.servingIdx == null ? '—' : cci.result.coloring[r.servingIdx] }}</td>
                         <td class="num">{{ r.cciDb == null ? '无同色波束 / 域外' : f(r.cciDb) }}</td>
@@ -515,7 +516,7 @@ const run = () => {
             <div class="ci-kpi"><span>卫星侧来源</span><b class="sm">{{ xpi.result.grdBacked ? 'GRD 实测' : '手填' }}</b></div>
           </div>
           <table class="ci-tb res">
-            <thead><tr><th>分段</th><th>XPI dB</th><th>来源</th><th>占总干扰</th></tr></thead>
+            <thead><tr><th>分段</th><th class="n">XPI dB</th><th>来源</th><th class="n">占总干扰</th></tr></thead>
             <tbody>
               <tr v-for="t in xpi.result.terms" :key="t.key">
                 <td>{{ t.label }}</td>
@@ -583,7 +584,7 @@ const run = () => {
           </div>
           <table class="ci-tb compact">
             <thead>
-<tr><th class="w-chk"></th><th>来源</th><th>名称 / 星座</th><th colspan="5">轨道（星历来源为只读）</th><th>EIRP 密度 dBW/Hz</th><th>极化</th><th>自系统</th><th class="w-chk"></th></tr>
+<tr><th class="w-chk"></th><th>来源</th><th>名称 / 星座</th><th colspan="5">轨道（星历来源为只读）</th><th class="n">EIRP 密度 dBW/Hz</th><th>极化</th><th>自系统</th><th class="w-chk"></th></tr>
             </thead>
             <tbody>
               <tr v-for="g in ngso.interferers" :key="g._id" :class="{ off: !g.enabled }">
@@ -621,7 +622,7 @@ const run = () => {
                 <td><input v-model="g.eirpDensityDbWPerHz" type="number" step="0.1" /></td>
                 <td><select v-model="g.polarization"><option value="">—</option><option>H</option><option>V</option><option>L</option><option>R</option></select></td>
                 <td><input v-model="g.selfSystem" type="checkbox" title="同星座内的其他星（服务星自身不计为干扰）" /></td>
-                <td><button class="ci-x" @click="I.removeNgsoGroup(g._id)">×</button></td>
+                <td><button class="ci-x" title="删除" @click="I.removeNgsoGroup(g._id)"><Icon name="x" :size="12" /></button></td>
               </tr>
             </tbody>
           </table>
@@ -858,17 +859,17 @@ const run = () => {
               <h3>CDF 分位</h3>
               <table class="ci-tb res">
                 <thead><tr>
-                  <th>超越时间</th><th>C/I dB</th>
-                  <th v-if="ngso.result.epochStats">95% 区间</th>
-                  <th>有效样本</th>
-                  <th v-if="ngso.result.iOverN" title="I/N 越大越劣，取自分布高端">I/N dB</th>
-                  <th v-if="ngso.result.cOverNI" title="链路口径">C/(N+I) dB</th>
-                  <th v-if="ngso.result.deltaTOverT" title="与 I/N 为同一比值的百分数表达">ΔT/T %</th>
-                  <th>年折合</th>
+                  <th class="n">超越时间</th><th class="n">C/I dB</th>
+                  <th v-if="ngso.result.epochStats" class="n">95% 区间</th>
+                  <th class="n">有效样本</th>
+                  <th v-if="ngso.result.iOverN" class="n" title="I/N 越大越劣，取自分布高端">I/N dB</th>
+                  <th v-if="ngso.result.cOverNI" class="n" title="链路口径">C/(N+I) dB</th>
+                  <th v-if="ngso.result.deltaTOverT" class="n" title="与 I/N 为同一比值的百分数表达">ΔT/T %</th>
+                  <th class="n">年折合</th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="(v, k) in ngso.result.percentiles" :key="k" :class="{ 'pct-none': v === null, 'pct-weak': ngSup(k) && ngSup(k).weak }">
-                    <td>{{ k }} %</td>
+                    <td class="num">{{ k }} %</td>
                     <td class="num" :title="ngSupTip(k)">
                       <template v-if="v !== null">
                         {{ f(v, 2) }}<sup v-if="ngSup(k) && ngSup(k).weak" class="pct-flag">弱</sup><sup v-if="ngSup(k) && ngSup(k).sampled" class="pct-flag samp">抽</sup>
@@ -890,7 +891,7 @@ const run = () => {
                     <td v-if="ngso.result.iOverN" class="num">{{ f(ngso.result.iOverN[k], 2) }}</td>
                     <td v-if="ngso.result.cOverNI" class="num">{{ f(ngso.result.cOverNI[k], 2) }}</td>
                     <td v-if="ngso.result.deltaTOverT" class="num">{{ f(ngso.result.deltaTOverT[k], 3) }}</td>
-                    <td class="dim">{{ f(fYearMin(k), 1) }} min/年</td>
+                    <td class="dim num">{{ f(fYearMin(k), 1) }} min/年</td>
                   </tr>
                 </tbody>
               </table>
@@ -911,11 +912,11 @@ const run = () => {
                 </template>
               </p>
               <table v-if="ngso.result.inlineEvents.length" class="ci-tb res">
-                <thead><tr><th>起始</th><th>时长</th><th>最近离轴 °</th><th>该段最差 C/I dB</th></tr></thead>
+                <thead><tr><th>起始</th><th class="n">时长</th><th class="n">最近离轴 °</th><th class="n">该段最差 C/I dB</th></tr></thead>
                 <tbody>
                   <tr v-for="(e, i) in ngso.result.inlineEvents.slice(0, 24)" :key="i">
                     <td class="dim">{{ fTime(e.startMs) }}</td>
-                    <td>{{ fDur(e.durationSec) }}</td>
+                    <td class="num">{{ fDur(e.durationSec) }}</td>
                     <td class="num">{{ f(e.minThetaDeg, 3) }}</td>
                     <td class="num">{{ f(e.worstCiDb, 1) }}</td>
                   </tr>
@@ -934,7 +935,7 @@ const run = () => {
               <template v-if="ngso.result.perGroup && ngso.result.perGroup.length">
                 <h3>单源分解</h3>
                 <table class="ci-tb res">
-                  <thead><tr><th>干扰星座</th><th>星数</th><th>聚合份额</th><th>时均 I₀ dBW/Hz</th><th>单入最坏 dBW/Hz</th><th>最坏时刻</th></tr></thead>
+                  <thead><tr><th>干扰星座</th><th class="n">星数</th><th class="n">聚合份额</th><th class="n">时均 I₀ dBW/Hz</th><th class="n">单入最坏 dBW/Hz</th><th>最坏时刻</th></tr></thead>
                   <tbody>
                     <tr v-for="g in ngso.result.perGroup" :key="g.id">
                       <td data-i18n-skip>{{ g.name }}</td>
@@ -954,22 +955,22 @@ const run = () => {
               <template v-if="ngso.result.breach && (ngso.result.breach.ciPct != null || ngso.result.breach.iOverNPct != null || ngso.result.breach.deltaTPct != null)">
                 <h3>越限时间占比</h3>
                 <table class="ci-tb res">
-                  <thead><tr><th>判据</th><th>门限</th><th>越限时间</th><th>年折合</th></tr></thead>
+                  <thead><tr><th>判据</th><th class="n">门限</th><th class="n">越限时间</th><th class="n">年折合</th></tr></thead>
                   <tbody>
                     <tr v-if="ngso.result.breach.ciPct != null">
                       <td>C/I</td><td class="num">&lt; {{ ngso.result.breach.criteria.ciDb }} dB</td>
                       <td class="num">{{ f(ngso.result.breach.ciPct, 4) }}%</td>
-                      <td class="dim">{{ f(fYearMin(ngso.result.breach.ciPct), 1) }} min/年</td>
+                      <td class="dim num">{{ f(fYearMin(ngso.result.breach.ciPct), 1) }} min/年</td>
                     </tr>
                     <tr v-if="ngso.result.breach.iOverNPct != null">
                       <td>I/N</td><td class="num">&gt; {{ ngso.result.breach.criteria.iOverNDb }} dB</td>
                       <td class="num">{{ f(ngso.result.breach.iOverNPct, 4) }}%</td>
-                      <td class="dim">{{ f(fYearMin(ngso.result.breach.iOverNPct), 1) }} min/年</td>
+                      <td class="dim num">{{ f(fYearMin(ngso.result.breach.iOverNPct), 1) }} min/年</td>
                     </tr>
                     <tr v-if="ngso.result.breach.deltaTPct != null">
                       <td>ΔT/T</td><td class="num">&gt; {{ ngso.result.breach.criteria.deltaTOverTPct }}%</td>
                       <td class="num">{{ f(ngso.result.breach.deltaTPct, 4) }}%</td>
-                      <td class="dim">{{ f(fYearMin(ngso.result.breach.deltaTPct), 1) }} min/年</td>
+                      <td class="dim num">{{ f(fYearMin(ngso.result.breach.deltaTPct), 1) }} min/年</td>
                     </tr>
                   </tbody>
                 </table>
@@ -978,11 +979,11 @@ const run = () => {
               <template v-if="ngso.result.availability">
                 <h3>可用度</h3>
                 <table class="ci-tb res">
-                  <thead><tr><th>口径</th><th>可用度</th><th>年不可用</th></tr></thead>
+                  <thead><tr><th>口径</th><th class="n">可用度</th><th class="n">年不可用</th></tr></thead>
                   <tbody>
-                    <tr><td>仅雨衰</td><td class="num">{{ f(ngso.result.availability.noInterferencePct, 4) }}%</td><td class="dim">{{ f((100 - ngso.result.availability.noInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
-                    <tr class="strong"><td>计入干扰</td><td class="num">{{ f(ngso.result.availability.withInterferencePct, 4) }}%</td><td class="dim">{{ f((100 - ngso.result.availability.withInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
-                    <tr><td>所需补偿余量</td><td class="num">{{ f(ngso.result.availability.extraMarginDb, 2) }} dB</td><td class="dim"></td></tr>
+                    <tr><td>仅雨衰</td><td class="num">{{ f(ngso.result.availability.noInterferencePct, 4) }}%</td><td class="dim num">{{ f((100 - ngso.result.availability.noInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
+                    <tr class="strong"><td>计入干扰</td><td class="num">{{ f(ngso.result.availability.withInterferencePct, 4) }}%</td><td class="dim num">{{ f((100 - ngso.result.availability.withInterferencePct) / 100 * 8760, 2) }} h/年</td></tr>
+                    <tr><td>所需补偿余量</td><td class="num">{{ f(ngso.result.availability.extraMarginDb, 2) }} dB</td><td class="dim num"></td></tr>
                   </tbody>
                 </table>
                 <p class="ci-note sm">
@@ -1027,21 +1028,25 @@ const run = () => {
 .ci-title { margin: 0; font-size: var(--fs-5); font-weight: 700; letter-spacing: var(--ls-tight); }
 .ci-bar-sp { flex: 1; }
 .ci-tabs { display: flex; gap: 3px; }
-.ci-tab { font: inherit; font-size: var(--fs-3); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
+/* 未选页签不描框：四个白框并排读起来像四个按钮；悬停才浮出框，选中那一格才是实体 */
+.ci-tab { font: inherit; font-size: var(--fs-3); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 12px; cursor: pointer; background: transparent; color: var(--text-muted); border: 1px solid transparent; border-radius: var(--r-ctl, 4px); }
+.ci-tab:hover:not(.on) { color: var(--text); background: var(--bg); border-color: var(--border); }
 .ci-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
-.ci-run { font: inherit; font-weight: 600; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; color: var(--bg); background: var(--accent); border: none; border-radius: var(--r-ctl, 4px); }
-.ci-run:disabled { opacity: 0.55; cursor: default; }
+/* 墨色主按钮（P1）：走 --primary-fill，深色下压一档不再是近白块；描边与底同色，border-box 下仍 28px */
+.ci-run { font: inherit; font-weight: 600; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; color: var(--primary-on); background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl, 4px); }
+.ci-run:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.ci-run:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 .ci-btn { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 10px; cursor: pointer; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 4px); }
 .ci-btn:hover:not(:disabled) { border-color: var(--border-strong); }
 .ci-btn:disabled { opacity: 0.5; cursor: default; }
-.ci-x { font: inherit; line-height: 1; padding: 1px 6px; cursor: pointer; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: var(--r-box); }
-.ci-x:hover { color: var(--text); border-color: var(--border); }
+.ci-x { display: inline-flex; align-items: center; justify-content: center; width: var(--h-ctl-sm); height: var(--h-ctl-sm); padding: 0; font: inherit; line-height: 1; cursor: pointer; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: var(--r-box); }
+.ci-x:hover { color: var(--danger); border-color: var(--border); }
 
 .ci-msg { margin: 0; padding: 6px 14px; font-size: var(--fs-3); color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 
 .ci-main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; }
 
-.ci-panel { margin-bottom: 20px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-float); }
+.ci-panel { margin-bottom: 20px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-box); }
 .ci-panel > h2, .ci-panel-hd h2 { margin: 0 0 10px; font-size: var(--fs-5); font-weight: 700; }
 .ci-panel h3 { margin: 14px 0 6px; font-size: var(--fs-4); font-weight: 700; color: var(--text-muted); }
 .ci-panel-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -1077,10 +1082,12 @@ const run = () => {
 .ci-grid input:focus, .ci-grid select:focus { outline: none; border-color: var(--accent-ui); }
 .ci-grid input[readonly] { background: var(--surface-2); color: var(--text-muted); }
 
-.ci-chk { flex-direction: row !important; align-items: center; gap: 5px !important; }
+/* 功能条里的复选（.ci-hd-tools）不在 .ci-grid 下，吃不到那边的字号 / 字色：这里自带，两处读起来一样 */
+.ci-chk { display: inline-flex; flex-direction: row !important; align-items: center; gap: 5px !important; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
 .ci-grid.gap-t { margin-top: 8px; }
 /* 换算出来的那一段值：填在上面、结果就在下面一行，不用等点「计算」才知道自己填的等于多少 */
-.ci-derived { margin: 9px 0 0; padding: 6px 10px; font-size: var(--fs-3); line-height: 1.5; color: var(--text); background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: var(--r-box); }
+/* 左侧是 3px 色条：色条那一边取直角，圆角只留在右侧，免得色条两端被削成月牙 */
+.ci-derived { margin: 9px 0 0; padding: 6px 10px; font-size: var(--fs-3); line-height: 1.5; color: var(--text); background: var(--surface-2); border-left: 3px solid var(--accent); border-radius: 0 var(--r-box) var(--r-box) 0; }
 .ci-derived b { font-size: var(--fs-4); font-weight: 700; font-variant-numeric: tabular-nums; }
 .ci-derived span { color: var(--text-muted); font-size: var(--fs-3); margin-left: 4px; }
 .ci-derived.off { color: var(--text-muted); border-left-color: var(--border-strong); }
@@ -1089,10 +1096,16 @@ const run = () => {
 .ci-mini { font: inherit; font-size: var(--fs-3); padding: 3px 6px; background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
 
 .ci-tb { width: 100%; border-collapse: collapse; font-size: var(--lb-fs, 12.5px); }
-.ci-tb th { padding: 4px 6px; font-size: var(--fs-3); font-weight: 600; text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+/* 表头左右 10px = 格 4px + 输入框描边 1px + 内距 5px：列名与框里的字同一条竖线起笔；
+   结果表（.res）格内距 8px，表头跟着收到 8px。数值列表头 .n 右对齐，与右对齐的数字同侧 */
+.ci-tb th { padding: 4px 10px; font-size: var(--fs-3); font-weight: 600; text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+.ci-tb th.w-chk { padding: 4px 0; }
+.ci-tb th.n { text-align: right; }
 .ci-tb td { padding: 2px 4px; border-bottom: 1px solid var(--border); }
+.ci-tb td.ci-ro { padding-left: 10px; padding-right: 10px; }
+.ci-tb.res thead th { padding-left: 8px; padding-right: 8px; }
 .ci-tb tr.off { opacity: 0.45; }
-.ci-tb tr.skip { opacity: 0.55; font-style: italic; }
+.ci-tb tr.skip { opacity: 0.55; }
 .ci-tb tr.hot { background: var(--surface-2); }
 .ci-tb .w-chk { width: 26px; }
 .ci-tb input[type=text], .ci-tb input[type=number], .ci-tb select {
@@ -1101,8 +1114,15 @@ const run = () => {
 }
 .ci-tb input:hover, .ci-tb select:hover { border-color: var(--field-border-hover); }
 .ci-tb input:focus, .ci-tb select:focus { outline: none; background-color: var(--field-bg); border-color: var(--accent-ui); }
+/* 表内焦点环收进框里：全局 2px 外环在密排行里会压到上下两行 */
+.ci-tb input:focus-visible, .ci-tb select:focus-visible { outline: 1px solid var(--accent-ui) !important; outline-offset: -2px; }
 .ci-tb.res td, .ci-tb.res th[scope], .ci-tb.res tbody th { padding: 3px 8px; }
 .ci-tb.res tbody th { text-align: left; font-weight: 500; color: var(--text-muted); border-bottom: 1px solid var(--border); }
+/* 结果表三线（与链路预算结果同一口径）：顶 / 底线 --lb-rule-strong、栏目线 --lb-rule、行间 --lb-rule-soft */
+.ci-tb.res { border-top: 1px solid var(--lb-rule-strong); border-bottom: 1px solid var(--lb-rule-strong); }
+.ci-tb.res thead th { border-bottom-color: var(--lb-rule); }
+.ci-tb.res td, .ci-tb.res tbody th { border-bottom-color: var(--lb-rule-soft); }
+.ci-tb.res tbody tr:last-child > * { border-bottom-color: var(--lb-rule-strong); }
 .ci-tb.res tr.strong { font-weight: 700; }
 .ci-tb .num { text-align: right; font-variant-numeric: tabular-nums; }
 .ci-tb .dim { color: var(--text-muted); }
@@ -1119,7 +1139,7 @@ const run = () => {
 .ci-tb.pts th:nth-child(2), .ci-tb.pts th:nth-child(3) { width: 112px; }
 
 .ci-kpis { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
-.ci-kpi { flex: 1 1 130px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
+.ci-kpi { flex: 1 1 130px; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); }
 .ci-kpi span { display: block; font-size: var(--fs-2); color: var(--text-muted); }
 .ci-kpi b { font-size: var(--fs-6); font-weight: 700; font-variant-numeric: tabular-nums; }
 .ci-kpi b.sm { font-size: var(--fs-5); }
@@ -1130,7 +1150,7 @@ const run = () => {
 .ci-tb.res tr.pct-none td { color: var(--text-muted); }
 .ci-tb.res tr.pct-weak td.num { color: var(--warn, #d08a2e); }
 .pct-short { font-size: var(--fs-2); color: var(--text-muted); }
-.pct-flag { font-size: 8.5px; font-weight: 700; margin-left: 2px; color: var(--warn, #d08a2e); }
+.pct-flag { font-size: var(--fs-1); font-weight: 700; margin-left: 2px; color: var(--warn, #d08a2e); }
 .pct-flag.samp { color: var(--danger, #c0392b); }
 
 /* 单源分解的份额条：数值旁附一条细条，便于横向比较各座的贡献占比 */
@@ -1155,14 +1175,14 @@ const run = () => {
 .ci-note { margin: 6px 0 0; font-size: var(--fs-3); line-height: 1.55; color: var(--text-muted); }
 .ci-note.sm { font-size: var(--fs-2); }
 /* 取数失败的原因行：不是提示语气，要看得出是出了事 */
-.ci-note.err { color: var(--danger, #d64545); }
+.ci-note.err { color: var(--danger); }
 .ci-note strong { color: var(--text); font-weight: 600; }
-.ci-warn { margin: 8px 0 0; padding: 7px 10px; font-size: var(--fs-3); line-height: 1.55; color: var(--text); background: color-mix(in srgb, var(--warn, #d08a2e) 12%, transparent); border-left: 3px solid var(--warn, #d08a2e); border-radius: var(--r-box); }
+.ci-warn { margin: 8px 0 0; padding: 7px 10px; font-size: var(--fs-3); line-height: 1.55; color: var(--text); background: color-mix(in srgb, var(--warn, #d08a2e) 12%, transparent); border-left: 3px solid var(--warn, #d08a2e); border-radius: 0 var(--r-box) var(--r-box) 0; }
 .ci-warn strong { font-weight: 700; }
 
 .ci-fieldwrap { margin-top: 10px; }
 /* 星座实参速览：选了真实星座后代替 Walker 输入格 */
-.ci-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; margin: 8px 0 0; padding: 8px 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
+.ci-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; margin: 8px 0 0; padding: 8px 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); }
 .ci-stats > div { display: flex; gap: 7px; align-items: baseline; font-size: var(--fs-3); }
 .ci-stats > div.wide { grid-column: 1 / -1; }
 .ci-stats dt { flex: none; color: var(--text-muted); font-size: var(--fs-3); }
@@ -1173,15 +1193,15 @@ const run = () => {
 .ci-prog-bar { height: 100%; background: var(--accent); transition: width 0.12s linear; }
 
 /* 邻星搜索：结果按与本星轨位的经度差排序，最近的在前 */
-.ci-search { margin: 8px 0 10px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-float); }
+.ci-search { margin: 8px 0 10px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); }
 .ci-search-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ci-search-hd input[type=text] { flex: 1 1 200px; min-width: 160px; font: inherit; font-size: var(--fs-4); padding: 4px 7px; color: var(--text); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
 .ci-search-hd input[type=number] { font: inherit; font-size: var(--fs-4); padding: 4px 5px; color: var(--text); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
 .ci-search-hd label { display: flex; align-items: center; gap: 3px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 .ci-search-msg { font-size: var(--fs-3); color: var(--text-muted); }
 .ci-search-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; max-height: 168px; overflow-y: auto; }
-.ci-hit { display: inline-flex; align-items: baseline; gap: 6px; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); }
-.ci-hit:hover { border-color: var(--accent); background: var(--surface); }
+.ci-hit { display: inline-flex; align-items: baseline; gap: 6px; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.ci-hit:hover { border-color: var(--line-hover); background: var(--surface); }
 .ci-hit b { font-weight: 600; }
 .ci-hit .lon { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .ci-hit .dl { color: var(--accent); font-variant-numeric: tabular-nums; }

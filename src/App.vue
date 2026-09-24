@@ -47,6 +47,9 @@ const aboutOpen = ref(false)
 const updateOpen = ref(false)    // 检查更新（帮助菜单，与关于平级）
 const appVersion = ref('')
 const openMenu = ref('')     // 当前展开的菜单 key（''=全收起）；经典菜单栏：点击展开，展开后悬停即切换
+// 展开中悬停换菜单 = 「跳」：新面板不重播入场（原生菜单横扫标题是瞬切），只有点开那一下才淡入
+const menuHop = ref(false)
+function hopTo(k) { menuHop.value = true; openMenu.value = k }
 const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/工具按钮时显示，默认「就绪」）
 
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
@@ -110,11 +113,18 @@ function multiTap(key, n, fn) {
 }
 
 // 侧栏宽度拖拽（左右分隔条）——宽度按视图分轨（可见性分析独立记忆、上限更高），拖谁记谁
+// 拖动期间整窗锁 col-resize 光标（html.ui-col-resize），侧栏与画布不接指针：
+// 指针扫过画布时不再改光标、不刷光标经纬度读数，也不会被侧栏里的控件吃掉悬停
+const colDrag = ref(false)
 function splitDown(e) {
   const k = sideWKey(), [lo, hi] = SIDE_W_LIM[k]
   const x0 = e.clientX; const w0 = ui[k]
+  colDrag.value = true; document.documentElement.classList.add('ui-col-resize')
   const move = (ev) => { ui[k] = Math.max(lo, Math.min(hi, w0 + ev.clientX - x0)) }
-  const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up) }
+  const up = () => {
+    colDrag.value = false; document.documentElement.classList.remove('ui-col-resize')
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up)
+  }
   document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
 }
 
@@ -148,7 +158,7 @@ function openCi() { window.api?.interference?.open?.() }
 function openPfdMask() { window.api?.pfdMask?.open?.() }
 function openFreqPlan() { window.api?.freqPlan?.open?.() }
 function openSsa() { window.api?.ssa?.open?.() }
-// 模型工作台（独立窗口）：入口只有「卫星模型」侧栏按钮 / 信息卡「编辑…」/ 本处的搜索命令 —— 不进菜单与工具栏（入口不重复）。
+// 模型工作台（独立窗口）：入口只有「卫星模型」侧栏按钮 / 本处的搜索命令 —— 不进菜单与工具栏（入口不重复；信息栏「编辑…」先落到「卫星模型」侧栏）。
 // 出 IPC 的参数现造纯数据；未激活时主进程 gate 回 {locked:true}，这里静默（runCommand 的 lock 闸已先拦一道）
 function openModelWb(o) { try { const r = window.api?.models?.open?.(JSON.parse(JSON.stringify(o || {}))); if (r && r.catch) r.catch(() => {}) } catch { /* ignore */ } }
 
@@ -218,7 +228,9 @@ const menus = computed(() => [
     { sep: true },
     { label: '工具栏', check: ui.toolbar, hint: '显示 / 隐藏图标工具栏', run: () => toggleUi('toolbar') },
     { label: '侧栏', check: !!ui.side, hint: '显示 / 隐藏侧栏（活动栏图标可切换视图）', run: () => { ui.side = ui.side ? '' : 'constellation' } },
-    { label: '日志窗格', check: ui.log, hint: '显示 / 隐藏底部日志窗格', run: () => toggleUi('log') }
+    { label: '日志窗格', check: ui.log, hint: '显示 / 隐藏底部日志窗格', run: () => toggleUi('log') },
+    // 追加在末尾：appCommands 的命令 id 按下标生成（menu.view.N），插在中间会让「最近使用」指错命令
+    { label: '卫星信息栏', check: ui.satInfo, hint: '显示 / 隐藏卫星信息栏（Ctrl+Alt+B）', run: () => toggleUi('satInfo') }
   ] },
   // 显示 = 活动栏视图的菜单镜像（键盘/菜单党可达性）
   { key: 'display', label: '显示', items: sideViews.value.map((v) => (
@@ -233,7 +245,8 @@ const menus = computed(() => [
     { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
     { label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     { sep: true },
-    { label: '发送到小程序…', icon: 'upload', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() }
+    { label: '发送覆盖图到小程序…', icon: 'upload', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() },
+    { label: '发送航迹到小程序…', icon: 'upload', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() }
   ] },
   { key: 'tools', label: '工具', items: [
     { label: '绑定小程序账号…', icon: 'wechat', lock: true, hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
@@ -411,9 +424,21 @@ watch(() => logStore.items.length, () => {
 })
 
 function onKey(e) {
-  if (e.key === 'Escape') { openMenu.value = ''; hint.value = '' }
+  if (e.key === 'Escape') {
+    openMenu.value = ''; hint.value = ''
+    if (!e.isComposing) lockOpen.value = false   // 「未激活」提示框同其它对话框：Esc 关（输入法组字中的 Esc 归输入法）
+  }
   // 「特定动作」之三：Ctrl+Alt+A 刷新激活状态
   else if (e.ctrlKey && e.altKey && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); doRefreshActivation() }
+  // Ctrl+Alt+B 开关右侧卫星信息栏（同 VS Code 次侧栏）；只有焦点在收字符的文本类控件里才不接管（AltGr 布局下
+  // Ctrl+Alt 即 AltGr，会打出字符）。复选框 / 滑块 / 下拉 / 按钮上照常切换 —— 点完一个勾选框再按快捷键很常见
+  else if (e.ctrlKey && e.altKey && !e.shiftKey && e.code === 'KeyB' && !e.repeat) {
+    const t = e.target
+    const textIn = t && (t.tagName === 'TEXTAREA' || t.isContentEditable ||
+      (t.tagName === 'INPUT' && /^(text|search|number|email|url|tel|password|datetime-local|date|time|month|week)$/i.test(t.type || 'text')))
+    if (textIn) return
+    e.preventDefault(); toggleUi('satInfo')
+  }
 }
 
 // 自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色同步到当前主题，避免暗色下亮色三键突兀。
@@ -440,26 +465,30 @@ onMounted(() => {
   initActivation()
   logMsg('卫星仿真平台就绪')
 })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKey)
+  document.documentElement.classList.remove('ui-col-resize')   // 拖分隔条途中卸载：别把整窗光标锁死
+})
 </script>
 
 <template>
-  <div class="shell">
+  <div class="shell" :class="{ 'col-drag': colDrag }">
     <!-- ① 菜单栏：经典文字菜单（点击展开，展开后悬停切换，Esc/点空白收起） -->
     <header class="menubar" :class="{ 'ms-open': searchOpen }">
       <img class="brand" :src="logoUrl" alt="卫星仿真平台" title="卫星仿真平台" draggable="false" />
-      <nav class="menus">
+      <nav class="menus" :class="{ open: !!openMenu }">
         <span v-for="m in menus" :key="m.key" class="mwrap">
           <span
             class="mtitle" :class="{ on: openMenu === m.key }"
-            @click.stop="openMenu = openMenu === m.key ? '' : m.key"
-            @mouseenter="openMenu && openMenu !== m.key && (openMenu = m.key)"
+            @click.stop="menuHop = false; openMenu = openMenu === m.key ? '' : m.key"
+            @mouseenter="openMenu && openMenu !== m.key && hopTo(m.key)"
           >{{ m.label }}</span>
-          <div v-if="openMenu === m.key" class="mpanel" @click.stop>
+          <div v-if="openMenu === m.key" class="mpanel" :class="{ hop: menuHop }" @click.stop>
             <div v-if="m.key === 'export'" class="vscope">
               <span class="vsp" :class="{ on: expScope === 'world' }" title="整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）" @click="expScope = 'world'">全球图</span>
               <span class="vsp" :class="{ on: expScope === 'view' }" title="当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图" @click="expScope = 'view'">截图</span>
             </div>
+            <div v-if="m.key === 'export'" class="msep"></div>
             <template v-for="(it, i) in m.items" :key="i">
               <div v-if="it.sep" class="msep"></div>
               <div
@@ -492,6 +521,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </template>
       <span class="tgrow"></span>
       <button class="tbtn" :class="{ on: ui.log }" title="日志窗格" @click="toggleUi('log')"><Icon name="panel-bottom" :size="16" /></button>
+      <!-- 右侧卫星信息栏：排在日志键之后、最右端（与 VS Code 布局键「下 / 右」的空间顺序一致） -->
+      <button class="tbtn" :class="{ on: ui.satInfo }" title="卫星信息栏（Ctrl+Alt+B）" @click="toggleUi('satInfo')"><Icon name="panel-right" :size="16" /></button>
     </div>
 
     <div class="body">
@@ -519,7 +550,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <div id="side-view" class="sv"></div>
         </div>
       </aside>
-      <div v-if="ui.side" class="vsplit" @mousedown.prevent="splitDown"></div>
+      <div v-if="ui.side" class="vsplit" :class="{ on: colDrag }" @mousedown.prevent="splitDown"></div>
 
       <div class="main-col">
         <!-- overflow 必须为 hidden：地图页 height:100% 从不滚动，若为 auto，窗口化时亚像素溢出
@@ -541,7 +572,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <div v-for="(l, i) in logStore.items" :key="i" class="ln" :class="l.level">
               <span class="ts">{{ l.ts }}</span>{{ l.text }}
             </div>
-            <div v-if="!logStore.items.length" class="ln dim">— 暂无日志 —</div>
+            <div v-if="!logStore.items.length" class="ln dim">暂无日志。</div>
           </div>
         </div>
       </div>
@@ -618,7 +649,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 /* ===== ① 菜单栏 ===== */
 .menubar {
   position: relative; display: flex; align-items: stretch; gap: 10px; height: 32px;
-  padding: 0 10px 0 12px; background: var(--surface);
+  padding: 0 10px 0 10px; background: var(--surface);   /* 左 10：logo 中心落在 x=20，与工具栏首钮、活动栏图标同轴 */
   border-bottom: 1px solid var(--border); flex: none;
   /* 自定义标题栏：整条即窗口拖拽区（双击最大化由原生 WCO 处理）；
      右侧留出 Windows 原生窗口控制按钮（覆盖式）宽度，菜单永不被三键遮挡。
@@ -636,34 +667,48 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
    logo.png 为深色墨稿：浅色主题直用；深色主题反相为浅色，避免深底不可见。 */
 .brand { align-self: center; height: 20px; width: auto; padding-right: 8px; display: block; user-select: none; -webkit-user-drag: none; }
 :root[data-theme='dark'] .brand { filter: invert(1) brightness(1.06); }
-.menus { display: flex; align-items: stretch; }
+/* 定位并抬到 z 100：展开时 .vmask（fixed, z 99）会盖住未定位的标题，「展开后悬停即切换」一直没生效 */
+.menus { display: flex; align-items: stretch; position: relative; z-index: 100; }
 .mwrap { position: relative; display: flex; }
 .mtitle { display: flex; align-items: center; padding: 0 11px; font-size: var(--fs-4); color: var(--text); cursor: default; }
+.mtitle:not(.on) { transition: background-color var(--dur-1) linear; }
+.menus.open .mtitle { transition: none; }   /* 菜单展开中扫过标题：瞬时，像原生 */
 .mtitle:hover { background: var(--surface-2); }
 .mtitle.on { background: var(--accent-ui); color: var(--bg); }
 .mpanel {
   position: absolute; top: 100%; left: 0; z-index: 100; min-width: 200px;
   background: var(--surface); border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-2); padding: 3px;
+  border-radius: 0 var(--r-float) var(--r-float) var(--r-float);   /* 左上角挂在标题色块下，保持直角 */
+  animation: ui-float-in var(--dur-2) var(--ease-out);
 }
-.mitem { display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 6px; font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap; }
+.mpanel.hop { animation: none; }   /* 展开中悬停换菜单：不重播入场 */
+/* 行高钉 28px：原 5px 上下内距 + 行高 = 27.55px，150% 缩放下落在 41.3 设备像素，悬停块 41/42 交替闪；与搜索下拉行同高 */
+.mitem { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px 0 6px; border-radius: var(--r-box); font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap; }
 .mitem:hover { background: var(--accent-ui); color: var(--bg); }
 .mitem.dis, .mitem.dis:hover { background: transparent; color: var(--text-faint); }
 .mitem .ck { width: 14px; flex: none; display: inline-flex; justify-content: center; }
 .mitem .mico { width: 16px; flex: none; display: inline-flex; justify-content: center; color: var(--text-faint); }
 .mitem:hover .mico { color: inherit; }
 .mitem.dis .mico { color: var(--text-faint); }
-.msep { height: 1px; background: var(--border); margin: 3px 6px; }
-.vscope { display: flex; gap: 4px; padding: 3px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 3px; }
-.vsp { flex: 1; text-align: center; cursor: pointer; padding: 3px 6px; border-radius: var(--r-ctl); font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); }
-.vsp:hover { color: var(--text); border-color: var(--accent); }
-.vsp.on { color: var(--bg); background: var(--accent-ui); border-color: var(--accent-ui); font-weight: 600; }
+.msep { height: 0; border-top: 1px solid var(--border); margin: 3px 6px; }   /* 边框按整设备像素取整：150% 下 height:1px 实底会 1/2 px 交替 */
+/* 导出范围：连体分段（外框 = 按钮组结构线，段间细线）；选中段机位色实底 = 「当前视图」语义，不跳粗 */
+.vscope { display: flex; height: var(--h-ctl); margin: 4px 0 3px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.vsp {
+  flex: 1; display: flex; align-items: center; justify-content: center; cursor: default; font-size: var(--fs-3);
+  color: var(--text-muted); transition: var(--t-state);
+}
+.vsp + .vsp { border-left: 1px solid var(--border); }
+.vsp:hover:not(.on) { background: var(--surface-2); color: var(--text); }
+.vsp:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
+.vsp.on { background: var(--accent-ui); color: var(--bg); transition-duration: 0s; }
+.vsp.on, .vsp.on + .vsp { border-left-color: transparent; }
 .vmask { position: fixed; inset: 0; z-index: 99; }
 
 /* ===== ② 工具栏 ===== */
 .toolbar {
   display: flex; align-items: center; gap: 2px; height: 34px;
-  padding: 0 8px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none;
+  padding: 0 8px 0 7px; background: var(--surface); border-bottom: 1px solid var(--border); flex: none;   /* 左 7：首钮中心 x=20，左缘三列同轴 */
 }
 .tbtn {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
@@ -672,24 +717,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .tbtn:hover { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
 .tbtn.on { background: var(--accent-ui); border-color: var(--accent-ui); color: var(--bg); }
+.tbtn.on:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+/* 深色下 --bg 比工具栏底更暗，照搬浅色的「白底抬起」会变成下沉；深色也抬起 */
+:root[data-theme='dark'] .tbtn:hover:not(.on):not(.dis) { background: var(--surface-2); }
+.tbtn:focus-visible { outline-offset: -2px; }
 .tbtn.dis, .tbtn.dis:hover { border-color: transparent; background: transparent; color: var(--text-faint); opacity: .45; cursor: default; }
-.tsep { width: 1px; height: 18px; background: var(--border-strong); margin: 0 5px; flex: none; }
+.tsep { width: 1px; height: 16px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 50%, var(--border)); margin: 0 5px; flex: none; }   /* 同上：画成边框，占位仍 1px（border-box） */
 .tgrow { flex: 1; }
 
 /* ===== ③ 活动栏 ===== */
 .body { display: flex; flex: 1; min-height: 0; }
+/* 左内距 1px 把 32px 钮放到 x=4..36、图标轴 x=20（与 logo、工具栏首钮同轴）；
+   经典 VS Code 活动栏：悬停只变字色，不铺底 */
 .actbar {
   width: 40px; flex: none; display: flex; flex-direction: column; align-items: center;
-  padding: 6px 0; gap: 2px; background: var(--surface); border-right: 1px solid var(--border);
+  padding: 6px 0 6px 1px; gap: 2px; background: var(--surface); border-right: 1px solid var(--border);
 }
 .actbtn {
-  width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
-  border: 0; border-left: 2px solid transparent; border-right: 2px solid transparent;
-  background: transparent; color: var(--text-faint); padding: 0; cursor: pointer;
+  position: relative; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-box); background: transparent; color: var(--text-faint); padding: 0; cursor: pointer;
+  transition: color var(--dur-1) linear;
 }
-.actbtn:hover { color: var(--text); }
-.actbtn.on { color: var(--text); border-left-color: var(--accent-ui); }
-.actbtn.dis, .actbtn.dis:hover { color: var(--text-faint); opacity: .35; cursor: default; }
+/* 当前视图指示条：伪元素伸到钮外 4px，贴窗口左缘 x=0..2；瞬时切换 */
+.actbtn::before { content: ''; position: absolute; left: -4px; top: 0; bottom: 0; width: 2px; background: var(--accent-ui); opacity: 0; }
+.actbtn.on::before { opacity: 1; }
+.actbtn:hover, .actbtn.on { color: var(--text); }
+.actbtn:focus-visible { outline-offset: -2px; }
+.actbtn.dis, .actbtn.dis:hover { color: var(--text-faint); opacity: .45; cursor: default; }
 
 /* ===== ④⑤ 停靠窗格（侧栏 / 日志） ===== */
 .dock { background: var(--surface); display: flex; flex-direction: column; min-height: 0; }
@@ -698,30 +752,43 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 5px 0 11px;
   background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none;
 }
-.dock-tt { flex: 1; font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dock-tt { flex: 1; font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .dock-x { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
 .dock-x:hover { background: var(--border); color: var(--text); }
+/* .dock-x 是 span，拿不到全局 <button> 的过渡与按下罩，就地补 */
+.dock-x { transition: var(--t-state); }
+.dock-x:active { box-shadow: var(--press); transition-duration: 0s; }
+/* 开关态（日志窗「搜索诊断」）：此前开 / 关长得一样 */
+.dock-x.on { color: var(--accent-ui); background: var(--accent-ui-weak); }
+.dock-x.on:hover { color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 22%, transparent); }
 /* scrollbar-gutter: stable —— 恒定预留竖滚动条槽位：侧栏面板内容（如可见性「瞬时可见」随时间轴每帧重算，
    可见星条数变化 → 面板高度增减 → 竖滚动条忽隐忽现）时，Windows 经典滚动条占 ~15px 会令内容宽度左右跳动；
    预留槽位后宽度恒定，消除拖时间轴时的横向抖动。 */
 .sbody { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
-/* Teleport 目标容器：3D 页把当前视图内容挂进来；空时（页面未挂载）显示占位 */
+/* Teleport 目标容器：3D 页把当前视图内容挂进来（页面未挂载时留空，不写教学占位） */
 .sv { display: flex; flex-direction: column; min-height: 100%; }
-.sv:empty::after {
-  content: '（星座地图加载后，这里显示对应视图）';
-  padding: 12px; font-size: var(--fs-3); color: var(--text-faint);
+/* 分隔条：命中区 5px，左右负外距吃回 → 净宽 0（原净宽 1px，露出侧栏与画布之间一道白缝）。
+   视觉是居中 2px 细线：悬停停 150ms 才淡入（扫过不闪），拖动中立即机位色 */
+.vsplit { position: relative; width: 5px; margin: 0 -3px 0 -2px; cursor: col-resize; flex: none; z-index: 5; }
+.vsplit::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 1px; width: 2px;
+  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
 }
-.vsplit { width: 5px; margin: 0 -2px; cursor: col-resize; flex: none; z-index: 5; }
-.vsplit:hover { background: var(--border-strong); }
+.vsplit:hover::after { opacity: 1; transition-delay: .15s; }
+.vsplit.on::after { opacity: 1; background: var(--accent-ui); transition: none; }
+.shell.col-drag .sidebar, .shell.col-drag .content { pointer-events: none; }
 
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .content { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 
 .logdock { flex: none; height: 110px; border-top: 1px solid var(--border); }
+/* 西文 / 数字 / 时间戳仍 Consolas；中文回落到界面字体（--font-code 尾部的 monospace 在中文 Windows 上落到 NSimSun 宋体）。
+   左内距 11 与窗头「日志」标题同一条左缘；行高钉整像素 */
 .loglines {
-  flex: 1; overflow-y: auto; padding: 3px 9px;
-  font-family: var(--font-code); font-size: var(--fs-3); line-height: 1.6; user-select: text;
+  flex: 1; overflow-y: auto; padding: 3px 11px;
+  font-family: Consolas, "Cascadia Mono", var(--font-ui); font-size: var(--fs-3); line-height: 18px; user-select: text;
 }
+.loglines .ln::selection, .loglines .ts::selection { background: color-mix(in srgb, var(--accent-ui) 28%, transparent); }
 .ln { white-space: nowrap; color: var(--text-muted); }
 .ln.warn { color: var(--warn); }
 .ln.error { color: var(--danger); }
@@ -729,15 +796,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .ln .ts { color: var(--text-faint); margin-right: 9px; }
 
 /* ===== 关于对话框 ===== */
-.about-mask { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.28); display: flex; align-items: center; justify-content: center; }
+/* z 2000：原 200 会被星座页 z 2100 / 2200 的浮层压住；遮罩瞬时出现，只框体入场 */
+.about-mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .about {
   min-width: 300px; padding: 26px 34px 22px; text-align: center;
   background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-3);
+  border-radius: var(--r-card); animation: ui-dlg-in var(--dur-3) var(--ease-out);
 }
 .ab-name { font-family: var(--font-serif); font-size: var(--fs-6); letter-spacing: var(--ls-tight); }
 .ab-ver { margin-top: 8px; font-size: var(--fs-3); color: var(--text-muted); }
-.ab-close { margin-top: 18px; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-ctl); }
-.ab-close:hover { border-color: var(--accent); }
+.ab-close { margin-top: 18px; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
+.ab-close:hover:not(:disabled) { border-color: var(--line-hover); }
 .ab-close:disabled { opacity: .5; cursor: default; }
 .ab-id { cursor: pointer; user-select: text; font-size: var(--fs-5); }
 .ab-id:hover { color: var(--text); }
@@ -759,9 +828,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .hint { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .cells { display: flex; align-items: center; gap: 6px; flex: none; }
 .cell {
-  display: inline-flex; align-items: center; gap: 6px; height: 19px; padding: 0 9px;
+  display: inline-flex; align-items: center; gap: 6px; height: var(--h-ctl-sm); padding: 0 9px;
   /* 平面语言：原来这里有一道 inset 凹陷，是全库唯一一处拟物，与其余控件不同族 */
-  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted);
 }
 /* 环境场读数格：量名（灰）+ 数值（等宽白）+ 单位（灰），与经纬度格同一档视觉重量 */
 .cell.envval { color: var(--text); gap: 5px; }
@@ -770,8 +839,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
 .cell.coord .cval { font-family: var(--font-code); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }
-.zoomctl .zbtn { width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); }
-.zoomctl .zbtn:hover { color: var(--text); border-color: var(--accent); }
+/* 格内小钮不再自带描边（格子已有一圈），悬停走中性罩 */
+.zoomctl .zbtn { width: 16px; height: 14px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); }
+.zoomctl .zbtn:hover { color: var(--text); background: var(--wash-hover); }
 .zoomctl .zrange { width: 110px; }
 .zoomctl .zpct { width: 32px; text-align: right; font-family: var(--font-code); color: var(--text-muted); }
 </style>

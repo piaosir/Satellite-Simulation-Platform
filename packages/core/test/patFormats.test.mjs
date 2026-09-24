@@ -202,7 +202,8 @@ const mkAcp4 = (azFast, azDesc, elDesc, norm, { sentinelAt = -1, extra = [] } = 
   const { useGrdCoverage } = await import('../../../src/viz/grd/useGrdCoverage.js')
   const { alertMsg } = await import('../../../src/stores/alert.js')
   const grd = useGrdCoverage(() => null, () => null, () => false)
-  const mkSat = () => ({ folder: 'T', satName: 'T', kind: 'preset', lon: 110.5, lat: 0, altKm: 35786, antennas: [] })
+  // 目标星须在树上：importGrd 每个 await 之后按 folder 重取节点，不在树上的一律按「目标卫星不存在」拒绝（不往脱树节点里建幽灵天线）
+  const mkSat = () => { const s = { folder: 'T', satName: 'T', kind: 'preset', lon: 110.5, lat: 0, altKm: 35786, antennas: [] }; grd.sats.value = [s]; return s }
 
   feed = [{ base: 'MULT.pat', text: mult2 }]
   let sat = mkSat(); alertMsg.value = ''

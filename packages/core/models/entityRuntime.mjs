@@ -5,7 +5,8 @@
 //      s.model = {id, px?}、s.track = {kind:'sat', satKey}（缺字段 = focus）、p.model、t.model / cruiseAltM / speedKmh / t0Ms。
 //      ★ 缺省值一律不写进对象（normTrajMotion 删等于 10668 的 cruiseAltM）；sanitizeMarkers 只删非法字段、从不补字段、不动其它字段
 //        （老存档过它后与原对象深相等）。绑定不进 models.bindings.json（那张表的键只认 norad/ephem/cc/lbsat/grdsat/name）。
-//   ② 航迹：trajMoving = 运动档（t0Ms + speedKmh 且全程非零长，与 trajKinematics.trajEndMs 同一判据）；运动档航迹线 = 大圆 0.5° 加密
+//   ② 航迹：trajMoving = 运动档（t0Ms + speedKmh，或航点时刻钉点排得出程；且全程非零长 —— 与 trajKinematics.trajEndMs 同一判据）；
+//      航点级 tMs / altM 由 sanitizeMarkers 只删非法值；运动档航迹线 = 大圆 0.5° 加密
 //      （densifyGreatCircle，与载具运动同一条大圆）；静止档返回 null → 渲染端走现有画线（逐像素不变，契约 §7-1）。
 //   ③ Excel 航迹说明行：「飞行; 巡航高度=10668 m; 速度=850 km/h; 起始=2026-09-24T08:00:00Z; 模型=ent:a320neo; 图标=48 px」。
 //      第一段仍是类型词（老导入器照样认类型）；解析容全角 / 单位 / 键别名；非法值静默丢弃（Excel 是用户手改的文件）。
@@ -116,10 +117,16 @@ export function resolveEntityPx(model, defPx) {
   const p = model && typeof model.px === 'number' && fin(model.px) ? model.px : (typeof defPx === 'number' && fin(defPx) ? defPx : 28)
   return clampPx(Math.round(p))
 }
-/** 跟踪字段归一：{kind:'sat', satKey（过 schema.isValidSatKey）} → 新对象；其余（含 {kind:'focus'}）→ null（= focus，不写进对象）。 */
+/**
+ * 跟踪字段归一：{kind:'sat', satKey（过 schema.isValidSatKey）, el?} → 新对象；其余（含 {kind:'focus'}）→ null（= focus，不写进对象）。
+ * el = true：站标签的仰角改读这颗星（缺省 = 旧口径，聚焦集最高仰角）；非 true 不写。
+ */
 export function normTrack(v) {
   if (!isObj(v) || v.kind !== 'sat' || !isValidSatKey(v.satKey)) return null
-  return { kind: 'sat', satKey: v.satKey }
+  const o = { kind: 'sat', satKey: v.satKey }
+  if (v.el === true) o.el = true
+  if (v.az === true) o.az = true
+  return o
 }
 
 // 删掉非法的航迹运动字段（不删合法的缺省值）
@@ -160,11 +167,26 @@ export function sanitizeMarkers(d) {
       if (has(s, 'track') && !normTrack(s.track)) delete s.track
     }
   }
-  if (Array.isArray(trajectories)) for (const t of trajectories) if (isObj(t)) { dropBadModel(t); dropBadMotion(t) }
+  if (Array.isArray(trajectories)) for (const t of trajectories) if (isObj(t)) { dropBadModel(t); dropBadMotion(t); dropBadWaypoints(t) }
   return d
 }
+/** 航点高度钉点的合法范围（m）：−1000（低于海平面的机场 / 死海）… 30000（与巡航高度同上限）。 */
+export const WP_ALT_M_MIN = -1000
+const okWpAlt = (v) => typeof v === 'number' && fin(v) && v >= WP_ALT_M_MIN && v <= CRUISE_ALT_M_MAX
+// 航点级字段（2026-09-24 航迹表格）：时刻钉点 tMs（同 t0Ms 的四位年范围）、高度钉点 altM；非法值删掉，其余字段不动
+function dropBadWaypoints(t) {
+  if (!Array.isArray(t.pts)) return
+  for (const p of t.pts) {
+    if (!isObj(p)) continue
+    if (has(p, 'tMs') && !okT0(p.tMs)) delete p.tMs
+    if (has(p, 'altM') && !okWpAlt(p.altM)) delete p.altM
+  }
+}
 
-/** 运动档：t0Ms 有限、speedKmh > 0、全程非零长（= Number.isFinite(trajEndMs(t))，与 trajStateAt 的 moving 同一条件）。 */
+/**
+ * 运动档：= Number.isFinite(trajEndMs(t))，与 trajStateAt 的 moving 同一条件 —— t0Ms 有限 + speedKmh > 0，
+ * 或航点带时刻钉点且排程成立（trajKinematics 文件头「时刻钉点」）；且全程非零长。
+ */
 export function trajMoving(t) { return fin(trajEndMs(t)) }
 /** 航迹载具的挂载类别：飞行 → 'aircraft'，其余 → 'ship'。 */
 export function trajEntityKind(t) { return t && t.kind === 'flight' ? 'aircraft' : 'ship' }

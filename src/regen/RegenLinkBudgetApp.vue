@@ -88,10 +88,13 @@ function startResizeSide(e) {
   const lib = sideView.value === 'library'
   const w = lib ? libWidth : configsWidth, min = lib ? LIB_W_MIN : CFG_W_MIN, max = lib ? LIB_W_MAX : CFG_W_MAX
   const startX = e.clientX, startW = w.value
-  sideResizing.value = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
+  // html.ui-col-resize（controls.css）：拖动全程整窗锁 col-resize 光标、禁选字——指针划过表格 / 按钮时光标不再跳
+  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   const move = (ev) => { w.value = Math.min(max, Math.max(min, startW + (ev.clientX - startX))) }
   const up = () => {
-    sideResizing.value = false; document.body.style.cursor = ''; document.body.style.userSelect = ''
+    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
     try { localStorage.setItem(lib ? 'regen/libWidth' : 'regen/configsWidth', String(w.value)) } catch (e2) { /* ignore */ }
   }
@@ -2282,7 +2285,6 @@ onMounted(async () => {
               <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
             </LbLibrary>
           </div>
-          <div class="lb-lib-foot" :title="(LIB_TABS.find((t) => t.key === libTab) || {}).tip">{{ (LIB_TABS.find((t) => t.key === libTab) || {}).tip }}</div>
         </template>
 
         <!-- 右缘拖拽调宽手柄（两视图各记各的宽度） -->
@@ -2311,20 +2313,22 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
+                <!-- 原第三行「工作点 · 随站型」是固定说明（CLAUDE.md），已删，三行竖排还会把功能区撑高一截；
+                     其口径挪到本组组名「计算」的 title 上。★ 不并进下面「几何」的 title：英文界面按整串查词典，
+                     拼出来的新串查不到，会译成中英夹杂的残句 -->
                 <label title="几何来源（四种体制统一）：自动最差＝按卫星轨道解最差工况几何（星地：仰角字段作门限、斜距由求解器给出；星间：两星轨道解最差星间距离与互视可见度）；手动＝星地斜距与星间链路距离由表内逐行给定，不解算轨道"><span>几何</span>
                   <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
                 </label>
                 <label v-if="!geoManual" title="在此时窗内求几何最差工况并列出全部满足最低仰角的访问窗口（选星走 SGP4；手动圆轨道为示意）"><span>时窗</span>
-                  <select v-model.number="geoHorizonHours" style="width: 76px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
+                  <select v-model.number="geoHorizonHours" style="width: 86px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
-                <label title="功放与余量随站型设置——在各站所选「地球站配置」的发射参数（工作点）中"><span>工作点</span><span class="lbr-u">随站型</span></label>
               </div>
               <button class="lbr-big primary" :disabled="computing || !linkMode" :title="linkMode ? `计算当前模块全部 ${nLinks} 条${modeLabel}链路（Ctrl+Enter）` : '尚无计算模块'" @click="computeActive">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
             </div>
-            <div class="lbr-cap">计算</div>
+            <div class="lbr-cap" title="功放与余量随站型设置——在各站所选「地球站配置」的发射参数（工作点）中">计算</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
@@ -2409,7 +2413,7 @@ onMounted(async () => {
               <span class="lbx-satnote">全部 {{ nLinks }} 条链路共用</span>
             </div>
           </LbSection>
-          <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length" summary="一行一站：站址 + 库引用 + 结果列">
+          <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length">
             <template #actions>
               <!-- 卫星的指定方式（场景级，上/下行共用一个开关）：统一指定＝上方「卫星」分区单选一颗；逐链路指定＝站表「卫星」列逐行选，上方分区收起 -->
               <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置只用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切换时各行所用卫星保持不变，计算口径不变">
@@ -2446,7 +2450,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length" summary="一行一站：站址 + 库引用 + 结果列">
+          <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
             <template #actions>
               <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置只用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切换时各行所用卫星保持不变，计算口径不变">
                 <span class="lbx-segl">卫星</span>
@@ -2482,7 +2486,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length" :summary="geoManual ? '一行一条：星间链路距离 + 星间参数 + 结果列' : '一行一条：发射星 → 接收星 + 结果列'">
+          <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
               <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
@@ -2511,7 +2515,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length" :summary="geoManual ? '一行一条：星间链路距离 + 激光参数 + 结果列' : '一行一条：发射星 → 接收星 + 结果列'">
+          <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
               <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
@@ -2806,16 +2810,24 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
 /* 左侧栏（配置列表 / 资源库 二选一）：宽度由 sideWidth 内联给出，两视图各记各的 */
-.lb-side { flex: none; position: relative; transition: width .15s ease; }
-.lb-side.resizing { transition: none; user-select: none; }
+/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
+.lb-side { flex: none; position: relative; }
+.lb-side.resizing { user-select: none; }
+/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
 .lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-configs.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
-.lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
-.lb-configs .lb-col-bd { padding: 10px 8px; scrollbar-width: thin; }
+.lb-cfg-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
+  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
+}
+.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: .15s; }
+.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
+/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
+.lb-configs .lb-col-bd { padding: 10px 8px; }
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
 .lb-lang-sel { font: inherit; font-size: var(--fs-2); text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-lang-sel:focus { outline: none; border-color: var(--accent-ui); }
@@ -2825,12 +2837,14 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
 .lb-cfg-acts { display: flex; gap: 4px; }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
+.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
 .lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
+.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 /* 分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
    原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
 .lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
@@ -2839,15 +2853,17 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
 .lb-input:focus { outline: none; border-color: var(--accent-ui); }
 .lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { opacity: .88; }
+/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
+.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
 
 .rlmode { display: flex; align-items: center; gap: 4px; flex: none; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .rlmode-i { position: relative; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 6px 9px 6px 14px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 /* 悬停只作用于未选中页签：选中页签是 accent 实底、字色恒 var(--bg)，再套一层 var(--text) 就和底同色了 */
 .rlmode-i:hover:not(.on) { color: var(--text); border-color: var(--border-strong); }
-.rlmode-i.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.rlmode-i.on:hover { filter: brightness(1.06); }
+/* 选中页签填墨（老用户认得的身份）走 token：深色下 --sel-fill 压一档，不再是整块近白；悬停换 token 色而非提亮滤镜 */
+.rlmode-i.on { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
+.rlmode-i.on:hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
 .rlmode-i.dragging { opacity: .45; }
 /* 状态点：已计算（实心）/ 输入已变（空心，警示色）；没算过不画 */
 .rlmode-dot { flex: none; width: 7px; height: 7px; margin-left: -6px; border-radius: 50%; background: var(--ok); box-sizing: border-box; }
@@ -2855,24 +2871,28 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-i.on .rlmode-dot { background: var(--bg); }
 .rlmode-i.on .rlmode-dot.stale { background: transparent; border-color: var(--bg); }
 /* 链路条数：小号数字，与资源库页签的计数同一语言 */
-.rlmode-n { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); padding: 1px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.rlmode-n { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); padding: 1px 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .rlmode-i.on .rlmode-n { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
-.rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: var(--r-card); color: currentColor; opacity: .5; }
+.rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: var(--r-ctl); color: currentColor; opacity: .5; }
 .rlmode-x svg { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .rlmode-i:hover .rlmode-x { opacity: .8; }
-.rlmode-x:hover { opacity: 1; background: rgba(214,69,69,.16); color: #d64545; }
+.rlmode-x:hover { opacity: 1; background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 .rlmode-i.on .rlmode-x:hover { background: color-mix(in srgb, var(--bg) 28%, transparent); color: var(--bg); }
-.rlmode-add-wrap { position: relative; display: inline-flex; }
-.rlmode-add { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 27px; padding: 0 10px 0 8px; font: inherit; font-size: var(--fs-3); font-weight: 600; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
+/* 「添加模块」随页签行拉满高度：定高 27px 比页签矮一截，两者底边对不齐 */
+.rlmode-add-wrap { position: relative; display: inline-flex; align-self: stretch; }
+.rlmode-add { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: auto; min-height: 27px; padding: 0 10px 0 8px; font: inherit; font-size: var(--fs-3); font-weight: 600; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .rlmode-add svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
-.rlmode-add:hover:not(:disabled), .rlmode-add.on { color: var(--accent); border-color: var(--accent); }
+.rlmode-add:hover:not(:disabled), .rlmode-add.on { color: var(--accent); border-color: var(--line-hover); }
 .rlmode-add:disabled { opacity: .45; cursor: not-allowed; }
 .rlmode-menu-mask { position: fixed; inset: 0; z-index: 40; }
-.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 196px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
+/* 命令菜单口径（spec P3）：浮层圆角 + 菜单级投影（--shadow-3 只给模态框），挂在按钮下方用下落入场 */
+.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 196px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); animation: ui-float-in var(--dur-2) var(--ease-out); }
 .rlmode-menu-hd { font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-faint); padding: 4px 8px 6px; }
 .rlmode-menu-i { display: flex; align-items: center; gap: 6px; text-align: left; font: inherit; font-size: var(--fs-3); font-weight: 500; padding: 6px 8px; cursor: pointer; background: transparent; color: var(--text); border: none; border-radius: var(--r-ctl); white-space: nowrap; }
-.rlmode-menu-i:hover { background: var(--surface-2); }
 .rlmode-menu-i.added { color: var(--text-faint); }
+/* 悬停机位色实底（与菜单栏同）；写在 .added 之后——已添加的项点了是切过去，悬停同样要实底白字 */
+.rlmode-menu-i:hover { background: var(--accent-ui); color: var(--bg); }
+.rlmode-menu-i:hover .rlmode-menu-ck { color: inherit; }
 .rlmode-menu-ck { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; color: var(--accent); }
 .rlmode-menu-ck svg { stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
 /* 空态：一句话 + 四个添加按钮（按钮是控件，不是说明文字） */
@@ -2881,7 +2901,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-empty-btns { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .rlmode-empty-b { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 7px 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .rlmode-empty-b svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
-.rlmode-empty-b:hover { color: var(--accent); border-color: var(--accent); }
+.rlmode-empty-b:hover { color: var(--accent); border-color: var(--line-hover); }
 
 /* 链路表节内的说明条 */
 .tx-optbar { display: flex; align-items: center; gap: 10px; flex: none; margin-bottom: 6px; flex-wrap: wrap; }
@@ -2896,10 +2916,10 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 2px 4px; border-bottom: 1px solid var(--lb-rule); }
 .geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
-.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
+.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
 /* 时区角标：一枚可点的档位标（点开是本机 / UTC / UTC±N 的列表，见 TzPicker） */
 .geo-tz { display: inline-flex; flex: none; align-items: center; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted); font-size: var(--fs-2); line-height: 1; font-variant-numeric: tabular-nums; }
-.geo-tz:hover, .geo-tz.open { color: var(--text); border-color: var(--accent); }
+.geo-tz:hover, .geo-tz.open { color: var(--text); border-color: var(--line-hover); }
 .geo-body { padding: 2px 2px 6px; }
 .geo-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .geo-col { min-width: 0; }
@@ -2936,6 +2956,6 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .acc-row .mono { font-family: var(--font-mono); }
 .acc-c1 { color: var(--text-faint); }
 .acc-c3, .acc-c4 { text-align: right; }
-.acc-clip { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 5px; padding: 0 4px; border: 1px solid var(--border); border-radius: var(--r-pill); }
+.acc-clip { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 5px; padding: 0 4px; border: 1px solid var(--border); border-radius: var(--r-ctl); }
 
 </style>

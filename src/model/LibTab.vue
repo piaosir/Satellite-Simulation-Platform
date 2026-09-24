@@ -105,7 +105,7 @@ function openModelPage(e) {
 // ── 装配 ──
 const isAsm = (e) => typeof e.id === 'string' && e.id.startsWith('asm:')
 const isEnt = (e) => e.origin === 'entTemplate' || (typeof e.id === 'string' && e.id.startsWith('ent:'))
-const canToAsm = (e) => { const f = entryFacts(e); return f.param && !isAsm(e) && !isEnt(e) && (e.kind || 'spacecraft') === 'spacecraft' }
+const canToAsm = (e) => { const f = entryFacts(e); return f.param && !isAsm(e) && !isEnt(e) && !e.fleet && (e.kind || 'spacecraft') === 'spacecraft' }
 function openAssembly(e) { wb.requestAssembly({ kind: 'open', id: e.id }) }
 function newFromTemplate(e) { wb.requestAssembly({ kind: 'template', entId: e.id }) }
 function toAssembly(e) { wb.requestAssembly({ kind: 'spec', from: e.id }) }

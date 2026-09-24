@@ -67,6 +67,7 @@ function createWindow() {
     height: 820,
     minWidth: 1024,
     minHeight: 680,
+    show: false,   // 先不显示：下面立即 maximize() → show()，没有「先闪 1280×820 再放大」那一帧
     title: '卫星仿真平台',
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
@@ -88,6 +89,15 @@ function createWindow() {
       devTools: !app.isPackaged
     }
   })
+
+  // 默认最大化启动（Windows 意义上的「全屏」= 最大化：保留任务栏与右上角三键；不用 setFullScreen ——
+  // hidden 标题栏 + overlay 下三键会消失、又没绑 F11，用户退不出来）。立即 maximize() → show()，不等 ready-to-show：
+  // 慢机上迟迟不出窗会被当成没启动而再双击。还原尺寸仍是上面的 1280×820 居中。
+  // 验证台不最大化：直接 require out/main/main.js 的台子（.modelharness/w11 等）要在屏外定尺寸、窗口 2% 透明，
+  // 最大化会铺满用户主屏并吃鼠标。它们一律设了 SATSIM_DATA_DIR（隔离数据目录，正式运行从不设），据此自动跳过；
+  // 另留 SATSIM_NO_MAXIMIZE 显式开关。
+  if (!process.env.SATSIM_NO_MAXIMIZE && !process.env.SATSIM_DATA_DIR) win.maximize()
+  win.show()
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -642,8 +652,12 @@ function createPerfWindow({ kind, key, title }) {
   }
   const id = 'pw' + (_perfSeq++)
   const geo = perfWinGeometry(k)
+  // 挂成主窗口的从属窗口：点主窗口（拖时间轴、调参数）时表仍浮在它上面，不被压到后面；
+  // 主窗口最小化 / 还原时一起走。只压主窗口，不压别的程序（不用 alwaysOnTop）。
+  const owner = _mainWin && !_mainWin.isDestroyed() ? _mainWin : undefined
   const win = new BrowserWindow({
     ...geo.opt,
+    ...(owner ? { parent: owner } : {}),
     minWidth: 640,
     minHeight: 420,
     title: String(title || '性能指标表'),

@@ -1,8 +1,9 @@
 <script setup>
 // 模型选择弹层（标记侧栏的「模型」小块点开：给地球站 / 点标记 / 航迹载具挂模型；DESIGN3 E7 / E11）。
-// 受控组件：页面 v-if 开关，选中 / 清除 / 改图标像素都经事件交给页面落到标记对象上（内联字段 obj.model = {id, px?}）。
+// 受控组件：页面 v-if 开关，选中 / 清除都经事件交给页面落到标记对象上（内联字段 obj.model = {id}）。
+// 模型不逐个定大小：跟这一类标记的图标大小（标记侧栏「大小」，模型与图标共用一个设置，见页面 entIconPxOf）。
 //   搜索 + 领域分段（缺省按实体类：站 → 地球站、飞行 → 飞机、航行 → 船）+ 缩略图网格（当前值 .on）；
-//   有模型时底部多一行「图标」滑杆（8–256，值 = 本实体覆盖 || 全局；双击 / 右键回到全局）与「清除」。
+//   有模型时底部多一行「清除」（卸下模型）。
 // ★ Teleport 到 body：侧栏层层 overflow，留在原位会被裁；Esc / 点外面关；选卡片即 pick 并关。
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Icon from './Icon.vue'
@@ -13,11 +14,9 @@ const props = defineProps({
   anchor: { type: Object, required: true },     // {x, y, w, h}：触发块的屏幕矩形（client 像素）
   lib: { type: Array, default: () => [] },      // 页面 modelLib.list
   domain: { type: String, default: '' },        // '' | 'ground' | 'aircraft' | 'ship' | 'vehicle' | 'space'
-  value: { type: String, default: '' },         // 当前模型 id（'' = 没挂）
-  px: { type: Number, default: 0 },             // 本实体的图标像素覆盖（0 = 跟全局）
-  defPx: { type: Number, default: 28 }          // 全局图标像素（focusStyle.modelPx）
+  value: { type: String, default: '' }          // 当前模型 id（'' = 没挂）
 })
-const emit = defineEmits(['pick', 'px', 'clear', 'close'])
+const emit = defineEmits(['pick', 'clear', 'close'])
 
 const DOMAINS = [
   { k: '', t: '全部' }, { k: 'ground', t: '地球站' }, { k: 'aircraft', t: '飞机' },
@@ -68,9 +67,6 @@ const observe = (el) => obs.observe(el)
 const qEl = ref(null)
 function pick(m) { emit('pick', m.id); emit('close') }
 function onEnter() { const m = shown.value[0]; if (m) pick(m) }
-const pxVal = computed(() => (props.px > 0 ? props.px : props.defPx))
-function onPx(e, final) { const v = Math.round(Number(e.target.value)); if (Number.isFinite(v)) emit('px', v, final) }
-function pxReset() { emit('px', null, true) }
 function onKey(e) {
   if (e.key !== 'Escape' || e.isComposing) return
   e.preventDefault(); e.stopPropagation()
@@ -112,9 +108,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="value" class="mpp-foot">
-          <label title="模型包围半径的屏幕像素 × 2；双击或右键回到全局设置">图标</label>
-          <input class="rng" type="range" min="8" max="256" step="2" :value="pxVal" @input="onPx($event, false)" @change="onPx($event, true)" @dblclick="pxReset" @contextmenu.prevent="pxReset" />
-          <span class="u" :class="{ inh: !(px > 0) }" :title="px > 0 ? '' : '跟随全局'">{{ pxVal }}</span>
           <span class="lnk" title="卸下模型" @click="emit('clear'); emit('close')">清除</span>
         </div>
       </div>
@@ -155,11 +148,7 @@ onBeforeUnmount(() => {
   background: radial-gradient(ellipse at 50% 38%, color-mix(in srgb, var(--text) 7%, var(--surface)) 0%, var(--surface) 78%); }
 .mpp-card .th img { width: 100%; height: 100%; object-fit: contain; }
 .mpp-card .nm { margin: 3px 5px 4px; font-size: var(--fs-1); line-height: 1.3; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: calc(2 * 1.3em); max-height: calc(2 * 1.3em); }
-.mpp-foot { flex: none; display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-.mpp-foot label { color: var(--text-muted); flex: none; white-space: nowrap; }
-.mpp-foot .rng { flex: 1; min-width: 0; }
-.mpp-foot .u { flex: none; min-width: 30px; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
-.mpp-foot .u.inh { color: var(--text-faint); }
+.mpp-foot { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .mpp-foot .lnk { flex: none; color: var(--text-muted); cursor: pointer; transition: color var(--dur-1) linear; }
 .mpp-foot .lnk:hover { color: var(--danger); text-decoration: underline; text-underline-offset: 2px; }
 </style>

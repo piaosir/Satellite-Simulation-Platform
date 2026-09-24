@@ -12,6 +12,7 @@ import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, sa
 import { appAlert } from '../stores/alert.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
+import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
 import { useBridge, useMirror } from './bridge.js'
 import { persistedRef } from './prefs.js'
 import PwMenu from './PwMenu.vue'
@@ -28,28 +29,40 @@ const sites = ref([])
 let _sid = 0
 const nextId = () => 'pw' + Date.now().toString(36) + '-' + (_sid++).toString(36)
 const fmtLL = (lon, lat) => `${Math.abs(lon).toFixed(2)}°${lon < 0 ? 'W' : 'E'} ${Math.abs(lat).toFixed(2)}°${lat < 0 ? 'S' : 'N'}`
-const siteSig = (list) => JSON.stringify((list || []).map((s) => [s.id, s.name, s.lon, s.lat, s.src]))
+// 「时间」列按主窗口的显示时区读写；带时刻的行读那一刻的气象帧 / 和风值 / 卫星几何，不带的跟时间轴
+const tzMode = computed(() => (st.tzMode == null ? 'local' : st.tzMode))
+const tText = (ms) => fmtTzTime(ms, tzMode.value)
+const siteSig = (list) => JSON.stringify((list || []).map((s) => [s.id, s.name, s.tMs, s.lon, s.lat, s.src]))
 useMirror(st, 'sites', {
   sigOf: siteSig,
-  apply: (v) => { sites.value = (Array.isArray(v) ? v : []).map((s) => ({ id: s.id || nextId(), name: String(s.name == null ? '' : s.name), lon: s.lon == null ? null : Number(s.lon), lat: s.lat == null ? null : Number(s.lat), src: s.src || 'manual' })) },
+  apply: (v) => { sites.value = (Array.isArray(v) ? v : []).map((s) => ({ id: s.id || nextId(), name: String(s.name == null ? '' : s.name), tMs: Number.isFinite(s.tMs) ? s.tMs : null, lon: s.lon == null ? null : Number(s.lon), lat: s.lat == null ? null : Number(s.lat), src: s.src || 'manual' })) },
   local: () => sites.value,
   send: (v) => act('sites', v)
 })
+// 时间插在经纬度之前：整块粘贴按「末两列 = 经度、纬度」认坐标
 const inCols = [
   { key: 'name', label: '站名' },
+  { key: 'tMs', label: '时间' },
   { key: 'lon', label: '经度', num: true, unit: '°E' },
   { key: 'lat', label: '纬度', num: true, unit: '°N' }
 ]
-// 经纬度是数字列（空串＝清空，非数字文本不落库）；站名随便填
+const inText = (r, c) => (c.key === 'tMs' ? tText(r.tMs) : (r[c.key] == null ? '' : String(r[c.key])))
+// 经纬度是数字列（空串＝清空，非数字文本不落库）；站名随便填；时间按显示时区读（只敲时分沿用该行原来那天，空 = 跟时间轴）
 function siteUpdate(id, key, val) {
   const s = sites.value.find((x) => x.id === id); if (!s) return
   if (key === 'name') { s.name = String(val == null ? '' : val); return }
   const t = String(val == null ? '' : val).trim()
+  if (key === 'tMs') {
+    if (t === '') { s.tMs = null; return }
+    const ms = parseTzText(t, tzMode.value, Number.isFinite(s.tMs) ? s.tMs : Date.now())
+    if (Number.isFinite(ms)) s.tMs = ms
+    return
+  }
   if (t === '') { s[key] = null; return }
   const n = Number(t)
   if (Number.isFinite(n)) s[key] = key === 'lat' ? Math.max(-90, Math.min(90, n)) : Math.max(-180, Math.min(180, n))
 }
-const newSite = (o) => ({ id: nextId(), name: '', lon: null, lat: null, src: 'manual', ...o })
+const newSite = (o) => ({ id: nextId(), name: '', tMs: null, lon: null, lat: null, src: 'manual', ...o })
 function addRow(at) {
   const list = sites.value
   const i = at == null || at < 0 || at > list.length ? list.length : at
@@ -76,7 +89,10 @@ function pasteAppend(text) {
     if (p.length < 2) continue
     const lat = Number(p[p.length - 1]), lon = Number(p[p.length - 2])
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
-    sites.value.push(newSite({ name: p.length > 2 ? p.slice(0, p.length - 2).join(' ') : fmtLL(lon, lat), lon, lat }))
+    // 经纬度前一格是时刻（本表复制出来的整行：站名 / 时间 / 经度 / 纬度）→ 取作该行时刻，不并进站名
+    let head = p.slice(0, p.length - 2), tMs = null
+    if (head.length) { const ms = parseTzText(head[head.length - 1], tzMode.value, Date.now()); if (Number.isFinite(ms)) { tMs = ms; head = head.slice(0, -1) } }
+    sites.value.push(newSite({ name: head.length ? head.join(' ') : fmtLL(lon, lat), tMs, lon, lat }))
     n++
   }
   return n
@@ -85,7 +101,7 @@ const inGrid = useGridSelect({
   gridId: 'pw-met-in',
   rows: () => sites.value,
   cols: () => inCols,
-  cellText: (r, c) => (r[c.key] == null ? '' : String(r[c.key])),
+  cellText: inText,
   onEdit: (id, key, val) => siteUpdate(id, key, val),
   onPasteBlock: pasteBlock,
   onPasteAppend: pasteAppend,
@@ -109,7 +125,7 @@ function addCities(list) {
 const cityOpen = ref(false), mkOpen = ref(false)
 const markers = computed(() => st.markers || { pts: [], sts: [], trajs: [] })
 const importItems = computed(() => [
-  { key: 'mk', label: '从标记 / 航迹导入…', icon: 'map-pin', title: '勾选地图上的点标记 / 地球站 / 航迹导入为站点（航迹每个航点一行；读数为当前时刻沿该航线各点的衰减）' },
+  { key: 'mk', label: '从标记 / 航迹导入…', icon: 'map-pin', title: '勾选地图上的点标记 / 地球站 / 航迹导入为站点（航迹每个航点一行；航迹排得出时刻的，每行带上经过该点的时刻，读数取那一刻）' },
   { key: 'xlsx', label: '从 Excel 导入…', icon: 'import', title: '按表头匹配 站名 / 经度 / 纬度' },
   { key: 'clip', label: '粘贴剪贴板', icon: 'clipboard', title: '每行至少两列，末两列为经度、纬度，其余作站名' }
 ])
@@ -136,7 +152,8 @@ async function importXlsx() {
   for (const rec of (records || [])) {
     const lon = Number(rec.lon), lat = Number(rec.lat)
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
-    sites.value.push(newSite({ name: String(rec.name || '').trim() || fmtLL(lon, lat), lon, lat }))
+    const ms = rec.tMs != null && String(rec.tMs).trim() !== '' ? parseTzText(rec.tMs, tzMode.value, Date.now()) : NaN
+    sites.value.push(newSite({ name: String(rec.name || '').trim() || fmtLL(lon, lat), tMs: Number.isFinite(ms) ? ms : null, lon, lat }))
     n++
   }
   if (!n) appAlert('无可导入的行（需经度、纬度两列）')
@@ -146,7 +163,8 @@ async function importXlsx() {
 const colKeys = computed(() => (Array.isArray(st.cols) ? st.cols : []))
 const cols = computed(() => MET_COL_DEFS.filter((c) => colKeys.value.includes(c.key)))
 const rows = computed(() => (Array.isArray(st.rows) ? st.rows : []))
-const resGrid = useGridSelect({ gridId: 'pw-met-res', rows: () => rows.value, cols: () => cols.value, readOnly: true, cellText: (r, c) => metCellText(r, c), onDeleteRows: removeSiteIds })
+const resText = (r, c) => metCellText(r, c, tText)
+const resGrid = useGridSelect({ gridId: 'pw-met-res', rows: () => rows.value, cols: () => cols.value, readOnly: true, cellText: resText, onDeleteRows: removeSiteIds })
 const optsOpen = ref(false)
 const colDef = (k) => MET_COL_DEFS.find((c) => c.key === k) || null
 const colLabel = (k) => { const c = colDef(k); return c ? c.label + (c.unit ? '（' + c.unit + '）' : '') : k }
@@ -174,7 +192,7 @@ function fetchObs() { if (!fetchDis.value) act('fetchObs') }
 function copyResult() {
   const cs = cols.value
   const head = cs.map((c) => c.label + (c.unit ? '(' + c.unit + ')' : '')).join('\t')
-  const body = resGrid.rows.value.map((r) => cs.map((c) => { const t = metCellText(r, c); return t === '—' ? '' : t }).join('\t'))
+  const body = resGrid.rows.value.map((r) => cs.map((c) => { const t = resText(r, c); return t === '—' ? '' : t }).join('\t'))
   const text = [head, ...body].join('\n')
   let ok = false
   try {
@@ -189,6 +207,7 @@ function copyResult() {
   if (!ok) { try { navigator.clipboard && navigator.clipboard.writeText(text).catch(() => {}) } catch { /* 剪贴板不可用 */ } }
 }
 const xlsxVal = (r, c) => {
+  if (c.time) return Number.isFinite(r[c.key]) ? fmtTzTimeOff(r[c.key], tzMode.value) : ''   // 带时区偏移：换台机器读回来不走样
   if (!c.num) return c.key === 'ptype' ? (PTYPE_ZH[r.ptype] || '') : (r[c.key] == null ? '' : String(r[c.key]))
   const v = Number(r[c.key]) * (c.mul || 1)
   return Number.isFinite(v) ? v : ''
@@ -199,7 +218,7 @@ async function exportXlsx() {
   const note = m ? `${m.model} · ${new Date(m.frameT).toISOString().slice(0, 16).replace('T', ' ')}Z` : ''
   const sheets = [
     sheetModel({ name: '气象指标', cols: cols.value, rows: resGrid.rows.value, value: xlsxVal, unitOf: (c) => c.unit, note }),
-    sheetModel({ name: '站点输入', cols: inCols, rows: sites.value, value: (r, c) => r[c.key] })
+    sheetModel({ name: '站点输入', cols: inCols, rows: sites.value, value: (r, c) => (c.key === 'tMs' ? (Number.isFinite(r.tMs) ? fmtTzTimeOff(r.tMs, tzMode.value) : null) : r[c.key]) })
   ]
   const r = await exportSheets({ defaultName: safeFileName('气象指标表', '气象指标表') + '.xlsx', title: '导出气象指标表', sheets })
   if (r && r.error) appAlert('导出失败：' + r.error)
@@ -237,7 +256,7 @@ function dragSplit(e) {
         <span class="ptb" :class="{ dis: !sites.length }" title="清空站点列表" @click="clearSites"><Icon name="trash" :size="12" /> 清空</span>
         <span class="pw-cnt">{{ sites.length }} 站</span>
       </div>
-      <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
+      <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="inText"
                  :actions-width="26" empty-text="还没有站点。" add-label="增加一行" @add="addRow(null)">
         <template #actions="{ row }">
           <span class="del" title="删除该站" @click="delSite(row.id)"><Icon name="x" :size="12" /></span>
@@ -261,7 +280,7 @@ function dragSplit(e) {
         <span v-if="st.busy" class="pw-cnt">计算中…</span>
         <span v-else class="pw-cnt">{{ rows.length }} 行</span>
       </div>
-      <ExcelGrid class="pw-grid eg-host" :grid="resGrid" :cols="cols" :text="(r, c) => metCellText(r, c)"
+      <ExcelGrid class="pw-grid eg-host" :grid="resGrid" :cols="cols" :text="resText"
                  :head-tip="(c) => (c.tip || c.label)"
                  :row-class="(r) => (r.note && r.totalDb == null ? 'out' : null)"
                  :empty-text="emptyText" />

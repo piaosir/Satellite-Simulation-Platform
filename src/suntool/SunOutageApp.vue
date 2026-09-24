@@ -855,19 +855,26 @@ onMounted(async () => {
 .so-res-resizer { right: auto; left: 0; }
 
 .lb-mini { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { border-color: var(--accent); }
+.lb-mini:hover:not(:disabled) { border-color: var(--line-hover); }
 .lb-mini:disabled { opacity: .5; cursor: default; }
-.lb-mini.pri { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 墨色主按钮（P1）：走 --primary-fill，深色下不再是近白块；悬停 / 禁用各有一档 */
+.lb-mini.pri { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
+.lb-mini.pri:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
+.lb-mini.pri:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 .lb-mini-ico { padding: 0 6px; }
 /* F10.7 数据读数：外观是读数（无边框），行为是按钮（点一下重新联网取） */
 .so-sf { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 6px; border: 1px solid transparent; background: none; color: var(--text-faint); border-radius: var(--r-ctl); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
 .so-sf:hover:not(:disabled) { border-color: var(--border); color: var(--text); }
 .so-sf:disabled { opacity: .5; cursor: default; }
-.so-sf b { font-weight: 500; color: var(--text-dim); font-family: var(--font-mono); }
+.so-sf b { font-weight: 500; color: var(--text-muted); font-family: var(--font-mono); }   /* 原写 --text-dim：全库未定义，整条失效 */
+.so-sf:hover:not(:disabled) b { color: var(--text); }
 .rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); margin-left: auto; max-width: 220px; }
 
 /* 工具栏（两行：卫星 / 时间与判据） */
-.rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+/* 上下 6px：6 + 24（分段 / 几何框 / 芯片）+ 6 + 1 = 37，与左右两栏的栏头同高，三栏的底线落在同一 y */
+.rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+/* 第二条工具条（年份 / 分点 / 判据）无栏头可对，保持原 8px 节奏：两行 = 8+24+8+24+8+1 = 73 */
+.rain-toolbar + .rain-toolbar { padding-top: 8px; padding-bottom: 8px; }
 .rain-seg-grp { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .rain-seg-lb.nocap { text-transform: none; }
 .rain-seg-lb { flex: none; white-space: nowrap; font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
@@ -876,24 +883,34 @@ onMounted(async () => {
 .rain-seg button + button { border-left: 1px solid var(--border); }
 .rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent-ui); background: var(--surface); }
 .rain-seg button:disabled { opacity: .45; cursor: default; }
-.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 25px; padding: 0 7px 0 8px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface-2); }
-.rain-geom:focus-within { border-color: var(--accent-ui); background: var(--surface); }
+.rain-seg button:hover:not(.on):not(:disabled) { color: var(--text); background: var(--surface); }
+/* 几何框是输入框不是按钮：高 22 + 描边 2 与分段同高；底色 / 描边 / 悬停 / 焦点跟全局输入框一套（field-*），
+   焦点环描整个框而不是框里的裸 input */
+.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: calc(var(--h-ctl) + 2px); padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
+.rain-geom:hover { border-color: var(--field-border-hover); }
+.rain-geom:focus-within { border-color: var(--accent-ui); background: var(--field-bg); }
+.rain-geom:has(input:focus-visible) { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
+.rain-geom input:focus-visible { outline: none !important; }
+.rain-geom:has(input:disabled), .rain-geom:has(input[readonly]) { background: var(--field-disabled-bg); border-color: var(--border); }
 .rain-geom span { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .rain-geom input { width: 62px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); text-align: right; outline: none; font-variant-numeric: tabular-nums; }
 .rain-geom input:disabled, .rain-geom input[readonly] { color: var(--text-faint); }
 .rain-geom i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); }
 .so-name input { width: 132px; text-align: left; }
 .chips { display: inline-flex; gap: 5px; }
-.chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); height: var(--h-ctl); padding: 0 10px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); }
-.chip:hover { border-color: var(--accent); color: var(--text); }
-.chip.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+/* 芯片与同一行的「判据」分段说同一种语言（工作台口径）：选中 = 浅底 + 2px 机位色下划线，不再是墨色实底 */
+.chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); height: calc(var(--h-ctl) + 2px); padding: 0 10px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); transition: var(--t-state); }
+.chip:hover:not(.on) { border-color: var(--border-strong); color: var(--text); background: var(--surface); }
+.chip.on { background: var(--surface); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); font-weight: 600; transition-duration: 0s; }
+/* 选中态自带 box-shadow 会盖掉全局按压阴影，这里叠回去（点选中芯片 = 取消该季） */
+.chip.on:active { box-shadow: inset 0 -2px 0 var(--accent-ui), var(--press); }
 
 /* 卫星检索 */
 .so-sat { position: relative; }
 .so-search { position: relative; display: inline-flex; }
-.so-search input { font: inherit; font-size: var(--fs-3); height: 25px; width: 150px; padding: 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); outline: none; }
+.so-search input { font: inherit; font-size: var(--fs-3); height: calc(var(--h-ctl) + 2px); width: 150px; padding: 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); outline: none; }
 .so-search input:focus { border-color: var(--accent-ui); }
-.so-drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 380px; max-height: 300px; overflow-y: auto; z-index: 50; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-box); padding: 3px; }
+.so-drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 380px; max-height: 300px; overflow-y: auto; z-index: 50; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-box); padding: 3px; animation: ui-float-in var(--dur-2) var(--ease-out); }
 .so-drop-i { display: flex; align-items: baseline; gap: 5px; padding: 4px 8px; cursor: pointer; font-size: var(--fs-3); color: var(--text-muted); border-radius: var(--r-ctl); white-space: nowrap; }
 .so-drop-i:hover { background: var(--surface-2); color: var(--text); }
 .so-drop-i.dim { color: var(--text-faint); cursor: default; }
@@ -915,8 +932,10 @@ onMounted(async () => {
 .rain-stale { flex: none; font-size: var(--fs-2); padding: 2px 7px; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-calc:disabled { opacity: .55; cursor: default; }
+.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--primary-fill); background: var(--primary-fill); color: var(--primary-on); border-radius: var(--r-ctl); cursor: pointer; }
+.lb-calc:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
+/* 禁用走 P1 配方而不是 opacity .55：半透明的墨块看着仍像能点 */
+.lb-calc:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 
 /* 结果栏 */
 .lb-result-bd { flex: 1 1 auto; overflow: auto; padding: 10px; }
@@ -946,13 +965,16 @@ onMounted(async () => {
 .v-warn { color: var(--warn); }
 .v-danger { color: var(--danger); }
 
-.so-empty { padding: 40px 12px; text-align: center; color: var(--text-muted); font-size: var(--fs-3); }
+/* 空态（P14）：居中一句，距栏头底线 18px（外层 10 + 8） */
+.so-empty { padding: 8px 6px; text-align: center; color: var(--text-faint); font-size: var(--fs-3); line-height: 1.7; }
+.so-empty p { margin: 0; }
 .so-empty .dim { color: var(--text-faint); font-family: var(--font-mono); margin-top: 6px; }
 .rain-err { color: var(--danger); font-size: var(--fs-4); padding: 16px 8px; }
 
 /* 弹窗 */
-.lb-mask { position: fixed; inset: 0; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; z-index: 300; }
-.lb-dlg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); }
+/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
+.lb-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 300; }
+.lb-dlg { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .lb-dlg-hd { font-size: var(--fs-4); font-weight: 600; margin-bottom: 10px; }
 .lb-dlg-msg { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
 .lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); margin-bottom: 12px; }

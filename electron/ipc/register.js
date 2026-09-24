@@ -398,6 +398,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGrd:get', (_e, file) => coverageGrd.get(file))
     // 导入的原始 GRD 持久化：存盘 / 读回 / 删除（供天线重载与清理）
     ipcMain.handle('coverageGrd:save', (_e, name, text) => coverageGrd.save(name, text))
+    // 解析天线记录（*.gauss.json）改参数后就地回存（文件名不变）；与 save 同在激活门禁内
+    ipcMain.handle('coverageGrd:overwrite', (_e, file, text) => coverageGrd.overwrite(file, text))
     ipcMain.handle('coverageGrd:raw', (_e, file) => coverageGrd.raw(file))
     ipcMain.handle('coverageGrd:remove', (_e, file) => coverageGrd.remove(file))
     // 方向图原样导出：保存框 + 主进程按字节拷贝，原文一个字节都不进渲染进程（实测件 243 MB）。
@@ -406,7 +408,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGrd:exportRaw', async (e, file, defaultName) => {
       let src
       try { src = coverageGrd.exportSrc(file) } catch (err) { return { ok: false, error: err.message || String(err) } }
-      if (src.synth) return { ok: false, synth: true }
+      // 解析天线记录另带 analytic:true：渲染端按参数现铺 GRD 文本（gaussStk.toGrdText），不走公共网格重打包
+      if (src.synth) return src.analytic ? { ok: false, synth: true, analytic: true } : { ok: false, synth: true }
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
         defaultPath: defaultName || 'pattern.grd',

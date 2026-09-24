@@ -22,15 +22,26 @@ export function loadSatTree() {
   try { rawLive = localStorage.getItem('globe3d/grdLive') || '' } catch (e) { rawLive = '' }
   let grd = null
   try { grd = JSON.parse(rawSettings || 'null')?.grd } catch (e) { grd = null }
-  let live = {}
-  try { live = JSON.parse(rawLive || 'null')?.pos || {} } catch (e) { live = {} }
+  let live = {}, gone = new Set()
+  try {
+    const j = JSON.parse(rawLive || 'null')
+    live = (j && j.pos) || {}
+    gone = new Set(Array.isArray(j && j.noEph) ? j.noEph.map(String) : [])
+  } catch (e) { live = {}; gone = new Set() }
   const sats = ((grd && grd.sats) || []).map((s) => {
-    const lp = live[s.folder]   // 该星的实时位置（仅 linked/orbit 有）
+    // 该星的实时位置：只认存盘树里【此刻仍是】关联星 / 轨道根数星的节点。grdLive 的条目按 folder 记，可能是旧的：
+    // 3D 页在树里一颗实时星都没有时不再重写它（persistGrdLive 早退），「取消关联」改成固定星、或删了再以同名 folder 建一颗固定星，
+    // 上一份 pos / noEph 就一直留着 —— 不按节点自身判的话，固定星会被旧星位顶掉、或被旧 noEph 判成「无星历」而整列不取值。
+    const lp = (s.noradId || s.elements) ? live[s.folder] : undefined
+    // 关联星此刻解不出星历（3D 页写进 noEph 一段）：仍是实时星（live，回填指纹照旧记 'live' 不翻），但此刻没有星位（noEph）——
+    // 采样一律不取值（sampleAntennaParams / antennaSampleSpec），不拿存盘快照顶替。下面的 lon/lat/altKm 回退到存储值只作显示。
+    // noEph 只由关联星（noradId）产生（轨道根数星恒解得出，见 treeLink.grdLivePayload）。
+    const noEph = !lp && !!s.noradId && gone.has(String(s.folder))
     const lon = lp ? Number(lp.lon) : (Number(s.lon) || 0)
     const lat = lp ? Number(lp.lat) : (Number(s.lat) || 0)
     const altKm = lp ? Number(lp.altKm) : (Number(s.altKm) || GEO_ALT)
     return {
-      folder: s.folder, satName: s.satName || s.folder, lon, lat, altKm, live: !!lp,
+      folder: s.folder, satName: s.satName || s.folder, lon, lat, altKm, live: !!lp || noEph, noEph,
       antennas: ((s.antennas || []).filter((a) => a && a.imported && a.file)).map((a) => ({
         // 实时星：天线基底也用实时位置（覆盖天线记录里的快照 satLon/satLat/satAlt）
         name: a.name, file: a.file, beams: a.beams || 1,
@@ -55,16 +66,22 @@ function satOf(node, ant) {
 // 对外：把某天线整理成主进程采样所需的一份「取值规格」{ file, sat, cfg }（纯数据，可过 IPC）。
 // 地理图的方向图联动要用它——那边是在主进程里逐格采样，渲染端只递这份规格，不亲自取值
 // （见 LbSpacePane 的 geoSpec 与 core/utils/linkSweep.js 的 spec.geo）。口径与逐站回填一致。
-export function antennaSampleSpec(node, ant, cfg) {
+// 关联星此刻无星历（node.noEph）→ null：地理图不按存盘旧星位铺方向图。
+function specOf(node, ant, cfg) {
   if (!node || !ant || !ant.file) return null
   return { file: String(ant.file), sat: satOf(node, ant), cfg: cfg ? JSON.parse(JSON.stringify(cfg)) : {} }
+}
+export function antennaSampleSpec(node, ant, cfg) {
+  return node && node.noEph ? null : specOf(node, ant, cfg)
 }
 
 // 对外：取某天线在【一批】经纬度上的「多波束最大 Parameter」（绝对 dB）。
 // 解析+采样在主进程完成，一次 IPC 处理所有站点；返回与 points 等长同序的 (number|null)[]。
+// 关联星此刻无星历（node.noEph）→ 全 null：调用方（fillFromAnt）把指纹退回原样、格子原样不动；
+// 星历回来后指纹仍是那一份，与实时星位漂移同口径 —— 空格照常补，自动值走「刷新」重取，手改值不碰。
 export async function sampleAntennaParams(node, ant, cfg, points) {
   const pts = points || []
-  if (!api || !node || !ant || !ant.file) return pts.map(() => null)
+  if (!api || !node || node.noEph || !ant || !ant.file) return pts.map(() => null)
   try {
     const vals = await api.linkBudget.grdSample({ file: ant.file, sat: satOf(node, ant), cfg: cfg || {}, points: pts })
     return Array.isArray(vals) ? vals : pts.map(() => null)
@@ -93,8 +110,9 @@ export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon'
 //       （不会拿「上一个挂点 / 天底退路」那一份取完值就钉死在表里）；
 //     · 同一份输入下随时刻变的角度 ⇒ 签名不变 ⇒ 不重取（要按最新姿态重取走「刷新」）。
 //   没盖签名的老值记 '?'。非 att 档 attEquiv 只是切走前留下的旧值、采样器不读，同样不拼（非 att 档的指纹与二期之前逐字相同）。
+// ★ 关联星此刻无星历（node.noEph）：node.live 仍为真 → 星位照旧记 'live'，基底与有星历时逐字相同（指纹不因「暂时没星位」翻动）。
 export function grdFillBase(node, ant, cfg) {
-  const spec = antennaSampleSpec(node, ant, cfg)
+  const spec = specOf(node, ant, cfg)
   if (!spec) return ''
   const c = {}
   for (const k of SAMPLE_CFG_KEYS) if (k !== 'attEquiv' && spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]

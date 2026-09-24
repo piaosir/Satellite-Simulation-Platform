@@ -19,7 +19,7 @@
 import sat from './satellite.js'
 import { propAt, refineInto, sampleOrbitAdaptive } from './adaptiveSample.js'
 import { periodMinOf, validSpan } from './satPos.js'
-import { headingAz } from './focusSwath.js'
+import { groundMotion } from './focusSwath.js'
 
 // 轨道圈缓存的有效期。定它的不是「误差随时间累积到多大」，而是【重建那一瞬会换掉多长一段环】：
 //
@@ -171,11 +171,13 @@ export function createFocusGeomCache() {
     return out
   }
   // 一个网格点：只留星下点经纬与时刻（不留 pv/gd，几千颗星每拍挂着是白占内存）。
-  // h / az（高度 km、地面航向 rad）是轨迹面要的：横断面按它们现算并缓存在点上（focusGeomTick 的 sw/swSig），
-  // 口径一变签名就不对、当场重算 —— 两个标量比留着 pv 便宜得多。
+  // h / az / gs / hd（高度 km、地面航向 rad、地面角速度 rad/s、径向速度 km/s）是轨迹面要的：横断面按它们现算并缓存在点上
+  // （focusGeomTick 的 sw/swSig），口径一变签名就不对、当场重算 —— 几个标量比留着 pv 便宜得多。
   function node(rec, tMs, idx) {
     const s = propAt(rec, new Date(tMs))
-    return s ? { tMs, idx, t: s.t, lat: s.lat, lon: s.lon, h: s.gd.height, az: headingAz(s.pv, s.gmst) } : null
+    if (!s) return null
+    const m = groundMotion(s.pv, s.gmst)
+    return { tMs, idx, t: s.t, lat: s.lat, lon: s.lon, h: s.gd.height, az: m.az, gs: m.gs, hd: m.hd }
   }
 
   // (a,b) 之间的细分点（不含两端）：复用 adaptiveSample 的同一套判据与深度上限
@@ -184,7 +186,7 @@ export function createFocusGeomCache() {
     refineInto(rec, a, b, stepDeg > 0 ? stepDeg : 4, tmp)
     tmp.pop()                                    // refineInto 末尾会带上 b 本身，这里只要中间那些
     if (!tmp.length) return tmp
-    for (const p of tmp) { p.tMs = p.t.getTime(); p.h = p.gd.height; p.az = headingAz(p.pv, p.gmst); p.pv = null; p.gd = null }
+    for (const p of tmp) { const m = groundMotion(p.pv, p.gmst); p.tMs = p.t.getTime(); p.h = p.gd.height; p.az = m.az; p.gs = m.gs; p.hd = m.hd; p.pv = null; p.gd = null }
     return tmp
   }
 

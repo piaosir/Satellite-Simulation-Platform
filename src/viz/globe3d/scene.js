@@ -25,7 +25,7 @@ import { createSpaceFx } from './spaceFx.js'
 // 点标记序号徽标（圈 1、圈 2）：与 2D 平面图共用同一支画笔，两视图观感一致
 import { paintNumBadge, BADGE_TEX_FILL, BADGE_R } from '../markers/numBadge.js'
 // 标记符号（圆点/方块/三角/图钉…）：与 2D 平面图共用同一支画笔，两视图观感一致
-import { markSymbolCanvas, texCenterY, symbolUp, symbolDown, MARK_TEX_FILL } from '../markers/markSymbols.js'
+import { markSymbolCanvas, texCenterY, symbolUp, symbolDown, MARK_TEX_FILL, PT_DOT_K } from '../markers/markSymbols.js'
 // 地球站符号：与 2D 平面图共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { vehicleCanvas } from '../vehicleSymbol.js'
@@ -34,6 +34,7 @@ import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { spinDelta, rotateSpeedFor } from './earthSpin.js'
 import { tauFor, dampingFor, ZOOM_TAU_MS } from './dragFollow.js'
+import { ZOOM_REF_DIST, pointZoomK } from './zoomScale.js'
 import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 import { emitSwath3D } from '../constellation/focusSwath.js'
@@ -342,7 +343,8 @@ export function createGlobeScene(container, quality = {}) {
   camera.position.copy(llaToVec(36, 104, 0).multiplyScalar(3.0))   // 默认以中国（约 104°E, 36°N）为中心
   // 标记/标签「随缩放联动」的基准相机距离：在此距离上标记=其设定的当前像素大小（≈默认贴合视角），
   // 拉近变大、拉远变小，与国家名/省名等世界尺寸地名同步缩放（取默认初始距离 3.0）。
-  const LABEL_REF_DIST = 3.0
+  // 值在 zoomScale.js（单一真值源）：卫星 / 实体模型图标按同一把尺联动
+  const LABEL_REF_DIST = ZOOM_REF_DIST
   const SAT_POINT_PX = 3.2   // 卫星点基准像素（基准距离上的屏幕大小，逐帧按缩放联动）
   // 「缩放联动」用的相机距离。跟随卫星时相机贴着主星（离地心 1.0x 个地球半径），照原式算等于放大 3 倍 ——
   // 星点 / 在轨点 / 标记全胀一圈。跟随期间按基准距离的 1/0.55 画（系数 0.55：星座点云 3.2 → 1.8 px，
@@ -1507,10 +1509,10 @@ export function createGlobeScene(container, quality = {}) {
       if (cfg.trkOn && it.track && it.track.length > 1) {
         const seg = bucket(cfg.trkColor, cfg.trkWidth, cfg.trkOpacity)
         if (cfg.trkMode === 'swath' && it.swath && it.swath.K > 0) {
-          // 轨迹面（页面 focusGeomOfRec 已做定向/分段）：两缘按轨迹线样式描边；带面 4.21＝紧贴覆盖圈填充之上、
-          // 模板 clip → 覆盖圈填充过的像素不再叠色
-          emitSwath3D(it.swath.layout, it.swath.discs, {
-            edge: seg, dash: cfg.trkDash, outlineOn: !!it.swath.outlineOn,
+          // 轨迹面（页面 focusGeomOfRec 已用 focusSwath.buildSwath 算好带面 / 圆盘 / 轮廓）：轮廓按轨迹线样式描边；
+          // 带面 4.21＝紧贴覆盖圈填充之上、模板 clip → 覆盖圈填充过的像素不再叠色
+          emitSwath3D(it.swath, {
+            edge: seg, dash: cfg.trkDash,
             fill: cfg.trkFillOpacity > 0 ? faceBucket(4.21, cfg.trkFillColor, cfg.trkFillOpacity, 'clip') : null
           })
         } else pushDashed(seg, densifyArc(it.track.map((p) => llaToVec(p.lat, p.lon, LIFT))), cfg.trkDash)
@@ -1594,6 +1596,24 @@ export function createGlobeScene(container, quality = {}) {
     orbRingSpin = Number.isFinite(rad) ? rad : 0
     if (orbRingGroup) orbRingGroup.quaternion.setFromAxisAngle(ORB_AXIS, orbRingSpin)
   }
+  // ===================== 跟随卫星：主星的轨道线（精确、穿星而过、RTC）=====================
+  // 跟随时相机贴着主星（几十米），环组里主选那条 orbP 是缓存的粗弦（弦垂可达 19 km、float32 绝对坐标）：从星上看全是折角，
+  // 星也不在线上。页面按本拍现算一条精确的（viz/globe3d/followFocus.js：相对锚点，double 算完才落 float32）顶替它。
+  // 物体摆在锚点上、顶点是相对量 —— MV 矩阵在 CPU 上按 double 乘出，平移分量只剩几十米，上传 float32 不丢精度。
+  // 这里只画得到【近裁剪面以外】那截（地球这一趟，受地球遮挡）；以内那截由模型层在局部那一趟画（同一份顶点、同一张平面切开）。
+  // spec：{ anchor:[x,y,z], segs: Float32Array（线段对，相对 anchor）| null } ＝ 跟随中（segs 空＝轨道线关着）；null ＝ 没在跟随
+  let followOrb = null, followOrbOn = false
+  function setFollowOrbit(spec) {
+    if (followOrb) { scene.remove(followOrb); followOrb.geometry.dispose(); lineMats.delete(followOrb.material); followOrb.material.dispose(); followOrb = null }
+    followOrbOn = !!spec
+    if (orbRingGroup) for (const o of orbRingGroup.children) if (o.userData.orbP) o.visible = !followOrbOn
+    if (!spec || !spec.segs || !spec.segs.length || !focusCfg.orbOn) return
+    const o = fatSegments(spec.segs, focusCfg.orbColor, focusCfg.orbWidth, focusCfg.orbOpacity, 6)
+    o.position.set(spec.anchor[0], spec.anchor[1], spec.anchor[2])
+    o.frustumCulled = false
+    scene.add(o)
+    followOrb = o
+  }
   // ===================== 聚焦星几何：预制顶点通道（Worker 池产出）=====================
   // 与 setSelectionSet 的分工：
   //   · setSelectionSet —— 逐拍现算的【少量】条目（对星覆盖聚焦特效、可见性叠加层），照旧「喂经纬度、这里算顶点」；
@@ -1652,7 +1672,9 @@ export function createGlobeScene(container, quality = {}) {
     const face = (a, color, op, order, stencil) => { if (a) g.add(fillMesh(a, color, op, order, stencil)) }
     if (rg) {
       line(rg, cat('orb'), c.orbColor, c.orbWidth * 0.77, c.orbOpacity * 0.56)   // 非主选收一档（与 setSelectionSet 同口径）
-      line(rg, cat('orbP'), c.orbColor, c.orbWidth, c.orbOpacity)
+      // 主选那条打上标记：跟随主星时让位给 setFollowOrbit 那条精确的（见那边）
+      const aP = cat('orbP')
+      if (aP) { const o = fatSegments(aP, c.orbColor, c.orbWidth, c.orbOpacity, 6); o.userData.orbP = true; o.visible = !followOrbOn; rg.add(o) }
     }
     line(g, cat('trk'), c.trkColor, c.trkWidth, c.trkOpacity)
     line(g, cat('fp'), c.fpColor, c.fpWidth, c.fpOpacity)
@@ -3116,10 +3138,10 @@ export function createGlobeScene(container, quality = {}) {
     ptFont: 14, ptLabelColor: '#ffffff', ptLabelOpacity: 1, ptLabelPos: 'up', ptBold: false,
     stOpacity: 1, stIcon: 16, stFont: 17, stLabelColor: '#ffffff', stLabelOpacity: 1, stLabelPos: 'down', stBold: false,
     tjWidth: 2.2, tjOpacity: 0.95, tjDash: 'solid', tjDot: 4, tjIconOn: true, tjIconPx: 26,
-    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff', tjNameBold: false
+    tjNameOn: false, tjNameFont: 13, tjNameColor: '#ffffff', tjNameBold: false,
+    tjCurtain: true   // 飞行航迹「延伸到地面」垂幕（只 3D 有；航行航迹没有高度，不画）
   }
   function setMarkStyle(cfg) { Object.assign(markCfg, cfg || {}) }
-  const PT_DOT_K = 18 / 32 * 2.2   // 点标记：滑块值 → 视觉直径（2D 侧同值）
   // 标记符号贴图：同（形状|色|透明度|描边）共用一张，改一个点的颜色不必把整层的贴图重造。
   // 打 _shared 标记，disposeGroup 见到就跳过（同 dotCache / vehTexCache）。材质仍逐枚新建 ——
   // 近地平淡出要改 material.opacity，共享材质会被互相改写（同 makeNumBadge 那条注释）。
@@ -3235,6 +3257,30 @@ export function createGlobeScene(container, quality = {}) {
   // （makeDot：直径 18 的圆居中于 32 画布），故 _px 要按占比放大回去 —— 2D 侧直接按半径作画、
   // 无留白，两视图这才一样大（同 numBadge 的 BADGE_TEX_FILL 那套换算）。
   const DOT_SPRITE_FILL = 18 / 32
+  // 飞行航迹按实际高度抬（2026-09-24「3D 视图上看到实际高度」）：线半径 trajR(h) = 1.0003 + h / 6371 km ——
+  //   地面 0 m 贴在陆地网格（顶点 r = 1.0）之上 0.0003，巡航 10668 m ≈ 1.00197 ≈ 原来的 1.002；与实体层载具模型锚点 r = 1 + h/R 同斜率、
+  //   只差 0.0003（≈1.9 km）。航点圆点 / 命中 / 载具精灵 / 航迹名在原半径上平移同一个量 liftD(h)（层间相对摆位不变）。
+  //   航行航迹没有高度（载荷不带 line3 / ptAlts / headAltM），逐像素不变。
+  const TRAJ_R0 = 1.0003, TRAJ_RE_M = 6371000
+  const trajR = (h) => TRAJ_R0 + (Number.isFinite(h) ? h : 0) / TRAJ_RE_M
+  const liftD = (h) => trajR(h) - 1.002
+  // 「延伸到地面」垂幕：航迹线到地面之间一道半透明竖面（同 Google Earth 的 extrude），高度靠它才看得出来 ——
+  //   真实比例下 10 km 只占地球半径 0.16 %，光一条抬高的线贴着地面几乎分不开。depthTest 开（被地球挡住的那半截不画）、不写深度，
+  //   双面，压在航迹线（10.5）之下
+  function trajCurtain(line, color, opacity) {
+    const n = line.length, pos = new Float32Array(n * 6), idx = []
+    for (let i = 0; i < n; i++) {
+      const p = line[i], v = llaToVec(p.lat, p.lon, 0), top = trajR(p.altM)
+      pos[i * 6] = v.x * TRAJ_R0; pos[i * 6 + 1] = v.y * TRAJ_R0; pos[i * 6 + 2] = v.z * TRAJ_R0
+      pos[i * 6 + 3] = v.x * top; pos[i * 6 + 4] = v.y * top; pos[i * 6 + 5] = v.z * top
+      if (i) { const a = 2 * (i - 1); idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2) }
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); geo.setIndex(idx)
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false }))
+    mesh.renderOrder = 10.4
+    return mesh
+  }
   function setTrajectories(list, cfg) {
     if (cfg) setMarkStyle(cfg)
     const trajD = Math.max(0, (markCfg.tjDot != null ? markCfg.tjDot : 4) / 2)   // 视觉直径（2D 同一换算）
@@ -3249,9 +3295,15 @@ export function createGlobeScene(container, quality = {}) {
     const g = new THREE.Group()
     for (const tr of (list || [])) {
       const pts = tr.pts || []
+      // 飞行航迹：tr.line3 = 带实际高度的线（trajKinematics.trajLine3：大圆加密 + 剖面拐点），tr.ptAlts = 各航点实际高度（与 pts 对齐），
+      // tr.headAltM = 航迹头高度（静止档载具停在那里）。没给就是航行 / 老载荷，走原来的画法
+      const line3 = Array.isArray(tr.line3) && tr.line3.length > 1 ? tr.line3 : null
+      const ptAlt = Array.isArray(tr.ptAlts) && tr.ptAlts.length === pts.length ? tr.ptAlts : null
+      const headD = Number.isFinite(tr.headAltM) ? liftD(tr.headAltM) : 0
       // tr.line（运动档：trajKinematics.densifyGreatCircle 的 0.5° 大圆加密，与载具运动同一条大圆）给了就直接用它；没给走原来的逐段 slerp
-      const verts = Array.isArray(tr.line) ? tr.line.map((p) => llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)) : []
-      if (!Array.isArray(tr.line)) for (let i = 0; i + 1 < pts.length; i++) {
+      const verts = line3 ? line3.map((p) => llaToVec(p.lat, p.lon, 0).multiplyScalar(trajR(p.altM)))
+        : (Array.isArray(tr.line) ? tr.line.map((p) => llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)) : [])
+      if (!line3 && !Array.isArray(tr.line)) for (let i = 0; i + 1 < pts.length; i++) {
         const a = llaToVec(pts[i].lat, pts[i].lon, 0), b = llaToVec(pts[i + 1].lat, pts[i + 1].lon, 0)
         const steps = Math.max(2, Math.ceil(a.angleTo(b) / (2 * Math.PI / 180)))
         for (let s = 0; s <= steps; s++) verts.push(slerp(a, b, s / steps).multiplyScalar(1.002))
@@ -3266,16 +3318,18 @@ export function createGlobeScene(container, quality = {}) {
         if (tjDash) { const sink = createSink(Math.max(1024, verts.length * 6)); pushDashed(sink, verts, tjDash); g.add(fatSegments(sink.view(), tjColor, tjW, tjOp, 10.5)) }
         else g.add(fatStrip(verts, tjColor, tjW, tjOp, 10.5))
       }
+      if (line3 && markCfg.tjCurtain !== false) g.add(trajCurtain(line3, tjColor, tjOp * 0.22))
+      const wpR = (i) => (ptAlt ? trajR(ptAlt[i]) : 1.002)                   // 航点圆点 / 命中的半径（飞行按该航点实际高度）
       if (trajD > 0) {
         const dotHex = '#' + ((tr.dotColor != null ? tr.dotColor : tjColor) & 0xffffff).toString(16).padStart(6, '0')
-        for (const p of pts) { const dot = makeDot(dotHex); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002)); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
+        for (let i = 0; i < pts.length; i++) { const p = pts[i]; const dot = makeDot(dotHex); dot.position.copy(llaToVec(p.lat, p.lon, 0).multiplyScalar(wpR(i))); dot._px = trajDotPx; dot._ar = 1; dot.renderOrder = 15; g.add(dot) }
       }
       // 航点也可直接拖（与点标记/地球站同一条通道）：圆点关掉时按最小抓取区仍可抓
-      if (tr.id) for (const p of pts) if (p.id) trajHits.push({ kind: 'waypoint', id: p.id, tid: tr.id, pos: llaToVec(p.lat, p.lon, 0).multiplyScalar(1.002), lat: p.lat, lon: p.lon, px: trajD })
+      if (tr.id) for (let i = 0; i < pts.length; i++) { const p = pts[i]; if (p.id) trajHits.push({ kind: 'waypoint', id: p.id, tid: tr.id, pos: llaToVec(p.lat, p.lon, 0).multiplyScalar(wpR(i)), lat: p.lat, lon: p.lon, px: trajD }) }
       // 航迹头（末航点）上的载具图标。depthTest 关 + _dir 半球剔除：同地球站图标那套，转到背面自动隐藏。
       if (vehOn && vehPx > 0 && pts.length) {
         const hd = pts[pts.length - 1]
-        const pos = llaToVec(hd.lat, hd.lon, 0).multiplyScalar(1.0025)
+        const pos = llaToVec(hd.lat, hd.lon, 0).multiplyScalar(1.0025 + headD)
         const ink = '#' + (hexOf(tr.iconColor != null ? tr.iconColor : (tr.color != null ? tr.color : 0xff5a5a)) & 0xffffff).toString(16).padStart(6, '0')
         const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: vehicleTexture(tr.kind === 'flight' ? 'flight' : 'sea', ink), depthTest: false, depthWrite: false, transparent: true }))
         spr.position.copy(pos); spr._px = vehPx; spr._ar = 1; spr._dir = pos.clone().normalize(); spr.renderOrder = 16
@@ -3302,6 +3356,7 @@ export function createGlobeScene(container, quality = {}) {
           ? Math.max((vehOn ? vehPx : 0) * 0.5, tr.iconPx * (tr.kind === 'flight' ? 0.5 : 1)) + nf * MK_FONT_K * 0.7
           : (vehOn ? vehPx : 0) * 0.5 + nf * MK_FONT_K * 0.7
         const nm = labelSprite(tr.name, hd.lat, hd.lon, markCfg.tjNameColor, 0.5 - dU / nf, nf, 0, null, !!markCfg.tjNameBold)
+        if (headD) nm.position.multiplyScalar((1.0012 + headD) / 1.0012)     // 飞行：随航迹头高度平移（方向不变，_dir 照旧）
         if (tr.id) {
           nm._tid = tr.id; nm._vehName = true
           const e = vehSprites.get(tr.id)
@@ -3445,7 +3500,7 @@ export function createGlobeScene(container, quality = {}) {
   // gl_PointSize 的硬件天花板。高亮环刻意不联动（固定屏幕大小，拉远也认得出选中的是哪颗）。
   function rescalePointLayers() {
     if (!focusSatGroup && !selDotGroup && !laneDotGroup && !laneSubGroup) return
-    const k = Math.max(0.35, Math.min(6, LABEL_REF_DIST / zoomDist()))
+    const k = pointZoomK(zoomDist())   // 夹在 0.35 … 6（卫星模型图标顶替这层点，按同一系数联动，见 zoomScale.js）
     const go = (grp) => { if (grp) for (const o of grp.children) { if (o._px) o.material.size = Math.min(256, o._px * k); else if (o.children) for (const c of o.children) if (c._px) c.material.size = Math.min(256, c._px * k) } }
     // 在轨点是「底盘 + 白圈」两层套一个 Group，故 go 要下探一层。
     // ★ 高亮环（laneHlGroup / ringGroup）刻意【不】参与缩放联动 —— 它是固定屏幕尺寸的选中标记，
@@ -3562,6 +3617,30 @@ export function createGlobeScene(container, quality = {}) {
   const ray = new THREE.Raycaster()
   let onPick = null
   function setOnPick(fn) { onPick = fn }
+  // 渲染集之外、却被别的功能画在球上的星（聚焦星所属集被关掉、可见性结果、天线树关联星、对星覆盖目标星…）：
+  // 宿主在点击那一刻吐 [{ lat, lon, altKm, ref }]，命中后 ref 原样交回 onPick 第四参。只在点击时调用，不进逐帧。
+  let pickExtras = null
+  function setPickExtras(fn) { pickExtras = typeof fn === 'function' ? fn : null }
+  const PICK_PX = 14
+  function pickExtraAt(clientX, clientY) {
+    if (!pickExtras) return null
+    let list = null
+    try { list = pickExtras() } catch { list = null }
+    if (!list || !list.length) return null
+    const r = renderer.domElement.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    let best = null, bd = Infinity
+    for (const x of list) {
+      if (!x || !Number.isFinite(x.lat) || !Number.isFinite(x.lon) || !Number.isFinite(x.altKm)) continue
+      const P = llaToVec(x.lat, x.lon, x.altKm)
+      if (occludedByGlobe(P)) continue
+      const s = projPx(P, r)
+      if (!(s.z < 1)) continue   // 相机背后
+      const dd = Math.hypot(s.x - mx, s.y - my)
+      if (dd <= PICK_PX && dd < bd) { bd = dd; best = { ref: x.ref, point: P.clone(), dist: dd } }
+    }
+    return best
+  }
 
   // 相机到 P 的视线是否在到达 P 之前先穿过地球（即 P 在地球背面被挡住）
   function occludedByGlobe(P) {
@@ -3632,10 +3711,23 @@ export function createGlobeScene(container, quality = {}) {
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) return
     // 放置模式：左键点击 = 在球面落点放置（波束合成），不当作选星
     if (placeMode) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPlace) onPlace(ll); return }
-    if (!satPoints || !satPoints.visible || !onPick) return   // 点云关着就不拾取（见 setSatPointsVisible）
-    const idx = pickSatAt(e.clientX, e.clientY)
+    if (!onPick) return
+    const cloud = !!(satPoints && satPoints.visible)   // 点云关着：点云不拾取（见 setSatPointsVisible），额外画出来的星照拾
+    const idx = cloud ? pickSatAt(e.clientX, e.clientY) : -1
+    const hitPt = lastPickPoint
+    const ex = pickExtraAt(e.clientX, e.clientY)
     const addToSel = e.ctrlKey || e.metaKey || e.shiftKey   // 按住 Ctrl/Cmd/Shift 点选=加入多选
-    if (idx >= 0) onPick(idx, lastPickPoint, addToSel); else onPick(-1, null, addToSel)
+    // 两路都中：取屏幕上离光标更近的那颗
+    // ★ 比星点本身的屏幕位置，不比 hitPt：Points 射线命中点是视线上离星点最近的点，投影下来恒在光标上
+    let cloudFirst = idx >= 0
+    if (ex && cloudFirst) {
+      const pa = satPoints.geometry.getAttribute('position')
+      const r = renderer.domElement.getBoundingClientRect(), s = projPx(new THREE.Vector3(pa.getX(idx), pa.getY(idx), pa.getZ(idx)), r)
+      cloudFirst = Math.hypot(s.x + r.left - e.clientX, s.y + r.top - e.clientY) <= ex.dist
+    }
+    if (ex && !cloudFirst) onPick(-1, ex.point, addToSel, ex.ref)
+    else if (idx >= 0) onPick(idx, hitPt, addToSel)
+    else if (cloud) onPick(-1, null, addToSel)
   })
   // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
   renderer.domElement.addEventListener('pointercancel', (e) => {
@@ -3834,7 +3926,8 @@ export function createGlobeScene(container, quality = {}) {
   // 航迹载具精灵登记（setTrajectories 重建时重建）：航迹 id → { spr: 载具精灵 | null, name: 航迹名精灵 | null }
   const vehSprites = new Map()
   // 运动档载具（页面每拍、以及每次 setTrajectories 之后各调一次；只含运动档，静止档不传、精灵原位不动）：
-  // list = [{ id, lat, lon, tan: [x, y, z] | null }]。位置与 llaToVec 同式、就地写（零分配），切向拷进 _tan（逐帧投到屏幕求角）。
+  // list = [{ id, lat, lon, tan: [x, y, z] | null, altM? }]。位置与 llaToVec 同式、就地写（零分配），切向拷进 _tan（逐帧投到屏幕求角）；
+  // altM（飞行载具此刻的实际高度）→ 精灵与航迹名随之抬（liftD，同 setTrajectories）。
   function updateVehicles(list) {
     if (!Array.isArray(list) || !vehSprites.size) return
     for (let i = 0; i < list.length; i++) {
@@ -3846,8 +3939,10 @@ export function createGlobeScene(container, quality = {}) {
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
       const phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180
       const x = -Math.sin(phi) * Math.cos(theta), y = Math.cos(phi), z = Math.sin(phi) * Math.sin(theta)
+      // it.altM：飞行载具此刻的实际高度（航行不带 → 0，与改前逐位同路）
+      const d = Number.isFinite(it.altM) ? liftD(it.altM) : 0
       if (e.spr) {
-        e.spr.position.set(x, y, z).multiplyScalar(1.0025)
+        e.spr.position.set(x, y, z).multiplyScalar(1.0025 + d)
         if (e.spr._dir) e.spr._dir.copy(e.spr.position).normalize()
         const t = it.tan
         if (t && Number.isFinite(t[0]) && Number.isFinite(t[1]) && Number.isFinite(t[2]) && (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]) > 1e-24) {
@@ -3856,7 +3951,7 @@ export function createGlobeScene(container, quality = {}) {
         }
       }
       if (e.name) {
-        e.name.position.set(x, y, z).multiplyScalar(1.0012)
+        e.name.position.set(x, y, z).multiplyScalar(1.0012 + d)
         if (e.name._dir) e.name._dir.copy(e.name.position).normalize()
       }
     }
@@ -4140,7 +4235,7 @@ export function createGlobeScene(container, quality = {}) {
 
   return {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
-    setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, clearSelectionGeom,
+    setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, setFollowOrbit, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCoverageLineAlpha, restyleCoverageLines, setCovGrid, clearCovGrid, setCovGridAlpha,
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays,
     setTerminator, clearTerminator,
@@ -4183,7 +4278,7 @@ export function createGlobeScene(container, quality = {}) {
     // 跟随卫星期间读到的是进入前的那个视图（存视图不会存成跟随机位）
     getView: () => { const p = followSaved ? followSaved.pos : camera.position; return { x: p.x, y: p.y, z: p.z, t: distToT(followSaved ? followSaved.zoomTarget : zoomTarget) } },
     // —— 模型层 / 跟随卫星（见 modelLayer.js）——
-    setOverlay, setFollowDriver, setDotMask, pickSatAt,
+    setOverlay, setFollowDriver, setDotMask, pickSatAt, setPickExtras,
     // —— 标记实体模型层（见 entityLayer.js）：出帧插槽、精灵遮罩、拖放命中与高亮、运动档载具 ——
     setEntityOverlay, setEntityProvider, entityAtScreen, setDropHighlight, updateVehicles,
     // —— 地图设置 · 宇宙空间：星空 / 大气 / 太阳（setSpace）、晨昏效果（setNightShade）、晨昏线（setTerminator）三路各自独立 ——

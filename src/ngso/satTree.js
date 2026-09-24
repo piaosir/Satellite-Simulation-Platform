@@ -27,7 +27,9 @@ export function loadSatTree() {
   let live = {}
   try { live = JSON.parse(rawLive || 'null')?.pos || {} } catch (e) { live = {} }
   const sats = ((grd && grd.sats) || []).map((s) => {
-    const lp = live[s.folder]   // 该星的实时位置（仅 linked/orbit 有）
+    // 该星的实时位置（仅 linked/orbit 有）。只认树里【仍是】关联/根数星的节点：取消关联改成固定星、或删了再建同名
+    // folder 的固定星，grdLive 里残留的旧条目不能盖掉它的固定位置（同 linkbudget/grdParam.js loadSatTree）
+    const lp = (s.noradId || s.elements) ? live[s.folder] : undefined
     return {
       folder: s.folder, satName: s.satName || s.folder,
       lon: lp ? Number(lp.lon) : (Number(s.lon) || 0),

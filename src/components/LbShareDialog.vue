@@ -23,7 +23,7 @@
 //     flushLib() → Promise                 // 冲刷全局库的防抖写盘（并库后、写配置前必须等它）
 //     onImported({ last, plan })           // 落盘后：刷新列表 / 载入末条 / 展开新建的文件夹
 //   }
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
@@ -198,6 +198,16 @@ async function sendOnline() {
 // 没有这个钩子的窗口（再生式暂未接）不显示这个页签。
 const canMini = computed(() => typeof props.ctx.toMiniItems === 'function')
 const miniOpen = ref(false)
+// 捕获阶段收 Esc（与 LbReportDialog 同一套）：对话框在最上层，不漏给下面的表格去取消单元格编辑。
+// 组字中的 Esc 是取消组字；「发送到小程序」叠在上面时这一下归它（它自己收 Esc）
+function onKey(e) {
+  if (e.key !== 'Escape' || e.isComposing) return
+  if (miniOpen.value) return
+  e.stopPropagation()
+  close()
+}
+watch(() => props.open, (v) => (v ? window.addEventListener('keydown', onKey, true) : window.removeEventListener('keydown', onKey, true)), { immediate: true })
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 // id 一并给出去（草稿为 '__draft__'）：父组件据此判「这一份是不是工作台上正算着的那一份」，
 // 是才把平台的计算结果随配置带过去（见 §结果一并带走）。别的配置没有对应的结果，不能张冠李戴。
 function buildMini() {
@@ -505,11 +515,13 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 <style scoped>
 /* 视觉语言与各 App 的 .lb-dlg 一致（同一套 CSS 变量），此处自带一份是因为 App 的样式是 scoped 的，
    子组件除根元素外吃不到。类名统一 lbs- 前缀，不与任何 App 内的类冲突。 */
-.lbs-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lbs-dlg { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.lbs-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.lbs-dlg { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .lbs-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lbs-hd-t { font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
-.lbs-mod { font-family: var(--font-mono); font-size: var(--fs-1); line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-pill); cursor: help; }
+.lbs-mod { font-family: var(--font-mono); font-size: var(--fs-1); line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); cursor: help; }
 .lbs-sp { flex: 1; }
 .lbs-id { font-size: var(--fs-2); color: var(--text-muted); }
 .lbs-id b { font-family: var(--font-code); color: var(--text); }
@@ -529,7 +541,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-pick.solo { grid-template-columns: 1fr; }
 .lbs-col { display: flex; flex-direction: column; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; }
 .lbs-col-hd { display: flex; align-items: center; gap: 6px; padding: 4px 7px; font-size: var(--fs-2); color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lbs-n { font-family: var(--font-mono); font-size: var(--fs-1); padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill); }
+.lbs-n { font-family: var(--font-mono); font-size: var(--fs-1); padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lbs-hint { font-size: var(--fs-2); color: var(--text-faint); cursor: help; }
 .lbs-lnk { font: inherit; font-size: var(--fs-2); height: var(--h-ctl-sm); white-space: nowrap; padding: 0 4px; cursor: pointer; color: var(--text-faint); background: transparent; border: 0; border-radius: var(--r-ctl); }
 .lbs-lnk:hover:not(:disabled) { color: var(--text); background: var(--bg); }
@@ -542,7 +554,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-fold { color: var(--text-muted); font-weight: 600; }
 .lbs-fi { flex: none; opacity: .65; }
 .lbs-draft { background: color-mix(in srgb, var(--accent-ui) 5%, var(--bg)); }
-.lbs-tag { flex: none; font-size: var(--fs-1); color: var(--text-faint); border: 1px dashed var(--border-strong); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
+.lbs-tag { flex: none; font-size: var(--fs-1); color: var(--text-faint); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); padding: 0 5px; line-height: 14px; }
 .lbs-row.lock { color: var(--text-muted); }
 .lbs-lk { flex: none; opacity: .55; }
 .lbs-grp { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 3px 7px; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -566,11 +578,12 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-inp { flex: 1; min-width: 0; font: inherit; font-family: var(--font-code); font-size: var(--fs-3); padding: 5px 8px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 .lbs-inp:focus { outline: none; border-color: var(--accent-ui); }
 .lbs-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.lbs-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 5px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+/* 定高 --h-ctl（原靠内距撑出 23px）；主钮机位色，悬停压深一档、字色显式 --bg（通用悬停会把字染成 --text） */
+.lbs-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl); font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbs-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lbs-btn:disabled { opacity: .45; cursor: not-allowed; }
 .lbs-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lbs-btn.primary:hover:not(:disabled) { opacity: .88; }
+.lbs-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lbs-note { font-size: var(--fs-2); color: var(--text-faint); }
 .lbs-warnbox { font-size: var(--fs-3); line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: var(--r-ctl, 2px); padding: 6px 8px; }
 

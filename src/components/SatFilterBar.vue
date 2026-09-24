@@ -42,7 +42,7 @@ function clearAll() {
   <div class="satfb">
     <div v-if="!expanded" class="fbh">
       <span class="lnk" :class="{ on: open }" @click="open = !open">
-        <Icon :name="open ? 'chevron-down' : 'chevron-right'" :size="12" /> 筛选
+        <Icon name="chevron-down" class="disc" :class="{ shut: !open }" :size="12" /> 筛选
       </span>
       <span v-if="matched >= 0" class="fbn" data-i18n-skip>已筛选 · {{ matched }} 颗</span>
       <span v-if="active" class="lnk clr" title="清空全部筛选" @click="clearAll"><Icon name="x" :size="12" /> 清空</span>
@@ -74,6 +74,7 @@ function clearAll() {
         <NumBox class="ci" :disabled="!hasCat" allow-empty :model-value="f.launchFrom" :min="1957" :max="2100" :step="1" placeholder="从" @commit="v => set('launchFrom', v)" />
         <span class="dash">–</span>
         <NumBox class="ci" :disabled="!hasCat" allow-empty :model-value="f.launchTo" :min="1957" :max="2100" :step="1" placeholder="至" @commit="v => set('launchTo', v)" />
+        <span class="u"></span>
       </div>
       <div class="frow">
         <label>轨道区制</label>
@@ -125,6 +126,9 @@ function clearAll() {
 .frow > label, .frow2 > label { flex: 0 0 60px; min-width: 60px; color: var(--text-muted); }
 .frow > .ci { flex: 1 1 auto; min-width: 0; }
 .frow2 > .ci { flex: 1 1 0; min-width: 0; }
-.dash { color: var(--text-faint); }
+/* 范围行对齐：短横与单位列定宽（单位列最宽的「min」约 17px；发射年那行补一个空的单位格），
+   五行「从 / 至」两个数字框的左右缘上下对齐，不再随 km / ° / min 的字宽各自伸缩 */
+.dash { flex: 0 0 6px; text-align: center; color: var(--text-faint); }
 .u { flex: 0 0 auto; color: var(--text-faint); }
+.frow2 > .u { flex: none; min-width: 18px; }
 </style>

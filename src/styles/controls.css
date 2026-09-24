@@ -72,15 +72,19 @@ input[type="radio"] {
   border-radius: var(--r-ctl);
   background: var(--field-bg);
   cursor: pointer;
-  transition: background .12s, border-color .12s;
+  transition: background-color var(--dur-1) linear, border-color var(--dur-1) linear;
 }
 input[type="radio"] { border-radius: 50%; }
-input[type="checkbox"]:hover,
-input[type="radio"]:hover { border-color: var(--field-border-hover); }
+/* 本文件的悬停一律排除禁用件：禁用件悬停时描边还在转深，读起来像「能点」。
+   写成 :where(:not(:disabled)) 而不是裸 :not(:disabled)：后者给选择器加一档特异度，
+   悬停就会反压同特异度、写在后面的 :checked / :indeterminate（选中的单选钮悬停时蓝边变灰），
+   也会反压组件里原本压得过悬停的规则。:where() 只排除、不改特异度。 */
+input[type="checkbox"]:hover:where(:not(:disabled)),
+input[type="radio"]:hover:where(:not(:disabled)) { border-color: var(--field-border-hover); }
 input[type="checkbox"]:checked,
 input[type="radio"]:checked { border-color: var(--accent-ui); }
 input[type="checkbox"]:checked { background: var(--accent-ui); }
-input[type="checkbox"]:checked:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+input[type="checkbox"]:checked:hover:where(:not(:disabled)) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 /* 勾用 mask 不用背景图：颜色由 background 给。实底是机位色，勾一律取纸色（浅色主题下就是白），
    两主题共用一份定义。 */
 input[type="checkbox"]:checked::after {
@@ -142,12 +146,15 @@ input[type="range"]::-webkit-slider-thumb {
   border: 0;
   border-radius: 50%;
   background: var(--accent-ui);
-  transition: transform .12s;
+  /* 钮与轨之间一圈纸色细缝：实心钮压在同为深色的轨上不再糊成一团 */
+  box-shadow: 0 0 0 1px var(--bg);
+  transition: transform var(--dur-1) var(--ease-std);
 }
 input[type="range"]:hover::-webkit-slider-thumb,
 input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
 input[type="range"]:disabled { cursor: not-allowed; }
 input[type="range"]:disabled::-webkit-slider-thumb { background: var(--text-faint); transform: none; }
+input[type="range"]:disabled::-webkit-slider-runnable-track { background: var(--border); }
 
 /* ==== 数字框 ====
    原生上下箭头一律去掉：一是丑，二是它挨着输入区，工程数值改错了不容易发现。
@@ -185,7 +192,7 @@ input[type="color"] {
   background: var(--field-bg);
   cursor: pointer;
 }
-input[type="color"]:hover { border-color: var(--field-border-hover); }
+input[type="color"]:hover:where(:not(:disabled)) { border-color: var(--field-border-hover); }
 input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
 input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 1px; }
 
@@ -211,8 +218,8 @@ select {
   cursor: pointer;
   outline: none;
 }
-select:hover { border-color: var(--field-border-hover); }
-select:disabled { color: var(--text-faint); background-color: var(--field-disabled-bg); cursor: not-allowed; }
+select:hover:where(:not(:disabled)) { border-color: var(--field-border-hover); }
+select:disabled { color: var(--text-faint); background-color: var(--field-disabled-bg); border-color: var(--border); cursor: not-allowed; }
 /* 右内距是给箭头留的结构性空间，不是可调参数 —— 全库有 21 处组件规则用 padding 简写重设了
    select 的内距（各种 1px 5px / 2px 6px / 3px 8px…），任一条漏掉右内距，文字就压到箭头上。
    与其逐条改、还留着下次再踩的坑，不如在这里把它钉死。
@@ -237,17 +244,22 @@ textarea {
   background: var(--field-bg);
   color: var(--text);
 }
-input[type="text"]:hover,
-input[type="number"]:hover,
-input[type="search"]:hover,
-input[type="password"]:hover,
-input[type="datetime-local"]:hover,
-input[type="date"]:hover,
-input[type="time"]:hover,
-input:not([type]):hover,
-textarea:hover { border-color: var(--field-border-hover); }
+input[type="text"]:hover:where(:not(:disabled)),
+input[type="number"]:hover:where(:not(:disabled)),
+input[type="search"]:hover:where(:not(:disabled)),
+input[type="password"]:hover:where(:not(:disabled)),
+input[type="datetime-local"]:hover:where(:not(:disabled)),
+input[type="date"]:hover:where(:not(:disabled)),
+input[type="time"]:hover:where(:not(:disabled)),
+input:not([type]):hover:where(:not(:disabled)),
+textarea:hover:where(:not(:disabled)) { border-color: var(--field-border-hover); }
 input:disabled,
 textarea:disabled { color: var(--text-faint); background-color: var(--field-disabled-bg); cursor: not-allowed; }
+/* 禁用框描边退到装饰线一档：可输入域的 3:1 描边是「这格能填」的信号，禁用了就不该还在发。
+   特异度 0,1,1、写在上面那条描边之后，靠后胜出；组件里就地写的描边照旧压得过。
+   四种自带画法的件（复选 / 单选 / 滑块 / 取色）排除在外，它们的禁用态各有各的画法。 */
+input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"])):disabled,
+textarea:disabled { border-color: var(--border); }
 textarea { font-family: inherit; padding: 4px 7px; }
 
 /* ==== 占位符 ====
@@ -270,6 +282,7 @@ textarea { font-family: inherit; padding: 4px 7px; }
   border: 1px solid transparent;
   border-radius: var(--r-ctl);
   cursor: pointer;
+  transition: var(--t-state);
 }
 :where(button:disabled) { cursor: not-allowed; }
 
@@ -288,10 +301,11 @@ textarea { font-family: inherit; padding: 4px 7px; }
   border: 1px solid var(--border-strong);
   border-radius: var(--r-ctl);
   cursor: pointer;
-  transition: border-color .12s, background .12s, color .12s;
+  transition: var(--t-state);
 }
-.btn:hover:not(:disabled) { border-color: var(--accent); }
-.btn:active:not(:disabled) { background: var(--surface-2); }
+.btn:hover:not(:disabled) { border-color: var(--line-hover); }
+/* 按下 = 内阴影罩，不换底色：.primary / .danger 的实底上也压得出一档（原 --surface-2 底只对白底按钮有效） */
+.btn:active:not(:disabled) { box-shadow: var(--press); transition-duration: 0s; }
 .btn:disabled { color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: not-allowed; }
 /* 主操作：整个对话框 / 整块分区里只允许有一个 */
 .btn.primary { color: var(--bg); background: var(--accent-ui); border-color: var(--accent-ui); }
@@ -336,10 +350,15 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
 
 /* ==== 滚动条 ====
    10px 是留白后的槽宽，实际拇指 4px：border 透明 + background-clip 让拇指缩在槽中间，
-   比原来 10px 见方的实心方块轻得多。 */
+   比原来 10px 见方的实心方块轻得多。悬停 / 按下时透明边收到 2px，拇指 4→6px，槽宽不变。
+   最短 24px：几千行的列表里拇指不再缩成一个抓不住的点。
+   ★ 任何地方都不许写标准属性 scrollbar-width / scrollbar-color —— Chromium 121+ 只要见到它，
+     就整条忽略该元素上的 ::-webkit-scrollbar，那一块立刻退回系统默认滚动条。 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
+  min-height: 24px;
+  min-width: 24px;
   background: var(--border-strong);
   background-clip: padding-box;
   border: 3px solid transparent;
@@ -348,6 +367,12 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-faint);
   background-clip: padding-box;
+  border-width: 2px;
+}
+::-webkit-scrollbar-thumb:active {
+  background: var(--text-muted);
+  background-clip: padding-box;
+  border-width: 2px;
 }
 ::-webkit-scrollbar-corner { background: transparent; }
 
@@ -357,7 +382,7 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
    谁要就地改样式照旧改得动（同样带 !important 即可）。outline-offset 不加 !important，
    留给个别控件就地内缩（如环境场开关条的 -3px）。
    2px 机位色：原来是 1px --accent（近黑），落在本来就有 1px 深描边的控件上读起来像双层边框，
-   与悬停态分不开；WCAG 2.2 SC 2.4.11 也要求焦点指示至少 2px。
+   与悬停态分不开；WCAG 2.2 SC 2.4.13（Focus Appearance）也要求焦点指示至少 2px。
 
    ★ 只描「自己就是焦点落点」的控件，不描「代替别人接键盘的容器」★
    本库有一类元素：自己不可见（或就是一整块滚动区），接住键盘只是为了把按键转给内部的当前项，
@@ -374,6 +399,13 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
   outline: 2px solid var(--accent-ui) !important;
   outline-offset: 1px;
 }
+/* 文本类输入框：环压在描边上（1px 在边上、1px 在外），密排行里不再顶到相邻行 */
+:where(input[type="text"], input[type="number"], input[type="search"], input[type="password"],
+       input[type="datetime-local"], input[type="date"], input[type="time"],
+       input:not([type]):not(.eg-cap):not(.sg-cap), textarea):focus-visible { outline-offset: -1px; }
+/* 滑块：描钮不描整条 14px 高的盒子 */
+input[type="range"]:focus-visible { outline: none !important; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-ui); }
 
 /* ==== 显隐拨杆 ====
    全软件唯一一件开关：环境场总开关条、标记三分区标题、每个 Polygon 卡片、设置窗的两行开关。
@@ -391,7 +423,7 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
   border-radius: 7px;
   background: var(--border-strong);
   cursor: pointer;
-  transition: background .15s;
+  transition: background-color var(--dur-1) linear;
 }
 .layersw > i {
   display: block;
@@ -400,7 +432,7 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
   margin: 2px;
   border-radius: 50%;
   background: var(--bg);
-  transition: transform .15s;
+  transition: transform var(--dur-2) var(--ease-std), background-color var(--dur-1) linear;
 }
 .layersw.on { background: var(--accent-ui); }
 .layersw.on > i { transform: translateX(12px); }
@@ -409,6 +441,9 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
 .layersw.lg { width: 40px; height: 22px; border-radius: 11px; }
 .layersw.lg > i { width: 18px; height: 18px; }
 .layersw.lg.on > i { transform: translateX(18px); }
+/* 深色关态：关 = 亮钮压暗轨、开 = 机位色轨上暗钮（Windows 11 深色开关惯例）。
+   原来关态是 --bg 近黑钮压在 --border-strong 暗轨上，钮与轨几乎同明度，一眼读不出是关着。浅色不变。 */
+:root[data-theme="dark"] .layersw:not(.on) > i { background: var(--text-muted); }
 
 /* ==== 英文版式让位（根元素 lang="en" 由 i18n 运行时打上）====
    同一个参数名，英文普遍比中文长一截（透明度 4 字 ≈ 48px，Opacity ≈ 58px；母线线型 ≈ 60px，
@@ -417,3 +452,56 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
    让绝大多数标签仍然对齐在同一列上。 */
 html[lang="en"] .srow { --srow-lab: 92px; }
 html[lang="en"] .srow.sub { --srow-lab: 73px; }
+
+/* ==== 按钮：统一状态过渡 + 按下罩（2026-09 精修）====
+   零特异度：组件里自己写了 transition / box-shadow 的照旧生效（自然退出全局口径）。
+   各组件不要再给 <button> 写 :active 背景——会与这里的内阴影叠成两层。 */
+:where(button:not(:disabled):not(.dis):active) { box-shadow: var(--press); transition-duration: 0s; }
+/* 选中切换瞬时：进入选中态不淡入（选中是结论，不是过程） */
+:where(button.on, button.active, button[aria-pressed="true"]) { transition-duration: 0s; }
+/* 菜单 / 下拉里的项不过渡：扫过一串菜单项时拖出的淡尾读起来像卡顿（VS Code / Win32 菜单均瞬时） */
+:where(.mpanel, .ms-pop, .ms-sub, .ctx-menu, .lmenu, .lp-menu, .lp-drop, .fd-menu, .expmenu,
+       .lb-ctx, .sg-ctx, .sg-dd, .eg-ctx, .pwm, .cmenu, .ddm, .rlmode-menu, .tzp-menu, .so-drop,
+       .e2-city-pop) :where(button, [class]) { transition: none; }
+/* 同上，列表 / 目录行：只收行所在的列表容器，弹层里的动作键（ExcelGrid 的 pick-foot 插槽、波束弹层的清空 / 应用）照旧过渡 */
+:where(.eg-pick-l, .addpop, .spop, .bp-list, .ssa-toc) :where(button, [class]) { transition: none; }
+/* 墨色实底主按钮：按下罩换 --press-ink（原罩在墨底上看不出，见 global.css）。
+   .mini.imp 在文件管理里是纸底、悬停才转墨，故只在悬停时换 */
+:where(button.ok, .ci-run, .lb-calc, .lb-mini.pri, .pb.main, .lp-add, .cpk-btn:not(.ghost),
+       .sdfoot .save:not(.ghost), .cefoot .save, .bs-gen, .grp-save .save, .sgm-pickbar .save,
+       .fp .mini.imp, .cbtns .mini.imp, .mini.imp:hover) { --press: var(--press-ink); }
+
+/* ==== 展开箭头：同一枚 chevron-down，收起时转 -90°（与 chevron-right 逐像素重合）==== */
+.app-icon.disc { transition: transform var(--dur-2) var(--ease-std); }
+.app-icon.disc.shut { transform: rotate(-90deg); }
+
+/* ==== 列宽拖拽期间锁光标（主窗侧栏分隔条、链路预算侧栏把手共用）==== */
+html.ui-col-resize, html.ui-col-resize * { cursor: col-resize !important; user-select: none !important; }
+
+/* ==== 主题切换：换肤那一帧所有过渡停掉，避免「面板先翻、复选框晚 120ms 再翻」的两段式 ==== */
+.theme-swap, .theme-swap *, .theme-swap *::before, .theme-swap *::after { transition: none !important; }
+
+/* ==== 共享入场关键帧（见 spec §1.2）====
+   只在 no-preference 下存在：减弱动效时名字解析不到，动画自然不发生。
+   用独立的 translate 属性而不是 transform —— 永不覆盖元素自己用 transform 做的定位（如 translate(-50%) 居中）；
+   不写 animation-fill-mode：结束后不在元素上留任何位移（侧栏里的 fixed 菜单靠这一点定位）。 */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes ui-float-in { from { opacity: 0; translate: 0 -2px; } }  /* 挂在触发器下方的下拉 / 菜单 */
+  @keyframes ui-float-up { from { opacity: 0; translate: 0 2px; } }   /* 挂在触发器上方的弹出层 */
+  @keyframes ui-fade-in  { from { opacity: 0; } }                     /* 光标处右键菜单 / 翻转位置不定的弹层 */
+  @keyframes ui-dlg-in   { from { opacity: 0; translate: 0 4px; } }   /* 模态对话框的框体（不是遮罩） */
+}
+
+/* ==== 减弱动效（Windows 设置 › 辅助功能 › 视觉效果 › 动画效果）====
+   过渡归零（必须是 0s：.01ms 会给每个元素都挂上一条真过渡（transition-property 初值是 all），
+   样式一律晚一帧才画、同步读回的还是旧值——虚拟滚动列表每跨一行跳 22px；src 里没有 transitionend 的消费者）；
+   新增入场关键帧在 reduce 下本来就不存在；既有的无限动画（转圈、实时脉冲）由各自组件就地处理。必须是本文件最后一段。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+  /* 滑块钮在输入框的内置影子树里，* 选不到，单独写 */
+  input[type="range"]::-webkit-slider-thumb { transition-duration: 0s !important; }
+}

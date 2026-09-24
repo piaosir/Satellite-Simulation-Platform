@@ -252,7 +252,8 @@ const hopBot = (i) => {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box, 3px);
 }
 .cs-node:hover { border-color: var(--border-strong); }
-.cs-node.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-ui); }
+/* 选中节点：外框与内描边同为机位色，合成一道 2px 蓝框（原外框墨色 + 内描边蓝，两色叠成一道脏边） */
+.cs-node.on { border-color: var(--accent-ui); box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .cs-n-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .cs-n-t { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 .cs-badge { font-size: var(--fs-1); line-height: 1.5; padding: 0 4px; border-radius: var(--r-ctl); white-space: nowrap; }
@@ -281,8 +282,14 @@ const hopBot = (i) => {
 /* hop 连线：线与箭头走 --cs-wire，深色主题下 --border-strong 只有 1.6:1，
    而这根线是「信号往哪儿流」的唯一视觉线索，不能退成分隔线的分量 */
 .cs-hop { flex: 1 1 96px; min-width: 96px; display: flex; flex-direction: column; justify-content: center; cursor: pointer; padding: 0 2px; }
-.cs-hop.on .cs-h-wire, .cs-hop.on .cs-h-arrow { background: var(--accent); border-left-color: var(--accent); }
+/* 选中跳与选中节点同一机位色；箭头是 0×0 的边框三角，只染左边框（背景色画不出来） */
+.cs-hop.on .cs-h-wire { background: var(--accent-ui); }
+.cs-hop.on .cs-h-arrow { border-left-color: var(--accent-ui); }
 .cs-hop.on .cs-h-top { color: var(--text); }
+/* 悬停未选中的跳：读数与连线各加深一档，示意整段都是可点的命中区 */
+.cs-hop:hover:not(.on) .cs-h-top { color: var(--text); }
+.cs-hop:hover:not(.on) .cs-h-wire { background: color-mix(in srgb, var(--text) 78%, var(--bg)); }
+.cs-hop:hover:not(.on) .cs-h-arrow { border-left-color: color-mix(in srgb, var(--text) 78%, var(--bg)); }
 .cs-h-top { display: flex; align-items: baseline; justify-content: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .cs-h-top b { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-h-line { display: flex; align-items: center; gap: 3px; padding: 3px 0; }
@@ -292,7 +299,7 @@ const hopBot = (i) => {
   flex: none; width: 15px; height: 15px; padding: 0; cursor: pointer; display: flex; align-items: center; justify-content: center;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); border-radius: 50%;
 }
-.cs-h-add:hover { color: var(--accent); border-color: var(--accent); }
+.cs-h-add:hover { color: var(--accent); border-color: var(--line-hover); }
 .cs-h-add svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
 .cs-h-bot { text-align: center; font-size: var(--fs-2); color: var(--text); font-variant-numeric: tabular-nums; min-height: 15px; }
 .cs-h-bot i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 2px; }

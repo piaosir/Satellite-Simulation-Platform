@@ -40,7 +40,8 @@ export async function revealSection(view, keys) {
   await settle()
   const el = findHeading(list)
   if (!el) return null
-  el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  // 减弱动效下直接跳到位（controls.css 的 scroll-behavior: auto 管不到 JS 显式传的 smooth）
+  el.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
   flash(el)
   return el
 }

@@ -1773,10 +1773,109 @@ export function beamSketchRing({ satLon, satLat = 0, altKm, lon, lat, thX, thY, 
   return [ring]                                        // 首尾重合（填充多边形的判据）
 }
 
+// ================= 真实离轴角度量（高斯组 stk 的布阵工具专用） =================
+// igrid-6 的 (az,el) 不是等距坐标：gridDir(6) = [−sin az, cos az·sin el, cos az·cos el]，同 el 两点的真实夹角 = Δaz，
+//   同 az 两点的真实夹角 ≈ cos(az)·Δel（LEO 偏轴 40° 时 el 向短 23%）。多馈源 / 相控阵的方向图本身在 (Δaz,Δel) 平面里算，
+//   布阵工具与方向图同口径，不动；高斯组方向图按真实离轴角 θ = ∠(u, b) 算（gaussStk.js），蜂窝布满 / 相切吸附 / 频率
+//   配色的距离也须是真实夹角 —— 下面几件是它们的真实角度版，多馈源 / 相控阵的平面算法原样不碰（逐位不变）。
+const _dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+const _crs3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+/** 两单位矢量的真实夹角（deg）；atan2 式，小角也不丢精度 */
+export function trueAngleDeg(u, v) { const c = _crs3(u, v); return Math.atan2(Math.hypot(c[0], c[1], c[2]), _dot3(u, v)) * 180 / Math.PI }
+// 局部方位等距（AEQ）平面：切点方向 = igrid-6 的 (az0,el0)。平面上到原点的距离 = 到切点的真实夹角（精确），
+//   方位角保真；任意两点间距的相对误差 ≲ ρ²/6（ρ = 两点离切点的角距，弧度；ρ = 4° 时 8e-4，只会偏短）。
+// 平面轴 = 切点处 ∂u/∂az、∂u/∂el 的单位向量 → x ≈ az 增向、y ≈ el 增向：天底附近与 (az,el) 平面同向同尺度，
+//   扫描线次序（自北向南 = y 降序、自西向东 = x 升序）等既有语义照旧。坐标单位 deg。
+export function aeqFrame(az0, el0) {
+  const a = az0 * Math.PI / 180, e = el0 * Math.PI / 180
+  const ca = Math.cos(a), sa = Math.sin(a), ce = Math.cos(e), se = Math.sin(e)
+  const u0 = gridDir(6, az0, el0)
+  const e1 = [-ca, -sa * se, -sa * ce]                    // ∂u/∂az（本身单位长）
+  const e2 = [0, ce, -se]                                 // ∂u/∂el ÷ cos(az)
+  const toXY = (u) => {
+    const x = _dot3(u, e1), y = _dot3(u, e2), s = Math.hypot(x, y)
+    if (!(s > 0)) return [0, 0]
+    const th = Math.atan2(s, _dot3(u, u0)) * 180 / Math.PI
+    return [th * x / s, th * y / s]
+  }
+  const fromXY = (x, y) => {
+    const r = Math.hypot(x, y)
+    if (!(r > 0)) return u0.slice()
+    const rr = r * Math.PI / 180, c = Math.cos(rr), k = Math.sin(rr) / r
+    return [c * u0[0] + k * (x * e1[0] + y * e2[0]), c * u0[1] + k * (x * e1[1] + y * e2[1]), c * u0[2] + k * (x * e1[2] + y * e2[2])]
+  }
+  return { az0, el0, u0, e1, e2, toXY, fromXY }
+}
+// 以方向 u（天底系，不必单位长）为切点的 AEQ 平面；u 落在天底半球之外（igrid-6 无定义）→ null
+export function aeqFrameAt(u) {
+  const ae = invGridDir(6, u[0], u[1], u[2])
+  return ae ? aeqFrame(ae[0], ae[1]) : null
+}
+// 频率配色（高斯组）的节点：方向空间 {az,el,r} → 以全体波束方向均值为切点的 AEQ 平面坐标（仍写成 {az,el,r}，
+//   子晶格识别 / 扫描线次序吃这个）+ dist(i,j) = 精确真实夹角（复用距离判据吃这个）。
+export function freqPlanNodesTrue(nodes) {
+  const U = nodes.map((q) => gridDir(6, q.az, q.el))
+  const m = [0, 0, 0]
+  for (const u of U) { m[0] += u[0]; m[1] += u[1]; m[2] += u[2] }
+  const F = U.length ? aeqFrameAt(m) : null
+  if (!F) return { nodes: nodes.map((q) => ({ az: q.az, el: q.el, r: q.r })), dist: (i, j) => trueAngleDeg(U[i], U[j]) }
+  return {
+    nodes: nodes.map((q, i) => { const xy = F.toXY(U[i]); return { az: xy[0], el: xy[1], r: q.r } }),
+    dist: (i, j) => trueAngleDeg(U[i], U[j])
+  }
+}
+// 蜂窝布满的真实角度版（hexFillCenters metric:'true'）：切点 = 顶点方向均值，再挪到顶点 AEQ 包围盒中心
+//   （最远格心离切点最近 → 失真最小）；六角格在 AEQ 平面里按 spacing 铺（到切点的距离与方位精确），格心经
+//   fromXY 回到方向 → igrid-6 (az,el) → 射线求交回地面。返回 [{lon,lat,az,el}]：lon/lat 同平面版取 4 位；az/el 为
+//   格心精确方向（未取整，供核对；调用方落盘只用 lon/lat）。排序同平面版：自北向南（y 降序）、自西向东（x 升序）。
+function hexFillTrue({ satLon, satLat = 0, altKm, polyPts, spacing }) {
+  const U = polyPts.map((p) => { const ae = dirToAzEl(satLon, satLat || 0, altKm, p[0], p[1]); return gridDir(6, ae.az, ae.el) })
+  const m = [0, 0, 0]
+  for (const u of U) { m[0] += u[0]; m[1] += u[1]; m[2] += u[2] }
+  let F = aeqFrameAt(m)
+  if (!F) return []
+  let V = U.map(F.toXY)
+  const bbox = () => {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
+    for (const q of V) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1] }
+    return { x0, x1, y0, y1 }
+  }
+  let bb = bbox()
+  const F2 = aeqFrameAt(F.fromXY((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2))
+  if (F2) { F = F2; V = U.map(F.toXY); bb = bbox() }
+  const { x0, x1, y0, y1 } = bb
+  const rowH = spacing * Math.sqrt(3) / 2
+  const inside = (px, py) => {
+    let ins = false
+    for (let i = 0; i < V.length; i++) {
+      const a = V[i], b = V[(i + 1) % V.length]
+      if ((a[1] > py) !== (b[1] > py) && px < a[0] + (py - a[1]) / (b[1] - a[1]) * (b[0] - a[0])) ins = !ins
+    }
+    return ins
+  }
+  const out = []
+  let r = 0
+  for (let ey = y0; ey <= y1 + 1e-9; ey += rowH, r++) {
+    const off = (r % 2) ? spacing / 2 : 0
+    for (let ax = x0 + off; ax <= x1 + 1e-9; ax += spacing) {
+      if (!inside(ax, ey)) continue
+      const w = F.fromXY(ax, ey)
+      const ae = invGridDir(6, w[0], w[1], w[2])
+      if (!ae) continue
+      const g = azElGround(satLon, satLat || 0, altKm, ae[0], ae[1])
+      if (g) out.push({ lon: +g.lon.toFixed(4), lat: +g.lat.toFixed(4), az: ae[0], el: ae[1], _y: ey, _x: ax })
+    }
+  }
+  out.sort((a, b) => (b._y - a._y) || (a._x - b._x))
+  return out.map(({ lon, lat, az, el }) => ({ lon, lat, az, el }))
+}
+
 // Polygon 蜂窝布满：在方向空间（az/el 平面）以间距 spacing（deg）铺六角格，取落在多边形内的
 // 格心映射回地面经纬度。返回 [{lon,lat}]（按自北向南、自西向东排序，编号稳定）。
-export function hexFillCenters({ satLon, satLat = 0, altKm, polyPts, spacing }) {
+// metric:'true'（高斯组）→ 间距按真实离轴角，见 hexFillTrue；缺省 'azel' 为原平面算法（多馈源 / 相控阵，逐位不变）。
+export function hexFillCenters({ satLon, satLat = 0, altKm, polyPts, spacing, metric = 'azel' }) {
   if (!polyPts || polyPts.length < 3 || !(spacing > 0)) return []
+  if (metric === 'true') return hexFillTrue({ satLon, satLat, altKm, polyPts, spacing })
   const V = polyPts.map((p) => { const ae = dirToAzEl(satLon, satLat || 0, altKm, p[0], p[1]); return [ae.az, ae.el] })
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
   for (const q of V) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1] }
@@ -1838,6 +1937,45 @@ export function snapTangentAzEl(click, neighbors, rNew, capture = 1.6, band = nu
   const ux = (click[0] - n1.az) / n1.d, uy = (click[1] - n1.el) / n1.d
   return { az: n1.az + ux * n1.R, el: n1.el + uy * n1.R, snapped: 1 }
 }
+// 相切吸附的真实角度版（高斯组）：入参 / 出参与 snapTangentAzEl 同形（click=[az,el]，neighbors=[{az,el,r}]，igrid-6 deg），
+//   捕获圈 / 窄带 / 排序口径逐条相同，只是中心距换成方向球面上的真实夹角，切点在球面上精确求：
+//   1 个邻居 → 沿「邻居 → 点击」的大圆推到夹角 = r+rNew；
+//   2 个邻居 → p·n1 = cos R1、p·n2 = cos R2、|p| = 1 的两个解里离点击近的那个（p = a·n1 + b·n2 ± h·n1×n2）。
+//   解出的方向落到天底半球之外（igrid-6 无定义）→ 原样返回点击点（snapped 0）。
+export function snapTangentTrue(click, neighbors, rNew, capture = 1.6, band = null) {
+  const c = gridDir(6, click[0], click[1])
+  const cand = (neighbors || [])
+    .map((n) => { const u = gridDir(6, n.az, n.el); return { u, d: trueAngleDeg(c, u), R: n.r + rNew } })
+    .filter((n) => n.d > 1e-9 && (band != null ? Math.abs(n.d - n.R) < n.R * band : n.d < n.R * capture))
+    .sort((a, b) => band != null
+      ? Math.abs(a.d - a.R) / a.R - Math.abs(b.d - b.R) / b.R
+      : a.d / a.R - b.d / b.R)
+  const none = { az: click[0], el: click[1], snapped: 0 }
+  if (!cand.length) return none
+  const out = (p, k) => { const ae = invGridDir(6, p[0], p[1], p[2]); return ae ? { az: ae[0], el: ae[1], snapped: k } : none }
+  const n1 = cand[0]
+  if (cand.length >= 2) {
+    const n2 = cand[1]
+    const D = trueAngleDeg(n1.u, n2.u)
+    if (D > 1e-9 && D < n1.R + n2.R && D > Math.abs(n1.R - n2.R)) {   // 两相切小圆相交 → 双切点存在
+      const cs = _dot3(n1.u, n2.u), s2 = 1 - cs * cs
+      const c1 = Math.cos(n1.R * D2R), c2 = Math.cos(n2.R * D2R)
+      const a = (c1 - cs * c2) / s2, b = (c2 - cs * c1) / s2
+      const h2 = (1 - (a * a + b * b + 2 * a * b * cs)) / s2          // |n1×n2|² = 1 − cs²
+      if (h2 > 0) {
+        const h = Math.sqrt(h2), x = _crs3(n1.u, n2.u)
+        const q = [a * n1.u[0] + b * n2.u[0], a * n1.u[1] + b * n2.u[1], a * n1.u[2] + b * n2.u[2]]
+        const p1 = [q[0] + h * x[0], q[1] + h * x[1], q[2] + h * x[2]], p2 = [q[0] - h * x[0], q[1] - h * x[1], q[2] - h * x[2]]
+        return out(_dot3(c, p1) >= _dot3(c, p2) ? p1 : p2, 2)
+      }
+    }
+  }
+  const k = _dot3(c, n1.u)
+  const t = [c[0] - k * n1.u[0], c[1] - k * n1.u[1], c[2] - k * n1.u[2]], tl = Math.hypot(t[0], t[1], t[2])
+  if (!(tl > 0)) return none
+  const cr = Math.cos(n1.R * D2R), sr = Math.sin(n1.R * D2R) / tl
+  return out([cr * n1.u[0] + sr * t[0], cr * n1.u[1] + sr * t[1], cr * n1.u[2] + sr * t[2]], 1)
+}
 
 // ================= 频率计划自动配色（SATSOFT 三色/四色填充同款用途） =================
 // 图着色：同色波束的中心距必须达到【复用距离】，k 色内均衡使用。
@@ -1866,20 +2004,26 @@ export function snapTangentAzEl(click, neighbors, rNew, capture = 1.6, band = nu
 //   故规则布局走【子晶格着色】（见 latticeColoring）：识别晶格基向量 → 取模 = 经典复用图案，
 //   同色间距恰为 √N·d；识别不出（手摆的不规则布局）才回退贪心 + 局部修复，与从前一致。
 export const reuseDistFactor = (k) => reuseDist(k) * 0.95
-export function colorFreqPlan(nodes, k, adjFactor = reuseDistFactor(k)) {
+// dist（可选）= (i,j) → 中心距（deg）：高斯组传真实夹角（见 freqPlanNodesTrue，nodes 则是 AEQ 平面坐标）；缺省 = 平面 hypot（原口径）
+export function colorFreqPlan(nodes, k, adjFactor = reuseDistFactor(k), dist = null) {
   const n = nodes.length
   if (!n || !(k >= 2)) return { colors: [], conflicts: 0 }
   const adj = Array.from({ length: n }, () => [])
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-    const d = Math.hypot(nodes[i].az - nodes[j].az, nodes[i].el - nodes[j].el)
+    const d = dist ? dist(i, j) : Math.hypot(nodes[i].az - nodes[j].az, nodes[i].el - nodes[j].el)
     if (d < (nodes[i].r + nodes[j].r) * adjFactor) { adj[i].push(j); adj[j].push(i) }
   }
   // 规则蜂窝先走子晶格：排得开就直接用（这才是频率规划图上那张周期图案）
   const lat = latticeColoring(nodes, k)
+  let latC = -1                                 // 真实夹角口径下子晶格图案的冲突对数（-1 = 不参与比较）
   if (lat) {
     let c0 = 0
     for (let i = 0; i < n; i++) for (const j of adj[i]) if (j > i && lat[j] === lat[i]) c0++
     if (!c0) return { colors: lat, conflicts: 0 }
+    // ★ 真实夹角口径（dist，高斯组）：晶格是在 AEQ 平面里认的，离切点远的波束周向被 sinρ/ρ 压短（LEO 大区边缘
+    //   ρ≳31° 就压过 5% 余量），图案本身没错、只是边缘几对同色略近于门限 —— 不能因此整张丢给贪心（贪心在蜂窝上
+    //   排不开，会出成片相邻同色）。记下它的冲突数，与贪心结果比，不差于贪心就用它。平面口径（dist 缺省）逐位不变。
+    if (dist) latC = c0
   }
   // 行分组：按 el 降序聚类（容差 = 半径中位数×0.5，吸掉经纬取整带来的行内抖动），行内按 az 升序
   const byEl = nodes.map((q, i) => i).sort((a, b) => nodes[b].el - nodes[a].el)
@@ -1917,6 +2061,7 @@ export function colorFreqPlan(nodes, k, adjFactor = reuseDistFactor(k)) {
   }
   let conflicts = 0
   for (let i = 0; i < n; i++) for (const j of adj[i]) if (j > i && colors[j] === colors[i]) conflicts++
+  if (latC >= 0 && latC <= conflicts) return { colors: lat, conflicts: latC }
   return { colors, conflicts }
 }
 

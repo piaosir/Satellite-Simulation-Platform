@@ -5,7 +5,7 @@
 // 一个收件人却得切回主窗口去设置 —— 那是最容易让人放弃这个功能的一步。故发送弹窗里就地能加。
 //
 // 认证码由小程序端生成（方向不能反，见 shared/miniBindings.js 头部），这里只负责记下来。
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import Icon from './Icon.vue'
 import { normalizeCh, isCh, fmtCh } from '../shared/miniPack.js'
 import { loadBindings, addBinding, removeBinding, renameBinding } from '../shared/miniBindings.js'
@@ -15,7 +15,10 @@ const props = defineProps({
   compact: { type: Boolean, default: false },
   // 初始列表。调用方手上已经有（发送弹窗为了出「发给谁」本就加载过一遍）就传进来，
   // 省掉一次 getSettings 往返；不传就自己去读。往后的增删仍以本组件读回的为准。
-  list: { type: Array, default: null }
+  list: { type: Array, default: null },
+  // 行内「绑定」键。独立绑定弹窗关掉它，改由底栏主钮经 defineExpose 的 add / canAdd 提交 ——
+  // 行内一个提交键、底栏再一个「完成」，粘完码顺手点了「完成」就是关窗，码白粘了。
+  addBtn: { type: Boolean, default: true }
 })
 const emit = defineEmits(['change', 'toast'])
 const api = typeof window !== 'undefined' ? window.api : null
@@ -28,6 +31,8 @@ const selfLabel = ref('')
 const busy = ref(false)
 
 const chOk = () => isCh(chIn.value)
+// 能否提交：码够 12 位且不在写盘途中（行内键与弹窗底栏主钮共用这一个判据）
+const canAdd = computed(() => !busy.value && isCh(chIn.value))
 
 async function refresh() {
   list.value = await loadBindings(api)
@@ -52,7 +57,7 @@ async function add() {
   busy.value = true
   const r = await addBinding(api, chIn.value, nameIn.value)
   busy.value = false
-  if (!r.ok) { err.value = r.error || '添加失败'; return }
+  if (!r.ok) { err.value = r.error || '绑定失败'; return }
   list.value = r.list
   emit('change', r.list)
   emit('toast', r.dup ? '该账号已绑定，备注名已更新' : '已绑定')
@@ -70,6 +75,8 @@ async function rename(b, e) {
   list.value = await renameBinding(api, b.ch, v)
   emit('change', list.value)
 }
+
+defineExpose({ add, canAdd })
 
 async function saveSelf() {
   try { await api?.store?.setSettings?.({ miniSelfLabel: selfLabel.value.slice(0, 40) }) } catch { /* ignore */ }
@@ -110,12 +117,13 @@ function ago(ts) {
         :value="chIn"
         maxlength="14"
         placeholder="粘贴 12 位认证码"
+        title="在小程序「设置 → 仿真平台绑定」中长按复制认证码，传至本机（可经微信「文件传输助手」）后粘贴于此，再填写备注名"
         :class="{ ok: chOk() }"
         @input="onChInput"
         @keyup.enter="add"
       />
       <input v-model="nameIn" class="mb-in-nm" maxlength="40" placeholder="备注名（可选）" @keyup.enter="add" />
-      <button class="mb-btn" :disabled="busy || !chOk()" @click="add">添加</button>
+      <button v-if="addBtn" class="mb-btn" :disabled="!canAdd" @click="add">绑定</button>
     </div>
     <div v-if="err" class="mb-err">{{ err }}</div>
   </div>

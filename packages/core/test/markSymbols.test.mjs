@@ -141,11 +141,16 @@ ok('isMarkShape 认得几何件、不认天线件', isMarkShape('circle') && !is
   const points = ref([]), stations = ref([]), trajectories = ref([])
   let nid = 0
   const mk = useMarkerTable({ points, stations, trajectories, newId: () => 'm' + (++nid), sync: () => {} })
-  ok('点标记列：只有经纬度两列', mk.PT_COLS.join(',') === 'lon,lat')
+  ok('点标记列：名称（可空）+ 经纬度', mk.PT_COLS.join(',') === 'name,lon,lat')
   ok('地球站列：名称 + 经纬度', mk.ST_COLS.join(',') === 'name,lon,lat')
   ok('航点列：只有经纬度两列', mk.WP_COLS.join(',') === 'lon,lat')
   mk.ptLayer.pasteAppend(['120\t30', '121\t31'].join('\n'))
   ok('点标记粘贴：两行都进来了，坐标落在末两列', points.value.length === 2 && points.value[0].lon === 120 && points.value[1].lat === 31)
+  ok('点标记粘贴：只给坐标不带名称字段', !('name' in points.value[0]))
+  mk.ptLayer.pasteAppend(['一号点', '122', '32'].join('	'))
+  ok('点标记粘贴：带名称的行名称落位', points.value[2].name === '一号点' && points.value[2].lon === 122)
+  mk.ptLayer.update(points.value[2].id, { name: '  ' })
+  ok('点标记名称清空即删字段', !('name' in points.value[2]))
   mk.stLayer.pasteAppend(['北京站', '116.4', '39.9'].join('\t'))
   ok('地球站粘贴：名称 + 坐标各就各位', stations.value.length === 1 && stations.value[0].name === '北京站' && stations.value[0].lon === 116.4 && stations.value[0].lat === 39.9)
 }

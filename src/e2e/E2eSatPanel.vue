@@ -266,7 +266,8 @@ const unresolved = computed(() => {
 }
 .esp-segb:first-child { border-radius: var(--r-ctl, 2px) 0 0 var(--r-ctl, 2px); }
 .esp-segb:last-child { border-radius: 0 var(--r-ctl, 2px) var(--r-ctl, 2px) 0; border-left: none; }
-.esp-segb.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 选中段填墨走 token：浅色逐字节不变，深色下 --sel-fill 压一档，不再是整块近白 */
+.esp-segb.on { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
 .esp-modes { display: flex; align-items: center; gap: 6px; margin: 8px 0 5px; }
 .esp-tab {
   font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; cursor: pointer;
@@ -290,7 +291,7 @@ const unresolved = computed(() => {
 .esp-list li.on { background: var(--surface-2); }
 .esp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
 .esp-li-i { display: block; font-size: var(--fs-1); color: var(--text-muted); font-family: var(--font-mono); }
-.esp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.esp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .esp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 .esp-badge.esp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
 .esp-badge.esp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }

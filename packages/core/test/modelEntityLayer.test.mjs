@@ -4,7 +4,8 @@
 //      未受驱动的关节（船的雷达 / 螺旋桨）烘在静止位姿
 //   ③ 锚点：船 datum 落在 sceneAnchor(lat, lon, 0)（≤ 1e-12）；A320 altM = 10668 时 datum 在 r = 1 + 10.668/6371；altM = 0 时按真实尺度
 //      机腹最低点在地面（≤ 1e-9）；地球站（无 datum）盒底 · 方位轴 x / y
-//   ④ 屏幕恒定：相机距离 2 / 4 / 8 时包围球投影直径 = px（±1 %）；逐实体 px 覆盖
+//   ④ 随缩放联动：相机距离 D = 2 / 3 / 4 / 8 时包围球投影直径 = px × ZOOM_REF_DIST / D（±1 %；D = 3 即 px）；逐实体 px 覆盖；
+//      反证：直径与 D 成反比（原「屏幕恒定」口径下 D = 2 与 D = 8 一样大，这里必须差 4 倍）
 //   ⑤ 姿态：载具航向 90° 时本体 +X（机头）= 当地正东（≥ 0.999999）；无关节模型整体转方位、目标一跳 > 2° 时一阶逼近、连续跟踪贴合
 //   ⑥ spriteWeight = 1 − alpha；setEnabled(false) 即刻恒 1、再开即满 alpha（不做交叉淡化）；换模型先淡出旧的；移除后淡出回收
 //   ⑦ 船 aClip：平面过锚点、法向 = 当地天顶；其余类别不裁
@@ -26,6 +27,7 @@ register('data:text/javascript,' + encodeURIComponent(
 
 const THREE = await import('three')
 const { createEntityLayer } = await import(SRC + 'globe3d/entityLayer.js')
+const { ZOOM_REF_DIST, markerZoomK } = await import(SRC + 'globe3d/zoomScale.js')
 const { irToThree } = await import(SRC + 'models/irToThree.js')
 const { applyRestPose, poseArticulations } = await import(SRC + 'models/thumbs.js')
 const { modelToBodyMatrix } = await import(SRC + 'models/view.js')
@@ -238,13 +240,15 @@ await t('③ 锚点：A320 altM = 10668 时 datum 在 r = 1 + 10.668/6371（≤ 
   assert.ok(Math.abs(belly.length() - 1) <= 1e-9, `机腹 r = ${belly.length()}`)
 })
 
-// ─────────────────────────────── ④ 屏幕恒定 ───────────────────────────────
-await t('④ 屏幕恒定：相机距离 2 / 4 / 8 时包围球投影直径 = px（±1 %）；逐实体 px 覆盖', async () => {
+// ─────────────────────────────── ④ 随缩放联动 ───────────────────────────────
+await t('④ 随缩放联动：相机距离 D 时包围球投影直径 = px × 3 / D（±1 %）；D = 3 即 px；逐实体 px 覆盖；反证：直径与 D 成反比', async () => {
   const lat = 22.3, lon = 114.2
+  assert.equal(ZOOM_REF_DIST, 3)
   for (const px of [28, 96]) {
     L.setEntities([item({ key: 'px', kind: 'station', modelId: 'ent:es-13p1', lat, lon, px })])
     await settle()
-    for (const D of [2, 4, 8]) {
+    const diam = {}
+    for (const D of [2, 3, 4, 8]) {
       const cm = cam(D, lat, lon)
       L.overlay.update(0.5, cm, 1600, 900)
       const e = L._debug.entity('px')
@@ -254,9 +258,17 @@ await t('④ 屏幕恒定：相机距离 2 / 4 / 8 时包围球投影直径 = px
       const r = e.k * I.radius
       const a = C.clone().addScaledVector(right, r).project(cm), b = C.clone().addScaledVector(right, -r).project(cm)
       const dpx = Math.abs(a.x - b.x) * 0.5 * 1600
-      assert.ok(Math.abs(dpx / px - 1) < 0.01, `D=${D} 直径 ${dpx.toFixed(2)} px ≠ ${px}`)
-      assert.equal(e.screen[2], px / 2)
+      const want = px * ZOOM_REF_DIST / D
+      assert.ok(Math.abs(dpx / want - 1) < 0.01, `D=${D} 直径 ${dpx.toFixed(2)} px ≠ ${want.toFixed(2)}`)
+      assert.ok(Math.abs(e.pxE - px * markerZoomK(D)) <= 1e-9 * px, `D=${D} pxE ${e.pxE}`)
+      assert.ok(Math.abs(e.screen[2] - want / 2) <= 1e-9 * px, `D=${D} 屏幕半径 ${e.screen[2]}`)
+      assert.equal(e.px, px, '设定像素原样保留（联动只乘在画的那一刻）')
+      diam[D] = dpx
     }
+    assert.ok(Math.abs(diam[3] / px - 1) < 0.01, `默认视角（D = 3）直径 ${diam[3].toFixed(2)} ≠ 设定 ${px}`)
+    // 反证：「屏幕恒定」口径下两者相等；联动口径下 D = 2 是 D = 8 的 4 倍
+    assert.ok(Math.abs(diam[2] / diam[8] - 4) < 0.04, `D=2 / D=8 直径比 ${(diam[2] / diam[8]).toFixed(3)} ≠ 4`)
+    assert.ok(Math.abs(diam[2] - px) > 0.2 * px, 'D = 2 时不应仍是设定像素（那是旧的屏幕恒定口径）')
   }
 })
 
@@ -370,7 +382,7 @@ await t('⑨ 命中：图标屏幕中心命中键、离开半径不中；背面�
   await settle()
   L3.overlay.update(1, cm, 1600, 900)
   const s = L3.overlay.screenOf('st:hit')
-  assert.ok(s && Number.isFinite(s[0]) && s[2] === 20)
+  assert.ok(s && Number.isFinite(s[0]) && Math.abs(s[2] - 20 * ZOOM_REF_DIST / 2.5) < 1e-9, `屏幕半径 ${s && s[2]}`)   // px 40 × 联动系数 3 / 2.5
   assert.equal(L3.hitTest(s[0] + 3, s[1] - 3), 'st:hit')
   assert.equal(L3.hitTest(s[0] + 40, s[1]), null)
   assert.equal(L3.overlay.screenOf('st:back'), null)

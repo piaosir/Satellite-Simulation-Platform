@@ -26,8 +26,9 @@ function readGroups() {
   } catch { return [] }
 }
 
-// 参与编号的组 = 有放置波束的那些（与 3D 页 visibleGroups 的类型判据同口径，只是不看「可见」）
-const hasBeams = (g) => g && (g.mode === 'gauss' || (g.mode === 'pam' && (g.p || {}).pamCover !== 'shaped'))
+// 参与编号的组 = 有放置波束的那些（与 3D 页 visibleGroups 的类型判据同口径，只是不看「可见」）：
+// 多馈源 gauss / 高斯组 stk（STK Gaussian）/ 相控阵点波束群。★ 同一判据在 useBeamSynth.hasBeamsMode（高斯组天线的波束名）
+const hasBeams = (g) => g && (g.mode === 'gauss' || g.mode === 'stk' || (g.mode === 'pam' && (g.p || {}).pamCover !== 'shaped'))
 
 /**
  * 全部波束组：[{ id, satFolder, name, mode, beamCount, uncolored, entries, colors }]
@@ -62,7 +63,7 @@ export function loadSynthGroups() {
       id: String(g.id || ''),
       satFolder: sat,
       name: g.name || '波束组',
-      mode: g.mode === 'pam' ? 'pam' : 'gauss',
+      mode: g.mode === 'pam' ? 'pam' : 'gauss',   // 高斯组（stk）与多馈源同属「点波束群」，按 gauss 报
       beamCount: raw.length,
       uncolored: alone.length,
       // 按色的排前面（色号升序），未配色的按代号跟在后面

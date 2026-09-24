@@ -14,6 +14,8 @@ import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
+import GaussModelFields from './GaussModelFields.vue'
+import { recordWithModel, synthOwned } from '../viz/grd/treeLink.js'
 
 const props = defineProps({
   grd: { type: Object, required: true },            // useGrdCoverage 活实例
@@ -25,9 +27,63 @@ const props = defineProps({
 // 本组件是多根（四个 .sec 平铺进宿主侧栏，不套壳）→ 关掉属性透传，免得宿主的 scoped 标记
 // 找不到唯一根节点而在控制台刷「Extraneous non-props attributes」。样式各自 scoped，不靠透传。
 defineOptions({ inheritAttrs: false })
+// open-synth(groupId)：波束合成产出的解析天线，「在波束合成中编辑」转给宿主（切视图 + 选中那个组）
+const emit = defineEmits(['open-synth'])
 const grd = props.grd
 const st = grd.s
 const isShell = computed(() => props.variant === 'shell')
+
+// ================= 方向图（解析高斯天线才有）=================
+// 记录随 anRev 醒（analyticRecordOf 内部先读它）；非解析天线 → null，整节不出。
+// 树上建的（owner null）→ 就地编辑；波束合成产出的（owner beamsynth）→ 只读，改参数回波束合成。
+// ★ 只读的前提是那个组【还在世且正驱动这根天线】（synthOwned）：组删了（removeGroup 不动已生成的天线）、
+//   或记录从别的工作区带过来（组存 localStorage、天线在盘上），owner 就是死条子 → 当作无主、就地可改，
+//   否则这根天线就再也没有地方能改参数了。在世与否由宿主页判：inject('synthOwnerLive')(groupId, key)，
+//   它读 bs.groups，本组件的 computed 随组增删自动重算；没有宿主提供 → 保守按在世。
+const synthOwnerLive = inject('synthOwnerLive', null)
+const anRec = computed(() => {
+  const k = grd.active.value
+  return k && typeof grd.analyticRecordOf === 'function' ? grd.analyticRecordOf(k) : null
+})
+const anOwned = computed(() => synthOwned(anRec.value, grd.active.value, synthOwnerLive))
+// 编辑草稿（每个方向图模型一份：树上建的只有一份；死 owner 留下的多设置天线逐份可改）：输入即改它（界面不等写盘回来），
+// 100 ms 合帧后整份记录交给 updateAnalyticAntenna。
+// 草稿只在「换了聚焦天线」或「没有待提交改动时记录 / 归属从别处变了」才重同步 —— 否则自己刚打的值会被旧记录顶回去。
+const anDrafts = reactive([])
+const anErr = ref('')
+let anKey = '', anTimer = 0, anPending = false
+function anFlush() {
+  if (anTimer) { clearTimeout(anTimer); anTimer = 0 }
+  if (!anPending) return
+  anPending = false
+  const key = anKey
+  const rec = grd.analyticRecordOf ? grd.analyticRecordOf(key) : null
+  if (!rec || synthOwned(rec, key, synthOwnerLive)) return
+  // 走到这里还带 owner 的必是死条子：落盘时抹掉，树上的 synth 标记与生成时的接管判定随之归位（它从此是树上的天线）
+  let rec2 = rec.owner ? { ...rec, owner: null } : rec
+  try {
+    const n = Math.min(anDrafts.length, (rec.models || []).length)
+    for (let i = 0; i < n; i++) rec2 = recordWithModel(rec2, i, { ...anDrafts[i] })
+    if (rec2 === rec) return
+  } catch (e) { anErr.value = '方向图参数无效'; return }
+  anErr.value = ''
+  grd.updateAnalyticAntenna(key, rec2)
+}
+function onAnModel(i, next) {
+  if (!anDrafts[i]) return
+  Object.assign(anDrafts[i], next)
+  anPending = true
+  if (anTimer) clearTimeout(anTimer)
+  anTimer = setTimeout(anFlush, 100)
+}
+watch([anRec, anOwned], ([rec, owned]) => {
+  const k = grd.active.value
+  if (k !== anKey) { anFlush(); anKey = k; anErr.value = '' }   // 换天线：上一根的待提交改动先落给上一根
+  else if (anPending) return
+  const list = rec && !owned && Array.isArray(rec.models) ? rec.models.map((m) => ({ ...m })) : []
+  anDrafts.splice(0, anDrafts.length, ...list)
+}, { immediate: true })
+onBeforeUnmount(anFlush)
 
 // ---- 电平配色：css(rgb) ↔ #hex（<input type=color> 只认后者）----
 function lvHex(css) { const m = /(\d+)\D+(\d+)\D+(\d+)/.exec(css || ''); if (!m) return '#ffffff'; const h = (n) => (+n).toString(16).padStart(2, '0'); return '#' + h(m[1]) + h(m[2]) + h(m[3]) }
@@ -259,7 +315,7 @@ const boreTip = computed(() => {
   <template v-if="grd.antMeta()">
     <div class="sec">
       <div class="sect setsect acc" :class="{ open: isSecOpen('grd-set') }" @click="toggleSec('grd-set')">
-        <Icon :name="isSecOpen('grd-set') ? 'chevron-down' : 'chevron-right'" :size="12" />
+        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-set') }" :size="12" />
         <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
         </svg>
@@ -267,6 +323,25 @@ const boreTip = computed(() => {
         <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
       </div>
       <template v-if="isSecOpen('grd-set')">
+        <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
+        <template v-if="anRec">
+          <div class="sect" data-sec="grd-model"><span>方向图</span>
+            <span v-if="anOwned" class="lnk" title="该天线由波束合成生成，参数在波束合成里改" @click.stop="emit('open-synth', anRec.owner.groupId)">在波束合成中编辑</span>
+          </div>
+          <template v-if="!anOwned">
+            <template v-for="(m, i) in anDrafts" :key="m.id || i">
+              <div v-if="anDrafts.length > 1" class="gm-h" data-i18n-skip>{{ m.name || ('#' + (i + 1)) }}</div>
+              <GaussModelFields :model="m" @update="(next) => onAnModel(i, next)" />
+            </template>
+            <div v-if="anErr" class="anerr">{{ anErr }}</div>
+          </template>
+          <template v-else>
+            <template v-for="(m, i) in anRec.models" :key="m.id || i">
+              <div v-if="anRec.models.length > 1" class="gm-h" data-i18n-skip>{{ m.name || ('#' + (i + 1)) }}</div>
+              <GaussModelFields :model="m" readonly />
+            </template>
+          </template>
+        </template>
         <template v-if="grd.beamListOn()">
           <div class="sect"><span>Beams To Plot · {{ bCount }} 波束</span></div>
           <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
@@ -308,6 +383,8 @@ const boreTip = computed(() => {
             <div v-if="!bRows.length" class="empty">无匹配波束</div>
           </div>
         </template>
+        <!-- 单波束解析天线：方向图小节之后直接接取值参数，补一个小标题隔开（多波束有 Beams To Plot 隔着） -->
+        <div v-if="anRec && !grd.beamListOn()" class="sect"><span>参数</span></div>
         <div class="srow"><label>极化</label><select v-model="st.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
         <div class="srow"><label>类型</label>
           <span class="seg sm"><span class="sg" :class="{ on: st.ctype === 'rel' }" @click="st.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: st.ctype === 'relInput' }" @click="st.ctype = 'relInput'">相对输入值</span><span class="sg" :class="{ on: st.ctype === 'abs' }" @click="st.ctype = 'abs'">绝对</span></span>
@@ -378,7 +455,7 @@ const boreTip = computed(() => {
     </div>
 
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon :name="isSecOpen('grd-bore') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线 boresight</span>
+      <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-bore') }" :size="12" /><span>天线 boresight</span>
         <span class="lnk" :class="{ on: grd.dragBore.value, dis: isAtt }" :title="isAtt ? '姿态 + 挂点：视轴由姿态律给出，不可拖拽' : (isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心')" @click.stop="isAtt || grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
       </div>
       <template v-if="isSecOpen('grd-bore')">
@@ -458,7 +535,7 @@ const boreTip = computed(() => {
     </div>
 
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon :name="isSecOpen('grd-disp', false) ? 'chevron-down' : 'chevron-right'" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
+      <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-disp', false) }" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
         <!-- 每项自带一枚色块（钉在行尾成一列）：色块是该项的从属参数，与字号/大小同进退——勾上才出现。
              ★ 必须放在 <label class="chk2"> 里面：取色框属于 interactive content，点它不会触发 label 的
@@ -513,50 +590,77 @@ const boreTip = computed(() => {
    标签正好落在父行文字的起跑线上（复选框 13 + gap 6）；标签列同步由 70 收到 51 —— 两者相加
    仍是 70，故控件列一动不动，三列网格不破。 */
 .srow.sub { --srow-lab: 51px; padding-left: 19px; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); outline: none; color: var(--text); }
 /* 下拉框的可读下限：挤到装不下最长选项时整件掉到下一行，而不是裁掉选项名 */
 .srow select { min-width: 116px; }
-.srow .ci:disabled { background: var(--surface); color: var(--text-faint); cursor: not-allowed; border-style: dashed; }
+.srow .ci:disabled { background: var(--surface); color: var(--text-muted); cursor: not-allowed; border-style: dashed; }
 /* ③ 读数列：钉宽 + 右对齐 + 等宽数字。原来 .u 宽度随文字走（dB / ° / 0.56 / 5 各不同），
    而滑杆是 flex:1 —— 读数宽一格滑杆就短一格，逐行长短不一。钉住之后所有滑杆等长。 */
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 /* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
    原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
-.seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
-.seg .sg { padding: 3px 12px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: background .12s, color .12s; }
+.seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+/* 行高钉 16 + 上下 2 + 外框 2 ＝ --h-ctl 22，与同行输入框齐平（允许折行的段每行也是 16） */
+.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
 .seg .sg + .sg { border-left: 1px solid var(--border); }
 .seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg.on { background: var(--accent); color: var(--bg); }
+/* span 不吃全局 <button> 按下罩，就地补一档 */
+.seg .sg:active:not(.on):not(.dis) { box-shadow: var(--press); transition-duration: 0s; }
+/* 选中是结论不是过程：切换瞬时；深色下走 --sel-fill 压一档，不再是近白刺眼块 */
+.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
 /* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
 .seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
 .seg.sm .sg { padding: 2px 7px; font-size: var(--fs-2); }
 /* 参数行里的分段控件：铺满整行、段内等分，挤不下时段文字折行而不是顶出面板（同 controls.css） */
 .srow > .seg { flex: 1 1 auto; }
 .srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
-.sect { display: flex; align-items: center; color: var(--text-muted); }
+/* 标题 / 行尾动作层级（与宿主页 .sect 逐字同源）：标题墨色，行尾动作浅灰、悬停转墨加下划线，开着的动作转机位色 */
+.sect { display: flex; align-items: center; color: var(--text); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
-.sect.acc:hover { color: var(--text); }
-.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
-.sect .lnk.on { font-weight: 600; text-decoration: underline; }
-.sect .lnk:hover { text-decoration: underline; }
+/* 展开箭头静止取最浅一档（同宿主页 .sect.acc .app-icon）；标题转墨后若随 .sect 继承，悬停反而变浅 */
+.sect.acc .app-icon { flex: none; color: var(--text-faint); }
+.sect .lnk { margin-left: auto; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); transition: color var(--dur-1) linear; }
+.sect .lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.sect .lnk.on { color: var(--accent-ui); font-weight: 600; text-decoration: none; }
 /* 姿态 + 挂点档：拖拽波束不可用（视轴归姿态律），压到最浅一档、不给悬停反馈 */
 .sect .lnk.dis, .sect .lnk.dis:hover { color: var(--text-faint); cursor: default; text-decoration: none; }
+.sect.acc .lnk .app-icon { color: inherit; }
+.sect .lnk ~ .lnk { margin-left: 12px; }
+/* 可点标题整条是命中区：负外边距把悬停底色向两侧各伸 6px，外边距 + 内距净值仍是原 12 / 6，文字不动。
+   本文件没有 .sect 基础外边距（靠 .sec > * + * 兄弟节奏），故按兄弟关系拆成四条；.setsect 自有负边距色带，排除 */
+.sect.acc:not(.setsect) { margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
+.sec > * + .sect.acc:not(.setsect) { margin-top: 9px; }
+.sec > .sect.acc:not(.setsect) + * { margin-top: 3px; }
+.sec > .sect.acc:not(.setsect):first-child { margin-top: -3px; }
+/* 收起时标题是 .sec 的最后一件：吃回底部 3px 内距，收起的分区不因这条色带变高 */
+.sec > .sect.acc:not(.setsect):last-child { margin-bottom: -3px; }
+.sect.acc:not(.setsect):hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.sect.acc:not(.setsect):active { background: color-mix(in srgb, var(--text) 9%, transparent); transition-duration: 0s; }
+/* 指在行尾动作上时整条不亮（点的是动作，不是展开）；须在 hover / active 之后 */
+.sect.acc:has(.lnk:hover, .layersw:hover, .lnk:active, .layersw:active) { background: transparent; }
+.sect.acc:hover > .app-icon.disc { color: var(--text-muted); }
 /* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款） */
 .setsect { margin: -12px -16px 10px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }
 .setsect .setlbl { color: var(--text); font-weight: 600; }
 .setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
+.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 1px 6px; }
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+/* 整行都是 label 命中区：指在文字上时复选框也给悬停反馈（同宿主页） */
+.chk2:hover > input[type=checkbox]:not(:checked):not(:disabled) { border-color: var(--field-border-hover); }
+.chk2:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 /* 勾选行行尾的色块：推到最右成一列。行文字长到要换行时它跟着掉行，不挤压文字。 */
 .chk2 > .clr.sw { margin-left: auto; }
 .empty { color: var(--text-faint); padding: 4px 0; }
+/* 方向图节：多模型（波束合成产出）时逐块的小标题；参数非法的状态行 */
+.gm-h { font-size: var(--fs-2); color: var(--text-muted); font-weight: 600; }
+.anerr { font-size: var(--fs-2); color: var(--danger); }
 .tip { color: var(--text-faint); font-size: var(--fs-2); line-height: 1.5; }
 .rng { flex: 1; min-width: 0; }
 .ci.bq { width: 100%; border: 1px solid var(--field-border); background: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }
-.ic.del:hover { color: #e66; }
+.ic.del:hover { color: var(--danger); }
 /* GRD 电平表 */
 .glv { border: 1px solid var(--border); border-radius: var(--r-ctl); }
 /* 电平表头：与 .glvrow 同一套列宽（20 / 20 / 66 / flex / 删除），内距对齐到各列输入框的文字起点 */
@@ -575,7 +679,7 @@ const boreTip = computed(() => {
 .glvsty .srow { padding: 2px 0; }
 .glvsty .srow label { width: 72px; }
 /* 电平生成器（起始 / 间隔 / 档数 / 配色） */
-.glvgen { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--r-1); }
+.glvgen { margin-top: 4px; border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .glvgen .srow { padding: 3px 6px; }
 .glvgen .srow label { width: 56px; }
 .glvrow { display: flex; align-items: center; gap: 5px; padding: 3px 6px; }
@@ -588,7 +692,7 @@ const boreTip = computed(() => {
 .glvrow .lvname:hover { border-color: var(--field-border-hover); }
 .glvrow .lvname:focus { border-color: var(--accent-ui); background: var(--field-bg); color: var(--text); }
 .glvrow .lvname.named { color: var(--text); }
-.glvrow .ic.del:hover { color: #d66; }
+.glvrow .ic.del:hover { color: var(--danger); }
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-top: 1px solid var(--border); }
 .glvadd:hover { color: var(--accent); background: var(--bg); }
 /* Beams To Plot 多波束多选列表（SATSOFT 风格）：勾选＝要绘制。整行都是勾选热区，按住拖＝刷选。
@@ -621,7 +725,7 @@ const boreTip = computed(() => {
 .brow .balln { flex: 1; color: var(--text); font-weight: 600; }
 /* 对星指向：目标星名与候选片 */
 .tgtnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.tgtnm.bad { color: #d08b5a; }
+.tgtnm.bad { color: var(--warn); }
 /* 目标星搜索结果：与主界面搜索下拉（.search .panel/.item）、卫星组管理器同款——
    一行一颗、星名 + 「来源 · NORAD」副行、可滚动，底下一行命中读数。 */
 .sres { border: 1px solid var(--border); background: var(--bg); }

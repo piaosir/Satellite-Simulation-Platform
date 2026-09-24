@@ -3,6 +3,7 @@
 // 见 docs/GRD导入与覆盖可视化设计.md（性能分层 §4、面+线 §5）。
 
 import { geodeticToEcef, geocentricToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, B, E2, RS_GEO } from '../wgs84.js'
+import { anGainDbiXY } from './gaussStk.js'   // 解析高斯天线（beam.an）：取值走闭式精确式，见 samplePowAt
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -205,9 +206,10 @@ export function dirAzElAbout(nb, w) {
 }
 
 // 地表点(lon,lat) → 该点相对星下天底的 az/el（geo↔azel 模式互换用）。任意地表点皆有定义（含地平内）。
-export function dirToAzEl(satLon, satLat, altKm, lon, lat) {
+// hKm：点的大地高（km；航迹航点的实际高度，缺省 0 = 地面）
+export function dirToAzEl(satLon, satLat, altKm, lon, lat, hKm = 0) {
   const nb = antennaBasis(satLon, satLon, satLat || 0, 0, satLat || 0, altKm)
-  const w = nrm(sub(geodeticToEcef(lon, lat, 0), nb.S))
+  const w = nrm(sub(geodeticToEcef(lon, lat, hKm), nb.S))
   const dx = dt(w, nb.x), dy = dt(w, nb.y), dz = dt(w, nb.z)
   return { az: Math.atan2(-dx, Math.hypot(dy, dz)) * R2D, el: Math.atan2(dy, dz) * R2D }
 }
@@ -243,8 +245,9 @@ export function satLookAt(satLon, satLat, altKm, lon, lat) {
 // 地球站(lon,lat) 看卫星的当地地平坐标：方位角 az（自正北顺时针 0–360°）、仰角 el（当地水平面以上，度）。
 // 用地球站当地 ENU 系（geodeticUp=大地天顶）；与 dirToAzEl（卫星看地面点）互为对偶。
 // el<0 表示卫星在该站地平线以下（不可见）；GEO 时 satAlt 传轨道高度，与本文件其它几何同口径。
-export function groundLookAngles(satLon, satLat, altKm, lon, lat) {
-  const G = geodeticToEcef(lon, lat, 0)                                  // 地球站 ECEF
+// hKm：站（航点）的大地高（km；缺省 0 = 地面）。空中的点仰角照当地水平面算，可为负（地平俯角以内仍可见）
+export function groundLookAngles(satLon, satLat, altKm, lon, lat, hKm = 0) {
+  const G = geodeticToEcef(lon, lat, hKm)                                // 地球站 ECEF
   const S = geodeticToEcef(satLon, satLat || 0, altKm)                   // 卫星 ECEF
   const up = geodeticUp(lon, lat)                                        // 当地天顶（大地法线，单位矢量）
   const east = [-Math.sin(lon * D2R), Math.cos(lon * D2R), 0]            // 当地正东（单位矢量）
@@ -549,9 +552,17 @@ function bicubic4At(re1, im1, re2, im2, NX, NY, fc, fr, out) {
 // 无复场（预置烘焙）→ 对功率 P1/P2 做 bicubic，过冲致非正时回退双线性。
 // 结果写入 _sp = [p1, p2, re1, im1, re2, im2]（零分配），返回是否有复场。
 // ★ 性能指标表（sampleBeamAtParam）与等值线交点细化（buildEdgeRefine）共用这一个内核 → 表与线同一份数。
+// ★ 解析天线（beam.an，gaussStk.js）：格坐标 → igrid-6 (X,Y) → 闭式增益，不插值。经这一个咽喉，性能表（对地 / 对星 /
+//   时段扫描 / 指向误差极值 / Slope）、交点细化与弦中点、地平端点全部落在精确函数上。场只有共极化一个实分量：
+//   re1 = √p，其余三分量 0（与合成 GRD 的 icomp 3 / c2 ≡ 0 同形，AR = 0 dB、P2 = 0）。
 const _sp = new Float64Array(6), _c4 = new Float64Array(4)
 function samplePowAt(beam, fc, fr) {
   const g = beam.grid, NX = g.NX, NY = g.NY
+  if (beam.an) {
+    const p = Math.pow(10, anGainDbiXY(beam.an, g.XS + fc * (g.XE - g.XS) / (NX - 1), g.YS + fr * (g.YE - g.YS) / (NY - 1)) / 10)
+    _sp[0] = p; _sp[1] = 0; _sp[2] = Math.sqrt(p); _sp[3] = 0; _sp[4] = 0; _sp[5] = 0
+    return true
+  }
   if (beam.c1re) {
     bicubic4At(beam.c1re, beam.c1im, beam.c2re, beam.c2im, NX, NY, fc, fr, _c4)
     const re1 = _c4[0], im1 = _c4[1], re2 = _c4[2], im2 = _c4[3]
@@ -601,9 +612,16 @@ export function axialRatioDb(comp, icomp) {
 // beam: { P1,P2,[c1re,c1im,c2re,c2im], grid:{...} }；basis: { S,x,y,z }。
 export function sampleBeamAt(beam, igrid, basis, lon, lat, opts = {}) {
   const { S } = basis
-  const P = geodeticToEcef(lon, lat, 0)
+  // opts.hKm：目标点的大地高（km，航迹航点的实际高度；缺省 0 = 地面，与改前逐位同路）
+  const hKm = Number.isFinite(opts.hKm) ? opts.hKm : 0
+  const P = geodeticToEcef(lon, lat, hKm)
   const ex = P[0] - S[0], ey = P[1] - S[1], ez = P[2] - S[2]
   const rs = Math.hypot(ex, ey, ez); if (!(rs > 0)) return null
+  if (hKm > 0) {
+    // 空中目标：地平俯角随高度变大（10 km ≈ 3.2°），当地水平面以下几度的星照样看得见 —— 改判「星→点」这段视线与椭球有无交点
+    if (segHitsEarth(S, P)) return null
+    return sampleBeamAtEcef(beam, igrid, basis, P, opts)
+  }
   // 地平遮挡（全轨道物理可见性）：卫星须在测站地方水平面之上（仰角≥0），否则视线被地球挡住 → 无效。
   // up=测站测地外法线，e 由卫星指向测站 → e·up>0 表示卫星在测站地平线【以下】（地球背面/对趾整片皆被排除）。
   // 必须独立判此：invGridDir 的 c>0 只能分前/后半球，无法区分「前方可见」与「前方穿过地球到背面对趾」(两者 e 同向)。
@@ -612,6 +630,19 @@ export function sampleBeamAt(beam, igrid, basis, lon, lat, opts = {}) {
   const clat = Math.cos(lat * D2R), up = [clat * Math.cos(lon * D2R), clat * Math.sin(lon * D2R), Math.sin(lat * D2R)]
   if ((ex * up[0] + ey * up[1] + ez * up[2]) / rs > 0) return null
   return sampleBeamAtEcef(beam, igrid, basis, P, opts)
+}
+// 线段 S→P（ECEF km）是否穿过 WGS-84 椭球（段内求交，端点不算）；与 shellProj.losBlocked 同式（hEx = 0），
+// 另写一份免得 coverage ↔ shellProj 循环引用
+function segHitsEarth(S, P) {
+  const ox = S[0] / A, oy = S[1] / A, oz = S[2] / B
+  const dx = (P[0] - S[0]) / A, dy = (P[1] - S[1]) / A, dz = (P[2] - S[2]) / B
+  const qa = dx * dx + dy * dy + dz * dz
+  if (!(qa > 0)) return false
+  const qb = 2 * (ox * dx + oy * dy + oz * dz), qc = ox * ox + oy * oy + oz * oz - 1
+  const disc = qb * qb - 4 * qa * qc
+  if (disc < 0) return false
+  const sd = Math.sqrt(disc), t1 = (-qb - sd) / (2 * qa), t2 = (-qb + sd) / (2 * qa)
+  return (t1 > 1e-9 && t1 < 1 - 1e-9) || (t2 > 1e-9 && t2 < 1 - 1e-9)
 }
 
 // sampleBeamAt 的通用内核：目标点直接给 ECEF（km），不含任何「地面站」专属判据。
@@ -781,9 +812,11 @@ function clipToHull(srcFlat, len, hull) {
 //（可分离二次近似）后转 dB。按 beam×pol 记忆化（峰值与指向无关）。性能指标表「相对峰值」以它为 0 dB；
 // 覆盖的相对档、热区盒最低档与峰值读数（pathLoss='none' 时）也以它为基准 → 「−3 dB」线与表的相对列同一参照
 //（0.1° HTS 网格上节点峰值低估中位 0.024 / p95 0.076 / max 0.11 dB）。
+// 解析天线（beam.an）：峰值就是视轴上的闭式 g0（极化口径照 polPow：只有共极化 → P1 / RSS = g0，其余无值）。
 export function refinedPeakDb(beam, pol) {
   const k = '_pk_' + pol
   if (beam[k] !== undefined) return beam[k]
+  if (beam.an) { const P = polPow(pol, 1, 0); beam[k] = P > 0 ? beam.an.g0 + 10 * Math.log10(P) : null; return beam[k] }
   const { P1, P2, grid } = beam, NX = grid.NX, NY = grid.NY, N = NX * NY
   const pw = (i) => polPow(pol, P1[i], P2 ? P2[i] : 0)
   let mi = 0, mv = -Infinity
@@ -832,6 +865,9 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
   }
   // 沿边 dB：表同一份插值 + 同一极化 / 增益口径；功率非正 → NaN（该点不细化）
   const dbAt = (fc, fr) => { samplePowAt(beam, fc, fr); const P = polPow(pol, _sp[0], _sp[1]); return P > 0 ? 10 * Math.log10(P) + gainOffset : NaN }
+  // 求根收敛目标：网格插值本身只准到 ~1e-4 dB，1e-5 足够；解析天线的 dbAt 是精确函数，压到 1e-9 dB（Float32 存 s* 的
+  // 舍入 ~3e-8 dB 才是底），顶点离轴角相对误差 ~1e-8 —— 多一两次闭式求值（~40 ns / 次），网格天线逐位不变
+  const TOL = beam.an ? 1e-9 : 1e-5
   const S_MIN = 1e-6, S_MAX = 1 - 1e-6
   // 一条边：起点 (c0,r0)、方向 (dc,dr)、两端节点 dB v0→v1。跨过的档 = (min, max] 内的档（与取线的 (v0<L)!==(v1<L) 同一判据）。
   const edge = (type, c0, r0, dc, dr, v0, v1) => {
@@ -850,7 +886,7 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
         if (fx !== fx) break
         const af = fx < 0 ? -fx : fx
         if (af < bestF) { bestF = af; bestX = x }
-        if (af < 1e-5) break
+        if (af < TOL) break
         if ((fx < 0) === (fb < 0)) { b = x; fb = fx; if (side === -1) fa *= 0.5; side = -1 }
         else { a = x; fa = fx; if (side === 1) fb *= 0.5; side = 1 }
         if (fb === fa || b - a < 1e-9) break
@@ -959,7 +995,7 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
         let ta = 0, fa = e0, tb = -e0 / gd
         if (!(Math.abs(tb) <= 0.5)) continue
         let fb = f(tb); if (fb !== fb) continue
-        for (let it = 0; it < 5 && Math.abs(fb) > 1e-5 && fb !== fa; it++) {
+        for (let it = 0; it < 5 && Math.abs(fb) > TOL && fb !== fa; it++) {
           const tn = tb - fb * (tb - ta) / (fb - fa)
           if (!(Math.abs(tn) <= 0.5)) break
           const fn = f(tn); if (fn !== fn) break
@@ -992,6 +1028,12 @@ export function buildEdgeRefine(beam, field, levelsAsc, { pol = 'RSS', gainOffse
 // 按波束缓存的细化表：键 = (极化, 增益偏置, 档表, 网格尺寸)。方向图与档一样 → 表一样，对地 / 对星覆盖、
 // 导出等值线共用一份；拖拽 / 播放不改这些键 → 每帧零求根。
 const sameArr = (a, b) => { if (!a || a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true }
+// 这一格密度下建不建细化表（对地 / 对星 / 导出四处同一道门）：
+//   · 网格天线：Whittaker 密度 > 1 不建 —— 细网格上直接线性 marching（SATSOFT 口径；表随节点数涨 N² 倍）；
+//   · 解析天线（beam.an）：照建。它的密度 N 网格是按参数重铺的（节点仍是闭式精确值，见 whittaker.whittakerBeam），
+//     不建表就退回节点 dB 线性插值 + 节点间经纬度线性插值，密度调高反而比密度 1 差三四个数量级（θ3 = 4° 的 −3 dB 线：
+//     密度 1 取值误差 ~2e-8 dB，密度 2 / 4 / 8 退到 3e-3 / 8e-4 / 2e-4 dB）。建了表，各密度都回到 ~1e-9 dB。
+export const refineAtDens = (beam) => !!beam && (!(beam._dens > 1) || !!beam.an)
 export function edgeRefineFor(beam, field, levelsAsc, pol, gainOffset) {
   const cc = beam._ref
   if (cc && cc.pol === pol && cc.gain === gainOffset && cc.NX === field.NX && cc.NY === field.NY && sameArr(cc.levels, levelsAsc)) return cc.ref
@@ -1010,13 +1052,17 @@ export const REFINE_EXACT_M = 1 / (A * A)
 export const LIMB_M_TOL = 4 * Math.sin(0.01 * D2R) ** 2 / (A * A)     // 地平交点求根容差：仰角 0.01°
 export function projectRefine(rf, grid, igrid, basis, proj, out = null) {
   const n = rf.n, nm = rf.nm || 0, NX = rf.NX, NY = rf.NY
-  const reuse = out && out.lon && out.lon.length === n && out.mlon && out.mlon.length === nm
-  const o = reuse ? out : { lon: new Float32Array(n), lat: new Float32Array(n), vis: new Float32Array(n), mlon: new Float32Array(nm), mlat: new Float32Array(nm), mvis: new Float32Array(nm), exact: 0 }
+  // grid.exact（解析天线，useGrdCoverage.importedCacheEntry 置位）：线顶点的 dB 是精确的，位置也要精确 —— 盒内【每个】
+  // 细化顶点都逐点求交，不留 30° 以上的线性插值（那条路 <0.005 dB 的误差对精确函数就是可见的偏差）。每拍多 O(顶点数) 条射线。
+  // 位置也存 Float64：Float32 的纬度量化 ~0.4 m，LEO 斜距几百 km 下就是 1e-5 量级的离轴角相对误差，比求根残差大三个数量级。
+  const all = !!(grid && grid.exact), FA = all ? Float64Array : Float32Array
+  const reuse = out && out.lon && out.lon.length === n && out.mlon && out.mlon.length === nm && out.lon instanceof FA
+  const o = reuse ? out : { lon: new FA(n), lat: new FA(n), vis: new FA(n), mlon: new FA(nm), mlat: new FA(nm), mvis: new FA(nm), exact: 0 }
   o.lon.fill(NaN); o.lat.fill(NaN); o.vis.fill(NaN); o.mlon.fill(NaN); o.mlat.fill(NaN); o.mvis.fill(NaN); o.exact = 0
   if (!n || !proj || !proj.vis || !grid) return o
   const vis = proj.vis, bx = proj.box
   const r0 = bx ? bx.r0 : 0, r1 = bx ? bx.r1 : NY - 1, c0 = bx ? bx.c0 : 0, c1 = bx ? bx.c1 : NX - 1
-  const graze = (i) => { const rr = (i / NX) | 0, cc = i % NX; return rr >= r0 && rr <= r1 && cc >= c0 && cc <= c1 && vis[i] < REFINE_EXACT_M }
+  const graze = (i) => { const rr = (i / NX) | 0, cc = i % NX; return rr >= r0 && rr <= r1 && cc >= c0 && cc <= c1 && (all || vis[i] < REFINE_EXACT_M) }
   const { S, x, y, z } = basis
   const x0 = x[0], x1 = x[1], x2 = x[2], y0 = y[0], y1 = y[1], y2 = y[2], z0 = z[0], z1 = z[1], z2 = z[2]
   const dx = (grid.XE - grid.XS) / (NX - 1), dy = (grid.YE - grid.YS) / (NY - 1)

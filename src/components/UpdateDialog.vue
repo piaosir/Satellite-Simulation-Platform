@@ -5,7 +5,7 @@
 // 把同一条流水线的当前状态摆出来，并给两个主动入口：现在就查一次、下载完了现在就装。
 // 状态快照是主进程的（stores/updater.js 镜像），这里不自己算任何东西；打开即检查一次。
 // 视觉沿用平台的弹窗语言（AboutDialog / MiniBindDialog 那套 mask / dlg / dhd / kv / dft）。
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { updater, initUpdater, checkUpdate, installUpdate } from '../stores/updater'
 
@@ -32,6 +32,12 @@ async function doInstall() {
 function doCheck() { installErr.value = ''; checkUpdate() }
 
 onMounted(() => { initUpdater(); checkUpdate() })
+
+// Esc 关窗（捕获阶段先收；输入法组字中不关）。不自动聚焦：下载完成后主钮会变成「立即重启安装」，
+// 焦点停在它上面，一个回车就把整个软件关了
+function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
+onMounted(() => window.addEventListener('keydown', onKey, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 </script>
 
 <template>
@@ -39,7 +45,7 @@ onMounted(() => { initUpdater(); checkUpdate() })
     <div class="dlg" role="dialog" aria-modal="true">
       <header class="dhd">
         <span class="dt">检查更新</span>
-        <span class="x" @click="emit('close')"><Icon name="x" :size="16" /></span>
+        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </header>
 
       <div class="body">
@@ -88,13 +94,18 @@ onMounted(() => { initUpdater(); checkUpdate() })
 
 <style scoped>
 /* 与 AboutDialog / MiniBindDialog / SettingsModal 同一套视觉语言 */
-.mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
+/* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
+.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
-.dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: var(--fs-5); }
-.x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
-.x:hover { color: var(--text); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3);
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
+/* 标题栏内距挪进 .dt，关闭键才能占满整条标题栏高度（总高不变） */
+.dhd { display: flex; align-items: stretch; justify-content: space-between; padding: 0; border-bottom: 1px solid var(--border); }
+.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
+/* 关闭键与「设置」「文件管理」同一枚：Windows 风矩形热区，悬停红底白字；右上内圆角 = 框体圆角 − 1px */
+.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
+  border-top-right-radius: calc(var(--r-card) - 1px); }
+.winx:hover { background: #c42b1c; color: #fff; }
 .body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
 
 /* 键值两栏共用一根 76px 栏名轴（与关于窗同宽） */
@@ -110,6 +121,8 @@ onMounted(() => { initUpdater(); checkUpdate() })
 .st.error .sti { color: var(--danger); }
 .st.checking .sti { animation: spin 1.1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* 减弱动效：检查中的转圈停住（无限动画不归全局过渡守卫管，得就地关） */
+@media (prefers-reduced-motion: reduce) { .st.checking .sti { animation: none; } }
 .stx { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 7px; overflow-wrap: anywhere; }
 .prog { display: flex; align-items: center; gap: 10px; }
 .bar { flex: 1; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
@@ -119,10 +132,12 @@ onMounted(() => { initUpdater(); checkUpdate() })
 
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
-.gh { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
-.gh:hover { border-color: var(--accent); }
-.gh:disabled { opacity: .5; cursor: default; }
-.gh:disabled:hover { border-color: var(--border-strong); }
-/* accent 实底控件的字色一律 var(--bg)：深色主题下 accent 是浅色，写死 #fff 会白底白字 */
-.ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }
+/* 次要钮：纸底 + 结构描边 + 正文字；主钮：墨色实底（走 token，深色压一档）。按下由全局按下罩提供 */
+.gh, .ghost { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
+.gh:hover:not(:disabled), .ghost:hover:not(:disabled) { border-color: var(--line-hover); }
+.gh:disabled { opacity: 1; color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: default; }
+/* 实底控件的字色一律跟 token（--primary-on = --bg）：深色主题下底色是浅色，写死 #fff 会白底白字 */
+.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
+.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 </style>

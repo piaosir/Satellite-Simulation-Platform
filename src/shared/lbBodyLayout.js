@@ -370,8 +370,9 @@ function stack() {
       import('../viz/models/view.js'),
       import('../viz/models/loader.js'),
       import('../viz/models/irToThree.js'),
-      import('../../packages/core/models/paramBus.mjs')
-    ]).then(([THREE, thumbs, view, loader, ir, pb]) => ({ THREE, thumbs, view, loader, ir, pb }))
+      import('../../packages/core/models/paramBus.mjs'),
+      import('../../packages/core/models/fleet/index.mjs')
+    ]).then(([THREE, thumbs, view, loader, ir, pb, fl]) => ({ THREE, thumbs, view, loader, ir, pb, fl }))
     _stack.catch(() => { _stack = null })
   }
   return _stack
@@ -427,10 +428,11 @@ async function acquire(S, api, id, onWait) {
     const tid = resolveTemplateId(id.slice(6))
     let r = null
     if (tid) r = S.pb.buildTemplateModel(tid)
+    else if (S.fl.isFleetId(id)) r = S.fl.buildFleetModel(id)   // 星座精模（fleet/）：按型号现生成
     else if (m0 && m0.spec) r = S.pb.buildParamModel(m0.spec)
     if (!r) return null
     const cid = tid ? templateModelId(tid) : id
-    const cat = templateCatalog().find((c) => c.id === cid) || null
+    const cat = templateCatalog().find((c) => c.id === cid) || (r.fleet ? S.fl.fleetCatalog().find((c) => c.id === cid) : null) || null
     const meta = Object.assign({ id, title: cat ? cat.title : id, titleZh: cat ? cat.titleZh : '' }, m0 || {}, {
       id,
       source: (m0 && m0.source) || (cat && cat.source) || { kind: 'param', credit: '', license: 'param', redistributable: true },

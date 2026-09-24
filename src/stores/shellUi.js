@@ -9,6 +9,7 @@ import { reactive, watch } from 'vue'
 //  - toolbar / log：图标工具栏、底部日志窗格显隐
 //  - exw：侧栏宽度（px）；exwVis：可见性分析视图的专属宽度（时段过境双时刻表格+甘特轴信息密度高，
 //    独立记忆且默认更宽、拖拽上限也更高——两条轨互不影响，拖谁记谁）
+//  - satInfo / satInfoW：右侧「卫星信息栏」显隐与宽度（地图右侧、时间轴之上；布局开关，与 side 白名单无关）
 // 单独成 store：3D 页的 Teleport（把各视图挂入侧栏）需要感知 side。
 // KEY 带版本号：日志窗格默认改为收起前，早期版本可能已把 log:true 存进旧 key，
 // 不换 key 的话旧用户会一直读到那个 true，看起来像「默认没生效」。
@@ -19,16 +20,17 @@ const KEY = 'shell-ui-v2'
 const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'envLive', 'focus', 'model', 'geo']
 // 出厂宽度 340（原 300）：参数行是「标签列 + 控件 + 读数列」三段，300px 下控件那段只剩一百出头，
 // 英文标签列还要再宽一档 —— 拖过一次的用户读的是自己存的值，这里只管第一次打开时的观感。
-export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400 })
+export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400, satInfo: true, satInfoW: 300 })
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
   if (saved && typeof saved === 'object') {
-    for (const k of ['toolbar', 'log']) if (typeof saved[k] === 'boolean') shellUi[k] = saved[k]
+    for (const k of ['toolbar', 'log', 'satInfo']) if (typeof saved[k] === 'boolean') shellUi[k] = saved[k]
     if (saved.side === '' || SIDES.includes(saved.side)) shellUi.side = saved.side
     else if (saved.explorer === false) shellUi.side = ''   // 旧版「资源管理器」布尔量迁移
     if (SIDES.includes(saved.sideLast)) shellUi.sideLast = saved.sideLast
     if (Number.isFinite(saved.exw)) shellUi.exw = Math.max(240, Math.min(420, saved.exw))
     if (Number.isFinite(saved.exwVis)) shellUi.exwVis = Math.max(240, Math.min(560, saved.exwVis))
+    if (Number.isFinite(saved.satInfoW)) shellUi.satInfoW = Math.max(240, Math.min(420, saved.satInfoW))
   }
 } catch { /* ignore */ }
 if (shellUi.side) shellUi.sideLast = shellUi.side   // 老快照没有 sideLast 字段：由当前 side 补一个
@@ -45,5 +47,6 @@ export const sideCtx = () => shellUi.side || shellUi.sideLast
 // 侧栏宽度按视图分轨：当前视图用哪个宽度字段 + 各自的拖拽范围（App.vue 的绑定与分隔条共用）
 export const sideWKey = () => (shellUi.side === 'vis' ? 'exwVis' : 'exw')
 export const SIDE_W_LIM = { exw: [240, 420], exwVis: [240, 560] }
+export const SAT_INFO_W_LIM = [240, 420]   // 右侧「卫星信息栏」宽度拖拽范围（3D 页分隔条用）
 
 export function toggleUi(k) { shellUi[k] = !shellUi[k] }

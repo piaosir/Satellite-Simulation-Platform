@@ -1,6 +1,8 @@
 // 3D 球上的标记实体模型层（P4 契约 §3.1；DESIGN3 E7–E10；摸底 map3/scene-entity.md §3 / §6）。
 //
-// 画什么：地球站 / 点标记 / 航迹载具（飞机、船、车）挂的 3D 模型，一律【屏幕恒定像素】的图标（地球视图下真实尺寸 < 1 px）。
+// 画什么：地球站 / 点标记 / 航迹载具（飞机、船、车）挂的 3D 模型，一律【屏幕定尺】的图标（地球视图下真实尺寸 < 1 px）。
+//   尺寸随缩放联动：px 是默认视角下的像素，屏幕像素 = px × zoomScale.markerZoomK(相机距离) —— 与它顶替的标记精灵、让位的标记文字
+//   同一系数，拉近变大、拉远变小（原先恒定像素：调大了在全球视角下连片压住地图，拉近又显小）。
 //   挂在 scene.js 的具名插槽 setEntityOverlay 上：宇宙空间主趟之后、卫星模型层（modelLayer）之前，独立一趟、先 clearDepth ——
 //   图标是屏幕定尺的符号，不与地球比深度（放大后的地面件世界尺寸能到上百 km，比深度会在近地平被球面截掉半截）；图标之间照常遮挡。
 //   背面按标记精灵同一条半球规则淡出（dot(锚点方向, 相机方向)：≤ 0.05 不画、0.05–0.22 线性、≥ 0.22 满），模型与精灵同时出现 / 消失。
@@ -12,13 +14,13 @@
 //     实例矩阵 = 实体矩阵 E（静态帧）或 E · D_f（关节帧，D_f 逐实例按关节值算）。绘制调用 = Σ 在画模型的（帧 × 材质）数。
 //   · 实体矩阵 E = T(锚点) · R(qB2S) · S(k) · T(−锚点在本体系的那一点)：锚点 = llaToVec 球面口径 r = 1 + h / 6371 km（不沿天顶额外抬高，
 //     契约 §7-2）；本体里要落在锚点上的点由 entityRuntime.anchorBodyOf 定（datum 挂点 → 包围盒底 / 飞机取盒心）；
-//     k = 屏幕像素 × 每像素场景长度 / 包围半径（像素 = 包围球在屏幕上的直径）。
+//     k = 屏幕像素 × 每像素场景长度 / 包围半径（像素 = 包围球在屏幕上的直径 = px × 缩放联动系数）。
 //   · 淡入淡出按逐实例 aFade：画布开了 MSAA 走 alpha-to-coverage（解析后平滑半透明），没开走 4×4 Bayer 屏幕门抖动（两档都
 //     不透明、写深度、不排序）；图标外沿一圈深色描边（制图套色，屏幕空间三趟，见「描边」）；光照系数逐实例 aShade（outgoingLight 整体压：
 //     漫反射 + 镜面 + 环境一起，等价于 modelLayer 按材质压色 + 压环境强度）；船按水线面裁剪（逐实例 aClip：过锚点的当地切平面，
 //     吃水线以下不画）。实例属性建层时就建好（首次写入不触发重编），onBeforeCompile 注入、customProgramCacheKey 带 'entIcon'。
-//   · 图标 LOD：图元三角形 > 6000 的模型在后台（analyze Worker，meshopt）抽一档 ≈ 4000 三角形的图标档，就绪后 px ≤ 96 的实例
-//     原位换上（节点名保留，关节照驱动）；px > 96 的实例仍画原档（同一模型两档并存）。
+//   · 图标 LOD：图元三角形 > 6000 的模型在后台（analyze Worker，meshopt）抽一档 ≈ 4000 三角形的图标档，就绪后此刻屏幕像素 ≤ 96 的实例
+//     原位换上（节点名保留，关节照驱动）；> 96 的实例仍画原档（同一模型两档并存；拉近拉远跨过 96 就换档）。
 //
 // 光照口径跟卫星模型层（modelLayer.setSunLit）走：晨昏效果关 = 全亮（主光改相机头灯、不压暗）；开 = 太阳方向主光 3.0 + 相机侧补光 0.6
 //   （modelLayer FILL_LIT）+ 当地太阳高度角 smoothstep(−6°, +0.8°) 压暗到底色 0.5（entityRuntime.shadeOf，= modelLayer ICON_ECL_FLOOR），
@@ -38,6 +40,7 @@ import { modelToBodyMatrix } from '../models/view.js'
 import { applyRestPose, stageMatrix } from '../models/thumbs.js'
 import { splitMultiMaterial } from '../models/irToThree.js'
 import { isSoftwareRenderer } from './spaceFx.js'
+import { markerZoomK } from './zoomScale.js'
 import { sceneAnchor, entityPoseAt, makeEntityPose } from '@core/models/entityPose.mjs'
 import { anchorBodyOf, aimRigOf, makeAimState, solveAim, parkAim, jointValuesOf, shadeOf, ENT_FADE_S } from '@core/models/entityRuntime.mjs'
 
@@ -742,7 +745,7 @@ export function createEntityLayer(o = {}) {
   // ───────────── 槽位 ─────────────
   function newSlot(key) {
     return {
-      key, kind: 'point', cls: 0, modelId: '', model: null, px: PX_DEF,
+      key, kind: 'point', cls: 0, modelId: '', model: null, px: PX_DEF, pxE: 0,   // pxE：上一次写实例时的屏幕像素（px × 缩放联动系数）
       lat: NaN, lon: NaN, altM: 0, hdg: 0, pit: 0,
       hasAim: false, aimDir: [0, 0, 1], aimAz: NaN, aimEl: NaN, park: true,
       gen: 0, want: true, trunc: false,
@@ -997,8 +1000,9 @@ export function createEntityLayer(o = {}) {
     writeInstances(camera, w, h)
     perfF[3] = nowMs() - perfF[2]; perfF[0] += (perfF[3] - perfF[0]) * 0.1
   }
+  // 按此刻的屏幕像素判（还没写过实例的按设定像素）：拉远后才变小的也要有图标档
   function anySmallPx(M) {
-    for (let i = 0; i < slotArr.length; i++) { const s = slotArr[i]; if (s.model === M && s.px <= LOD_PX) return true }
+    for (let i = 0; i < slotArr.length; i++) { const s = slotArr[i]; if (s.model === M && (s.pxE > 0 ? s.pxE : s.px) <= LOD_PX) return true }
     return false
   }
 
@@ -1011,6 +1015,8 @@ export function createEntityLayer(o = {}) {
     const cl = Math.sqrt(C.x * C.x + C.y * C.y + C.z * C.z) || 1
     const cdx = C.x / cl, cdy = C.y / cl, cdz = C.z / cl
     const hh = Math.max(1, h), ww = Math.max(1, w)
+    // 随缩放联动：与标记精灵 / 标记文字同一系数（靶心恒为地心，cl 就是 scene 的 zoomDist；跟随卫星时本层关着）
+    const zk = markerZoomK(cl)
     // 1) 计数（容量不够先扩）
     for (let i = 0; i < modelArr.length; i++) { const M = modelArr[i]; if (M.full) M.full.n = 0; if (M.icon) M.icon.n = 0 }
     for (let i = 0; i < slotArr.length; i++) {
@@ -1024,7 +1030,8 @@ export function createEntityLayer(o = {}) {
       s.fade = f
       if (f <= 0.002) continue
       s.drawn = true
-      const V = (M.icon && s.px <= LOD_PX) ? M.icon : M.full
+      s.pxE = s.px * zk
+      const V = (M.icon && s.pxE <= LOD_PX) ? M.icon : M.full
       s.vIdx = V.n++
       s.vIsIcon = V === M.icon
     }
@@ -1046,12 +1053,12 @@ export function createEntityLayer(o = {}) {
       const A = s.A
       const R = s.R, E = s.E, p = s.anchor ? s.anchor.pos : M.center, cc0 = M.center
       // 像素 = 包围球（盒心为心）在屏幕上的直径：按相机到【图标中心】的距离定尺（地球站锚在盒底，中心比锚点离相机近约一个半径，
-      // 按锚点距离定尺近景会大出几个百分点）。中心 = A + k·o（o = R·(盒心 − p)），k = α·D_c（α = px·tanH / (H·半径)），
+      // 按锚点距离定尺近景会大出几个百分点）。中心 = A + k·o（o = R·(盒心 − p)），k = α·D_c（α = pxE·tanH / (H·半径)，pxE = px × 缩放联动系数），
       // D_c = |A − cam + α·D_c·o| 的正根（闭式，无迭代）
       const ux = A[0] - C.x, uy = A[1] - C.y, uz = A[2] - C.z
       const vx = cc0[0] - p[0], vy = cc0[1] - p[1], vz = cc0[2] - p[2]
       const ox = R[0] * vx + R[3] * vy + R[6] * vz, oy = R[1] * vx + R[4] * vy + R[7] * vz, oz = R[2] * vx + R[5] * vy + R[8] * vz
-      const al = s.px * tanH / (hh * M.radius)
+      const al = s.pxE * tanH / (hh * M.radius)
       const uu = ux * ux + uy * uy + uz * uz, uo = ux * ox + uy * oy + uz * oz, oo = ox * ox + oy * oy + oz * oz
       const qa = 1 - al * al * oo
       const Dc = qa > 1e-6 ? (al * uo + Math.sqrt(al * al * uo * uo + qa * uu)) / qa : Math.sqrt(uu)
@@ -1087,7 +1094,7 @@ export function createEntityLayer(o = {}) {
       const cx = px0 + qw * tx + (qy * tz - qz * ty), cy = py0 + qw * ty + (qz * tx - qx * tz), cz = pz0 + qw * tz + (qx * ty - qy * tx)
       if (-cz > camera.near) {
         const nx = cx / (-cz * tanH * asp), ny = cy / (-cz * tanH)
-        s.sx = (nx * 0.5 + 0.5) * ww; s.sy = (0.5 - ny * 0.5) * hh; s.sr = s.px / 2
+        s.sx = (nx * 0.5 + 0.5) * ww; s.sy = (0.5 - ny * 0.5) * hh; s.sr = s.pxE / 2
         s.onScreen = true
         const rr = s.sr + 1
         if (s.sx - rr < hx0) hx0 = s.sx - rr
@@ -1329,7 +1336,7 @@ export function createEntityLayer(o = {}) {
         if (!s) return null
         const M = s.model
         return {
-          modelId: s.modelId, kind: s.kind, alpha: s.alpha, fade: s.fade, px: s.px, k: s.k,
+          modelId: s.modelId, kind: s.kind, alpha: s.alpha, fade: s.fade, px: s.px, pxE: s.pxE, k: s.k,
           anchor: Array.from(s.A), anchorSrc: s.anchor ? s.anchor.src : '', anchorBody: s.anchor ? s.anchor.pos.slice() : null,
           liftM: s.anchor ? s.anchor.liftM : 0, altEffM: s.altEff, qB2S: s.pose.qB2S.slice(),
           aimMode: s.aimMode, a1: s.a1, a2: s.a2, t1: s.t1, t2: s.t2, yawDeg: s.yaw, park: s.park, sunElevDeg: s.sunElev, shade: s.shade,

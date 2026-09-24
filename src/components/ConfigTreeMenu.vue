@@ -94,4 +94,6 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
 .lb-ctx-i { display: flex; align-items: center; gap: 18px; }
 .lb-ctx-k { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
 .lb-ctx-i:disabled .lb-ctx-k { color: inherit; }
+/* 悬停项是机位色实底：快捷键跟随字色退半档，不再是实底上一行看不清的淡灰 */
+.lb-ctx-i:hover:not(:disabled) .lb-ctx-k { color: inherit; opacity: .7; }
 </style>

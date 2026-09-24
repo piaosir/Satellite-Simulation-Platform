@@ -124,8 +124,10 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 </template>
 
 <style scoped>
-.slt-mask { position: fixed; inset: 0; background: rgba(0, 0, 0, .38); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.slt { width: 360px; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.slt-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 60; }
+.slt { width: 360px; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3);
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .slt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); color: var(--text); border-bottom: 1px solid var(--border); }
 .slt-sub { color: var(--text-faint); font-size: var(--fs-3); }
 .slt-sp { flex: 1; }

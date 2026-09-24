@@ -76,12 +76,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 <style scoped>
 /* 与 LbReportDialog 同一套控件语言，宽一档：条款表与右侧参数/扫描表要并排。
    ★ 字体走 var(--font-ui)（设置 → 界面字体），不跟报告那条衬线栈 —— 这是界面不是交付文档。 */
-.sd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.sd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
 .sd {
   width: min(1120px, 94vw); max-height: 90vh; display: flex; flex-direction: column;
   font-family: var(--font-ui);
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
   box-shadow: var(--shadow-3); overflow: hidden;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out);
 }
 .sd-hd {
   display: flex; align-items: center; gap: 8px; padding: 10px 12px;
@@ -111,5 +113,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .sd-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sd-btn:disabled { opacity: .45; cursor: not-allowed; }
 .sd-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.sd-btn.primary:hover { opacity: .88; }
+/* 主钮悬停压深一档（不再靠半透明），字色显式 --bg：通用悬停会把字染成 --text */
+.sd-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

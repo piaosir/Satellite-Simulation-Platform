@@ -9,7 +9,7 @@
 // 几何走参数域（见 shellProj.js 文件头）：bandGeometry 直接吃 gridXY 的 (X,Y)，切出来的顶点再逐壳投影。
 // 2D 平面地图（flatView）另走一条【对地投影】：同一批波束按对地那套投到 WGS84 椭球，与「对地覆盖分析」画法完全相同。
 import { ref, reactive, computed, watch } from 'vue'
-import { fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDirs, loopLabelAnchor, loopLabelsAtInterval } from './coverage.js'
+import { fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDir, gridDirs, loopLabelAnchor, loopLabelsAtInterval } from './coverage.js'
 import { shellGeom, shellGrid, shellMapper, tessellateFills, tessellateSegs } from './shellProj.js'
 import { cssRgb } from './colormap.js'
 import { A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
@@ -110,10 +110,11 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   }
   // 聚焦即 grd 的聚焦：面板上的设置控件绑的就是 grd.s（对地那份编辑态），
   // 两处聚焦必须是同一根天线，否则改的是另一根天线的参数。
-  async function setActive(sat, a) {
+  // opts 原样交给 grd.setActive（{ face:false } = 不转镜头）
+  async function setActive(sat, a, opts = {}) {
     const key = grd.keyOf(sat.folder, a.name)
     if (!(await grd.ensureAntLoaded(key))) return
-    if (grd.active.value !== key) await grd.setActive(sat, a)
+    if (grd.active.value !== key) await grd.setActive(sat, a, opts)
   }
   function satState(sat) {
     const ks = (sat.antennas || []).map((a) => grd.keyOf(sat.folder, a.name))
@@ -292,7 +293,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           if (!asc.length) continue
           const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
           // 交点细化（线 = 表）：与对地覆盖同一张表（edgeRefineFor 按波束缓存）；路损模式下场随斜距变，不细化
-          const refine = (st.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
+          const refine = (st.pathLoss === 'none' && stride === 1 && refineAtDens(beam)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
           const geo = bandGeometry(
             { lon: gx, lat: gy, vis: sg.vis, db: field.db, NX: set.NX, NY: set.NY },
             ascAbs, st.fill, box, null, stride, refine
@@ -321,8 +322,11 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           noteShell(sh.id, nTri || 1, '')
           // 峰值点：先用 strict 版求交——峰值方向【真打在这层壳上】才是一个能标的点。打不到时
           // 退回默认 map 的相切兜底点，那只是个锚（波束名贴在那儿），点与峰值电平由渲染端按 hit 不画。
-          const pkHit = shellMapper(igrid, basis, g, br, true)(gx[field.maxIdx], gy[field.maxIdx])
-          const pk = pkHit || map(gx[field.maxIdx], gy[field.maxIdx])
+          // 解析天线（beam.an）且无路损：峰值方向就是视轴的参数坐标 (az, el)，不取 argmax 格点（同对地 peakPoint）
+          const anPk = beam.an && st.pathLoss === 'none'
+          const pX = anPk ? beam.an.az : gx[field.maxIdx], pY = anPk ? beam.an.el : gy[field.maxIdx]
+          const pkHit = shellMapper(igrid, basis, g, br, true)(pX, pY)
+          const pk = pkHit || map(pX, pY)
           const layer = {
             id: `${key}#${bm.bi}@${sh.id}:${br}`, R, alpha: st.alpha,
             name: bm.name + (branches.length > 1 ? (br === 'near' ? ' 近' : ' 远') : ''),
@@ -361,7 +365,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       if (!asc.length) continue
       const hull = st.fill ? satHull(ctx.meta.satLon, ctx.meta.satLat || 0, ctx.meta.satAlt) : null
       const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
-      const refine = (st.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
+      const refine = (st.pathLoss === 'none' && stride === 1 && refineAtDens(beam)) ? edgeRefineFor(beam, field, ascAbs, st.pol, st.gainOffset) : null
       const pos = refine ? (beam._gpos = projectRefine(refine, set, igrid, basis, proj, beam._gpos)) : null   // 掠地格子的精确位置（随投影每拍重算）
       const geo = bandGeometry(
         { lon: proj.lon, lat: proj.lat, vis: proj.vis, db: field.db, NX: set.NX, NY: set.NY },
@@ -383,8 +387,13 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       // 峰值点：与对地视图逐字同口径（useGrdCoverage.peakPoint）——★ 不能读 proj.lon/lat[maxIdx]，
       // 那张投影 limbOutside=true，越地平的点返回的是「射线到地心的垂足」，反算出来的经纬度是假读数。
       // 对 argmax 那一条射线单独求交：hit=真打到椭球；打不到则退回该方向的地平点，只作波束名的锚。
-      const dirs = gridDirs(set, igrid), o3 = field.maxIdx * 3
-      const pr = Number.isFinite(field.max) ? projectLimb([dirs[o3], dirs[o3 + 1], dirs[o3 + 2]], basis) : null
+      // 解析天线（beam.an）且无路损：峰值方向 = 视轴（闭式），不取 argmax 格点
+      let pd = null
+      if (Number.isFinite(field.max)) {
+        if (beam.an && st.pathLoss === 'none') pd = gridDir(6, beam.an.az, beam.an.el)
+        else { const dirs = gridDirs(set, igrid), o3 = field.maxIdx * 3; pd = [dirs[o3], dirs[o3 + 1], dirs[o3 + 2]] }
+      }
+      const pr = pd ? projectLimb(pd, basis) : null
       const layer = {
         id: `${key}#${bm.bi}`, fillBands, segGroups, name: bm.name,
         bore: pr && Number.isFinite(pr.lon) && Number.isFinite(pr.lat) ? {
@@ -481,6 +490,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   watch(() => [s.hEx, s.guides, s.guideStep, s.guideLat, s.guideWidth, s.guideAlpha, s.guideDash], scheduleRecompute)
   // 天线设置是【共享】的：对地面板改、对星面板改、拖拽改，都落在 grd.s 上 → 一处监听全覆盖
   watch(() => grd.s, scheduleRecompute, { deep: true })
+  // 解析天线就地改参数（grd.updateAnalyticAntenna）：波束换了、grd.s 却可能一项没动 → 跟着修订号重画
+  if (grd.anRev) watch(grd.anRev, scheduleRecompute)
 
   // ==================== 持久化（随页面快照）====================
   function getState() {

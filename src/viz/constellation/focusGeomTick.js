@@ -9,8 +9,8 @@ import sat from './satellite.js'
 import { posAt, periodMinOf, validSpan } from './satPos.js'   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
 import { createFocusGeomCache, ringSegments } from './focusGeomCache.js'
 import { footprintRing } from './focusFootprint.js'
-import { swathK, swathSig, sectionOf, headingAz, swathLayout, swathDiscs, emitSwath3D, swathFlatGeom } from './focusSwath.js'
-import { llaToVec, pushDashed, densifyArc, footprintFill, coneFace, createSink, LIFT, RE } from '../globe3d/focusLanes.js'
+import { swathK, swathSig, sectionOf, groundMotion, buildSwath, emitSwath3D, swathFlatGeom } from './focusSwath.js'
+import { llaToVec, pushDashed, densifyArc, footprintFill, emitCone, createSink, LIFT, RE } from '../globe3d/focusLanes.js'
 
 export function createShard() {
   return { recs: new Map(), list: [], cache: createFocusGeomCache(), hint: new Map() }
@@ -46,8 +46,8 @@ export function computeTick(st, p) {
   let bMaxDeg = null, clampText = null
   // 2D 平面图要的经纬折线（只在平面图真在看时才打包 —— 不看时打了也是白打）
   // 轨迹面的 2D 打包：swK/swOff/swLL 逐星断面经纬；swSk 逐步「非平移步」标志（按各星断面数−1 顺排）；
-  // swOut 逐星「整轨打转描轮廓」；圆盘环两级偏移 swRgOff（逐星起始环号）/ swRgPt（逐环起始点号）→ swRgLL
-  const f2 = p.want2d ? { trkOff: [0], trkLL: [], fpOff: [0], fpLL: [], sub: [], swK: [], swOff: [0], swLL: [], swSk: [], swOut: [], swRgOff: [0], swRgPt: [0], swRgLL: [] } : null
+  // 圆盘环两级偏移 swRgOff（逐星起始环号）/ swRgPt（逐环起始点号）→ swRgLL；轮廓折线同样两级 swLnOff / swLnPt → swLnLL
+  const f2 = p.want2d ? { trkOff: [0], trkLL: [], fpOff: [0], fpLL: [], sub: [], swK: [], swOff: [0], swLL: [], swSk: [], swRgOff: [0], swRgPt: [0], swRgLL: [], swLnOff: [0], swLnPt: [0], swLnLL: [] } : null
   for (let i = 0; i < n; i++) {
     const e = st.list[i]
     const rec = e.rec
@@ -55,7 +55,7 @@ export function computeTick(st, p) {
     const t = new Date(tMs)
     let pv = null
     pv = posAt(rec, t)
-    if (!pv || !pv.position) { if (f2) { f2.trkOff.push(f2.trkLL.length / 2); f2.fpOff.push(f2.fpLL.length / 2); f2.sub.push(NaN, NaN); f2.swK.push(0); f2.swOff.push(f2.swLL.length / 2); f2.swOut.push(0); f2.swRgOff.push(f2.swRgPt.length - 1) } continue }
+    if (!pv || !pv.position) { if (f2) { f2.trkOff.push(f2.trkLL.length / 2); f2.fpOff.push(f2.fpLL.length / 2); f2.sub.push(NaN, NaN); f2.swK.push(0); f2.swOff.push(f2.swLL.length / 2); f2.swRgOff.push(f2.swRgPt.length - 1); f2.swLnOff.push(f2.swLnPt.length - 1) } continue }
     const gd = sat.eciToGeodetic(pv.position, g)
     const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude), h = gd.height
     // 星下点图标（贴地 ×1.0012，与 setFocusSatLLA 逐字同口径）+ 金色高亮环（套在星本体上，主选大一档）
@@ -71,8 +71,8 @@ export function computeTick(st, p) {
     }
     // ② 星下点轨迹：环形缓冲，逐拍只补窗口两端（头点＝上面刚算好的星下点，白送）
     //    「轨迹面」档：同一条轨迹的每个采样点各出一条横断面（缓存在点上，口径签名对不上才重算；头尾两点每拍新算），
-    //    两缘走 trk 线通道（与轨迹线同一份样式），带面走 swath 面通道。
-    let track = null, lay = null, discs = null, K = 0
+    //    轮廓走 trk 线通道（与轨迹线同一份样式），带面与端帽 / 圆盘走 swath 面通道。
+    let track = null, sw = null, K = 0
     const swathOn = S.trkOn && S.trkMode === 'swath'
     if (S.trkOn || p.want2d) {
       // 周期：satrec → 2π/no；星历点序列表 → 表内升交点估计（原来直接读 rec.no，表上没有这个字段
@@ -84,8 +84,9 @@ export function computeTick(st, p) {
       const spanMs = p.spanMs > 0 ? p.spanMs : (periodMin > 0 ? periodMin * p.per * 60000 : (sp ? sp.t1 - sp.t0 : 0))
       // 节拍：有周期按周期 / 采样数，否则按整段 / 采样数
       const dtMs = (periodMin > 0 ? periodMin * 60000 : spanMs) / p.lod.samples
+      const gm = groundMotion(pv, g)
       track = st.cache.track(e.key, rec, tMs, spanMs, dtMs, p.lod.stepDeg,
-        { tMs, t, lat, lon, h, az: headingAz(pv, g) })
+        { tMs, t, lat, lon, h, az: gm.az, gs: gm.gs, hd: gm.hd })
       if (swathOn && track.length > 1) {
         K = swathK(Math.max(h, (rec.alta > 0 ? rec.alta : 0) * RE), p.fp)   // 按远地点高度定横向分段（rec.alta 以地球半径为单位）
         const sig = swathSig(p.fp, K)
@@ -95,11 +96,10 @@ export function computeTick(st, p) {
           if (q.swSig !== sig) { q.sw = sectionOf(q, p.fp, K); q.swSig = sig }
           secs[j] = q.sw
         }
-        // 定向一致 + 平移/打转分段（见 focusSwath.swathLayout）：平移段连四边形、打转段落覆盖圆盘；
-        // 整轨打转（GEO）时圆盘轮廓只在覆盖圈层关着时描（开着就与覆盖圈重合）
-        lay = swathLayout(secs, K)
-        discs = swathDiscs(lay, track, p.fp, p.lod.fpSeg)
-        emitSwath3D(lay, discs, { edge: trk, fill: S.trkFillOn ? swa : null, dash: S.trkDash, outlineOn: lay.allRot && !S.fpOn })
+        // 定向分段 + 打转段圆盘 + 首尾端帽 + 按覆盖判据裁出的轮廓（见 focusSwath.buildSwath）；
+        // 覆盖圈层开着时当前时刻那只端帽的弧由覆盖圈线自己描
+        sw = buildSwath(track, secs, K, p.fp, p.lod.fpSeg, { fpOn: S.fpOn })
+        emitSwath3D(sw, { edge: trk, fill: S.trkFillOn ? swa : null, dash: S.trkDash })
       } else if (S.trkOn && track.length > 1) {
         // densifyArc：贴地线的直弦在节拍降档后会沉进地球（见 focusLanes.js 那段），满细节时不补一个点
         pushDashed(trk, densifyArc(track.map((q) => llaToVec(q.lat, q.lon, LIFT))), S.trkDash)
@@ -117,14 +117,8 @@ export function computeTick(st, p) {
         pushDashed(fp, densifyArc(rv), S.fpDash)   // 补密只给【线】：填充/锥面各自有同款补密，rv 原样传下去
         if (S.fillOn) footprintFill(rv, { lat, lon }, fill)
       }
-      if (S.coneOn && h > 0) {
-        const apex = llaToVec(lat, lon, h)
-        if (S.faceOn) coneFace(apex, rv, cone)
-        if (S.genCount > 0) {
-          const m = rv.length - 1, k = Math.max(1, Math.min(m, Math.round(S.genCount)))
-          for (let j = 0; j < k; j++) pushDashed(gen, [apex, rv[Math.round(j * m / k) % m]], S.genDash)
-        }
-      }
+      // 锥面 + 母线：与跟随主星的近场（globe3d/followFocus.js）同一份 emitCone
+      if (S.coneOn && h > 0) emitCone(llaToVec(lat, lon, h), rv, S, cone, gen)
     }
     // ④ 在轨点
     if (S.dotOn) {
@@ -137,16 +131,19 @@ export function computeTick(st, p) {
       if (ring) for (const q of ring) { f2.fpLL.push(q.lat, q.lon) }
       f2.fpOff.push(f2.fpLL.length / 2)
       f2.sub.push(lat, lon)
-      // 轨迹面：定向后的横断面经纬（每点 (K+1) 对 lat/lon）+ 逐步标志 + 圆盘环，平面图按平移步围切片、打转段填圆盘
-      if (lay) {
-        const fg = swathFlatGeom(lay, discs, lay.allRot && !S.fpOn)
+      // 轨迹面：定向后的横断面经纬（每点 (K+1) 对 lat/lon）+ 逐步标志 + 圆盘环 + 轮廓折线，
+      // 平面图按平移步围切片、其余由圆盘（含端帽）兜，轮廓照描
+      if (sw) {
+        const fg = swathFlatGeom(sw)
         const ll = fg.swath.ll
         for (let a = 0; a < ll.length; a++) f2.swLL.push(ll[a])
         for (let a = 0; a < fg.swath.skip.length; a++) f2.swSk.push(fg.swath.skip[a])
-        f2.swK.push(K); f2.swOut.push(fg.swOutline ? 1 : 0)
+        f2.swK.push(K)
         for (const ring of fg.swRings) { for (const q of ring) f2.swRgLL.push(q.lat, q.lon); f2.swRgPt.push(f2.swRgLL.length / 2) }
-      } else { f2.swK.push(0); f2.swOut.push(0) }
+        for (const pl of fg.swLines) { for (const q of pl) f2.swLnLL.push(q.lat, q.lon); f2.swLnPt.push(f2.swLnLL.length / 2) }
+      } else f2.swK.push(0)
       f2.swRgOff.push(f2.swRgPt.length - 1)
+      f2.swLnOff.push(f2.swLnPt.length - 1)
       f2.swOff.push(f2.swLL.length / 2)
     }
   }
@@ -158,7 +155,8 @@ export function computeTick(st, p) {
     dots: [...dots.values()].map((d) => ({ px: d.px, tint: d.tint, n: d.s.n, buf: d.s.a.buffer }))
   }
   if (f2) out.flat = { trkOff: new Int32Array(f2.trkOff), trkLL: new Float32Array(f2.trkLL), fpOff: new Int32Array(f2.fpOff), fpLL: new Float32Array(f2.fpLL), sub: new Float32Array(f2.sub), swK: new Int32Array(f2.swK), swOff: new Int32Array(f2.swOff), swLL: new Float32Array(f2.swLL),
-    swSk: new Uint8Array(f2.swSk), swOut: new Uint8Array(f2.swOut), swRgOff: new Int32Array(f2.swRgOff), swRgPt: new Int32Array(f2.swRgPt), swRgLL: new Float32Array(f2.swRgLL) }
+    swSk: new Uint8Array(f2.swSk), swRgOff: new Int32Array(f2.swRgOff), swRgPt: new Int32Array(f2.swRgPt), swRgLL: new Float32Array(f2.swRgLL),
+    swLnOff: new Int32Array(f2.swLnOff), swLnPt: new Int32Array(f2.swLnPt), swLnLL: new Float32Array(f2.swLnLL) }
   return out
 }
 // 这次结果里所有可 transfer 的底层缓冲（postMessage 第二参用）
@@ -167,6 +165,6 @@ export function transfersOf(r) {
     r.sub.buf, r.hl.buf, r.hlP.buf]
   for (const d of r.dots) t.push(d.buf)
   if (r.flat) t.push(r.flat.trkOff.buffer, r.flat.trkLL.buffer, r.flat.fpOff.buffer, r.flat.fpLL.buffer, r.flat.sub.buffer, r.flat.swK.buffer, r.flat.swOff.buffer, r.flat.swLL.buffer,
-    r.flat.swSk.buffer, r.flat.swOut.buffer, r.flat.swRgOff.buffer, r.flat.swRgPt.buffer, r.flat.swRgLL.buffer)
+    r.flat.swSk.buffer, r.flat.swRgOff.buffer, r.flat.swRgPt.buffer, r.flat.swRgLL.buffer, r.flat.swLnOff.buffer, r.flat.swLnPt.buffer, r.flat.swLnLL.buffer)
   return t
 }

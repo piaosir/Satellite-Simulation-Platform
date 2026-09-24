@@ -524,11 +524,19 @@ defineExpose({
 .sp-sel-n, .sp-sel-s { max-width: 8em; }
 /* 线密 / 地图：选项只有一两个字，按内容收窄（撑到 8em 会在控制条上白占两格） */
 .sp-sel-t { max-width: 5.6em; }
+/* 可输入件走字段底色与字段描边（与功能区小表单同）：原 --border 与题线同色，读不出哪里能填；
+   上面共享规则的 --border 只留给非输入件（导出 / 复位按钮）。:focus 必须写在 :hover 之后 */
+.sp-sel, .sp-in { background-color: var(--field-bg); border-color: var(--field-border); }
+.sp-sel:hover, .sp-in:hover { border-color: var(--field-border-hover); }
 .sp-sel:focus, .sp-in:focus { outline: none; border-color: var(--accent-ui); }
 .sp-in { width: 4.4em; text-align: right; font-variant-numeric: tabular-nums; }
 .sp-rng { display: inline-flex; align-items: center; gap: 3px; }
 .sp-dash { color: var(--text-faint); }
-.sp-exp { font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-muted); cursor: pointer; padding: 1px 6px; }
+/* 控制条里的「复位」与同排下拉 / 输入框等高（--h-ctl） */
+.sp-exp { font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-muted); cursor: pointer; height: var(--h-ctl); padding: 0 6px; display: inline-flex; align-items: center; }
+/* 题行里的「数据 / 导出」保持原紧凑高度：拉到 22px 会把题行撑高 4px，
+   且与并排那张图（LbLinkPane）的题行不再同高（两张图的题行必须是一套） */
+.sp-hd .sp-exp { height: auto; padding: 1px 6px; }
 .sp-exp:hover { color: var(--text); border-color: var(--border-strong); }
 
 .sp-ph { padding: 16px 4px; font-size: var(--lb-fs, 11px); color: var(--text-faint); text-align: center; }

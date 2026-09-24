@@ -400,7 +400,9 @@ onBeforeUnmount(onResizeUp)
 .eg-scroll { overflow: auto; outline: none; }
 .eg-tbl { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-3); }
 .eg-tbl th, .eg-tbl td { padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
-.eg-tbl th { position: sticky; top: 0; z-index: 3; background: var(--panel, var(--bg)); color: var(--text-muted); font-weight: 600; user-select: none; }
+.eg-tbl th { position: sticky; top: 0; z-index: 3; background: var(--bg); color: var(--text-muted); font-weight: 600; user-select: none; }
+/* 表头底线是栏目线（三线表的 --lb-rule；非链路预算窗口没这个变量时退到 --border-strong），不再与行间淡线同一档 */
+.eg-tbl thead th { border-bottom: 1px solid var(--lb-rule, var(--border-strong)); }
 .eg-tbl th.n, .eg-tbl td.n { text-align: right; font-family: var(--font-mono); }
 /* 列级对齐（col.align）压过上面「数字右」的缺省；.eg-v 与表头的 .eg-ht 都是块级/行内级盒，从格子继承 text-align */
 .eg-tbl th.al, .eg-tbl td.al { text-align: left; }
@@ -416,7 +418,7 @@ onBeforeUnmount(onResizeUp)
 .eg-ht { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .eg-tbl th.eg-h.sortable .eg-ht { cursor: pointer; }
 .eg-tbl th.eg-h.sortable:hover { color: var(--text); }
-.eg-tbl th.eg-h.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--panel, var(--bg))); color: var(--text); }
+.eg-tbl th.eg-h.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--bg)); color: var(--text); }
 .eg-sort { color: var(--accent-ui); flex: none; }
 /* 列边界线拖拽：光标压在任一列右边界 ±4px 内，整个容器转 col-resize（格子自带的 cell / pointer 光标要 !important 才压得过）；
    拖动中 .eg-rzline 是跟着光标走、贯穿整表高的引导线。scoped 下 `*` 只罩得住本组件的节点，插槽里的（操作列按钮）罩不着——
@@ -425,20 +427,23 @@ onBeforeUnmount(onResizeUp)
 .eg-rzline { position: sticky; top: 0; left: 0; height: 0; width: 0; z-index: 9; pointer-events: none; }
 .eg-rzline > i { position: absolute; top: 0; left: -1px; width: 2px; display: block; background: var(--accent); opacity: .85; }
 /* 序号列：sticky 左固定，点/拖选整行 */
-.eg-tbl th.eg-idx, .eg-tbl td.eg-idx { position: sticky; left: 0; z-index: 2; padding: 3px 4px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); background: var(--panel, var(--bg)); cursor: pointer; user-select: none; }
+.eg-tbl th.eg-idx, .eg-tbl td.eg-idx { position: sticky; left: 0; z-index: 2; padding: 3px 4px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-1); background: var(--bg); cursor: pointer; user-select: none; }
 .eg-tbl thead th.eg-idx { z-index: 5; cursor: cell; }
-.eg-tbl tbody tr.on > td.eg-idx { color: var(--accent-ui); font-weight: 700; background: color-mix(in srgb, var(--accent-ui) 14%, var(--panel, var(--bg))); }
+/* 悬停行的序号格：下面那条通用行悬停是透明罩，落在粘性序号格上会让横滚过去的格子透出来——这里混进不透明底。
+   必须写在 tr.on 之前（同特异度，靠后者胜），选中行的实底不被悬停盖掉 */
+.eg-tbl tbody tr:hover > td.eg-idx { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.eg-tbl tbody tr.on > td.eg-idx { color: var(--accent-ui); font-weight: 700; background: color-mix(in srgb, var(--accent-ui) 14%, var(--bg)); }
 .eg-tbl td.eg-idx:hover { color: var(--text-muted); }
 /* 冻结列：粘性左固定。★ 底色必须**与面板色混合**而不是用透明 —— 横滚时冻结列底下压着内容，
    任何一处透明都会把滚过去的格子透出来。这与序号列 .eg-idx 的成例一致。
    层级：序号列(6) > 冻结表头(5) > 普通表头(3) > 序号格(3) > 冻结格(2) > 活动格(1)。 */
-.eg-tbl th.eg-h.froz, .eg-tbl td.eg-c.froz { position: sticky; background-color: var(--panel, var(--bg)); }
+.eg-tbl th.eg-h.froz, .eg-tbl td.eg-c.froz { position: sticky; background-color: var(--bg); }
 .eg-tbl thead th.eg-h.froz { z-index: 5; }
 .eg-tbl tbody td.eg-c.froz { z-index: 2; }
 .eg-tbl thead th.eg-idx { z-index: 6; }
-.eg-tbl tbody tr:hover > td.eg-c.froz { background-color: color-mix(in srgb, var(--text) 5%, var(--panel, var(--bg))); }
-.eg-tbl td.eg-c.froz.sel, .eg-tbl tbody tr:hover > td.eg-c.froz.sel { background-color: color-mix(in srgb, var(--accent-ui) 16%, var(--panel, var(--bg))); }
-.eg-tbl th.eg-h.froz.colsel { background-color: color-mix(in srgb, var(--accent-ui) 22%, var(--panel, var(--bg))); }
+.eg-tbl tbody tr:hover > td.eg-c.froz { background-color: color-mix(in srgb, var(--text) 5%, var(--bg)); }
+.eg-tbl td.eg-c.froz.sel, .eg-tbl tbody tr:hover > td.eg-c.froz.sel { background-color: color-mix(in srgb, var(--accent-ui) 16%, var(--bg)); }
+.eg-tbl th.eg-h.froz.colsel { background-color: color-mix(in srgb, var(--accent-ui) 22%, var(--bg)); }
 /* 冻结线覆盖条：sticky 钉在滚动视口左沿，再用 transform 平移到实测偏移处 —— 故不随横滚跑。
    height:0 不占流；线体、命中区、投影都在内部的 <i> 上。 */
 .eg-fzbar { position: sticky; top: 0; left: 0; height: 0; width: 0; z-index: 8; }
@@ -470,10 +475,10 @@ onBeforeUnmount(onResizeUp)
 .eg-cap.editing { background: var(--surface, var(--bg)); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
 .eg-tbl th.eg-act, .eg-tbl td.eg-act { text-align: center; padding: 0 4px; overflow: visible; cursor: default; }
 .eg-tbl th.eg-pad, .eg-tbl td.eg-pad { padding: 0; }
-.eg-tbl td.eg-empty { text-align: center; color: var(--text-faint); padding: 16px 12px; cursor: default; font-style: italic; }
+.eg-tbl td.eg-empty { text-align: center; color: var(--text-faint); padding: 16px 12px; cursor: default; font-style: normal; }
 .eg-tbl tr.eg-addrow td { padding: 2px 6px; border-bottom: 0; overflow: visible; }
 .eg-addwrap { position: sticky; left: 6px; display: inline-flex; align-items: center; gap: 4px; }
-.eg-addlbl { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-card); }
+.eg-addlbl { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); }
 .eg-addlbl:hover:not(:disabled) { color: var(--accent); border-color: var(--border); }
 </style>
 
@@ -483,17 +488,20 @@ onBeforeUnmount(onResizeUp)
    文件管理对话框是 2000，原来的 400 会让菜单整个藏在对话框底下（看着像右键没反应）。
    3000 与下面的枚举列下拉同档（两者互斥，不会同时开），仍低于激活遮罩的 4000。 */
 .eg-addlbl.del { color: var(--text-faint); }
-.eg-addlbl.del:hover:not(:disabled) { color: #d07a72; }
+.eg-addlbl.del:hover:not(:disabled) { color: var(--danger); }
 .eg-addlbl:disabled { opacity: .4; cursor: default; }
 .eg-addn { font-style: normal; margin-left: 5px; font-family: var(--font-mono); color: var(--text-faint); }
 .eg-ctx-mask { position: fixed; inset: 0; z-index: 3000; }
-.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-3); display: flex; flex-direction: column; }
-.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-card); white-space: nowrap; }
+/* 命令菜单（P3）：菜单级投影 --shadow-2（--shadow-3 只给模态框），光标处出现故只淡入；
+   外框内距 4px → 项圆角 --r-ctl 同心；悬停机位色实底（与菜单栏一致），快捷键跟着反白、压一档 */
+.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-2); display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
+.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl); white-space: nowrap; }
 .eg-ctx-i > span { flex: 1; }
 .eg-ctx-i kbd { font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); }
-.eg-ctx-i:hover:not(:disabled) { background: color-mix(in srgb, var(--accent-ui) 18%, transparent); }
+.eg-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
+.eg-ctx-i:hover:not(:disabled) kbd { color: inherit; opacity: .7; }
 .eg-ctx-i:disabled { opacity: .4; cursor: default; }
-.eg-ctx-i.danger:hover { background: color-mix(in srgb, #ff6a6a 22%, transparent); }
+.eg-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
 .eg-ctx-i.on { color: var(--accent-ui); }
 /* 枚举列下拉浮层 */
 .eg-pick-mask { position: fixed; inset: 0; z-index: 3000; }

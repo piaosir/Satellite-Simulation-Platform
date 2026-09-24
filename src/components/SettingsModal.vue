@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { quality, effective, setTier, setField, setMapLevel, currentMapLevelIndex, TIERS, FIELD_OPTS, MAP_LEVELS } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
 import { theme, setTheme } from '../stores/theme'
@@ -45,6 +45,16 @@ const FRAME_OPTS = [
   { key: 'inertial', label: '惯性视角' },
   { key: 'fixed', label: '相机跟随' }
 ]
+
+// Esc 关窗（捕获阶段先收，不漏给下面的画布 / 菜单）；输入法组字中的 Esc 是取消组字，不关。
+// 打开即把焦点落在「完成」上：回车 = 完成，与系统对话框同手感。
+const okBtn = ref(null)
+function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
+onMounted(() => {
+  window.addEventListener('keydown', onKey, true)
+  okBtn.value?.focus({ preventScroll: true })
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 </script>
 
 <template>
@@ -166,46 +176,60 @@ const FRAME_OPTS = [
 
       <footer class="dft">
         <button class="ghost" @click="setTier('high')">恢复默认（高）</button>
-        <button class="ok" @click="emit('close')">完成</button>
+        <button ref="okBtn" class="ok" @click="emit('close')">完成</button>
       </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
-.mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
+/* 遮罩瞬时出现（压在逐帧重绘的画布上，不做淡入）；只有框体 160ms 升入，出场瞬时 */
+.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 560px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3);
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
 .dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
-/* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红 */
-.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
+/* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红。
+   右上内圆角 = 框体圆角 − 1px 描边：红色悬停块贴合圆角，不戳出方角 */
+.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
+  border-top-right-radius: calc(var(--r-card) - 1px); }
 .winx:hover { background: #c42b1c; color: #fff; }
-.body { padding: 14px 16px; overflow: auto; }
-.sec { margin-bottom: 18px; }
-.shd { font-size: var(--fs-3); color: var(--text-muted); letter-spacing: var(--ls-tight); margin-bottom: 10px; }
+/* 右内距 6 + 常驻滚动槽 10 = 16：有无滚动条控件右缘都与页脚「完成」齐 */
+.body { padding: 14px 6px 14px 16px; overflow: auto; scrollbar-gutter: stable; }
+.sec { margin-bottom: 16px; }
+.sec:last-child { margin-bottom: 0; }
+.shd { font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-faint); padding-bottom: 4px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
 .tiers { display: flex; gap: 6px; flex-wrap: wrap; }
 .tier { flex: 1; min-width: 64px; padding: 7px 0; cursor: pointer; font-size: var(--fs-4); color: var(--text-muted);
-  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box); transition: all .12s; }
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box); transition: var(--t-state); }
 .tier.ttheme { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.tier:hover { color: var(--text); border-color: var(--accent); }
-.tier.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
-.tip { font-size: var(--fs-3); color: var(--text-faint); margin: 8px 0 12px; }
+.tier:hover { color: var(--text); border-color: var(--line-hover); }
+/* 选中档填墨（走 token：深色下压一档，不再是整块近白）；进入选中瞬时 */
+.tier.on { color: var(--sel-on); background: var(--sel-fill); border-color: var(--sel-fill); font-weight: 600; transition-duration: 0s; }
 .tiers + .grid { margin-top: 14px; }
 .grid { display: flex; flex-direction: column; gap: 11px; }
 .frow { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .fn { font-size: var(--fs-4); color: var(--text); display: flex; flex-direction: column; }
 .fn em { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-top: 2px; }
-.frow select { min-width: 150px; border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; }
-.frow input[type=range] { width: 150px; }
-/* 行内两段式（参考系）：宽度跟着内容走 —— 中文两枚各 72px、整组 150px，正好与右侧那一栏齐；
-   英文「Camera Follows」一枚就要 114px，钉死 150px 会裁字。grid + 1fr 让两枚等宽并取较宽那个的宽度。*/
-.frow .tiers.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; flex: none; width: auto; }
-.frow .tiers.seg .tier { min-width: 72px; padding: 5px 10px; white-space: nowrap; }
-.frow select.fsel { min-width: 176px; }
+.frow select { border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; }
+/* 右侧控件列统一 176px：下拉、滑块、行内两段式左缘落在同一根竖线上 */
+.frow select, .frow select.fsel { width: 176px; min-width: 0; }
+.frow input[type=range] { width: 176px; }
+/* 行内两段式（参考系）：宽度跟着内容走，下限 176px 与右侧那一栏齐；
+   英文「Camera Follows」一枚就要 114px，钉死宽度会裁字。grid + 1fr 让两枚等宽并取较宽那个的宽度。*/
+.frow .tiers.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; flex: none; width: auto; min-width: 176px; }
+/* 行内段与同列下拉等高（--h-ctl），不再比邻行控件高出一截 */
+.frow .tiers.seg .tier { min-width: 72px; height: var(--h-ctl); padding: 0 10px; white-space: nowrap; }
+/* 行高保持旧段高（≈28.7px），下方滑块行不上移 */
+.frow:has(> .tiers.seg) { min-height: 29px; }
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
-.ghost { background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); }
-.ghost:hover { color: var(--text); border-color: var(--accent); }
-.ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }
+/* 次要钮：纸底 + 结构描边 + 正文字；主钮：墨色实底（走 token，深色压一档）。按下由全局按下罩提供 */
+.gh, .ghost { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
+.gh:hover:not(:disabled), .ghost:hover:not(:disabled) { border-color: var(--line-hover); }
+.gh:disabled { opacity: 1; color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: default; }
+.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
+.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 </style>

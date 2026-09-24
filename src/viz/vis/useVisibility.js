@@ -7,8 +7,10 @@
 // 交付节奏：P1 = 瞬时可见（本文件）。P2 时段表 / P3 覆盖热力图 复用同一「选目标 → 算仰角」地基。
 //
 // 星历点序列星：ents 一律带上 eph（瞬时 / 过境走 satPos.propOf；覆盖核只读 rec，故覆盖 ents 的 rec 直接放 propOf 的传播体）。
-import { ref, shallowRef, computed, watch } from 'vue'
+import { ref, shallowRef, computed, watch, toRaw } from 'vue'
 import sat from '../constellation/satellite.js'
+// 航迹目标的载具位置（排得出时刻的航迹：起始 + 速度 / 航点定了时刻）；相对路径，node 单测直接 import 本文件时也解析得到
+import { trajStateAt, makeTrajState, trajEndMs } from '../../../packages/core/models/trajKinematics.mjs'
 import { propOf } from '../constellation/satPos.js'
 import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage } from './visibility.js'
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
@@ -73,13 +75,32 @@ export function useVisibility({
   const covMsg = ref('')
   const covData = shallowRef(null)      // 结果：{ N, cells, step, T, sampleSec, minElevDeg, satActive, fom:{...} }（重数据，整体替换、不深度响应）
 
-  // ---- 目标点集归约（站/点=1 个；航迹=点串；Polygon=质心）----
+  // ---- 航迹目标随时刻移动（2026-09-24）：航迹排得出时刻（起始 + 速度，或航点定了时刻）时，目标 = 那一刻载具所在的一点
+  //      （飞行带实际高度，观测者按大地高算仰角）；排不出时刻的航迹照旧是整条航线的航点串（任一点可见即算可见）----
+  const _vst = makeTrajState()
+  function movingTraj() {
+    if (targetKind.value !== 'traj' || !targetId.value) return null
+    const t = (getTrajectories() || []).find((x) => x.id === targetId.value)
+    if (!t) return null
+    const raw = toRaw(t)
+    return Number.isFinite(trajEndMs(raw)) ? raw : null
+  }
+  function vehicleTargetAt(t, tMs, st) {
+    trajStateAt(t, tMs, st)
+    return st.ok ? [{ lat: st.lat, lon: st.lon, altKm: t.kind === 'flight' ? st.altM / 1000 : 0 }] : []
+  }
+
+  // ---- 目标点集归约（站/点=1 个；航迹=点串或此刻载具那一点；Polygon=质心）----
   function targetPoints() {
     const kind = targetKind.value, id = targetId.value
     if (!kind || !id) return []
     if (kind === 'station') { const s = (getStations() || []).find((x) => x.id === id); return s && Number.isFinite(s.lat) && Number.isFinite(s.lon) ? [{ lat: s.lat, lon: s.lon }] : [] }
     if (kind === 'point') { const p = (getPoints() || []).find((x) => x.id === id); return p && Number.isFinite(p.lat) && Number.isFinite(p.lon) ? [{ lat: p.lat, lon: p.lon }] : [] }
-    if (kind === 'traj') { const t = (getTrajectories() || []).find((x) => x.id === id); return t && Array.isArray(t.pts) ? t.pts.filter((q) => Number.isFinite(q.lat) && Number.isFinite(q.lon)).map((q) => ({ lat: q.lat, lon: q.lon })) : [] }
+    if (kind === 'traj') {
+      const mt = movingTraj()
+      if (mt) return vehicleTargetAt(mt, calcAt().getTime(), _vst)
+      const t = (getTrajectories() || []).find((x) => x.id === id); return t && Array.isArray(t.pts) ? t.pts.filter((q) => Number.isFinite(q.lat) && Number.isFinite(q.lon)).map((q) => ({ lat: q.lat, lon: q.lon })) : []
+    }
     if (kind === 'poly') { const pg = (getPolys() || []).find((x) => x.id === id); const c = pg && Array.isArray(pg.pts) ? ringCentroid(pg.pts) : null; return c ? [c] : [] }
     return []
   }
@@ -169,7 +190,17 @@ export function useVisibility({
     if (!tp.length) { accessMsg.value = '请先选择分析目标'; accessResults.value = []; return }
     const srcAll = getSatSet() || []
     if (!srcAll.length) { accessMsg.value = '卫星集为空'; accessResults.value = []; return }
-    const me = Number(minElev.value) || 0, tgtLat = tp[0].lat
+    // 移动的航迹目标：扫描时窗里每一刻取载具那一点（观测者按真实时刻缓存在 accessWindows 里）
+    const mt = movingTraj()
+    const mst = makeTrajState()
+    const targetsAt = mt ? (tMs) => vehicleTargetAt(mt, tMs, mst) : null
+    // 几何粗筛按【最容易够到】的那一点（|纬度| 最小）：点串 / 移动目标上任一点可见即算可见，只看第一点会误杀
+    const route = mt ? (mt.pts || []).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)) : []
+    const pool = route.length ? route : tp
+    // 大圆段在同一半球内往极向拱，最低 |纬度| 在端点；跨赤道的段中途经过 0°
+    const crossEq = route.some((q, i) => i > 0 && (q.lat < 0) !== (route[i - 1].lat < 0))
+    const tgtLat = crossEq ? 0 : pool.reduce((a, q) => (Math.abs(q.lat) < Math.abs(a) ? q.lat : a), pool[0].lat)
+    const me = Number(minElev.value) || 0
     const src = srcAll.filter((e) => orbitCanReach(e.rec, tgtLat, me))   // 几何粗筛（不传播）
     if (!src.length) { accessResults.value = []; accessMsg.value = '卫星集里没有轨道能覆盖该目标纬度的星'; return }
     if (src.length > ACCESS_MAX_SATS) { accessResults.value = []; accessMsg.value = `候选 ${src.length} 颗过多——请缩短时窗或在「星座」筛选星座`; return }
@@ -187,7 +218,7 @@ export function useVisibility({
     const stepFn = () => {
       if (token !== _accToken) return   // 已被新的计算作废
       try {
-        const part = accessWindows(ents.slice(i, i + BATCH), tp, { now, ccNow }, H, me, { coarseSec: 90 })
+        const part = accessWindows(ents.slice(i, i + BATCH), tp, { now, ccNow }, H, me, { coarseSec: 90, targetsAt })
         for (const s of part) out.push(s)
       } catch (e) { accessMsg.value = '计算失败：' + ((e && e.message) || e); accessBusy.value = false; return }
       i += BATCH

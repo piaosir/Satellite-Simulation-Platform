@@ -14,6 +14,7 @@ import { buildParamModel } from '@core/models/paramBus.mjs'
 import { templateSpec, resolveTemplateId } from '@core/models/paramTemplates.mjs'
 import { buildAssembly, asmHash } from '@core/models/assembly.mjs'
 import { entityTemplateDoc } from '@core/models/entityTemplates.mjs'
+import { buildFleetModel, isFleetId, fleetSig } from '@core/models/fleet/index.mjs'
 
 const models = () => (typeof window !== 'undefined' && window.api && window.api.models) || null
 
@@ -66,6 +67,8 @@ function blobToDataUrl(b) { return new Promise((res, rej) => { const fr = new Fi
 const TPL_THUMB_KEY = (tid) => `model/tplThumb/${TPL_THUMB_VER}/${tid}`
 // 实体模板：与 wbStore.entThumb 同一把钥匙（ENT_THUMB_REV = 'r2'，两边一起升）
 const ENT_THUMB_KEY = (id) => `model/entThumb/${TPL_THUMB_VER}-r2/${id}`
+// 星座精模：与 wbStore.fleetThumb 同一把钥匙
+const FLEET_THUMB_KEY = (id) => `model/fleetThumb/${TPL_THUMB_VER}-f1/${String(id).replace(/^param:/, '')}`
 // 更旧版本的模板缩略图（data URL，每张几十 KB）占着 localStorage 配额：本窗口第一次取模板图时扫一遍清掉。
 // 只清版本号【小于】本份的 —— 工作台先升了版本、这里还没跟上时，不能把它的新图当旧图删（两边来回删 / 来回画）
 let tplThumbSwept = false
@@ -75,7 +78,7 @@ function sweepOldTplThumbs() {
   try {
     const curN = Number(TPL_THUMB_VER.slice(1)), dead = []
     for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i), m = k && /^model\/(?:tplThumb|entThumb)\/v(\d+)[/-]/.exec(k)
+      const k = localStorage.key(i), m = k && /^model\/(?:tplThumb|entThumb|fleetThumb)\/v(\d+)[/-]/.exec(k)
       if (m && Number(m[1]) < curN) dead.push(k)
     }
     for (const k of dead) localStorage.removeItem(k)
@@ -84,6 +87,7 @@ function sweepOldTplThumbs() {
 async function paramThumb(id) {
   // 旧 id 别名换成现行模板 id：缓存钥匙与工作台同一把（按现行 id 存），老存档的 param:<旧 id> 直接复用那张图
   const tid = resolveTemplateId(id)
+  if (!tid && isFleetId(id)) return fleetThumb(id)
   if (!tid) return ''
   sweepOldTplThumbs()
   try { const u = localStorage.getItem(TPL_THUMB_KEY(tid)); if (u) return u } catch { /* 无 */ }
@@ -93,6 +97,20 @@ async function paramThumb(id) {
   try {
     const url = await blobToDataUrl(await renderThumb(rt, { frame: r.frame, units: { scaleToMeters: 1 } }, { size: 384 }))
     try { localStorage.setItem(TPL_THUMB_KEY(tid), url) } catch { /* 配额满：下次再画 */ }
+    return url
+  } finally { disposeObject(rt) }
+}
+// 星座精模（fleet/）：缓存键与工作台 wbStore.fleetThumb 同一把，值 {sig, url}——sig 是生成结果的几何签名（fleetSig），
+// 造型改了自动重画，不必逐型号记版本号
+async function fleetThumb(id) {
+  sweepOldTplThumbs()
+  const r = buildFleetModel(id)
+  const key = FLEET_THUMB_KEY(id), sig = fleetSig(r)
+  try { const c = JSON.parse(localStorage.getItem(key) || 'null'); if (c && c.sig === sig && c.url) return c.url } catch { /* 坏缓存：重画 */ }
+  const rt = irToThree(r.ir)
+  try {
+    const url = await blobToDataUrl(await renderThumb(rt, { frame: r.frame, units: { scaleToMeters: 1 }, articulations: r.articulations }, { size: 384 }))
+    try { localStorage.setItem(key, JSON.stringify({ sig, url })) } catch { /* 配额满：下次再画 */ }
     return url
   } finally { disposeObject(rt) }
 }

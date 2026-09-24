@@ -158,11 +158,18 @@ export function fmtRate(x) {
 }
 
 // 时长（ms）→ 紧凑读数：游标偏移量那一行用（带秒，正是「秒级游标」要看的）
+// ★ 串长有上限：时间条读数给它留的是定宽一格（11ch），而「跳到时刻」能跳到任意远。越远越粗、串越短：
+//   < 1 d「+H:MM:SS」→ < 100 d「+Dd H h MMm」→ < 1 万天去分钟「+365d23h」→ < 100 万天去小时「+10000d」
+//   → 再远按年「+2738y」（Date 的极限 ±27 万年也只有 8 个字符）。这个量级下被截掉的零头毫无读数意义。
+//   各档都按截断取（与天 / 小时本来的取法一致），不会进位出「24h」
 export function fmtOffset(ms) {
   const v = Math.round(Math.abs(ms) / 1000)
   const sgn = ms < 0 ? '−' : '+'
   const p = (n) => String(n).padStart(2, '0')
   const d = Math.floor(v / 86400), h = Math.floor((v % 86400) / 3600), m = Math.floor((v % 3600) / 60), s = v % 60
+  if (d >= 1e6) return `${sgn}${Math.floor(v / (86400 * 365.2425))}y`
+  if (d >= 1e4) return `${sgn}${d}d`
+  if (d >= 100) return `${sgn}${d}d${h}h`
   if (d) return `${sgn}${d}d${h}h${p(m)}m`
   if (h) return `${sgn}${h}:${p(m)}:${p(s)}`
   return `${sgn}${m}:${p(s)}`

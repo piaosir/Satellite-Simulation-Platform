@@ -49,6 +49,47 @@
   --shadow-2: 0 4px 12px rgba(26, 26, 22, .10), 0 1px 3px rgba(26, 26, 22, .06);
   --shadow-3: 0 12px 32px rgba(26, 26, 22, .14), 0 2px 8px rgba(26, 26, 22, .08);
 
+  /* —— 动效（2026-09 精修）——
+     按职能分档：0 档 = 按下 / 焦点 / 选中切换 / 逐帧数据，一律不过渡（不需要 token）；
+     1 档 = 悬停换色；2 档 = 视图内状态（拨杆钮、展开箭头、菜单与弹出层入场）；3 档 = 模态对话框入场。
+     200ms 封顶；出场一律瞬时。把三档改成 0ms 即一键关掉本轮全部新增过渡。 */
+  --dur-1: 80ms;
+  --dur-2: 120ms;
+  --dur-3: 160ms;
+  --ease-out: cubic-bezier(.22, 1, .36, 1);   /* 入场：前段极快，120ms 体感约 60ms，不让人等 */
+  --ease-std: cubic-bezier(.2, 0, 0, 1);      /* 视图内位移：拨杆钮、展开箭头；无过冲 */
+  --t-state: background-color var(--dur-1) linear, border-color var(--dur-1) linear,
+             color var(--dur-1) linear, box-shadow var(--dur-1) linear, opacity var(--dur-1) linear;
+
+  /* —— 中性悬停 / 按下罩：从 --text 混出，两主题同一条规则，不引入新色相。
+     取值与时间轴步进键（.tl .stg .st）已在用的 8% / 14% 相同。 —— */
+  --wash-hover: color-mix(in srgb, var(--text) 8%, transparent);
+  --wash-press: color-mix(in srgb, var(--text) 14%, transparent);
+  /* 按下反馈：内阴影铺满，纸 / 灰 / 机位色 / 危险色底上都能压出一档，且跟着圆角走 */
+  --press: inset 0 0 0 100vmax var(--wash-press);
+  /* 墨色实底（--primary-fill）上 --text 罩与底同色，压不出来 → 改混 --primary-on，顺着悬停方向再走一步
+     （浅 #1a1a1a→#434343、悬停 #3f3f3f→#626262；深 #bebebb→#a1a1a0）。哪些按钮换用它见 controls.css 按钮段 */
+  --press-ink: inset 0 0 0 100vmax color-mix(in srgb, var(--primary-on) 18%, transparent);
+
+  /* —— 选中填墨 / 墨色主操作 ——
+     主窗（侧栏分段、设置窗、对话框页脚）与雨衰 / 日凌 / PFD / C/I / 性能表 / 频率计划的「选中段」
+     与「主按钮」是墨色实底——老用户认得的身份，浅色下逐字节不变。
+     深色下 --accent = #ececea，整块近白是全屏最亮的东西；故一律走 token，深色压一档。
+     ★ -hover / -disabled / --wash-* / --press 只在这里写一次：它们引用的变量在 <html> 同一元素上
+       按当前主题取值，深色自动跟随，深色块里不要再写一遍。 */
+  --sel-fill: var(--accent);
+  --sel-on: var(--bg);
+  --primary-fill: var(--accent);
+  --primary-on: var(--bg);
+  --primary-fill-hover: color-mix(in srgb, var(--primary-fill) 84%, var(--bg));      /* 浅 #3f3f3f */
+  --primary-fill-disabled: color-mix(in srgb, var(--primary-fill) 38%, var(--surface));
+
+  /* —— 悬停描边：浅色 = 墨（与现状一致），深色软化，免得悬停时闪一圈近白框 —— */
+  --line-hover: var(--accent);
+
+  /* —— 模态遮罩：全软件一档（原 .28/.32/.35/.38/.40/.45 与一个冷蓝黑，共 8 种） —— */
+  --scrim: rgba(26, 26, 22, .30);
+
   /* —— 字体两族 ——
      ui：界面外壳（菜单 / 面板 / 控件 / 表格 / 状态栏）。同类工程软件（STK、MATLAB、COMSOL、
        Origin、Altium）的界面外壳一律无衬线，衬线只出现在输出文档里。
@@ -148,6 +189,11 @@
   --shadow-1: 0 1px 3px rgba(0, 0, 0, .35);
   --shadow-2: 0 4px 14px rgba(0, 0, 0, .45), 0 1px 4px rgba(0, 0, 0, .30);
   --shadow-3: 0 14px 40px rgba(0, 0, 0, .55), 0 3px 10px rgba(0, 0, 0, .35);
+
+  --sel-fill: color-mix(in srgb, var(--text) 76%, var(--surface));   /* ≈ #bebebb，--bg 字 ≈ 9:1 */
+  --primary-fill: var(--sel-fill);                                     /* hover ≈ #a4a4a2，禁用 ≈ #626260 */
+  --line-hover: color-mix(in srgb, var(--text) 62%, var(--surface));  /* ≈ #a2a2a0 */
+  --scrim: rgba(0, 0, 0, .50);
 
   --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23a4a49e' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }

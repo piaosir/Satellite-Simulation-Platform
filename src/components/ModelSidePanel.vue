@@ -1,8 +1,11 @@
 <script setup>
 // 「卫星模型」侧栏视图（活动栏 side='model'；设计契约 §6.3）。3D 页只负责 Teleport 挂载与喂数据。
 //   ① 当前卫星：缩略图 + 模型名 + 来源 / 保真度（署名与许可放 title）+ 尺寸 / 质量读数 + 姿态律 / 挂点数（二期）；
-//      模型下拉（自动 / 无 / 库中模型…）；跟随 / 编辑…（编辑… = 模型工作台「卫星」页：这颗星的姿态律与挂点）
-//   ② 显示：显示模型（拨杆，在节标题上）、图标大小、跟随时的 HUD 八项（常驻，跟随时生效）
+//      模型下拉（自动 / 无 / 库中模型…）；
+//      跟随 / 编辑…（编辑… = 模型工作台「卫星」页：这颗星的姿态律与挂点）
+//   ② 显示：显示模型（拨杆，在节标题上；卫星与标记共用）、图标大小（所有卫星模型统一一个值，不逐颗设；标记挂的模型跟标记自己的图标大小，
+//      在标记侧栏，模型与图标共用一个设置）、跟随时的 HUD 八项（常驻，跟随时生效）
+//   图标大小一律是【默认视角下】的像素，球面上随缩放联动（拉近变大、拉远变小，与标记 / 地名同一把尺，见 viz/globe3d/zoomScale.js）
 //   ③ 模型库：搜索 + 来源分段 + 缩略图网格（点卡片 = 绑定到当前卫星；右键：下载 / 移除缓存 / 在工作台中打开）
 //   ④ 底部「模型工作台」
 // 绑定写回由页面做（要与已有的挂点 / 姿态律合并，见 ConstellationMap3D 的 bindModel）；缩略图、下载、移除、开工作台直接走 IPC。
@@ -270,7 +273,7 @@ const HUD = [
     <div class="sec" :class="{ hid: !st.modelOn }">
       <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><span class="lnk" title="本节恢复出厂设置" @click.stop="emit('reset-style')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星改回画点、标记改回图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
       <template v-if="isSecOpen('mdl-disp')">
-        <div class="srow" title="模型包围半径的屏幕像素 × 2；卫星与标记实体共用，标记可逐个覆盖"><label>图标大小</label><input class="rng" type="range" min="8" max="256" step="2" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
+        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围半径屏幕像素 × 2，拉近变大、拉远变小；所有卫星统一。标记挂的模型跟标记自己的图标大小', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="4" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
         <div class="hudt" title="跟随卫星时叠加的方向指示">HUD</div>
         <label v-for="h in HUD" :key="h.k" class="chk2" :title="h.en ? zhEn(h.tt, h.ttEn) : (h.tt || '')"><input type="checkbox" :checked="st[h.k]" @change="emit('set-style', h.k, $event.target.checked)" /><span>{{ h.en ? zhEn(h.t, h.en) : h.t }}</span></label>
       </template>

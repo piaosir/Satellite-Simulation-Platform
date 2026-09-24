@@ -341,3 +341,18 @@ build/models/
 build/review/
 # 离屏验证台（模型工作台 / 3D 球模型层：真 Electron 窗口里载夹具出截图、量帧时与堆），本地开发用，不进仓库
 .modelharness/
+# 界面精修对照台（屏外 Electron 窗口逐状态截整窗 PNG，改前 / 改后并排比），本地开发用，不进仓库
+.polishharness/
+# 「发送到小程序 · 覆盖快照」目标卫星 / 覆盖名称验证台（npx vite --config .covsendharness/vite.config.mjs，launch.json 的 covsend-harness）：
+# 挂真 MiniSendDialog + 真 covMiniExport，window.api 打桩，验手动指定 / 改名 / 记住自定义星的交互与版式。
+.covsendharness/
+# 「航迹 → 小程序卫星覆盖」端到端验证台（node .trajharness/gen.mjs）：平台 trajMiniExport 打包 → 真 share.boxSend / putSnapshot →
+# 内存 COS → 真云函数 → 真 satsimBox / satsimPack → 覆盖页（Page 桩）航迹层；大圆 / 航程 / 朝向与 trajKinematics 对拍，图标 PNG 解码验像素。
+.trajharness/
+# 解析高斯天线（STK Gaussian）验证台（npx vite --config .gaussharness/vite.config.mjs，launch.json 的 gauss-harness）
+.gaussharness/
+# 覆盖安装「暂存 + 整目录换上」（build/installer.nsh）端到端验证台：node .updharness/run.mjs build → test → clean。
+# 以 --prepackaged release/win-unpacked 用真 electron-builder 打三个隔离测试包（appId com.satsim.updharness、exe 卫星仿真测试、
+# name satsim-updtest、快捷方式全关），真跑 NSIS 安装 / 更新 / 卸载并在各阶段强杀，核对安装目录恒为完整旧版或完整新版；
+# 工作目录默认 %TEMP%\satsim-updharness（峰值约 5 GB，不在仓库里）。★ 测试包里的 app.asar 仍是正式包：别带 --force-run 跑。
+.updharness/

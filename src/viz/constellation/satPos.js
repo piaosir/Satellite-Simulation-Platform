@@ -3,6 +3,8 @@
 // 两种传播体，同一个 posAt、同一种返回形状，调用方不必分支：
 //   satrec（SGP4/SDP4，来自 OMM / TLE / 六根数）        -> satellite.js 的 propagate
 //   ephem 表（时间标签位置序列，来自 .e / OEM / SP3）    -> ephemTable.js 的插值
+//   另：satrec 上挂了 __fix（天线树里的同步轨道定点星，见 viz/grd/treeGeo.js）→ 钉在地固系定点上：
+//       TEME = Rz(−GMST)·r_ECEF、速度 = ω⊕ × r；那份 satrec 只供读数，不拿来推演。
 // 两者都返 { position:{x,y,z}, velocity:{x,y,z} }（TEME，km / km·s⁻¹）或 null。
 //   satrec 的 null = SGP4 报错 / 位置非有限；ephem 的 null = 查询时刻【落在采样时段之外】
 //   （口径：不外推、不钉端点，该星此刻不画、不参与几何）。
@@ -26,10 +28,22 @@ export const isEphemEntry = (e) => !!(e && e.eph && e.eph.__ephem)
 
 const wrap = (r) => (r ? { position: { x: r.x, y: r.y, z: r.z }, velocity: { x: r.vx, y: r.vy, z: r.vz } } : null)
 
+// 定点（__fix.r = 地固系 km）在 GMST = g（rad）时刻的 TEME 位置 / 速度。与 satellite.js eciToEcf 互逆（同一个 gstime）
+const WE = 7.292115146706979e-5          // 地球自转角速度 rad/s（WGS-84）
+export const SIDEREAL_MIN = 1436.0681743 // 恒星日（min）：定点星的「周期」—— 轨道圈画一整圈恰好闭合
+function fixPv(f, g) {
+  const r = f && f.r
+  if (!r || !Number.isFinite(g)) return null
+  const c = Math.cos(g), s = Math.sin(g)
+  const X = r[0] * c - r[1] * s, Y = r[0] * s + r[1] * c
+  return { position: { x: X, y: Y, z: r[2] }, velocity: { x: -WE * Y, y: WE * X, z: 0 } }
+}
+
 // 通用取位。t 可以是 Date 或 UTC 毫秒。任何情况下都不抛。
 export function posAt(x, t) {
   const o = propOf(x)
   if (!o) return null
+  if (o.__fix) return fixPv(o.__fix, sat.gstime(t instanceof Date ? t : new Date(Number(t))))
   if (o.__ephem) return wrap(evalTable(o, t instanceof Date ? t.getTime() : Number(t)))
   const d = t instanceof Date ? t : new Date(Number(t))
   let pv
@@ -47,6 +61,7 @@ export function posAtMs(x, tMs, jd) {
   if (o.__ephem) return wrap(evalTable(o, tMs))
   if (!_sgp4) return posAt(o, tMs)
   const j = jd === undefined ? tMs / MS_PER_DAY + JD_UNIX : jd
+  if (o.__fix) return fixPv(o.__fix, sat.gstime(j))
   let pv
   try { pv = _sgp4(o, (j - o.jdsatepoch) * MIN_PER_DAY) } catch { return null }
   if (!pv || !pv.position || (o.error && o.error !== 0)) return null
@@ -57,6 +72,7 @@ export function posAtMs(x, tMs, jd) {
 export function propagatorLabel(x) {
   const o = propOf(x)
   if (!o) return ''
+  if (o.__fix) return '定点'
   if (o.__ephem) return '星历点序列'
   return o.method === 'd' ? 'SDP4' : 'SGP4'
 }
@@ -73,6 +89,7 @@ export function validSpan(x) {
 export function periodMinOf(x) {
   const o = propOf(x)
   if (!o) return null
+  if (o.__fix) return SIDEREAL_MIN
   if (o.__ephem) { const m = metricsFromEphem(o); return m ? m.periodMin : null }
   return periodMinFromNo(o.no)
 }

@@ -17,10 +17,12 @@ defineProps({
 <template>
   <section class="lbx-sec" :data-sec="id">
     <header class="lbx-sec-hd" :class="{ chain: flow === 'chain' }">
-      <span class="lbx-sec-t">{{ title }}</span>
-      <span v-if="no" class="lbx-sec-no">#{{ no }}</span>
-      <span v-if="count >= 0" class="lbx-sec-n">{{ count }}</span>
-      <span v-if="summary" class="lbx-sec-sum" :title="summary">{{ summary }}</span>
+      <span class="lbx-sec-tt">
+        <span class="lbx-sec-t">{{ title }}</span>
+        <span v-if="no" class="lbx-sec-no">#{{ no }}</span>
+        <span v-if="count >= 0" class="lbx-sec-n">{{ count }}</span>
+        <span v-if="summary" class="lbx-sec-sum" :title="summary">{{ summary }}</span>
+      </span>
       <span class="lbx-sec-sp"></span>
       <!-- 节级动作 -->
       <span class="lbx-sec-acts"><slot name="actions" /></span>
@@ -44,6 +46,9 @@ defineProps({
   border-bottom: 2px solid var(--lb-rule-strong);
   user-select: none;
 }
+/* 标题侧（节名 / 行号 / 计数 / 摘要）单独成一组按基线对齐：四者字号不同，跟着节头 center 对齐时
+   小字比节名的基线高出 1–2px；节级动作按钮仍在外层居中。 */
+.lbx-sec-tt { display: flex; align-items: baseline; gap: 7px; flex: 0 1 auto; min-width: 0; }
 .lbx-sec-t { font-size: calc(var(--lb-fs, 11px) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); white-space: nowrap; }
 /* 行号小标：与链路表里被点亮那一行的序号格、与表脚「本行读数」的 .lbx-rr-no 三处严格同形
    （实底 accent-ui + var(--bg) 的字）。字号取数据区基准而不是节标题的 +2px —— 实底块跟着标题

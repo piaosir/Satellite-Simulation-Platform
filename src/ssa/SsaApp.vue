@@ -827,16 +827,19 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
-.lb-side { flex: none; position: relative; transition: width .15s ease; }
+/* 栏宽不过渡：拖宽是逐帧跟手的，过渡只会让栏宽落后指针一截 */
+.lb-side { flex: none; position: relative; }
 .lb-side.resizing { transition: none; user-select: none; }
 .lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
 .lb-cfg-resizer:hover, .lb-side.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
 /* 检查器的拖宽缝在【左】缘：它贴在窗口右沿，往右拖是收窄（见 startResize 的取负） */
 .ssa-insp-resizer { right: auto; left: 0; }
 .lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
-.lb-configs .lb-col-bd { padding: 10px 8px; scrollbar-width: thin; }
+/* 不写标准的滚动条宽度 / 颜色属性：Chromium 121+ 见到它就整条忽略 ::-webkit-scrollbar，滚动条退回系统粗条 */
+.lb-configs .lb-col-bd { padding: 10px 8px; }
 .lb-insp { border-right: none; border-left: 1px solid var(--border); }
-.lb-insp .lb-col-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; gap: 5px; scrollbar-width: thin; }
+.lb-insp .lb-col-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-3); }
+.lb-insp .lbx-sla-cap { margin-top: 8px; }
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
@@ -846,15 +849,17 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
 .lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { opacity: .88; }
+/* 机位色主按钮悬停（P1）：换深一档底色，字色显式写 --bg——半透明悬停会把底下的纸色透上来 */
+.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 10px 0; }
 .lb-cfg-acts { display: flex; gap: 4px; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
 .lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
+/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
+.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
@@ -874,7 +879,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .ssa-main { flex: 1; min-height: 0; display: flex; }
 .ssa-toc {
   flex: none; width: 168px; min-width: 0; display: flex; flex-direction: column; gap: 1px;
-  padding: 10px 6px; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); scrollbar-width: thin;
+  padding: 10px 6px; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border);
 }
 .ssa-toc-i {
   display: flex; align-items: baseline; gap: 6px; padding: 3px 7px; cursor: pointer; text-align: left; font: inherit;
@@ -905,17 +910,22 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .ssa-cap-btn { flex: none; }
 /* 筛选行：左标签 + 右「n 项 / 不限」按钮。用 .lb-mini 而不是 .ci —— .ci 的选择器是
    input.ci/select.ci/textarea.ci，套在 button 上一条都拿不到，看着不像控件。 */
-.ssa-pickrow .ssa-pickbtn { flex: 1; min-width: 0; justify-content: flex-start; }
+/* 与同栏的输入框（.ci）同高同字号：.lb-mini 的 3px 内距 + 行高 1 只有 19px，比邻行矮一截 */
+.ssa-pickrow .ssa-pickbtn { flex: 1; min-width: 0; justify-content: flex-start; height: var(--h-ctl); padding: 0 7px; font-size: var(--fs-3); }
 .ssa-pickbtn.on { color: var(--accent-ui); border-color: var(--accent-ui); }
 /* 「报告主体」两档：复用功能区「单位」那件分段控件（lbworkbench.css 的 .lbu-seg），两档同时在屏上，
    不必拉开下拉才知道另一档是什么 —— 这一行正是整个窗口最容易读错的一处。铺满参数行、段内等分。 */
+.srow > input.ci[inputmode="decimal"] { text-align: right; font-variant-numeric: tabular-nums; }
 .srow > .lbu-seg { flex: 1 1 auto; min-width: 0; }
-.srow > .lbu-seg > button { flex: 1 1 auto; }
+.srow > .lbu-seg > button { flex: 1 1 auto; height: var(--h-ctl); padding-top: 0; padding-bottom: 0; font-size: var(--fs-3); }
 /* 区制 / 类型这两维只有四到六个取值，整行铺开比再点开一层浮层快 —— 它们是参数不是图层，故仍是复选框 */
 .ssa-chips { align-items: flex-start; }
 .ssa-chipbox { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 3px; }
-.ssa-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--r-pill); font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.ssa-chip { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px; height: var(--h-ctl-sm); border: 1px solid var(--border); border-radius: var(--r-ctl); font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .ssa-chip:hover { color: var(--text); border-color: var(--border-strong); }
+/* 取值芯片是 <label> 不是 <button>，吃不到全局按钮的过渡与按下罩，就地补（P8） */
+label.ssa-chip { transition: var(--t-state); }
+label.ssa-chip:active { box-shadow: var(--press); transition-duration: 0s; }
 .ssa-chip.on { color: var(--accent-ui); border-color: var(--accent-ui); }
 .ssa-chip input { margin: 0; }
 /* 每一维排头的「不限」：一个都没勾时亮的就是它（芯片全灭与「全选」在屏上长得一样，分不出），

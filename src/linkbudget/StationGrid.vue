@@ -1224,7 +1224,7 @@ function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/m
 function markerSections() {
   const mk = readMarkers()
   const groups = []
-  const pts = (mk.points || []).map((p, i) => ({ id: 'pt:' + (p.id || i), name: '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
+  const pts = (mk.points || []).map((p, i) => ({ id: 'pt:' + (p.id || i), name: String(p.name || '').trim() || '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
   const sts = (mk.stations || []).map((s, i) => ({ id: 'st:' + (s.id || i), name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
   if (pts.length) groups.push({ id: 'points', name: '点标记', nameEn: 'Points', items: pts })
   if (sts.length) groups.push({ id: 'stations', name: '地球站', nameEn: 'Earth Stations', items: sts })
@@ -1631,6 +1631,8 @@ function clearColContents() {
 .sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sg-btn:disabled { opacity: .4; cursor: not-allowed; }
 .sg-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
+/* 主按钮悬停：加深一档机位色，字色钉 --bg（通用 .sg-btn 悬停会把字染成 --text，蓝底黑字） */
+.sg-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .sg-btn.on { color: var(--text); border-color: var(--accent); }
 
 .sg-scroll { flex: 1; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
@@ -1643,7 +1645,9 @@ function clearColContents() {
    （冻结线覆盖条 .sg-fzbar 在滚动容器之外，与本表无关）
    前提是 .sg-cell 自成层叠上下文（见下方 z-index:0）：格内浮层（下拉箭头/填充柄/捕获输入框 z3–6）
    只在格内互相排序。否则它们会越过 td 直接与表头比大小——滚动时小箭头、填充柄浮在标题行上面。 */
-.sg-tbl th { position: sticky; top: 0; z-index: 3; padding: 3px 7px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--bg); }
+/* 只有左内距 6px（= 数据格 .sg-v 的内距）：列头文字与列值左缘对齐（原 7px 错开 1px）；
+   右内距 8px，左右合计仍 14px——由列头撑宽的列不变窄，右侧各列不左移 */
+.sg-tbl th { position: sticky; top: 0; z-index: 3; padding: 3px 8px 3px 6px; font-weight: 600; color: var(--text-muted); text-align: left; background: var(--bg); }
 .sg-tbl thead tr:last-child th { border-bottom: 1px solid var(--lb-rule); }
 /* —— 两层表头（列组行）与分区区分度 ——
    组行贴顶、字段行整体下移一行高（20px，与下方 top 同步）；序号角格(sg-gpad)抬高层级盖住横滚组名。
@@ -1652,7 +1656,7 @@ function clearColContents() {
    （撤通栏线改分段 cmidrule + 组间留一道空白列距），在这种全格线密排表里读起来是「少画了根格线」
    而非「这里是分区」，已否决——留白当分隔符的前提是稀疏排版，勿再重来。
    组标题原为 --text-faint，比它管辖的列头(--text-muted)还淡、层级倒挂，一并提到 muted/700。 */
-.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 7px; font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-caps); color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
+.sg-tbl.has-g thead tr.sg-ghd th { top: 0; height: 20px; padding: 2px 8px 2px 6px; font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-caps); color: var(--text-muted); z-index: 4; border-bottom: 1px solid var(--lb-rule); }
 .sg-tbl.has-g thead tr.sg-ghd th.sg-gpad { z-index: 6; }
 .sg-tbl.has-g thead tr:not(.sg-ghd) th { top: 20px; }
 .sg-glbl { vertical-align: middle; }
@@ -1671,12 +1675,15 @@ function clearColContents() {
 .sg-addlbl:hover { color: var(--accent); border-color: var(--border); background: var(--surface); }
 .sg-tbl th.sg-hcol { cursor: pointer; }
 .sg-tbl th.sg-hcol:hover { color: var(--text); }
-.sg-tbl th.colsel { background: color-mix(in srgb, var(--accent-ui) 24%, var(--surface-2)); color: var(--text); }
+/* 选中列表头与 ExcelGrid 同一色（机位色 22% 兑纸色，仍不透明——sticky 表头要盖住滚过的行） */
+.sg-tbl th.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--bg)); color: var(--text); }
 .sg-tbl th i { color: var(--text-faint); font-style: normal; font-weight: 400; }
 .sg-tbl tbody tr.on > td { background: var(--surface-2); }
 /* 冻结：选择列(固定 40px) + 名称区(从首列冻结到城市/名称字段，可能不止 1 列，left 由 keyColStyle() 按列动态算) */
 .sg-tbl th.sg-sel, .sg-tbl td.sg-sel { position: sticky; left: 0; z-index: 2; width: 34px; min-width: 34px; max-width: 34px; padding: 3px 2px; text-align: center; white-space: nowrap; }
 .sg-tbl thead th.sg-sel { z-index: 5; }
+/* 表头全选框按行高居中（基线对齐时比同行列头文字低 1–2px） */
+.sg-tbl th.sg-sel input[type="checkbox"] { vertical-align: middle; }
 .sg-tbl td.sg-sel { cursor: pointer; user-select: none; }
 .sg-tbl td.sg-sel:hover { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
@@ -1705,7 +1712,7 @@ function clearColContents() {
    格子引用 var(--sgw)（常量串）。规则放在 .sg-kw 之后：同特异度，定过宽的出厂关键列以定宽为准。 */
 .sg-tbl th.sg-wset { width: var(--sgw); min-width: var(--sgw); max-width: var(--sgw); }
 .sg-ht { display: block; overflow: hidden; text-overflow: ellipsis; }
-.sg-tbl th.sg-wset .sg-ht { width: calc(var(--sgw) - 15px); }   /* 7px×2 内边距 + 1px 右框 */
+.sg-tbl th.sg-wset .sg-ht { width: calc(var(--sgw) - 15px); }   /* 左6+右8内边距+1px右框 */
 .sg-tbl td.sg-wset .sg-v, .sg-tbl td.sg-wset .sg-sub { box-sizing: border-box; width: calc(var(--sgw) - 1px); min-width: 0; }
 /* 列边界线拖拽：光标压在边界 ±4px 内整个容器转 col-resize（格子自带的 cell / pointer 光标要 !important 才压得过）；
    拖动中 .sg-rzline 是跟着光标走、贯穿整表高的引导线（同冻结预览线画法，放在滚动容器之外） */
@@ -1773,8 +1780,9 @@ function clearColContents() {
 /* 拖动中的落点预览线（松手才真冻结，与 Excel 拖冻结条一致） */
 .sg-fzprev { position: absolute; width: 2px; margin-left: -1px; z-index: 9; pointer-events: none; background: var(--accent); }
 
-.sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; }
+/* 对话框口径（spec P6）：遮罩全软件一档 --scrim、瞬时出现；框体 160ms 入场 */
+.sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .sg-box-sm { width: 320px; }
 .sg-box-hd { padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .sg-search { margin: 10px 12px; padding: 6px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
@@ -1800,13 +1808,18 @@ function clearColContents() {
 
 /* 右键菜单（Excel 式）：满屏遮罩拦截点击关闭 + 浮层菜单 */
 .sg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2); display: flex; flex-direction: column; }
-.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px); white-space: nowrap; }
-.sg-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
+/* 命令菜单口径（spec P3）：浮层圆角、光标处淡入、悬停机位色实底（与菜单栏 / 其它右键菜单同）；
+   外框内距 4px → 项圆角 --r-ctl 与外框同心 */
+.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
+.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl); white-space: nowrap; }
+.sg-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
 .sg-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
-.sg-ctx-i.danger:hover { color: var(--danger); }
+.sg-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
 .sg-ctx-i kbd { font: inherit; font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); padding: 0 4px; }
-.sg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+/* 悬停项里的快捷键跟随字色退半档；键帽的浅灰底去掉，否则实底上是一块浅灰里的白字 */
+.sg-ctx-i:hover:not(:disabled) :is(kbd, em, small, span + span) { color: inherit; opacity: .7; }
+.sg-ctx-i:hover:not(:disabled) kbd { background: transparent; border-color: currentColor; }
+.sg-ctx-sep { height: 1px; margin: 3px 6px; background: var(--border); }
 
 /* select 单元格下拉指示 chevron：单击即开的热区，pointer-events 高于透明捕获框(.sg-cap z3) */
 /* top:10px（首行 ~19px 行高的中线）而非 50%：单行格与 50% 等效，双行格（配置名+第二行小字）时 chevron 仍贴首行的配置名 */

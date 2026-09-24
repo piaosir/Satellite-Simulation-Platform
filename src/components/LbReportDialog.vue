@@ -318,12 +318,14 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 
 <style scoped>
 /* 与工作台其它对话框同一套控件语言（方角、细边、衬线数字），只是宽一档——元信息有十栏要填 */
-.rd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.rd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
 .rd {
   width: 560px; max-height: 88vh; display: flex; flex-direction: column;
   font-family: var(--lb-serif, var(--font-serif));
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
   box-shadow: var(--shadow-3); overflow: hidden;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out);
 }
 .rd-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
@@ -380,12 +382,14 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }
 .rd-ptext { margin-top: 4px; font-size: var(--fs-2); color: var(--text-muted); }
 .rd-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+/* 定高 --h-ctl（原靠内距撑出 21px）；主钮机位色，悬停压深一档、字色显式 --bg（通用悬停会把字染成 --text） */
 .rd-btn {
-  font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 12px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl);
+  font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 12px; cursor: pointer;
   background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .rd-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rd-btn:disabled { opacity: .45; cursor: not-allowed; }
 .rd-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.rd-btn.primary:hover:not(:disabled) { opacity: .88; }
+.rd-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

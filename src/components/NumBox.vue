@@ -52,11 +52,11 @@ function onKey(e) {
   if (e.key === 'Enter') e.target.blur()
   else if (e.key === 'Escape') { draft.value = null; e.target.blur() }
 }
-// 滚轮：Chromium 在输入框带焦点时把滚轮当微调轮使，侧栏一滚数值就被悄悄改掉 → 焦点在本格时吃掉它
-function onWheel(e) { if (e.target === document.activeElement) e.preventDefault() }
+// 滚轮误改数值的防护不在本组件：shared/ui/controls.js 在 document 捕获阶段先把带焦点的数字框 blur 掉。
+// 这里别再挂 @wheel —— 非 passive 的滚轮监听会让经过数字框的滚动回到主线程（主线程正在逐帧画球）。
 </script>
 
 <template>
   <input type="number" :value="shown" :min="min" :max="max" :step="step" :placeholder="placeholder" :disabled="disabled"
-    @input="onInput" @change="commit" @blur="commit" @keydown="onKey" @wheel="onWheel" />
+    @input="onInput" @change="commit" @blur="commit" @keydown="onKey" />
 </template>

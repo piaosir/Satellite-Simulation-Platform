@@ -30,7 +30,7 @@
 import { ref, reactive, computed } from 'vue'
 import sat from '../constellation/satellite.js'
 import { posAt } from '../constellation/satPos.js'   // 取位的唯一入口（对星覆盖不收星历点序列，见 satcovReject）
-import { sampleBeamAtEcef, sampleBeamAtParam, invGridDir, perturbSpacecraft, antennaBasis, axialRatioDb, beamBasisFrom, boreSettingsAtPos, azElGround, pointRevOf } from './coverage.js'
+import { sampleBeamAtEcef, sampleBeamAtParam, invGridDir, perturbSpacecraft, antennaBasis, axialRatioDb, beamBasisFrom, boreSettingsAtPos, azElGround, pointRevOf, refinedPeakDb as covRefinedPeakDb } from './coverage.js'
 import { losBlocked } from './shellProj.js'
 import { scanWindows, summarize } from './satcovScan.js'
 import { A } from '../wgs84.js'
@@ -155,6 +155,53 @@ export function pointingSig(st, meta) {
   let dLon = bl - num(m.satLon); dLon = ((dLon % 360) + 540) % 360 - 180
   return { k: 'geoU', v: [dLon, num(st.boreLat) - num(m.satLat), yaw], a: [true, false, true], tol: 1e-2 }
 }
+// 上下文里 beams 对应的方向图修订号（grd.getPerfContext 给 ctx.anRev；老调用方 / 单测手搓的 ctx 没有 → 退活 meta，再退 0）
+const anRevOfCtx = (ctx) => (ctx && Number.isFinite(ctx.anRev) ? ctx.anRev : ((ctx && ctx.meta && ctx.meta.anRev) || 0))
+// 任意时刻的天线几何（时段扫描 / 对地性能表按航点时刻取值共用）：
+//   ctx   — grd.getPerfContext(key)（settings / meta 取【开扫那一刻】的一份，指向字段按各自语义随星位重算）
+//   times — satcovTimes()（now / ccNow：合成星走场景历元轴，差值 ccOff 加到它们自己的星历时刻上）
+//   env   — { srcRec: 源星星历 | null（固定星恒定）, boreRec: 对星指向的目标星星历 | null, attAt: 姿态 + 挂点钩子 | null }
+// 返回 { ccOff, srcMetaAt(tMs) → {satLon, satLat, satAlt} | null（解不出）, geoAt, ecefAt, basisAt(tMs, meta) → 基底 }
+function pvGeo(pv, gm) {
+  const gd = sat.eciToGeodetic(pv.position, gm)
+  return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), alt: gd.height }
+}
+export function perfGeomOf(ctx, times, env = {}) {
+  const st0 = ctx.settings, meta0 = ctx.meta
+  const ccOff = times && times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
+  const baseMeta = { satLon: meta0.satLon, satLat: meta0.satLat || 0, satAlt: meta0.satAlt }
+  const srcRec = env.srcRec || null
+  const srcOff = srcRec && srcRec._cc ? ccOff : 0
+  // 源星位置：有星历按星历走，固定星恒定。口径与实时路一致（星下点 lon/lat/alt）
+  const srcMetaAt = srcRec
+    ? (tMs) => {
+      const d = new Date(tMs + (srcRec._cc ? ccOff : 0))
+      const pv = posAt(srcRec, d)
+      if (!pv || !pv.position) return null
+      const g = pvGeo(pv, sat.gstime(d))
+      return { satLon: g.lon, satLat: g.lat, satAlt: g.alt }
+    }
+    : () => baseMeta
+  const geoAt = (rec, tMs) => {
+    const d = new Date(tMs)
+    const pv = posAt(rec, d)
+    if (!pv || !pv.position) return null
+    const gm = sat.gstime(d), e = sat.eciToEcf(pv.position, gm), g = pvGeo(pv, gm)
+    return { P: [e.x, e.y, e.z], lon: g.lon, lat: g.lat, alt: g.alt }
+  }
+  const ecefAt = (rec, tMs) => { const r = geoAt(rec, tMs); return r ? r.P : null }
+  const boreRec = env.boreRec || null
+  const needBore = st0.boreType === 'sat' || st0.boreType === 'satoff'
+  const boreAt = (tMs) => (boreRec ? ecefAt(boreRec.rec, tMs + (boreRec._cc ? ccOff : 0)) : null)
+  // 姿态 + 挂点：挂点轴随时刻由宿主给（与实时路 hooks.getAttAxes 同一口径，只是时刻由扫描定）；缺钩子 / 解不到 → 退天底
+  const needAtt = st0.boreType === 'att'
+  const attFn = needAtt && typeof env.attAt === 'function' ? env.attAt : null
+  const attAt = (tMs) => { if (!attFn) return null; try { return attFn(tMs, tMs + srcOff) } catch { return null } }
+  // 某时刻的天线基底：源星走到哪 → 指向字段按各自语义重算 → 基底
+  const basisAt = (tMs, m) => beamBasisFrom(m, boreSettingsAtPos(st0, baseMeta, { lon: m.satLon, lat: m.satLat }), needBore ? boreAt(tMs) : null, needAtt ? attAt(tMs) : null)
+  return { ccOff, srcMetaAt, geoAt, ecefAt, basisAt }
+}
+
 export function samePointing(p, q) {
   if (!p || !q) return p === q
   if (p.k !== q.k || p.v.length !== q.v.length) return false
@@ -183,7 +230,10 @@ export function useSatPerfTable() {
       winNote: ref(''),
       winInfo: ref(null),         // { t0Ms, t1Ms, bands, nTarget, nLit, nWin, samples, ms, budgetHit, minStepHit, truncated }
       winFp: ref(''),
-      winPt: null,                // 出这份结果时的指向指纹 { st, meta, sig, rev }（st / meta 是缓存里那两份活对象，过期判断现读）
+      winPt: null,                // 出这份结果时的指向指纹 { st, meta, sig, rev, anRev }（st / meta 是缓存里那两份活对象，过期判断现读）
+      // 这张表见过的最新方向图修订号（ctx.anRev / meta.anRev，解析天线就地改参 +1）。meta 不是响应式的，
+      // 这个 ref 只为让 winStaleFor 的读者（宿主推送的 watch）在表按新方向图重算的那一拍跟着重跑、把「输入已变」推出去
+      patRev: ref(0),
       winToken: 0,
       winEnv: null                // 扫完留下的取值环境：游标每挪一下按它现算一张瞬时表
     }
@@ -351,24 +401,9 @@ export function useSatPerfTable() {
     return { min: baseDb + lo, max: baseDb + hi }
   }
 
-  // 真峰值 dB（相对峰值口径的扣减基准）：与对地表同法，按 beam×pol 记忆化
-  function refinedPeakDb(beam, pol) {
-    const k = '_pk_' + pol
-    if (beam[k] !== undefined) return beam[k]
-    const { P1, P2, grid } = beam, NX = grid.NX, NY = grid.NY, N = NX * NY
-    const pw = (i) => { const a = P1[i], b = P2 ? P2[i] : 0
-      return pol === 'P1' ? a : pol === 'P2' ? b : pol === 'RSS' ? a + b : pol === 'P1/P2' ? (b > 0 ? a / b : 0) : pol === 'P2/P1' ? (a > 0 ? b / a : 0) : a }
-    let mi = 0, mv = -Infinity
-    for (let i = 0; i < N; i++) { const v = pw(i); if (v > mv) { mv = v; mi = i } }
-    if (!(mv > 0)) { beam[k] = null; return null }
-    const r = (mi / NX) | 0, c = mi % NX
-    const inc = (fm, f0, fp) => { const den = 2 * f0 - fm - fp; return den > 0 ? (fp - fm) * (fp - fm) / (8 * den) : 0 }
-    let peak = mv
-    if (c > 0 && c < NX - 1) peak += inc(pw(mi - 1), mv, pw(mi + 1))
-    if (r > 0 && r < NY - 1) peak += inc(pw(mi - NX), mv, pw(mi + NX))
-    beam[k] = peak > 0 ? 10 * Math.log10(peak) : null
-    return beam[k]
-  }
+  // 真峰值 dB（相对峰值口径的扣减基准）：本体在 coverage.refinedPeakDb（与对地表 / 覆盖同一份、同一个 beam×pol 记忆化键；
+  // 解析天线直接给闭式 g0）。这里原先抄了一份网格算法 —— 解析天线会被它按格点抛物线重算，口径就分了叉
+  const refinedPeakDb = covRefinedPeakDb
 
   // ==================== 取值内核（瞬时表与时段表共用）====================
   // 一次建好本轮的全部口径量（极化/路径损耗/波束筛选/网格盒/壳层表），之后逐目标只调它的方法。
@@ -532,7 +567,10 @@ export function useSatPerfTable() {
   // keyForNull — ctx 为 null（清表）时指哪张表；缺省当前表
   function compute(ctx, opts, targets, times, shells, hExKm = 0, keyForNull) {
     if (!ctx) { const s = sess(keyForNull || activeKey.value); s.rows.value = []; s.ctxInfo.value = null; s.ctxBeams.value = []; s.note.value = ''; s.stampMs.value = null; return }
+    // 源星是关联星、此刻解不出星历（grd.getPerfContext 标 noEph）：清表，只留状态本身 —— 不按停着的旧星位出数
+    if (ctx.noEph) { const s = sess(ctx.key || activeKey.value); s.rows.value = []; s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: 0 }; s.ctxBeams.value = []; s.note.value = '关联卫星当前无星历'; s.stampMs.value = null; return }
     const s = sess(ctx.key || activeKey.value)
+    s.patRev.value = anRevOfCtx(ctx)   // 方向图换了的那一拍：时段结果的「输入已变」跟着推出去（见 winPatStale）
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
     s.stampMs.value = times && times.now ? times.now.getTime() : null
     const o = opts || defaultOpts()
@@ -581,7 +619,14 @@ export function useSatPerfTable() {
     if (same && !att) p.rev = pointRevOf(p.st)                // 改了又改回来：吸收这次计数，之后的程序性漂移照旧不比
     return !same
   }
-  const winStaleFor = (key) => { const s = sess(key); return !s.winInfo.value || s.winFp.value !== winSig(key) || winPtStale(s) }
+  // 方向图另比：解析天线就地改参（同 key 换方向图，updateAnalyticAntenna 给活 meta 的 anRev +1）→ 扫出来的时段是旧方向图的。
+  // 修订号按活 meta 现读（准）；先读一下 s.patRev 只为建立响应式依赖（见 newSession）。没有「改回来」一说：变过就算变。
+  const winPatStale = (s) => {
+    void s.patRev.value
+    const p = s.winPt
+    return !!(p && p.meta && (p.meta.anRev || 0) !== (p.anRev || 0))
+  }
+  const winStaleFor = (key) => { const s = sess(key); return !s.winInfo.value || s.winFp.value !== winSig(key) || winPtStale(s) || winPatStale(s) }
   function cancelWindows(key) { const s = sess(key || activeKey.value); s.winToken++; s.win.busy = false; s.win.msg = '已取消' }
 
   // 开表 / 切表：目标星名单、来源档、时窗设置都切到这根天线自己那份（没有就现开一份空的）。
@@ -624,41 +669,8 @@ export function useSatPerfTable() {
   //                 tPosMs = 源星取星位的时刻（源星自己的历元轴）：自定义星座星（_cc）= tMs + ccOff，其它 = tMs。
   //                 宿主拿 tPosMs 传播源星（与 srcMetaAt 取星位同一刻，挂点轴用的星位与这里的基底 S 才对得上），拿 tMs 定太阳 / 目标。
   //   ★ 早先只传一个 tMs + srcOff：自定义星座星的太阳 / 目标也跟着挪了 ccOff，与实时路（只挪星位）不一致（ccOff ≡ 0 时无差别）
-  function makeGeom(ctx, times, env) {
-    const st0 = ctx.settings, meta0 = ctx.meta
-    const ccOff = times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
-    const baseMeta = { satLon: meta0.satLon, satLat: meta0.satLat || 0, satAlt: meta0.satAlt }
-    const srcRec = env.srcRec || null
-    const srcOff = srcRec && srcRec._cc ? ccOff : 0
-    // 源星位置：有星历按星历走，固定星恒定。口径与实时路一致（星下点 lon/lat/alt）
-    const srcMetaAt = srcRec
-      ? (tMs) => {
-        const d = new Date(tMs + (srcRec._cc ? ccOff : 0))
-        const pv = posAt(srcRec, d)
-        if (!pv || !pv.position) return null
-        const g = geoOf(pv, sat.gstime(d))
-        return { satLon: g.lon, satLat: g.lat, satAlt: g.alt }
-      }
-      : () => baseMeta
-    const geoAt = (rec, tMs) => {
-      const d = new Date(tMs)
-      const pv = posAt(rec, d)
-      if (!pv || !pv.position) return null
-      const gm = sat.gstime(d), e = sat.eciToEcf(pv.position, gm), g = geoOf(pv, gm)
-      return { P: [e.x, e.y, e.z], lon: g.lon, lat: g.lat, alt: g.alt }
-    }
-    const ecefAt = (rec, tMs) => { const r = geoAt(rec, tMs); return r ? r.P : null }
-    const boreRec = env.boreRec || null
-    const needBore = st0.boreType === 'sat' || st0.boreType === 'satoff'
-    const boreAt = (tMs) => (boreRec ? ecefAt(boreRec.rec, tMs + (boreRec._cc ? ccOff : 0)) : null)
-    // 姿态 + 挂点：挂点轴随时刻由宿主给（与实时路 hooks.getAttAxes 同一口径，只是时刻由扫描定）；缺钩子 / 解不到 → 退天底
-    const needAtt = st0.boreType === 'att'
-    const attFn = needAtt && typeof env.attAt === 'function' ? env.attAt : null
-    const attAt = (tMs) => { if (!attFn) return null; try { return attFn(tMs, tMs + srcOff) } catch { return null } }
-    // 某时刻的天线基底：源星走到哪 → 指向字段按各自语义重算 → 基底
-    const basisAt = (tMs, m) => beamBasisFrom(m, boreSettingsAtPos(st0, baseMeta, { lon: m.satLon, lat: m.satLat }), needBore ? boreAt(tMs) : null, needAtt ? attAt(tMs) : null)
-    return { ccOff, srcMetaAt, geoAt, ecefAt, basisAt }
-  }
+  // 本体已提到模块级（perfGeomOf）：对地性能指标表按航点时刻取值也要同一套「任意时刻的星位 + 基底」
+  function makeGeom(ctx, times, env) { return perfGeomOf(ctx, times, env) }
 
   // ctx/opts/targets/times/shells/hExKm 同 compute；env 见 makeGeom，另有 env.onDone（扫完回调）
   async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}) {
@@ -667,6 +679,7 @@ export function useSatPerfTable() {
     const s = sess(key)
     const token = ++s.winToken
     const clear = () => { s.winInfo.value = null; s.winEnv = null; s.win.msg = ''; s.winNote.value = ''; s.win.cursorMs = null; clearRows(key) }
+    if (ctx.noEph) { clear(); s.winFp.value = ''; s.winPt = null; s.win.msg = '关联卫星当前无星历'; return }   // 源星无星历：没有可扫的起点星位
     const o = opts || defaultOpts()
     s.ctxBeams.value = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
     s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }
@@ -675,7 +688,9 @@ export function useSatPerfTable() {
 
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
     // 指向指纹按【开扫那一刻】定（扫描逐刻读的就是这份 settings）：扫到一半改了指向，扫完照实自称过期
-    const pt0 = { st: ctx.settings, meta: ctx.meta, sig: pointingSig(ctx.settings, ctx.meta), rev: pointRevOf(ctx.settings) }
+    // anRev：扫描逐刻用的是 ctx.beams —— 记下它们对应的方向图修订号（取上下文里那份：与 beams 同一刻取的，不取活 meta）
+    const anRev0 = anRevOfCtx(ctx)
+    const pt0 = { st: ctx.settings, meta: ctx.meta, sig: pointingSig(ctx.settings, ctx.meta), rev: pointRevOf(ctx.settings), anRev: anRev0 }
     s.win.busy = true; s.win.progress = 0; s.win.msg = ''
     const calc = perfCalc(ctx, o, shells, hExKm)
     const t0Ms = Number.isFinite(s.win.startMs) ? s.win.startMs : times.now.getTime()
@@ -730,7 +745,7 @@ export function useSatPerfTable() {
       nTarget: use.length, nWin, nLit: bands.filter((x) => x.nWin > 0).length,
       samples, ms, budgetHit, minStepHit, truncated: all.length > MAX_TARGETS
     }
-    s.winEnv = { ctx, o, shells, hExKm, targets: use, geom, t0Ms, t1Ms }
+    s.winEnv = { ctx, anRev: anRev0, o, shells, hExKm, targets: use, geom, t0Ms, t1Ms }
     s.win.busy = false; s.win.progress = 1; s.winFp.value = winSig(key); s.winPt = pt0
     s.win.msg = ''
     // 读数分两份：瞬时表随手重算会覆盖 note，扫描结果的读数得单独存，否则一刷新就没了
@@ -751,6 +766,20 @@ export function useSatPerfTable() {
     const s = sess(k)
     const env = s.winEnv
     if (!env || !Number.isFinite(tMs)) return
+    // 方向图扫完之后就地改过（解析天线同 key 换参，活 meta 的 anRev 变了）：钉住的 ctx.beams 是旧波束 —— 游标表改按现在的
+    // 方向图取值（与指向 / 选项同口径：游标表按当前输入现算；扫出来的时段仍是旧的，由 winStaleFor 标「输入已变」，重扫才更新）。
+    // 取不到现在的方向图（天线已不在缓存）就清表，不拿旧波束出数。
+    const liveRev = env.ctx.meta ? (env.ctx.meta.anRev || 0) : env.anRev
+    if (liveRev !== env.anRev) {
+      const pat = typeof env.ctx.patternNow === 'function' ? env.ctx.patternNow() : null
+      if (!pat) { s.winEnv = null; clearRows(k); s.patRev.value = liveRev; return }
+      const nc = { ...env.ctx, igrid: pat.igrid, icomp: pat.icomp, beams: pat.beams, anRev: pat.anRev }
+      Object.defineProperty(nc, 'patternNow', { value: env.ctx.patternNow, enumerable: false })   // 展开不带不可枚举的，补上
+      env.ctx = nc; env.anRev = pat.anRev
+      s.ctxBeams.value = pat.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
+      s.ctxInfo.value = { satName: nc.satName, antName: nc.antName, beams: pat.beams.length }
+    }
+    s.patRev.value = env.anRev
     const t = Math.max(env.t0Ms, Math.min(env.t1Ms, tMs))
     const { ctx, shells, hExKm, targets, geom } = env
     const o = opts || (optsByAnt.value[k] ? optsByAnt.value[k] : env.o)

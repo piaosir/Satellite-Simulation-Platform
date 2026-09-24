@@ -195,7 +195,8 @@ function onSearchKey(e) {
   if (sel.value.size) { addSelected(); return }
   if (searching.value) { const r = rows.value.find((x) => !x.had || props.dup); if (r) addOne(r) }
 }
-function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); emit('close') } }
+// 输入法组字中的 Esc 是「取消组字」，不关对话框（搜索框常打拼音）
+function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
 onMounted(() => document.addEventListener('keydown', onKey, true))
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
 const fx = (v) => Number(v).toFixed(2)
@@ -207,7 +208,7 @@ const fx = (v) => Number(v).toFixed(2)
       <div class="cpk-hd">
         <span>{{ title }}</span>
         <slot name="head" />
-        <span class="cpk-x" @click="emit('close')"><Icon name="x" :size="12" /></span>
+        <button type="button" class="cpk-x" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </div>
       <div class="cpk-body">
         <input ref="inputEl" class="cpk-q" v-model="q" placeholder="搜索：城市名 / 省份 / 拼音首字母 / 英文名 / 国家" @keydown="onSearchKey" />
@@ -257,8 +258,8 @@ const fx = (v) => Number(v).toFixed(2)
       <div class="cpk-ft">
         <span class="cpk-cnt">{{ single ? `${total} 座` : `${total} 座 · 已选 ${selCount} 座` }}</span>
         <span v-if="note" class="cpk-cnt cpk-note">{{ note }}</span>
-        <span v-if="!single" class="cpk-btn ghost" :class="{ dis: !selCount }" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></span>
-        <span class="cpk-btn" @click="emit('close')">{{ single ? '关闭' : '完成' }}</span>
+        <button v-if="!single" type="button" class="cpk-btn ghost" :disabled="!selCount" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></button>
+        <button type="button" class="cpk-btn" @click="emit('close')">{{ single ? '关闭' : '完成' }}</button>
       </div>
     </div>
   </div>
@@ -266,18 +267,26 @@ const fx = (v) => Number(v).toFixed(2)
 
 <style>
 /* 壳：与性能指标表窗口的 PwDialog 同一套几何（遮罩 / 标题条 / 页脚），自带一份，两条样式链都能落 */
-.cpk-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(4, 8, 14, .45); }
-.cpk-dlg { max-width: calc(100% - 32px); max-height: 92%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-3); }
+/* 遮罩全软件一档 --scrim（原冷蓝黑），瞬时出现；框体上浮入场。改这里须同步 perf/perfwin.css 的 PwDialog（孪生） */
+.cpk-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.cpk-dlg { max-width: calc(100% - 32px); max-height: 92%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .cpk-hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
-.cpk-hd .cpk-x { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; }
-.cpk-hd .cpk-x:hover { color: var(--text); }
+/* 关闭键是真 <button>（Tab 可达）：去掉按钮默认描边 / 底色，悬停给中性罩 */
+.cpk-hd .cpk-x { margin-left: auto; cursor: pointer; display: inline-flex; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: var(--text-faint); }
+.cpk-hd .cpk-x:hover { color: var(--text); background: var(--wash-hover); }
 .cpk-body { padding: 12px 14px; overflow: auto; min-height: 0; display: flex; flex-direction: column; }
 .cpk-ft { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
 .cpk-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
 .cpk-ft .cpk-cnt + .cpk-btn { margin-left: auto; }
-.cpk-btn { background: var(--accent); color: var(--bg); padding: 4px 18px; cursor: pointer; font-size: var(--fs-3); white-space: nowrap; user-select: none; }
-.cpk-btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
-.cpk-btn.dis { opacity: .45; pointer-events: none; }
+/* 页脚两钮是真 <button>：同为 --h-ctl-lg 定高（原 ghost 多 1px 描边比主钮高 2px）；主钮墨色实底走 primary token */
+.cpk-btn { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl-lg); padding: 0 18px;
+           font-size: var(--fs-3); white-space: nowrap; cursor: pointer; user-select: none; color: var(--primary-on);
+           background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); }
+.cpk-btn:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.cpk-btn.ghost { color: var(--text); background: var(--bg); border-color: var(--border-strong); }
+/* 上一条主钮悬停特异度更高，ghost 悬停须把底色显式压回 --bg */
+.cpk-btn.ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--line-hover); }
+.cpk-btn:disabled { opacity: .45; cursor: not-allowed; }
 /* 搜索框（自绘，不靠窗口的 .ci / .sg-search） */
 .cpk-q { width: 100%; box-sizing: border-box; flex: none; margin: 0 0 8px; padding: 5px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 .cpk-q:focus { outline: none; border-color: var(--accent-ui); }
@@ -292,7 +301,7 @@ const fx = (v) => Number(v).toFixed(2)
 .cpk-grp.on { background: color-mix(in srgb, var(--accent-ui) 14%, transparent); color: var(--text); font-weight: 600; }
 .cpk-grp .cpk-gn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cpk-grp .cpk-gc { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); }
-.cpk-grp .cpk-gs { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--bg); background: var(--accent-ui); border-radius: var(--r-pill); padding: 0 5px; }
+.cpk-grp .cpk-gs { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--bg); background: var(--accent-ui); border-radius: var(--r-ctl); padding: 0 5px; }
 .cpk-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .cpk-rh { display: flex; align-items: center; gap: 8px; padding: 0 2px 5px; flex: none; }
 .cpk-rh .cpk-cnt { margin-left: auto; }
@@ -317,8 +326,8 @@ const fx = (v) => Number(v).toFixed(2)
 .cpk-row.cpk-all + .cpk-row { border-top: 0; }
 .cpk-row .cpk-alln { flex: 1; color: var(--text); font-weight: 600; }
 .cpk-row.had, .cpk-row.had .cpk-nm { color: var(--text-faint); }
-.cpk-tag { flex: none; font-size: var(--fs-1); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 5px; white-space: nowrap; }
-.cpk-had { flex: none; font-size: var(--fs-1); color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 0 5px; }
+.cpk-tag { flex: none; font-size: var(--fs-1); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0 5px; white-space: nowrap; }
+.cpk-had { flex: none; font-size: var(--fs-1); color: var(--text-faint); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0 5px; }
 /* 宿主插在行里的悬停钮（如链路预算的 ⇄ 钉另一端）：悬停该行才现形，钉中常亮 */
 .cpk-item .cpk-hov { visibility: hidden; }
 .cpk-item:hover .cpk-hov, .cpk-item .cpk-hov.on { visibility: visible; }

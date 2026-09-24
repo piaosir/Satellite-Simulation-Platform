@@ -38,14 +38,19 @@ html[data-theme='dark'] {
 
 /* —— 功能区（MATLAB App 工具条式）：分组大按钮 + 组内小表单 + 组名注脚，组间竖分隔线 —— */
 .lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; }
-.lbr-g { display: flex; flex-direction: column; flex: none; padding: 2px 7px 0; border-right: 1px solid var(--border); }
+/* 组间竖线：不再是通高的 border-right，改成上下各让 5px 的伪元素——通高线与功能区底线相接成「┤」，
+   把组名注脚一格格框死；让开两端后读作「分组」而不是「表格」（Office / MATLAB 功能区同此）。
+   ★ 原 1px 边框换成透明边框占位、细线落在它原来的位置（right:-1px 越过内边距盒）：
+     直接 border-right:0 每组窄 1px，六七组累积下来最右一组会左移 5px 以上。 */
+.lbr-g { position: relative; display: flex; flex-direction: column; flex: none; padding: 2px 7px 0; border-right: 1px solid transparent; }
+.lbr-g::after { content: ''; position: absolute; top: 5px; bottom: 5px; right: -1px; width: 0; border-right: 1px solid var(--border); pointer-events: none; }
 .lbr-items { flex: 1; display: flex; align-items: center; gap: 2px; min-height: 46px; }
-.lbr-cap { flex: none; text-align: center; font-size: var(--fs-1); letter-spacing: var(--ls-caps); color: var(--text-faint); padding: 1px 0 2px; white-space: nowrap; }
+.lbr-cap { flex: none; text-align: center; font-size: var(--fs-1); letter-spacing: var(--ls-caps); color: var(--text-muted); padding: 1px 0 2px; white-space: nowrap; }
 .lbr-big {
   position: relative;   /* 「保存」按钮右上角的未保存脏点（.lbx-dirty）定位基准 */
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   min-width: 46px; height: 44px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: var(--fs-2); line-height: 1;
-  color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
+  color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
 }
 .lbr-big:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
 .lbr-big:disabled { opacity: .45; cursor: not-allowed; }
@@ -53,6 +58,14 @@ html[data-theme='dark'] {
 .lbr-big.primary { color: var(--accent-ui); font-weight: 600; }
 .lbr-big .lbr-svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
 .lbr-big .lbr-svg.fill { fill: currentColor; stroke: none; }
+/* 状态（2026-09 精修）：未选中的按下由 controls.css 全局按下罩给；.on 自带底缘机位色条（内阴影），
+   会把全局罩压掉，故单写一档加深。primary 悬停保住机位色——否则被上面通用悬停染回 --text。
+   过渡不在这里单写：controls.css 的 :where(button) 已给 --t-state，按下与进入 .on 的 0s 也由它兜；
+   这里写 0,1,0 的 transition 简写会把那两条零特异度的 0s 盖掉，按下罩变成 80ms 渐显。 */
+.lbr-big.on:hover:not(:disabled) { background: var(--surface-2); border-color: var(--border-strong); }
+.lbr-big.on:active:not(:disabled) { background: color-mix(in srgb, var(--text) 7%, var(--surface-2)); transition-duration: 0s; }
+.lbr-big.primary:hover:not(:disabled) { color: var(--accent-ui-hover); }
+.lbr-big:focus-visible { outline-offset: -1px; }
 /* 组内小表单（对齐 MATLAB SIMULATE 组的时间字段）：2-3 行「标签+控件」竖排 */
 .lbr-form { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 3px; }
 .lbr-form label { display: flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
@@ -76,13 +89,13 @@ html[data-theme='dark'] {
 
 /* —— 资源库视图（v1.4.5：左侧栏的第二个视图，与「配置列表」二选一，VS Code 活动栏范式）——
    左侧栏一次只显示一个视图（同屏一个上下文）；工作台常驻主区，不再有「工作台」页签。
-   窄区排布：子导航一行 + LbLibrary 竖排（上列表/下编辑器），底部一行全局库提示。 */
+   窄区排布：子导航一行 + LbLibrary 竖排（上列表/下编辑器）。
+   窗头内距不在此另给：两视图共用各 App 的 .lb-col-hd 基础规则，标题 x 位置一致（2026-09 精修）。
+   底部那行库口径提示句已删（CLAUDE.md：界面不写说明文字，口径留在子导航按钮的 title 里）。 */
 .lb-lib { background: var(--bg); }
-.lb-lib .lb-col-hd { padding: 0 6px 0 10px; gap: 6px; }
 .lb-lib-tabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 4px 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
 .lb-lib-tabs .lbx-subtab { flex: 1; justify-content: center; padding: 2px 4px; font-size: var(--fs-3); }
 .lb-libpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.lb-lib-foot { flex: none; padding: 3px 10px 4px; font-size: var(--fs-2); line-height: 1.4; color: var(--text-faint); background: var(--surface); border-top: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* —— 侧栏＝参数检查器（对齐 MATLAB Property Inspector / Blender 属性面板）——
    目标：高信息密度 + 可扫读。三件事：① 多列栅格按宽度自动降列；② 每个参数压成一条 21px 的
@@ -180,11 +193,12 @@ html[data-theme='dark'] {
   align-items: baseline; gap: 3px 12px; padding: 5px 0; border-top: 1px solid var(--lb-rule-soft);
 }
 .lbx-satband > .lbx-satline:first-child { border-top: none; padding-top: 0; }
-.lbx-satgut { font-size: var(--lb-fs); letter-spacing: var(--ls-tight); color: var(--text-faint); white-space: nowrap; }
+.lbx-satgut { font-size: var(--lb-fs); letter-spacing: var(--ls-tight); color: var(--text-muted); font-weight: 600; white-space: nowrap; }
 .lbx-satmain { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 14px; min-width: 0; }
 .lbx-satsel {
   font: inherit; font-size: var(--fs-3); font-weight: 600; min-width: 160px; padding: 3px 6px; cursor: pointer;
-  background-color: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
+  /* 可输入件走字段描边（与 .lbx-satpick 同）：原 --border 与周围发丝线同色，读不出这是个能点的下拉 */
+  background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
 .lbx-satsel:focus { outline: none; border-color: var(--accent-ui); }
 .lbx-satname { font-size: calc(var(--lb-fs) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
@@ -234,14 +248,13 @@ html[data-theme='dark'] {
    .sg-fillbar 本体只是与格壁齐平（inset:0）的透明定位容器，格底保持单元格自身底色；
    ::after＝按 --fill 比例从左壁铺开的一层半透明单色，颜色由网格挂的 lv1..lv4 档位类给出
    （档位按未封顶的原始占比取，阈值 25/50/75%，见 StationGrid 的 fillLv）。
-   width 带缓动过渡，重算时平滑推移而非跳变。min-width 保证 >0 必可见。
+   数据条随数字一起瞬变（重算中的表格不加过渡：数字跳了、条还在滑，两者对不上）。min-width 保证 >0 必可见。
    条画在格底、值文字抬为 relative 浮于其上；>100% 封顶铺满，整格转红由 st-bad 接手（其档位本就是 lv4）。
    纯显示层，选中/复制不受影响。 */
 .sg-cell .sg-fillbar { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .sg-cell .sg-fillbar::after {
   content: ''; position: absolute; top: 0; bottom: 0; left: 0; width: var(--fill, 0%); min-width: 2px;
   background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #3f6d8c)) 18%, transparent);
-  transition: width .32s cubic-bezier(.4, 0, .2, 1);
 }
 .sg-cell .sg-fillbar.lv1 { --lb-fill-c: var(--lb-lv1, #3f6d8c); }
 .sg-cell .sg-fillbar.lv2 { --lb-fill-c: var(--lb-lv2, #2f7d62); }
@@ -251,7 +264,10 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #82a9c6)) 26%, transparent);
 }
 .sg-cell .sg-fillbar ~ .sg-v { position: relative; }
-@media (prefers-reduced-motion: reduce) { .sg-cell .sg-fillbar::after { transition: none; } }
+/* 减弱动效：功能区刷新转圈停住并压淡（各 App scoped 里的 lb-spin 是无限动画，全局守卫只归零过渡、管不到它） */
+@media (prefers-reduced-motion: reduce) {
+  .lb-shell .lbr .lbr-big.spin .lbr-svg { animation: none; opacity: .5; }
+}
 /* 容量汇总作为链路表分区脚注 */
 .lbx-capfoot { margin-top: 6px; }
 /* —— 详细预算文档区：上排「级联主表 ‖ 图表区」，下排参考段整幅段带 ——
@@ -510,20 +526,24 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    正是画在 ChainStrip 里的，漏样式的后果在深色主题下最刺眼——按钮退回 UA 默认的浅灰实底，
    而字色继承 .lb-shell 的近白墨色，成了白底白字。故在公共表里存一份，任何组件都吃得到。
    ★ 这几条【刻意不加 .lb-shell 前缀】：本表末尾那批带前缀的规则是为「压过各 App 的 scoped」，
-   这里要的正相反——它是兜底，前三窗自己那份（.lb-ctx-i[data-v-…]，特异度高一级）必须照旧生效。 */
+   这里要的正相反——它是兜底，组件自己的 scoped 补丁（如 ConfigTreeMenu 的快捷键列，特异度高一级）必须照旧生效。
+   （前三窗各自那份 .lb-ctx-i 副本如今已删净，这里就是唯一一份外观。） */
 .lb-ctx-mask { position: fixed; inset: 0; z-index: 400; }
+/* 2026-09 精修：命令菜单统一口径（spec P3）——浮层圆角、光标处淡入、悬停机位色实底（与菜单栏同）；
+   外框内距 4px → 项圆角 --r-ctl 与外框同心。 */
 .lb-ctx {
   position: fixed; min-width: 150px; padding: 4px; display: flex; flex-direction: column;
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2);
+  animation: ui-fade-in var(--dur-2) var(--ease-out);
 }
 .lb-ctx-i {
   font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; white-space: nowrap;
-  background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl, 2px);
+  background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl);
 }
-.lb-ctx-i:hover:not(:disabled) { background: var(--surface-2); }
+.lb-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
 .lb-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
-.lb-ctx-i.danger:hover { color: var(--danger); }
-.lb-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.lb-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
+.lb-ctx-sep { height: 1px; margin: 3px 6px; background: var(--border); }
 
 /* 计算栏提示（功放取站型）：纯文本 */
 .lbx-run-hint { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
@@ -582,6 +602,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    二十来个「标签 数值」自由折行时哪个数是哪个的全靠猜，等宽格 + 引导线把每一格框成一条读数，
    数值在各列里齐成一竖行。值比标签重一档、单位退到最轻；着色口径同结果单元格（负余量/超占用转红）。 */
 .lbx-rowline { display: grid; grid-template-columns: 148px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
+/* 没有容量汇总行时读数行就是块内第一行：顶上已是 2px 顶线，再叠一条发丝线成了双线 */
+.lbx-capblk > .lbx-rowline:first-child { border-top: 0; }
 .lbx-rr-hd { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 2px; }
 /* 行号 + 站对名：定宽栏里长站名折行显示，不裁 */
 /* 「#3」＝链路表里被点亮那一行的行号，与表里那一格严格同形（实底 accent-ui + var(--bg) 的字，
@@ -639,6 +661,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   position: relative; z-index: 1;
   color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui);
 }
+/* 功能区里的小控件（字号步进 / 单位档位）定高到 --h-ctl，与同组小表单的下拉齐平（原靠内距撑出 23px） */
+.lbr :is(.lbf-btn, .lbu-seg > button) { height: var(--h-ctl); padding-block: 0; }
 
 /* 链路表 / 站表节头里的「卫星：统一指定 | 逐链路指定」分段控件（三个链路预算窗口同款）：
    复用功能区「单位」的 .lbu-seg，按节头 .lb-mini 的尺度压扁；前面一枚栏名（.lbx-segl）说明这组按钮管的是什么。 */

@@ -89,10 +89,13 @@ function startResizeSide(e) {
   const lib = sideView.value === 'library'
   const w = lib ? libWidth : configsWidth, min = lib ? LIB_W_MIN : CFG_W_MIN, max = lib ? LIB_W_MAX : CFG_W_MAX
   const startX = e.clientX, startW = w.value
-  sideResizing.value = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
+  // html.ui-col-resize（controls.css）：拖动全程整窗锁 col-resize 光标、禁选字——指针划过表格 / 按钮时光标不再跳
+  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   const move = (ev) => { w.value = Math.min(max, Math.max(min, startW + (ev.clientX - startX))) }
   const up = () => {
-    sideResizing.value = false; document.body.style.cursor = ''; document.body.style.userSelect = ''
+    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
     try { localStorage.setItem(lib ? 'ngso/libWidth' : 'ngso/configsWidth', String(w.value)) } catch (e2) { /* ignore */ }
   }
@@ -2102,7 +2105,6 @@ onMounted(async () => {
               <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
             </LbLibrary>
           </div>
-          <div class="lb-lib-foot" :title="(LIB_TABS.find((t) => t.key === libTab) || {}).tip">{{ (LIB_TABS.find((t) => t.key === libTab) || {}).tip }}</div>
         </template>
 
         <!-- 右缘拖拽调宽手柄（两视图各记各的宽度） -->
@@ -2136,7 +2138,7 @@ onMounted(async () => {
                   <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
                 </label>
                 <label v-if="!geoManual && anySatSelected" title="从计算此刻起在此时窗内，比较全部互视过境，取最坏一次的工况"><span>时窗</span>
-                  <select v-model.number="geoHorizonHours" style="width: 76px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
+                  <select v-model.number="geoHorizonHours" style="width: 86px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
               </div>
               <button class="lbr-big primary" :disabled="computing" :title="`逐行计算链路表全部 ${linkRows.length} 条链路（Ctrl+Enter）`" @click="compute">
@@ -2193,7 +2195,7 @@ onMounted(async () => {
             </div>
           </LbSection>
 
-          <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
+          <LbSection id="links" title="链路表" :count="linkRows.length">
             <template #actions>
               <!-- 卫星的指定方式（场景级）：统一指定＝上方分区单选一颗；逐链路指定＝表首「卫星」列组逐行选，上方分区收起 -->
               <span class="lbx-segwrap" title="卫星的指定方式：统一指定＝本配置只用一颗卫星（在上方「卫星与轨道」分区选择，全部链路共用）；逐链路指定＝链路表每行各选卫星（表首「卫星」列组：卫星 · 卫星G/T · 星侧太阳侵入 · 太阳侵入 ΔG/T · 卫星EIRP，几何按各行所用的星解，上方分区随之收起）。切换时各行所用卫星保持不变，计算口径不变">
@@ -2440,19 +2442,24 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
 /* 左侧栏（配置列表 / 资源库 二选一）：宽度由 sideWidth 内联给出，两视图各记各的 */
-.lb-side { flex: none; position: relative; transition: width .15s ease; }
-.lb-side.resizing { transition: none; user-select: none; }
-/* 右缘拖拽手柄：调整配置栏宽度 */
+/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
+.lb-side { flex: none; position: relative; }
+.lb-side.resizing { user-select: none; }
+/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
 .lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-configs.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
-/* 配置栏表头更紧凑，给「配置列表」标题留足空间 */
-.lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
-/* 细滚动条：树可横向滚动看全名，且尽量不与右缘拖拽手柄抢占 */
-.lb-configs .lb-col-bd { padding: 10px 8px; scrollbar-width: thin; }
+.lb-cfg-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
+  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
+}
+.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: .15s; }
+.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
+/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
+.lb-configs .lb-col-bd { padding: 10px 8px; }
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
 .lb-lang-sel { font: inherit; font-size: var(--fs-2); text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lb-lang-sel:focus { outline: none; border-color: var(--accent-ui); }
@@ -2480,13 +2487,15 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-cfg-acts { display: flex; gap: 3px; }
 .lb-cfg-acts i { font-style: normal; }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
+.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
 .lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
 .lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
 /* 弹窗（命名 / 分享） */
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
+.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 /* 分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
    原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
 .lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
@@ -2495,7 +2504,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
 .lb-input:focus { outline: none; border-color: var(--accent-ui); }
 .lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { opacity: .88; }
+/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
+.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
 
 /* 分段选择（链路配对等，计算栏用） */
@@ -2512,10 +2522,10 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 2px 4px; border-bottom: 1px solid var(--lb-rule); }
 .geo-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .geo-tt { font-size: calc(var(--lb-fs, 11px) + 1px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
-.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-pill); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
+.geo-badge { flex: none; align-self: center; font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); line-height: 1; padding: 2px 7px; border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted); border: 1px solid var(--border-strong); }
 /* 时区角标：一枚可点的档位标（点开是本机 / UTC / UTC±N 的列表，见 TzPicker） */
 .geo-tz { display: inline-flex; flex: none; align-items: center; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted); font-size: var(--fs-2); line-height: 1; font-variant-numeric: tabular-nums; }
-.geo-tz:hover, .geo-tz.open { color: var(--text); border-color: var(--accent); }
+.geo-tz:hover, .geo-tz.open { color: var(--text); border-color: var(--line-hover); }
 
 .geo-body { padding: 2px 2px 6px; }
 .geo-sec { display: flex; align-items: baseline; gap: 7px; font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; color: var(--accent); margin: 8px 0 3px; padding-top: 5px; border-top: 1px solid var(--lb-rule-soft); letter-spacing: var(--ls-tight); }
@@ -2527,7 +2537,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-l i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); margin-left: 4px; letter-spacing: var(--ls-tight); }
 .geo-v, .geo-time { font-size: var(--lb-fs, 11px); font-weight: 700; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .geo-v i, .geo-time i { font-style: normal; font-weight: 500; color: var(--text-faint); margin-left: 5px; }
-.geo-clip { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-faint); margin-left: 7px; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-pill); vertical-align: 1px; }
+.geo-clip { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text-faint); margin-left: 7px; padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-ctl); vertical-align: 1px; }
 .geo-v-updn { display: inline-flex; gap: 11px; }
 .geo-v-updn .up { color: var(--up); }
 .geo-v-updn .dn { color: var(--dn); }

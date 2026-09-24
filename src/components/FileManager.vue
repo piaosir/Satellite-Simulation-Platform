@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
@@ -11,6 +11,7 @@ import { serializeKml } from '../viz/kml/serialize.js'
 import { grdToStkAzEl } from '../viz/grd/stkPattern.js'
 import { grdToAcp4, grdToEutelsat } from '../viz/grd/patFormats.js'
 import { repackGrdCommonGridParts } from '../viz/grd/synth.js'
+import { isAnalyticText, parseRecord as parseAnRecord, toGrdText as anToGrdText } from '../viz/grd/gaussStk.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
@@ -45,6 +46,9 @@ const confirmMsg = ref('')
 let _confirmResolve = null
 function ask(message) { confirmMsg.value = message; return new Promise((res) => { _confirmResolve = res }) }
 function answerConfirm(ok) { confirmMsg.value = ''; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
+// 确认框一出来焦点就落在「确定」上：回车即确定（靠焦点触发，不另挂全局 Enter）
+const cOk = ref(null)
+watch(confirmMsg, (v) => v && nextTick(() => cOk.value?.focus({ preventScroll: true })))
 
 // latin1 字符串 → 原始字节（保真导出 GRD/GXT 二进制原文）
 // ★ 不许写成 Uint8Array.from(s, fn)：带 mapfn 的 %TypedArray%.from 对可迭代源先走 IterableToList，
@@ -212,6 +216,8 @@ function grdLonText(sat) {
   void fileBridge.liveTick   // 依赖实时 tick → 星动时本行重渲染
   const a = fileBridge.grdActions
   const p = a && a.livePos && a.livePos(sat.folder)
+  // 关联星此刻解不出（星历里没有 / 越出时段 / 池还没就绪）→ 「—」：不拿存储值冒充当前经度（地图 / 覆盖此刻都当它没有星位）
+  if (sat.noradId && a && a.livePos && !(p && Number.isFinite(p.lon))) return '— · '
   const lon = (p && Number.isFinite(p.lon)) ? p.lon : (sat.lon != null ? Number(sat.lon) : null)
   return lon != null ? fmtGeoSlot(lon) + ' · ' : ''   // °E/°W 折算（西经不再写成负°E）
 }
@@ -372,6 +378,8 @@ async function saveOut(text, defaultName, filters, msg) {
   if (save && save.ok) flash(msg + '：' + save.filePath)
   else if (save && save.error) flash('导出失败：' + save.error)
 }
+// 解析天线（*.gauss.json）盘上只有参数记录：导出前按参数现铺 GRASP 文本（带 SYNTHMETA，下面照合成件原路走）；其余原样
+const grdTextOf = (text) => (isAnalyticText(text) ? anToGrdText(parseAnRecord(text)) : text)
 async function doExport(fmt) {
   const a = expMenu.value.ant
   expMenu.value = { key: '', x: 0, y: 0, ant: null }
@@ -381,31 +389,35 @@ async function doExport(fmt) {
     if (fmt === 'grd') {
       // 真实导入件原样导出：保存框与拷贝全在主进程做，原文一个字节都不进渲染进程
       //（实测件 243 MB，搬进来再转字节就是本页那条白屏崩溃）。合成件回 { synth:true }，落到下面那条。
-      const cp = await api.coverageGrd.exportRaw(a.file, `${a.name}.grd`)
-      if (!cp || !cp.synth) {                       // 只有「这是合成件」才继续往下；取消/出错/未激活都到此为止
-        if (cp && cp.ok) flash('已导出：' + cp.filePath)
-        else if (cp && cp.error) flash('导出失败：' + cp.error)
-        return
+      // 解析天线不走字节拷贝（拷出去的是 JSON 参数，不是方向图）：直接落到下面现铺网格那条
+      if (!/\.gauss\.json$/i.test(a.file)) {
+        const cp = await api.coverageGrd.exportRaw(a.file, `${a.name}.grd`)
+        if (!cp || !cp.synth) {                     // 只有「这是合成件」才继续往下；取消/出错/未激活都到此为止
+          if (cp && cp.ok) flash('已导出：' + cp.filePath)
+          else if (cp && cp.error) flash('导出失败：' + cp.error)
+          return
+        }
       }
       // 合成的多馈源 .grd 各波束用各自小窗口，SATSOFT 会把全部波束摆到波束1处（见 repackGrdCommonGrid 注释）。
       // 导出前重打包到公共网格（各波束落真实位置）；分片写盘，不拼成一个整串。
       const rg = await api.coverageGrd.raw(a.file)
-      let parts = [rg.text]
-      if (rg.text && rg.text.includes('SYNTHMETA')) { try { parts = repackGrdCommonGridParts(rg.text) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
+      const gt = grdTextOf(rg.text)
+      let parts = [gt]
+      if (gt && gt.includes('SYNTHMETA')) { try { parts = repackGrdCommonGridParts(gt) } catch (err) { console.warn('公共网格重打包失败，导出原始多窗口 .grd', err) } }
       return await saveOut(parts, `${a.name}.grd`, [{ name: 'GRASP 网格', extensions: ['grd'] }], '已导出')
     }
-    const r = await api.coverageGrd.raw(a.file)
+    const text = grdTextOf((await api.coverageGrd.raw(a.file)).text)
     if (fmt === 'stk') {
-      const s = grdToStkAzEl(r.text, { name: a.name })
+      const s = grdToStkAzEl(text, { name: a.name })
       return await saveOut(s.text, `${a.name}_STK.txt`, [{ name: 'STK 外部天线方向图', extensions: ['txt', 'pattern', 'ant'] }],
         `已导出 STK 方向图（${s.nx}×${s.ny} · ${s.nBeams} 波束 · 峰值 ${s.peakDbi.toFixed(1)} dBi）`)
     }
     if (fmt === 'acp4') {
-      const s = grdToAcp4(r.text, { name: a.name })
+      const s = grdToAcp4(text, { name: a.name })
       return await saveOut(s.text, `${a.name}.pat`, [{ name: 'ACP4 方向图', extensions: ['pat', 'txt'] }],
         `已导出 ACP4（${s.nBeams} 波束 · 峰值 ${s.peakDb.toFixed(1)} dB）`)
     }
-    const s = grdToEutelsat(r.text, { name: a.name })
+    const s = grdToEutelsat(text, { name: a.name })
     return await saveOut(s.text, `${a.name}_EUT.pat`, [{ name: 'Eutelsat 方向图', extensions: ['pat', 'txt'] }],
       `已导出 Eutelsat（${s.nx}×${s.ny}${s.nBeams > 1 ? ` · ${s.nBeams} 波束取包络` : ''} · 峰值 ${s.peakDb.toFixed(1)} dB）`)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
@@ -932,6 +944,22 @@ onMounted(() => {
 // 频率计划在独立窗口编辑，改动不会回推本页 —— 切回本页签时重新拉一次索引，
 // 免得用户编辑完回来看到的还是旧的转发器数/更新时间。
 watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
+
+// Esc 由内到外逐层关：删除确认 → 导出菜单 → 发送到小程序 → 文件管理本身。捕获阶段先收，不漏给下面的画布；
+// 输入法组字中的 Esc 是取消组字。发送到小程序开着时只拦住冒泡，关它交给它自己的 Esc（上传中它不关）；
+// MODCOD 表格开着下拉 / 右键菜单时留给表格自己收；输入框里的 Esc 留给行内改名的「取消」。
+function onKey(e) {
+  if (e.key !== 'Escape' || e.isComposing) return
+  if (confirmMsg.value) { e.stopPropagation(); e.preventDefault(); answerConfirm(false); return }
+  if (expMenu.value.key) { e.stopPropagation(); expMenu.value = { key: '', x: 0, y: 0, ant: null }; return }
+  if (fpMiniOpen.value) { e.stopPropagation(); return }
+  if (mcGrid.pick.open || mcGrid.menu.open) return
+  if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return
+  e.stopPropagation()
+  emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKey, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 </script>
 
 <template>
@@ -976,10 +1004,9 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
                 </template>
                 <template v-else>
                   <span class="cnm rn" title="点击改名" @click="startRenameCust('k' + c.id, c.name)" data-i18n-skip>{{ c.name }}</span>
-                  <span class="cmeta">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
+                  <span class="cmeta" title="在「星座3D」管理">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
                   <span class="cops">
                     <button class="mini ghost" @click="exportConstellation(c)">导出</button>
-                    <span class="cro">在「星座3D」管理</span>
                   </span>
                 </template>
               </div>
@@ -1224,7 +1251,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
             <div v-else class="tree">
               <div v-for="sat in allSats" :key="sat.key" class="tnode">
                 <div class="trow sat clk" @click="toggleSat(sat.key)">
-                  <span class="tw"><Icon :name="gxtExpanded[sat.key] ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
+                  <span class="tw"><Icon name="chevron-down" class="disc" :class="{ shut: !(gxtExpanded[sat.key]) }" :size="12" /></span>
                   <span class="tname" data-i18n-skip>{{ sat.name }}</span>
                   <span class="tcount">{{ (sat.lon != null ? (fmtGeoSlot(Number(sat.lon)) || sat.lon + '°') + ' · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
@@ -1267,7 +1294,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
           <div class="cmsg">{{ confirmMsg }}</div>
           <div class="cbtns">
             <button class="mini ghost" @click="answerConfirm(false)">取消</button>
-            <button class="mini imp" @click="answerConfirm(true)">确定</button>
+            <button ref="cOk" class="mini imp" @click="answerConfirm(true)">确定</button>
           </div>
         </div>
       </div>
@@ -1289,41 +1316,53 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 </template>
 
 <style scoped>
-.mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; }
+/* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
+.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .dlg { position: relative; width: 980px; max-width: calc(100vw - 32px); height: 680px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-3); overflow: hidden; }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .dhd { display: flex; align-items: stretch; justify-content: space-between; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 11px 16px; align-self: center; }
-/* Windows 风格关闭：整块矩形热区，悬停变红 */
-.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
+.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
+/* Windows 风格关闭：整块矩形热区，悬停变红；右上内圆角 = 框体圆角 − 1px */
+.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
+  border-top-right-radius: calc(var(--r-card) - 1px); }
 .winx:hover { background: #c42b1c; color: #fff; }
 .wrap { flex: 1; min-height: 0; display: flex; }
 .rail { width: 128px; flex: none; padding: 8px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
-.rb { display: flex; align-items: center; padding: 8px 11px; border: 0; background: transparent; color: var(--text-muted);
-  text-align: left; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-4); border-left: 2px solid transparent; transition: background .12s, color .12s; }
-.rb:hover { background: var(--bg); color: var(--text); }
-.rb.on { background: var(--bg); color: var(--text); border-left-color: var(--accent); }
-.pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px; }
+/* 左栏：悬停 = 灰底，选中 = 纸底 + 贴左缘 2px 机位色竖条（内阴影画，不占盒宽；左内距 13 = 原 2px 边 + 11，文字不动） */
+.rb { display: flex; align-items: center; padding: 8px 11px 8px 13px; border: 0; background: transparent; color: var(--text-muted);
+  text-align: left; cursor: pointer; border-radius: 0 var(--r-ctl) var(--r-ctl) 0; font-size: var(--fs-4); }
+.rb:hover { background: var(--surface-2); color: var(--text); }
+.rb.on { background: var(--bg); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); transition-duration: 0s; }
+/* 右内距 6 + 常驻滚动槽 10 = 16：换页签时内容不因滚动条出没而横跳 */
+.pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 6px 14px 16px; scrollbar-gutter: stable; }
 .tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-4); }
-.tbl th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: var(--fs-3); }
+.tbl th { text-align: left; color: var(--text-faint); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--border-strong); font-size: var(--fs-3); }
 .tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border); color: var(--text); }
+/* 三线表：表头线与末行线走结构色，行间细线维持；数量列右对齐等宽数字；首末列与上方分区标题 / 行 4px 缩进对齐 */
+.tbl tbody tr:last-child td { border-bottom-color: var(--border-strong); }
+.tbl th:nth-child(2), .tbl td:nth-child(2) { text-align: right; padding-right: 20px; font-variant-numeric: tabular-nums; }
+.tbl th:first-child, .tbl td:first-child { padding-left: 4px; }
+.tbl th:last-child, .tbl td:last-child { padding-right: 4px; }
 .tbl td.nm { font-weight: 600; }
 .tbl td.dim, .dim { color: var(--text-faint); }
+.tbl td.dim[colspan] { font-size: var(--fs-3); }
 .tbl td.ops { text-align: right; white-space: nowrap; }
 .badge { font-size: var(--fs-2); padding: 1px 7px; border-radius: var(--r-ctl); border: 1px solid var(--border); background: transparent; color: var(--text-muted); }
 .badge.off { color: var(--text-faint); }
 /* 内置兜底快照：区别于「已缓存」（用户联网数据），用低调蓝调描边表示软件自带 */
 .badge.bundled { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
-/* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分 */
-.mini { padding: 3px 10px; margin-left: 6px; cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-ctl);
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); transition: color .12s, border-color .12s; }
-.mini:hover { color: var(--text); border-color: var(--accent); }
+/* 统一低调描边按钮（去掉满屏亮色实心），主次靠位置与标签区分。一律 --h-ctl 定高，与同行输入框齐平；
+   过渡与按下罩走全局 button 口径，这里不另写 */
+.mini { height: var(--h-ctl); padding: 0 10px; margin-left: 6px; font-size: var(--fs-3); white-space: nowrap;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; border-radius: var(--r-ctl);
+  background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); }
+.mini:hover { color: var(--text); border-color: var(--line-hover); }
 .mini:disabled { opacity: .4; cursor: not-allowed; }
 .mini:disabled:hover { color: var(--text-muted); border-color: var(--border); }
 .mini.ghost { color: var(--text-muted); }
 .mini.del { color: var(--text-muted); }
-.mini.del:hover { color: #d07a72; border-color: #d07a72; }
+.mini.del:hover { color: var(--danger); border-color: var(--danger); }
 .empty-hint { padding: 28px 12px; text-align: center; color: var(--text-faint); font-size: var(--fs-4); line-height: 1.7; }
 .tree { display: flex; flex-direction: column; gap: 10px; }
 .tnode { border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
@@ -1337,28 +1376,35 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .trops { margin-left: auto; white-space: nowrap; display: flex; }
 /* 导出格式菜单：定位用 fixed —— .tnode 的 overflow:hidden 会裁掉行内绝对定位的浮层 */
 .expback { position: fixed; inset: 0; z-index: 2100; }
-.expmenu { position: fixed; z-index: 2101; transform: translateX(-100%); min-width: 148px; padding: 4px 0;
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl); box-shadow: var(--shadow-2);
-  display: flex; flex-direction: column; }
-.expmenu button { appearance: none; border: 0; background: none; color: var(--text-muted); text-align: left;
-  padding: 5px 14px; font-size: var(--fs-3); cursor: pointer; white-space: nowrap; }
-.expmenu button:hover { background: var(--accent); color: var(--bg); }
+/* 命令菜单口径：结构描边 + 浮层圆角 + 四周 3px 内距，项圆角与外框同心（6 − 3 = --r-box）；
+   入场只动 opacity / translate，不碰定位用的 transform: translateX(-100%) */
+.expmenu { position: fixed; z-index: 2101; transform: translateX(-100%); min-width: 148px; padding: 3px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2);
+  display: flex; flex-direction: column; animation: ui-float-in var(--dur-2) var(--ease-out); }
+.expmenu button { appearance: none; border: 0; background: none; color: var(--text); text-align: left;
+  padding: 5px 12px; font-size: var(--fs-3); cursor: pointer; white-space: nowrap; border-radius: var(--r-box); }
+.expmenu button:hover { background: var(--accent-ui); color: var(--bg); }
 .noant { padding: 8px 22px; font-size: var(--fs-3); color: var(--text-faint); }
 .trow.sat.clk { cursor: pointer; }
 .trow.sat.clk:hover { background: var(--surface); }
 .tw { width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); flex: none; }
 .addbar, .addbeam { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .addbar.sub { margin-top: -4px; margin-bottom: 14px; }
-.mini.imp { margin-left: 0; color: var(--accent); border-color: var(--accent); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 14px; }
-.mini.imp:hover { background: var(--accent); color: var(--bg); }
+.mini.imp { margin-left: 0; color: var(--accent); border-color: var(--accent); }
+/* 悬停填墨走主钮 token（深色压一档）；禁用态不填（原规则连禁用钮也填墨） */
+.mini.imp:hover:not(:disabled) { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
 .dimnote { font-size: var(--fs-2); color: var(--text-faint); }
 .addbeam { padding: 8px 10px 8px 22px; background: var(--bg); border-bottom: 1px solid var(--border); margin: 0; }
 /* 显式允许文本选择：全局 body 设了 user-select:none，继承到输入框在 Electron 的 Chromium 下会
    阻止「点击放置光标」（表现为点不进、只能程序聚焦）。这里强制恢复，保证可点击聚焦与选词。 */
-.ci { border: 1px solid var(--border); background-color: var(--bg); color: var(--text); padding: 5px 8px; outline: none; font-size: var(--fs-4); border-radius: var(--r-ctl); min-width: 0; user-select: text; -webkit-user-select: text; }
+/* 可输入域走 --field-* 一档（与装饰分隔线分开），悬停描边转深，与全平台输入框同口径 */
+.ci { border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 5px 8px; outline: none; font-size: var(--fs-4); border-radius: var(--r-ctl); min-width: 0; user-select: text; -webkit-user-select: text; }
+.ci:hover { border-color: var(--field-border-hover); }
 .ci:focus { border-color: var(--accent-ui); }
 .ci.nar { width: 96px; flex: none; }
 .ci.wide { width: 150px; flex: none; }
+/* MODCOD 改名框：与标准名（.mcname 左内距 4px）同起点 */
+.mcbar .ci.wide { margin-left: 4px; }
 /* 天线名可点重命名：悬停提示可交互 */
 .tname.rn { cursor: pointer; }
 .tname.rn:hover { color: var(--accent); }
@@ -1367,19 +1413,29 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .addbar .ci:first-child { width: 180px; flex: none; }
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */
-.cmask { position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; }
-.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-3); padding: 18px 18px 14px; }
+.cmask { position: absolute; inset: 0; z-index: 10; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
+.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); padding: 18px 18px 14px;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .cmsg { font-size: var(--fs-4); color: var(--text); line-height: 1.6; margin-bottom: 16px; }
 .cbtns { display: flex; justify-content: flex-end; gap: 8px; }
-.cbtns .mini { margin-left: 0; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; }
-.dft { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); }
+.cbtns .mini { margin-left: 0; height: var(--h-ctl-lg); padding: 0 16px; }
+/* 确认框的「确定」是这一步的主操作：墨色实底（与页脚「完成」同一套 token） */
+.cbtns .mini.imp { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); font-weight: 600; }
+.cbtns .mini.imp:hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.dft { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft .msg { flex: 1; font-size: var(--fs-3); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-4); }
-.ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); }
-/* 自定义卫星：轻量分区（与星座列表同风格），非大块卡片 */
+.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
+/* 主钮：墨色实底（走 token，深色压一档）；字色跟 --primary-on，禁写死 #fff。按下由全局按下罩提供 */
+.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
+.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
+/* 自定义卫星：轻量分区（与星座列表同风格），非大块卡片。
+   带按钮与不带按钮的分区标题条等高；标题字与下方行 / 表格首列同一根 4px 缩进线 */
 .secbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }
+.secbar, .mcbar { min-height: calc(var(--h-ctl) + 6px); }
 .secbar.top { margin-top: 18px; }
 .sect { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
+.sect, .mcname { padding-left: 4px; }
 .sctag { font-size: var(--fs-2); color: var(--text-faint); }
 .secbar .mini { margin-left: 0; }
 .clist { display: flex; flex-direction: column; }
@@ -1394,8 +1450,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .ci.cnmedit { width: 200px; flex: none; padding: 3px 8px; }
 .cmeta { font-size: var(--fs-3); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cops { margin-left: auto; flex: none; display: flex; align-items: center; gap: 2px; }
-.cops .mini { margin-left: 4px; height: var(--h-ctl); white-space: nowrap; padding: 0 9px; }
-.cro { font-size: var(--fs-2); color: var(--text-faint); opacity: .8; margin-left: 6px; }
+.cops .mini { margin-left: 4px; }
 .cempty { padding: 12px 4px; font-size: var(--fs-3); color: var(--text-faint); line-height: 1.6; }
 /* 标准级属性行：体制骨架 + 门限条件四格。一行排开，来源那格吃掉剩余宽度 */
 .mcstd { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; flex-wrap: wrap; }
@@ -1404,11 +1459,12 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .mcstd-f.wide .ci { flex: 1 1 auto; width: auto; }
 .mcstd-l { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .mcstd .ci { width: 108px; font-size: var(--fs-2); }
-.mcstd .ci[readonly], .mcstd select:disabled { color: var(--text-muted); background: var(--surface); }
+/* 只能写 background-color：简写会把 select 的下拉箭头（background-image）一并清掉 */
+.mcstd .ci[readonly], .mcstd select:disabled { color: var(--text-muted); background-color: var(--surface); }
 
 /* MODCOD 表：标准页签在上、网格吃掉剩余高度（整页不滚，只网格自己滚——60 行的 S2X 表若跟着整页滚，
    列头一滚就没了）。故这一页的 .pane 关掉溢出，由 .mcsec 撑满并把高度让给网格。 */
-.pane.fill { overflow: hidden; }
+.pane.fill { overflow: hidden; padding-right: 16px; scrollbar-gutter: auto; }   /* 本页不滚，不留滚动槽 */
 .mcsec { height: 100%; display: flex; flex-direction: column; min-height: 0; }
 .mctabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; flex: none; }
 .mctab { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; height: var(--h-ctl); cursor: pointer;
@@ -1437,5 +1493,5 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
 .mcgen-m .ci { width: 56px; padding: 2px 6px; font-size: var(--fs-3); font-family: var(--font-mono); }
 .mcgen-o { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mcgen-o.bad { color: var(--warn); }
-.mcgen .mini { margin-left: 0; height: var(--h-ctl); padding: 0 10px; }
+.mcgen .mini { margin-left: 0; }
 </style>

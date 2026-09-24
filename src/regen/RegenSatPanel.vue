@@ -263,7 +263,8 @@ const rows = computed(() => {
 .rsp { max-width: 940px; }
 .rsp-modes { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .rsp-seg { font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
-.rsp-seg.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 选中段填墨走 token：浅色逐字节不变，深色下 --sel-fill 压一档，不再是整块近白 */
+.rsp-seg.on { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
 .rsp-flex { flex: 1; }
 .rsp-clear { font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); border-radius: var(--r-box); cursor: pointer; }
 .rsp-grd { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
@@ -277,7 +278,7 @@ const rows = computed(() => {
 .rsp-list li.on { background: var(--surface-2); }
 .rsp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
 .rsp-li-i { display: block; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
-.rsp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+.rsp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
 .rsp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
 .rsp-badge.rsp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }

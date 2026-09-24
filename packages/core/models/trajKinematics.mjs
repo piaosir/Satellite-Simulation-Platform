@@ -18,9 +18,14 @@
 //   无 t0Ms / speedKmh（或速度 ≤ 0、有效航点 < 2、全程零长）：钉在航迹头（末航点），航向取末段大圆切向——
 //          切向矢量 tan 与 scene.setTrajectories 载具的 spr._tan 逐位一致（sceneHeadTangent 按同一串浮点运算复写，单测用
 //          three 的 Vector3 与 focusLanes.llaToVec 对拍）。
+//   时刻钉点（STK Great Arc「由时间定速度」，2026-09-24）：航点可带 tMs（UTC ms）。锚点 = 首航点的起始时刻 t0Ms（缺省退首航点自带的 tMs）
+//          + 其后各航点的 tMs，按航点顺序收：里程增则时刻须严格增、零长段（停留）可相等，不满足的钉点记坏、不参与排程。
+//          相邻两锚点之间匀速（段速 = 里程差 ÷ 时差）；首锚点之前 / 末锚点之后按 speedKmh 外推，没给速度沿用最近一段的段速。
+//          飞行剖面的爬升线改按时间积（高度 = 钉点高度 + 爬升率 × 飞过的时间），下滑仍按里程（3° 下滑角）；匀速时与原式同一条线。
+//          ★ 没有任何 tMs 的航迹不走排程，沿用 s = v·(t − t0) 的原式——老航迹与改前逐位一致。
 //
 // ── 航迹对象（与 ConstellationMap3D 的 trajectories 同形；E7 的新字段全部可选）──
-//   { id?, kind: 'flight'|'sea', pts: [{lat, lon, altM?}], cruiseAltM?, t0Ms?, speedKmh?, climbRateMs?, glideDeg? }
+//   { id?, kind: 'flight'|'sea', pts: [{lat, lon, altM?, tMs?}], cruiseAltM?, t0Ms?, speedKmh?, climbRateMs?, glideDeg? }
 //   坐标非有限的航点跳过（与页面 markerTrs 的 finLL 过滤同口径）；数值一律按 Number.isFinite 判，不做字符串转换。
 //
 // ── 热路径 ──
@@ -35,9 +40,10 @@
 //   （与 trajStateAt 的 moving 同一条件：t0Ms 有限、speedKmh > 0、全程非零长）。静止档航迹维持现有画法：3D 线 r = 1.002、2D 经纬直连——
 //   静止档飞行按口径全程是巡航高度（缺省 10668 m ≈ r 1.00167），拿它去抬线或加密都会让老航迹的画面变样。
 //
-// 导出：trajStateAt / trajStateAtS / makeTrajState / trajPlan / trajLengthM / trajEndMs / sceneHeadTangent /
+// 导出：trajStateAt / trajStateAtS / makeTrajState / trajPlan / trajLengthM / trajEndMs / trajStartMs / sceneHeadTangent /
 //       greatCircleInterp / greatCircleDistanceM / wgs84DistanceM / clearTrajPlanCache / trajPlanStats / 常量 /
-//       GC_STEP_DEG / densifyGreatCircle（航迹线大圆加密，P4）
+//       GC_STEP_DEG / densifyGreatCircle（航迹线大圆加密，P4）/ trajWaypointInfo（逐航点读数：时刻 / 段长 / 航向 / 段速 / 实际高度）/
+//       trajLine3（带实际高度的 3D 航迹线：大圆加密 + 剖面拐点）
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI
 
@@ -239,13 +245,20 @@ function newPlan() {
     u: new Float64Array(0), T: new Float64Array(0), om: new Float64Array(0), len: new Float64Array(0), cum: new Float64Array(0),
     L: 0, kFirst: -1, kLast: -1,
     kS: new Float64Array(0), kH: new Float64Array(0), K: 0,                 // 运动档飞行剖面的钉点（里程 m、高度 m）
-    hasTanHead: false, tanHead: new Float64Array(3), headHeadingDeg: 0
+    hasTanHead: false, tanHead: new Float64Array(3), headHeadingDeg: 0,
+    // 时刻钉点与排程（见文件头「时刻钉点」）：pin = 航点自带 tMs（NaN = 没钉）；nPin = 钉点个数（0 = 不走排程、沿用原式）；
+    // tw = 各有效航点的排程时刻（ms）、vl = 第 k 段段速（m/s）、bad = 钉点不合时序（记坏、不参与排程）、aj = 锚点下标暂存；
+    // 排程按 (t0Ms, 缺省地速) 缓存（sT0 / sV），计划重建即作废（sDirty）
+    pin: new Float64Array(0), nPin: 0,
+    tw: new Float64Array(0), vl: new Float64Array(0), bad: new Uint8Array(0), aj: new Int32Array(0),
+    sDirty: true, sT0: NaN, sV: NaN, sOk: false
   }
 }
 const altOf = (p) => (fin(p.altM) ? p.altM : NaN)
+const pinOf = (p) => (fin(p.tMs) ? p.tMs : NaN)
 const sameNum = (a, b) => a === b || (a !== a && b !== b)                // NaN 视作相等
 
-// 核对缓存的计划与当前航点：原长、每个有效航点的原下标（leg 取它，无效行挪位置也要重建）、lat / lon / altM
+// 核对缓存的计划与当前航点：原长、每个有效航点的原下标（leg 取它，无效行挪位置也要重建）、lat / lon / altM / tMs
 function planMatches(plan, pts) {
   const n = pts ? pts.length : 0
   if (n !== plan.n) return false
@@ -253,7 +266,7 @@ function planMatches(plan, pts) {
   for (let i = 0; i < n; i++) {
     const p = pts[i]
     if (!p || !fin(p.lat) || !fin(p.lon)) continue
-    if (j >= plan.m || plan.idx[j] !== i || plan.lat[j] !== p.lat || plan.lon[j] !== p.lon || !sameNum(plan.alt[j], altOf(p))) return false
+    if (j >= plan.m || plan.idx[j] !== i || plan.lat[j] !== p.lat || plan.lon[j] !== p.lon || !sameNum(plan.alt[j], altOf(p)) || !sameNum(plan.pin[j], pinOf(p))) return false
     j++
   }
   return j === plan.m
@@ -270,17 +283,20 @@ function buildPlan(pts, reuse) {
     plan.lat = new Float64Array(c); plan.lon = new Float64Array(c); plan.alt = new Float64Array(c); plan.idx = new Int32Array(c)
     plan.u = new Float64Array(3 * c); plan.T = new Float64Array(3 * c); plan.om = new Float64Array(c); plan.len = new Float64Array(c); plan.cum = new Float64Array(c)
     plan.kS = new Float64Array(c); plan.kH = new Float64Array(c)
+    plan.pin = new Float64Array(c); plan.tw = new Float64Array(c); plan.vl = new Float64Array(c); plan.bad = new Uint8Array(c); plan.aj = new Int32Array(c)
     plan.cap = c
   }
   plan.n = n; plan.m = m
-  let j = 0
+  let j = 0, nPin = 0
   for (let i = 0; i < n; i++) {
     const p = pts[i]
     if (!p || !fin(p.lat) || !fin(p.lon)) continue
     plan.lat[j] = p.lat; plan.lon[j] = p.lon; plan.alt[j] = altOf(p); plan.idx[j] = i
+    plan.pin[j] = pinOf(p); if (fin(plan.pin[j])) nPin++
     unitInto(p.lat, p.lon, plan.u, 3 * j)
     j++
   }
+  plan.nPin = nPin; plan.sDirty = true; plan.sOk = false
   // 段：Ω（球面角）、切向 T、WGS-84 段长、累计里程
   const u = plan.u, T = plan.T
   plan.kFirst = -1; plan.kLast = -1
@@ -350,6 +366,90 @@ export function trajPlan(traj) {
 export function clearTrajPlanCache() { _cacheById.clear(); _cacheByObj = new WeakMap() }
 /** 计划重建次数（测试核对缓存命中用）。 */
 export function trajPlanStats() { return { builds: _builds, cachedById: _cacheById.size } }
+
+// ─────────────────────────────── 排程（航点时刻钉点） ───────────────────────────────
+
+// 缺省地速（m/s）：speedKmh > 0 才有，否则 NaN
+const defSpeedMs = (traj) => { const v = traj.speedKmh; return fin(v) && v > 0 ? v / 3.6 : NaN }
+
+/**
+ * 按锚点排出各有效航点的时刻 plan.tw 与段速 plan.vl，返回排程是否成立（结果按 (t0, vMs) 缓存在计划上）。
+ *   t0  = 航迹的 t0Ms（首航点锚点；非有限时退首航点自带的 tMs）；vMs = 缺省地速（m/s，NaN = 没给）。
+ *   不成立：一个锚点都没有；或首锚点前 / 末锚点后还有里程，却既没给速度、也没有第二个锚点可借段速。
+ */
+function schedInto(plan, t0, vMs) {
+  if (!plan.sDirty && sameNum(plan.sT0, t0) && sameNum(plan.sV, vMs)) return plan.sOk
+  plan.sDirty = false; plan.sT0 = t0; plan.sV = vMs; plan.sOk = false
+  const m = plan.m, cum = plan.cum, tw = plan.tw, pin = plan.pin, bad = plan.bad, aj = plan.aj
+  for (let j = 0; j < m; j++) { tw[j] = NaN; bad[j] = 0; plan.vl[j] = NaN }
+  if (!m) return false
+  // 锚点：首航点（t0 或它自带的 tMs）+ 其后各钉点；按航点顺序收，里程增则时刻须严格增、零长（停留）可相等
+  let na = 0, lastJ = -1, lastT = NaN
+  const start = fin(t0) ? t0 : pin[0]
+  if (fin(start)) { aj[na++] = 0; tw[0] = start; lastJ = 0; lastT = start }
+  for (let j = 1; j < m; j++) {
+    const tp = pin[j]
+    if (!fin(tp)) continue
+    if (lastJ >= 0 && (cum[j] > cum[lastJ] ? !(tp > lastT) : !(tp >= lastT))) { bad[j] = 1; continue }
+    aj[na++] = j; tw[j] = tp; lastJ = j; lastT = tp
+  }
+  if (!na) return false
+  // 相邻锚点之间匀速；零长（停留）段中间的航点取出发时刻
+  let firstV = NaN, lastV = NaN                                            // m / ms
+  for (let a = 0; a + 1 < na; a++) {
+    const ja = aj[a], jb = aj[a + 1], ds = cum[jb] - cum[ja]
+    if (ds > 0) {
+      const v = ds / (tw[jb] - tw[ja])
+      if (!(firstV > 0)) firstV = v
+      lastV = v
+      for (let j = ja + 1; j < jb; j++) tw[j] = tw[ja] + (cum[j] - cum[ja]) / v
+    } else for (let j = ja + 1; j < jb; j++) tw[j] = tw[ja]
+  }
+  // 首锚点之前 / 末锚点之后：按缺省地速外推，没给就借最近一段的段速；那一侧没有里程则与锚点同刻
+  const vDef = fin(vMs) && vMs > 0 ? vMs / 1000 : NaN
+  const vPre = vDef > 0 ? vDef : firstV, vPost = vDef > 0 ? vDef : lastV
+  const j0 = aj[0], jn = aj[na - 1]
+  if (j0 > 0) {
+    if (vPre > 0) { for (let j = 0; j < j0; j++) tw[j] = tw[j0] - (cum[j0] - cum[j]) / vPre }
+    else if (cum[j0] > 0) return false
+    else for (let j = 0; j < j0; j++) tw[j] = tw[j0]
+  }
+  if (jn < m - 1) {
+    if (vPost > 0) { for (let j = jn + 1; j < m; j++) tw[j] = tw[jn] + (cum[j] - cum[jn]) / vPost }
+    else if (cum[m - 1] > cum[jn]) return false
+    else for (let j = jn + 1; j < m; j++) tw[j] = tw[jn]
+  }
+  // 段速（m/s）：零长段 / 停留段记 0
+  for (let k = 0; k + 1 < m; k++) { const dt = tw[k + 1] - tw[k]; plan.vl[k] = plan.len[k] > 0 && dt > 0 ? plan.len[k] / dt * 1000 : 0 }
+  plan.sOk = true
+  return true
+}
+// 该航迹走不走排程、排程是否成立（走排程 = 至少有一个航点带 tMs）
+const schedOf = (plan, traj) => plan.nPin > 0 && schedInto(plan, traj.t0Ms, defSpeedMs(traj))
+
+// 排程下里程 s 处的时刻（ms）：depart = true 取「离开」（s 恰在停留点上取停留结束），false 取「到达」
+function tAtS(plan, s, depart) {
+  const cum = plan.cum, tw = plan.tw, m = plan.m
+  if (m < 2) return tw[0]
+  let k
+  if (depart) { let lo = 0, hi = m - 2; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid - 1 } k = lo }
+  else { let lo = 0, hi = m - 2; while (lo < hi) { const mid = (lo + hi) >> 1; if (cum[mid + 1] >= s) hi = mid; else lo = mid + 1 } k = lo }
+  const len = plan.len[k]
+  if (!(len > 0)) return depart ? tw[k + 1] : tw[k]
+  let f = (s - cum[k]) / len
+  f = f < 0 ? 0 : (f > 1 ? 1 : f)
+  return tw[k] + f * (tw[k + 1] - tw[k])
+}
+// 排程下里程 s 所在段的段速（m/s）；落在零长 / 停留段上取其后第一段有速度的
+function vAtS(plan, s) {
+  const cum = plan.cum, m = plan.m
+  if (m < 2) return 0
+  let lo = 0, hi = m - 2
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid - 1 }
+  for (let k = lo; k + 1 < m; k++) if (plan.vl[k] > 0) return plan.vl[k]
+  for (let k = lo - 1; k >= 0; k--) if (plan.vl[k] > 0) return plan.vl[k]
+  return 0
+}
 
 // ─────────────────────────────── 状态 ───────────────────────────────
 
@@ -457,6 +557,37 @@ function profileMovingInto(plan, traj, o) {
   o.phase = slope > 0 ? PHASE_CLIMB : (slope < 0 ? PHASE_DESCENT : PHASE_CRUISE)
 }
 
+// 飞行高度剖面（排程下，调用方已确认 schedOf 成立）：与 profileMovingInto 同一套 min(段顶, 爬升线, 下滑线)，只是爬升线按时间积——
+// 爬升线 = 钉点高度 + 爬升率 × (此处离开时刻 − 钉点离开时刻)，段内变速时它在航点处折一下；下滑线仍按里程（3° 下滑角）。
+// 可达判据同理：爬升按两钉点之间实际飞行时间、下降按里程。匀速时两式与 profileMovingInto 是同一条线。
+function profileSchedInto(plan, traj, o) {
+  const kS = plan.kS, kH = plan.kH, K = plan.K, s = o.s
+  let j = 0
+  { let lo = 0, hi = K - 2; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (kS[mid] <= s) lo = mid; else hi = mid - 1 } j = lo }
+  const sA = kS[j], sB = kS[j + 1], hA = kH[j], hB = kH[j + 1], d = sB - sA
+  let h, slope
+  if (!(d > 0)) { h = hB; slope = 0 }
+  else {
+    const cr = cruiseOf(traj)
+    const rate = fin(traj.climbRateMs) && traj.climbRateMs > 0 ? traj.climbRateMs : CLIMB_RATE_MS_DEFAULT
+    const gd = fin(traj.glideDeg) && traj.glideDeg > 0 && traj.glideDeg < 90 ? traj.glideDeg : GLIDE_DEG_DEFAULT
+    const td = Math.tan(gd * D2R)
+    const tA = tAtS(plan, sA, true), tB = tAtS(plan, sB, false)
+    const feasible = hB >= hA ? hB - hA <= rate * (tB - tA) / 1000 : hA - hB <= d * td
+    if (!feasible) { slope = (hB - hA) / d; h = hA + slope * (s - sA) }
+    else {
+      const cap = Math.max(cr, hA, hB)
+      const u1 = hA + rate * (tAtS(plan, s, true) - tA) / 1000, u2 = hB + (sB - s) * td
+      if (cap <= u1 && cap <= u2) { h = cap; slope = 0 }
+      else if (u1 <= u2) { h = u1; const v = vAtS(plan, s); slope = v > 0 ? rate / v : 0 }
+      else { h = u2; slope = -td }
+    }
+  }
+  o.altM = h
+  o.pitchDeg = clampPitch(Math.atan(slope) * R2D)
+  o.phase = slope > 0 ? PHASE_CLIMB : (slope < 0 ? PHASE_DESCENT : PHASE_CRUISE)
+}
+
 // 飞行高度（静止档口径：各航点 altM ?? 巡航，段内线性）；里程取 o.s
 function profileStaticInto(plan, traj, k, o) {
   const cr = cruiseOf(traj), s = o.s
@@ -471,7 +602,8 @@ function profileStaticInto(plan, traj, k, o) {
 
 /**
  * 按里程求状态（不看时刻）：s 夹在 [0, 全程]。有 speedKmh 的飞行航迹按运动档剖面（起降 0 m、爬升、巡航、3° 下滑），
- * 没有速度按静止档口径（航点 altM ?? 巡航、段内线性）。给航迹线按剖面抬高度、读数面板用。有效航点 < 2 或全程零长时同静止档。
+ * 带时刻钉点且排程成立的按排程剖面（爬升按实际飞行时间积），都没有按静止档口径（航点 altM ?? 巡航、段内线性）。
+ * 给航迹线按剖面抬高度、读数面板用。有效航点 < 2 或全程零长时同静止档。
  * phase 恒不为 'pre' / 'done'（那是时刻口径），moving 恒 false。
  * ★ 拿它抬航迹线只对运动档航迹（Number.isFinite(trajEndMs(traj))）做，静止档航迹的线保持现状（见文件头「调用方门控」）。
  */
@@ -488,7 +620,9 @@ export function trajStateAtS(traj, sM, out) {
   const k = positionInto(plan, o)
   const src = traj[PLAN_TAG] === true ? null : traj
   if (src && isFlight(src)) {
-    if (hasSpeed(src)) profileMovingInto(plan, src, o); else profileStaticInto(plan, src, k, o)
+    // 带时刻钉点且排程成立 → 按排程的时间积爬升；否则有地速按匀速剖面，没有按静止档
+    if (schedOf(plan, src)) profileSchedInto(plan, src, o)
+    else if (hasSpeed(src)) profileMovingInto(plan, src, o); else profileStaticInto(plan, src, k, o)
   } else { o.altM = 0; o.pitchDeg = 0; o.phase = PHASE_CRUISE }
   return o
 }
@@ -497,6 +631,7 @@ export function trajStateAtS(traj, sM, out) {
  * 航迹载具在 tMs 的状态（DESIGN3 E8）。
  *   有 t0Ms（有限）+ speedKmh（> 0）且全程非零长 → 运动档：s = 地速 × (tMs − t0Ms)；s < 0 停在起点（phase 'pre'、地面高度），
  *     s ≥ 全程停在终点（done = true）；途中沿大圆、按剖面给高度与俯仰。
+ *   有航点带 tMs（时刻钉点）→ 按排程：各航点时刻由锚点插值 / 外推（见 schedInto），段内匀速；排程不成立退静止档。
  *   否则 → 静止档：钉在航迹头（末航点），与 scene.setTrajectories 的载具位置、_tan 逐位一致；飞行高度 = 末航点 altM ?? 巡航高度。
  * @param {object} traj  航迹对象或 trajPlan 的结果（后者没有 kind / 速度，只能出静止档）
  * @param {number} tMs   UTC 毫秒（clock.tMs）
@@ -509,6 +644,7 @@ export function trajStateAt(traj, tMs, out) {
   if (!plan.m) return setInvalid(o)
   const src = traj[PLAN_TAG] === true ? null : traj
   if (!src) return staticInto(plan, {}, o)
+  if (plan.nPin > 0) return schedStateInto(plan, src, tMs, o)              // 带时刻钉点：按排程（没有钉点的航迹不进这里，下面原式逐位不变）
   const sk = src.speedKmh, t0 = src.t0Ms                                    // 各取一次（页面形状杂时每次取 double 都可能装箱）
   if (!(fin(sk) && sk > 0) || !fin(t0) || plan.kFirst < 0 || !fin(tMs)) return staticInto(plan, src, o)
   const v = sk / 3.6
@@ -516,26 +652,7 @@ export function trajStateAt(traj, tMs, out) {
   const s = (tMs - t0) / 1000 * v
   const flight = isFlight(src)
   o.ok = true; o.moving = true; o.sTotal = L
-  if (s <= 0 || s >= L) {
-    // 两端：航点原值、到达 / 出发航向、地面（或钉点）高度、俯仰 0
-    const end = s >= L, j = end ? plan.m - 1 : 0, k = end ? plan.kLast : plan.kFirst, h = 3 * j
-    o.lat = plan.lat[j]; o.lon = plan.lon[j]
-    const u = plan.u, T = plan.T, a = 3 * k
-    if (end) {
-      const om = plan.om[k], sn = Math.sin(om), c = Math.cos(om)
-      const dx = -u[a] * sn + T[a] * c, dy = -u[a + 1] * sn + T[a + 1] * c, dz = -u[a + 2] * sn + T[a + 2] * c
-      o.headingDeg = headingAt(u[h], u[h + 1], u[h + 2], dx, dy, dz); setTanFromEcef(o, dx, dy, dz)
-    } else {
-      o.headingDeg = headingAt(u[h], u[h + 1], u[h + 2], T[a], T[a + 1], T[a + 2]); setTanFromEcef(o, T[a], T[a + 1], T[a + 2])
-    }
-    o.leg = plan.idx[k]
-    o.s = end ? L : 0
-    o.done = end
-    o.phase = end ? PHASE_DONE : PHASE_PRE
-    o.altM = flight ? plan.kH[end ? plan.K - 1 : 0] : 0
-    o.pitchDeg = 0
-    return o
-  }
+  if (s <= 0 || s >= L) return endsInto(plan, flight, s >= L, o)
   o.done = false
   o.s = s
   positionInto(plan, o)
@@ -543,14 +660,59 @@ export function trajStateAt(traj, tMs, out) {
   else { o.altM = 0; o.pitchDeg = 0; o.phase = PHASE_CRUISE }
   return o
 }
+// 运动档两端：航点原值、到达 / 出发航向、地面（或钉点）高度、俯仰 0。end = 已到达（done），否则未出发（pre）
+function endsInto(plan, flight, end, o) {
+  const j = end ? plan.m - 1 : 0, k = end ? plan.kLast : plan.kFirst, h = 3 * j
+  o.lat = plan.lat[j]; o.lon = plan.lon[j]
+  const u = plan.u, T = plan.T, a = 3 * k
+  if (end) {
+    const om = plan.om[k], sn = Math.sin(om), c = Math.cos(om)
+    const dx = -u[a] * sn + T[a] * c, dy = -u[a + 1] * sn + T[a + 1] * c, dz = -u[a + 2] * sn + T[a + 2] * c
+    o.headingDeg = headingAt(u[h], u[h + 1], u[h + 2], dx, dy, dz); setTanFromEcef(o, dx, dy, dz)
+  } else {
+    o.headingDeg = headingAt(u[h], u[h + 1], u[h + 2], T[a], T[a + 1], T[a + 2]); setTanFromEcef(o, T[a], T[a + 1], T[a + 2])
+  }
+  o.leg = plan.idx[k]
+  o.s = end ? plan.L : 0
+  o.done = end
+  o.phase = end ? PHASE_DONE : PHASE_PRE
+  o.altM = flight ? plan.kH[end ? plan.K - 1 : 0] : 0
+  o.pitchDeg = 0
+  return o
+}
+// 排程下的状态：时刻落在哪两个航点之间 → 按两航点时刻线性换里程（段内匀速）；排程不成立退静止档
+function schedStateInto(plan, src, tMs, o) {
+  if (!schedOf(plan, src) || plan.kFirst < 0 || !fin(tMs)) return staticInto(plan, src, o)
+  const tw = plan.tw, m = plan.m, flight = isFlight(src)
+  o.ok = true; o.moving = true; o.sTotal = plan.L
+  if (tMs <= tw[0] || tMs >= tw[m - 1]) return endsInto(plan, flight, tMs >= tw[m - 1], o)
+  let lo = 0, hi = m - 2
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (tw[mid] <= tMs) lo = mid; else hi = mid - 1 }
+  const dt = tw[lo + 1] - tw[lo]
+  o.s = dt > 0 ? plan.cum[lo] + (tMs - tw[lo]) / dt * plan.len[lo] : plan.cum[lo + 1]
+  o.done = false
+  positionInto(plan, o)
+  if (flight) profileSchedInto(plan, src, o)
+  else { o.altM = 0; o.pitchDeg = 0; o.phase = PHASE_CRUISE }
+  return o
+}
 
 /** 全程（m，WGS-84 测地线段长之和；跳过坐标无效的航点）。 */
 export function trajLengthM(traj) { return trajPlan(traj).L }
-/** 运动档的到达时刻（ms）；不是运动档返回 NaN。 */
+/** 运动档的到达时刻（ms）；不是运动档返回 NaN。带时刻钉点的航迹 = 排程里末航点的时刻。 */
 export function trajEndMs(traj) {
   if (!traj || typeof traj !== 'object' || traj[PLAN_TAG] === true) return NaN
   const v = speedMsOf(traj), plan = trajPlan(traj)
+  if (plan.nPin > 0) return schedOf(plan, traj) && plan.L > 0 ? plan.tw[plan.m - 1] : NaN
   return fin(v) && fin(traj.t0Ms) && plan.L > 0 ? traj.t0Ms + plan.L / v * 1000 : NaN
+}
+/** 运动档的出发时刻（ms，= 首航点时刻）；不是运动档返回 NaN。 */
+export function trajStartMs(traj) {
+  if (!traj || typeof traj !== 'object' || traj[PLAN_TAG] === true) return NaN
+  const plan = trajPlan(traj)
+  if (!(plan.L > 0)) return NaN
+  if (plan.nPin > 0) return schedOf(plan, traj) ? plan.tw[0] : NaN
+  return fin(speedMsOf(traj)) && fin(traj.t0Ms) ? traj.t0Ms : NaN
 }
 
 // ─────────────────────────────── 航迹线大圆加密（P4） ───────────────────────────────
@@ -601,5 +763,117 @@ export function densifyGreatCircle(pts, stepDeg = GC_STEP_DEG) {
     out.push({ lat: p.lat, lon: normLonDeg(p.lon) })
     prev = p
   }
+  return out
+}
+
+// ─────────────────────────────── 逐航点读数 / 带高度的 3D 航迹线（航迹表格、3D 实际高度） ───────────────────────────────
+
+/**
+ * 逐航点读数（航迹表格用，导航日志口径：一行 = 到达这个航点的那一段）。与 traj.pts 等长，坐标无效的行给 null。每项：
+ *   sM         累计里程（m，WGS-84 测地线）
+ *   legM       到达本航点这一段的段长（m；首航点 NaN）
+ *   courseDeg  这一段的出发航向（大圆在段起点的方位，度 [0, 360)；首航点 / 零长段 NaN）
+ *   speedKmh   这一段的地速（km/h；排程下 = 段速、停留段 0，起始 + 匀速 / 只给了速度 = speedKmh，都没有 NaN）
+ *   tMs        本航点时刻（ms；排程 / 起始 + 匀速推出，推不出 NaN）
+ *   tPinned    时刻是用户定的（首航点 = 起始时刻，其余 = 合时序的 tMs 钉点）；tBad = 钉点不合时序（排程里没用它）
+ *   altM       本航点实际高度（m；飞行按剖面 = trajStateAtS，航行 0）；altPinned = 本航点带 altM 钉点
+ */
+export function trajWaypointInfo(traj) {
+  const pts = traj && typeof traj === 'object' && Array.isArray(traj.pts) ? traj.pts : []
+  const out = new Array(pts.length).fill(null)
+  if (!pts.length) return out
+  const plan = trajPlan(traj), m = plan.m
+  if (!m) return out
+  const flight = isFlight(traj), vDef = defSpeedMs(traj)
+  const sched = schedOf(plan, traj)
+  const uniform = !plan.nPin && fin(traj.t0Ms) && vDef > 0                // 老口径：起始 + 匀速（与 trajEndMs 同式）
+  const st = makeTrajState(), u = plan.u, T = plan.T
+  for (let j = 0; j < m; j++) {
+    const i = plan.idx[j], p = pts[i]
+    const e = { sM: plan.cum[j], legM: NaN, courseDeg: NaN, speedKmh: NaN, tMs: NaN, tPinned: false, tBad: false, altM: 0, altPinned: false }
+    if (j > 0) {
+      const k = j - 1, len = plan.len[k]
+      e.legM = len
+      if (len > 0) { const a = 3 * k; e.courseDeg = headingAt(u[a], u[a + 1], u[a + 2], T[a], T[a + 1], T[a + 2]) }
+      if (sched) e.speedKmh = plan.vl[k] * 3.6
+      else if (vDef > 0) e.speedKmh = vDef * 3.6
+    }
+    if (sched) {
+      e.tMs = plan.tw[j]
+      e.tPinned = j === 0 ? (fin(traj.t0Ms) || fin(plan.pin[0])) : (fin(plan.pin[j]) && !plan.bad[j])
+    } else if (uniform) {
+      e.tMs = traj.t0Ms + plan.cum[j] / vDef * 1000
+      e.tPinned = j === 0
+    }
+    if (plan.nPin > 0) e.tBad = plan.bad[j] === 1
+    if (flight) { trajStateAtS(traj, plan.cum[j], st); e.altM = st.altM; e.altPinned = fin(p.altM) }
+    out[i] = e
+  }
+  return out
+}
+
+// 剖面拐点（里程 m，追加进 list）：运动档 / 排程下的飞行剖面 = min(段顶, 爬升线, 下滑线)，钉点段内按航点再分小段，
+// 每小段里三者都是线性的，拐点只在两两相交处 —— 按小段两端的差值变号线性插出来（多出几个不是拐点的点无妨，线照样过）。
+// 静止档段内线性、航行恒 0：没有拐点。
+function profileKnotsInto(traj, plan, list) {
+  if (!isFlight(traj)) return
+  const sched = schedOf(plan, traj), vDef = defSpeedMs(traj)
+  if (!sched && !(vDef > 0)) return
+  const kS = plan.kS, kH = plan.kH, K = plan.K, cum = plan.cum, m = plan.m
+  const cr = cruiseOf(traj)
+  const rate = fin(traj.climbRateMs) && traj.climbRateMs > 0 ? traj.climbRateMs : CLIMB_RATE_MS_DEFAULT
+  const gd = fin(traj.glideDeg) && traj.glideDeg > 0 && traj.glideDeg < 90 ? traj.glideDeg : GLIDE_DEG_DEFAULT
+  const td = Math.tan(gd * D2R), tc = sched ? NaN : rate / vDef
+  let w = 0                                                                // 航点指针（cum 与 kS 都升序，一趟走完）
+  for (let q = 0; q + 1 < K; q++) {
+    const sA = kS[q], sB = kS[q + 1], hA = kH[q], hB = kH[q + 1], d = sB - sA
+    if (!(d > 0)) continue
+    const tA = sched ? tAtS(plan, sA, true) : 0
+    const climbM = sched ? rate * (tAtS(plan, sB, false) - tA) / 1000 : d * tc
+    if (hB >= hA ? hB - hA > climbM : hA - hB > d * td) continue          // 到不了：该段是直线
+    const cap = Math.max(cr, hA, hB)
+    const f1 = (s) => (sched ? hA + rate * (tAtS(plan, s, true) - tA) / 1000 : hA + (s - sA) * tc) - cap
+    const f2 = (s) => hB + (sB - s) * td - cap
+    let a = sA, a1 = f1(a), a2 = f2(a)
+    while (w < m && cum[w] <= sA) w++
+    for (;;) {
+      const b = w < m && cum[w] < sB ? cum[w] : sB
+      const b1 = f1(b), b2 = f2(b)
+      if ((a1 < 0) !== (b1 < 0) && a1 !== b1) list.push(a + (b - a) * a1 / (a1 - b1))
+      if ((a2 < 0) !== (b2 < 0) && a2 !== b2) list.push(a + (b - a) * a2 / (a2 - b2))
+      const a3 = a1 - a2, b3 = b1 - b2
+      if ((a3 < 0) !== (b3 < 0) && a3 !== b3) list.push(a + (b - a) * a3 / (a3 - b3))
+      if (b >= sB) break
+      a = b; a1 = b1; a2 = b2; w++
+    }
+  }
+}
+
+/**
+ * 带实际高度的 3D 航迹线：[{lat, lon, altM}]（新数组）。位置与载具同一条大圆：逐段按球心角 ≤ stepDeg 细分（段数与 densifyGreatCircle 同式），
+ * 各点经 trajStateAtS 取位置与剖面高度；飞行的运动档 / 排程剖面另在爬升顶点、下降起点、三角顶点插拐点（线在那里真的折）。
+ * 静止档飞行段内线性（航点 altM ?? 巡航），航行恒 0。经度归一到 (−180, 180]，不切接缝（交渲染端）。有效航点 < 2 或全程零长时只出一个点。
+ */
+export function trajLine3(traj, stepDeg = GC_STEP_DEG) {
+  const out = []
+  if (!traj || typeof traj !== 'object') return out
+  const plan = trajPlan(traj), m = plan.m
+  if (!m) return out
+  const st = makeTrajState()
+  const emit = (s) => { trajStateAtS(traj, s, st); if (st.ok) out.push({ lat: st.lat, lon: normLonDeg(st.lon), altM: st.altM }) }
+  if (plan.kFirst < 0) { emit(0); return out }
+  const step = fin(stepDeg) && stepDeg > 0 ? stepDeg : GC_STEP_DEG
+  const ss = [0]
+  for (let k = 0; k + 1 < m; k++) {
+    const len = plan.len[k]
+    if (!(len > 0)) continue
+    const n = Math.ceil(plan.om[k] * R2D / step), a = plan.cum[k]
+    for (let i = 1; i < n; i++) ss.push(a + len * i / n)
+    ss.push(plan.cum[k + 1])
+  }
+  profileKnotsInto(traj, plan, ss)
+  ss.sort((x, y) => x - y)
+  let prev = -Infinity
+  for (const s of ss) if (s - prev > 1e-3) { emit(s); prev = s }        // 拐点恰落在细分点上（< 1 mm）只出一次
   return out
 }

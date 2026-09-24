@@ -694,7 +694,7 @@ function nudge(g, sign, big) {
 
         <!-- 收起行 = 一条转发器的身份 + 缩略占用条。点它摊开这一条（图上同步高亮） -->
         <div class="th" @click="pick(g)">
-          <span class="tw"><Icon v-if="!g.orphan" :name="isOpen(g) ? 'chevron-down' : 'chevron-right'" :size="12" /></span>
+          <span class="tw"><Icon v-if="!g.orphan" name="chevron-down" class="disc" :class="{ shut: !isOpen(g) }" :size="12" /></span>
           <span class="gno">{{ g.orphan ? '未归属转发器' : (g.no || '—') }}</span>
           <template v-if="!g.orphan">
             <span class="gf" v-if="g.f1 != null">↓ {{ fu(g.f1) }}~{{ fu(g.f2) }}<i v-if="g.pol">{{ g.pol }}</i></span>
@@ -947,7 +947,8 @@ function nudge(g, sign, big) {
 .gbw { font-variant-numeric: tabular-nums; flex: none; }
 .gbm { color: var(--text-faint); font-size: var(--fs-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gbm em { font-style: normal; margin-right: 8px; }
-.gbm .dot { display: inline-block; width: 7px; height: 7px; margin-right: 3px; vertical-align: baseline; border: 1px solid rgba(0, 0, 0, .25); }
+/* 色块描边从 --text 混出：原 rgba(0,0,0,.25) 在深色底上等于没有，深色波束色一贴底就糊 */
+.gbm .dot { display: inline-block; width: 7px; height: 7px; margin-right: 3px; vertical-align: baseline; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); }
 /* 二选一那一组不许被挤掉：只是图例的可以省略号截断，能点的截断了就成了半个按钮 */
 .gbm.pick { flex: none; overflow: visible; }
 /* 二选一的色片钮：没选中的连色点一并压暗 —— 光靠文字深浅分不出「选中的是哪一个」 */
@@ -1049,18 +1050,21 @@ function nudge(g, sign, big) {
 
 /* 右键菜单。遮罩吃掉一次点击（含右键）——菜单开着时点别处只该关菜单，不该同时选中别的东西 */
 .mmask { position: fixed; inset: 0; z-index: 40; }
-.cmenu { position: fixed; z-index: 41; min-width: 132px; padding: 3px 0; background: var(--bg);
-  border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); }
+/* 命令菜单（P3，本窗全方角故不加圆角）：四周 3px 内距、项左右内距 10 → 7 字不动；光标处出现故只淡入；
+   悬停机位色实底（与菜单栏一致），快捷键跟着反白、压一档；危险项悬停 --danger 实底 */
+.cmenu { position: fixed; z-index: 41; min-width: 132px; padding: 3px; background: var(--bg);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); animation: ui-fade-in var(--dur-2) var(--ease-out); }
 .cmenu button { display: flex; align-items: center; gap: 14px; width: 100%; font: inherit; font-size: var(--fs-4);
-  padding: 3px 10px; border: none; background: none; color: var(--text); cursor: pointer; text-align: left; }
+  padding: 3px 7px; border: none; background: none; color: var(--text); cursor: pointer; text-align: left; }
 .cmenu button i { margin-left: auto; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
 .cmenu button.bm { gap: 7px; }
-.cmenu .cdot { flex: none; width: 8px; height: 8px; border: 1px solid rgba(0, 0, 0, .25); }
+.cmenu .cdot { flex: none; width: 8px; height: 8px; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); }
 .cmenu .cdot.none { background: transparent; border-style: dashed; }
-.cmenu button:hover:not(:disabled) { background: var(--surface-2); }
+.cmenu button:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
+.cmenu button:hover:not(:disabled) i { color: inherit; opacity: .7; }
 .cmenu button:disabled { color: var(--text-faint); cursor: default; }
-.cmenu button.dgr:hover:not(:disabled) { color: var(--danger); }
-.msep { height: 1px; margin: 3px 0; background: var(--border); }
+.cmenu button.dgr:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
+.msep { height: 1px; margin: 3px 6px; background: var(--border); }
 
 /* 表末整星合计：压双线，与上面每一条的分区线拉开层级 */
 .foot { display: flex; align-items: baseline; gap: 4px; padding: 4px 10px; font-size: var(--fs-3);
@@ -1074,12 +1078,14 @@ function nudge(g, sign, big) {
 
 .ci { width: 100%; background-color: transparent; border: 1px solid transparent; color: var(--text); padding: 2px 3px; font: inherit; }
 .ci:hover:not(:disabled) { border-color: var(--field-border-hover); }
-.ci:focus { border-color: var(--text); outline: none; background-color: var(--field-bg); }
+/* 表内聚焦格：描边转机位色，焦点环收进框里紧贴描边内侧（全局 2px 外环在密表里会顶到邻格） */
+.ci:focus { border-color: var(--accent-ui); outline: none; background-color: var(--field-bg); }
+.ci:focus-visible { outline: 1px solid var(--accent-ui) !important; outline-offset: -2px; }
 .ci:disabled { color: var(--text-faint); cursor: default; }
 .ci.num { text-align: right; font-variant-numeric: tabular-nums; }
 /* 波束那一格：色点 + 下拉。色点是只读标注（这一行在条上什么颜色），故不吃指针 */
 .bmcell { display: flex; align-items: center; gap: 4px; }
-.bmcell .dot { flex: none; width: 8px; height: 8px; border: 1px solid rgba(0, 0, 0, .25); pointer-events: none; }
+.bmcell .dot { flex: none; width: 8px; height: 8px; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); pointer-events: none; }
 /* 下拉吃掉整格剩下的宽 —— 波束名动辄七八个字（CHINA / Beam 2 / 中星某某），截半个字最难认 */
 .bmcell .selc { flex: 1; min-width: 0; }
 .selc { -webkit-appearance: none; appearance: none; }

@@ -131,43 +131,72 @@ export function slerpUnit(a, b, t) {
   const s = Math.sin(th)
   return a.clone().multiplyScalar(Math.sin((1 - t) * th) / s).addScaledVector(b, Math.sin(t * th) / s)
 }
+// 单位矢量 a→b 的大圆插值写进 o[k..k+2]：与 slerpUnit 逐位同算（近重合退回 lerp + normalize，否则不再归一），只是不分配对象。
+// th / s 由调用方给：同一对端点反复插值时夹角只算一次（与 slerpUnit 每次重算的值逐位相同）。
+function slerpTo(o, k, ax, ay, az, bx, by, bz, th, s, t) {
+  if (th < 1e-6) {
+    let x = ax + (bx - ax) * t, y = ay + (by - ay) * t, z = az + (bz - az) * t
+    const inv = 1 / (Math.sqrt(x * x + y * y + z * z) || 1)
+    o[k] = x * inv; o[k + 1] = y * inv; o[k + 2] = z * inv
+    return
+  }
+  const w0 = Math.sin((1 - t) * th) / s, w1 = Math.sin(t * th) / s
+  o[k] = ax * w0 + bx * w1; o[k + 1] = ay * w0 + by * w1; o[k + 2] = az * w0 + bz * w1
+}
+const angOf = (ax, ay, az, bx, by, bz) => Math.acos(Math.max(-1, Math.min(1, ax * bx + ay * by + az * bz)))
 // 把一颗星的覆盖圈填充三角形追加进 out（顶点流）；无从下笔时原样返回。
+// ★ 全程标量 + 定长缓冲、不逐点 new Vector3：轨迹面每颗星每拍要填两只端帽再加打转段的盘（GPS 一圈二十几只），
+//   原来逐点 clone/slerp 的写法光垃圾回收就占去一成多。运算顺序与原 three 链式写法逐条对应，出的三角形逐位相同。
 export function footprintFill(ring, satPos, out) {
   if (!ring || ring.length < 3) return
-  const c = new THREE.Vector3()
   // 中心取星下点；缺它时用环顶点均值（足迹环按方位等分生成，均值必落在锥轴上）
-  if (satPos && Number.isFinite(satPos.lat) && Number.isFinite(satPos.lon)) c.copy(llaToVec(satPos.lat, satPos.lon, 0))
-  else for (const v of ring) c.add(v)
-  if (c.lengthSq() < 1e-12) return
-  c.normalize()
-  const src = ring.map((v) => v.clone().normalize())
-  if (src.length > 1 && src[0].distanceToSquared(src[src.length - 1]) < 1e-14) src.pop()   // 去掉自闭的重复末点
-  const n0 = src.length
+  let cx = 0, cy = 0, cz = 0
+  if (satPos && Number.isFinite(satPos.lat) && Number.isFinite(satPos.lon)) { const v = llaToVec(satPos.lat, satPos.lon, 0); cx = v.x; cy = v.y; cz = v.z }
+  else for (const v of ring) { cx += v.x; cy += v.y; cz += v.z }
+  if (cx * cx + cy * cy + cz * cz < 1e-12) return
+  { const inv = 1 / (Math.sqrt(cx * cx + cy * cy + cz * cz) || 1); cx *= inv; cy *= inv; cz *= inv }
+  let n0 = ring.length
+  const src = new Float64Array(n0 * 3)
+  for (let i = 0; i < n0; i++) {
+    const v = ring[i], inv = 1 / (Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) || 1)
+    src[i * 3] = v.x * inv; src[i * 3 + 1] = v.y * inv; src[i * 3 + 2] = v.z * inv
+  }
+  if (n0 > 1) {   // 去掉自闭的重复末点
+    const e = (n0 - 1) * 3, dx = src[0] - src[e], dy = src[1] - src[e + 1], dz = src[2] - src[e + 2]
+    if (dx * dx + dy * dy + dz * dz < 1e-14) n0--
+  }
   if (n0 < 3) return
   // 环向按格边长补密：多选降采样时足迹只有 18 段，直接连会切进球里被地表吃掉
-  const R = []
+  let cap = n0 * 2
+  let R = new Float64Array(cap * 3), n = 0
+  const put = () => { if (n >= cap) { cap *= 2; const b = new Float64Array(cap * 3); b.set(R); R = b } return (n++) * 3 }
   for (let i = 0; i < n0; i++) {
-    const a = src[i], b = src[(i + 1) % n0]
-    R.push(a)
-    const k = Math.ceil(angBetween(a, b) / FILL_CELL)
-    for (let j = 1; j < k; j++) R.push(slerpUnit(a, b, j / k))
+    const a = i * 3, b = ((i + 1) % n0) * 3
+    const ax = src[a], ay = src[a + 1], az = src[a + 2], bx = src[b], by = src[b + 1], bz = src[b + 2]
+    let o = put(); R[o] = ax; R[o + 1] = ay; R[o + 2] = az
+    const th = angOf(ax, ay, az, bx, by, bz), k = Math.ceil(th / FILL_CELL), s = Math.sin(th)
+    for (let j = 1; j < k; j++) { o = put(); slerpTo(R, o, ax, ay, az, bx, by, bz, th, s, j / k) }
   }
-  const n = R.length
+  // 每个环点到中心的夹角只算一次（逐层插值共用）
+  const th = new Float64Array(n), sn = new Float64Array(n)
   let maxAng = 0
-  for (const v of R) maxAng = Math.max(maxAng, angBetween(c, v))
+  for (let i = 0; i < n; i++) { const a = angOf(cx, cy, cz, R[i * 3], R[i * 3 + 1], R[i * 3 + 2]); th[i] = a; sn[i] = Math.sin(a); if (a > maxAng) maxAng = a }
   const M = Math.max(1, Math.min(64, Math.ceil(maxAng / FILL_CELL)))   // 径向层数
-  const push = (v) => { out.push3(v.x * FILL_R, v.y * FILL_R, v.z * FILL_R) }
-  let prev = new Array(n).fill(c)
+  const F = FILL_R
+  let prev = new Float64Array(n * 3), cur = new Float64Array(n * 3)
   for (let j = 1; j <= M; j++) {
     const t = j / M
-    const cur = new Array(n)
-    for (let i = 0; i < n; i++) cur[i] = slerpUnit(c, R[i], t)
+    for (let i = 0; i < n; i++) slerpTo(cur, i * 3, cx, cy, cz, R[i * 3], R[i * 3 + 1], R[i * 3 + 2], th[i], sn[i], t)
     for (let i = 0; i < n; i++) {
-      const i2 = (i + 1) % n
-      if (j === 1) { push(c); push(cur[i]); push(cur[i2]) }   // 最内圈退化成扇形
-      else { push(prev[i]); push(cur[i]); push(cur[i2]); push(prev[i]); push(cur[i2]); push(prev[i2]) }
+      const a = i * 3, b = ((i + 1) % n) * 3
+      if (j === 1) {   // 最内圈退化成扇形
+        out.push3(cx * F, cy * F, cz * F); out.push3(cur[a] * F, cur[a + 1] * F, cur[a + 2] * F); out.push3(cur[b] * F, cur[b + 1] * F, cur[b + 2] * F)
+      } else {
+        out.push3(prev[a] * F, prev[a + 1] * F, prev[a + 2] * F); out.push3(cur[a] * F, cur[a + 1] * F, cur[a + 2] * F); out.push3(cur[b] * F, cur[b + 1] * F, cur[b + 2] * F)
+        out.push3(prev[a] * F, prev[a + 1] * F, prev[a + 2] * F); out.push3(cur[b] * F, cur[b + 1] * F, cur[b + 2] * F); out.push3(prev[b] * F, prev[b + 1] * F, prev[b + 2] * F)
+      }
     }
-    prev = cur
+    const tmp = prev; prev = cur; cur = tmp
   }
 }
 // 覆盖锥锥面：锥顶（卫星本体）→ 覆盖圈边界的三角扇。母线是直的、锥面本就是直纹面，不需要贴球细分；
@@ -189,11 +218,24 @@ export function coneFace(apex, ring, out) {
     }
   }
 }
+// 覆盖锥一整只（锥面三角扇 + 均布的 n 根母线）。聚焦几何 Worker（focusGeomTick）与跟随主星的近场（followFocus）共用这一份：
+// 跟随时同一只锥远处那截由前者画、近处那截由后者画，两边的母线取法稍有出入，接缝处就对不上。
+// o：{ faceOn, genCount, genDash }；face / gen 为顶点收集器（push3 / push6）。
+export function emitCone(apex, rv, o, face, gen) {
+  if (!rv || rv.length < 2) return
+  if (o.faceOn) coneFace(apex, rv, face)
+  if (o.genCount > 0) {
+    const m = rv.length - 1, k = Math.max(1, Math.min(m, Math.round(o.genCount)))   // 环首尾同点，取 m 个不重复方位
+    for (let j = 0; j < k; j++) pushDashed(gen, [apex, rv[Math.round(j * m / k) % m]], o.genDash)
+  }
+}
 
 // ===================== 轨迹面（覆盖带） =====================
 // 横断面 = Float32Array((K+1)·3) 的单位矢量（由 constellation/focusSwath.js 的 sectionOf 产出，左缘在前、右缘在后），
 // 沿轨相邻两条横断面之间逐格两个三角形，顶点抬到 FILL_R —— 与覆盖圈填充同一层半径、同一格边长约束。
 // 沿轨相邻横断面相距 δ 超过一格时按 slerp 插出中间断面：多选降采样时相邻星下点隔 15°，直连的格子会沉进地球。
+// ★ δ 取星下点与两缘三者里挪得最远的那个：转弯步（大口径 MEO 过极）星下点一步挪 2°，外缘却扫过 5° 以上，按中点定步数
+//   外缘那排格子就超了格边长。
 function slerpArr(a, b, t, out, m) {
   for (let j = 0; j < m; j++) {
     const o = j * 3
@@ -210,16 +252,16 @@ function slerpArr(a, b, t, out, m) {
 export function swathFill(secs, K, out) {
   const n = secs ? secs.length : 0
   if (n < 2 || !(K >= 1)) return
-  const m = K + 1, c = (K >> 1) * 3
+  const m = K + 1, c = (K >> 1) * 3, k3 = K * 3
   const bufA = new Float32Array(m * 3), bufB = new Float32Array(m * 3)   // 中间断面的两块轮换缓冲（一颗星一拍两次分配，不值得池化）
   const R = FILL_R
+  const ang = (a, b, o) => Math.acos(Math.max(-1, Math.min(1, a[o] * b[o] + a[o + 1] * b[o + 1] + a[o + 2] * b[o + 2])))
   for (let i = 0; i + 1 < n; i++) {
     const a = secs[i], b = secs[i + 1]
     if (!a || !b) continue                                  // 断面缺失（该采样点无从下笔）：这一格不画
-    const d = Math.max(-1, Math.min(1, a[c] * b[c] + a[c + 1] * b[c + 1] + a[c + 2] * b[c + 2]))
-    const th = Math.acos(d)
+    const th = ang(a, b, c)
     if (th > Math.PI - 1e-3) continue                       // 近对跖：这一格本就穿过地心、不可见
-    const steps = Math.max(1, Math.min(32, Math.ceil(th / FILL_CELL)))
+    const steps = Math.max(1, Math.min(32, Math.ceil(Math.max(th, ang(a, b, 0), ang(a, b, k3)) / FILL_CELL)))
     let P = a
     for (let s = 1; s <= steps; s++) {
       let C
@@ -234,16 +276,6 @@ export function swathFill(secs, K, out) {
       P = C
     }
   }
-}
-// 带的两条边线（左缘 / 右缘）：抬到 LIFT 的 Vector3 点列，直接喂 densifyArc → pushDashed（与星下点轨迹线同一层同样式）。
-export function swathEdges(secs, K) {
-  const L = [], R = [], rr = (RE + LIFT) / RE, k3 = K * 3
-  for (const s of (secs || [])) {
-    if (!s) continue
-    L.push(new THREE.Vector3(s[0] * rr, s[1] * rr, s[2] * rr))
-    R.push(new THREE.Vector3(s[k3] * rr, s[k3 + 1] * rr, s[k3 + 2] * rr))
-  }
-  return [L, R]
 }
 // 渲染球面单位矢量 → 大地经纬（°），llaToVec 的逆（Y 极轴、θ = lon + 180）。平面图要的是经纬折线。
 export function vecToLatLon(x, y, z) {

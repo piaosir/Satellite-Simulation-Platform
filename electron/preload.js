@@ -472,6 +472,8 @@ contextBridge.exposeInMainWorld('api', {
     // 链路预算侧导入：主进程直接拷贝文件，只回 { base, file }（不搬文本）
     import: () => ipcRenderer.invoke('coverageGrd:import'),
     save: (name, text) => ipcRenderer.invoke('coverageGrd:save', name, text),
+    // 解析天线记录（*.gauss.json）就地改写：只许已存在的 .gauss.json，文件名不变
+    overwrite: (file, text) => ipcRenderer.invoke('coverageGrd:overwrite', file, text),
     raw: (file) => ipcRenderer.invoke('coverageGrd:raw', file),
     // 原样导出：保存框 + 主进程按字节拷贝（原文不进渲染进程）。合成件回 { synth:true }，需渲染端重打包
     exportRaw: (file, defaultName) => ipcRenderer.invoke('coverageGrd:exportRaw', file, defaultName),

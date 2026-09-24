@@ -15,10 +15,18 @@ function read() {
 
 export const theme = reactive({ mode: read(), resolved: 'light' })
 
+// 换肤那一帧打 .theme-swap（controls.css 里停掉全部过渡），两帧后撤：否则带 80~120ms 颜色过渡的
+// 按钮 / 复选框 / 拨杆会比面板晚翻一拍，整窗分两段变色。只在主题真的变了时才打 ——
+// .theme-swap * 会让整棵树重算样式，系统主题变了但用户选的是固定档、storage 回声这类空触发不许打。
 function apply() {
   const dark = theme.mode === 'dark' || (theme.mode === 'system' && mq && mq.matches)
-  theme.resolved = dark ? 'dark' : 'light'
-  document.documentElement.dataset.theme = theme.resolved
+  const next = dark ? 'dark' : 'light'
+  theme.resolved = next
+  const r = document.documentElement
+  if (r.dataset.theme === next) return
+  r.classList.add('theme-swap')
+  r.dataset.theme = next
+  requestAnimationFrame(() => requestAnimationFrame(() => r.classList.remove('theme-swap')))
 }
 
 export function setTheme(mode) {

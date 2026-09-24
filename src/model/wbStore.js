@@ -33,6 +33,7 @@ import { patchGlbJson } from '@core/models/glb.mjs'
 import { modelToBodyMatrix } from '../viz/models/view.js'
 import { buildParamModel } from '@core/models/paramBus.mjs'
 import { templateCatalog, templateSpec, TEMPLATE_IDS, TEMPLATES } from '@core/models/paramTemplates.mjs'
+import { fleetCatalog, buildFleetModel, fleetSig } from '@core/models/fleet/index.mjs'
 import { normalizeMeta } from '@core/models/schema.mjs'
 import { defaultImportQ } from '@core/models/bodyFrame.mjs'
 import { getComponent } from '@core/models/components/index.mjs'
@@ -86,11 +87,19 @@ function entityEntries() {
 
 /** 参数化模板 → 库条目（参数化段；排在最前，tplOrder 定序） */
 function templateEntries() {
-  return templateCatalog().map((t, i) => ({
-    ...t, schema: 2, origin: 'template', tplOrder: i, local: {}, files: {},
-    units: { scaleToMeters: 1, unitGuess: 'm', sizeVerified: false },
-    frame: null, geometry: null
-  }))
+  return [
+    ...templateCatalog().map((t, i) => ({
+      ...t, schema: 2, origin: 'template', tplOrder: i, local: {}, files: {},
+      units: { scaleToMeters: 1, unitGuess: 'm', sizeVerified: false },
+      frame: null, geometry: null
+    })),
+    // 星座精模（fleet/）：与模板同为「内置、运行时现生成、只读」，排在参数化模板之后；fleet 标记让选中 / 出图走 buildFleetModel
+    ...fleetCatalog().map((t, i) => ({
+      ...t, schema: 2, origin: 'template', fleet: true, tplOrder: 50 + i, local: {}, files: {},
+      units: { scaleToMeters: 1, unitGuess: 'm', sizeVerified: true },
+      frame: null, geometry: null
+    }))
+  ]
 }
 
 /**
@@ -272,7 +281,26 @@ export function createWorkbench(ui) {
   }
   async function blobToU8(b) { return new Uint8Array(await b.arrayBuffer()) }
   function blobToDataUrl(b) { return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(b) }) }
+  /**
+   * 星座精模缩略图：缓存键与 3D 页 modelThumbs.fleetThumb 同一把（值 {sig, url}，sig = fleetSig 几何签名，造型改了自动重画）。
+   * 生成只要几毫秒，出图在主线程、两段之间让空闲时段（同 entThumb 的退路）。
+   */
+  async function fleetThumbWb(e) {
+    const key = `model/fleetThumb/${TPL_THUMB_VER}-f1/${e.templateId}`
+    const r = buildFleetModel(e.templateId)
+    const sig = fleetSig(r)
+    try { const c = JSON.parse(localStorage.getItem(key) || 'null'); if (c && c.sig === sig && c.url) { st.thumbs[e.id] = c.url; thumbState.set(e.id, 'done'); return } } catch { /* 坏缓存：重画 */ }
+    await idleSlot()
+    const rt = irToThree(r.ir)
+    let blob
+    try { await idleSlot(); blob = await renderThumb(rt, { frame: r.frame, units: { scaleToMeters: 1 }, articulations: r.articulations }, { size: 384 }) } finally { disposeObject(rt) }
+    const url = await blobToDataUrl(blob)
+    st.thumbs[e.id] = url
+    thumbState.set(e.id, 'done')
+    try { localStorage.setItem(key, JSON.stringify({ sig, url })) } catch { /* 配额满：下次再画 */ }
+  }
   async function templateThumb(e) {
+    if (e.fleet) return fleetThumbWb(e)
     const key = `model/tplThumb/${TPL_THUMB_VER}/${e.templateId}`
     try { const u = localStorage.getItem(key); if (u) { st.thumbs[e.id] = u; thumbState.set(e.id, 'done'); return } } catch { /* 无 */ }
     const t = templateSpec(e.templateId)
@@ -513,8 +541,7 @@ export function createWorkbench(ui) {
         if (tok !== loadTok) return
         showAssembly(t.doc, { id: e.id, name: e.titleZh || e.title, title: e.title, source: plain(e.source) }, o)
       } else if (e.origin === 'template') {
-        const t = templateSpec(e.templateId)
-        const r = buildParamModel(t.spec)
+        const r = e.fleet ? buildFleetModel(e.templateId) : buildParamModel(templateSpec(e.templateId).spec)
         if (tok !== loadTok) return
         const meta = paramMeta(r, { id: e.id, title: e.title, titleZh: e.titleZh, source: e.source })
         adoptRoot(irToThree(r.ir), null, meta, 'tpl', 'lod0', o)
@@ -1189,7 +1216,7 @@ export function createWorkbench(ui) {
     if (!e) return null
     if (e.origin === 'entTemplate') return fromTemplate(id)
     let spec = null
-    if (e.origin === 'template') spec = templateSpec(e.templateId).spec
+    if (e.origin === 'template') spec = e.fleet ? null : templateSpec(e.templateId).spec
     else if (e.source && e.source.kind === 'param') {
       const m = await call('getMeta', id)
       spec = m && m !== LOCKED && m.ok !== false ? m.spec : null

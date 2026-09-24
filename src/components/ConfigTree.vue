@@ -184,7 +184,7 @@ function onRowClick(row) {
       <span v-for="d in row.depth" :key="'g' + d" class="lb-tree-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
 
       <span v-if="row.isFolder" class="lb-tree-chev" @click.stop="emit('toggle', row.item)">
-        <Icon :name="expanded.has(row.item.id) ? 'chevron-down' : 'chevron-right'" :size="12" />
+        <Icon name="chevron-down" class="disc" :class="{ shut: !(expanded.has(row.item.id)) }" :size="12" />
       </span>
       <span v-else class="lb-tree-chev empty"></span>
       <!-- ★ 两类行都占这个图标位：名称起点因此与深度严格单调（见文件头注） -->
@@ -250,7 +250,7 @@ function onRowClick(row) {
    折行第二行从本 span 的左缘起，也就是名称起点——层级不会因此断掉。 */
 .lb-tree-nm { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
 /* 计数徽标紧跟名称（空文件夹显示 0，与「未展开」区分开）；hover 时让位给动作区 */
-.lb-tree-count { flex: none; margin-top: 1px; font-size: var(--fs-1); line-height: 1; padding: 2px 5px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-faint); }
+.lb-tree-count { flex: none; margin-top: 1px; font-size: var(--fs-1); line-height: 1; padding: 2px 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-faint); }
 .lb-tree-row.on .lb-tree-count { background: var(--bg); }
 .lb-tree-row:hover .lb-tree-count { visibility: hidden; }
 
@@ -261,7 +261,9 @@ function onRowClick(row) {
 .lb-tree-ico:hover { color: var(--text); }
 .lb-tree-ico.del:hover { color: var(--danger); }
 
-.lb-tree-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); padding: 2px 5px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-ctl); }
+/* 改名框定高 18px、上下各吃回 1px：占 16px，恰与名称行高（1.35em）相当——进入改名时整行不再长高 6px。
+   描边走机位色：这是正在输入的焦点件，不是悬停描边 */
+.lb-tree-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); height: var(--h-ctl-sm); margin: -1px 0; padding: 0 5px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent-ui); border-radius: var(--r-ctl); }
 .lb-tree-rename:focus { outline: none; }
 
 .lb-empty { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 12px 6px; }

@@ -30,7 +30,7 @@ export const SIZE_MAX = 900 * 1024
 const asArr = (x) => (Array.isArray(x) ? x : [])
 
 /** 包内一件的一句话名字（清单与提示语共用） */
-export const ITEM_LABEL = { 'lb-config': '链路配置', 'freq-plan': '频率计划', 'sat-set': '卫星集' }
+export const ITEM_LABEL = { 'lb-config': '链路配置', 'freq-plan': '频率计划', 'sat-set': '卫星集', traj: '航迹' }
 
 /**
  * 造一个信封。items 由各调用方按类型自备（见 lbMiniExport / fpMiniExport）。
@@ -104,6 +104,7 @@ export function syncOf(item) {
   if (item.type === 'lb-config') return item.srcId ? `cfg:${item.srcId}` : ''
   if (item.type === 'freq-plan') return item.meta && item.meta.id ? `fp:${item.meta.id}` : ''
   if (item.type === 'sat-set') return item.setId ? `ss:${item.setId}` : ''
+  if (item.type === 'traj') return item.tid ? `tj:${item.tid}` : ''
   return ''
 }
 
@@ -126,11 +127,13 @@ const packOne = (pack, item) => ({
  * 标准包 → 逐件拆开。
  * label 优先取件自带的（卫星集那类一个 type 下有「卫星组 / 自定义卫星 / 自定义星座」三种来源，
  * 清单上只写「卫星集」的话，三行长得一模一样，勾选时分不出哪行是哪个）。
+ * tag 是清单行尾的读数：件自带的 tag（航迹的航点数）优先，其次链路配置的体制 mod。
  */
 export const unitsOfPack = (pack) => asArr(pack && pack.items).map((it) => ({
   sync: syncOf(it),
   name: it.name || '',
   label: it.label || ITEM_LABEL[it.type] || it.type,
+  tag: String(it.tag || it.mod || ''),
   payload: packOne(pack, it)
 }))
 
@@ -139,6 +142,7 @@ export const unitOfRaw = (payload, o = {}) => [{
   sync: String(o.sync || ''),
   name: String(o.name || (payload && payload.name) || ''),
   label: String(o.label || '快照'),
+  tag: '',
   payload
 }]
 

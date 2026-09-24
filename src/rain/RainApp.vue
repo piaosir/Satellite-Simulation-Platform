@@ -763,24 +763,34 @@ onMounted(async () => {
 .lb-col-bd { flex: 1 1 auto; overflow: auto; padding: 6px; }
 
 .lb-mini { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-mini:hover:not(:disabled) { border-color: var(--accent); }
+.lb-mini:hover:not(:disabled) { border-color: var(--line-hover); }
 .lb-mini:disabled { opacity: .5; cursor: default; }
-.lb-mini.pri { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+/* 墨色主按钮（P1）：走 --primary-fill，深色下不再是近白块；悬停 / 禁用各有一档 */
+.lb-mini.pri { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
+.lb-mini.pri:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
+.lb-mini.pri:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 .lb-mini-ico { display: inline-flex; align-items: center; height: var(--h-ctl); white-space: nowrap; padding: 0 6px; }
 .rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); max-width: 220px; }
 
 /* 工具栏 */
 /* 窄栏下按整组换行、组内文字不折断（避免「链路方/向」「ITU-R 自/动」式中途断行） */
-.rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+/* 上下 6px：6 + 24（分段 / 几何框）+ 6 + 1 = 37，与左右两栏的栏头同高，三栏的底线落在同一 y */
+.rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .rain-seg-grp { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .rain-seg-lb { flex: none; white-space: nowrap; font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
 .rain-seg { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rain-seg button { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); padding: 0 12px; border: 0; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
 .rain-seg button + button { border-left: 1px solid var(--border); }
 .rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent-ui); background: var(--surface); }
-/* 全局几何输入（GEO 轨位 / NGSO 轨道三要素）：与分段按钮同高同框，标签内嵌 + 单位后缀 */
-.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: 25px; padding: 0 7px 0 8px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface-2); }
-.rain-geom:focus-within { border-color: var(--accent-ui); background: var(--surface); }
+.rain-seg button:hover:not(.on):not(:disabled) { color: var(--text); background: var(--surface); }
+/* 全局几何输入（GEO 轨位 / NGSO 轨道三要素）：与分段按钮同高（22 + 描边 2），标签内嵌 + 单位后缀。
+   它是输入框不是按钮：底色 / 描边 / 悬停 / 焦点跟全局输入框一套（field-*），焦点环描整个框而不是框里的裸 input */
+.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: calc(var(--h-ctl) + 2px); padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
+.rain-geom:hover { border-color: var(--field-border-hover); }
+.rain-geom:focus-within { border-color: var(--accent-ui); background: var(--field-bg); }
+.rain-geom:has(input:focus-visible) { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
+.rain-geom input:focus-visible { outline: none !important; }
+.rain-geom:has(input:disabled), .rain-geom:has(input[readonly]) { background: var(--field-disabled-bg); border-color: var(--border); }
 .rain-geom span { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .rain-geom input { width: 48px; padding: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); text-align: right; outline: none; font-variant-numeric: tabular-nums; }
 .rain-geom i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); }
@@ -793,8 +803,9 @@ onMounted(async () => {
 .rain-stale { flex: none; font-size: var(--fs-2); padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
 
 .lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-calc:disabled { opacity: .55; cursor: default; }
+.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--primary-fill); background: var(--primary-fill); color: var(--primary-on); border-radius: var(--r-ctl); cursor: pointer; }
+.lb-calc:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
+.lb-calc:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 /* 底栏承载了单算例 + 多站的全部设置：窄窗口下按整组换行（组内不折断，与顶部工具栏同一套办法），
    「计算」按钮靠 lb-flex 始终推到最右，换行后仍在最后一行右端 */
 .rain-foot { flex-wrap: wrap; gap: 7px 12px; }
@@ -807,7 +818,8 @@ onMounted(async () => {
 
 /* 结果栏 */
 .lb-result-bd { flex: 1 1 auto; overflow: auto; padding: 10px; }
-.rain-ph { color: var(--text-faint); font-size: var(--fs-3); line-height: 1.7; padding: 20px 8px; }
+/* 空态（P14）：居中一句，距栏头底线 18px（外层 10 + 8） */
+.rain-ph { color: var(--text-faint); font-size: var(--fs-3); line-height: 1.7; text-align: center; padding: 8px 6px; }
 .rain-err { color: var(--danger); font-size: var(--fs-4); padding: 16px 8px; }
 
 .rain-detail { margin-top: 12px; }
@@ -823,16 +835,18 @@ onMounted(async () => {
 .rd-note { padding: 6px 10px 7px; font-size: var(--fs-2); line-height: 1.6; color: var(--text-faint); border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
 
 /* 弹窗 / 菜单 */
-.lb-mask { position: fixed; inset: 0; background: rgba(0,0,0,.28); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.lb-dlg { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); }
+/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
+.lb-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.lb-dlg { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .lb-dlg-hd { font-size: var(--fs-4); font-weight: 600; margin-bottom: 10px; }
 .lb-dlg-msg { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
 .lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); margin-bottom: 12px; }
 .lb-dlg-acts { display: flex; justify-content: flex-end; gap: 8px; }
 .lb-ctx-mask { position: fixed; inset: 0; z-index: 60; }
-.lb-ctx { position: fixed; min-width: 160px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-box); box-shadow: var(--shadow-3); padding: 4px; display: flex; flex-direction: column; }
+/* 命令菜单（P3）：浮层边 --border-strong + --shadow-2，悬停机位色实底（与菜单栏一致），光标处出现故只淡入 */
+.lb-ctx { position: fixed; min-width: 160px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); padding: 4px; display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
 .lb-ctx button { font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; border: 0; background: transparent; color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-ctx button:hover { background: var(--surface-2); }
-.lb-ctx button.del:hover { color: var(--danger); }
-.lb-ctx-sep { height: 1px; background: var(--border); margin: 4px 0; }
+.lb-ctx button:hover { background: var(--accent-ui); color: var(--bg); }
+.lb-ctx button.del:hover { background: var(--danger); color: var(--bg); }
+.lb-ctx-sep { height: 1px; background: var(--border); margin: 3px 6px; }
 </style>

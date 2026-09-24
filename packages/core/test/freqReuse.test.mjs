@@ -13,8 +13,8 @@
 //      10 不在（同为 2.65d 却要切 5 段频率，被 8 支配）；
 //   ③ k 色都要用上（不许退化成更少的色），且各色用量均衡 —— 否则某几段频率被过度装载；
 //   ④ 排不开时不许假装排开：conflicts 如实计数（UI 据此报「该布局 k 色排不开」）。
-import { colorFreqPlan, reuseDistFactor, reuseDist, beamSketchRing } from '../../../src/viz/grd/synth.js'
-import { dirToAzEl } from '../../../src/viz/grd/coverage.js'
+import { colorFreqPlan, reuseDistFactor, reuseDist, beamSketchRing, hexFillCenters, freqPlanNodesTrue, trueAngleDeg } from '../../../src/viz/grd/synth.js'
+import { dirToAzEl, gridDir } from '../../../src/viz/grd/coverage.js'
 import { geodeticToEcef, elevationDeg } from '../../../src/viz/wgs84.js'
 // 引擎侧的档位表（CJS）：两处档位必须同表，故在这里一并验
 import ciCci from '../utils/interference/ciCci.js'
@@ -164,6 +164,46 @@ function minSameColorDist(nodes, colors, d) {
     ok(`${k} 色：按可达距离排出图案（零冲突）`, conflicts === 0, `conflicts=${conflicts}`)
     ok(`${k} 色：可达距离 < √${k}`, reuseDist(k) < Math.sqrt(k) - 1e-9)
   }
+}
+
+/* ---------- ④d 真实夹角口径（高斯组）：LEO 大区的子晶格图案不许因边缘压短整张丢给贪心 ---------- */
+{
+  // 病例：550 km LEO 星下 (30°E, 30°N)，6°×6° 经纬度 Polygon → 边缘波束离 AEQ 切点 ≈37°，周向被 sinρ/ρ 压短过 5% 余量。
+  //   旧口径：真实夹角下子晶格有几对边缘同色略近于门限 → 整张回退贪心 → 成片【相邻】同色（3 色 36 对 · 2° 间距 4 色 210 对）。
+  //   要求：相邻同色 0 对；冲突数按真实夹角如实报（等于逐对重数的结果），且不多于贪心。
+  const sat = { lon: 30, lat: 30, altKm: 550 }, half = 3
+  const pts = [[sat.lon - half, sat.lat - half], [sat.lon + half, sat.lat - half], [sat.lon + half, sat.lat + half], [sat.lon - half, sat.lat + half]]
+  for (const [sp, ks] of [[3, [3, 4, 7]], [2, [3, 4, 7]]]) {
+    const cs = hexFillCenters({ satLon: sat.lon, satLat: sat.lat, altKm: sat.altKm, polyPts: pts, spacing: sp, metric: 'true' })
+    const nodes = cs.map((c) => { const q = dirToAzEl(sat.lon, sat.lat, sat.altKm, c.lon, c.lat); return { az: q.az, el: q.el, r: sp / 2 } })
+    const U = nodes.map((q) => gridDir(6, q.az, q.el))
+    let maxOff = 0
+    for (const u of U) maxOff = Math.max(maxOff, Math.acos(Math.min(1, u[2])) * 180 / Math.PI)
+    ok(`LEO ${sp}° 间距：布下的是大区（>300 个波束、离轴 >30°）`, nodes.length > 300 && maxOff > 30, `${nodes.length} 个 · 离轴 ${maxOff.toFixed(1)}°`)
+    const tm = freqPlanNodesTrue(nodes)
+    for (const k of ks) {
+      const { colors, conflicts } = colorFreqPlan(tm.nodes, k, undefined, tm.dist)
+      const thr = reuseDistFactor(k)
+      let adjSame = 0, honest = 0, minSame = Infinity
+      for (let i = 0; i < U.length; i++) for (let j = i + 1; j < U.length; j++) {
+        if (colors[i] !== colors[j]) continue
+        const dd = trueAngleDeg(U[i], U[j])
+        if (dd < 1.1 * sp) adjSame++
+        if (dd < (nodes[i].r + nodes[j].r) * thr) honest++
+        if (dd < minSame) minSame = dd
+      }
+      ok(`LEO ${sp}° 间距 ${k} 色：相邻波束零同色`, adjSame === 0, `相邻同色 ${adjSame} 对 · 同色最小 ${(minSame / sp).toFixed(3)}×间距`)
+      ok(`LEO ${sp}° 间距 ${k} 色：同色最小真实间距 ≥ 0.9·√${k}×间距（子晶格图案）`, minSame >= 0.9 * reuseDist(k) * sp, `${(minSame / sp).toFixed(3)}×`)
+      ok(`LEO ${sp}° 间距 ${k} 色：冲突数按真实夹角如实报`, conflicts === honest, `报 ${conflicts} · 实数 ${honest}`)
+      ok(`LEO ${sp}° 间距 ${k} 色：${k} 色全用上`, new Set(colors).size === k)
+    }
+  }
+  // 小区（±2.5°）本来就排得开：仍零冲突（回归护栏）
+  const p25 = pts.map(([x, y]) => [sat.lon + (x - sat.lon) * 2.5 / 3, sat.lat + (y - sat.lat) * 2.5 / 3])
+  const c25 = hexFillCenters({ satLon: sat.lon, satLat: sat.lat, altKm: sat.altKm, polyPts: p25, spacing: 3, metric: 'true' })
+  const n25 = c25.map((c) => { const q = dirToAzEl(sat.lon, sat.lat, sat.altKm, c.lon, c.lat); return { az: q.az, el: q.el, r: 1.5 } })
+  const t25 = freqPlanNodesTrue(n25)
+  ok('LEO ±2.5° 小区：3 色零冲突（不受影响）', colorFreqPlan(t25.nodes, 3, undefined, t25.dist).conflicts === 0)
 }
 
 /* ---------- ⑥ 界面预设 = 有效前沿：同一间距上只留最省频率的那一档 ---------- */

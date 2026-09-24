@@ -7,6 +7,10 @@
 //
 // 数学口径与渲染端 src/viz/grd/{parse,coverage}.js + src/viz/wgs84.js 完全一致（逐函数移植）。
 // 仅服务链路预算的「多波束最大 Parameter」点取值；3D 覆盖页仍用其原渲染路径，互不影响。
+//
+// 解析高斯天线（*.gauss.json，STK Gaussian 参数记录，见 ./gaussStk.js）：buildBin 按记录现铺网格写进 .grdbin（数组消费者
+// 照旧吃网格），表头逐 set 带 an 参数；loadBin 还原 beam.an，sampleBeamAt / peakDb 走闭式精确式，不插值、不取节点。
+const gaussStk = require('./gaussStk.js');
 
 // ===== WGS84（src/viz/wgs84.js 同源）=====
 const A = 6378.137, B = 6356.7523142, F = (A - B) / A, E2 = 2 * F - F * F, RS_GEO = 42164.17;
@@ -128,7 +132,12 @@ function sampleBeamAt(beam, igrid, basis, lon, lat, opt, tgtAltKm) {
   const fr = (xy[1] - g.YS) / ((g.YE - g.YS) / (NY - 1));
   if (fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) return null;  // 站点在方向图网格域外
   let p1, p2;
-  if (beam.c1re) {
+  if (beam.an) {
+    // 解析波束：取值域仍是上面那道网格窗口（= 铺网格的窗口，与渲染端同一判据），域内按闭式精确式求值。
+    // (a,b,c) = 单位矢量 e 在正交归一基底上的分量，本就单位长（anGainDbi 的 atan2(|u×b|, u·b) 对模长也不敏感）。
+    // 交叉极化恒 0 —— 与合成高斯 GRD（c2 ≡ 0）同一极化口径。
+    p1 = Math.pow(10, gaussStk.anGainDbi(beam.an, a, b, c) / 10); p2 = 0;
+  } else if (beam.c1re) {
     const re1 = bicubicAt(beam.c1re, NX, NY, fc, fr), im1 = bicubicAt(beam.c1im, NX, NY, fc, fr);
     const re2 = bicubicAt(beam.c2re, NX, NY, fc, fr), im2 = bicubicAt(beam.c2im, NX, NY, fc, fr);
     p1 = re1 * re1 + im1 * im1; p2 = re2 * re2 + im2 * im2;
@@ -208,11 +217,19 @@ function parseGrd(text) {
 // ===== 紧凑二进制 .grdbin =====
 // 布局: [4 'GRDB'][u32 ver=1][u32 headerLen][header JSON][pad→4][数据区: 每 set 连续 c1re,c1im,c2re,c2im(Float32LE)]
 const MAGIC = 'GRDB';
+// 解析天线记录：按参数现铺网格（窗口 / 分辨率 / 节点值与渲染端 src/viz/grd/gaussStk.js 逐位一致），数据区照旧落四条复分量；
+// 表头 set 多一个 an {az,el,th3,g0,k,back}、顶层多一个 anWin —— loadBin 据此还原闭式求值描述子。旧 .grdbin 没有这两项，照旧载入。
 function buildBin(text) {
-  const g = parseGrd(text);
+  const analytic = gaussStk.isAnalyticText(text);
+  const g = analytic ? gaussStk.materializeText(text) : parseGrd(text);
   const header = { v: 1, igrid: g.igrid, icomp: g.icomp, ncomp: g.ncomp, sets: [] };
+  if (analytic) header.anWin = g.sets[0].an.win;
   let dataBytes = 0;
-  for (const s of g.sets) { const n = s.NX * s.NY; header.sets.push({ XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY, off: dataBytes, n }); dataBytes += n * 4 * 4; }
+  for (const s of g.sets) {
+    const n = s.NX * s.NY, hs = { XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY, off: dataBytes, n };
+    if (s.an) hs.an = { az: s.an.az, el: s.an.el, th3: s.an.th3, g0: s.an.g0, k: s.an.k, back: s.an.back };
+    header.sets.push(hs); dataBytes += n * 4 * 4;
+  }
   const headerJson = Buffer.from(JSON.stringify(header), 'utf8');
   const headEnd = 12 + headerJson.length;
   const pad = (4 - (headEnd % 4)) % 4;
@@ -242,10 +259,14 @@ function loadBin(buf) {
     if (base % 4 === 0) return new Float32Array(ab, base, n);
     return new Float32Array(ab.slice(base, base + n * 4));   // 对齐兜底（极少触发）
   };
-  const beams = header.sets.map((s) => ({
-    grid: { XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY },
-    c1re: view(s.off, s.n), c1im: view(s.off + s.n * 4, s.n), c2re: view(s.off + 2 * s.n * 4, s.n), c2im: view(s.off + 3 * s.n * 4, s.n)
-  }));
+  const beams = header.sets.map((s) => {
+    const bm = {
+      grid: { XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY },
+      c1re: view(s.off, s.n), c1im: view(s.off + s.n * 4, s.n), c2re: view(s.off + 2 * s.n * 4, s.n), c2im: view(s.off + 3 * s.n * 4, s.n)
+    };
+    if (s.an) bm.an = gaussStk.anBeamOf(s.an, header.anWin);   // 解析波束：取值走闭式（sampleBeamAt / peakDb）
+    return bm;
+  });
   return { igrid: header.igrid, icomp: header.icomp, ncomp: header.ncomp, beams };
 }
 
@@ -295,6 +316,8 @@ function sampleMax(loaded, sat, cfg, lon, lat, tgtAltKm) {
  * 里头已含卫星天线峰值增益，方向图在那里只作一条 ≤0 的修正（见 interference/patternsSat.js）。
  * 峰值必须与采样值同口径（同 pol 组合、同 gainOffset），否则修正量会整体平移。
  * 节点最大值与插值后的真峰相差不超过一个网格的曲率，对滚降口径可忽略。
+ * 解析波束（bm.an）不取节点：峰值就是 g0（闭式精确，与 sampleBeamAt 的解析分支同口径）；复场第 2 分量恒 0，
+ * 故只在 Pw 取 p1 的那几档（RSS / P1 / 其余缺省）有值，P2 / P1/P2 / P2/P1 与合成高斯 GRD 一样取不到。
  */
 function peakDb(loaded, cfg) {
   if (!loaded || !loaded.beams || !loaded.beams.length) return null;
@@ -303,8 +326,10 @@ function peakDb(loaded, cfg) {
   const keep = Array.isArray(c.keptSets) ? c.keptSets : null;
   const beams = (keep && keep.length < loaded.beams.length)
     ? keep.map((i) => loaded.beams[i]).filter(Boolean) : loaded.beams;
-  let best = null;
+  let best = null, bestAn = null;                 // bestAn：解析波束的峰值（dB，精确值，不过线性往返）
+  const anOk = pol !== 'P2' && pol !== 'P1/P2' && pol !== 'P2/P1';
   for (const bm of beams) {
+    if (bm.an) { if (anOk && (bestAn === null || bm.an.g0 > bestAn)) bestAn = bm.an.g0; continue; }
     const n = bm.grid.NX * bm.grid.NY;
     for (let i = 0; i < n; i++) {
       let p1, p2;
@@ -320,7 +345,9 @@ function peakDb(loaded, cfg) {
       if (Pw > 0 && (best === null || Pw > best)) best = Pw;
     }
   }
-  return best === null ? null : 10 * Math.log10(best) + gainOffset;
+  const gridDb = best === null ? null : 10 * Math.log10(best);
+  if (bestAn !== null && (gridDb === null || bestAn >= gridDb)) return bestAn + gainOffset;
+  return gridDb === null ? null : gridDb + gainOffset;
 }
 
 function sampleMaxCtx(ctx, lon, lat, tgtAltKm) {
@@ -373,6 +400,7 @@ function sampleAllCtx(ctx, lon, lat) {
 // （峰值处交叉极化必远弱于共极化），且与文件怎么写、icomp 标几都无关。
 function coPolIndexOf(beam) {
   if (beam._coPol === 1 || beam._coPol === 2) return beam._coPol;
+  if (beam.an) return 1;                          // 解析波束：只有分量 1（铺出的网格 c2 ≡ 0，扫一遍也是 1，省掉 O(N)）
   const n = beam.grid.NX * beam.grid.NY;
   let best = -1, bi = 0;
   for (let i = 0; i < n; i++) {
@@ -424,6 +452,7 @@ function sampleXpdCtx(ctx, lon, lat) {
 
 module.exports = {
   parseGrd, buildBin, loadBin,
+  sampleBeamAt,                                   // 单波束未取整值（单测对拍解析闭式用）
   sampleMax, sampleAll, sampleXpd,
   makeSampleCtx, sampleMaxCtx, sampleAllCtx, sampleXpdCtx, coPolIndexOf, peakDb
 };

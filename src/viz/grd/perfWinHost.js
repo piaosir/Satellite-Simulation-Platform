@@ -12,7 +12,10 @@
 import { ref, watch, nextTick } from 'vue'
 import { cityLabelText } from './usePerfTable.js'
 import { cityBoxItems } from './cityBoxes.js'
+import { perfGeomOf, pointingSig } from './useSatPerfTable.js'
 import { byLang } from '../../shared/i18n/lang.js'
+// 相对路径（不走 @core 别名）：perfCityLayer 单测在 node 里直接 import 本文件
+import { trajWaypointInfo } from '../../../packages/core/models/trajKinematics.mjs'
 
 const plain = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)))
 
@@ -130,14 +133,57 @@ export function createPerfWinHost(D) {
       ctxBeams: ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))
     }
   }
+  // 带时刻的城市行按那一刻取值：源星沿星历走到那一刻、指向按各自语义重算（与对星表时段扫描同一套 perfGeomOf）。
+  // 没有带时刻的行 / 宿主没给星历钩子 → null（时刻只作一列读数，取值照当前时刻）
+  // 返回 { at, fp }：at 懒建几何（缓存全命中时一次星历都不解），fp＝带时刻行取值的全部输入指纹
+  // （时钟不在里面：带时刻行的值只看自己那一刻）。
+  function ctxAtOf(ctx, stations) {
+    if (!ctx || ctx.noEph || !ctx.meta || typeof D.perfGeomEnv !== 'function' || typeof D.satcovTimes !== 'function') return null
+    if (!(stations || []).some((s) => Number.isFinite(s.tMs))) return null
+    let env = null, times = null
+    try { env = D.perfGeomEnv(ctx) || {}; times = D.satcovTimes() } catch { return null }
+    let geom = null, bad = false
+    const at = (tMs) => {
+      if (!geom && !bad) { try { geom = perfGeomOf(ctx, times, env) } catch { bad = true } }
+      if (!geom) return null
+      const m = geom.srcMetaAt(tMs)
+      return m ? { basis: geom.basisAt(tMs, m), meta: m } : null
+    }
+    return { at, fp: groundFp(ctx, D.perf.getOpts(ctx.key), env, times) }
+  }
+  // 对象身份编号（星历 / 方向图网格按引用认：内容一换就是新对象）
+  const _oid = new WeakMap(); let _oidSeq = 0
+  const oid = (o) => { if (!o || (typeof o !== 'object' && typeof o !== 'function')) return 0; let i = _oid.get(o); if (!i) { i = ++_oidSeq; _oid.set(o, i) } return i }
+  function groundFp(ctx, opts, env, times) {
+    const src = env.srcRec || null, bore = env.boreRec || null, m = ctx.meta
+    const cc = (src && src._cc) || (bore && bore._cc)
+    const ccOff = cc && times && times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
+    let sig = null
+    try { sig = pointingSig(ctx.settings, m) } catch { sig = null }
+    try {
+      return JSON.stringify([
+        ctx.key, ctx.anRev || 0, ctx.satNo, ctx.antNo, ctx.satName, ctx.antName, oid(ctx.igrid), oid(ctx.icomp),
+        ctx.beams.map((b) => b.bi + ':' + oid(b.beam) + ':' + (b.seq || '')), ctx.settings, sig, opts,
+        oid(src && src.rec), src ? 0 : [m.satLon, m.satLat, m.satAlt], oid(bore && bore.rec), ccOff
+      ])
+    } catch { return null }   // 设置里有拼不成 JSON 的东西 → 不缓存（每拍照旧全算）
+  }
+  const _groundCache = new Map()   // key → { fp, map }：带时刻行的取值缓存（见 usePerfTable.computeRows 的 cache 参数）
   function refreshGround(key) {
     const list = winsOf('ground', key)
-    if (!list.length) return
+    if (!list.length) { _groundCache.delete(key); return }
     const ctx = D.grd.getPerfContext(key)
     const opts = D.perf.getOpts(key)
-    const r = D.perf.computeRows(ctx, opts, D.perf.stationsOf(key))
+    const stations = D.perf.stationsOf(key)
+    const ca = ctxAtOf(ctx, stations)
+    let cache = null
+    if (ca && ca.fp) {
+      cache = _groundCache.get(key)
+      if (!cache || cache.fp !== ca.fp) { cache = { fp: ca.fp, map: new Map() }; _groundCache.set(key, cache) }
+    } else _groundCache.delete(key)
+    const r = D.perf.computeRows(ctx, opts, stations, ca ? ca.at : null, cache)
     const snap = groundCtxSnap(key)
-    for (const w of list) push(w.id, { rows: r.rows, ctx: snap.ctx, ctxBeams: snap.ctxBeams, stamp: D.timeLabel() })
+    for (const w of list) push(w.id, { rows: r.rows, ctx: snap.ctx, ctxBeams: snap.ctxBeams, stamp: D.timeLabel(), tzMode: D.tzMode() })
   }
   function pushGroundFull(w) {
     const key = w.key
@@ -148,7 +194,8 @@ export function createPerfWinHost(D) {
       opts: D.perf.getOpts(key),
       cityGroups: D.perf.cityGroups.value,
       markers: markersSnap(),
-      stamp: D.timeLabel()
+      stamp: D.timeLabel(),
+      tzMode: D.tzMode()
     })
     refreshGround(key)
     pushBoxes()
@@ -205,10 +252,24 @@ export function createPerfWinHost(D) {
         for (const o of winsOf('ground')) if (o.id !== w.id) push(o.id, { cityGroups: D.perf.cityGroups.value })
         break
       case 'trajPts': {
-        // ids=[…] 按勾选取；id='*' 全部；单个 id 兼容
+        // ids=[…] 按勾选取；id='*' 全部；单个 id 兼容。
+        // 每个航点带上排程时刻（tMs，排不出省略）与实际高度（altM，只飞行航迹带；航行恒 0 不带）—— 与航迹表格同一份 trajWaypointInfo
         const M = D.markers() || {}, id = p && p.id, ids = p && Array.isArray(p.ids) ? new Set(p.ids) : null
         const want = (t) => (ids ? ids.has(t.id) : (id === '*' || t.id === id))
-        const list = (M.trs || []).filter(want).map((t) => ({ id: t.id, name: t.name || '', pts: (t.pts || []).map((q) => ({ lon: q.lon, lat: q.lat })) }))
+        const list = (M.trs || []).filter(want).map((t) => {
+          let info = []
+          try { info = trajWaypointInfo(t) } catch { info = [] }
+          const fl = t.kind === 'flight'
+          return {
+            id: t.id, name: t.name || '',
+            pts: (t.pts || []).map((q, i) => {
+              const o = { lon: q.lon, lat: q.lat }, e = info[i]
+              if (e && Number.isFinite(e.tMs)) o.tMs = Math.round(e.tMs)
+              if (e && fl && Number.isFinite(e.altM)) o.altM = Math.round(e.altM * 10) / 10
+              return o
+            })
+          }
+        })
         reply(w.id, m.reqId, list)
         break
       }
@@ -307,6 +368,7 @@ export function createPerfWinHost(D) {
       pointOk: !pv || !pv.point || pv.point.ok !== false, pointMsg: pv && pv.point ? (pv.point.message || '') : '',
       siteMeta: E.siteMeta.value, hasMeta: !!E.meta.value, inRange: !!(E.frameInfo.value && E.frameInfo.value.inRange),
       timeText: D.liveTimeText(), satReady: !!E.satReady.value, satName: E.satName.value || '',
+      tzMode: typeof D.tzMode === 'function' ? D.tzMode() : 'local',
       markers: markersSnap()
     }
   }
@@ -323,7 +385,9 @@ export function createPerfWinHost(D) {
           let id = s && s.id ? String(s.id) : ''
           if (!id || seen.has(id)) id = E.nextSiteId()
           seen.add(id)
-          return { id, name: String(s.name == null ? '' : s.name), lon: s.lon == null ? null : Number(s.lon), lat: s.lat == null ? null : Number(s.lat), src: s.src || 'manual' }
+          const o = { id, name: String(s.name == null ? '' : s.name), lon: s.lon == null ? null : Number(s.lon), lat: s.lat == null ? null : Number(s.lat), src: s.src || 'manual' }
+          if (s && Number.isFinite(s.tMs)) o.tMs = s.tMs      // 该行的取值时刻（航迹航点 / 手填），没有就跟时间轴
+          return o
         })
         break
       }
@@ -367,6 +431,8 @@ export function createPerfWinHost(D) {
     // 城市组 / 标记变了 → 推给开着的对地 / 气象窗
     watch(() => D.perf.cityGroups.value, (v) => { for (const w of winsOf('ground')) push(w.id, { cityGroups: v }) }, { deep: true })
     watch(() => markersSnap(), (v) => { for (const w of wins.values()) if (w.kind !== 'shell') push(w.id, { markers: v }) }, { deep: true })
+    // 显示时区改了 → 对地表的「时间」列按新时区重排（对星表的 tzMode 随 shellSnapLight 走）
+    if (typeof D.tzMode === 'function') watch(() => D.tzMode(), (v) => { for (const w of winsOf('ground')) push(w.id, { tzMode: v }) })
     // 城市桶 / 选项桶整份换了（页面快照恢复、弹窗整份发回）→ 城市层重画；眼睛与逐项改动各自显式调 pushBoxes
     watch(() => [D.perf.stationsByAnt.value, D.perf.optsByAnt.value], () => pushBoxes())
     // 天线树整份换了（GRD 索引载完 / 加天线 / 改名 / 删除）→ 之前载不到的天线重试（启动时城市桶先于索引恢复，见 _loadFailed）

@@ -13,6 +13,7 @@ import { sheetModel, exportSheets, importWorkbook, sheetToRecords, sheetToTsv, p
 import { appAlert } from '../stores/alert.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
+import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
 import { useBridge, useMirror } from './bridge.js'
 import { persistedRef } from './prefs.js'
 import PwMenu from './PwMenu.vue'
@@ -26,9 +27,13 @@ const { st, act, req } = B
 const key = B.self.key
 const pl = usePerfTable()
 pl.setActiveKey(key)
+// 「时间」列按主窗口的显示时区读写（本机 / UTC / UTC±N）；粘贴 / 导入的时间文本同一口径
+const tzMode = computed(() => (st.tzMode == null ? 'local' : st.tzMode))
+pl.setTimeParser((txt) => parseTzText(txt, tzMode.value, Date.now()))
+const tText = (ms) => fmtTzTime(ms, tzMode.value)
 
 // ===== 镜像：城市列表 / 选项 / 城市组（口径见 bridge.useMirror）=====
-const stSig = (list) => JSON.stringify((list || []).map((s) => [s.id, s.country, s.city, s.desig, s.lon, s.lat]))
+const stSig = (list) => JSON.stringify((list || []).map((s) => [s.id, s.country, s.city, s.desig, s.tMs, s.altM, s.lon, s.lat]))
 useMirror(st, 'stations', {
   sigOf: stSig,
   apply: (v) => pl.setStationsOf(key, v),
@@ -42,7 +47,7 @@ useMirror(st, 'opts', {
   local: () => pl.optsByAnt.value[key],
   send: (v) => act('opts', v)
 })
-const grpSig = (list) => JSON.stringify((list || []).map((g) => [g.id, g.name, (g.cities || []).map((c) => [c.country, c.city, c.desig, c.lon, c.lat])]))
+const grpSig = (list) => JSON.stringify((list || []).map((g) => [g.id, g.name, (g.cities || []).map((c) => [c.country, c.city, c.desig, c.tMs, c.altM, c.lon, c.lat])]))
 useMirror(st, 'cityGroups', {
   sigOf: grpSig,
   apply: (v) => pl.setCityGroups(v),
@@ -64,20 +69,31 @@ onMounted(async () => {
 })
 
 // ===== 上：城市输入（可编辑 ExcelGrid）=====
+// 时间 / 高度插在经纬度之前：粘贴解析按「末两列 = 经度、纬度」认坐标（本表复制出去的整行也能原样粘回来）
 const inCols = [
   { key: 'country', label: '国家' },
   { key: 'city', label: '城市' },
   { key: 'desig', label: '代号' },
+  { key: 'tMs', label: '时间' },
+  { key: 'altM', label: '高度', num: true, unit: 'm' },
   { key: 'lon', label: '经度', num: true, unit: '°E' },
   { key: 'lat', label: '纬度', num: true, unit: '°N' }
 ]
+const inText = (r, c) => { if (c.key === 'tMs') return tText(r.tMs); const v = r[c.key]; return v == null ? '' : String(v) }
+// 改时间：只敲时分（HH:mm）沿用该行原来那一天；清空 = 不带时刻（按当前仿真时刻取值）；认不出不落
+function editTime(id, val) {
+  const s = pl.stations.value.find((x) => x.id === id); if (!s) return
+  if (String(val == null ? '' : val).trim() === '') { pl.updateStation(id, { tMs: null }); return }
+  const ms = parseTzText(val, tzMode.value, s.tMs)
+  if (Number.isFinite(ms)) pl.updateStation(id, { tMs: ms })
+}
 const inGrid = useGridSelect({
   gridId: 'pw-in',
   rows: () => pl.stations.value,
   cols: () => inCols,
-  cellText: (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) },
+  cellText: inText,
   // 编辑城市名后，若精确命中城市库 → 自动补全经纬度（与 GEO 链路预算一致）
-  onEdit: (id, k, val) => { pl.updateStation(id, { [k]: val }); if (k === 'city') pl.applyCityGeo(id) },
+  onEdit: (id, k, val) => { if (k === 'tMs') { editTime(id, val); return } pl.updateStation(id, { [k]: val }); if (k === 'city') pl.applyCityGeo(id) },
   onPasteBlock: (anchorId, startKey, text) => pl.pasteBlock(anchorId, startKey, text),
   onPasteAppend: (text) => pl.addStationsBulk(text),
   onClear: (cells) => cells.forEach(({ rowId, key: k }) => pl.updateStation(rowId, { [k]: '' })),
@@ -138,7 +154,14 @@ async function confirmMk(sel) {
   if (!pts.length && !sts.length && !trajs.length) return
   pl.pushUndo()
   const n = pl.importFromMarkers(pts, sts) + (trajs.length ? pl.importFromTrajectories(trajs) : 0)
-  if (!n) { pl.dropUndo(); appAlert('所选标记均已在城市列表中') }
+  if (!n) { pl.dropUndo(); appAlert('所选标记均已在城市列表中'); return }
+  // 航点带时刻 / 实际高度进来了 → 结果表把这两列亮出来（用户关掉之后不再自作主张地打开：只在这次导入确有该量时置真）
+  const has = (k) => trajs.some((t) => (t.pts || []).some((q) => Number.isFinite(q[k])))
+  const o = opts.value
+  if (o && o.cols) {
+    if (has('tMs')) o.cols.tMs = true
+    if (has('altM')) o.cols.altM = true
+  }
 }
 async function pasteClip() {
   let text = ''
@@ -160,14 +183,19 @@ async function importXlsx() {
   if (records) {
     for (const rec of records) {
       const s = pl.addEmptyStation()
-      pl.updateStation(s.id, { country: rec.country || '', city: rec.city || '', desig: rec.desig || '', lon: rec.lon, lat: rec.lat })
+      pl.updateStation(s.id, { country: rec.country || '', city: rec.city || '', desig: rec.desig || '', lon: rec.lon, lat: rec.lat, altM: rec.altM == null ? '' : rec.altM })
+      if (rec.tMs != null && String(rec.tMs).trim() !== '') { const ms = parseTzText(rec.tMs, tzMode.value, Date.now()); if (Number.isFinite(ms)) pl.updateStation(s.id, { tMs: ms }) }
       n++
     }
   } else n = pl.addStationsBulk(sheetToTsv(sheet))
   if (!n) { pl.dropUndo(); appAlert('没有读到数据（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
   pl.applyCityGeoAll()
 }
-const xlsxVal = (r, c) => { const v = r[c.key]; if (v == null || v === '') return null; return (c.num && typeof v === 'number') ? v : String(v) }
+// 时间列导出为带偏移的文本（换台机器 / 换显示时区读回来不走样），其余照原值
+const xlsxVal = (r, c) => {
+  if (c.key === 'tMs') return Number.isFinite(r.tMs) ? fmtTzTimeOff(r.tMs, tzMode.value) : null
+  const v = r[c.key]; if (v == null || v === '') return null; return (c.num && typeof v === 'number') ? v : String(v)
+}
 const ctxName = () => (ctx.value ? ctx.value.satName + '_' + ctx.value.antName : '性能指标表')
 const citySheet = () => sheetModel({ name: '城市输入', cols: inCols, rows: pl.stations.value, value: xlsxVal })
 async function exportCities() {
@@ -228,10 +256,11 @@ const resGrid = useGridSelect({
   rows: () => filteredRows.value,
   cols: () => cols.value,
   readOnly: true,
-  cellText: (r, c) => { const v = r[c.key]; if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }
+  cellText: (r, c) => { if (c.time) return tText(r[c.key]); const v = r[c.key]; if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }
 })
 const fx = (v, n) => (v == null ? '—' : Number(v).toFixed(n == null ? 2 : n))
 function resText(r, c) {
+  if (c.time) return tText(r[c.key])
   if (c.num) return c.fix != null ? fx(r[c.key], c.fix) : (r[c.key] == null ? '—' : String(r[c.key]))
   return r[c.key] || ''
 }
@@ -263,7 +292,7 @@ function copyResult() {
   const cs = cols.value, rs = filteredRows.value
   if (!rs.length) { appAlert('结果表为空'); return }
   const head = cs.map((c) => { const u = colUnit(c); return c.label + (u ? '(' + u + ')' : '') }).join('\t')
-  const body = rs.map((r) => cs.map((c) => { const v = r[c.key]; if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }).join('\t')).join('\n')
+  const body = rs.map((r) => cs.map((c) => { const v = r[c.key]; if (c.time) return tText(v); if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }).join('\t')).join('\n')
   if (!writeClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
 }
 async function exportResult() {
@@ -313,7 +342,8 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
         <span class="ptb" :class="{ on: setOpen }" title="城市设置：标签 / 标记 / 指向误差（指向误差同时决定 Min/Max Pointing 列与地图上的误差框）" @click="setOpen = true"><Icon name="settings" :size="12" /> 城市设置…</span>
         <span class="pw-cnt">{{ pl.stations.value.length }} 城市</span>
       </div>
-      <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
+      <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="inText"
+                 :head-tip="(c) => (c.key === 'tMs' ? '经过该点的时刻（显示时区）；只敲时分沿用该行原来那一天，留空按当前仿真时刻取值' : c.key === 'altM' ? '点的大地高；留空为地面' : c.label)"
                  :actions-width="26" empty-text="暂无城市。" add-label="增加一行" @add="addRowEnd">
         <template #actions="{ row }">
           <span class="del" title="删除该城市" @click="delStation(row.id)"><Icon name="x" :size="12" /></span>
@@ -353,7 +383,7 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
 
     <!-- 弹层 -->
     <CityPicker v-if="cityOpen" :has="hasLL" @add="addCities" @close="cityOpen = false" />
-    <MarkerPick v-if="mkOpen" :pts="markers.pts || []" :sts="markers.sts || []" :trajs="markers.trajs || []" traj-note="每个航点一行，城市名取「航迹名#序号」" @confirm="confirmMk" @close="mkOpen = false" />
+    <MarkerPick v-if="mkOpen" :pts="markers.pts || []" :sts="markers.sts || []" :trajs="markers.trajs || []" traj-note="每个航点一行，城市名取「航迹名#序号」；航迹有时刻 / 飞行高度的一并带入（取值按该时刻、该高度）" @confirm="confirmMk" @close="mkOpen = false" />
     <PerfOptsDialog v-if="optsOpen" title="性能表选项" :sub="ctx ? ctx.antName : ''" :opts="opts" :col-defs="PERF_COL_DEFS" :col-groups="PERF_COL_GROUPS" :ctx-beams="pl.ctxBeams.value" unit-choice @close="optsOpen = false" @reset="resetOpts" />
 
     <!-- 城市设置（SATSOFT §4.2.2 Cities：Label / Marker / Pointing Error） -->

@@ -4,11 +4,12 @@
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDirs, fieldDb, bandGeometry, edgeRefineFor, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
 import { whittakerBeam, upsampledPts, clampDensity } from './whittaker.js'   // Whittaker 插值密度（SATSOFT 同名项）
+import { materialize as anMaterialize, parseRecord as anParseRecord, recordToText as anRecordText, isAnalyticText, AN_FILE_EXT } from './gaussStk.js'   // 解析高斯天线（存参数、现铺网格）
 import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, ecefToGeodetic, rayEllipsoid, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
@@ -86,7 +87,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   const active = ref('')            // 聚焦天线 key（设置/填充对象）
   const loading = ref(false)
   let loaded = false
-  const cache = new Map()           // key → { meta, P1, P2, proj }
+  const cache = new Map()           // key → { meta, beams, settings, rec? }（rec = 解析天线的参数记录，gaussStk.js）
+  // 解析天线记录的修订号：cache 不是响应式的，建 / 改解析天线都 +1，读 analyticRecordOf 的 computed 靠它醒
+  const anRev = ref(0)
   // 聚焦天线【当前画面上】的峰值读数 { db, lon, lat, hit }：由图层构建顺手记下（对地/对星两个
   // 视图各自的构建器都写这里），面板 tip 直接读 → 与地图上标出来的那个点永远是同一个数。
   // hit = 峰值方向真打在那个面上（对地＝WGS84 椭球，对星＝那层壳）；false 时 lon/lat 只是
@@ -318,6 +321,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       // 直接取缓存算基底，不走 getPerfContext —— 后者顺带 map 出【全部波束】的清单（94 波束就是每帧
       // 94 个对象 + 94 次取名），而这里只要 S 和 z 两个矢量。拖拽热路径上这笔白账尤其贵。
       const c = cache.get(key); if (!c || !c.meta || !c.beams) continue
+      if (ephGone(c.meta.folder)) continue                       // 关联星无星历：不画轴（同 buildLayer）
       const b0 = beamBasis(c.meta, c.settings)
       const S = b0.S, d = b0.z
       const rS = Math.hypot(S[0], S[1], S[2]) || 1
@@ -869,7 +873,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const gone = []
     for (const a of n.antennas) {
       const k = keyOf(folder, a.name)
-      if (a.imported && a.file) { try { window.api.coverageGrd.remove(a.file) } catch { /* ignore */ } }
+      if (a.imported && a.file) { cancelAnWrite(a.file); try { window.api.coverageGrd.remove(a.file) } catch { /* ignore */ } }
       cache.delete(k); pendingCfgs.delete(k)
       selected.value = selected.value.filter((x) => x !== k)
       if (active.value === k) active.value = ''
@@ -886,7 +890,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const sat = sats.value.find((x) => x.folder === folder); if (!sat) return
     const key = keyOf(folder, name)
     const tgt = sat.antennas.find((a) => a.name === name)
-    if (tgt && tgt.imported && tgt.file) { try { window.api.coverageGrd.remove(tgt.file) } catch { /* ignore */ } }
+    if (tgt && tgt.imported && tgt.file) { cancelAnWrite(tgt.file); try { window.api.coverageGrd.remove(tgt.file) } catch { /* ignore */ } }
     sat.antennas = sat.antennas.filter((a) => a.name !== name)
     cache.delete(key); pendingCfgs.delete(key)
     selected.value = selected.value.filter((k) => k !== key)
@@ -952,11 +956,16 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       if (!a.file) return key
       try {
         const { text } = await window.api.coverageGrd.raw(a.file)
-        const g = parseGrd(text)
+        // 解析天线（*.gauss.json）：盘上只有参数记录 → 按参数现铺网格（节点即精确值），其余与 GRD 同一条路
+        const rec = (a.analytic || /\.gauss\.json$/i.test(a.file) || isAnalyticText(text)) ? anParseRecord(text) : null
+        const g = rec ? anMaterialize(rec) : parseGrd(text)
         const sat = sats.value.find((x) => x.folder === folder) || { satName: a.sat || '', folder }
         const pos = Number.isFinite(a.satLon) ? { lon: a.satLon, lat: a.satLat || 0, altKm: a.satAlt } : null
         const ent = importedCacheEntry(sat, g, a.name, pos)   // 多波束：一并重建全部波束（按文件原始 set 顺序）
-        cache.set(key, { meta: ent.meta, beams: ent.beams, settings: defaultSettings(ent.meta.satLon, ent.meta.satLat, ent.meta.peakDb) })
+        const st0 = defaultSettings(ent.meta.satLon, ent.meta.satLat, ent.meta.peakDb)
+        if (rec) Object.assign(st0, AN_BORE, { beamsToPlot: ent.beams.map((_, i) => i) })   // 没有存档设置时的出厂口径（同 createAnalyticAntenna）
+        cache.set(key, { meta: ent.meta, beams: ent.beams, settings: st0, ...(rec ? { rec } : {}) })
+        if (rec) anRev.value++
         applyPendingCfg(key)   // 套用存档设置（若有）
       } catch (e) { console.warn('导入 GRD 重载失败', a.file, e) }
       return key
@@ -981,7 +990,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
 
   // 点击天线名 → 仅设为聚焦/编辑对象，不改变其显示状态（显示与否只由勾选框 toggleAnt 控制，两者解耦）
-  async function setActive(sat, a) {
+  // opts.face === false：不转镜头（聚焦定位交给调用方，如页面按卫星当前位置自己定）；缺省照旧转到峰值点
+  async function setActive(sat, a, opts = {}) {
     loading.value = true
     try {
       const key = await ensureLoaded(sat.folder, a)
@@ -992,6 +1002,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       c.settings.beamsToPlot = (c.settings.beamsToPlot || []).filter((i) => i < nb)
       _muteSync = true; applySettings(c.settings); _muteSync = false   // 载入该天线已存的全部设置（含指向 / Beams To Plot）
       recompute()
+      if (opts && opts.face === false) return
       const sc = getScene(); if (sc && c.meta.peak) sc.faceLonLat(c.meta.peak[0], c.meta.peak[1])
     } finally { loading.value = false }
   }
@@ -1139,6 +1150,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // ---- Whittaker 插值密度（SATSOFT Contour Dialog「Whittaker Interpolation Density」，1 = 关）----
   // 密度 N > 1：复场按周期 sinc 上采样成 N 倍细的网格（whittaker.js），下游投影 / 场 / 热区盒 / 分带 / 峰值全部在细网格上跑，
   // 与 SATSOFT 一样直接在细网格上做线性 marching squares —— 交点细化表在这一档不启用（N=5 时表要大 25 倍，肉眼无差）。
+  // ★ 解析天线例外（coverage.refineAtDens）：细网格是按参数重铺的精确节点，细化表照建，线与表仍逐点精确。
   // 派生波束缓存在原波束上（beam._whit），换密度才重算；投影 / 场等缓存挂在派生对象自己身上。性能指标表仍按原网格取值。
   // 预算：绘制中的波束上采样后总点数 > WHIT_BUDGET 则本次按 1 画并提示一次（HTS 94 波束 × 密度 5 ≈ 7700 万点，内存吃不消）。
   const WHIT_BUDGET = 8e6
@@ -1174,10 +1186,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 把关，而垂足的经纬度永远有限，这道关从来不触发。
   // 故此处对 argmax 那一条射线单独求交（一根射线，白给）：hit=真打到椭球；打不到则退回该方向的
   // 地平点，只作波束名的锚（点与峰值电平一律不画）。顺带绕开「热区盒为空时 proj 未写、读到陈旧值」的坑。
+  // 解析天线（beam.an）且无路损：峰值方向就是视轴本身（闭式），不取 argmax 格点（差半格）；有路损时场峰随斜距偏离视轴，照旧取格点。
   function peakPoint(c, cfg, beam, field) {
     if (!Number.isFinite(field.max)) return null
-    const dirs = gridDirs(beam.grid, c.meta.igrid), o = field.maxIdx * 3
-    const r = projectLimb([dirs[o], dirs[o + 1], dirs[o + 2]], beamBasis(c.meta, cfg))
+    let d
+    if (beam.an && cfg.pathLoss === 'none') d = gridDir(6, beam.an.az, beam.an.el)
+    else { const dirs = gridDirs(beam.grid, c.meta.igrid), o = field.maxIdx * 3; d = [dirs[o], dirs[o + 1], dirs[o + 2]] }
+    const r = projectLimb(d, beamBasis(c.meta, cfg))
     if (!Number.isFinite(r.lon) || !Number.isFinite(r.lat)) return null
     return { lon: r.lon, lat: r.lat, hit: r.vis >= 0 }
   }
@@ -1248,7 +1263,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const ascAbs = asc.map((x) => x.abs)
     // 交点细化表（线 = 表，见 coverage.buildEdgeRefine）：无路损 + 全分辨率三角化时启用；按 (极化, 增益, 档) 缓存在
     // 波束上，拖拽 / 播放每帧零求根。★ 同一张表也交给 fieldMesh：等值线（CPU）与填充（GPU）的细化顶点必须是同一批。
-    const refine = (need && cfg.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // Whittaker 密度 > 1：细网格上直接线性 marching，不建细化表
+    // Whittaker 密度 > 1：网格天线在细网格上直接线性 marching，不建细化表；解析天线（beam.an）照建 —— 见 refineAtDens
+    const refine = (need && cfg.pathLoss === 'none' && stride === 1 && refineAtDens(beam)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null
     const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
     // wantFills=cfg.fill：只画等值线时跳过逐档填充裁剪（关填充的大波束拖拽省一半三角化）；box：只三角化覆盖热区
     // ★ stride 必须与 fieldMesh 的索引生成用同一个值：等值线（CPU）与填充（GPU）要落在同一张三角网上。
@@ -1304,6 +1320,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const cfg = c.settings   // 每层用自身保存的设置（聚焦层的实时编辑已由 watcher 回存到此）
     // satShown = 该天线所属卫星的「卫星名」是否显示：3D 连线(卫星↔峰值点)需 showBore 且 satShown 同时为真
     const node = sats.value.find((x) => x.folder === key.split('|')[0])
+    // 关联星此刻解不出星历：一个波束也不画（不拿停着的旧星位出一张「看着像真的」覆盖）
+    if (nodeEphGone(node)) { if (key === active.value) setLivePeak('ground', null); return [] }
     const satShown = !node || node.labelShow !== false
     const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)   // 全未选 → 不绘制任何波束
     // 仅聚焦天线 + 显示数值标签时，捕获各档各环的可拖标签（锚点+环+原档下标），供 labelDrag 就近锁定/投影
@@ -1465,12 +1483,47 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 卫星实时位置解算器（由页面注入：星座关联星按星历/时间轴解算星下点+高度）。
   // 未注入或非关联星 → 回退到节点静态 lon/lat/altKm。
+  // ★ 关联星（node.noradId）解不出（星历缺 / 已陨落 / SGP4 报错 / 点序列越界）时注入函数给 null，这里如实返回 null ——
+  //   不再静默退回节点里存的旧经纬高（那是上次弹窗提交时的位置，不是上一拍的活位置，覆盖会一声不吭跳过去）。
+  //   调用方一律按「此刻无星位」处理：tickLive / reprojectSat 不挪、导入 / 新建拒绝、buildLayer 不画、getPerfContext 标 noEph。
+  //   未注入（单测 / 页面挂钩之前）仍退静态值：没有解算器，谈不上「解不出」。
   let _livePosFn = null
-  function setLivePos(fn) { _livePosFn = fn }
+  function setLivePos(fn) { _livePosFn = fn; _liveMemo.clear() }
+  // 「此刻解不解得出」的逐拍备忘（folder → { gen, p }）：buildLayer / getPerfContext / buildAxisRays 逐天线问，一拍内同一颗星
+  // 只真解一次；tickLive 每拍 _liveGen++ 整体作废。★ 只管判「有没有」—— 各调用点要的星位照旧现取，与改前逐位一致。
+  const _liveMemo = new Map()
+  let _liveGen = 0
   function liveOf(sat) {
     const p = _livePosFn && _livePosFn(sat)
-    return (p && Number.isFinite(p.lon)) ? p : { lon: sat.lon, lat: sat.lat || 0, altKm: sat.altKm }
+    const out = (p && Number.isFinite(p.lon)) ? p : ((_livePosFn && sat.noradId) ? null : { lon: sat.lon, lat: sat.lat || 0, altKm: sat.altKm })
+    if (sat.folder) _liveMemo.set(sat.folder, { gen: _liveGen, p: out })
+    return out
   }
+  // 关联星此刻解不出星历（本拍备忘，没问过就现解一次）。非关联星恒 false。
+  function nodeEphGone(node) {
+    if (!node || !node.noradId || !_livePosFn) return false
+    const m = _liveMemo.get(node.folder)
+    return (m && m.gen === _liveGen ? m.p : liveOf(node)) === null
+  }
+  function ephGone(folder) { return nodeEphGone(sats.value.find((x) => x.folder === folder)) }
+  // 星历源「还没备好」的等待钩子（页面注入：启动头几秒搜索池还在建，此时关联星解不出只是池没到，不是没星历）。
+  // fn() 返回 Promise（等池备好）或 null（已备好 / 没法再等）。导入 / 新建这类要【此刻星位】的入口先问一次再下「无星历」的结论 ——
+  // SatCovPanel / FileManager 直接调 importGrd，放在这里一处收口，各入口都不用各自等。
+  let _awaitEph = null
+  function setEphReady(fn) { _awaitEph = typeof fn === 'function' ? fn : null }
+  async function liveOfReady(sat) {
+    let p = liveOf(sat)
+    if (!p && sat && sat.noradId && _awaitEph) {
+      try { await _awaitEph() } catch (e) { console.warn('星历源载入失败', e) }   // 载不成照「此刻解不出」处理
+      p = liveOf(sat)
+    }
+    return p
+  }
+  // 星历源整份换了（页面换搜索池 / 自定义星座重建）：「解不解得出」的逐拍备忘作废，并按新源把【缓存里全部】天线的星位对一遍。
+  // 光作废备忘不够：之前解不出的星，meta 里还是载入时的存盘星位 —— 下一次 recompute 就会把覆盖画在那儿（正是要去掉的静默旧位）；
+  // 反过来刚丢了星历的，也得在这一拍标上 _noEph 撤图。故直接走一拍 tickLive（它先 _liveGen++），范围放大到全部已载入的天线。
+  // 返回 tickLive 同款 { changed, moved }：页面据 moved 刷性能表 / 对星壳层（perfHost.onMoved 等），与时钟走一拍同口径；画着的层已当场重算。
+  function invalidateLive() { return tickLive([...cache.keys()]) }
   // 把单个天线的覆盖投影平移到卫星新位置 p：指向随星下点平移（保留用户相对偏置），
   // 高度变化则足迹随之缩放。返回是否有变化。供实时跟踪与手改卫星信息共用。
   function moveCoverage(c, key, p) {
@@ -1506,6 +1559,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 返回 moved（本次真的动了的 key 集合），调用方据此各取所需——只有一个 perfMoved 布尔量不够用了。
   // live=true ＝ 连播拍（重算走节流闸）；false ＝ 用户离散动作（步进/拖游标/跳时刻）→ 当场重算。
   function tickLive(extra = null) {
+    _liveGen++                                   // 新的一拍：「解不解得出」的备忘整体作废（见 liveOf）
     const keys = new Set(selected.value)
     const extras = Array.isArray(extra) ? extra.filter(Boolean) : (extra ? [extra] : [])
     for (const k of extras) keys.add(k)
@@ -1528,7 +1582,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       }
       const node = sats.value.find((x) => x.folder === c.meta.folder)
       if (!node || (!node.noradId && !node.elements)) continue   // 仅星座关联星 / 轨道根数模拟星跟踪（固定星不动）
-      if (moveCoverage(c, key, liveOf(node))) { moved.add(key); if (selected.value.includes(key)) changed = true }
+      const p = liveOf(node)
+      // 关联星此刻无星历：不挪（没有可信星位），画着的覆盖 / 表撤下（buildLayer / getPerfContext 据同一份备忘）——
+      // 只在进出「无星历」的那一拍标 moved / changed，停在那儿不白算
+      if (!p) { if (!c._noEph) { c._noEph = true; moved.add(key); if (selected.value.includes(key)) changed = true } continue }
+      if (c._noEph) { c._noEph = false; moved.add(key); if (selected.value.includes(key)) changed = true }
+      if (moveCoverage(c, key, p)) { moved.add(key); if (selected.value.includes(key)) changed = true }
     }
     // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新。
     // 当场重算、不延后：星位与覆盖场必须是同一个时刻（见上面「一帧一个时刻」）。
@@ -1540,6 +1599,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   function reprojectSat(folder) {
     const node = sats.value.find((x) => x.folder === folder); if (!node) return
     const p = liveOf(node)
+    if (!p) {   // 关联星此刻无星历：不挪、不改存盘星位；重绘一次把该星的覆盖撤下（buildLayer 不画）
+      for (const a of node.antennas) { const c = cache.get(keyOf(folder, a.name)); if (c) c._noEph = true }
+      recompute(); return
+    }
     let changed = false
     for (const a of node.antennas) {
       if (a.imported) { a.satLon = p.lon; a.satLat = p.lat || 0; a.satAlt = p.altKm }
@@ -1554,16 +1617,26 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 由解析结果 g 重建一个导入天线的缓存条目（含【全部波束】的投影/场/峰值 + 天线级 meta）。导入与
   // 重载（ensureLoaded）共用，保证两次结果一致。pos：卫星位置（导入时取实时星历；重载时取存盘位置）。
   // 一个 GRD（含 N 个 set）= 一个天线，N 个 set = N 个波束（SATSOFT 模型，由 Beams To Plot 多选绘制）。
+  // 解析天线（g.sets[i].an，gaussStk.materialize 的产物）：beam.an 挂上 → 取值走闭式（coverage.samplePowAt），grid.exact 置位 →
+  // 细化顶点逐点求交（coverage.projectRefine）；峰值 = g0（精确，照旧保留 3 位），落点 = 视轴射线交椭球（不取 argmax 格点）。
   function importedCacheEntry(sat, g, name, pos) {
     const p0 = pos || liveOf(sat)
+    if (!p0) throw new Error('关联卫星当前无星历')
     const basis = antennaBasis(p0.lon, p0.lon, p0.lat || 0, 0, p0.lat || 0, p0.altKm)
     const beams = g.sets.map((set) => {
       const proj = projectGrid(set, g.igrid, basis, null, null, true)
+      const grid = { XS: set.XS, YS: set.YS, XE: set.XE, YE: set.YE, NX: set.NX, NY: set.NY }
+      if (set.an) {
+        const r = projectLimb(gridDir(6, set.an.az, set.an.el), basis)
+        const peak = r.vis >= 0 ? [+r.lon.toFixed(4), +r.lat.toFixed(4)] : null
+        grid.exact = true
+        return { P1: set.P1, P2: set.P2, c1re: set.c1re, c1im: set.c1im, c2re: set.c2re, c2im: set.c2im, an: set.an, grid, proj, peakDb: +set.an.g0.toFixed(3), peak }
+      }
       const field = fieldDb({ P1: set.P1, P2: set.P2, NX: set.NX, NY: set.NY }, proj, { pol: 'RSS' })
       // 峰值落点：vis≥0 才是真打在椭球上。越地平时 proj 存的是「射线到地心的垂足」，
       // 拿它当地表点会把镜头飞到一个不存在的地方（这里只给 faceLonLat 定位用），故留空。
       const peak = proj.vis[field.maxIdx] >= 0 ? [+proj.lon[field.maxIdx].toFixed(4), +proj.lat[field.maxIdx].toFixed(4)] : null
-      return { P1: set.P1, P2: set.P2, c1re: set.c1re, c1im: set.c1im, c2re: set.c2re, c2im: set.c2im, grid: { XS: set.XS, YS: set.YS, XE: set.XE, YE: set.YE, NX: set.NX, NY: set.NY }, proj, peakDb: +field.max.toFixed(3), peak }
+      return { P1: set.P1, P2: set.P2, c1re: set.c1re, c1im: set.c1im, c2re: set.c2re, c2im: set.c2im, grid, proj, peakDb: +field.max.toFixed(3), peak }
     })
     // 天线整体峰值 = 各波束峰值的最大者（电平表默认值/聚焦定位用）
     const best = beams.reduce((a, b) => (b.peakDb > a.peakDb ? b : a), beams[0])
@@ -1575,14 +1648,31 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     }
     return { meta, beams, peak: best.peak, peakDb: best.peakDb }
   }
+  // 等待（星历源 / 文件框 / 存盘）之后按 folder 重取目标星：等待期间它可能已被删（树行 ✕ 一键删）。还拿等待前那个节点往下建，
+  // 天线就挂在脱树的节点上 —— 照样入缓存 / 勾选 / 聚焦、画在图上、存了盘，树上却没有行可删（幽灵天线 + 孤儿文件）。
+  const satAt = (folder) => sats.value.find((x) => x.folder === folder) || null
+  // 导入 GRD 进行中（等星历源 → 文件框 → 逐个存盘）：再点一次不另起一轮。等星历源那段没有模态文件框挡着，
+  // 不拦的话连点两下会在等完后先后弹两个文件框、同一文件入两副同名天线。
+  let _importBusy = false
   // 返回新建天线的 key 列表（对星覆盖分析的树据此把新天线一并勾进【它自己那份】显示列表）
   async function importGrd(target) {
-    const sat = target || targetSat()
-    if (!sat) { appAlert('请先选择一颗卫星'); return [] }
-    loading.value = true
+    const t0 = target || targetSat()
+    if (!t0) { appAlert('请先选择一颗卫星'); return [] }
+    if (_importBusy) return []
+    const folder = t0.folder
+    let sat = satAt(folder)
+    if (!sat) { appAlert('目标卫星不存在'); return [] }
+    _importBusy = true
+    loading.value = true                                   // 等星历源那段就亮「载入中」（＋菜单已经关了，否则屏上看不出有导入在等）
     try {
+      const pos = await liveOfReady(sat)                   // 导入按此刻星位建天线系，没有星位就不开文件框（星历源没备好先等它）
+      sat = satAt(folder)
+      if (!sat) { appAlert('目标卫星不存在'); return [] }
+      if (!pos) { appAlert('关联卫星当前无星历'); return [] }
       const res = await window.api.coverageGrd.open()
       if (!res || res.canceled) return []
+      sat = satAt(folder)
+      if (!sat) { appAlert('目标卫星不存在'); return [] }
       // 多选：每个文件 = 一个天线。兼容旧返回（单文件 {base,text}）。
       const files = res.files || (res.text ? [{ base: res.base, text: res.text }] : [])
       if (!files.length) { appAlert('读取失败：' + (res.error || '空文件')); return [] }
@@ -1606,11 +1696,17 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         try { g = parseGrd(text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + e.message); continue }
         let name = (f.base || 'GRD').replace(/\.(grd|pat|txt|ant|pattern)$/i, '')
         while (sat.antennas.some((a) => a.name === name)) name += '·'   // 重名加后缀
-        const ent = importedCacheEntry(sat, g, name)
+        let ent
+        try { ent = importedCacheEntry(sat, g, name) } catch (e) { errs.push((f.base || '文件') + '：' + e.message); continue }   // 选文件期间关联星丢了星历
         const m = ent.meta
         // 原始 GRD 存盘（userData/coverage-grd-imported）；失败则仅本会话内有效，不阻断导入
         let file = null
         try { const r = await window.api.coverageGrd.save(f.base || name, text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
+        // 存盘途中卫星被删：刚存的文件撤掉、不再入树；已入树的几副由 removeSatellite 连同文件清掉 → 一个 key 也不交回
+        sat = satAt(folder)
+        if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } return [] }
+        while (sat.antennas.some((a) => a.name === name)) name += '·'   // 存盘途中同名的抢先入了树（同 createAnalyticAntenna）
+        m.name = name
         const key = keyOf(sat.folder, name)
         // 多波束默认只画第 1 个波束（与 SATSOFT 一致：Beams To Plot 由用户按需多选/全选）。
         // 切勿默认全选——HTS 动辄 20+ 波束，一次性建几十个网格/提几十遍等值线会瞬时压垮 GPU（见 command_buffer 崩溃）。
@@ -1635,7 +1731,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
           warns.length ? '导入告警：\n' + warns.join('\n') : ''].filter(Boolean).join('\n\n'))
       }
       return added
-    } finally { loading.value = false }
+    } finally { _importBusy = false; loading.value = false }
   }
 
   // 波束合成入树：把程序生成的 GRD 文本在指定卫星下建成一副「导入天线」，存盘原始文本后与手动
@@ -1643,7 +1739,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 同名 = 重新生成：替换旧天线（旧盘上文件一并清理），已有的电平/极化等设置尽量保留。
   // opts: { ctype, levels:[dB...] }——合成波束默认相对模式（各波束自身相对峰值档，SATSOFT 观感）。
   async function importSynthGrd(folder, name, text, opts = {}) {
-    const sat = sats.value.find((x) => x.folder === folder)
+    let sat = satAt(folder)
     if (!sat) { appAlert('目标卫星不存在'); return null }
     loading.value = true
     try {
@@ -1651,11 +1747,18 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       const key = keyOf(folder, name)
       const prev = cache.get(key)
       const prevCfg = prev && prev.settings ? serializeCfg(prev.settings) : null   // 重新生成时保留用户设置
+      const sat0 = sat
+      let pos = await liveOfReady(sat)                               // 星历源没备好先等它
+      sat = satAt(folder)                                            // 等待期间卫星被删 → 不往脱树的节点里建（见 satAt）
+      if (!sat) { appAlert('目标卫星不存在'); return null }
+      if (sat !== sat0) pos = liveOf(sat)
+      const ent = importedCacheEntry(sat, g, name, pos)              // 先建条目：关联星无星历在这里抛错，旧天线原样留着（不先删）
       if (sat.antennas.some((a) => a.name === name)) removeAntenna(folder, name)
-      const ent = importedCacheEntry(sat, g, name)
       const m = ent.meta
       let file = null
       try { const r = await window.api.coverageGrd.save(name + '.grd', utf8BytesAsLatin1(text)); file = r && r.file } catch (e) { console.warn('合成 GRD 持久化失败，仅本会话内有效', e) }
+      sat = satAt(folder)
+      if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } appAlert('目标卫星不存在'); return null }   // 存盘途中卫星被删：刚存的文件撤掉
       let settings
       if (prevCfg) {
         settings = mergeCfg(m, { ...prevCfg, keptSets: null })
@@ -1681,6 +1784,117 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       appAlert('波束合成失败：' + ((e && e.message) || e))
       return null
     } finally { loading.value = false }
+  }
+
+  // ===== 解析高斯天线（STK Gaussian，gaussStk.js）：盘上只存参数记录（*.gauss.json），载入时按参数现铺网格 =====
+  // 与导入 / 合成 GRD 同构（同一个 cache 条目形状、同一棵树、同一套设置 / 存档 / 性能表 / 链路预算按文件取值），差别只有两处：
+  //   · 波束带 an（闭式求值）、grid.exact（细化顶点逐点求交）—— 线与表都落在精确函数上；
+  //   · 出厂指向 = 真·本体固定天底（azel(0,0) 且【不锁定】）：波束的 az/el 本就是天线系里的角，随星体走；
+  //     旧的锁定缺省会在第一拍把天底钉成地面点（LEO 上就成了「目标跟踪」），对参数化天线是错的口径。
+  const AN_BORE = Object.freeze({ boreType: 'azel', boreAz: 0, boreEl: 0, boreLock: false })
+  // 缓存里存一份纯数据副本：调用方手里那份可能是面板的响应式对象（structuredClone 过不了 Proxy），之后还会被它接着改
+  const plainRec = (r) => JSON.parse(JSON.stringify(r))
+  // 新建：record = gaussStk.buildRecord 的产物；settings 只认 ctype / refDb / levels（levels 可给 dB 数组或电平对象数组）。
+  // 同星重名加「·2」「·3」…；镜头不动（聚焦定位由页面决定）。关联星此刻无星历 → 抛「关联卫星当前无星历」。返回天线 key。
+  async function createAnalyticAntenna(folder, { name, record, settings = {}, select = true, activate = true } = {}) {
+    let sat = satAt(folder)
+    if (!sat) throw new Error('目标卫星不存在')
+    const g = anMaterialize(record)                               // 记录无效在此抛错（不留半截天线）
+    const sat0 = sat
+    let pos = await liveOfReady(sat)                              // 星历源（启动时的搜索池）没备好先等它，再下「无星历」的结论
+    sat = satAt(folder)                                           // 等待期间卫星被删 → 不往脱树的节点里建（见 satAt）
+    if (!sat) throw new Error('目标卫星不存在')
+    if (sat !== sat0) pos = liveOf(sat)
+    if (!pos) throw new Error('关联卫星当前无星历')
+    const base = String(name == null ? '' : name).trim() || '天线'
+    const uniq = () => { let nm = base, i = 1; while (sat.antennas.some((a) => a.name === nm)) nm = `${base}·${++i}`; return nm }
+    let nm = uniq()
+    const ent = importedCacheEntry(sat, g, nm, pos)
+    let file = null
+    try { const r = await window.api.coverageGrd.save(nm + AN_FILE_EXT, anRecordText(record)); file = r && r.file } catch (e) { console.warn('解析天线持久化失败，仅本会话内有效', e) }
+    sat = satAt(folder)
+    if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } throw new Error('目标卫星不存在') }   // 存盘途中卫星被删：刚存的文件撤掉
+    if (sat.antennas.some((a) => a.name === nm)) { nm = uniq(); ent.meta.name = nm }   // 存盘途中同名的抢先入了树
+    const m = ent.meta
+    const st = { ...defaultSettings(m.satLon, m.satLat, m.peakDb), ...AN_BORE }
+    if (settings.ctype) st.ctype = settings.ctype
+    if (settings.refDb != null && settings.refDb !== '' && Number.isFinite(+settings.refDb)) st.refDb = +settings.refDb
+    const lv = settings.levels
+    if (Array.isArray(lv) && lv.length) st.levels = typeof lv[0] === 'number' ? levelsFromValues(lv.map(Number)) : copyLevels(lv)
+    st.beamsToPlot = ent.beams.map((_, i) => i)
+    const key = keyOf(folder, nm)
+    cache.set(key, { meta: m, beams: ent.beams, settings: st, rec: plainRec(record) })
+    sat.antennas.push({ name: nm, type: '', band: '', beams: m.beams, peakDb: ent.peakDb, peak: ent.peak, file, imported: true, analytic: true, synth: !!record.owner, satLon: m.satLon, satLat: m.satLat, satAlt: m.satAlt })
+    sats.value = [...sats.value]
+    if (select && !selected.value.includes(key)) selected.value = [...selected.value, key]
+    expanded.value = { ...expanded.value, [folder]: true }
+    if (activate) { active.value = key; _muteSync = true; applySettings(st); _muteSync = false }
+    anRev.value++
+    recompute()
+    return key
+  }
+  // 就地改：换参数不换身份（key / 文件名 / 树行 / 设置都不动）。天线系按该天线【此刻 meta 的星位】重铺，不重取活位置 —— 画面不跳。
+  // 波束数变了 → 画全部波束、清波束名与删波束记录（旧下标已无意义）；没变 → 保留 Beams To Plot / 波束名 / 删波束记录。
+  // 写盘合帧（见 queueAnWrite）。返回是否改成。
+  function updateAnalyticAntenna(key, record) {
+    const c = cache.get(key); if (!c || !c.rec || !c.meta) return false
+    const info = findAnt(key); if (!info) return false
+    let g
+    try { g = anMaterialize(record) } catch (e) { console.warn('解析天线记录无效', e); return false }
+    const ent = importedCacheEntry(info.sat, g, c.meta.name, { lon: c.meta.satLon, lat: c.meta.satLat || 0, altKm: c.meta.satAlt })
+    const nOld = Array.isArray(c.rec.beams) ? c.rec.beams.length : c.beams.length
+    c.rec = plainRec(record)
+    c.beams = ent.beams
+    Object.assign(c.meta, { beams: ent.meta.beams, peakDb: ent.meta.peakDb, peak: ent.meta.peak, igrid: ent.meta.igrid, icomp: ent.meta.icomp, ncomp: ent.meta.ncomp })
+    // 逐天线的方向图修订号（挂在活的 meta 上，非响应式）：同 key 换了方向图 —— 对星表时段扫描据它标「输入已变」、游标表据它换新波束
+    //（useSatPerfTable.winStaleFor / computeAtCursor）；全局那个 anRev ref 只管「有天线变了」，页面据它刷开着的表
+    c.meta.anRev = (c.meta.anRev || 0) + 1
+    const a = info.a
+    a.beams = ent.meta.beams; a.peakDb = ent.peakDb; a.peak = ent.peak; a.synth = !!record.owner
+    const st = c.settings
+    if (st && nOld !== ent.beams.length) {
+      st.beamsToPlot = ent.beams.map((_, i) => i); st.beamNames = {}; st.keptSets = null
+      if (key === active.value) { _muteSync = true; s.beamsToPlot = st.beamsToPlot.slice(); s.beamNames = {}; _muteSync = false }
+    } else applyKeptSets(c)                                            // 删过波束：新记录照旧按保留下标裁（同数目，下标仍指同一批）
+    sats.value = [...sats.value]
+    if (a.file) queueAnWrite(a.file, anRecordText(record))
+    beamsRev.value++; anRev.value++
+    if (key === active.value || selected.value.includes(key)) recompute()
+    return true
+  }
+  // 解析天线的参数记录（深拷贝，改了不会漏进缓存）；非解析天线 / 未载入 → null。先读 anRev：computed 里调用随改随醒。
+  function analyticRecordOf(key) {
+    void anRev.value
+    const c = cache.get(key)
+    return c && c.rec ? plainRec(c.rec) : null
+  }
+  // 解析天线写盘：按文件合帧 —— 同一文件至多一笔在途；静默 250 ms 后补写最后一份（拖滑杆连发不逐次落盘，最后一份必落）。
+  // 删天线 / 删卫星时撤掉待写（cancelAnWrite）：在途那笔写完若已撤，就再删一次，免得把删掉的文件写回来。
+  const _anW = new Map()   // file → { text, busy, t, dead }
+  function queueAnWrite(file, text) {
+    let w = _anW.get(file)
+    if (!w) { w = { text: null, busy: false, t: 0, dead: false }; _anW.set(file, w) }
+    w.text = text
+    if (w.t) clearTimeout(w.t)
+    w.t = setTimeout(() => { w.t = 0; flushAnWrite(file) }, 250)
+  }
+  async function flushAnWrite(file) {
+    const w = _anW.get(file); if (!w || w.busy || w.dead || w.text == null) return
+    const text = w.text; w.text = null; w.busy = true
+    try {
+      const api = window.api && window.api.coverageGrd
+      if (api && typeof api.overwrite === 'function') await api.overwrite(file, text)
+      else console.warn('解析天线写盘接口缺失（coverageGrd.overwrite）', file)
+    } catch (e) { console.warn('解析天线写盘失败', file, e) }
+    w.busy = false
+    if (w.dead) { _anW.delete(file); try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } return }
+    if (w.text != null) { if (!w.t) flushAnWrite(file) } else if (!w.t) _anW.delete(file)
+  }
+  function cancelAnWrite(file) {
+    const w = _anW.get(file); if (!w) return
+    if (w.t) { clearTimeout(w.t); w.t = 0 }
+    w.text = null
+    if (w.busy) w.dead = true; else _anW.delete(file)
   }
 
   // 拖拽波束：在方向(az/el)空间相对拖动。地表经纬度在地平附近非单调（过地平会回折，导致"拖不到地平线"），
@@ -1858,7 +2072,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       // 「AR/XPD 不适用」提示的唯一来源，漏了它重开软件后这两样就一声不吭地退回成「导入」。
       antennas: s.antennas.filter((a) => a.imported && a.file).map((a) => ({
         name: a.name, file: a.file, type: a.type || '', band: a.band || '', beams: a.beams, peakDb: a.peakDb, peak: a.peak,
-        satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth, src: a.src || ''
+        satLon: a.satLon, satLat: a.satLat, satAlt: a.satAlt, imported: true, synth: !!a.synth, analytic: !!a.analytic, src: a.src || ''
       }))
     }))
     const disp = {}
@@ -1904,7 +2118,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
           for (const aa of ss.antennas) {
             if (!aa || !aa.imported || !aa.file || node.antennas.some((x) => x.name === aa.name)) continue
             node.antennas.push({ name: aa.name, type: aa.type || '', band: aa.band || '', beams: aa.beams, peakDb: aa.peakDb, peak: aa.peak,
-              file: aa.file, imported: true, synth: !!aa.synth, src: aa.src || '', satLon: aa.satLon, satLat: aa.satLat, satAlt: aa.satAlt })
+              file: aa.file, imported: true, synth: !!aa.synth, analytic: !!aa.analytic || /\.gauss\.json$/i.test(aa.file), src: aa.src || '', satLon: aa.satLon, satLat: aa.satLat, satAlt: aa.satAlt })
           }
         }
       }
@@ -1948,22 +2162,43 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 性能指标表取值上下文：某天线(key)的名义指向 basis + 当前「Beams To Plot」选中的波束（含数据/名/序号）
   // + 计算设置。供 usePerfTable 逐站调用 sampleBeamAt。该天线未加载缓存时返回 null。
+  // ★ 关联星此刻解不出星历：照样返回上下文（不返回 null —— 「null = 没载入」，城市层等调用方见 null 会去 ensureAntLoaded 再重试，
+  //   载入了还是 null 就原地打转），但 noEph:true、basis:null、beams:[] —— 不认这个标志的调用方拿到的是「没有波束可取值」，
+  //   不会按停着的旧星位算出一张看着像真的表。
+  // 性能表列【该天线现存的全部波束】（已删除的波束不再进表），不受「Beams To Plot」绘制选择影响；
+  // 取值口径/指向仍跟随天线设置。覆盖该城市的波束由 filterOn(minDir) 过滤后显示（SATSOFT 口径）。
+  // seq = 原始波束号（1-based，删除波束后不重排），与覆盖面板波束列表同一口径。
+  const perfBeamsOf = (c) => c.beams.map((bm, bi) => ({ bi, seq: origIdx(c, bi) + 1, name: beamName(c, bi), peakDb: bm.peakDb, beam: bm }))
+  // 上下文上挂一个【不可枚举】的 patternNow()：按这根天线的缓存条目现取方向图 { anRev, igrid, icomp, beams }（不看星历、不算基底）。
+  // 给钉住一份 ctx 反复用的调用方（对星表时段扫描的游标表 winEnv）—— 解析天线就地改参（updateAnalyticAntenna）
+  // 换的是 c.beams 整个数组，钉住的 ctx.beams 仍指旧波束；拿 anRev 比一下，变了就按它换新。捕获条目本身而非 key：改名不丢。
+  // 不可枚举：JSON / 展开 / structuredClone 都不带它（ctx 不过 IPC，但别给以后留坑）。
+  function withPattern(ctx, c) {
+    Object.defineProperty(ctx, 'patternNow', {
+      value: () => (c.beams && c.meta ? { anRev: c.meta.anRev || 0, igrid: c.meta.igrid, icomp: c.meta.icomp, beams: perfBeamsOf(c) } : null),
+      enumerable: false
+    })
+    return ctx
+  }
   function getPerfContext(key) {
     const c = cache.get(key); if (!c || !c.beams) return null
-    const basis = beamBasis(c.meta, c.settings)
     const folder = key.split('|')[0]
     const satIdx = sats.value.findIndex((x) => x.folder === folder)
     const node = satIdx >= 0 ? sats.value[satIdx] : null
     const antIdx = node ? node.antennas.findIndex((a) => a.name === key.split('|')[1]) : -1
-    return {
-      key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis, meta: c.meta, settings: c.settings,
+    // anRev：这份上下文里 beams 对应的方向图修订号（解析天线就地改参 +1，见 updateAnalyticAntenna；其余天线恒 0）
+    const anRev = c.meta.anRev || 0
+    if (nodeEphGone(node)) {
+      return withPattern({ key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis: null, meta: c.meta, settings: c.settings, noEph: true, anRev,
+        satNo: satIdx + 1, antNo: antIdx + 1, satName: (node && node.satName) || c.meta.sat || '', antName: key.split('|')[1], beams: [] }, c)
+    }
+    const basis = beamBasis(c.meta, c.settings)
+    return withPattern({
+      key, igrid: c.meta.igrid, icomp: c.meta.icomp, basis, meta: c.meta, settings: c.settings, anRev,
       satNo: satIdx + 1, antNo: antIdx + 1,
       satName: (node && node.satName) || c.meta.sat || '', antName: key.split('|')[1],
-      // 性能表列【该天线现存的全部波束】（已删除的波束不再进表），不受「Beams To Plot」绘制选择影响；
-      // 取值口径/指向仍跟随天线设置。覆盖该城市的波束由 filterOn(minDir) 过滤后显示（SATSOFT 口径）。
-      // seq = 原始波束号（1-based，删除波束后不重排），与覆盖面板波束列表同一口径。
-      beams: c.beams.map((bm, bi) => ({ bi, seq: origIdx(c, bi) + 1, name: beamName(c, bi), peakDb: bm.peakDb, beam: bm }))
-    }
+      beams: perfBeamsOf(c)
+    }, c)
   }
 
   // 确保某天线已载入缓存（性能表对【非聚焦】天线取值前调用），返回是否就绪。
@@ -1982,6 +2217,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       const c = cache.get(key); if (!c || !c.beams) continue
       const cfg = c.settings
       const node = sats.value.find((x) => x.folder === key.split('|')[0])
+      if (nodeEphGone(node)) continue                   // 关联星无星历：屏上不画，导出也不出（同 buildLayer）
       const plot = (cfg.beamsToPlot || []).filter((i) => i < c.beams.length)
       const dens = densOf(key, c, cfg, plot)
       for (const bi of plot) {
@@ -1991,7 +2227,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         const box = beamBox(beam, cfg, field)
         syncBeamProj(c, beam, cfg, field)
         const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
-        const refine = (cfg.pathLoss === 'none' && stride === 1 && !(beam._dens > 1)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // 导出的线与屏上同一份细化
+        const refine = (cfg.pathLoss === 'none' && stride === 1 && refineAtDens(beam)) ? edgeRefineFor(beam, field, ascAbs, cfg.pol, cfg.gainOffset) : null   // 导出的线与屏上同一份细化
         const pos = refine ? beamRefPos(c, beam, cfg, refine) : null
         const geo = bandGeometry({ lon: beam.proj.lon, lat: beam.proj.lat, vis: beam.proj.vis, db: field.db, NX: beam.proj.NX, NY: beam.proj.NY }, ascAbs, false, box, null, stride, refine, pos)
         const contours = []
@@ -2061,9 +2297,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, applyLineToAll, schemeOf, applyScheme, applySchemeTo, antList, importGrd, importSynthGrd,
+    createAnalyticAntenna, updateAnalyticAntenna, analyticRecordOf, anRev,
     addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
-    setLivePos, tickLive, getPerfContext, ensureAntLoaded, exportContours,
+    setLivePos, setEphReady, invalidateLive, tickLive, getPerfContext, ensureAntLoaded, exportContours,
     livePeak, setLivePeak, bestPeakOf, beamAtDensity
   }
 }

@@ -13,6 +13,8 @@ export const covNav = reactive({
   exportAvail: false, exportMap: null,
   // 发送到小程序入口（顶栏「导出」菜单）：3D 页注册 sendMiniapp()（构建快照→上传COS→弹密钥），离开页面复位
   sendMiniapp: null,
+  // 同一菜单的「发送航迹到小程序」：3D 页注册 sendTrajMiniapp()（标记层航迹逐条成件 → 发送弹窗），离开页面复位
+  sendTrajMiniapp: null,
   // 导入 TLE 入口（「文件」菜单）：3D 页注册 importTle() 打开本地 CSV 选择器（原「加载」弹窗移除后的离线兜底），离开页面复位
   importTle: null
 })

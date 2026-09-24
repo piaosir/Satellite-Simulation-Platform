@@ -4,11 +4,12 @@
 //   （GrdSetSections.vue，两边都绑 grd.s）——控件、口径、折叠状态全部一致，改哪边都同步。
 //   本面板独有的只有：卫星/天线树的勾选（画哪些天线）、轨道壳层库、掠地高度与参照网。
 // 视觉语言也照抄对地侧栏（.sec/.srow/.gtree/.csfoot 一套），两个视图切过去不该有「换了个软件」的感觉。
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { appAlert } from '../stores/alert'
 import GrdSetSections from './GrdSetSections.vue'
+import { treeNavState, nodeLinkId } from '../viz/grd/treeLink.js'
 
 const props = defineProps({
   sc: { type: Object, required: true },      // useShellCoverage
@@ -16,13 +17,32 @@ const props = defineProps({
   satCount: { type: Number, default: 0 },
   satSearch: { type: Function, default: null },    // 目标星搜索（对星跟踪选目标用，全量：星座目录 + 卫星组 + 自定义星座）
   tableOpenKeys: { type: Object, default: () => new Set() },   // 开着对星性能指标表窗口的天线 key 集（一根天线一窗）
-  satVis: { type: Function, default: () => true }  // 小眼睛状态（与对地视图同一份 iconShow/labelShow）
+  satVis: { type: Function, default: () => true },  // 小眼睛状态（与对地视图同一份 iconShow/labelShow）
+  selFolders: { type: Object, default: () => new Set() },   // 星座选中集关联着的 folder（卫星行 cur 回显，宿主 selFolderSet）
+  linkMiss: { type: Object, default: () => new Set() },     // 关联星不在当前星历的 folder（卫星行告警，宿主 linkMissSet）
+  followId: { type: String, default: '' },                  // 正在跟随的星的 NORAD（'' = 没在跟随，宿主 followLinkId）
+  flat: { type: Boolean, default: false },                  // 平面图（跟随只在 3D 球体里有）
+  geoIds: { type: Object, default: () => new Map() }        // 天线树定点同步星 folder → 合成号（宿主 treeGeoIdMap；它们在星座里有条目）
 })
-const emit = defineEmits(['open-table', 'pick-shells', 'toggle-eye', 'add-sat', 'edit-sat', 'remove-sat'])
+// focus-sat(sat, force, additive)：树 → 星座聚焦（天线行点击 force=false 看小眼睛；双击星名 / 「聚焦」钮 force=true；
+//   「聚焦」钮 Ctrl / Cmd / Shift 点 additive=true：加入 / 移出聚焦集）
+// follow-sat(sat)：「跟随」钮（宿主 followTreeSat：跟随该星 / 正跟随它则退出）
+// add-ant(sat, 'gauss')：「＋」菜单里的「高斯天线」（导入 GRD 本面板自己走 sc.importGrd）
+// open-synth(groupId)：「方向图」节「在波束合成中编辑」，转给宿主
+const emit = defineEmits(['open-table', 'pick-shells', 'toggle-eye', 'add-sat', 'edit-sat', 'remove-sat', 'focus-sat', 'follow-sat', 'add-ant', 'open-synth'])
 
 const sc = props.sc, grd = props.grd
 const satNodes = computed(() => grd.sats.value.filter((x) => x.kind !== 'elevline'))
 const actMeta = computed(() => grd.antMeta())
+// 卫星行「聚焦 / 跟随」两钮的状态：与对地树同一个判据（treeLink.treeNavState），按 folder 查
+const navMap = computed(() => {
+  const m = new Map()
+  for (const n of satNodes.value) m.set(n.folder, treeNavState(n, { cur: props.selFolders.has(n.folder), miss: props.linkMiss.has(n.folder), followId: props.followId, flat: props.flat, linkId: nodeLinkId(n, props.geoIds) }))
+  return m
+})
+const navOf = (sat) => navMap.value.get(sat.folder) || treeNavState(sat)
+function onFocusBtn(sat, ev) { if (!navOf(sat).focusDis) emit('focus-sat', sat, true, !!(ev.ctrlKey || ev.metaKey || ev.shiftKey)) }
+function onFollowBtn(sat) { if (!navOf(sat).followDis) emit('follow-sat', sat) }
 
 // 天线名内联重命名（与对地树同一套：editAnt 存正在改的天线 key，editVal 为输入框值）。
 // 树本身是共用的，改名/删除走 grd 的同一批方法，本视图的勾选由 useShellCoverage 订阅 grd 变更自动跟随。
@@ -37,6 +57,34 @@ function commitRenameAnt(sat, a) {
   }
   editAnt.value = ''
 }
+
+// 天线行点击：设为编辑对象（不转到导入时的旧峰值点）→ 宿主按卫星此刻位置聚焦（小眼睛灭着不动）
+async function onAntClick(sat, a) {
+  await sc.setActive(sat, a, { face: false })
+  emit('focus-sat', sat, false)
+}
+// 卫星行「＋」：新建天线菜单（导入 GRD / 高斯天线）。只存 folder，锚在按钮下沿，越界翻到上方
+const addMenu = ref(null)      // { x, y, folder }
+function openAddMenu(ev, sat) {
+  const r = ev.currentTarget.getBoundingClientRect(), w = 160, h = 64
+  const x = Math.max(6, Math.min(r.left, window.innerWidth - w - 6))
+  const y = r.bottom + 2 + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 2) : r.bottom + 2
+  addMenu.value = { x, y, folder: sat.folder }
+}
+function addPick(kind) {
+  const m = addMenu.value; addMenu.value = null
+  const sat = m ? grd.sats.value.find((x) => x.folder === m.folder) : null
+  if (!sat) return
+  if (kind === 'gauss') emit('add-ant', sat, 'gauss')
+  else sc.importGrd(sat)
+}
+// Esc 关「＋」菜单（同宿主页 onExpEsc）：捕获阶段先拿到并截住，一次 Esc 只关最上一层；输入法组字中的 Esc 归输入法
+function onAddMenuEsc(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); addMenu.value = null } }
+watch(() => !!addMenu.value, (open) => {
+  if (open) window.addEventListener('keydown', onAddMenuEsc, true)
+  else window.removeEventListener('keydown', onAddMenuEsc, true)
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onAddMenuEsc, true))
 
 const newAlt = ref(550)
 function addShellFromInput() {
@@ -93,7 +141,7 @@ function shellWhy(sh) {
          仰角线是纯对地概念（等仰角环画在地表），本树按 kind 过滤掉，也不提供「加仰角线」。 -->
     <div class="sec">
       <div class="sect acc" data-sec="satcov-tree" :class="{ open: isSecOpen('satcov-tree') }" @click="toggleSec('satcov-tree')">
-        <Icon :name="isSecOpen('satcov-tree') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>卫星 / 天线</span>
+        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('satcov-tree') }" :size="12" /><span>卫星 / 天线</span>
         <span v-if="sc.selected.value.length" class="editing">{{ sc.selected.value.length }} 已选</span>
         <span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="emit('add-sat')"><Icon name="plus" :size="12" /> 卫星</span>
       </div>
@@ -101,7 +149,7 @@ function shellWhy(sh) {
         <div class="gtree">
           <div v-if="!satNodes.length" class="empty">还没有卫星。</div>
           <template v-for="sat in satNodes" :key="sat.folder">
-            <div class="gsat">
+            <div class="gsat" :class="{ cur: selFolders.has(sat.folder) }" :data-folder="sat.folder">
               <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="12" /></i>
               <input type="checkbox" class="gck" :checked="sc.satState(sat) === 'all'" :indeterminate.prop="sc.satState(sat) === 'some'"
                      :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="sc.toggleSatAll(sat)" />
@@ -114,14 +162,18 @@ function shellWhy(sh) {
                   <rect x="49" y="35" width="22" height="50" rx="10" />
                 </g>
               </svg>
-              <span class="gsname" @click="grd.toggleExpand(sat.folder)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
-              <!-- 小眼睛：与对地视图同一个开关（图标 + 卫星名）；本视图另附「聚焦特效」——
+              <span class="gsname" @click="grd.toggleExpand(sat.folder)" @dblclick.stop="emit('focus-sat', sat, true)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
+              <span v-if="linkMiss.has(sat.folder)" class="lmiss" :title="`关联卫星 NORAD ${sat.noradId} 不在当前星历中`"><Icon name="alert-triangle" :size="12" /></span>
+              <!-- 聚焦 / 跟随该星：与对地树同款两钮。
+                   小眼睛：与对地视图同一个开关（图标 + 卫星名）；本视图另附「聚焦特效」——
                    画出波束的星连同它对星跟踪的目标星一起点亮轨道圈/星下点轨迹/覆盖足迹（不弹信息卡） -->
               <span class="sdisp">
+                <span class="ic" :class="{ on: navOf(sat).focusOn, dis: navOf(sat).focusDis }" :title="navOf(sat).focusTip" @click.stop="onFocusBtn(sat, $event)"><Icon name="crosshair" :size="12" /></span>
+                <span class="ic" :class="{ on: navOf(sat).followOn, dis: navOf(sat).followDis }" :title="navOf(sat).followTip" @click.stop="onFollowBtn(sat)"><Icon name="locate-fixed" :size="12" /></span>
                 <span class="ic" :class="{ on: satVis(sat) }" title="显示 / 隐藏该卫星（图标 + 名称）；点亮时，已画波束的星连同其对星跟踪的目标星一并显示轨道圈 / 星下点轨迹 / 覆盖足迹" @click.stop="emit('toggle-eye', sat)"><Icon :name="satVis(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
               </span>
               <span class="sacts">
-                <span class="ic" title="导入 GRD：在该星下新建天线（新天线自动勾选，直接画到壳层上）" @click.stop="sc.importGrd(sat)"><Icon name="plus" :size="12" /></span>
+                <span class="ic" title="在该星下新建天线（新天线自动勾选，直接画到壳层上）" @click.stop="openAddMenu($event, sat)"><Icon name="plus" :size="12" /></span>
                 <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="emit('edit-sat', sat)"><Icon name="pencil" :size="12" /></span>
                 <span class="ic del" title="删除卫星（含其天线）" @click.stop="emit('remove-sat', sat)"><Icon name="x" :size="12" /></span>
               </span>
@@ -130,7 +182,7 @@ function shellWhy(sh) {
               <div v-if="!sat.antennas.length" class="gant noant">暂无天线。</div>
               <template v-for="a in sat.antennas" :key="a.name">
                 <div class="gant" :class="{ on: sc.isSelected(grd.keyOf(sat.folder, a.name)), foc: sc.isActive(grd.keyOf(sat.folder, a.name)) }"
-                     title="点击编辑该天线参数（不影响是否显示）" @click="sc.setActive(sat, a)">
+                     title="点击编辑该天线参数（不影响是否显示）" @click="onAntClick(sat, a)">
                   <input type="checkbox" class="gck" title="勾选＝把该天线的波束画到轨道壳层上" :checked="sc.isSelected(grd.keyOf(sat.folder, a.name))" @click.stop @change="sc.toggleAnt(sat, a)" />
                   <span class="ant-btn" :class="{ on: sc.isSelected(grd.keyOf(sat.folder, a.name)) }" @click.stop="sc.toggleAnt(sat, a)">
                     <svg v-if="sc.isSelected(grd.keyOf(sat.folder, a.name))" class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -169,7 +221,7 @@ function shellWhy(sh) {
     <!-- 轨道壳层（本视图独有）：波束投到哪些球壳上 -->
     <div class="sec">
       <div class="sect acc" data-sec="satcov-shell" :class="{ open: isSecOpen('satcov-shell') }" @click="toggleSec('satcov-shell')">
-        <Icon :name="isSecOpen('satcov-shell') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>轨道壳层</span>
+        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('satcov-shell') }" :size="12" /><span>轨道壳层</span>
         <span class="lnk" title="从全量在轨目录里挑壳层（可看清每层是哪些星座、哪些星）" @click.stop="emit('pick-shells')">从星座取…</span>
       </div>
       <template v-if="isSecOpen('satcov-shell')">
@@ -230,7 +282,16 @@ function shellWhy(sh) {
     </div>
 
     <!-- 天线设置四区：与「对地覆盖分析」同一个组件 -->
-    <GrdSetSections :grd="grd" variant="shell" :sat-search="satSearch" />
+    <GrdSetSections :grd="grd" variant="shell" :sat-search="satSearch" @open-synth="(id) => emit('open-synth', id)" />
+
+    <!-- 卫星行「＋」菜单（与宿主页 .lmenu 同一层级与视觉） -->
+    <template v-if="addMenu">
+      <div class="lmenu-bd" @mousedown="addMenu = null" @contextmenu.prevent="addMenu = null"></div>
+      <div class="lmenu" :style="{ left: addMenu.x + 'px', top: addMenu.y + 'px' }">
+        <div class="lmi" @click="addPick('gauss')"><Icon name="waves" :size="12" /><span>高斯天线</span></div>
+        <div class="lmi" @click="addPick('grd')"><Icon name="import" :size="12" /><span>导入 GRD…</span></div>
+      </div>
+    </template>
 
     <div class="csfoot">
       <span class="cst" :title="sc.stats.value.fullMs ? '几何 ' + sc.stats.value.ms + ' ms + GPU 重建，整轮 ' + sc.stats.value.fullMs + ' ms。播放时一拍就要这么久，时钟据此拉开两拍的间隔' : ''">{{ sc.stats.value.layers }} 层 · {{ sc.stats.value.tris }} 面片 · {{ sc.stats.value.fullMs || sc.stats.value.ms }} ms · {{ satCount }} 星在场</span>
@@ -254,24 +315,39 @@ function shellWhy(sh) {
 .srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .srow label { color: var(--text-muted); min-width: var(--srow-lab); max-width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow.sub { --srow-lab: 51px; padding-left: 19px; }
-.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
+.srow select, .srow .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); outline: none; color: var(--text); }
 /* 下拉框的可读下限：挤到装不下最长选项时整件掉到下一行，而不是裁掉选项名 */
 .srow select { min-width: 116px; }
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.sect { display: flex; align-items: center; color: var(--text-muted); }
+/* 标题 / 行尾动作 / 可点标题带：与 GrdSetSections.vue 逐字同源（各条口径的说明见那边） */
+.sect { display: flex; align-items: center; color: var(--text); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
-.sect.acc:hover { color: var(--text); }
-.sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
-.sect .lnk:hover { text-decoration: underline; }
-.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 1px 6px; }
+.sect.acc .app-icon { flex: none; color: var(--text-faint); }
+.sect .lnk { margin-left: auto; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); transition: color var(--dur-1) linear; }
+.sect .lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.sect .lnk.on { color: var(--accent-ui); font-weight: 600; text-decoration: none; }
+.sect.acc .lnk .app-icon { color: inherit; }
+.sect .lnk ~ .lnk { margin-left: 12px; }
+.sect.acc:not(.setsect) { margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
+.sec > * + .sect.acc:not(.setsect) { margin-top: 9px; }
+.sec > .sect.acc:not(.setsect) + * { margin-top: 3px; }
+.sec > .sect.acc:not(.setsect):first-child { margin-top: -3px; }
+.sec > .sect.acc:not(.setsect):last-child { margin-bottom: -3px; }
+.sect.acc:not(.setsect):hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.sect.acc:not(.setsect):active { background: color-mix(in srgb, var(--text) 9%, transparent); transition-duration: 0s; }
+.sect.acc:has(.lnk:hover, .layersw:hover, .lnk:active, .layersw:active) { background: transparent; }
+.sect.acc:hover > .app-icon.disc { color: var(--text-muted); }
+.sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 1px 6px; }
 .sect .editing + .lnk { margin-left: 0; }   /* 「n 已选」在时由它顶到右边，链接紧随其后（两个 auto 会把空白对半分） */
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.chk2:hover > input[type=checkbox]:not(:checked):not(:disabled) { border-color: var(--field-border-hover); }
+.chk2:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 /* 滑块：同 ConstellationMap3D 的 .rng（那份 scoped 进不到本组件） */
 .rng { flex: 1; min-width: 0; }
 .empty { color: var(--text-faint); padding: 4px 0; }
 .ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
 .ic:hover { color: var(--text); }
-.ic.del:hover { color: #e66; }
+.ic.del:hover { color: var(--danger); }
 /* 卫星 / 天线树（与对地同款两级层次） */
 .gtree { max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
 .gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: var(--fs-4); border-radius: var(--r-box); }
@@ -284,11 +360,24 @@ function shellWhy(sh) {
 .gsat .gsname .simtag { font-style: normal; margin-left: 5px; padding: 0 4px; border: 1px solid var(--accent); border-radius: var(--r-ctl); color: var(--accent); font-size: var(--fs-1); vertical-align: middle; }
 .gsvg { flex: none; width: 14px; height: 14px; }
 .gsat .sat-svg { width: 18px; height: 18px; color: var(--text); opacity: .92; }
+/* 星座选中集回显 / 关联星缺失告警：与对地树（宿主页 .gsat.cur / .gsat .lmiss）同值，两处对照 */
+.gsat.cur { box-shadow: inset 2px 0 0 var(--accent-ui); }
+.gsat.cur .gsname { color: var(--accent-ui); }
+.gsat .lmiss { flex: none; display: inline-flex; align-items: center; color: var(--warn); }
+/* 「＋」新建天线菜单：宿主页 .lmenu / .lmi 的同值副本（那份 scoped 进不来），两处对照 */
+.lmenu-bd { position: fixed; inset: 0; z-index: 2190; }
+.lmenu { position: fixed; z-index: 2200; min-width: 150px; max-height: 280px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); padding: 3px; border-radius: var(--r-float); animation: ui-float-in var(--dur-2) var(--ease-out); }
+.lmi { display: flex; align-items: center; gap: 7px; padding: 4px 7px; font-size: var(--fs-3); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
+.lmi > svg { flex: none; color: var(--text-muted); }
+.lmi:hover { background: var(--accent-ui); color: var(--bg); }
+.lmi:hover > svg { color: inherit; }
+.lmi > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 卫星行的小眼睛：与对地侧栏 .sdisp 同款（图标按钮，hover 底色淡入，点亮转 accent） */
 .sdisp { flex: none; display: flex; align-items: center; gap: 1px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border); }
 .sdisp .ic { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--r-box); color: var(--text-faint); opacity: .55; cursor: pointer; transition: opacity .12s, color .12s, background .12s; }
 .sdisp .ic:hover { opacity: 1; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
 .sdisp .ic.on { opacity: 1; color: var(--accent); }
+.sdisp .ic.dis, .sdisp .ic.dis:hover { opacity: .22; color: var(--text-faint); background: none; cursor: default; }
 .gbody { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--border); margin-bottom: 2px; }
 .gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-box); transition: background .12s, color .12s, box-shadow .12s; }
 .gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
@@ -296,15 +385,16 @@ function shellWhy(sh) {
 .gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent-ui) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent-ui); font-weight: 600; }
 .gant .aname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; word-break: break-word; line-height: 1.35; }
 .gant .aname-in { flex: 1; min-width: 0; border: 1px solid var(--accent); background: var(--field-bg); padding: 1px 5px; font-size: var(--fs-3); color: var(--text); outline: none; }
-.gant .afoc { flex: none; font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-pill); padding: 0 5px; line-height: 14px; }
+.gant .afoc { flex: none; font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 0 5px; line-height: 14px; }
 /* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
 .sacts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 4px; }
 .sacts .ic { font-size: var(--fs-2); color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
 .gsat:hover .sacts .ic, .gant:hover .sacts .ic { opacity: .9; }
 .sacts .ic:hover { color: var(--text); opacity: 1; }
-.sacts .ic.del:hover { color: #e66; }
-.ic.ok { color: #5fbf6a; font-weight: 700; }
-.ic.ok:hover { color: #7ddc88; }
+.sacts .ic.del:hover { color: var(--danger); }
+/* 确认钮走状态色 token（两主题各有一档），悬停向墨色收一点而不是再提亮 */
+.ic.ok { color: var(--ok); font-weight: 700; }
+.ic.ok:hover { color: color-mix(in srgb, var(--ok) 75%, var(--text)); }
 .gant.noant { color: var(--text-faint); font-style: italic; cursor: default; padding-left: 6px; }
 .gant.noant:hover { background: none; color: var(--text-faint); }
 .gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: var(--r-box); transition: background .12s; }
@@ -335,16 +425,20 @@ function shellWhy(sh) {
    都超出内容盒，被 select 自己裁掉，而 select 的裁切在 DOM 上量不出来 */
 .shbr { flex: none; width: auto; background-color: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-2); padding: 1px 2px; }
 .shbr.one { color: var(--text-faint); text-align: center; border-color: transparent; }
-.shwhy { padding: 0 8px 4px 32px; font-size: var(--fs-2); color: #d08b5a; }
+.shwhy { padding: 0 8px 4px 32px; font-size: var(--fs-2); color: var(--warn); }
 .shadd { gap: 6px; }
 .shadd .shalt { flex: none; }
 /* min-width：预置名（「MEO 20200」这类）是固定词表，缩到装不下就被 select 自己裁掉；
    给个下限，宽度不够时整行换行（.srow 可换行），而不是把选项名切一半 */
 .shadd .shpre { flex: 1; min-width: 92px; font-size: var(--fs-2); }
 .addb { flex: none; display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); padding: 2px 8px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); border-radius: var(--r-ctl); }
-.addb:hover { border-color: var(--accent); color: var(--text); }
-.csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.addb:hover { border-color: var(--line-hover); color: var(--text); }
+/* 页脚左右内距 16：与上方各 .sec 同一条左缘 */
+.csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
 .cst { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
-.cclr { margin-left: auto; font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; white-space: nowrap; }
-.cclr:hover { border-color: var(--accent); color: var(--text); }
+/* 侧栏小按钮家族（同宿主页 .mini / .expb2 / .cclr）：定高 --h-ctl，描边取按钮结构线 */
+.cclr { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: var(--h-ctl); padding: 0 10px; font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); cursor: pointer; white-space: nowrap; transition: var(--t-state); }
+.cclr:hover { border-color: var(--line-hover); color: var(--text); }
+/* span 不吃全局 <button> 按下罩，就地补一档 */
+.cclr:active { box-shadow: var(--press); transition-duration: 0s; }
 </style>

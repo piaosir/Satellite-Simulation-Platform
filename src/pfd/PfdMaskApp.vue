@@ -403,9 +403,7 @@ const srcDiag = computed(() => {
   let s = '本机可取：' + p.join(' · ')
   if (localSrc.value.err) s += `；读取本地星座出错：${localSrc.value.err}`
   if (ommErr.value) s += `；${ommErr.value}`
-  if (!localSrc.value.cc.length && !localSrc.value.sg.length && !localSrc.value.err) {
-    s += '。前两类为空说明主窗口「星座」面板里还没建过自定义星座或卫星组。'
-  }
+  // 曾在前两类为空时追加一句「说明主窗口还没建过…」——教学式从句（CLAUDE.md），计数本身已说明状态
   return s
 })
 
@@ -793,7 +791,8 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 
 <style scoped>
 .pw { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font-size: var(--fs-4); }
-.pw-hd { display: flex; align-items: center; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
+/* 顶栏 / 底栏落在 --surface 上、顶栏底线用 --border-strong：与其余工具窗的功能条同一层级 */
+.pw-hd { display: flex; align-items: center; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border-strong); flex: none; flex-wrap: wrap; background: var(--surface); }
 .pw-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-5); font-weight: 600; color: var(--accent); }
 .pw-title s { text-decoration: none; font-size: var(--fs-2); font-weight: 400; color: var(--text-faint); }
 .pw-gf { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -806,17 +805,18 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 .pw-common .pw-r > label { min-width: auto; margin-right: 2px; }
 .pw-common .pw-r > label ~ label { margin-left: 14px; }
 .pw-common .pw-note { margin-top: 5px; }
-.pw-src { margin: 4px 0 0; font-size: var(--fs-2); color: var(--text-faint); }
+.pw-src { margin: -3px 0 3px; font-size: var(--fs-2); color: var(--text-faint); }
 .pw-src.bad { color: var(--danger, #c0392b); }
 .w280 { width: 280px }
 .w360 { width: 360px }
 
 .pw-tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex: none; }
 .pw-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 14px 6px; cursor: pointer;
-  background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); font-size: var(--fs-4); }
+  background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); font-size: var(--fs-4);
+  margin-bottom: -1px; }   /* 下划线压住条带底线，而不是叠在它上面（P5） */
 .pw-tab code { font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-code); }
 .pw-tab:hover { color: var(--text); }
-.pw-tab.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.pw-tab.on { color: var(--text); border-bottom-color: var(--accent-ui); font-weight: 600; }
 
 .pw-body { flex: 1; display: grid; grid-template-columns: minmax(560px, 1fr) minmax(330px, 400px); min-height: 0; }
 .pw-main { overflow-y: auto; padding: 14px 18px 20px; }
@@ -835,24 +835,33 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 .pw-note.bad { border-left-color: var(--danger, #c0392b); color: var(--text-muted); }
 .pw-note b { color: var(--text-muted); }
 
-.pi { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-box); background: var(--field-bg); color: var(--text);
+.pi { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text);
   font-family: var(--font-mono); font-size: var(--fs-3); font-variant-numeric: tabular-nums; }
 .pi:disabled { opacity: 0.55; }
 .pi.bad { border-color: var(--danger, #c0392b); }
 .w70 { width: 70px } .w80 { width: 80px } .w90 { width: 90px } .w110 { width: 110px }
 .w120 { width: 120px } .w180 { width: 180px } .w220 { width: 220px } .w240 { width: 240px } .w260 { width: 260px }
-select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-box); background-color: var(--field-bg); color: var(--text); font-size: var(--fs-3); }
+select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); font-size: var(--fs-3); }
 .pu { font-size: var(--fs-2); color: var(--text-faint); }
 .pv { font-family: var(--font-mono); font-size: var(--fs-3); color: var(--text); margin-right: 14px; }
-.pseg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-box); overflow: hidden; }
-.pseg span { padding: 3px 12px; cursor: pointer; color: var(--text-muted); font-size: var(--fs-3); }
-.pseg span.on { background: var(--accent); color: var(--bg); }
+/* 分段（P2）：连体外框 --border-strong + 段间细线；选中段填墨走 --sel-fill（深色下压一档），两侧细线隐去。
+   段是 <span> 不是 <button>，吃不到全局按钮的过渡与按下罩，就地补（P8） */
+.pseg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.pseg span { padding: 3px 12px; cursor: pointer; color: var(--text-muted); font-size: var(--fs-3); transition: var(--t-state); }
+.pseg span + span { border-left: 1px solid var(--border); }
+.pseg span:hover:not(.on) { color: var(--text); background: var(--surface); }
+.pseg span:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
+.pseg span.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
+.pseg span.on, .pseg span.on + span { border-left-color: transparent; }
 
-.pb { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--bg); color: var(--text);
+.pb { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--bg); color: var(--text);
   font-size: var(--fs-4); cursor: pointer; }
-.pb:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pb:hover:not(:disabled) { border-color: var(--line-hover); color: var(--accent); }
 .pb:disabled { opacity: 0.45; cursor: default; }
-.pb.main { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+/* 墨色主按钮（P1）。悬停写到 0,4,0 压过上面的 .pb:hover——原来那条把字染成 --accent，落在墨底上「计算」二字就没了 */
+.pb.main { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); font-weight: 600; }
+.pb.main:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
+.pb.main:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 .pb.sm { height: var(--h-ctl); white-space: nowrap; padding: 0 10px; font-size: var(--fs-3); }
 
 .pw-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 0; font-size: var(--fs-3); }
@@ -866,11 +875,11 @@ select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius:
 .pw-files li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pw-files li b { margin-left: auto; color: var(--text-faint); font-weight: 400; white-space: nowrap; }
 
-.pw-ft { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--border); flex: none; }
+.pw-ft { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--border); flex: none; background: var(--surface); }
 .pw-msg { font-size: var(--fs-3); color: var(--text-muted); }
 .pw-msg.bad { color: var(--danger, #c0392b); }
 .pw-prob, .pw-warn { flex: none; max-height: 130px; overflow-y: auto; padding: 7px 14px; font-size: var(--fs-3); line-height: 1.6; }
 .pw-prob { color: var(--danger, #c0392b); background: color-mix(in srgb, var(--danger, #c0392b) 7%, transparent); border-top: 1px solid var(--danger, #c0392b); }
 .pw-prob-t { font-weight: 600; display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
-.pw-warn { color: var(--text-muted); background: color-mix(in srgb, #a97c2e 8%, transparent); border-top: 1px solid #a97c2e; }
+.pw-warn { color: var(--text-muted); background: color-mix(in srgb, var(--warn) 8%, transparent); border-top: 1px solid var(--warn); }
 </style>

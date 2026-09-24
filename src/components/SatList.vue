@@ -301,7 +301,7 @@ function onAction(a, e) {
             @mousedown="onRowDown($event, idx)"
             @dblclick="emit('activate', it)"
           >
-            <span class="slck" :class="{ on: sel.has(it.id) }" title="加入 / 移出选择（等同 Ctrl 点）· 按住往下拖可连着刷一片" @mousedown.stop="onCheckDown($event, idx)"><Icon v-if="sel.has(it.id)" name="check" :size="12" /></span>
+            <span class="slck" :class="{ on: sel.has(it.id) }" title="加入 / 移出选择（等同 Ctrl 点）· 按住往下拖可连着刷一片" @mousedown.stop="onCheckDown($event, idx)"></span>
             <span v-if="it.dot" class="sldot" :style="{ background: it.dot }"></span>
             <span class="slnm" data-i18n-skip>{{ it.name }}</span>
             <span v-if="it.sub" class="slsub">{{ it.sub }}</span>
@@ -313,40 +313,64 @@ function onAction(a, e) {
 </template>
 
 <style scoped>
-/* 整块面板左缘一道竖条，把列表和上面那行「挂」在一起（比行内选中条淡一档，避免两道同强度的线打架） */
-.sl { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface-2); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+/* 左缘挂条不在这里画：侧栏里由 SatLayersPanel 给 .sl 画（.lp-body :deep(.sl)::before），
+   查找对话框里同一个组件就不带条 —— 条是「挂在上面那一行」的意思，对话框里没有上面那一行。 */
+.sl { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface-2); }
 /* 头：筛选框 + 全选/清除 */
 .slh { display: flex; align-items: center; gap: 5px; padding: 5px 10px 4px 12px; }
-.slf { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--bg); padding: 1px 6px; color: var(--text-faint); }
-.slf:focus-within { border-color: var(--accent-ui); }
-.slf input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); padding: 2px 0; outline: none; }
-.slb { flex: none; display: inline-flex; align-items: center; padding: 2px; color: var(--text-faint); cursor: pointer; }
-.slb:hover { color: var(--text); }
+/* 筛选框：外框才是「输入框」，里面的 input 只是透明的字面 —— 描边 / 高度 / 焦点环都画在外框上，
+   与全局文本框同一套（--h-ctl、--field-*、2px 机位色环压在描边上）。原来 input 吃了全局 22px 高度，
+   外框再包 1px 内距 + 描边，成了 26px 的异类。 */
+.slf { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; height: var(--h-ctl); box-sizing: border-box;
+       border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); padding: 0 6px; color: var(--text-faint); }
+.slf:hover { border-color: var(--field-border-hover); }
+.slf:focus-within { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
+.slf input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); padding: 0; outline: none; }
+/* 全局焦点环是 !important 的；环已由外框 :focus-within 画，这里不再描第二圈 */
+.slf input:focus-visible { outline: none !important; }
+.slb { flex: none; display: inline-flex; align-items: center; width: 18px; height: 18px; justify-content: center; padding: 0; color: var(--text-faint); cursor: pointer; border-radius: var(--r-box); transition: var(--t-state); }
+.slb:hover { color: var(--text); background: var(--bg); }
+/* span 充当按钮，吃不到全局 button 按下罩，就地补（spec P8） */
+.slb:not(.off):active { box-shadow: var(--press); transition-duration: 0s; }
 .slb.off { opacity: .4; }
 /* 读数行 + 操作条 */
 .slm { display: flex; align-items: center; gap: 8px; padding: 0 10px 5px 12px; font-size: var(--fs-2); }
 .sln { flex: 1; min-width: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sla { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); cursor: pointer; white-space: nowrap; padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: var(--r-card); }
+/* 动作钮落在密排档 --h-ctl-sm：原来 1px 内距 + 行高撑出来的高度随字体漂 */
+.sla { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); cursor: pointer; white-space: nowrap; height: var(--h-ctl-sm); box-sizing: border-box; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: var(--r-ctl); transition: var(--t-state); }
 .sla:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.sla:not(.off):active { box-shadow: var(--press); transition-duration: 0s; }
 .sla.warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .sla.warn:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
-/* 没选星时按钮是真的不可点：色/描边压到底 + not-allowed，别让人以为「点了没反应」 */
-.sla.off { color: var(--text-faint); border-color: var(--border); border-style: dashed; opacity: .55; cursor: not-allowed; background: transparent; }
+/* 没选星时按钮是真的不可点：色/描边压到底 + not-allowed，别让人以为「点了没反应」。
+   实线描边 + 不再整体压透明：虚线框 × .55 透明读起来像「占位」而不是「禁用」 */
+.sla.off { color: var(--text-faint); border-color: var(--border); border-style: solid; opacity: 1; cursor: not-allowed; background: transparent; }
 .sla.off:hover { background: transparent; }
 /* 列表本体：定高视口 + 撑高占位 + 平移窗口 */
 .slvp { overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; background: var(--bg); border-top: 1px solid var(--border); outline: none; user-select: none; }
 .slvp:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .slsp { position: relative; }
 .slwin { position: absolute; top: 0; left: 0; right: 0; will-change: transform; }
-.slr { height: 22px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 10px; font-size: var(--fs-3); color: var(--text-muted); cursor: default; }
-/* 勾选框：常占位不常显 —— 悬停该行、该行已选、或已有任何选中时才现身（Explorer 式，不做成常驻复选框列） */
-.slck { flex: none; width: 12px; height: 12px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--text-faint); border-radius: var(--r-ctl); opacity: 0; }
+/* 左内距 12 = 勾选框左缘对齐上面筛选框左缘；gap 5（原 6）抵掉勾选框 12→13 与内距 10→12，
+   名字列只右移 2px */
+.slr { height: 22px; box-sizing: border-box; display: flex; align-items: center; gap: 5px; padding: 0 10px 0 12px; font-size: var(--fs-3); color: var(--text-muted); cursor: default; }
+/* 勾选框：常占位不常显 —— 悬停该行、该行已选、或已有任何选中时才现身（Explorer 式，不做成常驻复选框列）。
+   外观与全局 input[type=checkbox] 同一套（--ctl-box 边长、--field-* 描边、机位色实底 + 纸色勾 mask），
+   不再是另一种 12px 墨色框 + 图标勾 */
+.slck { position: relative; flex: none; width: var(--ctl-box); height: var(--ctl-box); box-sizing: border-box; display: inline-flex;
+        border: 1px solid var(--field-border); background: var(--field-bg); border-radius: var(--r-ctl); opacity: 0; transition: opacity var(--dur-1) linear; }
 .slr:hover .slck, .slr.on .slck, .sl.hassel .slck { opacity: 1; }
-.slck:hover { border-color: var(--accent); }
-.slck.on { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.slck:hover { border-color: var(--field-border-hover); }
+.slck.on { background: var(--accent-ui); border-color: var(--accent-ui); }
+.slck.on:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.slck.on::after { content: ''; position: absolute; inset: 0; background: var(--bg);
+                  -webkit-mask: var(--ctl-check) center / 11px no-repeat; mask: var(--ctl-check) center / 11px no-repeat; }
 .slr:hover { background: var(--surface-2); color: var(--text); }
-.slr.on { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
-.slr.cur { outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: -1px; }
+.slr.on { background: var(--accent-ui-weak); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
+.slr.on:hover { background: color-mix(in srgb, var(--accent-ui) 22%, transparent); }
+/* 键盘光标行：只在列表有焦点时描（失焦还挂着一圈框，读起来像第二种选中） */
+.slvp:focus .slr.cur { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.slvp:focus .slr.on.cur { box-shadow: inset 2px 0 0 var(--accent-ui), inset 0 0 0 1px var(--border-strong); }
 /* 行首色点（可选 it.dot）：卫星组成员显示生效配色；'transparent' 为占位对齐 */
 .sldot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
 .slnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

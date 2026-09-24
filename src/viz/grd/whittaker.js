@@ -10,6 +10,8 @@
 //   列向按整行扫（访存连续）。181×181 密度 5：约 5.6 亿次乘加、本机 0.5～1 s，派生波束缓存在原波束上，换密度才重算。
 // 不做 FFT：181 这类素数长度要 Bluestein，代价与直接卷积同量级，代码却多一倍。
 
+import { materializeBeam } from './gaussStk.js'
+
 const _kern = new Map()   // 'n|N' → [Kd_1 … Kd_{N−1}]，每条 Float64Array(2n)
 
 // 密度只认 1～10 的整数；非法值一律 1（= 关）
@@ -89,6 +91,14 @@ export function whittakerBeam(beam, N) {
   if (w && w.N === N) return w.beam
   const g = beam.grid, NX = g.NX, NY = g.NY
   const NX2 = N * (NX - 1) + 1, NY2 = N * (NY - 1) + 1, n = NX2 * NY2
+  // 解析天线（beam.an）：不插值 —— 按参数在同一窗口上直接铺 N 倍密的网格，节点值仍是闭式精确值
+  //（周期 sinc 对截断窗口会振铃，精确函数没必要吃这份误差）。窗口由 an 唯一确定，与原网格逐位同一范围。
+  if (beam.an && NX2 === NY2) {
+    const st = materializeBeam(beam.an, NX2)
+    const b = { grid: { XS: st.XS, YS: st.YS, XE: st.XE, YE: st.YE, NX: st.NX, NY: st.NY, ...(g.exact ? { exact: true } : {}) }, P1: st.P1, P2: st.P2, c1re: st.c1re, c1im: st.c1im, c2re: st.c2re, c2im: st.c2im, an: beam.an, proj: null, peakDb: beam.peakDb, peak: beam.peak, _base: beam, _dens: N }
+    beam._whit = { N, beam: b }
+    return b
+  }
   const up = (a) => Float32Array.from(upsample2D(a, NX, NY, N))
   let c1re = null, c1im = null, c2re = null, c2im = null, P1, P2
   if (beam.c1re && beam.c1im && beam.c2re && beam.c2im) {

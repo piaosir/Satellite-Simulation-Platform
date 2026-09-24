@@ -30,6 +30,9 @@ export const isMarkShape = (k) => MARK_SHAPE_KEYS.includes(k)
 // 3D 贴图里形状占的比例（其余是留白：描边、星角、抗锯齿都要地方）
 export const MARK_TEX_FILL = 0.78
 
+// 点标记「大小」滑块值 → 视觉直径 d（屏幕 px @默认视角）。2D / 3D 两个渲染器与页面（点标记挂的模型按这个直径定尺）共用
+export const PT_DOT_K = 18 / 32 * 2.2
+
 // 锚点在 d×d 方框里的纵向位置（0=框底、1=框顶；横向恒 0.5）。
 // 图钉的针尖在框底 → 0；其余形状形心在框心 → 0.5。
 export function symbolAnchorY(shape) { return shape === 'pin' ? 0 : 0.5 }

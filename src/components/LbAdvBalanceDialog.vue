@@ -293,12 +293,14 @@ function apply() {
 <style scoped>
 /* 与其它对话框同一套控件语言（方角、细边），宽一档——里面是两张表。
    字体走外壳档：功带平衡是求解过程，两张表不进交付文档，衬线只留给会进报告的东西。 */
-.ab-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.ab-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
 .ab {
   width: 760px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
   font-family: var(--font-ui);
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
   box-shadow: var(--shadow-3); overflow: hidden;
+  animation: ui-dlg-in var(--dur-3) var(--ease-out);
 }
 .ab-hd {
   display: flex; align-items: center; gap: 6px; padding: 10px 12px;
@@ -380,5 +382,6 @@ function apply() {
 .ab-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .ab-btn:disabled { opacity: .45; cursor: not-allowed; }
 .ab-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.ab-btn.primary:hover:not(:disabled) { opacity: .88; }
+/* 主钮悬停压深一档（不再靠半透明），字色显式 --bg：通用悬停会把字染成 --text */
+.ab-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

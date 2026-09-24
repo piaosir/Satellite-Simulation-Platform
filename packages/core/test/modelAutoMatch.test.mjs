@@ -77,9 +77,32 @@ const CASES = [
   ['MMS 1', 40482, 'HEO', 'other', N('magnetospheric-multiscale-mms-a'), 'mms'],
   ['DSCOVR', 40390, 'HEO', 'other', N('deep-space-climate-observatory-dscovr-triana'), 'dscovr'],
   ['SAC-D', 37673, 'LEO', 'other', 'nasa:aquarius-b~2', 'aquarius'],
-  ['STARLINK-1007', 44713, 'LEO', 'starlink', 'param:flat-leo', 'constellation:starlink'],
-  ['ONEWEB-0012', 44057, 'LEO', 'oneweb', 'param:flat-leo', 'constellation:oneweb'],
-  ['KUIPER-00008', 60000, 'LEO', 'kuiper', 'param:flat-leo', 'constellation:kuiper'],
+  // 2026-09-25：星链 / 一网 / Kuiper / GNSS 等有名星座改走星座精模（fleet/match.mjs），国网 / 千帆仍走平板 LEO
+  ['STARLINK-1007', 44713, 'LEO', 'starlink', 'param:starlink-v1', 'fleet:starlink-v1.0'],
+  ['STARLINK-1700', 46000, 'LEO', 'starlink', 'param:starlink-v1-visor', 'fleet:starlink-v1.0-visor'],
+  ['STARLINK-3005', 48880, 'LEO', 'starlink', 'param:starlink-v15', 'fleet:starlink-v1.5'],
+  ['STARLINK-30069', 57000, 'LEO', 'starlink', 'param:starlink-v2mini', 'fleet:starlink-v2mini'],
+  ['STARLINK-34001', 63000, 'LEO', 'starlink', 'param:starlink-v2mini-opt', 'fleet:starlink-v2mini-opt'],
+  ['STARLINK-11083 [DTC]', 59000, 'LEO', 'starlink', 'param:starlink-v2mini-dtc', 'fleet:starlink-dtc'],
+  ['ONEWEB-0012', 44057, 'LEO', 'oneweb', 'param:oneweb-gen1', 'fleet:oneweb'],
+  ['KUIPER-00008', 60000, 'LEO', 'kuiper', 'param:kuiper', 'fleet:kuiper'],
+  ['GPS BIIR-11 (PRN 19)', 28190, 'MEO', 'gps', 'param:gps-iir', 'fleet:gps-iir'],
+  ['GPS BIIRM-1 (PRN 17)', 28874, 'MEO', 'gps', 'param:gps-iirm', 'fleet:gps-iirm'],
+  ['GPS BIIF-1  (PRN 25)', 36585, 'MEO', 'gps', 'param:gps-iif', 'fleet:gps-iif'],
+  ['GPS BIII-1  (PRN 04)', 43873, 'MEO', 'gps', 'param:gps-iii', 'fleet:gps-iii'],
+  ['GPS BIII-9  (PRN 20)', 65000, 'MEO', 'gps', 'param:gps-iii-lra', 'fleet:gps-iii-lra'],
+  ['BEIDOU-3 M7 (C27)', 43107, 'MEO', 'beidou', 'param:beidou3-meo-secm-a', 'fleet:beidou-norad'],
+  ['BEIDOU-3 M13 (C32)', 99990, 'MEO', 'beidou', 'param:beidou3-meo-cast-sar', 'fleet:beidou3-meo-cast-sar'],
+  ['BEIDOU-3 G1 (C59)', 43683, 'GEO', 'geo', 'param:beidou3-geo', 'fleet:beidou-norad'],
+  ['COSMOS 2569 (703K)', 57517, 'MEO', 'glonass', 'param:glonass-k2', 'fleet:glonass-k2'],
+  ['COSMOS 2547 (705K)', 46805, 'MEO', 'glonass', 'param:glonass-k1', 'fleet:glonass-k1'],
+  ['COSMOS 2433 (720)', 32276, 'MEO', 'glonass', 'param:glonass-m', 'fleet:glonass-m'],
+  ['IRIDIUM 106', 41917, 'LEO', 'iridium', 'param:iridium-next', 'fleet:iridium-next'],
+  ['GLOBALSTAR M066', 32263, 'LEO', 'globalstar', 'param:globalstar-1', 'fleet:globalstar-1'],
+  ['GLOBALSTAR M080', 37189, 'LEO', 'globalstar', 'param:globalstar-2', 'fleet:globalstar-2'],
+  ['GLOBALSTAR M100', 66000, 'LEO', 'globalstar', 'param:globalstar-2r', 'fleet:globalstar-2r'],
+  ['O3B FM10', 40348, 'MEO', 'o3b', 'param:o3b-gen1', 'fleet:o3b'],
+  ['O3B MPOWER F1', 54755, 'MEO', 'o3b', 'param:o3b-mpower', 'fleet:o3b-mpower'],
   ['QIANFAN-1', 60379, 'LEO', 'qianfan', 'param:flat-leo', 'constellation:qianfan'],
   ['HULIANWANG DIGUI-01', 62000, 'LEO', 'guowang', 'param:flat-leo', 'constellation:guowang'],
   ['某星 A', 99999, 'LEO', 'guowang', 'param:flat-leo', 'constellation:guowang'],
@@ -87,8 +110,8 @@ const CASES = [
   ['CHINASAT 26', 57860, 'GEO', 'geo', DEF, 'geo-default'],
   ['APSTAR 6D', 45863, 'GEO', 'geo', DEF, 'geo-default'],
   ['INTELSAT 39', 44476, 'GEO', 'geo', DEF, 'geo-default'],
-  ['BEIDOU-3 M1', 43001, 'MEO', 'beidou', DEF, 'fallback'],
-  ['GSAT0101 (GALILEO 5)', 37846, 'MEO', 'galileo', DEF, 'fallback'],
+  ['BEIDOU-3 M1', 43001, 'MEO', 'beidou', 'param:beidou3-meo-cast', 'fleet:beidou-norad'],
+  ['GSAT0101 (GALILEO 5)', 37846, 'MEO', 'galileo', 'param:galileo-iov', 'fleet:galileo-iov'],
   ['TIANHE', 48274, 'LEO', 'stations', DEF, 'fallback'],
   ['OBSCURESAT-7', 88888, 'LEO', 'other', DEF, 'fallback'],
   ['MOLNIYA 1-93', 28163, 'HEO', 'other', DEF, 'fallback'],
@@ -137,7 +160,7 @@ t('available 缺候选：先换同规则的下一个候选，再落到下一条�
   // ISS 候选全缺 → 兜底默认卫星
   assert.deepStrictEqual(match({ name: 'ISS (ZARYA)', orbitKind: 'LEO', group: 'stations' }, { available: new Set() }), { id: DEF, rule: 'fallback' })
   // param: 模型恒可用（运行时生成，不进 manifest 也行）
-  assert.deepStrictEqual(match({ name: 'STARLINK-30000' }, { available: new Set() }), { id: 'param:flat-leo', rule: 'constellation:starlink' })
+  assert.deepStrictEqual(match({ name: 'STARLINK-30000' }, { available: new Set() }), { id: 'param:starlink-v2mini', rule: 'fleet:starlink-v2mini' })
   // 数组形式的 available 也认
   assert.equal(match({ name: 'HST' }, { available: [N('hubble-space-telescope-b')] }).id, N('hubble-space-telescope-b'))
 })
@@ -154,16 +177,17 @@ t('prefs.geoDefault：生效；是 NASA id 但不可用时退回默认卫星；�
   }
   assert.deepStrictEqual(match({ name: 'APSTAR 6D', orbitKind: 'GEO' }, { prefs: { geoDefault: '' } }), { id: DEF, rule: 'geo-default' }, '空串按缺省')
   // GEO 偏好不外溢到非 GEO 的兜底
-  assert.deepStrictEqual(match({ name: 'BEIDOU-3 M1', orbitKind: 'MEO' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: DEF, rule: 'fallback' })
+  assert.deepStrictEqual(match({ name: 'BEIDOU-3 M1', orbitKind: 'MEO' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:beidou3-meo-cast', rule: 'fleet:beidou3-meo-cast' })
 })
 
 t('orbitKind 缺失时 GEO 运营商名兜底；给了非 GEO 类别就不兜底', () => {
   assert.deepStrictEqual(match({ name: 'ZHONGXING-26' }), { id: DEF, rule: 'geo-name-hint' })
   assert.deepStrictEqual(match({ name: 'INTELSAT 901' }), { id: DEF, rule: 'geo-name-hint' })
   assert.deepStrictEqual(match({ name: 'ZHONGXING-26', orbitKind: 'IGSO' }), { id: DEF, rule: 'fallback' })
-  assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }), { id: DEF, rule: 'fallback' }, '伽利略的 GSAT 不能当 GEO 通信星')
+  assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }), { id: 'param:galileo-foc', rule: 'fleet:galileo-foc' }, '伽利略的 GSAT 不能当 GEO 通信星')
   // 两条路给的模型同是默认卫星，区别在 GEO 偏好只作用于 GEO 那条
-  assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: DEF, rule: 'fallback' })
+  assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:galileo-foc', rule: 'fleet:galileo-foc' })
+  assert.deepStrictEqual(match({ name: 'GSAT-30', orbitKind: '' }), { id: DEF, rule: 'fallback' }, '印度通信星 GSAT-30 不能当伽利略（GEO 名称兜底本就不收 GSAT）')
   assert.deepStrictEqual(match({ name: 'INTELSAT 901' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:ssl1300', rule: 'geo-name-hint' })
 })
 

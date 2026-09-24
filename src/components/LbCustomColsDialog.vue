@@ -179,8 +179,10 @@ const listUnit = (c) => unitOf(c, props.pool)
 </template>
 
 <style scoped>
-.ccd-mask { position: fixed; inset: 0; z-index: 220; background: rgba(0, 0, 0, .32); display: flex; align-items: center; justify-content: center; }
-.ccd { width: 620px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, rgba(128,128,128,.5)); border-radius: var(--r-box, 4px); box-shadow: var(--shadow-3); }
+/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
+.ccd-mask { position: fixed; inset: 0; z-index: 220; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
+.ccd { width: 620px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, rgba(128,128,128,.5)); border-radius: var(--r-box, 4px); box-shadow: var(--shadow-3);
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .ccd-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border, rgba(128,128,128,.3)); }
 .ccd-fx { font-style: italic; font-weight: 700; color: var(--accent, var(--text)); }
 .ccd-sub { font-weight: 400; color: var(--text-faint, #888); font-size: var(--fs-3); }

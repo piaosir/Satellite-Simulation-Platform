@@ -66,10 +66,13 @@ function startResizeSide(e) {
   const lib = sideView.value === 'library'
   const w = lib ? libWidth : configsWidth, min = lib ? LIB_W_MIN : CFG_W_MIN, max = lib ? LIB_W_MAX : CFG_W_MAX
   const startX = e.clientX, startW = w.value
-  sideResizing.value = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
+  // html.ui-col-resize（controls.css）：拖动全程整窗锁 col-resize 光标、禁选字——指针划过表格 / 按钮时光标不再跳
+  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   const move = (ev) => { w.value = Math.min(max, Math.max(min, startW + (ev.clientX - startX))) }
   const up = () => {
-    sideResizing.value = false; document.body.style.cursor = ''; document.body.style.userSelect = ''
+    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
     try { localStorage.setItem(lib ? 'e2e/libWidth' : 'e2e/configsWidth', String(w.value)) } catch (e2) { /* ignore */ }
   }
@@ -1408,7 +1411,6 @@ onMounted(async () => {
               <template #default="{ cfg }"><E2eSatPanel :form="cfg.form" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
             </LbLibrary>
           </div>
-          <div class="lb-lib-foot" :title="(LIB_TABS.find((t) => t.key === libTab) || {}).tip">{{ (LIB_TABS.find((t) => t.key === libTab) || {}).tip }}</div>
         </template>
         <div class="lb-cfg-resizer" title="拖动调整栏宽" @mousedown.prevent="startResizeSide"></div>
       </aside>
@@ -1433,20 +1435,22 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
+                <!-- 原第三行「算法 · 正向递推」是固定说明（CLAUDE.md），已删，三行竖排还会把功能区撑高一截；
+                     其口径挪到本组组名「计算」的 title 上。★ 不并进下面「几何」的 title：英文界面按整串查词典，
+                     拼出来的新串查不到，会译成中英夹杂的残句 -->
                 <label title="几何来源：自动最差＝按各跳卫星的轨道解最差工况（GSO 静止几何 / NGSO 选星走 SGP4 / NGSO 手填走圆轨道闭式；星间跳按两星轨道取时窗内最大距离），此时「仰角」字段是最低仰角门限；手动＝斜距与仰角、星间距离由各跳自己填"><span>几何</span>
                   <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
                 </label>
                 <label v-if="!geoManual" title="从计算此刻起在此时窗内解最差工况几何"><span>时窗</span>
-                  <select v-model.number="geoHorizonHours" style="width: 76px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
+                  <select v-model.number="geoHorizonHours" style="width: 86px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
-                <label title="端到端只有正向电平递推一种算法：多跳下反算欠定（目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 去凑）"><span>算法</span><span class="lbr-u">正向递推</span></label>
               </div>
               <button class="lbr-big primary" :disabled="computing" :title="`计算全部 ${chains.length} 条链路（Ctrl+Enter）`" @click="compute">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
             </div>
-            <div class="lbr-cap">计算</div>
+            <div class="lbr-cap" title="端到端只有正向电平递推一种算法：多跳下反算欠定（目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 去凑）">计算</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
@@ -1478,7 +1482,7 @@ onMounted(async () => {
 
         <div class="lbx-flow lbx-cards">
           <!-- 上：链路列表 -->
-          <LbSection id="links" title="端到端链路" :count="chains.length" summary="一行一条：节点链 + 段结算">
+          <LbSection id="links" title="端到端链路" :count="chains.length">
             <template #actions>
               <button class="lb-mini" title="新增一条链路（站-星-站）" @click="addChain">＋ 链路</button>
             </template>
@@ -1742,32 +1746,43 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
-.lb-side { flex: none; position: relative; transition: width .15s ease; }
-.lb-side.resizing { transition: none; user-select: none; }
+/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
+.lb-side { flex: none; position: relative; }
+.lb-side.resizing { user-select: none; }
+/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
 .lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-configs.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
-.lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
-.lb-configs .lb-col-bd { padding: 10px 8px; scrollbar-width: thin; }
+.lb-cfg-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
+  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
+}
+.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: .15s; }
+.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
+/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
+.lb-configs .lb-col-bd { padding: 10px 8px; }
 .lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
 .lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
 .lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
 .lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { opacity: .88; }
+/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
+.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
+.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
 .lb-cfg-acts { display: flex; gap: 4px; }
 /* 右键菜单（.lb-ctx*）不在这儿：它同时被本组件与 ChainStrip 用，scoped 只盖得住自己那半边，
-   故收进公共表 styles/lbworkbench.css（前三窗各自 scoped 的同名规则特异度更高，不受影响）。 */
+   故收进公共表 styles/lbworkbench.css（如今四窗都只吃那一份）。 */
 .lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
 .lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.28); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; }
+.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
@@ -1780,7 +1795,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl-wrap { overflow-x: auto; }
 .e2-tbl { width: 100%; border-collapse: collapse; font-size: var(--lb-fs, 11px); font-variant-numeric: tabular-nums; }
 .e2-tbl th { text-align: right; font-weight: 600; color: var(--text-muted); padding: 3px 8px; white-space: nowrap; border-bottom: 1px solid var(--lb-rule); }
-.e2-tbl thead tr { border-top: 2px solid var(--lb-rule-strong); }
+/* 顶线不再画：节头（LbSection）下缘已是一条 2px 题线，紧贴着再来一条就成了双粗线 */
+.e2-tbl thead tr { border-top: 0; }
 .e2-tbl tbody tr { border-bottom: 1px solid var(--lb-rule-soft); cursor: pointer; }
 .e2-tbl tbody tr:last-child { border-bottom: 2px solid var(--lb-rule-strong); }
 .e2-tbl tbody tr:hover { background: var(--surface); }
@@ -1797,6 +1813,13 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl .c-lib { text-align: left; min-width: 150px; }
 .e2-tbl .c-n { min-width: 96px; }
 .e2-tbl .c-act { width: 74px; text-align: right; }
+/* 名称格：让出输入框自身的 1px 边 + 3px 内距，框里的字与列头「名称」左缘对齐 */
+.e2-tbl td.c-nm { padding-left: 4px; }
+/* 行尾动作钮平时无框（一列框墙是噪声），悬停 / 当前行才浮出；按钮自身悬停仍描深一档 */
+.e2-tbl .c-act .lb-mini-ico { background: transparent; border-color: transparent; }
+.e2-tbl tbody tr:hover .c-act .lb-mini-ico:not(:disabled),
+.e2-tbl tbody tr.on .c-act .lb-mini-ico:not(:disabled) { background: var(--bg); border-color: var(--border); }
+.e2-tbl tbody tr .c-act .lb-mini-ico:hover:not(:disabled) { border-color: var(--border-strong); }
 .e2-tbl td.st-bad { color: var(--danger); font-weight: 600; }
 .e2-tbl td.st-ok { color: var(--ok); font-weight: 600; }
 .e2-err { color: var(--danger); margin-right: 4px; }
@@ -1870,9 +1893,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
   display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 2px 5px; cursor: pointer; text-align: left;
   color: var(--text); background: transparent; border: 0; border-radius: var(--r-ctl, 2px);
 }
-/* accent 实底上的字一律 var(--bg)：写死 #fff 在浅色主题下就是白底白字 */
-.e2-city-i.on { background: var(--accent); color: var(--bg); }
-.e2-city-i.on .e2-city-x, .e2-city-i.on .e2-city-g { color: var(--bg); opacity: .82; }
+/* 选项拾取器（spec P3 第二类）：光标项是机位色淡罩 + 原字色，不是命令菜单那种实底——
+   与右键菜单分得开；次级字（省份 / 经纬度）保持各自的退档色 */
+.e2-city-i.on { background: color-mix(in srgb, var(--accent-ui) 16%, var(--bg)); color: var(--text); }
 .e2-city-n { flex: none; font-size: var(--fs-3); }
 .e2-city-x { flex: 1; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .e2-city-g { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }

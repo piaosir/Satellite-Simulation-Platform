@@ -11,7 +11,7 @@
 // 这一块整体不出现（import.meta.glob 不报编译错），只留「搜一搜」文字入口 + 复制名称。
 //
 // 视觉沿用 MiniBindDialog（同一套 mask / dlg / dhd / dft）。
-import { ref } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import avatarUrl from '../assets/linklab-miniapp-mark.png'
 import { TTL_DAYS } from '../shared/miniPack.js'
@@ -42,6 +42,15 @@ const copied = ref(false)
 async function copyName() {
   try { await navigator.clipboard.writeText(MINI_NAME); copied.value = true; setTimeout(() => { copied.value = false }, 1200) } catch (e) { /* 无剪贴板权限 */ }
 }
+
+// Esc 关窗（捕获阶段先收；输入法组字中不关），打开即聚焦「完成」
+const okBtn = ref(null)
+function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
+onMounted(() => {
+  window.addEventListener('keydown', onKey, true)
+  okBtn.value?.focus({ preventScroll: true })
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 </script>
 
 <template>
@@ -49,7 +58,7 @@ async function copyName() {
     <div class="dlg" role="dialog" aria-modal="true">
       <header class="dhd">
         <span class="dt"><Icon name="wechat" :size="16" />微信小程序</span>
-        <span class="x" @click="emit('close')"><Icon name="x" :size="16" /></span>
+        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
       </header>
 
       <div class="body">
@@ -100,7 +109,7 @@ async function copyName() {
 
       <footer class="dft">
         <button class="gh" @click="emit('bind')">绑定小程序账号…</button>
-        <button class="ok" @click="emit('close')">完成</button>
+        <button ref="okBtn" class="ok" @click="emit('close')">完成</button>
       </footer>
     </div>
   </div>
@@ -108,13 +117,18 @@ async function copyName() {
 
 <style scoped>
 /* 与 MiniBindDialog / SettingsModal 同一套视觉语言 */
-.mask { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
+/* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
+.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .dlg { width: 580px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); }
-.dhd { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.dt { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-size: var(--fs-5); }
-.x { cursor: pointer; color: var(--text-muted); padding: 2px 6px; display: inline-flex; align-items: center; }
-.x:hover { color: var(--text); }
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3);
+  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
+/* 标题栏内距挪进 .dt，关闭键才能占满整条标题栏高度（总高不变） */
+.dhd { display: flex; align-items: stretch; justify-content: space-between; padding: 0; border-bottom: 1px solid var(--border); }
+.dt { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
+/* 关闭键与「设置」「文件管理」同一枚：Windows 风矩形热区，悬停红底白字；右上内圆角 = 框体圆角 − 1px */
+.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
+  border-top-right-radius: calc(var(--r-card) - 1px); }
+.winx:hover { background: #c42b1c; color: #fff; }
 .body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
 
 /* 名片：头像 + 名称 + 一句话 + 打开方式 */
@@ -130,7 +144,7 @@ async function copyName() {
 .how { font-size: var(--fs-3); color: var(--text-faint); }
 .cp { display: inline-flex; align-items: center; gap: 4px; height: var(--h-ctl-sm); white-space: nowrap; padding: 0 7px; font-size: var(--fs-2); cursor: pointer;
   color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); }
-.cp:hover { color: var(--text); border-color: var(--accent); }
+.cp:hover { color: var(--text); border-color: var(--line-hover); }
 /* 小程序码：品牌图，白底不反相；96px 足够手机扫 */
 .qr { flex: none; margin: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .qr img { width: 96px; height: 96px; background: #fff; border: 1px solid var(--border); border-radius: var(--r-ctl); user-select: none; -webkit-user-drag: none; }
@@ -148,8 +162,12 @@ async function copyName() {
 
 .dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
-.gh { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
-.gh:hover { border-color: var(--accent); }
-/* accent 实底控件的字色一律 var(--bg)：深色主题下 accent 是浅色，写死 #fff 会白底白字 */
-.ok { background: var(--accent); border: 1px solid var(--accent); color: var(--bg); font-weight: 600; }
+/* 次要钮：纸底 + 结构描边 + 正文字；主钮：墨色实底（走 token，深色压一档）。按下由全局按下罩提供 */
+.gh, .ghost { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
+.gh:hover:not(:disabled), .ghost:hover:not(:disabled) { border-color: var(--line-hover); }
+.gh:disabled { opacity: 1; color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: default; }
+/* 实底控件的字色一律跟 token（--primary-on = --bg）：深色主题下底色是浅色，写死 #fff 会白底白字 */
+.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
+.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 </style>

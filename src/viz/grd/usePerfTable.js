@@ -39,6 +39,10 @@ const COL_DEFS = [
   { key: 'country', label: '国家', w: 76 },
   { key: 'city', label: '城市', w: 88 },
   { key: 'desig', label: '代号', w: 72 },
+  // 时间 / 高度（2026-09-24，航迹航点导入带进来，也可手填）：有时刻的行按那一刻的星位 / 指向取值，有高度的行按空中那一点取值。
+  // 两列插在经纬度【之前】—— 粘贴解析按「末两列 = 经度、纬度」认坐标，列序不能破
+  { key: 'tMs', label: '时间', w: 148, time: true, tip: '经过该点的时刻（显示时区）；有时刻的行按该时刻的星位与指向取值，留空按当前仿真时刻' },
+  { key: 'altM', label: '高度', w: 72, num: true, fix: 0, unit: 'm', tip: '点的大地高（航迹航点为实际高度）；方向图取值与 G/S、S/C 视角都按该高度，留空为地面' },
   { key: 'lon', label: '经度', w: 128, num: true, fix: 2, unit: '°E', tip: '东经为正，负值表示西经' },
   { key: 'lat', label: '纬度', w: 128, num: true, fix: 2, unit: '°N', tip: '北纬为正，负值表示南纬' },
   { key: 'scAz', label: 'S/C Az', w: 64, num: true, fix: 2, unit: '°', tip: '卫星（航天器）天线系下、指向该地面点的方位角（boresight=星下点为 0）' },
@@ -60,13 +64,18 @@ const COL_DEFS = [
 // 列分组（仅供选项弹窗排版）
 const COL_GROUPS = [
   { title: '标识', keys: ['satNo', 'satName', 'antNo', 'antName', 'beamNo', 'stationNo'] },
-  { title: '站点', keys: ['country', 'city', 'desig', 'lon', 'lat'] },
+  { title: '站点', keys: ['country', 'city', 'desig', 'tMs', 'altM', 'lon', 'lat'] },
   { title: '几何', keys: ['scAz', 'scEl', 'gsAz', 'gsEl', 'u', 'v'] },
   { title: '性能', keys: ['dir', 'param', 'minPt', 'maxPt', 'xpol', 'slope', 'ar'] }
 ]
 
-// 城市输入网格的可编辑列（弹窗与粘贴解析共用同一份列序）
-const EDIT_COLS = ['country', 'city', 'desig', 'lon', 'lat']
+// 城市输入网格的可编辑列（弹窗与粘贴解析共用同一份列序；末两列恒为经纬度）
+const EDIT_COLS = ['country', 'city', 'desig', 'tMs', 'altM', 'lon', 'lat']
+// 城市行的时刻 / 高度：有限数才留，其余一律 null（老存档、标记导入的行没有这两个字段）
+const finOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+// 两行是否同一点：坐标 ±1e-4° 且时刻一致（都没有，或差 < 1 s）—— 航迹往返经过同一处、时刻不同的两行不算重复
+const sameSpot = (s, lon, lat, tMs) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4 &&
+  (Number.isFinite(s.tMs) ? Number.isFinite(tMs) && Math.abs(s.tMs - tMs) < 1000 : !Number.isFinite(tMs))
 
 function defaultOpts() {
   const cols = {}
@@ -205,7 +214,7 @@ export function usePerfTable() {
       let id = s && s.id ? String(s.id) : ''
       if (!id || seen.has(id)) id = newId()
       seen.add(id)
-      return { id, country: String(s.country == null ? '' : s.country), city: String(s.city == null ? '' : s.city), desig: String(s.desig == null ? '' : s.desig), lon: num(s.lon), lat: num(s.lat) }
+      return { id, country: String(s.country == null ? '' : s.country), city: String(s.city == null ? '' : s.city), desig: String(s.desig == null ? '' : s.desig), lon: num(s.lon), lat: num(s.lat), tMs: finOrNull(s.tMs), altM: finOrNull(s.altM) }
     })
     stationsByAnt.value = { ...stationsByAnt.value, [key]: out }
   }
@@ -213,8 +222,20 @@ export function usePerfTable() {
   function setCityGroups(list) {
     cityGroups.value = (Array.isArray(list) ? list : []).filter((g) => g && Array.isArray(g.cities)).map((g) => ({
       id: g.id || gid(), name: String(g.name || '城市组'),
-      cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+      cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat), tMs: finOrNull(c.tMs), altM: finOrNull(c.altM) }))
     }))
+  }
+
+  // 时间文本 → UTC ms：弹窗按显示时区装解析器（setTimeParser）；数字（ms）原样收。返回 null = 清空、undefined = 认不出（保留原值）
+  let timeParser = null
+  function setTimeParser(fn) { timeParser = typeof fn === 'function' ? fn : null }
+  function timeOf(v) {
+    if (v == null) return null
+    if (typeof v === 'number') return Number.isFinite(v) ? v : null
+    const s = String(v).trim()
+    if (!s) return null
+    const ms = timeParser ? timeParser(s) : NaN
+    return Number.isFinite(ms) ? ms : undefined
   }
 
   // ===== 站点库 CRUD =====
@@ -227,7 +248,7 @@ export function usePerfTable() {
   // Excel/链路预算式「增加行」：在 at 处插入一行空站（经纬度留空，填好后才参与取值）。返回新站。
   function addEmptyStation(at) {
     if (!activeKey.value) return null              // 没开表＝没有哪张表收得下（stations 的 setter 此时是空转），返回值不许撒谎
-    const s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null }
+    const s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null, tMs: null, altM: null }
     const list = [...stations.value]
     const i = (at == null || at < 0 || at > list.length) ? list.length : at
     list.splice(i, 0, s)
@@ -238,6 +259,8 @@ export function usePerfTable() {
     const s = stations.value.find((x) => x.id === id); if (!s) return
     if ('lon' in patch) setCoord(s, 'lon', patch.lon)
     if ('lat' in patch) setCoord(s, 'lat', patch.lat)
+    if ('altM' in patch) setCoord(s, 'altM', patch.altM)
+    if ('tMs' in patch) { const t = timeOf(patch.tMs); if (t !== undefined) s.tMs = t }
     for (const k of ['country', 'city', 'desig']) if (k in patch) s[k] = String(patch[k] == null ? '' : patch[k])
     stations.value = [...stations.value]
   }
@@ -250,7 +273,7 @@ export function usePerfTable() {
     for (const c of (list || [])) {
       const lon = num(c.lon), lat = num(c.lat)
       if (lon != null && lat != null && (exists(lon, lat) || add.some((a) => Math.abs(a.lon - lon) < 1e-4 && Math.abs(a.lat - lat) < 1e-4))) continue
-      add.push({ id: newId(), country: String(c.country || ''), city: String(c.city || ''), desig: String(c.desig || ''), lon, lat })
+      add.push({ id: newId(), country: String(c.country || ''), city: String(c.city || ''), desig: String(c.desig || ''), lon, lat, tMs: null, altM: null })
     }
     if (add.length) stations.value = [...stations.value, ...add]
     return add.length
@@ -323,7 +346,8 @@ export function usePerfTable() {
   }
 
   // Excel/表格粘贴：每行一站，单元格按 制表符 > 逗号 > 空白 切分；约定【末两列=经度、纬度】，
-  // 之前的文本列依次填 国家/城市/代号。末两列非数字的行（表头/无效）自动跳过。返回新增条数。
+  // 之前的列依次填 国家/城市/代号/时间/高度（与网格同序，从本表复制出来的整行原样粘得回去）。
+  // 末两列非数字的行（表头/无效）自动跳过。返回新增条数。
   function parsePasted(text) {
     const out = []
     for (const line of String(text || '').split(/\r?\n/)) {
@@ -333,14 +357,15 @@ export function usePerfTable() {
       const lon = num(c[c.length - 2]), lat = num(c[c.length - 1])
       if (lon == null || lat == null) continue
       const head = c.slice(0, c.length - 2)
-      out.push({ country: head[0] || '', city: head[1] || '', desig: head[2] || '', lon, lat })
+      const tm = timeOf(head[3])
+      out.push({ country: head[0] || '', city: head[1] || '', desig: head[2] || '', lon, lat, tMs: tm == null ? null : tm, altM: num(head[4]) })
     }
     return out
   }
   function addStationsBulk(text) {
     if (!activeKey.value) return 0
     const parsed = parsePasted(text); if (!parsed.length) return 0
-    const add = parsed.map((p) => ({ id: newId(), country: p.country, city: p.city, desig: p.desig, lon: p.lon, lat: p.lat }))
+    const add = parsed.map((p) => ({ id: newId(), country: p.country, city: p.city, desig: p.desig, lon: p.lon, lat: p.lat, tMs: p.tMs, altM: p.altM }))
     stations.value = [...stations.value, ...add]
     return add.length
   }
@@ -354,7 +379,8 @@ export function usePerfTable() {
       .map((l) => l.split('\t').map((x) => x.trim()))
   }
   function setStationCell(s, key, val) {
-    if (key === 'lon' || key === 'lat') setCoord(s, key, val)
+    if (key === 'lon' || key === 'lat' || key === 'altM') setCoord(s, key, val)
+    else if (key === 'tMs') { const t = timeOf(val); if (t !== undefined) s.tMs = t }
     else s[key] = String(val == null ? '' : val)
   }
   function pasteBlock(startId, startKey, text) {
@@ -366,7 +392,7 @@ export function usePerfTable() {
     if (idx < 0) idx = list.length
     grid.forEach((cells, ri) => {
       let s = list[idx + ri]
-      if (!s) { s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null }; list[idx + ri] = s }
+      if (!s) { s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null, tMs: null, altM: null }; list[idx + ri] = s }
       cells.forEach((val, ci) => { const key = EDIT_COLS[c0 + ci]; if (key) setStationCell(s, key, val) })
     })
     stations.value = list.filter(Boolean)
@@ -378,7 +404,7 @@ export function usePerfTable() {
 
   // ===== 城市组（把当前城市列表存成命名预设，随时载入/追加/覆盖，供不同天线的性能表复用）=====
   const gid = () => 'cg' + Date.now().toString(36) + (_seq++)
-  const snapCities = () => stations.value.map((s) => ({ country: s.country || '', city: s.city || '', desig: s.desig || '', lon: s.lon, lat: s.lat }))
+  const snapCities = () => stations.value.map((s) => ({ country: s.country || '', city: s.city || '', desig: s.desig || '', lon: s.lon, lat: s.lat, tMs: finOrNull(s.tMs), altM: finOrNull(s.altM) }))
   const findGroup = (id) => cityGroups.value.find((x) => x.id === id) || null
   // 存当前城市列表为新组。空列表不存（返回 null）；名称去空白，空名给默认名。返回新组 id。
   function addCityGroup(name) {
@@ -402,20 +428,20 @@ export function usePerfTable() {
   function loadCityGroup(id) {
     if (!activeKey.value) return 0
     const g = findGroup(id); if (!g) return 0
-    stations.value = (g.cities || []).map((c) => ({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+    stations.value = (g.cities || []).map((c) => ({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat), tMs: finOrNull(c.tMs), altM: finOrNull(c.altM) }))
     hidden.value = {}
     return stations.value.length
   }
-  // 追加组到当前列表：有坐标的行按 ±1e-4 去重（与从标记导入同口径），无坐标的行（仅城市名）一律追加。调用方负责 pushUndo。返回新增数。
+  // 追加组到当前列表：有坐标的行按 ±1e-4 去重（与从标记导入同口径，带时刻的行连时刻一起比），无坐标的行（仅城市名）一律追加。
+  // 调用方负责 pushUndo。返回新增数。
   function appendCityGroup(id) {
     if (!activeKey.value) return 0
     const g = findGroup(id); if (!g) return 0
-    const exists = (lon, lat) => stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
     for (const c of (g.cities || [])) {
-      const lon = num(c.lon), lat = num(c.lat)
-      if (lon != null && lat != null && exists(lon, lat)) continue
-      add.push({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon, lat })
+      const lon = num(c.lon), lat = num(c.lat), tMs = finOrNull(c.tMs)
+      if (lon != null && lat != null && stations.value.some((s) => sameSpot(s, lon, lat, tMs))) continue
+      add.push({ id: newId(), country: c.country || '', city: c.city || '', desig: c.desig || '', lon, lat, tMs, altM: finOrNull(c.altM) })
     }
     if (add.length) stations.value = [...stations.value, ...add]
     return add.length
@@ -424,26 +450,26 @@ export function usePerfTable() {
   // 从地图标记导入：地球站 name → 城市；点标记 → 仅经纬度。±1e-4 去重。返回新增条数。
   function importFromMarkers(points = [], mkStations = []) {
     if (!activeKey.value) return 0
-    const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
+    const exists = (lon, lat) => stations.value.some((s) => sameSpot(s, lon, lat, null))
     const add = []
-    for (const p of mkStations) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: (p.name || '').trim() || '地球站', desig: '', lon, lat }) }
-    for (const p of points) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: '', desig: '', lon, lat }) }
+    for (const p of mkStations) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: (p.name || '').trim() || '地球站', desig: '', lon, lat, tMs: null, altM: null }) }
+    for (const p of points) { const lon = num(p.lon), lat = num(p.lat); if (lon == null || lat == null || exists(lon, lat)) continue; add.push({ id: newId(), country: '', city: '', desig: '', lon, lat, tMs: null, altM: null }) }
     if (add.length) stations.value = [...stations.value, ...add]
     return add.length
   }
 
-  // 从地图航迹导入：每个航点 → 一座城市，城市名取「航迹名#序号」。±1e-4 去重（重复导入自动跳过）。返回新增条数。
+  // 从地图航迹导入：每个航点 → 一座城市，城市名取「航迹名#序号」；航点带排程时刻 / 实际高度的一并带进来（宿主按航迹排程算好，
+  // 导入时拷贝一份，之后改航迹不回灌 —— 与经纬度同一口径）。坐标 ±1e-4 且时刻一致才算重复（往返经过同一处的两行都留）。返回新增条数。
   function importFromTrajectories(trajectories = []) {
     if (!activeKey.value) return 0
-    const exists = (lon, lat) => stations.value.some((s) => Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
     for (const t of trajectories) {
       const nm = ((t && t.name) || '航迹').trim() || '航迹'
       const pts = (t && t.pts) || []
       pts.forEach((p, j) => {
-        const lon = num(p.lon), lat = num(p.lat)
-        if (lon == null || lat == null || exists(lon, lat)) return
-        add.push({ id: newId(), country: '', city: nm + '#' + (j + 1), desig: '', lon, lat })
+        const lon = num(p.lon), lat = num(p.lat), tMs = finOrNull(p.tMs)
+        if (lon == null || lat == null || stations.value.some((s) => sameSpot(s, lon, lat, tMs)) || add.some((s) => sameSpot(s, lon, lat, tMs))) return
+        add.push({ id: newId(), country: '', city: nm + '#' + (j + 1), desig: '', lon, lat, tMs, altM: finOrNull(p.altM) })
       })
     }
     if (add.length) stations.value = [...stations.value, ...add]
@@ -484,7 +510,12 @@ export function usePerfTable() {
 
   // 纯取值：给定天线上下文、选项与城市列表 → { rows, ctxInfo, ctxBeams }。不碰任何响应式状态，
   // 宿主按弹窗发来的城市与选项逐 key 调它；compute 只是把结果落进当前表的那层薄包装。
-  function computeRows(ctx, opts, stationList) {
+  // ctxAt（可选）：tMs → { basis, meta } | null —— 带时刻的行按那一刻的星位 / 天线基底取值（宿主按 useSatPerfTable.perfGeomOf 装，
+  //   同一时刻只解一次）；解不出（关联星该时刻无星历）的行照出、值留空。不给 ctxAt 时时刻只作一列读数。
+  // 行带高度（altM）→ 方向图取值、G/S 与 S/C 视角都按空中那一点（coverage.sampleBeamAt 的 hKm）。
+  // cache（可选）：{ map: Map } —— 带时刻行的取值与仿真时钟无关，宿主按「天线 + 设置 + 选项 + 星历」指纹持有一份，
+  //   指纹变了换新 map；命中的行直接拼行不再采方向图（时钟每拍只重算不带时刻的行）。本次没用到的条目清掉。
+  function computeRows(ctx, opts, stationList, ctxAt = null, cache = null) {
     if (!ctx) return { rows: [], ctxInfo: null, ctxBeams: [] }
     const o = opts || defaultOpts()
     const ctxBeamsOut = ctx.beams.map((b) => ({ bi: b.bi, seq: b.seq || b.bi + 1, name: b.name, peakDb: b.peakDb }))   // 供选项面板波束筛选列表（含波束名/峰值）；seq=原始波束号（删除波束后不重排）
@@ -500,41 +531,63 @@ export function usePerfTable() {
     const unitOf = (db) => (same || o.unit === 'dB') ? db : (o.unit === 'power' ? Math.pow(10, db / 10) : Math.pow(10, db / 20))
 
     const out = []; let no = 1
+    const atCache = new Map()                                                               // 时刻 → { basis, meta } | null（一次取值内同一时刻只解一次）
+    const rowCache = cache && cache.map instanceof Map ? cache.map : null, used = rowCache ? new Set() : null
     ;(stationList || []).forEach((s, si) => {
       if (!Number.isFinite(s.lon) || !Number.isFinite(s.lat)) return   // 空行/经纬度未填全：不参与取值（行号 stationNo 仍按输入区行计）
-      const geo = wantGeo ? dirToAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null
-      const gls = wantGS ? groundLookAngles(meta.satLon, meta.satLat || 0, meta.satAlt, s.lon, s.lat) : null   // 地球站看卫星的方位/仰角
+      const tMs = Number.isFinite(s.tMs) ? s.tMs : null, altM = Number.isFinite(s.altM) ? s.altM : null
+      const timed = tMs != null && typeof ctxAt === 'function'
+      const head = { satNo: ctx.satNo, satName: ctx.satName, antNo: ctx.antNo, antName: ctx.antName, stationNo: si + 1, country: s.country, city: s.city, desig: s.desig, tMs, altM, lon: s.lon, lat: s.lat }
+      const ck = timed && rowCache ? tMs + '|' + altM + '|' + s.lon + '|' + s.lat : null
+      if (ck) {
+        used.add(ck)
+        const hit = rowCache.get(ck)
+        if (hit) { for (const v of hit) out.push({ id: s.id + '#' + v.bi, no: no++, ...head, ...v.vals }); return }
+      }
+      const vals = ck ? [] : null
+      // 该行的星位 / 基底：带时刻且给了 ctxAt → 那一刻的；否则当前上下文。解不出 → 行照出、值留空
+      let B = basis, M = meta, blank = false
+      if (timed) {
+        let g = atCache.get(tMs)
+        if (g === undefined) { try { g = ctxAt(tMs) || null } catch { g = null } atCache.set(tMs, g) }
+        if (g && g.basis && g.meta) { B = g.basis; M = g.meta } else blank = true
+      }
+      const hKm = altM != null ? altM / 1000 : 0
+      const dOpts = hKm ? { ...dirOpts, hKm } : dirOpts, pOpts = hKm ? { ...parOpts, hKm } : parOpts
+      const geo = wantGeo && !blank ? dirToAzEl(M.satLon, M.satLat || 0, M.satAlt, s.lon, s.lat, hKm) : null
+      const gls = wantGS && !blank ? groundLookAngles(M.satLon, M.satLat || 0, M.satAlt, s.lon, s.lat, hKm) : null   // 地球站看卫星的方位/仰角
       for (const bm of ctx.beams) {
         if (beamAllow && !beamAllow.has(bm.bi)) continue                                     // 波束筛选：未选中的波束不进表
-        const d = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, want('ar') ? { ...dirOpts, wantComp: true } : dirOpts)
+        const d = blank ? null : sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, want('ar') ? { ...dOpts, wantComp: true } : dOpts)
         const dir = d ? d.db : null
         if (o.filterOn && (dir == null || dir < o.minDir)) continue                                       // 最低方向性过滤
-        const p = (want('param') || wantPt) ? sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, parOpts) : null
+        const p = !blank && (want('param') || wantPt) ? sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, pOpts) : null
         let param = p ? p.db : null
         if (param != null && rel) { const pk = refinedPeakDb(bm.beam, polD); if (pk != null) param -= pk }
         // Min/Max Pointing：误差区上真实重采样取极值（见 pointMinMax），以 param 为中心。
         // 输入按【全幅误差】解释：实际半幅 = 输入/2（与 SATSOFT 一致，输入 0.06 → 用 ±0.03）。
-        const pt = wantPt ? pointMinMax(bm.beam, igrid, basis, s.lon, s.lat, parOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2) : { min: null, max: null }
+        const pt = wantPt && !blank ? pointMinMax(bm.beam, igrid, B, s.lon, s.lat, pOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2) : { min: null, max: null }
         // Xpol C/I = 共极化/交叉极化 功率比（dB）
         let xpol = null
-        if (want('xpol')) { const a = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, { pol: 'P1', gainOffset: 0, pathLoss: 'none' }); const b = sampleBeamAt(bm.beam, igrid, basis, s.lon, s.lat, { pol: 'P2', gainOffset: 0, pathLoss: 'none' }); xpol = (a && b) ? a.db - b.db : null }
+        if (want('xpol') && !blank) { const a = sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, { pol: 'P1', gainOffset: 0, pathLoss: 'none', hKm }); const b = sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, { pol: 'P2', gainOffset: 0, pathLoss: 'none', hKm }); xpol = (a && b) ? a.db - b.db : null }
         // Slope = 方向性对指向角的梯度幅值（中心差分，δ=0.1°）
         let slope = null
-        if (want('slope') && dir != null) { const dd = 0.1; const ga = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(basis, dd, 0, 0), s.lon, s.lat, dirOpts); const ge = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(basis, 0, dd, 0), s.lon, s.lat, dirOpts); if (ga && ge) slope = Math.hypot(ga.db - dir, ge.db - dir) / dd }
+        if (want('slope') && dir != null) { const dd = 0.1; const ga = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(B, dd, 0, 0), s.lon, s.lat, dOpts); const ge = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(B, 0, dd, 0), s.lon, s.lat, dOpts); if (ga && ge) slope = Math.hypot(ga.db - dir, ge.db - dir) / dd }
         // AR 轴比：由复场相位算（预置烘焙天线无 comp → null）
         const ar = (want('ar') && d && d.comp) ? axialRatioDb(d.comp, icomp) : null
-        out.push({
-          id: s.id + '#' + bm.bi, no: no++,
-          satNo: ctx.satNo, satName: ctx.satName, antNo: ctx.antNo, antName: ctx.antName,
-          beamNo: bm.seq || bm.bi + 1, stationNo: si + 1,   // 波束号=原始 GRD 序号（删除波束后不重排）
-          country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat,
+        const v = {
+          beamNo: bm.seq || bm.bi + 1,   // 波束号=原始 GRD 序号（删除波束后不重排）
           scAz: geo ? geo.az : null, scEl: geo ? geo.el : null,
           gsAz: gls ? gls.az : null, gsEl: gls ? gls.el : null, u: d ? d.u : null, v: d ? d.v : null,
           dir, param: param == null ? null : unitOf(param), minPt: pt.min, maxPt: pt.max, xpol, slope, ar,
           inPattern: d != null
-        })
+        }
+        if (vals) vals.push({ bi: bm.bi, vals: v })
+        out.push({ id: s.id + '#' + bm.bi, no: no++, ...head, ...v })
       }
+      if (vals) rowCache.set(ck, vals)
     })
+    if (rowCache) for (const k of rowCache.keys()) if (!used.has(k)) rowCache.delete(k)
     return { rows: out, ctxInfo: { satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length }, ctxBeams: ctxBeamsOut }
   }
 
@@ -561,7 +614,13 @@ export function usePerfTable() {
     for (const k of Object.keys(stationsByAnt.value)) {
       const list = stationsByAnt.value[k]
       if (!list || !list.length) continue                                     // 空表不写进快照
-      sb[k] = list.map((s) => ({ country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat }))
+      // 时刻 / 高度只在有值时写（没有这两列的老表，快照与改前逐字相同）
+      sb[k] = list.map((s) => {
+        const o = { country: s.country, city: s.city, desig: s.desig, lon: s.lon, lat: s.lat }
+        if (Number.isFinite(s.tMs)) o.tMs = s.tMs
+        if (Number.isFinite(s.altM)) o.altM = s.altM
+        return o
+      })
     }
     return {
       stationsByAnt: sb,
@@ -569,7 +628,15 @@ export function usePerfTable() {
       optsTemplate: optsTemplate ? cloneOpts(optsTemplate) : null,
       filterDefault: 'off',   // 标记：本快照已按「仅覆盖波束默认关」存；没有它的老快照恢复时把 filterOn 一次性归零
       cityDefault: 'off',     // 同上：眼睛（cityShow）出厂关，没有标记的快照恢复时一次性归零
-      cityGroups: cityGroups.value.map((g) => ({ name: g.name, cities: (g.cities || []).map((c) => ({ country: c.country, city: c.city, desig: c.desig, lon: c.lon, lat: c.lat })) }))
+      cityGroups: cityGroups.value.map((g) => ({
+        name: g.name,
+        cities: (g.cities || []).map((c) => {
+          const o = { country: c.country, city: c.city, desig: c.desig, lon: c.lon, lat: c.lat }
+          if (Number.isFinite(c.tMs)) o.tMs = c.tMs
+          if (Number.isFinite(c.altM)) o.altM = c.altM
+          return o
+        })
+      }))
     }
   }
   function restoreState(st) {
@@ -577,7 +644,7 @@ export function usePerfTable() {
     clearHistory()
     activeKey.value = ''
     hidden.value = {}
-    const mkSt = (s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat) })
+    const mkSt = (s) => ({ id: newId(), country: s.country || '', city: s.city || '', desig: s.desig || '', lon: num(s.lon), lat: num(s.lat), tMs: finOrNull(s.tMs), altM: finOrNull(s.altM) })
     // 老快照（没有 filterDefault 标记）：filterOn:true 是旧出厂默认落下的、分不清是不是用户勾的 → 一次性归零；阈值保留
     const legacyFilter = st.filterDefault !== 'off', legacyCity = st.cityDefault !== 'off'
     const fill = (o) => { const f = fillOpts(o); if (legacyFilter) f.filterOn = false; if (legacyCity) f.cityShow = false; return f }
@@ -603,7 +670,7 @@ export function usePerfTable() {
     cityGroups.value = Array.isArray(st.cityGroups)
       ? st.cityGroups.filter((g) => g && Array.isArray(g.cities)).map((g) => ({
           id: gid(), name: String(g.name || '城市组'),
-          cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat) }))
+          cities: g.cities.map((c) => ({ country: c.country || '', city: c.city || '', desig: c.desig || '', lon: num(c.lon), lat: num(c.lat), tMs: finOrNull(c.tMs), altM: finOrNull(c.altM) }))
         }))
       : []
   }
@@ -622,7 +689,7 @@ export function usePerfTable() {
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, hasOpts, setOptsOf, visibleColumns, rememberOpts, resetOpts, cityShowOf, setCityShow,
     stationsOf, setStationsOf, setCityGroups,
     addEmptyStation, updateStation, removeStation, removeRow, clearStations, addStationsBulk, addStations, pasteBlock, importFromMarkers, importFromTrajectories,
-    setCities, applyCityGeo, applyCityGeoAll,
+    setTimeParser, setCities, applyCityGeo, applyCityGeoAll,
     cityGroups, addCityGroup, renameCityGroup, overwriteCityGroup, removeCityGroup, loadCityGroup, appendCityGroup,
     ctxBeams, beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
     pushUndo, dropUndo, undo, redo, compute, computeRows, getState, restoreState

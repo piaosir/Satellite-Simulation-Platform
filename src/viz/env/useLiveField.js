@@ -28,6 +28,8 @@
 
 import { ref, reactive, computed, watch } from 'vue'
 import { colorize, autoDomain, legendStops, bandEdges, valueAt, fmtValue, rasterCanvas, levelTicks } from './envRaster.js'
+// 航迹航点的排程时刻（导入航迹时每行带上「经过该点的时刻」；相对路径：node 单测直接 import 本文件时也解析得到）
+import { trajWaypointInfo } from '../../../packages/core/models/trajKinematics.mjs'
 import { MET_SCHEMES } from './metPalette.js'
 import { clock } from '../../stores/simClock.js'
 
@@ -105,6 +107,8 @@ const MIN_ELEVS = [
 //   mul   显示前的倍数（引擎里 rh/cloud 是 0~1 分数，表上按 % 读）
 const MET_COL_DEFS = [
   { key: 'name', label: '站名', w: 128 },
+  // 带时刻的行（航迹航点导入 / 手填）读【那一刻】的气象帧、和风值与卫星几何；不带时刻的行照旧跟时间轴当前时刻
+  { key: 'tMs', label: '时间', w: 148, time: true, tip: '该行的取值时刻（显示时区）：航迹航点为经过该点的时刻；留空跟随时间轴当前时刻' },
   { key: 'lon', label: '经度', w: 92, num: true, fix: 3, unit: '°E', tip: '东经为正，负值表示西经' },
   { key: 'lat', label: '纬度', w: 92, num: true, fix: 3, unit: '°N', tip: '北纬为正，负值表示南纬' },
   { key: 'altKm', label: '海拔', w: 72, num: true, fix: 3, unit: 'km', tip: 'ITU-R P.1511 地形高程（用于气体吸收的站点气压）' },
@@ -143,7 +147,7 @@ const MET_COL_DEFS = [
 ]
 // 列分组（仅供选项弹窗排版）
 const MET_COL_GROUPS = [
-  { title: '站点', keys: ['name', 'lon', 'lat', 'altKm'] },
+  { title: '站点', keys: ['name', 'tMs', 'lon', 'lat', 'altKm'] },
   { title: '几何', keys: ['elev', 'az', 'rangeKm'] },
   { title: '链路衰减', keys: ['totalDb', 'rainDb', 'cloudDb', 'gasDb', 'scintDb'] },
   { title: '降水与云', keys: ['rainMmH', 'ptype', 'cwat', 'cloud'] },
@@ -157,9 +161,11 @@ const PTYPE_ZH = { none: '无', rain: '雨', snow: '雪', ice: '冰', mixed: '�
 // 气象指标表窗口（src/perf/MetTableWin.vue）不实例化本模块，只要列定义与格式化口径 → 单独导出
 export { MET_COL_DEFS, MET_COL_GROUPS, MET_COLS_DEFAULT, PTYPE_ZH }
 /** 一格的显示文本（与复制/导出同口径：数字按列定义的小数位，取不到值给破折号）—— 表窗口与宿主同一份 */
-export function metCellText(r, c) {
+// fmtTime（可选）：时间列的格式化（窗口按主窗口的显示时区给；不给按 UTC ISO 出）
+export function metCellText(r, c, fmtTime) {
   if (c.key === 'ptype') return PTYPE_ZH[r.ptype] || (r.ptype ? String(r.ptype) : '')
   const v = r[c.key]
+  if (c.time) return Number.isFinite(v) ? (typeof fmtTime === 'function' ? fmtTime(v) : new Date(v).toISOString().slice(0, 19).replace('T', ' ') + 'Z') : ''
   if (!c.num) return v == null ? '' : String(v)
   const n = Number(v) * (c.mul || 1)
   return Number.isFinite(n) ? n.toFixed(c.fix == null ? 2 : c.fix) : '—'
@@ -266,6 +272,12 @@ export function useLiveField(host) {
   const satArgs = () => (satMode.value === 'geo'
     ? { satLon: parseFloat(satLon.value) }
     : (satPos.value ? { satPos: { lat: satPos.value.lat, lon: satPos.value.lon, altKm: satPos.value.altKm } } : {}))
+  // 任意时刻的目标星入参（站点表里带时刻的行用）：在轨卫星档按那一刻解算星下点；轨位 / 手动星下点两档与时刻无关
+  const satArgsAt = (tMs) => {
+    if (satMode.value !== 'sat') return satArgs()
+    const p = satId.value ? H.satPosAt?.(satId.value, tMs) : null
+    return p && Number.isFinite(p.lat) && Number.isFinite(p.lon) && Number.isFinite(p.altKm) ? { satPos: { lat: p.lat, lon: p.lon, altKm: p.altKm } } : {}
+  }
   // 几何变了就得重算整场。量化到 0.01°（≈1 km）再比：GEO 档几乎不动，LEO 档随时钟连续变，
   // 由在飞闸把连拍合并成「算得多快就刷多快」，不额外压节流（压了就成了错帧的画面）。
   const satKey = computed(() => {
@@ -516,27 +528,99 @@ export function useLiveField(host) {
   //   会把主进程排满，且排在队里的都是过期时刻。故在飞期间只记一个「还欠一次」，回来再补算 ——
   //   中间拍会被丢掉，但一定会落到最后那一拍。
   let siteInFlight = false, sitePending = false
+  // 带时刻行的读数与时间轴无关（帧、星位都取自己那一刻）：按「帧 + 几何 + 链路参数 + 点」记一份，时钟每拍只重取
+  // 不带时刻的那一组。重新取数（meta 换对象）整份作废；本次没用到的组清掉。星位按 (目标星, 时刻) 记，换星作废。
+  let timedCache = new Map(), timedCacheMeta = null
+  const satAtMemo = new Map()
+  function satArgsAtMemo(tMs) {
+    if (satMode.value !== 'sat') return satArgs()
+    const k = satId.value + '@' + tMs
+    let v = satAtMemo.get(k)
+    if (!v) { if (satAtMemo.size > 4096) satAtMemo.clear(); v = satArgsAt(tMs); satAtMemo.set(k, v) }
+    return v
+  }
+  // 离某时刻最近的气象帧（带时刻的站点行用；判据与 frameInfo 同：离最近帧不超过一个帧距算在取数时段内，不外推）
+  function frameNear(tMs) {
+    const m = meta.value
+    if (!m || !m.times || !m.times.length || !Number.isFinite(tMs)) return { idx: -1, t: 0, inRange: false }
+    const T = m.times
+    let best = 0, bd = Infinity
+    for (let i = 0; i < T.length; i++) { const d = Math.abs(T[i] - tMs); if (d < bd) { bd = d; best = i } }
+    const stepMs = T.length > 1 ? Math.abs(T[1] - T[0]) : 3600000
+    return { idx: best, t: T[best], inRange: bd <= stepMs }
+  }
   async function refreshSites(force) {
     if (!meta.value || !sites.value.length) { siteRows.value = []; siteMeta.value = null; return }
     if (!window.api?.weather?.points) { siteMsg.value = '气象数据通道不可用'; return }
     const fi = frameInfo.value
-    if (fi.idx < 0 || (!fi.inRange && !force)) { siteRows.value = []; siteMeta.value = null; siteMsg.value = '当前时刻不在已获取的气象时段内'; return }
+    const timed = sites.value.some((s) => Number.isFinite(s.tMs))
+    if (!timed && (fi.idx < 0 || (!fi.inRange && !force))) { siteRows.value = []; siteMeta.value = null; siteMsg.value = '当前时刻不在已获取的气象时段内'; return }
     if (siteInFlight && !force) { sitePending = true; return }
     siteInFlight = true
     const seq = ++siteSeq
     siteBusy.value = true
+    const common = { freq: parseFloat(freq.value), pol: pol.value, pathModel: pathModel.value, cloudMode: cloudMode.value, minElev: Number(minElev.value) }
+    const ptOf = (s) => ({ id: s.id, name: s.name, lat: Number(s.lat), lon: Number(s.lon) })
+    const metaOf = (r) => ({ frameT: r.frameT, model: r.model, cloudFellBack: r.cloudFellBack, ms: r.ms, minElev: r.minElev })
     try {
-      const r = await window.api.weather.points({
-        pts: sites.value.map((s) => ({ id: s.id, name: s.name, lat: Number(s.lat), lon: Number(s.lon) })),
-        frame: fi.idx,
-        ...satArgs(), freq: parseFloat(freq.value), pol: pol.value,
-        pathModel: pathModel.value, cloudMode: cloudMode.value, minElev: Number(minElev.value)
-      })
-      if (seq !== siteSeq) return                       // 快拖时间轴时慢的那次回来就丢掉
-      if (!r || r.error) { siteMsg.value = (r && r.error) || '站点读数计算失败'; siteRows.value = []; return }
-      siteRows.value = r.rows || []
-      siteMeta.value = { frameT: r.frameT, model: r.model, cloudFellBack: r.cloudFellBack, ms: r.ms, minElev: r.minElev }
-      siteMsg.value = ''
+      if (!timed) {
+        // 全是不带时刻的站：原口径 —— 一帧一次 IPC，跟时间轴当前时刻
+        const r = await window.api.weather.points({ pts: sites.value.map(ptOf), frame: fi.idx, ...satArgs(), ...common })
+        if (seq !== siteSeq) return                       // 快拖时间轴时慢的那次回来就丢掉
+        if (!r || r.error) { siteMsg.value = (r && r.error) || '站点读数计算失败'; siteRows.value = []; return }
+        siteRows.value = r.rows || []
+        siteMeta.value = metaOf(r)
+        siteMsg.value = ''
+        return
+      }
+      // 有带时刻的站（航迹航点 / 手填时刻）：按「气象帧 × 几何时刻」分组，每组一次 IPC。
+      //   不带时刻的行照旧取时间轴当前那一帧；带时刻的行取离它最近的一帧（超出已取时段如实报，不外推）；
+      //   在轨卫星档的星下点也取该行时刻，轨位 / 手动星下点两档几何与时刻无关、只按帧分组
+      const groups = new Map(), rows = []
+      const perTime = satMode.value === 'sat'
+      if (timedCacheMeta !== meta.value) { timedCache = new Map(); timedCacheMeta = meta.value }
+      const commonSig = JSON.stringify(common)
+      for (const s of sites.value) {
+        const own = Number.isFinite(s.tMs)
+        const fr = own ? frameNear(s.tMs) : fi
+        if (fr.idx < 0 || !fr.inRange) {
+          rows.push({ id: s.id, name: s.name, lat: Number(s.lat), lon: Number(s.lon), err: own ? '该时刻不在已获取的气象时段内' : '当前时刻不在已获取的气象时段内' })
+          continue
+        }
+        const key = fr.idx + '@' + (own ? (perTime ? String(s.tMs) : 't') : 'c')
+        let g = groups.get(key)
+        if (!g) { g = { own, frame: fr.idx, sat: own ? satArgsAtMemo(s.tMs) : satArgs(), pts: [] }; groups.set(key, g) }
+        g.pts.push(ptOf(s))
+      }
+      // 带时刻的组先查缓存；没命中的与「当前时刻」组并发发出（主进程照样排队，省的是逐个往返的等待）
+      const used = new Set(), todo = []
+      for (const g of groups.values()) {
+        if (g.own) {
+          g.ck = g.frame + '|' + JSON.stringify(g.sat) + '|' + commonSig + '|' + g.pts.map((p) => p.id + ':' + p.lon + ',' + p.lat + ':' + p.name).join(';')
+          used.add(g.ck)
+          const hit = timedCache.get(g.ck)
+          if (hit) { g.r = hit; continue }
+        }
+        todo.push(g)
+      }
+      const res = await Promise.all(todo.map((g) => window.api.weather.points({ pts: g.pts, frame: g.frame, ...g.sat, ...common }).catch((e) => ({ error: e.message || String(e) }))))
+      if (seq !== siteSeq) return
+      todo.forEach((g, i) => { g.r = res[i]; if (g.own && g.r && !g.r.error) timedCache.set(g.ck, g.r) })
+      for (const k of timedCache.keys()) if (!used.has(k)) timedCache.delete(k)
+      let first = null, err = ''
+      for (const g of groups.values()) {
+        const r = g.r
+        if (!r || r.error) { err = (r && r.error) || '站点读数计算失败'; continue }
+        for (const row of (r.rows || [])) rows.push(row)
+        if (!first) first = r
+      }
+      // 全部命中（时钟走了但只有带时刻的行）→ 行对象逐个没变就不换引用，免得每拍往表窗口整份重推
+      const prev = siteRows.value
+      const same = prev.length === rows.length && rows.every((r, i) => r === prev[i] || (r.err && prev[i] && prev[i].err === r.err && prev[i].id === r.id))
+      if (!same) siteRows.value = rows
+      const nm = first ? metaOf(first) : null
+      if (JSON.stringify(nm) !== JSON.stringify(siteMeta.value)) siteMeta.value = nm
+      siteMsg.value = err
     } catch (e) { if (seq === siteSeq) siteMsg.value = e.message || String(e) } finally {
       siteBusy.value = false; siteInFlight = false
       if (sitePending) { sitePending = false; refreshSites() }
@@ -550,7 +634,7 @@ export function useLiveField(host) {
     const byId = new Map(siteRows.value.map((r) => [r.id, r]))
     return sites.value.map((s) => {
       const r = byId.get(s.id)
-      const base = { id: s.id, name: s.name, lon: Number(s.lon), lat: Number(s.lat), src: s.src }
+      const base = { id: s.id, name: s.name, tMs: Number.isFinite(s.tMs) ? s.tMs : null, lon: Number(s.lon), lat: Number(s.lat), src: s.src }
       const o = siteObs.value[s.id]
       // 和风列一律加 o 前缀，与模式列分得开；差值列只有两边都在时才算，缺一个就留空（不拿 0 顶替）
       const obsFields = o && o.ok ? {
@@ -591,11 +675,11 @@ export function useLiveField(host) {
 
   /**
    * 从地图标记导入。三类各有各的取法：
-   *   pt   点标记 —— 无名字，用坐标当名字
+   *   pt   点标记 —— 起了名用名字，没起名用坐标当名字
    *   st   地球站 —— 自带名字
-   *   traj 航迹   —— ★ 航迹的顶点**不带时间戳**，故不能算「此刻这条船在哪」。
-   *        逐顶点各成一行是唯一诚实的做法：读出来的是「当前时刻，沿这条航线各点的衰减」，
-   *        正是航路规划要看的东西。不去凭空给顶点安一个时间再插值假装船在动。
+   *   traj 航迹   —— 逐顶点各成一行。航迹排得出时刻（起始 + 速度，或航点定了时刻；2026-09-24）时每行带上
+   *        「经过该点的时刻」（trajWaypointInfo），读数取那一刻的气象帧 / 和风值 / 卫星几何 —— 航路上每一点
+   *        在飞机 / 船真正到那儿时的衰减；排不出时刻的航迹照旧不带，读数是「当前时刻沿这条航线各点的衰减」。
    *   mk   点标记 + 地球站一次导入（「导入标记…」弹窗那条路），sel = { pts, sts }
    * sel：只导入这些 —— pt / st 给 id 集合（Set 或数组），traj 给一条航迹的 id，mk 给 { pts, sts } 两个集合；
    *      不给（null）＝该类全部。★ 弹窗里勾了才导，不再一键把地图上的全部标记倒进表里。
@@ -606,17 +690,27 @@ export function useLiveField(host) {
     if (!M) { siteMsg.value = '读取地图标记失败' ; return }
     const within = (set, id) => set == null || (set instanceof Set ? set.has(id) : Array.isArray(set) ? set.includes(id) : set === id)
     const add = []
-    const takePts = (set) => { for (const p of (M.pts || [])) if (within(set, p.id)) add.push({ lon: p.lon, lat: p.lat, name: fmtLL(p.lon, p.lat), src: 'pt' }) }
+    const takePts = (set) => { for (const p of (M.pts || [])) if (within(set, p.id)) add.push({ lon: p.lon, lat: p.lat, name: String(p.name || '').trim() || fmtLL(p.lon, p.lat), src: 'pt' }) }
     const takeSts = (set) => { for (const s of (M.sts || [])) if (within(set, s.id)) add.push({ lon: s.lon, lat: s.lat, name: s.name || '地球站', src: 'st' }) }
     if (kind === 'pt') takePts(sel)
     if (kind === 'st') takeSts(sel)
     if (kind === 'mk') { takePts(sel && sel.pts); takeSts(sel && sel.sts) }
+    // 航迹：航迹排得出时刻（起始 + 速度，或航点定了时刻）时每个航点带上「经过该点的时刻」，读数取那一刻；
+    // 排不出时刻的航迹照旧不带（读数跟时间轴当前时刻，与改前一样）
     if (kind === 'traj') for (const t of (M.trs || [])) {
       if (!within(sel, t.id)) continue
       const pts = t.pts || []
-      pts.forEach((p, i) => add.push({ lon: p.lon, lat: p.lat, name: `${t.name || '航迹'} #${i + 1}`, src: 'traj' }))
+      let info = []
+      try { info = trajWaypointInfo(t) } catch { info = [] }
+      pts.forEach((p, i) => {
+        const o = { lon: p.lon, lat: p.lat, name: `${t.name || '航迹'} #${i + 1}`, src: 'traj' }
+        const e = info[i]
+        if (e && Number.isFinite(e.tMs)) o.tMs = Math.round(e.tMs)
+        add.push(o)
+      })
     }
-    const key = (o) => Math.round(o.lon * 100) + ',' + Math.round(o.lat * 100)
+    // 去重：同坐标（0.01° 内）且同时刻（都没有，或同一分钟）才算重复 —— 往返经过同一处、时刻不同的两行都留
+    const key = (o) => Math.round(o.lon * 100) + ',' + Math.round(o.lat * 100) + (Number.isFinite(o.tMs) ? '@' + Math.round(o.tMs / 60000) : '')
     const have = new Set(sites.value.map(key))
     let n = 0
     for (const o of add) {
@@ -624,7 +718,12 @@ export function useLiveField(host) {
       have.add(key(o)); sites.value.push({ id: nextSiteId(), ...o }); n++
     }
     siteMsg.value = n ? `导入 ${n} 站` + (add.length > n ? `（${add.length - n} 个坐标重复，已跳过）` : '') : '无可导入的标记'
-    if (n) refreshSites()
+    // 带时刻的航点进来了 → 读数表把「时间」列亮出来（只在这次确有时刻时置真，用户关掉的不再自作主张打开）
+    if (n && add.some((o) => Number.isFinite(o.tMs)) && !siteCols.value.includes('tMs')) {
+      const next = new Set(siteCols.value); next.add('tMs')
+      siteCols.value = MET_COL_DEFS.filter((c) => next.has(c.key)).map((c) => c.key)
+    }
+    if (n) { refreshSites(); if (obsArmed.value) refreshObs(false) }
   }
 
   function toggleSiteCol(k) {
@@ -637,13 +736,7 @@ export function useLiveField(host) {
   function resetSiteCols() { siteCols.value = [...MET_COLS_DEFAULT] }
 
   /** 一格的显示文本（与复制/导出同口径：数字按列定义的小数位，取不到值给破折号） */
-  function metText(r, c) {
-    if (c.key === 'ptype') return PTYPE_ZH[r.ptype] || (r.ptype ? String(r.ptype) : '')
-    const v = r[c.key]
-    if (!c.num) return v == null ? '' : String(v)
-    const n = Number(v) * (c.mul || 1)
-    return Number.isFinite(n) ? n.toFixed(c.fix == null ? 2 : c.fix) : '—'
-  }
+  function metText(r, c) { return metCellText(r, c, H.fmtTime) }
   /** 站点表 → TSV（直接粘进 Excel）。表头带单位；行序由调用方给（屏幕上排过序的那一份） */
   function metTsv(rows) {
     const cols = metCols.value
@@ -667,26 +760,40 @@ export function useLiveField(host) {
     // 取值时刻：优先用已取回栅格的那一帧（两个数据源摆在同一张表里，必须对齐同一时刻）
     const fi = frameInfo.value
     const tMs = (meta.value && fi.idx >= 0 && fi.inRange) ? fi.t : clock.tMs
+    // 带时刻的站（航迹航点）各取自己那一刻（同样先对齐到最近的气象帧）：按整点分组，每组一次 IPC；
+    // 买数据的时间跨度也要盖到最晚那个航点（逐小时预报最长 240 h，更远的主进程照实报取不到）
+    const tOf = (s) => { if (!Number.isFinite(s.tMs)) return tMs; const f = frameNear(s.tMs); return f.idx >= 0 && f.inRange ? f.t : s.tMs }
+    const groups = new Map()
+    for (const s of pts) {
+      const t = tOf(s), k = Number.isFinite(s.tMs) ? 'h' + Math.floor(t / 3600000) : 'c'
+      let g = groups.get(k)
+      if (!g) { g = { tMs: t, own: Number.isFinite(s.tMs), pts: [] }; groups.set(k, g) }
+      g.pts.push(s)
+    }
     const sp = timeSpan.value
-    const horizonMs = sp ? Math.max(0, sp.t1 - Date.now()) : 0
+    let horizonMs = sp ? Math.max(0, sp.t1 - Date.now()) : 0
+    for (const g of groups.values()) if (g.own) horizonMs = Math.max(horizonMs, g.tMs - Date.now())
     const seq = ++obsSeq
     if (allowFetch) { obsBusy.value = true; siteMsg.value = `获取和风数据…（${pts.length} 站，逐站各一次请求）` }
     try {
-      const r = await window.api.weather.obs({
-        pts: pts.map((s) => ({ id: s.id, lat: Number(s.lat), lon: Number(s.lon) })),
-        tMs, allowFetch: !!allowFetch, horizonMs,
-        ...satArgs(), freq: parseFloat(freq.value), pol: pol.value,
-        pathModel: pathModel.value, cloudMode: cloudMode.value
-      })
-      if (seq !== obsSeq) return                        // 快拖时间轴时慢的那次回来就丢掉
-      if (!r || r.error) { if (allowFetch) siteMsg.value = (r && r.error) || '和风数据获取失败'; return }
       const m = {}
-      let ok = 0
-      for (const row of (r.rows || [])) { m[row.id] = row; if (row.ok) ok++ }
+      let ok = 0, n = 0, tAt = 0
+      for (const g of groups.values()) {
+        const r = await window.api.weather.obs({
+          pts: g.pts.map((s) => ({ id: s.id, lat: Number(s.lat), lon: Number(s.lon) })),
+          tMs: g.tMs, allowFetch: !!allowFetch, horizonMs,
+          ...(g.own ? satArgsAt(g.tMs) : satArgs()), freq: parseFloat(freq.value), pol: pol.value,
+          pathModel: pathModel.value, cloudMode: cloudMode.value
+        })
+        if (seq !== obsSeq) return                      // 快拖时间轴时慢的那次回来就丢掉
+        if (!r || r.error) { if (allowFetch) siteMsg.value = (r && r.error) || '和风数据获取失败'; continue }
+        for (const row of (r.rows || [])) { m[row.id] = row; n++; if (row.ok) ok++ }
+        if (!g.own && ok) tAt = r.t || g.tMs
+      }
       siteObs.value = m
-      obsAt.value = ok ? (r.t || tMs) : 0
+      obsAt.value = ok ? (tAt || tMs) : 0
       if (ok) obsArmed.value = true
-      if (allowFetch) siteMsg.value = `和风数据 ${ok}/${(r.rows || []).length} 站` + (ok < (r.rows || []).length ? '（其余见备注列）' : '')
+      if (allowFetch) siteMsg.value = `和风数据 ${ok}/${n} 站` + (ok < n ? '（其余见备注列）' : '')
     } catch (e) { if (allowFetch) siteMsg.value = e.message || String(e) } finally { if (allowFetch) obsBusy.value = false }
   }
   const fetchObsAll = () => refreshObs(true)
