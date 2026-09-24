@@ -7,9 +7,9 @@
 //
 // 报告语言不在这里选：它跟随平台语言（设置▸语言），屏幕上的详细预算与导出的文件一起切换。
 // 在这儿再放一个开关就会出现「屏幕是中文、导出是英文」。
-import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
+import { reactive, ref, computed, watch, onBeforeUnmount, inject } from 'vue'
 import Icon from './Icon.vue'
-import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
+import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate, LB_REPORT_LAYOUT_KEY } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
 import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
 // 台标的栅格化与存取（2026-09-16 从本文件搬进 shared/reportLogo.js，零行为改动）：
@@ -38,6 +38,9 @@ const props = defineProps({
   vizAvailable: { type: Boolean, default: true },
   // 有「列入」条款的链路数：为 0 时「含服务等级指标（SLA）」整项不出现
   slaCount: { type: Number, default: 0 },
+  // 有卫星本体与天线布局数据（模型绑定）的星数：为 0 时「含卫星本体与天线布局」整项不出现。
+  // 宿主一般不传——useLbReport 打开对话框时数好了经 provide 送来（LB_REPORT_LAYOUT_KEY），两者取大
+  layoutCount: { type: Number, default: 0 },
   storeKey: { type: String, default: 'lb' },
   busy: { type: Boolean, default: false },
   // { text, done, total }：导出过程中的进度，由上层逐条链路推进
@@ -67,7 +70,9 @@ const font = reactive({ ...REPORT_FONT_DEF })
 const fontOpts = ref({ latin: [], cjk: [] })   // 打开时再列（要探一遍本机装了哪些字体）
 
 const doc = reactive(defaultDocInfo(scheme.value, props.satName, props.lang, props.band))
-const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true })
+const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true, layout: true })
+const layoutInj = inject(LB_REPORT_LAYOUT_KEY, null)
+const layoutCount = computed(() => Math.max(props.layoutCount || 0, (layoutInj && layoutInj.count) || 0))
 
 // —— 右上角 logo ——
 // 贴在三份文件的右上角：Excel 每张工作表，Word 与 PDF 的每一页页眉。选图 → PNG dataURL 的
@@ -127,7 +132,7 @@ function loadSaved() {
   if (ttl && ttl.title) doc.title = (ttl.title === ttl.titleDefault) ? base.title : ttl.title
   try {
     const o = JSON.parse(localStorage.getItem(OPT_KEY.value) || 'null')
-    if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false; opt.sla = o.sla !== false }
+    if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false; opt.sla = o.sla !== false; opt.layout = o.layout !== false }
   } catch (e) { /* 用默认 */ }
   if (!props.vizAvailable) opt.figures = false
   if (!props.slaCount) opt.sla = false
@@ -146,7 +151,7 @@ function persist() {
     // 标题另存（两份报告的自动命名各走各的），故这一份里把它剔掉。
     localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
     localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: defTitle() }))
-    localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
+    localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla, layout: opt.layout }))
     localStorage.setItem(FONT_KEY.value, JSON.stringify(normReportFontSel(font)))
   } catch (e) { /* 存不下不影响导出 */ }
 }
@@ -191,7 +196,9 @@ function submit() {
     doc: Object.assign(JSON.parse(JSON.stringify(doc)), { fonts: composeReportFonts(font) }),
     formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSla.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
     withFigures: !isSla.value && !!opt.figures && props.vizAvailable,
-    withSla: isSla.value ? true : (!!opt.sla && props.slaCount > 0)
+    withSla: isSla.value ? true : (!!opt.sla && props.slaCount > 0),
+    // 第 5 章只进 Word / PDF（Excel 不出这一章）；SLA 报告没有这一章
+    withLayout: !isSla.value && !!opt.layout && layoutCount.value > 0 && (opt.docx || opt.pdf)
   })
 }
 const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
@@ -280,6 +287,11 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
           <!-- 一条条款都没勾时整项不出现：留一个永远点不动的灰选项在这儿，只会让人反复去点它 -->
           <label v-if="!isSla && slaCount" class="rd-ck" :title="slaHint">
             <input v-model="opt.sla" type="checkbox" :disabled="busy" />{{ t('含服务等级指标（SLA）') }}
+          </label>
+          <!-- 同上：本份报告没有一颗星有模型绑定时整项不出现；只进 Word / PDF，两者都没勾时灰掉 -->
+          <label v-if="!isSla && layoutCount" class="rd-ck" :class="{ off: !opt.docx && !opt.pdf }"
+            :title="t('Word / PDF 另出第 5 章「卫星本体与天线布局」：按模型绑定出三视图、质量特性表与挂点布局表（Excel 不含；STK 本机模型不出图）')">
+            <input v-model="opt.layout" type="checkbox" :disabled="busy || (!opt.docx && !opt.pdf)" />{{ t('含卫星本体与天线布局') }}
           </label>
         </div>
         <!-- 分节读数：各模块几条链路（模块名单独成节点，DOM 翻译按整串查表才对得上） -->

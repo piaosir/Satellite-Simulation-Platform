@@ -885,6 +885,7 @@ const gridVals = computed(() => {
 //   链路组＝只剩传播与设计条件（雨强 / 可用度）。
 const _STN_GROUP = { basebandId: 'ref',
   satelliteId: 'sat', G_Ts: 'sat', rxEIRP: 'sat',
+  satSunIntrusion: 'sat', satSunGtLoss: 'sat',   // 星侧太阳侵入（D11）：随上行 G/T 同属卫星列组，列序见 regenParams
   stationId: 'es',
   earthStationLocation: 'es', longitude: 'es', latitude: 'es', minElevation: 'es', slantRange: 'es', altitude: 'es',
   rxEarthStationLocation: 'es', rxLongitude: 'es', rxLatitude: 'es', rxMinElevation: 'es', rxSlantRange: 'es', rxAltitude: 'es',
@@ -2089,6 +2090,7 @@ async function computeMissing(step) {
 let _selSnap = null   // 导出前各模块的选中行：取图会逐条切过去，结束后还原
 const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
+  bodyLayout: () => ({ ns: LIB_NS, sats: sceneSats.value }),   // 第 5 章：本配置所用卫星（配置级 / 链路级 / 自动几何下的星间两端，口径同封面卫星名）
   orbitType: 'REGEN',
   regenMode: () => linkMode.value || 'uplink',
   fieldGroups: FIELD_GROUPS,

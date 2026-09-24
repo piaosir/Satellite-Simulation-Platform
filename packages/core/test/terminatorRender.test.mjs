@@ -6,6 +6,7 @@
 // 3D 球冠错扣在日下点而不是反日下点。这四种错都能在 Node 里用点判定逐点抓出来，
 // 判据一律取独立写的球面公式 sin h = sinφ·sinφs + cosφ·cosφs·cos(λ−λs)，不复用被测中间量。
 import * as THREE from 'three'
+import { geoContains } from 'd3-geo'
 import { solarGeometry, terminatorFlat } from '../../../src/viz/terminator.js'
 
 let pass = 0, fail = 0
@@ -203,6 +204,39 @@ const DATES = [
   // 首版参数的反向证伪：这条不变式必须真的能拦住它，否则测试形同虚设
   const oldMin = capFloor(1.0002, 96, 48)
   ok('反向证伪：首版 R=1.0002+96×48 会被拦下', oldMin < LAND_MAX, `首版实测壳最低 ${oldMin.toFixed(6)} < ${LAND_MAX}`)
+}
+
+// ---- E. 2D 投影档（d3 球面多边形）的夜区定向：内点取反日下点 ----
+// 投影档把晨昏线整圈交给 d3 做球面裁剪，环的绕向由「内点」定（flatCoverage 的 orientRings：geoContains 不含内点就整环翻过来）。
+// 内点必须恒在夜里 —— 反日下点（太阳高度 −90°）。v1.4.13 取暗极附近 (0°, ±89°)：春秋分前后赤纬不到 1°，
+// 极夜只剩极点一小圈，那个点常落在昼侧，整片阴影就填到白天那半边（2026-09-24 实测 Robinson / 方位等距全反）。
+// 这里照 drawTerminator 投影分叉的口径搭环（经度折回 ±180、首尾闭合），用独立球面公式逐点判。
+{
+  const orient = (rings, insidePt) => (geoContains({ type: 'Polygon', coordinates: rings }, insidePt) ? rings : rings.map((r) => r.slice().reverse()))
+  const judge = (d, insidePt) => {
+    const sub = solarGeometry(d).sub
+    const ring = terminatorFlat(d, { steps: 1440, lon0: LON0 }).line.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]])
+    const poly = { type: 'Polygon', coordinates: orient([ring.concat([ring[0]])], insidePt) }
+    let bad = 0, n = 0
+    for (let lat = -84; lat <= 84; lat += 6) {
+      for (let lon = -177; lon < 180; lon += 6) {
+        const h = sunElev(lat, lon, sub)
+        if (Math.abs(h) < 1) continue   // 晨昏线两侧 ±1° 内不判（1440 段折线逼近）
+        n++
+        if (geoContains(poly, [lon, lat]) !== (h < 0)) bad++
+      }
+    }
+    return { bad, n }
+  }
+  const anti = (d) => { const s = solarGeometry(d).sub; return [((s.lon % 360) + 360) % 360 - 180, -s.lat] }
+  const EQX = [...DATES, U(2026, 9, 24, 11, 0), U(2026, 3, 21, 3, 30)]
+  let worst = 0, tot = 0
+  for (const d of EQX) { const r = judge(d, anti(d)); worst = Math.max(worst, r.bad); tot += r.n }
+  ok('投影档夜区多边形：内点取反日下点，至日 / 分点 / 分点前后一天全判对（覆盖域 = h<0）', worst === 0, `${EQX.length} 个时刻、${tot} 点，错判最多 ${worst}`)
+  // 反向证伪：旧内点在秋分后一天必须真的判反 —— 否则这一段抓不到那个 bug
+  const d0 = U(2026, 9, 24, 11, 0), dp = terminatorFlat(d0, { steps: 1440, lon0: LON0 }).darkPole
+  const old = judge(d0, [0, dp > 0 ? 89 : -89])
+  ok('反向证伪：旧内点 (0°, ±89°) 在 2026-09-24 11:00Z 把夜区整片判反', old.bad > old.n * 0.9, `${old.bad}/${old.n} 点判反`)
 }
 
 console.log(`\n晨昏线渲染判定：${pass} passed, ${fail} failed`)

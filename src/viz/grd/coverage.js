@@ -66,17 +66,24 @@ export function tiltBasis(basis, epsDeg, phiDeg = 0) {
 // 同一旋转作用到该波束 basis 的 x/y/z（绕过卫星位置 S 的轴，S 不变）。对天底波束 ≈ 绕波束自身扰动；
 // 对偏轴波束，Yaw 让波束沿弧平移（boresight 真位移 ~离轴角×yaw），绕波束自转无此效果——这是与旧实现的关键差异。
 // 顺序 Yaw→El→Az（小角近似可交换）。Rodrigues 旋转保持正交归一。
+// 「姿态 + 挂点」档（basis.body 在，见 beamBasisFrom 的 att 分支）：体轴直接取真实本体三轴 —— z_sc = 本体 +Z，
+//   x_sc = −本体 X、y_sc = −本体 Y（对地定向的赤道 GEO 上本体 X = 东、Y = 南，于是与下面现构的 西 / 北 两轴逐位同向，
+//   手动档与 att 档的误差口径在那里零跳变）；偏航导引 / 对日 / 惯性这类律下误差就绕真实本体轴施加（随 ψ 转）。
 export function perturbSpacecraft(basis, azDeg = 0, elDeg = 0, yawDeg = 0) {
   if (!azDeg && !elDeg && !yawDeg) return basis
   const { S } = basis
-  const zsc = nrm(sc(S, -1))                                   // 天底：卫星指向地心
-  let xsc = crs([0, 0, 1], zsc)
-  xsc = (Math.hypot(xsc[0], xsc[1], xsc[2]) > 1e-9) ? nrm(xsc) : [1, 0, 0]   // 极区退化保护
-  const ysc = crs(zsc, xsc)
+  const bd = basis.body
+  const hasBody = !!(bd && isAxis(bd.x) && isAxis(bd.y) && isAxis(bd.z))
+  const zsc = hasBody ? nrm(bd.z) : nrm(sc(S, -1))             // 天底：卫星指向地心
+  let xsc = hasBody ? nrm(sc(bd.x, -1)) : crs([0, 0, 1], zsc)
+  if (!hasBody) xsc = (Math.hypot(xsc[0], xsc[1], xsc[2]) > 1e-9) ? nrm(xsc) : [1, 0, 0]   // 极区退化保护
+  const ysc = hasBody ? nrm(sc(bd.y, -1)) : crs(zsc, xsc)
   const rod = (v, k, ang) => { const c = Math.cos(ang), s = Math.sin(ang), kv = crs(k, v); return add(add(sc(v, c), sc(kv, s)), sc(k, dt(k, v) * (1 - c))) }
   const rot = (v) => { let r = v; if (yawDeg) r = rod(r, zsc, yawDeg * D2R); if (elDeg) r = rod(r, xsc, elDeg * D2R); if (azDeg) r = rod(r, ysc, azDeg * D2R); return r }
   return { S, x: rot(basis.x), y: rot(basis.y), z: rot(basis.z) }
 }
+// 有限、非零的三元数组（本体轴入参的把关：宿主给坏了就当没给，退回现构体轴）
+const isAxis = (v) => !!(v && v.length === 3 && Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]) && (v[0] || v[1] || v[2]))
 
 // 天线姿态基底：默认 boresight=星下点(satLon,boreLat)；可设 boreLon/boreLat/yaw（WGS84）。
 // satLat/altKm = 卫星真实纬度/轨道高度（默认 GEO 赤道）：足迹大小随高度变，LEO 远小于 GEO。
@@ -107,6 +114,51 @@ export function antennaBasisEcef(S, T, yawDeg = 0) {
     const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2
   }
   return { S, x, y, z }
+}
+
+// 「姿态 + 挂点」指向（boreType='att'，DESIGN2 §4 / D1）：天线三轴直接由本体姿态 × 挂点给出，不再从某个目标点现构。
+//   zE  = 挂点视轴（标准 ECEF 单位矢量，Z 为极轴）；upE = 挂点 up（同系）。
+//   D1「up ↔ 天线 +y」：y = up 在视轴法平面上的投影（归一），x = y × z（与既有约定 y = z × x 等价，右手系不变）。
+//   up 与视轴平行（投影退化）→ 退回与 antennaBasisEcef 同一套极轴参考（x = ẑ × z，极区再退 x̂ × z），基底始终正交归一。
+//   yawDeg = 天线设置里的「旋转 Rot」，在这一档是【附加】钟向偏置：套与其余四个构造函数逐字相同的转法，偏置 0 时基底 = 挂点系本身。
+// 零跳变（单测 modelAttPointing）：赤道 GEO「nadir 律 + 视轴本体 +Z + up 本体 −Y」与 antennaBasisAzEl(0,0) 的 x/y/z 逐分量 < 1e-12
+//   （本体 −Y 在 GEO 顺行即正北 = 手动天底的 y；x = 北 × 天底 = 西，与手动档同）。
+export function basisFromAxes(S, zE, upE, yawDeg = 0) {
+  const z = nrm(zE)
+  let x
+  let y = upE ? sub(upE, sc(z, dt(upE, z))) : null
+  if (y && Math.hypot(y[0], y[1], y[2]) > 1e-9) {
+    y = nrm(y)
+    x = crs(y, z)
+  } else {
+    x = crs([0, 0, 1], z)
+    x = (Math.hypot(x[0], x[1], x[2]) > 1e-9) ? nrm(x) : nrm(crs([1, 0, 0], z))
+    y = crs(z, x)
+  }
+  if (yawDeg) {
+    const c = Math.cos(yawDeg * D2R), sn = Math.sin(yawDeg * D2R)
+    const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2
+  }
+  return { S, x, y, z }
+}
+// 「姿态 + 挂点」读数（面板 boreTip 用，只出数字）：视轴在星下天底系里的 igrid 6 方位 / 俯仰（与「本体固定」档的 Az/El 同一口径），
+// 以及天线 x 轴相对 azel 档参考轴 x_ref = nrm(ẑ × z) 的钟向角 ψ（°，(−180, 180]；含「旋转 Rot」偏置）。
+// 三个数正是 D9 的等效手动指向：antennaBasisAzEl(satLon, satLat, satAlt, az, el, ψ) 与该基底同一基底。
+// 视轴平行地轴（x_ref 无定义）时 ψ 给 null。
+export function attAxesReadout(meta, basis) {
+  if (!meta || !basis || !basis.z) return null
+  const nb = antennaBasis(meta.satLon, meta.satLon, meta.satLat || 0, 0, meta.satLat || 0, meta.satAlt)
+  const ae = dirAzElAbout(nb, basis.z)
+  const z = basis.z
+  let rx = -z[1], ry = z[0]
+  const rl = Math.hypot(rx, ry)
+  let psi = null
+  if (rl > 1e-12) {
+    rx /= rl; ry /= rl
+    const yr = [-z[2] * ry, z[2] * rx, z[0] * ry - z[1] * rx]          // y_ref = z × x_ref（x_ref.z = 0）
+    psi = Math.atan2(dt(basis.x, yr), basis.x[0] * rx + basis.x[1] * ry) * R2D
+  }
+  return { az: ae.az, el: ae.el, psi }
 }
 
 // 方向式天线姿态：boresight 由「相对星下天底的 az/el 方向」直接给定（igrid6 约定），
@@ -234,7 +286,19 @@ export function azElGround(satLon, satLat, altKm, azDeg, elDeg) {
 //   meta — 该时刻源星的 {satLon, satLat, satAlt}
 //   st   — 天线设置（boreType / boreLon,boreLat / boreAz,boreEl / yaw / boreOff* / borePt*）
 //   T    — sat/satoff 模式的目标星 ECEF（km）；解析不到给 null → 退回天底（不让覆盖凭空消失）
-export function beamBasisFrom(meta, st, T = null) {
+//   att  — att 模式（姿态 + 挂点）宿主解出的 { z, up }（标准 ECEF 单位矢量，见 basisFromAxes）；null → 退回天底（与 sat 档同口径）
+//          可另带 body:{X,Y,Z}（本体三轴，同系）→ 挂到基底的 body 上，perturbSpacecraft 据此绕真实本体轴施加指向误差
+export function beamBasisFrom(meta, st, T = null, att = null) {
+  if (st.boreType === 'att') {
+    if (att && att.z) {
+      const b = basisFromAxes(geodeticToEcef(meta.satLon, meta.satLat || 0, meta.satAlt), att.z, att.up, st.yaw || 0)
+      const bd = att.body
+      const bx = bd && (bd.X || bd.x), by = bd && (bd.Y || bd.y), bz = bd && (bd.Z || bd.z)
+      if (isAxis(bx) && isAxis(by) && isAxis(bz)) b.body = { x: [bx[0], bx[1], bx[2]], y: [by[0], by[1], by[2]], z: [bz[0], bz[1], bz[2]] }
+      return b
+    }
+    return antennaBasisAzEl(meta.satLon, meta.satLat || 0, meta.satAlt, 0, 0, st.yaw || 0)
+  }
   if (st.boreType === 'sat' || st.boreType === 'satoff') {
     if (T) {
       const nb = antennaBasisEcef(geodeticToEcef(meta.satLon, meta.satLat || 0, meta.satAlt), T, st.yaw || 0)
@@ -251,17 +315,27 @@ export function beamBasisFrom(meta, st, T = null) {
   return antennaBasis(meta.satLon, st.boreLon == null ? meta.satLon : st.boreLon, st.boreLat || 0, st.yaw || 0, meta.satLat || 0, meta.satAlt)
 }
 
+// 逐天线的「用户改指向」计数（按 settings 对象记，不进存盘 cfg）：useGrdCoverage.persistActive 发现指向字段真的变了才 +1 ——
+// 面板改值 / 切档 / 拖拽都走那里；tickLive · moveCoverage 的程序性改写（不锁定 geo 随星平移、锁定 azel 钉成 geo）先改 settings
+// 再把面板同步成同样的值，回存时看不出差别，不 +1。对星性能表的时段扫描拿它判「扫完之后用户动过指向没有」（useSatPerfTable）：
+// 只比数值的话，不锁定 geo 那一路逐拍 toFixed(4) 的舍入会慢慢漂（慢漂的星每拍位移小于舍入步长时整段被吞），任何容差都挡不住。
+export const POINT_KEYS = ['boreType', 'boreLon', 'boreLat', 'boreAz', 'boreEl', 'yaw', 'boreLock', 'boreSat', 'boreOffAz', 'boreOffEl', 'borePtLon', 'borePtLat', 'borePtAlt', 'boreMount']
+const PT_REV = new WeakMap()
+export const pointRevOf = (st) => (st && typeof st === 'object' && PT_REV.get(st)) || 0
+export function bumpPointRev(st) { if (st && typeof st === 'object') PT_REV.set(st, pointRevOf(st) + 1) }
+
 // 「源星从 meta0 走到 pos 之后，指向字段该变成什么」—— useGrdCoverage.moveCoverage 的纯函数版。
 // 三条口径与实时路逐字一致：
 //   · 锁定（boreLock ≠ false）：geo 原地不动（basis 按新星位重算 ＝ 天线重新指向同一地面点）；
 //     azel 若有地面落点则钉成 geo（默认天底 azel(0,0) 就此锁定在【时窗起点】的星下点）；越地平的深空指向保持 azel。
 //   · 不锁定 + geo：boresight 随星下点平移，保留相对经纬偏置。
 //   · 对星三型（sat/satoff/point）：一律不动 —— 目标星自带星历，空间点是钉死的定点。
+//   · 姿态 + 挂点（att）：一律不动 —— 视轴由本体姿态律按时刻给出（beamBasisFrom 的 att 入参），不是存下来的指向字段。
 // ★ 与实时路唯一的差别：实时是逐帧增量累加，这里是相对【起点 meta0】的一次性总量。geo 平移量
 //   telescoping 相等 ⇒ 两者等价；只有纬度撞上 ±89.9 夹紧时会分叉（极区退化的边角）。
 export function boreSettingsAtPos(st, meta0, pos) {
   const locked = st.boreLock !== false
-  if (st.boreType === 'sat' || st.boreType === 'satoff' || st.boreType === 'point') return st
+  if (st.boreType === 'sat' || st.boreType === 'satoff' || st.boreType === 'point' || st.boreType === 'att') return st
   if (locked) {
     if (st.boreType !== 'azel') return st
     const g = azElGround(meta0.satLon, meta0.satLat || 0, meta0.satAlt, st.boreAz || 0, st.boreEl || 0)

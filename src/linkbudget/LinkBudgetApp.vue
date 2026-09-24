@@ -178,7 +178,7 @@ const curSat = computed(() => resolveSat(satId.value))
 const satSelectOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
 // —— 卫星的指定方式（场景级，随场景存档；三个链路预算窗口同一套；开关在链路表节头）——
 //   'config' 统一指定：本配置只用一颗卫星（satId），在「卫星与转发器」分区选，全部链路共用——GSO 出厂口径；
-//   'link'   逐链路指定：链路表每行各选卫星（行字段 satelliteId），表首多出「卫星」列组（卫星 · 卫星G/T · 卫星EIRP），
+//   'link'   逐链路指定：链路表每行各选卫星（行字段 satelliteId），表首多出「卫星」列组（卫星 · 卫星G/T · 星侧太阳侵入 · 太阳侵入 ΔG/T · 卫星EIRP），
 //            上方卫星分区随之收起（再报一颗星只会与表里的混淆）。
 // 引擎口径不变：两种方式只决定每行的 satForm 从哪里取（见 satOfRow）；方向图回填仍按「G/T 取发信站站址、
 // EIRP 取收信站站址」，只是天线来自该行所用的那颗星。
@@ -485,11 +485,13 @@ function toggleResultKey(k) {
 // （见 cellSubFn，值仍来自 computedVals：发端配置下显示 EIRP、收端配置下显示 G·T）。
 // 列组随卫星的指定方式变：统一指定＝发信站 | 收信站 | 计算结果（卫星在上方分区单选，不占列）；
 // 逐链路指定＝卫星 | 发信站 | 收信站 | 计算结果——「卫星」列组放在表首（用户要求：一眼先看到这行用的哪颗星），
-// 组内三列：卫星（库引用）、该星对本行发信站的 G/T、该星对本行收信站的 EIRP（与再生式链路表的「卫星」列组同一口径）。
+// 组内五列：卫星（库引用）、该星对本行发信站的 G/T 及其星侧太阳侵入两列、该星对本行收信站的 EIRP
+// （与再生式链路表的「卫星」列组同一口径）。
 const GRID_GROUPS_CONFIG = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
 const GRID_GROUPS_LINK = [{ key: 'sat', label: '卫星' }, { key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
 const gridGroups = computed(() => (satLink.value ? GRID_GROUPS_LINK : GRID_GROUPS_CONFIG))
-const SAT_COL_KEYS = ['satelliteId', 'G_Ts', 'rxEIRP']
+// 星侧太阳侵入两列（DESIGN2 D11）紧跟 G/T：同为「该星对本行发信站」的接收侧配对量，随 G/T 一起进卫星列组
+const SAT_COL_KEYS = ['satelliteId', 'G_Ts', 'satSunIntrusion', 'satSunGtLoss', 'rxEIRP']
 const gridFields = computed(() => {
   const link = satLink.value
   const all = [...TX_FIELDS, ...RX_FIELDS]
@@ -1830,6 +1832,7 @@ function calcOfLink(l) {
 }
 const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
+  bodyLayout: () => ({ ns: LIB_NS, sats: links.value.map((l) => satOfRow(linkRows.find((r) => r._id === l.rowId))) }),   // 第 5 章：本份报告各链路所用卫星库条目
   orbitType: 'GEO',
   fieldGroups: FIELD_GROUPS,
   nextTick,
@@ -2114,7 +2117,7 @@ onMounted(async () => {
           <LbSection id="links" title="链路表" :count="linkRows.length" summary="一行一条链路：发端 + 收端 + 库引用 + 结果">
             <template #actions>
               <!-- 卫星的指定方式（场景级）：统一指定＝上方分区单选一颗；逐链路指定＝表首「卫星」列组逐行选，上方分区收起 -->
-              <span class="lbx-segwrap" title="卫星的指定方式：统一指定＝本配置只用一颗卫星（在上方「卫星与转发器」分区选择，全部链路共用）；逐链路指定＝链路表每行各选卫星（表首「卫星」列组：卫星 · 卫星G/T · 卫星EIRP，上方分区随之收起）。切换时各行所用卫星保持不变，计算口径不变">
+              <span class="lbx-segwrap" title="卫星的指定方式：统一指定＝本配置只用一颗卫星（在上方「卫星与转发器」分区选择，全部链路共用）；逐链路指定＝链路表每行各选卫星（表首「卫星」列组：卫星 · 卫星G/T · 星侧太阳侵入 · 太阳侵入 ΔG/T · 卫星EIRP，上方分区随之收起）。切换时各行所用卫星保持不变，计算口径不变">
                 <span class="lbx-segl">卫星</span>
                 <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>

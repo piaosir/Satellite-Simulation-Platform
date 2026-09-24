@@ -47,7 +47,9 @@ export const CMD_KW = {
   '环境场': ['ITU', 'rain rate', 'environment', 'climate', 'R0.01', '环境', '雨量', '降雨率', '水汽', '雨高', '等温线', '云'],
   '实时气象': ['weather', 'GFS', 'live', 'forecast', 'QWeather', '实时', '气象', '云图', '预报', '降水', '和风'],
   '聚焦卫星': ['focus', 'selected satellite', 'display style', '聚焦', '轨道线', '覆盖圈', '样式'],
-  '地图设置': ['map settings', 'basemap', 'projection', 'border', 'label', '地图', '底图', '投影', '国界', '地名', '晨昏线', '坐标系', '配色'],
+  '卫星模型': ['3D model', 'satellite model', 'model library', 'glb', 'gltf', 'NASA', 'STK', 'follow satellite', 'chase view',
+    '3D 模型', '三维模型', '模型库', '卫星外形', '跟随卫星', '图标', '参数化'],
+  '地图设置': ['map settings', 'basemap', 'projection', 'border', 'label', 'space', '地图', '底图', '投影', '国界', '地名', '宇宙空间', '晨昏线', '坐标系', '配色'],
   // 文件管理页签
   '轨道星历': ['OMM', 'TLE', 'ephemeris', 'orbit', '星历', '自定义卫星', '根数'],
   '天线方向图': ['GRD', 'pattern', 'antenna', 'STK', 'ACP4', 'Eutelsat', '方向图', '天线', '导出方向图'],
@@ -113,15 +115,35 @@ export const ID_KW = {
   'mk.points': ['points', 'marker', 'pin', '标记点'],
   'mk.stations': ['earth station', 'ground station', 'es', '站'],
   'mk.traj': ['trajectory', 'track', 'route', '航迹', '船', '飞机'],
-  'geo.imagery': ['imagery', 'satellite image', 'basemap', '真彩', '卫星影像', '底图'],
   'geo.adm': ['province', 'admin', 'state', '省界', '省', '行政区划'],
   'geo.chain': ['island chain', '第一岛链', '第二岛链'],
-  'geo.term': ['terminator', 'day night', 'night', '夜区', '昼夜', '太阳'],
+  // 宇宙空间（地图设置）：总开关 + 六个子项（星空 / 大气辉光 / 太阳 / 地球影像 / 晨昏效果 / 晨昏线）；地球影像 = 原「影像底图」并进来，老叫法照样搜得到
+  'geo.space': ['space', 'cosmos', 'starfield', 'sun', 'atmosphere', 'terminator', 'day night', 'STK', 'NASA Eyes',
+    '宇宙', '太空', '星空', '太阳', '大气', '昼夜', '夜区', '晨昏', '晨昏线'],
+  'geo.space.stars': ['stars', 'starfield', 'milky way', 'sky', 'space', '星空', '恒星', '银河', '天空', '宇宙'],
+  'geo.space.atmo': ['atmosphere', 'glow', 'limb', 'halo', 'space', '大气', '辉光', '临边', '光晕', '宇宙'],
+  'geo.space.sun': ['sun', 'glare', 'flare', 'space', '太阳', '眩光', '日面', '宇宙'],
+  'geo.space.img': ['imagery', 'blue marble', '16K', 'satellite image', 'basemap', 'space', '影像', '影像底图', '底图', '真彩', '卫星影像', '宇宙'],
+  'geo.space.night': ['night', 'day night', 'twilight', 'night shade', 'terminator', 'space', '夜区', '昼夜', '晨昏', '曙暮光', '宇宙'],
+  'geo.space.line': ['terminator', 'day night line', 'night shade', 'space', '晨昏线', '昼夜', '分界线', '晨昏', '夜区', '阴影', '宇宙'],
   'geo.proj': ['projection', 'mercator', 'equal earth', 'robinson', 'albers', 'azimuthal', '投影', '墨卡托', '罗宾逊', '阿尔伯斯', '方位等距', '等距圆柱', '等积'],
   'foc.orb': ['orbit', 'orbit line', '轨道'],
   'foc.trk': ['ground track', 'subsatellite', '星下点', '地面轨迹'],
   'foc.fp': ['footprint', 'coverage circle', '覆盖', '仰角圈'],
-  'foc.cone': ['cone', 'coverage cone', '锥']
+  'foc.cone': ['cone', 'coverage cone', '锥'],
+  // 卫星 3D 模型（活动栏「卫星模型」+ 模型工作台窗口）。★ 别收裸「跟随」：那是参考系「相机跟随」（const.frame）的词
+  'model.open': ['model workbench', '3D model', 'glb', 'gltf', 'obj', 'stl', 'fbx', 'step', 'iges', 'NASA', 'STK',
+    '模型工作台', '3D 模型', '三维模型', '卫星模型', '模型库', '质量特性', '挂点', '本体轴'],
+  'model.import': ['import model', 'glb', 'gltf', 'obj', 'stl', 'fbx', 'step', 'stp', 'iges', 'igs', 'brep', 'cad', 'STK',
+    '导入模型', '3D 模型', 'CAD', '三维模型'],
+  'model.gen': ['parametric', 'generate', 'template', 'default satellite', 'SSL-1300', 'Spacebus', 'Eurostar', 'cubesat',
+    '参数化', '生成', '模板', '默认卫星', '立方星', '3D 模型'],
+  'model.follow': ['follow satellite', 'chase view', 'chase camera', 'NASA Eyes', '3D model', '跟随卫星', '跟踪视图', '近景', '卫星模型'],
+  'model.unfollow': ['exit follow', 'stop following', 'escape', '退出跟随卫星', '结束跟随'],
+  'model.show': ['show 3D model', 'model icon', 'glb', 'HUD', 'LVLH', 'body axes', 'ISL', 'earth station direction', '3D 模型', '模型图标', '卫星模型', '显示模型',
+    '本体轴', '轨道法向', '星间链路', '地球站方向'],
+  'sec.mdl-lib': ['model library', 'NASA', 'STK', 'glb', 'download', '模型库', '3D 模型', '下载', '缩略图'],
+  'sec.mdl-cur': ['current satellite', 'model binding', '模型绑定', '当前卫星', '3D 模型']
 }
 
 export const kwOf = (label) => CMD_KW[label] || []

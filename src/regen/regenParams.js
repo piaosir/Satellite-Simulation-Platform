@@ -111,6 +111,10 @@ export const FIELD_GROUPS = [
       // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
       // 配对量，故留在站表逐站手填（不入地球站库）；列位紧跟「卫星」，与它同属卫星列组。
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
+      // 星侧太阳侵入（DESIGN2 D11）：与 G_Ts 同为「卫星×发信站」配对量（这座站落在哪个接收波束、那个波束何时看见太阳），
+      // 故紧跟 G_Ts 同组同列组。引擎只从 uplinkCT / uplinkThermalCN 各减一次，G_Ts 与 SFD 不动；缺省关 = 逐位同旧口径。
+      { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从上行 C/T 与上行热噪声 C/N 中扣除，卫星 G/T 与 SFD 不变；「设置余量」方式由功放抬升补足余量（功放功率与到达通量密度随之升高），「设置工作点」方式功放与到达通量密度不变；关＝不计入', type: 'select', options: ['关', '开'], def: '关', target: 'link' },
+      { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },

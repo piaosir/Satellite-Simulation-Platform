@@ -65,6 +65,7 @@ const sideViews = computed(() => [
   { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
   { key: 'envLive', label: '实时气象', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
   { key: 'focus', label: '聚焦卫星', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
+  { key: 'model', label: '卫星模型', icon: 'box', disabled: !pageReady.value, hint: '聚焦星的 3D 模型：模型绑定 / 球面图标 / 跟随卫星视图 / 模型库（NASA · 参数化 · 本机导入）' },
   { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
@@ -147,6 +148,9 @@ function openCi() { window.api?.interference?.open?.() }
 function openPfdMask() { window.api?.pfdMask?.open?.() }
 function openFreqPlan() { window.api?.freqPlan?.open?.() }
 function openSsa() { window.api?.ssa?.open?.() }
+// 模型工作台（独立窗口）：入口只有「卫星模型」侧栏按钮 / 信息卡「编辑…」/ 本处的搜索命令 —— 不进菜单与工具栏（入口不重复）。
+// 出 IPC 的参数现造纯数据；未激活时主进程 gate 回 {locked:true}，这里静默（runCommand 的 lock 闸已先拦一道）
+function openModelWb(o) { try { const r = window.api?.models?.open?.(JSON.parse(JSON.stringify(o || {}))); if (r && r.catch) r.catch(() => {}) } catch { /* ignore */ } }
 
 function pickView(flat) {
   if (view.flat === flat) return
@@ -289,7 +293,9 @@ function tbClick(b) {
 // 侧栏 / 设置窗的分区与参数行：索引由 scripts/cmd-index.mjs 从模板静态抽出（src/shared/cmdIndex.data.js，dev / build 自动刷新）。
 // 带拨杆 / 子菜单的分区由星座地图页登记（PAGE_SECS，见其 pageCommands），这里不再登记分区本身，但其参数行照常登记。
 // 同视图同标题的分区（波束合成按模式分成 bs-antp / bs-pam、bs-cov / bs-pcov）合成一条，keys 全带上，谁在 DOM 里就定位谁。
-const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-img', 'geo-adm', 'geo-chain', 'geo-term', 'geo-proj', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
+const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-adm', 'geo-chain', 'geo-space', 'geo-proj', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
+// 参数行里页面已用拨杆登记过的（'分区键|行名'）：宇宙空间六个子项在页面登记成带勾选的 geo.space.*，这里不再登记成定位行
+const PAGE_ROWS = new Set(['星空', '大气辉光', '太阳', '地球影像', '晨昏效果', '晨昏线'].map((l) => 'geo-space|' + l))
 // 标题是动态文本的分区，这里给个固定名；"<view>-top" 是视图里第一个分区之前的内容，缺省不带分区名（星座视图那块是生成星座向导）
 const SEC_TITLES = { 'bs-mode': '天线类型', 'vis-list': '可见卫星', 'constellation-top': '生成星座' }
 const SECTIONS = (() => {
@@ -336,12 +342,19 @@ function appCommands() {
     }
     // 参数行：「分区 › 行」，选中即定位到那一行
     for (const it of sec.items) {
+      if (PAGE_ROWS.has(key + '|' + it.label)) continue
       out.push({ id: 'row.' + key + '.' + it.label, label: it.label, path: sec.title, icon: v.icon, group: v.label, hint: it.hint, keywords: kwId('row.' + key + '.' + it.label), lock: sec.view !== 'settings', disabled: v.disabled, run: () => goRow(sec, it.label) })
     }
   }
   for (const t of FILE_TABS) {
     out.push({ id: 'file.' + t.key, label: t.label, icon: 'folder-open', group: '文件管理', keywords: kwOf(t.label), lock: true, run: () => { fileTab.value = t.key; fileOpen.value = true } })
   }
+  // 模型工作台：id 手写固定（不挂菜单 —— 菜单命令的 id 按下标生成，中间插一项后面全移位）
+  out.push(
+    { id: 'model.open', label: '模型工作台', icon: 'box', group: '卫星模型', keywords: kwId('model.open'), lock: true, run: () => openModelWb({ tab: 'lib' }) },
+    { id: 'model.import', label: '导入 3D 模型', icon: 'import', group: '卫星模型', keywords: kwId('model.import'), lock: true, run: () => openModelWb({ tab: 'import' }) },
+    { id: 'model.gen', label: '参数化生成卫星模型', icon: 'sliders-horizontal', group: '卫星模型', keywords: kwId('model.gen'), lock: true, run: () => openModelWb({ tab: 'gen' }) }
+  )
   const lang = getLang()
   out.push(
     { id: 'set.theme', label: '外观', icon: 'monitor', group: '设置', keywords: kwOf('外观'),

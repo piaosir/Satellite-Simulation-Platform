@@ -1005,6 +1005,7 @@ const reportLinks = computed(() => chains
   }))
 const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
+  bodyLayout: () => ({ ns: LIB_NS, sats: reportLinks.value.flatMap((l) => ((chains.find((r) => r._id === l.rowId) || {}).nodes || []).map(satCfgOf)) }),   // 第 5 章：各条链上的卫星节点所用库条目
   orbitType: ORBIT,
   fieldGroups: [],
   nextTick,

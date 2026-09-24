@@ -14,10 +14,18 @@
 //     activateSection(k)  → 把工作台切到该模块（取图要靠图表区画出这一节的链路）；
 //     beforeReport(step)  → 导出前把没算过 / 已过期的模块补算（结果不齐的报告不叫整份配置）。
 //   模型里各链路带 sec（节下标）、全篇 #N 连续编号；不分节的窗口一个字都不用改。
-import { reactive, ref } from 'vue'
-import { buildReportModel, buildInputDigest, calcBlock, carrierIdentity, regenModeName } from './lbReport.js'
+//
+// ★ 第 5 章「卫星本体与天线布局」（二期，可选）：宿主多交一样 bodyLayout: () => ({ ns, sats })——ns = 本窗卫星库命名空间
+//   （geo / ngso / regen / e2e，与 lbsat:<ns>:<条目 id> 绑定键同一个 ns），sats = 本份报告用到的卫星库条目（可重复、可含 null）。
+//   打开对话框时按绑定表数一遍有布局数据的星（provide 给对话框），勾了才在导出时逐星出图、组块（shared/lbBodyLayout.js）。
+import { reactive, ref, provide } from 'vue'
+import { buildReportModel, buildInputDigest, calcBlock, carrierIdentity, regenModeName, translate, LB_REPORT_LAYOUT_KEY } from './lbReport.js'
 import { buildSlaReportModel } from './lbSlaReport.js'   // 独立《服务等级指标（SLA）》报告的模型
 import { isUnitAdaptive } from './lbUnitMode.js'   // 结果显示单位档（功能区「单位」）：报告与屏幕同口径
+// 第 5 章「卫星本体与天线布局」：宿主窗口给 bodyLayout: () => ({ ns: 库命名空间, sats: 本份报告用到的卫星库条目 })。
+// 组块的 lbBodyLayout.js 连着模型 schema / 自动匹配 / 参数化模板（及其引入的 glb / AGI 解析）一串，按需动态加载：
+// 四个窗口启动时不解析、不执行这些模块，第一次打开导出对话框（数布局星）时才载入
+const layoutMod = () => import('./lbBodyLayout.js')
 
 // 报告里图件的像素倍率。图上那个「出图」按钮用 4 倍，是因为它出的图不知道会被放到多大；
 // 报告里的图位是定死的（PDF 里限高 82 mm、Excel 里 460 px 宽），2 倍已合 550 dpi 以上，
@@ -31,6 +39,20 @@ export function useLbReport(o) {
   // busy / progress 共用（一次只出一份），提交按 variant 分派。
   const variant = ref('full')
 
+  // 第 5 章「卫星本体与天线布局」：对话框要知道「本份报告里有几颗星有布局数据」才决定出不出那一项。
+  // 读数经 provide / inject 交给 LbReportDialog（宿主窗口模板一行不用改）；每次打开对话框按当时的绑定表重数一遍。
+  const layout = reactive({ count: 0 })
+  if (o.bodyLayout) { try { provide(LB_REPORT_LAYOUT_KEY, layout) } catch (e) { /* 不在 setup 里调用：对话框就不出这一项 */ } }
+  let _probe = 0
+  async function probeLayout() {
+    const seq = ++_probe
+    let n = 0
+    if (o.bodyLayout && o.api && o.api.models) {
+      try { n = await (await layoutMod()).probeBodyLayout(Object.assign({ api: o.api }, o.bodyLayout())) } catch (e) { n = 0 }
+    }
+    if (seq === _probe) layout.count = n
+  }
+
   // 有没有东西可报：分节窗口按「有链路行」算（导出前 beforeReport 会把没算过的模块补算），
   // 其余窗口按已有结果算（没算过就没有数）。
   const hasWork = () => (o.canReport ? !!o.canReport() : o.links().length > 0)
@@ -41,6 +63,7 @@ export function useLbReport(o) {
     variant.value = 'full'
     dlg.progress = null
     dlg.open = true
+    probeLayout()
   }
 
   function openSla() {
@@ -119,6 +142,21 @@ export function useLbReport(o) {
           }
         })
       }
+      // 第 5 章「卫星本体与天线布局」：对话框勾了才出。逐星加载模型、出三视图 PNG（纯数据块，dataUrl 过 IPC）；
+      // 某颗星出图失败只丢那颗的图（数字表照出），不拖垮整份报告
+      let bodyLayout = null
+      if (opts.withLayout && o.bodyLayout && api.models) {
+        const lbl = translate('出图：卫星本体', lang)
+        dlg.progress = { text: lbl, done: 0, total: 1 }
+        const fonts = opts.doc && opts.doc.fonts
+        const { buildBodyLayout } = await layoutMod()
+        bodyLayout = await buildBodyLayout(Object.assign({
+          api, lang,
+          // 三视图上的格标题 / 挂点名 / 比例尺跟报告的标题字体（导出对话框「字体」；出厂 = 模板口径 TNR + 黑体）
+          font: (fonts && fonts.cssHead) || '"Times New Roman", SimHei, "黑体", serif',
+          onStep: (name, done, n) => { dlg.progress = { text: lbl + (name ? (en ? ': ' : '：') + name : ''), done, total: n } }
+        }, o.bodyLayout()))
+      }
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: total, total }
 
       // 「计算设置」块：求解策略随载波逐链路而定（o.calcFor），故逐条各出各的；
@@ -140,6 +178,7 @@ export function useLbReport(o) {
         satelliteName: calc.satelliteName || '',
         frequencyBand: calc.frequencyBand || '',
         calc,
+        bodyLayout,
         links: flat.map(({ l, si }, i) => {
           const p = o.paramsFor(l)
           const inputs = p ? buildInputDigest(o.fieldGroups, p, lang) : []
@@ -240,7 +279,7 @@ export function useLbReport(o) {
   const submit = (opts) => ((opts && opts.variant === 'sla') ? runSla(opts) : run(opts))
 
   return {
-    reportDlg: dlg, reportVariant: variant,
+    reportDlg: dlg, reportVariant: variant, reportLayout: layout,
     openReportDialog: open, openSlaReportDialog: openSla,
     runReport: run, runSlaReport: runSla, submitReport: submit
   }

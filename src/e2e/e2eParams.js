@@ -86,6 +86,10 @@ export const SAT_FIELDS = [
   { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度（km）。选星后由所选卫星轨道自动确定', unit: 'km', type: 'num', def: '1200', grp: 'orbit' },
   { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角（°）。选星后由所选卫星轨道自动确定', unit: '°', type: 'num', def: '53', grp: 'orbit' },
   { key: 'gt', label: '卫星 G/T', tip: '卫星接收品质因数 G/T（dB/K）：按该站对本星的波束位置手动输入（平台既定：不做方向图自动取值）', unit: 'dB/K', type: 'num', def: '2', grp: 'rx' },
+  // 星侧太阳侵入（DESIGN2 D11）：同属接收组（grp 'rx'，透明 / 再生节点检查器都出）；链上节点可覆盖。
+  // 只作用于这颗星【接住的星地上行跳】：linkChain 复用 gtDeg 通道，本跳 G/T 取 卫星 G/T − 该值。
+  { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从这颗星接住的星地上行跳的 G/T 中扣除（到达电平与卫星 G/T 读数不变）；关＝不计入', type: 'select', options: ['关', '开'], def: '关', grp: 'rx' },
+  { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', grp: 'rx' },
   { key: 'sfdRef', label: '卫星 SFD', tip: '饱和通量密度 SFD（dBW/m²，参考 G/T）', unit: 'dBW/m²', type: 'num', def: '-84', grp: 'txp' },
   { key: 'sfdGtRef', label: 'SFD 参考 G/T', tip: 'SFD 标称所依据的参考 G/T（dB/K）；引擎入口按 有效SFD = SFD + 参考G/T 换算', unit: 'dB/K', type: 'num', def: '0', grp: 'txp' },
   { key: 'BOi', label: '输入回退 IBO', unit: 'dB', type: 'num', def: '6', grp: 'txp' },

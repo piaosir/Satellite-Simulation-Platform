@@ -5,8 +5,11 @@
 // 纯几何在 visibility.js；本层只做编排与宿主接线，宿主能力全经参数注入。
 //
 // 交付节奏：P1 = 瞬时可见（本文件）。P2 时段表 / P3 覆盖热力图 复用同一「选目标 → 算仰角」地基。
+//
+// 星历点序列星：ents 一律带上 eph（瞬时 / 过境走 satPos.propOf；覆盖核只读 rec，故覆盖 ents 的 rec 直接放 propOf 的传播体）。
 import { ref, shallowRef, computed, watch } from 'vue'
 import sat from '../constellation/satellite.js'
+import { propOf } from '../constellation/satPos.js'
 import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage } from './visibility.js'
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
@@ -96,7 +99,8 @@ export function useVisibility({
     const now = calcAt(), gmst = sat.gstime(now)
     const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)
     // slot＝GEO 定点标注（geoSlotOfSatrec 结果缓存在 rec 上，逐拍重算只是一次属性读取），随结果行透传到表/叠加层
-    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))
+    // eph＝星历点序列星的采样表（没有 rec；computeVisibility 经 propOf 取位）
+    const ents = src.map((e) => ({ rec: e.rec, eph: e.eph, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))
     results.value = computeVisibility(ents, tp, { now, gmst, ccNow, ccGmst }, Number(minElev.value) || 0)
   }
 
@@ -176,7 +180,8 @@ export function useVisibility({
     accessHorizonMin.value = H / 60   // 钉住本次实际时窗（输入框超范围被 clamp 时，分母/横轴仍与窗口口径一致）
     accessBaseMs.value = now.getTime()   // 钉住时窗起点：绝对时刻 = 起点 + 相对分钟（cc 星的窗口也按此轴换算，与甘特同轴）
     accessScanned.value = src.length
-    const ents = src.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))   // slot=GEO 定点标注，透传到过境表
+    // slot=GEO 定点标注，透传到过境表；eph=星历点序列表（accessWindows 经 propOf 取位）
+    const ents = src.map((e) => ({ rec: e.rec, eph: e.eph, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))
     const BATCH = 400, out = []
     let i = 0
     const stepFn = () => {
@@ -243,7 +248,8 @@ export function useVisibility({
     covBusy.value = true; covData.value = null; covMsg.value = `覆盖计算… 0 / ${T0}`; drawCovNow()
     const token = ++_covToken
     const now = calcAt(), ccNow = ccTimeAt(now)
-    const ents = srcAll.map((e) => ({ rec: e.rec, name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
+    // rec＝传播体：覆盖核只读 e.rec（orbitCanReach 对星历表按「不剔除」、posAt 认表），星历点序列星放 propOf 的表
+    const ents = srcAll.map((e) => ({ rec: propOf(e), name: e.name, noradId: e.noradId, group: e.group, _cc: !!isCustomEntry(e) }))
     let run
     try { run = createCoverageRun(ents, grid, { now, ccNow }, { horizonSec, minElevDeg: me, sampleSec }) } catch (e) { covBusy.value = false; covMsg.value = '计算失败：' + ((e && e.message) || e); return }
     const T = run.T, perSample = Math.max(1, grid.cells.length * Math.max(1, run.activeCount))

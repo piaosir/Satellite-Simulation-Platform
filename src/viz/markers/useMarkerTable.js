@@ -3,6 +3,8 @@
 // 三套数据仍是页面里的 points / stations / trajectories 三个 ref（本模块受注入的引用，改后调 sync 落盘+推图）。
 import { ref } from 'vue'
 import { sheetToRecords, sheetToTsv } from '../../shared/gridXlsx.js'
+// 说明行「飞行; 巡航高度=10668 m; 速度=850 km/h; 起始=…; 模型=…; 图标=… px」的解析（DESIGN3 E7；相对路径：node 单测直接 import）
+import { parseTrajNote } from '../../../packages/core/models/entityRuntime.mjs'
 
 // 空串/空白判 null（Number('')===0，否则粘贴块里的空单元格会把经纬度悄悄写成 0）
 const num = (v) => { if (v == null || String(v).trim() === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null }
@@ -35,6 +37,8 @@ export const TRAJ_SHEET_COLS = [{ key: 'lon', label: '经度' }, { key: 'lat', l
 export const TRAJ_NOTE_SHEET = '说明'
 // 手搓的工作簿没有说明表 → 退回按表名认（自动名就叫「航行1 / 飞行2」），仍认不出算航行
 export const trajKindOf = (s) => (/飞行|flight/i.test(String(s == null ? '' : s)) ? 'flight' : 'sea')
+// 说明行里透传到航迹对象上的航迹级字段（页面 mkImportTrajXlsx 按同一张表挑）
+export const TRAJ_NOTE_FIELDS = Object.freeze(['cruiseAltM', 'speedKmh', 't0Ms', 'model'])
 
 // 重名加序号：工作表重名会被 Excel 改写，同名两条航迹在列表里也分不清
 function uniqName(base, used, fallback) {
@@ -76,7 +80,12 @@ export function trajsFromSheets(sheets, opts = {}) {
       pts = parseWpLines(sheetToTsv(s), mkId)
     }
     if (!pts.length) continue
-    out.push({ name: uniqName(nm, used, opts.fallbackName), kind: trajKindOf(notes.has(nm) ? notes.get(nm) : nm), pts })
+    // 说明行第一段是类型词（老工作簿只有这一段：parseTrajNote 与 trajKindOf 同式，结果不变）；随后的航迹级字段
+    // （巡航高度 / 速度 / 起始时刻 / 模型）只挑解析出来的合法项透传 —— 缺字段 = 现状，缺省值不写进对象
+    const extra = notes.has(nm) ? parseTrajNote(notes.get(nm)) : { kind: trajKindOf(nm) }
+    const o = { name: uniqName(nm, used, opts.fallbackName), kind: extra.kind, pts }
+    for (const k of TRAJ_NOTE_FIELDS) if (extra[k] !== undefined) o[k] = extra[k]
+    out.push(o)
   }
   return out
 }

@@ -271,7 +271,27 @@ export const LB_REPORT_EN = {
   '按各链路勾选的条款单出一份《服务等级指标（SLA）》报告（Excel / Word）': 'Exports a standalone Service Level Metrics (SLA) report (Excel / Word) from the clauses ticked on each link',
   '尚无 SLA 条款': 'No SLA clauses yet',
   '平台标志': 'Platform mark',
-  '用本软件自己的标志（与「关于」窗口同一枚）': 'Use this application’s own mark (the same one shown in the About window)'
+  '用本软件自己的标志（与「关于」窗口同一枚）': 'Use this application’s own mark (the same one shown in the About window)',
+  // 第 5 章「卫星本体与天线布局」（二期契约 D14–D16）：章名、图题、两张表的栏名与行名、枚举值、导出对话框那一项
+  '卫星本体与天线布局': 'Spacecraft Body and Antenna Layout',
+  '本体三视图与透视': 'body three-view and perspective', '模型': 'model',
+  '质量特性': 'Mass Properties', '挂点布局': 'Antenna Mount Layout',
+  '来源': 'Source', '置信度': 'Confidence',
+  '外形（本体系）': 'Envelope (body frame)', '包围盒尺寸 X': 'Bounding box X', '包围盒尺寸 Y': 'Bounding box Y', '包围盒尺寸 Z': 'Bounding box Z',
+  '质量与质心（本体系）': 'Mass and centre of mass (body frame)', '质量': 'Mass',
+  '质心 X': 'CoM X', '质心 Y': 'CoM Y', '质心 Z': 'CoM Z',
+  '惯量张量（对质心，本体系）': 'Inertia tensor (about CoM, body frame)',
+  '安装位置（本体系）': 'Mount position (body frame)', '位置 X': 'Position X', '位置 Y': 'Position Y', '位置 Z': 'Position Z',
+  '视轴（本体系）': 'Boresight (body frame)', '视轴方位': 'Boresight azimuth', '视轴俯仰': 'Boresight elevation', '滚转': 'Roll',
+  '视场': 'Field of view', '万向节限位': 'Gimbal limits',
+  '方位下限': 'Azimuth min', '方位上限': 'Azimuth max', '俯仰下限': 'Elevation min', '俯仰上限': 'Elevation max',
+  '绕 X 下限': 'X-axis min', '绕 X 上限': 'X-axis max', '绕 Y 下限': 'Y-axis min', '绕 Y 上限': 'Y-axis max',
+  '角速率上限': 'Max slew rate', '星上系统噪温': 'On-board system noise temp.',
+  '手填': 'Manual', '估算': 'Estimated', '组件': 'Components', '模型几何': 'Model geometry', '高': 'High', '低': 'Low',
+  '含卫星本体与天线布局': 'Include spacecraft body and antenna layout',
+  'Word / PDF 另出第 5 章「卫星本体与天线布局」：按模型绑定出三视图、质量特性表与挂点布局表（Excel 不含；STK 本机模型不出图）':
+    'Word / PDF gain chapter 5 “Spacecraft Body and Antenna Layout” from the model bindings: three-view, mass properties and antenna mount tables (not in Excel; no figure for local STK models)',
+  '出图：卫星本体': 'Rendering spacecraft body'
 }
 export function translate(s, lang) {
   if (lang !== 'en' || !s) return s
@@ -552,7 +572,9 @@ export function labelBundle(lang) {
     tier: t('档位'), composite: t('综合'), rainUp: t('上行雨衰'), rainDown: t('下行雨衰'),
     marginCol: t('链路余量'), powerUse: t('功率占用'), bwUse: t('带宽占用'), outageCol: t('中断时长'),
     start: t('起'), end: t('止'), duration: t('时长'), utc: 'UTC', localTime: t('北京时间'),
-    exportSla: t('导出 SLA 报告')
+    exportSla: t('导出 SLA 报告'),
+    // 第 5 章（有卫星本体与天线布局时才出）：章名；图表的题名、栏名与行名都在 layoutDoc 里按语言排好
+    layout: t('卫星本体与天线布局')
   }
 }
 
@@ -581,8 +603,11 @@ export function buildReportModel(o) {
   const {
     lang = 'zh', orbitType = 'GEO', regenMode = 'uplink',
     doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = '',
-    adaptUnits = false, slaParams = null, sections = null
+    adaptUnits = false, slaParams = null, sections = null, bodyLayout = null
   } = o || {}
+  // 第 5 章「卫星本体与天线布局」（shared/lbBodyLayout.js 组的纯数据块）：一颗星都没有 ⇒ 三个键一个都不加，
+  // 模型与改版前一个键都不多，两个渲染器整章不出、目录不列、表号图号不占（docx 逐字节不变，见 modelReportLayout.test）
+  const layout = normBodyLayout(bodyLayout)
   // 分节（再生式一份配置装了几个计算模块）：sections = [{ key, regenMode, title, short, count }]，
   // 各链路以 link.sec（节下标）归属；体制描述子按全部模块取（副标题并列、方法学按并集）。
   // 不分节的窗口（GSO / NGSO / 端到端 / 只有一个模块的再生式）照旧只传 regenMode。
@@ -614,8 +639,177 @@ export function buildReportModel(o) {
     }),
     calc: Object.assign({ satelliteName, frequencyBand }, calc),
     links,
-    method: methodology(scheme, lang)
+    method: methodology(scheme, lang),
+    ...(layout ? { hasLayout: true, bodyLayout: layout, layoutDoc: bodyLayoutDoc(layout, lang) } : {})
   }
+}
+
+// —— 第 5 章「卫星本体与天线布局」——
+// 数据块（lbBodyLayout.buildBodyLayout 的产出）按星一节：三视图 + 透视一张图、质量特性一张表、挂点布局一张表。
+// 两个渲染器（reportDocx / ReportApp）只认 layoutDoc：标签、单位、数值格式、表头、对齐、列宽在这里一次定死，
+// 编号（表号接全文连续号、图号全局连续——D15，不用「图 5-i」以免与 #5 链路的图撞号）由渲染器按出场次序取。
+// 表格只放数字（任务书 §6.9）；质量特性表的「来源」「置信度」两列是 D14 的例外——它们是数据的属性（手填 / 估算 / 组件、
+// 高 / 低），不是判定，任务书 §9 要求 low confidence 的估算不能当真值混进报告，所以必须随数出现。
+
+/**
+ * 对话框读「有几颗星有布局数据」的注入键（useLbReport 在宿主窗口 setup 里 provide，LbReportDialog inject）。
+ * 放在这里而不放 lbBodyLayout.js：那个文件连着模型 schema / 自动匹配 / 参数化模板一串，由 useLbReport 按需动态加载，
+ * 对话框与宿主窗口启动时只该碰这一个 Symbol（lbBodyLayout 原样转出，老的 import 路径照样能用）。
+ */
+export const LB_REPORT_LAYOUT_KEY = Symbol.for('satsim.lbReport.bodyLayout')
+
+const LAYOUT_MOUNT_CHUNK = 5  // 挂点表按挂点做列：纵向版心 160 mm，参数列 + 5 列挂点 + 单位列排得开；多了切续表
+
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
+const isV3 = (v) => Array.isArray(v) && v.length === 3 && v.every(isNum)
+// 定点小数；负零、「-0.000」一律回正（表里出现「-0.000」读者会以为那一格有个很小的负数）
+function fx(v, d) {
+  if (!isNum(v)) return '—'
+  const s = v.toFixed(d)
+  return /^-0(\.0*)?$/.test(s) ? s.slice(1) : s
+}
+// 一组量共用的小数位：按组内最大绝对值取 4 位有效数字（惯量从立方星的 0.01 kg·m² 到大平台的 10⁴ kg·m² 都读得清），同组对齐
+function groupDecimals(vals) {
+  const m = Math.max(0, ...vals.filter(isNum).map(Math.abs))
+  if (!(m > 0)) return 3
+  return Math.max(0, Math.min(6, 3 - Math.floor(Math.log10(m))))
+}
+
+// 块规整：只收纯数据，丢掉一格都给不出的星；没有星 ⇒ null
+export function normBodyLayout(b) {
+  const sats = b && Array.isArray(b.sats) ? b.sats : []
+  const out = []
+  for (const s of sats) {
+    if (!s || typeof s !== 'object') continue
+    const views = s.views && typeof s.views.dataUrl === 'string' && s.redistributable !== false ? { dataUrl: s.views.dataUrl, w: s.views.w | 0, h: s.views.h | 0 } : null
+    const bbox = isV3(s.bbox) ? s.bbox.slice() : null
+    const m = s.mass
+    const mass = m && isNum(m.massKg) && isV3(m.com)
+      ? { massKg: m.massKg, com: m.com.slice(), inertia: Array.isArray(m.inertia) && m.inertia.length === 3 && m.inertia.every(isV3) ? m.inertia.map((r) => r.slice()) : null, source: String(m.source || 'manual'), confidence: m.confidence === 'high' ? 'high' : 'low' }
+      : null
+    const mounts = (Array.isArray(s.mounts) ? s.mounts : []).filter((x) => x && isV3(x.pos)).map((x) => ({
+      id: String(x.id || ''), name: String(x.name || x.id || ''), pos: x.pos.slice(),
+      azDeg: isNum(x.azDeg) ? x.azDeg : null, elDeg: isNum(x.elDeg) ? x.elDeg : null, rollDeg: isNum(x.rollDeg) ? x.rollDeg : null,
+      fovDeg: isNum(x.fovDeg) ? x.fovDeg : null,
+      gimbalType: x.gimbalType === 'azel' || x.gimbalType === 'xy' ? x.gimbalType : 'none',
+      limits: x.limits && typeof x.limits === 'object' ? { a1Min: x.limits.a1Min, a1Max: x.limits.a1Max, a2Min: x.limits.a2Min, a2Max: x.limits.a2Max } : null,
+      rateDegS: isNum(x.rateDegS) ? x.rateDegS : null, sysTempK: isNum(x.sysTempK) ? x.sysTempK : null
+    }))
+    if (!views && !bbox && !mass && !mounts.length) continue
+    out.push({
+      satKey: String(s.satKey || ''), satName: String(s.satName || s.satKey || ''), norad: s.norad || null,
+      modelId: s.modelId || null, modelTitle: String(s.modelTitle || ''),
+      credit: String(s.credit || ''), license: String(s.license || ''),
+      redistributable: s.redistributable === false ? false : (s.redistributable === true ? true : null),
+      views, bbox, sizeVerified: !!s.sizeVerified, mass, mounts
+    })
+  }
+  return out.length ? { sats: out } : null
+}
+
+/**
+ * 块 → 排版计划（两个渲染器共用）。每星一项：
+ *   { sat: 下标, title: 星名, figure: { caption } | null（图从 bodyLayout.sats[sat].views 取，不在两处各存一份 data URL），
+ *     mass: { title, head, rows, keyRows, align, widths } | null,
+ *     mount: { title, chunks: [{ head, rows, keyRows, align, widths }] } | null }
+ * 题名不带「图 n / 表 n」——编号由渲染器按出场次序给。多星时表题带星名（与「逐参数对照」分节表题同一写法）。
+ */
+export function bodyLayoutDoc(layout, lang) {
+  const en = lang === 'en'
+  const t = (s) => translate(s, lang)
+  const sats = (layout && layout.sats) || []
+  const multi = sats.length > 1
+  const suffix = (s) => (multi ? '　·　' + s.satName : '')
+  const SRC = { manual: t('手填'), estimate: t('估算'), components: t('组件') }
+  const CONF = { high: t('高'), low: t('低') }
+  return sats.map((s, si) => {
+    // —— 图：「中星 6D　本体三视图与透视（模型：Hubble Space Telescope (A)，NASA / DigitalSpace Corporation）」——
+    // 括号里依次是：画的是哪个模型（读者要知道这是示意模型还是实星模型）、署名（NASA / 社区 / CC BY）、CC BY 的许可名
+    let figure = null
+    if (s.views) {
+      const bits = [s.modelTitle, s.credit, s.license].filter(Boolean)
+      const tail = bits.length ? (en ? ` (${t('模型')}: ${bits.join(', ')})` : `（${t('模型')}：${bits.join('，')}）`) : ''
+      figure = { caption: (en ? `${s.satName} — ${t('本体三视图与透视')}` : `${s.satName}　${t('本体三视图与透视')}`) + tail }
+    }
+    // —— 质量特性表：参数 / 数值 / 单位 / 来源 / 置信度 ——
+    let mass = null
+    const rows = [], keyRows = []
+    const grp = (label) => { rows.push([label, '', '', '', '']); keyRows.push(true) }
+    const row = (label, v, unit, src, conf) => { rows.push([label, v, unit, src, conf]); keyRows.push(false) }
+    if (s.bbox) {
+      grp(t('外形（本体系）'))
+      const src = t('模型几何'), conf = s.sizeVerified ? CONF.high : CONF.low
+      ;['X', 'Y', 'Z'].forEach((ax, k) => row(t('包围盒尺寸 ' + ax), fx(s.bbox[k], 3), 'm', src, conf))
+    }
+    if (s.mass) {
+      const m = s.mass
+      const src = SRC[m.source] || m.source, conf = CONF[m.confidence] || m.confidence
+      grp(t('质量与质心（本体系）'))
+      row(t('质量'), fx(m.massKg, groupDecimals([m.massKg])), 'kg', src, conf)
+      ;['X', 'Y', 'Z'].forEach((ax, k) => row(t('质心 ' + ax), fx(m.com[k], 3), 'm', src, conf))
+      if (m.inertia) {
+        const I = m.inertia
+        const comp = [['Ixx', I[0][0]], ['Iyy', I[1][1]], ['Izz', I[2][2]], ['Ixy', I[0][1]], ['Ixz', I[0][2]], ['Iyz', I[1][2]]]
+        const d = groupDecimals(comp.map((c) => c[1]))
+        grp(t('惯量张量（对质心，本体系）'))
+        for (const [nm, v] of comp) row(nm, fx(v, d), 'kg·m²', src, conf)
+      }
+    }
+    if (rows.length) {
+      mass = {
+        title: t('质量特性') + suffix(s),
+        head: [t('参数'), t('数值'), t('单位'), t('来源'), t('置信度')],
+        rows, keyRows, align: ['left', 'right', 'left', 'left', 'left'], widths: [36, 20, 12, 18, 14]
+      }
+    }
+    // —— 挂点布局表：参数做行、挂点做列（多了切续表），格里只有数；不适用的格「—」——
+    let mount = null
+    const ms = s.mounts || []
+    if (ms.length) {
+      const any = (f) => ms.some(f)
+      const azel = any((x) => x.gimbalType === 'azel' && x.limits), xy = any((x) => x.gimbalType === 'xy' && x.limits)
+      const tint = any((x) => isNum(x.sysTempK) && !Number.isInteger(x.sysTempK))
+      // 行定义：[标签, 单位, 取值(x) → 字符串] | 分组行 [标签]
+      const defs = [
+        [t('安装位置（本体系）')],
+        [t('位置 X'), 'm', (x) => fx(x.pos[0], 3)], [t('位置 Y'), 'm', (x) => fx(x.pos[1], 3)], [t('位置 Z'), 'm', (x) => fx(x.pos[2], 3)],
+        [t('视轴（本体系）')],
+        [t('视轴方位'), '°', (x) => fx(x.azDeg, 2)], [t('视轴俯仰'), '°', (x) => fx(x.elDeg, 2)], [t('滚转'), '°', (x) => fx(x.rollDeg, 2)]
+      ]
+      if (any((x) => isNum(x.fovDeg))) defs.push([t('视场'), '°', (x) => fx(x.fovDeg, 2)])
+      if (azel || xy) {
+        defs.push([t('万向节限位')])
+        const lim = (type, k) => (x) => (x.gimbalType === type && x.limits ? fx(x.limits[k], 2) : '—')
+        if (azel) defs.push([t('方位下限'), '°', lim('azel', 'a1Min')], [t('方位上限'), '°', lim('azel', 'a1Max')], [t('俯仰下限'), '°', lim('azel', 'a2Min')], [t('俯仰上限'), '°', lim('azel', 'a2Max')])
+        if (xy) defs.push([t('绕 X 下限'), '°', lim('xy', 'a1Min')], [t('绕 X 上限'), '°', lim('xy', 'a1Max')], [t('绕 Y 下限'), '°', lim('xy', 'a2Min')], [t('绕 Y 上限'), '°', lim('xy', 'a2Max')])
+        if (any((x) => isNum(x.rateDegS))) defs.push([t('角速率上限'), '°/s', (x) => fx(x.rateDegS, 2)])
+      }
+      if (any((x) => isNum(x.sysTempK))) defs.push([t('星上系统噪温'), 'K', (x) => fx(x.sysTempK, tint ? 1 : 0)])
+      const chunks = []
+      for (let i = 0; i < ms.length; i += LAYOUT_MOUNT_CHUNK) {
+        const items = ms.slice(i, i + LAYOUT_MOUNT_CHUNK)
+        const rowsC = [], keyC = []
+        for (const d of defs) {
+          if (d.length === 1) { rowsC.push([d[0], ...items.map(() => ''), '']); keyC.push(true); continue }
+          rowsC.push([d[0], ...items.map((x) => d[2](x)), d[1]]); keyC.push(false)
+        }
+        // 列宽按「版心百分比」定死：参数列 30、每个挂点 13、单位 8——挂点少时整张表收窄居中（widthPct），
+        // 不把两三列数字摊满 160 mm（数字与行名隔得太远难对读）；满 5 列时正好铺满
+        const raw = [30, ...items.map(() => 13), 8]
+        const sum = raw.reduce((a, b) => a + b, 0)
+        const widths = raw.map((w) => Math.floor(w * 100 / sum))
+        widths[0] += 100 - widths.reduce((a, b) => a + b, 0)
+        chunks.push({
+          head: [t('参数'), ...items.map((x) => x.name), t('单位')],
+          rows: rowsC, keyRows: keyC,
+          align: ['left', ...items.map(() => 'right'), 'left'],
+          widths, widthPct: Math.min(100, sum)
+        })
+      }
+      mount = { title: t('挂点布局') + suffix(s), chunks }
+    }
+    return { sat: si, title: s.satName, figure, mass, mount }
+  })
 }
 
 // 图题注：「图 3-2　地理场图 · 链路余量」——章号取链路序号，两个渲染器共用一套编号，

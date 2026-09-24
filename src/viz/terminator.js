@@ -132,3 +132,22 @@ export function terminatorFlat(date, opts = {}) {
   night.push([lon0 + 360, darkPole], [lon0, darkPole])
   return { line, night, sub, darkPole }
 }
+
+// ── 晨昏效果的过渡带（地图设置 · 宇宙空间 · 晨昏效果）──
+// 夜区不是硬边半球罩，而是按【太阳中心高度角 h】连续压暗：h ≥ 0 不压、h ≤ −18° 压满，中间 smoothstep。
+// −18° 是天文曙暮光的下界（民用 −6° / 航海 −12° / 天文 −18°）：地面在 −18° 以下才算全黑夜。
+// 3D 着色器（scene.js 的夜区壳）与平面图栅格（flatCoverage.js）逐字同一条曲线，两边的过渡带落在同一处。
+export const TWILIGHT_DEG = 18
+export const TWILIGHT_SIN = Math.sin(TWILIGHT_DEG * RAD)   // 0.30901699…
+/**
+ * 夜区遮罩系数（0..1）。
+ * @param {number} sinH 太阳高度角的正弦（= 地表单位法向 · 太阳单位矢量）
+ */
+export function nightRamp(sinH) {
+  const t = Math.max(0, Math.min(1, -sinH / TWILIGHT_SIN))
+  return t * t * (3 - 2 * t)
+}
+/** GLSL 版（同一条曲线）：常量由 TWILIGHT_SIN 写进源码，别在着色器里另抄一个数 */
+export const NIGHT_RAMP_GLSL = `float nightRamp(float sinH) { float t = clamp(-sinH / ${TWILIGHT_SIN.toFixed(9)}, 0.0, 1.0); return t * t * (3.0 - 2.0 * t); }`
+/** 格林尼治平恒星时（rad）：与 solarGeometry、卫星星位同一个 sat.gstime —— 星空按它随惯性系转 */
+export function gmstOf(date) { return sat.gstime(date) }

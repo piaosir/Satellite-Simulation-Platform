@@ -65,8 +65,29 @@ const tblNo = computed(() => {
   n.refs = ++k
   n.consts = ++k
   if (hasSla.value) n.sla = ++k
+  // 第 5 章：逐星「质量特性」一张、「挂点布局」一张（续表共用一个号），接在 SLA 之后——与 Word 端同一次序
+  n.layout = layoutDoc.value.map((d) => ({ mass: d.mass ? ++k : 0, mount: d.mount && d.mount.chunks.length ? ++k : 0 }))
   return n
 })
+// 第 5 章「卫星本体与天线布局」（二期契约 D14–D16）：排版计划在渲染端 lbReport.bodyLayoutDoc 定死，这里只排；
+// 没有布局块 ⇒ 整章不出、目录不列、表号图号不占。图号全局连续（图 1、图 2…；D15），不用「图 5-i」——
+// 那会与 #5 链路详情的图撞号。redistributable=false 的星不出图（组块时已丢，这里再兜一道），数字表照出。
+const layoutDoc = computed(() => {
+  const m = model.value
+  if (!m || !m.hasLayout || !Array.isArray(m.layoutDoc)) return []
+  return m.layoutDoc.filter((d) => d && (d.figure || d.mass || d.mount))
+})
+const hasLayout = computed(() => layoutDoc.value.length > 0)
+const layoutMulti = computed(() => layoutDoc.value.length > 1)
+const layoutViews = (d) => {
+  const s = ((model.value && model.value.bodyLayout && model.value.bodyLayout.sats) || [])[d.sat] || {}
+  return d.figure && s.views && s.views.dataUrl && s.redistributable !== false ? s.views : null
+}
+const figNo = computed(() => { let f = 0; return layoutDoc.value.map((d) => (layoutViews(d) ? ++f : 0)) })
+const capFigureNo = (no, title) => {
+  const t = en.value ? 'Figure' : (L.value.figure || '图')
+  return en.value ? `${t} ${no}  ${title}` : `${t} ${no}　${title}`
+}
 // SLA 建议（§4）：矩阵由主进程按各链路的条款并集转置好（见 report.js 的 buildSlaMatrix）；
 // 一条链路都没勾条款 ⇒ hasSla 为假 ⇒ 整节不出、目录不列、表号不占。
 const hasSla = computed(() => !!(model.value && model.value.hasSla && model.value.slaMatrix && model.value.slaMatrix.rows.length))
@@ -114,6 +135,11 @@ const toc = computed(() => {
   }
   items.push({ n: '3', t: l.refs, sub: true })
   if (hasSla.value) items.push({ n: '4', t: l.sla, sub: true })
+  if (hasLayout.value) {
+    items.push({ n: '5', t: l.layout, sub: true })
+    // 逐星小节与分节时的 1.n / 2.n 同级（本目录只分两档：章名与其下各条）
+    if (layoutMulti.value) layoutDoc.value.forEach((d, i) => items.push({ n: '5.' + (i + 1), t: d.title, sub: true }))
+  }
   items.push({ n: '', t: l.detail, sub: false })
   for (const s of secs.value) {
     if (multi.value) items.push({ n: '', t: s.title, sub: true })
@@ -286,6 +312,45 @@ onMounted(async () => {
           </tbody>
         </table>
         <div v-if="slaParams.length" class="rp-note">{{ L.slaParams }}　{{ slaParams.map((x) => x.label + ' ' + x.value + (x.unit ? ' ' + x.unit : '')).join('　·　') }}</div>
+      </template>
+
+      <!-- 第 5 章「卫星本体与天线布局」：另起一页；每星 三视图 + 透视（纵向四宫格）→ 质量特性表 → 挂点布局表（续表共用表号）。
+           分组行走 .rp-grp（三线表不许底纹，层次靠黑体）；挂点表参数做行、挂点做列，格里只有数。 -->
+      <template v-if="hasLayout">
+        <h2 class="rp-h2 rp-layout-h">5　{{ L.layout }}</h2>
+        <div v-for="(d, di) in layoutDoc" :key="di" class="rp-layout-sat">
+          <h3 v-if="layoutMulti" class="rp-h3">5.{{ di + 1 }}　{{ d.title }}</h3>
+          <figure v-if="layoutViews(d)" class="rp-fig rp-layout">
+            <img :src="layoutViews(d).dataUrl" alt="" />
+            <figcaption>{{ capFigureNo(figNo[di], d.figure.caption) }}</figcaption>
+          </figure>
+          <template v-if="d.mass">
+            <div class="rp-caption">{{ capTable(tblNo.layout[di].mass, 0, 1, d.mass.title) }}</div>
+            <table class="rp-tb rp-layout-tb">
+              <thead><tr><th v-for="(h, hi) in d.mass.head" :key="hi" :class="d.mass.align[hi] === 'right' ? 'num' : 'lbl'" :style="{ width: d.mass.widths[hi] + '%' }">{{ h }}</th></tr></thead>
+              <tbody>
+                <template v-for="(r, ri) in d.mass.rows" :key="ri">
+                  <tr v-if="d.mass.keyRows[ri]" class="rp-grp"><td class="lbl" :colspan="d.mass.head.length">{{ r[0] }}</td></tr>
+                  <tr v-else><td v-for="(c, ci) in r" :key="ci" :class="d.mass.align[ci] === 'right' ? 'num' : 'lbl'">{{ c }}</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+          <template v-if="d.mount">
+            <template v-for="(ck, ci) in d.mount.chunks" :key="'m' + ci">
+              <div class="rp-caption">{{ capTable(tblNo.layout[di].mount, ci, d.mount.chunks.length, d.mount.title) }}</div>
+              <table class="rp-tb rp-layout-tb rp-keep" :style="ck.widthPct < 100 ? { width: ck.widthPct + '%', marginLeft: 'auto', marginRight: 'auto' } : null">
+                <thead><tr><th v-for="(h, hi) in ck.head" :key="hi" :class="ck.align[hi] === 'right' ? 'num' : 'lbl'" :style="{ width: ck.widths[hi] + '%' }">{{ h }}</th></tr></thead>
+                <tbody>
+                  <template v-for="(r, ri) in ck.rows" :key="ri">
+                    <tr v-if="ck.keyRows[ri]" class="rp-grp"><td class="lbl" :colspan="ck.head.length">{{ r[0] }}</td></tr>
+                    <tr v-else><td v-for="(c, cj) in r" :key="cj" :class="ck.align[cj] === 'right' ? 'num' : 'lbl'">{{ c }}</td></tr>
+                  </template>
+                </tbody>
+              </table>
+            </template>
+          </template>
+        </div>
       </template>
     </section>
 

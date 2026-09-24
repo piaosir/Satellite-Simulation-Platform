@@ -117,6 +117,10 @@ export const FIELD_GROUPS = [
       { key: 'slantRange', label: '斜距', tip: '发信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表逐站填写）。MEO 预设 10 dB/K：MEO Ku 点波束量级（GEO 宽波束为 0~2 dB/K 量级）', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
+      // 星侧太阳侵入（DESIGN2 D11）：与 G_Ts 同为「卫星×发信站」配对量（这座站落在哪个接收波束、那个波束何时看见太阳），
+      // 故紧跟 G_Ts 同组同列组。引擎只从 uplinkCT / uplinkThermalCN 各减一次，G_Ts 与 SFD 不动；缺省关 = 逐位同旧口径。
+      { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从上行 C/T 与上行热噪声 C/N 中扣除，卫星 G/T 与 SFD 不变；「设置余量」方式由功放抬升补足余量（功放功率、到达通量密度与下行电平随之升高），其余计算方式功放与到达通量密度不变；关＝不计入', type: 'select', options: ['关', '开'], def: '关', target: 'link' },
+      { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]

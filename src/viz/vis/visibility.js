@@ -5,8 +5,11 @@
 //
 // 双历元约定：真实星按墙钟 now/gmst 解算，自定义/合成星按固定场景历元 ccNow/ccGmst 解算——
 // 由调用方在 entry 上打好 _cc 标记并预备两套时刻（见 useVisibility.recompute）。
+//
+// 星历点序列星（entry = {eph: 表}，没有 rec）：一律经 satPos.propOf(entry) 取传播体——只认 e.rec 的旧写法会让
+// 这类星 posAtMs(undefined) 恒为 null、仰角恒 −999，在过境里静默缺席（单测 modelVisEph）。
 import sat from '../constellation/satellite.js'
-import { posAt, posAtMs } from '../constellation/satPos.js'   // 取位的唯一入口
+import { posAt, posAtMs, propOf } from '../constellation/satPos.js'   // 取位的唯一入口
 
 const DEG = Math.PI / 180
 
@@ -146,7 +149,7 @@ const peakInWindow = (rec, obs, aMs, bMs) => {
   return { peakMs: tPeak, peakEl: elevMaxAt(rec, obs, tPeak) }
 }
 
-// entries:[{rec,name,noradId,group,slot?,_cc}] · targets:[{lat,lon}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
+// entries:[{rec|eph,name,noradId,group,slot?,_cc}] · targets:[{lat,lon}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
 // 返回 [{noradId,name,group,slot,windows:[{startMs,endMs,durMin,peakEl,peakMs,truncated}]}]，按首窗开始时刻排序。
 export function accessWindows(entries, targets, times, horizonSec, minElevDeg, opts) {
   if (!entries || !entries.length || !targets || !targets.length) return []
@@ -160,22 +163,23 @@ export function accessWindows(entries, targets, times, horizonSec, minElevDeg, o
   const seededPeak = (rec, seedMs, aMs, bMs) => peakInWindow(rec, obs, Math.max(aMs, seedMs - step), Math.min(bMs, seedMs + step))
   for (const e of entries) {
     const base = (e._cc ? times.ccNow : times.now).getTime(), end = base + horizonSec * 1000
+    const rec = propOf(e)   // satrec 或星历点序列表（rec 星与改前逐位同路）
     const windows = []
-    const el0 = elevMaxAt(e.rec, obs, base)
+    const el0 = elevMaxAt(rec, obs, base)
     let prevMs = base, prevAbove = el0 >= thr
     let startMs = prevAbove ? base : null, pkMs = base, pkEl = el0   // pkMs/pkEl：当前开窗内最高粗采样格
     for (let ms = base + step; ms <= end; ms += step) {
-      const el = elevMaxAt(e.rec, obs, ms), above = el >= thr
-      if (above && !prevAbove) { startMs = bisectCross(e.rec, obs, prevMs, ms, thr, false); pkMs = ms; pkEl = el }
+      const el = elevMaxAt(rec, obs, ms), above = el >= thr
+      if (above && !prevAbove) { startMs = bisectCross(rec, obs, prevMs, ms, thr, false); pkMs = ms; pkEl = el }
       else if (above && prevAbove) { if (el > pkEl) { pkEl = el; pkMs = ms } }
       else if (!above && prevAbove && startMs != null) {
-        const losMs = bisectCross(e.rec, obs, prevMs, ms, thr, true), pk = seededPeak(e.rec, pkMs, startMs, losMs)
+        const losMs = bisectCross(rec, obs, prevMs, ms, thr, true), pk = seededPeak(rec, pkMs, startMs, losMs)
         windows.push({ startMs, endMs: losMs, startMin: (startMs - base) / 60000, endMin: (losMs - base) / 60000, durMin: (losMs - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: false })
         startMs = null
       }
       prevMs = ms; prevAbove = above
     }
-    if (prevAbove && startMs != null) { const pk = seededPeak(e.rec, pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
+    if (prevAbove && startMs != null) { const pk = seededPeak(rec, pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
     if (windows.length) out.push({ noradId: e.noradId, name: e.name, group: e.group, slot: e.slot || '', windows })   // slot=GEO 定点标注（调用方预置，纯透传）
   }
   out.sort((a, b) => a.windows[0].startMs - b.windows[0].startMs)

@@ -7,11 +7,13 @@
 // 逐像素一致，且以后只有一处要改。变体只影响【文案】，不影响控件与口径：
 //   variant='ground' —— 对地覆盖分析（拖拽落点是地表）
 //   variant='shell'  —— 对星覆盖分析（拖拽落点是轨道壳层）
-import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, inject } from 'vue'
 import Icon from './Icon.vue'
 import { SCHEME_NAMES } from '../viz/grd/colormap.js'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { useCheckList } from '../shared/ui/useCheckList.js'
+import { byLang } from '../shared/i18n/lang.js'
+import { onLangChange } from '../shared/i18n/runtime.js'
 
 const props = defineProps({
   grd: { type: Object, required: true },            // useGrdCoverage 活实例
@@ -150,6 +152,45 @@ function lvGenerate() { grd.generateLevels(gen.start, gen.step, gen.count, gen.s
 const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
 const satResolved = computed(() => grd.boreSatResolved(st))
 const isSatMode = computed(() => st.boreType === 'sat' || st.boreType === 'satoff')
+// ---- 指向来源：手动（上面七种模式）/ 姿态 + 挂点（DESIGN2 §4）----
+// 挂点候选与姿态律名由宿主注入（grd.mountOptions / grd.attLaw 转宿主 hooks；老宿主没注入就退到 inject 那一份）
+const injMountOpts = inject('grdMountOptions', null)
+const injAttLaw = inject('grdAttLaw', null)
+const isAtt = computed(() => st.boreType === 'att')
+const boreSrc = computed({ get: () => (isAtt.value ? 'att' : 'manual'), set: (v) => grd.setBoreSource && grd.setBoreSource(v) })
+// 「缺省」（''）的实际去向与宿主口径一致：antennaRef 指向本天线的挂点 → 否则本体 +Z（up 本体 −Y）
+// ★ 选项整条挂 data-i18n-skip（挂点名是用户数据，呈现层不许翻），所以里面我们自己拼的那几个字（「缺省 · 」前缀 /
+//   「本体 +Z」/「已不在绑定里」）呈现层也够不着 —— 按平台语言在这里就地出（byLang），换语言经 langTick 重算
+const langTick = ref(0)
+onBeforeUnmount(onLangChange(() => { langTick.value++ }))
+const mountOpts = computed(() => {
+  void langTick.value
+  const key = grd.active.value
+  const raw = (grd.mountOptions ? grd.mountOptions(key) : (injMountOpts ? injMountOpts(key) : null)) || []
+  const list = raw.filter((o) => o && typeof o.id === 'string')
+  const hit = list.find((o) => o.id && o.match)
+  const bodyZ = byLang('本体 +Z', 'Body +Z')
+  const defName = (o) => (hit ? byLang('缺省 · ', 'Default · ') + (hit.name || hit.id) : ((o && o.name) || bodyZ))
+  const out = list.map((o) => (o.id ? { id: o.id, name: o.name || o.id, match: !!o.match } : { id: '', name: defName(o), match: false }))
+  if (!out.some((o) => o.id === '')) out.unshift({ id: '', name: defName(null), match: false })
+  // 存下的挂点已不在绑定里（工作台删了 / 改了 id）：照实列出来，宿主那边按缺省口径退。
+  // 宿主的绑定还在路上（启动时 attReady false，候选只有缺省一项）时不下「已不在绑定里」这个判断：只列 id 本身，绑定一到（bodyVer 变）重算
+  const cur = typeof st.boreMount === 'string' ? st.boreMount : ''
+  const ready = !grd.attReady || grd.attReady() !== false
+  if (cur && !out.some((o) => o.id === cur)) out.push(ready ? { id: cur, name: cur + byLang('（已不在绑定里）', ' (no longer bound)'), match: false, gone: true } : { id: cur, name: cur, match: false })
+  return out
+})
+const mountSel = computed({ get: () => (typeof st.boreMount === 'string' ? st.boreMount : ''), set: (v) => grd.setBoreMount && grd.setBoreMount(v) })
+// 律名进读数行（.tip 不挂 skip，呈现层按 uiDict 翻）
+const LAW_NAMES = { nadir: '对地定向', yawSteer: '偏航导引', sun: '对日定向', inertial: '惯性定向', target: '对目标定向' }
+const lawName = (law) => LAW_NAMES[law] || LAW_NAMES.nadir
+// 读数里的律 = 实际生效的那条（宿主随轴带回；没带就按绑定律）。律退过（目标 / 太阳解不出 → 对地定向）照实写成状态
+const attLawText = (r) => {
+  const k = grd.active.value
+  const cfg = (r && r.cfgLaw) || (grd.attLaw ? grd.attLaw(k) : (injAttLaw ? injAttLaw(k) : 'nadir'))
+  const eff = (r && r.law) || cfg
+  return (r && r.fallback && eff !== cfg) ? `${lawName(cfg)}未解出，已退回${lawName(eff)}` : lawName(eff)
+}
 // 目标星搜索：★全量（星座目录 / 卫星组 / 自定义星座），不限于在场的星——搜到即可跟踪。
 // 结果区与主界面搜索、卫星组管理器【同款】：一行一颗（星名 + 「来源 · NORAD」副行）、可滚动、
 // 条数上限同量级（60），底下一行照实报命中总数——只列一小截又不说总数，用户分不清「就这几颗」与「被截了」。
@@ -178,7 +219,12 @@ onBeforeUnmount(() => { if (bTimer) clearTimeout(bTimer) })
 function pickBoreSat(e) { grd.setBoreSat(e.noradId ? 'n:' + e.noradId : 'm:' + e.name, e.name); bq.value = '' }
 // 读数行：各模式各报各的口径（对地报地表落点，对星报目标星/空间点），不硬套「经纬度」一种说法。
 // 数字一律走 fx：数字输入框被清空时 v-model.number 落下的是空串，直接 .toFixed 会当场抛错、整块侧栏白屏。
-const fx = (v, n = 2) => (Number.isFinite(+v) && v !== '' && v !== null ? (+v).toFixed(n) : '—')
+// 负零（−1e-16 这类取整后为 0 的数）去掉负号：天底上的视轴 Az 不该读成「-0.000°」
+const fx = (v, n = 2) => {
+  if (!(Number.isFinite(+v) && v !== '' && v !== null)) return '—'
+  const s = (+v).toFixed(n)
+  return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s
+}
 const boreTip = computed(() => {
   const m = grd.antMeta(); if (!m) return ''
   // 峰值读数取【当前画面上】标出来的那个峰值点（grd.livePeak，两个视图各一份），与地图所见同源。
@@ -189,6 +235,14 @@ const boreTip = computed(() => {
   const tail = lp
     ? ` · 峰值 ${fx(lp.db)}dB` + (lp.hit ? ` @ ${fx(lp.lon)},${fx(lp.lat)}` : '')
     : (Number.isFinite(+m.peakDb) ? ` · 峰值 ${fx(m.peakDb)}dB` : '')
+  // 姿态 + 挂点：律名 + 视轴在星下天底系的 Az/El（与「本体固定」档同一口径）+ 钟向角 ψ（含「旋转 Rot」）+ 视轴落点。
+  // 这三个角正是写给链路预算 / 主进程采样器的等效手动指向（attEquiv）
+  if (isAtt.value) {
+    const r = grd.attReadout ? grd.attReadout() : null
+    if (!r || !r.resolved) return '姿态未解出，已退回天底' + tail
+    return `${attLawText(r)} · 视轴 Az ${fx(r.az, 3)}° El ${fx(r.el, 3)}° · ψ ${fx(r.psi, 2)}°`
+      + (r.lon != null ? ` · 指向 ${fx(r.lon)}°E, ${fx(r.lat)}°N` : ' · 指向深空（越过地平）') + tail
+  }
   if (isSatMode.value) {
     const off = st.boreType === 'satoff' ? ` · 偏置 ${fx(st.boreOffAz || 0)}°/${fx(st.boreOffEl || 0)}°` : ''
     return (st.boreSat ? (satResolved.value ? '指向 ' + (st.boreSatName || '目标星') : '目标星不在场，已退回天底') : '未选目标星') + off + tail
@@ -325,11 +379,26 @@ const boreTip = computed(() => {
 
     <div class="sec">
       <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon :name="isSecOpen('grd-bore') ? 'chevron-down' : 'chevron-right'" :size="12" /><span>天线 boresight</span>
-        <span class="lnk" :class="{ on: grd.dragBore.value }" :title="isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心'" @click.stop="grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
+        <span class="lnk" :class="{ on: grd.dragBore.value, dis: isAtt }" :title="isAtt ? '姿态 + 挂点：视轴由姿态律给出，不可拖拽' : (isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心')" @click.stop="isAtt || grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
       </div>
       <template v-if="isSecOpen('grd-bore')">
         <!-- 两大类：对地指向瞄地面/相对天底，对星指向瞄空间（目标星或空间定点，可指反天底）。
              同一份指向设置两视图共用，故两边下拉必须给全，缺项会让另一视图选出来的模式在这里显示空白。 -->
+        <div class="srow"><label>指向来源</label>
+          <div class="seg">
+            <span class="sg" :class="{ on: boreSrc === 'manual' }" title="按下面的指向模式手动给定" @click="boreSrc = 'manual'">手动</span>
+            <span class="sg" :class="{ on: boreSrc === 'att' }" title="视轴 = 卫星本体姿态律 × 挂点（绑定在模型工作台「卫星」页设）；随仿真时刻走。切回手动恢复原指向" @click="boreSrc = 'att'">姿态 + 挂点</span>
+          </div>
+        </div>
+        <!-- ★ att 自成一支：下面手动那条 v-if / v-else-if / v-else 链整块包进 v-else，att 不会掉进末尾的 az/el 分支 -->
+        <template v-if="isAtt">
+          <div class="srow"><label>挂点</label>
+            <select v-model="mountSel" title="绑定里的挂点；「缺省」= antennaRef 指向本天线的那副挂点，没有则本体 +Z（up 本体 −Y，与手动天底同一基底）">
+              <option v-for="o in mountOpts" :key="o.id || '_def'" :value="o.id" data-i18n-skip>{{ o.name }}</option>
+            </select>
+          </div>
+        </template>
+        <template v-else>
         <div class="srow"><label>指向模式</label>
           <select v-model="boreMode">
             <optgroup label="对地指向">
@@ -381,6 +450,7 @@ const boreTip = computed(() => {
         <template v-else>
           <div class="srow"><label>方位 Az</label><input class="ci" type="number" step="0.5" v-model.number="st.boreAz" /><span class="u">°</span></div>
           <div class="srow"><label>俯仰 El</label><input class="ci" type="number" step="0.5" v-model.number="st.boreEl" /><span class="u">°</span></div>
+        </template>
         </template>
         <div class="srow"><label>旋转 Rot</label><input class="ci" type="number" step="1" v-model.number="st.yaw" /><span class="u">°</span></div>
         <div class="tip">{{ boreTip }}</div>
@@ -469,6 +539,8 @@ const boreTip = computed(() => {
 .sect .lnk { margin-left: auto; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
 .sect .lnk.on { font-weight: 600; text-decoration: underline; }
 .sect .lnk:hover { text-decoration: underline; }
+/* 姿态 + 挂点档：拖拽波束不可用（视轴归姿态律），压到最浅一档、不给悬停反馈 */
+.sect .lnk.dis, .sect .lnk.dis:hover { color: var(--text-faint); cursor: default; text-decoration: none; }
 /* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款） */
 .setsect { margin: -12px -16px 10px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }

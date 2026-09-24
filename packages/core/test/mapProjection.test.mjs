@@ -397,9 +397,11 @@ for (const { k, zh } of PROJECTIONS) {
     /reprojectRaster\(imgEl, null, true\)/.test(FLAT) &&
     /if \(!imgEl\) return false/.test(seg(FLAT, 'function drawImagery()', 'function imageryPlan')) &&
     /from '\.\.\/geo\/tileBins\.js'/.test(FLAT))
-  ok('⑪ 调用方不再换档：imagery.js 没有 imageryForFlat，2D 与 3D 同一档；换投影仍重推影像',
+  // 2026-09-24 地球影像并入宇宙空间：页面按视图各记一档、没变不重贴（3D 重贴 = 716 MB 重传），
+  // 故换投影要显式 force2d（applyImagery(true)）—— 2D 那侧档位没变也得重推一遍。
+  ok('⑪ 调用方不再换档：imagery.js 没有 imageryForFlat，平面图按所选档（投影档照吃瓦片）；换投影仍重推影像（force2d）',
     !/imageryForFlat|PROJ_IMAGERY/.test(IMG) && !/imageryForFlat/.test(VUE) &&
-    /function setMapProj\(k\) \{[^\n]*applyImagery\(\)/.test(lf(VUE)))
+    /function setMapProj\(k\) \{[^\n]*applyImagery\(true\)/.test(lf(VUE)))
   ok('⑪ 瓦片路只有一份分桶几何：CPU 与 GPU 都从 binByTiles 取，选级与等距圆柱同式，导出前把片等到位',
     (FLAT.match(/binByTiles\(/g) || []).length >= 1 && (FLAT.match(/planTileBins\(/g) || []).length >= 3 &&
     /const tileZ = \(kk\) => pickZoom\(1 \/ \(kk \* dpr\), imgMaxZ\)/.test(FLAT) &&

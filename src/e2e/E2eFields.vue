@@ -12,13 +12,22 @@ const props = defineProps({
 })
 const ph = (f) => (props.base && props.base[f.key] != null ? String(props.base[f.key]) : '')
 const ro = (f) => props.readonlyKeys.includes(f.key)
+// 覆盖模式下的下拉：select 没有占位符，故补一个空值项充当「跟随库条目」——显示库里的值（库也空则
+// 字段缺省，与 buildChain 的回落同口径），选它即清掉覆盖（写回 ''，buildChain 视 '' 为跟随库）。
+// 不用 v-model：覆盖值 undefined 与空值项 '' 在 looseEqual 下不等，会渲成 selectedIndex = -1 的空白框。
+const inherits = (f) => props.form[f.key] == null || props.form[f.key] === ''
+const selVal = (f) => (inherits(f) ? '' : String(props.form[f.key]))
 </script>
 
 <template>
   <div class="sp-fields">
     <label v-for="f in fields" :key="f.key" class="sp-f" :title="f.tip || f.label">
       <span class="sp-l">{{ f.label }}<i v-if="f.unit || ro(f)"> ({{ ro(f) ? '自动' : f.unit }})</i></span>
-      <select v-if="f.type === 'select'" v-model="form[f.key]" class="sp-i">
+      <select v-if="f.type === 'select' && !base" v-model="form[f.key]" class="sp-i">
+        <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
+      </select>
+      <select v-else-if="f.type === 'select'" class="sp-i" :class="{ inh: inherits(f) }" :value="selVal(f)" @change="form[f.key] = $event.target.value">
+        <option value="" class="inh">{{ ph(f) || f.def }}</option>
         <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
       </select>
       <input v-else v-model="form[f.key]" class="sp-i" :class="{ auto: ro(f) }" :readonly="ro(f)" :placeholder="ph(f)" :inputmode="f.type === 'num' ? 'decimal' : undefined" />
@@ -39,5 +48,7 @@ select.sp-i { text-align: left; }
 .sp-i:hover { background-color: var(--field-bg); border-color: var(--field-border-hover); }
 .sp-i:focus { outline: none; background-color: var(--field-bg); border-color: var(--accent-ui); }
 .sp-i::placeholder { color: var(--text-faint); }
+select.sp-i.inh, .sp-i option.inh { color: var(--text-faint); }
+select.sp-i.inh option:not(.inh) { color: var(--text); }
 .sp-i.auto { color: var(--text-muted); cursor: not-allowed; }
 </style>

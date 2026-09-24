@@ -174,6 +174,8 @@ const RESULT_LABEL_LIST = [
     ['cloudNoiseTempResult', '云噪声温度', 'K'],
     ['gOverTeResult', '收信站 G/T', 'dB/K'],
     ['gOverTdegradationResult', 'G/T 劣化（降雨）', 'dB'],
+    // 星侧（卫星接收天线看见太阳）的等效 G/T 损失；与上一行的地面雨致劣化是两件事，名字刻意不撞
+    ['satSunGtLossResult', '星侧太阳侵入 G/T 劣化', 'dB'],
     ['txAntennaGainResult', '发信站天线增益', 'dBi'],
     ['rxAntennaGainResult', '收信站天线增益', 'dBi'],
     ['beamWidthResult', '发信站波束宽度', '°'],

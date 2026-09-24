@@ -261,3 +261,20 @@ body {
 .rp-sla { max-width: 190mm; }
 .rp-sla .lbl { width: 26%; }
 .rp-sla td.num:first-of-type, .rp-sla th.num:first-of-type { width: 30%; color: #333; }
+
+/* ——— 第 5 章「卫星本体与天线布局」（纵向页）———
+   章另起一页（与 Word 的 pageBreakBefore 同口径），多星时第二颗起每星另起一页。
+   三视图 + 透视是 2×2 四宫格的正方图：纵向版心 160 mm 宽，限高 148 mm（与 Word 的 560 px 同尺寸），
+   图题与下一张表题还能落在同一页；原 .rp-fig img 的 82 mm 限高是给横向详情页两图同页用的，这里放宽。
+   表格列宽由排版计划给（行内 style），挂点表的数列窄，表头允许折行、数字不折。 */
+.rp-h2.rp-layout-h { break-before: page; margin-top: 0; }
+.rp-layout-sat + .rp-layout-sat { break-before: page; }
+.rp-fig.rp-layout { margin: 4pt 0 6pt; }
+.rp-fig.rp-layout img { width: 148mm; max-width: 100%; height: auto; max-height: 148mm; }
+/* 挂点表不长（≤ 20 行）整张不拆；质量特性表紧跟在大图下面，放不下就照常续页（重复表头）。
+   分组行（「安装位置」「惯量张量」一类）不许落在页脚、数据全在下页 */
+.rp-layout-tb { table-layout: fixed; }
+.rp-layout-tb.rp-keep { break-inside: avoid; }
+.rp-layout-tb tr.rp-grp { break-after: avoid; }
+.rp-layout-tb td.num { white-space: nowrap; }
+.rp-layout-tb th { overflow-wrap: anywhere; }

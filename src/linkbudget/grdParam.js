@@ -77,19 +77,32 @@ export async function sampleAntennaParams(node, ant, cfg, points) {
 // 采样真正吃的天线设置键——镜像 core/utils/grdSampler.js 的 makeSampleCtx（指向 / 极化 / 增益偏置 / 路径损耗 /
 // 存活波束；lbGrdImport.test.mjs 拿采样器源码对拍这份清单）。设置对象里其余全是 3D 页的绘制项（等值线电平与
 // 颜色 / 线宽 / 填充 / 要画哪些波束 / 波束改名…），改它们不该动链路表。
-export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon', 'boreLat', 'pol', 'gainOffset', 'pathLoss', 'keptSets']
+// attEquiv（D9）：「姿态 + 挂点」档由 3D 页按仿真时刻写回的等效手动指向 {boreAz, boreEl, yaw}，采样器照 azel 吃。
+export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon', 'boreLat', 'attEquiv', 'pol', 'gainOffset', 'pathLoss', 'keptSets']
 
 // 对外：某路天线的回填指纹「基底」（不含站址那一段）＝决定取值的输入里【用户能改的】那部分：
 // 天线文件 + 采样吃的那几项设置 + 静态星位。
 // ★ 实时关联星（node.live：星位来自 3D 页每 3 s 重写一次的 globe3d/grdLive）不把星位拼进去：GEO 日常漂移
 //   ±0.1°、窗口每次获得焦点都重读一遍，拼进去等于「指纹随时会变」——下次任何触发（加行 / 改站址 / 刷新）
 //   就把整列手改值冲掉。漂移对取值的影响远小于 0.1 dB；要按最新星位重取走「刷新」（force，见 grdFillNeeded）。
+// ★ 「姿态 + 挂点」档（boreType 'att'）的 attEquiv【角度】同理不拼：它是仿真时刻的函数（偏航导引下每秒都在变，LEO 随星位变），
+//   3D 页定时写回 —— 拼进去就是「指纹随时会变」。拼的是挂点 id + attEquiv 的来源签名 sig（3D 页写 attEquiv 时盖上的：
+//   所选 / 实际生效的挂点、实际生效的姿态律、Rot，见 useGrdCoverage.attSrcSig）：
+//     · 换挂点 / 改 Rot / 绑定里换了律 ⇒ 签名变 ⇒ 回填重取；
+//     · 还没写过（null）→ 写上了、按旧挂点写的 → 按新挂点写的 ⇒ 签名也变 ⇒ 第一份对得上的 attEquiv 一到就自动重取一次
+//       （不会拿「上一个挂点 / 天底退路」那一份取完值就钉死在表里）；
+//     · 同一份输入下随时刻变的角度 ⇒ 签名不变 ⇒ 不重取（要按最新姿态重取走「刷新」）。
+//   没盖签名的老值记 '?'。非 att 档 attEquiv 只是切走前留下的旧值、采样器不读，同样不拼（非 att 档的指纹与二期之前逐字相同）。
 export function grdFillBase(node, ant, cfg) {
   const spec = antennaSampleSpec(node, ant, cfg)
   if (!spec) return ''
   const c = {}
-  for (const k of SAMPLE_CFG_KEYS) if (spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]
-  return JSON.stringify({ file: spec.file, sat: node.live ? 'live' : spec.sat, cfg: c })
+  for (const k of SAMPLE_CFG_KEYS) if (k !== 'attEquiv' && spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]
+  const eq = spec.cfg.attEquiv
+  const att = spec.cfg.boreType === 'att'
+    ? { mount: typeof spec.cfg.boreMount === 'string' ? spec.cfg.boreMount : '', eq: eq && typeof eq === 'object' ? (typeof eq.sig === 'string' ? eq.sig : '?') : null }
+    : null
+  return JSON.stringify(att ? { file: spec.file, sat: node.live ? 'live' : spec.sat, cfg: c, att } : { file: spec.file, sat: node.live ? 'live' : spec.sat, cfg: c })
 }
 
 // 对外：链路表某一格该不该由自动取值改写（判据本身是纯函数，便于自测；用法见 LinkBudgetApp 的 fillFromAnt）。

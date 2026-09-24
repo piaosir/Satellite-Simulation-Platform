@@ -7,7 +7,7 @@ import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '.
 import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, hasDetail, onPovChange } from '../geo/povResolver.js'
 // 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
-import { terminatorFlat } from '../terminator.js'
+import { terminatorFlat, solarGeometry, nightRamp } from '../terminator.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
 import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, getTileFallback, ancestorHit, prefetchParents, tileStats, tileGutter, tileImgSize, loadTiles, warm as warmTiles, MISS_TTL } from '../imageryTiles.js'
 // 投影档瓦片影像：同一份三角网按片分桶（纯几何，见其文件头）
@@ -19,6 +19,8 @@ import { paintMarkSymbol, symbolUp, symbolDown } from '../markers/markSymbols.js
 // 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
 import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
+// 运动档载具的屏幕朝向（沿大圆前进一小步投到图上）：P4 标记实体
+import { aheadPoint } from '../../../packages/core/models/entityRuntime.mjs'
 // 注记描边色/粗细随底色现算：与 3D 球体共用单一来源
 import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
 // 水域注记（大洋 + 海域）：与 3D 球体共用同一份表（../geo/waterNames.js）
@@ -45,7 +47,7 @@ import {
   uncoveredMode, needsRestRebuild,
   coversSubset, pickFallbackIdx, clipRects, stripRects
 } from './rebuildPolicy.js'
-import { geoArea, geoContains } from 'd3-geo'
+import { geoArea, geoContains, geoRotation } from 'd3-geo'
 // 南极洲极区收口：与 3D 球体同源（见 buildBaseGeo 的 ATA 分支）
 import { antarcticaFillRings } from '../globe3d/antarctica.js'
 // 导出（compat）时陆地面的分组：基础面按色合并、争议叠加面逐面单独填（纯函数，见其文件头）
@@ -203,9 +205,12 @@ export function createFlatCoverage(canvas) {
   // 位图不走分带多边形——连续场用栅格一次 drawImage 即可，缩放平移零成本、也不受多边形数量拖累。
   let envImg = null, envBBox = null, envAlpha = 0.78, envSmooth = true
   let envContours = []   // [{ level, text, color, width, lines:[[[lon,lat]...]], labels:[{lon,lat,a}] }]
-  // 晨昏线 / 夜区：随时间轴每次推进重算，只存当次的点列（约 360 点，逐帧直接 trace，不烘 Path2D
-  // ——量级比覆盖分带小两三个数量级，缓存收益还不如省掉 compat 分支的复杂度）
-  let termData = null, termOpts = {}
+  // 晨昏线：随时间轴每次推进重算，只存当次的点列（约 1440 点，逐帧直接 trace，不烘 Path2D
+  // ——量级比覆盖分带小两三个数量级，缓存收益还不如省掉 compat 分支的复杂度）。termDate 留着给换平面后就地重算
+  let termData = null, termOpts = {}, termDate = null
+  // 晨昏效果（夜区柔和压暗）：只存日下点与样式，栅格按需重算（见 drawNightShade）
+  let nightSub = null, nightOpts = { color: '#030814', opacity: 0.72 }
+  let nightEq = null, nightPj = null
   // GRD 全局标注选项（与 3D 同步）：波束名 / 峰值点 / 数值标签
   let fieldOpts = { showName: true, nameSize: 16, nameColor: '#ffffff', showBore: true, boreSize: 0.5, boreColor: '#ffffff', showPeak: false, peakSize: 5, peakColor: '#cfd6df', showVal: false, valSize: 12, valColor: '#ffffff' }
   let nameMode = 'off', provVisible = false, prov = null, cityVisible = false, city = null
@@ -251,6 +256,13 @@ export function createFlatCoverage(canvas) {
   // 非空即顶替逐片绘制 —— 于是矢量 PDF 也有影像底图，而不是悄悄掉回矢量海陆。
   let vecImg = null
   let mk = { points: [], stations: [], trajectories: [] }
+  // 运动档载具（P4：航迹带起始时刻 + 速度，随仿真时钟沿大圆走）：航迹 id → { lat, lon, headingDeg, gen }（条目复用）。
+  // 没有条目的航迹（静止档）照旧把载具画在末航点、朝向按末段在图上的走向 —— 与改动前逐像素相同。
+  const vehStates = new Map()
+  let vehGen = 0
+  // 拖放落点高亮（页面 dragover 期间给）：{ kind, id, px, color } | null；每帧按该实体【当前】屏幕位置画（实时层，不进快照）
+  let dropHl = null
+  // 平面图上 2D 不画 3D 模型（本期口径）：只有标记图标，运动档载具随时钟挪、拖放命中与接收
   // 性能指标表的城市层（每张开着的表一层）：[{ key, color, width, markOn, labelOn, labelPt, labelAlign,
   //   items:[{ lon, lat, ring:[[lon,lat],…]|null, text }] }]。与标记同住文字快照（页面按表推、随天线移动重推）
   let cityBoxes = []
@@ -2214,52 +2226,173 @@ export function createFlatCoverage(canvas) {
     }
   }
 
-  // 夜区填充 + 晨昏分界线。世界坐标 x=lon−LON0、y=90−lat，与覆盖层同一套 setTransform + ±360 环绕。
+  // 晨昏线（分界线 + 自带的夜区阴影）。世界坐标 x=lon−LON0、y=90−lat，与覆盖层同一套 setTransform + ±360 环绕。
   // 采样起点已在 terminatorFlat 里对齐到 LON0（地图接缝）→ 世界 X 单调 0→360，多边形不会被接缝撕开。
-  // 画在 drawEnvRaster 之前（即所有数据层之下、底图之上）：夜区是「打光」不是「数据」，
-  // 只该压暗底图，不该把覆盖场/等值线一起蒙灰；国界地名在 aboveCanvas，天然压在其上。
+  // 画在 drawEnvRaster 之前（即所有数据层之下、底图之上）：它与晨昏效果一样是「打光」不是「数据」；
+  // 国界地名在 aboveCanvas，天然压在其上。
+  // 夜区阴影（shadeOpacity > 0 才画）：硬边夜区多边形 —— v1.4.13「夜区遮罩」原样，矢量填充、放多大都是一条利边。
+  // 晨昏效果（drawNightShade 的柔和栅格）勾着时页面给 shadeOpacity 0，夜区由它接管，不叠两层。
   function drawTerminator() {
+    // 换平面（切口 / 投影）会作废点列（见 rebuildPlane 的 term）：时钟停着没有下一拍来补，这里按存着的时刻就地重算
+    if (!termData && termDate) termData = terminatorFlat(termDate, { steps: (termOpts.steps || 1440), lon0: LON0 })
     if (!termData) return
     const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
     const o = termOpts
+    const sh = Number(o.shadeOpacity) > 0 ? Math.min(1, Number(o.shadeOpacity)) : 0
+    const lineOn = !(o.lineOpacity <= 0)
     ctx.save()
     for (const off of wraps()) {
       if (off + 360 < wl || off > wr) continue          // 该副本整幅落在视口外
       ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-      if (o.night !== false) {
-        ctx.globalAlpha = o.nightOpacity != null ? o.nightOpacity : 0.42
-        ctx.fillStyle = o.nightColor || '#0a1120'
+      if (sh > 0) {
+        ctx.globalAlpha = sh
+        ctx.fillStyle = o.shadeColor || '#0a1120'
         ctx.beginPath()
-        const ng = termData.night
-        // 夜区：投影档交给 d3 的球面多边形裁剪 —— 它自己判绕不绕极、该不该补极点，
+        // 投影档交给 d3 的球面多边形裁剪 —— 它自己判绕不绕极、该不该补极点，
         // 故【不用】平面那套「沿暗极那条边封口」的收口点（那两点的经度超出 ±180，d3 认不得）。
-        // 定向靠 darkPole：暗极必在夜区里，据此判要不要把环翻过来（面积判据在这里正好是半球、靠不住）。
+        // 定向靠反日下点：它恒是夜区正中（太阳高度 −90°），据此判要不要把环翻过来（面积判据在这里正好是半球、靠不住）。
+        // ★ 不能拿暗极附近的 (0°, ±89°) 当内点（v1.4.13 的写法）：春秋分前后赤纬不到 1°，极夜只剩极点一小圈，
+        //   (0°, 89°) 常常落在昼侧 —— 整片阴影就填到白天那半边去了（2026-09-24 秋分后一天实测 Robinson / 方位等距全反）。
         if (!PJ.identity) {
           const ring = termData.line.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]])
-          const dp = termData.darkPole > 0 ? 89 : -89
-          PJ.path(asPoly([ring.concat([ring[0]])], [0, dp]), ctx)
+          const s = termData.sub
+          PJ.path(asPoly([ring.concat([ring[0]])], [((s.lon % 360) + 360) % 360 - 180, -s.lat]), ctx)
         } else {
+          const ng = termData.night
           ctx.moveTo(ng[0][0] - LON0, 90 - ng[0][1])
           for (let i = 1; i < ng.length; i++) ctx.lineTo(ng[i][0] - LON0, 90 - ng[i][1])
         }
         ctx.closePath(); ctx.fill()
       }
-      if (o.line !== false) {
-        ctx.globalAlpha = o.lineOpacity != null ? o.lineOpacity : 0.75
-        ctx.strokeStyle = o.lineColor || '#ffd27a'
-        ctx.lineWidth = (o.lineWidth || 1.2) / kk       // 除以缩放 → 恒定屏幕像素宽
-        ctx.lineJoin = 'round'; ctx.lineCap = 'round'
-        ctx.beginPath()
-        const ln = termData.line
-        if (!PJ.identity) PJ.path({ type: 'LineString', coordinates: ln.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]]) }, ctx)
-        else {
-          ctx.moveTo(ln[0][0] - LON0, 90 - ln[0][1])
-          for (let i = 1; i < ln.length; i++) ctx.lineTo(ln[i][0] - LON0, 90 - ln[i][1])
-        }
-        ctx.stroke()
+      if (!lineOn) continue
+      ctx.globalAlpha = o.lineOpacity != null ? o.lineOpacity : 0.75
+      ctx.strokeStyle = o.lineColor || '#ffd27a'
+      ctx.lineWidth = (o.lineWidth || 1.2) / kk       // 除以缩放 → 恒定屏幕像素宽
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+      ctx.beginPath()
+      const ln = termData.line
+      if (!PJ.identity) PJ.path({ type: 'LineString', coordinates: ln.map((q) => [((q[0] + 180) % 360 + 360) % 360 - 180, q[1]]) }, ctx)
+      else {
+        ctx.moveTo(ln[0][0] - LON0, 90 - ln[0][1])
+        for (let i = 1; i < ln.length; i++) ctx.lineTo(ln[i][0] - LON0, 90 - ln[i][1])
       }
+      ctx.stroke()
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
+  }
+
+  // ---- 晨昏效果：夜区柔和压暗（地图设置 · 宇宙空间）----
+  // 与 3D 同一条曲线：按太阳高度角 h 从 0° 到 −18° smoothstep 压暗（terminator.nightRamp），不是硬边多边形。
+  // 连续渐变在 Canvas2D 里只能靠栅格：算一张小位图（每像素一次点积）再 drawImage 放大，双线性插值天然平滑 ——
+  // 过渡带宽 18°（约 2000 km），0.5°～1° 一格的栅格放大多少倍都看不出格子。逐帧只是一到三次 drawImage。
+  //   · 等距圆柱：经纬栅格 720×360（0.5°/格），可分离（行项 sinφ·sinφs、cosφ·cosφs × 列项 cos(λ−λs)），重算约 2 ms；
+  //     按 x = lon − LON0 与整幅影像同一套 ±360 副本贴，副本边界 round 到整设备像素 —— 半透明层两副本在小数边上
+  //     各盖一半，source-over 叠出来比单层淡，接缝经线上会出一条亮线。
+  //   · 投影档：平面栅格（≤ 9 万格）逐格逆算一次、存成【投影旋转系】下的单位矢量 —— 平面 ↔ 旋转系只由投影形状
+  //    （档 + 标准纬线）定，与切口 / 中心纬度无关：换切口（跟随星下点）/ 拖中心只把太阳转进旋转系、重填一遍 alpha，
+  //     不重做逆投影。画时裁到图廓（Sphere）里，栅格边上那一格的外推值漏不到图廓外。
+  // 栅格只在「日下点 / 颜色 / 强度」变了才重填（键比较），时间轴不动时每帧零计算。
+  const NIGHT_EQ_W = 720, NIGHT_EQ_H = 360, NIGHT_PJ_BUDGET = 90000
+  const _R = Math.PI / 180
+  function nightKey(sub) { return sub.lat.toFixed(4) + '/' + sub.lon.toFixed(4) + '/' + nightOpts.color + '/' + nightOpts.opacity }
+  function nightCanvas(w, h) {
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h
+    const g = cv.getContext('2d')
+    return { cv, g, img: g.createImageData(w, h), key: '' }
+  }
+  function nightEqRaster() {
+    if (!nightEq) {
+      nightEq = nightCanvas(NIGHT_EQ_W, NIGHT_EQ_H)
+      nightEq.cosLon = new Float64Array(NIGHT_EQ_W)
+    }
+    const s = nightSub, key = nightKey(s)
+    if (nightEq.key === key) return nightEq.cv
+    const [cr, cg, cb] = parseColor(nightOpts.color)
+    const A = 255 * Math.max(0, Math.min(1, nightOpts.opacity))
+    const sps = Math.sin(s.lat * _R), cps = Math.cos(s.lat * _R)
+    const cl = nightEq.cosLon, d = nightEq.img.data
+    for (let i = 0; i < NIGHT_EQ_W; i++) cl[i] = Math.cos((-180 + (i + 0.5) * 360 / NIGHT_EQ_W - s.lon) * _R)
+    let p = 0
+    for (let j = 0; j < NIGHT_EQ_H; j++) {
+      const lat = (90 - (j + 0.5) * 180 / NIGHT_EQ_H) * _R
+      const a = Math.sin(lat) * sps, b = Math.cos(lat) * cps
+      for (let i = 0; i < NIGHT_EQ_W; i++, p += 4) {
+        d[p] = cr; d[p + 1] = cg; d[p + 2] = cb
+        d[p + 3] = Math.round(A * nightRamp(a + b * cl[i]))
+      }
+    }
+    nightEq.g.putImageData(nightEq.img, 0, 0)
+    nightEq.key = key
+    return nightEq.cv
+  }
+  function nightPjRaster() {
+    const shape = PJ.kind + '/' + (PJ.par ? PJ.par.join(',') : '') + '/' + PJ.W + 'x' + PJ.H.toFixed(6)
+    if (!nightPj || nightPj.shape !== shape) {
+      const aspect = PJ.H / PJ.W
+      const RW = Math.max(64, Math.round(Math.sqrt(NIGHT_PJ_BUDGET / aspect))), RH = Math.max(32, Math.round(RW * aspect))
+      const rot = geoRotation(PJ.d3.rotate())
+      const dirs = new Float32Array(RW * RH * 3), ok = new Uint8Array(RW * RH)
+      const _t0 = performance.now()
+      for (let j = 0, k0 = 0; j < RH; j++) {
+        const y = (j + 0.5) / RH * PJ.H
+        for (let i = 0; i < RW; i++, k0++) {
+          const b = PJ.invRaw((i + 0.5) / RW * PJ.W, y)
+          if (!b) continue
+          const r = rot(b)
+          if (!r || !Number.isFinite(r[0]) || !Number.isFinite(r[1])) continue
+          const la = r[1] * _R, lo = r[0] * _R, c = Math.cos(la)
+          dirs[k0 * 3] = c * Math.cos(lo); dirs[k0 * 3 + 1] = c * Math.sin(lo); dirs[k0 * 3 + 2] = Math.sin(la)
+          ok[k0] = 1
+        }
+      }
+      nightPj = { shape, RW, RH, dirs, ok, ...nightCanvas(RW, RH), buildMs: +(performance.now() - _t0).toFixed(1) }
+    }
+    const P = nightPj
+    // 太阳转进投影旋转系（与逐格方向同一个系）：两边一起转，点积不变
+    const rs = geoRotation(PJ.d3.rotate())([nightSub.lon, nightSub.lat])
+    const key = nightKey({ lat: rs[1], lon: rs[0] })
+    if (P.key === key) return P.cv
+    const la = rs[1] * _R, lo = rs[0] * _R, c = Math.cos(la)
+    const sx = c * Math.cos(lo), sy = c * Math.sin(lo), sz = Math.sin(la)
+    const [cr, cg, cb] = parseColor(nightOpts.color)
+    const A = 255 * Math.max(0, Math.min(1, nightOpts.opacity))
+    const D = P.dirs, d = P.img.data, n = P.RW * P.RH
+    for (let q = 0, p = 0; q < n; q++, p += 4) {
+      d[p] = cr; d[p + 1] = cg; d[p + 2] = cb
+      d[p + 3] = P.ok[q] ? Math.round(A * nightRamp(D[q * 3] * sx + D[q * 3 + 1] * sy + D[q * 3 + 2] * sz)) : 0
+    }
+    P.g.putImageData(P.img, 0, 0)
+    P.key = key
+    return P.cv
+  }
+  function drawNightShade() {
+    if (!nightSub || !(nightOpts.opacity > 0)) return
+    const kk = k()
+    if (!(kk > 0)) return
+    ctx.save()
+    ctx.imageSmoothingEnabled = true
+    if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high'
+    if (PJ.identity) {
+      const cv = nightEqRaster()
+      const shift = (((-180 - LON0) % 360) + 360) % 360
+      const wl = -tx / kk, wr = (cw - tx) / kk
+      let n0 = Math.floor((wl - shift) / 360), n1 = Math.floor((wr - shift) / 360)
+      if (Number.isFinite(n0) && Number.isFinite(n1)) {
+        if (n1 - n0 > 8) n1 = n0 + 8
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        const y0 = Math.round(dpr * ty), y1 = Math.round(dpr * (ty + 180 * kk))
+        for (let n = n0; n <= n1; n++) {
+          const x0 = Math.round(dpr * (tx + (shift + n * 360) * kk)), x1 = Math.round(dpr * (tx + (shift + (n + 1) * 360) * kk))
+          if (x1 > x0 && y1 > y0) ctx.drawImage(cv, x0, y0, x1 - x0, y1 - y0)
+        }
+      }
+    } else {
+      const cv = nightPjRaster()
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
+      traceSphere(ctx); ctx.clip()
+      ctx.drawImage(cv, 0, 0, PJ.W, PJ.H)
+    }
+    ctx.restore()
   }
 
   // GPU 路的一层：三份环绕副本各画一次 → 按【该层屏上包围盒】合成一次 → 清空 GL 画布给下一层。
@@ -3020,7 +3153,8 @@ export function createFlatCoverage(canvas) {
     const sa0 = ctx.globalAlpha
     ctx.globalAlpha = sa0 * Math.max(0, Math.min(1, markCfg.tjOpacity != null ? markCfg.tjOpacity : 0.95))
     const tjDash = DASH_2D[markCfg.tjDash] || null
-    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(t.pts, hex(t.color != null ? t.color : 0xff5a5a), Math.max(0.1, markCfg.tjWidth != null ? markCfg.tjWidth : 2.2), false, tjDash)
+    // 运动档（t.line：0.5° 大圆加密，与载具运动同一条大圆）画加密线；drawPolyline 按 |Δx| > 180 在接缝切段、投影档交给 d3
+    for (const t of mk.trajectories) if (t.pts && t.pts.length > 1) drawPolyline(Array.isArray(t.line) && t.line.length > 1 ? t.line : t.pts, hex(t.color != null ? t.color : 0xff5a5a), Math.max(0.1, markCfg.tjWidth != null ? markCfg.tjWidth : 2.2), false, tjDash)
     ctx.globalAlpha = sa0
     // 圆点大小可调 markCfg.tjDot（0＝不画），按克制版 iz 联动。
     // ★ tjDot 与 tjIconPx 同一把尺（都是【屏幕 px @100% 缩放】、同一档位区间），
@@ -3041,21 +3175,105 @@ export function createFlatCoverage(canvas) {
       ctx.globalAlpha = sa * Math.max(0, Math.min(1, markCfg.tjOpacity != null ? markCfg.tjOpacity : 0.95))
       for (const t of mk.trajectories) {
         const tp = t.pts || []; if (!tp.length) continue
+        // 运动档：画在此刻的状态位置，朝向取【屏幕】走向（沿大圆前进一小步投到图上）—— 任何投影档都贴着大圆线
+        const vs = vehStates.size && t.id != null ? vehStates.get(t.id) : null
+        if (vs) {
+          const x = PX(vs.lon, vs.lat), y = PY(vs.lat, vs.lon)
+          drawVehicle(ctx, t.kind, x, y, vi, vehScreenRot(vs, x, y), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
+          continue
+        }
         const hd = tp[tp.length - 1]
         drawVehicle(ctx, t.kind, PX(hd.lon, hd.lat), PY(hd.lat, hd.lon), vi, flatHeading(tp[tp.length - 2], hd), hex(t.iconColor != null ? t.iconColor : (t.color != null ? t.color : 0xff5a5a)))
       }
       ctx.globalAlpha = sa
     }
-    // 航迹名（默认不画）：锚在航迹头上，让开载具图标那一截
+    // 航迹名（默认不画）：锚在航迹头上（运动档跟着载具走），让开载具图标那一截
     if (markCfg.tjNameOn && markCfg.tjNameFont > 0) {
       const nf = markCfg.tjNameFont * iz * MK_FONT_K
       const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * stIconK
       for (const t of mk.trajectories) {
         const tp = t.pts || []; if (!tp.length || !t.name) continue
-        const hd = tp[tp.length - 1]
+        const vs = vehStates.size && t.id != null ? vehStates.get(t.id) : null
+        const hd = vs || tp[tp.length - 1]
         drawText(t.name, hd.lon, hd.lat, nf, markCfg.tjNameColor, { dy: -(vi * 0.5 + nf * 0.7), bold: !!markCfg.tjNameBold })
       }
     }
+  }
+  // 运动档载具在图上的朝向（弧度，屏幕正上起顺时针）：沿大圆前进 0.05° 投到图上取走向；那一步跨了世界接缝就改取后退一步反向
+  const _aq = { lat: 0, lon: 0 }
+  function vehScreenRot(vs, x, y) {
+    aheadPoint(vs.lat, vs.lon, vs.headingDeg, 0.05, _aq)
+    let dx = PX(_aq.lon, _aq.lat) - x, dy = PY(_aq.lat, _aq.lon) - y
+    if (Math.abs(dx) > PJ.W * k() * 0.5) {
+      aheadPoint(vs.lat, vs.lon, vs.headingDeg + 180, 0.05, _aq)
+      dx = x - PX(_aq.lon, _aq.lat); dy = y - PY(_aq.lat, _aq.lon)
+    }
+    if (dx * dx + dy * dy < 1e-12) return 0
+    return Math.atan2(dx, -dy)
+  }
+  // 载具此刻在图上的位置（运动档 = 状态；静止档 = 末航点）
+  function vehLL(t) {
+    const vs = vehStates.size && t.id != null ? vehStates.get(t.id) : null
+    if (vs) return vs
+    const tp = t.pts || []
+    return tp.length ? tp[tp.length - 1] : null
+  }
+  // ---- 拖放命中（不受「调整位置」门控）：地球站 → 点标记 → 载具（图上压盖次序反过来）。2D 没有卫星拾取 ----
+  // 几何与 markerAt 同一套（stBox / stExtent / ptDiam / idxDiam，立在锚点上的符号抓形体中心），外加载具（半径 max(HIT_MIN, vi·0.5 + 4)）。
+  // 返回 { kind, id, x, y, px }（x / y = 画布 CSS 像素的形体中心，px = 视觉直径）或 null。
+  const ENT_ORDER = ['station', 'point', 'vehicle']
+  function entityAtScreen(clientX, clientY, kinds) {
+    const r = canvas.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    let best = null, bd = Infinity
+    const test = (x, y, d, kind, id) => {
+      const hit = Math.max(HIT_MIN, d * 0.5 + 4)
+      const dd = Math.hypot(x - mx, y - my)
+      if (dd <= hit && dd < bd) { bd = dd; best = { kind, id, x, y, px: d } }
+    }
+    for (const kind of ENT_ORDER) {
+      if (Array.isArray(kinds) && kinds.indexOf(kind) < 0) continue
+      entityGeom(kind, test, null)
+      if (best) return best
+    }
+    return null
+  }
+  // 一类实体的屏幕几何（命中与高亮环共用）：逐个回调 fn(x, y, 直径, kind, id)；only = {kind, id} 时只回调那一个
+  function entityGeom(kind, fn, only) {
+    const iz = izNow()
+    const pick = (id) => !only || only.id === id
+    if (kind === 'station') {
+      const si = stBox(iz), ext = stExtent(si), d = Math.max(ext.up + ext.down, ext.half * 2)
+      for (const s of mk.stations) if (s.id != null && pick(s.id) && Number.isFinite(s.lat) && Number.isFinite(s.lon)) fn(PX(s.lon, s.lat), PY(s.lat, s.lon) - (ext.up - ext.down) * 0.5, d, 'station', s.id)
+    } else if (kind === 'point') {
+      const ptD = ptDiam(iz), idxD = idxDiam(iz), sh = markCfg.ptShape
+      for (const p of mk.points) if (p.id != null && pick(p.id) && Number.isFinite(p.lat) && Number.isFinite(p.lon)) {
+        const d = p.idx ? idxD : ptD
+        const up = p.idx ? d * BADGE_R : symbolUp(sh) * d, dn = p.idx ? d * BADGE_R : symbolDown(sh) * d
+        fn(PX(p.lon, p.lat), PY(p.lat, p.lon) - (up - dn) * 0.5, Math.max(up + dn, d), 'point', p.id)
+      }
+    } else if (kind === 'vehicle') {
+      const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * ST_ICON_K
+      for (const t of mk.trajectories) {
+        if (t.id == null || !pick(t.id)) continue
+        const ll = vehLL(t)
+        if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lon)) continue
+        fn(PX(ll.lon, ll.lat), PY(ll.lat, ll.lon), vi, 'vehicle', t.id)
+      }
+    }
+  }
+  // 落点高亮环：实时层（所有快照之后），按目标实体【当前】屏幕位置；直径 max(px, 24) + 12、线宽 2，外垫一道深色描边（浅底也认得出）
+  function drawDropRing() {
+    if (!dropHl) return
+    let at = null
+    entityGeom(dropHl.kind, (x, y, d) => { if (!at) at = { x, y, d } }, dropHl)
+    if (!at) return
+    const R = (Math.max(at.d, 24) + 12) / 2
+    ctx.save()
+    ctx.beginPath(); ctx.arc(at.x, at.y, R, 0, Math.PI * 2)
+    ctx.lineWidth = 4.5; ctx.strokeStyle = 'rgba(6,11,18,0.55)'; ctx.stroke()
+    ctx.lineWidth = 2; ctx.strokeStyle = dropHl.color || '#4da3ff'; ctx.stroke()
+    ctx.restore()
   }
   // 性能指标表的城市层：指向误差框 + 城市标签。椭圆（it.ring，卫星视角下的 Az/El 误差投到地面的闭合环）走 drawPolyline；
   // ★ 矩形（it.rect = 半宽 / 半高，度）＝屏幕矩形：以城市的屏幕位置为中心、半宽半高 = 度 × k()。全部投影档的平面都归一到
@@ -3425,7 +3643,8 @@ export function createFlatCoverage(canvas) {
     blitSnap(belowCanvas, pl)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
-    drawTerminator()     // 夜区遮罩 + 晨昏线（最底：是「打光」不是数据，只压暗底图、不蒙灰数据层）
+    drawNightShade()     // 晨昏效果 + 晨昏线（最底：是「打光」不是数据，只压暗底图、不蒙灰数据层）
+    drawTerminator()
     drawEnvRaster()      // ITU 环境场栅格（气象/地形是背景量，谁都压得住它）
     drawEnvContours()    // 环境场等值线 + 数值标注（紧跟其场，不与覆盖层混层）
     drawSatFills()       // Polygon 区域填充（覆盖场之下：叠加区只显示覆盖图颜色）
@@ -3454,6 +3673,7 @@ export function createFlatCoverage(canvas) {
     drawSubPoint()        // 星下点标记：压在最上面，任何图层都不许盖住它
     drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
     ctx.restore()
+    if (dropHl) drawDropRing()   // 拖放落点高亮（实时层：按目标此刻的屏幕位置，不进快照、不进导出）
     if (globalThis.__staticStat) globalThis.__staticStat.drawMs = +(performance.now() - _tIn).toFixed(1)
   }
 
@@ -3893,18 +4113,27 @@ export function createFlatCoverage(canvas) {
     setEnvAlpha(a) { envAlpha = a; envFadeKey = ''; requestDraw() },
     setEnvContours(groups) { envContours = Array.isArray(groups) ? groups : []; requestDraw() },
     clearEnv() { envImg = null; envBBox = null; envContours = []; envFadeKey = ''; requestDraw() },
-    // ---- 晨昏线 / 夜区 ----
-    // date = UTC 时刻（跟随时间轴，非系统时钟）；传 null 清层。opts 同 3D：
-    // { night, line, nightColor, nightOpacity, lineColor, lineWidth, lineOpacity, steps }
-    // 采样起点钉在 LON0（地图接缝）—— 否则夜区多边形横跨接缝、填充被撕成两半。
-    // steps 默认 1440（0.25°/段）：平面图能放大到 60×，360 段（1°/段）在高倍下会看出折线棱角。
+    // ---- 晨昏线（分界线 + 自带的夜区阴影）----
+    // date = UTC 时刻（跟随时间轴，非系统时钟）；传 null 清层。opts 同 3D：{ lineColor, lineWidth, lineOpacity, shadeColor, shadeOpacity, steps }
+    //（shadeOpacity > 0 才画硬边夜区；line:false 同 null —— 老调用口径；晨昏效果的柔和夜区归 setNightShade）。
+    // 采样起点钉在 LON0（地图接缝）。steps 默认 1440（0.25°/段）：平面图能放大到 60×，360 段（1°/段）在高倍下会看出折线棱角。
     // 逐帧只是 1440 次 lineTo，与覆盖分带填充比可忽略，故直接给足而不做自适应。
     setTerminator(date, opts) {
       if (opts) termOpts = { ...termOpts, ...opts }
-      termData = date ? terminatorFlat(date, { steps: (termOpts.steps || 1440), lon0: LON0 }) : null
+      termDate = date && termOpts.line !== false ? date : null
+      termData = termDate ? terminatorFlat(termDate, { steps: (termOpts.steps || 1440), lon0: LON0 }) : null
       requestDraw()
     },
-    clearTerminator() { termData = null; requestDraw() },
+    clearTerminator() { termData = null; termDate = null; requestDraw() },
+    // ---- 晨昏效果（夜区柔和压暗）----
+    // date = UTC 时刻（或直接给日下点 {lat, lon}）；传 null 清层。opts：{ color: CSS 色, opacity: 夜区最深处的不透明度 }
+    setNightShade(date, opts) {
+      if (opts) nightOpts = { ...nightOpts, ...opts }
+      nightSub = !date ? null : (Number.isFinite(date.lat) && Number.isFinite(date.lon) ? { lat: date.lat, lon: date.lon } : solarGeometry(date instanceof Date ? date : new Date(date)).sub)
+      requestDraw()
+    },
+    // 验证台读数：栅格规格与最近一次逆投影耗时（投影档）
+    nightShadeStats: () => ({ on: !!nightSub, eq: nightEq ? { w: NIGHT_EQ_W, h: NIGHT_EQ_H } : null, pj: nightPj ? { w: nightPj.RW, h: nightPj.RH, buildMs: nightPj.buildMs, shape: nightPj.shape } : null }),
     setCovGrid(layer, opts) {
       covGridLayers = (layer && layer.fillBands && layer.fillBands.length) ? [{ ...layer, fillPaths: buildFillPaths(layer.fillBands), bounds: layerBounds(layer) }] : []
       if (opts && opts.alpha != null) covGridAlpha = opts.alpha
@@ -4112,6 +4341,32 @@ export function createFlatCoverage(canvas) {
     // ★ 标记 / 标记样式 / 卫星层只住在文字那一张快照里：只重画它（几毫秒），面与线、回退快照都不动 ——
     //   这三样随时间轴每拍都会被页面重推一次（标记仰角、卫星图标），按内容作废就是每拍一次 100 ms 的整份重建。
     setMarkers(points, stations, trajectories) { mk = { points: points || [], stations: stations || [], trajectories: trajectories || [] }; invalidateText(); requestDraw() },
+    // 标记实体（P4）：运动档载具状态 —— list = [{ id, lat, lon, headingDeg }]（只含运动档）或 null；条目复用。
+    // 没变就不作废文字快照（页面每拍都调，静止档航迹时它是空表 → 一次重画都不多）
+    setVehicleStates(list) {
+      const g = ++vehGen
+      let changed = false
+      if (Array.isArray(list)) for (const it of list) {
+        if (!it || it.id == null) continue
+        const lat = +it.lat, lon = +it.lon, hd = Number.isFinite(it.headingDeg) ? +it.headingDeg : 0
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
+        let e = vehStates.get(it.id)
+        if (!e) { e = { lat, lon, headingDeg: hd, gen: g }; vehStates.set(it.id, e); changed = true; continue }
+        if (e.lat !== lat || e.lon !== lon || e.headingDeg !== hd) { e.lat = lat; e.lon = lon; e.headingDeg = hd; changed = true }
+        e.gen = g
+      }
+      for (const [id, e] of vehStates) if (e.gen !== g) { vehStates.delete(id); changed = true }
+      if (changed) { invalidateText(); requestDraw() }
+    },
+    // 拖放命中（不受「调整位置」门控）：{ kind: 'station'|'point'|'vehicle', id, x, y, px } | null；kinds 里的 'sat' 忽略（2D 没有卫星拾取）
+    entityAtScreen,
+    // 拖放落点高亮：hit = entityAtScreen 的结果或 null；o.color 缺省 #4da3ff（页面传 accent）
+    setDropHighlight(hit, o) {
+      const next = hit && hit.kind && hit.id != null ? { kind: hit.kind, id: hit.id, px: Number(hit.px) > 0 ? Number(hit.px) : 24, color: (o && o.color) || '#4da3ff' } : null
+      if (!next && !dropHl) return
+      dropHl = next
+      requestDraw()
+    },
     // 性能指标表的城市层（指向误差框 + 城市标签），与标记同住文字快照
     setCityBoxes(list) { cityBoxes = Array.isArray(list) ? list : []; invalidateText(); requestDraw() },
     // 标记层样式（与 3D 同一份设置，见 markCfg）
@@ -4230,7 +4485,7 @@ export function createFlatCoverage(canvas) {
       if (o.background !== false) { ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch) }
       drawBelowContent(rx, ry, rw, rh)
       // 层序必须与 draw() 逐字一致（所见即所得）：晨昏线夜区打头，与屏幕上同为最底层
-      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawFocusFills(); drawFocusSwaths(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
+      ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip(); drawNightShade(); drawTerminator(); drawEnvRaster(); drawEnvContours(); drawSatFills(); drawFocusFills(); drawFocusSwaths(); drawCovGrid(); drawField(); drawSatPolyLines(); drawDataLines(); ctx.restore()
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
