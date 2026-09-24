@@ -1,0 +1,1637 @@
+{
+  "$comment": "NASA 语料逐件核定的本体朝向（scripts/nasa3d/build.mjs 读它：有条目的写 frame.q_model2body = q、frame.verified = true；没有的取 +Y 天顶缺省 Q_YUP_ZENITH、verified = false）。q = [x,y,z,w]、v_body = R(q)·v_model；axes = 模型里落到本体 +Z（天底）/ +X（速度）的轴，q 由 bodyFrame.quatFromBodyAxes(axes) 算出，build 核对二者一致。判定方法：glTF 轴 6 向 + 等轴接触印样（与工作台同一套渲染）+ 部件质心 + 资料；本体系约定：+Z 天底（对地载荷面）、+X 速度、对日跟踪太阳翼转轴沿 ±Y；天文台 / 惯性指向星按显示约定（口径指 −Z、翼沿 ±Y）、自旋星自旋轴沿 ±Y。skipped 为逐件看过、但依据不足或不适用而不校正的条目（保持缺省、verified = false）。",
+  "schema": 1,
+  "generated": "W17 2026-09-24",
+  "entries": {
+    "nasa:international-space-station-iss-d-igoal": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "XVV：材质质心 Zvezda x≈−28（后）、Lab / Node 2 x≈+2（前）；Poisk（MRM2）y≈+3.7 → 天顶、Rassvet（MRM1）与 Cupola y<0 → 天底；JEM z≈−7.8 → 左舷（−Y）、Columbus 载荷 z≈+6…+9 → 右舷（+Y），右手系自洽；主桁架沿模型 Z → 本体 ±Y。复核图 .modelharness/w17/review/international-space-station-iss-d-igoal.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/international-space-station-iss-d-igoal/"
+      ]
+    },
+    "nasa:international-space-station-iss-b": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "XVV：点云——舱段链沿模型 Y（俄段较长一端在 −Y → 后）、主桁架在 y≈−8.6 沿 Z；桁架中心 x≈3.0 低于舱段轴线 x≈3.9–4.2 → 桁架在 −X 侧 = 天顶（S0 装在 Destiny 天顶面）；y≈+22 处为悬空碎片。复核图 .modelharness/w17/review/international-space-station-iss-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/international-space-station-iss-b/"
+      ]
+    },
+    "nasa:international-space-station-iss-a": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "组装早期构型：P6 立在 Z1 上（+Y = 天顶）、P6 与 Zvezda 的翼沿模型 X → 本体 ±Y；舱段链沿 Z，俄段在 −Z → 后。复核图 .modelharness/w17/review/international-space-station-iss-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/international-space-station-iss-a/"
+      ]
+    },
+    "nasa:tracking-and-data-relay-satellites-tdrs-a": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "一代 TRW：两副 SA 碟口与 MA 阵朝模型 +Y → 天底；翼沿 ±X → 本体 ±Y（南北）；SA 臂沿 ±Z → 本体 ±X（东西）；与 STK tdrs.glb 的核定口径一致。复核图 .modelharness/w17/review/tracking-and-data-relay-satellites-tdrs-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-tdrs-a/",
+        "https://www.eoportal.org/satellite-missions/tdrs"
+      ]
+    },
+    "nasa:tracking-and-data-relay-satellites-trds-e": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "一代 TRW：金色 SA 碟口与 MA 螺旋阵朝 +Y → 天底；方形翼沿 ±X → 南北。复核图 .modelharness/w17/review/tracking-and-data-relay-satellites-trds-e.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-trds-e/",
+        "https://www.eoportal.org/satellite-missions/tdrs"
+      ]
+    },
+    "nasa:tracking-and-data-relay-satellites-tdrs-b": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "两副网状 SA 碟从 +Y 看是正面（肋条），从 −Y 看是背面 → +Y 天底；翼沿 ±X → 南北。复核图 .modelharness/w17/review/tracking-and-data-relay-satellites-tdrs-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-tdrs-b/",
+        "https://www.eoportal.org/satellite-missions/tdrs"
+      ]
+    },
+    "nasa:tracking-and-data-relay-satellites-tdrs-c": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "SGL 小碟口朝 +Y → 天底；翼沿 ±X → 南北；SA 臂沿 ±Z（两副 SA 碟另为 ~2 / ~3 两个文件）。复核图 .modelharness/w17/review/tracking-and-data-relay-satellites-tdrs-c.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-tdrs-c/",
+        "https://www.eoportal.org/satellite-missions/tdrs"
+      ]
+    },
+    "nasa:tracking-and-data-relay-satellites-tdrs-d": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "材质 NGTDRSS-*（新一代，波音 601）：SA 网状碟、MA 阵与 SGL 在 +Y 面（从 +Y 看得见馈源锥）、−Y 为远地发动机与星箭对接环 → +Y 天底；翼沿 ±Z → 南北；SA 臂沿 ±X → 东西。复核图 .modelharness/w17/review/tracking-and-data-relay-satellites-tdrs-d.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-tdrs-d/",
+        "https://www.eoportal.org/satellite-missions/tdrs",
+        "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2002-011A"
+      ]
+    },
+    "nasa:geostationary-operational-environmental-satellites": {
+      "q": [
+        0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "-Z"
+      },
+      "basis": "visual+资料",
+      "note": "−Y 面为星箭对接环（背地板）、成像仪 / 探测仪装在对地板所在的 +Y 侧 → +Y 天底；单翼沿 −X → 本体 +Y（南北向，太阳翼转轴沿 ±Y）；磁强计杆斜向背地侧。复核图 .modelharness/w17/review/geostationary-operational-environmental-satellites.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/geostationary-operational-environmental-satellites/",
+        "https://www.eoportal.org/satellite-missions/goes-n-o-p"
+      ]
+    },
+    "nasa:space-systems-loral-ssl-1300": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "对地板天线塔在 +Y → 天底；东西两侧反射面在 ±Z → 本体 ±X；翼沿 ±X → 南北（= STK 映射）。复核图 .modelharness/w17/review/space-systems-loral-ssl-1300.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/space-systems-loral-ssl-1300/"
+      ]
+    },
+    "nasa:aqua-a": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "TRW 线图（Aqua 手册 p.2，标 +X_sv 速度 / +Z_sv 天底）：长轴沿速度、AMSR-E 在前端、太阳翼在 −Y 侧；模型长轴 Y、翼沿 −Z → 本体 −Y，AMSR-E 反射面在 +Y 端 → 前，右手系定出天底 = 模型 +X。复核图 .modelharness/w17/review/aqua-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aqua-a/",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aqua-b": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 Aqua 线图：AMSR-E 反射面在模型 +X 端 → 前；翼沿 −Y → 本体 −Y；右手系定出天底 = 模型 +Z（恒等映射）。复核图 .modelharness/w17/review/aqua-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aqua-b/",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aqua-c": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 aqua-b（AMSR-E 在 +X 端、翼沿 −Y）。复核图 .modelharness/w17/review/aqua-c.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aqua-c/",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aura-a": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "Aura 与 Aqua 同平台（T330）：MLS 前视临边、天线在长轴前端（模型 +Y 端）；翼沿 −Z → 本体 −Y。复核图 .modelharness/w17/review/aura-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aura-a/",
+        "https://www.jpl.nasa.gov/news/press_kits/Aura_SW_Guide.pdf",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aura-b": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同平台：MLS 在模型 +X 端 → 前；翼沿 −Y → 本体 −Y。复核图 .modelharness/w17/review/aura-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aura-b/",
+        "https://www.jpl.nasa.gov/news/press_kits/Aura_SW_Guide.pdf",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aura-c": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 aura-b。复核图 .modelharness/w17/review/aura-c.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aura-c/",
+        "https://www.jpl.nasa.gov/news/press_kits/Aura_SW_Guide.pdf",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:aura-d": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 aura-b。复核图 .modelharness/w17/review/aura-d.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aura-d/",
+        "https://www.jpl.nasa.gov/news/press_kits/Aura_SW_Guide.pdf",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:terra": {
+      "q": [
+        0,
+        0.7071067811865475,
+        -0.7071067811865476,
+        0
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "-X"
+      },
+      "basis": "visual+资料",
+      "note": "按 EOS 约定（+X 速度、太阳翼在 −Y、跟踪天线在天顶）：本体长轴沿模型 X、单翼沿 +Z → 本体 −Y、HGA 碟在 +Y → 天顶。复核图 .modelharness/w17/review/terra.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/terra/",
+        "https://aqua.nasa.gov/sites/default/files/references/Aqua_brochure.pdf"
+      ]
+    },
+    "nasa:tropical-rainfall-measuring-mission-trmm": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "节点名：TRMM_Body（165×164 的平板、z≈+140）= PR 降水雷达平面阵 → 天底；HGA 臂在 z≈−147 → 天顶；CERES / VIRS 在 ±Y 两侧；翼沿 ±Y（恒等映射）。复核图 .modelharness/w17/review/tropical-rainfall-measuring-mission-trmm.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tropical-rainfall-measuring-mission-trmm/"
+      ]
+    },
+    "nasa:global-precipitation-measurement": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "近景：GMI 锥扫反射面装在 +Y 顶、−Y 底为 DPR 大平面相控阵 → −Y 天底；翼 A 沿 +Z → 本体 +Y。复核图 .modelharness/w17/review/global-precipitation-measurement.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/global-precipitation-measurement/"
+      ]
+    },
+    "nasa:cloudsat-a": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "CPR 云雷达反射面在 −Y 底 → 天底；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/cloudsat-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cloudsat-a/"
+      ]
+    },
+    "nasa:cloudsat-b": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 cloudsat-a。复核图 .modelharness/w17/review/cloudsat-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cloudsat-b/"
+      ]
+    },
+    "nasa:cloudsat-c": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "同 cloudsat-a。复核图 .modelharness/w17/review/cloudsat-c.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cloudsat-c/"
+      ]
+    },
+    "nasa:cloud-aerosol-lidar-and-infrared-pathfinder-satellite-calipso": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "CALIOP 1 m 激光雷达望远镜在 +Y 顶 → 天底（Proteus 平台，载荷舱对地）；翼沿 ±X → 本体 ±Y。复核图 .modelharness/w17/review/cloud-aerosol-lidar-and-infrared-pathfinder-satellite-calipso.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cloud-aerosol-lidar-and-infrared-pathfinder-satellite-calipso/"
+      ]
+    },
+    "nasa:ocean-surface-topography-mission-ostm-jason-2": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "Proteus 平台：载荷舱（高度计碟 / 辐射计）在 +Y 顶 → 天底；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/ocean-surface-topography-mission-ostm-jason-2.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/ocean-surface-topography-mission-ostm-jason-2/"
+      ]
+    },
+    "nasa:jason-1": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "近景：Proteus 平台，高度计碟与辐射计在 +Y 顶 → 天底；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/jason-1.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/jason-1/"
+      ]
+    },
+    "nasa:jason-continuity-of-service-sentinel-6": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "屋脊状固定太阳板在 +Y → 天顶、底面天线朝 −Y → 天底；长轴沿模型 X → 速度。复核图 .modelharness/w17/review/jason-continuity-of-service-sentinel-6.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/jason-continuity-of-service-sentinel-6/"
+      ]
+    },
+    "nasa:topex-poseidon": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "Poseidon / TOPEX 高度计碟在 −Y 底 → 天底；TDRS 天线杆朝 +Y → 天顶（= +Y 天顶缺省）。复核图 .modelharness/w17/review/topex-poseidon.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/topex-poseidon/"
+      ]
+    },
+    "nasa:quick-scatterometer-quikscat": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "SeaWinds 旋转碟在 −Y 底（三脚架上）→ 天底；两翼沿 ±X → 本体 ±Y（= 缺省）。复核图 .modelharness/w17/review/quick-scatterometer-quikscat.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/quick-scatterometer-quikscat/"
+      ]
+    },
+    "nasa:radar-satellite-1-radarsat-1": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "节点名：SAR 天线平板（140×20、z≈+20）在 +Z 侧 → 天底（未计 SAR 侧视约 30° 的滚转）、长边沿模型 X → 速度（方位向）；翼在 −Z 侧沿 ±X（恒等映射）。复核图 .modelharness/w17/review/radar-satellite-1-radarsat-1.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/radar-satellite-1-radarsat-1/"
+      ]
+    },
+    "nasa:landsat-1-2-and-3": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "Nimbus 型：底部传感器环朝 −Y → 天底；两块桨叶沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/landsat-1-2-and-3.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/landsat-1-2-and-3/"
+      ]
+    },
+    "nasa:landsat-4-and-5": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "TDRS 天线装在本体上方约 4 m 的杆上（资料）→ 杆沿 +Y = 天顶；单翼沿 +Z → 本体 +Y（对日跟踪转轴沿轨道法向）。复核图 .modelharness/w17/review/landsat-4-and-5.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/landsat-4-and-5/"
+      ]
+    },
+    "nasa:earth-observing-1-eo-1": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "ALI / Hyperion 装在 +Y 顶、−Y 为星箭对接环 → +Y 天底；单翼沿 +X → 本体 +Y。复核图 .modelharness/w17/review/earth-observing-1-eo-1.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/earth-observing-1-eo-1/"
+      ]
+    },
+    "nasa:deformation-ecosystem-structure-and-dynamics-of-ice-desdyni": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "顶部白环里的激光雷达望远镜口朝 +Y → 天底；两副圆形翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/deformation-ecosystem-structure-and-dynamics-of-ice-desdyni.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/deformation-ecosystem-structure-and-dynamics-of-ice-desdyni/"
+      ]
+    },
+    "nasa:orbiting-carbon-observatory-oco-2": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "LEOStar-2：光谱仪在 +Y 顶、−Y 底为对接环 → +Y 天底；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/orbiting-carbon-observatory-oco-2.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/orbiting-carbon-observatory-oco-2/"
+      ]
+    },
+    "nasa:aeronomy-of-ice-in-the-mesosphere": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "CIPS / SOFIE 在 +Y 顶、−Y 为对接环 → +Y 天底；六块板沿 ±X → 本体 ±Y。复核图 .modelharness/w17/review/aeronomy-of-ice-in-the-mesosphere.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/aeronomy-of-ice-in-the-mesosphere/"
+      ]
+    },
+    "nasa:seastar": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "SeaWiFS 在 +Y 顶 → 天底；四块板在 −Y 端（天顶侧）。复核图 .modelharness/w17/review/seastar.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/seastar/"
+      ]
+    },
+    "nasa:polar-operational-environmental-satellite-poes": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "节点：仪器台与 AVHRR 扫描镜在 +Z 端 → 前、螺旋天线在 −Y → 天底、太阳翼挂在后端 +Y 侧 → 天顶侧（= 缺省）。复核图 .modelharness/w17/review/polar-operational-environmental-satellite-poes.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/polar-operational-environmental-satellite-poes/"
+      ]
+    },
+    "nasa:gravity-recovery-and-climate-experiment-grace-a": {
+      "q": [
+        0,
+        0,
+        -0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "梯形截面：最宽的一面（金色 MLI，带小盒与短杆）在 +Z → 天底，与 GRACE 实星（宽平底对地、窄顶与斜面为体装电池）及 grace-b 的复核图一致（短杆同朝地）；长轴沿模型 Y → 速度（星间测距方向）。复核图 .modelharness/w17/review/gravity-recovery-and-climate-experiment-grace-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/gravity-recovery-and-climate-experiment-grace-a/"
+      ]
+    },
+    "nasa:gravity-recovery-and-climate-experiment-grace-b": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "梯形截面：体装电池的屋脊在 +Y → 天顶、平底在 −Y → 天底（= 缺省）。复核图 .modelharness/w17/review/gravity-recovery-and-climate-experiment-grace-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/gravity-recovery-and-climate-experiment-grace-b/"
+      ]
+    },
+    "nasa:ice-clouds-and-land-elevation-satellite-2-icesat-2-a": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "材质质心：ATLAS 主镜在 x≈+0.6、平台在 x<0、推进 / 对接端在 x≈−1.7 → ATLAS 端 = 天底（竖直飞行，激光朝下）；翼沿 +Z → 本体 +Y。复核图 .modelharness/w17/review/ice-clouds-and-land-elevation-satellite-2-icesat-2-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/ice-clouds-and-land-elevation-satellite-2-icesat-2-a/"
+      ]
+    },
+    "nasa:ice-clouds-and-land-elevation-satellite-2-icesat-2-b": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "节点：Atlas scope 在 x≈+0.6、平台在 −X → ATLAS 端 = 天底；翼沿 +Z → 本体 +Y。复核图 .modelharness/w17/review/ice-clouds-and-land-elevation-satellite-2-icesat-2-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/ice-clouds-and-land-elevation-satellite-2-icesat-2-b/"
+      ]
+    },
+    "nasa:ice-clouds-and-land-elevation-satellite-2-icesat-2-c": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "节点：Atlas components / Payload Reflectors 在 x≈+0.7、Bus Ring 2（对接环）在 x≈−1.75 → ATLAS 端 = 天底；SA Panels 沿 +Z → 本体 +Y。复核图 .modelharness/w17/review/ice-clouds-and-land-elevation-satellite-2-icesat-2-c.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/ice-clouds-and-land-elevation-satellite-2-icesat-2-c/"
+      ]
+    },
+    "nasa:cyclone-global-navigation-satellite-system-cygnss": {
+      "q": [
+        0,
+        0,
+        -0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "两副对地散射天线在 +Z 两斜面 → 天底；太阳电池阵在 −Z（新闻资料：天顶朝上的电池阵）；翼沿模型 X → 本体 ±Y。复核图 .modelharness/w17/review/cyclone-global-navigation-satellite-system-cygnss.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cyclone-global-navigation-satellite-system-cygnss/",
+        "https://www.nasa.gov/wp-content/uploads/2015/05/cygnss_presskit.pdf"
+      ]
+    },
+    "nasa:cubesat-icecube": {
+      "q": [
+        0,
+        0,
+        -0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "+Z 面有亚毫米波辐射计口 → 天底；3U 长轴沿 Y → 速度；体装电池在 ±X。复核图 .modelharness/w17/review/cubesat-icecube.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cubesat-icecube/"
+      ]
+    },
+    "nasa:cubesat-mirata": {
+      "q": [
+        0,
+        0,
+        -0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "+Z 面大圆口（微波辐射计）→ 天底；3U 长轴沿 Y → 速度。复核图 .modelharness/w17/review/cubesat-mirata.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cubesat-mirata/"
+      ]
+    },
+    "nasa:cubesat-1-ru-generic": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "通用 1U 无载荷：按作者直立 = 天顶（= +Y 天顶缺省）。复核图 .modelharness/w17/review/cubesat-1-ru-generic.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cubesat-1-ru-generic/"
+      ]
+    },
+    "nasa:cubesat-2-ru-generic": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "通用 2U 无载荷：按作者直立 = 天顶（= +Y 天顶缺省）。复核图 .modelharness/w17/review/cubesat-2-ru-generic.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cubesat-2-ru-generic/"
+      ]
+    },
+    "nasa:communication-and-navigation-outage-forecast-system-cnofs": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "四根电场杆在模型 X–Z 面、与 X 成 45°，两根沿 Y（资料：四根在轨道面 X–Z 内、两根沿轨道法向 Y）→ 模型 Y ↦ 本体 Y；X / Z 次序按八棱柱对称未定，取恒等映射。复核图 .modelharness/w17/review/communication-and-navigation-outage-forecast-system-cnofs.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/communication-and-navigation-outage-forecast-system-cnofs/",
+        "https://www.eoportal.org/satellite-missions/cnofs"
+      ]
+    },
+    "nasa:firefly": {
+      "q": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "axes": {
+        "nadir": "-Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "重力梯度稳定：梯度杆（带端部质量）沿模型 +Z → 天顶、星体与伽马射线探测器在下方对地（初判把杆方向看反，复核图上杆朝地，已改）。复核图 .modelharness/w17/review/firefly.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/firefly/"
+      ]
+    },
+    "nasa:tselina-2": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "重力梯度杆沿 +Y → 天顶（= 缺省）。复核图 .modelharness/w17/review/tselina-2.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/tselina-2/"
+      ]
+    },
+    "nasa:agena-target-vehicle": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "对接目标：长轴沿速度、+Z 端对接锥朝前、作者直立（= 缺省）。复核图 .modelharness/w17/review/agena-target-vehicle.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/agena-target-vehicle/"
+      ]
+    },
+    "nasa:active-cavity-irradiance-monitor-satellite-acrimsat-a": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "对日：顶部仪器与四块太阳板朝 +Y → −Z（背地 / 朝日一侧，= 缺省）。复核图 .modelharness/w17/review/active-cavity-irradiance-monitor-satellite-acrimsat-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/active-cavity-irradiance-monitor-satellite-acrimsat-a/"
+      ]
+    },
+    "nasa:active-cavity-irradiance-monitor-satellite-acrimsat-b": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "同 acrimsat-a。复核图 .modelharness/w17/review/active-cavity-irradiance-monitor-satellite-acrimsat-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/active-cavity-irradiance-monitor-satellite-acrimsat-b/"
+      ]
+    },
+    "nasa:hessi-rhessi": {
+      "q": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "axes": {
+        "nadir": "-Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "对日自旋：电池面与准直器口朝 +Z（太阳）→ −Z；四块板十字排布。复核图 .modelharness/w17/review/hessi-rhessi.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/hessi-rhessi/"
+      ]
+    },
+    "nasa:high-energy-transient-explorer": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+资料",
+      "note": "反日指向：探测器视窗在 −Z → 天顶、太阳板在 +Z。复核图 .modelharness/w17/review/high-energy-transient-explorer.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/high-energy-transient-explorer/"
+      ]
+    },
+    "nasa:hinode-solar-b": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "对日：望远镜口径 +Y → −Z；翼沿 ±X → 本体 ±Y（= 缺省）。复核图 .modelharness/w17/review/hinode-solar-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/hinode-solar-b/"
+      ]
+    },
+    "nasa:advanced-composition-explorer": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "L1 对日自旋：+Y 顶面电池朝日 = 背地 → −Z；−Y 底 HGA 朝地（= 缺省）。复核图 .modelharness/w17/review/advanced-composition-explorer.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/advanced-composition-explorer/"
+      ]
+    },
+    "nasa:deep-space-climate-observatory-dscovr-triana": {
+      "q": [
+        0,
+        0,
+        -0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+资料",
+      "note": "L1：电池面朝 −Z（太阳 = 背地）→ −Z，EPIC 一侧对地；两翼沿 ±X → 本体 ±Y。复核图 .modelharness/w17/review/deep-space-climate-observatory-dscovr-triana.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/deep-space-climate-observatory-dscovr-triana/"
+      ]
+    },
+    "nasa:wilkinson-microwave-anisotropy-probe-wmap": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "L2：遮阳盘在 −Y（朝日 ≈ 朝地）→ +Z、背靠背望远镜在 +Y → 天顶（= 缺省）。复核图 .modelharness/w17/review/wilkinson-microwave-anisotropy-probe-wmap.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/wilkinson-microwave-anisotropy-probe-wmap/"
+      ]
+    },
+    "nasa:van-allen-probes": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "对日自旋（自旋轴近似指日）：+Y 面电池 → −Z（= 缺省）。复核图 .modelharness/w17/review/van-allen-probes.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/van-allen-probes/"
+      ]
+    },
+    "nasa:hubble-space-telescope-a": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+资料",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径门在 +Y；翼沿 ±X → 本体 ±Y；HGA 杆沿 ±Z → 本体 ±X（= 缺省）。复核图 .modelharness/w17/review/hubble-space-telescope-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/hubble-space-telescope-a/"
+      ]
+    },
+    "nasa:hubble-space-telescope-b": {
+      "q": [
+        0.7071067811865475,
+        0,
+        0.7071067811865476,
+        0
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：CAD 件口径门在 −X 端；无太阳翼参照，滚转取 +Z → +X。复核图 .modelharness/w17/review/hubble-space-telescope-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/hubble-space-telescope-b/"
+      ]
+    },
+    "nasa:chandra-x-ray-observatory": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：遮阳门在 −X 端；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/chandra-x-ray-observatory.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/chandra-x-ray-observatory/"
+      ]
+    },
+    "nasa:fermi-gamma-ray-large-area-space-telescope": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：LAT 在 +Y 顶（巡天指天顶）；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/fermi-gamma-ray-large-area-space-telescope.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/fermi-gamma-ray-large-area-space-telescope/"
+      ]
+    },
+    "nasa:far-ultraviolet-spectroscopic-explorer": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：镜筒口径在 +Y；四块板沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/far-ultraviolet-spectroscopic-explorer.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/far-ultraviolet-spectroscopic-explorer/"
+      ]
+    },
+    "nasa:gamma-ray-observatory": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：EGRET / COMPTEL 在 +Y 顶；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/gamma-ray-observatory.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/gamma-ray-observatory/"
+      ]
+    },
+    "nasa:swift": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：BAT 编码板 / XRT / UVOT 朝 +Y；翼沿 ±X → 本体 ±Y（= 缺省）。复核图 .modelharness/w17/review/swift.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/swift/"
+      ]
+    },
+    "nasa:suzaku": {
+      "q": [
+        0.7071067811865475,
+        0.7071067811865476,
+        0,
+        0
+      ],
+      "axes": {
+        "nadir": "-Z",
+        "velocity": "+Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：五台 XRT 口径朝 +Z；桨叶沿 ±X → 本体 ±Y。复核图 .modelharness/w17/review/suzaku.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/suzaku/"
+      ]
+    },
+    "nasa:transiting-exoplanet-survey-satellite-tess-a": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：四台相机朝 +Y；翼沿 ±X → 本体 ±Y（= 缺省）。复核图 .modelharness/w17/review/transiting-exoplanet-survey-satellite-tess-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/transiting-exoplanet-survey-satellite-tess-a/"
+      ]
+    },
+    "nasa:transiting-exoplanet-survey-satellite-tess-b": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：同 tess-a。复核图 .modelharness/w17/review/transiting-exoplanet-survey-satellite-tess-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/transiting-exoplanet-survey-satellite-tess-b/"
+      ]
+    },
+    "nasa:interstellar-boundary-explorer-ibex": {
+      "q": [
+        -0.5,
+        0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "对日自旋：+Y 顶面整面电池朝日 → −Z（= 缺省）。复核图 .modelharness/w17/review/interstellar-boundary-explorer-ibex.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/interstellar-boundary-explorer-ibex/"
+      ]
+    },
+    "nasa:submillimeter-wave-astronomy-satellite-swas": {
+      "q": [
+        -0.7071067811865475,
+        0,
+        0,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 +Y；翼沿 ±Z → 本体 ±Y。复核图 .modelharness/w17/review/submillimeter-wave-astronomy-satellite-swas.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/submillimeter-wave-astronomy-satellite-swas/"
+      ]
+    },
+    "nasa:wide-field-infrared-explorer-wire": {
+      "q": [
+        -0.5,
+        -0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "-Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 +Y；太阳板在 −Z 面 → 本体 +X。复核图 .modelharness/w17/review/wide-field-infrared-explorer-wire.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/wide-field-infrared-explorer-wire/"
+      ]
+    },
+    "nasa:international-x-ray-observatory": {
+      "q": [
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+Y",
+        "velocity": "+Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：同心镜壳在 −Y 端、伸缩光具座朝 +Y；两副圆翼沿 ±X → 本体 ±Y。复核图 .modelharness/w17/review/international-x-ray-observatory.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/international-x-ray-observatory/"
+      ]
+    },
+    "nasa:constellation-x": {
+      "q": [
+        0.5,
+        -0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "-Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：镜筒口径在 −X 端；单块遮阳 / 太阳板法向 −Y → 本体 +X。复核图 .modelharness/w17/review/constellation-x.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/constellation-x/"
+      ]
+    },
+    "nasa:advanced-technology-large-aperture-space-telescope-atlast": {
+      "q": [
+        0,
+        0,
+        0.7071067811865475,
+        0.7071067811865476
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "-Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：分块主镜朝 −Z；遮阳罩热面朝 −Y → 本体 +X。复核图 .modelharness/w17/review/advanced-technology-large-aperture-space-telescope-atlast.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/advanced-technology-large-aperture-space-telescope-atlast/"
+      ]
+    },
+    "nasa:james-webb-space-telescope-a": {
+      "q": [
+        -0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-X",
+        "velocity": "-Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：主镜朝 +X；遮阳罩热面（朝日）−Y → 本体 +X。复核图 .modelharness/w17/review/james-webb-space-telescope-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/james-webb-space-telescope-a/"
+      ]
+    },
+    "nasa:james-webb-space-telescope-b": {
+      "q": [
+        0.7071067811865475,
+        -0.7071067811865476,
+        0,
+        0
+      ],
+      "axes": {
+        "nadir": "-Z",
+        "velocity": "-Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：主镜朝 +Z；遮阳罩热面 −Y → 本体 +X。复核图 .modelharness/w17/review/james-webb-space-telescope-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/james-webb-space-telescope-b/"
+      ]
+    },
+    "nasa:spitzer-space-telescope": {
+      "q": [
+        -0.5,
+        -0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "-Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 +Y；固定太阳板在 −Z 面 → 本体 +X。复核图 .modelharness/w17/review/spitzer-space-telescope.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/spitzer-space-telescope/"
+      ]
+    },
+    "nasa:kepler-a": {
+      "q": [
+        0,
+        0.7071067811865475,
+        -0.7071067811865476,
+        0
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "-X"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 +Y；固定太阳板在 −X 面 → 本体 +X。复核图 .modelharness/w17/review/kepler-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/kepler-a/"
+      ]
+    },
+    "nasa:kepler-b": {
+      "q": [
+        -0.5,
+        -0.5,
+        0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "-Y",
+        "velocity": "-Z"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 +Y；太阳板在 −Z 面 → 本体 +X。复核图 .modelharness/w17/review/kepler-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/kepler-b/"
+      ]
+    },
+    "nasa:nancy-grace-roman-space-telescope-a": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：口径在 −X 端；太阳板 / 遮阳板在 +Y 面 → 本体 +X。复核图 .modelharness/w17/review/nancy-grace-roman-space-telescope-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/nancy-grace-roman-space-telescope-a/"
+      ]
+    },
+    "nasa:nancy-grace-roman-space-telescope-b": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+约定",
+      "note": "惯性指向星按此显示约定：望远镜口径指 −Z（天顶）：同 roman-a。复核图 .modelharness/w17/review/nancy-grace-roman-space-telescope-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/nancy-grace-roman-space-telescope-b/"
+      ]
+    },
+    "nasa:wind": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：自旋轴（轴向杆）沿模型 Y。复核图 .modelharness/w17/review/wind.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/wind/"
+      ]
+    },
+    "nasa:polar": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：线杆在 X–Z 面、轴向杆沿 Y。复核图 .modelharness/w17/review/polar.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/polar/"
+      ]
+    },
+    "nasa:geotailsat": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：鼓形体轴沿模型 Y。复核图 .modelharness/w17/review/geotailsat.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/geotailsat/"
+      ]
+    },
+    "nasa:atmosphere-space-transition-region-explorer-astre": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：长线杆在 X–Z 面、轴向杆沿 Y。复核图 .modelharness/w17/review/atmosphere-space-transition-region-explorer-astre.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/atmosphere-space-transition-region-explorer-astre/"
+      ]
+    },
+    "nasa:cluster": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：鼓形体轴沿 Y、线杆在 X–Z 面。复核图 .modelharness/w17/review/cluster.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cluster/"
+      ]
+    },
+    "nasa:cluster-ii": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：同 cluster。复核图 .modelharness/w17/review/cluster-ii.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/cluster-ii/"
+      ]
+    },
+    "nasa:time-history-of-events-and-macroscale-interactions-during-substorms-themis": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：线杆在 X–Z 面、轴向杆沿 Y。复核图 .modelharness/w17/review/time-history-of-events-and-macroscale-interactions-during-substorms-themis.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/time-history-of-events-and-macroscale-interactions-during-substorms-themis/"
+      ]
+    },
+    "nasa:magnetospheric-multiscale-mms-a": {
+      "q": [
+        -0.5,
+        -0.5,
+        -0.5,
+        0.5
+      ],
+      "axes": {
+        "nadir": "+X",
+        "velocity": "+Y"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：轴向杆沿模型 Z → 本体 Y。复核图 .modelharness/w17/review/magnetospheric-multiscale-mms-a.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/magnetospheric-multiscale-mms-a/"
+      ]
+    },
+    "nasa:magnetospheric-multiscale-mms-b": {
+      "q": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "axes": {
+        "nadir": "+Z",
+        "velocity": "+X"
+      },
+      "basis": "visual+约定",
+      "note": "自旋稳定星按此显示约定：自旋轴沿 ±Y（≈ 轨道 / 黄道法向）：轴向杆沿模型 Y。复核图 .modelharness/w17/review/magnetospheric-multiscale-mms-b.png",
+      "refs": [
+        "https://science.nasa.gov/3d-resources/magnetospheric-multiscale-mms-b/"
+      ]
+    }
+  },
+  "skipped": {
+    "nasa:mir": "姿态模式随任务期变化，没有统一的 LVLH 构型可核",
+    "nasa:gateway-lunar-space-station": "月球 NRHO 轨道，不对地",
+    "nasa:landsat-7": "对地面在模型上认不出（ETM+ 入光口与制冷器口分不清），公开资料无在轨构型图",
+    "nasa:landsat-8": "光具座在前端（L8 数据手册 §2.4）→ 速度向 = 模型 +X 已知，但对地面在模型上认不出",
+    "nasa:suomi-national-polar-orbiting-partnership-suomi-npp": "对地面（仪器甲板）在模型上认不出",
+    "nasa:ionospheric-connection-explorer-icon": "仪器侧视临边，对地面资料不足",
+    "nasa:ice-clouds-and-land-elevation-satellite-icesat-a": "GLAS 望远镜朝向在两版模型上互相矛盾，资料不足",
+    "nasa:ice-clouds-and-land-elevation-satellite-icesat-b": "同 icesat-a",
+    "nasa:satellite-for-scientific-applications-sac-c": "磁强计杆朝向（天顶 / 天底）资料不足",
+    "nasa:total-ozone-mapping-spectrometer-toms": "仪器面在模型上认不出",
+    "nasa:spartan-201": "日冕仪口径在哪一端认不出",
+    "nasa:aquarius-a": "SAC-D 平台在轨构型资料不足（反射面 / 馈源与翼的相对方位认不出）",
+    "nasa:aquarius-b": "同 aquarius-a（收拢态）",
+    "nasa:aquarius-b~2": "同 aquarius-a（展开态）",
+    "nasa:tracking-and-data-relay-satellites-tdrs-c~2": "单副 SA 天线部件（部件类不校正）",
+    "nasa:tracking-and-data-relay-satellites-tdrs-c~3": "单副 SA 天线部件（部件类不校正）",
+    "nasa:deep-space-network-34-meter": "地面天线（随包子集），不是航天器：本体系的天底 / 速度不适用，保持作者直立",
+    "nasa:satellite-kit": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~2": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~3": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~4": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~5": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~6": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~7": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~8": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）",
+    "nasa:satellite-kit~9": "组件套装的部件（平台体 / 翼 / 天线），不是整星（部件类不校正）"
+  }
+}

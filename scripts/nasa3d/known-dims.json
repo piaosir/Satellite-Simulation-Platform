@@ -1,0 +1,653 @@
+{
+  "$comment": "NASA 3D 模型已知真实尺寸（build.mjs 用它反算 units.scaleToMeters，sizeVerified=true、sizeSource=source）。每条：measure/valueM/deployed/source/sourceQuote/confidence 是用来缩放的那个官方量（sourceQuote 可在出处原文逐字检索）；fit 说明它对应模型的哪个量：'longest'=包围盒最长边；{axis}=包围盒该轴全长；{extentNative}=研究时量得的某个部件跨度（模型原生单位，不能从包围盒重算，build 先用 bboxNative 核对文件没换过再用）；file=多文件条目里量的是哪个文件，inherit=同条目其余文件沿用同一比例。来源：2026-09-23 研究汇编（56 条，每条引文都与出处原文存档逐字比对过）；缺值、或官方量与模型对不上的条目不收，理由见 $skipped。2026-09-24 修订：补 TDRS-D（新一代外形，按第二代 21 m 翼展）；核实 aqua-a 确为 Aqua、GOES 为 N/O/P 外形；Satellite Kit 不收（理由见 $skipped）。",
+  "$skipped": {
+    "hubble-space-telescope-b": "工程 CAD 转出、三边接近，认不出镜筒轴；太阳翼代次未确认",
+    "international-space-station-iss-a": "模型比例与完整空间站对不上，疑为组装阶段构型，109 m 不适用",
+    "international-space-station-iss-b": "模型比例与完整空间站对不上，疑为组装阶段构型，109 m 不适用",
+    "gateway-lunar-space-station": "模型最长边 39.1 与官方 43 m 差 9%，构型未核实；原生单位疑似已是米，留给包围盒规则",
+    "terra": "官方只给本体长 6.8 m，模型带单翼太阳阵且单网格分层，无法可靠认出本体轴",
+    "jason-1": "无官方翼展",
+    "fermi-gamma-ray-large-area-space-telescope": "只有收拢态尺寸",
+    "james-webb-space-telescope-a": "包围盒 27.40×12.00×14.77：最长边对遮阳罩长 21.197 m 得 0.774，次长边对宽 14.162 m 得 0.959（≈米），两种对法相差 24 %，认不出哪一边是遮阳罩",
+    "satellite-kit": "Ames「Satellite Kit」是一套通用部件（平台体 / 翼 / 天线），不对应任何真实航天器，没有官方尺寸；9 个文件都保持未核（W9 量得 2–6 cm 是原生单位）"
+  },
+  "tracking-and-data-relay-satellites-tdrs-a": {
+    "measure": "span",
+    "valueM": 17.3,
+    "deployed": true,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=1991-054B",
+    "sourceQuote": "With the solar panels and SA antennae deployed, TDRS measures 17.3 x 14.2 m.",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "tracking-and-data-relay-satellites-trds-e": {
+    "measure": "span",
+    "valueM": 17.3,
+    "deployed": true,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=1991-054B",
+    "sourceQuote": "With the solar panels and SA antennae deployed, TDRS measures 17.3 x 14.2 m.",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "tracking-and-data-relay-satellites-tdrs-d": {
+    "measure": "span",
+    "valueM": 21,
+    "deployed": true,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2002-011A",
+    "sourceQuote": "a pair of steerable, transponding antennas of diameter 5 m, and pair of solar arrays of length 21 m",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "模型材质全是 NGTDRSS-*（Next Generation TDRSS，波音 601 平台）：新一代外形，第一代 TRW 的 17.3 m 不适用。NSSDC 的 TDRS-I（第二代，2002-011A）页给出「两翼长 21 m」（第三代 TDRS-K/L/M 为 601HP 平台，同为约 21 m 翼展，二手来源）。模型最长边 = 模型轴 Z 3.022（原生单位）= 两翼沿南北方向的全长，对上翼展 → 比例 6.95，不吸附（W9 量得约 3 m 是把原生单位当成了米）"
+  },
+  "space-systems-loral-ssl-1300": {
+    "measure": "span",
+    "valueM": 24,
+    "deployed": true,
+    "source": "http://web.archive.org/web/20241214192625/https://airandspace.si.edu/collection-objects/satellite-communications-sirius-fm-4/nasm_A20130001000",
+    "sourceQuote": "Fully opened in orbit, they would span more than 24 meters (78 feet).",
+    "confidence": "secondary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "geostationary-operational-environmental-satellites": {
+    "measure": "length",
+    "valueM": 8.4,
+    "deployed": true,
+    "source": "https://www.eoportal.org/satellite-missions/goes-n-o-p",
+    "sourceQuote": "Length = 8.4 m, (solar array to spacecraft body)",
+    "confidence": "secondary",
+    "fit": "longest",
+    "note": "模型最长轴是太阳阵方向（模型轴 X，单翼沿 −X），对应 eoPortal GOES-N/O/P「太阳阵到本体」8.4 m（主值 9.1 m 是成像仪口到磁强计杆，模型最长轴不是它）。外形核实：单翼 + 磁强计杆、没有 GOES I–M 的太阳帆长杆，材质 Goes2-* → 按 N/O/P（波音 601）资料"
+  },
+  "landsat-8": {
+    "measure": "height",
+    "valueM": 4.877,
+    "deployed": false,
+    "source": "https://svs.gsfc.nasa.gov/11490/",
+    "sourceQuote": "At 16 feet tall, with a 32 foot long solar array, Landsat 8 orbits Earth",
+    "confidence": "primary",
+    "fit": {
+      "axis": "x"
+    },
+    "note": "模型 x 向 4.970 ≈ 高 16 ft；最长边 12.26 是太阳阵加本体的合成尺寸，不对应官方值"
+  },
+  "landsat-7": {
+    "measure": "length",
+    "valueM": 4.3,
+    "deployed": false,
+    "source": "http://web.archive.org/web/20221223122855/https://landsat.gsfc.nasa.gov/wp-content/uploads/2021/12/landsat7_1999presskit.pdf",
+    "sourceQuote": "Dimensions: 14 feet long (4.3 meters) and 9 feet (2.8 meters) in diameter",
+    "confidence": "primary",
+    "fit": {
+      "axis": "y"
+    },
+    "note": "按材质分组量得本体沿 y（0.70 单位），x 向最长边含太阳阵；按 y = 本体长 4.3 m 缩放后直径方向 ≈ 2.5 m（官方 2.8 m）"
+  },
+  "landsat-4-and-5": {
+    "measure": "height",
+    "valueM": 4.3,
+    "deployed": false,
+    "source": "http://www.astronautix.com/l/landsat4-5.html",
+    "sourceQuote": "Height : 4.30 m (14.10 ft).",
+    "confidence": "tertiary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "landsat-1-2-and-3": {
+    "measure": "span",
+    "valueM": 4,
+    "deployed": true,
+    "source": "https://www.eoportal.org/satellite-missions/landsat-1-3",
+    "sourceQuote": "twin solar paddles (single-axis articulation) that extended to 4 m",
+    "confidence": "secondary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "hubble-space-telescope-a": {
+    "measure": "length",
+    "valueM": 13.2,
+    "deployed": false,
+    "source": "https://science.nasa.gov/mission/hubble/observatory/design/",
+    "sourceQuote": "Hubble is 43.5 feet long (13.2 m) and 14 feet wide (4.2 m) at the back",
+    "confidence": "primary",
+    "fit": {
+      "axis": "y"
+    },
+    "note": "按材质分组量得镜筒沿 y（hbltel_1 的 y 向 525.5 单位，太阳翼 hbltel_3 在 xz 平面），y 恰为最长边；折算约 0.0251 m/单位（≈ 英寸）"
+  },
+  "international-space-station-iss-d-igoal": {
+    "measure": "span",
+    "valueM": 109,
+    "deployed": true,
+    "source": "https://www.nasa.gov/international-space-station/space-station-facts-and-figures/",
+    "sourceQuote": "The space station is 356 feet (109 meters) end-to-end",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "mir": {
+    "measure": "length",
+    "valueM": 33,
+    "deployed": true,
+    "source": "https://www.esa.int/About_Us/Corporate_news/Mir_FAQs_-_Facts_and_history",
+    "sourceQuote": "The overall dimensions are: 33 m (Progress M- Kvant 1- Core Module – Soyuz TM) x 31 m",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "aqua-a": {
+    "measure": "span",
+    "valueM": 16.7,
+    "deployed": true,
+    "source": "https://aqua.nasa.gov/content/about-aqua",
+    "sourceQuote": "Size (deployed): 4.8 m (15.8 ft) x 16.7 m (54.8 ft) x 8 m (26.4 ft)",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边。2026-09-24 核实：管线处理的文件是本条目自有的「Aqua (A).glb」（页面上的「Aquarius (A).glb」是借用直链、归 aquarius-a），材质层名为 Aqua_Reduced_v0014 […]，缩放后三边 4.77 × 8.83 × 16.7 m 与官方展开态 4.8 × 8.04 × 16.7 m 一致——是 Aqua（2002），不是 Aquarius / SAC-D"
+  },
+  "aura-a": {
+    "measure": "span",
+    "valueM": 17.37,
+    "deployed": true,
+    "source": "http://web.archive.org/web/20170512105134/https://www.nasa.gov/mission_pages/aura/spacecraft/spacecraft_details.html",
+    "sourceQuote": "Deployed - 15.4 ft h (4.70 m ) by 57.0 ft w (17.37 m )",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "suomi-national-polar-orbiting-partnership-suomi-npp": {
+    "measure": "bus",
+    "valueM": 4.2,
+    "deployed": false,
+    "source": "https://www.eoportal.org/satellite-missions/suomi-npp",
+    "sourceQuote": "S/C dimensions 1.3 m x 1.3 m x 4.2 m",
+    "confidence": "secondary",
+    "fit": {
+      "axis": "y"
+    },
+    "note": "模型 y 向 4.183 ≈ 本体 4.2 m；最长边 8.96 是太阳阵 8 m 加本体宽，不能直接对 8 m（主值置信度 primary）"
+  },
+  "ocean-surface-topography-mission-ostm-jason-2": {
+    "measure": "span",
+    "valueM": 9.7,
+    "deployed": true,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/jason-2.pdf",
+    "sourceQuote": "measures approximately 9.7 meters (31.8 feet) from tip to tip",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "jason-continuity-of-service-sentinel-6": {
+    "measure": "length",
+    "valueM": 5.3,
+    "deployed": true,
+    "source": "https://www.esa.int/Applications/Observing_the_Earth/Copernicus/Sentinel-6/Facts_and_figures",
+    "sourceQuote": "Dimensions 2.35 m × 4.17 m × 5.30 m",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "topex-poseidon": {
+    "measure": "span",
+    "valueM": 11.5,
+    "deployed": true,
+    "source": "https://www.eoportal.org/satellite-missions/topex-poseidon",
+    "sourceQuote": "5.5 m in length, 6.6 m in height, and 2.8 m in width (span length of 11.5 m)",
+    "confidence": "secondary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "tropical-rainfall-measuring-mission-trmm": {
+    "measure": "span",
+    "valueM": 14.6,
+    "deployed": true,
+    "source": "https://www.eorc.jaxa.jp/TRMM/about/outline/outline_e.htm",
+    "sourceQuote": "in orbit: 5.1 m (length), 14.6 m (in paddle direction)",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "global-precipitation-measurement": {
+    "measure": "span",
+    "valueM": 11.6,
+    "deployed": true,
+    "source": "https://www.science.gov/topicpages/g/gpm+low-inclination+observatory",
+    "sourceQuote": "GPM Core Observatory overall size (1 1.6m x 6.5m x 5.0m)",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "cloudsat-a": {
+    "measure": "span",
+    "valueM": 5.08,
+    "deployed": true,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/cloudsat-calipso-launch.pdf",
+    "sourceQuote": "wingspan of deployed solar array approx 5.08 meters (200 inches)",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "cloud-aerosol-lidar-and-infrared-pathfinder-satellite-calipso": {
+    "measure": "span",
+    "valueM": 9.7,
+    "deployed": true,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/cloudsat-calipso-launch.pdf",
+    "sourceQuote": "wingspan of deployed solar array 9.7 meters (31.9 feet)",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "gravity-recovery-and-climate-experiment-grace-a": {
+    "measure": "length",
+    "valueM": 3.123,
+    "deployed": false,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/gracelaunch.pdf",
+    "sourceQuote": "3.123 meters (123 inches) long",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "ice-clouds-and-land-elevation-satellite-2-icesat-2-a": {
+    "measure": "span",
+    "valueM": 10.06,
+    "deployed": true,
+    "source": "https://www.ulalaunch.com/missions/archived-launched/delta-ii-icesat-2",
+    "sourceQuote": "It will have a wingspan of 33 feet once the power-generating solar array is deployed in space.",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "orbiting-carbon-observatory-oco-2": {
+    "measure": "span",
+    "valueM": 9,
+    "deployed": true,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/oco2-launch-press-kit.pdf",
+    "sourceQuote": "measures approximately 29 feet (9 meters) from tip to tip",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "chandra-x-ray-observatory": {
+    "measure": "span",
+    "valueM": 19.5,
+    "deployed": true,
+    "source": "https://chandra.harvard.edu/about/spacecraft.html",
+    "sourceQuote": "With it's solar arrays deployed, Chandra measures 19.5 meters (64 ft) wide.",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "swift": {
+    "measure": "height",
+    "valueM": 5.64,
+    "deployed": true,
+    "source": "https://swift.gsfc.nasa.gov/news/2004/swift_presskit.pdf",
+    "sourceQuote": "Spacecraft Dimensions (deployed on orbit): 18.5 ft H x 17.75 ft W",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "transiting-exoplanet-survey-satellite-tess-a": {
+    "measure": "span",
+    "valueM": 3.9,
+    "deployed": true,
+    "source": "https://www.eoportal.org/satellite-missions/tess",
+    "sourceQuote": "Spacecraft size (deployed) 3.9 m x 1.2 m x 1.5 m",
+    "confidence": "secondary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "spitzer-space-telescope": {
+    "measure": "length",
+    "valueM": 4.45,
+    "deployed": false,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/sirtflaunch.pdf",
+    "sourceQuote": "Size: 4.45 meters (14.6 feet) long, 2.1 meters (6.9 feet) in diameter",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "kepler-a": {
+    "measure": "height",
+    "valueM": 4.7,
+    "deployed": false,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/Kepler-presskit-2-19-smfile.pdf",
+    "sourceQuote": "The overall size is about 2.7 meters (nine feet) in diameter and 4.7 meters (15.3 feet) high.",
+    "confidence": "primary",
+    "fit": "longest",
+    "note": "按包围盒最长边"
+  },
+  "cubesat-1-ru-generic": {
+    "measure": "length",
+    "valueM": 0.1135,
+    "deployed": false,
+    "source": "https://static1.squarespace.com/static/5418c831e4b0fa4ecac1bacd/t/62193b7fc9e72e0053f00910/1645820809779/CDS+REV14_1+2022-02-09.pdf",
+    "sourceQuote": "1U CAC length spec was 113.5 +/-0.5mm revised to 113.5+/-0.1mm",
+    "confidence": "primary",
+    "what": "星体本体高度（不含 x 向两根展开鞭状天线）",
+    "fit": {
+      "axis": "y"
+    },
+    "bboxNative": [
+      5.1928,
+      2.6015,
+      2.1971
+    ],
+    "note": "按 fitRef"
+  },
+  "cubesat-2-ru-generic": {
+    "measure": "length",
+    "valueM": 0.227,
+    "deployed": false,
+    "source": "https://static1.squarespace.com/static/5418c831e4b0fa4ecac1bacd/t/62193b7fc9e72e0053f00910/1645820809779/CDS+REV14_1+2022-02-09.pdf",
+    "sourceQuote": "2U CAC length spec was 227.0 +/- 0.1mm revised to 227.0 +/-0.2mm",
+    "confidence": "primary",
+    "what": "星体本体长度（不含 x 向展开天线）",
+    "fit": {
+      "axis": "y"
+    },
+    "bboxNative": [
+      5.3858,
+      5.0015,
+      2.2139
+    ],
+    "note": "按 fitRef"
+  },
+  "cyclone-global-navigation-satellite-system-cygnss": {
+    "measure": "span",
+    "valueM": 1.635,
+    "deployed": true,
+    "source": "https://www.nasa.gov/wp-content/uploads/2015/05/cygnss_presskit.pdf",
+    "sourceQuote": "the zenith (upward) pointed solar cell array will have a span of 163.5 cm",
+    "confidence": "primary",
+    "what": "整星最长边＝展开太阳翼翼展",
+    "fit": {
+      "axis": "x"
+    },
+    "bboxNative": [
+      1.5905,
+      0.5121,
+      0.2442
+    ],
+    "note": "按 fitRef"
+  },
+  "deep-space-network-34-meter": {
+    "measure": "diameter",
+    "valueM": 34,
+    "deployed": false,
+    "source": "https://www.cdscc.nasa.gov/Pages/Antennas/dss34.html",
+    "sourceQuote": "Deep Space Station 34 is a Beam Wave Guide, 34-metre diameter antenna.",
+    "confidence": "primary",
+    "what": "主反射面（truss_dish 网格）直径",
+    "fit": {
+      "axis": "x",
+      "extentNative": 33.95
+    },
+    "bboxNative": [
+      34.0248,
+      36.7921,
+      33.9696
+    ],
+    "note": "按 fitRef：主反射面直径 33.95 单位 ↔ 34 m"
+  },
+  "deep-space-network-70-meter": {
+    "measure": "height",
+    "valueM": 73,
+    "deployed": false,
+    "source": "https://www.cdscc.nasa.gov/Pages/Antennas/dss43.html",
+    "sourceQuote": "Diameter: 70 metres Height: 73 metres",
+    "confidence": "primary",
+    "what": "整体高度（天线朝天顶，最长边）",
+    "fit": {
+      "axis": "y"
+    },
+    "bboxNative": [
+      70.0734,
+      72.9267,
+      70.0734
+    ],
+    "note": "按 fitRef"
+  },
+  "70-meter-dish": {
+    "measure": "diameter",
+    "valueM": 70,
+    "deployed": false,
+    "source": "https://science.nasa.gov/3d-resources/70-meter-dish/",
+    "sourceQuote": "one huge, 230-foot (70-meter) diameter antenna",
+    "confidence": "primary",
+    "what": "反射面口径（模型 x/z 两向最长边）",
+    "fit": {
+      "axis": "x"
+    },
+    "bboxNative": [
+      91.5653,
+      85.5387,
+      91.3153
+    ],
+    "note": "按 fitRef"
+  },
+  "voyager-probe-a": {
+    "measure": "diameter",
+    "valueM": 3.66,
+    "deployed": true,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=1977-084A",
+    "sourceQuote": "A 3.66 m diameter parabolic high-gain antenna was mounted on top of the bus.",
+    "confidence": "primary",
+    "fit": {
+      "axis": "x"
+    },
+    "bboxNative": [
+      0.1,
+      0.2092,
+      0.3366
+    ],
+    "note": "按 fitRef：高增益天线口径 = x 向 0.100 单位 ↔ 3.66 m；最长边是被画短的磁强计杆"
+  },
+  "cassini-huygens-a": {
+    "measure": "height",
+    "valueM": 6.8,
+    "deployed": false,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=1997-061A",
+    "sourceQuote": "It measures 6.8 m in length with a 4 m high gain antenna.",
+    "confidence": "primary",
+    "what": "器体高度（HGA 顶到主发动机底，不含磁强计杆与 RPWS 天线）",
+    "fit": {
+      "axis": "y",
+      "extentNative": 6.533
+    },
+    "bboxNative": [
+      17.983,
+      11.6626,
+      13.1065
+    ],
+    "file": "Cassini-Huygens (A).glb",
+    "inherit": true,
+    "note": "按 fitRef：器体高 6.533 单位 ↔ 6.8 m；同条目另两个文件（仅惠更斯号 / 不含惠更斯号）同一建模单位，沿用同一比例"
+  },
+  "juno-a": {
+    "measure": "span",
+    "valueM": 20,
+    "deployed": true,
+    "source": "https://www.jpl.nasa.gov/news/press_kits/juno/spacecraft/",
+    "sourceQuote": "giving the overall spacecraft a span of more than 66 feet (20 meters)",
+    "confidence": "primary",
+    "what": "三翼太阳阵翼尖外接圆直径（翼尖半径实测 10.06/10.08，×2）",
+    "fit": {
+      "axis": "xz",
+      "extentNative": 20.15
+    },
+    "bboxNative": [
+      17.6546,
+      4.2574,
+      18.5431
+    ],
+    "note": "按 fitRef"
+  },
+  "parker-solar-probe": {
+    "measure": "height",
+    "valueM": 3,
+    "deployed": false,
+    "source": "https://www.nasa.gov/wp-content/uploads/2018/02/parkersolarprobe_presskit_august2018_final.pdf",
+    "sourceQuote": "The spacecraft is about 9.8 feet (3 meters) tall",
+    "confidence": "primary",
+    "what": "器体高度（热盾前缘到器尾，不含磁强计杆）",
+    "fit": {
+      "axis": "z",
+      "extentNative": 3.2
+    },
+    "bboxNative": [
+      5.748,
+      5.2631,
+      6.6111
+    ],
+    "note": "按 fitRef"
+  },
+  "mars-reconnaissance-orbiter-mro-a": {
+    "measure": "span",
+    "valueM": 13.6,
+    "deployed": true,
+    "source": "https://assets.science.nasa.gov/content/dam/science/psd/mars/downloadable_items/4/4/44746_mro-launch.pdf",
+    "sourceQuote": "width 13.6 meters (45 feet) with pair of 5.35- by 2.53-meter",
+    "confidence": "primary",
+    "what": "两块太阳翼翼尖到翼尖（最长边）",
+    "fit": {
+      "axis": "z"
+    },
+    "bboxNative": [
+      32.7643,
+      61.0063,
+      89.7404
+    ],
+    "note": "按 fitRef"
+  },
+  "lunar-reconnaissance-orbiter-a": {
+    "measure": "span",
+    "valueM": 4.2672,
+    "deployed": true,
+    "source": "https://www.uni-muenster.de/imperia/md/content/planetology/lroc/nasa_lro_lcross_press_kit.pdf",
+    "sourceQuote": "The three panels together are 168 inches wide and extend out from the spacecraft 126 inches.",
+    "confidence": "primary",
+    "what": "展开太阳阵宽度（三块板并排方向）",
+    "fit": {
+      "axis": "z"
+    },
+    "bboxNative": [
+      33.2772,
+      26.2937,
+      32.258
+    ],
+    "note": "按 fitRef"
+  },
+  "van-allen-probes": {
+    "measure": "span",
+    "valueM": 8.1,
+    "deployed": true,
+    "source": "https://www.nasa.gov/wp-content/uploads/2015/03/677837main_rbsp_pk_final81712_lores.pdf",
+    "sourceQuote": "The span of the spacecraft with solar panels and magnetometer booms deployed is 8.1 m (26.6 ft) across.",
+    "confidence": "primary",
+    "what": "太阳翼+两根 3 m 磁强计杆的翼尖跨距（mesh_0_29）",
+    "fit": {
+      "axis": "x",
+      "extentNative": 240.99
+    },
+    "bboxNative": [
+      1277.5292,
+      401.5281,
+      1277.6074
+    ],
+    "note": "按 fitRef"
+  },
+  "magnetospheric-multiscale-mms-a": {
+    "measure": "bus",
+    "valueM": 3.5,
+    "deployed": false,
+    "source": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2015-011A",
+    "sourceQuote": "Each spacecraft has an octagonal shape, approximately 3.5 m wide and 1.2 m high.",
+    "confidence": "primary",
+    "what": "八角本体直径（不含杆）",
+    "fit": {
+      "axis": "y",
+      "extentNative": 3.44
+    },
+    "bboxNative": [
+      8.527,
+      8.527,
+      5.0002
+    ],
+    "note": "按 fitRef"
+  },
+  "radar-satellite-1-radarsat-1": {
+    "measure": "length",
+    "valueM": 15,
+    "deployed": true,
+    "source": "https://web.archive.org/web/20210119130337/https://www.asc-csa.gc.ca/eng/satellites/radarsat1/components.asp",
+    "sourceQuote": "Antenna size 15 m x 1.5 m",
+    "confidence": "primary",
+    "what": "SAR 天线长度（最长边，含边框）",
+    "fit": {
+      "axis": "x"
+    },
+    "bboxNative": [
+      160.2233,
+      28.1171,
+      43.186
+    ],
+    "note": "按 fitRef"
+  },
+  "space-shuttle-a": {
+    "measure": "length",
+    "valueM": 56.083,
+    "deployed": false,
+    "source": "https://www.nasa.gov/wp-content/uploads/2023/04/2011.07.05-shuttle-era-facts.pdf",
+    "sourceQuote": "Space shuttle: 184 feet",
+    "confidence": "primary",
+    "what": "整个发射组合体长度（外储箱尖到喷管，最长边）",
+    "fit": {
+      "axis": "z"
+    },
+    "bboxNative": [
+      19.8094,
+      14.2431,
+      41.9
+    ],
+    "note": "按 fitRef"
+  },
+  "saturn-v": {
+    "measure": "height",
+    "valueM": 110.642,
+    "deployed": false,
+    "source": "https://www.nasa.gov/learning-resources/for-kids-and-students/what-was-the-saturn-v-grades-5-8/",
+    "sourceQuote": "The Saturn V rocket was 111 meters (363 feet) tall",
+    "confidence": "primary",
+    "what": "火箭全高（最长边）",
+    "fit": {
+      "axis": "y"
+    },
+    "bboxNative": [
+      2.0143,
+      12.9868,
+      2.0143
+    ],
+    "note": "按 fitRef"
+  },
+  "apollo-lunar-module": {
+    "measure": "span",
+    "valueM": 9.449,
+    "deployed": true,
+    "source": "https://www.apollojournals.org/alsj/LM04_Lunar_Module_ppLV1-17.pdf",
+    "sourceQuote": "31 ft. (diagonally across extended landing gear)",
+    "confidence": "primary",
+    "what": "相对两足垫外缘距离（着陆腿沿 x/z 轴布置，最长边）",
+    "fit": {
+      "axis": "x"
+    },
+    "bboxNative": [
+      6.4274,
+      5.0128,
+      6.4266
+    ],
+    "note": "按 fitRef"
+  }
+}

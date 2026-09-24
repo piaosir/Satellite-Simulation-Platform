@@ -337,3 +337,7 @@ resources/imagery/
 # 语料离线管线（scripts/nasa3d/build.mjs）的加工产物 lod0/1/2 + manifest，同样不进 git。
 # ★ 只忽略 build/models/：build/ 下的 icon.ico / icon.png 是打包图标，照常入库。
 build/models/
+# 离线管线的复核图（scripts/nasa3d/sheets.mjs：带本体轴与米制标尺的整图，人工核对单位/朝向用），不进 git。
+build/review/
+# 离屏验证台（模型工作台 / 3D 球模型层：真 Electron 窗口里载夹具出截图、量帧时与堆），本地开发用，不进仓库
+.modelharness/

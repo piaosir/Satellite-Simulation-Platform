@@ -1,0 +1,1347 @@
+{
+  "schema": 2,
+  "buildId": "builtin-e290687c08a7",
+  "generatedAt": "2026-09-24T14:43:51.989Z",
+  "sourceBuildId": "nasa-22a14e11b602",
+  "thumbView": "auto+crop-v2|d:c8867ecec072",
+  "models": [
+    {
+      "schema": 2,
+      "id": "nasa:cubesat-1-ru-generic",
+      "title": "CubeSat - 1 RU Generic",
+      "titleZh": "通用 1U 立方星",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/cubesat-1-ru-generic/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "1c4dbbd09d4f45e1c72a794d52bbbf528522867fb5569efb5d929fd39f1f2a65",
+          "bytes": 149076,
+          "tris": 23570
+        },
+        "lod1": {
+          "sha256": "7ecfb597f08b8cf587fa65f7d4a938d017278c5dac82f3885c59cab51d56b484",
+          "bytes": 82436,
+          "tris": 7957
+        },
+        "lod2": {
+          "sha256": "b40c01d1e658baede764794fc856dce6cdcba4ad4cf3ecbd8ef7fb4c5130cc29",
+          "bytes": 50264,
+          "tris": 2685
+        },
+        "thumb": {
+          "sha256": "5d4776f1b84ce779eac3f41341d69c46561691a451a646d79c1ac46022768dc5",
+          "bytes": 43326
+        }
+      },
+      "units": {
+        "scaleToMeters": 0.043628,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "https://static1.squarespace.com/static/5418c831e4b0fa4ecac1bacd/t/62193b7fc9e72e0053f00910/1645820809779/CDS+REV14_1+2022-02-09.pdf"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -0.1132752,
+            -0.05675,
+            -0.04792754
+          ],
+          "max": [
+            0.1132752,
+            0.05675,
+            0.04792754
+          ]
+        },
+        "boundingRadiusM": 0.1210428,
+        "tris": 23570,
+        "areaM2": 0.3634085,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          0.000002040975,
+          0.01388367,
+          -0.000979568
+        ]
+      },
+      "tags": [
+        "cubesat",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "1U",
+        "CubeSat 1U"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:cubesat-2-ru-generic",
+      "title": "CubeSat - 2 RU Generic",
+      "titleZh": "通用 2U 立方星",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/cubesat-2-ru-generic/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "faea3684f0090fe5f06b5fb8fe92733b1c3c74afaac71a49f9c4b2bc1d3d7696",
+          "bytes": 223356,
+          "tris": 36896
+        },
+        "lod1": {
+          "sha256": "eeeaa104119f3f39f0b95438c426a2956d663ec1b337f76b9a046723d450ae47",
+          "bytes": 113296,
+          "tris": 11340
+        },
+        "lod2": {
+          "sha256": "7fba65d8f27c5e86bbd64b7614d39c07c40dd2f77d07ae3c35a65c2bbd71efed",
+          "bytes": 67944,
+          "tris": 4131
+        },
+        "thumb": {
+          "sha256": "3d1ff37e81c15cb060294ba642dae3105dee8ff81786d068f8d0f062ad24dc2c",
+          "bytes": 32156
+        }
+      },
+      "units": {
+        "scaleToMeters": 0.04538602,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "https://static1.squarespace.com/static/5418c831e4b0fa4ecac1bacd/t/62193b7fc9e72e0053f00910/1645820809779/CDS+REV14_1+2022-02-09.pdf"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -0.1222204,
+            -0.1135,
+            -0.0502409
+          ],
+          "max": [
+            0.1222204,
+            0.1135,
+            0.0502409
+          ]
+        },
+        "boundingRadiusM": 0.1571673,
+        "tris": 36896,
+        "areaM2": 0.6845676,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -0.00003118431,
+          0.01767044,
+          -0.000687652
+        ]
+      },
+      "tags": [
+        "cubesat",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "2U",
+        "CubeSat 2U"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:deep-space-network-34-meter",
+      "title": "Deep Space Network 34-meter",
+      "titleZh": "深空网 34 米天线",
+      "kind": "ground",
+      "group": "ground",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/deep-space-network-34-meter/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "8d3dbe5e346425d4cb651c3786272af71e1267dac536758a92318964d9d04e34",
+          "bytes": 831544,
+          "tris": 31842
+        },
+        "lod1": {
+          "sha256": "bd0f0c6506c7f29aa75819e29c36ba0ef5013b4f64b41782f94b41bfc754a9ca",
+          "bytes": 675304,
+          "tris": 19455
+        },
+        "lod2": {
+          "sha256": "f533331d71cf291eb82cf898937d6dfce2d54fe86cc52b11583920d3f508e304",
+          "bytes": 332456,
+          "tris": 13924
+        },
+        "thumb": {
+          "sha256": "19e142fd2ea7622b63a1c2e1913c25d50901e8072a380025cd576438daba482a",
+          "bytes": 38470
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "m",
+        "sizeVerified": true,
+        "sizeSource": "https://www.cdscc.nasa.gov/Pages/Antennas/dss34.html"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": false,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -17.01241,
+            -18.39605,
+            -16.98478
+          ],
+          "max": [
+            17.01241,
+            18.39605,
+            16.98478
+          ]
+        },
+        "boundingRadiusM": 20.74128,
+        "tris": 31842,
+        "areaM2": 5778.809,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          0.02728199,
+          -0.5091865,
+          -0.3691225
+        ]
+      },
+      "tags": [
+        "deep",
+        "space",
+        "network",
+        "meter",
+        "ground",
+        "nasa"
+      ],
+      "aliases": [
+        "DSN",
+        "DSS-34"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:geostationary-operational-environmental-satellites",
+      "title": "Geostationary Operational Environmental Satellites",
+      "titleZh": "地球静止轨道环境业务卫星（GOES）",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/geostationary-operational-environmental-satellites/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "8027333a58edb6306d163bac5265ae34851489a2d6f8c218100611acb8eed280",
+          "bytes": 351288,
+          "tris": 40935
+        },
+        "lod1": {
+          "sha256": "e9296c62b1a13fd9843414ab7fc8404ce2e624953578786671986fd7c80de463",
+          "bytes": 135840,
+          "tris": 12554
+        },
+        "lod2": {
+          "sha256": "1bcd0917ac247b203a3d7907c9074bd1571e483a33d5a1d36441db1f4079c685",
+          "bytes": 83712,
+          "tris": 5118
+        },
+        "thumb": {
+          "sha256": "debb74ae28b2a701a2f9b2fb676f7c58a0f26ed16d4eccb02d746081e1a39679",
+          "bytes": 10222
+        }
+      },
+      "units": {
+        "scaleToMeters": 62.4811,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "https://www.eoportal.org/satellite-missions/goes-n-o-p"
+      },
+      "frame": {
+        "q_model2body": [
+          0.5,
+          -0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          0.5,
+          -0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -4.2,
+            -3.810213,
+            -3.479023
+          ],
+          "max": [
+            4.2,
+            3.810213,
+            3.479023
+          ]
+        },
+        "boundingRadiusM": 6.517301,
+        "tris": 40935,
+        "areaM2": 155.4257,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          1.313121,
+          1.788278,
+          1.713573
+        ]
+      },
+      "tags": [
+        "geostationary",
+        "operational",
+        "environmental",
+        "satellites",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "GOES"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:hubble-space-telescope-a",
+      "title": "Hubble Space Telescope (A)",
+      "titleZh": "哈勃空间望远镜（A 版）",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/hubble-space-telescope-a/",
+        "credit": "NASA / DigitalSpace Corporation",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "1285e7a4b9b65c0f483478fe7cc590588e56cbb1398695d10dd596f7ef5546c3",
+          "bytes": 188672,
+          "tris": 7672
+        },
+        "lod1": {
+          "sha256": "c1637ace741f3aadbc13424b87fba130ece41f8b930e6842e98c8c1eab87227f",
+          "bytes": 142260,
+          "tris": 2319
+        },
+        "lod2": {
+          "sha256": "3413fcab8e702b1ad79b55c75ebb3a1849d6d58c07d6d48b44ee856803b46976",
+          "bytes": 43416,
+          "tris": 926
+        },
+        "thumb": {
+          "sha256": "f3e753a04b67884ab683a873087b201806054e41f0e9b41eccc9f3504a49fbf6",
+          "bytes": 19916
+        }
+      },
+      "units": {
+        "scaleToMeters": 0.0254,
+        "unitGuess": "in",
+        "sizeVerified": true,
+        "sizeSource": "https://science.nasa.gov/mission/hubble/observatory/design/"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -5.819887,
+            -6.673705,
+            -6.366558
+          ],
+          "max": [
+            5.819887,
+            6.673705,
+            6.366558
+          ]
+        },
+        "boundingRadiusM": 8.647834,
+        "tris": 7672,
+        "areaM2": 519.0456,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -0.007971524,
+          -1.322577,
+          0.1713892
+        ]
+      },
+      "tags": [
+        "hubble",
+        "space",
+        "telescope",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "HST",
+        "Hubble"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:international-space-station-iss-d-igoal",
+      "title": "International Space Station (ISS) (D) (IGOAL)",
+      "titleZh": "国际空间站（D 版，IGOAL）",
+      "kind": "station",
+      "group": "station",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/international-space-station-iss-d-igoal/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "ee707c9acbe571dc32daea2ec3d72e6926aed6e670cf4328dfaa882bf660aeaa",
+          "bytes": 51826852,
+          "tris": 2975912
+        },
+        "lod1": {
+          "sha256": "51d1ae8943bfc7927b2f52d60925a926e583ea4626b39c534c52461fb1170af5",
+          "bytes": 29296388,
+          "tris": 1400914
+        },
+        "lod2": {
+          "sha256": "8e617585ceb5fae4880641656af328eae476ab7143dea8f5296809261f02fd84",
+          "bytes": 1328884,
+          "tris": 27253
+        },
+        "thumb": {
+          "sha256": "48c4eb1b081d2401ba037bd2a2011b241e6f46ae6aeb679e579d4bd20347a0f4",
+          "bytes": 36712
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "m",
+        "sizeVerified": true,
+        "sizeSource": "https://www.nasa.gov/international-space-station/space-station-facts-and-figures/"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.7071067811865475,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          -0.7071067811865475,
+          0,
+          0,
+          0.7071067811865476
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -36.71141,
+            -15.31284,
+            -54.14629
+          ],
+          "max": [
+            36.71141,
+            15.31284,
+            54.14629
+          ]
+        },
+        "boundingRadiusM": 65.74757,
+        "tris": 2975912,
+        "areaM2": 19935.38,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -2.319747,
+          5.35192,
+          -0.8712907
+        ]
+      },
+      "tags": [
+        "international",
+        "space",
+        "station",
+        "iss",
+        "igoal",
+        "nasa"
+      ],
+      "aliases": [
+        "ISS",
+        "IGOAL",
+        "ISS (ZARYA)"
+      ],
+      "updatedAt": "2026-09-24T14:43:50.296Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:landsat-8",
+      "title": "Landsat 8",
+      "titleZh": "陆地卫星 8 号（Landsat 8）",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/landsat-8/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "46f0a3f77f37f7329c41a4ab13456f36a2c3fec309827432ed46fd3b9e3e74d3",
+          "bytes": 747976,
+          "tris": 85364
+        },
+        "lod1": {
+          "sha256": "d5b883f0ff78f2a2288cadae027e04d9f8cd1482022e399b16ebf594e83497bd",
+          "bytes": 268196,
+          "tris": 30401
+        },
+        "lod2": {
+          "sha256": "c00523e7ed3382022b1771216244a4646dab652529dd940e41c2fa5885ab95bf",
+          "bytes": 125316,
+          "tris": 8144
+        },
+        "thumb": {
+          "sha256": "f63897966aa2f8fa6a58fd84e638b0346061b7da88c33fea2a96a7da664f930f",
+          "bytes": 13182
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "m",
+        "sizeVerified": true,
+        "sizeSource": "https://svs.gsfc.nasa.gov/11490/"
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": false,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -2.485176,
+            -5.018455,
+            -6.129737
+          ],
+          "max": [
+            2.485176,
+            5.018455,
+            6.129737
+          ]
+        },
+        "boundingRadiusM": 8.233722,
+        "tris": 85364,
+        "areaM2": 242.2533,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -0.7348097,
+          2.291108,
+          -2.142951
+        ]
+      },
+      "tags": [
+        "landsat",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "LDCM",
+        "Landsat 8"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:satellite-kit",
+      "title": "Satellite Kit body 1",
+      "titleZh": "卫星组件套装：平台体 1",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/satellite-kit/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "e736f095fdf1f381e82f2bd8e25afb1e2dd847ac5ef0c006ee5583efe5520226",
+          "bytes": 4124,
+          "tris": 320
+        },
+        "lod1": {
+          "sha256": "58ec8f9117bfe5c4f4f9e0a4a75fbff16cacb110ef0ecd6d71512abc0611fd84",
+          "bytes": 3212,
+          "tris": 102
+        },
+        "lod2": {
+          "sha256": "aceac4bf4a8204e99c3e1fdb4f8d688489ca6429c625c4a1c7868fa742bb10db",
+          "bytes": 2440,
+          "tris": 34
+        },
+        "thumb": {
+          "sha256": "e5b79113f9beca17c76c6ac425800218233d6fccc3f5833f79075304b59951e5",
+          "bytes": 3488
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "unknown",
+        "sizeVerified": false
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": false,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -0.01,
+            -0.03,
+            -0.01000001
+          ],
+          "max": [
+            0.01,
+            0.03,
+            0.01000001
+          ]
+        },
+        "boundingRadiusM": 0.03162292,
+        "tris": 320,
+        "areaM2": 0.004468248,
+        "volumeM3": 0.0000181076,
+        "closed": true,
+        "centroidM": [
+          5.987872e-9,
+          -8.056984e-16,
+          5.987873e-9
+        ]
+      },
+      "tags": [
+        "satellite",
+        "kit",
+        "body",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "Satellite Kit body 1"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:satellite-kit~2",
+      "title": "Satellite Kit body 2",
+      "titleZh": "卫星组件套装：平台体 2",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/satellite-kit/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "2176cfb8fc6ed674c281893cb21ef8fa80f3d419ab04378d9d07950e4ac1fa9e",
+          "bytes": 7044,
+          "tris": 1032
+        },
+        "lod1": {
+          "sha256": "14ae8ad66cd9dc1c87e12d874fc6cda3c4f4b784b82147b6d887016a6307823a",
+          "bytes": 4512,
+          "tris": 308
+        },
+        "lod2": {
+          "sha256": "2a8ac43a716c42681e6a16049972ecb9ed7877f36f918cab43d6b2dd25ba5a77",
+          "bytes": 3676,
+          "tris": 162
+        },
+        "thumb": {
+          "sha256": "0cb59262d44248ba8c8b5e9ebd88a8d245eaf800743f9432be412e6475f84d4a",
+          "bytes": 5024
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "unknown",
+        "sizeVerified": false
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": false,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -0.005939142,
+            -0.01323908,
+            -0.02949698
+          ],
+          "max": [
+            0.005939142,
+            0.01323908,
+            0.02949698
+          ]
+        },
+        "boundingRadiusM": 0.03287275,
+        "tris": 1032,
+        "areaM2": 0.004993467,
+        "volumeM3": 0.00001012916,
+        "closed": true,
+        "centroidM": [
+          2.076319e-7,
+          -0.0000136168,
+          -0.006106353
+        ]
+      },
+      "tags": [
+        "satellite",
+        "kit",
+        "body",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "Satellite Kit body 2"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:satellite-kit~3",
+      "title": "Satellite Kit body 3",
+      "titleZh": "卫星组件套装：平台体 3",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/satellite-kit/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "b00de2fe117aeb197f4fc4cd7d2c8f451f28f7dfd4290fa1a6a85b19b45d30f4",
+          "bytes": 6140,
+          "tris": 656
+        },
+        "lod1": {
+          "sha256": "1156471a71059c31e67c50d17020bc830449477a3970942b4c6d792bf2d109c1",
+          "bytes": 3996,
+          "tris": 196
+        },
+        "lod2": {
+          "sha256": "8aad7f5ae4d9b6d974a1a178bf8c24e54e874d730377cb72e7e39c2d0615e1dc",
+          "bytes": 3596,
+          "tris": 130
+        },
+        "thumb": {
+          "sha256": "7e1b0ea9589fb5487eda9630f1ee76c0f8d8d463081ad728e116ca8676cf96c0",
+          "bytes": 7008
+        }
+      },
+      "units": {
+        "scaleToMeters": 1,
+        "unitGuess": "unknown",
+        "sizeVerified": false
+      },
+      "frame": {
+        "q_model2body": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": false,
+        "importQ": [
+          -0.5,
+          0.5,
+          -0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -0.01112842,
+            -0.03131548,
+            -0.01255479
+          ],
+          "max": [
+            0.01112842,
+            0.03131548,
+            0.01255479
+          ]
+        },
+        "boundingRadiusM": 0.03389528,
+        "tris": 656,
+        "areaM2": 0.006305681,
+        "volumeM3": 0.00001858772,
+        "closed": true,
+        "centroidM": [
+          4.388521e-10,
+          0.002814122,
+          0.00005806442
+        ]
+      },
+      "tags": [
+        "satellite",
+        "kit",
+        "body",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "Satellite Kit body 3"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:space-systems-loral-ssl-1300",
+      "title": "Space Systems Loral (SSL-1300)",
+      "titleZh": "劳拉空间系统 SSL-1300 平台",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/space-systems-loral-ssl-1300/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "e08d7bfd31f44010c72718691d06e1fd18cb89c3bc69f26c2748a0820bf46632",
+          "bytes": 1003860,
+          "tris": 182319
+        },
+        "lod1": {
+          "sha256": "b26d41939bb0b13ba1cc76b6643cbfd628dc463b2ea92588514bf891f067f98e",
+          "bytes": 454680,
+          "tris": 56839
+        },
+        "lod2": {
+          "sha256": "d0fbecea3cb832346bb943ddcd675cfe5773e798ce09c5d456beebf792bbf35d",
+          "bytes": 241904,
+          "tris": 25505
+        },
+        "thumb": {
+          "sha256": "d1fb5fbcbf3cb046286193730928fabeb189189c19269e080609c732f7ac9fcc",
+          "bytes": 19614
+        }
+      },
+      "units": {
+        "scaleToMeters": 0.08944194,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "http://web.archive.org/web/20241214192625/https://airandspace.si.edu/collection-objects/satellite-communications-sirius-fm-4/nasm_A20130001000"
+      },
+      "frame": {
+        "q_model2body": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -12,
+            -2.74007,
+            -3.594304
+          ],
+          "max": [
+            12,
+            2.74007,
+            3.594304
+          ]
+        },
+        "boundingRadiusM": 12.04717,
+        "tris": 182319,
+        "areaM2": 356.7948,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -0.05702761,
+          -0.1894264,
+          -0.05361436
+        ]
+      },
+      "tags": [
+        "space",
+        "systems",
+        "loral",
+        "ssl",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "SSL-1300",
+        "SSL 1300",
+        "LS-1300",
+        "FS-1300"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:tracking-and-data-relay-satellites-tdrs-d",
+      "title": "Tracking and Data Relay Satellites (TDRS) (D)",
+      "titleZh": "跟踪与数据中继卫星（TDRS-D）",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-tdrs-d/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "9c47c5874211e81ca0bed0e8f375fcfcd90caf7512e44fc71519f0353c089dde",
+          "bytes": 1903940,
+          "tris": 197235
+        },
+        "lod1": {
+          "sha256": "7814b2f1e8bc522d021cd6d5be58eaa76d824fe9e09004a49f20a97a226680f1",
+          "bytes": 492424,
+          "tris": 61982
+        },
+        "lod2": {
+          "sha256": "9183c8441f8e42da6a0171b29b9e73ff240af8cae03c8095d626627a888ee8b8",
+          "bytes": 284788,
+          "tris": 23678
+        },
+        "thumb": {
+          "sha256": "11e3d5899cbf27657911271c97900ee08549d54f18cacbcaf426cf06d541dca4",
+          "bytes": 14308
+        }
+      },
+      "units": {
+        "scaleToMeters": 6.948095,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2002-011A"
+      },
+      "frame": {
+        "q_model2body": [
+          0.7071067811865475,
+          0,
+          0,
+          0.7071067811865476
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          0.7071067811865475,
+          0,
+          0,
+          0.7071067811865476
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -5.944369,
+            -3.176732,
+            -10.5
+          ],
+          "max": [
+            5.944369,
+            3.176732,
+            10.5
+          ]
+        },
+        "boundingRadiusM": 10.69015,
+        "tris": 197235,
+        "areaM2": 249.094,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          -0.0001054787,
+          -0.9949341,
+          0.05413127
+        ]
+      },
+      "tags": [
+        "tracking",
+        "data",
+        "relay",
+        "satellites",
+        "tdrs",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "TDRS",
+        "TDRSS"
+      ],
+      "updatedAt": "2026-09-24T14:43:50.296Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    },
+    {
+      "schema": 2,
+      "id": "nasa:tracking-and-data-relay-satellites-trds-e",
+      "title": "Tracking and Data Relay Satellites (TRDS) (E)",
+      "titleZh": "跟踪与数据中继卫星（TDRS-E）",
+      "kind": "spacecraft",
+      "group": "spacecraft",
+      "fidelity": "outreach",
+      "source": {
+        "kind": "nasa",
+        "url": "https://science.nasa.gov/3d-resources/tracking-and-data-relay-satellites-trds-e/",
+        "credit": "NASA",
+        "license": "NASA Images and Media Usage Guidelines（美国公有领域；不得暗示 NASA 背书；保留第三方贡献者署名）",
+        "redistributable": true
+      },
+      "files": {
+        "lod0": {
+          "sha256": "ef281e8f27e300d6e7e8f2f63e61915409a1132e1c4718cecad9310699b8cd0a",
+          "bytes": 312496,
+          "tris": 66962
+        },
+        "lod1": {
+          "sha256": "79a8da9aa2998f2099b2ea921a9e7130ccc88e07eea8252a1c6d28fb41db0972",
+          "bytes": 232944,
+          "tris": 21749
+        },
+        "lod2": {
+          "sha256": "7c8b5e1f68b7f45b3a2939ff9809b2e1df335ee23640ab143362856ff0db01c7",
+          "bytes": 122564,
+          "tris": 8813
+        },
+        "thumb": {
+          "sha256": "7f779cc23a3bda46ec2109f88a6b18d8ba10dc10e5791b70044524413cc00dab",
+          "bytes": 16270
+        }
+      },
+      "units": {
+        "scaleToMeters": 0.1831852,
+        "unitGuess": "unknown",
+        "sizeVerified": true,
+        "sizeSource": "https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=1991-054B"
+      },
+      "frame": {
+        "q_model2body": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ],
+        "t_model2body": [
+          0,
+          0,
+          0
+        ],
+        "verified": true,
+        "importQ": [
+          0.5,
+          0.5,
+          0.5,
+          0.5
+        ]
+      },
+      "geometry": {
+        "bboxM": {
+          "min": [
+            -8.65,
+            -1.945606,
+            -6.910467
+          ],
+          "max": [
+            8.65,
+            1.945606,
+            6.910467
+          ]
+        },
+        "boundingRadiusM": 9.080848,
+        "tris": 66962,
+        "areaM2": 260.4451,
+        "volumeM3": null,
+        "closed": false,
+        "centroidM": [
+          0.01166419,
+          -0.4104931,
+          0.008793174
+        ]
+      },
+      "tags": [
+        "tracking",
+        "data",
+        "relay",
+        "satellites",
+        "trds",
+        "spacecraft",
+        "nasa"
+      ],
+      "aliases": [
+        "TRDS",
+        "TDRS",
+        "TDRSS"
+      ],
+      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "builtin": [
+        "lod2",
+        "thumb"
+      ]
+    }
+  ]
+}

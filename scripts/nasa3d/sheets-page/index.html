@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>nasa3d sheets</title>
+<!--
+  nasa3d:sheets 的离屏出图页（sheet://repo/… 由 scripts/nasa3d/sheets.mjs 的协议处理器供文件，只读白名单）。
+  importmap 只做三件事：'three' 与 'three/addons/' 指到 node_modules/three，'@core/' 指到 packages/core ——
+  src/viz/models 下的渲染栈（studio / thumbs / materials / loader / irToThree）原样加载，与工作台、3D 页同一套代码。
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "sheet://repo/node_modules/three/build/three.module.js",
+    "three/addons/": "sheet://repo/node_modules/three/examples/jsm/",
+    "@core/": "sheet://repo/packages/core/"
+  }
+}
+</script>
+<script type="module" src="./main.js"></script>
+</head>
+<body></body>
+</html>

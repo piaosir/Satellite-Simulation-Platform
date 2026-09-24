@@ -1,0 +1,1 @@
+本目录为随安装包分发的 LGPL-2.1 组件许可原文：occt-import-js 0.0.23（STEP / IGES / BREP 导入，源码 https://github.com/kovacsv/occt-import-js ，npm 包 https://registry.npmjs.org/occt-import-js/-/occt-import-js-0.0.23.tgz ）及其内含的 Open CASCADE Technology（源码 https://github.com/Open-Cascade-SAS/OCCT ）；两份原文依次为 license.occt-import-js.txt、license.occt.txt，未作任何修改。
