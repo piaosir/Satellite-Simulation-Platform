@@ -18,7 +18,7 @@
     "swpc:snapshot": "node scripts/fetch-solar-flux.mjs",
     "omm:seed": "node scripts/omm-cos.mjs seed",
     "omm:status": "node scripts/omm-cos.mjs status",
-    "dist": "node scripts/check-share-config.mjs && node scripts/check-imagery.mjs && node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && electron-builder --win && node scripts/verify-asar.mjs && node scripts/publish-cos.mjs",
+    "dist": "node scripts/check-share-config.mjs && node scripts/check-imagery.mjs && node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && electron-vite build && node scripts/patch-nsis-template.mjs && electron-builder --win && node scripts/verify-asar.mjs && node scripts/publish-cos.mjs",
     "publish:cos": "node scripts/publish-cos.mjs",
     "i18n:scan": "node scripts/i18n-scan.mjs",
     "imagery:tiles": "electron scripts/build-imagery-tiles.mjs",
