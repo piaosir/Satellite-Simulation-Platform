@@ -41,7 +41,7 @@
 //   跟踪 makeTrackState / pickTrackTarget
 //   载具 / 光照 vehicleStateAt / aheadPoint / shadeOf
 
-import { trajStateAt, trajEndMs, densifyGreatCircle, makeTrajState, CRUISE_ALT_M_DEFAULT, GC_STEP_DEG } from './trajKinematics.mjs'
+import { trajStateAt, trajEndMs, densifyGreatCircle, makeTrajState, CRUISE_ALT_M_DEFAULT, GC_STEP_DEG, trajDefaultCruiseAltM } from './trajKinematics.mjs'
 import { makeStationLook, stationTrackAzEl, stationAimScene } from './entityPose.mjs'
 import { mountFrame } from './attitude.mjs'
 import { parseModelId, isValidSatKey } from './schema.mjs'
@@ -138,11 +138,13 @@ function dropBadMotion(t) {
 /**
  * 就地删掉航迹 t 上非法的 cruiseAltM（非有限 / < 0 / > 30000）、speedKmh（非有限 / ≤ 0 / > 5000）、t0Ms（非有限 / 超出四位年），
  * 以及等于缺省 10668 的 cruiseAltM（缺省值不写进对象）。航行航迹上的 cruiseAltM 不删（被忽略；切回飞行还在）。返回 t。
+ * 挂的模型有自己的缺省（trajKinematics.MODEL_CRUISE_ALT_M：直升机 / 多旋翼 / 垂起）时，10668 是用户另填的值，留着；等于模型缺省的
+ * 值也留着（换了模型还得是它）。所以只在 trajDefaultCruiseAltM(t) = 10668 时删，删掉的永远是改前也会删的那些。
  */
 export function normTrajMotion(t) {
   if (!isObj(t)) return t
   dropBadMotion(t)
-  if (has(t, 'cruiseAltM') && t.cruiseAltM === CRUISE_ALT_M_DEFAULT) delete t.cruiseAltM
+  if (has(t, 'cruiseAltM') && t.cruiseAltM === CRUISE_ALT_M_DEFAULT && trajDefaultCruiseAltM(t) === CRUISE_ALT_M_DEFAULT) delete t.cruiseAltM
   return t
 }
 // 删掉非法的 model（坏 id / 不是对象）与越界 / 非整数的 model.px；model 里别的键不动

@@ -189,6 +189,7 @@
     "packages/core/test/modelAssembly.test.mjs",
     "packages/core/test/modelTrajKinematics.test.mjs",
     "packages/core/test/modelEntityPose.test.mjs",
+    "packages/core/test/modelTrajCruiseDefault.test.mjs",
     "packages/core/test/modelAutoMatch.test.mjs",
     "packages/core/test/modelFleet.test.mjs",
     "packages/core/test/modelAttitude.test.mjs",

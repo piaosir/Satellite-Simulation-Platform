@@ -14,6 +14,8 @@
 //            相邻两钉点之间各自按同一规则爬 / 平 / 降（段顶 = max(巡航, 两端钉点)）。钉点之间按爬升率 / 下滑角到不了时，
 //            该段退成两钉点直线连接（坡度超限，照走，保证高度连续）。爬升梯度 = 爬升率 / 地速。
 //          飞行 + 无时刻或速度（静止档）：各航点高度 = altM ?? cruiseAltM，段内按里程线性；航迹头 = 末航点高度。
+//          巡航高度 = trajCruiseAltM：航迹自己填的 cruiseAltM（有限、≥ 0）；没填按挂的模型查 MODEL_CRUISE_ALT_M（直升机 / 多旋翼 /
+//            复合翼垂起）；再没有 = CRUISE_ALT_M_DEFAULT（FL350）。模型缺省只在运行时取，不写进航迹对象。
 //   俯仰   = 航迹角 atan(dh/ds)（度），夹在 ±PITCH_LIMIT_DEG（显示保护，只对离谱的钉点坡度起作用）。
 //   无 t0Ms / speedKmh（或速度 ≤ 0、有效航点 < 2、全程零长）：钉在航迹头（末航点），航向取末段大圆切向——
 //          切向矢量 tan 与 scene.setTrajectories 载具的 spr._tan 逐位一致（sceneHeadTangent 按同一串浮点运算复写，单测用
@@ -25,7 +27,7 @@
 //          ★ 没有任何 tMs 的航迹不走排程，沿用 s = v·(t − t0) 的原式——老航迹与改前逐位一致。
 //
 // ── 航迹对象（与 ConstellationMap3D 的 trajectories 同形；E7 的新字段全部可选）──
-//   { id?, kind: 'flight'|'sea', pts: [{lat, lon, altM?, tMs?}], cruiseAltM?, t0Ms?, speedKmh?, climbRateMs?, glideDeg? }
+//   { id?, kind: 'flight'|'sea', pts: [{lat, lon, altM?, tMs?}], cruiseAltM?, t0Ms?, speedKmh?, climbRateMs?, glideDeg?, model?: {id} }
 //   坐标非有限的航点跳过（与页面 markerTrs 的 finLL 过滤同口径）；数值一律按 Number.isFinite 判，不做字符串转换。
 //
 // ── 热路径 ──
@@ -43,7 +45,7 @@
 // 导出：trajStateAt / trajStateAtS / makeTrajState / trajPlan / trajLengthM / trajEndMs / trajStartMs / sceneHeadTangent /
 //       greatCircleInterp / greatCircleDistanceM / wgs84DistanceM / clearTrajPlanCache / trajPlanStats / 常量 /
 //       GC_STEP_DEG / densifyGreatCircle（航迹线大圆加密，P4）/ trajWaypointInfo（逐航点读数：时刻 / 段长 / 航向 / 段速 / 实际高度）/
-//       trajLine3（带实际高度的 3D 航迹线：大圆加密 + 剖面拐点）
+//       trajLine3（带实际高度的 3D 航迹线：大圆加密 + 剖面拐点）/ trajCruiseAltM / trajDefaultCruiseAltM / MODEL_CRUISE_ALT_M（巡航高度口径）
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI
 
@@ -51,6 +53,15 @@ const D2R = Math.PI / 180, R2D = 180 / Math.PI
 export const SCENE_RE_KM = 6371
 /** 飞行缺省巡航高度（m）：FL350 = 35000 ft = 10668 m（DESIGN3 E7）。 */
 export const CRUISE_ALT_M_DEFAULT = 10668
+/**
+ * 按模型的缺省巡航高度（m，键 = 航迹挂的模型 id）：航迹没填 cruiseAltM 时按 traj.model.id 查。表外的模型（客机、公务机、
+ * MQ-9 / RQ-4B 这类中高空长航时无人机、船车、用户自建模型）与没挂模型的航迹都走 CRUISE_ALT_M_DEFAULT，与改前逐位相同。
+ * ★ illustrative（示意值，没有核到出处）：模板 ops 里有出处的只有最大使用高度 / 升限 / 密度高度，都是上限、不是常用巡航高度——
+ *   直升机 1000 m、轻小型多旋翼 120 m（视距内常见限高一带）、复合翼垂起无人机 1500 m，只求载具落在合理的量级上。
+ *   新增直升机 / 多旋翼 / 垂起模板在这里登记（单测按模板根件类型核对漏登记）。
+ */
+export const MODEL_CRUISE_ALT_M = Object.freeze({ 'ent:aw139': 1000, 'ent:astro-max': 120, 'ent:jump20': 1500 })
+const _modelCruise = new Map(Object.entries(MODEL_CRUISE_ALT_M))
 /**
  * 缺省爬升率（m/s）= 2000 ft/min。★ illustrative（示意值，没有核到出处）：只用来给起飞段一个可见的斜坡；
  * 航迹对象可用 climbRateMs 覆盖。地速 830 km/h 时爬升梯度约 2.5°，升到 FL350 约走 242 km。
@@ -472,7 +483,18 @@ export function makeTrajState() {
 }
 
 const isFlight = (traj) => traj.kind === 'flight'
-const cruiseOf = (traj) => (fin(traj.cruiseAltM) && traj.cruiseAltM >= 0 ? traj.cruiseAltM : CRUISE_ALT_M_DEFAULT)
+/**
+ * 航迹的缺省巡航高度（m）：挂的模型在 MODEL_CRUISE_ALT_M 里取表值，否则 CRUISE_ALT_M_DEFAULT。不看航迹自己的 cruiseAltM ——
+ * 侧栏「留空 = …」的占位值、entityRuntime.normTrajMotion「等于缺省不写进对象」的判据都按它。
+ */
+export function trajDefaultCruiseAltM(traj) {
+  const m = traj !== null && typeof traj === 'object' ? traj.model : undefined
+  const v = m !== null && typeof m === 'object' && typeof m.id === 'string' ? _modelCruise.get(m.id) : undefined
+  return v === undefined ? CRUISE_ALT_M_DEFAULT : v
+}
+const cruiseOf = (traj) => (fin(traj.cruiseAltM) && traj.cruiseAltM >= 0 ? traj.cruiseAltM : trajDefaultCruiseAltM(traj))
+/** 航迹实际用的巡航高度（m）：自己填了 cruiseAltM（有限、≥ 0）用它，否则 trajDefaultCruiseAltM。剖面、读数、摘要都按它。 */
+export function trajCruiseAltM(traj) { return traj !== null && typeof traj === 'object' ? cruiseOf(traj) : CRUISE_ALT_M_DEFAULT }
 const speedMsOf = (traj) => (fin(traj.speedKmh) && traj.speedKmh > 0 ? traj.speedKmh / 3.6 : NaN)
 // 热路径只问「有没有地速」（布尔不装箱）；要数值时就地 speedKmh / 3.6——speedMsOf 这种返回 double 的小函数没内联时每次装箱 16 B
 const hasSpeed = (traj) => fin(traj.speedKmh) && traj.speedKmh > 0

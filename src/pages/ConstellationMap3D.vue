@@ -49,7 +49,7 @@ import { createEntityLayer } from '../viz/globe3d/entityLayer.js'
 // 平面图上挂了模型的站 / 点 / 载具：画这件模型的正射俯视图（离屏出图器，与 3D 模型图标同一份模型、同一套打光）
 import { createEntitySprites } from '../viz/flatmap/entitySprites.js'
 import { entityTemplateCatalog } from '@core/models/entityTemplates.mjs'
-import { makeTrajState, CRUISE_ALT_M_DEFAULT, trajWaypointInfo, trajLine3, trajStartMs, trajEndMs, trajLengthM } from '@core/models/trajKinematics.mjs'
+import { makeTrajState, CRUISE_ALT_M_DEFAULT, trajWaypointInfo, trajLine3, trajStartMs, trajEndMs, trajLengthM, trajCruiseAltM, trajDefaultCruiseAltM } from '@core/models/trajKinematics.mjs'
 import { ENT_PX_MIN, ENT_PX_MAX, entityKey, normEntityModel, normTrack, normTrajMotion, sanitizeMarkers, trajMoving, trajEntityKind, trajLinePts, trajNoteOf, parseDateTimeText, partsToUtcMs, makeTrackState, pickTrackTarget, vehicleStateAt } from '@core/models/entityRuntime.mjs'
 import NumIn from '../model/NumIn.vue'
 import { createBodyRuntime, qB2LFromBasis, attEquivOf } from '../viz/models/bodyRuntime.js'
@@ -8541,7 +8541,7 @@ function syncMarkers() { pushMarkers(); persistMarkers(); syncEdit() }   // sync
 // 地球站 / 点标记 / 航迹载具挂 3D 模型。绑定【内联在标记对象上】（不进 models.bindings.json —— 那张表的键只认卫星）：
 //   s.model = {id}（大小不逐个存：跟这一类标记的图标大小，见 entIconPxOf；老存档 / 老工作簿里的 model.px 进场摘掉，见 dropModelPx）、
 //   s.track = {kind:'sat', satKey}（缺字段 = 跟主选星：聚焦集里此刻 WGS-84 仰角最高的一颗，滞回 0.5°，
-//   最高仰角 < 0 收成停放姿态）；p.model；t.model、t.cruiseAltM（飞行缺省 10668 m 不写进对象）、t.speedKmh + t.t0Ms（运动档）。
+//   最高仰角 < 0 收成停放姿态）；p.model；t.model、t.cruiseAltM（飞行缺省 = 模型缺省或 10668 m，不写进对象）、t.speedKmh + t.t0Ms（运动档）。
 // 每拍（feedModels 末尾，与星位同一个 now）：① 运动档载具沿大圆移动（3D 精灵 / 2D 图标）；② 站天线跟踪解算（侧栏读数用 WGS-84）；
 // ③ 实体模型层（3D 球面屏幕定尺图标，px 为默认视角下的像素、随缩放联动；与标记精灵交叉淡化）；平面图画同一件模型的正射俯视图（entSprites，载荷 m2d）。模型开关与卫星模型共用「卫星模型 · 显示」拨杆。
 let entityLayer = null
@@ -9930,13 +9930,15 @@ const motOpen = ref(new Set())   // 展开着的航迹 id（界面状态，不�
 function toggleMot(id) { const s = new Set(motOpen.value); if (s.has(id)) s.delete(id); else s.add(id); motOpen.value = s }
 const pad2 = (n) => String(n).padStart(2, '0')
 function fmtFL(m) { const fl = m / 0.3048 / 100; return Math.abs(fl - Math.round(fl)) < 0.05 ? 'FL' + String(Math.round(fl)).padStart(3, '0') : Math.round(m) + ' m' }
+// 巡航高度框的悬停：留空时实际取的值（挂了直升机 / 多旋翼等模型 = 模型缺省，否则出厂 FL350）
+function cruiseTip(t) { const d = trajDefaultCruiseAltM(t); return d === CRUISE_ALT_M_DEFAULT ? '飞行剖面的平飞高度；留空 = 10668 m（FL350）' : `飞行剖面的平飞高度；留空 = ${d} m（模型缺省）` }
 function motSummary(t) {
   const raw = toRaw(t)
   if (!trajMoving(raw)) return '—'
   // 出发时刻取排程（航点定了时刻时首航点可由外推得出，t0Ms 未必有）；航点定了时刻 = 逐段变速，报全程均速
   const t0 = trajStartMs(raw), p = tzParts(t0, tzMode.value), out = []
   const pinned = (t.pts || []).some((q) => q && Number.isFinite(q.tMs))
-  if (t.kind === 'flight') out.push(fmtFL(Number.isFinite(t.cruiseAltM) ? t.cruiseAltM : CRUISE_ALT_M_DEFAULT))
+  if (t.kind === 'flight') out.push(fmtFL(trajCruiseAltM(t)))
   if (!pinned && Number.isFinite(t.speedKmh)) out.push(String(Number(t.speedKmh.toPrecision(6))) + ' km/h')
   else { const dt = trajEndMs(raw) - t0; if (dt > 0) out.push(byLang('均速 ', 'avg ') + String(Number((trajLengthM(raw) / dt * 3600).toPrecision(4))) + ' km/h') }
   out.push(pad2(p.h) + ':' + pad2(p.mi))
@@ -12623,7 +12625,7 @@ onBeforeUnmount(() => {
             <div class="tmot" :class="{ open: motOpen.has(t.id) }">
               <div class="tmh" :title="motOpen.has(t.id) ? '收起' : '运动：巡航高度 / 速度 / 起始时刻'" @click="toggleMot(t.id)"><Icon name="chevron-down" class="disc" :class="{ shut: !motOpen.has(t.id) }" :size="12" /><span class="tms" :class="{ on: vehOn.has(t.id) }">{{ motSummary(t) }}</span></div>
               <template v-if="motOpen.has(t.id)">
-                <div v-if="t.kind === 'flight'" class="srow sub"><label>巡航高度</label><NumIn :model-value="Number.isFinite(t.cruiseAltM) ? t.cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(CRUISE_ALT_M_DEFAULT)" title="飞行剖面的平飞高度；留空 = 10668 m（FL350）" @commit="(v) => setTrajMotion(t.id, { cruiseAltM: v })" /><span class="u">m</span></div>
+                <div v-if="t.kind === 'flight'" class="srow sub"><label>巡航高度</label><NumIn :model-value="Number.isFinite(t.cruiseAltM) ? t.cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(t))" :title="cruiseTip(t)" @commit="(v) => setTrajMotion(t.id, { cruiseAltM: v })" /><span class="u">m</span></div>
                 <div class="srow sub"><label>速度</label><NumIn :model-value="Number.isFinite(t.speedKmh) ? t.speedKmh : null" allow-empty :min="1" :max="5000" title="地速（WGS-84 测地线里程）；与起始时刻都给了载具才随时钟移动" @commit="(v) => setTrajMotion(t.id, { speedKmh: v })" /><span class="u">km/h</span></div>
                 <div class="srow sub"><label>起始</label><input class="ci t0i" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DD HH:mm:ss" title="载具离开首航点的时刻（按显示时区；可带 Z 或 ±hh:mm）" :value="t0Edit.id === t.id ? t0Edit.text : fmtT0(t.t0Ms)" @focus="t0Begin(t)" @input="t0Input(t, $event.target.value)" @blur="t0Commit(t)" @keydown.enter.prevent="t0Enter($event, t)" @keydown.esc.prevent="t0Esc($event)" /><span class="lnk" title="设为当前仿真时刻" @click="setTrajMotion(t.id, { t0Ms: clock.tMs })">此刻</span></div>
                 <div v-if="vehOn.has(t.id)" class="srow sub tmr"><span class="rdv" :title="t.kind === 'flight' ? '高度 · 已飞 / 全程' : '已航行 / 全程'"><VehReadTxt :t="t" /></span></div>
@@ -13264,7 +13266,7 @@ onBeforeUnmount(() => {
           <!-- 航迹页：当前航迹的运动参数（与侧栏「运动」栏改的是同一组字段）+ 全程 / 历时 / 到达读数 -->
           <div v-if="mkTab === 'traj' && mkCurTraj()" class="mk-tjbar">
             <template v-if="mkCurTraj().kind === 'flight'">
-              <label>巡航高度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().cruiseAltM) ? mkCurTraj().cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(CRUISE_ALT_M_DEFAULT)" title="飞行剖面的平飞高度；留空 = 10668 m（FL350）" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { cruiseAltM: v }))" /><span class="u">m</span>
+              <label>巡航高度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().cruiseAltM) ? mkCurTraj().cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(mkCurTraj()))" :title="cruiseTip(mkCurTraj())" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { cruiseAltM: v }))" /><span class="u">m</span>
             </template>
             <label>速度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().speedKmh) ? mkCurTraj().speedKmh : null" allow-empty :min="1" :max="5000" title="地速（WGS-84 测地线里程）；航点定了时刻的段按时差反推，其余段按它推算" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { speedKmh: v }))" /><span class="u">km/h</span>
             <label>起始</label><input class="ci t0i mkp-t" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DD HH:mm:ss" title="载具离开首航点的时刻（按显示时区；可带 Z 或 ±hh:mm）；与表格首行的时间是同一个数" :value="t0Edit.id === mkTrajId ? t0Edit.text : fmtT0(mkCurTraj().t0Ms)" @focus="t0Begin(mkCurTraj())" @input="t0Input(mkCurTraj(), $event.target.value)" @blur="mkMotEdit(mkCurTraj(), () => t0Commit(mkCurTraj()))" @keydown.enter.prevent="mkMotEdit(mkCurTraj(), () => t0Enter($event, mkCurTraj()))" @keydown.esc.prevent="t0Esc($event)" /><span class="lnk" title="设为当前仿真时刻" @click="mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { t0Ms: clock.tMs }))">此刻</span>
