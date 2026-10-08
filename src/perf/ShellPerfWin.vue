@@ -283,7 +283,7 @@ function dragSplit(e) {
           <div class="sres-list">
             <div v-for="e in cand" :key="e.noradId || e.name" class="sitem" @click="addCand(e)">
               <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
-              <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template><template v-if="e.slot"> · {{ e.slot }}</template></div>
+              <div class="sub">{{ e.tag }}<template v-if="e.noradId && !e.syn"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template><template v-if="e.slot"> · {{ e.slot }}</template></div>
             </div>
           </div>
           <div class="sres-n">

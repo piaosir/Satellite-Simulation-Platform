@@ -3,7 +3,7 @@
 // 身份口径（全模块唯一）：
 //   · 树节点（folder）只凭 node.noradId 与星座关联，比对一律 String(noradId) —— 存盘里的号有字符串也有数字；
 //     绝不按星名、绝不按对象身份（同一颗星在「在场集 / 全量池 / 自定义星座」里是几份不同的对象）。
-//     例外：天线树定点同步星没有 noradId，它在星座里的条目用合成号（viz/grd/treeGeo.js），「号 ↔ folder」一律走 nodeLinkId。
+//     例外：天线树虚拟星（定点星 / 轨道根数星）没有 noradId，它在星座里的条目用合成号（viz/grd/treeGeo.js），「号 ↔ folder」一律走 nodeLinkId。
 //   · 仰角线节点（kind:'elevline'）没有星座身份，也不挂天线：一律不参与联动。
 //   · 同一个 NORAD 可以被多个 folder 关联（addSatellite 不按号去重）→ NORAD → folder 是一对多。
 import { buildRecord } from './gaussStk.js'
@@ -104,11 +104,27 @@ export function focusStale(guard, tick, fseq) {
   return (guard.tick != null && guard.tick !== tick) || (guard.fseq != null && guard.fseq !== fseq)
 }
 
-// 树节点在星座里的身份串：关联星 = 它的 NORAD；天线树定点同步星 = 合成号（geoIds：folder → 号串，viz/grd/treeGeo.treeGeoIds）；
-// 其余（非同步定点星 / 轨道根数星 / 仰角线）没有星座身份，''。下面几处「号 ↔ folder」一律按它比。
+// 树节点在星座里的身份串：关联星 = 它的 NORAD；天线树虚拟星（定点 / 轨道根数）= 合成号（geoIds：folder → 号串，
+// 宿主只放真出了星座条目的那些，见 viz/grd/treeGeo.syncTreeGeoEntries）；其余（仰角线 / 根数解不出的星 / 没给映射）没有星座身份，''。
+// 下面几处「号 ↔ folder」一律按它比。
 export function nodeLinkId(node, geoIds) {
   if (!node || node.kind === 'elevline') return ''
   return idOf(node.noradId) || (geoIds ? idOf(geoIds.get(node.folder)) : '')
+}
+
+// 卫星集「卫星天线树」的成员（按树序）：[{ id, folder, name, node, virtual }]
+//   id：星座身份串（关联星 = 真 NORAD；虚拟星 = 合成号，见 nodeLinkId）；virtual：虚拟星（没关联星座，条目由 treeGeo 生成）。
+//   仰角线与没有星座身份的节点不收；同号多 folder（同一颗星被关联了几次）只留树序第一个。
+export function treeSetMembers(nodes, geoIds) {
+  const out = [], seen = new Set()
+  for (const n of nodes || []) {
+    if (!n || n.kind === 'elevline') continue
+    const id = nodeLinkId(n, geoIds)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    out.push({ id, folder: n.folder, name: n.satName || '', node: n, virtual: !idOf(n.noradId) })
+  }
+  return out
 }
 
 // 关联到给定 NORAD 集合的 folder 集（一对多、字符串 / 数字混存都认）。norads：可迭代的号（任意类型）。
@@ -138,11 +154,11 @@ export function linkMissing(node, poolReady, resolve) {
 }
 
 // 树卫星行「聚焦 / 跟随」两钮的状态（对地 / 对星两棵树共用）：点亮 / 置灰 / 悬停说明。
-//   有星座身份的星（关联星 / 天线树定点同步星）：聚焦＝选中并正对（亮＝在聚焦集里）；跟随＝并入聚焦集、设为主选后跟随（亮＝正跟随它）。
-//   没有星座身份的星（非同步高度的定点星 / 轨道根数星）星座里没有条目：聚焦只把地球转到它此刻的星下点（恒不亮），跟随置灰。
+//   有星座身份的星（关联星 / 天线树虚拟星）：聚焦＝选中并正对（亮＝在聚焦集里）；跟随＝并入聚焦集、设为主选后跟随（亮＝正跟随它）。
+//   没有星座身份的星（根数解不出的轨道根数星 / 宿主没给映射）星座里没有条目：聚焦只把地球转到它此刻的星下点（恒不亮），跟随置灰。
 //   关联星不在当前星历（miss）→ 两钮置灰；平面图（flat）里跟随置灰。正跟随着的那颗不灰（留着退出的口）。
 // ctx：{ cur 该行在聚焦集里, miss 关联星缺失, followId 正在跟随的星的 NORAD（'' = 没在跟随）, flat 平面图,
-//        linkId 该行的星座身份（nodeLinkId；天线树定点同步星给合成号 —— 它在星座里有条目，与关联星同样可聚焦 / 跟随）}
+//        linkId 该行的星座身份（nodeLinkId；天线树虚拟星给合成号 —— 它在星座里有条目，与关联星同样可聚焦 / 跟随）}
 export function treeNavState(node, { cur = false, miss = false, followId = '', flat = false, linkId } = {}) {
   const id = node && node.kind !== 'elevline' ? (linkId !== undefined ? idOf(linkId) : idOf(node.noradId)) : ''
   const lost = !!id && !!miss

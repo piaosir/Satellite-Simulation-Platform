@@ -13,7 +13,7 @@ const q = computed({ get: () => asm.ui.libQ, set: (v) => { asm.ui.libQ = v } })
   <div class="asm asm-tab">
     <label class="asm-search">
       <Icon name="search" :size="13" />
-      <input v-model="q" type="text" spellcheck="false" placeholder="搜索组件" title="按中英文名、组件类型、参数名搜索；大小写、全角半角、连字符不计" />
+      <input v-model="q" type="text" spellcheck="false" placeholder="搜索组件" title="按中英文名称、组件类型、参数名搜索；不区分大小写、全角半角与连字符" />
       <button v-if="q" type="button" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
     </label>
     <AsmLib :q="q" />

@@ -50,11 +50,29 @@ const AXIS_SUFFIX = /_([+-])([XYZ])$/
 const AXIS_VEC = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] }
 
 /**
+ * 关节的转轴挂点：先认「<关节名>_axis」（参数化模型 wing_+Y → wing_+Y_axis、星座精模同式）；没有就按关节名前缀认
+ * 「<前缀>_axis」，前缀在下划线处截、取最长的那个——装配件里太阳翼组件的关节叫 wing、挂点叫 axis，加组件前缀后是
+ * 关节 wing1_wing、挂点 wing1_axis（挂点名不能改：卫星页的挂载模板靠 wing1_axis 对上）。
+ */
+function axisPointOf(aps, artName) {
+  const ok = (a) => a && isVec(a.dirBody)
+  const hit = aps.find((a) => ok(a) && a.name === `${artName}_axis`)
+  if (hit) return hit
+  for (let i = artName.lastIndexOf('_'); i > 0; i = artName.lastIndexOf('_', i - 1)) {
+    const pre = artName.slice(0, i)
+    const ap = aps.find((a) => ok(a) && a.name === `${pre}_axis`)
+    if (ap) return ap
+  }
+  return null
+}
+
+/**
  * 从 ModelMeta 取太阳翼板：parts 里 role = 'solarArray' 的部件（normalBody、areaM2），效率按所属 solarPanelGroup
  * （部件的 solarGroup 名 → 组；或部件节点与组节点有交集），articulation 按「关节节点 ∩ 部件节点」认。
- *   · 部件没有 normalBody、而节点名都带 _±X/_±Y/_±Z 后缀（参数化立方星的体装电池片）→ 按节点拆成各面一块，面积均分。
- *   · 关节转轴：attach point「<关节名>_axis」的 dirBody（参数化模型的 SADA 轴）；否则 opts.axisFor(articulation) → 本体轴；
- *     都没有 → 该板按固定法向算（warnings 里记一条）。pointingVector 缺省 = 电池法向（opts.pointingFor 可覆盖）。
+ *   · 部件没有 normalBody、而节点名都带 _±X/_±Y/_±Z 后缀（旧版参数化立方星的体装电池片：四面合成一个部件）→ 按节点拆成各面一块，
+ *     面积均分（只对方截面成立；现行生成器逐面登记部件、各带法向与面积，走上面那支）。
+ *   · 关节转轴：转轴挂点（axisPointOf：「<关节名>_axis」，否则「<关节名前缀>_axis」）的 dirBody（SADA 轴）；否则 opts.axisFor(articulation)
+ *     → 本体轴；都没有 → 该板按固定法向算（warnings 里记一条）。pointingVector 缺省 = 电池法向（opts.pointingFor 可覆盖）。
  *   · 关节限位取第一个旋转 stage 的 min/max（度），缺省 ±180。
  * @param {object} meta
  * @param {{defaultEfficiencyPct?:number, axisFor?:(art)=>number[]|null, pointingFor?:(art, part)=>number[]|null}} [opts]
@@ -76,7 +94,7 @@ export function panelsFromMeta(meta, opts = {}) {
     const art = arts.find((a) => a && overlaps(a.nodes, nodes)) || null
     let articulation = null
     if (art) {
-      const ap = aps.find((a) => a && a.name === `${art.name}_axis` && isVec(a.dirBody))
+      const ap = typeof art.name === 'string' ? axisPointOf(aps, art.name) : null
       const axis = ap ? nrm3(ap.dirBody) : (typeof opts.axisFor === 'function' ? opts.axisFor(art) : null)
       if (isVec(axis)) {
         const st = (art.stages || []).find((s) => s && /Rotate$/.test(s.type)) || {}
@@ -87,7 +105,7 @@ export function panelsFromMeta(meta, opts = {}) {
           maxDeg: Number.isFinite(st.maximumValue) ? st.maximumValue : 180,
           initialDeg: Number.isFinite(st.initialValue) ? st.initialValue : 0, track: true
         }
-      } else warnings.push(`${p.name || p.id}：关节「${art.name}」没有转轴，按固定法向算`)
+      } else warnings.push(`${p.name || p.id}：关节「${art.name}」无转轴，按固定法向计算`)
     }
     const base = { group: g ? g.name : (p.solarGroup || p.name || p.id), efficiencyPct: eta, articulation }
     if (isVec(p.normalBody)) {
@@ -97,7 +115,7 @@ export function panelsFromMeta(meta, opts = {}) {
         const [, sg, ax] = x.match(AXIS_SUFFIX)
         panels.push({ name: x, ...base, normalBody: AXIS_VEC[ax].map((v) => (sg === '-' ? -v : v)), areaM2: (p.areaM2 > 0 ? p.areaM2 : 0) / nodes.length })
       }
-    } else warnings.push(`${p.name || p.id}：没有法向，未计入`)
+    } else warnings.push(`${p.name || p.id}：无法向，未计入`)
   }
   return { panels, warnings }
 }

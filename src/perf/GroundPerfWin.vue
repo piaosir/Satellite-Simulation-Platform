@@ -14,6 +14,7 @@ import { appAlert } from '../stores/alert.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
+import { sceneNowMs } from '../shared/sceneClock.js'
 import { useBridge, useMirror } from './bridge.js'
 import { persistedRef } from './prefs.js'
 import PwMenu from './PwMenu.vue'
@@ -27,9 +28,11 @@ const { st, act, req } = B
 const key = B.self.key
 const pl = usePerfTable()
 pl.setActiveKey(key)
-// 「时间」列按主窗口的显示时区读写（本机 / UTC / UTC±N）；粘贴 / 导入的时间文本同一口径
+// 「时间」列按主窗口的显示时区读写（本机 / UTC / UTC±N）；粘贴 / 导入的时间文本同一口径。
+// 只敲时分（12:00）落在时间轴当前那一天，不落在系统今天：日期基准＝宿主推来的 nowMs（有的话）> 主窗口时钟镜像（sceneClock）
 const tzMode = computed(() => (st.tzMode == null ? 'local' : st.tzMode))
-pl.setTimeParser((txt) => parseTzText(txt, tzMode.value, Date.now()))
+const sceneBaseMs = () => { const t = Number(st.nowMs); return Number.isFinite(t) && t > 0 ? t : sceneNowMs() }
+pl.setTimeParser((txt) => parseTzText(txt, tzMode.value, sceneBaseMs()))
 const tText = (ms) => fmtTzTime(ms, tzMode.value)
 
 // ===== 镜像：城市列表 / 选项 / 城市组（口径见 bridge.useMirror）=====
@@ -84,7 +87,7 @@ const inText = (r, c) => { if (c.key === 'tMs') return tText(r.tMs); const v = r
 function editTime(id, val) {
   const s = pl.stations.value.find((x) => x.id === id); if (!s) return
   if (String(val == null ? '' : val).trim() === '') { pl.updateStation(id, { tMs: null }); return }
-  const ms = parseTzText(val, tzMode.value, s.tMs)
+  const ms = parseTzText(val, tzMode.value, Number.isFinite(s.tMs) ? s.tMs : sceneBaseMs())
   if (Number.isFinite(ms)) pl.updateStation(id, { tMs: ms })
 }
 const inGrid = useGridSelect({
@@ -184,7 +187,7 @@ async function importXlsx() {
     for (const rec of records) {
       const s = pl.addEmptyStation()
       pl.updateStation(s.id, { country: rec.country || '', city: rec.city || '', desig: rec.desig || '', lon: rec.lon, lat: rec.lat, altM: rec.altM == null ? '' : rec.altM })
-      if (rec.tMs != null && String(rec.tMs).trim() !== '') { const ms = parseTzText(rec.tMs, tzMode.value, Date.now()); if (Number.isFinite(ms)) pl.updateStation(s.id, { tMs: ms }) }
+      if (rec.tMs != null && String(rec.tMs).trim() !== '') { const ms = parseTzText(rec.tMs, tzMode.value, sceneBaseMs()); if (Number.isFinite(ms)) pl.updateStation(s.id, { tMs: ms }) }
       n++
     }
   } else n = pl.addStationsBulk(sheetToTsv(sheet))

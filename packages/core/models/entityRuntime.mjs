@@ -2,7 +2,8 @@
 // 纯 ESM、零 three、node 可测。给 3D 页 / 侧栏 / entityLayer / flatCoverage 共用的纯逻辑：
 //
 //   ① 键与字段：实体键 'st:' / 'pt:' / 'tr:' + id（与链路预算 CityPicker、可见性的前缀同族）；标记对象上的内联字段
-//      s.model = {id, px?}、s.track = {kind:'sat', satKey}（缺字段 = focus）、p.model、t.model / cruiseAltM / speedKmh / t0Ms。
+//      s.model = {id, px?}、s.track = {kind:'sat', satKey}（缺字段 = focus）、s.diaM（天线口径 m）/ s.radome（天线罩，只存 true）、
+//      p.model、t.model / cruiseAltM / speedKmh / t0Ms；存档另带图上链路 links（形状与规范化见 mapLinks.mjs）。
 //      ★ 缺省值一律不写进对象（normTrajMotion 删等于 10668 的 cruiseAltM）；sanitizeMarkers 只删非法字段、从不补字段、不动其它字段
 //        （老存档过它后与原对象深相等）。绑定不进 models.bindings.json（那张表的键只认 norad/ephem/cc/lbsat/grdsat/name）。
 //   ② 航迹：trajMoving = 运动档（t0Ms + speedKmh，或航点时刻钉点排得出程；且全程非零长 —— 与 trajKinematics.trajEndMs 同一判据）；
@@ -45,6 +46,7 @@ import { trajStateAt, trajEndMs, densifyGreatCircle, makeTrajState, CRUISE_ALT_M
 import { makeStationLook, stationTrackAzEl, stationAimScene } from './entityPose.mjs'
 import { mountFrame } from './attitude.mjs'
 import { parseModelId, isValidSatKey } from './schema.mjs'
+import { okDiaM, okPwrW, sanitizeLinks } from './mapLinks.mjs'
 
 export { makeTrajState, CRUISE_ALT_M_DEFAULT, GC_STEP_DEG }
 
@@ -167,9 +169,15 @@ export function sanitizeMarkers(d) {
       if (!isObj(s)) continue
       dropBadModel(s)
       if (has(s, 'track') && !normTrack(s.track)) delete s.track
+      // 站参数（2026-10-07）：天线口径 diaM（m，0 < d ≤ 1000）、天线罩 radome（只存 true）——导入链路预算时按它们对号地球站库
+      if (has(s, 'diaM') && !okDiaM(s.diaM)) delete s.diaM
+      if (has(s, 'radome') && s.radome !== true) delete s.radome
+      if (has(s, 'pwrW') && !okPwrW(s.pwrW)) delete s.pwrW   // 功放功率（W）：导入时只给发端站
     }
   }
   if (Array.isArray(trajectories)) for (const t of trajectories) if (isObj(t)) { dropBadModel(t); dropBadMotion(t); dropBadWaypoints(t) }
+  // 图上链路（mapLinks.mjs）：有这一项才规范化（老存档没有 links，原样不动）
+  if (has(d, 'links')) d.links = sanitizeLinks(d.links)
   return d
 }
 /** 航点高度钉点的合法范围（m）：−1000（低于海平面的机场 / 死海）… 30000（与巡航高度同上限）。 */

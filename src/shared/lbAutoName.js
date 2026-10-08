@@ -59,6 +59,8 @@ export function carrierAutoName(form) {
 // 卫星名称字段的出厂默认值 'Satellite' 只是占位符，不算星名——星名是这一串的头，没有它就整条不成立：
 // 返回空 → syncAutoNames 留着现名不动（「默认卫星」原样），等取到星再一起跟上来。
 const SAT_NAME_PLACEHOLDER = 'Satellite'
+// 链路预算四窗「配置」的自动名（名字随内容，2026-10-06 自动保存起）同一口径：占位符不算星名，名字里略去
+export const isSatNamePlaceholder = (nm) => { const t = s(nm); return !t || t === SAT_NAME_PLACEHOLDER }
 // legacy=true 出旧版形状（原样数字+°E，2026-08-17 改 °E/°W 前的样子）——只给 satLegacyAutoName 用于
 // 旧库推定：旧格式的自动名要还认得出是自动名，否则改格式那一刻它们会被钉成自定义名（见文件头）。
 function satOrbitText(f, legacy) {

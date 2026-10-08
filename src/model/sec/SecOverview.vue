@@ -1,5 +1,5 @@
 <script setup>
-// 概况：名称（中 / 英）、类别、细节档、来源（只读：来源与授权以库里为准，渲染端改不了）、尺寸核定 / 装配核定状态。
+// 概况：名称（中 / 英）、类别、细节档、来源（只读：来源与授权以库里为准，渲染端改不了）、尺寸核定 / 本体轴核定状态。
 import { computed, inject } from 'vue'
 import Icon from '../../components/Icon.vue'
 import MdSec from '../MdSec.vue'
@@ -34,7 +34,7 @@ const frameOk = computed(() => !!(m.value && m.value.frame && m.value.frame.veri
 <template>
   <MdSec id="m-overview" title="概况">
     <template v-if="m">
-      <div class="srow"><label title="英文名（导出件的场景名、STK 里显示的名字）">名称</label>
+      <div class="srow"><label title="英文名称（导出模型的场景名，即 STK 中显示的名称）">名称</label>
         <input class="ci" type="text" :value="m.title" :disabled="ro" data-i18n-skip @change="setText('title', $event.target.value)" @keydown.enter="$event.target.blur()" /></div>
       <div class="srow"><label>中文名</label>
         <input class="ci" type="text" :value="m.titleZh" :disabled="ro" data-i18n-skip @change="setText('titleZh', $event.target.value)" @keydown.enter="$event.target.blur()" /></div>
@@ -42,7 +42,7 @@ const frameOk = computed(() => !!(m.value && m.value.frame && m.value.frame.veri
         <select class="ci" :value="m.group || m.kind" :disabled="ro" @change="setKind($event.target.value)">
           <option v-for="c in CATEGORIES" :key="c.key" :value="c.key">{{ c.label }}</option>
         </select></div>
-      <div class="srow"><label title="模型可信程度的档位（属性，不是判定）">细节档</label>
+      <div class="srow"><label title="模型可信度等级（属性，非判定）">细节档</label>
         <select class="ci" :value="m.fidelity" :disabled="ro" @change="setField('fidelity', $event.target.value)">
           <option v-for="f in FIDS" :key="f.key" :value="f.key" :title="f.tip">{{ f.label }}</option>
         </select></div>
@@ -57,7 +57,7 @@ const frameOk = computed(() => !!(m.value && m.value.frame && m.value.frame.veri
           <Icon :name="sizeOk ? 'check' : 'ruler'" :size="12" />尺寸
         </span>
         <span class="md-ico" :class="frameOk ? 'good' : 'poor'" :title="frameOk ? '本体轴已核定' : '本体轴未核定：在「本体轴」节核对后勾选'">
-          <Icon :name="frameOk ? 'check' : 'axis-3d'" :size="12" />装配
+          <Icon :name="frameOk ? 'check' : 'axis-3d'" :size="12" />本体轴
         </span>
         <span v-if="m.source && m.source.redistributable === false" class="md-ico poor" :title="(m.source.license || '') + '：不可导出、不可分发'"><Icon name="lock" :size="12" />不可分发</span>
       </div>

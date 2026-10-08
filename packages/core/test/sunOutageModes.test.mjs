@@ -12,7 +12,7 @@ import { parseOMMCsv } from '../../../src/viz/constellation/tle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const { calculateSunOutage, calculateSunOutageSeasons, solarFluxAt, solarTempAt, solarTempLegacy, equinoxDateOf } = require('../utils/sunOutageCalculator.js')
+const { calculateSunOutage, calculateSunOutageSeasons, solarFluxAt, solarTempAt, solarTempLegacy, equinoxDateOf, couplingAt, sunEcefAt, sunDiamDegAt } = require('../utils/sunOutageCalculator.js')
 const { orbitSource, jdToMs } = require('../utils/orbitSource.js')
 const sat = require('../vendor/satellite.js')
 
@@ -61,23 +61,64 @@ const BASE = { lat: 39.9042, lon: 116.4074, diameter: 2.4, band: 'Ku', customFre
   assert.equal(eph.model.noradId, String(omm.noradId))
   assert.ok(Math.abs(eph.totalDays - slot.totalDays) <= 1, `天数 ${eph.totalDays} vs ${slot.totalDays}`)
 
+  // ★ 恶化差原判据「≤ 0.2 dB」是拍的数，不是物理上界（2026-10-06 拆开量过；v1.4.13 起这条就卡在 0.200 上红着）：
+  //   峰值处时角对齐，夹角 θ = |δ☉ − δ星|，故星历档与定轨档的恶化差全由【站心南北偏差 Δδ】决定（星历星 vs 定轨星的
+  //   站心赤纬差：倾角项 + 偏心率半径项，东西漂移只占千分之一度），日凌边缘斜率 ~20 dB/°；171 颗受控 GEO 这个差 0~2.8 dB，
+  //   中星 6C 每换一版 omm 快照数值就变——判据不能拟合某一版的数值。改成两条容差由式子算出的不变式（Δδ 由 SGP4 直取，与引擎无关）：
+  //   ① 夹角差 = ±Δδ：| |θe − θs| − |Δδ| | ≤ |Δδ☉|（两个峰值时刻之间太阳赤纬的变化）+ 0.001（两次 θ 取 3 位小数）+ 0.001（求根 / 日内插值）；
+  //   ② 恶化差 ≤ max|D′|·(|Δδ| + |Δδ☉| + 0.002) + 0.01（两次恶化取 2 位小数）。D(θ) 按引擎同一口径逐日重建（70λ/D 波束、
+  //      当日正午太阳视直径 sunDiamDegAt、该日亮温 solarTempAt、couplingAt），max|D′| 在两夹角之间（各外扩 0.002°）取；
+  //      重建得对不对另用 ③ 核：引擎给的恶化与 D(引擎给的夹角) 只差舍入。
+  //   变异（2026-10-06）：引擎丢掉卫星 z 分量时 ① 差出倾角项（~0.016°）当场抓住；旧判据只看到 0.12 dB 会放过。
+  const D2R = Math.PI / 180, R_GEO_KM = 42164.17, A_KM = 6378.137, E2 = 0.00669437999014
+  const la = BASE.lat * D2R, lo = BASE.lon * D2R, Nn = A_KM / Math.sqrt(1 - E2 * Math.sin(la) ** 2)
+  const STN = [Nn * Math.cos(la) * Math.cos(lo), Nn * Math.cos(la) * Math.sin(lo), Nn * (1 - E2) * Math.sin(la)]   // 与引擎 stationXYZ 同式（高 0）
+  const topoDec = (x, y, z) => Math.atan2(z - STN[2], Math.hypot(x - STN[0], y - STN[1])) / D2R                      // 站心赤纬（°）
+  const decSlot = topoDec(R_GEO_KM * Math.cos(SLOT * D2R), R_GEO_KM * Math.sin(SLOT * D2R), 0)
+  const sunDec = (ms) => { const s = sunEcefAt(ms); return Math.asin(s[2] / Math.hypot(s[0], s[1], s[2])) / D2R }
+  const msOf = (date, hms) => Date.parse(date + 'T' + hms + 'Z')
+  const FREQ = BASE.customFreq, THB = 20.98547 / (FREQ * BASE.diameter)
+
   let worstDt = 0, worstDb = 0, worstResid = 0, shared = 0
+  let worstGeo = -Infinity, worstGeoResid = 0, worstDbExcess = -Infinity, worstFit = -Infinity, maxDdec = 0
   for (const r of eph.dailyResults) {
     const q = slot.dailyResults.find((z) => z.date === r.date)
     if (!q) continue
     shared++
     const dt = sec(r.peakTimeUTC) - sec(q.peakTimeUTC)
     worstDt = Math.max(worstDt, Math.abs(dt))
-    worstDb = Math.max(worstDb, Math.abs(r.peakCNdeg - q.peakCNdeg))
     // 卫星比定轨轨位偏西 Δlon → 太阳要多转 Δlon 才对上，峰值时刻晚 Δlon/360×恒星日
     const expect = (SLOT - r.satLon) / 360 * SIDEREAL_SEC
     worstResid = Math.max(worstResid, Math.abs(dt - expect))
+    // ① 夹角差 = ±Δδ
+    const te = msOf(r.date, r.peakTimeUTC), ts = msOf(q.date, q.peakTimeUTC)
+    const pe = sat.eciToEcf(sat.propagate(recEp, new Date(te)).position, sat.gstime(new Date(te)))
+    const dDec = topoDec(pe.x, pe.y, pe.z) - decSlot
+    const dSun = Math.abs(sunDec(te) - sunDec(ts))
+    const geoResid = Math.abs(Math.abs(r.peakSeparation - q.peakSeparation) - Math.abs(dDec))
+    worstGeo = Math.max(worstGeo, geoResid - (dSun + 0.002)); worstGeoResid = Math.max(worstGeoResid, geoResid)
+    maxDdec = Math.max(maxDdec, Math.abs(dDec))
+    // ② 恶化差 ≤ max|D′|·(|Δδ| + |Δδ☉| + 0.002) + 0.01
+    const thD = sunDiamDegAt(Date.parse(r.date + 'T00:00:00Z'))
+    const Tb = solarTempAt(FREQ, eph.model.f107, thD, eph.model.solarModel)
+    const D = (th) => 10 * Math.log10(1 + Tb * couplingAt(Math.max(0, th), THB, thD) / BASE.sysTemp)
+    const a = Math.min(r.peakSeparation, q.peakSeparation) - 0.002, b = Math.max(r.peakSeparation, q.peakSeparation) + 0.002
+    let slope = 0
+    for (let th = a; th <= b + 1e-12; th += 0.0005) slope = Math.max(slope, Math.abs(D(th + 0.0002) - D(th - 0.0002)) / 0.0004)
+    const dDb = Math.abs(r.peakCNdeg - q.peakCNdeg)
+    worstDb = Math.max(worstDb, dDb)
+    worstDbExcess = Math.max(worstDbExcess, dDb - (slope * (Math.abs(dDec) + dSun + 0.002) + 0.01))
+    // ③ D(θ) 重建与引擎同口径：恶化 − D(夹角) 只差舍入（夹角 0.0005° × 斜率 + 恶化 0.005 dB）
+    for (const z of [q, r]) worstFit = Math.max(worstFit, Math.abs(z.peakCNdeg - D(z.peakSeparation)) - (slope * 0.0005 + 0.006))
   }
   assert.ok(shared >= 3, '两档共有的事件日太少：' + shared)
   assert.ok(worstDt <= 300, `峰值时刻差 ${worstDt}s`)
-  assert.ok(worstDb <= 0.2, `峰值恶化差 ${worstDb.toFixed(3)} dB`)
   assert.ok(worstResid <= 60, `时刻差与经度漂移不相符，残差 ${worstResid.toFixed(0)}s`)
-  console.log(`  星历 vs 定轨：共有 ${shared} 天，峰值时刻差 ≤ ${worstDt}s（扣掉经度漂移后残差 ${worstResid.toFixed(0)}s）、恶化差 ≤ ${worstDb.toFixed(3)} dB`)
+  assert.ok(worstGeo <= 0, `夹角差与站心南北偏差 Δδ 不相符：残差 ${worstGeoResid.toFixed(4)}°（超出容差 ${worstGeo.toFixed(4)}°）`)
+  assert.ok(worstFit <= 0, `按引擎口径重建的 D(θ) 与引擎给的恶化对不上（超出舍入 ${worstFit.toFixed(3)} dB）——② 的斜率上界因此不可信`)
+  assert.ok(worstDbExcess <= 0, `峰值恶化差 ${worstDb.toFixed(3)} dB 超出 max|D′|·Δδ 上界 ${worstDbExcess.toFixed(3)} dB`)
+  console.log(`  星历 vs 定轨：共有 ${shared} 天，峰值时刻差 ≤ ${worstDt}s（扣掉经度漂移后残差 ${worstResid.toFixed(0)}s）、` +
+    `恶化差 ≤ ${worstDb.toFixed(3)} dB（站心南北偏差 |Δδ| ≤ ${maxDdec.toFixed(4)}°，夹角差残差 ≤ ${worstGeoResid.toFixed(4)}°）`)
 }
 
 /* ── 插值保真：60 s 细表插值 vs 逐秒 propagate ─────────────────────────

@@ -1,6 +1,7 @@
 // 卫星本体运行时（DESIGN2 §4 各接入点共用的一份取数口）：绑定缓存 → 某颗星某一时刻的本体姿态 / 挂点视轴 / 本体遮挡查表。
 //
-// 谁在用：3D 页的球面图标与跟随（姿态律 / 挂点 HUD）、GRD「姿态 + 挂点」指向（getAttAxes / attEquiv）、对星时段扫描（attAt）。
+// 谁在用：3D 页的球面图标与跟随（姿态律 / 挂点 HUD）、GRD「姿态 + 挂点」指向（getAttAxes / attEquiv）与该节就地改姿态律（setAttitude）、
+// 对星时段扫描（attAt）。
 // 本体遮挡掩模（maskFor / maskSync / blockedAt）是给建模 / 标定工具取数用的：用户 2026-09-24 叫停了遮挡接入分析模块
 // （可见性 / 对星性能表 / 星间链路），平台页面现在不查掩模，故掩模【不随绑定预取】（createBodyRuntime({prefetchMasks:true}) 才预取）。
 // 姿态 / 挂点 / 掩模的数学全在 packages/core/models：attitude.mjs（五律、挂点系）与 mask.mjs（D2 角坐标、查表、编解码），
@@ -26,6 +27,7 @@
 // 返回值一律是新建的纯数组 / 纯对象（调用方可以缓存、可以过 IPC）；逐拍热路径（图标 / 跟随）传 out 复用。
 import { attitudeBasisEcef, makeBasis, sunEcefApprox, gmstRadAt, mountFrame, mountBasisEcef, losToBody, basisToQuatScene, quatMul, articulationSunAngle } from '@core/models/attitude.mjs'
 import { decodeMask, maskLookup, sunScanBin, SUN_SCAN_BINS } from '@core/models/mask.mjs'
+import { normalizeAttitude, isValidSatKey } from '@core/models/schema.mjs'
 import { geodeticToEcef } from '../wgs84.js'
 import { antennaBasis, dirAzElAbout } from '../grd/coverage.js'
 
@@ -178,6 +180,35 @@ export function createBodyRuntime(o = {}) {
     if (binding) next[satKey] = binding; else delete next[satKey]
     setBindings({ prefs: binds.prefs, bindings: next })
   }
+  /**
+   * 改一颗星的姿态律（覆盖分析「姿态 + 挂点」一节就地改；与模型工作台卫星页写的是同一份绑定 —— 一颗星一个本体姿态，
+   * 本星全部天线、3D 模型、工作台读的都是它）。
+   *   · 先过 normalizeAttitude：坏值在这里丢掉（主进程见到被清洗过的条目会整条拒写，见 models.bindingsSet）；
+   *   · 与已有绑定合并：模型 / 挂点 / 质量特性原样不动，只换 attitude；
+   *   · 先落本地缓存（画面当拍跟上，onChange 照常广播），再经 models.bindingsSet 落盘；主进程拒写 / 通道抛错 →
+   *     重读一次，把本地缓存拉回盘上那份（界面随之复位）。没有 api（单测 / 验证台）只改本地缓存。
+   * @returns {Promise<{ok:boolean, code?:string, errors:string[]}>}  errors = 归一时丢掉的坏值（照实报，不判定）
+   */
+  async function setAttitude(satKey, attitude) {
+    if (!isValidSatKey(satKey)) return { ok: false, code: 'bad-key', errors: [] }
+    const errors = []
+    const att = normalizeAttitude(attitude, { errors }).attitude
+    const old = bindingFor(satKey)
+    const next = JSON.parse(JSON.stringify({
+      ...(old || {}),
+      model: old && old.model ? old.model : { id: 'auto' },
+      mounts: old && Array.isArray(old.mounts) ? old.mounts : [],
+      attitude: att
+    }))
+    patchLocal(satKey, next)
+    if (!models || !models.bindingsSet) return { ok: true, errors }
+    let r = null
+    try { r = await models.bindingsSet({ satKey, binding: next }) } catch { r = null }
+    if (disposed) return { ok: false, code: 'disposed', errors }
+    if (r && r.ok) return { ok: true, errors }
+    await reload()
+    return { ok: false, code: (r && (r.code || (r.locked ? 'locked' : ''))) || 'ipc', errors: (r && Array.isArray(r.errors) && r.errors) || errors }
+  }
   const bindingFor = (satKey) => (satKey && binds.bindings && binds.bindings[satKey]) || null
   const mountsFor = (satKey) => { const b = bindingFor(satKey); return b && Array.isArray(b.mounts) ? b.mounts : [] }
   function attitudeFor(satKey) {
@@ -185,10 +216,10 @@ export function createBodyRuntime(o = {}) {
     const a = b && b.attitude
     return a && LAWS.includes(a.law) ? { law: a.law, params: a.params && typeof a.params === 'object' ? a.params : {} } : NADIR_ATT
   }
-  /** 是不是恒等于 nadir 常量（调用方可以直接用 Q_BODY2L_NADIR，省一次姿态解算） */
+  /** 是不是恒等于 nadir 常量（调用方可以直接用 Q_BODY2L_NADIR，省一次姿态解算）：nadir 律且三个姿态偏置都是 0 */
   function isPlainNadir(satKey) {
-    const a = attitudeFor(satKey)
-    return a.law === 'nadir' && !(Number(a.params.yawBiasDeg) || 0)
+    const a = attitudeFor(satKey), p = a.params
+    return a.law === 'nadir' && !(Number(p.yawBiasDeg) || 0) && !(Number(p.pitchBiasDeg) || 0) && !(Number(p.rollBiasDeg) || 0)
   }
   function mountFor(satKey, mountId) {
     if (!mountId) return null
@@ -248,7 +279,8 @@ export function createBodyRuntime(o = {}) {
     const mb = mountBasisEcef(b, frameOf(m))
     return {
       x: mb.x, y: mb.y, z: mb.z, up: mb.y.slice(), S: _st.r.slice(), law: b.law, fallback: !!b.fallback,
-      mount: m.id || '', body: { X: b.X.slice(), Y: b.Y.slice(), Z: b.Z.slice() }
+      mount: m.id || '', body: { X: b.X.slice(), Y: b.Y.slice(), Z: b.Z.slice() },
+      yawDeg: Number.isFinite(b.yawDeg) ? b.yawDeg : null     // 本体偏航（nadir = 偏航偏置、yawSteer = 此刻的导引角；其余律无定义）
     }
   }
   /**
@@ -448,7 +480,7 @@ export function createBodyRuntime(o = {}) {
   }
   const rt = {
     reload, ready: () => (loadP || Promise.resolve(binds)), isLoaded: () => loaded, version: () => ver,
-    setBindings, patchLocal, bindingsAll: () => binds,
+    setBindings, patchLocal, setAttitude, bindingsAll: () => binds,
     bindingFor, mountsFor, mountFor, attitudeFor, isPlainNadir, hasMask,
     attitudeBasisAt, basisMemoAt, losBodyAt, mountAxesAt, bindSigOf, sunEcefLast: () => _sun.slice(),
     maskFor, maskSync, ensureMasks, prefetchMasks: () => { prefetchMasks(); return prefetchP },

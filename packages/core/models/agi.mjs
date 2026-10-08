@@ -71,13 +71,13 @@ function readStage(s, where, warnings) {
     maximumValue: s.maximumValue,
     initialValue: s.initialValue
   }
-  if (!out.name) { warnings.push(`${where}：缺 name，已跳过`); return null }
+  if (!out.name) { warnings.push(`${where}：缺少 name，已跳过`); return null }
   if (!['minimumValue', 'maximumValue', 'initialValue'].every((k) => isNum(out[k]))) {
     warnings.push(`${where}「${out.name}」：minimumValue / maximumValue / initialValue 须为有限数，已跳过`)
     return null
   }
   if (!STAGE_TYPES.includes(out.type)) warnings.push(`${where}「${out.name}」：未知类型 ${q(out.type)}（原样保留）`)
-  if (!agiNameOk(out.name)) warnings.push(`${where}：名字 ${q(out.name)} 含空白，STK 不认`)
+  if (!agiNameOk(out.name)) warnings.push(`${where}：名称 ${q(out.name)} 含空白字符，STK 不支持`)
   if (out.minimumValue > out.maximumValue) warnings.push(`${where}「${out.name}」：minimumValue > maximumValue`)
   return out
 }
@@ -85,12 +85,12 @@ function readStage(s, where, warnings) {
 // 读一条关节定义（不含节点归属）；stages 为空的整条丢弃（schema minItems 1）
 function readArticulationDef(a, where, errors, warnings) {
   if (!isObj(a)) { errors.push(`${where}：不是对象，已跳过`); return null }
-  if (typeof a.name !== 'string' || !a.name) { errors.push(`${where}：缺 name，已跳过`); return null }
-  if (!agiNameOk(a.name)) warnings.push(`${where}：关节名 ${q(a.name)} 含空白，STK 不认`)
+  if (typeof a.name !== 'string' || !a.name) { errors.push(`${where}：缺少 name，已跳过`); return null }
+  if (!agiNameOk(a.name)) warnings.push(`${where}：关节名 ${q(a.name)} 含空白字符，STK 不支持`)
   const stages = []
   if (!Array.isArray(a.stages)) errors.push(`${where}「${a.name}」：stages 不是数组`)
   else a.stages.forEach((s, k) => { const st = readStage(s, `${where}「${a.name}」.stages[${k}]`, warnings); if (st) stages.push(st) })
-  if (!stages.length) { errors.push(`${where}「${a.name}」：没有有效的 stage，已跳过`); return null }
+  if (!stages.length) { errors.push(`${where}「${a.name}」：无有效的 stage，已跳过`); return null }
   const out = { name: a.name, nodes: [], stages }
   if (a.pointingVector !== undefined) {
     const pv = a.pointingVector
@@ -102,8 +102,8 @@ function readArticulationDef(a, where, errors, warnings) {
 
 function readGroupDef(g, where, errors, warnings) {
   if (!isObj(g)) { errors.push(`${where}：不是对象，已跳过`); return null }
-  if (typeof g.name !== 'string' || !g.name) { errors.push(`${where}：缺 name，已跳过`); return null }
-  if (!agiNameOk(g.name)) warnings.push(`${where}：组名 ${q(g.name)} 含空白，STK 不认`)
+  if (typeof g.name !== 'string' || !g.name) { errors.push(`${where}：缺少 name，已跳过`); return null }
+  if (!agiNameOk(g.name)) warnings.push(`${where}：组名 ${q(g.name)} 含空白字符，STK 不支持`)
   if (!isNum(g.efficiency)) { errors.push(`${where}「${g.name}」：efficiency 须为数（百分数 0–100），已跳过`); return null }
   if (g.efficiency < 0 || g.efficiency > 100) warnings.push(`${where}「${g.name}」：efficiency ${g.efficiency} 不在 0–100`)
   return { name: g.name, efficiency: g.efficiency, nodes: [] }
@@ -162,7 +162,7 @@ export function readAgiFromGltfJson(json) {
     const em = n.extensions[AGI_STK_METADATA]
     if (ea === undefined && em === undefined) return
     let name = typeof n.name === 'string' && n.name ? n.name : null
-    if (!name) { name = `node_${i}`; res.warnings.push(`节点 #${i} 无名，按「${name}」记（gmdf 按名引用，建议先给节点起名）`) }
+    if (!name) { name = `node_${i}`; res.warnings.push(`节点 #${i} 未命名，按「${name}」记录（gmdf 按名称引用，建议先为节点命名）`) }
     else referenced.add(name)
     if (ea !== undefined) {
       if (!isObj(ea)) res.warnings.push(`节点「${name}」的 AGI_articulations 不是对象，已忽略`)
@@ -171,7 +171,7 @@ export function readAgiFromGltfJson(json) {
         if (ea.articulationName !== undefined) {
           const d = typeof ea.articulationName === 'string' ? artByName.get(ea.articulationName) : null
           if (d) d.nodes.push(name)
-          else res.warnings.push(`节点「${name}」引用的关节 ${q(ea.articulationName)} 在根上没有定义，已忽略`)
+          else res.warnings.push(`节点「${name}」引用的关节 ${q(ea.articulationName)} 在根节点上未定义，已忽略`)
         }
       }
     }
@@ -181,7 +181,7 @@ export function readAgiFromGltfJson(json) {
         if (em.solarPanelGroupName !== undefined) {
           const g = typeof em.solarPanelGroupName === 'string' ? grpByName.get(em.solarPanelGroupName) : null
           if (g) g.nodes.push(name)
-          else res.warnings.push(`节点「${name}」引用的太阳翼组 ${q(em.solarPanelGroupName)} 在根上没有定义，已忽略`)
+          else res.warnings.push(`节点「${name}」引用的太阳翼组 ${q(em.solarPanelGroupName)} 在根节点上未定义，已忽略`)
         }
         if (em.noObscuration === true) pushUnique(res.noObscurationNodes, name)
       }
@@ -190,8 +190,8 @@ export function readAgiFromGltfJson(json) {
   for (const name of referenced) {
     if ((nameCount.get(name) || 0) > 1) res.warnings.push(`节点名「${name}」不唯一（${nameCount.get(name)} 个），按名引用时会同时命中`)
   }
-  for (const d of res.articulations) if (!d.nodes.length) res.warnings.push(`关节「${d.name}」没有节点引用`)
-  for (const g of res.solarPanelGroups) if (!g.nodes.length) res.warnings.push(`太阳翼组「${g.name}」没有节点引用`)
+  for (const d of res.articulations) if (!d.nodes.length) res.warnings.push(`关节「${d.name}」无节点引用`)
+  for (const g of res.solarPanelGroups) if (!g.nodes.length) res.warnings.push(`太阳翼组「${g.name}」无节点引用`)
   return res
 }
 
@@ -233,7 +233,7 @@ export function readGmdf(input) {
             if (seen.has(d.name)) { res.warnings.push(`gmdf.articulations[${i}]：关节名「${d.name}」重复，只取第一条`); return }
             seen.add(d.name)
             d.nodes = readNameList(a.modelNodes, `gmdf.articulations[${i}].modelNodes`, res.warnings)
-            if (!d.nodes.length) res.warnings.push(`gmdf 关节「${d.name}」没有 modelNodes`)
+            if (!d.nodes.length) res.warnings.push(`gmdf 关节「${d.name}」缺少 modelNodes`)
             res.articulations.push(d)
           })
         }
@@ -254,7 +254,7 @@ export function readGmdf(input) {
             if (seen.has(d.name)) { res.warnings.push(`gmdf.solarPanelGroups[${i}]：组名「${d.name}」重复，只取第一条`); return }
             seen.add(d.name)
             d.nodes = readNameList(g.modelNodes, `gmdf.solarPanelGroups[${i}].modelNodes`, res.warnings)
-            if (!d.nodes.length) res.warnings.push(`gmdf 太阳翼组「${d.name}」没有 modelNodes`)
+            if (!d.nodes.length) res.warnings.push(`gmdf 太阳翼组「${d.name}」缺少 modelNodes`)
             res.solarPanelGroups.push(d)
           })
         }
@@ -386,7 +386,7 @@ export function applyAgiToGltfJson(json, agi) {
     // 与读取端的兜底对称：无名节点读出来记作 node_<下标>，写回时同名找不到就按下标认回去
     // （STK 自带的 cubesat_3u_radial_panel.glb 根节点就是无名的，挂着关节）
     if (!hit) hit = unnamedByFallback(nodes, name)
-    if (!hit) { errors.push(`${what}：找不到节点 ${q(name)}`); return [] }
+    if (!hit) { errors.push(`${what}：未找到节点 ${q(name)}`); return [] }
     if (hit.length > 1) warnings.push(`${what}：节点名「${name}」有 ${hit.length} 个，全部生效`)
     return hit
   }
@@ -409,19 +409,19 @@ export function applyAgiToGltfJson(json, agi) {
       if (!isObj(s) || !agiNameOk(s.name)) { errors.push(`关节「${d.name}」：stage 名 ${q(s && s.name)} 为空或含空白，已跳过`); continue }
       if (seenStage.has(s.name)) { errors.push(`关节「${d.name}」：stage 名「${s.name}」重复，已跳过`); continue }
       if (!STAGE_TYPES.includes(s.type)) { errors.push(`关节「${d.name}」.「${s.name}」：未知类型 ${q(s.type)}，已跳过`); continue }
-      if (!['minimumValue', 'maximumValue', 'initialValue'].every((k) => isNum(s[k]))) { errors.push(`关节「${d.name}」.「${s.name}」：数值不全，已跳过`); continue }
+      if (!['minimumValue', 'maximumValue', 'initialValue'].every((k) => isNum(s[k]))) { errors.push(`关节「${d.name}」.「${s.name}」：数值不完整，已跳过`); continue }
       seenStage.add(s.name)
       stages.push(cleanStage(s))
     }
-    if (!stages.length) { errors.push(`关节「${d.name}」：没有有效 stage，已跳过`); continue }
+    if (!stages.length) { errors.push(`关节「${d.name}」：无有效 stage，已跳过`); continue }
     seenArt.add(d.name)
     const def = { name: d.name, stages }
     if (Array.isArray(d.pointingVector) && d.pointingVector.length === 3 && d.pointingVector.every(isNum)) def.pointingVector = d.pointingVector.slice()
     rootArts.push(def)
-    if (!d.nodes.length) warnings.push(`关节「${d.name}」没有节点`)
+    if (!d.nodes.length) warnings.push(`关节「${d.name}」无节点`)
     for (const nn of d.nodes) {
       for (const i of find(nn, `关节「${d.name}」`)) {
-        if (artOf.has(i)) { errors.push(`节点「${nn}」已挂关节「${artOf.get(i)}」，不能再挂「${d.name}」`); continue }
+        if (artOf.has(i)) { errors.push(`节点「${nn}」已关联关节「${artOf.get(i)}」，不能再关联「${d.name}」`); continue }
         artOf.set(i, d.name)
         nodeExt(nodes[i], AGI_ARTICULATIONS).articulationName = d.name
       }
@@ -437,10 +437,10 @@ export function applyAgiToGltfJson(json, agi) {
     if (!isNum(g.efficiency) || g.efficiency < 0 || g.efficiency > 100) { errors.push(`太阳翼组「${g.name}」：efficiency 须在 0–100，已跳过`); continue }
     seenGrp.add(g.name)
     rootGroups.push({ name: g.name, efficiency: g.efficiency })
-    if (!g.nodes.length) warnings.push(`太阳翼组「${g.name}」没有节点`)
+    if (!g.nodes.length) warnings.push(`太阳翼组「${g.name}」无节点`)
     for (const nn of g.nodes) {
       for (const i of find(nn, `太阳翼组「${g.name}」`)) {
-        if (grpOf.has(i)) { errors.push(`节点「${nn}」已在太阳翼组「${grpOf.get(i)}」，不能再进「${g.name}」`); continue }
+        if (grpOf.has(i)) { errors.push(`节点「${nn}」已属于太阳翼组「${grpOf.get(i)}」，不能再加入「${g.name}」`); continue }
         grpOf.set(i, g.name)
         nodeExt(nodes[i], AGI_STK_METADATA).solarPanelGroupName = g.name
         usedMeta = true
@@ -504,7 +504,7 @@ export function buildGmdf(agi) {
   const aps = []
   for (const p of a.attachPoints) {
     const n = p.node ?? p.name
-    if (typeof n !== 'string' || !n) { errors.push(`挂点 ${q(p.name)} 没有节点名，已跳过`); continue }
+    if (typeof n !== 'string' || !n) { errors.push(`挂点 ${q(p.name)} 缺少节点名，已跳过`); continue }
     pushUnique(aps, n)
   }
   if (aps.length) art.attachPoints = aps
@@ -513,10 +513,10 @@ export function buildGmdf(agi) {
   for (const d of a.articulations) {
     if (!agiNameOk(d.name) || seen.has(d.name)) { errors.push(`关节名 ${q(d.name)} 不合规或重复，已跳过`); continue }
     const modelNodes = d.nodes.filter((s) => typeof s === 'string' && s)
-    if (!modelNodes.length) { errors.push(`关节「${d.name}」没有节点（gmdf 要求 modelNodes 非空），已跳过`); continue }
+    if (!modelNodes.length) { errors.push(`关节「${d.name}」无节点（gmdf 要求 modelNodes 非空），已跳过`); continue }
     const stages = d.stages.filter((s) => isObj(s) && agiNameOk(s.name) && STAGE_TYPES.includes(s.type) && ['minimumValue', 'maximumValue', 'initialValue'].every((k) => isNum(s[k]))).map(cleanStage)
     if (stages.length !== d.stages.length) errors.push(`关节「${d.name}」有 ${d.stages.length - stages.length} 个 stage 不合规，已跳过这些 stage`)
-    if (!stages.length) { errors.push(`关节「${d.name}」没有有效 stage，已跳过`); continue }
+    if (!stages.length) { errors.push(`关节「${d.name}」无有效 stage，已跳过`); continue }
     seen.add(d.name)
     const o = { name: d.name, modelNodes: [...new Set(modelNodes)], stages }
     if (Array.isArray(d.pointingVector) && d.pointingVector.length === 3 && d.pointingVector.every(isNum)) o.pointingVector = d.pointingVector.slice()
@@ -532,7 +532,7 @@ export function buildGmdf(agi) {
     if (!agiNameOk(g.name) || seenG.has(g.name)) { errors.push(`太阳翼组名 ${q(g.name)} 不合规或重复，已跳过`); continue }
     if (!isNum(g.efficiency) || g.efficiency < 0 || g.efficiency > 100) { errors.push(`太阳翼组「${g.name}」：efficiency 须在 0–100，已跳过`); continue }
     const modelNodes = g.nodes.filter((s) => typeof s === 'string' && s)
-    if (!modelNodes.length) { errors.push(`太阳翼组「${g.name}」没有节点（gmdf 要求 modelNodes 非空），已跳过`); continue }
+    if (!modelNodes.length) { errors.push(`太阳翼组「${g.name}」无节点（gmdf 要求 modelNodes 非空），已跳过`); continue }
     seenG.add(g.name)
     groups.push({ name: g.name, efficiency: g.efficiency, modelNodes: [...new Set(modelNodes)] })
   }

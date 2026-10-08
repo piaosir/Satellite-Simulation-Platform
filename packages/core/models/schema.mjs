@@ -291,7 +291,7 @@ export function validateMeta(m, opts = {}) {
 
   // id 与来源
   const pid = parseModelId(m.id)
-  if (!pid) errors.push(`id：格式不对 ${q(m.id)}`)
+  if (!pid) errors.push(`id：格式错误 ${q(m.id)}`)
   const src = m.source
   if (!isObj(src)) errors.push('source：须为对象')
   else {
@@ -331,7 +331,7 @@ export function validateMeta(m, opts = {}) {
     if (need === 'auto') need = isObj(src) && (src.kind === 'nasa' || src.kind === 'community') ? 'all' : (isObj(src) && src.kind === 'param' ? 'none' : 'any')
     const have = LOD_KEYS.filter((k) => files[k] !== undefined)
     if (need === 'all' && have.length !== 3) errors.push(`files：三档 lod 须齐全（缺 ${LOD_KEYS.filter((k) => !have.includes(k)).join('、')}）`)
-    if (need === 'any' && !have.length) errors.push('files：至少要有一档 lod')
+    if (need === 'any' && !have.length) errors.push('files：至少需要一档 lod')
   }
 
   // 单位
@@ -416,7 +416,7 @@ export function validateMeta(m, opts = {}) {
           else if (!(Math.hypot(...a[k]) > 1e-9)) { errors.push(`${path}.${k}：不能是零向量`); axesOk = false }
         }
         // 上向量与视轴平行就定不出挂点系的滚转（二期 D1：up ↔ 天线 +y），方向图 / 掩模都会随手算的兜底轴乱转
-        if (axesOk && isUpDegenerate(a.dirBody, a.upBody)) errors.push(`${path}.upBody：与 dirBody 平行，定不出滚转`)
+        if (axesOk && isUpDegenerate(a.dirBody, a.upBody)) errors.push(`${path}.upBody：与 dirBody 平行，无法确定滚转`)
       })
     }
   }
@@ -502,7 +502,7 @@ export function validateMeta(m, opts = {}) {
   if (Array.isArray(o.nodeNames)) {
     const seen = new Map()
     o.nodeNames.forEach((n, i) => {
-      if (!isStr(n) || !n) errors.push(`节点 #${i}：名字为空（gmdf / AGI 按名引用，须唯一非空）`)
+      if (!isStr(n) || !n) errors.push(`节点 #${i}：名称为空（gmdf / AGI 按名称引用，须唯一且非空）`)
       else if (seen.has(n)) errors.push(`节点 #${i}：与 #${seen.get(n)} 重名「${n}」`)
       else seen.set(n, i)
     })
@@ -1085,7 +1085,7 @@ export function normalizeMount(m, opts = {}) {
     bore = [0, 0, 1]
   }
   let up = src.upBody === undefined || src.upBody === null ? null : orthoUp(src.upBody, bore)
-  if (!up && src.upBody !== undefined && src.upBody !== null) errors.push(`${path}.upBody：零长、非法或与视轴平行，按 D1 缺省`)
+  if (!up && src.upBody !== undefined && src.upBody !== null) errors.push(`${path}.upBody：零长、无效或与视轴平行，按缺省上向`)
   if (!up) up = defaultUpBody(bore)
 
   // 未知键先放（纯数据），已知键随后覆盖——输出键序稳定：未知键在前不影响读，但让 JSON 对拍 / 幂等不受输入键序干扰。
@@ -1137,7 +1137,7 @@ export function defaultMount(partial = {}) {
 
 /**
  * 姿态律参数的键与缺省——与 packages/core/models/attitude.mjs 的 attitudeBasisEcef 逐键同口径（那边是消费端，缺的键它按下列缺省算）：
- *   nadir     yawBiasDeg（固定偏航，度，缺省 0）
+ *   nadir     rollBiasDeg / pitchBiasDeg / yawBiasDeg（相对轨道系的固定滚转 / 俯仰 / 偏航偏置，度，缺省 0；3-2-1 序，见 attitude.mjs nadir 律）
  *   yawSteer  sunSide（'+X' | '-X'：太阳落在偏航后 +X / −X 半平面，缺省 '+X'）
  *   sun       axis（本体轴，[x,y,z]，缺省 −Z）精确指太阳；secondary（缺省随 axis：axis ∥ ±Z 取 'velocity'，否则 'nadir'）；secondaryAxis
  *   inertial  q（本体 → TEME 惯性系，[x,y,z,w]）或 eulerDeg {yaw, pitch, roll}（3-2-1）；都没有 = 单位旋转
@@ -1148,7 +1148,7 @@ export function defaultMount(partial = {}) {
  * axis / secondaryAxis 可写成 BODY_AXES 的字符串（'+X' …），归一时换成单位向量——attitude.mjs 只认数值向量。
  */
 export const ATTITUDE_PARAM_DEFAULTS = Object.freeze({
-  nadir: Object.freeze({ yawBiasDeg: 0 }),
+  nadir: Object.freeze({ rollBiasDeg: 0, pitchBiasDeg: 0, yawBiasDeg: 0 }),
   yawSteer: Object.freeze({ sunSide: '+X' }),
   sun: Object.freeze({ axis: Object.freeze([0, 0, -1]) }),
   inertial: Object.freeze({ q: Object.freeze([0, 0, 0, 1]) }),
@@ -1217,7 +1217,9 @@ export function normalizeAttitude(a, opts = {}) {
     else params[k] = ax
   }
   if (params.secondary !== undefined && !ATTITUDE_SECONDARY.includes(params.secondary)) drop('secondary', `须为 ${ATTITUDE_SECONDARY.join(' / ')}`)
-  if (params.yawBiasDeg !== undefined && !(isNum(params.yawBiasDeg) && Math.abs(params.yawBiasDeg) <= 360)) drop('yawBiasDeg', '须在 [−360, 360] °')
+  for (const k of ['rollBiasDeg', 'pitchBiasDeg', 'yawBiasDeg']) {
+    if (params[k] !== undefined && !(isNum(params[k]) && Math.abs(params[k]) <= 360)) drop(k, '须在 [−360, 360] °')
+  }
   if (params.sunSide !== undefined && params.sunSide !== '+X' && params.sunSide !== '-X') drop('sunSide', "须为 '+X' / '-X'")
   if (params.q !== undefined) {
     const qv = params.q
@@ -1314,7 +1316,7 @@ export function validateBindings(b) {
   if (b.bindings !== undefined && !isObj(b.bindings)) errors.push('bindings：须为对象')
   else if (isObj(b.bindings)) {
     for (const [k, v] of Object.entries(b.bindings)) {
-      if (!isValidSatKey(k)) { errors.push(`bindings：键 ${q(k)} 格式不对，已丢弃`); continue }
+      if (!isValidSatKey(k)) { errors.push(`bindings：键 ${q(k)} 格式错误，已丢弃`); continue }
       const nb = normBinding(v, `bindings[${q(k)}]`, errors)
       if (nb) out[k] = nb
     }

@@ -1,29 +1,33 @@
 <script setup>
-// 星座侧栏 · 卫星集面板：内置星座 / 卫星组 / 导入星历 / 自定义星座 摊成【一张有序表】，每一行同一套控件与手势。
+// 星座侧栏 · 卫星集面板：卫星天线树 / 内置星座 / 卫星组 / 导入星历 / 自定义星座 摊成【一张有序表】，每一行同一套控件与手势。
 //   · 眼睛        显 / 隐（可多开，地图 = 所有可见集的并集）
 //   · Alt + 眼睛  仅显示这一集（其余暂隐；顶部出现「仅显示：X」，点它还原）
 //   · 点行        展开 / 收起成员表（同一时刻只开一处）
 //   · 双击行      聚焦（转到它那一面并选中）
 //   · 拖行首把手  调顺序（松手落位）；键盘党用菜单的 上移 / 下移 / 置顶
-//   · 双击名字    改名；行尾「⋯」与右键 = 同一份菜单，条目由宿主按种类给（menuItems(row)）
-// 新建统一走顶部「＋」菜单（宿主给 addItems）。本组件只管呈现与本地 UI 态（改名 / 菜单 / 两步删除 / 拖拽），
+//   · 双击名字    改名（行给了 renamable 才行：卫星天线树的名字不归这里管）；行尾「⋯」与右键 = 同一份菜单，条目由宿主按种类给（menuItems(row)）
+// 新建统一走顶部「＋」菜单（宿主给 addItems）。本组件只管呈现与本地 UI 态（改名 / 菜单 / 两步删除 / 拖拽 / 搜索下拉开合），
 // 数据与动作全在宿主（emit 出去）。
-import { ref, nextTick, onBeforeUnmount } from 'vue'
+// 搜索下拉可关：Esc（焦点在搜索框里）/ 在搜索行外按下鼠标 / 点选一条结果 → 收起；再输入、点回搜索框（有关键词时）、关键词被
+// 宿主改了，或宿主递增 search.openTick（标题栏搜索桥，同一个词再搜也算）→ 重新展开。结果行的「＋」（加入 / 移出选中集）不收起，可以连着攒一批。
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import SatList from './SatList.vue'
 
 const props = defineProps({
-  // 有序行：{ id, kind, name, count, sub, color, colorable, visible, renamable, icon, iconTitle, modified }
+  // 有序行：{ id, kind, name, lit, count, sub, color, colorable, visible, renamable, icon, iconTitle, modified }
+  //   lit = 名字是界面词（卫星天线树 / 没改过名的内置星座 / 搜索结果），跟界面语言走；否则是用户起的名字（数据），挂 data-i18n-skip 不翻
   rows: { type: Array, default: () => [] },
   searchRow: { type: Object, default: null },            // 搜索结果那一行（钉在最上，不参与排序）
   summary: { type: Object, default: () => ({}) },        // { shown, layers, dataTime, status }
-  solo: { type: Object, default: null },                 // { id, name }
+  solo: { type: Object, default: null },                 // { id, name, lit }
   expanded: { type: String, default: '' },
   expItems: { type: Array, default: () => [] },
   expLoading: { type: Boolean, default: false },
   expError: { type: String, default: '' },
   expActions: { type: Array, default: () => [] },
-  // { keyword, results:[{ noradId, name, groupLabel, slot, picked }], finderActive }
+  // { keyword, openTick, results:[{ noradId, name, groupLabel, slot, picked, syn }], finderActive }
+  //   （syn：天线树虚拟星，合成号不当 NORAD 显示；openTick：宿主要求重新展开下拉并聚焦搜索框时自增）
   search: { type: Object, default: () => ({ keyword: '', results: [], finderActive: false }) },
   menuItems: { type: Function, default: null },          // (row) => [{ key, label, icon, tone, sep }]
   addItems: { type: Array, default: () => [] },          // 「＋」菜单：[{ key, label, icon, sep }]
@@ -46,6 +50,13 @@ function startRename(row) {
   if (!row || !row.renamable) return
   renameId.value = row.id; renameVal.value = row.name
   nextTick(() => { try { if (rnEl) { rnEl.focus(); rnEl.select() } } catch { /* ignore */ } })
+}
+// 双击名字：能改名的行才截住双击进改名；不能改名的（卫星天线树）放它冒泡到行上 = 聚焦，同双击行的其余位置
+// （原来一律 .stop：天线树那一行双击名字什么也不发生）
+function onNameDbl(ev, row) {
+  if (!row || !row.renamable) return
+  ev.stopPropagation()
+  startRename(row)
 }
 function commitRename(row) {
   if (renameId.value !== row.id) return
@@ -99,7 +110,37 @@ function onItem(it) {
   emit('action', it.key, row)
 }
 const itemLabel = (it, row) => (row && it.key === 'delete' && delArm.value === row.id ? '确认删除' : it.label)
-onBeforeUnmount(() => { clearTimeout(armT); endDrag(); window.removeEventListener('keydown', onMenuKey, true) })
+onBeforeUnmount(() => { clearTimeout(armT); endDrag(); window.removeEventListener('keydown', onMenuKey, true); document.removeEventListener('mousedown', onDocDown, true) })
+
+/* —— 搜索下拉的开合（本地 UI 态；结果本身由宿主给） —— */
+const searchEl = ref(null)
+const dropOpen = ref(false)
+// 外部按下：捕获相挂在 document 上，只在下拉开着时挂；落在搜索行里（输入框 / 下拉 / 行内按钮）不收
+function onDocDown(e) { if (searchEl.value && searchEl.value.contains(e.target)) return; setDrop(false) }
+function setDrop(v) {
+  if (dropOpen.value === !!v) return
+  dropOpen.value = !!v
+  if (v) document.addEventListener('mousedown', onDocDown, true)
+  else document.removeEventListener('mousedown', onDocDown, true)
+}
+function onSearchInput(ev) { const v = ev.target.value; setDrop(!!v); emit('search-input', v) }
+function onSearchReopen() { if (props.search && props.search.keyword) setDrop(true) }   // 聚焦 / 点击搜索框：有关键词就重新展开
+// Esc 收起：真收起了一份看得见的下拉才截停（否则照常往外走，宿主的 Esc 照旧生效）；输入法组字中的 Esc 归输入法
+function onSearchKey(e) {
+  if (e.key !== 'Escape' || e.isComposing) return
+  const shown = dropOpen.value && !!(props.search && props.search.results && props.search.results.length)
+  setDrop(false)
+  if (shown) { e.stopPropagation(); e.preventDefault() }
+}
+function onResultPick(it) { setDrop(false); emit('search-pick', it) }
+// 关键词被宿主改了（标题栏「在星座中搜索」桥 / 点选后清空 / 清除）：有词就展开、空了就收起。
+// immediate：面板重挂（关掉轨道向导）时关键词还在 → 照旧展开
+watch(() => props.search && props.search.keyword, (k) => setDrop(!!k), { immediate: true })
+// 标题栏「在星座中搜索」每调一次 openTick 自增（同一个词再搜也变）：重新展开并把焦点交给搜索框
+watch(() => props.search && props.search.openTick, () => {
+  if (props.search && props.search.keyword) setDrop(true)
+  nextTick(() => { const el = searchEl.value && searchEl.value.querySelector('input'); if (el) { try { el.focus() } catch { /* ignore */ } } })
+})
 
 /* —— 眼睛：普通点 = 显隐；Alt + 点 = 仅显示 —— */
 function onEye(ev, row) { if (ev.altKey) emit('solo', row); else emit('toggle', row) }
@@ -174,25 +215,26 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 <template>
   <div class="lp">
     <div ref="topEl" class="lp-top">
-      <div class="lp-search">
+      <div ref="searchEl" class="lp-search">
         <span class="lp-si"><Icon name="search" :size="12" /></span>
-        <input :value="search.keyword" placeholder="搜索名 / 编号" spellcheck="false" @input="emit('search-input', $event.target.value)" />
+        <input :value="search.keyword" placeholder="搜索名 / 编号" spellcheck="false" @input="onSearchInput" @focus="onSearchReopen" @click="onSearchReopen" @keydown="onSearchKey" />
         <span v-if="search.keyword" class="lp-x" title="清除" @click="emit('search-clear')"><Icon name="x" :size="12" /></span>
         <button type="button" class="lp-ib" :class="{ on: search.finderActive }" title="查找卫星：按所有者 / 对象类型 / 状态 / 发射年 / 轨道区制 / 近远地点 / 倾角 / 周期" @click="emit('open-finder')"><Icon name="filter" :size="12" /></button>
-        <button type="button" class="lp-ib lp-add" title="添加：新建卫星组 / 生成星座 / 导入星历 / 从目录查找 / 找回删掉的内置星座" @click="openAdd"><Icon name="plus" :size="13" /></button>
-        <div v-if="search.results && search.results.length" class="lp-drop">
-          <div v-for="it in search.results" :key="it.noradId" class="lp-di" :class="{ picked: it.picked }" @click="emit('search-pick', it)">
+        <button type="button" class="lp-ib lp-add" title="添加：新建卫星组 / 生成卫星或星座 / 导入星历 / 从目录查找 / 找回删掉的内置星座" @click="openAdd"><Icon name="plus" :size="13" /></button>
+        <div v-if="dropOpen && search.results && search.results.length" class="lp-drop">
+          <div v-for="it in search.results" :key="it.noradId" class="lp-di" :class="{ picked: it.picked }" @click="onResultPick(it)">
             <div class="lp-dt">
               <div class="lp-dn" data-i18n-skip>{{ it.name }}</div>
-              <div class="lp-ds" data-i18n-skip>{{ it.groupLabel }} · NORAD {{ it.noradId }}<span v-if="it.slot"> · {{ it.slot }}</span></div>
+              <div class="lp-ds" data-i18n-skip>{{ it.groupLabel }}<template v-if="!it.syn"> · NORAD {{ it.noradId }}</template><span v-if="it.slot"> · {{ it.slot }}</span></div>
             </div>
             <span class="lp-dp" :title="it.picked ? '已在选中集中，点击移出' : '加入选中集'" @click.stop="emit('search-toggle-pick', it)"><Icon :name="it.picked ? 'check' : 'plus'" :size="12" /></span>
           </div>
         </div>
       </div>
-      <div class="lp-sum" data-i18n-skip>
+      <!-- 读数行是界面语汇 + 数字，跟界面语言走（不整行 skip）；只有「仅显示：」后面那个用户起的集名不翻（lit = 界面词才翻） -->
+      <div class="lp-sum">
         <span class="lp-sn">显示 {{ summary.shown ?? 0 }} 颗 · {{ summary.layers ?? 0 }} 集<template v-if="summary.dataTime"> · OMM {{ summary.dataTime }}</template><template v-if="summary.status"> · {{ summary.status }}</template></span>
-        <span v-if="solo" class="lp-solo" title="点击还原之前的显示" @click="emit('restore')">仅显示：{{ solo.name }} <Icon name="x" :size="11" /></span>
+        <span v-if="solo" class="lp-solo" title="点击还原之前的显示" @click="emit('restore')"><span><span>仅显示：</span><span :data-i18n-skip="solo.lit ? null : ''">{{ solo.name }}</span></span><Icon name="x" :size="11" /></span>
       </div>
     </div>
 
@@ -208,7 +250,7 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
           <span class="lp-eye" :title="eyeTitle(searchRow)" @click.stop="onEye($event, searchRow)"><Icon :name="searchRow.visible ? 'eye' : 'eye-off'" :size="13" /></span>
           <span class="lp-sw fixed"><span class="lp-swi" :style="{ background: searchRow.color || defaultColor }"></span></span>
           <span class="lp-ki" title="搜索结果"><Icon name="search" :size="12" /></span>
-          <span class="lp-nm" :title="searchRow.name" data-i18n-skip>{{ searchRow.name }}</span>
+          <span class="lp-nm" :title="searchRow.name" :data-i18n-skip="searchRow.lit ? null : ''">{{ searchRow.name }}</span>
           <span class="lp-cnt" data-i18n-skip>{{ searchRow.count }}</span>
           <span class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, searchRow)"><Icon name="ellipsis" :size="13" /></span>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== searchRow.id }" :size="12" /></span>
@@ -241,8 +283,10 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
             v-if="renameId === row.id" :ref="setRnEl" class="lp-rn" v-model="renameVal"
             @click.stop @dblclick.stop @keydown.enter="commitRename(row)" @keydown.esc.stop="renameId = ''" @blur="commitRename(row)"
           />
-          <span v-else class="lp-nm" :title="row.name" data-i18n-skip @dblclick.stop="startRename(row)">{{ row.name }}<i v-if="row.modified" class="lp-mod" title="已改动过（菜单里可重置）"></i></span>
-          <span v-if="row.sub" class="lp-sub" data-i18n-skip>{{ row.sub }}</span>
+          <!-- 名字（连同悬停全名）是用户数据才不翻：skip 只挂内层；「已改动」小点的 title 是界面词，放在 skip 外面 -->
+          <span v-else class="lp-nm" @dblclick="onNameDbl($event, row)"><span :title="row.name" :data-i18n-skip="row.lit ? null : ''">{{ row.name }}</span><i v-if="row.modified" class="lp-mod" title="已改动过（菜单里可重置）"></i></span>
+          <!-- 副读数全是界面语汇 + 日期（「星历 · 起 → 止」/ 格式名 · 导入日 / Walker 码「53° · 单星」），不含用户数据，不 skip -->
+          <span v-if="row.sub" class="lp-sub">{{ row.sub }}</span>
           <span class="lp-cnt" data-i18n-skip>{{ row.count }}</span>
           <span class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, row)"><Icon name="ellipsis" :size="13" /></span>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== row.id }" :size="12" /></span>
@@ -266,7 +310,7 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
     <template v-if="menu">
       <div class="lp-mbd" @mousedown="closeMenu" @contextmenu.prevent="closeMenu"></div>
       <div class="lp-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-        <div v-if="menu.row" class="lp-mh" data-i18n-skip>{{ menu.row.name }}</div>
+        <div v-if="menu.row" class="lp-mh" :data-i18n-skip="menu.row.lit ? null : ''">{{ menu.row.name }}</div>
         <template v-for="(it, i) in menu.items" :key="(it.key || 'sep') + i">
           <div v-if="it.sep" class="lp-msep"></div>
           <div v-else class="lp-mi" :class="[it.tone || '', { warn: menu.row && it.key === 'delete' && delArm === menu.row.id, dis: it.disabled }]" @click="!it.disabled && onItem(it)">
@@ -337,8 +381,12 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 /* 展开箭头不随隐藏压暗：它本就是 --text-faint，再叠 .45 只剩 1.5:1，默认大半行是隐藏集，「能点开」的提示就没了 */
 .lp-row.off .lp-nm, .lp-row.off .lp-cnt, .lp-row.off .lp-sub, .lp-row.off .lp-swi, .lp-row.off .lp-ki { opacity: .45; }
 .lp-row.off:hover .lp-chev, .lp-row.off.exp .lp-chev { opacity: 1; }
-/* 眼睛开关带来的显隐变化淡一下（这是状态切换，不是悬停；行本身不加过渡） */
-.lp-nm, .lp-cnt, .lp-sub, .lp-swi, .lp-ki, .lp-chev { transition: opacity var(--dur-2) linear; }
+/* 显示中的集整行亮着：种类图标 / 颗数比常态提一档，与压暗的隐藏行拉开 */
+.lp-row:not(.off) .lp-ki, .lp-row:not(.off) .lp-cnt { color: var(--text-muted); }
+/* 眼睛开关带来的显隐变化淡一下（这是状态切换，不是悬停；行本身不加过渡）。
+   种类图标 / 颗数不随悬停变色，颜色只在显隐时变，故可连颜色一起过渡；名字的颜色跟着行悬停走，不能带 */
+.lp-nm, .lp-sub, .lp-swi, .lp-chev { transition: opacity var(--dur-2) linear; }
+.lp-cnt, .lp-ki { transition: opacity var(--dur-2) linear, color var(--dur-2) linear; }
 .lp-row.solo .lp-nm { color: var(--accent-ui); }
 /* 右键 / ⋯ 菜单正对着的那一行：菜单开着时标出来，免得不知道在改哪一集 */
 .lp-row.ctx { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
@@ -356,7 +404,14 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
    --t-state 里含 opacity，⋯ 的悬停显形照样 80ms */
 .lp-eye { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); border-radius: var(--r-box); transition: var(--t-state); }
 .lp-eye:hover { color: var(--text); background: var(--bg); }
-.lp-row.off .lp-eye { color: var(--text-faint); }
+/* 显示中 = 机位色实底钮（同工具栏 .tbtn.on 的「开」），整列一眼读出地图上开着哪几集。
+   原来两态只差眼睛上那道斜杠：记号长在占多数的隐藏集身上，少数的显示集反倒是「缺一笔」的那个，
+   缺特征的目标只能逐行找（Treisman 搜索不对称）—— 记号必须加在少数一方。 */
+.lp-row:not(.off) .lp-eye { background: var(--accent-ui); color: var(--bg); }
+.lp-row:not(.off) .lp-eye:hover { background: var(--accent-ui-hover); color: var(--bg); }
+/* 隐藏 = 眼睛随整行压暗（与种类图标同档），悬停该行才回到可点的亮度 */
+.lp-row.off .lp-eye { color: var(--text-faint); opacity: .45; }
+.lp-row.off:hover .lp-eye { opacity: 1; }
 .lp-row.off .lp-eye:hover { color: var(--text); }
 .lp-eye:active { box-shadow: var(--press); transition-duration: 0s; }
 .lp-sw { position: relative; flex: none; width: 12px; height: 12px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }

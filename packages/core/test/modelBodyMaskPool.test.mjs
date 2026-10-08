@@ -129,7 +129,8 @@ await t('排除名单的顺序 / 重复不影响键（第二次命中缓存）',
 await t('dispose：挂起的调用立即拒绝（不等算完）；之后再算直接拒绝', async () => {
   const pool = P.createBodyMaskPool()
   const a = settle(pool.compute(geomSat, { ...mountSat, posBody: [0.3, 0.2, 2.9] }))
-  await tick()
+  // ★ 同步收摊，不先等一拍：几何已缓存时这次投射总共只要两三个 25 ms 块，等一拍 setTimeout(0) 它可能已算完（快机器上 3 次挂 1 次）。
+  //   compute 返回时 job 一定还挂着（结果要走微任务才落定），这里拒绝它与「算到一半收摊」走的是同一条 job.settle
   pool.dispose()
   const ra = await a
   assert.equal(ra.ok, false); assert.match(ra.e.message, /已释放/)

@@ -1,16 +1,22 @@
 // 3D 球上的卫星模型层（设计契约 §6.2；任务书 §5.9 / §5.10）：球面图标模式 + 跟随视图。
 //
 // 两种画法，都挂在 scene.js 的叠加层口子上（setOverlay），地球那一趟一个材质都不碰：
-//   ① 球面图标：聚焦星（≤ 32 颗）画成屏幕定尺的小模型（lod2），姿态按姿态律（一期 nadir，基底由调用方给）。
+//   ① 球面图标：聚焦星（颗数不设上限）画成屏幕定尺的小模型（lod2），姿态按姿态律（一期 nadir，基底由调用方给）。
+//      画法在 iconBatch.js：同一模型的星归一组实例化画（每个部件一次 draw call，与颗数无关），屏幕定尺 / 遮挡 / 淡入淡出在着色器里算，
+//      远看自动换抽稀档（iconLod.js）；下面这几条口径不变。
 //      尺寸随缩放联动：px（全局「图标大小」）是默认视角下的像素，屏幕像素 = px × zoomScale.pointZoomK(相机距离)
 //      —— 与它顶替的聚焦星点层同一系数，拉近变大、拉远变小（原先恒定像素：调大了在全球视角下连片压住地图）。
-//      用【地球相机】在第二趟画、不清深度 —— 地球已写的深度天然把背面的星挡掉；另按「相机→锚点的线段穿不穿单位球」
+//      用【地球相机】在第二趟画、先清深度（图标是屏幕定尺的符号，不与地球比深度）；按「相机→锚点的线段穿不穿单位球」
 //      整颗判遮挡（与点精灵的着色器剔除同一判据）。出现 / 消失 300 ms 透明度渐变，同步给点精灵遮罩一个反向系数
-//      （scene.setDotMask）：模型淡入、原来那个点淡出 —— 交叉淡入淡出。模型没就绪 / 下载失败 / 太小（半径 < 3 px）时照旧画点。
+//      （scene.setDotMask，GPU 哈希表见 dotMaskHash.js）：模型淡入、原来那个点淡出 —— 交叉淡入淡出。模型没就绪 / 下载失败 / 太小（半径 < 3 px）时照旧画点。
+//      跟随中照画（2026-10-08 起；原先跟随时整批藏掉，别的聚焦星只剩高亮环）：页面不给主星与 500 km 内的邻星（局部那一趟按真实尺寸画、
+//      聚焦的邻星屏上至少画到图标大小），图标大小按跟随档（zoomScale.FOLLOW_ICON_K），画在局部那一趟之前（主星恒在前）。
 //   ② 跟随视图：局部场景（米制、原点 = 主星、L 系：x̂ 沿迹 / ŷ 径向向上 / ẑ = x̂ × ŷ）+ 局部相机 + 局部轨道控件。
 //      地球相机由局部相机推出：q_E = qL2S · q_camL，p_E = anchor + qL2S·p_camL / 6371000（double 算完再赋给 three）。
 //      局部那一趟：清深度 → 模型（太阳档影棚光：硬平行光 + 地球反照 + 太空环境反射、PCF 阴影按画质档）→ 500 km 内其他星 → HUD，
 //      临时 ACES 色调映射、画完恢复（地球那一趟的材质程序不串）。
+//      近场几何也在这一趟（nearRoot）：主星自己的轨道线 / 覆盖锥近截（页面给，state.near）、别的以主星为端点的线的近截与图上链路的
+//      近场整跳（场景给，setNearLines / setNearLinks；口径见 scene.js 的 followA 那段）。
 //      星空 / 大气 / 太阳眩光【不归本层】：它们是地图设置 · 宇宙空间的开关（scene.setSpace / spaceFx.js），普通视图与跟随同一套 ——
 //      跟随只改视角、不改地图。本层只报「主星模型挡住太阳多少」（overlay.sunVisibility），由 scene 乘进眩光。
 //      主星没有模型可画（绑定「无」/ 离线未缓存 / 下载或解码失败 / 还在加载 / 软件光栅 / 逐档降级退到底）：局部原点画回退标记
@@ -60,10 +66,10 @@ import { tauFor, dampingFor, ZOOM_TAU_MS } from './dragFollow.js'
 import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { byLang, curLang } from '../../shared/i18n/lang.js'
 import { isSoftwareRenderer } from './spaceFx.js'
-import { pointZoomK } from './zoomScale.js'
+import { createIconBatch, EARTH_R } from './iconBatch.js'
+import { FOLLOW_ICON_K } from './zoomScale.js'
 
 const RE_M = 6371000              // 场景 1 单位 = 6371 km（与 focusLanes.RE 同值）
-const MAX_ICONS = 32
 const FADE_S = 0.3
 const MAX_OTHERS = 16
 const FOLLOW_MAX_M = 5000
@@ -386,7 +392,12 @@ const _m3 = new THREE.Matrix3()
 const _ta = [0, 0, 0], _tpv = [0, 0, 0], _tsu = [0, 0, 0]
 function nameOfNode(o) { return (o.userData && o.userData.name) || o.name }
 const wrap180 = (x) => { const v = ((x % 360) + 540) % 360 - 180; return v === -180 ? 180 : v }
-function makeSunTrackers(inst, body) {
+/**
+ * 对日关节的规格（跟随视图的挂架与球面图标批次 iconBatch 共用，算式只此一份）：
+ * list[i] = { nodes（关节节点）, rest（各节点静止局部矩阵）, axis（转轴，节点局部系）, p0（指向）, rootToNode, lo, hi, deg, pv }；
+ * bodyToModel = 本体 → 模型根的纯旋转。没有可自动驱动的关节返回 null。
+ */
+export function sunTrackSpecs(inst, body) {
   const meta = inst.meta || {}
   const arts = Array.isArray(meta.articulations) ? meta.articulations : []
   const groups = Array.isArray(meta.solarPanelGroups) ? meta.solarPanelGroups : []
@@ -440,27 +451,43 @@ function makeSunTrackers(inst, body) {
   const bodyToModel = new THREE.Quaternion()
   body.matrix.decompose(_tp, bodyToModel, _ts)
   bodyToModel.invert()
+  return { list, bodyToModel }
+}
+/**
+ * 一个对日关节此刻该转到的角度（度，相对静止位姿；夹进限位）。sunBody：太阳方向（本体系单位矢量，{x,y,z}）；prevDeg：上一拍的角度。
+ * 返回 NaN = 这一拍不动：太阳几乎沿转轴（β≈90°，转到哪都一样，保持上一拍）或与上一拍差不到 0.05°。
+ */
+export function sunTrackDeg(t, sunBody, bodyToModel, prevDeg) {
+  _tc.set(sunBody.x, sunBody.y, sunBody.z).applyQuaternion(bodyToModel).applyQuaternion(t.rootToNode)
+  const k = _tc.dot(t.axis)
+  if (_tc.lengthSq() - k * k < 1e-8) return NaN
+  _ta[0] = t.axis.x; _ta[1] = t.axis.y; _ta[2] = t.axis.z
+  _tpv[0] = t.p0.x; _tpv[1] = t.p0.y; _tpv[2] = t.p0.z
+  _tsu[0] = _tc.x; _tsu[1] = _tc.y; _tsu[2] = _tc.z
+  let deg = articulationSunAngle(_tpv, _ta, _tsu)
+  if (deg < t.lo || deg > t.hi) {
+    if (deg - 360 >= t.lo && deg - 360 <= t.hi) deg -= 360
+    else if (deg + 360 >= t.lo && deg + 360 <= t.hi) deg += 360
+    else deg = Math.abs(wrap180(deg - t.lo)) <= Math.abs(wrap180(deg - t.hi)) ? t.lo : t.hi
+  }
+  if (Math.abs(deg - prevDeg) < 0.05) return NaN
+  return deg
+}
+function makeSunTrackers(inst, body) {
+  const sp = sunTrackSpecs(inst, body)
+  if (!sp) return null
+  const { list, bodyToModel } = sp
   return {
     count: list.length,
+    /** 规格（球面图标批次按它烘关节骨骼、逐实例算角度） */
+    specs: list, bodyToModel,
     /** 各关节此刻相对静止位姿的转角（度；验证台 / 单测读数） */
     angles: () => list.map((t) => t.deg),
     /** sunBody：太阳方向（本体系单位矢量，THREE.Vector3） */
     update(sunBody) {
       for (const t of list) {
-        _tc.copy(sunBody).applyQuaternion(bodyToModel).applyQuaternion(t.rootToNode)
-        // 太阳几乎沿转轴（β≈90°）：转到哪都一样，保持上一拍的角度
-        const k = _tc.dot(t.axis)
-        if (_tc.lengthSq() - k * k < 1e-8) continue
-        _ta[0] = t.axis.x; _ta[1] = t.axis.y; _ta[2] = t.axis.z
-        _tpv[0] = t.p0.x; _tpv[1] = t.p0.y; _tpv[2] = t.p0.z
-        _tsu[0] = _tc.x; _tsu[1] = _tc.y; _tsu[2] = _tc.z
-        let deg = articulationSunAngle(_tpv, _ta, _tsu)
-        if (deg < t.lo || deg > t.hi) {
-          if (deg - 360 >= t.lo && deg - 360 <= t.hi) deg -= 360
-          else if (deg + 360 >= t.lo && deg + 360 <= t.hi) deg += 360
-          else deg = Math.abs(wrap180(deg - t.lo)) <= Math.abs(wrap180(deg - t.hi)) ? t.lo : t.hi
-        }
-        if (Math.abs(deg - t.deg) < 0.05) continue
+        const deg = sunTrackDeg(t, sunBody, bodyToModel, t.deg)
+        if (!Number.isFinite(deg)) continue
         t.deg = deg
         _tq.setFromAxisAngle(t.axis, deg * Math.PI / 180)
         _tm.makeRotationFromQuaternion(_tq)
@@ -490,26 +517,6 @@ function faceNormal(geo) {
 // 单测用（packages/core/test/modelGlobeLayer.test.mjs）：挂架 + 太阳翼对日的几何口径不经 GPU 也能验
 // createHud：挂点名屏幕避让（declutter）要个假 document 就能在 Node 里验（modelGlobeLayerP2 ⑤）
 export const __test = { mountInstance, faceNormal, createHud }
-
-// 材质克隆（图标要逐颗淡入淡出、逐颗按地影压暗 —— 共享材质改不得）；贴图不克隆（共享，随模板释放）
-function cloneMaterials(root) {
-  const map = new Map(), list = []
-  root.traverse((o) => {
-    if (!o.isMesh || !o.material) return
-    const one = (m) => {
-      let c = map.get(m)
-      if (!c) {
-        c = m.clone()
-        c.userData = { ...c.userData, _base: c.color ? c.color.clone() : null, _baseEm: c.emissive ? c.emissive.clone() : null }
-        delete c.userData._shared
-        map.set(m, c); list.push(c)
-      }
-      return c
-    }
-    o.material = Array.isArray(o.material) ? o.material.map(one) : one(o.material)
-  })
-  return list
-}
 
 // ============================================================================================
 // HUD 与标签：屏幕像素定尺（不复用 scene.makeLabelSprite —— 那个按世界单位定尺，米制局部场景里不通）
@@ -948,11 +955,13 @@ function dotTexture() {
 // 画质档 → 跟随视图的 LOD 与阴影（任务书 §5.9：极致 = lod0 + 阴影，中 = lod1，低 = lod2 无阴影）
 // tris：该档三角形预算 —— 档位只是「最细到哪一档」，真正取哪一档还要看模型自己的面数（ISS IGOAL 的 lod1 有 140 万面、
 // 29 MB，「高」档照档位取会在进入跟随时卡一秒多；按预算退到 lod2 的 28 万面，画面差别在 5 km 视距内看不出）
+// 「高」档 2026-10-08 起从 lod1 改为 lod0（预算不变）：跟随时主星占满半屏，原件精度才对得上 NASA 官网的观感；
+// 常见卫星原件 ≤ 20 万面（SSL-1300 18 万、TDRS-D 20 万），在预算里；ISS 这类大件照旧按预算退档
 function followProfile(tier, q) {
   switch (tier) {
     case 'native': return { lod: 'lod0', shadows: true, tris: 3.5e6 }
     case 'ultra': return { lod: 'lod0', shadows: true, tris: 2e6 }
-    case 'high': return { lod: 'lod1', shadows: true, tris: 8e5 }
+    case 'high': return { lod: 'lod0', shadows: true, tris: 8e5 }
     case 'mid': return { lod: 'lod1', shadows: false, tris: 4e5 }
     case 'low': return { lod: 'lod2', shadows: false, tris: 1.5e5 }
     default: return (q && q.pixelRatio >= 2) ? { lod: 'lod1', shadows: true, tris: 8e5 } : { lod: 'lod2', shadows: false, tris: 1.5e5 }
@@ -1005,9 +1014,8 @@ export function createModelLayer(o = {}) {
   const iconFill = new THREE.DirectionalLight(0xffffff, 0)   // 相机侧补光（晨昏效果开时，见 FILL_LIT）
   iconScene.add(iconSun, iconSun.target, iconAmb, iconFill, iconFill.target)
   let iconEnv = null
-  const icons = new Map()        // key → slot（查找用）
-  const iconArr = []             // 同一批槽位（逐帧遍历用：下标循环零分配）
-  let iconsOn = true, iconPx = 28
+  let iconsOn = true
+  let iconPxDef = 28                // 模型图标像素（默认视角下，focusStyle.modelPx）：跟随中聚焦邻星的最小屏幕尺寸也按它
   let maskOn = false
   const sunS = new THREE.Vector3(1, 0, 0)
   // 光照口径跟「地图设置 · 宇宙空间 · 晨昏效果」走（setSunLit；2026-09-24 用户定：没有晨昏效果时地球和卫星都该全亮）：
@@ -1038,6 +1046,17 @@ export function createModelLayer(o = {}) {
   const _nf = new THREE.Vector3()
   let nearSpec = null
   localScene.add(nearRoot)
+  // 场景给的近场（scene.js followA 那段）：别的「以主星为端点」的线 —— 可见性视线 / GRD 天线视轴 / 对星射线的近截（同轨道线近截，
+  // 按 nearClip 切），与图上链路的整跳（nearLinkG：链路材质、不切，地球遮挡在材质里逐片元求，见 linkLineMaterial.js 的 occ）。
+  // 顶点同样是相对锚点的场景单位，挂在 nearRoot 下（位姿 qS2L、缩放 RE_M → L 系米制）。
+  const nearXLineObjs = []
+  let nearLinkG = null
+  let nearLinkFarM = 0       // 近场链路端点离原点最远多少米：局部相机 far 要够到（见 updateFollow）
+  const nearLinkNb = []      // 端点钉到邻星的段：{ tip（终点 instanceTip / 起点 instanceTip0）, i, slot }（箭头 / 线头让邻星此刻的屏幕半径，逐帧回填，见 updateFollow）
+  const _oc = new THREE.Vector3()
+  // 覆盖锥锥面（近场）在锥顶那截淡出：锥顶就是主星质心，半透明锥面从模型肚子里穿出来、在星体下面糊一圈裙边。
+  // 按离原点的距离 r0 → r1（模型包围半径的 1.1 → 2.4 倍）由 0 升到原透明度（见 fadeFace）
+  const coneFade = { uFR0: { value: 0 }, uFR1: { value: 1 } }
   let hud = null, mark = null                // mark：主星没有模型可画时的回退标记（见 satMarkTexture）
   let hudMoved = 0, _vpW = 0, _vpH = 0          // 挂点名避让：本帧挪动的字标数 / 最近一帧的视口（stats 读数用）
   let studio = null, studioShadows = null
@@ -1047,6 +1066,8 @@ export function createModelLayer(o = {}) {
   const others = new Map()                   // key → { inst, mount, req, label, dot, rel:Vector3, q:Quaternion, name }
   const otherArr = []
   let ctl = null, dom = null, domTouch = ''
+  let rotateOn = true                        // 左键转局部相机的闸：scene 的工具态（拖波束 / 拖标签 / 绘制 / 拖标记）里关掉（scene.updateRotate 推进来）
+  const _sph = new THREE.Spherical()
   let followTau = tauFor(50), wheelPct = 3
   let zoomTarget = 60, dMin = 5, dMax = FOLLOW_MAX_M
   let hudOn = { bodyAxes: false, lvlh: false, nadir: false, velocity: false, sun: false, isl: false, es: false, mounts: false }
@@ -1063,53 +1084,20 @@ export function createModelLayer(o = {}) {
   const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion()
 
   // ============================== 图标 ==============================
-  function newIconSlot(key) {
-    return { key, modelId: null, frame: null, frameSig: '', px: iconPx, anchor: new THREE.Vector3(), q: new THREE.Quaternion(), qB2L: new THREE.Quaternion(), altScene: 0.05, eclipse: 1, want: true,
-      alpha: 0, inst: null, mount: null, mats: null, req: 0, visible: false, dotW: 1, pxR: 0, lastEcl: -1, envTex: null }
-  }
-  function releaseIconInst(s) {
-    if (s.mount) iconScene.remove(s.mount.holder)
-    if (s.mats) for (const m of s.mats) m.dispose()
-    if (s.inst) s.inst.release()
-    s.inst = null; s.mount = null; s.mats = null; s.lastEcl = -1; s.envTex = null
-  }
-  function dropIconSlot(s) {
-    releaseIconInst(s); s.req++
-    icons.delete(s.key)
-    const i = iconArr.indexOf(s); if (i >= 0) iconArr.splice(i, 1)
-  }
-  /** keep：原位换新实例（元数据刷新）时保留当前透明度，不重新淡入 */
-  function loadIcon(s, keep) {
-    const req = ++s.req
-    const id = s.modelId
-    if (!id) return
-    source.acquire(id, 'lod2', null).then(async (inst) => {
-      const stale = () => disposed || req !== s.req || !icons.has(s.key)
-      if (stale()) { if (inst) inst.release(); return }
-      if (!inst) return   // 没模型：留着点精灵
-      await waitRenderer()
-      if (stale() || gpuWeak) { inst.release(); return }   // 软件光栅：图标一律不画，留点精灵
-      const mount = mountInstance(inst, s.frame)
-      const mats = cloneMaterials(inst.root)
-      // 恒为 transparent（transparent 是着色器程序的参数之一，逐帧切会来回换程序）；depthWrite 照开 —— 自遮挡靠深度，
-      // 不透明度 1 时混合结果与不透明画法相同。环境图此刻就挂上（挂晚了又是一次同步重编）
-      ensureIconEnv()
-      const envTex = iconEnv ? iconEnv.texture : null
-      for (const m of mats) {
-        m.transparent = true; m.opacity = 0; m.depthWrite = true
-        if ('envMap' in m && envTex) { m.envMap = envTex; m.envMapIntensity = ICON_ENV_I }
-      }
-      await warmUp(mount.holder, iconScene, true, false)
-      if (stale()) { for (const m of mats) m.dispose(); inst.release(); return }
-      const a0 = keep && s.inst ? s.alpha : 0
-      releaseIconInst(s)
-      s.inst = inst; s.mount = mount; s.mats = mats; s.envTex = envTex
-      s.alpha = a0
-      trackSun(s.mount, s.q, sunS)
-      if (gpu) gpu.track(s.mount.holder)
-      iconScene.add(s.mount.holder)
-    })
-  }
+  // 实例化批次（iconBatch.js）：组 = 同一模型 + 同一套逐星轴覆盖；挂架 / 对日关节 / 预编译 / 环境图沿用本层的同一套
+  const batch = createIconBatch({
+    scene: iconScene,
+    acquire: (id) => source.acquire(id, 'lod2', null),
+    mount: (inst, frame) => mountInstance(inst, frame),
+    frameSig,
+    waitRenderer,
+    warmUp: (obj) => warmUp(obj, iconScene, true, false),
+    envTex: () => { ensureIconEnv(); return iconEnv ? iconEnv.texture : null },
+    gpuTrack: (obj) => { if (gpu) gpu.track(obj) },
+    isWeak: () => gpuWeak,
+    envI: ICON_ENV_I, eclFloor: ICON_ECL_FLOOR
+  })
+  batch.setSunTrackFn(sunTrackDeg)
   /**
    * 着色器预编译（KHR_parallel_shader_compile，three 的 compileAsync）：新模型的程序在后台编好再挂进场景。
    * ANGLE / D3D 下一个 Physical 材质程序同步编要一两百毫秒，一颗十几种材质的星就是进入跟随后一秒多的整屏卡死。
@@ -1141,111 +1129,10 @@ export function createModelLayer(o = {}) {
   }
   /**
    * 每拍：聚焦星的图标状态。list 项：{ key, modelId, px?（默认视角下的像素，逐帧再乘缩放联动系数）, anchor:[x,y,z]（场景单位，llaToVec 大地版）, qL2S:[x,y,z,w],
-   *   qB2L?:[x,y,z,w]（本体 → L；缺省 nadir）, frame?:{q,t}（绑定表逐星的模型轴覆盖）, altKm, eclipse:0..1 }。不在表里的淡出后移除。
+   *   qB2L?:[x,y,z,w]（本体 → L；缺省 nadir）, frame?:{q,t}（绑定表逐星的模型轴覆盖）, altKm, eclipse:0..1 }。不在表里的淡出后移除。颗数不设上限。
    */
-  function setIcons(list) {
-    const seen = new Set()
-    const arr = Array.isArray(list) ? list.slice(0, MAX_ICONS) : []
-    for (const it of arr) {
-      if (!it || !it.key) continue
-      seen.add(it.key)
-      let s = icons.get(it.key)
-      if (!s) { s = newIconSlot(it.key); icons.set(it.key, s); iconArr.push(s) }
-      s.want = true
-      s.px = Number(it.px) > 0 ? Number(it.px) : iconPx
-      s.anchor.set(it.anchor[0], it.anchor[1], it.anchor[2])
-      const qb = it.qB2L || Q_BODY2L_NADIR
-      s.qB2L.set(qb[0], qb[1], qb[2], qb[3])
-      s.q.set(it.qL2S[0], it.qL2S[1], it.qL2S[2], it.qL2S[3]).multiply(s.qB2L)
-      s.altScene = Math.max(1e-4, (Number(it.altKm) || 300) / 6371)
-      s.eclipse = Number.isFinite(it.eclipse) ? it.eclipse : 1
-      trackSun(s.mount, s.q, sunS)
-      const fsig = frameSig(it.frame)
-      if ((it.modelId || null) !== s.modelId || fsig !== s.frameSig) {
-        const sameModel = (it.modelId || null) === s.modelId
-        s.modelId = it.modelId || null
-        s.frame = it.frame || null; s.frameSig = fsig
-        if (s.inst && !sameModel) { releaseIconInst(s); s.alpha = 0 }
-        s.req++
-        if (s.modelId) loadIcon(s, sameModel)
-      }
-    }
-    for (let i = 0; i < iconArr.length; i++) if (!seen.has(iconArr[i].key)) iconArr[i].want = false
-  }
-
-  // 相机 → P 的线段是否先穿过单位球（与 scene.occludedByGlobe / 点精灵着色器剔除同一判据）
-  function occluded(C, P) {
-    const dx = P.x - C.x, dy = P.y - C.y, dz = P.z - C.z
-    const a = dx * dx + dy * dy + dz * dz
-    const b = 2 * (C.x * dx + C.y * dy + C.z * dz)
-    const c = C.x * C.x + C.y * C.y + C.z * C.z - 1
-    const disc = b * b - 4 * a * c
-    if (disc <= 0) return false
-    const sq = Math.sqrt(disc), EPS = 1e-4
-    const t1 = (-b - sq) / (2 * a), t2 = (-b + sq) / (2 * a)
-    return (t1 > EPS && t1 < 1 - EPS) || (t2 > EPS && t2 < 1 - EPS)
-  }
-
-  function updateIcons(dt, camera, h) {
-    let busy = false
-    const tanH = Math.tan(camera.fov * Math.PI / 360)
-    const C = camera.position
-    // 随缩放联动：与聚焦星点层同一系数（靶心恒为地心，|C| 就是 scene 的 zoomDist；跟随时这一趟不画）
-    const zk = pointZoomK(C.length())
-    for (let i = iconArr.length - 1; i >= 0; i--) {   // 倒序：循环里可能摘掉当前槽位
-      const s = iconArr[i]
-      const ready = !!(s.mount && s.mats)
-      const target = (s.want && iconsOn && ready && !fstate && !gpuWeak) ? 1 : 0
-      if (s.alpha !== target) {
-        const st = dt > 0 ? dt / FADE_S : 0
-        s.alpha = target > s.alpha ? Math.min(target, s.alpha + st) : Math.max(target, s.alpha - st)
-        busy = true
-      }
-      if (!s.want && s.alpha <= 0) { dropIconSlot(s); continue }
-      if (!ready) { s.visible = false; s.dotW = 1; continue }
-      const occ = occluded(C, s.anchor)
-      const D = C.distanceTo(s.anchor)
-      const wpp = 2 * D * tanH / Math.max(1, h)                 // 此处 1 CSS 像素 = 多少场景单位
-      // 半径 = 用户给的像素 × 缩放联动系数（不按「0.4 × 轨道高度」封顶：那道顶让低轨星在全球视角下最多约 34 px，图标大小滑杆拉到头也不变大；
-      // 图标这一趟先清深度（见 render），大图标整个画在球面之上、不被地球裁掉；锚点在地球背面的照旧按 occluded 整个藏起）
-      const R = (s.px * zk / 2) * wpp
-      s.pxR = R / wpp
-      const k0 = R / s.mount.radius
-      const sizeF = smooth(2.5, 5, s.pxR)                       // 太小的图标让位给点：半径 < 2.5 px 全画点
-      s.visible = !occ && s.alpha > 0.002 && s.pxR > 1.2
-      const hold = s.mount.holder
-      hold.visible = s.visible
-      if (s.visible) {
-        hold.position.copy(s.anchor)
-        hold.quaternion.copy(s.q)
-        hold.scale.setScalar(k0)
-        const a = s.alpha * sizeF
-        const mats = s.mats
-        for (let j = 0; j < mats.length; j++) mats[j].opacity = a
-        // 地影：逐颗压暗（本影里只剩一点地球反照 / 环境光）。一颗一份材质，改色不串到别的星。
-        // 环境反射也要跟着暗：scene.environment 的强度是全场一个值（会盖掉材质自己的 envMapIntensity），
-        // 故环境图逐材质挂（envMap 由空变有只重编一次程序），强度按地影逐颗给
-        const envTex = iconEnv ? iconEnv.texture : null
-        const e = sunLit ? Math.round(s.eclipse * 50) / 50 : 1   // 全亮（晨昏效果关）：不按地影压暗
-        if (e !== s.lastEcl || s.envTex !== envTex) {
-          // 本影里留五成底色：图标是分析读图用的，比日照暗一截看得出在地影里，但结构要看得清（原两成在夜半球上成黑剪影）
-          const kk = ICON_ECL_FLOOR + (1 - ICON_ECL_FLOOR) * e
-          for (let j = 0; j < mats.length; j++) {
-            const m = mats[j]
-            if (m.userData._base) m.color.copy(m.userData._base).multiplyScalar(kk)
-            if ('envMap' in m && m.envMap !== envTex) { m.envMap = envTex; m.needsUpdate = true }
-            if ('envMapIntensity' in m) m.envMapIntensity = ICON_ENV_I * (0.6 + 0.4 * e)
-          }
-          s.lastEcl = e; s.envTex = envTex
-        }
-      }
-      s.dotW = occ ? 1 : 1 - s.alpha * sizeF
-    }
-    return busy
-  }
+  function setIcons(list) { batch.set(list) }
   const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t) }
-
-  function iconsVisible() { for (let i = 0; i < iconArr.length; i++) if (iconArr[i].visible) return true; return false }
 
   // ============================== 跟随 ==============================
   function releaseFollowInst() {
@@ -1331,6 +1218,8 @@ export function createModelLayer(o = {}) {
     if (d < dMin) camL.position.setLength(dMin)
     zoomTarget = Math.max(dMin, Math.min(dMax, zoomTarget))
     if (studio) { studio.fit(_v.set(0, 0, 0), r); tuneEarthshine() }
+    // 模型到了（外包盒 / 半径变了）：近场链路指向主星的箭头改让本体外包盒、锥顶淡出按新半径
+    fixNearLinks(); syncConeFade()
     reportZoom()
   }
   const distToT = (d) => TMAX * (Math.log(dMax) - Math.log(Math.max(dMin, Math.min(dMax, d)))) / Math.max(1e-9, Math.log(dMax) - Math.log(dMin))
@@ -1356,7 +1245,7 @@ export function createModelLayer(o = {}) {
     others.delete(s.key)
     const i = otherArr.indexOf(s); if (i >= 0) otherArr.splice(i, 1)
   }
-  function dropAllOthers() { while (otherArr.length) dropOther(otherArr[otherArr.length - 1]) }
+  function dropAllOthers() { while (otherArr.length) dropOther(otherArr[otherArr.length - 1]); batch.setMaskExtra(null) }
   const _o0 = new THREE.Vector3()
   function setOthers(list) {
     const seen = new Set()
@@ -1365,6 +1254,7 @@ export function createModelLayer(o = {}) {
       seen.add(it.key)
       const s = otherSlot(it.key)
       s.rel.set(it.relL[0], it.relL[1], it.relL[2])
+      s.icon = !!it.icon   // 聚焦集里的邻星：屏上至少画到模型图标那么大（见 updateFollow）
       // ISL 通视：主星 → 邻星的连线不擦过 100 km 高度以下（拍级量：相对位置每拍才变）
       s.los = !segHitsSphere(_o0, s.rel, earthL, ISL_GRAZE_M)
       if (Array.isArray(it.anchorS)) { s.anchorS.set(it.anchorS[0], it.anchorS[1], it.anchorS[2]); s.hasAnchor = true } else s.hasAnchor = false
@@ -1395,6 +1285,10 @@ export function createModelLayer(o = {}) {
       }
     }
     for (let i = otherArr.length - 1; i >= 0; i--) if (!seen.has(otherArr[i].key)) dropOther(otherArr[i])
+    // 邻星由局部那一趟画（模型或圆点 + 名字）：它在星座点云里那个点整颗藏掉（点精灵遮罩的「整颗藏」项）
+    const ex = []
+    for (let i = 0; i < otherArr.length; i++) { const o2 = otherArr[i]; if (o2.hasAnchor) ex.push([o2.anchorS.x, o2.anchorS.y, o2.anchorS.z]) }
+    batch.setMaskExtra(ex)
   }
   function loadOther(s) {
     const req = ++s.req
@@ -1418,7 +1312,7 @@ export function createModelLayer(o = {}) {
   // 某个模型刚下载好：当时没有任何可用档、只画了点的槽位重取一次
   source.onReady((id) => {
     if (disposed) return
-    for (let i = 0; i < iconArr.length; i++) { const s = iconArr[i]; if (s.modelId === id && !s.inst) loadIcon(s) }
+    batch.onModelReady(id)
     for (let i = 0; i < otherArr.length; i++) { const s = otherArr[i]; if (s.modelId === id && !s.inst) loadOther(s) }
     if (fslot && fslot.modelId === id && !fslot.inst && fstate) loadFollow(id, lod, lodBudget, fslot.frame)
   })
@@ -1435,9 +1329,10 @@ export function createModelLayer(o = {}) {
   async function refreshModel(id) {
     if (disposed) return
     const inUse = new Set()
-    for (let i = 0; i < iconArr.length; i++) if (iconArr[i].modelId) inUse.add(iconArr[i].modelId)
     for (let i = 0; i < otherArr.length; i++) if (otherArr[i].modelId) inUse.add(otherArr[i].modelId)
     if (fslot && fslot.modelId) inUse.add(fslot.modelId)
+    // 图标批次自己按 id 重挂（它的组键里就是模型 id，比签名与否不影响结果：参数化 / 实体模板不随元数据变，跳过）
+    if (!id || !id.startsWith('param:')) batch.refreshModel(id || null)
     const ids = [...inUse].filter((x) => !x.startsWith('param:') && (!id || x === id))
     const olds = ids.map((x) => source.peekMeta(x))
     source.invalidateMeta(id || null)
@@ -1446,51 +1341,200 @@ export function createModelLayer(o = {}) {
       try { before = olds[k] ? await olds[k] : null } catch { before = null }
       try { after = await source.meta(mid) } catch { after = null }
       if (disposed || mountSig(before) === mountSig(after)) return
-      for (let i = 0; i < iconArr.length; i++) { const s = iconArr[i]; if (s.modelId === mid) loadIcon(s, true) }
       for (let i = 0; i < otherArr.length; i++) { const s = otherArr[i]; if (s.modelId === mid) loadOther(s) }
       if (fslot && fslot.modelId === mid && fslot.go) fslot.go()
     }))
   }
 
-  // 近场几何（见 nearRoot）整份重建。按引用判「变了」：同一拍里重喂（改 HUD、拖滑杆）不重建。
+  // 近场几何（见 nearRoot）。按引用判「变了」：同一拍里重喂（改 HUD、拖滑杆）不重建。
   // 线与地球那一趟同一套画法（像素线宽、透明、不写深度、层序 6；锥面 5.5），另关色调映射 —— 局部那一趟临时开着 ACES，
   // 不关的话同一条线近处那截被压暗、跟远处那截接不上色。
+  // ★ 对象与材质跨拍复用、只换几何：跟随播放时每拍都来一份新 spec，若每拍 dispose 材质再 new 一份 ——
+  //   带 nearClip 裁剪面的这套材质全场只有近场在用，程序引用一归零 three 就删掉着色器程序，下一帧同步重编重链。
+  //   几何每拍照旧新建、旧的 dispose（段数会变；就地换属性的话旧 GPU 缓冲没人释放）
+  const nearLineObjs = [], nearFaceObjs = []
+  function dropNearObj(o) {
+    nearRoot.remove(o)
+    o.geometry.dispose()
+    if (o.material.isLineMaterial) lineMats.delete(o.material)
+    o.material.dispose()
+  }
+  // 近截线（同一套对象跨拍复用、只换几何，见上）：页面的轨道线 / 母线与场景给的视线 / 视轴 / 射线各一组 objs
+  function syncNearLines(objs, lines) {
+    while (objs.length > lines.length) dropNearObj(objs.pop())
+    lines.forEach((l, i) => {
+      const g = new LineSegmentsGeometry(); g.setPositions(l.segs)
+      const opacity = l.opacity == null ? 1 : l.opacity, width = l.width || 1
+      let o = objs[i]
+      if (o) {
+        o.geometry.dispose(); o.geometry = g
+        const m = o.material
+        m.color.set(l.color); m.linewidth = width; m.opacity = opacity
+        return
+      }
+      const m = new LineMaterial({ color: l.color, linewidth: width, worldUnits: false, transparent: true, opacity,
+        depthWrite: false, toneMapped: false, clippingPlanes: [nearClip] })
+      m.resolution.set(lastW || 1, lastH || 1)
+      lineMats.add(m)
+      o = new LineSegments2(g, m)
+      o.renderOrder = 6; o.frustumCulled = false
+      nearRoot.add(o); objs[i] = o
+    })
+  }
+  // 锥面锥顶那截淡出（见 coneFade）：片元离 L 系原点（主星）的距离过 smoothstep(r0, r1)；所有近场锥面共用一个程序
+  function fadeFace(m) {
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uFR0 = coneFade.uFR0; sh.uniforms.uFR1 = coneFade.uFR1
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying float vFadeD;')
+        .replace('#include <project_vertex>', '#include <project_vertex>\n  vFadeD = length( ( modelMatrix * vec4( transformed, 1.0 ) ).xyz );')
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vFadeD;\nuniform float uFR0;\nuniform float uFR1;')
+        .replace('#include <opaque_fragment>', '  diffuseColor.a *= smoothstep( uFR0, uFR1, vFadeD );\n#include <opaque_fragment>')
+    }
+    m.customProgramCacheKey = () => 'nearConeFade'
+    return m
+  }
   function setNear(spec) {
     spec = spec || null
     if (spec === nearSpec) return
     nearSpec = spec
-    for (let i = nearRoot.children.length - 1; i >= 0; i--) {
-      const o = nearRoot.children[i]
-      nearRoot.remove(o)
-      o.geometry.dispose()
-      if (o.material.isLineMaterial) lineMats.delete(o.material)
-      o.material.dispose()
-    }
-    if (!spec) return
-    for (const l of spec.lines || []) {
-      if (!l || !l.segs || l.segs.length < 6) continue
-      const g = new LineSegmentsGeometry(); g.setPositions(l.segs)
-      const m = new LineMaterial({ color: l.color, linewidth: l.width || 1, worldUnits: false, transparent: true, opacity: l.opacity == null ? 1 : l.opacity,
-        depthWrite: false, toneMapped: false, clippingPlanes: [nearClip] })
-      m.resolution.set(lastW || 1, lastH || 1)
-      lineMats.add(m)
-      const o = new LineSegments2(g, m)
-      o.renderOrder = 6; o.frustumCulled = false
-      nearRoot.add(o)
-    }
-    for (const f of spec.faces || []) {
-      if (!f || !f.tris || f.tris.length < 9) continue
+    const lines = spec ? (spec.lines || []).filter((l) => l && l.segs && l.segs.length >= 6) : []
+    const faces = spec ? (spec.faces || []).filter((f) => f && f.tris && f.tris.length >= 9) : []
+    syncNearLines(nearLineObjs, lines)
+    while (nearFaceObjs.length > faces.length) dropNearObj(nearFaceObjs.pop())
+    faces.forEach((f, i) => {
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(f.tris, 3))
-      const m = new THREE.MeshBasicMaterial({ color: f.color, transparent: true, opacity: f.opacity == null ? 1 : f.opacity, side: THREE.DoubleSide,
-        depthWrite: false, toneMapped: false, clippingPlanes: [nearClip] })
-      const o = new THREE.Mesh(g, m)
+      const opacity = f.opacity == null ? 1 : f.opacity
+      let o = nearFaceObjs[i]
+      if (o) {
+        o.geometry.dispose(); o.geometry = g
+        o.material.color.set(f.color); o.material.opacity = opacity
+        return
+      }
+      const m = fadeFace(new THREE.MeshBasicMaterial({ color: f.color, transparent: true, opacity, side: THREE.DoubleSide,
+        depthWrite: false, toneMapped: false, clippingPlanes: [nearClip] }))
+      o = new THREE.Mesh(g, m)
       o.renderOrder = 5.5; o.frustumCulled = false
-      nearRoot.add(o)
+      nearRoot.add(o); nearFaceObjs[i] = o
+    })
+  }
+  /** 场景给的近截普通线（scene.js followA 那段）：[{ segs（相对锚点、场景单位的线段对）, color, width, opacity }] | null */
+  function setNearLines(list) {
+    syncNearLines(nearXLineObjs, Array.isArray(list) ? list.filter((l) => l && l.segs && l.segs.length >= 6) : [])
+  }
+  /** 场景给的近场链路（整跳，scene.js setLinks）：Group | null。对象归场景所有（换下来的由场景释放），这里只挂 / 摘、修端点 */
+  function setNearLinks(g) {
+    g = g || null
+    if (g === nearLinkG) return
+    if (nearLinkG) nearRoot.remove(nearLinkG)
+    nearLinkG = g
+    if (g) nearRoot.add(g)
+    fixNearLinks()
+  }
+  // 近场链路的端点（逐拍：换链路 / 换锚点姿态 / 邻星表变 / 主星模型到了各修一次）：
+  //   · tip.z = 3 的段终点是主星本体：终点挪到「从起点射向原点、先撞上的本体外包盒面」（模型没到 / 退成标记 → 包围球 / 原点）——
+  //     箭头尖停在星体外，不扎进模型肚子里被深度藏掉；
+  //   · 端点落在某颗邻星旁（局部那一趟按真 ECEF 差摆它，链路按大地经纬高落点，两边差 ≤ 1%）：钉到邻星的局部位置，终点的箭头 /
+  //     起点的线头让邻星此刻的屏幕半径（逐帧，见 updateFollow）。
+  // 每次都从场景给的原始端点（第一次进来时存一份）重算，不累积
+  const _ne = new THREE.Vector3(), _ns = new THREE.Vector3(), _nb = new THREE.Vector3(), _nq = new THREE.Quaternion()
+  function bodyEntry(sx, sy, sz, out) {
+    // 起点 → L 系米 → 本体系
+    _ns.set(sx, sy, sz).multiplyScalar(RE_M).applyQuaternion(qS2L)
+    const hasModel = !!(fslot && fslot.mount) && !modelOff
+    const box = hasModel ? fslot.mount.box : null
+    let t = -1
+    if (box) {
+      _nq.copy(qB2L).invert()
+      _nb.copy(_ns).applyQuaternion(_nq)
+      // 射线 P(t) = S + t·(−S)，t ∈ [0, 1]（t = 1 到原点）：slab 法求进盒的 t
+      let t0 = 0, t1 = 1
+      for (let k = 0; k < 3 && t0 <= t1; k++) {
+        const p = k === 0 ? _nb.x : (k === 1 ? _nb.y : _nb.z), d = -p
+        const lo = box.min[k], hi = box.max[k]
+        if (Math.abs(d) < 1e-12) { if (p < lo || p > hi) t0 = 2; continue }
+        let ta = (lo - p) / d, tb = (hi - p) / d
+        if (ta > tb) { const x = ta; ta = tb; tb = x }
+        if (ta > t0) t0 = ta
+        if (tb < t1) t1 = tb
+      }
+      if (t0 <= t1 && t0 >= 0 && t0 < 1) t = t0
     }
+    if (t < 0) {
+      // 有模型、射线却没进外包盒（本体原点不在盒里）：退到包围球；没有模型可画（还在加载 / 退成标记）就停在原点，
+      // 箭头让标记的屏幕半径（见 fixNearLinks）
+      const len = _ns.length()
+      const r = hasModel ? followRadius() : 0
+      t = len > r && r > 0 ? 1 - r / len : 1
+    }
+    out.copy(_ns).multiplyScalar(1 - t).applyQuaternion(qL2S).multiplyScalar(1 / RE_M)
+    return out
+  }
+  function fixNearLinks() {
+    nearLinkNb.length = 0
+    nearLinkFarM = 0
+    if (!nearLinkG || !fstate) return
+    const hasModel = !!(fslot && fslot.mount) && !modelOff
+    for (const o of nearLinkG.children) {
+      const geo = o.geometry
+      const ib = geo && geo.attributes.instanceStart ? geo.attributes.instanceStart.data : null
+      const ta = geo ? geo.attributes.instanceTip : null
+      const ta0 = geo ? geo.attributes.instanceTip0 || null : null   // 起点符号圆（钉到邻星的起点逐帧改它）
+      if (!ib || !ta) continue
+      const P = ib.array, T = ta.array
+      if (!geo.userData.orig) geo.userData.orig = { p: P.slice(), t: T.slice(), t0: ta0 ? ta0.array.slice() : null }
+      const O = geo.userData.orig
+      P.set(O.p); T.set(O.t); if (ta0 && O.t0) ta0.array.set(O.t0)
+      const n = Math.floor(P.length / 6)
+      for (let i = 0; i < n; i++) {
+        const j = i * 6
+        if (O.t[i * 4 + 2] > 2.5) {
+          // 终点 = 主星本体
+          bodyEntry(P[j], P[j + 1], P[j + 2], _ne)
+          P[j + 3] = _ne.x; P[j + 4] = _ne.y; P[j + 5] = _ne.z
+          if (!hasModel) { T[i * 4] = 0; T[i * 4 + 1] = MARK_PX * 0.5; T[i * 4 + 2] = 0 }
+        } else {
+          // 起点 / 终点落在邻星旁：钉到邻星的局部位置
+          for (let e = 0; e < 2; e++) {
+            const b = j + e * 3
+            _ne.set(P[b], P[b + 1], P[b + 2])
+            if (_ne.lengthSq() === 0) continue   // 主星（原点）
+            const s = nearNeighborAt(_ne)
+            if (!s) continue
+            _ns.copy(s.rel).applyQuaternion(qL2S).multiplyScalar(1 / RE_M)
+            P[b] = _ns.x; P[b + 1] = _ns.y; P[b + 2] = _ns.z
+            if (e === 1) nearLinkNb.push({ tip: ta, i, slot: s, last: -1 })
+            else if (ta0) nearLinkNb.push({ tip: ta0, i, slot: s, last: -1 })
+          }
+        }
+        for (let e = 0; e < 2; e++) {
+          const b = j + e * 3
+          const d = Math.hypot(P[b], P[b + 1], P[b + 2]) * RE_M
+          if (d > nearLinkFarM) nearLinkFarM = d
+        }
+      }
+      ib.needsUpdate = true
+      ta.needsUpdate = true
+      if (ta0) ta0.needsUpdate = true
+    }
+  }
+  // 场景单位、相对锚点的一个链路端点 → 它旁边的邻星槽位（L 系真 ECEF 差；容差 2 km 或距离的 1.5%）| null
+  function nearNeighborAt(v) {
+    _nb.copy(v).multiplyScalar(RE_M).applyQuaternion(qS2L)
+    const d = _nb.length()
+    const tol = Math.max(2000, 0.015 * d)
+    let best = null, bd = tol * tol
+    for (let i = 0; i < otherArr.length; i++) {
+      const s = otherArr[i]
+      const q = s.rel.distanceToSquared(_nb)
+      if (q < bd) { bd = q; best = s }
+    }
+    return best
   }
   /**
    * 进入 / 刷新 / 退出跟随。state：{ key, modelId, frame?:{q,t}, anchor:[3]（场景单位）, qL2S:[4], qB2L?:[4], velL?:[3]（L 系单位矢量），
-   *   eclipse:0..1, altKm, others:[{key, modelId, frame?, relL:[3]（米）, qB2L?:[4], anchorS?:[3], name}],
+   *   eclipse:0..1, altKm, others:[{key, modelId, frame?, relL:[3]（米）, qB2L?:[4], anchorS?:[3], name, icon?（聚焦集里的邻星：屏上至少图标大小）}],
    *   stations?:[{name, dirL:[3]（L 系单位矢量，主星 → 站）}]（HUD「地球站」，页面按仰角 ≥ 0° 筛、近者优先），
    *   mounts?:[{name, posBody:[3]（米）, dir:[3]（本体系视轴）, fovDeg?}]（HUD「挂点」，绑定表里这颗星的挂点），
    *   near?:{ lines:[{segs:Float32Array（线段对）, color, width（px）, opacity}], faces:[{tris:Float32Array, color, opacity}] }
@@ -1548,8 +1592,11 @@ export function createModelLayer(o = {}) {
     }
     if (fslot) trackSun(fslot.mount, qB2L, sunL)
     setOthers(state.others)
+    fixNearLinks()   // 锚点 / 姿态 / 邻星都是拍级量：近场链路的端点跟着重修
+    syncConeFade()
     if (studio) { if (sunLit) { studio.setSunDir(sunL); studio.setEclipse(state.eclipse) } tuneEarthshine() }   // 全亮时光向每帧按相机给（见 render）
   }
+  function syncConeFade() { const r = followRadius(); coneFade.uFR0.value = 1.1 * r; coneFade.uFR1.value = 2.4 * r }
   /**
    * 进入跟随时的机位（从主星指向相机的单位方向，L 系）—— NASA Eyes 那种「受光面朝镜头、地球在背景里」的构图：
    *   俯仰：主星看地平线的俯角 δ = acos(R / (R + h))。低轨（δ ≈ 20°）相机抬到 δ + 4°，地平线略高于画面中线、地球铺满下半屏；
@@ -1583,6 +1630,7 @@ export function createModelLayer(o = {}) {
       ctl.dampingFactor = 0
       ctl.enablePan = false
       ctl.enableZoom = false
+      ctl.enableRotate = rotateOn
       ctl.rotateSpeed = 0.9
       ctl.minDistance = dMin; ctl.maxDistance = dMax
       ctl.target.set(0, 0, 0)
@@ -1602,6 +1650,20 @@ export function createModelLayer(o = {}) {
       const t1 = stepZoomT(distToT(zoomTarget), wheelNotches(e), wheelPct, TMAX)
       zoomTarget = tToDist(t1)
       reportZoom()
+    },
+    /** 左键转局部相机的开关（scene.updateRotate）：关着时按下左键归 scene 的工具，局部控件不进旋转态；拖动途中关掉，下一个 move 起就不再转 */
+    setRotate(on) {
+      rotateOn = !!on
+      if (ctl) ctl.enableRotate = rotateOn
+    },
+    /** 方向键：绕主星步进转局部相机（dAz 绕 L 系 ŷ、dPol 极角，弧度）。与 scene.rotateBy 同一套球坐标约定；极角夹在两极内不翻面 */
+    rotateBy(dAz, dPol) {
+      if (!fstate || (!dAz && !dPol)) return
+      _sph.setFromVector3(camL.position)   // 靶心恒为原点（主星），camL.up = ŷ —— 与局部控件同一套球坐标
+      _sph.theta += dAz || 0
+      _sph.phi = Math.max(1e-4, Math.min(Math.PI - 1e-4, _sph.phi + (dPol || 0)))
+      camL.position.setFromSpherical(_sph)
+      if (ctl) ctl.update(); else camL.lookAt(0, 0, 0)   // 帧间 dampingFactor 为 0：这次 update 不施加欠着的拖动命令，只按新位置重朝向
     },
     /** 每帧：局部相机（阻尼 / 缩放缓动）→ 推出地球相机位姿与 near / far */
     apply(camera, dt) {
@@ -1649,7 +1711,6 @@ export function createModelLayer(o = {}) {
     r.shadowMap.enabled = true
     gpu = createGpuReleaser(r)
     r.shadowMap.enabled = sm
-    for (let i = 0; i < iconArr.length; i++) if (iconArr[i].mount) gpu.track(iconArr[i].mount.holder)
     if (fslot && fslot.mount) gpu.track(fslot.mount.holder)
     // 软件光栅判据（见 isSoftwareRenderer）：只在拿到 renderer 时判一次
     try {
@@ -1661,7 +1722,7 @@ export function createModelLayer(o = {}) {
   }
   // 软件光栅：已挂上的图标 / 主星 / 邻星模型全撤（图标回到点精灵、主星画回退标记）
   function applyWeak() {
-    for (let i = 0; i < iconArr.length; i++) releaseIconInst(iconArr[i])
+    batch.setWeak(true)
     if (fslot) { releaseFollowInst(); fitFollow() }
     for (let i = 0; i < otherArr.length; i++) { const s = otherArr[i]; s.req++; if (s.mount) othersRoot.remove(s.mount.holder); if (s.inst) s.inst.release(); s.inst = null; s.mount = null }
   }
@@ -1671,7 +1732,7 @@ export function createModelLayer(o = {}) {
     const room = new RoomEnvironment()
     iconEnv = pm.fromScene(room, 0.04)
     room.dispose(); pm.dispose()
-    // 不挂 iconScene.environment：环境图逐材质挂（见 updateIcons 的地影段）
+    // 不挂 iconScene.environment：环境图逐材质挂（图标批次按实例在着色器里压地影）
   }
   function ensureFollowRig() {
     if (!renderer) return
@@ -1701,7 +1762,8 @@ export function createModelLayer(o = {}) {
     const r = followRadius()
     // 局部 near：跟距离走（深度精度），但不越过模型最近的那一面
     camL.near = Math.max(0.01, Math.min(d * 0.002, Math.max(0.01, (d - r) * 0.5)))
-    camL.far = Math.max(6e5, camera.near * RE_M * 1.02)   // 至少够到地球那一趟的近平面：近场几何（nearRoot）要一直画到那张平面上
+    // 至少够到地球那一趟的近平面：近场几何（nearRoot）要一直画到那张平面上；近场链路是整跳，还要够到最远的端点
+    camL.far = Math.max(6e5, camera.near * RE_M * 1.02, nearLinkG ? (nearLinkFarM + d) * 1.05 : 0)
     camL.updateProjectionMatrix()
     const labelK = 2 * Math.tan(camL.fov * Math.PI / 360) / Math.max(1, h)   // 1 CSS 像素 ↔ sizeAttenuation:false 精灵的 scale
     // 主星模型：逐档降级退到底（modelOff）就藏起来；没有可画的模型（绑定「无」/ 没缓存 / 失败 / 还在加载 / 软件光栅）画回退标记
@@ -1728,26 +1790,36 @@ export function createModelLayer(o = {}) {
       // 挂点名按屏幕避让（对地挂点视轴几乎平行，斜侧机位下沿射线错开的长度被透视压扁）
       hudMoved = hudOn.mounts ? hud.declutter(camL, w, h) : 0
     }
-    // 其他星：真实相对位置；地球挡住的藏起来（线段 相机→星 穿过地球球面）；亚像素时画点 + 名字
+    // 其他星：真实相对位置；地球挡住的藏起来（线段 相机→星 穿过地球球面）；亚像素时画点 + 名字。
+    // 聚焦集里的邻星（s.icon）按模型图标的屏幕尺寸兜底：真实尺寸比图标小时整颗放大到图标大小（与 3D 视图里它的模型图标、
+    // 与 500 km 外那些聚焦星的图标同一把尺：图标像素 × 跟随档联动系数），近到比图标大时照真实尺寸
     const wpp0 = labelK
+    const iconR = iconPxDef * FOLLOW_ICON_K * 0.5
     let ni = 0
     for (let i = 0; i < otherArr.length; i++) {
       const s = otherArr[i]
       _v.copy(s.rel).sub(camL.position)
       const dist = _v.length()
       s.occ = segHitsSphere(camL.position, s.rel, earthL, RE_M)
-      const pxR = s.mount ? s.mount.radius / Math.max(1e-6, dist * wpp0) : 0
+      const pxT = s.mount ? s.mount.radius / Math.max(1e-6, dist * wpp0) : 0
+      const k = s.icon && iconsOn && pxT > 0 && pxT < iconR ? iconR / pxT : 1
+      const pxR = pxT * k
+      let visR = 0   // 此刻屏上半径（px）：指向它的近场链路箭头让这么多
       if (s.mount) {
         s.mount.holder.visible = !s.occ && pxR > 0.35
         s.mount.holder.position.copy(s.rel)
         s.mount.holder.quaternion.copy(s.q)
+        s.mount.holder.scale.setScalar(k)
+        if (s.mount.holder.visible) visR = pxR
       }
       if (s.dot) {
         s.dot.position.copy(s.rel)
         const dpx = Math.max(0, 6 - pxR * 2)
         s.dot.visible = !s.occ && dpx > 0.5
         s.dot.scale.setScalar(dpx * labelK)
+        if (s.dot.visible) visR = Math.max(visR, dpx * 0.5)
       }
+      s.visR = visR
       if (s.label) {
         s.label.visible = !s.occ
         s.label.position.copy(s.rel)
@@ -1758,6 +1830,15 @@ export function createModelLayer(o = {}) {
       if (hud && hudOn.isl && s.los) hud.setIsl(ni++, s.rel)
     }
     if (hud) hud.hideIslFrom(ni)
+    // 近场链路里端点钉到邻星的段：箭头尖 / 线头让邻星此刻的屏上半径（屏幕恒定口径；变化不到 0.25 px 不重传）
+    for (let j = 0; j < nearLinkNb.length; j++) {
+      const it = nearLinkNb[j], v = it.slot.visR || 0
+      if (Math.abs(v - it.last) < 0.25) continue
+      it.last = v
+      const T = it.tip.array
+      T[it.i * 4] = 0; T[it.i * 4 + 1] = v; T[it.i * 4 + 2] = 0
+      it.tip.needsUpdate = true
+    }
     // 太阳被主星挡住多少：局部相机沿太阳方向的射线到包围球心的最近距离（宇宙空间 · 太阳开着时乘进眩光）
     {
       const t = -camL.position.dot(sunL)
@@ -1809,38 +1890,27 @@ export function createModelLayer(o = {}) {
       if (disposed) return
       lastW = w; lastH = h
       if (w && h) { const lm = lineMats.list; for (let i = 0; i < lm.length; i++) lm[i].resolution.set(w, h) }
-      const busyIcons = updateIcons(dt, camera, h)
+      // 图标总闸：开关开着、不是软件光栅。跟随中照画（2026-10-08 用户：跟随视角里别的聚焦星只剩一个圈、没有模型，与 3D 视图对不上）——
+      // 页面只给主星与 500 km 内邻星以外的聚焦星（那几颗在局部那一趟按真实尺寸画），缩放联动按跟随档（与星点 / 在轨点同一把尺）
+      batch.setZoomK(fstate ? FOLLOW_ICON_K : null)
+      const busyIcons = batch.update(dt, camera, w, h, iconsOn && !gpuWeak)
       overlay._busyIcons = busyIcons
       if (fstate) updateFollow(dt, camera, w, h)
       // 点精灵遮罩开关跟着「有没有图标 / 跟随邻星在」走（没有了就把原材质换回来 —— 关掉后球面逐像素回到原样）。
       // 跟随时 500 km 内的邻星由局部那一趟画（模型或圆点 + 名字），它在星座点云里那个点要藏掉，不然同一颗星画两遍
-      const want = icons.size > 0 || (!!fstate && others.size > 0)
+      const want = batch.maskWanted()
       if (want !== lastMask) { lastMask = want; maskOn = want; if (o.onMaskChange) o.onMaskChange(want) }
       if (dt > 0) { const t = performance.now(); if (perf.lastT) perf.frameMs = perf.frameMs * 0.9 + (t - perf.lastT) * 0.1; perf.lastT = t }
     },
-    isEmpty() { return disposed || (!fstate && icons.size === 0) },
+    isEmpty() { return disposed || (!fstate && batch.count() === 0) },
     busy() { return !!(overlay._busyIcons || (fstate && (dragging || camMovedL || zoomBusy))) },
-    fillDotMask(arr) {
-      let n = 0
-      if (!maskOn) return 0
-      for (let i = 0; i < iconArr.length; i++) {
-        const s = iconArr[i]
-        if (n >= MAX_ICONS) break
-        if (s.dotW >= 0.999) continue
-        arr[n * 4] = s.anchor.x; arr[n * 4 + 1] = s.anchor.y; arr[n * 4 + 2] = s.anchor.z; arr[n * 4 + 3] = s.dotW
-        n++
-      }
-      if (fstate) {
-        for (let i = 0; i < otherArr.length; i++) {
-          const s = otherArr[i]
-          if (n >= MAX_ICONS) break
-          if (!s.hasAnchor) continue
-          arr[n * 4] = s.anchorS.x; arr[n * 4 + 1] = s.anchorS.y; arr[n * 4 + 2] = s.anchorS.z; arr[n * 4 + 3] = 0
-          n++
-        }
-      }
-      return n
-    },
+    /** 跟随近场（scene.js followA 那段）：别的「以主星为端点」的线的近截 / 图上链路的近场整跳 */
+    setNearLines(list) { if (!disposed) setNearLines(list) },
+    setNearLinks(g) { if (!disposed) setNearLinks(g) },
+    /** 点精灵遮罩（scene.setDotMask 开着时逐帧取）：哈希表 + 实例表纹理与参数，见 dotMaskHash.js；遮罩关着返回 null */
+    dotMask() { return maskOn ? batch.dotMask() : null },
+    /** 出图 / 视频出帧的像素倍率（scene.snapshot / captureFrame 设、出完设回 1）：图标抽稀档按输出像素选，见 iconBatch.setLodScale */
+    setLodScale(s) { if (!disposed) batch.setLodScale(s) },
     /** 跟随时主星模型挡太阳的系数（0..1）；不跟随 = 1。scene 乘进宇宙空间的眩光 */
     sunVisibility() { return fstate ? sunVisModel : 1 },
     render(r, camera, w, h) {
@@ -1848,6 +1918,19 @@ export function createModelLayer(o = {}) {
       const tm = r.toneMapping, te = r.toneMappingExposure, ac = r.autoClear, sm = r.shadowMap.enabled, st = r.shadowMap.type
       try {
         r.autoClear = false
+        // 球面图标（跟随中是主星与邻星以外的聚焦星）：地球相机、先清深度；跟随时局部那一趟再清一次深度画在它上面（主星离相机几十米，恒在前）
+        if (batch.drawable()) {
+          ensureIconEnv()
+          iconSun.position.copy(sunLit ? sunS : _hl.copy(HEADLIGHT_C).applyQuaternion(camera.quaternion)).multiplyScalar(10)
+          iconSun.target.position.set(0, 0, 0)
+          // 相机侧补光（晨昏效果开时）：背光面托到看得清；地影里的星另按材质压到五成（见 ICON_ECL_FLOOR），补光一起跟着暗
+          iconFill.intensity = sunLit ? FILL_LIT : 0
+          if (sunLit) { iconFill.position.copy(_hl.copy(HEADLIGHT_C).applyQuaternion(camera.quaternion)).multiplyScalar(10); iconFill.target.position.set(0, 0, 0) }
+          r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = 1.0
+          r.clearDepth()   // 图标是屏幕定尺的符号：不拿放大几何与地球比深度（低轨图标下半截会扎进球面）；地球遮挡在图标着色器里逐像素解析求（iconBatch.js icEarthVis）；图标之间的遮挡照常
+          r.render(iconScene, camera)
+          r.toneMapping = tm; r.toneMappingExposure = te
+        }
         if (fstate) {
           ensureFollowRig()
           if (studio && !sunLit) studio.setSunDir(_hl.copy(HEADLIGHT_C).applyQuaternion(camL.quaternion))   // 全亮：光跟着跟随相机（L 系）
@@ -1861,6 +1944,12 @@ export function createModelLayer(o = {}) {
             nearClip.normal.copy(_nf).negate()
             nearClip.constant = _nf.dot(camL.position) + camera.near * RE_M        // 深度 ≤ 近平面（米）一侧为正、留下
           }
+          // 近场链路的地球遮挡（链路材质 occ）：地心在局部相机视空间里的位置 + 地球网格半径（米）
+          if (nearLinkG) {
+            camL.updateMatrixWorld()
+            _oc.copy(earthL).applyMatrix4(camL.matrixWorldInverse)
+            for (const o of nearLinkG.children) { const u = o.material && o.material.uniforms; if (u && u.uOcc) u.uOcc.value.set(_oc.x, _oc.y, _oc.z, RE_M * EARTH_R) }
+          }
           r.clearDepth()
           r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = 1.0
           r.shadowMap.enabled = !!studioShadows; r.shadowMap.type = THREE.PCFShadowMap
@@ -1868,16 +1957,6 @@ export function createModelLayer(o = {}) {
           r.localClippingEnabled = nearOn
           try { r.render(localScene, camL) } finally { r.localClippingEnabled = lce }
           r.toneMapping = tm; r.toneMappingExposure = te; r.shadowMap.enabled = sm; r.shadowMap.type = st
-        } else if (iconsVisible()) {
-          ensureIconEnv()
-          iconSun.position.copy(sunLit ? sunS : _hl.copy(HEADLIGHT_C).applyQuaternion(camera.quaternion)).multiplyScalar(10)
-          iconSun.target.position.set(0, 0, 0)
-          // 相机侧补光（晨昏效果开时）：背光面托到看得清；地影里的星另按材质压到五成（见 ICON_ECL_FLOOR），补光一起跟着暗
-          iconFill.intensity = sunLit ? FILL_LIT : 0
-          if (sunLit) { iconFill.position.copy(_hl.copy(HEADLIGHT_C).applyQuaternion(camera.quaternion)).multiplyScalar(10); iconFill.target.position.set(0, 0, 0) }
-          r.toneMapping = THREE.ACESFilmicToneMapping; r.toneMappingExposure = 1.0
-          r.clearDepth()   // 图标是屏幕定尺的符号：不与地球比深度（否则放大的低轨图标下半截扎进球面被裁掉）；图标之间的遮挡照常
-          r.render(iconScene, camera)
         }
       } finally {
         r.toneMapping = tm; r.toneMappingExposure = te; r.autoClear = ac; r.shadowMap.enabled = sm; r.shadowMap.type = st
@@ -1892,15 +1971,22 @@ export function createModelLayer(o = {}) {
     source,
     followDriver: () => driver,
     setIcons,
+    /**
+     * 图上链路的端点画着这颗星的模型图标时，箭头尖要停的位置：key = 图标键（setIcons 的 key），other = 链路另一端（场景坐标）→
+     * 图标此刻屏上轮廓沿这条线的外沿离图标中心多少 px（见 iconBatch.edgePx）；图标没在画 → −1。须在本帧 overlay.update 之后问
+     */
+    iconEdgePx: (key, other) => (disposed ? -1 : batch.edgePx(key, other)),
+    /** 单测用（只读）：图标批次里这颗星此刻的部件 / 对日转角 / 位姿 / 屏幕半径 */
+    _iconEdgeState: (key) => batch._edgeState(key),
     /** 图标总开关与大小（focusStyle.modelOn / modelPx） */
     setIconStyle(s) {
       if (!s) return
       if (s.on != null) iconsOn = !!s.on
-      if (Number(s.px) > 0) { iconPx = Math.max(4, Math.min(2048, Number(s.px))) }   // 侧栏「图标大小」滑杆 4–2048
+      if (Number(s.px) > 0) { iconPxDef = Math.max(4, Math.min(2048, Number(s.px))); batch.setDefaultPx(iconPxDef) }   // 侧栏「图标大小」滑杆 4–2048
     },
     /** 每拍：太阳方向（场景轴单位矢量）。第二参（GMST）原给跟随星空用，星空已归宇宙空间，留着只为调用口不变 */
     setSun(v) {
-      if (v) sunS.set(v[0], v[1], v[2]).normalize()
+      if (v) { sunS.set(v[0], v[1], v[2]).normalize(); batch.setSun(sunS) }
       if (fstate) { sunL.copy(sunS).applyQuaternion(qS2L); if (studio) { if (sunLit) studio.setSunDir(sunL); tuneEarthshine() } }
     },
     /** 晨昏效果（地图设置 · 宇宙空间）：true = 按太阳打光 + 地影压暗；false = 全亮（相机头灯、不按地影压暗）。页面每拍都调，没变就不动 */
@@ -1908,7 +1994,7 @@ export function createModelLayer(o = {}) {
       on = !!on
       if (on === sunLit) return
       sunLit = on
-      for (let i = 0; i < iconArr.length; i++) iconArr[i].lastEcl = -1   // 下一帧按新口径重设各图标材质的地影压暗
+      batch.setSunLit(on)   // 各图标的地影因子按新口径重写
       if (studio) {
         if (on) studio.setSunDir(sunL)   // 全亮时的光向每帧按相机给（见 render），切回按太阳
         studio.setEclipse(on && fstate ? fstate.eclipse : 1)
@@ -1935,14 +2021,14 @@ export function createModelLayer(o = {}) {
     },
     /** 调试 / 验证台读数 */
     stats() {
-      let icVis = 0
-      for (const s of iconArr) if (s.visible) icVis++
+      const bs = batch.stats()
       let isl = 0
       for (const s of otherArr) if (s.los) isl++
       return {
-        icons: icons.size, iconsVisible: icVis, following: !!fstate,
+        icons: bs.icons, iconsVisible: bs.iconsVisible, following: !!fstate,
+        iconGroups: bs.iconGroups, iconDraws: bs.iconDraws, iconTris: bs.iconTris, iconLevels: bs.iconLevels,
         // 在画的图标此刻的屏幕直径（px，已乘缩放联动系数）：[key, 直径]
-        iconsPx: iconArr.filter((s) => s.visible).map((s) => [s.key, +(2 * s.pxR).toFixed(2)]), lod: fslot ? (fslot.inst ? fslot.inst.lod : 'loading') : null, lodTarget: fslot ? fslot.lod : null,
+        iconsPx: bs.iconsPx, lod: fslot ? (fslot.inst ? fslot.inst.lod : 'loading') : null, lodTarget: fslot ? fslot.lod : null,
         lodDowngradedFrom: lodDowngraded, modelOff, marker: !!(mark && mark.visible), gpuWeak, followRadiusM: followRadius(), others: others.size, islLos: isl,
         stations: fstate && Array.isArray(fstate.stations) ? fstate.stations.length : 0, zoomBusy, dMin: +dMin.toFixed(3),
         followBox: fslot && fslot.mount ? fslot.mount.box : null, hudLang: hud ? hud.lang : null,
@@ -1951,6 +2037,8 @@ export function createModelLayer(o = {}) {
         qB2L: [qB2L.x, qB2L.y, qB2L.z, qB2L.w], sunArt: fslot && fslot.mount && fslot.mount.sun ? fslot.mount.sun.angles() : null,
         hudMounts: hud ? hud.mountCount() : 0, hudLabelMoved: hudMoved, hudDeclutterRuns: hud ? hud.declutterRuns() : 0, vp: [_vpW, _vpH],
         hudMountRects: hud && hudOn.mounts ? hud.mountLabelRects(camL, _vpW, _vpH) : [],
+        // 跟随近场：场景给的近截线条数 / 近场链路段数（验证台读数）
+        nearLines: nearXLineObjs.length, nearLinkSegs: nearLinkG ? nearLinkG.children.reduce((n, o) => n + (o.geometry && o.geometry.attributes.instanceTip ? o.geometry.attributes.instanceTip.count : 0), 0) : 0,
         sunLit, followLight: studio ? { dir: studio.rig.children.filter((l) => l.isDirectionalLight && l.visible).map((l) => l.position.clone().sub(l.target.position).normalize().toArray().map((v) => +v.toFixed(4))) } : null
       }
     },
@@ -1958,20 +2046,21 @@ export function createModelLayer(o = {}) {
     _simulateWeakGpu(v) {
       gpuWeak = !!v
       if (gpuWeak) { applyWeak(); return }
-      for (let i = 0; i < iconArr.length; i++) { const s = iconArr[i]; if (s.modelId && !s.inst) loadIcon(s) }
+      batch.setWeak(false)
       for (let i = 0; i < otherArr.length; i++) { const s = otherArr[i]; if (s.modelId && !s.inst) loadOther(s) }
       if (fstate && !fslot) loadFollow(fstate.modelId, lod, lodBudget, fstate.frame)
     },
-    /** 验证台用：局部相机（只读）、太阳在 L 系的方向 */
+    /** 验证台用：局部相机（只读）、太阳在 L 系的方向、近场链路组（只读） */
     _localCamera: () => camL,
+    _nearLinks: () => nearLinkG,
     _sunL: () => [sunL.x, sunL.y, sunL.z],
     dispose() {
       if (disposed) return
       disposed = true
       follow(null)
       driver.detach()
-      for (const s of iconArr) releaseIconInst(s)
-      icons.clear(); iconArr.length = 0
+      setNearLines(null); setNearLinks(null)   // 近场链路的对象归场景（它自己释放），这里只摘
+      batch.dispose()
       if (hud) { localScene.remove(hud.group); hud.dispose(); hud = null }
       if (mark) { localScene.remove(mark); mark.material.dispose(); mark = null }   // 贴图是模块级共享件，不随层释放
       if (studio) { studio.dispose(); studio = null }

@@ -9,7 +9,8 @@
 // ⑤ glb JSON 辅助：三角形计数、AGI 块原样摘下 / 贴回、导入路径白名单；
 // ⑥ STK 判据（署名 / 无 extras.satsim 的 AGI 扩展 / 自声明）、STK 安装树路径、isInside（盘符根）；
 // ⑦ 下载优先级（lod2 < thumb < lod1 < lod0）与「小件道」让道规则、preempt 迁移；
-// ⑧ state.json 的 STK 目录记忆、覆盖层差量比较 sameJson。
+// ⑧ state.json 的 STK 目录记忆、覆盖层差量比较 sameJson；
+// ⑨ 本机 STK 定位：reg.exe 输出解码（UTF-8 / GBK）、InstallHome 解析（只认版本号那层、32 位视图、REG_EXPAND_SZ）、候选排序。
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import path, { join } from 'node:path'
@@ -277,6 +278,66 @@ const dirs = { user: 'U', bundle: 'B' }
   ok(L.sameJson({ a: 1, b: [1, { c: 2 }] }, { b: [1, { c: 2 }], a: 1 }), 'sameJson：键序无关')
   ok(!L.sameJson({ a: 1 }, { a: 1, b: 2 }) && !L.sameJson([1, 2], [2, 1]) && !L.sameJson(null, {}) && !L.sameJson(1, '1'), 'sameJson：不同就是不同')
   ok(L.sameJson({ a: 1, b: undefined }, { a: 1 }) && L.sameJson(null, null) && L.sameJson([], []), 'sameJson：undefined 键当没有')
+}
+
+// ⑨ 本机 STK 定位（主进程 stkLocate 的解码 / 解析 / 排序）
+{
+  eq([L.STK_REG_KEY, L.STK_MODELS_REL], ['HKLM\\SOFTWARE\\AGI\\STK', ['STKData', 'VO', 'Models']], '注册表键与模型目录相对路径')
+  // 本机 STK 12 上 reg query HKLM\SOFTWARE\AGI\STK /s /v InstallHome /reg:64 的原样输出
+  const out12 = '\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\12.0\r\n    InstallHome    REG_SZ    C:\\Program Files\\AGI\\STK 12\\\r\n\r\nEnd of search: 1 match(es) found.\r\n'
+  eq(L.parseRegInstallHome(out12), [{ version: '12.0', home: 'C:\\Program Files\\AGI\\STK 12\\' }], '本机实测输出（STK 12.0）')
+  const multi = [
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\11.0',
+    '    InstallHome    REG_SZ    D:\\AGI\\STK 11\\',
+    '',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\12.0\\Plugins',
+    '    InstallHome    REG_SZ    C:\\Elsewhere\\',
+    '',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\AGI\\STK\\10.0',
+    '    installhome    REG_EXPAND_SZ    %ProgramFiles(x86)%\\AGI\\STK 10\\',
+    '',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\9.0',
+    '    InstallHome    REG_SZ    relative\\STK 9',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\8.0',
+    '    InstallHome    REG_SZ    \\\\server\\share\\STK 8\\',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\7.0',
+    '    InstallHome    REG_SZ    ',
+    'HKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\6.0',
+    '    InstallHome    REG_EXPAND_SZ    %NO_SUCH_VAR%\\STK 6\\',
+    '',
+    '搜索结束: 找到 7 匹配。'
+  ].join('\n')
+  eq(L.parseRegInstallHome(multi, { 'PROGRAMFILES(X86)': 'C:\\Program Files (x86)' }), [
+    { version: '11.0', home: 'D:\\AGI\\STK 11\\' },
+    { version: '10.0', home: 'C:\\Program Files (x86)\\AGI\\STK 10\\' }
+  ], '只收版本号那层子键（…\\12.0\\Plugins 不算）；32 位视图（WOW6432Node）照认；值名不分大小写；REG_EXPAND_SZ 展开（变量名不分大小写）；' +
+    '相对路径 / UNC / 空值 / 展开不了的变量不收；LF 换行也认；随语言变的末行不认')
+  eq([L.parseRegInstallHome(''), L.parseRegInstallHome(null), L.parseRegInstallHome('    InstallHome    REG_SZ    C:\\x\\')], [[], [], []], '空输出 / 值前没有键行 → 空')
+  eq([L.expandWinEnv('%a%\\%B%\\%c%', { A: '1', b: '2' }), L.expandWinEnv('100%', {})], ['1\\2\\%c%', '100%'], 'expandWinEnv：没有的变量原样留着')
+
+  // 解码：开了 UTF-8 全球语言支持的机器（本机 OEMCP = 65001）reg.exe 写 UTF-8；普通中文 Windows（936）写 GBK
+  eq(L.regOutputTexts(Buffer.from(out12, 'latin1')), [out12], '纯 ASCII：两种解法相同，只出一份')
+  const tz = L.regOutputTexts(Buffer.from('D:\\软件\\STK 12\\', 'utf8'))
+  eq([tz.length, tz[0]], [2, 'D:\\软件\\STK 12\\'], 'UTF-8 输出：UTF-8 解在前，GB18030 的乱码解作备选（调用方按目录在不在挑）')
+  const GBK_RUANJIAN = [0xc8, 0xed, 0xbc, 0xfe]   // 「软件」的 GBK 编码
+  eq(L.regOutputTexts(Buffer.from([0x44, 0x3a, 0x5c, ...GBK_RUANJIAN])), ['D:\\软件'], 'GBK 输出：UTF-8 严格解不通 → 按 GB18030 解')
+  eq([L.regOutputTexts('x'), L.regOutputTexts(null), L.regOutputTexts(5)], [['x'], [], []], '字符串原样；非字节 → 空')
+  const gbkOut = Buffer.concat([Buffer.from('\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\12.0\r\n    InstallHome    REG_SZ    D:\\'), Buffer.from(GBK_RUANJIAN), Buffer.from('\\STK 12\\\r\n\r\n')])
+  eq(L.regOutputTexts(gbkOut).flatMap((t) => L.parseRegInstallHome(t)), [{ version: '12.0', home: 'D:\\软件\\STK 12\\' }], 'GBK 输出整条链：解码 → 解析')
+
+  // 排序与候选
+  eq(['9.0', '12.0', 'x', '11.6', '12', '11.10'].sort(L.cmpVersionDesc), ['12.0', '12', '11.10', '11.6', '9.0', 'x'], '版本号降序：逐段按数值比（11.10 > 11.6），没有数字的排最后')
+  const reg = [{ version: '11.0', home: 'D:\\AGI\\STK 11\\' }, { version: '12.0', home: 'C:\\Program Files\\AGI\\STK 12\\' }]
+  const dirs = ['STK 12', 'STK 13', 'STK MATLAB Connector', 'STK Parallel Computing 12', 'Support Tools', 'STK11']
+    .map((name) => ({ home: 'C:\\Program Files\\AGI\\' + name, name }))
+  dirs[0].home = 'c:/program files/agi/stk 12'   // 与注册表那条是同一个目录（大小写 / 斜杠 / 结尾分隔符不同）
+  eq(L.stkHomeCandidates(reg, dirs), [
+    { home: 'C:\\Program Files\\AGI\\STK 12\\', version: '12.0', source: 'registry' },
+    { home: 'D:\\AGI\\STK 11\\', version: '11.0', source: 'registry' },
+    { home: 'C:\\Program Files\\AGI\\STK 13', version: '13', source: 'program-files' },
+    { home: 'C:\\Program Files\\AGI\\STK11', version: '11', source: 'program-files' }
+  ], '注册表（高版本在前）→ Program Files 里「STK + 版本号」的文件夹（高版本在前）；同一目录只留注册表那条；STK MATLAB Connector / Support Tools 不算')
+  eq([L.stkHomeCandidates(), L.stkHomeCandidates(null, null)], [[], []], '缺省空')
 }
 
 // 其它小工具

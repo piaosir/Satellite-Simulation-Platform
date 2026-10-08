@@ -29,7 +29,7 @@ watch(() => props.overlays, (o) => { if (chart.value && chart.value.setOverlays)
 watch(() => props.mode, (m) => { if (chart.value && chart.value.setMode) chart.value.setMode(m) })
 watch(() => props.tz, (z) => { if (chart.value && chart.value.setTz) chart.value.setTz(z) })
 onBeforeUnmount(() => { if (chart.value) chart.value.dispose(); chart.value = null })
-defineExpose({ exportPng: (o) => (chart.value ? chart.value.exportPng(o) : Promise.reject(new Error('图还没画'))), chart })
+defineExpose({ exportPng: (o) => (chart.value ? chart.value.exportPng(o) : Promise.reject(new Error('图表尚未生成'))), chart })
 </script>
 
 <template>

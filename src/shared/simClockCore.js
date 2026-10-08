@@ -25,8 +25,9 @@ export const STEP_PRESETS = [1, 5, 10, 30, 60, 300, 600, 1800, 3600]
 // 倍速预设（×实时）：1× 实时 → 3 h/s。与步长搭不上的组合由 effSpeed 夹住并如实显示。
 export const SPEED_PRESETS = [1, 10, 60, 300, 600, 1800, 3600, 10800]
 
-export const STEP_MIN = 0.1, STEP_MAX = 86400
-export const SPEED_MIN = 0.01, SPEED_MAX = 1e6
+// 上限按「时段最长 100 年」配：步长到 1 年、倍速到 10⁹（≈ 31.7 年 / 真实秒），100 年的时段一分钟内能放完。
+export const STEP_MIN = 0.1, STEP_MAX = 366 * 86400
+export const SPEED_MIN = 0.01, SPEED_MAX = 1e9
 // 拍/真实秒。下限保住心跳（慢档下时钟不能看着像死了）。
 // ★ 上限不是性能闸 —— 真正防卡死的是 nextDelayMs 的占用底线（两拍之间留出本拍耗时，占用 ≤ 1/2），
 //   它按【实测单拍耗时】自适应回退。贵场景（几千颗星 + 覆盖场）单拍就是几十毫秒，压根够不着上限；
@@ -132,6 +133,31 @@ export function followWindow(offMin, winStartMin, windowMin, pastFrac = 0.25, sp
   return panWindow(offMin, winStartMin, windowMin, pastFrac)
 }
 
+// —— 仿真时段的终止处理（STK Animation 的 End Time / Loop At；Cesium ClockRange 的 CLAMPED / LOOP_STOP / UNBOUNDED）——
+// range = { startMs, stopMs, end } | null。end：'stop' 停在终止时刻 / 'loop' 回到起始时刻 / 'continue' 越过继续（时段只作标记）。
+// ★ 只管【连播】：拖动、键入、步进、实时都不受它约束 —— 时段之外照样能去（尺子上淡显），自由度不因设了时段而收窄。
+export const END_MODES = ['stop', 'loop', 'continue']
+export const normEnd = (v) => (END_MODES.includes(v) ? v : 'stop')
+const bounded = (r) => !!r && Number.isFinite(r.startMs) && Number.isFinite(r.stopMs) && r.stopMs > r.startMs && (r.end === 'stop' || r.end === 'loop')
+// 连播一拍 prev → next（倒放时「终止」取起始时刻）。返回 { tMs, halt }：
+//   · 跨过 / 踩到终止时刻 → 落在终止时刻上（这一刻也属于时段，不跳过）；stop 档随之停表
+//   · 已在终止时刻或其外（停在终点后再起播、拖到时段外接着播）→ stop 原地停表，loop 回到另一端从头走
+//   · 起始时刻之前起播的不管（自然走进时段）
+export function boundStep(prevMs, nextMs, range, dir = 1) {
+  if (!bounded(range)) return { tMs: nextMs, halt: false }
+  const fwd = dir >= 0, end = fwd ? range.stopMs : range.startMs, head = fwd ? range.startMs : range.stopMs
+  const past = (t) => (fwd ? t >= end : t <= end)
+  if (past(prevMs)) return range.end === 'loop' ? { tMs: head, halt: false } : { tMs: prevMs, halt: true }
+  if (past(nextMs)) return { tMs: end, halt: range.end === 'stop' }
+  return { tMs: nextMs, halt: false }
+}
+// 起播位置：已在终止时刻或其外（按播放方向）→ 从另一端开始（播放器惯例：放完再按播放 = 从头放）
+export function playStartMs(tMs, range, dir = 1) {
+  if (!bounded(range)) return tMs
+  if (dir >= 0) return tMs >= range.stopMs ? range.startMs : tMs
+  return tMs <= range.startMs ? range.stopMs : tMs
+}
+
 // 实测时间压缩比（仿真秒 / 真实秒）：读的是【真的走了多少】，不是设定值。
 // 机器跟不上、切后台被节流、单帧重算太贵，都在这个数上如实反映出来。
 export function achievedRate(simDeltaMs, realDeltaMs) {
@@ -140,16 +166,18 @@ export function achievedRate(simDeltaMs, realDeltaMs) {
 }
 
 // —— 读数格式化（三处共用：时间条、tooltip、持久化后的回显）——
+// 步长可任意键入，读数不许失真：取「能写成至多一位小数」的最大单位（90 s → 1.5 min、100 s → 100 s、25 h → 25 h），
+// 都写不成就退回秒（至多两位小数）。原来 100 s 读作「1.7 min」，与实际步长对不上。
 export function fmtStep(sec) {
   const s = Number(sec) || 0
-  if (s < 1) return s.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + ' s'
-  if (s < 60) return (Number.isInteger(s) ? s : s.toFixed(1)) + ' s'
-  if (s < 3600) { const m = s / 60; return (Number.isInteger(m) ? m : m.toFixed(1)) + ' min' }
-  const h = s / 3600
-  return (Number.isInteger(h) ? h : h.toFixed(1)) + ' h'
+  for (const [u, k] of [[86400, 'd'], [3600, 'h'], [60, 'min']]) {
+    const q = s / u
+    if (q >= 1 && Math.abs(q * 10 - Math.round(q * 10)) < 1e-6) return String(Math.round(q * 10) / 10) + ' ' + k
+  }
+  return String(Math.round(s * 100) / 100) + ' s'
 }
 // 下拉里的紧凑写法（时间条横向寸土寸金，两个下拉不能各占 80 px）：1s 30s 5m 1h
-export const fmtStepShort = (sec) => fmtStep(sec).replace(' min', 'm').replace(' s', 's').replace(' h', 'h')
+export const fmtStepShort = (sec) => fmtStep(sec).replace(' min', 'm').replace(' s', 's').replace(' h', 'h').replace(' d', 'd')
 export function fmtRate(x) {
   const v = Number(x) || 0
   if (v >= 100) return Math.round(v).toLocaleString()

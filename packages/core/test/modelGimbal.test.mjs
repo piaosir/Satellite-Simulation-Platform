@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import {
   GIMBAL_TYPES, REASON, solveAzEl, solveXY, solveGimbal, dirFromAzEl, dirFromXY, dirFromGimbal,
-  normalizeGimbal, pickSolution, trackSeries
+  normalizeGimbal, pickSolution, trackSeries, isContinuousAxis
 } from '../models/gimbal.mjs'
 import { mountFrame, dirMountToBody } from '../models/attitude.mjs'
 import { buildMask, maskLookup } from '../models/mask.mjs'
@@ -193,6 +193,35 @@ t('线缆缠绕：方位限位 [−270, 270]，目标方位连续转到 265° �
   const r = trackSeries(dirs, tMs, { type: 'azel', limits: { azMin: -270, azMax: 270 } }, 1.5)
   near(r.series.a1[265], 265, 1e-9, '缠绕到 265°')
   near(r.trackableFrac, 1, 1e-12); near(r.peakRateA1DegS, 1, 1e-9, '速率 1°/s')
+})
+
+t('连续轴：缺省 ±180°（跨度恰 360° = 不限位）过 ±180° 不回卷——速率按最短角差、读数折回窗内；跨度 ≠ 360° 的限位行为不变', () => {
+  assert.equal(isContinuousAxis(-180, 180), true); assert.equal(isContinuousAxis(0, 360), true)
+  assert.equal(isContinuousAxis(-270, 270), false, '线缆缠绕不是连续轴'); assert.equal(isContinuousAxis(-170, 170), false)
+  // 目标方位 160° → 200°（1°/s 扫过 180°）：改前命令角在 180° 处翻到 −179°、峰值 359°/s，限速 2°/s 时追不上 20 拍
+  const dirs = [], tMs = []
+  for (let s = 0; s <= 40; s++) { dirs.push(dirFromAzEl(160 + s, 0)); tMs.push(s * 1000) }
+  const id = { frame: { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] } }
+  const r = trackSeries(dirs, tMs, { type: 'azel', rateDegS: 2 }, undefined, null, id)
+  near(r.peakRateA1DegS, 1, 1e-9, '峰值 = 1°/s')
+  assert.equal(r.counts.ok, 41, `全可跟踪：${JSON.stringify(r.counts)}`)
+  for (let i = 0; i <= 40; i++) {
+    assert.ok(r.series.a1[i] >= -180 && r.series.a1[i] <= 180, `读数在窗内：${r.series.a1[i]}`)
+    near(Math.abs(((r.series.a1[i] - (160 + i)) % 360 + 540) % 360 - 180), 0, 1e-9, `命令角 ≡ ${160 + i}°`)
+    near(r.series.act1[i], r.series.a1[i], 1e-9, '实际角跟上')
+    if (i) near(r.series.rate1[i], 1, 1e-9, `第 ${i} 拍速率`)
+  }
+  near(r.series.a1[20], 180, 1e-9, '窗端点原样（不写成 −180）'); near(r.series.a1[21], -179, 1e-9, '过 180° 后折回 −179°')
+  // 正绕一整圈：连续轴照样每拍 1°/s、全可跟踪（缠绕 [−270, 270] 到头必须倒转回卷——真限位，行为不变）
+  const d2 = [], t2 = []
+  for (let s = 0; s <= 400; s++) { d2.push(dirFromAzEl(s, 0)); t2.push(s * 1000) }
+  const full = trackSeries(d2, t2, { type: 'azel', rateDegS: 2 }, undefined, null, id)
+  assert.equal(full.counts.ok, 401); near(full.peakRateA1DegS, 1, 1e-9, '整圈峰值 1°/s')
+  const wrap = trackSeries(d2, t2, { type: 'azel', limits: { azMin: -270, azMax: 270 }, rateDegS: 2 }, undefined, null, id)
+  assert.ok(wrap.counts.rate > 0 && wrap.peakRateA1DegS > 300, `缠绕到头回卷：${JSON.stringify(wrap.counts)}、峰值 ${wrap.peakRateA1DegS}`)
+  // 真限位 ±170：171°…189° 这 19 拍照样记超限（170° 与 190° ≡ −170° 落在限位端点上，可达）
+  const hard = trackSeries(dirs, tMs, { type: 'azel', limits: { azMin: -170, azMax: 170 } }, undefined, null, id)
+  assert.equal(hard.counts.limit, 19, `±170 限位：${JSON.stringify(hard.counts)}`)
 })
 
 t('固定天线（type none，限位照存不用）：命令角钉在 (0,0)、不看限位；目标扫过 ±60° → 可跟踪比例 = 视场内时长 / 总时长；peakRate null', () => {

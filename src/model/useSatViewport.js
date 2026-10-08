@@ -43,13 +43,13 @@ export function useSatViewport({ wb, sat, getVp }) {
     const want = r.id || ''
     if (want === lastWant && (want ? cur.id === want : !cur.meta)) return
     lastWant = want
-    if (!want) { wb.showBlank(byLang('未配模型。', 'No model.')); return }
+    if (!want) { wb.showBlank(byLang('未配置模型。', 'No model assigned.')); return }
     if (cur.id === want && (cur.meta || cur.loading)) return
     // 掩模按 lod1 算（DESIGN2 §2），预览也就停在 lod1（模型页要全精度时它自己升 lod0）
     if (wb.byId(want)) wb.select(want, { lod: 'lod1' })
-    else { wb.showBlank(byLang('模型不在库里。', 'Model not in library.')) }
+    else { wb.showBlank(byLang('模型不在库中。', 'Model not in library.')) }
   }
-  watch(() => [st.tab, sat.st.satKey, sat.st.binding && sat.st.binding.model && sat.st.binding.model.id, st.loaded, st.list.length], () => { syncModel() })
+  watch(() => [st.tab, sat.st.satKey, sat.st.binding && sat.st.binding.model && sat.st.binding.model.id, st.loaded, st.list.length, sat.st.metaRev], () => { syncModel() })
 
   // ── 掩模球面片 ──
   let lastMask = ''

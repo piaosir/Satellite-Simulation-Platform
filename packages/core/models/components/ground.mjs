@@ -24,6 +24,10 @@
 //   副面 / 馈源必须随碟面一起转，所以卡塞格伦 / 主焦 / 偏馈反射面都自带副面、馈源与撑杆；es.subrefl / es.feed 是给固定天线
 //   手搭用的独立件（不带关节）。
 //
+// ★ 安装基面 / 接口收件清单（2026-10 设计页交互重构 §3.3.1「accepts 收紧」核对结论）：座架 el / y、底座 / 立柱 mast 只收反射面；
+//   主焦 / 偏馈 focus 只收馈源（主焦另收副面）；es.feed aperture 只收馈源链与副反射面（本轮收紧，原先不限）；方舱 / 铁塔顶面与
+//   天线罩内 floor 照旧（大件 / 罩内底板）；副反射面、卡氏反射面只有自身安装接口。各件面全可装（只有方舱、铁塔有面）。
+//
 // ★ 缺省参数一律示意值（source:'illustrative'），不取任何具体型号；ISO 668 集装箱尺寸是标准值（source = 标准页）。
 //   尺寸类缺省尽量写成「留空 = 按口径 / 基准量推算」（比例是示意值），模板只填有出处的量，其余靠推算——不同口径的天线都像样。
 //
@@ -155,6 +159,8 @@ function struts(mb, L, pts, target, r) { for (const p of pts) tubeAlong(mb, p, t
 // ───────────────────────────── 地球站：座架 ─────────────────────────────
 
 const REFL_ACCEPTS = Object.freeze(['es.refl.', 'prim.'])
+/** 馈源口面：馈源链 + 副反射面 + 基本体占位。 */
+const FEED_CHAIN_ACCEPTS = Object.freeze(['es.feed', 'es.subrefl', 'prim.'])
 const STEEL_AREAL = 90        // 座架钢壳等效面密度（kg/m²，示意：约 11 mm 钢板）
 const STEEL_SOLID = 1200      // 臂 / 支架等效体密度（kg/m³，示意：箱形焊接件按外包络折算）
 
@@ -170,16 +176,16 @@ function azelGeom(p) {
 const pedestalAzel = {
   type: 'es.pedestal.azel', domain: ['ground', 'ship', 'vehicle'], title: 'Az-El pedestal', titleZh: '方位俯仰座', role: 'boom',
   params: {
-    dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按它推算缺省尺寸（比例为示意值）' }),
+    dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     elAxisHM: num(null, 'm', '俯仰轴高', { nullable: true, gt: 0, title: '安装面到俯仰轴；留空 = 0.52 × 配套口径 + 0.3 m' }),
     baseDM: num(null, 'm', '立柱底径', { nullable: true, gt: 0, title: '留空 = 0.16 × 配套口径 + 0.6 m' }),
     yokeWM: num(null, 'm', '俯仰轴承间距', { nullable: true, gt: 0, title: '留空 = 0.3 × 配套口径 + 0.4 m' }),
     padHM: num(0.3, 'm', '基础高', { min: 0 }),
     azTravelDeg: num(540, '°', '方位行程', { gt: 0, max: 720, title: '≥ 360° 以北为中心；不足 360° 以南为中心' }),
     seg: int(48, '分段', { min: 12, max: 128 }),
-    style: enm('kingpost', ['kingpost', 'tripod'], '座型', { title: 'kingpost = 锥形立柱；tripod = 三根圆管腿（着地半径 0.9 × 立柱底径、120° 均布）汇到方位轴承下的短套筒' })
+    style: enm('kingpost', ['kingpost', 'tripod'], '座型', { title: 'kingpost = 锥形立柱；tripod = 三根圆管腿（着地半径 0.9 × 立柱底径、120° 均布）汇交于方位轴承下方的短套筒' })
   },
-  validate: (p) => { const g = azelGeom(p); return g.hPostTop > p.padHM ? [] : ['俯仰轴高不足以放下转台与叉臂'] },
+  validate: (p) => { const g = azelGeom(p); return g.hPostTop > p.padHM ? [] : ['俯仰轴高不足以容纳转台与叉臂'] },
   sockets: (p) => { const g = azelGeom(p); return [standSocket(g.baseD, 15), sock('el', [0, 0, -g.H], [1, 0, 0], [0, 0, -1], g.yokeW, 90, REFL_ACCEPTS)] },
   symmetricPlanes: ['xz'],
   build(p, kit) {
@@ -257,9 +263,9 @@ function xyGeom(p) {
 const pedestalXY = {
   type: 'es.pedestal.xy', domain: ['ground', 'ship', 'vehicle'], title: 'X-Y pedestal', titleZh: 'X-Y 座', role: 'boom',
   params: {
-    dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按它推算缺省尺寸（比例为示意值）' }),
+    dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     xAxisHM: num(null, 'm', 'X 轴高', { nullable: true, gt: 0, title: '安装面到下轴（X 轴，东西向）；留空 = 0.55 × 配套口径 + 0.5 m' }),
-    yOffsetM: num(null, 'm', 'Y 轴高出 X 轴', { nullable: true, min: 0, title: '上轴（Y 轴，南北向）比下轴高多少；留空 = 0.12 × 配套口径 + 0.2 m。反射面的同名参数须填同一值' }),
+    yOffsetM: num(null, 'm', 'Y 轴高出 X 轴', { nullable: true, min: 0, title: '上轴（Y 轴，南北向）高出下轴的距离；留空 = 0.12 × 配套口径 + 0.2 m。反射面的同名参数须取相同值' }),
     baseWM: num(null, 'm', 'X 轴承间距', { nullable: true, gt: 0, title: '留空 = 0.5 × 配套口径 + 0.6 m' }),
     limitDeg: num(92, '°', '单轴限位', { gt: 0, max: 180, title: '两轴各 ±；天顶无锁孔，锁孔在 X 轴两端的地平方向' }),
     padHM: num(0.3, 'm', '基础高', { min: 0 })
@@ -303,8 +309,8 @@ const pedestalXY = {
 
 /** 反射面共用的座架参数（关节类型、初值、行程）。 */
 const GIMBAL_PARAMS = {
-  gimbal: enm('azel', ['azel', 'xy', 'none'], '座架', { title: 'azel = 方位俯仰（装方位俯仰座 el 插座 / 立柱）；xy = X-Y 座（装 y 插座）；none = 固定' }),
-  el0Deg: num(30, '°', '初始仰角', { min: -90, max: 180, title: 'azel：俯仰关节初值；xy：Y 轴初值；none：固定仰角（烘进几何）' }),
+  gimbal: enm('azel', ['azel', 'xy', 'none'], '座架', { title: 'azel = 方位俯仰（安装于方位俯仰座 el 接口 / 立柱）；xy = X-Y 座（安装于 y 接口）；none = 固定' }),
+  el0Deg: num(30, '°', '初始仰角', { min: -90, max: 180, title: 'azel：俯仰关节初值；xy：Y 轴初值；none：固定仰角（烘焙进几何）' }),
   azTravelDeg: num(540, '°', '方位行程', { gt: 0, max: 720, title: '须与座架同名参数一致' }),
   elMinDeg: num(0, '°', '仰角下限', { min: -90, max: 90 }),
   elMaxDeg: num(90, '°', '仰角上限', { min: -90, max: 180 }),
@@ -429,10 +435,10 @@ export function primeReach0(p) {
 /** reachM 与顶点前伸的约束（两者只能给一个；反推的顶点前伸不得为负）。 */
 function reachValidate(p, reach0) {
   if (!isNum(p.reachM)) return []
-  if (isNum(p.vertexOffsetM)) return ['顶点前伸与最前点距离只能给一个']
+  if (isNum(p.vertexOffsetM)) return ['顶点前伸与最前点距离只能指定其一']
   return p.reachM - reach0(p) >= 0 ? [] : ['最前点距离过小']
 }
-const REACH_PARAM = () => num(null, 'm', '最前点距离', { nullable: true, gt: 0, title: '俯仰轴到最前点（沿视轴）；仰角 90° 时 = 总高 − 俯仰轴高；给了就反推顶点前伸' })
+const REACH_PARAM = () => num(null, 'm', '最前点距离', { nullable: true, gt: 0, title: '俯仰轴至最前点的距离（沿视轴）；仰角 90° 时 = 总高 − 俯仰轴高；指定后据此反推顶点前伸' })
 
 const reflPrime = {
   type: 'es.refl.prime', domain: ['ground', 'ship', 'vehicle'], title: 'Prime-focus reflector', titleZh: '主焦反射面', role: 'reflector',
@@ -451,6 +457,8 @@ const reflPrime = {
   validate: (p) => [...gimbalValidate(p), ...(auto(p.hubDM, 0.2 * p.diameterM) < 0.8 * p.diameterM ? [] : ['中心筒直径过大']), ...reachValidate(p, primeReach0)],
   mountSocket: 'root',
   sockets: (p) => { const g = axiLayout(p, primeReach0); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.2, 0.26 * g.D), 90), sock('focus', [g.vo + g.f, 0, 0], [1, 0, 0], [0, 0, -1], auto(p.feedDM, 0.035 * g.D + 0.05), 15, Object.freeze(['es.feed', 'es.subrefl', 'prim.']))] },
+  // 带自带馈源时焦点已经有馈源：焦点接口算占用（装配时不再往上叠第二个馈源）
+  busySockets: (p) => (p.feed ? ['focus'] : []),
   // 三根撑杆（φ = 0、±120°）只关于 xz 面对称；不带馈源时没有撑杆
   symmetricPlanes: (p) => ((!p.feed || p.struts === 4) && axiXY(p) ? ['xz', 'xy'] : ['xz']),
   build(p, kit) {
@@ -528,14 +536,14 @@ const reflCass = {
     ribs: int(null, '背架肋数', { nullable: true, min: 4, max: 64 }),
     ...GIMBAL_PARAMS,
     reachM: REACH_PARAM(),
-    counterweight: bool(false, '配重', { title: '碟背下方箱形配重（随俯仰转）：质量 = 0.15 × 主反射面质量（示意）' })
+    counterweight: bool(false, '配重', { title: '反射面背部下方箱形配重（随俯仰转动）：质量 = 0.15 × 主反射面质量（示意）' })
   },
   validate: (p) => {
     const e = gimbalValidate(p), D = p.diameterM, f = p.fD * D, Ds = auto(p.subDM, 0.1 * D)
     if (!(Ds < 0.5 * D)) e.push('副面直径过大')
     else {
       const c = cassLayout(D, f, Ds, p.subHM)
-      if (!(c.a > 0 && c.zF2 < c.zV && c.zV < f)) e.push('副面高度与副面直径不成双曲面')
+      if (!(c.a > 0 && c.zF2 < c.zV && c.zV < f)) e.push('副面高度与副面直径无法构成双曲面')
       else e.push(...reachValidate(p, cassReach0))
     }
     return e
@@ -633,18 +641,20 @@ const reflOffset = {
     diameterM: num(1.2, 'm', '口径', { gt: 0, title: '口面在射频轴法平面上的投影直径（有效口径）' }),
     offsetDeg: num(20, '°', '偏置角', { gt: 0, max: 60, title: '口面竖直时波束仰起的角度（口沿平面法向与射频轴的夹角）' }),
     fD: num(null, '', '焦径比', { nullable: true, gt: 0.2, max: 2, title: '母抛物面焦距 / 有效口径；留空 = 0.25 / tan(偏置角) + 0.03' }),
-    feedArm: enm('auto', ['auto', 'boom', 'tripod'], '馈源支撑', { title: 'auto：口径 ≥ 1.8 m 用三杆' }),
+    feedArm: enm('auto', ['auto', 'boom', 'tripod'], '馈源支撑', { title: 'auto：口径 ≥ 1.8 m 时采用三杆' }),
     feedDM: num(null, 'm', '馈源口径', { nullable: true, gt: 0, title: '留空 = 0.06 × 口径 + 0.03 m' }),
-    backOffsetM: num(null, 'm', '安装点后移', { nullable: true, min: 0, title: '俯仰转轴在口面中心背后多远；留空 = 0.1 × 口径 + 0.08 m' }),
-    mastDM: num(0.076, 'm', '立柱直径', { gt: 0, title: '方位抱箍按它开孔' }),
+    backOffsetM: num(null, 'm', '安装点后移', { nullable: true, min: 0, title: '俯仰转轴位于口面中心后方的距离；留空 = 0.1 × 口径 + 0.08 m' }),
+    mastDM: num(0.076, 'm', '立柱直径', { gt: 0, title: '方位抱箍按此开孔' }),
     ...GIMBAL_PARAMS,
     seams: int(0, '瓣缝', { options: [0, 2, 4], title: '分瓣反射面凹面上的拼缝细肋：2 = 左右两瓣（一条竖缝），4 = 四瓣（十字缝）' }),
-    collar: bool(true, '方位抱箍', { title: '套在立柱顶、只随方位转；车顶展开座等无立柱的安装关掉' }),
+    collar: bool(true, '方位抱箍', { title: '套装于立柱顶端，仅随方位转动；车顶展开座等无立柱安装时关闭' }),
     pivotDropM: num(0, 'm', '转轴下移', { min: 0, title: '俯仰转轴沿口面朝下缘方向离开口面中心的距离（再叠加安装点后移）；车顶展开天线的转轴在口径下缘，约 0.5 × 口径' })
   },
   validate: (p) => [...gimbalValidate(p), ...(p.pivotDropM <= 0.6 * p.diameterM ? [] : ['转轴下移过大'])],
   mountSocket: 'root',
   sockets: (p) => { const g = offsetLayout(p); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.1, 2 * p.mastDM), 90), sock('focus', g.F, nrm(sub(g.F, g.Pc)), perpUp(nrm(sub(g.F, g.Pc)), [1, 0, 0], [0, 0, -1]), auto(p.feedDM, 0.06 * g.D + 0.03), 15, Object.freeze(['es.feed', 'prim.']))] },
+  // 偏馈反射面恒带馈源（馈源臂 / 三杆随碟面转）：焦点接口算占用
+  busySockets: () => ['focus'],
   symmetricPlanes: ['xz'],
   build(p, kit) {
     const ctx = kit.createCtx(), g = offsetLayout(p)
@@ -711,7 +721,7 @@ const subrefl = {
   params: {
     diameterM: num(0.7, 'm', '直径', { gt: 0 }),
     sagM: num(null, 'm', '凸起高', { nullable: true, min: 0, title: '凸面顶点到口沿平面；留空 = 0.12 × 直径' }),
-    legs: int(0, '支腿数', { options: [0, 3, 4], title: '0 = 由父件托着；3 / 4 = 自带撑腿（长 = 支腿长）' }),
+    legs: int(0, '支腿数', { options: [0, 3, 4], title: '0 = 由父件支撑；3 / 4 = 自带支腿（长度 = 支腿长）' }),
     legLenM: num(1.0, 'm', '支腿长', { gt: 0 })
   },
   // 凸面顶点朝 −X（朝主面）；mount = 顶点，n = −X
@@ -741,12 +751,13 @@ const feedLenOf = (p) => auto(p.lengthM, p.kind === 'lnb' ? 1.4 * p.apertureDM :
 const feed = {
   type: 'es.feed', domain: ['ground', 'ship', 'vehicle'], title: 'Feed', titleZh: '馈源', role: 'feed',
   params: {
-    kind: enm('corrugated', ['corrugated', 'horn', 'lnb'], '形式', { title: 'corrugated = 波纹喇叭；horn = 光壁锥喇叭；lnb = 小口径喇叭 + 高频头' }),
+    kind: enm('corrugated', ['corrugated', 'horn', 'lnb'], '形式', { title: 'corrugated = 波纹喇叭；horn = 光壁锥喇叭；lnb = 小口径喇叭 + LNB' }),
     apertureDM: num(0.3, 'm', '口径', { gt: 0 }),
     lengthM: num(null, 'm', '长度', { nullable: true, gt: 0, title: '留空：lnb = 1.4 × 口径，其余 2.5 × 口径' })
   },
-  // root = 后法兰（口面朝 +X）；aperture = 口面中心（接反射面焦点插座时用它作 mount：口面朝反射面）
-  sockets: (p) => [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], p.apertureDM, 15), sock('aperture', [feedLenOf(p), 0, 0], [1, 0, 0], [0, 0, -1], p.apertureDM, 15)],
+  // root = 后法兰（口面朝 +X）；aperture = 口面中心（接反射面焦点插座时用它作 mount：口面朝反射面）。
+  // aperture 作父接口只收馈源链与副反射面（+ 基本体占位）
+  sockets: (p) => [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], p.apertureDM, 15), sock('aperture', [feedLenOf(p), 0, 0], [1, 0, 0], [0, 0, -1], p.apertureDM, 15, FEED_CHAIN_ACCEPTS)],
   symmetricPlanes: ['xz', 'xy'],
   build(p, kit) {
     const ctx = kit.createCtx(), L = feedLenOf(p), ra = p.apertureDM / 2, part = { id: 'feed', name: '馈源', role: 'feed' }
@@ -782,7 +793,7 @@ const radome = {
     translucent: bool(false, '半透明'),
     panels: bool(true, '板块接缝')
   },
-  validate: (p) => { const H = auto(p.heightM, 0.85 * p.diameterM), rh = auto(p.ringHM, 0.04 * p.diameterM); return H - rh > 0.05 * p.diameterM && H - rh <= p.diameterM ? [] : ['总高与球径不成截球'] },
+  validate: (p) => { const H = auto(p.heightM, 0.85 * p.diameterM), rh = auto(p.ringHM, 0.04 * p.diameterM); return H - rh > 0.05 * p.diameterM && H - rh <= p.diameterM ? [] : ['总高与球径无法构成截球'] },
   sockets: (p) => { const H = auto(p.heightM, 0.85 * p.diameterM), rh = auto(p.ringHM, 0.04 * p.diameterM), R = p.diameterM / 2, zc = -(H - R), rb = Math.sqrt(Math.max(0, R * R - (zc + rh) ** 2)); return [standSocket(2 * rb, 15), sock('floor', [0, 0, -rh], [0, 0, -1], [1, 0, 0], 1.6 * rb, 15)] },
   symmetricPlanes: ['xz', 'yz'],
   build(p, kit) {
@@ -943,7 +954,7 @@ function wheeltrackGeom(p) {
 const pedestalWheeltrack = {
   type: 'es.pedestal.wheeltrack', domain: ['ground'], title: 'Wheel-and-track pedestal', titleZh: '轮轨座', role: 'boom',
   params: {
-    dishDM: num(34, 'm', '配套口径', { gt: 5, max: 100, title: '座架按它推算缺省尺寸（比例为示意值）' }),
+    dishDM: num(34, 'm', '配套口径', { gt: 5, max: 100, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     elAxisHM: num(null, 'm', '俯仰轴高', { nullable: true, gt: 0, title: '地面到俯仰轴；留空 = 0.62 × 配套口径' }),
     railDM: num(null, 'm', '方位轨道直径', { nullable: true, gt: 0, title: '留空 = 0.55 × 配套口径' }),
     pedHM: num(null, 'm', '基座高', { nullable: true, min: 0, title: '混凝土基座（下有波导镜室）露出地面的高度；留空 = 0.12 × 配套口径' }),
@@ -1031,8 +1042,8 @@ const mast = {
   type: 'es.mast', domain: ['ground', 'ship', 'vehicle'], title: 'Pipe mast', titleZh: '立柱', role: 'boom',
   params: {
     mastDM: num(0.114, 'm', '立柱直径', { gt: 0.02, max: 1 }),
-    heightM: num(1.5, 'm', '立柱高', { gt: 0.2, max: 8, title: '安装面到立柱顶（方位抱箍 / 俯仰转轴）；厂家不规定，随用户立柱' }),
-    footing: bool(true, '混凝土基础', { title: '墩顶露出安装面 0.05 m（0.6 × 0.6 m，示意）；关掉 = 法兰底板 + 四块筋板（甲板 / 车顶螺接）' }),
+    heightM: num(1.5, 'm', '立柱高', { gt: 0.2, max: 8, title: '安装面至立柱顶（方位抱箍 / 俯仰转轴）；厂家未规定，取决于用户立柱' }),
+    footing: bool(true, '混凝土基础', { title: '墩顶高出安装面 0.05 m（0.6 × 0.6 m，示意）；关闭 = 法兰底板 + 四块筋板（甲板 / 车顶螺栓连接）' }),
     massKg: num(null, 'kg', '质量', { nullable: true, gt: 0, title: '留空 = 钢管按 7850 kg/m³、壁厚 0.06 × 管径（示意）' })
   },
   sockets: (p) => [standSocket(Math.max(0.2, 3 * p.mastDM), 90), sock('mast', [0, 0, -p.heightM], [1, 0, 0], [0, 0, -1], Math.max(0.1, 2 * p.mastDM), 90, REFL_ACCEPTS)],

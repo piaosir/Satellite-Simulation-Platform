@@ -99,9 +99,9 @@ export function rayEllipsoidMargin(o, d) {
   return { p: projectToSurface(pRaw), m: disc < 0 ? disc : -1, pRaw }
 }
 
-// 大地点对卫星(ECEF)的仰角（度，椭球法线为基准）
-export function elevationDeg(lonDeg, latDeg, satEcef) {
-  const obs = geodeticToEcef(lonDeg, latDeg, 0)
+// 大地点对卫星(ECEF)的仰角（度，椭球法线为基准）。hKm = 观测点大地高（km，缺省 0 = 地面；空中端如飞行航迹的代表点用）
+export function elevationDeg(lonDeg, latDeg, satEcef, hKm = 0) {
+  const obs = geodeticToEcef(lonDeg, latDeg, hKm)
   const r = sub(satEcef, obs)
   const up = geodeticUp(lonDeg, latDeg)
   return Math.asin(Math.max(-1, Math.min(1, dot(r, up) / Math.hypot(r[0], r[1], r[2])))) / DEG

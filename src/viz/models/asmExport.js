@@ -73,11 +73,11 @@ export function asmThumbInWorker(doc, size = 384) {
 }
 
 /**
- * 在 Worker 里给组件卡片出缩略图（缺省参数）。haveSig = 本机缓存那张的几何签名：一样就不出图（回 same:true）。
+ * 在 Worker 里给组件卡片出缩略图（params 缺省 = 缺省参数；常用型号卡片传型号参数）。haveSig = 本机缓存那张的几何签名：一样就不出图（回 same:true）。
  * @returns {Promise<{ok:true, sig:string, same?:boolean, thumb?:Uint8Array, thumbType?:string}|{ok:false, code:string, error:string, sig?:string}|null>}
  */
-export function compThumbInWorker(type, size = 128, haveSig = '') {
-  return ask({ kind: 'thumbComp', type, size, haveSig: haveSig || '' }, (m) => (m.ok ? { ok: true, sig: m.sig, same: !!m.same, thumb: thumbOut(m), thumbType: m.thumbType || '' } : { ok: false, code: m.code || 'error', error: m.error || '', sig: m.sig || '' }))
+export function compThumbInWorker(type, size = 128, haveSig = '', params = null) {
+  return ask({ kind: 'thumbComp', type, size, haveSig: haveSig || '', params: params && typeof params === 'object' ? JSON.parse(JSON.stringify(params)) : {} }, (m) => (m.ok ? { ok: true, sig: m.sig, same: !!m.same, thumb: thumbOut(m), thumbType: m.thumbType || '' } : { ok: false, code: m.code || 'error', error: m.error || '', sig: m.sig || '' }))
 }
 
 /**

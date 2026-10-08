@@ -195,7 +195,7 @@ export async function exportGlb(root, meta, opts = {}) {
     all.forEach((o, i) => { o.name = un.names[i] })
     for (const [nw, old] of Object.entries(un.map)) renamed[nw] = Object.hasOwn(renamed, old) ? renamed[old] : old
     const nRenamed = Object.keys(renamed).length
-    if (nRenamed) warnings.push('节点名重名或为空，已改名 ' + nRenamed + ' 个')
+    if (nRenamed) warnings.push('节点名重复或为空，已重命名 ' + nRenamed + ' 个')
     const names = new Set(un.names)
 
     // ---- 4. 挂点：有节点的直接标；没有的在导出坐标里造空节点 ----
@@ -213,7 +213,7 @@ export async function exportGlb(root, meta, opts = {}) {
       // 否则每往返一次多一批节点（验证台实测过 70 → 73）
       const ours = hit && !hit.isMesh && hit.children.length === 0 && topSet.has(hit) && Array.isArray(ap.posBody)
       if (hit && !ours && (explicit || !Array.isArray(ap.posBody))) { aps.push({ name: ap.name, node: key }); continue }   // 指名道姓的节点：位姿以节点为准
-      if (!Array.isArray(ap.posBody)) { warnings.push('挂点「' + ap.name + '」没有位置，未导出'); continue }
+      if (!Array.isArray(ap.posBody)) { warnings.push('挂点「' + ap.name + '」缺少位置，未导出'); continue }
       // 节点局部轴口径由 agi.mjs 定（按本机 STK 12 核定：视轴 = 局部 +Y、上向 = 局部 +X），矩阵一律由 attachNodeMatrix 造，
       // 读回 attachPointPoses 才是同一套数。上向缺省 / 退化时在本体系里按 D1 规则（defaultUpBody）补好再换到导出坐标 ——
       // attachNodeMatrix 自己的兜底只在本体系里才等于 D1。
@@ -223,7 +223,7 @@ export async function exportGlb(root, meta, opts = {}) {
       vz.fromArray(dirB).applyMatrix4(RkInv)
       vy.fromArray(upB).applyMatrix4(RkInv)
       const M = attachNodeMatrix([vp.x, vp.y, vp.z], [vz.x, vz.y, vz.z], [vy.x, vy.y, vy.z])
-      if (!M) { warnings.push('挂点「' + ap.name + '」位姿不合法，未导出'); continue }
+      if (!M) { warnings.push('挂点「' + ap.name + '」位姿无效，未导出'); continue }
       let o = ours ? hit : null
       let nm = key
       if (!o) {

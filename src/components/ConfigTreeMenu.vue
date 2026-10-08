@@ -14,11 +14,14 @@ const props = defineProps({
   item: { type: Object, default: null },       // 右键命中的条目（空白处右键为 null）
   isFolder: { type: Boolean, default: false },
   clip: { type: Object, default: null },       // 剪贴板 { mode, name, isFolder }
-  hasApi: { type: Boolean, default: true }
+  hasApi: { type: Boolean, default: true },
+  // 自动保存的窗口（链路预算四窗）：没有「保存当前为新配置」（工作区恒是某一份配置），配置项多出「创建副本」「历史版本…」
+  autosave: { type: Boolean, default: false }
 })
 const emit = defineEmits([
   'close', 'rename', 'new-folder', 'new-config', 'save-new',
-  'cut', 'copy', 'paste', 'move-root', 'delete', 'expand-all', 'collapse-all', 'hide'
+  'cut', 'copy', 'paste', 'move-root', 'delete', 'expand-all', 'collapse-all', 'hide',
+  'duplicate', 'versions'
 ])
 
 const boxEl = ref(null)
@@ -49,7 +52,7 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
       <template v-else-if="!item">
         <button class="lb-ctx-i" @click="done('new-config', null)">添加空白配置</button>
         <button class="lb-ctx-i" @click="done('new-folder', null)">新建文件夹</button>
-        <button class="lb-ctx-i" :disabled="!hasApi" @click="done('save-new')">保存当前为新配置</button>
+        <button v-if="!autosave" class="lb-ctx-i" :disabled="!hasApi" @click="done('save-new')">保存当前为新配置</button>
         <div class="lb-ctx-sep"></div>
       </template>
 
@@ -60,6 +63,7 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
         <button class="lb-ctx-i" :disabled="!clip" @click="done('paste', menu.id, isFolder)">
           {{ isFolder ? '粘贴到此文件夹' : '粘贴到此后' }}<span class="lb-ctx-k">Ctrl+V</span>
         </button>
+        <button v-if="autosave" class="lb-ctx-i" :disabled="isFolder || !hasApi" @click="done('duplicate', item)">创建副本</button>
         <button class="lb-ctx-i" :disabled="item.parentId == null" @click="done('move-root', item)">移到根目录</button>
         <div class="lb-ctx-sep"></div>
       </template>
@@ -72,6 +76,7 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
 
       <!-- ③ 改名 / 删除 -->
       <template v-if="item">
+        <button v-if="autosave" class="lb-ctx-i" :disabled="isFolder || !hasApi" @click="done('versions', item)">历史版本…</button>
         <button class="lb-ctx-i" @click="done('rename', item)">重命名<span class="lb-ctx-k">F2</span></button>
         <button class="lb-ctx-i danger" @click="done('delete', item)">
           {{ isFolder ? '删除文件夹（含子项）' : '删除' }}<span class="lb-ctx-k">Del</span>

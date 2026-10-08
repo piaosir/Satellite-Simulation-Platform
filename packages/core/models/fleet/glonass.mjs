@@ -51,7 +51,7 @@ function conicalRadome(g, base, H, r, mat = 'radome') {
 // 圆柱中段一圈电机驱动的热控百叶窗；两翼各 2 × 2 块板，总面积 30.85 m²（IGS 邮件 2005）。
 function buildM(B) {
   const zc0 = -0.55, zc1 = 1.43, rc = 0.815, ZP = 1.83
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   cyl(g.mb('struct_light'), P(0, 0, zc0), P(0, 0, zc1), rc, 48, false, false)
   // 百叶窗带：圆柱中段一圈竖向叶片（微微张开）
   for (let k = 0; k < 36; k++) {
@@ -107,7 +107,7 @@ function buildM(B) {
 function buildK1(B) {
   const ZE = 1.314, ZB = -1.346
   const hb = P(0.8, 0.3975, (ZE - ZB) / 2), cb = P(0, 0, (ZE + ZB) / 2)
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, cb, hb, 0.02)
   skinBox(g, BODY, cb, hb, { '+x': 'mli_gold', '-x': 'mli_gold', '+y': 'radiator', '-y': 'radiator', '-z': 'mli_gold' })
   // 对地板：2.18（X）× 0.795（Y），厚 0.06 m，白色
@@ -151,7 +151,7 @@ function buildK1(B) {
 // 对地长条面上两列交错约 26 根导航螺旋 + 中段环形角反射器（Ø0.68 / 0.432 m、36 棱镜）；每翼 3 块宽板，白色 V 形杆接在侧面中段。
 function buildK2(B) {
   const hb = P(3.0, 0.47, 1.1), ZE = hb[2]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), hb, 0.03)
   skinBox(g, BODY, P(0, 0, 0), hb, { '+x': 'mli_gold', '-x': 'mli_gold', '+y': 'radiator', '-y': 'radiator', '+z': 'white_paint', '-z': 'mli_gold' })
   // ±Y 大面上的金色 MLI 分区（散热面之外的设备区）

@@ -531,6 +531,27 @@ const geoSeries = (t0, n, stepMs, bore = null) => {
   ok(ex.ok === true && fs.existsSync(saveTo.path) && fs.statSync(saveTo.path).size > 1000, '⑦ exportTable 经 handler 写出 xlsx')
 }
 
+// ⑦b 模型文件读取白名单（排查 #32）：授权目录内照读；OBJ 的 .mtl 用 ../ 引用上一级目录的贴图——材质库 / 贴图类放宽到上一层，
+//     模型文件与其它类型仍只限授权目录；再往上一层不放
+{
+  const base = path.join(TMP, 'wl'), objDir = path.join(base, 'pack', 'obj'), texDir = path.join(base, 'pack', 'textures')
+  fs.mkdirSync(objDir, { recursive: true }); fs.mkdirSync(texDir, { recursive: true })
+  fs.writeFileSync(path.join(objDir, 'sat.obj'), 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n')
+  fs.writeFileSync(path.join(objDir, 'sat.mtl'), 'newmtl a\nmap_Kd ../textures/skin.png\n')
+  fs.writeFileSync(path.join(texDir, 'skin.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  fs.writeFileSync(path.join(base, 'pack', 'other.obj'), 'v 0 0 0\n')
+  fs.writeFileSync(path.join(base, 'far.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const denied = (x) => !!(x && x.ok === false && /未授权/.test(x.error || ''))
+  ok(denied(await call('models:readFile', path.join(objDir, 'sat.mtl'))), '⑦b 没授权：拒读')
+  await call('models:allowPaths', [path.join(objDir, 'sat.obj')])
+  const a = await call('models:readFile', path.join(objDir, 'sat.mtl'))
+  ok(a && a.bytes && a.bytes.length > 0, '⑦b 授权目录内的 .mtl 照读')
+  const b = await call('models:readFile', path.join(objDir, '..', 'textures', 'skin.png'))
+  ok(b && b.bytes && b.bytes.length === 4, '⑦b 上一级目录的贴图（../textures/skin.png）放行')
+  ok(denied(await call('models:readFile', path.join(base, 'pack', 'other.obj'))), '⑦b 上一级目录的模型文件仍拒读')
+  ok(denied(await call('models:readFile', path.join(base, 'far.png'))), '⑦b 再上一层的贴图不放行')
+}
+
 // ⑨ 真 preload（假 contextBridge 收下 api，invoke 直通 handler）
 {
   const store = new Map()

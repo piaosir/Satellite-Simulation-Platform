@@ -48,7 +48,7 @@ function setModel(v) {
   <MdSec id="s-model" title="模型" :summary="resolvedName">
     <template v-if="b">
       <div class="srow">
-        <label title="自动：按卫星名称 / NORAD 号 / 类别匹配库里的模型（GEO 通信星缺省用默认卫星）；无：不配模型">模型</label>
+        <label title="自动：按卫星名称 / NORAD 编号 / 类别匹配库中模型（GEO 通信卫星缺省采用默认卫星模型）；无：不配置模型">模型</label>
         <select class="ci sm-sel" :value="cur === 'auto' ? '__auto' : cur === null ? '__none' : cur" @change="setModel($event.target.value)">
           <option value="__auto">自动</option>
           <option value="__none">无</option>
@@ -58,7 +58,7 @@ function setModel(v) {
       <div v-if="resolved.auto && resolved.id" class="md-kvs">
         <div class="md-kv" :title="resolved.rule ? '匹配规则：' + resolved.rule : ''"><span class="k">自动匹配</span><span class="v sm-v" data-i18n-skip>{{ resolvedName }}</span></div>
       </div>
-      <div v-else-if="cur !== null && resolved.id && !wb.byId(resolved.id)" class="md-state warn">模型不在库里。</div>
+      <div v-else-if="cur !== null && resolved.id && !wb.byId(resolved.id)" class="md-state warn">模型不在库中。</div>
     </template>
   </MdSec>
 </template>

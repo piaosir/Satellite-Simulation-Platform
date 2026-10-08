@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "buildId": "builtin-e290687c08a7",
-  "generatedAt": "2026-09-24T14:43:51.989Z",
-  "sourceBuildId": "nasa-22a14e11b602",
+  "buildId": "builtin-f6ff5fbcb169",
+  "generatedAt": "2026-10-08T02:52:47.126Z",
+  "sourceBuildId": "nasa-0e022deac726",
   "thumbView": "auto+crop-v2|d:c8867ecec072",
   "models": [
     {
@@ -27,14 +27,14 @@
           "tris": 23570
         },
         "lod1": {
-          "sha256": "7ecfb597f08b8cf587fa65f7d4a938d017278c5dac82f3885c59cab51d56b484",
-          "bytes": 82436,
-          "tris": 7957
+          "sha256": "89fd27672ce545d0f056d248a68aec52467b9f4fff8aa6f0fb37d4d994d0f031",
+          "bytes": 235632,
+          "tris": 1425
         },
         "lod2": {
-          "sha256": "b40c01d1e658baede764794fc856dce6cdcba4ad4cf3ecbd8ef7fb4c5130cc29",
-          "bytes": 50264,
-          "tris": 2685
+          "sha256": "69ec1208c786c013ee126cb7d6ddaa2819858d4eb24efa42240d631c13dbc368",
+          "bytes": 55368,
+          "tris": 709
         },
         "thumb": {
           "sha256": "5d4776f1b84ce779eac3f41341d69c46561691a451a646d79c1ac46022768dc5",
@@ -100,8 +100,9 @@
         "1U",
         "CubeSat 1U"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -128,14 +129,14 @@
           "tris": 36896
         },
         "lod1": {
-          "sha256": "eeeaa104119f3f39f0b95438c426a2956d663ec1b337f76b9a046723d450ae47",
-          "bytes": 113296,
-          "tris": 11340
+          "sha256": "14cbfc78dd8a9d7df2e51b9a97d7ddad22a40ba1766fb00d0af0b990cefd0cca",
+          "bytes": 263948,
+          "tris": 1619
         },
         "lod2": {
-          "sha256": "7fba65d8f27c5e86bbd64b7614d39c07c40dd2f77d07ae3c35a65c2bbd71efed",
-          "bytes": 67944,
-          "tris": 4131
+          "sha256": "475d5818767d54e75e314164f85ef39a63b46d277e428edcd2b3de90df3aa0a9",
+          "bytes": 54324,
+          "tris": 831
         },
         "thumb": {
           "sha256": "3d1ff37e81c15cb060294ba642dae3105dee8ff81786d068f8d0f062ad24dc2c",
@@ -201,8 +202,9 @@
         "2U",
         "CubeSat 2U"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -229,14 +231,14 @@
           "tris": 31842
         },
         "lod1": {
-          "sha256": "bd0f0c6506c7f29aa75819e29c36ba0ef5013b4f64b41782f94b41bfc754a9ca",
-          "bytes": 675304,
-          "tris": 19455
+          "sha256": "2c2a0a9f964aa1c126ec022a98ba612bbb7d54850d4cb973f4d0ed6a201455f3",
+          "bytes": 651612,
+          "tris": 11603
         },
         "lod2": {
-          "sha256": "f533331d71cf291eb82cf898937d6dfce2d54fe86cc52b11583920d3f508e304",
-          "bytes": 332456,
-          "tris": 13924
+          "sha256": "3de3307b7503c04ce399a0fd7b44e06c595acdd3a89be2e694b7c67bf6df8f9e",
+          "bytes": 302072,
+          "tris": 9253
         },
         "thumb": {
           "sha256": "19e142fd2ea7622b63a1c2e1913c25d50901e8072a380025cd576438daba482a",
@@ -305,8 +307,9 @@
         "DSN",
         "DSS-34"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -333,14 +336,14 @@
           "tris": 40935
         },
         "lod1": {
-          "sha256": "e9296c62b1a13fd9843414ab7fc8404ce2e624953578786671986fd7c80de463",
-          "bytes": 135840,
-          "tris": 12554
+          "sha256": "2e41fb8c6fb8fbed400c0c6433ef8e1e5c8fdcb1814ecc96afdc570d27909b87",
+          "bytes": 284556,
+          "tris": 8599
         },
         "lod2": {
-          "sha256": "1bcd0917ac247b203a3d7907c9074bd1571e483a33d5a1d36441db1f4079c685",
-          "bytes": 83712,
-          "tris": 5118
+          "sha256": "86fbf256e016a079571d51263d0863ad8f16e1b918bdd89fca01a229dd578f9a",
+          "bytes": 94000,
+          "tris": 2941
         },
         "thumb": {
           "sha256": "debb74ae28b2a701a2f9b2fb676f7c58a0f26ed16d4eccb02d746081e1a39679",
@@ -408,8 +411,9 @@
       "aliases": [
         "GOES"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -436,14 +440,14 @@
           "tris": 7672
         },
         "lod1": {
-          "sha256": "c1637ace741f3aadbc13424b87fba130ece41f8b930e6842e98c8c1eab87227f",
-          "bytes": 142260,
-          "tris": 2319
+          "sha256": "164915fe1116f0b01da23073175579e64077b82b02304f1b524d3d87aff2f70f",
+          "bytes": 159228,
+          "tris": 2236
         },
         "lod2": {
-          "sha256": "3413fcab8e702b1ad79b55c75ebb3a1849d6d58c07d6d48b44ee856803b46976",
-          "bytes": 43416,
-          "tris": 926
+          "sha256": "7c246899d1b7396a7f2871e549f3485367329b5a2beded0e8d0cebe1e46feba7",
+          "bytes": 48616,
+          "tris": 901
         },
         "thumb": {
           "sha256": "f3e753a04b67884ab683a873087b201806054e41f0e9b41eccc9f3504a49fbf6",
@@ -511,8 +515,9 @@
         "HST",
         "Hubble"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -539,18 +544,18 @@
           "tris": 2975912
         },
         "lod1": {
-          "sha256": "51d1ae8943bfc7927b2f52d60925a926e583ea4626b39c534c52461fb1170af5",
-          "bytes": 29296388,
-          "tris": 1400914
+          "sha256": "b4e1a9dbcd5b2d95deb255feabd824c6276d51669b67deca10bbe0a56bc27eea",
+          "bytes": 29289184,
+          "tris": 1397970
         },
         "lod2": {
-          "sha256": "8e617585ceb5fae4880641656af328eae476ab7143dea8f5296809261f02fd84",
-          "bytes": 1328884,
-          "tris": 27253
+          "sha256": "d0195fcd07a66bb2b0a1c07f206b6faabf15ba9583e140caac718084498b7149",
+          "bytes": 1223012,
+          "tris": 22389
         },
         "thumb": {
-          "sha256": "48c4eb1b081d2401ba037bd2a2011b241e6f46ae6aeb679e579d4bd20347a0f4",
-          "bytes": 36712
+          "sha256": "4316ae753fde0f78802d664d19cf4826b5d8335a22f16005be902c826c998a4e",
+          "bytes": 36728
         }
       },
       "units": {
@@ -616,7 +621,7 @@
         "IGOAL",
         "ISS (ZARYA)"
       ],
-      "updatedAt": "2026-09-24T14:43:50.296Z",
+      "updatedAt": "2026-10-08T02:52:46.271Z",
       "builtin": [
         "lod2",
         "thumb"
@@ -644,14 +649,14 @@
           "tris": 85364
         },
         "lod1": {
-          "sha256": "d5b883f0ff78f2a2288cadae027e04d9f8cd1482022e399b16ebf594e83497bd",
-          "bytes": 268196,
-          "tris": 30401
+          "sha256": "885e4932c0227746f810bcbd20ad74fc309dd08b80558ecfae99165dd9a75332",
+          "bytes": 413664,
+          "tris": 27035
         },
         "lod2": {
-          "sha256": "c00523e7ed3382022b1771216244a4646dab652529dd940e41c2fa5885ab95bf",
-          "bytes": 125316,
-          "tris": 8144
+          "sha256": "117c6111eb723e5a5ac2969155b4c65034c101527877501f2bb57f2b38d496a8",
+          "bytes": 146408,
+          "tris": 7092
         },
         "thumb": {
           "sha256": "f63897966aa2f8fa6a58fd84e638b0346061b7da88c33fea2a96a7da664f930f",
@@ -717,8 +722,9 @@
         "LDCM",
         "Landsat 8"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -820,6 +826,7 @@
       ],
       "updatedAt": "2026-09-24T03:37:26.982Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -921,6 +928,7 @@
       ],
       "updatedAt": "2026-09-24T03:37:26.982Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -1022,6 +1030,7 @@
       ],
       "updatedAt": "2026-09-24T03:37:26.982Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -1048,14 +1057,14 @@
           "tris": 182319
         },
         "lod1": {
-          "sha256": "b26d41939bb0b13ba1cc76b6643cbfd628dc463b2ea92588514bf891f067f98e",
-          "bytes": 454680,
-          "tris": 56839
+          "sha256": "b90018bdbac6c6d14460d86dee3d094fca552f303e0dd76859d9a10f5c0a5a3f",
+          "bytes": 511168,
+          "tris": 21601
         },
         "lod2": {
-          "sha256": "d0fbecea3cb832346bb943ddcd675cfe5773e798ce09c5d456beebf792bbf35d",
-          "bytes": 241904,
-          "tris": 25505
+          "sha256": "08ffea8c238f4f668670f2d27637ef7dd5f948b44d0c1e59e0ea878aeac5564d",
+          "bytes": 172352,
+          "tris": 13851
         },
         "thumb": {
           "sha256": "d1fb5fbcbf3cb046286193730928fabeb189189c19269e080609c732f7ac9fcc",
@@ -1126,8 +1135,9 @@
         "LS-1300",
         "FS-1300"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:49:16.734Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -1154,18 +1164,18 @@
           "tris": 197235
         },
         "lod1": {
-          "sha256": "7814b2f1e8bc522d021cd6d5be58eaa76d824fe9e09004a49f20a97a226680f1",
-          "bytes": 492424,
-          "tris": 61982
+          "sha256": "fc4e8dbcf64defbc13cf0d0217e2875ba1370d7f4df02f4f6faf6a4cd89d6935",
+          "bytes": 735384,
+          "tris": 45646
         },
         "lod2": {
-          "sha256": "9183c8441f8e42da6a0171b29b9e73ff240af8cae03c8095d626627a888ee8b8",
-          "bytes": 284788,
-          "tris": 23678
+          "sha256": "65db68791374311c1bd7cfa024f55ec75e73def63e0682a88a5b747367c3b5f5",
+          "bytes": 274144,
+          "tris": 16404
         },
         "thumb": {
-          "sha256": "11e3d5899cbf27657911271c97900ee08549d54f18cacbcaf426cf06d541dca4",
-          "bytes": 14308
+          "sha256": "435592e7d9825a6f29d08b20cb3417590dd3716257a58c11ffc9197c5e794f71",
+          "bytes": 14306
         }
       },
       "units": {
@@ -1231,8 +1241,9 @@
         "TDRS",
         "TDRSS"
       ],
-      "updatedAt": "2026-09-24T14:43:50.296Z",
+      "updatedAt": "2026-10-08T02:52:46.271Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]
@@ -1254,23 +1265,23 @@
       },
       "files": {
         "lod0": {
-          "sha256": "ef281e8f27e300d6e7e8f2f63e61915409a1132e1c4718cecad9310699b8cd0a",
-          "bytes": 312496,
+          "sha256": "660618adecbedf57e38fa8ee4a382576e98701f780e5a8ed7a5da33f6baa2fda",
+          "bytes": 312492,
           "tris": 66962
         },
         "lod1": {
-          "sha256": "79a8da9aa2998f2099b2ea921a9e7130ccc88e07eea8252a1c6d28fb41db0972",
-          "bytes": 232944,
-          "tris": 21749
+          "sha256": "accde9d4284c42e2a73cb9a10827664d3851b1bd6d336c54430458897c6c78fa",
+          "bytes": 234492,
+          "tris": 21151
         },
         "lod2": {
-          "sha256": "7c8b5e1f68b7f45b3a2939ff9809b2e1df335ee23640ab143362856ff0db01c7",
-          "bytes": 122564,
-          "tris": 8813
+          "sha256": "fe38ac72493486153dfb66ae3c41850576b0cfa9fecba4e1c4f10a6ade5befcc",
+          "bytes": 125616,
+          "tris": 8551
         },
         "thumb": {
-          "sha256": "7f779cc23a3bda46ec2109f88a6b18d8ba10dc10e5791b70044524413cc00dab",
-          "bytes": 16270
+          "sha256": "7e33216e9cdc878ba1f33290fb28dea0c065f8d0b0338ccec791ec3a1d2db34d",
+          "bytes": 17190
         }
       },
       "units": {
@@ -1337,8 +1348,9 @@
         "TDRS",
         "TDRSS"
       ],
-      "updatedAt": "2026-09-24T03:37:26.982Z",
+      "updatedAt": "2026-10-08T02:52:46.271Z",
       "builtin": [
+        "lod0",
         "lod2",
         "thumb"
       ]

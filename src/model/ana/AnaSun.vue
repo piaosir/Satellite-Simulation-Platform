@@ -1,7 +1,7 @@
 <script setup>
 // 分析 › 星侧太阳侵入（任务书 §6.8、DESIGN2 D10 / D11 / D12）：选中挂点的视轴（姿态律 × 挂点系，逐拍 ECEF）+ 星位 → 主进程
 // sunOutage.satIntrusion（日凌核：高精度太阳位置、当日视直径、地球遮挡日面比例、日面求积平均增益、NoRP 亮温）→ 逐拍 ΔT（K）与
-// ΔG/T = 10·lg(1 + ΔT / T_sys)（dB）。最坏值与时刻给链路预算的「太阳侵入 ΔG/T」用（「复制最坏 ΔG/T」，不跨窗自动回填，D11）。
+// ΔG/T = 10·lg(1 + ΔT / T_sys)（dB）。「复制最坏 ΔG/T」只把数放进剪贴板（链路预算的「太阳侵入 ΔG/T」列已回退，不跨窗回填）。
 // 方向图：挂点天线引用 GRD 树天线时按 GRD 取增益（{kind:'grd', key}），否则高斯主瓣（−3 dB 全宽：参数化口径 hpbw → 70λ/D → 增益反推，可手改）。
 // 天线引用链路预算卫星库条目（lbAntenna）时：频率 = 条目上行频率（星上接收），方向图 = 条目挂的 G/T 方向图（GRD 树天线），
 // 没挂方向图按条目 G/T 反推高斯主瓣（G = G/T + 10·lg T_sys）。
@@ -65,9 +65,9 @@ async function compute() {
   const m = mnt.value
   if (!m || !can.value) return
   const f = freq.value || freqDef.value
-  if (!(f > 0)) { err.value = '缺频率。'; return }
+  if (!(f > 0)) { err.value = '未设置频率。'; return }
   const th = hpbw.value || hpbwDef.value
-  if (!grdKey.value && !(th > 0)) { err.value = '缺方向图宽度。'; return }
+  if (!grdKey.value && !(th > 0)) { err.value = '未设置方向图宽度。'; return }
   if (ctrl) ctrl.abort()
   ctrl = new AbortController()
   const signal = ctrl.signal
@@ -81,7 +81,7 @@ async function compute() {
     if (!live()) return
     const axes = mountAxesSeries(B, m)
     const { samples, idx } = intrusionSamples(tMs, st, axes)
-    if (!idx.length) throw new Error('时段内取不到星位。')
+    if (!idx.length) throw new Error('时段内无法解算卫星位置。')
     prog.value = '…'
     const pattern = pk ? { kind: 'grd', key: pk, thetaB3dB: th || undefined, thetaB3dBDeg: th || undefined } : { kind: 'gauss', thetaB3dB: th, thetaB3dBDeg: th }
     // 主进程这一段：同 jobKey 的新请求顶掉旧的；进度按 preload 分段（26 万拍一段）回报；取消 = cancelSatIntrusion(JOB)，
@@ -97,11 +97,14 @@ async function compute() {
       call.then((v) => { signal.removeEventListener('abort', on); res2(v) }, (e) => { signal.removeEventListener('abort', on); rej(e) })
     })
     if (!live() || (r && (r.canceled || r.code === 'canceled'))) return
-    if (!r || r.ok === false || !r.dT) throw new Error((r && (r.error || r.message)) || '主进程没有返回结果。')
+    if (!r || r.ok === false || !r.dT) throw new Error((r && (r.error || r.message)) || '主进程未返回结果。')
     const N = tMs.length
     const dT = new Float64Array(N).fill(NaN), gl = new Float64Array(N).fill(NaN)
-    for (let k = 0; k < idx.length; k++) { dT[idx[k]] = r.dT[k]; gl[idx[k]] = r.gtLossDb[k] }
-    const off = sunOffAxisSeries(B, axes)
+    // 太阳偏轴取主进程同一次算出来的（卫星 → 太阳方向，含视差、高精度太阳位置）：与 ΔT 同源，曲线与最小偏轴不再和 ΔT 差几百分之一度
+    const off = new Float64Array(N).fill(NaN)
+    const offMain = r.offAxisDeg && r.offAxisDeg.length === idx.length ? r.offAxisDeg : null
+    const offLocal = offMain ? null : sunOffAxisSeries(B, axes)   // 旧版主进程没回偏轴：退回本地式
+    for (let k = 0; k < idx.length; k++) { dT[idx[k]] = r.dT[k]; gl[idx[k]] = r.gtLossDb[k]; off[idx[k]] = offMain ? offMain[k] : offLocal[idx[k]] }
     let minOff = Infinity, minOffT = null
     for (let i = 0; i < N; i++) if (off[i] < minOff) { minOff = off[i]; minOffT = tMs[i] }
     const w = r.worst || {}
@@ -146,11 +149,14 @@ async function copyWorst() {
 }
 const chartRef = ref(null)
 const expMsg = ref('')
+const expBad = ref(false)
+function setExp(x) { const s = ana.exportState(x); expMsg.value = s.msg; expBad.value = s.bad }
 async function exportPng() {
   if (!chartRef.value || !res.value) return
-  const blob = await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? mnt.value.name : ''} · 星侧太阳侵入` })
-  const x = await ana.exportBlob(ana.fileStem('太阳侵入'), blob, 'png', 'PNG')
-  expMsg.value = x && x.ok ? '已导出。' : ''
+  let x
+  try { x = await ana.exportBlob(ana.fileStem('太阳侵入'), await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? mnt.value.name : ''} · 星侧太阳侵入` }), 'png', 'PNG') }
+  catch (e) { x = { ok: false, error: (e && e.message) || String(e) } }
+  setExp(x)
 }
 async function exportXlsx() {
   const r = res.value
@@ -159,25 +165,25 @@ async function exportXlsx() {
   const rows = []
   for (let i = 0; i < r.tMs.length; i++) rows.push({ t: fmtTimeFull(r.tMs[i], tz), off: Number.isFinite(r.off[i]) ? +r.off[i].toFixed(4) : null, dT: Number.isFinite(r.dT[i]) ? +r.dT[i].toFixed(4) : null, gl: Number.isFinite(r.gl[i]) ? +r.gl[i].toFixed(5) : null })
   const x = await ana.exportTable({ sheets: [{ name: '太阳侵入', cols: [{ key: 't', label: '时刻' }, { key: 'off', label: '太阳偏轴', unit: '°', num: true }, { key: 'dT', label: 'ΔT', unit: 'K', num: true }, { key: 'gl', label: 'ΔG/T', unit: 'dB', num: true }], rows }], defaultName: ana.fileStem('太阳侵入') + '.xlsx', title: `${S.label} · ${mnt.value ? mnt.value.name : ''}` })
-  expMsg.value = x && x.ok ? '已导出。' : ''
+  setExp(x)
 }
 const canXlsx = computed(() => !!(api && api.models && typeof api.models.exportTable === 'function'))
 const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k))
 </script>
 
 <template>
-  <MdSec id="a-sun" title="星侧太阳侵入" :summary="res ? f(res.worst.gtLossDb) + ' dB' : ''" tip="ΔG/T = 10·lg(1 + ΔT / T_sys)；ΔT = 太阳亮温 × 方向图在日面上的平均耦合 × 未被地球挡住的日面比例（日凌核同一套物理，主进程计算）">
+  <MdSec id="a-sun" title="星侧太阳侵入" :summary="res ? f(res.worst.gtLossDb) + ' dB' : ''" tip="ΔG/T = 10·lg(1 + ΔT / T_sys)；ΔT = 太阳亮温 × 方向图在日面上的平均耦合 × 未被地球遮挡的日面比例（与日凌计算采用同一物理模型，由主进程计算）">
     <template #actions>
       <button class="lb-mini" :disabled="!res || !canXlsx" :title="canXlsx ? '导出 XLSX' : '需在桌面客户端中运行'" @click="exportXlsx"><Icon name="table" :size="12" />XLSX</button>
       <button class="lb-mini" :disabled="!res" title="导出 PNG" @click="exportPng"><Icon name="image" :size="12" />PNG</button>
     </template>
     <div class="srow">
-      <label title="星上接收频率（GHz）；留空 = 挂点参数化口径里的频率，或所引链路预算卫星库条目的上行频率">频率</label>
+      <label title="星上接收频率（GHz）；留空 = 挂点参数化口径中的频率，或所引用链路预算卫星库条目的上行频率">频率</label>
       <NumIn :model-value="freq" :min="0.01" :max="1000" :sig="6" allow-empty :placeholder="freqDef ? String(freqDef) : ''" @commit="(v) => { freq = v }" />
       <span class="u">GHz</span>
     </div>
     <div class="srow">
-      <label :title="grdKey ? '方向图取 GRD 天线（' + grdKey + '）；取不到的方向退回这个宽度的高斯主瓣' : '高斯主瓣 −3 dB 全宽；留空 = 按挂点口径推（hpbw → 70λ/D → 增益反推；链路预算卫星库条目按 G = G/T + 10·lg T_sys 反推）'">−3 dB 宽</label>
+      <label :title="grdKey ? '方向图取自 GRD 天线（' + grdKey + '）；数据范围外的方向按此宽度的高斯主瓣计算' : '高斯主瓣 −3 dB 全宽；留空 = 按挂点口径推算（hpbw → 70λ/D → 增益反推；链路预算卫星库条目按 G = G/T + 10·lg T_sys 反推）'">−3 dB 宽</label>
       <NumIn :model-value="hpbw" :min="0.01" :max="180" :sig="5" allow-empty :placeholder="hpbwDef ? String(+hpbwDef.toPrecision(4)) : ''" @commit="(v) => { hpbw = v }" />
       <span class="u">°</span>
     </div>
@@ -195,21 +201,21 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
       <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
       <span v-if="busy" class="md-state"><span class="as-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
       <span class="sp"></span>
-      <button class="lb-mini" :disabled="!res || !Number.isFinite(res.worst.gtLossDb)" title="把最坏 ΔG/T（dB，3 位小数）复制到剪贴板：粘进链路预算表的「太阳侵入 ΔG/T」列" @click="copyWorst"><Icon name="clipboard" :size="13" />复制最坏 ΔG/T</button>
+      <button class="lb-mini" :disabled="!res || !Number.isFinite(res.worst.gtLossDb)" title="将最坏 ΔG/T（dB，3 位小数）复制到剪贴板" @click="copyWorst"><Icon name="clipboard" :size="13" />复制最坏 ΔG/T</button>
     </div>
     <div v-if="copied" class="md-state ok">已复制</div>
-    <div v-if="err" class="md-state bad" data-i18n-skip>{{ err }}</div>
+    <div v-if="err" class="md-state bad">{{ err }}</div>
     <template v-if="res">
       <div class="md-kvs">
         <div class="md-kv" :title="'最坏时刻 ' + (worstT != null ? fmtTimeFull(worstT, ana.win.tz) : '—')"><span class="k">最坏 ΔG/T</span><span class="v" data-i18n-skip>{{ f(res.worst.gtLossDb) }}</span><span class="u">dB</span></div>
         <div class="md-kv"><span class="k">最坏 ΔT</span><span class="v" data-i18n-skip>{{ f(res.worst.dT) }}</span><span class="u">K</span></div>
         <div class="md-kv as-t"><span class="k">最坏时刻</span><span class="v" data-i18n-skip>{{ worstT != null ? fmtTimeFull(worstT, ana.win.tz) : '—' }}</span></div>
-        <div class="md-kv" :title="'太阳离视轴最近的时刻 ' + (res.minOffT ? fmtTimeFull(res.minOffT, ana.win.tz) : '—') + '（地心太阳方向）'"><span class="k">最小偏轴</span><span class="v" data-i18n-skip>{{ f(res.minOff) }}</span><span class="u">°</span></div>
+        <div class="md-kv" :title="'太阳距视轴最近的时刻 ' + (res.minOffT ? fmtTimeFull(res.minOffT, ana.win.tz) : '—')"><span class="k">最小偏轴</span><span class="v" data-i18n-skip>{{ f(res.minOff) }}</span><span class="u">°</span></div>
         <div class="md-kv"><span class="k">耗时</span><span class="v" data-i18n-skip>{{ res.ms }}</span><span class="u">ms</span></div>
       </div>
       <ChartBox ref="chartRef" kind="timeline" :data="chartData" :tz="ana.win.tz" :panel-height="84" />
     </template>
-    <div v-if="expMsg" class="md-state ok">{{ expMsg }}</div>
+    <div v-if="expMsg" class="md-state" :class="{ ok: !expBad, bad: expBad }">{{ expMsg }}</div>
   </MdSec>
 </template>
 

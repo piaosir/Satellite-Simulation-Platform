@@ -4,7 +4,10 @@
 // 外壳照空间态势报告窗口的 .lb-* 一套（样式整段抄在本文件 scoped 里，理由见样式区注释）。页签表是数据：
 // 二期的「卫星」「分析」两页只需往 TABS 里按 order 插一条，左栏组件按页签懒加载（defineAsyncComponent + KeepAlive）。
 // 状态与编排在 wbStore.js（provide 给各页签）；画面在 src/viz/models/viewport.js。
-// 无关窗守卫：元数据改动即落盘（主进程 models:saveMeta），关窗无可丢之物。
+// 关窗守卫（2026-10-06 任务书 §3.4）：主进程 close 时转来 modelwb:closeRequested → 待存的元数据 / 卫星绑定、全部签的草稿与入库作业落定
+// （wb.flushForClose，至多 2.5 s；主进程另有 3 s 兜底）→ confirmClose 真关。来不及入库的改动下次开窗按草稿恢复。
+// 设计页（2026-10-06 文档标签条）：功能区下方一条文档标签条（design/DocTabs.vue），设计页显示什么只由激活签决定；
+// Ctrl+Tab / Ctrl+Shift+Tab 按签顺序切换、Ctrl+W 关闭激活签（捕获阶段统一处理，非设计页空操作）。
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
@@ -18,14 +21,20 @@ import { createWorkbench } from './wbStore.js'
 import { createSatStore } from './satStore.js'
 import { disposeHeavy } from './anaHeavy.js'
 import { useSatViewport, SAT_TABS } from './useSatViewport.js'
-import { fmtInt, fmtNum, fmtBox, displayName, importRoute, sourceTag, bodyBoxOfMeta } from './wbLogic.js'
+import { fmtInt, fmtNum, fmtBox, displayName, importRoute, sourceTag, bodyBoxOfMeta, previewLod } from './wbLogic.js'
 import { createAsmSession } from './asmSession.js'
-import { DOMAIN_LABELS, DOCK_W_MIN, DOCK_W_MAX } from './asmLogic.js'
-import { defaultAsmName } from '@core/models/asmMeta.mjs'
-// 装配页的功能区组 / 右侧 dock / 视口读数：只在装配页出现，按需加载
+import { DOCK_W_MIN, DOCK_W_MAX } from './asmLogic.js'
+import { DEFAULT_TEMPLATE_ID } from '@core/models/paramTemplates.mjs'
+// 装配视图的功能区组 / 右侧 dock / 视口读数：只在设计页打开装配文档时出现，按需加载
 const AsmRibbon = defineAsyncComponent(() => import('./asm/AsmRibbon.vue'))
 const AsmDock = defineAsyncComponent(() => import('./asm/AsmDock.vue'))
 const AsmReadout = defineAsyncComponent(() => import('./asm/AsmReadout.vue'))
+const AsmCursor = defineAsyncComponent(() => import('./asm/AsmCursor.vue'))
+// 设计页模型视图（导入件 / NASA / 已存参数化件 / 只读模板）：右侧 dock = 模型级属性各节；功能区「文档」组
+const ModelDock = defineAsyncComponent(() => import('./design/ModelDock.vue'))
+const ModelRibbon = defineAsyncComponent(() => import('./design/ModelRibbon.vue'))
+const DocTabs = defineAsyncComponent(() => import('./design/DocTabs.vue'))
+const NewMenu = defineAsyncComponent(() => import('./design/NewMenu.vue'))
 
 const api = (typeof window !== 'undefined') ? window.api : null
 const langNow = ref(curLang())
@@ -53,36 +62,48 @@ const { st, cur } = wb
 const sat = createSatStore(wb)
 provide('sat', sat)
 
-// ============ 页签（数据驱动；二期「卫星」「分析」在 50 / 60）============
+// ============ 页签（数据驱动）============
+// 2026-10 统一设计：原「模型」「生成」「装配」三页合并成「设计」——打开什么文档就在同一个工作区里编辑它：
+// 左栏快速设置（驱动参数 / 主要参数）+ 组件库，中间视口，右栏结构树 + 属性（选根节点 = 模型级属性：质量特性、挂点、关节、太阳翼组…）。
 const TABS = [
-  { key: 'lib', order: 10, label: '库', icon: 'package', tip: '模型库：内置 / 云端 / 本机 / STK / 参数化', comp: defineAsyncComponent(() => import('./LibTab.vue')) },
+  { key: 'lib', order: 10, label: '库', icon: 'package', tip: '模型库：内置 / 云端 / 本机 / STK / 参数化 / 装配；双击在设计页打开（模板打开为模板签，编辑时自动创建副本）', comp: defineAsyncComponent(() => import('./LibTab.vue')) },
   { key: 'import', order: 20, label: '导入', icon: 'import', tip: '导入 glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP，或从本机 STK 目录导入', comp: defineAsyncComponent(() => import('./ImportTab.vue')) },
-  { key: 'model', order: 30, label: '模型', icon: 'box', tip: '当前模型的单位、本体轴、质量特性、部件、挂点、关节、太阳翼组', comp: defineAsyncComponent(() => import('./ModelTab.vue')) },
-  { key: 'gen', order: 40, label: '生成', icon: 'sliders-horizontal', tip: '参数化整星生成', comp: defineAsyncComponent(() => import('./GenTab.vue')) },
-  { key: 'asm', order: 45, label: '装配', icon: 'boxes', tip: '装配：拖拽组件搭建卫星 / 地球站 / 飞机 / 船舶 / 车辆', comp: defineAsyncComponent(() => import('./AsmTab.vue')) },
-  { key: 'sat', order: 50, label: '卫星', icon: 'satellite', tip: '给一颗星绑定模型、姿态律与挂点（天线安装位：位置 / 视轴 / 视场 / 万向节 / 天线引用）', comp: defineAsyncComponent(() => import('./SatTab.vue')) },
-  { key: 'ana', order: 60, label: '分析', icon: 'chart-line', tip: '当前卫星 + 选中挂点：本体遮挡掩模、万向节可达、太阳翼功率、星侧太阳侵入', comp: defineAsyncComponent(() => import('./AnalysisTab.vue')) },
+  { key: 'design', order: 30, label: '设计', icon: 'boxes', tip: '设计：快速设置驱动参数，或在结构树与属性面板中逐件编辑；选中根节点查看模型级属性', comp: defineAsyncComponent(() => import('./design/DesignSide.vue')) },
+  { key: 'sat', order: 50, label: '卫星', icon: 'satellite', tip: '为卫星绑定模型、姿态律与挂点（天线安装位置：位置 / 视轴 / 视场 / 万向节 / 天线引用）', comp: defineAsyncComponent(() => import('./SatTab.vue')) },
+  { key: 'ana', order: 60, label: '分析', icon: 'chart-line', tip: '当前卫星与选中挂点：本体遮挡掩模、万向节可达性、太阳翼功率、星侧太阳侵入', comp: defineAsyncComponent(() => import('./AnalysisTab.vue')) },
   { key: 'export', order: 70, label: '导出', icon: 'file-down', tip: '导出 glb（含 .gmdf / .satsim.json）、缩略图与三视图', comp: defineAsyncComponent(() => import('./ExportTab.vue')) }
 ].sort((a, b) => a.order - b.order)
 const TAB_KEYS = TABS.map((t) => t.key)
+// 旧页签键（URL ?tab= / 本机记住的 / 3D 页「在工作台中打开」）：模型 / 生成 / 装配 → 设计页（显示哪份文档由激活签 / 跳转目标定）
+const LEGACY_TABS = { model: 'model', gen: 'asm', asm: 'asm' }
+function tabFrom(k) {
+  if (TAB_KEYS.includes(k)) return k
+  if (Object.hasOwn(LEGACY_TABS, k)) return 'design'
+  return null
+}
 const q0 = new URLSearchParams(location.search)
-st.tab = TAB_KEYS.includes(q0.get('tab')) ? q0.get('tab') : (TAB_KEYS.includes(lsGet('model/tab', 'lib')) ? lsGet('model/tab', 'lib') : 'lib')
+st.tab = tabFrom(q0.get('tab')) || tabFrom(lsGet('model/tab', 'lib')) || 'lib'
 watch(() => st.tab, (v) => lsSet('model/tab', v))
 const curTab = computed(() => TABS.find((t) => t.key === st.tab) || TABS[0])
-// 模型 / 导出页以 lod0 为准（部件三角形号、拾取、导出都按全精度几何）
-watch(() => [st.tab, cur.id], () => { if (st.tab === 'model' || st.tab === 'export') wb.ensureFullDetail() })
+const designOn = computed(() => st.tab === 'design')
+// 设计页显示什么由激活签决定：装配签 = 装配视图；模型签 = 模型视图（cur）；没有签 = 空态（视口空、左右栏空、功能区只留「新建」「文件」）
+const docKind = computed(() => wb.activeKind())
+const modelOn = computed(() => designOn.value && docKind.value === 'model')
+const emptyOn = computed(() => designOn.value && !docKind.value)
+// 设计页模型签 / 导出页以 lod0 为准（部件三角形号、拾取、导出都按全精度几何）；正在加载的那一档挂上之后再升
+watch(() => [st.tab, docKind.value, cur.id, cur.loading], () => { if (modelOn.value || st.tab === 'export') wb.ensureFullDetail() })
 
-// ============ 左栏拖宽（320–640，默认 400）；装配页单独一档（组件库两列卡片：260–480，默认 300）============
+// ============ 左栏拖宽（320–640，默认 400）；设计页单独一档（三栏：快速设置 / 组件库 260–480，默认 320）============
 const W_MIN = 320, W_MAX = 640
 const AW_MIN = 260, AW_MAX = 480
 const sideW = ref((() => { const n = Number(lsGet('model/sideWidth', '400')); return n > 0 ? Math.min(W_MAX, Math.max(W_MIN, n)) : 400 })())
-const asmSideW = ref((() => { const n = Number(lsGet('model/asmSideWidth', '300')); return n > 0 ? Math.min(AW_MAX, Math.max(AW_MIN, n)) : 300 })())
+const asmSideW = ref((() => { const n = Number(lsGet('model/asmSideWidth', '320')); return n > 0 ? Math.min(AW_MAX, Math.max(AW_MIN, n)) : 320 })())
 const sideResizing = ref(false)
 // 窗宽（装配页三栏按比例收窄、功能区溢出菜单都看它）
 const winW = ref(typeof window !== 'undefined' ? window.innerWidth : 1600)
 const onWinResize = () => { winW.value = window.innerWidth }
 function startResize(e) {
-  const asmNow = st.tab === 'asm'
+  const asmNow = designOn.value
   const x0 = e.clientX, w0 = asmNow ? sideWEff.value : sideW.value
   const lo = asmNow ? AW_MIN : W_MIN, hi = asmNow ? AW_MAX : W_MAX
   sideResizing.value = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
@@ -105,7 +126,7 @@ const VIEWS = [
 const view = ref('auto')
 function applyView(v) { view.value = v; if (vp) vp.setView(v) }
 const OVS = [
-  { key: 'axes', label: '本体轴', icon: 'axis-3d', tip: '本体系三轴：X 速度、Y 补全右手、Z 天底' },
+  { key: 'axes', label: '本体轴', icon: 'axis-3d', tip: '本体系三轴：X 速度方向、Y 按右手系补全、Z 天底' },
   { key: 'attach', label: '挂点', icon: 'locate-fixed', tip: '挂点：圆盘 + 视轴射线 + 名称' },
   { key: 'com', label: '质心', icon: 'weight', tip: '质心标记（有质量特性时）' },
   { key: 'parts', label: '部件', icon: 'layers', tip: '部件按角色着色' },
@@ -121,7 +142,7 @@ watch(ov, (v) => { lsSet('model/overlays', JSON.stringify(v)); if (vp) vp.setOve
 const light = ref(lsGet('model/light', 'studio') === 'sun' ? 'sun' : 'studio')
 watch(light, (v) => { lsSet('model/light', v); if (vp) vp.setLight(v) })
 const QUALITY_OPTS = [
-  { key: 'low', label: '标准', tip: '直接渲染：无环境光遮蔽，适合弱显卡或超大模型' },
+  { key: 'low', label: '标准', tip: '直接渲染：无环境光遮蔽，适用于低性能显卡或超大模型' },
   { key: 'high', label: '高', tip: '4× 多重采样 + 环境光遮蔽（半分辨率）+ 接地阴影' },
   { key: 'ultra', label: '极致', tip: '8× 多重采样（显卡支持时）+ 全分辨率环境光遮蔽 + 4096 阴影贴图' }
 ]
@@ -131,8 +152,8 @@ provide('viewport', () => vp)
 // 装配页会话（P3）：先于卫星页的视口联动建 —— 切页签时它的 watch 先跑，先借还视口，卫星页再喂
 const asm = createAsmSession({ wb, getVp: () => vp, ov })
 provide('asm', asm)
-const asmOn = computed(() => st.tab === 'asm')
-// 装配页三栏：视口至少留 560 px——窗窄时组件库栏与 dock 按比例收窄（各不低于下限），不挤视口
+const asmOn = computed(() => designOn.value && docKind.value === 'asm')
+// 设计页三栏：视口至少留 560 px——窗窄时左栏与 dock 按比例收窄（各不低于下限），不挤视口
 const ASM_STAGE_MIN = 560
 const asmCols = computed(() => {
   const side = asmSideW.value, dock = asm.ui.dockW
@@ -141,7 +162,7 @@ const asmCols = computed(() => {
   const k = Math.max(0, room) / (side + dock)
   return { side: Math.max(AW_MIN, Math.round(side * k)), dock: Math.max(DOCK_W_MIN, Math.round(dock * k)) }
 })
-const sideWEff = computed(() => (asmOn.value ? asmCols.value.side : sideW.value))
+const sideWEff = computed(() => (designOn.value ? asmCols.value.side : sideW.value))
 const dockWEff = computed(() => asmCols.value.dock)
 // 功能区：装配页窗宽放不下整条功能区时把「视图」「字号」收进「⋯」溢出菜单，不靠横向滚动。
 // 整条的宽度按屏上实量（界面字体 / 字号可调，不写死）：完整显示时量一次各组宽度之和，窗宽小于它就收
@@ -171,9 +192,6 @@ watch(ribbonNarrow, (n) => { if (!n) moreMenu.value = null })
 const RENDER_OPTS = computed(() => { const out = []; for (const l of [['studio', '影棚'], ['sun', '太阳']]) for (const q of QUALITY_OPTS) out.push({ key: l[0] + '|' + q.key, label: l[1] + ' · ' + q.label, tip: q.tip }); return out })
 const renderKey = computed(() => light.value + '|' + quality.value)
 function setRender(v) { const [l, q] = String(v).split('|'); if (l === 'studio' || l === 'sun') light.value = l; if (QUALITY[q]) quality.value = q }
-const asmDoc = computed(() => asm.doc.value)
-const asmTitle = computed(() => (asmDoc.value && asmDoc.value.name) || wb.asm.name || defaultAsmName(wb.asm.domain))
-const asmSub = computed(() => '装配 · ' + (DOMAIN_LABELS[(asmDoc.value && asmDoc.value.domain) || wb.asm.domain] || ''))
 // 「视图」组的叠加开关：装配页里「质心」「挂点」换成编辑器自己的质心十字 / 空闲插座标记
 // 「本体轴」在装配页换成编辑器的原点三轴（像素恒定细线 + 字标）：视口那套按整件半径缩放的实心箭头装上长太阳翼后粗到压住星体
 const ovOn = (k) => (asmOn.value && k === 'com' ? asm.ui.showCom : asmOn.value && k === 'attach' ? asm.ui.showSockets : asmOn.value && k === 'axes' ? asm.ui.showAxes : ov[k])
@@ -183,8 +201,10 @@ function ovToggle(k) {
   else if (asmOn.value && k === 'axes') asm.setShowAxes(!asm.ui.showAxes)
   else ov[k] = !ov[k]
 }
-const ovLabel = (o) => (asmOn.value && o.key === 'attach' ? '插座' : o.label)
-const ovTip = (o) => (asmOn.value && o.key === 'attach' ? '插座标记：选中件的空闲插座' : asmOn.value && o.key === 'com' ? '质心十字（随拖动实时更新）' : asmOn.value && o.key === 'axes' ? '本体原点三轴（屏幕恒定长度）' : o.tip)
+// 装配视图里没有「部件」着色（编辑器按件自己画），开关不起作用 → 不给
+const ovsNow = computed(() => (asmOn.value ? OVS.filter((o) => o.key !== 'parts') : OVS))
+const ovLabel = (o) => (asmOn.value && o.key === 'attach' ? '接口' : o.label)
+const ovTip = (o) => (asmOn.value && o.key === 'attach' ? '接口标记：选中件的空闲接口' : asmOn.value && o.key === 'com' ? '质心十字（随拖动实时更新）' : asmOn.value && o.key === 'axes' ? '本体原点三轴（屏幕恒定长度）' : o.tip)
 // 视口自己的叠加：装配页关掉它的本体轴（由编辑器画）
 const vpOverlays = () => ({ ...ov, axes: asmOn.value ? false : ov.axes })
 // 右侧 dock 拖宽（左缘；260–520，存 model/asm/ui）
@@ -238,7 +258,15 @@ async function pickAndImport() {
   wb.importFiles(files.map((f) => ({ path: f.path, name: f.name })))
 }
 function openStk() { st.tab = 'import'; nextTick(() => window.dispatchEvent(new CustomEvent('modelwb:stk'))) }
+// 设计页没有签时功能区的「新建」（下拉与装配 / 模型视图共用 design/NewMenu.vue）
+const newMenu = ref(null)
+function openNew(ev) {
+  const r = ev.currentTarget.getBoundingClientRect()
+  newMenu.value = { x: Math.min(r.left, window.innerWidth - 176), y: r.bottom + 2 }
+}
 function openExport() { st.tab = 'export' }
+// 「导出…」：设计页有签（导出对象 = 激活签）或当前有模型时可用
+const canOpenExport = computed(() => (designOn.value ? !!wb.activeDocState() : !!cur.meta))
 
 // ============ 整窗拖放导入 ============
 const dropOn = ref(false)
@@ -253,10 +281,14 @@ async function onDrop(e) {
   dragDepth = 0; dropOn.value = false
   const files = Array.from(e.dataTransfer.files || [])
   if (!files.length) return
+  // 本机路径经 preload（webUtils）从真实 File 取、并登记给主进程放行：主进程只读用户选过 / 拖进来的那几处目录。
+  // OBJ 的 .mtl / 贴图、STEP 都要路径；拿不到时 glb / OBJ / STL / FBX 退回读字节
+  let paths = []
+  try { paths = (api && api.models && api.models.droppedPaths) ? await api.models.droppedPaths(files) : [] } catch { paths = [] }
   const out = []
-  for (const f of files) {
-    // Electron 31 的 File 带 .path（本机绝对路径）：OBJ 的 .mtl / 贴图、STEP 都要路径；拿不到时 glb / OBJ / STL / FBX 退回读字节
-    const p = typeof f.path === 'string' && f.path ? f.path : ''
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i]
+    const p = typeof paths[i] === 'string' && paths[i] ? paths[i] : ''
     if (p) out.push({ path: p, name: f.name })
     else {
       const route = importRoute(f.name)
@@ -273,31 +305,98 @@ function onKey(e) {
   if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return
   if (e.target && e.target.closest && e.target.closest('.eg-scroll')) return
   if (e.ctrlKey || e.altKey || e.metaKey) return
+  // gizmo 拖动中不切视角（切了会打乱手柄的拖动平面）；放置中（拖入 / 重新放置）照常
+  if (asmOn.value && asm.ui.dragging && asm.ui.dragKind === 'gizmo') return
   const k = e.key
-  if (k === 'f' || k === 'F') { if (st.tab === 'asm') asm.frameSelection(); else applyView(view.value); e.preventDefault() }
+  if (k === 'f' || k === 'F') { if (asmOn.value) asm.frameSelection(); else applyView(view.value); e.preventDefault() }
   else if (k === '1') applyView(e.shiftKey ? 'back' : 'front')
   else if (k === '3') applyView(e.shiftKey ? 'left' : 'right')
   else if (k === '7') applyView(e.shiftKey ? 'bottom' : 'top')
   else if (k === '0') applyView('auto')
 }
 
+// ============ 文档签键位：Ctrl+Tab / Ctrl+Shift+Tab 按签顺序切换，Ctrl+W 关闭激活签 ============
+// 捕获阶段统一处理并 preventDefault（Ctrl+W 不落到窗口关闭、Tab 不移走焦点）；非设计页空操作。焦点在输入框：先 blur 提交再动作。
+// 放置中 / gizmo 拖动中（编辑器 mode 不是 idle / hover）、应用内确认框开着时一律忽略。
+function onDocKey(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.isComposing) return
+  const k = e.key
+  const isTab = k === 'Tab', isW = k === 'w' || k === 'W'
+  if (!isTab && !isW) return
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.repeat && isW) return
+  if (st.tab !== 'design' || confirmDlg.open) return
+  if (asmOn.value && (asm.ui.dragging || (asm.ui.mode !== 'idle' && asm.ui.mode !== 'hover'))) return
+  const a = document.activeElement
+  if (a && a !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) a.blur()
+  if (isTab) wb.cycleDoc(e.shiftKey ? -1 : 1)
+  else if (st.activeDoc) wb.closeDoc(st.activeDoc)
+}
+
+// ============ 关窗守卫（§3.4）============
+let offClose = null, closing = false
+async function onCloseRequested() {
+  if (closing) return
+  closing = true
+  try {
+    const a = document.activeElement
+    if (a && a !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) a.blur()   // 输入框里没提交的值先提交
+    const satP = sat.flushSave()
+    await Promise.race([Promise.all([wb.flushForClose(2500), Promise.resolve(satP).catch(() => null)]), new Promise((r) => setTimeout(r, 2600))])
+  } catch (e) { console.warn('[modelwb] 关窗落定：' + errText(e)) } finally {
+    closing = false
+    try { await api.models.confirmClose() } catch { /* 主进程兜底关 */ }
+  }
+}
+
 // ============ 外部目标（3D 页「编辑…」/ 侧栏「模型工作台」）============
-// {tab?, modelId?, satKey?, name?}：带 satKey 的切到卫星页并选中那颗星（没给 tab 时）；模型跟着卫星绑定走（useSatViewport）
+// {tab?, modelId?, satKey?, name?}：带 satKey 的选中那颗星（没给 tab 时切到卫星页，模型跟着卫星绑定走：useSatViewport）。
+// 落到设计页的（旧键 model / asm、3D 页侧栏「模型工作台」{tab:'model', satKey, modelId}）一律 = 库页双击：打开或激活该件的签——
+// 设计页显示什么只由激活签决定，不在设计页上直接 wb.select（cur 与激活签对不上，编辑会落到签名以外的那件上）。
+// 开签前先等开窗恢复（restoreDocs，与 ModelApp 挂载时同一个 Promise）：主进程在 did-finish-load 就送目标，恢复还没完时开的签与恢复出的同一签会各一份。
 async function goTarget(t) {
   if (!t || typeof t !== 'object') return
-  // 装配件：在装配页打开（库页 / 3D 页「编辑…」带 asm: id 时）
-  if (t.tab === 'asm' && typeof t.modelId === 'string' && t.modelId.startsWith('asm:')) { wb.requestAssembly({ kind: 'open', id: t.modelId }); return }
-  if (TAB_KEYS.includes(t.tab)) st.tab = t.tab
-  if (t.satKey && typeof t.satKey === 'string') {
-    if (!TAB_KEYS.includes(t.tab)) st.tab = 'sat'
-    await sat.selectSat({ satKey: t.satKey, label: typeof t.name === 'string' && t.name ? t.name : undefined })
-    if (!t.modelId) return
+  const tk = tabFrom(t.tab)   // 旧键 model / gen / asm → design
+  const mid = typeof t.modelId === 'string' && t.modelId ? t.modelId : ''
+  const sk = typeof t.satKey === 'string' && t.satKey ? t.satKey : ''
+  // 没给页签、不带卫星、正停在设计页：同样按「在设计页打开」处理
+  const toDesign = !!mid && (tk === 'design' || (!tk && !sk && st.tab === 'design'))
+  if (sk) {
+    if (!toDesign) {
+      // 直接跳到导出页：导出对象 = 这一件（钉住，进导出页的缺省规则不覆盖）
+      if (tk === 'export' && mid) wb.pinExportTarget('lib:' + mid)
+      st.tab = tk || 'sat'
+    }
+    await sat.selectSat({ satKey: sk, label: typeof t.name === 'string' && t.name ? t.name : undefined })
+    if (!mid) return
   }
-  if (t.modelId) {
+  // 主窗口命令「参数化生成卫星模型」（旧键 gen）：打开 default-sat 模板签（已开 = 激活；原样不入库）
+  if (t.tab === 'gen' && !mid && !sk) {
     if (!st.loaded) await wb.refresh()
-    if (!wb.byId(t.modelId)) await wb.refresh()
-    wb.select(t.modelId, { lod: st.tab === 'model' || st.tab === 'export' ? 'lod0' : 'lod2' })
+    await wb.restoreDocs()
+    wb.openTemplateTab(wb.templateEntryIdOf(DEFAULT_TEMPLATE_ID))
+    return
   }
+  if (mid) {
+    if (!st.loaded) await wb.refresh()
+    if (!wb.byId(mid)) await wb.refresh()
+    if (toDesign) {
+      await wb.restoreDocs()
+      if (!wb.openInDesign(mid)) {
+        hint(byLang('模型不在库中。', 'Model not in library.'))
+        if (sk) st.tab = 'sat'
+      }
+      return
+    }
+    if (tk && !sk) {
+      if (tk === 'export') wb.pinExportTarget('lib:' + mid)
+      st.tab = tk
+    }
+    wb.select(mid, { lod: st.tab === 'export' ? 'lod0' : previewLod(wb.byId(mid)) })
+    return
+  }
+  if (tk) st.tab = tk
 }
 
 onMounted(async () => {
@@ -308,16 +407,24 @@ onMounted(async () => {
   wb.setViewport(vp)
   _rdT = setInterval(pollStats, 500)
   window.addEventListener('keydown', onKey)
+  window.addEventListener('keydown', onDocKey, true)
   window.addEventListener('beforeunload', wb.flushSave)
   window.addEventListener('beforeunload', sat.flushSave)
-  window.addEventListener('beforeunload', wb.flushAssemblySave)
+  window.addEventListener('beforeunload', wb.flushAllDocs)
   wb.onTarget(goTarget)
+  // 关窗守卫：主进程拦下 close 转来；落定后回 confirmClose（主进程 3 s 兜底，渲染端卡住也关得掉）
+  if (api && api.models && typeof api.models.onCloseRequested === 'function') {
+    try { offClose = api.models.onCloseRequested(onCloseRequested) } catch (e) { console.warn('[modelwb] 关窗守卫：' + errText(e)) }
+  }
   await wb.refresh()
+  // 上次的签（库件按 id 重读、模板签按模板重建、未入库文档按草稿恢复）：在装配会话起来、外部跳转之前恢复
+  await wb.restoreDocs()
   sat.loadAll()
   satView.apply()
   asm.start()
   const mid = q0.get('modelId'), sk = q0.get('satKey')
   if (mid || sk) goTarget({ tab: q0.get('tab'), modelId: mid || undefined, satKey: sk || undefined, name: q0.get('name') || undefined })
+  else if (q0.get('tab') === 'gen') goTarget({ tab: 'gen' })
   else if (SAT_TABS.includes(st.tab)) {
     // 上次停在卫星 / 分析页：接着上次那颗星
     try { const l = JSON.parse(lsGet('model/satLast', 'null')); if (l && l.satKey) sat.selectSat(l) } catch { /* 便利数据 */ }
@@ -330,9 +437,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onWinResize)
   if (lbrMo) { lbrMo.disconnect(); lbrMo = null }
   window.removeEventListener('keydown', onKey)
+  window.removeEventListener('keydown', onDocKey, true)
   window.removeEventListener('beforeunload', wb.flushSave)
   window.removeEventListener('beforeunload', sat.flushSave)
-  window.removeEventListener('beforeunload', wb.flushAssemblySave)
+  window.removeEventListener('beforeunload', wb.flushAllDocs)
+  if (offClose) { try { offClose() } catch { /* 无 */ } offClose = null }
   sat.dispose()
   disposeHeavy()
   asm.dispose()
@@ -359,12 +468,21 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
       </div>
 
       <AsmRibbon v-if="asmOn" />
+      <ModelRibbon v-else-if="modelOn" />
+      <div v-else-if="emptyOn" class="lbr-g asm-rb" data-grp="doc">
+        <div class="lbr-items">
+          <button class="lbr-big" data-act="new" title="新建：空白文档或从模板新建" @click="openNew">
+            <Icon name="plus" :size="16" />新建
+          </button>
+        </div>
+        <div class="lbr-cap">文档</div>
+      </div>
 
-      <div v-if="!ribbonNarrow" class="lbr-g" :class="{ asm: asmOn }" data-grp="view">
+      <div v-if="!ribbonNarrow && !emptyOn" class="lbr-g" :class="{ asm: asmOn }" data-grp="view">
         <div class="lbr-items">
           <div class="lbr-form">
             <label><span>视角</span>
-              <select :value="view" title="直切到该视角并取景（自动：按模型选看得见电池面、占画面最大的 3/4 视角，与库缩略图同一个）；键盘 F 重新取景、1 / 3 / 7 前 / 右 / 顶（Shift 取反向）、0 自动" @change="applyView($event.target.value)">
+              <select :value="view" title="切换到该视角并取景（自动：选取太阳电池面可见、画面占比最大的 3/4 视角，与模型库缩略图一致）；键盘 F 重新取景，1 / 3 / 7 为前 / 右 / 顶（Shift 取反向），0 为自动" @change="applyView($event.target.value)">
                 <option v-for="v in VIEWS" :key="v.key" :value="v.key">{{ v.label }}</option>
               </select>
             </label>
@@ -376,7 +494,7 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
               </label>
               <label><span>姿态</span>
                 <span class="lbu-seg">
-                  <button data-act="pose-zero" :class="{ on: !asm.ui.posePreview }" title="零位：按关节零位编辑（插座 / 贴面 / 拾取 / 穿插同一几何）" @click="asm.setPosePreview(false)">零位</button>
+                  <button data-act="pose-zero" :class="{ on: !asm.ui.posePreview }" title="零位：按关节零位编辑（接口 / 面安装 / 拾取 / 干涉检查基于同一几何）" @click="asm.setPosePreview(false)">零位</button>
                   <button data-act="pose-init" :class="{ on: asm.ui.posePreview }" title="初值：按关节初值姿态预览（预览时不可编辑）" @click="asm.setPosePreview(true)">初值</button>
                 </span>
               </label>
@@ -396,14 +514,14 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
             </template>
           </div>
           <div class="md-ovgrid">
-            <button v-for="o in OVS" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
+            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
               <Icon :name="o.icon" :size="13" /><span>{{ ovLabel(o) }}</span>
             </button>
           </div>
         </div>
         <div class="lbr-cap">视图</div>
       </div>
-      <div v-if="ribbonNarrow" class="lbr-g" data-grp="more">
+      <div v-if="ribbonNarrow && !emptyOn" class="lbr-g" data-grp="more">
         <div class="lbr-items">
           <button class="lbr-big" data-act="ribbon-more" :class="{ on: !!moreMenu }" title="视图 · 字号" @click="toggleMore">
             <Icon name="ellipsis" :size="16" />视图
@@ -412,36 +530,57 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
         <div class="lbr-cap">更多</div>
       </div>
 
-      <div v-if="!asmOn" class="lbr-g">
+      <!-- 文件组：装配视图里功能区组多，收成两列小钮（不撑宽功能区） -->
+      <div class="lbr-g" :class="{ 'asm-rb': asmOn }" data-grp="file">
         <div class="lbr-items">
-          <button class="lbr-big" :disabled="!api" title="选择模型文件导入（glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP）；也可直接拖进窗口" @click="pickAndImport">
-            <Icon name="folder-open" :size="16" />导入文件…
-          </button>
-          <button class="lbr-big" :disabled="!api" title="从本机 STK 安装目录导入 glb（不可导出、不可分发）" @click="openStk">
-            <Icon name="satellite" :size="16" />从 STK 导入…
-          </button>
-          <button class="lbr-big" :disabled="!cur.meta" title="导出当前模型" @click="openExport">
-            <Icon name="download" :size="16" />导出…
-          </button>
+          <template v-if="!asmOn">
+            <button class="lbr-big" data-act="import" :disabled="!api" title="选择模型文件导入（glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP）；也可直接拖入窗口" @click="pickAndImport">
+              <Icon name="folder-open" :size="16" />导入文件…
+            </button>
+            <button class="lbr-big" data-act="import-stk" :disabled="!api" title="从本机 STK 安装目录导入 glb（不可导出、不可分发）" @click="openStk">
+              <Icon name="satellite" :size="16" />从 STK 导入…
+            </button>
+            <button class="lbr-big" data-act="export" :disabled="!canOpenExport" title="导出当前模型" @click="openExport">
+              <Icon name="download" :size="16" />导出…
+            </button>
+          </template>
+          <template v-else>
+            <div class="asm-rb-col">
+              <button class="asm-tg" data-act="import" :disabled="!api" title="选择模型文件导入（glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP）；也可直接拖入窗口" @click="pickAndImport">
+                <Icon name="folder-open" :size="13" /><span>导入文件…</span>
+              </button>
+              <button class="asm-tg" data-act="import-stk" :disabled="!api" title="从本机 STK 安装目录导入 glb（不可导出、不可分发）" @click="openStk">
+                <Icon name="satellite" :size="13" /><span>从 STK 导入…</span>
+              </button>
+            </div>
+            <div class="asm-rb-col">
+              <button class="asm-tg" data-act="export" :disabled="!canOpenExport" title="导出当前装配件（未入库时先入库）" @click="openExport">
+                <Icon name="download" :size="13" /><span>导出…</span>
+              </button>
+            </div>
+          </template>
         </div>
         <div class="lbr-cap">文件</div>
       </div>
 
-      <LbFontCtl v-if="!ribbonNarrow" />
+      <LbFontCtl v-if="!ribbonNarrow && !emptyOn" />
 
       <div class="lbr-status">
         <span v-if="st.busy" class="md-busy"><span class="md-spin"></span><span data-i18n-skip>{{ st.busy }}</span></span>
         <span v-if="notice" class="lb-note" data-i18n-skip>{{ notice }}</span>
-        <span v-if="hintText" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span data-i18n-skip>{{ hintText }}</span></span>
+        <span v-if="hintText" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span>{{ hintText }}</span></span>
         <span v-if="cur.saveErr" class="lb-hint" :title="cur.saveErr"><Icon name="alert-triangle" :size="12" /> 未保存</span>
         <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
       </div>
     </div>
 
+    <!-- 文档标签条（设计页；横跨三栏） -->
+    <DocTabs v-if="designOn && st.docs.length" />
+
     <div class="lb-body">
       <aside class="lb-col lb-side md-side" :class="{ resizing: sideResizing }" :style="{ width: sideWEff + 'px' }">
-        <div class="lb-col-hd"><span class="lb-cfg-hd-t">{{ curTab.label }}</span></div>
-        <div class="lb-col-bd md-side-bd">
+        <div v-if="!designOn" class="lb-col-hd"><span class="lb-cfg-hd-t">{{ curTab.label }}</span></div>
+        <div class="lb-col-bd md-side-bd" :class="{ dsg: designOn }">
           <KeepAlive>
             <component :is="curTab.comp" :key="curTab.key" />
           </KeepAlive>
@@ -450,37 +589,37 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
       </aside>
       <section class="lb-col lb-build md-stage" :class="{ sun: light === 'sun' }">
         <div ref="viewEl" class="md-view"></div>
-        <div v-if="asmOn" class="md-cap">
-          <div class="md-cap-t" :title="wb.asm.id" data-i18n-skip>{{ asmTitle }}</div>
-          <div class="md-cap-s">{{ asmSub }}</div>
-        </div>
         <!-- 装配状态片（视口顶部居中、不挡鼠标）：吸附 / 穿插 / 命令失败的状态短语 + 入库中 / 未保存 -->
         <div v-if="asmOn && (asm.ui.status.text || wb.asm.saving || wb.asm.saveErr)" class="asm-stchip">
-          <span v-if="asm.ui.status.text" class="asm-st" :class="asm.ui.status.kind" data-asm-status data-i18n-skip>{{ asm.ui.status.text }}</span>
+          <span v-if="asm.ui.status.text" class="asm-st" :class="asm.ui.status.kind" data-asm-status>{{ asm.ui.status.text }}</span>
           <span v-if="wb.asm.saving" class="asm-st busy" title="入库中"><span class="md-spin"></span></span>
           <span v-if="wb.asm.saveErr" class="asm-st warn" :title="wb.asm.saveErr" data-asm-save-err><Icon name="alert-triangle" :size="12" />未保存</span>
         </div>
         <AsmReadout v-if="asmOn" :fps="rd.fps" :frame-ms="rd.frameMs" />
-        <div v-if="cur.meta && !asmOn" class="md-cap">
+        <AsmCursor v-if="asmOn" />
+        <!-- 视口左上的标题只在库 / 导入 / 卫星 / 分析 / 导出页显示：设计页由标签条显示文档名 -->
+        <div v-if="cur.meta && !designOn" class="md-cap">
           <div class="md-cap-t" :title="curTip" data-i18n-skip>{{ curTitle }}</div>
           <div v-if="curSub" class="md-cap-s" data-i18n-skip>{{ curSub }}</div>
         </div>
-        <div v-if="!asmOn && !cur.meta && !cur.loading && !cur.error" class="md-empty">{{ cur.blank || '未选中模型。' }}</div>
-        <div v-if="!asmOn && cur.loading" class="md-load">
+        <div v-if="emptyOn" class="md-empty">未打开文档。</div>
+        <div v-else-if="!asmOn && !cur.meta && !cur.loading && !cur.error" class="md-empty">{{ cur.blank || '未选中模型。' }}</div>
+        <div v-if="!asmOn && !emptyOn && cur.loading" class="md-load">
           <span class="md-spin"></span>
           <span v-if="dlPct != null" data-i18n-skip>{{ dlPct }}%</span>
         </div>
-        <div v-if="!asmOn && cur.error && !cur.loading" class="md-err"><Icon name="alert-triangle" :size="13" /> <span data-i18n-skip>{{ cur.error }}</span></div>
-        <div v-if="cur.meta && !asmOn" class="md-read">
+        <div v-if="!asmOn && !emptyOn && cur.error && !cur.loading" class="md-err"><Icon name="alert-triangle" :size="13" /> <span>{{ cur.error }}</span></div>
+        <div v-if="cur.meta && !asmOn && !emptyOn" class="md-read">
           <span class="md-rk">三角形</span><span class="md-rv" data-i18n-skip>{{ fmtInt(rd.tris) }}</span>
           <template v-if="boxText"><span class="md-rs">·</span><span class="md-rk">包围盒</span><span class="md-rv" data-i18n-skip>{{ boxText }}</span><span class="md-ru">m</span></template>
           <template v-if="massText"><span class="md-rs">·</span><span class="md-rk">质量</span><span class="md-rv" data-i18n-skip>{{ massText }}</span><span class="md-ru">kg</span></template>
-          <template v-if="rd.fps"><span class="md-rs">·</span><span class="md-rv" data-i18n-skip :title="'帧 CPU ' + rd.frameMs + ' ms'">{{ Math.round(rd.fps) }}</span><span class="md-ru">fps</span></template>
+          <template v-if="rd.fps"><span class="md-rs">·</span><span class="md-rv" :title="'帧 CPU ' + rd.frameMs + ' ms'">{{ Math.round(rd.fps) }}</span><span class="md-ru">fps</span></template>
         </div>
       </section>
-      <aside v-if="asmOn" class="lb-col asm-dockcol" :class="{ resizing: dockResizing }" :style="{ width: dockWEff + 'px' }">
+      <aside v-if="designOn" class="lb-col asm-dockcol" :class="{ resizing: dockResizing }" :style="{ width: dockWEff + 'px' }">
         <div class="asm-dockcol-rz" title="拖动调整栏宽" @mousedown.prevent="startDockResize"></div>
-        <AsmDock />
+        <AsmDock v-if="asmOn" />
+        <ModelDock v-else-if="modelOn" />
       </aside>
     </div>
 
@@ -506,7 +645,7 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
             </label>
           </div>
           <div class="md-ovgrid">
-            <button v-for="o in OVS" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
+            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
               <Icon :name="o.icon" :size="13" /><span>{{ ovLabel(o) }}</span>
             </button>
           </div>
@@ -515,12 +654,14 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
       </div>
     </Teleport>
 
+    <NewMenu v-if="newMenu" :x="newMenu.x" :y="newMenu.y" @close="newMenu = null" />
+
     <div v-if="dropOn" class="md-drop"><div class="md-drop-in"><Icon name="import" :size="30" /><span>导入</span></div></div>
 
     <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
       <div class="lb-dlg" @click.stop>
         <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row" data-i18n-skip>{{ confirmDlg.msg }}</div></div>
+        <div class="lb-dlg-bd"><div class="lb-share-row">{{ confirmDlg.msg }}</div></div>
         <div class="lb-dlg-ft">
           <button class="lb-mini" @click="answerConfirm(false)">取消</button>
           <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
@@ -530,7 +671,7 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
     <div v-if="alertMsg" class="lb-mask" @click.self="closeAlert">
       <div class="lb-dlg">
         <div class="lb-dlg-hd">提示</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row" data-i18n-skip>{{ alertMsg }}</div></div>
+        <div class="lb-dlg-bd"><div class="lb-share-row">{{ alertMsg }}</div></div>
         <div class="lb-dlg-ft"><button class="lb-mini primary" @click="closeAlert">确定</button></div>
       </div>
     </div>
@@ -579,6 +720,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 /* —— 本窗口专有 —— */
 .md-side-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; min-height: 0; }
+/* 设计页左栏：页眉（快速设置 / 组件）与滚动区由 DesignSide 自己排 */
+.md-side-bd.dsg { padding: 0; overflow: hidden; }
 .md-stage { position: relative; overflow: hidden; }
 .md-view { position: absolute; inset: 0; overflow: hidden; }
 /* 视口上的 DOM 读数层：不挡鼠标（除了需要悬停看 title 的标题） */

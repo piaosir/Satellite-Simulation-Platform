@@ -11,6 +11,8 @@
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import { pf } from '../shared/num.js'
+import { sceneNowMs } from '../shared/sceneClock.js'   // 「此刻」＝主窗口时间轴上的当前时刻（全软件一条时间线）
+import { inputText, parseInput, endFromHours, hoursFromEnd } from '../shared/timeWindowInput.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -28,7 +30,8 @@ const emit = defineEmits(['close', 'fill'])
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.linkBudget : null
 
-const HOURS = [{ v: 1, l: '1 小时' }, { v: 3, l: '3 小时' }, { v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }]
+// 时窗＝起止时刻（两个都可自定义）；时长与结束时刻是同一个量的两种填法，改哪个另一个跟着变，改起始时刻时长不变（结束跟着平移）
+const MAX_HOURS = 720   // 30 天：再长样本步长（时窗 / maxSamples）已粗到一小时，曲线不再有用
 const A = reactive({ src: '', altKm: '1200', inclDeg: '53', raanDeg: '0', maDeg: '0' })
 const B = reactive({ src: '', altKm: '1200', inclDeg: '53', raanDeg: '40', maDeg: '25' })
 const hours = ref(6)
@@ -39,14 +42,20 @@ const err = ref('')
 const res = ref(null)      // { samples, stats, method, representative, search }
 const idx = ref(0)
 
-// 本地时刻 ↔ datetime-local 值（该控件只吃本地时间，无时区后缀）
-function toLocalInput(d) {
-  const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
-}
-function nowT0() { t0Local.value = toLocalInput(new Date()) }
+// 本机时刻 ↔ datetime-local 值（该控件只吃本地墙钟，无时区后缀；读写与半截年份判据见 shared/timeWindowInput.js）
+function nowT0() { t0Local.value = inputText(sceneNowMs(), 'local') }
+const t0Ms = () => { const t = parseInput(t0Local.value, 'local'); return Number.isFinite(t) ? t : sceneNowMs() }
+// 结束时刻 ⇄ 时长：结束时刻按起始 + 时长显示；改结束时刻 = 改时长（须晚于起始；超过 720 h 由「计算」报出，不在这里吞掉）
+const t1Local = computed({
+  get: () => inputText(endFromHours(t0Ms(), hours.value), 'local'),
+  set: (v) => { const h = hoursFromEnd(t0Ms(), parseInput(v, 'local')); if (Number.isFinite(h)) hours.value = h }
+})
+const hoursText = computed({
+  get: () => (hours.value > 0 ? String(+hours.value.toFixed(4)) : ''),
+  set: (v) => { const h = pf(v); if (h > 0) hours.value = h }
+})
 
-// 每次打开重播种：起点取此刻，时窗跟随主界面；两端默认取卫星群前两份配置。
+// 每次打开重播种：起点取时间轴此刻，时窗跟随主界面；两端默认取卫星群前两份配置。
 // immediate：宿主可能一挂载就是打开态（验证台/深链），那一次不走「关→开」的边沿，得在此补上
 watch(() => props.open, (o) => {
   if (!o) return
@@ -60,10 +69,7 @@ watch(() => props.open, (o) => {
 }, { immediate: true })
 
 const satOpts = computed(() => [...props.sats.map((s) => ({ value: s.id, label: s.name })), { value: '', label: '自定义轨道' }])
-const t0ISO = computed(() => {
-  const d = t0Local.value ? new Date(t0Local.value) : new Date()
-  return isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString()
-})
+const t0ISO = computed(() => new Date(t0Ms()).toISOString())   // 起始框读不出（清空 / 半截）按时间轴此刻
 // 一端 → 轨道 spec：选卫星群条目取其轨道（选星=真实星历 / 手动=圆轨道），自定义则按本地四项圆轨道。
 // 圆轨道缺历元时钉到时窗起点：相位(M0)/升交点从这一刻起算，多次计算复现。
 function specOf(s) {
@@ -84,6 +90,7 @@ async function run() {
   if (!api || !api.islRangeSeries) { err.value = '几何求解需在桌面客户端中运行'; return }
   const orbitA = specOf(A), orbitB = specOf(B)
   if (!orbitA || !orbitB) { err.value = '两端轨道未给全（自定义轨道需要高度）'; return }
+  if (!(hours.value > 0) || hours.value > MAX_HOURS) { err.value = '时长须大于 0 且不超过 720 h'; return }
   busy.value = true; err.value = ''
   try {
     const am = pf(atmMarginKm.value)
@@ -221,11 +228,16 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
         <div class="irt-row">
           <label class="irt-f wide"><span class="irt-l">起始时刻</span>
             <input v-model="t0Local" type="datetime-local" class="irt-in mono" /></label>
-          <button class="irt-btn" title="起始时刻取此刻" @click="nowT0">此刻</button>
+          <button class="irt-btn" title="起始时刻取时间轴当前时刻" @click="nowT0">此刻</button>
         </div>
         <div class="irt-row">
-          <label class="irt-f"><span class="irt-l">时窗</span>
-            <select v-model.number="hours" class="irt-in"><option v-for="h in HOURS" :key="h.v" :value="h.v">{{ h.l }}</option></select></label>
+          <label class="irt-f wide" title="改结束时刻＝改时长；改起始时刻时长不变"><span class="irt-l">结束时刻</span>
+            <input v-model.lazy="t1Local" type="datetime-local" class="irt-in mono" @blur="$event.target.value = t1Local" /></label>
+          <button class="irt-btn irt-ghost" tabindex="-1" aria-hidden="true">此刻</button>
+        </div>
+        <div class="irt-row">
+          <label class="irt-f" title="结束时刻 − 起始时刻（≤ 720 h）"><span class="irt-l">时长</span>
+            <input v-model.lazy="hoursText" class="irt-in mono" inputmode="decimal" @blur="$event.target.value = hoursText" /><i class="irt-u">h</i></label>
           <label class="irt-f" title="LOS 视线须高出地表的余量（km）：微波/激光须清过大气；0=纯几何视线"><span class="irt-l">大气余量</span>
             <input v-model="atmMarginKm" class="irt-in mono" inputmode="decimal" /><i class="irt-u">km</i></label>
           <button class="irt-btn primary" :disabled="busy" @click="run">{{ busy ? '计算中…' : '计算' }}</button>
@@ -322,6 +334,7 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 9px; white-space: nowrap; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .irt-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .irt-btn:disabled { opacity: .45; cursor: not-allowed; }
+.irt-ghost { visibility: hidden; }   /* 占住「此刻」那一格：结束时刻输入框与起始时刻的同宽对齐 */
 .irt-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
 /* 主钮悬停压深一档（原规则只保住字色，描边却被通用悬停染成灰框） */
 .irt-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }

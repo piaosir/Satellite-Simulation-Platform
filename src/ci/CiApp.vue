@@ -11,10 +11,11 @@
 // C/XPI 的站址就坐在「在本站取值」按钮旁边，C/CCI 什么都不需要。
 //
 // 本窗口是只读计算器：读三库与 GRD、不写回。算出的 C/I 要用到链路预算里由使用者自己搬。
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onBeforeUnmount } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import { fmtGeoSlot } from '../shared/orbitClass.js'
+import { inputText, parseInput, endFromHours, hoursFromEnd } from '../shared/timeWindowInput.js'
 import { useInterference } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
@@ -24,10 +25,41 @@ import CiSeriesPlot from './CiSeriesPlot.vue'
 const I = useInterference()
 const {
   MODES, REUSE_COLORS, mode, busy, msg, site, carrier, asi, xpi, cci, ngso,
-  satLib, grdAntennas, currentAntenna, ngsoGrdBeams, geoData, hoveredId, satSearch, ngsoGroups, groupStats, groupsErr
+  satLib, grdAntennas, currentAntenna, ngsoGrdBeams, geoData, hoveredId, satSearch, ngsoGroups, groupStats, groupsErr,
+  stale
 } = I
+// 「输入已变」灯的悬停口径（与雨衰页同一句）
+const STALE_TIP = '计算输入已被修改，以下数值对应修改前的参数'
 
-onMounted(() => { I.load(); I.loadLibraries(); I.loadGrdTree(); I.loadNgsoGroups() })
+// —— 主窗口带上下文打开（地图右键 / 卫星信息栏「分析 ▸ 干扰分析」）——
+// 本窗是只读计算器、没有配置列表：带来的 GSO 星写进「本链路」的期望星轨位与星名，带来的站（取第一个）
+// 写进「本站」站址，其余参数原样保留。停在 C/CCI 页（不吃本站与本链路）时换到 C/ASI，免得写了看不见。
+// 已有的结果不清：入参一变，各页结果旁的「输入已变」灯按入参指纹自己亮（useInterference 的 stale，手改入参同一盏）。
+// 面板态由 I.load() 同步读回：载入前到的上下文排队，载入后再写，免得被读回的旧值盖掉。
+const _ctxQueue = []
+let _ctxReady = false
+function applyToolContext(c) {
+  if (!c) return
+  const parts = []
+  if (c.sat && c.sat.slotLon != null) {
+    carrier.satLonDeg = Math.round(c.sat.slotLon * 100) / 100
+    carrier.satName = c.sat.name || ''
+    parts.push(c.sat.name || fmtGeoSlot(carrier.satLonDeg))
+  }
+  const s = c.sites && c.sites[0]
+  if (s) { site.name = s.name || site.name; site.lat = s.lat; site.lon = s.lon; parts.push(site.name) }
+  if (parts.length && mode.value === 'cci') mode.value = 'asi'
+  if (parts.length) msg.value = parts.join(' · ')
+}
+function onToolContext(c) { if (_ctxReady) applyToolContext(c); else _ctxQueue.push(c) }
+const _stopCtx = (typeof window !== 'undefined' && window.api && window.api.tools) ? window.api.tools.onContext(onToolContext) : null
+onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
+
+onMounted(() => {
+  I.load(); I.loadLibraries(); I.loadGrdTree(); I.loadNgsoGroups()
+  _ctxReady = true
+  for (const c of _ctxQueue.splice(0)) applyToolContext(c)
+})
 
 // C/XPI 各段的来源标签（source 由引擎 ciXpi.resolveXpd 给出，算式在 term.note 里，挂 title）
 const XPI_SRC = {
@@ -45,6 +77,14 @@ const fPct = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v
 const fSlot = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : fmtGeoSlot(Number(v)))
 const fDur = (s) => (s == null ? '—' : s < 60 ? s.toFixed(2) + ' s' : (s / 60).toFixed(2) + ' min')
 const fTime = (ms) => { try { return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + 'Z' } catch (e) { return '—' } }
+
+// ─── NGSO 时段：起止时刻（UTC，与结果里的时刻同一口径）。结束时刻 ⇄ 时窗：改结束＝改时窗，改起始时窗不变 ───
+// 读写与年份判据（半截年份 0002 不认）见 shared/timeWindowInput.js
+const ngsoT0 = () => { const t = Date.parse(ngso.startIso || ''); return Number.isFinite(t) ? t : NaN }
+const ngsoStartText = computed(() => inputText(ngsoT0(), 'utc'))
+const ngsoEndText = computed(() => inputText(endFromHours(ngsoT0(), ngso.horizonH), 'utc'))
+function setNgsoStart(v) { const t = parseInput(v, 'utc'); if (Number.isFinite(t)) ngso.startIso = new Date(t).toISOString() }
+function setNgsoEnd(v) { const h = hoursFromEnd(ngsoT0(), parseInput(v, 'utc')); if (Number.isFinite(h)) ngso.horizonH = +h.toFixed(6) }
 
 // ─── NGSO 分位数的样本支撑度（引擎的 percentileSupport）─────────────────────────
 // 「样本不足」必须显示成「样本不足」，不能显示成一个看着完全正常的数字：
@@ -90,14 +130,16 @@ function toggleSearch() {
 // 星座下拉按来源分段（口径见 useInterference 的 loadNgsoGroups）：自己建的东西排在前面，
 // 编目星座十几个排最后——找自己的东西不该先滚过一整屏 CelesTrak 组名。
 //
-// ⚠️ 空的段**不删掉**，改成一条灰的说明项。曾经是「items 为空就 filter 掉」，于是一个字都不留：
+// ⚠️ 空的段**不删掉**，留一条灰的空项。曾经是「items 为空就 filter 掉」，于是一个字都不留：
 // 用户在星座页建了自定义星座、回到这里发现下拉里根本没有「自定义」这一段，只能得出「选不了」，
-// 却看不出该去哪儿建、也看不出是没建还是坏了。四段永远在，缺什么一目了然。
+// 也看不出是没建还是坏了。四段永远在，缺什么一目了然。
+// 空项只写一句陈述「无」——各段从哪儿来（星座页存组 / Walker 生成器 / 文件管理导入 / 联网取 CelesTrak）
+// 曾写成操作教学挂在这一项上，按 CLAUDE.md 删掉（v1.5.0 上线前排查 #51）。
 const SECTIONS = [
-  { kind: 'satgroup', label: '卫星组', empty: '无 —— 在「星座」页按搜索结果 / 多选存组' },
-  { kind: 'ccustom', label: '自定义星座', empty: '无 —— 在「星座」页用 Walker 生成器建' },
-  { kind: 'custom', label: '自定义星历', empty: '无 —— 在「文件管理」导入 OMM / TLE' },
-  { kind: 'omm', label: '编目星座', empty: '无 —— 需联网取一次 CelesTrak 分组' }
+  { kind: 'satgroup', label: '卫星组', empty: '无' },
+  { kind: 'ccustom', label: '自定义星座', empty: '无' },
+  { kind: 'custom', label: '自定义星历', empty: '无' },
+  { kind: 'omm', label: '编目星座', empty: '无' }
 ]
 const groupSections = computed(() =>
   SECTIONS.map((s) => ({ ...s, items: ngsoGroups.value.filter((g) => (g.kind || 'omm') === s.kind) })))
@@ -269,7 +311,7 @@ const run = () => {
         </section>
 
         <section v-if="asi.result" class="ci-panel">
-          <h2>结果</h2>
+          <h2>结果<span v-if="stale.asi" class="ci-stale" :title="STALE_TIP">输入已变</span></h2>
           <div class="ci-kpis">
             <div class="ci-kpi"><span>下行 C/ASI</span><b>{{ f(asi.result.downlink && asi.result.downlink.ciDb) }}</b><i>dB</i></div>
             <div class="ci-kpi"><span>上行 C/ASI</span><b>{{ f(asi.result.uplink && asi.result.uplink.ciDb) }}</b><i>dB</i></div>
@@ -397,6 +439,7 @@ const run = () => {
             <div class="ci-split-l">
               <div class="ci-panel-hd">
                 <h3>C/CCI 覆盖场图</h3>
+                <span v-if="stale.cciField" class="ci-stale" :title="STALE_TIP">输入已变</span>
                 <button class="ci-btn" :disabled="busy || !currentAntenna" @click="I.computeCciField()">计算场图</button>
               </div>
               <div class="ci-grid inline">
@@ -420,6 +463,7 @@ const run = () => {
             <div class="ci-split-r">
               <div class="ci-panel-hd">
                 <h3>逐站取值</h3>
+                <span v-if="stale.cci" class="ci-stale" :title="STALE_TIP">输入已变</span>
               </div>
               <template v-if="cci.result">
                 <div class="ci-tbwrap">
@@ -510,7 +554,7 @@ const run = () => {
         </section>
 
         <section v-if="xpi.result" class="ci-panel">
-          <h2>结果</h2>
+          <h2>结果<span v-if="stale.xpi" class="ci-stale" :title="STALE_TIP">输入已变</span></h2>
           <div class="ci-kpis">
             <div class="ci-kpi"><span>总 C/XPI</span><b>{{ f(xpi.result.xpiDb) }}</b><i>dB</i></div>
             <div class="ci-kpi"><span>卫星侧来源</span><b class="sm">{{ xpi.result.grdBacked ? 'GRD 实测' : '手填' }}</b></div>
@@ -547,7 +591,7 @@ const run = () => {
                   <option value="">— 选一个星座 —</option>
                   <optgroup v-for="s in groupSections" :key="s.label" :label="s.label">
                     <option v-for="g in s.items" :key="g.key" :value="g.key">{{ g.label }}{{ g.count ? `（${g.count} 颗）` : (g.available ? '（本地有数据）' : '（无数据，需联网）') }}</option>
-                    <option v-if="!s.items.length" disabled>（{{ s.empty }}）</option>
+                    <option v-if="!s.items.length" disabled>{{ s.empty }}</option>
                   </optgroup>
                 </select>
               </label>
@@ -597,7 +641,7 @@ const run = () => {
                     <option value="">— 选星座 —</option>
                     <optgroup v-for="s in groupSections" :key="s.label" :label="s.label">
                       <option v-for="x in s.items" :key="x.key" :value="x.key">{{ x.label }}{{ x.count ? ` (${x.count})` : (x.available ? ' (本地)' : ' (无)') }}</option>
-                      <option v-if="!s.items.length" disabled>（{{ s.empty }}）</option>
+                      <option v-if="!s.items.length" disabled>{{ s.empty }}</option>
                     </optgroup>
                   </select>
                   <input v-else v-model="g.name" type="text" />
@@ -630,6 +674,9 @@ const run = () => {
           <div class="ci-sub">
             <h3>扫描设置</h3>
             <div class="ci-grid">
+              <label class="wide" title="多历元蒙特卡洛：各起始历元从此时刻起在基线跨度内抽取">起始时刻 UTC<input type="datetime-local" :value="ngsoStartText" @change="setNgsoStart($event.target.value)" @blur="$event.target.value = ngsoStartText" /></label>
+              <label class="btn-cell"><button class="ci-btn" title="起始时刻取时间轴当前时刻" @click="I.ngsoStartNow()">此刻</button></label>
+              <label v-if="(ngso.epochs.mode || 'single') === 'single'" class="wide" title="改结束时刻＝改时窗；改起始时刻时窗不变">结束时刻 UTC<input type="datetime-local" :value="ngsoEndText" @change="setNgsoEnd($event.target.value)" @blur="$event.target.value = ngsoEndText" /></label>
               <label>仰角门限 °<input v-model.number="ngso.minElevDeg" type="number" step="0.5" /></label>
               <label>时窗 h<input v-model.number="ngso.horizonH" type="number" step="0.5" /></label>
               <label>步长 s<input v-model.number="ngso.stepSec" type="number" step="0.1" /></label>
@@ -789,7 +836,7 @@ const run = () => {
         </section>
 
         <section v-if="ngso.result" class="ci-panel">
-          <h2>结果</h2>
+          <h2>结果<span v-if="stale.ngso" class="ci-stale" :title="STALE_TIP">输入已变</span></h2>
           <div class="ci-kpis">
             <div class="ci-kpi"><span>C/I 中位</span><b>{{ f(ngso.result.medianCiDb, 1) }}</b><i>dB</i></div>
             <div class="ci-kpi" :title="ngSupTip(0.1)">
@@ -1043,6 +1090,10 @@ const run = () => {
 .ci-x:hover { color: var(--danger); border-color: var(--border); }
 
 .ci-msg { margin: 0; padding: 6px 14px; font-size: var(--fs-3); color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+/* 「输入已变」小灯（与链路预算 / 雨衰同一款）：出过结果后入参又变了 → 提醒重算。
+   挂在「结果」h2 里时不吃标题的字号 / 字重；挂在 .ci-panel-hd 里时由 flex gap 隔开 */
+.ci-stale { display: inline-block; flex: none; font-size: var(--fs-2); font-weight: 400; letter-spacing: 0; line-height: 1.5; padding: 0 7px; color: var(--warn, #d08a2e); border: 1px solid color-mix(in srgb, var(--warn, #d08a2e) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn, #d08a2e) 8%, transparent); vertical-align: middle; }
+.ci-panel > h2 .ci-stale { margin-left: 10px; }
 
 .ci-main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; }
 

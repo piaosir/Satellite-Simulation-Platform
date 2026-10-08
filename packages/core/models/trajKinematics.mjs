@@ -632,7 +632,12 @@ function profileStaticInto(plan, traj, k, o) {
 export function trajStateAtS(traj, sM, out) {
   const o = out || makeTrajState()
   if (!traj || typeof traj !== 'object') return setInvalid(o)
-  const plan = trajPlan(traj)
+  return stateAtSInto(trajPlan(traj), traj, sM, o)
+}
+// trajStateAtS 的主体（计划已取好）。★ 逐点批量（trajWaypointInfo / trajLine3）先 trajPlan 一次再逐点调它：
+//   trajPlan 每调一次都要拿缓存的计划与全部航点逐个核对（planMatches，O(航点数)），逐点都走 trajStateAtS
+//   就成了平方级 —— 几千航点的飞行航迹（导入的 ADS-B 记录）选星 / 拖样式 / 拖标记每次卡零点几秒、航迹表卡几十秒
+function stateAtSInto(plan, traj, sM, o) {
   if (!plan.m) return setInvalid(o)
   if (plan.kFirst < 0) return staticInto(plan, traj, o)
   const L = plan.L
@@ -828,7 +833,7 @@ export function trajWaypointInfo(traj) {
       e.tPinned = j === 0
     }
     if (plan.nPin > 0) e.tBad = plan.bad[j] === 1
-    if (flight) { trajStateAtS(traj, plan.cum[j], st); e.altM = st.altM; e.altPinned = fin(p.altM) }
+    if (flight) { stateAtSInto(plan, traj, plan.cum[j], st); e.altM = st.altM; e.altPinned = fin(p.altM) }
     out[i] = e
   }
   return out
@@ -882,7 +887,7 @@ export function trajLine3(traj, stepDeg = GC_STEP_DEG) {
   const plan = trajPlan(traj), m = plan.m
   if (!m) return out
   const st = makeTrajState()
-  const emit = (s) => { trajStateAtS(traj, s, st); if (st.ok) out.push({ lat: st.lat, lon: normLonDeg(st.lon), altM: st.altM }) }
+  const emit = (s) => { stateAtSInto(plan, traj, s, st); if (st.ok) out.push({ lat: st.lat, lon: normLonDeg(st.lon), altM: st.altM }) }
   if (plan.kFirst < 0) { emit(0); return out }
   const step = fin(stepDeg) && stepDeg > 0 ? stepDeg : GC_STEP_DEG
   const ss = [0]

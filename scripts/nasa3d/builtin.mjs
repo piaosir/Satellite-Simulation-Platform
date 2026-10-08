@@ -6,11 +6,12 @@
 // 产物（DESIGN §3.3 / §8）：
 //   resources/models/manifest.json        manifest v2（内置层；sourceBuildId = 这批文件出自哪次 build，check-models --online 据它查云端是否已发布；
 //                                         thumbView = 缩略图的取景口径〔显示系签名〕，check-models 据它拦显示系换向后没重出的缩略图）
-//   resources/models/builtin/<sha>.glb    子集的 lod2（只这一档：球面图标、「低」档跟随、未下载时的预览够用；lod0 / lod1 照旧从云端按需拉）
+//   resources/models/builtin/<sha>.glb    子集的 lod2（球面图标、「低」档跟随）+ 体积够小的件的 lod0（库页预览 / 跟随「高」档离线也是原件精度，
+//                                         见 BUILTIN_LOD0_MAX_BYTES；2026-10-08 前只带 lod2）；其余档照旧从云端按需拉
 //   resources/models/thumbs/<sha>.webp    缩略图
 //
 // 出厂口径（2026-09-24 审查后）：内置层 = 【实际随包带了模型的条目】，一条不多——
-//   · 子集（BUILTIN_SUBSET）：builtin ['lod2','thumb']。
+//   · 子集（BUILTIN_SUBSET）：builtin ['lod2','thumb']，lod0 ≤ BUILTIN_LOD0_MAX_BYTES 的另带 lod0（nasaTiersFor）。
 //   · 参数化模板：缺省【不进】（--templates=off）。DESIGN §8「参数化模板不需要文件（运行时生成）」；工作台（wbStore.refresh 同 id
 //     清单条目会顶掉自己生成的模板条目 → 选中报「参数化模型缺少生成参数」）、3D 页（清单条目带 geometry 就不再按模板算质量）、
 //     主进程（slimMeta 白名单删掉 templateId / specHash）三处都按「模板没有清单条目」写的。--templates=entries 出带缩略图的模板条目，
@@ -61,6 +62,17 @@ export const BUILTIN_SUBSET = Object.freeze([
   { key: 'kit-body-3', pick: ['nasa:satellite-kit~3'], why: 'Satellite Kit 平台体 3' }
 ])
 export const NASA_TIERS = Object.freeze(['lod2', 'thumb'])
+/**
+ * 原件精度随包的体积门槛（2026-10-08）：lod0 不超过它的子集件另带 lod0（库页预览 / 跟随视图「高」档离线也是原件精度——
+ * 只带 lod2 时离线看到的是抽稀档，「不如 NASA 官网」）。lod2 照带（球面图标按 lod2 实例化，几十颗同型星不能用原件）。
+ * 现子集里只有 ISS（lod0 49 MB）过不了门槛；其余 12 件 lod0 合计约 5.5 MiB。
+ */
+export const BUILTIN_LOD0_MAX_BYTES = 2.5 * 1024 * 1024
+/** 子集件的随包档位：lod0 够小就带上（见 BUILTIN_LOD0_MAX_BYTES） */
+export function nasaTiersFor(meta, max = BUILTIN_LOD0_MAX_BYTES) {
+  const f = meta && meta.files && meta.files.lod0
+  return f && Number.isInteger(f.bytes) && f.bytes > 0 && f.bytes <= max ? ['lod0', ...NASA_TIERS] : NASA_TIERS.slice()
+}
 export const PARAM_TIERS = Object.freeze(['thumb'])
 /** 换入重试（Windows：杀毒软件扫新文件、开着的应用占着句柄时 rename 报 EPERM / EBUSY / EACCES，过一会儿就好） */
 export const RENAME_RETRY_MS = Object.freeze([50, 100, 200, 400, 800, 1600])
@@ -281,12 +293,15 @@ async function main() {
     const dir = p.id.slice('nasa:'.length)
     const meta = readJson(path.join(buildDir, dir, 'meta.json'))
     if (!meta) throw new Error(`${p.id}：读不到 ${dir}/meta.json`)
-    const e = nasaEntry(meta, dir, NASA_TIERS)
+    // lod0 文件不在（只出过 lod2 的 build、单测夹具）就不带，照旧只随包 lod2
+    const tiers = nasaTiersFor(meta).filter((t) => t !== 'lod0' || fs.existsSync(path.join(buildDir, dir, 'lod0.glb')))
+    const e = nasaEntry(meta, dir, tiers)
     entries.push(e)
     sources.set(`builtin/${e.files.lod2.sha256}.glb`, path.join(buildDir, dir, 'lod2.glb'))
+    if (e.builtin.includes('lod0')) sources.set(`builtin/${e.files.lod0.sha256}.glb`, path.join(buildDir, dir, 'lod0.glb'))
     sources.set(`thumbs/${e.files.thumb.sha256}.webp`, path.join(buildDir, dir, 'thumb.webp'))
     const b = e.geometry && e.geometry.bboxM
-    rows.push({ id: p.id, what: p.why + (p.fallback ? '（候选顶替）' : ''), lod2: e.files.lod2.bytes, thumb: e.files.thumb.bytes, tris: e.files.lod2.tris,
+    rows.push({ id: p.id, what: p.why + (p.fallback ? '（候选顶替）' : ''), lod0: e.builtin.includes('lod0') ? e.files.lod0.bytes : 0, lod2: e.files.lod2.bytes, thumb: e.files.thumb.bytes, tris: e.files.lod2.tris,
       size: b ? b.max.map((v, k) => +(v - b.min[k]).toPrecision(3)).join(' × ') : '—', verified: !!(e.units && e.units.sizeVerified), frameVerified: !!(e.frame && e.frame.verified === true) })
   }
   // 其余 NASA 条目：目录 + 缩略图（仅 --catalog=full，见文件头）
@@ -345,11 +360,12 @@ async function main() {
   const manifestText = JSON.stringify(manifest, null, 2) + '\n'
   total += Buffer.byteLength(manifestText)
   const mib = (n) => (n / 1024 / 1024).toFixed(2)
-  console.log(formatTable(['id', '说明', 'lod2 KB', '缩略图 KB', 'lod2 三角形', '包围盒 m（模型轴）', '尺寸核定', '朝向核定'], rows.map((r) => [r.id, r.what, r.lod2 ? (r.lod2 / 1024).toFixed(1) : '—', (r.thumb / 1024).toFixed(1), r.tris.toLocaleString('en-US'), r.size, r.verified ? '已核' : '未核', r.frameVerified ? '已核' : '未核']), ['l', 'l', 'r', 'r', 'r', 'r', 'l', 'l']))
+  console.log(formatTable(['id', '说明', 'lod0 KB', 'lod2 KB', '缩略图 KB', 'lod2 三角形', '包围盒 m（模型轴）', '尺寸核定', '朝向核定'], rows.map((r) => [r.id, r.what, r.lod0 ? (r.lod0 / 1024).toFixed(1) : '—', r.lod2 ? (r.lod2 / 1024).toFixed(1) : '—', (r.thumb / 1024).toFixed(1), r.tris.toLocaleString('en-US'), r.size, r.verified ? '已核' : '未核', r.frameVerified ? '已核' : '未核']), ['l', 'l', 'r', 'r', 'r', 'r', 'r', 'l', 'l']))
   console.log('')
   const sumOf = (pred) => plan.filter(pred).reduce((a, f) => a + f.bytes, 0)
   console.log(formatTable(['构成', '个数', 'MiB'], [
-    ['子集 lod2（builtin/*.glb）', plan.filter((f) => f.tier !== 'thumb').length, mib(sumOf((f) => f.tier !== 'thumb'))],
+    ['子集 lod0（builtin/*.glb）', plan.filter((f) => f.tier === 'lod0').length, mib(sumOf((f) => f.tier === 'lod0'))],
+    ['子集 lod2（builtin/*.glb）', plan.filter((f) => f.tier === 'lod2').length, mib(sumOf((f) => f.tier === 'lod2'))],
     ['缩略图（thumbs/*.webp）', plan.filter((f) => f.tier === 'thumb').length, mib(sumOf((f) => f.tier === 'thumb'))],
     ['manifest.json', 1, mib(Buffer.byteLength(manifestText))]
   ], ['l', 'r', 'r']))

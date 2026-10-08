@@ -48,6 +48,20 @@ for (const f of ['src/pages/ConstellationMap3D.vue', 'src/components/SatCovPanel
   ok(`${path.basename(f)} 的 data-sec 全部入索引`, !miss.length, miss.join(','))
 }
 
+// 宇宙空间子项：页面登记成带勾选的 geo.space.* 命令，App.vue 的 PAGE_ROWS 必须逐项排除同名参数行 ——
+// 漏一项（2026-10-08 漏了「行星」），标题栏搜索就出两条同名结果
+{
+  const page = fs.readFileSync(path.join(ROOT, 'src/pages/ConstellationMap3D.vue'), 'utf8')
+  const app = fs.readFileSync(path.join(ROOT, 'src/App.vue'), 'utf8')
+  const m = /\.\.\.\[(\['stars'[\s\S]*?\])\]\s*\.map\(\(\[k, label, icon\]\) => sw\('geo\.space\.'/.exec(page)
+  const labels = m ? [...m[1].matchAll(/\['[a-z]+', '([^']+)'/g)].map((x) => x[1]) : []
+  const pr = /const PAGE_ROWS = new Set\(\[([^\]]*)\]/.exec(app)
+  const rows = pr ? [...pr[1].matchAll(/'([^']+)'/g)].map((x) => x[1]) : []
+  const miss = labels.filter((l) => !rows.includes(l))
+  ok('宇宙空间子项：页面登记的每一项 PAGE_ROWS 都排除了（不出两条同名结果）', labels.length >= 8 && !miss.length, miss.length ? '漏 ' + miss.join(',') : labels.length + ' 项')
+  ok('宇宙空间子项：PAGE_ROWS 里没有页面不登记的多余项', rows.every((l) => labels.includes(l)), rows.filter((l) => !labels.includes(l)).join(','))
+}
+
 // 落盘文件与模板同步（过期 = 有人改了模板没跑 dev/build，也没手动 node scripts/cmd-index.mjs）
 let cur = ''
 try { cur = fs.readFileSync(path.join(ROOT, OUT_FILE), 'utf8') } catch { /* 缺文件也算过期 */ }

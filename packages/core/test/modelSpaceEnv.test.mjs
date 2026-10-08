@@ -1,17 +1,19 @@
-// 地图设置 · 宇宙空间（星空 / 大气辉光 / 太阳 / 地球影像 / 晨昏效果 / 晨昏线）自测。运行：node packages/core/test/modelSpaceEnv.test.mjs
+// 地图设置 · 宇宙空间（星空 / 大气辉光 / 太阳 / 月球 / 地球影像 / 晨昏效果 / 晨昏线）自测。运行：node packages/core/test/modelSpaceEnv.test.mjs
 //
 // 渲染本身在 Electron 验证台里逐像素看（.modelharness/w18）；这里钉住的是不看画面也能错的几件事：
 //   ① 晨昏效果的过渡带曲线（3D 着色器与平面图栅格共用 nightRamp / NIGHT_RAMP_GLSL）：h ≥ 0 不压、h ≤ −18° 压满、单调、中点对；
 //      以及平面图栅格的「行项 × 列项」可分离写法与独立球面公式逐点一致；
-//   ② 星表：亮星逐颗落在真实赤经赤纬、暗星数与种子固定（每次打开一样、不闪）、暗星确实向银道面集中；
+//   ② 星表与底图：BSC5 逐颗对上星位 / 星等 / B−V（自行已推到历元）、星色亮度归一且随 B−V 单调变红、底图 uv 与天球网格同一套映射；
 //   ③ 惯性系 → 场景轴的转动：GMST 时刻赤经 = GMST 的赤道点正好落在格林尼治子午线（场景 +X），且是正交阵；
+//      星空实际走 ICRF → 场景（岁差 + 章动 + GAST）：岁差矩阵复现 Meeus 例 21.b、真天极的偏移量与方向对；
 //      GMST 就是卫星星位用的那个 sat.gstime（IAU-82，逐位相同），星空转动 ≡ 卫星链路的 eciToEcf；
 //      太阳方向与模型层的 sunDirScene 同一口径（星空 / 大气 / 晨昏同一个太阳）；
 //   ④ 大气可见标高与临边环带：跟随低轨星退回真实标高、全球视角按像素兜底；环带内外径把临边夹在中间；
 //      大气画在地球那一趟的不透明队列（数据层叠在它上面）、深度壳高于底图、编排器挂 / 摘地球场景；
 //   ⑤ 太阳被地球挡住的系数：正对太阳 1、太阳在地球正背后 0、跨临边平滑；
-//   ⑥ 设置口径：出厂值（总开关另存、前五项勾、晨昏线不勾）、新存档逐字段合并 + 夹范围、
-//      老存档迁移（termOn=true → 晨昏线 + 夜区阴影；影像底图开 → 地球影像；别的一概不勾）。
+//   ⑥ 设置口径：出厂值（总开关另存、晨昏线以外都勾、月球放大与日面同口径）、新存档逐字段合并 + 夹范围、
+//      老存档迁移（termOn=true → 晨昏线 + 夜区阴影；影像底图开 → 地球影像；别的一概不勾，月球也不勾）。
+//   （月球的星历 / 姿态 / 地影 / 贴图取向另在 lunar.test.mjs）
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -25,6 +27,7 @@ register('data:text/javascript,' + encodeURIComponent(
 
 const T = await import(SRC + 'terminator.js')
 const FX = await import(SRC + 'globe3d/spaceFx.js')
+const L = await import(SRC + 'lunar.js')
 const { llaToVec } = await import(SRC + 'globe3d/focusLanes.js')
 const AT = await import(CORE + 'models/attitude.mjs')
 const sat = (await import(SRC + 'constellation/satellite.js')).default
@@ -85,31 +88,54 @@ t('3D 夜区壳的局部口径：壳 +Y = 反日方向 ⇒ sin h = −ŷ·p̂（
   assert.ok(worst < 1e-5, 'worst=' + worst)   // 日下点经纬本身是 double，llaToVec 是 THREE.Vector3（double）；1e-5 只为吸收 solarGeometry 的归一化
 })
 
-// ───────────── ② 星表 ─────────────
-t('亮星逐颗：天狼星（α 6.752 h、δ −16.716°、−1.46 等）排第一、方向是单位矢量', () => {
-  const S = FX.buildStarArrays()
-  const a = 6.752 * 15 * RAD, d = -16.716 * RAD
-  near(S.pos[0], Math.cos(d) * Math.cos(a), 1e-6); near(S.pos[1], Math.cos(d) * Math.sin(a), 1e-6); near(S.pos[2], Math.sin(d), 1e-6)
-  near(S.mag[0], -1.46, 1e-6)
-  for (let i = 0; i < S.pos.length / 3; i++) near(Math.hypot(S.pos[i * 3], S.pos[i * 3 + 1], S.pos[i * 3 + 2]), 1, 1e-5, '#' + i)
-})
-t('暗星数与种子固定：两次生成逐字节相同（不闪）；星等落在 [3, 6.8]', () => {
-  const A = FX.buildStarArrays(), B = FX.buildStarArrays()
-  assert.equal(A.pos.length / 3, A.nBright + FX.FAINT_N)
-  assert.ok(A.nBright >= 110, String(A.nBright))
-  assert.deepEqual(Buffer.from(A.pos.buffer), Buffer.from(B.pos.buffer))
-  assert.deepEqual(Buffer.from(A.mag.buffer), Buffer.from(B.mag.buffer))
-  for (let i = A.nBright; i < A.mag.length; i++) assert.ok(A.mag[i] >= 3 - 1e-6 && A.mag[i] <= 6.8 + 1e-6)
-})
-t('暗星向银道面集中：|b| < 20° 的比例明显高于均匀分布的 34.2%', () => {
-  const S = FX.buildStarArrays(), NGP = [-0.86767, -0.19808, 0.45598]
-  let k = 0
-  for (let i = S.nBright; i < S.mag.length; i++) {
-    const sb = S.pos[i * 3] * NGP[0] + S.pos[i * 3 + 1] * NGP[1] + S.pos[i * 3 + 2] * NGP[2]
-    if (Math.abs(Math.asin(sb)) < 20 * RAD) k++
+// ───────────── ② 星表与银河底图 ─────────────
+const STARS = FX.decodeStarData(await import(SRC + 'globe3d/starfield.data.js'))
+const starByHr = (hr) => { const k = STARS.hr.indexOf(hr); assert.ok(k >= 0, 'HR ' + hr); return { ra: STARS.ra[k] / RAD, dec: STARS.dec[k] / RAD, v: STARS.mag[k], bv: STARS.bv[k] } }
+t('亮星表：BSC5 9096 颗；天狼星 / 老人星 / 北极星 / 织女星 / 参宿四逐颗对上星位、星等、B−V（星位已按自行推到 2026.0）', () => {
+  assert.equal(STARS.n, 9096)
+  for (let k = 0; k < STARS.n; k++) {
+    assert.ok(STARS.ra[k] >= 0 && STARS.ra[k] < 2 * Math.PI && Math.abs(STARS.dec[k]) <= Math.PI / 2, '#' + k)
+    assert.ok(STARS.mag[k] >= -1.5 && STARS.mag[k] < 8.1 && Number.isFinite(STARS.bv[k]), '#' + k)
   }
-  const f = k / FX.FAINT_N
-  assert.ok(f > 0.45 && f < 0.75, 'f=' + f)
+  // 天狼星：J2000 α 101.2875°、δ −16.7161°，自行 (−0.546″, −1.223″)/年 × 26 年 → α −0.0041°、δ −0.0088°
+  const si = starByHr(2491)
+  near(si.ra, 101.2834, 0.0005); near(si.dec, -16.7249, 0.0005); near(si.v, -1.46, 1e-6); near(si.bv, 0, 1e-6)
+  near(starByHr(2326).v, -0.72, 1e-6)                                     // 老人星
+  assert.ok(starByHr(424).dec > 89.2 && Math.abs(starByHr(424).v - 2.02) < 1e-6)   // 北极星
+  near(starByHr(7001).ra, 279.2365, 0.002); near(starByHr(7001).v, 0.03, 1e-6)    // 织女星
+  near(starByHr(2061).bv, 1.85, 1e-6)                                     // 参宿四
+  // 亮于 2 等的约 50 颗、亮于 6 等的约 5000 颗（全天星等计数）
+  const cnt = (m) => STARS.mag.filter((v) => v < m).length
+  assert.ok(cnt(2) >= 45 && cnt(2) <= 55 && cnt(6) >= 4800 && cnt(6) <= 5200, cnt(2) + ' / ' + cnt(6))
+})
+t('星色：亮度归一（Y = 1）；B−V 越大越红（R/B 单调升）；织女星型偏蓝、太阳型近白微暖、参宿四型橙；饱和度 0 = 纯白', () => {
+  let prev = 0
+  for (let bv = -0.4; bv <= 2.4 + 1e-9; bv += 0.05) {
+    const c = FX.starColorBV(bv, 1)
+    near(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2], 1, 1e-9, 'bv=' + bv)
+    assert.ok(c[0] / c[2] > prev, 'bv=' + bv); prev = c[0] / c[2]
+  }
+  const vega = FX.starColorBV(0, 1), sun = FX.starColorBV(0.65, 1), betel = FX.starColorBV(1.85, 1)
+  assert.ok(vega[2] > 1.3 * vega[0], String(vega))
+  assert.ok(sun[0] > sun[2] && sun[0] / sun[2] < 1.35, String(sun))
+  assert.ok(betel[0] / betel[2] > 3.5, String(betel))
+  for (const x of FX.starColorBV(1.2, 0)) near(x, 1, 1e-12)
+})
+t('底图映射：赤经 0h 在图中线、赤经向左增大、上边 = +90°；天球网格每个顶点的 uv 与 starMapUv 一致（接缝两列各存一份）', () => {
+  const uv = (raDeg, decDeg) => FX.starMapUv(raDeg * RAD, decDeg * RAD)
+  near(uv(0, 0)[0], 0.5, 1e-12); near(uv(90, 0)[0], 0.25, 1e-12); near(uv(270, 0)[0], 0.75, 1e-12)
+  near(uv(0, 90)[1], 1, 1e-12); near(uv(0, -90)[1], 0, 1e-12); near(uv(0, 30)[1], 2 / 3, 1e-12)
+  const A = FX.skySphereArrays(24, 12)
+  assert.equal(A.pos.length / 3, 25 * 13); assert.equal(A.idx.length, 24 * 12 * 6)
+  for (let k = 0; k < A.pos.length / 3; k++) {
+    const x = A.pos[k * 3], y = A.pos[k * 3 + 1], z = A.pos[k * 3 + 2]
+    near(Math.hypot(x, y, z), 1, 1e-6)
+    const dec = Math.asin(Math.max(-1, Math.min(1, z)))
+    near(FX.starMapUv(0, dec)[1], A.uv[k * 2 + 1], 1e-6, 'v#' + k)
+    if (Math.abs(z) > 0.999999) continue                                   // 极点：赤经无定义
+    const u = FX.starMapUv(Math.atan2(y, x), dec)[0], d = Math.abs(u - A.uv[k * 2])
+    near(Math.min(d, 1 - d), 0, 1e-6, 'u#' + k)
+  }
 })
 
 // ───────────── ③ 惯性系 → 场景 ─────────────
@@ -158,6 +184,62 @@ t('GMST 与卫星星位同一个 gstime：gmstOf ≡ sat.gstime（逐位）；�
       near(s3[0], e.x, 1e-12); near(s3[1], e.z, 1e-12); near(s3[2], -e.y, 1e-12)
     }
   }
+})
+
+t('岁差：IAU 1976 岁差矩阵复现 Meeus 例 21.b（英仙 θ，J2000 → 2028-11-13.19 TD，含自行）：α 2h46m11.331s、δ +49°20′54.54″', () => {
+  const a0 = (2 + 44 / 60 + 11.986 / 3600) * 15, d0 = 49 + 13 / 60 + 42.48 / 3600
+  const Tc = (2462088.69 - 2451545.0) / 36525, yrs = Tc * 100
+  const a1 = (a0 + 0.03425 * 15 / 3600 * yrs) * RAD, d1 = (d0 - 0.0895 / 3600 * yrs) * RAD
+  const v = [Math.cos(d1) * Math.cos(a1), Math.cos(d1) * Math.sin(a1), Math.sin(d1)]
+  const P = L.precessionMatrix(Tc)
+  const w = [0, 1, 2].map((r) => P[r * 3] * v[0] + P[r * 3 + 1] * v[1] + P[r * 3 + 2] * v[2])
+  near((Math.atan2(w[1], w[0]) / RAD) / 15 * 3600, 2 * 3600 + 46 * 60 + 11.331, 0.002)   // 时秒
+  near(Math.asin(w[2]) / RAD * 3600, 49 * 3600 + 20 * 60 + 54.54, 0.02)                  // 角秒
+})
+t('ICRF → 场景：J2000.0 时刻与「只转 GMST」只差章动（< 25″）；2026-10-07 真天极离 J2000 天极 θ_A ≈ 537″（±10″ 章动），朝赤经 0h；正交阵', () => {
+  const ang = (m1, m2) => {   // 两个转动之差的转角：acos((tr(m1·m2ᵀ) − 1) / 2)
+    let tr = 0
+    for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++) tr += m1[i * 3 + k] * m2[i * 3 + k]
+    return Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2))) / RAD * 3600
+  }
+  const j2000 = new Date(Date.UTC(2000, 0, 1, 11, 58, 55, 816))
+  const g0 = T.gmstOf(j2000)
+  assert.ok(ang(FX.icrfToSceneRows(j2000, g0), FX.inertialToSceneRows(g0)) < 25)
+  const d = new Date(Date.UTC(2026, 9, 7)), R = L.icrfToEcef(d)
+  const pole = [R[6], R[7], R[8]]                                          // 地固 z（真天极）在 ICRF 里的方向 = R 的第三行
+  const Tc = (d.getTime() / 86400000 + 2440587.5 + 69.184 / 86400 - 2451545) / 36525
+  near((90 - Math.asin(pole[2]) / RAD) * 3600, 2004.3109 * Tc, 10)
+  near(Math.atan2(pole[1], pole[0]) / RAD, 0, 2)
+  const m = FX.icrfToSceneRows(d, T.gmstOf(d))
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    const s = m[i * 3] * m[j * 3] + m[i * 3 + 1] * m[j * 3 + 1] + m[i * 3 + 2] * m[j * 3 + 2]
+    near(s, i === j ? 1 : 0, 1e-12)
+  }
+  // 换轴：场景行 = 地固 (x, z, −y) 行
+  for (let k = 0; k < 3; k++) { near(m[k], R[k], 0); near(m[3 + k], R[6 + k], 0); near(m[6 + k], -R[3 + k], 0) }
+})
+
+t('自动曝光：远眺（地球只占一小点）≈ 满曝光；贴近昼半球（地球占满屏）压到 1/3 上下；夜半球按夜区压暗程度回升；晨昏效果关（夜区不压）= 与昼半球同', () => {
+  const sun = new THREE.Vector3(1, 0, 0)
+  const cam = (pos) => { const c = new THREE.PerspectiveCamera(42, 16 / 9, 0.1, 120); c.position.set(...pos); c.lookAt(0, 0, 0); c.updateMatrixWorld(); return c }
+  const far = FX.adaptFactor(cam([50, 0, 0]), sun, 0.72)
+  assert.ok(far > 0.995, 'far=' + far)
+  const day = FX.adaptFactor(cam([1.25, 0, 0]), sun, 0.72)
+  assert.ok(day > 0.3 && day < 0.4, 'day=' + day)
+  const night = FX.adaptFactor(cam([-1.25, 0, 0]), sun, 0.72)
+  assert.ok(night > 0.55 && night < 0.75, 'night=' + night)
+  near(FX.adaptFactor(cam([-1.25, 0, 0]), sun, 0), day, 1e-12)
+  // 拉远单调回升（地球占满屏的几档相等）
+  let prev = 0
+  for (const D of [1.25, 1.6, 2.2, 3, 5, 10, 25]) { const a = FX.adaptFactor(cam([D, 0, 0]), sun, 0.72); assert.ok(a >= prev - 1e-12, 'D=' + D); prev = a }
+  assert.ok(prev > 0.95 && FX.adaptFactor(cam([3, 0, 0]), sun, 0.72) > day + 0.1)
+})
+t('星的曝光：亮度滑块线性、太阳压暗最多到 40%、适应系数直接相乘；缺省适应 = 1', () => {
+  near(FX.starExposure(1, 0), FX.STAR_E0, 1e-12)
+  near(FX.starExposure(2, 0, 1), 2 * FX.STAR_E0, 1e-12)
+  near(FX.starExposure(1, 1, 1), 0.4 * FX.STAR_E0, 1e-12)
+  near(FX.starExposure(1, 0, 0.35), 0.35 * FX.STAR_E0, 1e-12)
+  near(FX.starExposure(1, 7, 3), 0.4 * FX.STAR_E0, 1e-12)   // 越界的 dim / adapt 夹回 [0, 1]
 })
 
 // ───────────── ④ 大气 ─────────────
@@ -233,6 +315,42 @@ t('编排器：开大气 = 两块网格挂进地球场景，关掉 / 整个放�
   assert.equal(earth.children.length, 0)
 })
 
+t('月球：挂进地球场景的不透明队列（底图 0 之后、大气 0.5 之前）、写深度；按月心就位、显示半径 = 真实半径 × 大小；关掉 / 放掉 = 摘走', () => {
+  const earth = new THREE.Scene()
+  const fx = FX.createSpaceFx({ getContext() { throw new Error('no gl') } }, earth)
+  assert.ok(FX.MOON_EARTH_ORDER > 0 && FX.MOON_EARTH_ORDER < FX.ATMO_EARTH_ORDER)
+  const d = new Date('2026-10-06T00:00:00Z'), p = L.moonPosition(d)
+  const st = FX.moonSceneState(p, L.moonBodyToEcef(d, p), L.sunDistanceKm(d))
+  fx.setTime([1, 0, 0], 0, st)            // 月球没开时先到的状态：开了以后照样就位
+  fx.setMoon({ scale: 3 })
+  const m = fx._moonMesh()
+  assert.deepEqual(earth.children, [m])
+  assert.equal(m.renderOrder, FX.MOON_EARTH_ORDER)
+  assert.equal(m.material.transparent, false); assert.equal(m.material.depthWrite, true); assert.equal(m.material.depthTest, true)
+  assert.deepEqual(m.position.toArray(), st.center)
+  near(m.scale.x, 1737.4 / 6371 * 3, 1e-12)
+  fx.setMoon({ scale: 99 }); near(m.scale.x, 1737.4 / 6371 * 10, 1e-12)   // 夹到 10×
+  assert.equal(m.visible, false)          // 贴图没到手（单测里没有 DOM）：不画，不闪一个灰球
+  fx.setMoon(null); assert.equal(earth.children.length, 0)
+  fx.setMoon({ scale: 1 }); fx.dispose(); assert.equal(earth.children.length, 0)
+})
+t('日面被（显示大小的）月盘挡住的系数：月心正对日心时 = 1 −（月盘/日面）²，月盘盖满日面 = 0，错开 = 1', () => {
+  const mf = FX.createMoonFx({})
+  const c = [60, 0, 0], cam = new THREE.PerspectiveCamera()
+  mf.setState({ center: c, rot: [1, 0, 0, 0, 1, 0, 0, 0, 1] })
+  mf.mesh.visible = true
+  const sunR = 0.008, dir = new THREE.Vector3(1, 0, 0)
+  for (const s of [1, 1.7]) {
+    mf.setStyle({ scale: s })
+    const rho = Math.asin(1737.4 / 6371 * s / 60)
+    near(mf.sunVisibility(cam, dir, sunR), 1 - (rho / sunR) ** 2, 1e-9, '倍数 ' + s)
+  }
+  mf.setStyle({ scale: 4 }); near(mf.sunVisibility(cam, dir, sunR), 0, 1e-12)
+  near(mf.sunVisibility(cam, new THREE.Vector3(Math.cos(0.1), Math.sin(0.1), 0), sunR), 1, 1e-12)
+  mf.mesh.visible = false; assert.equal(mf.sunVisibility(cam, dir, sunR), 1)   // 没画出来就不挡
+  mf.dispose()
+})
+
 // ───────────── ⑤ 太阳被地球挡 ─────────────
 t('太阳被地球挡住的系数：正对太阳 1、太阳在地球正背后 0、跨临边单调且平滑', () => {
   const sun = { x: 1, y: 0, z: 0 }
@@ -251,27 +369,35 @@ t('太阳被地球挡住的系数：正对太阳 1、太阳在地球正背后 0�
 })
 
 // ───────────── ⑥ 设置口径 ─────────────
-t('出厂：总开关另存（缺省关）；五项勾、晨昏线不勾；数值都在滑块范围内', () => {
+t('出厂：总开关另存（缺省关）；晨昏线以外都勾；数值都在滑块范围内；月球放大倍数 = 日面的放大口径', () => {
   const d = FX.SPACE_DEF
-  assert.deepEqual([d.stars, d.atmo, d.sun, d.img, d.night, d.line], [true, true, true, true, true, false])
+  assert.deepEqual([d.stars, d.atmo, d.sun, d.moon, d.img, d.night, d.line], [true, true, true, true, true, true, false])
+  assert.equal(d.planets, true)
+  assert.equal(d.moonScale, FX.MOON_SCALE_DEF)
+  near(d.moonScale, 0.008 / 0.00465, 0.05, '日面 SUN_R_VIS / SUN_R_TRUE')
   for (const [k, [lo, hi]] of Object.entries(FX.SPACE_RANGE)) assert.ok(d[k] >= lo && d[k] <= hi, k)
   assert.equal(FX.spaceFromSaved({}), null)
   assert.equal(FX.spaceFromSaved(null), null)
 })
 t('新存档：逐字段合并、类型不对的保留出厂值、数值夹进滑块范围、颜色只认 #rrggbb', () => {
-  const r = FX.spaceFromSaved({ spaceOn: true, space: { stars: false, starGain: 9, nightOpacity: -1, nightColor: 'red', lineColor: '#ABCDEF', line: 'yes', img: false } })
+  const r = FX.spaceFromSaved({ spaceOn: true, space: { stars: false, starGain: 9, nightOpacity: -1, nightColor: 'red', lineColor: '#ABCDEF', line: 'yes', img: false, moonScale: 99 } })
   assert.equal(r.on, true)
   assert.equal(r.space.stars, false); assert.equal(r.space.img, false)
   assert.equal(r.space.starGain, 2); assert.equal(r.space.nightOpacity, 0)
   assert.equal(r.space.nightColor, FX.SPACE_DEF.nightColor); assert.equal(r.space.lineColor, '#abcdef')
   assert.equal(r.space.line, false)   // 'yes' 不是布尔 → 出厂值
+  assert.equal(r.space.moonScale, 10); assert.equal(r.space.moon, true)   // 放大倍数夹到 10×；月球项缺 → 出厂勾
+  // 加月球之前的新存档（space 里没有 moon / moonScale）：打开总开关的老用户升级后月球按出厂值上屏
+  const o = FX.spaceFromSaved({ spaceOn: true, space: { stars: true, atmo: true, sun: true, img: false, night: true, line: false } })
+  assert.equal(o.space.moon, true); assert.equal(o.space.moonScale, FX.MOON_SCALE_DEF)
   assert.equal(FX.spaceFromSaved({ space: {} }).on, false)
 })
 t('老存档迁移：termOn=true → 总开关开、晨昏线（旧夜区遮罩 = 线的夜区阴影）、样式照搬；影像底图开 → 地球影像；都没开 → 总开关关、子项出厂值', () => {
   // 旧版只开夜区遮罩：晨昏线勾上、阴影照搬、线透明度 0（只剩阴影）；晨昏效果（柔和过渡带 + 卫星按日照明暗）不勾
   const a = FX.spaceFromSaved({ termOn: true, termNight: true, termLine: false, termStyle: { nightColor: '#0A1120', nightOpacity: 0.42, lineColor: '#ffd27a', lineWidth: 2, lineOpacity: 0.5 } })
   assert.equal(a.on, true)
-  assert.deepEqual([a.space.stars, a.space.atmo, a.space.sun, a.space.img, a.space.night, a.space.line], [false, false, false, false, false, true])
+  assert.deepEqual([a.space.stars, a.space.atmo, a.space.sun, a.space.moon, a.space.img, a.space.night, a.space.line], [false, false, false, false, false, false, true])
+  assert.equal(a.space.planets, false)
   assert.equal(a.space.shadeColor, '#0a1120'); assert.equal(a.space.shadeOpacity, 0.42); assert.equal(a.space.lineWidth, 2); assert.equal(a.space.lineOpacity, 0)
   assert.equal(a.space.nightColor, FX.SPACE_DEF.nightColor); assert.equal(a.space.nightOpacity, FX.SPACE_DEF.nightOpacity)   // 晨昏效果的样式不受旧遮罩牵连
   // 老存档缺 termNight / termLine（老版本的缺省都是开）：线 + 阴影都在
@@ -286,7 +412,7 @@ t('老存档迁移：termOn=true → 总开关开、晨昏线（旧夜区遮罩 
   // 影像底图并进宇宙空间：旧 imagery.on=true → 总开关开、只勾地球影像（星空 / 大气 / 太阳 / 晨昏不上屏）
   const e = FX.spaceFromSaved({ imagery: { on: true, k: 'bm8k', bright: 0.8 } })
   assert.equal(e.on, true)
-  assert.deepEqual([e.space.stars, e.space.atmo, e.space.sun, e.space.img, e.space.night, e.space.line], [false, false, false, true, false, false])
+  assert.deepEqual([e.space.stars, e.space.atmo, e.space.sun, e.space.moon, e.space.img, e.space.night, e.space.line], [false, false, false, false, true, false, false])
   const f = FX.spaceFromSaved({ termOn: true, imagery: { on: true } })
   assert.deepEqual([f.on, f.space.img, f.space.line, f.space.night], [true, true, true, false])
   assert.equal(FX.spaceFromSaved({ imagery: { on: false } }).on, false)

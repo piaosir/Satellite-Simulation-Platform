@@ -49,8 +49,8 @@ const DIMS = [
   { key: 'span', label: '翼展', tip: '本体 Y 向总长（GEO 南北向，太阳翼展开方向）', axis: 1 },
   { key: 'len', label: '长', tip: '本体 X 向总长（速度方向）', axis: 0 },
   { key: 'height', label: '高', tip: '本体 Z 向总高（对地方向）', axis: 2 },
-  { key: 'longest', label: '最长边', tip: '包围盒三边里最长的一条（翼展方向没摆到 ±Y 时用它）' },
-  { key: 'aperture', label: '口径', tip: '部件里拟合出的最大反射面口径' }
+  { key: 'longest', label: '最长边', tip: '包围盒三边中的最长边（翼展方向未沿 ±Y 时使用）' },
+  { key: 'aperture', label: '口径', tip: '部件中拟合得到的最大反射面口径' }
 ]
 const dim = ref('span')
 const known = ref(null)
@@ -88,13 +88,13 @@ const srcBad = computed(() => !!u.value.sizeSource && !isHttpUrl(u.value.sizeSou
         <div class="md-kv" title="导入时的推断（STEP 头 > extras.satsim > 已知尺寸 > 导出器线索 > 包围盒量级）"><span class="k">推断</span><span class="v un-font">{{ UNIT_LABEL[u.unitGuess] || u.unitGuess }}</span></div>
         <div class="md-kv"><span class="k">当前尺寸</span><span class="v" data-i18n-skip>{{ measuredNow ? fmtNum(measuredNow, 4) : '—' }}</span><span class="u">m</span></div>
       </div>
-      <div class="srow"><label title="1 个模型单位合多少米；改它时挂点、部件、质心、惯量一并缩放">比例</label>
+      <div class="srow"><label title="1 个模型单位对应的米数；修改时挂点、部件、质心、惯量同步缩放">比例</label>
         <NumIn :model-value="u.scaleToMeters" :min="1e-9" :max="1e6" :sig="9" :disabled="ro" @commit="(v) => applyScale(v)" />
         <span class="u">m/单位</span></div>
       <div class="srow"><label title="尺寸出处（网址，或 STEP / IGES 文件头）；核定尺寸必须有出处">出处</label>
         <input class="ci" type="text" :value="u.sizeSource || ''" :disabled="ro" :class="{ 'md-red': srcBad }" spellcheck="false" data-i18n-skip
                @change="setSource($event.target.value)" @keydown.enter="$event.target.blur()" /></div>
-      <label class="md-chkrow" :class="{ dim: !u.sizeSource }" title="尺寸已按出处核定（没有出处不能勾）">
+      <label class="md-chkrow" :class="{ dim: !u.sizeSource }" title="尺寸已按出处核定（无出处时不可勾选）">
         <input type="checkbox" :checked="!!u.sizeVerified" :disabled="ro || !u.sizeSource" @change="setVerified($event.target.checked)" />尺寸已核定
       </label>
 
@@ -103,20 +103,20 @@ const srcBad = computed(() => !!u.value.sizeSource && !isHttpUrl(u.value.sizeSou
         <select v-model="dim" class="ci un-dim" :title="(DIMS.find((d) => d.key === dim) || {}).tip">
           <option v-for="d in DIMS" :key="d.key" :value="d.key" :title="d.tip">{{ d.label }}</option>
         </select>
-        <NumIn v-model="known" :min="1e-6" :max="1e5" allow-empty :disabled="ro" title="该尺寸的真实值（米，按出处填）" @keydown.enter="solve" />
+        <NumIn v-model="known" :min="1e-6" :max="1e5" allow-empty :disabled="ro" title="该尺寸的实际值（米，按出处填写）" @keydown.enter="solve" />
         <span class="u">m</span>
         <button class="lb-mini" :disabled="ro || !(known > 0) || !measuredNow" @click="solve">反算</button>
       </div>
       <template v-if="res">
-        <div v-if="!res.ok" class="md-state bad" data-i18n-skip>{{ res.error }}</div>
+        <div v-if="!res.ok" class="md-state bad">{{ res.error }}</div>
         <template v-else>
           <div class="md-kvs">
-            <div class="md-kv"><span class="k">模型量得</span><span class="v" data-i18n-skip>{{ fmtNum(res.measured, 5) }}</span><span class="u">单位</span></div>
+            <div class="md-kv"><span class="k">模型测量值</span><span class="v" data-i18n-skip>{{ fmtNum(res.measured, 5) }}</span><span class="u">单位</span></div>
             <div class="md-kv"><span class="k">比例</span><span class="v" data-i18n-skip>{{ fmtNum(res.rawScale, 6) }}</span><span class="u">m/单位</span></div>
           </div>
           <div class="md-acts">
-            <button class="lb-mini primary" :disabled="ro" title="照已知尺寸精确换算（不吸附）" @click="applyScale(res.rawScale, res.unitGuess); res = null">应用</button>
-            <button v-if="res.nearest" class="lb-mini" :disabled="ro" :title="'按标准单位 ' + res.nearest.unitGuess + ' 吸附，与已知尺寸差 ' + (res.nearest.relErr * 100).toFixed(1) + '%'"
+            <button class="lb-mini primary" :disabled="ro" title="按已知尺寸精确换算（不吸附）" @click="applyScale(res.rawScale, res.unitGuess); res = null">应用</button>
+            <button v-if="res.nearest" class="lb-mini" :disabled="ro" :title="'按标准单位 ' + res.nearest.unitGuess + ' 吸附，与已知尺寸相差 ' + (res.nearest.relErr * 100).toFixed(1) + '%'"
                     @click="applyScale(res.nearest.scaleToMeters, res.nearest.unitGuess); res = null">
               <span>吸附</span><span data-i18n-skip>{{ res.nearest.unitGuess }} · {{ (res.nearest.relErr * 100).toFixed(1) }}%</span>
             </button>

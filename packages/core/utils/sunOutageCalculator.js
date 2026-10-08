@@ -1256,6 +1256,24 @@ var SUN_DISK_RULE = (function () {
   return pts;
 })();
 
+/*
+ * 窄波束用的加密求积（v1.5.0 排查 #18）：径向 u = r² 上 6 点 Gauss–Legendre × 方位 16 等分，共 96 点。
+ * 波束宽度 θB 小于约 0.4 θd（日面角径，≈ 0.21°：大口径 Ka 天线）时，24 点那套对日面上剧烈变化的增益采不够——θB = 0.15° 轴上
+ * 偏 −4.5 %、偏轴 0.3° 处 +30 %（对高斯档闭式）；96 点在 ΔT 有量级处（偏轴 ≤ 0.3°）≤ 0.2 %。宽波束仍用 24 点，结果逐位不变
+ *（SUN_DISK_FINE_BELOW 是相对日面角径的门限）。
+ */
+var SUN_DISK_RULE_FINE = (function () {
+  var gl = [[-0.9324695142031521, 0.1713244923791704], [-0.6612093864662645, 0.3607615730481386], [-0.2386191860831969, 0.4679139345726910],
+    [0.2386191860831969, 0.4679139345726910], [0.6612093864662645, 0.3607615730481386], [0.9324695142031521, 0.1713244923791704]];
+  var pts = [];
+  for (var i = 0; i < gl.length; i++) {
+    var rf = Math.sqrt((gl[i][0] + 1) / 2);
+    for (var j = 0; j < 16; j++) { var ph = Math.PI * j / 8; pts.push([rf * Math.cos(ph), rf * Math.sin(ph), gl[i][1] / 2 / 16]); }
+  }
+  return pts;
+})();
+var SUN_DISK_FINE_BELOW = 0.4;
+
 /**
  * 星侧太阳侵入：逐样本批量（主进程 IPC sunoutage:satIntrusion 直接调它；纯函数、不联网）。
  * @param {object} o
@@ -1264,6 +1282,7 @@ var SUN_DISK_RULE = (function () {
  *   pattern   {kind:'gauss', thetaB3dBDeg} | {kind:'diameter', diameterM} |
  *             {kind:'gain', gainAt(dirAnt:[x,y,z]) → dBi|null, fallbackThetaB3dBDeg?}（dirAnt = 天线系单位矢量：z = 视轴、y = up、x = y × z；
  *              每拍在日面上按 SUN_DISK_RULE 取 24 个方向求线性平均增益（不是只取日面中心——窄波束下小源近似会差几十 %）；
+ *              fallbackThetaB3dBDeg < 0.4θd 的窄波束换 SUN_DISK_RULE_FINE（96 点）；
  *              传给回调的数组每次复用（零分配），回调里要留就自己拷；
  *              GRD 网格通常只盖地球盘附近，任一点取不到（null）时整拍退回高斯主瓣 fallbackThetaB3dBDeg，再没有记 0）
  *   earthRadiusKm  地球遮挡用（缺省 6371，D13）
@@ -1309,9 +1328,11 @@ function satSunIntrusionSeries(o) {
         if (ax <= ay && ax <= az) { e1x = 0; e1y = cz; e1z = -cy; } else if (ay <= az) { e1x = -cz; e1y = 0; e1z = cx; } else { e1x = cy; e1y = -cx; e1z = 0; }
         var el = Math.sqrt(e1x * e1x + e1y * e1y + e1z * e1z); e1x /= el; e1y /= el; e1z /= el;
         var e2x = cy * e1z - cz * e1y, e2y = cz * e1x - cx * e1z, e2z = cx * e1y - cy * e1x;
+        // 窄波束（θB < 0.4 θd；θB 取主进程给的峰值增益等效宽度 fallbackThetaB3dBDeg）换 96 点加密求积，宽波束照旧 24 点
+        var rule = pat.fallbackThetaB3dBDeg > 0 && pat.fallbackThetaB3dBDeg < SUN_DISK_FINE_BELOW * diam ? SUN_DISK_RULE_FINE : SUN_DISK_RULE;
         var rad = diam / 2 * RAD, gsum = 0, okAll = true;
-        for (var p = 0; p < SUN_DISK_RULE.length; p++) {
-          var P = SUN_DISK_RULE[p], rho = Math.hypot(P[0], P[1]) * rad;
+        for (var p = 0; p < rule.length; p++) {
+          var P = rule[p], rho = Math.hypot(P[0], P[1]) * rad;
           var cr = Math.cos(rho), sr = rho > 0 ? Math.sin(rho) / (rho / rad) : 0;  // sin(ρ)·(P/|P|) = sin(ρ)/|P|·P
           dir[0] = cr * cx + sr * (P[0] * e1x + P[1] * e2x);
           dir[1] = cr * cy + sr * (P[0] * e1y + P[1] * e2y);
@@ -1352,5 +1373,7 @@ module.exports = {
   sunDistAuAt: sunDistAuAt,
   earthBlockFraction: earthBlockFraction,
   satSunIntrusionSeries: satSunIntrusionSeries,
-  SUN_DISK_RULE: SUN_DISK_RULE
+  SUN_DISK_RULE: SUN_DISK_RULE,
+  SUN_DISK_RULE_FINE: SUN_DISK_RULE_FINE,
+  SUN_DISK_FINE_BELOW: SUN_DISK_FINE_BELOW
 };

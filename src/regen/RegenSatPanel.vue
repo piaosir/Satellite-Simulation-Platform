@@ -1,7 +1,60 @@
+<script>
+// 取星口径的两件纯函数放在模块作用域并导出：窗口刷新卫星树时（RegenLinkBudgetApp.reloadSatTree）按树里现在的节点
+// 重解已选条目的轨道，与本面板选星走同一份代码（3D 页改了根数 / 历元，再生式窗口跟着变）。
+import { findPoolByNorad } from '../ngso/satSearchPool.js'
+import { treeElementsSpec } from '../shared/treeOrbitEpoch.js'
+
+// 平均运动(rev/day) → 圆轨道高度(km)
+const _MU = 398600.4418, _RE = 6378.137
+function altFromMeanMotion(revDay) {
+  const n = (Number(revDay) || 0) * 2 * Math.PI / 86400
+  if (!(n > 0)) return null
+  return Math.cbrt(_MU / (n * n)) - _RE
+}
+
+// —— 卫星/天线树节点 → 轨道 spec：按 NORAD/根数解析真实轨道（与 NGSO 同口径，读同一份共享候选池）——
+// 节点自带经典六根数时历元取节点自己的 elements.epoch（treeElementsSpec；旧节点没有历元按固定常量），与 3D 页同一颗星同一处。
+export async function treeNodeOrbit(node) {
+  if (!node) return null
+  const kind = node.kind || ''
+  if (node.noradId != null) {
+    const rec = await findPoolByNorad(node.noradId)
+    if (rec) {
+      if (rec.orbitType === 'elements' && rec.elements) {
+        const e = rec.elements
+        return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
+      }
+      return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
+    }
+    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「从星历搜索」按 NORAD 重选，或改用手动轨道高度+倾角。` }
+  }
+  if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
+  const el = node.elements
+  if (el && el.altKm != null) return treeElementsSpec(el, node.noradId)
+  if ((kind === 'preset' || kind === 'custom' || !kind) && node.altKm != null) return { type: 'snapshot', lonDeg: Number(node.lon) || 0, latDeg: Number(node.lat) || 0, altKm: Number(node.altKm) || 0, noradId: node.noradId }
+  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数，无法确定其轨道。请在「星座3D」页为其补充轨道根数，或改用手动轨道高度+倾角。` }
+}
+
+// 选星后回显轨道高度/倾角到 form（只读「自动」）
+export function orbitToForm(form, orbit) {
+  if (!form || !orbit) return
+  if (orbit.type === 'elements') {
+    if (orbit.altKm != null) form.orbitAltitude = String(Math.round(orbit.altKm))
+    if (orbit.incl != null) form.orbitInclination = String(orbit.incl)
+  } else if (orbit.type === 'omm') {
+    const h = altFromMeanMotion(orbit.meanMotion); if (h != null) form.orbitAltitude = h.toFixed(0)
+    if (orbit.incl != null) form.orbitInclination = String(orbit.incl)
+  } else if (orbit.type === 'snapshot') {
+    if (orbit.altKm != null) form.orbitAltitude = String(Math.round(orbit.altKm))
+    form.orbitInclination = String(Math.abs(Number(orbit.latDeg) || 0).toFixed(2))
+  }
+}
+</script>
+
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from '../ngso/satPresets.js'
-import { ensureSearchPool, findPoolByNorad } from '../ngso/satSearchPool.js'
+import { ensureSearchPool } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
 import { fmtGeoSlot, geoSlotOfOmm } from '../shared/geoSlot.js'
 
@@ -27,39 +80,11 @@ function onClear() {
   props.ngsoSat.mode = 'manual'; props.ngsoSat.orbit = null; props.ngsoSat.name = ''; props.ngsoSat.noradId = null; props.ngsoSat.folder = ''
 }
 
-// 平均运动(rev/day) → 圆轨道高度(km)
-const _MU = 398600.4418, _RE = 6378.137
-function altFromMeanMotion(revDay) {
-  const n = (Number(revDay) || 0) * 2 * Math.PI / 86400
-  if (!(n > 0)) return null
-  return Math.cbrt(_MU / (n * n)) - _RE
-}
-
-// —— ① 卫星/天线树选择：按 NORAD/根数解析真实轨道（与 NGSO 同口径，读同一份共享候选池）——
+// —— ① 卫星/天线树选择：按 NORAD/根数解析真实轨道（treeNodeOrbit，见上方模块作用域）——
 // tree 下拉直接绑定 ngsoSat.folder（唯一真值源）：搜索选星/取消选星把它清空即自动回到未选，
 // 重载时也自动回显已保存的 folder，无需独立本地态同步（切换标签页因此不会丢失树选星）。
 const curNode = computed(() => props.satTree.find((s) => s.folder === props.ngsoSat.folder) || null)
 const treeSats = computed(() => props.satTree)
-async function treeNodeOrbit(node) {
-  if (!node) return null
-  const kind = node.kind || ''
-  if (node.noradId != null) {
-    const rec = await findPoolByNorad(node.noradId)
-    if (rec) {
-      if (rec.orbitType === 'elements' && rec.elements) {
-        const e = rec.elements
-        return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
-      }
-      return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
-    }
-    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「从星历搜索」按 NORAD 重选，或改用手动轨道高度+倾角。` }
-  }
-  if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
-  const el = node.elements
-  if (el && el.altKm != null) return { type: 'elements', altKm: Number(el.altKm), ecc: Number(el.ecc) || 0, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, epoch: node.epoch || null, noradId: node.noradId }
-  if ((kind === 'preset' || kind === 'custom' || !kind) && node.altKm != null) return { type: 'snapshot', lonDeg: Number(node.lon) || 0, latDeg: Number(node.lat) || 0, altKm: Number(node.altKm) || 0, noradId: node.noradId }
-  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数，无法确定其轨道。请在「星座3D」页为其补充轨道根数，或改用手动轨道高度+倾角。` }
-}
 async function onPickTree() {
   const node = curNode.value
   if (!node) { onClear(); return }
@@ -67,6 +92,7 @@ async function onPickTree() {
   props.ngsoSat.folder = node.folder
   props.form.satelliteName = node.satName
   const orbit = await treeNodeOrbit(node)
+  if (props.ngsoSat.mode !== 'tree' || props.ngsoSat.folder !== node.folder) return   // 反解期间另选了星：不拿旧节点顶掉新选的
   props.ngsoSat.orbit = orbit
   applyOrbitToForm(orbit)
 }
@@ -120,19 +146,7 @@ function pickSearch(rec) {
 }
 
 // 选星后回显轨道高度/倾角到 form（只读「自动」）
-function applyOrbitToForm(orbit) {
-  if (!orbit) return
-  if (orbit.type === 'elements') {
-    if (orbit.altKm != null) props.form.orbitAltitude = String(Math.round(orbit.altKm))
-    if (orbit.incl != null) props.form.orbitInclination = String(orbit.incl)
-  } else if (orbit.type === 'omm') {
-    const h = altFromMeanMotion(orbit.meanMotion); if (h != null) props.form.orbitAltitude = h.toFixed(0)
-    if (orbit.incl != null) props.form.orbitInclination = String(orbit.incl)
-  } else if (orbit.type === 'snapshot') {
-    if (orbit.altKm != null) props.form.orbitAltitude = String(Math.round(orbit.altKm))
-    props.form.orbitInclination = String(Math.abs(Number(orbit.latDeg) || 0).toFixed(2))
-  }
-}
+function applyOrbitToForm(orbit) { orbitToForm(props.form, orbit) }
 
 // 选中卫星轨道形状（近/远地点/偏心率/周期 + 严谨区制 GEO/IGSO/MEO/LEO/HEO，见 shared/orbitClass.js）
 const orbitShape = computed(() => {

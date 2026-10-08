@@ -11,7 +11,7 @@
 import {
   stepsDue, advanceMs, tickIntervalMs, snapMs, cursorSnapSec, panWindow, achievedRate,
   clampStep, clampRate, clampSpeed, fmtStep, fmtStepShort, fmtRate, fmtOffset, STEP_PRESETS, SPEED_PRESETS,
-  followWindow, flipPeriodSec, rateFor, effSpeed, speedCapped, RATE_MAX, RATE_MIN, nextDelayMs
+  followWindow, flipPeriodSec, rateFor, effSpeed, speedCapped, RATE_MAX, RATE_MIN, nextDelayMs, STEP_MAX, boundStep, playStartMs
 } from '../../../src/shared/simClockCore.js'
 
 let pass = 0, fail = 0
@@ -122,7 +122,7 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps
   ok('③ 换速率不丢零头', r2.steps === 1, `accum0=${a1} steps=${r2.steps}`)
 
   // 步长是【量】不是【向】：负值夹到下限而不是回默认（方向由 dir 单独管，两者混在一起会出现「负步长 + 反向 = 前进」）
-  ok('③ 步长夹逼', clampStep(0) === 60 && clampStep(1e9) === 86400 && clampStep(-5) === 0.1,
+  ok('③ 步长夹逼', clampStep(0) === 60 && clampStep(1e9) === STEP_MAX && clampStep(-5) === 0.1,
     `${clampStep(0)} / ${clampStep(1e9)} / ${clampStep(-5)}`)
   ok('③ 拍率夹逼', clampRate(0) === 1 && clampRate(1e6) === RATE_MAX && clampRate(0.001) === RATE_MIN)
   // 超过拍率上限的诉求先被 clampRate 夹住，间隔因此不会低于 1000/RATE_MAX（240 拍/s → 4 ms，
@@ -230,5 +230,16 @@ const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps
   ok('⑦ 仿真时间不因放慢而落后', clk.clock.tMs > 0)
 }
 
+// ==================== ⑦ 仿真时段的终止处理 ====================
+{
+  const R = (end) => ({ startMs: 0, stopMs: 10000, end })
+  const b1 = boundStep(9000, 11000, R('stop'), 1)
+  ok('⑦ 停止：跨过终止时刻落在终止时刻并停表', b1.tMs === 10000 && b1.halt === true, JSON.stringify(b1))
+  const b2 = boundStep(9000, 11000, R('loop'), 1), b3 = boundStep(10000, 11000, R('loop'), 1)
+  ok('⑦ 循环：先落终点出一帧，下一拍回起点', b2.tMs === 10000 && !b2.halt && b3.tMs === 0 && !b3.halt)
+  const b4 = boundStep(9000, 11000, R('continue'), 1), b5 = boundStep(1000, -500, R('loop'), -1)
+  ok('⑦ 继续不设界；倒放循环落起点', b4.tMs === 11000 && !b4.halt && b5.tMs === 0 && !b5.halt)
+  ok('⑦ 起播：在终点外按播放从另一端开始', playStartMs(12000, R('stop'), 1) === 0 && playStartMs(-1, R('loop'), -1) === 10000 && playStartMs(5000, R('stop'), 1) === 5000 && playStartMs(12000, null, 1) === 12000)
+}
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

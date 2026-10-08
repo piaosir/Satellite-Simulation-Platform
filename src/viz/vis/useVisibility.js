@@ -1,6 +1,6 @@
 // 可见性分析（复刻 STK Access / Coverage）—— 组合式逻辑层（仿 useBeamSynth）。
 // 职责：面板状态 + 目标点归约 + 单时刻可见性计算（recompute）+ 地图叠加 spec（overlaySpec）+ KPI 摘要 + 结果排序。
-// 卫星集来源可选（satSrc）：''=当前显示的星（跟随星座视图）| 'g:<key>'=内置分组（g:custom=自定义卫星）| 's:<id>'=卫星组。
+// 卫星集来源可选（satSrc）：''=当前显示的星（跟随星座视图）| 'g:<key>'=内置分组（g:custom=自定义卫星）| 's:<id>'=卫星组 | 't:tree'=卫星天线树。
 // 非空来源由宿主异步解析成 entries 缓存，getSatSet 统一吐当前生效的集；本面板不自持临时组。
 // 纯几何在 visibility.js；本层只做编排与宿主接线，宿主能力全经参数注入。
 //
@@ -36,7 +36,7 @@ export function useVisibility({
 }) {
   const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
   const open = ref(false)
-  const satSrc = ref('')             // 卫星集来源：''=当前显示 | 'g:<key>'=内置分组 | 's:<id>'=卫星组（解析在宿主）
+  const satSrc = ref('')             // 卫星集来源：''=当前显示 | 'g:<key>'=内置分组 | 's:<id>'=卫星组 | 't:tree'=卫星天线树（解析在宿主）
   const minElev = ref(5)             // 仰角门限（度）
   const targetKind = ref('')         // 'station' | 'point' | 'traj' | 'poly'
   const targetId = ref('')
@@ -162,6 +162,7 @@ export function useVisibility({
 
   // 地图叠加：目标点（贴地青点）+ 可见星星下点（2D 平面图画卫星图标；3D 因 setSatLayer 不画图标 → 只在 hover 时出名字）。
   // 3D 的在轨立体点 + 目标→星视线斜线由宿主 computeVisibilityGeometry/commitGeometry 走 setSelectionSet 另画（setSatLayer 画不出在轨高度）。
+  // key＝卫星身份串（宿主 satIdOf 同一口径）：宿主按它与聚焦 / 天线树卫星的图标归并（viz/constellation/satMarkMerge.js）
   function overlaySpec() {
     if (!open.value || mode.value === 'coverage') return null   // 覆盖模式：只留热力图，不画目标点/可见星标记
     const dots = [], sats = []
@@ -172,7 +173,7 @@ export function useVisibility({
       if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
       const hot = hid && String(r.noradId) === hid
       const nm = r.slot ? r.name + ' ' + r.slot : r.name   // GEO 星地图标签带定点经度
-      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? nm : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelBold: !!nameBold.value, labelShow: showName.value || hot, iconShow: true })
+      sats.push({ lon: r.subLon, lat: r.subLat, altKm: r.altKm, name: (showName.value || hot) ? nm : '', color: hot ? HL_HEX : iconHex, nameColor: hot ? '#efeae0' : (iconColor.value || VIS_CSS), iconSize: Number(iconSize.value) || 12, labelSize: Number(nameSize.value) || 10, labelBold: !!nameBold.value, labelShow: showName.value || hot, iconShow: true, key: r.noradId ? 'n:' + r.noradId : 'm:' + r.name })
     }
     return (dots.length || sats.length) ? { dots, sats } : null
   }
@@ -373,7 +374,7 @@ export function useVisibility({
         if (typeof d.nameBold === 'boolean') nameBold.value = d.nameBold
         if (typeof d.iconColor === 'string' && /^#[0-9a-f]{6}$/i.test(d.iconColor)) iconColor.value = d.iconColor
         if (typeof d.showLines === 'boolean') showLines.value = d.showLines
-        if (typeof d.satSrc === 'string' && /^(|[gs]:[\w-]+)$/.test(d.satSrc)) satSrc.value = d.satSrc   // 宿主 watch 到非空值即解析；死 id 由宿主回退
+        if (typeof d.satSrc === 'string' && /^(|[gst]:[\w-]+)$/.test(d.satSrc)) satSrc.value = d.satSrc   // 宿主 watch 到非空值即解析；死 id 由宿主回退
         if (['now', 'access', 'coverage'].includes(d.mode)) mode.value = d.mode   // 记住上次模式（别每次都回瞬时可见）
         if (d.accessTz != null) accessTz.value = normTzMode(d.accessTz, accessTz.value)
         if (d.accOrder === 'time' || d.accOrder === 'sat') accOrder.value = d.accOrder

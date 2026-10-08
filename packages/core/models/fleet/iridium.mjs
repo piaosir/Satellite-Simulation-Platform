@@ -23,7 +23,7 @@ const Z = [0, 0, 1]
 
 function buildNext(B) {
   const h = P(1.2, 0.8, 0.6), ZN = h[2]         // 主箱 2.4（X）× 1.6（Y）× 1.2（Z）；两端载荷 / 天线把全长撑到 ≈3.1 m
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), h, 0.03)
   // 外观：侧面 / 对地面大面积银色（铝胶带网格感）+ 金色 MLI 包边与顶部（2017、2023 发射前照片）
   skinBox(g, BODY, P(0, 0, 0), h, { '+x': 'mli_gold', '-x': 'mli_gold', '+y': 'mli_silver', '-y': 'mli_silver', '-z': 'mli_gold', '+z': 'mli_silver' })

@@ -39,13 +39,14 @@ const massTip = computed(() => fmtNum(s.value.massKg, 9) + ' kg')
   <div class="md-read asm-read" data-asm-readout>
     <span class="g"><span class="k" title="展开对称后的件数">件数</span><span class="v" data-i18n-skip>{{ fmtInt(s.count) }}</span></span>
     <template v-if="s.count">
-      <span class="g"><span class="k">质量</span><span class="v" data-i18n-skip :title="massTip">{{ fx(s.massKg, 1) }}</span><span class="u">kg</span></span>
-      <span class="g"><span class="k">质心</span><span class="v" data-i18n-skip :title="comTip"><template v-for="(t, i) in com" :key="i"><span class="ax">{{ 'XYZ'[i] }}</span><span class="n" :style="{ minWidth: wOf(t) + 'ch' }">{{ t }}</span></template></span><span class="u">m</span></span>
-      <span class="g"><span class="k">惯量</span><span class="v" data-i18n-skip :title="inTip"><template v-for="(t, i) in inertia" :key="i"><span v-if="i" class="sep"> / </span><span class="n">{{ t }}</span></template></span><span class="u">kg·m²</span></span>
+      <span class="g"><span class="k">质量</span><span class="v" :title="massTip">{{ fx(s.massKg, 1) }}</span><span class="u">kg</span></span>
+      <span class="g"><span class="k">质心</span><span class="v" :title="comTip"><template v-for="(t, i) in com" :key="i"><span class="ax">{{ 'XYZ'[i] }}</span><span class="n" :style="{ minWidth: wOf(t) + 'ch' }">{{ t }}</span></template></span><span class="u">m</span></span>
+      <!-- 惯量三个对角分量各带淡色分量名（xx / yy / zz，与质心的 X / Y / Z 同一写法） -->
+      <span class="g"><span class="k">惯量</span><span class="v" :title="inTip"><template v-for="(t, i) in inertia" :key="i"><span class="ax">{{ ['xx', 'yy', 'zz'][i] }}</span><span class="n">{{ t }}</span></template></span><span class="u">kg·m²</span></span>
       <span v-if="boxOk" class="g"><span class="k">包围盒</span><span class="v" data-i18n-skip><template v-for="(t, i) in box" :key="i"><span v-if="i" class="sep"> × </span><span class="n">{{ t }}</span></template></span><span class="u">m</span></span>
-      <span class="g"><span class="k">穿插</span><span class="v" :class="{ bad: s.clashes > 0 }" data-i18n-skip>{{ fmtInt(s.clashes) }}</span></span>
+      <span class="g"><span class="k">干涉</span><span class="v" :class="{ bad: s.clashes > 0 }" data-i18n-skip>{{ fmtInt(s.clashes) }}</span></span>
     </template>
-    <span v-if="fps" class="g"><span class="v" data-i18n-skip :title="'帧 CPU ' + frameMs + ' ms'" :style="{ minWidth: '3ch' }">{{ Math.round(fps) }}</span><span class="u">fps</span></span>
+    <span v-if="fps" class="g"><span class="v" :title="'帧 CPU ' + frameMs + ' ms'" :style="{ minWidth: '3ch' }">{{ Math.round(fps) }}</span><span class="u">fps</span></span>
   </div>
 </template>
 

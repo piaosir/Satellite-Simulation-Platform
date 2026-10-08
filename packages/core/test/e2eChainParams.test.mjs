@@ -321,5 +321,22 @@ function mkRow() {
     thresholdEffLive(null, '1') === null)
 }
 
+// ⑫ 节点覆盖：'' / 未设 = 跟随库条目，显式值压过库；覆盖模式的下拉（E2eFields.vue）要有空值项可回到「跟随库」
+//    （select 没有占位符：覆盖值 undefined 与空值项 '' 在 looseEqual 下不等，会渲成 selectedIndex = -1 的空白框，选过一次就回不去）
+{
+  const fs = await import('node:fs')
+  const SAT = { id: 's', name: '星', form: { satelliteName: '星', frequencyBand: 'Ka', gt: '2' } }
+  const mk = (ov) => { const s = newSatNode('txp', '星'); s.ov = ov; return { _id: 'c', nodes: [newEsNode('发'), s, newEsNode('收')], hops: [newHop('rf'), newHop('rf')] } }
+  const RES = { es: () => ({ form: {} }), sat: () => SAT }
+  ok("节点覆盖 '' 跟随库条目", buildChain(mk({ frequencyBand: '' }), RES).nodes[1].frequencyBand === 'Ka')
+  ok('节点覆盖未设跟随库条目', buildChain(mk({}), RES).nodes[1].frequencyBand === 'Ka')
+  ok('节点覆盖显式值压过库', buildChain(mk({ frequencyBand: 'Ku' }), RES).nodes[1].frequencyBand === 'Ku')
+  const sfc = fs.readFileSync(path.join(path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..'), 'src/e2e/E2eFields.vue'), 'utf8')
+  const ovSel = /<select v-else-if="f\.type === 'select'"[^>]*>([\s\S]*?)<\/select>/.exec(sfc)
+  ok('E2eFields：覆盖模式的下拉单独一支', !!ovSel)
+  ok('E2eFields：空值项显示库值（库也空则字段缺省）', !!ovSel && /<option value=""[^>]*>\{\{ ph\(f\) \|\| f\.def \}\}<\/option>/.test(ovSel[1]))
+  ok("E2eFields：选空值项写回 ''", !!ovSel && /@change="form\[f\.key\] = \$event\.target\.value"/.test(ovSel[0]))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

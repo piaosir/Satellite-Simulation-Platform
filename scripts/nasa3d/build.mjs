@@ -67,11 +67,15 @@ import {
 import { DEFAULT_Q_MODEL2BODY, Q_YUP_ZENITH, defaultImportQ, quatCanonical, quatAngleDeg, quatFromBodyAxes } from '../../packages/core/models/bodyFrame.mjs'
 import { NASA_LICENSE, parseModelId } from '../../packages/core/models/schema.mjs'
 import { checkThumbRecord, recipeHash, RECIPE_FILES, REVIEW_ROOT, summarizeSheets } from './sheets.mjs'
+import { fixInvertedNormals, bakePlanarDetail, isBakePrim, BAKE_TEX_PREFIX } from './lodbake.mjs'
 
 // ─────────────────────────────── 常量 ───────────────────────────────
 
-/** 处理口径一变就 +1：旧产物的缓存全部作废。3：材质兜底（applyMaterialFallbacks）+ lod2 预算（零碎件剔除 + 三角形上限）。 */
-export const PIPELINE_VERSION = 3
+/**
+ * 处理口径一变就 +1：旧产物的缓存全部作废。3：材质兜底（applyMaterialFallbacks）+ lod2 预算（零碎件剔除 + 三角形上限）。
+ * 4（2026-10-08）：原件法线朝向纠正（三档，lodbake.fixInvertedNormals）+ lod1 / lod2 平面细节烘焙（lodbake.bakePlanarDetail）。
+ */
+export const PIPELINE_VERSION = 4
 
 export const LOD_SPECS = Object.freeze([
   Object.freeze({ key: 'lod0', ratio: 1, error: 0, maxTex: 2048 }),
@@ -907,12 +911,12 @@ export function withSimplifyFlags(S, flags) {
   return w
 }
 
-/** 去掉可重算的法线 / 切线，返回被处理的图元集合（之后只给这些图元重算法线）。 */
+/** 去掉可重算的法线 / 切线，返回被处理的图元集合（之后只给这些图元重算法线）。烘焙四边形（lodbake）不动：它的法线就是组法线。 */
 export function stripNormalsForSimplify(doc) {
   const touched = new Set()
   for (const mesh of doc.getRoot().listMeshes()) {
     for (const prim of mesh.listPrimitives()) {
-      if (prim.getMode() !== 4 || prim.listTargets().length) continue
+      if (prim.getMode() !== 4 || prim.listTargets().length || isBakePrim(prim)) continue
       if (!prim.getAttribute('NORMAL') && !prim.getAttribute('TANGENT')) continue
       prim.setAttribute('NORMAL', null)
       prim.setAttribute('TANGENT', null)
@@ -1209,6 +1213,8 @@ export function simplifyPrims(doc, F, S, { simplifier, ratio, error, flags = [],
     for (const prim of mesh.listPrimitives()) {
       const mode = prim.getMode()
       if (mode !== 4 && mode !== 5 && mode !== 6 && mode !== 0) continue
+      // 烘焙四边形（lodbake）一块两个三角形，减不动；Prune 还会把它当零碎件整块删掉
+      if (isBakePrim(prim)) continue
       const pos = prim.getAttribute('POSITION'), uv = prim.getAttribute('TEXCOORD_0'), idx = prim.getIndices()
       const P = pos && pos.getArray(), UV = uv && uv.getArray()
       if (mode === 4 && idx && uvWeight > 0 && P instanceof Float32Array && UV instanceof Float32Array && hasTexture(F, prim.getMaterial())) {
@@ -1235,28 +1241,30 @@ export function simplifyPrims(doc, F, S, { simplifier, ratio, error, flags = [],
 }
 
 /**
- * lod1 / lod2 的简化（从同一份基准文档克隆，基准不动）：[lod2 剔零碎件] → 去法线 → 焊接 → 简化 → 折痕法线 → prune。
+ * lod1 / lod2 的简化（从同一份基准文档克隆，基准不动）：[lod2 剔零碎件] → [平面细节烘焙] → 去法线 → 焊接 → 简化 → 折痕法线 → prune。
+ * 平面细节烘焙（lodbake.bakePlanarDetail，给了 sharp 且 bake 不为 false 时）：电池片 / OSR 这类共面细碎几何烘进图集、换成贴图四边形，
+ * 不再交给简化器删（2026-10-08，见 lodbake.mjs 文件头）。烘焙四边形不去法线、不简化（simplifyPrims / stripNormalsForSimplify 跳过）。
  * lod2 设了三角形上限且超了：按「上限 ÷ 剔除后面数」重设 ratio，error 依次放宽到 0.05 / 0.1 / 0.2 重来，取第一个落进上限 × 1.1 的
- * （都落不进取面数最少的那次）。返回 { doc, budget }，budget 记剔除与降面过程（进 build.json 与 REPORT）。
+ * （都落不进取面数最少的那次）。返回 { doc, budget }，budget 记剔除、烘焙与降面过程（进 build.json 与 REPORT）。
  */
-export async function simplifyToBudget(base, F, spec, { simplifier, raw = null, flags = [], uvWeight = 0, cullFrac = 0, maxTris = 0 } = {}) {
+export async function simplifyToBudget(base, F, spec, { simplifier, raw = null, flags = [], uvWeight = 0, cullFrac = 0, maxTris = 0, sharp = null, bake = true } = {}) {
   const isL2 = spec.key === 'lod2'
   const run = async (ratio, error) => {
     const d = F.cloneDocument(base)
     const cull = isL2 && cullFrac > 0 ? cullSmallMeshes(d, F, cullFrac) : null
+    const baked = sharp && bake ? await bakePlanarDetail(d, F, sharp, { lod: spec.key }) : null
     const touched = stripNormalsForSimplify(d)
-    // lod2 带贴图的图元按 uv 计误差（LOD2_UV_WEIGHT 处的注释）；lod1 与 lod2 其余图元与 F.simplify 同一条路
-    if (raw && uvWeight > 0) {
-      await d.transform(F.weld())
-      simplifyPrims(d, F, raw, { simplifier, ratio, error, flags, uvWeight })
-    } else await d.transform(F.weld(), F.simplify({ simplifier, ratio, error }))
+    // 逐图元简化（跳过烘焙四边形）：lod2 带贴图的图元按 uv 计误差（LOD2_UV_WEIGHT 处的注释）；其余与 F.simplify 逐图元同一条路
+    await d.transform(F.weld())
+    simplifyPrims(d, F, raw || simplifier, { simplifier, ratio, error, flags, uvWeight: raw ? uvWeight : 0 })
     for (const prim of touched) if (!prim.isDisposed()) creaseNormals(d, prim)
     // lod2 剔了零碎件：空出来的叶节点留着（节点名一个不少）；其余照旧删空叶
     await d.transform(F.prune({ keepExtras: true, keepLeaves: !!(cull && cull.meshes) }))
-    return { d, cull, tris: countSceneTriangles(d), ratio, error }
+    return { d, cull, baked, tris: countSceneTriangles(d), ratio, error }
   }
   let best = await run(spec.ratio, spec.error)
   const budget = { cull: best.cull && best.cull.meshes ? { meshes: best.cull.meshes, tris: best.cull.tris } : null, cap: null }
+  if (best.baked && best.baked.regions) budget.bake = { regions: best.baked.regions, tris: best.baked.trisRemoved, atlas: best.baked.atlas, mr: best.baked.mr }
   if (isL2 && maxTris > 0 && best.tris > maxTris * 1.1) {
     const first = best.tris
     const base0 = best.cull ? best.cull.total - best.cull.tris : countSceneTriangles(base)
@@ -1382,6 +1390,10 @@ export async function processModelFile(tc, job) {
   info.materialFallback = fb
   if (fb.noMaterialPrims) notes.push(`${fb.noMaterialPrims} 个图元没有材质，已给中性浅灰（${NEUTRAL_MATERIAL_NAME}）`)
   if (fb.degenerate.fixed.length) notes.push(`退化黑材质覆盖 ${(fb.degenerate.share * 100).toFixed(0)} % 的三角形，按名字还原 ${fb.degenerate.fixed.length} 个：${fb.degenerate.fixed.join('、')}`)
+  // 法线朝向纠正（原件法线与绕向相反的图元整图元翻法线；三档共用，见 lodbake.mjs 文件头 ②）
+  const inv = fixInvertedNormals(doc)
+  info.normalsFlipped = inv.flipped.length
+  if (inv.flipped.length) notes.push(`${inv.flipped.length}/${inv.prims} 个图元的法线与绕向相反，已翻转：${inv.flipped.slice(0, 8).join('、')}${inv.flipped.length > 8 ? ' 等' : ''}`)
   // ⑤ 包围盒（精确：已解压的顶点 × 世界矩阵）与居中
   const scene = sceneOf(doc)
   if (!scene) throw stageError('场景', new Error('glb 里没有场景'))
@@ -1413,7 +1425,8 @@ export async function processModelFile(tc, job) {
       try {
         const r = await simplifyToBudget(doc, F, spec, {
           simplifier, raw: MeshoptSimplifier, flags, uvWeight: isL2 ? LOD2_UV_WEIGHT : 0,
-          cullFrac: isL2 ? job.lod2CullFrac || 0 : 0, maxTris: isL2 ? job.lod2MaxTris || 0 : 0
+          cullFrac: isL2 ? job.lod2CullFrac || 0 : 0, maxTris: isL2 ? job.lod2MaxTris || 0 : 0,
+          sharp, bake: job.bake !== false
         })
         d = r.doc
         budget = r.budget
@@ -1433,7 +1446,9 @@ export async function processModelFile(tc, job) {
     }
     if (d.getRoot().listTextures().length) {
       const tex = texLimitFor(spec, job)
-      try { await d.transform(F.textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [tex, tex] })) } catch (e) { notes.push(`${spec.key} 贴图压缩失败，保留原贴图：${e.message}`) }
+      // 烘焙图集（名 / URI 以 BAKE_TEX_PREFIX 开头）已按档出好 WebP：不再二次有损、也不缩到通用上限（lod2 的 256 会把图集压糊）
+      const notBake = new RegExp(`^(?!${BAKE_TEX_PREFIX})`)
+      try { await d.transform(F.textureCompress({ encoder: sharp, targetFormat: 'webp', resize: [tex, tex], pattern: notBake })) } catch (e) { notes.push(`${spec.key} 贴图压缩失败，保留原贴图：${e.message}`) }
     }
     const tris = countSceneTriangles(d)
     let glb
@@ -1447,7 +1462,7 @@ export async function processModelFile(tc, job) {
     lods[spec.key] = {
       bytes: buf.byteLength, sha256: sha256(buf), tris,
       extensionsRequired: hh.json.extensionsRequired || [], textures: (hh.json.textures || []).length, ms: Math.round(performance.now() - t1),
-      ...(budget && (budget.cull || budget.cap || budget.animations) ? { budget } : {})
+      ...(budget && (budget.cull || budget.cap || budget.animations || budget.bake) ? { budget } : {})
     }
   }
   for (const n of tc.notes) notes.push(n)

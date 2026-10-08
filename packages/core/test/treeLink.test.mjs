@@ -23,6 +23,8 @@ import { createLiveThrottle, focusStale } from '../../../src/viz/grd/treeLink.js
 //   ⑬ treeNavState：两棵树卫星行「聚焦 / 跟随」两钮的点亮 / 置灰 / 悬停说明（关联 / 非关联 / 缺失 / 平面图 / 正跟随）；
 //      说明文字都在 UI 词典里；两棵树与页面接线（Ctrl 点加减、非关联星与正跟随的星显式聚焦先退出跟随）按源码钉。
 import { treeNavState, nodeLinkId } from '../../../src/viz/grd/treeLink.js'
+//   ⑭ treeSetMembers：卫星集「卫星天线树」的成员 —— 树序、仰角线 / 无身份不收、同号去重（先到先得）、虚拟星（合成号）与关联星（真号）分开标。
+import { treeSetMembers } from '../../../src/viz/grd/treeLink.js'
 import { EXACT as UI_EXACT, PAT as UI_PAT } from '../../../src/shared/i18n/uiDict.data.js'
 import { readFileSync } from 'node:fs'
 
@@ -443,14 +445,14 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(!treeNavState(E, { cur: true, followId: '41194' }).focusOn && !treeNavState(E, { followId: '41194' }).followOn, '仰角线节点：不认号，不亮')
   ok(treeNavState({ folder: 'X', noradId: '' }).followDis && !treeNavState(null).followOn, '空号 / 空节点：按非关联处理、不抛')
 
-  // 天线树定点同步星：节点没有号，星座条目用合成号（geoIds：folder → 号串）—— 与关联星同样可聚焦 / 跟随
+  // 天线树虚拟星（这里用定点同步星）：节点没有号，星座条目用合成号（geoIds：folder → 号串）—— 与关联星同样可聚焦 / 跟随
   const G = { folder: 'MY-GEO', kind: 'custom', lon: 125, lat: 0, altKm: 35786, noradId: null }
   const geoIds = new Map([['MY-GEO', '1712966']])
   ok(nodeLinkId(G, geoIds) === '1712966' && nodeLinkId(G) === '' && nodeLinkId(L, geoIds) === '41194' && nodeLinkId(E, new Map([['EL', '1']])) === '', 'nodeLinkId：关联星给号、定点同步星给合成号、没映射 / 仰角线给空')
   s = treeNavState(G, { cur: true, linkId: nodeLinkId(G, geoIds) })
   ok(s.focusOn && !s.focusDis && s.focusTip === '聚焦卫星（Ctrl 点＝加入 / 移出聚焦集）' && !s.followDis && s.followTip === '跟随卫星', '定点同步星（给了 linkId）：聚焦亮、跟随可点')
   ok(treeNavState(G, { followId: '1712966', linkId: '1712966' }).followOn, '正跟随它（按合成号）→ 亮')
-  ok(treeNavState(G, { linkId: '' }).followDis, 'linkId 显式给空（非同步定点星）→ 跟随置灰')
+  ok(treeNavState(G, { linkId: '' }).followDis, 'linkId 显式给空（星座里没有它的条目）→ 跟随置灰')
   const tree = [L, G, { folder: 'LEO-FIX', kind: 'custom', altKm: 550, noradId: null }]
   ok([...foldersForNorads(tree, ['1712966', '41194'], geoIds)].sort().join() === 'MY-GEO,ZX6E' && foldersForNorads(tree, ['1712966']).size === 0, 'foldersForNorads：带映射认合成号（不带映射照旧只认真号）')
   ok(linkedNodesOf(tree, 1712966, geoIds).map((n) => n.folder).join() === 'MY-GEO' && linkedNodesOf(tree, '1712966').length === 0, 'linkedNodesOf：合成号 → 它自己那一个节点')
@@ -476,6 +478,30 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(page.includes('@click.stop="onTreeFocusBtn(sat, $event)"') && page.includes('@click.stop="onTreeFollowBtn(sat)"'), '对地树卫星行：两钮接上')
   ok(page.includes(':follow-id="followLinkId" :flat="flatView"') && page.includes('@focus-sat="(n, f, add) => focusTreeSat(n, { force: f, additive: !!add })" @follow-sat="followTreeSat"'), '对星树：宿主传跟随状态与平面图、接两路事件')
   ok(panel.includes('@click.stop="onFocusBtn(sat, $event)"') && panel.includes('@click.stop="onFollowBtn(sat)"') && panel.includes("'follow-sat'"), '对星树卫星行：两钮接上')
+}
+
+// ---------- ⑭ 卫星集「卫星天线树」的成员（treeSetMembers）----------
+{
+  const nodes = [
+    { folder: 'ZX6E', satName: '中星6E', noradId: 41194 },                             // 关联星（号存数字）
+    { folder: 'MY-GEO', satName: '自定义 GEO', kind: 'custom', lon: 125, lat: 0, altKm: 35786, noradId: null },
+    { folder: 'EL', satName: '仰角线', kind: 'elevline', noradId: '41194' },           // 仰角线：带号也不收
+    { folder: 'ZX6E·2', satName: '中星6E 副本', noradId: '41194' },                   // 同号第二个 folder：去重
+    { folder: 'SIM', satName: 'LEO 模拟', kind: 'orbit', elements: { altKm: 550 } },
+    { folder: 'BAD', satName: '根数解不出', kind: 'orbit', elements: { altKm: -1 } },    // 宿主没给它合成号（没出条目）
+    null,
+    { folder: 'ISS', satName: '', noradId: '25544' }
+  ]
+  const geoIds = new Map([['MY-GEO', '1712966'], ['SIM', '1755501']])
+  const m = treeSetMembers(nodes, geoIds)
+  ok(m.map((x) => x.id).join() === '41194,1712966,1755501,25544', '按树序；仰角线 / 没身份的 / 空节点不收；同号只留树序第一个', m.map((x) => x.id).join())
+  ok(m[0].folder === 'ZX6E' && m[0].node === nodes[0] && m[0].name === '中星6E' && m[0].virtual === false && typeof m[0].id === 'string', '关联星：真号（字符串）、virtual = false、带回节点')
+  ok(m[1].virtual === true && m[1].folder === 'MY-GEO' && m[2].virtual === true && m[2].name === 'LEO 模拟', '虚拟星（定点 / 根数）：合成号、virtual = true')
+  ok(m[3].name === '' && m[3].id === '25544', '没起名：名字给空串（宿主自己兜）')
+  ok(treeSetMembers(nodes).map((x) => x.id).join() === '41194,25544', '不给合成号映射：只剩关联星')
+  ok(treeSetMembers(null).length === 0 && treeSetMembers([], geoIds).length === 0, '空树 → 空表')
+  // 与「号 ↔ folder」一律同口径：每个成员的 id 都能经 linkedNodesOf 认回它自己那个节点
+  ok(m.every((x) => linkedNodesOf(nodes.filter(Boolean), x.id, geoIds)[0] === x.node), '成员 id 经 linkedNodesOf 认回树序第一个节点')
 }
 
 console.log(`\n${pass} pass, ${fail} fail`)

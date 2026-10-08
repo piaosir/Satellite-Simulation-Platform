@@ -1,6 +1,7 @@
 // NGSO（非地球静止轨道）链路预算 — 完整专业参数 schema。
 // 由 GEO 参数集改造：删除 GEO 专属（定点轨道经度 / 邻星离轴角），改为 NGSO 的轨道高度 / 轨道倾角，
-// 每个发/收信站增加「最低仰角」（最差几何依据），「其他损耗」改名「综合损耗」。星间链路(ISL)已删除
+// 每个发/收信站增加「最低仰角」（最差几何依据）。（「其他损耗」曾改名「综合损耗」，v1.5.0 起四窗统一回「其他损耗」——
+// 与详细预算、结果词表同名；同一损耗项三种叫法曾让人以为是三个量。）星间链路(ISL)已删除
 // （NGSO 预算模块永久将 ISL 跳数置 0）。
 // 默认值 = MEO Ku 预设（2026-07 起）：轨道 8000 km/45°（平台 MEO 基准工况）+ 卫星点波束 G/T 10 dB/K；
 // 站型/转发器/干扰系数沿用小程序 NGSO 口径（6.2m 关口站 + 3.7m 干线站对 MEO 弯管仍属合理站型）。
@@ -52,13 +53,13 @@ export const FIELD_GROUPS = [
       { key: 'feederLoss', label: '馈线损耗', side: 'tx', unit: 'dB', type: 'num', def: '3.5', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合（原「其他损耗」）', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      { key: 'uplinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
       { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数；NGSO §8 口径下随等效仰角变化），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },
       { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35', target: 'link' },
       { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75', target: 'link' },
       { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
-      { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合（原「其他损耗」）', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
+      { key: 'downlinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
     ]
   },
   {
@@ -117,10 +118,6 @@ export const FIELD_GROUPS = [
       { key: 'slantRange', label: '斜距', tip: '发信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（随波束位置随站而异的「卫星×发信站」配对量，故留在站表逐站填写）。MEO 预设 10 dB/K：MEO Ku 点波束量级（GEO 宽波束为 0~2 dB/K 量级）', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
-      // 星侧太阳侵入（DESIGN2 D11）：与 G_Ts 同为「卫星×发信站」配对量（这座站落在哪个接收波束、那个波束何时看见太阳），
-      // 故紧跟 G_Ts 同组同列组。引擎只从 uplinkCT / uplinkThermalCN 各减一次，G_Ts 与 SFD 不动；缺省关 = 逐位同旧口径。
-      { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从上行 C/T 与上行热噪声 C/N 中扣除，卫星 G/T 与 SFD 不变；「设置余量」方式由功放抬升补足余量（功放功率、到达通量密度与下行电平随之升高），其余计算方式功放与到达通量密度不变；关＝不计入', type: 'select', options: ['关', '开'], def: '关', target: 'link' },
-      { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
@@ -137,7 +134,7 @@ export const FIELD_GROUPS = [
       { key: 'rxMinElevation', label: '最低仰角', manualLabel: '仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '收信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', def: '10', target: 'link' },
       { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表逐站填写）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
+      { key: 'rxEIRP', label: '卫星饱和 EIRP', tip: '卫星下行 EIRP（随波束位置随站而异的「卫星×收信站」配对量，故留在站表逐站填写）', unit: 'dBW', type: 'num', def: '46', target: 'link' },
       { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
       { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]

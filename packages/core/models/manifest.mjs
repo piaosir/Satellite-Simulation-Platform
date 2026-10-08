@@ -108,7 +108,7 @@ export function validateManifest(m, opts = {}) {
   if (!buildId) warnings.push('manifest.buildId 缺失或不合规')
   const generatedAt = isStr(m.generatedAt) && Number.isFinite(Date.parse(m.generatedAt)) ? m.generatedAt : null
   if (m.generatedAt !== undefined && !generatedAt) warnings.push('manifest.generatedAt 不是合法时间')
-  if (m.cdnBase !== undefined) warnings.push('manifest.cdnBase 已忽略（客户端地址钉死）')
+  if (m.cdnBase !== undefined) warnings.push('manifest.cdnBase 已忽略（客户端地址固定）')
   // 顶层 builtin：内置 manifest 可以统一声明「每条都带了哪些档」，条目自己的 builtin 优先
   const topBuiltin = Array.isArray(m.builtin) ? m.builtin : null
 
@@ -121,8 +121,8 @@ export function validateManifest(m, opts = {}) {
     if (seen.has(e.id)) { errors.push(`${tag}：id 重复，已丢弃`); return }
     if (o.remote) {
       const pid = parseModelId(e.id)
-      if (!isRedistributable(e)) { errors.push(`${tag}：不可分发的条目不许出现在云端，已丢弃`); return }
-      if (['stk-local', 'user'].includes(e.source.kind) || (pid && ['stk', 'user'].includes(pid.prefix))) { errors.push(`${tag}：本机来源不许出现在云端，已丢弃`); return }
+      if (!isRedistributable(e)) { errors.push(`${tag}：不可分发的条目不允许出现在云端，已丢弃`); return }
+      if (['stk-local', 'user'].includes(e.source.kind) || (pid && ['stk', 'user'].includes(pid.prefix))) { errors.push(`${tag}：本机来源不允许出现在云端，已丢弃`); return }
       if (!httpOk(e.source.url || '')) { errors.push(`${tag}：source.url 须为 http(s) 地址，已丢弃`); return }
     }
     seen.add(e.id)

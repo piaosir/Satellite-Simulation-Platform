@@ -723,6 +723,22 @@ export function createViewport(el, opts = {}) {
     if (controls._panOffset) controls._panOffset.set(0, 0, 0)
     if (controls._scale != null) controls._scale = 1
   }
+  /**
+   * 按屏幕像素增量转视角：与 OrbitControls 左键拖动同一换算（2π·Δ / 画布高 × rotateSpeed、同一正方向），立即到位、不留阻尼余量。
+   * 装配编辑器放置中「按住 Alt 移动指针」用：那时 OrbitControls 被禁用、指针事件归编辑器（update 不看 enabled）。天线视角下不动。
+   */
+  function orbitBy(dx, dy) {
+    if (av || !(Number.isFinite(dx) && Number.isFinite(dy)) || (dx === 0 && dy === 0)) return
+    const s = 2 * Math.PI * controls.rotateSpeed / (canvas.clientHeight || 1)
+    killInertia()
+    controls.rotateLeft(dx * s)
+    controls.rotateUp(dy * s)
+    const damp = controls.enableDamping
+    controls.enableDamping = false
+    controls.update()
+    controls.enableDamping = damp
+    invalidate()
+  }
   // 「自动」视角（autoViewFor：与缩略图同一套取景，库卡片与预览第一眼同一张脸）：按模型算一次，几何 / 轴向变了作废
   let autoDir = null
   // 太阳档的自动太阳：没有真实太阳矢量时（工作台看模型），每次选视角把太阳摆在「相机右肩后、比相机更偏向它那一侧」——
@@ -1895,7 +1911,7 @@ export function createViewport(el, opts = {}) {
     setMounts, setMountSelection, onMountPick, setMaskOverlay, setMaskVisible, setAntennaView, onAntennaViewChange, attachPoseNow,
     snapshot, stats, probeNode, resize: () => resize(), invalidate, dispose,
     // live 根（装配编辑器，CONTRACT §4）
-    setLiveRoot, refreshLive, setDisplayUp, setPointerOwner, setFrameHook, viewState, setViewState, killInertia, precompile,
+    setLiveRoot, refreshLive, setDisplayUp, setPointerOwner, setFrameHook, viewState, setViewState, killInertia, orbitBy, precompile,
     get scene() { return scene },
     get overlay() { return overlay },
     get controls() { return controls },

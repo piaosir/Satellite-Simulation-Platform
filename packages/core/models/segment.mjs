@@ -863,7 +863,9 @@ function flatPatches(he, nrm, area, maxDeg, eligible) {
 
 // ───────────────────────── 自动分割 ─────────────────────────
 
-const ROLE_ZH = { bus: '本体', solarArray: '太阳翼', reflector: '反射面', feed: '馈源', boom: '伸展臂', radiator: '散热面', thruster: '推力器', sensor: '敏感器', other: '其他' }
+// 部件缺省名（不是识别关键词表——那张表是上面的 ROLE_RULES，「伸展臂」等仍是匹配词）：与工作台部件表「角色」列同一套叫法
+// （wbLogic.ROLE_LABEL：支撑结构…），本体部件叫「本体」（导入件也可能是飞机 / 船，不叫星体）
+const ROLE_ZH = { bus: '本体', solarArray: '太阳翼', reflector: '反射面', feed: '馈源', boom: '支撑结构', radiator: '散热面', thruster: '推力器', sensor: '敏感器', other: '其他' }
 
 /**
  * 自动分割（任务书 §5.4 ①–④ 的自动部分；⑤ 人工在工作台里改）。

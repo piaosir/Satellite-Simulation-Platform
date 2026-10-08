@@ -1,7 +1,7 @@
 <script setup>
 // 质量特性（任务书 §4.3 三档来源互斥）：
 //   手填   质量 / 质心 / 惯量六项由用户给；
-//   估算   用户给质量，网格按均质体积分（Worker：焊接 → 闭合性 → 逐壳定向 → Mirtich），闭合才出惯量，不闭合退回表面质心；
+//   估算   用户给质量，按部件类型赋密度估算质心与惯量（partMass；部件没识别出来时 Worker 先自动识别）；闭合性 / 体积 / 表面积只作读数；
 //   组件   部件表里逐件填质量（质心缺省取分割给的部件质心）→ 平行轴累加；参数化模型用生成器的组件表（只读）。
 // 结果区只出数字；闭合性 / 可信度用图标 + title（属性，不是判定）。
 import { ref, computed, inject, watch } from 'vue'
@@ -10,7 +10,7 @@ import ExcelGrid from '../../components/ExcelGrid.vue'
 import MdSec from '../MdSec.vue'
 import NumIn from '../NumIn.vue'
 import { useGridSelect } from '../../viz/grd/useGridSelect.js'
-import { combineComponents } from '@core/models/massProps.mjs'
+import { combineComponents, principalInertia } from '@core/models/massProps.mjs'
 import { num } from '../../shared/num.js'
 import { partsAsComponents, fmtNum, ROLE_LABEL } from '../wbLogic.js'
 
@@ -20,9 +20,9 @@ const m = computed(() => cur.meta)
 const ro = computed(() => !cur.editable)
 const mp = computed(() => (m.value && m.value.massProps) || null)
 const MODES = [
-  { key: 'manual', label: '手填', tip: '质量、质心、惯量由用户给出' },
-  { key: 'estimate', label: '估算', tip: '给定质量，按网格均质体积分（闭合网格才有惯量）' },
-  { key: 'components', label: '组件', tip: '逐部件给质量，平行轴定理累加' }
+  { key: 'manual', label: '手动输入', tip: '质量、质心、惯量由用户指定' },
+  { key: 'estimate', label: '估算', tip: '给定总质量，按部件类型赋密度估算质心与惯量（星体按包围盒实心盒，太阳翼 / 反射面 / 散热面等按面密度；与参数化生成器同一张密度表；未识别部件时先自动识别）' },
+  { key: 'components', label: '组件', tip: '逐部件指定质量，按平行轴定理累加' }
 ]
 const mode = ref('manual')
 watch(() => [cur.id, mp.value && mp.value.source], () => { mode.value = (mp.value && mp.value.source) || (cur.kind === 'tpl' || cur.kind === 'param' || cur.kind === 'gen' ? 'components' : 'manual') }, { immediate: true })
@@ -39,7 +39,8 @@ function loadDraft() {
   draft.value = {
     massKg: p ? p.massKg : null,
     com: p && Array.isArray(p.comBody) ? p.comBody.slice() : [0, 0, 0],
-    I: I ? [I[0][0], I[1][1], I[2][2], I[0][1], I[0][2], I[1][2]] : [null, null, null, null, null, null]
+    // 惯性积按 P = +∫xy dm 显示 / 输入（存的是张量元 = −P）
+    I: I ? [I[0][0], I[1][1], I[2][2], -I[0][1], -I[0][2], -I[1][2]] : [null, null, null, null, null, null]
   }
 }
 watch(() => [cur.id, cur.rev], loadDraft, { immediate: true })
@@ -47,7 +48,9 @@ function commitManual() {
   const d = draft.value
   if (!(d.massKg > 0)) return
   const I = d.I
-  const inertia = I.slice(0, 3).every((v) => Number.isFinite(v)) ? [[I[0], I[3] ?? 0, I[4] ?? 0], [I[3] ?? 0, I[1], I[5] ?? 0], [I[4] ?? 0, I[5] ?? 0, I[2]]] : null
+  // 输入的惯性积是 P = +∫xy dm，张量非对角元 = −P
+  const P = (k) => (Number.isFinite(I[k]) ? -I[k] : 0)
+  const inertia = I.slice(0, 3).every((v) => Number.isFinite(v)) ? [[I[0], P(3), P(4)], [P(3), I[1], P(5)], [P(4), P(5), I[2]]] : null
   setMP({ massKg: d.massKg, comBody: d.com.map((v) => (Number.isFinite(v) ? v : 0)), inertiaBody: inertia, source: 'manual', confidence: 'high' })
 }
 function setDraft(path, v) {
@@ -58,7 +61,11 @@ function setDraft(path, v) {
   draft.value = d
   commitManual()
 }
-const I_LABELS = ['Ixx', 'Iyy', 'Izz', 'Ixy', 'Ixz', 'Iyz']
+// 惯量（对质心、本体轴）+ 惯性积 P = +∫xy dm（SolidWorks 缺省「正」记法同号；张量非对角元 = −P）
+const I_LABELS = ['Ixx', 'Iyy', 'Izz', 'Pxy', 'Pxz', 'Pyz']
+const I_TIPS = ['转动惯量 Ixx（对质心、沿本体轴）', '转动惯量 Iyy（对质心、沿本体轴）', '转动惯量 Izz（对质心、沿本体轴）',
+  '惯性积 Pxy = +∫xy dm（张量非对角元 = −Pxy）', '惯性积 Pxz = +∫xz dm（张量非对角元 = −Pxz）', '惯性积 Pyz = +∫yz dm（张量非对角元 = −Pyz）']
+const iVal = (I, k) => [I[0][0], I[1][1], I[2][2], -I[0][1], -I[0][2], -I[1][2]][k]
 
 // ---------- 估算 ----------
 const estMass = ref(null)
@@ -68,19 +75,26 @@ const estErr = ref('')
 const estMs = ref(0)
 watch(() => cur.id, () => { est.value = null; estErr.value = ''; estMass.value = mp.value && mp.value.source === 'estimate' ? mp.value.massKg : null })
 const rootOk = computed(() => { void cur.geomRev; return !!wb.currentRoot() && !(cur.kind === 'glb' && cur.lod !== 'lod0') })
+// 发起计算的那一件（id + 几何版本）：Worker 回来时当前件换了（切签 / 库页单击别的件）或几何改过，结果作废——
+// 不把 A 的质量特性写进 B（500 ms 后自动落盘），同分析页 live() 守卫
+const stamp = () => cur.id + '|' + cur.geomRev
 async function runEstimate() {
   const root = wb.currentRoot()
   if (!root || !(estMass.value > 0)) return
   estBusy.value = true; estErr.value = ''
   const t0 = performance.now()
+  const s0 = stamp(), massKg = estMass.value
   try {
-    const r = await wb.analyzer.massProps(root, wb.viewMeta(), { massKg: estMass.value })
+    const r = await wb.analyzer.massProps(root, wb.viewMeta(), { massKg })
+    if (stamp() !== s0) return
     estMs.value = Math.round(performance.now() - t0)
     if (!r) { estErr.value = '网格为空。'; return }
+    // 部件拆不出来、网格又不闭合：给不出可信的质心（不拿面积形心冒充，审查 P0-1）
+    if (!Array.isArray(r.comBody)) { estErr.value = '未识别出部件。'; return }
     est.value = r
-    setMP({ massKg: estMass.value, comBody: r.comBody, inertiaBody: r.inertiaBody, source: 'estimate', confidence: r.confidence })
+    setMP({ massKg, comBody: r.comBody, inertiaBody: r.inertiaBody, source: 'estimate', confidence: r.confidence })
     wb.edit((x) => { const g = x.geometry || (x.geometry = {}); g.closed = !!r.closed; g.volumeM3 = r.volumeM3 == null ? null : r.volumeM3; if (r.areaM2) g.areaM2 = r.areaM2 }, { undo: false })
-  } catch (e) { estErr.value = (e && e.message) || String(e) }
+  } catch (e) { if (stamp() === s0) estErr.value = (e && e.message) || String(e) }
   finally { estBusy.value = false }
 }
 
@@ -116,9 +130,34 @@ function pEdit(id, key, val) {
     }
     applyComponents(x)
   }, { undo: false })
+  refineComponents()
 }
-function applyComponents(x) {
-  const r = combineComponents(partsAsComponents(x.parts))
+// 组件档的自身惯量（审查 P0-2）：各部件单位质量惯量由分析 Worker 按部件几何与类型算（partMass），按「模型 + 几何版本 + 部件划分」记一份；
+// 改质量先按已有的（或质点）即时合成，Worker 回来后补上自身惯量再合成一次
+let jpk = null, jpkKey = '', jpkRun = null
+const partsSig = (x) => JSON.stringify((x && Array.isArray(x.parts) ? x.parts : []).map((p) => [p.id, p.role, p.nodes || null, p.triRanges || null]))
+async function ensureJpk() {
+  const root = wb.currentRoot()
+  if (!root || !m.value) return null
+  const key = cur.id + '|' + cur.geomRev + '|' + partsSig(m.value)
+  if (key === jpkKey && jpk) return jpk
+  if (jpkRun && jpkRun.key === key) return jpkRun.p
+  const p = wb.analyzer.partInertia(root, wb.viewMeta()).then((list) => {
+    jpk = new Map((Array.isArray(list) ? list : []).map((o) => [o.id, o.inertiaPerKg])); jpkKey = key
+    return jpk
+  }).catch(() => null).finally(() => { if (jpkRun && jpkRun.key === key) jpkRun = null })
+  jpkRun = { key, p }
+  return p
+}
+async function refineComponents() {
+  const s0 = stamp()
+  const J = await ensureJpk()
+  if (stamp() !== s0) return   // 算的途中换了件：这份自身惯量属于上一件
+  if (!J || !J.size || !m.value || !m.value.massProps || m.value.massProps.source !== 'components') return
+  wb.edit((x) => applyComponents(x, J), { undo: false })
+}
+function applyComponents(x, J = jpk) {
+  const r = combineComponents(partsAsComponents(x.parts, J))
   if (r) x.massProps = { massKg: r.massKg, comBody: r.comBody, inertiaBody: r.inertiaBody, source: 'components', confidence: 'low' }
 }
 const pg = useGridSelect({
@@ -144,12 +183,13 @@ function useParamComponents() {
 
 const conf = computed(() => mp.value && mp.value.confidence)
 const inertia = computed(() => (mp.value && Array.isArray(mp.value.inertiaBody) ? mp.value.inertiaBody : null))
+const principal = computed(() => { const I = inertia.value; if (!I) return []; try { return principalInertia(I).moments.slice().sort((a, b) => a - b) } catch { return [] } })
 </script>
 
 <template>
   <MdSec id="m-mass" title="质量特性" :summary="mp ? fmtNum(mp.massKg, 5) + ' kg' : ''">
     <template v-if="m">
-      <div class="srow"><label title="三档来源互斥：结果只取当前这一档">来源</label>
+      <div class="srow"><label title="三种来源互斥：结果仅取当前所选来源">来源</label>
         <div class="lbu-seg">
           <button v-for="x in MODES" :key="x.key" :class="{ on: mode === x.key }" :title="x.tip" :disabled="ro && !isParam" @click="mode = x.key">{{ x.label }}</button>
         </div>
@@ -161,9 +201,9 @@ const inertia = computed(() => (mp.value && Array.isArray(mp.value.inertiaBody) 
           <NumIn :model-value="draft.massKg" :min="1e-6" :max="1e7" allow-empty :disabled="ro" @commit="(v) => setDraft('massKg', v)" /><span class="u">kg</span></div>
         <div class="srow"><label title="本体系（米）">质心</label>
           <div class="md-v3"><NumIn v-for="k in [0, 1, 2]" :key="k" :model-value="draft.com[k]" :sig="6" :disabled="ro" @commit="(v) => setDraft('c' + k, v)" /></div><span class="u">m</span></div>
-        <div class="srow ms-I"><label title="绕质心、本体系轴；不填惯量时只存质量与质心">惯量 (kg·m²)</label>
+        <div class="srow ms-I"><label title="对质心、沿本体系轴；未填惯量时仅保存质量与质心">惯量 (kg·m²)</label>
           <div class="ms-I6">
-            <div v-for="(lab, k) in I_LABELS" :key="lab" class="ms-Ic"><span class="ms-Il" data-i18n-skip>{{ lab }}</span>
+            <div v-for="(lab, k) in I_LABELS" :key="lab" class="ms-Ic" :title="I_TIPS[k]"><span class="ms-Il" data-i18n-skip>{{ lab }}</span>
               <NumIn :model-value="draft.I[k]" :sig="6" allow-empty :disabled="ro" @commit="(v) => setDraft('I' + k, v)" /></div>
           </div></div>
       </template>
@@ -172,15 +212,15 @@ const inertia = computed(() => (mp.value && Array.isArray(mp.value.inertiaBody) 
       <template v-else-if="mode === 'estimate'">
         <div class="srow"><label>质量</label>
           <NumIn v-model="estMass" :min="1e-6" :max="1e7" allow-empty :disabled="ro" /><span class="u">kg</span>
-          <button class="lb-mini" :disabled="ro || !rootOk || !(estMass > 0) || estBusy" title="按网格均质体积分（全精度 lod0）" @click="runEstimate">{{ estBusy ? '估算中…' : '估算' }}</button>
+          <button class="lb-mini" :disabled="ro || !rootOk || !(estMass > 0) || estBusy" title="按部件类型赋密度估算（全精度 lod0；未识别部件时先自动识别）" @click="runEstimate">{{ estBusy ? '估算中…' : '估算' }}</button>
         </div>
-        <div v-if="estErr" class="md-state bad" data-i18n-skip>{{ estErr }}</div>
+        <div v-if="estErr" class="md-state bad">{{ estErr }}</div>
         <div v-if="est" class="md-acts ms-flags">
-          <span class="md-ico" :class="est.closed ? 'good' : 'poor'" :title="est.closed ? '网格闭合：按体积积分' : '网格不闭合：退回表面质心，无惯量'"><Icon :name="est.closed ? 'check' : 'alert-triangle'" :size="12" />闭合</span>
+          <span class="md-ico" :class="est.closed ? 'good' : 'poor'" :title="est.closed ? '网格闭合' : '网格不闭合'"><Icon :name="est.closed ? 'check' : 'alert-triangle'" :size="12" />闭合性</span>
           <span class="md-ico" :class="est.confidence === 'high' ? 'good' : 'poor'" :title="'可信度 ' + est.confidence"><Icon :name="est.confidence === 'high' ? 'check' : 'alert-triangle'" :size="12" />可信度</span>
           <span v-if="est.volumeM3 != null" class="md-state" title="体积"><span data-i18n-skip>{{ fmtNum(est.volumeM3, 4) }}</span> m³</span>
           <span class="md-state" title="表面积"><span data-i18n-skip>{{ fmtNum(est.areaM2, 4) }}</span> m²</span>
-          <span v-if="est.shells" class="md-state" title="壳数 / 翻正的壳 / 空腔"><span data-i18n-skip>{{ est.shells }} / {{ est.invertedShells }} / {{ est.cavities }}</span></span>
+          <span v-if="est.shells" class="md-state" title="壳体数 / 已翻正的壳体 / 空腔数"><span data-i18n-skip>{{ est.shells }} / {{ est.invertedShells }} / {{ est.cavities }}</span></span>
           <span class="md-state" data-i18n-skip>{{ estMs }} ms</span>
         </div>
       </template>
@@ -198,7 +238,7 @@ const inertia = computed(() => (mp.value && Array.isArray(mp.value.inertiaBody) 
         </template>
         <template v-else>
           <div class="md-grid tall">
-            <ExcelGrid :grid="pg" :cols="PCOLS" :text="pText" :cell-class="pCellClass" :head-tip="(c) => c.tip || c.label" empty-text="还没有部件。" />
+            <ExcelGrid :grid="pg" :cols="PCOLS" :text="pText" :cell-class="pCellClass" :head-tip="(c) => c.tip || c.label" empty-text="暂无部件。" />
           </div>
           <div class="md-state"><span>计入</span><span data-i18n-skip>{{ nWithMass }} / {{ parts.length }}</span></div>
         </template>
@@ -216,8 +256,10 @@ const inertia = computed(() => (mp.value && Array.isArray(mp.value.inertiaBody) 
           <div class="md-kv"><span class="k">质心 Y</span><span class="v" data-i18n-skip>{{ fmtNum(mp.comBody[1], 5) }}</span><span class="u">m</span></div>
           <div class="md-kv"><span class="k">质心 Z</span><span class="v" data-i18n-skip>{{ fmtNum(mp.comBody[2], 5) }}</span><span class="u">m</span></div>
           <template v-if="inertia">
-            <div v-for="(lab, k) in I_LABELS" :key="lab" class="md-kv"><span class="k" data-i18n-skip>{{ lab }}</span>
-              <span class="v" data-i18n-skip>{{ fmtNum([inertia[0][0], inertia[1][1], inertia[2][2], inertia[0][1], inertia[0][2], inertia[1][2]][k], 5) }}</span><span class="u">kg·m²</span></div>
+            <div v-for="(lab, k) in I_LABELS" :key="lab" class="md-kv" :title="I_TIPS[k]"><span class="k" data-i18n-skip>{{ lab }}</span>
+              <span class="v" data-i18n-skip>{{ fmtNum(iVal(inertia, k), 5) }}</span><span class="u">kg·m²</span></div>
+            <div v-for="(v, k) in principal" :key="'pm' + k" class="md-kv" title="主惯量（惯量张量特征值，由小到大；与惯性积符号记法无关）"><span class="k" data-i18n-skip>I{{ k + 1 }}</span>
+              <span class="v" data-i18n-skip>{{ fmtNum(v, 5) }}</span><span class="u">kg·m²</span></div>
           </template>
         </div>
         <div class="md-acts"><span class="sp"></span><button class="lb-mini" :disabled="ro" title="清除质量特性" @click="setMP(null)"><Icon name="trash" :size="12" />清除</button></div>

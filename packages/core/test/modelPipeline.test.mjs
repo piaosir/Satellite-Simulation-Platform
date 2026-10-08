@@ -1244,7 +1244,7 @@ const BI = await imp('scripts/nasa3d/builtin.mjs')
   eq(B.texLimitFor(lod0, { lod2MaxTex: 64 }), 2048, 'texLimitFor：别的档不受 lod2 选项影响')
   eq(B.optsLabel({ meshoptLevel: 'medium', lod2Flags: ['Prune', 'Permissive'] }), 'medium · lod2 贴图 512 px', 'optsLabel：老 build.json 没 lod2MaxTex / 预算键 → 当时的 512、不设预算')
   eq(B.optsLabel(B.resolveProcOpts({ lod2Strict: true })), 'high · lod2 贴图 256 px · lod2 ≤ 2.5 万面 · 剔除 < 1 % · lod2 strict', 'optsLabel：预算与 strict 注明')
-  eq(B.PIPELINE_VERSION, 3, '管线版本 3（材质兜底 + lod2 预算：旧缓存全部作废）')
+  eq(B.PIPELINE_VERSION, 4, '管线版本 4（法线朝向纠正 + 低档平面细节烘焙：旧缓存全部作废）')
   // history：每种处理档留最近一次、按时间排
   let h = B.updateHistory(null, { at: '2026-09-23T01:00:00Z', opts: { a: 1 }, lod0: 1 })
   h = B.updateHistory(h, { at: '2026-09-23T02:00:00Z', opts: { a: 2 }, lod0: 2 })
@@ -1651,6 +1651,11 @@ const BI = await imp('scripts/nasa3d/builtin.mjs')
   const ne = BI.nasaBuiltinEntry(withThumb)
   ok(ne.parts === undefined && ne.attachPoints === undefined && ne.files.lod0 && ne.files.lod1 && ne.files.lod2 && ne.files.thumb, 'nasaBuiltinEntry：精简字段、files 保留全部档（客户端据此从云端补 lod0 / lod1）')
   deq(ne.builtin, ['lod2', 'thumb'], 'nasaBuiltinEntry：档位表')
+  // 随包档位：lod0 够小另带原件精度（2026-10-08；离线库页预览 / 跟随「高」档不再是抽稀档）
+  deq(BI.nasaTiersFor({ files: { lod0: { bytes: 1003860 } } }), ['lod0', 'lod2', 'thumb'], 'nasaTiersFor：lod0 ≤ 门槛 → 带 lod0')
+  deq(BI.nasaTiersFor({ files: { lod0: { bytes: 49 * 1024 * 1024 } } }), ['lod2', 'thumb'], 'nasaTiersFor：ISS 这类大件只带 lod2')
+  deq(BI.nasaTiersFor({ files: {} }), ['lod2', 'thumb'], 'nasaTiersFor：没有 lod0 记录 → 只带 lod2')
+  deq(BI.nasaBuiltinEntry(withThumb, BI.nasaTiersFor({ files: { lod0: { bytes: 1 } } })).builtin, ['lod0', 'lod2', 'thumb'], 'nasaBuiltinEntry：档位表随 nasaTiersFor')
   assert.throws(() => BI.nasaBuiltinEntry(metas[0]), /files\.thumb 缺失/); n++
   if (SCHEMA) ok(SCHEMA.validateMeta(ne, { slim: true }).ok, 'nasaBuiltinEntry：过 validateMeta（slim）')
   // 参数化模板条目（--templates=entries）
@@ -1729,7 +1734,8 @@ if (PT) {
     [{ name: 'ISS (ZARYA)', noradId: 25544, orbitKind: 'LEO' }, 'nasa:international-space-station-iss-d-igoal'],
     [{ name: 'TDRS 3', orbitKind: 'GEO' }, 'nasa:tracking-and-data-relay-satellites-trds-e'],
     [{ name: 'TDRS 11', orbitKind: 'GEO' }, 'nasa:tracking-and-data-relay-satellites-tdrs-d'],
-    [{ name: 'GOES 16', orbitKind: 'GEO' }, 'nasa:geostationary-operational-environmental-satellites'],
+    // NASA 那件是 GOES-N/O/P 外形（GOES 13–15）；GOES 16 起的 GOES-R 系列走星座精模 param:goes-r（见下）
+    [{ name: 'GOES 15', orbitKind: 'GEO' }, 'nasa:geostationary-operational-environmental-satellites'],
     [{ name: 'HST', noradId: 20580, orbitKind: 'LEO' }, 'nasa:hubble-space-telescope-a'],
     [{ name: 'LANDSAT 8', orbitKind: 'LEO' }, 'nasa:landsat-8'],
     [{ name: 'LANDSAT 9', orbitKind: 'LEO' }, 'nasa:landsat-8']
@@ -1741,6 +1747,7 @@ if (PT) {
   }
   const geo = AM.match({ name: 'ZHONGXING-9B', orbitKind: 'GEO' }, { available })
   ok(/^param:/.test(geo.id), `离线 autoMatch：GEO 通信星 → 参数化（${geo.id}）`)
+  eq(AM.match({ name: 'GOES 16', orbitKind: 'GEO' }, { available }).id, 'param:goes-r', '离线 autoMatch：GOES 16 → GOES-R 星座精模（不再借 GOES-N/O/P 外形的 NASA 件）')
   const bi = spawnSync(process.execPath, [path.join(REPO, 'scripts', 'check-models.mjs')], { encoding: 'utf8', env: { ...process.env, SATSIM_SKIP_MODELS: '' } })
   eq(bi.status, 0, `仓库 resources/models 过 check-models ${bi.stderr}`)
 }

@@ -17,6 +17,7 @@ import { byLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
 // 缩略图逻辑抽到 modelThumbs.js（模块级单例：本侧栏、标记侧栏的「模型」小块、模型选择弹层共用一份缓存）
 import { thumbs, requestThumb, forgetThumb, createThumbObserver } from './modelThumbs.js'
+import { entryFacts } from '../model/wbLogic.js'
 
 const props = defineProps({
   sat: { type: Object, default: null },          // { key, name } 主选星；null = 未选中
@@ -46,10 +47,10 @@ function zhEn(zh, en) { void langTick.value; return byLang(zh, en) }
 // 姿态律名（绑定表 attitude.law；没绑定 = nadir）。口径写进 title
 const LAW = {
   nadir: { t: ['对地定向', 'Nadir'], tt: ['+Z 指地心、+X 沿惯性速度', '+Z to Earth centre, +X along inertial velocity'] },
-  yawSteer: { t: ['偏航导引', 'Yaw steering'], tt: ['对地定向基础上绕 +Z 偏航，太阳翼轴（本体 ±Y）始终垂直太阳', 'Nadir pointing with yaw about +Z so the array axis (body ±Y) stays perpendicular to the Sun'] },
-  sun: { t: ['对日定向', 'Sun pointing'], tt: ['指定本体轴精确指太阳', 'The chosen body axis points exactly at the Sun'] },
+  yawSteer: { t: ['偏航导引', 'Yaw steering'], tt: ['在对地定向基础上绕 +Z 偏航，太阳翼轴（本体 ±Y）始终垂直于太阳方向', 'Nadir pointing with yaw about +Z so the array axis (body ±Y) stays perpendicular to the Sun'] },
+  sun: { t: ['对日定向', 'Sun pointing'], tt: ['指定本体轴精确指向太阳', 'The chosen body axis points exactly at the Sun'] },
   inertial: { t: ['惯性定向', 'Inertial'], tt: ['本体相对 TEME 惯性系固定', 'Body fixed relative to the TEME inertial frame'] },
-  target: { t: ['对目标定向', 'Target pointing'], tt: ['指定本体轴精确指地球站或目标星', 'The chosen body axis points exactly at an earth station or target satellite'] }
+  target: { t: ['对目标定向', 'Target pointing'], tt: ['指定本体轴精确指向地球站或目标卫星', 'The chosen body axis points exactly at an earth station or target satellite'] }
 }
 const lawOf = (k) => LAW[k] || LAW.nadir
 const lawName = (k) => zhEn(...lawOf(k).t)
@@ -57,7 +58,7 @@ const attTitle = computed(() => {
   const m = props.model
   if (!m) return ''
   const tt = zhEn(...lawOf(m.law).tt), n = m.mounts || 0, k = m.masks || 0
-  return zhEn('姿态律：' + tt + '\n挂点 ' + n + ' 副，其中有遮挡掩模 ' + k + ' 副', 'Attitude law: ' + tt + '\n' + n + ' mounts, ' + k + ' with obscuration masks')
+  return zhEn('姿态律：' + tt + '\n挂点 ' + n + ' 副，其中 ' + k + ' 副已有遮挡掩模', 'Attitude law: ' + tt + '\n' + n + ' mounts, ' + k + ' with obscuration masks')
 })
 const nameOf = (m) => (m ? (byLang(m.titleZh || m.title || m.id, m.title || m.titleZh || m.id)) : '')
 const srcTitle = (m) => {
@@ -121,6 +122,13 @@ const ready = (m) => !!(m.local && (m.local.lod0 === 'ready' || m.local.lod1 ===
 const isParam = (m) => String(m.id).startsWith('param:')
 // 运行时生成、没有文件的条目（参数化模板 param: / 实体模板 ent:）：没有「下载」「移除缓存」可言
 const isGen = (m) => /^(param|ent):/.test(String(m.id))
+// 「移除缓存」只给远端件下载下来的缓存（与工作台库页 canRemoveCache 同一判据）。本机导入件 / 工作台自建装配件 / STK 件
+// 的文件就是原件，删了找不回 —— 侧栏不给删，删除走工作台库页（有确认，并处理打开着的签与草稿）
+const isCloud = (m) => entryFacts(m).cloud
+const canRemoveCache = (m) => { const f = entryFacts(m); return f.cloud && (f.cached || f.partial) }
+// 「下载」只给云端件、且完整模型（lod0）还没下到本机的（与工作台库页 canDownload 同一判据）；正在下的不再给。
+// 本机导入件 / STK 件 / 参数化与实体模板没有可下的东西，已缓存的也不必再下 —— 原来这几类照样能点、点了没反应
+const canDownload = (m) => { const f = entryFacts(m); return !!models && f.cloud && !(m.local && m.local.lod0 === 'ready') && !prog.value.has(m.id) }
 // 地面 / 空中 / 水面件的占位图标（缩略图出来之前）
 const KIND_ICON = { ground: 'satellite-dish', aircraft: 'plane', ship: 'ship', vehicle: 'car' }
 const phIcon = (m) => KIND_ICON[m.kind] || (isParam(m) ? 'box' : 'satellite')
@@ -161,22 +169,42 @@ function stateOf(m) {
   return m.origin === 'remote' ? { cls: 'cloud', t: '云端' } : null
 }
 
-// 卡片右键菜单
-const menu = ref(null)   // { x, y, m }
+// 卡片右键菜单：fixed 定位在指针处，按实际尺寸夹回视口（同 SatLayersPanel 的 place）。
+// 原来 absolute 挂在侧栏里、按侧栏坐标摆：右列卡片右键时菜单伸出侧栏右缘被裁掉一截
+const menu = ref(null)   // { x, y, m }（视口坐标）
+const menuEl = ref(null)
 function openMenu(e, m) {
-  const host = e.currentTarget.closest('.mdl-side')
-  const r = host ? host.getBoundingClientRect() : { left: 0, top: 0 }
-  menu.value = { x: e.clientX - r.left, y: e.clientY - r.top + (host ? host.scrollTop : 0), m }
+  menu.value = { x: e.clientX, y: e.clientY, m }
+  window.addEventListener('keydown', onMenuKey, true)
+  window.addEventListener('scroll', closeMenu, true)   // fixed 的菜单不跟卡片滚：侧栏一滚就收（捕获阶段收得到任何一层滚动区的 scroll）
+  nextTick(() => {   // 量到实际宽高再夹（英文菜单更宽）；nextTick 在绘制之前，不会先闪一帧在原位
+    const el = menuEl.value, cur = menu.value
+    if (!el || !cur) return
+    const r = el.getBoundingClientRect(), pad = 4
+    const x = Math.max(pad, Math.min(cur.x, window.innerWidth - r.width - pad))
+    const y = Math.max(pad, Math.min(cur.y, window.innerHeight - r.height - pad))
+    if (x !== cur.x || y !== cur.y) menu.value = { ...cur, x, y }
+  })
 }
-function closeMenu() { menu.value = null }
+function closeMenu() {
+  menu.value = null
+  window.removeEventListener('keydown', onMenuKey, true)
+  window.removeEventListener('scroll', closeMenu, true)
+}
+// Esc 关菜单：捕获阶段截住，同一下 Esc 不再被宿主页当成别的快捷键（同 SatLayersPanel）；输入法组字中的 Esc 归输入法
+function onMenuKey(e) {
+  if (e.key !== 'Escape' || e.isComposing) return
+  e.stopPropagation(); e.preventDefault()
+  closeMenu()
+}
 async function doDownload(m) {
   closeMenu()
-  if (!models || isGen(m)) return
+  if (!canDownload(m)) return
   try { await models.ensure({ id: m.id, lod: 'lod0' }) } catch { /* 状态由下载事件回报 */ }
 }
 async function doRemove(m) {
   closeMenu()
-  if (!models || !models.remove) return
+  if (!models || !models.remove || !canRemoveCache(m)) return
   try { await models.remove(m.id) } catch { /* ignore */ }
 }
 function doOpen(m) { closeMenu(); emit('open-wb', { modelId: m.id }) }
@@ -216,14 +244,14 @@ function onCardDrag(e, m) {
 }
 function onDocDown(e) { if (menu.value && !(e.target.closest && e.target.closest('.mdl-menu'))) closeMenu() }
 onMounted(() => document.addEventListener('pointerdown', onDocDown, true))
-onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocDown, true))
+onBeforeUnmount(() => { document.removeEventListener('pointerdown', onDocDown, true); closeMenu() })
 
 const HUD = [
   { k: 'hudAxes', t: '本体轴', tt: '+X 红 / +Y 绿 / +Z 蓝' }, { k: 'hudLvlh', t: 'LVLH', tt: '沿迹 / 径向 / 轨道法向（r × v）' }, { k: 'hudNadir', t: '天底' },
   { k: 'hudVel', t: '速度', tt: '惯性速度方向' }, { k: 'hudSun', t: '太阳' },
-  { k: 'hudIsl', t: 'ISL', tt: '与 500 km 内邻星的通视连线（连线不低于 100 km 高度）' },
-  { k: 'hudEs', t: '地球站', tt: '标记层地球站中仰角 ≥ 0° 的方向，近者优先 12 个' },
-  { k: 'hudMounts', t: '挂点', tt: '绑定表里各挂点的视轴射线与视场锥（视场取挂点的 fovDeg；没写时按参数化天线的 −3 dB 波束宽）',
+  { k: 'hudIsl', t: 'ISL', tt: '与 500 km 内相邻卫星的通视连线（连线最低高度不低于 100 km）' },
+  { k: 'hudEs', t: '地球站', tt: '标记层中仰角 ≥ 0° 的地球站方向，按距离由近及远取 12 个' },
+  { k: 'hudMounts', t: '挂点', tt: '绑定表中各挂点的视轴射线与视场锥（视场取挂点的 fovDeg；未设置时按参数化天线的 −3 dB 波束宽度）',
     en: 'Mounts', ttEn: 'Boresight ray and field-of-view cone of each bound mount (FOV = the mount\'s fovDeg; otherwise the −3 dB beamwidth of the parametric antenna)' }
 ]
 </script>
@@ -255,7 +283,7 @@ const HUD = [
             </div>
           </div>
           <div class="srow"><label>模型</label>
-            <select :value="bindValue" title="自动：按卫星名 / NORAD / 轨道类别匹配；无：只画点" @change="onBindSelect">
+            <select :value="bindValue" title="自动：按卫星名称 / NORAD 编号 / 轨道类别匹配；无：仅显示点符号" @change="onBindSelect">
               <option value="auto">{{ autoLabel }}</option>
               <option value="none">无</option>
               <option v-if="bindValue !== 'auto' && bindValue !== 'none'" :value="bindValue" data-i18n-skip>{{ model && model.name ? model.name : bindValue }}</option>
@@ -271,9 +299,9 @@ const HUD = [
     </div>
 
     <div class="sec" :class="{ hid: !st.modelOn }">
-      <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><span class="lnk" title="本节恢复出厂设置" @click.stop="emit('reset-style')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星改回画点、标记改回图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
+      <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><span class="lnk" title="本节恢复出厂设置" @click.stop="emit('reset-style')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星显示为点符号，标记显示为图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
       <template v-if="isSecOpen('mdl-disp')">
-        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围半径屏幕像素 × 2，拉近变大、拉远变小；所有卫星统一。标记挂的模型跟标记自己的图标大小', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="4" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
+        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围直径（屏幕像素），随视距缩放；对全部卫星统一生效。标记所挂模型的大小与标记图标一致', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="4" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
         <div class="hudt" title="跟随卫星时叠加的方向指示">HUD</div>
         <label v-for="h in HUD" :key="h.k" class="chk2" :title="h.en ? zhEn(h.tt, h.ttEn) : (h.tt || '')"><input type="checkbox" :checked="st[h.k]" @change="emit('set-style', h.k, $event.target.checked)" /><span>{{ h.en ? zhEn(h.t, h.en) : h.t }}</span></label>
       </template>
@@ -286,7 +314,7 @@ const HUD = [
         <div class="seg nseg" role="group" aria-label="来源">
           <span v-for="s in SEGS" :key="s.k" class="sg" :class="{ on: seg === s.k }" @click="seg = s.k">{{ s.t }}</span>
         </div>
-        <div v-if="!lib.length" class="empty">还没有模型。</div>
+        <div v-if="!lib.length" class="empty">暂无模型。</div>
         <div v-else-if="!shown.length" class="empty">无匹配模型。</div>
         <div v-else class="grid" @contextmenu.prevent>
           <div
@@ -312,9 +340,9 @@ const HUD = [
       <button type="button" class="btn wide" @click="emit('open-wb', { satKey: sat && sat.key, modelId: model && model.id })"><Icon name="box" :size="13" /><span>模型工作台</span></button>
     </div>
 
-    <div v-if="menu" class="mdl-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-      <div class="mi" :class="{ dis: isGen(menu.m) }" @click="!isGen(menu.m) && doDownload(menu.m)">下载</div>
-      <div class="mi" :class="{ dis: isGen(menu.m) || !(ready(menu.m) || menu.m.origin === 'user') }" @click="!isGen(menu.m) && doRemove(menu.m)">移除缓存</div>
+    <div v-if="menu" ref="menuEl" class="mdl-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
+      <div class="mi" :class="{ dis: !canDownload(menu.m) }" @click="canDownload(menu.m) && doDownload(menu.m)">下载</div>
+      <div v-if="isCloud(menu.m)" class="mi" :class="{ dis: !canRemoveCache(menu.m) }" @click="canRemoveCache(menu.m) && doRemove(menu.m)">移除缓存</div>
       <div class="mi" @click="doOpen(menu.m)">在工作台中打开</div>
     </div>
   </div>
@@ -403,7 +431,7 @@ const HUD = [
 /* 两行截断：留白放在 margin 上 —— 放 padding 里的话第三行会从下内边距里露出半截（overflow 按内边距盒裁） */
 .nm { margin: 4px 6px 5px; font-size: var(--fs-2); line-height: 1.3; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: calc(2 * 1.3em); max-height: calc(2 * 1.3em); }
 .foot { padding: 12px 16px; }
-.mdl-menu { position: absolute; z-index: 30; min-width: 132px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-box); box-shadow: var(--shadow-2, 0 6px 20px rgba(0,0,0,.25)); font-size: var(--fs-3); }
+.mdl-menu { position: fixed; z-index: 2200; min-width: 132px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-box); box-shadow: var(--shadow-2, 0 6px 20px rgba(0,0,0,.25)); font-size: var(--fs-3); }
 .mdl-menu .mi { padding: 5px 10px; border-radius: var(--r-box); cursor: pointer; white-space: nowrap; }
 .mdl-menu .mi:hover { background: var(--accent-ui); color: var(--bg); }
 .mdl-menu .mi.dis, .mdl-menu .mi.dis:hover { color: var(--text-faint); background: none; cursor: default; }

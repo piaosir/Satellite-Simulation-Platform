@@ -15,6 +15,8 @@ import { useCheckList } from '../shared/ui/useCheckList.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
 import GaussModelFields from './GaussModelFields.vue'
+import GrdAttitudeFields from './GrdAttitudeFields.vue'   // 「姿态 + 挂点」档的本体姿态律（改的是本星绑定，见该组件头注）
+import { LAW_NAMES } from '../viz/models/attEdit.js'
 import { recordWithModel, synthOwned } from '../viz/grd/treeLink.js'
 
 const props = defineProps({
@@ -27,7 +29,7 @@ const props = defineProps({
 // 本组件是多根（四个 .sec 平铺进宿主侧栏，不套壳）→ 关掉属性透传，免得宿主的 scoped 标记
 // 找不到唯一根节点而在控制台刷「Extraneous non-props attributes」。样式各自 scoped，不靠透传。
 defineOptions({ inheritAttrs: false })
-// open-synth(groupId)：波束合成产出的解析天线，「在波束合成中编辑」转给宿主（切视图 + 选中那个组）
+// open-synth(groupId)：电磁波束仿真产出的解析天线，「在电磁波束仿真中编辑」转给宿主（切视图 + 选中那个组）
 const emit = defineEmits(['open-synth'])
 const grd = props.grd
 const st = grd.s
@@ -237,15 +239,15 @@ const mountOpts = computed(() => {
   return out
 })
 const mountSel = computed({ get: () => (typeof st.boreMount === 'string' ? st.boreMount : ''), set: (v) => grd.setBoreMount && grd.setBoreMount(v) })
-// 律名进读数行（.tip 不挂 skip，呈现层按 uiDict 翻）
-const LAW_NAMES = { nadir: '对地定向', yawSteer: '偏航导引', sun: '对日定向', inertial: '惯性定向', target: '对目标定向' }
+// 律名进读数行（.tip 不挂 skip，呈现层按 uiDict 翻；律名表与「姿态律」下拉同一份，见 attEdit.js）
 const lawName = (law) => LAW_NAMES[law] || LAW_NAMES.nadir
-// 读数里的律 = 实际生效的那条（宿主随轴带回；没带就按绑定律）。律退过（目标 / 太阳解不出 → 对地定向）照实写成状态
+// 律本身就在上面的「姿态律」下拉里，读数不再重复写律名；只有律退过（目标 / 太阳解不出 → 对地定向）才照实写成状态。
+// 实际生效的律由宿主随轴带回（没带就按绑定律）
 const attLawText = (r) => {
   const k = grd.active.value
   const cfg = (r && r.cfgLaw) || (grd.attLaw ? grd.attLaw(k) : (injAttLaw ? injAttLaw(k) : 'nadir'))
   const eff = (r && r.law) || cfg
-  return (r && r.fallback && eff !== cfg) ? `${lawName(cfg)}未解出，已退回${lawName(eff)}` : lawName(eff)
+  return (r && r.fallback && eff !== cfg) ? `${lawName(cfg)}无法解算，已回退至${lawName(eff)}` : ''
 }
 // 目标星搜索：★全量（星座目录 / 卫星组 / 自定义星座），不限于在场的星——搜到即可跟踪。
 // 结果区与主界面搜索、卫星组管理器【同款】：一行一颗（星名 + 「来源 · NORAD」副行）、可滚动、
@@ -281,6 +283,15 @@ const fx = (v, n = 2) => {
   const s = (+v).toFixed(n)
   return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s
 }
+// 「姿态 + 挂点」读数一份两用：读数行（boreTip）与偏置标签上的 Az / El / ψ 标注（attTags）。
+// 先读 livePeak：图层每重建一拍（星动 / 改姿态 / 改挂点）就醒一次 —— 与读数行原先的依赖同一个节拍
+const attR = computed(() => { void grd.livePeak.value; return isAtt.value && grd.attReadout ? grd.attReadout() : null })
+// 三个标注没变就交回同一个对象：子组件 props 不变、不跟着每拍重渲染
+const attTags = computed((prev) => {
+  const t = attR.value && attR.value.tags
+  if (!t) return null
+  return prev && prev.roll === t.roll && prev.pitch === t.pitch && prev.yaw === t.yaw ? prev : t
+})
 const boreTip = computed(() => {
   const m = grd.antMeta(); if (!m) return ''
   // 峰值读数取【当前画面上】标出来的那个峰值点（grd.livePeak，两个视图各一份），与地图所见同源。
@@ -291,12 +302,14 @@ const boreTip = computed(() => {
   const tail = lp
     ? ` · 峰值 ${fx(lp.db)}dB` + (lp.hit ? ` @ ${fx(lp.lon)},${fx(lp.lat)}` : '')
     : (Number.isFinite(+m.peakDb) ? ` · 峰值 ${fx(m.peakDb)}dB` : '')
-  // 姿态 + 挂点：律名 + 视轴在星下天底系的 Az/El（与「本体固定」档同一口径）+ 钟向角 ψ（含「旋转 Rot」）+ 视轴落点。
-  // 这三个角正是写给链路预算 / 主进程采样器的等效手动指向（attEquiv）
+  // 姿态 + 挂点：（律退过才有的状态）+ 视轴在星下天底系的 Az/El（与「本体固定」档同一口径）+ 钟向角 ψ（含「旋转 Rot」）
+  // + 偏航导引此刻的本体偏航角（随时刻变的量，下拉里看不到）+ 视轴落点。Az/El/ψ 正是写给链路预算 / 主进程采样器的等效手动指向（attEquiv）
   if (isAtt.value) {
-    const r = grd.attReadout ? grd.attReadout() : null
-    if (!r || !r.resolved) return '姿态未解出，已退回天底' + tail
-    return `${attLawText(r)} · 视轴 Az ${fx(r.az, 3)}° El ${fx(r.el, 3)}° · ψ ${fx(r.psi, 2)}°`
+    const r = attR.value
+    if (!r || !r.resolved) return '姿态无法解算，已回退至天底' + tail
+    const fb = attLawText(r)
+    const yaw = r.law === 'yawSteer' && Number.isFinite(r.bodyYaw) ? ` · 本体偏航 ${fx(r.bodyYaw, 2)}°` : ''
+    return (fb ? fb + ' · ' : '') + `视轴 Az ${fx(r.az, 3)}° El ${fx(r.el, 3)}° · ψ ${fx(r.psi, 2)}°` + yaw
       + (r.lon != null ? ` · 指向 ${fx(r.lon)}°E, ${fx(r.lat)}°N` : ' · 指向深空（越过地平）') + tail
   }
   if (isSatMode.value) {
@@ -326,7 +339,7 @@ const boreTip = computed(() => {
         <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
         <template v-if="anRec">
           <div class="sect" data-sec="grd-model"><span>方向图</span>
-            <span v-if="anOwned" class="lnk" title="该天线由波束合成生成，参数在波束合成里改" @click.stop="emit('open-synth', anRec.owner.groupId)">在波束合成中编辑</span>
+            <span v-if="anOwned" class="lnk" title="该天线由电磁波束仿真生成，参数须在电磁波束仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在电磁波束仿真中编辑</span>
           </div>
           <template v-if="!anOwned">
             <template v-for="(m, i) in anDrafts" :key="m.id || i">
@@ -464,15 +477,18 @@ const boreTip = computed(() => {
         <div class="srow"><label>指向来源</label>
           <div class="seg">
             <span class="sg" :class="{ on: boreSrc === 'manual' }" title="按下面的指向模式手动给定" @click="boreSrc = 'manual'">手动</span>
-            <span class="sg" :class="{ on: boreSrc === 'att' }" title="视轴 = 卫星本体姿态律 × 挂点（绑定在模型工作台「卫星」页设）；随仿真时刻走。切回手动恢复原指向" @click="boreSrc = 'att'">姿态 + 挂点</span>
+            <span class="sg" :class="{ on: boreSrc === 'att' }" title="视轴 = 卫星本体姿态律 × 挂点；随仿真时刻更新。切回手动时恢复原指向" @click="boreSrc = 'att'">姿态 + 挂点</span>
           </div>
         </div>
-        <!-- ★ att 自成一支：下面手动那条 v-if / v-else-if / v-else 链整块包进 v-else，att 不会掉进末尾的 az/el 分支 -->
+        <!-- ★ att 自成一支：下面手动那条 v-if / v-else-if / v-else 链整块包进 v-else，att 不会掉进末尾的 az/el 分支。
+             顺序即运动链由外到内：本体姿态律（本星的，GrdAttitudeFields）→ 挂点（天线装在本体哪儿）→ 旋转 Rot（绕视轴） -->
         <template v-if="isAtt">
+          <GrdAttitudeFields :grd="grd" :sat-search="satSearch" :axis-tags="attTags" />
           <div class="srow"><label>挂点</label>
-            <select v-model="mountSel" title="绑定里的挂点；「缺省」= antennaRef 指向本天线的那副挂点，没有则本体 +Z（up 本体 −Y，与手动天底同一基底）">
+            <select v-model="mountSel" title="绑定中的挂点；「缺省」= antennaRef 指向本天线的挂点，若无则取本体 +Z（上向为本体 −Y，与手动天底同一基准）">
               <option v-for="o in mountOpts" :key="o.id || '_def'" :value="o.id" data-i18n-skip>{{ o.name }}</option>
             </select>
+            <span v-if="grd.bodyEditorOk && grd.bodyEditorOk()" class="ic" title="在模型工作台「卫星」页编辑挂点与姿态律" @click="grd.openBodyEditor()"><Icon name="external-link" :size="12" /></span>
           </div>
         </template>
         <template v-else>
@@ -513,7 +529,7 @@ const boreTip = computed(() => {
               <div class="sres-list">
                 <div v-for="e in bcand" :key="e.noradId || e.name" class="sitem" @click="pickBoreSat(e)">
                   <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
-                  <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
+                  <div class="sub">{{ e.tag }}<template v-if="e.noradId && !e.syn"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
                 </div>
               </div>
               <div class="sres-n">{{ bTotal > bcand.length ? `命中 ${bTotal} 颗 · 列出前 ${bcand.length}` : `${bTotal} 颗` }}</div>

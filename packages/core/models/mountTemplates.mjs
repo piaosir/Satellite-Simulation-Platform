@@ -78,19 +78,23 @@ const T = [
     ]
   },
   {
-    id: 'ssl1300', title: 'SSL-1300', titleZh: 'SSL-1300 平台（TerreStar-1 代表星）', fidelity: 'illustrative', orbit: 'GEO',
+    id: 'ssl1300', title: 'SSL-1300', titleZh: 'SSL-1300 平台（EchoStar XVII 代表星）', fidelity: 'illustrative', orbit: 'GEO',
     modelIds: ['param:ssl1300', 'nasa:space-systems-loral-ssl-1300'],
     attitude: { law: 'nadir', params: {} },
     source: {
-      note: '与参数化模板 param:ssl1300 同一代表星 TerreStar-1：18 m S 频段网状反射面（MSS 2 GHz 频段，用户上行 2000–2020 MHz 取中心 2010 MHz）；' +
-        'Ku 对地喇叭为通用示意。挂点名对上 paramBus 生成的 reflector_1_focus / nadir_center。',
-      refs: ['TerreStar-1（SSL-1300S）公开资料：18 m S 频段反射面']
+      note: '与参数化模板 param:ssl1300 同一代表星 EchoStar XVII（Jupiter 1，Ka 多波束高通量）：东西每侧两副反射面叠放（Arianespace VA207 手册渲染）；' +
+        'Ka 用户下行 19.7–20.2 GHz 取中心 19.95 GHz，反射面口径未公开、按 2.5 m 示意。挂点名对上 paramBus 生成的 reflector_1–4_focus。',
+      refs: ['Arianespace VA207 发射手册（EchoStar XVII）', 'ITU《无线电规则》第 5 条频率划分表：卫星固定业务（空对地）Ka 频段 19.7–20.2 GHz']
     },
     mounts: [
-      { id: 'refl_s', name: 'S 频段 18 m 网状反射面', attachPoint: 'reflector_1_focus', posBody: [-7.903, 0, 4.537], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
-        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 18, freqGHz: 2.01, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] },
-      { id: 'ku_horn', name: 'Ku 对地喇叭', attachPoint: 'nadir_center', posBody: [-9.403, 0, 3.037], boresightBody: NADIR, upBody: UP_N, fovDeg: 17.4, sysTempK: 500,
-        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { freqGHz: 14.25, hpbwDeg: 17.4, pattern: 'earthCoverage' } }, excludeNodes: [] }
+      { id: 'refl_ka_e1', name: 'Ka 多波束反射面（东 1）', attachPoint: 'reflector_1_focus', posBody: [1.68, 0.775, 4.061], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 19.95, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] },
+      { id: 'refl_ka_w1', name: 'Ka 多波束反射面（西 1）', attachPoint: 'reflector_2_focus', posBody: [-1.68, 0.775, 4.061], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 19.95, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] },
+      { id: 'refl_ka_e2', name: 'Ka 多波束反射面（东 2）', attachPoint: 'reflector_3_focus', posBody: [1.68, -0.775, 4.061], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 19.95, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] },
+      { id: 'refl_ka_w2', name: 'Ka 多波束反射面（西 2）', attachPoint: 'reflector_4_focus', posBody: [-1.68, -0.775, 4.061], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+        gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 19.95, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] }
     ]
   },
   {
@@ -103,14 +107,14 @@ const T = [
       refs: ['ITU《无线电规则》第 5 条频率划分表：固定卫星业务（地对空）C 频段 5925–6425 MHz、Ku 频段 14.0–14.5 GHz']
     },
     mounts: [
-      { id: 'refl_c_e', name: 'C 频段反射面（东）', attachPoint: 'reflector_1_focus', posBody: [1.08, 0, 1.605], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+      { id: 'refl_c_e', name: 'C 频段反射面（东）', attachPoint: 'reflector_1_focus', posBody: [1.26, 0, 1.552], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
         gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 6.175, efficiency: 0.65, pattern: 'reflector' } }, excludeNodes: [] },
-      { id: 'refl_ku_w', name: 'Ku 频段反射面（西）', attachPoint: 'reflector_2_focus', posBody: [-1.08, 0, 1.605], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+      { id: 'refl_ku_w', name: 'Ku 频段反射面（西）', attachPoint: 'reflector_2_focus', posBody: [-1.26, 0, 1.552], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
         gimbal: gimbalNone(), antennaRef: { kind: 'param', spec: { diameterM: 2.5, freqGHz: 14.25, efficiency: 0.65, pattern: 'reflector' } }, excludeNodes: [] },
-      { id: 'spot_1', name: 'Ku 可动点波束 1', attachPoint: 'reflector_3_focus', posBody: [0, 0.35, 2.462], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+      { id: 'spot_1', name: 'Ku 可动点波束 1', attachPoint: 'reflector_3_focus', posBody: [0, 0.35, 2.41], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
         gimbal: { type: 'xy', limits: { a1Min: -9, a1Max: 9, a2Min: -9, a2Max: 9 } },
         antennaRef: { kind: 'param', spec: { diameterM: 1.2, freqGHz: 14.25, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] },
-      { id: 'spot_2', name: 'Ku 可动点波束 2', attachPoint: 'reflector_4_focus', posBody: [0, -0.35, 2.462], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
+      { id: 'spot_2', name: 'Ku 可动点波束 2', attachPoint: 'reflector_4_focus', posBody: [0, -0.35, 2.41], boresightBody: NADIR, upBody: UP_N, sysTempK: 500,
         gimbal: { type: 'xy', limits: { a1Min: -9, a1Max: 9, a2Min: -9, a2Max: 9 } },
         antennaRef: { kind: 'param', spec: { diameterM: 1.2, freqGHz: 14.25, efficiency: 0.6, pattern: 'reflector' } }, excludeNodes: [] }
     ]
@@ -174,8 +178,25 @@ export function mountTemplate(id) {
 }
 
 /**
+ * 模板挂点名 → 候选名（先原名）：参数化整星的挂点名在装配件 / 驱动装配件（2026-10，satSpecToComps）里改了前缀——
+ *   reflector_N_focus → reflN_focus；nadir_center / zenith_center → bus_*；wing_+Y_axis → wing1_axis；
+ *   wing_-Y_axis → wing1-1_axis（对称合成的一对翼，派生件）或 wing2_axis（两翼各自装）。
+ */
+export function apAliases(name) {
+  const n = String(name || '')
+  const out = [n]
+  let m
+  if ((m = /^reflector_(\d+)_focus$/.exec(n))) out.push(`refl${m[1]}_focus`)
+  else if (n === 'nadir_center' || n === 'zenith_center') out.push('bus_' + n)
+  else if (n === 'wing_+Y_axis') out.push('wing1_axis')
+  else if (n === 'wing_-Y_axis') out.push('wing1-1_axis', 'wing2_axis')
+  return out
+}
+
+/**
  * 套用模板 → 归一后的 mounts（直接进绑定表）与建议姿态律。
- *   · attachPoints（当前绑定模型 meta.attachPoints）里有同名挂点的：posBody / 视轴取挂点（模型为准），记进 matched；
+ *   · attachPoints（当前绑定模型 meta.attachPoints）里有同名挂点（或 apAliases 的装配件对应名）的：posBody / 视轴取挂点（模型为准），
+ *     attachPoint 改成模型里的实际挂点名，记进 matched；
  *     ★ up 仍取模板的（normalizeMount 再投到新视轴的法平面）：模板的万向节限位是按「up = 本体 −Y（北）」定义的 a1 南北 / a2 东西，
  *       而挂点节点的上向（局部 +X）在 STK 模型里没有统一语义——tdrs.glb 的 SA_E / SA_W 上向分别是本体 −X / +X（镜像安装），
  *       照搬会把 ±31° / ±22.5° 限位对调、且东西两副互为反号。模板 up 与挂点视轴平行（投影退化）时才退到挂点 up，再没有按 D1；
@@ -195,7 +216,9 @@ export function applyMountTemplate(id, opts = {}) {
   t.mounts.forEach((m, i) => {
     const src = { ...m }
     if (src.attachPoint) {
-      const ap = aps.find((a) => a && a.name === src.attachPoint && Array.isArray(a.posBody))
+      const names = apAliases(src.attachPoint)
+      const ap = names.map((nm) => aps.find((a) => a && a.name === nm && Array.isArray(a.posBody))).find(Boolean)
+      if (ap) src.attachPoint = ap.name
       if (ap) {
         src.posBody = ap.posBody.slice()
         if (Array.isArray(ap.dirBody)) src.boresightBody = ap.dirBody.slice()

@@ -67,10 +67,14 @@ const wingDoc = (yM = 2.1, wingParams = {}, sym = { op: 'mirrorXZ' }) => docOf([
 
 // ───────────────────────── 注册表与组件 ─────────────────────────
 
-t('注册表：13 个卫星组件 + 2 个基本体，逐件以缺省参数作根件可生成，IR 合法、名字合规、参数带出处', () => {
-  const sat = ['sat.bus.box', 'sat.bus.cyl', 'sat.bus.hex', 'sat.wing', 'sat.reflector', 'sat.feed.horn', 'sat.array.phased', 'sat.tower', 'sat.boom', 'sat.thruster', 'sat.radiator', 'sat.sensor.star', 'sat.sensor.sun']
+t('注册表：42 个卫星组件 + 2 个基本体，逐件以缺省参数作根件可生成，IR 合法、名字合规、参数带出处', () => {
+  const sat = ['sat.bus.box', 'sat.bus.cyl', 'sat.bus.hex', 'sat.wing', 'sat.reflector', 'sat.feed.horn', 'sat.array.phased', 'sat.tower', 'sat.boom', 'sat.thruster', 'sat.radiator', 'sat.sensor.star', 'sat.sensor.sun', 'sat.sensor.earth', 'sat.antenna.ttc',
+    // 2026-10-08 补全
+    'sat.bus.trap', 'sat.bus.flat', 'sat.antenna.gimbal', 'sat.antenna.helix', 'sat.antenna.omni', 'sat.antenna.lpda', 'sat.antenna.shroud', 'sat.antenna.slot', 'sat.feed.cluster',
+    'sat.lct', 'sat.camera', 'sat.instrument', 'sat.lra', 'sat.tank', 'sat.sensor.mag', 'sat.dock', 'sat.ep.arm', 'sat.visor', 'sat.antenna.despun',
+    'sat.wing.hinged', 'sat.wing.flex', 'sat.wing.rosa', 'sat.wing.circular', 'sat.bus.prism', 'sat.bus.cubesat', 'sat.bus.sphere', 'sat.bus.module']
   for (const ty of [...sat, 'prim.box', 'prim.cyl']) assert.ok(componentTypes().includes(ty), `缺 ${ty}`)
-  assert.equal(listComponents('spacecraft').length, 15)
+  assert.equal(listComponents('spacecraft').length, 44)
   // 非卫星领域的组件（ground / air / sea / veh）不漏进卫星库；它们的同类检查在 modelAsmDomains.test（A3 规格 §12-1）
   assert.ok(listComponents('spacecraft').every((d) => d.type.startsWith('sat.') || d.type.startsWith('prim.')), '卫星领域只见 sat.* 与基本体')
   for (const def of listComponents('spacecraft')) {
@@ -158,7 +162,17 @@ t('normalizeAssembly 幂等；asmHash 不受键序 / −0 / 缺省值写没写�
   assert.notEqual(A.asmHash(d4), h, '改参数')
   // 自由件四元数归一到规范号（q 与 −q 同一旋转同一哈希）
   const f = (q) => docOf([BUS(), { id: 'p', type: 'prim.box', parent: 'bus', attach: { mode: 'free' }, t: [1, 2, 3], q }])
-  assert.equal(A.asmHash(f([0, 0, 0.7071067811865476, 0.7071067811865476])), A.asmHash(f([0, 0, -1.4142135623730951, -1.4142135623730951])))
+  assert.equal(A.asmHash(f([0, 0, 0.7071067811865476, 0.7071067811865476])), A.asmHash(f([0, 0, -0.7071067811865476, -0.7071067811865476])))
+  // 非单位长的照旧除模长（−2q 归到与 q 同一旋转）；已是单位长（差 ≤ 4 ulp）的不再除——归一结果再归一逐位不变（排查 #11：
+  // 每次都除时末位来回跳，驱动装配件三方合并把没碰过的展开臂误判成位置改写）
+  const qa = A.normalizeAssembly(f([0, 0, -1.4142135623730951, -1.4142135623730951])).comps[1].q
+  assert.ok(Math.abs(qa[2] - Math.SQRT1_2) < 1e-15 && Math.abs(qa[3] - Math.SQRT1_2) < 1e-15 && qa[2] > 0)
+  let seed = 5
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 - 0.5 }
+  for (let k = 0; k < 2000; k++) {
+    const n1 = A.normalizeAssembly(f([rnd(), rnd(), rnd(), rnd()]))
+    assert.deepStrictEqual(A.normalizeAssembly(n1), n1, '自由件 q 再归一逐位不变')
+  }
 })
 
 t('validateAssembly：结构 / 参数 / 安装 / 对称的非法情形逐条报出', () => {
@@ -180,11 +194,11 @@ t('validateAssembly：结构 / 参数 / 安装 / 对称的非法情形逐条报�
   assert.match(errs(docOf([BUS({}, { bogus: 1 })])), /bus\.params\.bogus：未知参数/)
   assert.match(errs(docOf([BUS({}, { mli: 'gold' })])), /bus\.params\.mli/)
   assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'surface', face: '+Y' }, params: { sidePanels: 1 } }])), /sidePanels/)
-  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'nobody', attach: { mode: 'surface', face: '+Y' } }])), /找不到 nobody/)
+  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'nobody', attach: { mode: 'surface', face: '+Y' } }])), /未找到 nobody/)
   assert.match(errs(docOf([BUS(), { id: 'a', type: 'prim.box', parent: 'b', attach: { face: '+Z' } }, { id: 'b', type: 'prim.box', parent: 'a', attach: { face: '+Z' } }])), /成环/)
-  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'surface', face: '+W' } }])), /没有面 "\+W"/)
-  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'socket', socket: 'top' } }])), /没有插座 "top"/)
-  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'socket', socket: '+Y', mount: 'tip' } }])), /本件没有插座 "tip"/)
+  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'surface', face: '+W' } }])), /无安装面 "\+W"/)
+  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'socket', socket: 'top' } }])), /无接口 "top"/)
+  assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'socket', socket: '+Y', mount: 'tip' } }])), /本件无接口 "tip"/)
   assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'glue', face: '+Y' } }])), /attach\.mode/)
   assert.match(errs(docOf([BUS(), { id: 'w', type: 'sat.wing', parent: 'bus', attach: { mode: 'surface', face: '+Y', uv: [0] } }])), /uv/)
   assert.match(errs(docOf([BUS(), { id: 'p', type: 'prim.box', parent: 'bus', attach: { mode: 'free' }, q: [0, 0, 0, 0] }])), /p\.q/)
@@ -337,10 +351,11 @@ t('P1-3 镜像翼：派生件走钩子，翼尖在 −Y、电池面朝 −Z，�
 
 t('P1-3b 带转角的翼：钩子把转角取反，派生几何 = 主件几何关于 XZ 面的镜像（顶点集合逐点对上）', () => {
   const r = A.buildAssembly(wingDoc(2.1, { tiltDeg: 30, sidePanels: 2 }))
-  for (const nd of ['wing_1_substrate', 'wing_2_cells', 'wing_2a_substrate', 'wing_yoke', 'wing_sada']) {
+  // 两块板的翼：侧板缺省挂在倒数第二块 = 第 1 块（十字形，paramBus.defaultSidePanelAt）
+  for (const nd of ['wing_1_substrate', 'wing_2_cells', 'wing_1a_substrate', 'wing_yoke', 'wing_sada']) {
     const a = worldMesh(r, `w_${nd}`), b = worldMesh(r, `w-1_${nd}`)
     const mirrored = vset(a.P, [1, -1, 1]), got = vset(b.P)
-    if (nd.endsWith('a_substrate')) { const bb = worldMesh(r, 'w-1_wing_2b_substrate'); sameSet(mirrored, vset(bb.P), `${nd}（a ↔ b 互换）`) } else sameSet(mirrored, got, nd)
+    if (nd.endsWith('a_substrate')) { const bb = worldMesh(r, 'w-1_wing_1b_substrate'); sameSet(mirrored, vset(bb.P), `${nd}（a ↔ b 互换）`) } else sameSet(mirrored, got, nd)
   }
   assert.equal(A.normalizeAssembly(wingDoc(2.1, { tiltDeg: 30 })).comps[1].params.tiltDeg, 30, '文档只存主件')
 })
@@ -599,7 +614,7 @@ t('插座安装：馈源 aperture 插到反射面 focus → 口面中心在焦�
     const g = reflectorFrame(fillParams(getComponent('sat.reflector'), { diameterM: D }))
     const w = (M, v) => [0, 1, 2].map((k) => M[k] * v[0] + M[4 + k] * v[1] + M[8 + k] * v[2] + M[12 + k])
     const Fw = w(Mr, g.F), Pcw = w(Mr, g.Pc)
-    const ap = w(Mf, [0, 0, 0.15 * 1.6])
+    const ap = w(Mf, [0, 0, 0.15 * 2.12])   // 喇叭长缺省 2.12 × 口径（窄张角波纹锥喇叭）
     nearV(ap, Fw, 1e-12, `D=${D} 口面中心在焦点`)
     const dir = [Mf[8], Mf[9], Mf[10]], want = Pcw.map((x, k) => x - Fw[k]), l = Math.hypot(...want)
     nearV(dir, want.map((x) => x / l), 1e-12, `D=${D} 喇叭朝口径中心`)
@@ -655,7 +670,7 @@ t('solvePose / combineMass 的 out 复用：条目与数组同一实例，改 uv
   assert.deepStrictEqual([...out.keys()], ['bus'])
 })
 
-t('热路径零分配：归一件拖动（就地改 uv / roll / 自由件 t）时 solvePose + combineMass 稳态不涨新生代（独立进程量）', () => {
+t('热路径零分配：归一件拖动（就地改 uv / roll / 自由件 t / off / tilt，含「@」安装端）时 solvePose + combineMass 稳态不涨新生代（独立进程量）', () => {
   // 在新进程里量：本文件前面的用例喂过大量未归一的原始文档，V8 的类型反馈已被搅乱，不代表编辑器稳态（编辑器持有归一件）。
   // 口径：new_space 已用字节，短窗口（避开 GC）取中位数，减去同样测法的空循环基线；JIT 没升到优化档时多热身几轮再量。
   const asmUrl = new URL('../models/assembly.mjs', import.meta.url).href
@@ -675,14 +690,19 @@ t('热路径零分配：归一件拖动（就地改 uv / roll / 自由件 t）�
     "  { id: 'r', type: 'sat.reflector', parent: 'bus', attach: { mode: 'socket', socket: '+X', roll: 22.5 }, params: { diameterM: 1.6, feed: 'none' } },",
     "  { id: 'f', type: 'sat.feed.horn', parent: 'r', attach: { mode: 'socket', socket: 'focus', mount: 'aperture' } },",
     "  { id: 'st', type: 'sat.sensor.star', parent: 'bus', attach: { mode: 'free', socket: '-X' }, t: [0.1, 0.2, 0.05], q: [0, 0.2, 0, 0.98] },",
-    "  { id: 'bx', type: 'prim.box', parent: 'bus', attach: { mode: 'surface', face: '+Z', uv: [-0.3, 0.2], roll: 7.5 }, massKg: 12.5 }] })",
+    "  { id: 'bx', type: 'prim.box', parent: 'bus', attach: { mode: 'surface', face: '+Z', uv: [-0.3, 0.2], roll: 7.5 }, massKg: 12.5 },",
+    // 2026-10 带锚偏移 / 倾角与 '@' 安装端：非零 off / tilt 走扩展路径（S4 / S5 暂存、角度经 CS / EX 传），'@面' / '@bbox' 安装端查 g.mounts
+    "  { id: 'ot', type: 'prim.box', parent: 'bus', attach: { mode: 'surface', face: '-X', uv: [0.1, -0.2], roll: 12.5, off: [0, 0, 0.05], tilt: [17.5, -6.25], mount: '@+X' }, params: { xM: 0.3, yM: 0.2, zM: 0.25 } },",
+    "  { id: 'os', type: 'sat.sensor.star', parent: 'bus', attach: { mode: 'socket', socket: '-Y', off: [0.15, -0.05, 0.02], tilt: [5.5, 0], mount: '@bbox+X' } }] })",
     'const out = []',
     'for (const doc of [A.specToAssembly(templateSpec(DEFAULT_TEMPLATE_ID).spec), mixed]) {',
     '  const poses = new Map(), cm = {}',
     "  const drags = doc.comps.filter((c) => c.parent && c.attach.mode !== 'free').slice(0, 3), frees = doc.comps.filter((c) => c.parent && c.attach.mode === 'free').slice(0, 2)",
+    "  const exts = doc.comps.filter((c) => c.parent && c.attach.mode !== 'free' && (c.attach.off[2] !== 0 || c.attach.tilt[0] !== 0))",
     '  const f = (i) => {',
     "    for (const c of drags) { if (c.attach.uv) c.attach.uv[0] = 0.001 * (i % 50); c.attach.roll = 7.5 * (i % 8) }",
     '    for (const c of frees) c.t[2] = 0.002 * (i % 7)',
+    '    for (const c of exts) { c.attach.off[2] = 0.01 + 0.001 * (i % 9); c.attach.tilt[1] = 2.5 * (i % 6) }',
     '    A.solvePose(doc, poses); A.combineMass(doc, cm)',
     '  }',
     '  const noop = () => {}',

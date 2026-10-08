@@ -137,6 +137,22 @@ function doTextNode(node) {
   textApplied.set(node, next)
   node.data = next
 }
+// 多行 title（'\n' 拼起来的几行：口径 / 示意值或出处 / 范围 / 改写状态……）：整串是按空白折叠成一行查表的，
+// 各行的组合千变万化、整串常常查不到（组合模式又不按空格切）。整串译不干净时逐行再译一遍——每行本就是
+// 独立的一句 / 一项；单行串走原路，行为不变。
+function translateAttr(raw, key) {
+  const en = translate(key)
+  if (raw.indexOf('\n') < 0 || !HAN.test(en)) return en
+  let changed = false
+  const out = raw.split('\n').map((ln) => {
+    const k = ln.replace(/\s+/g, ' ').trim()
+    if (!k || !HAN.test(k)) return k
+    const e = translate(k)
+    if (e !== k) changed = true
+    return e
+  })
+  return changed ? out.join('\n') : en
+}
 function doAttrs(el) {
   const done = attrApplied.get(el)
   for (const a of ATTRS) {
@@ -144,7 +160,7 @@ function doAttrs(el) {
     if (!raw || !HAN.test(raw)) continue
     if (done && done[a] === raw) continue       // 自写入，跳过
     const key = raw.replace(/\s+/g, ' ').trim()
-    const en = translate(key)
+    const en = translateAttr(raw, key)
     if (en === key) continue
     let bag = attrOrig.get(el)
     if (!bag) { bag = {}; attrOrig.set(el, bag) }

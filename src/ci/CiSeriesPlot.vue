@@ -145,11 +145,14 @@ const fmtT = (ms) => {
 const figName = computed(() => props.title || (props.metric === 'iOverN' ? 'I/N 时序' : 'C/I 时序'))
 const svgEl = ref(null)
 const busy = ref(false)
+const expErr = ref('')
 async function exportPng() {
   if (busy.value) return
-  busy.value = true
-  try { await exportSvgPng(svgEl.value, props.fileName || figName.value) }
-  finally { busy.value = false }
+  busy.value = true; expErr.value = ''
+  try {
+    const r = await exportSvgPng(svgEl.value, props.fileName || figName.value)
+    if (r && !r.ok && !r.canceled && !r.missing) expErr.value = '导出失败：' + (r.error || '')
+  } finally { busy.value = false }
 }
 defineExpose({ svg: svgEl, exportPng })
 </script>
@@ -159,6 +162,7 @@ defineExpose({ svg: svgEl, exportPng })
     <div class="ci-fig-hd">
       <b class="ci-fig-name">{{ figName }}</b>
       <span class="ci-fig-sp" />
+      <span v-if="expErr" class="ci-fig-err" :title="expErr">{{ expErr }}</span>
       <button
         v-if="canExportPng" class="ci-fig-exp" :disabled="busy || !pts.length"
         :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">导出</button>
@@ -194,6 +198,9 @@ defineExpose({ svg: svgEl, exportPng })
 
       <text :x="10" :y="M.t + PH / 2" class="pl-axis" text-anchor="middle"
         :transform="`rotate(-90 10 ${M.t + PH / 2})`">{{ yName }}</text>
+      <!-- 横轴名：刻度按 UTC 出（fmtT 取 getUTC*，与本页起止时刻框、事件表同一口径）。不写的话，起点取自主时间轴
+           （本地时区显示）、刻度却是 UTC，读图差一个时区。写在 SVG 里，导出 PNG 一并带上 -->
+      <text :x="M.l + PW / 2" :y="H - 3" class="pl-axis" text-anchor="middle">时间（UTC）</text>
     </svg>
     <p v-if="!pts.length" class="ci-series-empty">尚无时序数据</p>
   </div>
@@ -213,6 +220,7 @@ defineExpose({ svg: svgEl, exportPng })
 }
 .ci-fig-exp:hover:not(:disabled) { border-color: var(--border-strong); }
 .ci-fig-exp:disabled { opacity: 0.45; cursor: default; }
+.ci-fig-err { color: var(--danger); font-size: var(--fs-1); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pl-bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 0.6; }
 .pl-grid { stroke: var(--border); stroke-width: 0.4; }

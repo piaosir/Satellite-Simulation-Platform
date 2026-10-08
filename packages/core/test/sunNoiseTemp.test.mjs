@@ -296,4 +296,52 @@ t('⑤ 增益档在日面上求积（SUN_DISK_RULE 24 点）：高斯方向图�
   console.log(`  日面求积 vs 高斯闭式：${rows.join('、')}`)
 })
 
+t('⑦ 窄波束加密求积（排查 #18）：θB < 0.4θd 换 96 点，θB = 0.15° / 0.2° 对闭式 ≤ 0.5 %；宽波束仍是 24 点、结果逐位不变', () => {
+  const F = so.SUN_DISK_RULE_FINE
+  assert.equal(F.length, 96); assert.equal(so.SUN_DISK_FINE_BELOW, 0.4)
+  near(F.reduce((a, p) => a + p[2], 0), 1, 1e-14, '权和 1')
+  for (let k = 0; k <= 10; k++) near(F.reduce((a, p) => a + p[2] * (p[0] * p[0] + p[1] * p[1]) ** k, 0), 1 / (k + 1), 1e-14, `E[u^${k}]（6 点 GL 对 u 的 11 次多项式精确）`)
+  // GEO 0°E 春分正午：视轴偏离太阳 off°（绕与太阳垂直的轴转），up ⟂ 视轴
+  const t = Date.UTC(2026, 2, 20, 12, 0), r = [42164, 0, 0]
+  const s = so.sunEcefAt(t), dist = so.sunDistAuAt(t) * 1.495978707e8
+  const v = [s[0] * dist - r[0], s[1] * dist - r[1], s[2] * dist - r[2]], vl = Math.hypot(...v), sun = v.map((x) => x / vl)
+  const k = Math.abs(sun[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]
+  let e = [sun[1] * k[2] - sun[2] * k[1], sun[2] * k[0] - sun[0] * k[2], sun[0] * k[1] - sun[1] * k[0]]
+  const el = Math.hypot(...e); e = e.map((x) => x / el)
+  const sample = (off) => {
+    const c = Math.cos(off * D2R), sn = Math.sin(off * D2R)
+    const z = [0, 1, 2].map((i) => sun[i] * c + e[i] * sn), up = [0, 1, 2].map((i) => -sun[i] * sn + e[i] * c)
+    return Float64Array.from([t, ...r, ...z, ...up])
+  }
+  const thetaD = so.sunDiamDegAt(t), rows = []
+  for (const thB of [0.15, 0.2]) {
+    assert.ok(thB < 0.4 * thetaD)
+    const G0 = 16 * Math.LN2 / (thB * D2R) ** 2
+    let calls = 0
+    const gainAt = (d) => { calls++; const psi = Math.acos(Math.max(-1, Math.min(1, d[2]))) / D2R; return 10 * Math.log10(G0 * Math.exp(-4 * Math.LN2 * psi * psi / (thB * thB))) }
+    let worst = 0
+    for (const off of [0, 0.1, 0.2, 0.3]) {
+      const S = sample(off)
+      const a = so.satSunIntrusionSeries({ samples: S, freqGHz: 20, sysTempK: 500, f107: 120, pattern: { kind: 'gauss', thetaB3dBDeg: thB } })
+      calls = 0
+      const b = so.satSunIntrusionSeries({ samples: S, freqGHz: 20, sysTempK: 500, f107: 120, pattern: { kind: 'gain', gainAt, fallbackThetaB3dBDeg: thB } })
+      assert.equal(calls, 96, '窄波束：96 个方向')
+      worst = Math.max(worst, Math.abs(b.dT[0] / a.dT[0] - 1))
+    }
+    assert.ok(worst < 5e-3, `θB=${thB}°：加密求积 vs 闭式 ${worst}（24 点时轴上 −4.5 %、偏 0.3° +30 %）`)
+    rows.push(`θB=${thB}° 最差 ${(worst * 100).toFixed(2)} %`)
+  }
+  // 宽波束（θB = 0.58° > 0.4θd）：给不给 fallbackThetaB3dBDeg 都是 24 点、逐位同值
+  const thW = 0.58, GW = 16 * Math.LN2 / (thW * D2R) ** 2
+  let callsW = 0
+  const gW = (d) => { callsW++; const psi = Math.acos(Math.max(-1, Math.min(1, d[2]))) / D2R; return 10 * Math.log10(GW * Math.exp(-4 * Math.LN2 * psi * psi / (thW * thW))) }
+  const SW = sample(0.2)
+  const w1 = so.satSunIntrusionSeries({ samples: SW, freqGHz: 12, sysTempK: 500, f107: 120, pattern: { kind: 'gain', gainAt: gW } })
+  assert.equal(callsW, 24)
+  callsW = 0
+  const w2 = so.satSunIntrusionSeries({ samples: SW, freqGHz: 12, sysTempK: 500, f107: 120, pattern: { kind: 'gain', gainAt: gW, fallbackThetaB3dBDeg: thW } })
+  assert.equal(callsW, 24); same(w1.dT[0], w2.dT[0], '宽波束逐位不变')
+  console.log(`  窄波束加密求积 vs 高斯闭式：${rows.join('、')}`)
+})
+
 console.log(`sunNoiseTemp: ${n} 项通过`)

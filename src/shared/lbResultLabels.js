@@ -174,8 +174,6 @@ const RESULT_LABEL_LIST = [
     ['cloudNoiseTempResult', '云噪声温度', 'K'],
     ['gOverTeResult', '收信站 G/T', 'dB/K'],
     ['gOverTdegradationResult', 'G/T 劣化（降雨）', 'dB'],
-    // 星侧（卫星接收天线看见太阳）的等效 G/T 损失；与上一行的地面雨致劣化是两件事，名字刻意不撞
-    ['satSunGtLossResult', '星侧太阳侵入 G/T 劣化', 'dB'],
     ['txAntennaGainResult', '发信站天线增益', 'dBi'],
     ['rxAntennaGainResult', '收信站天线增益', 'dBi'],
     ['beamWidthResult', '发信站波束宽度', '°'],
@@ -249,3 +247,39 @@ export function labeledResultPool(keys) {
 }
 
 export { RESULT_LABELS, RESULT_LABEL_LIST }
+
+// ============================================================================
+// 输入字段改名后的公式迁移（v1.5.0 上线前排查 #50）
+// ============================================================================
+// 自定义列公式可按列名引用字段（[标签] / [标签(单位)]，见 lbCustomCols.js），而 v1.5.0 改了两处列名：
+//   · 「卫星EIRP」按口径拆名：GSO / NGSO →「卫星饱和 EIRP」（整波束饱和值），再生式 →「再生下行 EIRP」（单载波值）；
+//   · 「综合损耗」（NGSO / 再生式）统一回「其他损耗」（与 GSO、详细预算、本词表同名）。
+// 存在 localStorage 里的旧公式按旧名引用，不改写就整列变「—」、编辑器报「未知字段」。各窗载入定义时过一遍（幂等）：
+//   · GSO / NGSO：新名「卫星饱和 EIRP」与出参 EIRPsResult（本词表）同名同单位，按名引用会判歧义（字段下拉遇到这种
+//     情形本就插键名）—— 旧的 [卫星EIRP…] 落成键名 rxEIRP；早先按名引用出参的 [卫星饱和 EIRP…] 同理落成 EIRPsResult；
+//   · 再生式：[卫星EIRP…] → [再生下行 EIRP…]（不撞名，保留按名引用）；
+//   · NGSO / 再生式：[综合损耗…] → [其他损耗…]，（发）/（收）后缀与单位原样保留（池内同名加后缀的规则不变，一一对应）。
+// 只动方括号引用：裸标识符是引擎键名，与列名无关。orbit ∈ 'GEO' | 'NGSO' | 'REGEN'。
+// 没有可改的原样返回同一个数组（调用方可据此判断要不要回写）。
+const REF_RE = /\[([^[\]]*)\]/g
+const splitRef = (inner) => { const m = /^(.*)\(([^()]*)\)$/.exec(inner); return m ? { label: m[1], unit: '(' + m[2] + ')' } : { label: inner, unit: '' } }
+export function migrateLegacyFieldRefs(defs, orbit) {
+  if (!Array.isArray(defs)) return defs
+  const gsoLike = orbit === 'GEO' || orbit === 'NGSO'
+  const fix = (expr) => expr.replace(REF_RE, (whole, inner) => {
+    const { label, unit } = splitRef(inner)
+    if (label === '卫星EIRP') return gsoLike ? 'rxEIRP' : (orbit === 'REGEN' ? '[再生下行 EIRP' + unit + ']' : whole)
+    if (label === '卫星饱和 EIRP' && gsoLike) return 'EIRPsResult'
+    if (label.startsWith('综合损耗') && (orbit === 'NGSO' || orbit === 'REGEN')) return '[其他损耗' + label.slice('综合损耗'.length) + unit + ']'
+    return whole
+  })
+  let changed = false
+  const out = defs.map((d) => {
+    if (!d || typeof d.expr !== 'string') return d
+    const e = fix(d.expr)
+    if (e === d.expr) return d
+    changed = true
+    return { ...d, expr: e }
+  })
+  return changed ? out : defs
+}

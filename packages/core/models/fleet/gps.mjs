@@ -64,7 +64,7 @@ function xmasTree(mb, x, y, z0, stations, r = 0.011) {
 // ───────────────────────────── IIR / IIR-M ─────────────────────────────
 function buildIIR(B) {
   const h = P(0.98, 0.78, 0.765), ZN = h[2]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), h, 0.02)
   skinBox(g, BODY, P(0, 0, 0), h, { '+x': 'mli_black', '-x': 'mli_black', '+y': 'mli_black', '-y': 'mli_black', '+z': 'mli_black', '-z': 'mli_black' })
   // ±Y 面 OSR 散热片（L 形两块 + 矩形一块，按 Adhya 图 5.2 的轮廓取外接矩形）
@@ -120,7 +120,7 @@ function buildIIR(B) {
 // ───────────────────────────── IIF ─────────────────────────────
 function buildIIF(B) {
   const h = P(1.255, 1.03, 0.9), ZN = h[2]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), h, 0.025)
   skinBox(g, BODY, P(0, 0, 0), h, { '+x': 'mli_gold', '-x': 'mli_gold', '+z': 'mli_black', '-z': 'mli_gold' })
   // ±Y：灰银色散热面 + 黑色竖条（波音渲染）
@@ -180,7 +180,7 @@ function sweepBent(mb, pts, r) { truss(mb, pts, r, 10) }
 // ───────────────────────────── III ─────────────────────────────
 function buildIII(B, { lra }) {
   const h = P(1.23, 0.89, 1.7), ZN = h[2]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), h, 0.03)
   skinBox(g, BODY, P(0, 0, 0), h, { '+x': 'mli_silver', '-x': 'mli_black', '+y': 'radiator', '-y': 'radiator', '-z': 'mli_black', '+z': 'mli_silver' })
   // 背地面：100 lbf 液体远地点发动机 + 对接环

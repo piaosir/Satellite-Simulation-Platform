@@ -52,7 +52,7 @@ const rows = computed(() => {
   return layout.value.filter((r) => (!onlyOn.value || noObs.value.has(r.name)) && (!nq || normText(r.name).includes(nq) || normText((partOf.value.get(r.name) || {}).name).includes(nq)))
 })
 const COLS = [
-  { key: 'chk', label: '', w: 28, align: 'center', tip: '勾选 = 不参与本体遮挡计算（点表头全选当前列表；空格翻转选中行）' },
+  { key: 'chk', label: '', w: 28, align: 'center', tip: '勾选 = 不参与本体遮挡计算（单击表头全选当前列表；空格键切换选中行）' },
   { key: 'name', label: '节点', w: 170 },
   { key: 'tris', label: '三角形', num: true, w: 70, tip: '含子节点' },
   { key: 'part', label: '部件', w: 100 },
@@ -98,7 +98,7 @@ function pickRole(role) { if (role) setNodes(roleNodes(role), true) }
 
 // 选中 → 预览高亮
 watch(() => [g.rect.value.r0, g.rect.value.r1], () => {
-  if (wb.st.tab !== 'model') return
+  if (!wb.designModel()) return
   const r = g.rect.value
   const vp = getVp()
   if (!vp) return
@@ -110,24 +110,24 @@ const nOn = computed(() => noObs.value.size)
 </script>
 
 <template>
-  <MdSec id="m-noobs" title="不遮挡节点" :count="nOn || null" :default-open="false"
+  <MdSec id="m-noobs" title="遮挡计算排除节点" :count="nOn || null" :default-open="false"
          tip="AGI noObscuration：本体遮挡掩模计算时不参与求交的节点（天线自身的反射面、馈源支架等）">
     <template v-if="m">
-      <div v-if="!layout.length" class="lb-placeholder ob-none">没有节点。</div>
+      <div v-if="!layout.length" class="lb-placeholder ob-none">无节点。</div>
       <template v-else>
         <div class="md-acts">
           <label class="ob-q">
             <Icon name="search" :size="12" />
             <input v-model="q" type="text" spellcheck="false" placeholder="筛选" title="按节点名 / 部件名筛选" />
           </label>
-          <select class="ci ob-role" value="" :disabled="ro || !rolesAvail.length" title="把某一角色部件的全部节点勾为不遮挡" @change="pickRole($event.target.value); $event.target.value = ''">
+          <select class="ci ob-role" value="" :disabled="ro || !rolesAvail.length" title="将指定角色部件的全部节点标记为不遮挡" @change="pickRole($event.target.value); $event.target.value = ''">
             <option value="">按角色勾选</option>
             <option v-for="k in rolesAvail" :key="k" :value="k">{{ ROLE_LABEL[k] }}</option>
           </select>
-          <button class="lb-mini" :class="{ on: onlyOn }" title="只列已勾选的节点" @click="onlyOn = !onlyOn"><Icon name="check" :size="12" />已勾选</button>
+          <button class="lb-mini" :class="{ on: onlyOn }" title="仅列出已勾选的节点" @click="onlyOn = !onlyOn"><Icon name="check" :size="12" />已勾选</button>
         </div>
         <div class="md-grid" @click.capture="chk.onClickCapture" @keydown.capture="chk.onKeyCapture">
-          <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :head-tip="(c) => c.tip || c.label" empty-text="没有匹配的节点。" />
+          <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :head-tip="(c) => c.tip || c.label" empty-text="无匹配节点。" />
         </div>
       </template>
     </template>

@@ -5,16 +5,25 @@
 // paramBus.buildParamModel 完全相同，导出 / 缩略图 / 工作台 / 3D 球原样复用。
 //
 // ★ 文档（AssemblySpec，E1）：
-//   { kind:'assembly', schema:1, domain:'spacecraft'|'ground'|'aircraft'|'ship'|'vehicle', name,
-//     comps:[{ id, type, params, parent, attach:{mode, socket, face, uv, roll, mount}, t?, q?, sym?, name, massKg, material, hidden, locked }],
+//   { kind:'assembly', schema:1|2, domain:'spacecraft'|'ground'|'aircraft'|'ship'|'vehicle', name,
+//     comps:[{ id, type, params, parent, attach:{mode, socket, face, uv, roll, mount, off, tilt}, t?, q?, sym?, name, massKg, material, hidden, locked }],
 //     density:{DENSITY 覆盖}, massTargetKg }
+//   · schema：文档里出现非缺省 off / tilt 时为 2（旧版本 validateAssembly 明确拒收，好过按旧式子摆错位姿），否则 1。
+//     存档 / 草稿 / 哈希一律走 compactAssembly（剥掉缺省 off / tilt）：不带扩展字段的旧文档字节与 asmHash 与加字段之前逐位相同。
 //   · id：小写字母开头的字母数字（≤ 24 位，不含下划线——节点名 `${id}_${短名}` 靠第一个下划线切前缀，不会撞名）。
 //   · 恰好一个根件（parent = null），根件位姿恒为单位阵 = 本体系原点（卫星：平台体几何中心）。
 //   · attach.mode：
-//       socket  —— 本件的 mount 插座贴父件插座：M = M_父 · 插座系 · Rz(roll) · (本件 mount 插座系)⁻¹
-//       surface —— 贴父件的面，uv = 以面心为原点的面内偏移（米；柱面 uv0 = 沿轴、uv1 = 弧长）：M = M_父 · 面系(uv) · Rz(roll) · mount⁻¹
-//       free    —— t / q 直接给（相对父件；可带 socket 或 face+uv 作锚：相对锚点系），roll 不用
-//     归一件的 attach 恒为 {mode, socket, face, uv, roll, mount} 同一形状，不适用的键为 null（热路径单态读取，见 normAttach）。
+//       socket  —— 本件的 mount 插座贴父件插座：M = M_父 · 插座系 · T(off) · Rz(roll) · Rx(t0) · Ry(t1) · (本件 mount 插座系)⁻¹
+//       surface —— 贴父件的面，uv = 以面心为原点的面内偏移（米；柱面 uv0 = 沿轴、uv1 = 弧长）：
+//                  M = M_父 · 面系(uv) · T(0, 0, off[2]) · Rz(roll) · Rx(t0) · Ry(t1) · mount⁻¹（面内位置只走 uv、off 只认法向分量：
+//                  归一时 off[0] / off[1] 清零，解算与 asmSnap.mountedFrame 对未归一文档同样只读 off[2]——面安装件不带看不见的面内偏移）
+//       free    —— t / q 直接给（相对父件；可带 socket 或 face+uv 作锚：相对锚点系），roll / mount / off / tilt 不用
+//     off = [x, y, z]（米，锚系：接口系 / 面系(uv)，z = 法向偏移，可正可负；面安装只有 z）；tilt = [t0, t1]（度）。off 在锚系、滚转与倾角绕本件
+//     安装点转：先偏移后改滚转，安装点世界位置不变。off / tilt 全 0 时解算走原代码路径、不多乘（旧文档位姿逐位不变，含 −0）。
+//     本件 mount 可取 g.mounts 里任一项：本件插座 ∪ 平面面心 '@<面 id>'（z = −n 向内、x = u）∪ 包围盒六面面心 '@bbox+X' … '@bbox-Z'
+//     （组件局部包围盒；侧面 x = +Z、±Z 面 x = +X）。'@' 不在插座 id 字符集里，不会与真实插座撞名。
+//     归一件的 attach 恒为 {mode, socket, face, uv, roll, mount, off, tilt} 同一形状（含根件 / 自由件），不适用的键为 null、
+//     off / tilt 为缺省 [0,0,0] / [0,0]（热路径单态读取，见 normAttach；构造一律走 mkAttach）。
 //     插座系 / 面系：z = 朝外法向、x = 滚转零位（插座 up / 面 u）、y = z × x；本件 mount 插座系：z = −n（指向本件内部）。
 //   · sym：{group, op:'mirrorXZ'|'mirrorYZ'|'radial', n?:2..8, axis?:'±X'|'±Y'|'±Z'}。只存主件，展开派生件 `${id}~k`；
 //     主件的整棵子树跟着复制（子件派生 id `${子id}~k`、父为 `${父id}~k`）；不支持嵌套对称。派生件的节点前缀把 ~ 换成 -（`c3-1_…`）。
@@ -43,12 +52,18 @@
 //   两个函数都收未归一的文档，缺省推断与 normalizeAssembly 同一套（attachModeOf / symAxisOf / 自由件 t、q 缺省）。
 //
 // 导出：
-//   ASM_SCHEMA, ASM_DOMAINS, ATTACH_MODES, SYM_OPS, SYM_AXES, ASM_ID_RE, COMP_ID_RE, NODE_NAME_RE, RESERVED_COMP_IDS, DOMAIN_FRAMES
+//   ASM_SCHEMA（= 1，基础版）, ASM_SCHEMA_EXT（= 2，带 off / tilt）, ASM_SCHEMAS, ASM_DOMAINS, ATTACH_MODES, SYM_OPS, SYM_AXES, ASM_ID_RE,
+//   COMP_ID_RE, NODE_NAME_RE, RESERVED_COMP_IDS, DOMAIN_FRAMES, MOUNT_BBOX_IDS
 //   newAsmId(rand?) → 'asm:<12 位十六进制>'（rand：() => [0,1)，注入以便测试确定性；缺省用 crypto）；isAsmId(id)
 //   nextCompId(doc) → 'c<n>'；nodePrefix(expandedId) → 节点前缀
+//   mkAttach(o?) → 归一形状的 attach（{mode, socket, face, uv, roll, mount, off, tilt}；o 里给了的键照抄，数组拷贝）
+//   isDefaultOff(v) / isDefaultTilt(v) → 是否缺省（[0,0,0] / [0,0]）
 //   normalizeAssembly(doc) → 补缺省的深拷贝（幂等；JSON 口径：NaN / ±Infinity 变 null）；validateAssembly(doc) → {ok, errors, missing}
 //     （非有限数查原文报，不靠归一件）
-//   asmHash(doc) → 16 位十六进制（canon + FNV-1a 64，与 paramBus.specHash 同口径；只作缓存键，不作 id）
+//   compactAssembly(doc) → 归一后剥掉缺省 off / tilt 的深拷贝（入库 / 草稿 / 哈希用；旧文档与 normalizeAssembly 旧输出逐字节相同）
+//   asmHash(doc) → 16 位十六进制（compactAssembly + canon + FNV-1a 64，与 paramBus.specHash 同口径；只作缓存键，不作 id）
+//   componentMounts(type, params?) → 本件安装端候选（插座 ∪ '@<面 id>' ∪ '@bbox±X…'，插座同形对象，局部系）
+//   componentMount(type, params, id) → 其中一项（找不到 null；'@bbox…' 才生成包围盒）
 //   expandSymmetry(doc) → [{id, src, k, parent, prefix, sym}]（拓扑序：父在子前）
 //   solvePose(doc, out?) → Map(id → {id, m:Float64Array(16) 列主序本体系位姿, mode, plane, bad})
 //   combineMass(doc, out?) → {massKg, comBody, inertiaBody, count, warnings}（根件坐标系 = spec 原点，未减几何中心；
@@ -71,6 +86,11 @@ import { createCtx, MB, worldPositions, meshArea, z0, isNum, isVec3 } from './me
 // ───────────────────────────── 常量 ─────────────────────────────
 
 export const ASM_SCHEMA = 1
+/** 带安装扩展字段（非缺省 off / tilt）的文档版本：旧版本认不得，validateAssembly 报「schema：不支持」整件拒收。 */
+export const ASM_SCHEMA_EXT = 2
+export const ASM_SCHEMAS = Object.freeze([ASM_SCHEMA, ASM_SCHEMA_EXT])
+/** 包围盒六面面心安装端 id（componentMounts 里排在插座与平面面心之后）。 */
+export const MOUNT_BBOX_IDS = Object.freeze(['@bbox+X', '@bbox-X', '@bbox+Y', '@bbox-Y', '@bbox+Z', '@bbox-Z'])
 export { ASM_DOMAINS }
 export const ATTACH_MODES = Object.freeze(['socket', 'surface', 'free'])
 export const SYM_OPS = Object.freeze(['mirrorXZ', 'mirrorYZ', 'radial'])
@@ -78,6 +98,8 @@ export const SYM_AXES = Object.freeze(['+X', '-X', '+Y', '-Y', '+Z', '-Z'])
 export const ASM_ID_RE = /^asm:[0-9a-f]{12}$/
 export const COMP_ID_RE = /^[a-z][a-z0-9]{0,23}$/
 export const NODE_NAME_RE = /^[A-Za-z0-9_+-]+$/
+/** 驱动参数的种类：'sat' = paramBus 整星 spec 驱动卫星装配件（drive.mjs）。 */
+export const DRIVE_KINDS = Object.freeze(['sat'])
 
 const M_YUP = Object.freeze(mat4FromQuatT(quatConj(Q_YUP_ZENITH)).map(z0))
 /** 领域 → 根节点名 / frame.q_model2body / 根节点矩阵（本体 → 模型轴）。卫星沿用出厂 STK 映射；飞机 / 船 / 车 / 地球站用 Q_YUP_ZENITH（E5）。 */
@@ -165,12 +187,37 @@ function normSym(s, id, domain) {
   return o
 }
 /**
- * 安装语义归一：恒为同一形状 {mode, socket, face, uv, roll, mount}，不适用的键为 null。
+ * 归一形状的 attach（全部构造点共用这一个工厂：形状不一致时热路径的读取点转通用读取、双精度装箱）。
+ * o 里给了的键照抄（数组拷贝），没给的取缺省：mode 'free'、socket / face / uv / mount null、roll 0、off [0,0,0]、tilt [0,0]。
+ */
+export function mkAttach(o) {
+  const s = isObj(o) ? o : NO_PARAMS
+  const cp = (v, d) => (v === undefined ? d : Array.isArray(v) ? v.slice() : v)
+  return {
+    mode: s.mode === undefined ? 'free' : s.mode,
+    socket: s.socket === undefined ? null : s.socket,
+    face: s.face === undefined ? null : s.face,
+    uv: cp(s.uv, null),
+    roll: s.roll === undefined ? 0 : s.roll,
+    mount: s.mount === undefined ? null : s.mount,
+    off: cp(s.off, [0, 0, 0]),
+    tilt: cp(s.tilt, [0, 0])
+  }
+}
+/** off 是缺省值 [0,0,0]（−0 也算 0）。 */
+export const isDefaultOff = (v) => Array.isArray(v) && v.length === 3 && v[0] === 0 && v[1] === 0 && v[2] === 0
+/** tilt 是缺省值 [0,0]。 */
+export const isDefaultTilt = (v) => Array.isArray(v) && v.length === 2 && v[0] === 0 && v[1] === 0
+/** 件的 attach 带非缺省扩展字段（off / tilt）。 */
+const attachExt = (a) => isObj(a) && ((a.off !== undefined && !isDefaultOff(a.off)) || (a.tilt !== undefined && !isDefaultTilt(a.tilt)))
+
+/**
+ * 安装语义归一：恒为同一形状 {mode, socket, face, uv, roll, mount, off, tilt}（mkAttach），不适用的键为 null、off / tilt 为缺省。
  * 形状统一是为热路径：各模式形状不同时 solvePose 读 roll 的点超过 4 种形状（V8 转通用读取），
  * roll 一旦是双精度，每读一次都复制出一个 HeapNumber；同一形状则优化代码直接读出双精度、不分配。
  */
 function normAttach(a, isRoot) {
-  const o = { mode: 'free', socket: null, face: null, uv: null, roll: 0, mount: null }
+  const o = mkAttach()
   if (isRoot) return o
   const s = isObj(a) ? a : {}
   const mode = attachModeOf(s)
@@ -179,7 +226,13 @@ function normAttach(a, isRoot) {
   if (mode === 'socket') o.socket = typeof s.socket === 'string' ? s.socket : ''
   else if (mode === 'surface') { o.face = typeof s.face === 'string' ? s.face : ''; o.uv = uv(s.uv) } else if (typeof s.socket === 'string' && s.socket) o.socket = s.socket
   else if (typeof s.face === 'string' && s.face) { o.face = s.face; o.uv = uv(s.uv) }
-  if (mode !== 'free') { o.roll = s.roll === undefined ? 0 : s.roll; o.mount = typeof s.mount === 'string' && s.mount ? s.mount : null }
+  if (mode !== 'free') {
+    o.roll = s.roll === undefined ? 0 : s.roll; o.mount = typeof s.mount === 'string' && s.mount ? s.mount : null
+    // 非数组按缺省（与 uv 同口径）；长度 / 元素非法的数组原样留给 validateAssembly 报。面安装的面内位置只走 uv：off[0] / off[1] 清零
+    // （setAttach 把接口件换成面安装时，接口系里的面内偏移不悄悄留成看不见、清不掉的偏移）
+    if (Array.isArray(s.off)) o.off = mode === 'surface' && s.off.length === 3 ? [0, 0, s.off[2]] : s.off.slice()
+    if (Array.isArray(s.tilt)) o.tilt = s.tilt.slice()
+  }
   return o
 }
 function normComp(c0, domain) {
@@ -214,13 +267,46 @@ export function normalizeAssembly(doc) {
   const domain = domainOf(d)
   const out = { kind: 'assembly', schema: ASM_SCHEMA, domain, name: typeof d.name === 'string' ? d.name : '', comps: [], density: {}, massTargetKg: null }
   if (Array.isArray(d.comps)) out.comps = d.comps.map((c) => normComp(c, domain))
+  // 文档实际用到安装扩展字段才升版本（旧版本据 schema 拒收，不按旧式子摆错）；没用到的与旧文档同为 1
+  if (out.comps.some((c) => attachExt(c.attach))) out.schema = ASM_SCHEMA_EXT
   if (isObj(d.density)) for (const k of Object.keys(d.density).sort()) out.density[k] = d.density[k]
   if (d.massTargetKg !== undefined && d.massTargetKg !== null) out.massTargetKg = d.massTargetKg
+  // 驱动参数（快速设置层，drive.mjs）：只有带它的文档才有这个键——不带驱动的老文档归一结果、哈希与加这个字段之前逐位相同
+  const drive = normalizeDrive(d.drive, domain)
+  if (drive) out.drive = drive
   return out
 }
 
-/** 装配件稳定哈希（归一后规范化 JSON 的 FNV-1a 64，16 位十六进制）。只作缓存键（缩略图 / glb 去重），不作 id。 */
-export const asmHash = (doc) => fnv1a64Hex(canon(normalizeAssembly(doc)))
+/**
+ * 驱动参数形状归一（入参已是深拷贝）：{kind, spec, templateId, serial}。spec 内容是否合法归 paramBus.validateSpec；
+ * serial = 下一个可用的列表条目序号（反射面 / 馈源 / 杆件 / 推力器 / 散热面的 uid，只增不减）。
+ * 种类不认识、spec 不是对象、领域不是卫星 → null（文档当普通装配件处理）。
+ */
+export function normalizeDrive(dr, domain = 'spacecraft') {
+  if (!isObj(dr) || !DRIVE_KINDS.includes(dr.kind) || !isObj(dr.spec) || domain !== 'spacecraft') return null
+  return {
+    kind: dr.kind, spec: dr.spec,
+    templateId: typeof dr.templateId === 'string' && dr.templateId ? dr.templateId : null,
+    serial: Number.isInteger(dr.serial) && dr.serial > 0 ? dr.serial : 1
+  }
+}
+
+/**
+ * 存档形状：归一后剥掉缺省的 off / tilt（返回新深拷贝；schema 与 normalizeAssembly 相同）。入库 / 草稿 / 哈希都用它——
+ * 不带扩展字段的旧文档结果与加字段之前的 normalizeAssembly 输出逐字节相同（MODCOD 库「存档只留差异」同一口径）。
+ */
+export function compactAssembly(doc) {
+  const d = normalizeAssembly(doc)
+  for (const c of d.comps) {
+    const a = c.attach
+    if (isDefaultOff(a.off)) delete a.off
+    if (isDefaultTilt(a.tilt)) delete a.tilt
+  }
+  return d
+}
+
+/** 装配件稳定哈希（compactAssembly 后规范化 JSON 的 FNV-1a 64，16 位十六进制）。只作缓存键（缩略图 / glb 去重），不作 id。 */
+export const asmHash = (doc) => fnv1a64Hex(canon(compactAssembly(doc)))
 
 const safe = (fn, dflt) => { try { return fn() || dflt } catch { return dflt } }
 
@@ -234,7 +320,7 @@ export function validateAssembly(doc) {
   const d = normalizeAssembly(doc)
   const errors = [], missing = []
   if (raw.kind !== undefined && raw.kind !== 'assembly') errors.push(`kind：须为 assembly（得到 ${JSON.stringify(raw.kind)}）`)
-  if (raw.schema !== undefined && raw.schema !== ASM_SCHEMA) errors.push(`schema：不支持 ${JSON.stringify(raw.schema)}`)
+  if (raw.schema !== undefined && !ASM_SCHEMAS.includes(raw.schema)) errors.push(`schema：不支持 ${JSON.stringify(raw.schema)}`)
   if (raw.domain !== undefined && !ASM_DOMAINS.includes(raw.domain)) errors.push(`domain：未知 ${JSON.stringify(raw.domain)}`)
   if (raw.comps !== undefined && !Array.isArray(raw.comps)) errors.push('comps：须为数组')
   else if (!d.comps.length) missing.push('comps')
@@ -267,13 +353,13 @@ export function validateAssembly(doc) {
     errors.push(...checkParams(def, c.params, `${p}.params`))
   })
   const roots = d.comps.filter((c) => c.parent === null)
-  if (d.comps.length && !roots.length) errors.push('没有根件')
+  if (d.comps.length && !roots.length) errors.push('缺少根件')
   if (roots.length > 1) errors.push(`根件多于一个：${roots.map((c) => c.id).join('、')}`)
   const n = d.comps.length
   for (const c of d.comps) {
     if (c.parent === null || !byId.has(c.id) || byId.get(c.id) !== c) continue
     const p = c.id
-    if (!byId.has(c.parent)) { errors.push(`${p}.parent：找不到 ${c.parent}`); continue }
+    if (!byId.has(c.parent)) { errors.push(`${p}.parent：未找到 ${c.parent}`); continue }
     let cur = c.parent, steps = 0
     while (cur !== null && cur !== c.id && byId.has(cur) && steps <= n) { cur = byId.get(cur).parent; steps++ }
     if (cur === c.id || steps > n) { errors.push(`${p}.parent：父子关系成环`); continue }
@@ -281,13 +367,17 @@ export function validateAssembly(doc) {
     if (!def || !pdef) continue
     const a = c.attach
     const psock = safe(() => pdef.sockets(pc.params), []), pface = safe(() => pdef.faces(pc.params), []), csock = safe(() => def.sockets(c.params), [])
-    if (a.socket !== null && !psock.some((s) => s.id === a.socket)) errors.push(`${p}.attach.socket：父件 ${c.parent} 没有插座 ${JSON.stringify(a.socket)}`)
-    if (a.face !== null && !pface.some((f) => f.id === a.face)) errors.push(`${p}.attach.face：父件 ${c.parent} 没有面 ${JSON.stringify(a.face)}`)
+    if (a.socket !== null && !psock.some((s) => s.id === a.socket)) errors.push(`${p}.attach.socket：父件 ${c.parent} 无接口 ${JSON.stringify(a.socket)}`)
+    if (a.face !== null && !pface.some((f) => f.id === a.face)) errors.push(`${p}.attach.face：父件 ${c.parent} 无安装面 ${JSON.stringify(a.face)}`)
     if (a.uv !== null && !(Array.isArray(a.uv) && a.uv.length === 2 && a.uv.every(isNum))) errors.push(`${p}.attach.uv：须为 [u, v]`)
     if (a.mode !== 'free') {
       if (!isNum(a.roll)) errors.push(`${p}.attach.roll：须为有限数`)
       const m = a.mount || def.mountSocket
-      if (!csock.some((s) => s.id === m)) errors.push(`${p}.attach.mount：本件没有插座 ${JSON.stringify(m)}`)
+      // 安装端查 g.mounts 口径：本件插座 ∪ '@<平面面 id>' ∪ '@bbox±X…'（包围盒只在用到时生成）
+      if (!(typeof m === 'string' && m[0] === '@' ? !!componentMount(c.type, c.params, m) : csock.some((s) => s.id === m))) errors.push(`${p}.attach.mount：本件无接口 ${JSON.stringify(m)}`)
+      if (!(Array.isArray(a.off) && a.off.length === 3 && a.off.every(isNum))) errors.push(`${p}.attach.off：须为 [x, y, z]`)
+      if (!(Array.isArray(a.tilt) && a.tilt.length === 2 && a.tilt.every(isNum))) errors.push(`${p}.attach.tilt：须为 [t0, t1]`)
+      else if (Math.abs(a.tilt[0]) > 90) errors.push(`${p}.attach.tilt：t0 须在 −90°–90°`)
     } else {
       if (!isVec3(c.t)) errors.push(`${p}.t：须为 [x,y,z]`)
       if (!quatOk(c.q)) errors.push(`${p}.q：须为非零四元数 [x,y,z,w]`)
@@ -314,7 +404,7 @@ export function validateAssembly(doc) {
 
 // ───────────────────────────── 4×4（列主序 Float64Array，写进调用方给的数组） ─────────────────────────────
 
-const S0 = new Float64Array(16), S1 = new Float64Array(16), S2 = new Float64Array(16), S3 = new Float64Array(16)
+const S0 = new Float64Array(16), S1 = new Float64Array(16), S2 = new Float64Array(16), S3 = new Float64Array(16), S4 = new Float64Array(16), S5 = new Float64Array(16)
 function ident(o) { o.fill(0); o[0] = o[5] = o[10] = o[15] = 1; return o }
 function copy16(o, a) { for (let i = 0; i < 16; i++) o[i] = a[i]; return o }
 /** o = a · b（o 不得与 a / b 同一数组）。 */
@@ -360,6 +450,39 @@ function rotRoll(o, a) {
   const r = a.roll
   CS[2] = isNum(r) ? r : 0
   return rotAxis(o, '+Z')
+}
+// 安装扩展量（off / tilt）走模块级 Float64Array：EX = [off x, off y, off z, t0, t1]（attachExtra 写、extraXform 读）
+const EX = new Float64Array(5)
+/**
+ * 读 attach.off / tilt 写进 EX（缺键 / 非数组 / 元素非有限数按 0），返回 Smi：有非零量 1、全缺省 0。
+ * surf = 1（面安装，Smi）：只认法向分量 off[2]（与 normAttach 清零面内分量同一口径，未归一的文档也一样）。
+ * 全缺省时 solvePrimary 走原代码路径不多乘（乘单位阵会把 −0 变 +0，旧文档位姿就不再逐位相同）。
+ * 有限数判据写成 x − x === 0（不调函数：热路径不向可能未内联的函数传双精度）。
+ */
+function attachExtra(a, surf) {
+  const o = a.off, t = a.tilt
+  EX[0] = 0; EX[1] = 0; EX[2] = 0; EX[3] = 0; EX[4] = 0
+  if (Array.isArray(o) && o.length === 3) {
+    const x = o[0], y = o[1], z = o[2]
+    if (surf === 0 && typeof x === 'number' && x - x === 0) EX[0] = x
+    if (surf === 0 && typeof y === 'number' && y - y === 0) EX[1] = y
+    if (typeof z === 'number' && z - z === 0) EX[2] = z
+  }
+  if (Array.isArray(t) && t.length === 2) {
+    const t0 = t[0], t1 = t[1]
+    if (typeof t0 === 'number' && t0 - t0 === 0) EX[3] = t0
+    if (typeof t1 === 'number' && t1 - t1 === 0) EX[4] = t1
+  }
+  return EX[0] !== 0 || EX[1] !== 0 || EX[2] !== 0 || EX[3] !== 0 || EX[4] !== 0 ? 1 : 0
+}
+/** o = T(off) · Rz(roll) · Rx(t0) · Ry(t1)（EX 由 attachExtra 先写好；S4 / S5 暂存）。 */
+function extraXform(o, a) {
+  rotRoll(S4, a)
+  CS[2] = EX[3]; rotAxis(S5, '+X'); mul(o, S4, S5)
+  CS[2] = EX[4]; rotAxis(S5, '+Y'); mul(S4, o, S5)
+  copy16(o, S4)
+  o[12] = EX[0]; o[13] = EX[1]; o[14] = EX[2]
+  return o
 }
 /** 四元数 [x,y,z,w]（先归一）+ 平移 → o。 */
 function fromQT(o, q, t) {
@@ -417,7 +540,7 @@ function findId(list, id) { for (let i = 0; i < list.length; i++) if (list[i].id
 
 // ───────────────────────────── 解算计划（展开对称 + 拓扑序） ─────────────────────────────
 
-const EMPTY_GEO = Object.freeze({ vals: [], params: {}, sockets: [], faces: [], symPlanes: [] })
+const EMPTY_GEO = Object.freeze({ vals: [], params: {}, sockets: [], faces: [], symPlanes: [], mounts: [], bbm: true })
 
 function buildPlan(doc) {
   const comps = isObj(doc) && Array.isArray(doc.comps) ? doc.comps : []
@@ -513,7 +636,77 @@ function snapValues(keys, raw) { const v = new Array(keys.length); for (let j = 
 
 function makeGeo(def, raw) {
   const params = fillParams(def, raw)
-  return { vals: snapValues(def.keys, raw), params, sockets: safe(() => def.sockets(params), []), faces: safe(() => def.faces(params), []), symPlanes: safe(() => (typeof def.symmetricPlanes === 'function' ? def.symmetricPlanes(params) : def.symmetricPlanes), []) }
+  const sockets = safe(() => def.sockets(params), []), faces = safe(() => def.faces(params), [])
+  // mounts = 本件安装端候选：插座 ∪ 平面面心（这里一次生成）；包围盒六面面心要跑组件生成，第一次用到 '@bbox…' 时才补（bbm 置真）
+  return { vals: snapValues(def.keys, raw), params, sockets, faces, symPlanes: safe(() => (typeof def.symmetricPlanes === 'function' ? def.symmetricPlanes(params) : def.symmetricPlanes), []), mounts: sockets.concat(faceMountsOf(faces)), bbm: false }
+}
+/** 本件安装端 id → 插座同形对象（热路径：普通插座 id 直接查插座表，'@' 才查 g.mounts）。 */
+function mountOf(g, def, id) {
+  if (id.charCodeAt(0) !== 64) return findId(g.sockets, id)
+  if (!g.bbm) addBboxMounts(g, def)
+  return findId(g.mounts, id)
+}
+function addBboxMounts(g, def) {
+  g.bbm = true
+  const bb = def ? localBox(def, g.params) : null
+  if (bb) for (const m of bboxMountsOf(bb)) g.mounts.push(m)
+}
+
+// ───────────────────────────── 安装端候选（插座 / 平面面心 / 包围盒面心） ─────────────────────────────
+
+/** 平面面心安装端（插座同形：pos = 面心、n = 面外法向、up = 面 u；mount 系 z = −n 向内、x = u）。柱面不出。 */
+function faceMountsOf(faces) {
+  const out = []
+  for (const f of faces) {
+    if (!f || f.kind === 'cyl' || typeof f.id !== 'string') continue
+    out.push({ id: '@' + f.id, pos: f.origin, n: f.n, up: f.u, size: 2 * Math.min(f.halfU, f.halfV), accepts: null, roll: 90 })
+  }
+  return out
+}
+/** 包围盒（6 元局部）六面面心安装端：侧面（±X / ±Y）滚转零位 +Z、±Z 面取 +X（与盒面约定 FACE_FRAMES 同）。 */
+function bboxMountsOf(bb) {
+  const c = [(bb[0] + bb[3]) / 2, (bb[1] + bb[4]) / 2, (bb[2] + bb[5]) / 2], h = [(bb[3] - bb[0]) / 2, (bb[4] - bb[1]) / 2, (bb[5] - bb[2]) / 2]
+  const out = []
+  for (let ax = 0; ax < 3; ax++) {
+    for (const sg of [1, -1]) {
+      const pos = c.slice(); pos[ax] = sg > 0 ? bb[ax + 3] : bb[ax]
+      const n = [0, 0, 0]; n[ax] = sg
+      const up = ax === 2 ? [1, 0, 0] : [0, 0, 1]
+      const a1 = ax === 2 ? 0 : 2, a2 = 3 - ax - a1
+      out.push({ id: `@bbox${sg > 0 ? '+' : '-'}${'XYZ'[ax]}`, pos: pos.map(z0), n, up, size: Math.max(1e-3, 2 * Math.min(h[a1], h[a2])), accepts: null, roll: 90 })
+    }
+  }
+  return out
+}
+/** 组件局部包围盒（生成缓存轻层；缺省密度表——几何不随密度变；没有几何 / 参数非法 / 生成失败 null）。 */
+function localBox(def, params) {
+  try {
+    if (checkParams(def, params).length) return null
+    const b = cachedBuild(def, params, DENS0, false)
+    return Number.isFinite(b.bbox[0]) && b.bbox[0] <= b.bbox[3] ? b.bbox : null
+  } catch { return null }
+}
+/**
+ * 本件安装端候选（局部系，插座同形对象 {id, pos, n, up, size, accepts, roll}）：本件插座 ∪ 平面面心 '@<面 id>' ∪ 包围盒六面面心
+ * '@bbox+X' … '@bbox-Z'（MOUNT_BBOX_IDS 顺序）。未知组件 []。属性面板安装端下拉 / 编辑器 B 键循环 / 主进程校验共用。
+ */
+export function componentMounts(type, params) {
+  const def = getComponent(type)
+  if (!def) return []
+  const p = fillParams(def, params)
+  const out = safe(() => def.sockets(p), []).concat(faceMountsOf(safe(() => def.faces(p), [])))
+  const bb = localBox(def, p)
+  if (bb) for (const m of bboxMountsOf(bb)) out.push(m)
+  return out
+}
+/** 单个安装端（找不到 null）。普通插座 / '@<面 id>' 不跑组件生成，'@bbox…' 才取包围盒。 */
+export function componentMount(type, params, id) {
+  const def = getComponent(type)
+  if (!def || typeof id !== 'string' || !id) return null
+  const p = fillParams(def, params)
+  if (id[0] !== '@') return safe(() => def.sockets(p), []).find((s) => s.id === id) || null
+  if (id.startsWith('@bbox')) { const bb = localBox(def, p); return bb ? findId(bboxMountsOf(bb), id) : null }
+  return findId(faceMountsOf(safe(() => def.faces(p), [])), id)
 }
 /** 组件的插座 / 面 / 对称面（按参数值缓存在条目上）。 */
 function geoOf(plan, e) {
@@ -547,9 +740,11 @@ function solvePrimary(plan, e, p) {
     if (!q || !t) { p.bad = 'free'; ident(S1) } else fromQT(S1, q, t)
     mul(S2, S0, S1)
   } else {
-    mul(S1, S0, rotRoll(S2, a))
+    // off / tilt 全缺省：原路径（逐位不变）；否则 锚 · T(off) · Rz(roll) · Rx(t0) · Ry(t1)
+    if (attachExtra(a, mode === 'surface' ? 1 : 0) === 0) mul(S1, S0, rotRoll(S2, a))
+    else mul(S1, S0, extraXform(S2, a))
     const g = geoOf(plan, e), mid = typeof a.mount === 'string' && a.mount ? a.mount : (e.def ? e.def.mountSocket : 'root')
-    const ms = findId(g.sockets, mid)
+    const ms = mountOf(g, e.def, mid)
     if (!ms || !frameZX(S3, ms.pos, ms.n, ms.up, -1)) { p.bad = 'mount'; ident(S3) }
     mul(S2, S1, invRigid(S0, S3))
   }
@@ -690,6 +885,8 @@ function bakeBuilt(b, plane) {
 //     几十 MB：主线程只留一小撮，反复导出的 Worker 里多留。clearBuildCache() 两层一起清（编辑器 dispose / 离开装配页）。
 const LIGHT_LRU_CAP = 512
 const HEAVY_LRU_BYTES = (typeof document !== 'undefined' ? 12 : 96) * 1048576
+/** 缺省密度表（包围盒安装端用：几何不随密度变，固定用这一份，'@bbox…' 的位置与文档密度无关）。 */
+const DENS0 = resolveDensity(null)
 const lightLru = new Map(), heavyLru = new Map()
 let heavyBytes = 0
 const densKeys = new WeakMap()
@@ -905,7 +1102,7 @@ function collectMass(plan, dens, doc, st, withNames) {
     }
   }
 }
-const massWarning = (st, target) => (st.warn === 'nosink' ? `目标质量 ${target} kg 未生效：没有可吃余量的平台体` :st.warn === 'small' ? `目标质量 ${target} kg 小于其余组件合计 ${st.other.toFixed(1)} kg 的 1.05 倍，平台体按密度表估算` : null)
+const massWarning = (st, target) => (st.warn === 'nosink' ? `目标质量 ${target} kg 未生效：无可承担质量差额的平台体` :st.warn === 'small' ? `目标质量 ${target} kg 小于其余组件合计 ${st.other.toFixed(1)} kg 的 1.05 倍，平台体按密度表估算` : null)
 
 /**
  * 合计：总质量、质心、对质心惯量（对称化、抹 −0），写进 out（复用其数组）。与 paramBus 同一累加口径。
@@ -1081,7 +1278,8 @@ export function buildAssembly(doc) {
       apNodes.push({ name, parent: 0, matrix: attachNodeMatrix(pos, dir, up), extras: { attachPoint: true } })
       attachPoints.push({ name, node: name, posBody: pos, dirBody: dir.map(z0), upBody: up.map(z0) })
     }
-    for (const a of b.arts) articulations.push({ name: `${pre}_${a.name}`, nodes: a.nodes.map((n) => `${pre}_${n}`), stages: a.stages.map((q) => ({ ...q })) })
+    // pointingVector（节点局部系，太阳翼 = 电池面法向）原样带上：节点改名不改局部系
+    for (const a of b.arts) articulations.push({ name: `${pre}_${a.name}`, nodes: a.nodes.map((n) => `${pre}_${n}`), stages: a.stages.map((q) => ({ ...q })), ...(Array.isArray(a.pointingVector) ? { pointingVector: a.pointingVector.slice() } : {}) })
     for (const g of b.spg) solarPanelGroups.push({ name: `${pre}_${g.name}`, nodes: g.nodes.map((n) => `${pre}_${n}`), efficiency: g.efficiency })
     const disp = comp.name || null
     for (const p of b.parts) {
@@ -1141,7 +1339,7 @@ export function buildComponent(type, params, opts = {}) {
     params: p, sockets: def.sockets(p), faces: def.faces(p), symmetricPlanes: sp.slice(), ir, attachPoints, massKg: b.massKg,
     bbox: { min: b.bbox.slice(0, 3), max: b.bbox.slice(3) },
     // 关节（局部短名，与 ir 几何节点名同）：编辑器「初值姿态」预览按它摆（P3 契约 §2.4；装配件入库时由 buildAssembly 按前缀改名）
-    articulations: b.arts.map((a) => ({ name: a.name, nodes: a.nodes.slice(), stages: a.stages.map((q) => ({ ...q })) }))
+    articulations: b.arts.map((a) => ({ name: a.name, nodes: a.nodes.slice(), stages: a.stages.map((q) => ({ ...q })), ...(Array.isArray(a.pointingVector) ? { pointingVector: a.pointingVector.slice() } : {}) }))
   }
 }
 

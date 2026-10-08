@@ -1040,7 +1040,7 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
   const others = rows('其他传播衰减', 'loss');
   ok('★ 星地跳传播项折成三行（FSL / 雨衰 / 其他传播衰减），大气·云·附加不再各占一行',
     others.length === 2 && rows('大气衰减 P.676').length === 0 &&
-    rows('云衰 P.840').length === 0 && rows('附加损耗').length === 0 &&
+    rows('云衰 P.840').length === 0 && rows('其他损耗').length === 0 && rows('附加损耗').length === 0 &&
     rows('自由空间损耗', 'loss').length === 2 && rows('雨衰 P.618', 'loss').length === 2,
     `其他传播衰减 ${others.length} 行`);
   ok('★ 上行「其他传播衰减」= 大气 + 云 + 附加（逐位）',
@@ -1061,10 +1061,11 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
     hops: [UP_HOP, { link: 'rf', frequency: '23', rangeKm: '40000', islEirp: '45', islGT: '12', miscLoss: '1' }, DN_HOP],
     carrier: CARRIER
   });
-  ok('★ 星间微波跳的同两行同样合并（附加损耗照旧单列——星间没有大气/雨/云可并）',
+  ok('★ 星间微波跳的同两行同样合并（其他损耗照旧单列——星间没有大气/雨/云可并；v1.5.0 起行名由「附加损耗」统一为「其他损耗」）',
     islChain.data.ledger.filter((x) => x.label === '−k − 10·lgB').length === 3 &&
     islChain.data.ledger.filter((x) => x.label === '−玻尔兹曼常数 k').length === 0 &&
-    islChain.data.ledger.filter((x) => x.label === '附加损耗').length === 1);
+    islChain.data.ledger.filter((x) => x.label === '其他损耗').length === 1 &&
+    islChain.data.ledger.filter((x) => x.label === '附加损耗').length === 0);
   ok('★ 到达电平 = 上级电平 − FSL − 雨衰 − 其他传播衰减（三行手算得出）',
     near(rows('发信站 EIRP', 'sub')[0].value - rows('自由空间损耗', 'loss')[0].value
       - rows('雨衰 P.618', 'loss')[0].value - others[0].value,

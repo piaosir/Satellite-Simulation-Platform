@@ -31,9 +31,14 @@
 //                                                       'bad-asm'（meta.spec 不是装配文档）、'not-redistributable'（引用了查不到 / 不可分发的库模型，整件拒收、不落盘）、
 //                                                       'dup'（字节与库里另一条目相同，不抢它的文件）
 //                                                       saveMeta 对 asm: 只收 title / titleZh / tags / aliases（其余只能随 glb 一起经 saveImported 变）
+//                                                       元数据副本（meta.copyOf = 原条目 id，工作台模型签「另存副本」，2026-10-06）：身份恒为 user、可分发，
+//                                                       署名 / 许可 / 出处文本按原条目保留（原条目在目录里取目录那份；不在目录里的内置参数化件 param:<型号> 取送来的）；
+//                                                       原条目不可分发 → 'not-redistributable'，查不到 → 'missing'；不带 spec
+//  stkLocate()       models:stkLocate        gate      → {dir, found, version, source:'registry'|'program-files'|'fallback'}（本机 STK 模型目录，注册表 InstallHome 优先）
 //  scanStk(o)        models:scanStk          gate      {dir?} → {dir, exists, truncated?, items:[{file, rel, category, bytes, nodes, attachPoints, articulations, solarPanelGroups, hasGmdf, error?}]}
+//                                                       dir 缺省 = stkLocate().dir（importStk 同）
 //  pickStkDir()      models:pickStkDir       gate      → {dir} | {canceled:true}
-//  importStk(o)      models:importStk        gate      {dir, files:[rel]} → {imported:[{id, file}], errors:[{file, message}]}
+//  importStk(o)      models:importStk        gate      {dir, files:[rel]} → {imported:[{id, file, existed}], errors:[{file, message}]}（existed：库里早有同一件）
 //  saveMeta(o)       models:saveMeta         gate      {id, meta} → {ok, errors?}（本机模型改原件；远端 / 内置写覆盖层 overrides/<id>.satsim.json）
 //  getMeta(id)       models:getMeta          UNGATED   → 完整 ModelMeta（合并覆盖层）| null
 //  exportModel(o)    models:export           gate      {id, glb, gmdf?, satsimJson?, suggestedName} → {ok:true, path} | {ok:false, code:'not-redistributable'|'canceled'|'missing'|'bad-glb', error?}
@@ -82,6 +87,7 @@ const fs = require('fs')
 const fsp = require('fs/promises')
 const path = require('path')
 const crypto = require('crypto')
+const { execFile } = require('child_process')
 const { pathToFileURL } = require('url')
 const L = require('./modelsLogic')
 const imp = require('./modelsImport')
@@ -109,6 +115,8 @@ const CAD_CONCURRENCY = 1
 // 访问的目录数 / 深度 / 文件数封顶，超了就停并在结果里标 truncated
 const STK_WALK = { maxDepth: 8, maxDirs: 2000, maxFiles: 5000 }
 const STK_INDEX_TTL_MS = 10 * 60 * 1000          // 本机 STK 文件清单（按大小比对字节用）缓存 10 分钟
+const STK_LOCATE_RETRY_MS = 30 * 1000            // 没找到本机 STK 时，过这么久再查注册表（STK 装好不用重启本软件）
+const REG_TIMEOUT_MS = 5000
 // 掩模（D18）：每张 325 816 B。masks/ 目录超过 MASK_KEEP 张时，绑定里没人引用的按修改时间从旧往新清（512 张 ≈ 160 MB）；
 // 刚写的（MASK_GRACE_MS 内）不清：工作台是先存 .bin、再写绑定（对日扫描一次存 12 张），中间这段时间它们还没人引用
 const MASK_KEEP = 512
@@ -162,7 +170,18 @@ function readHead(file, n) {
   try { const b = Buffer.alloc(n); const k = fs.readSync(fd, b, 0, n, 0); return b.subarray(0, k).toString('latin1') } finally { fs.closeSync(fd) }
 }
 const isFile = (f) => { const s = statOr(f); return !!(s && s.isFile()) }
+const isDir = (f) => { const s = statOr(f); return !!(s && s.isDirectory()) }
 const rmQuiet = (f) => { try { fs.unlinkSync(f); return true } catch { return false } }
+
+// reg.exe 只读查询：用系统目录下那一份（不走 PATH）；退出码非 0（键不存在）、超时一律当没有 → null。
+// 出参是原始字节（编码随 OEM 代码页，交给 modelsLogic.regOutputTexts 解）
+function regQueryExe(args) {
+  const exe = path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'reg.exe')
+  return new Promise((resolve) => {
+    execFile(exe, args, { encoding: 'buffer', windowsHide: true, timeout: REG_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => resolve(err ? null : stdout))
+  })
+}
 
 // 异步递归列出 dir 下的 .glb（STK 扫描 / 本机 STK 字节比对共用）。
 // 走 fs.promises：用户选了 C:\ 也只是慢慢列，不会把主进程（= 所有窗口的 IPC）卡住几十秒；
@@ -210,8 +229,11 @@ function createModels(opts = {}) {
   // 以下两项只给单测：退避时间缩放（别让重试把单测拖成 10 s）、缓存上限的下限（小夹具才测得到淘汰）
   const retryScale = Number.isFinite(opts.retryScale) && opts.retryScale >= 0 ? opts.retryScale : 1
   const minCap = Number.isFinite(opts.minCacheCap) && opts.minCacheCap >= 0 ? opts.minCacheCap : L.CAP_MIN
-  // 只给单测：把「默认 STK 目录」指到临时目录（别让单测去碰本机真 STK 安装）
+  // 只给单测：把「默认 STK 目录」指到临时目录（别让单测去碰本机真 STK 安装；给了它就不查注册表）
   const stkDefaultOverride = typeof opts.stkDefaultDir === 'string' && opts.stkDefaultDir ? opts.stkDefaultDir : null
+  // 只给单测：注册表查询（args → Promise<Buffer | string | null>）与 Program Files 的 AGI 搜索根，换成假的才测得到定位顺序
+  const regQuery = typeof opts.regQuery === 'function' ? opts.regQuery : (process.platform === 'win32' ? regQueryExe : null)
+  const stkProgramRoots = Array.isArray(opts.stkProgramRoots) ? opts.stkProgramRoots : null
   const stkWalkLimits = opts.stkWalk && typeof opts.stkWalk === 'object' ? { ...STK_WALK, ...opts.stkWalk } : STK_WALK
   // 只给单测：掩模目录的留存张数与保护期（真实 512 张 × 325 KB，单测造不起）
   const maskKeep = Number.isInteger(opts.maskKeep) && opts.maskKeep >= 0 ? opts.maskKeep : MASK_KEEP
@@ -372,7 +394,7 @@ function createModels(opts = {}) {
       if (!m || !m.source || m.source.redistributable === false) continue
       const bad = S.asmModelRefs(m.spec).find((rid) => { const r = byId.get(rid); return !r || !S.isRedistributable(r) })
       if (bad === undefined) continue
-      const next = S.normalizeMeta({ ...u.meta, source: { kind: 'user', url: '', credit: '', license: '含不可分发件', redistributable: false }, updatedAt: new Date(now()).toISOString() })
+      const next = S.normalizeMeta({ ...u.meta, source: { kind: 'user', url: '', credit: '', license: '含不可分发模型', redistributable: false }, updatedAt: new Date(now()).toISOString() })
       try { writeJsonAtomic(u.metaFile, next, 2) } catch { /* 写不进也照样按不可分发用 */ }
       u.meta = next
       const nm = { ...m, source: next.source, updatedAt: next.updatedAt }
@@ -504,7 +526,7 @@ function createModels(opts = {}) {
     const fin = (fn, v) => { if (done) return; done = true; clearTimeout(timer); fn && fn(v) }
     const kick = () => {
       clearTimeout(timer)
-      timer = setTimeout(() => { try { abortReq() } catch {} ; fin(h.onError, new Error('网络超时（30 s 无数据）')) }, IDLE_TIMEOUT_MS)
+      timer = setTimeout(() => { try { abortReq() } catch {} ; fin(h.onError, new Error('网络超时（30 s 内未收到数据）')) }, IDLE_TIMEOUT_MS)
     }
     const hooks = {
       response: (s, hd) => { if (!done) { kick(); h.onResponse(s, hd) } },
@@ -647,7 +669,7 @@ function createModels(opts = {}) {
       const got = await sha256File(j.part)
       if (got !== j.sha) {
         try { fs.unlinkSync(j.part) } catch {}
-        throw Object.assign(new Error('sha256 不符'), { retriable: true })
+        throw Object.assign(new Error('sha256 校验不符'), { retriable: true })
       }
       fs.renameSync(j.part, j.dest)
       setState(L.touchState(state(), j.key, now()))
@@ -707,7 +729,7 @@ function createModels(opts = {}) {
         onResponse: (status, hd) => {
           if (status === 206) {
             const cr = L.parseContentRange(L.hdr(hd, 'content-range'))
-            if (!cr || cr.start !== start) return bail(new Error('续传区间不符'))
+            if (!cr || cr.start !== start) return bail(new Error('断点续传区间不匹配'))
             if (cr.total) total = cr.total
             ws = fs.createWriteStream(j.part, { flags: 'a' })
           } else if (status === 200) {
@@ -717,11 +739,11 @@ function createModels(opts = {}) {
             ws = fs.createWriteStream(j.part, { flags: 'w' })
           } else if (status === 416) {
             try { fs.unlinkSync(j.part) } catch {}
-            return bail(new Error('续传区间无效'))
+            return bail(new Error('断点续传区间无效'))
           } else {
             return bail(Object.assign(new Error(`HTTP ${status}`), { retriable: status >= 500 || status === 429 || status === 408 ? true : false }))
           }
-          if (j.bytes && total && total !== j.bytes) return bail(Object.assign(new Error(`文件大小不符（${total} ≠ ${j.bytes}）`), { retriable: false }))
+          if (j.bytes && total && total !== j.bytes) return bail(Object.assign(new Error(`文件大小不匹配（${total} ≠ ${j.bytes}）`), { retriable: false }))
           if (total > MAX_BLOB_BYTES) return bail(Object.assign(new Error('文件过大'), { retriable: false }))
           ws.on('error', bail)
           jobSet(j, { type: 'progress', received, total })
@@ -729,7 +751,7 @@ function createModels(opts = {}) {
         onData: (c) => {
           if (failed || !ws) return
           received += c.length
-          if ((j.bytes && received > j.bytes) || received > MAX_BLOB_BYTES) return bail(new Error('收到的字节超出声明大小'))
+          if ((j.bytes && received > j.bytes) || received > MAX_BLOB_BYTES) return bail(new Error('接收字节数超出声明大小'))
           ws.write(c)
           jobSet(j, { type: 'progress', received, total })
         },
@@ -737,7 +759,7 @@ function createModels(opts = {}) {
           if (failed) return
           if (!ws) return reject(new Error('无响应体'))
           ws.end(() => {
-            if (total && received !== total) return reject(new Error(`连接提前断开（${received}/${total}）`))
+            if (total && received !== total) return reject(new Error(`连接意外中断（${received}/${total}）`))
             resolve()
           })
         },
@@ -850,9 +872,9 @@ function createModels(opts = {}) {
       if (r.status === 304) { setState({ ...state(), lastRefresh: now() }); log.info('[models] 远端 manifest 未变（304）'); return }
       if (r.status !== 200) throw new Error(`HTTP ${r.status}`)
       let json
-      try { json = JSON.parse(r.body.toString('utf8')) } catch { throw new Error('远端 manifest 不是 JSON') }
+      try { json = JSON.parse(r.body.toString('utf8')) } catch { throw new Error('远端 manifest 非 JSON 格式') }
       const v = M.validateManifest(json, { remote: true })
-      if (!v.ok && !(v.models && v.models.length)) throw new Error(`远端 manifest 不合格：${(v.errors || []).slice(0, 3).join('；')}`)
+      if (!v.ok && !(v.models && v.models.length)) throw new Error(`远端 manifest 校验未通过：${(v.errors || []).slice(0, 3).join('；')}`)
       if (v.errors && v.errors.length) log.warn(`[models] 远端 manifest 丢弃 ${v.errors.length} 处不合格：${v.errors.slice(0, 3).join('；')}`)
       if (v.warnings && v.warnings.length) log.info(`[models] 远端 manifest 提示 ${v.warnings.length} 条：${v.warnings.slice(0, 5).join('；')}`)
       mk(modelsDir)
@@ -1009,6 +1031,9 @@ function createModels(opts = {}) {
     return { id, meta, existed: false }
   }
   const userSource = () => ({ kind: 'user', url: '', credit: '', license: '', redistributable: true })
+  // 元数据副本的来源：身份 user、可分发，原件的出处 / 署名 / 许可文本照抄（只收字符串、截到 2000 字）
+  const copyText = (v) => (typeof v === 'string' ? v.slice(0, 2000) : '')
+  const copySource = (s0) => ({ kind: 'user', url: copyText(s0 && s0.url), credit: copyText(s0 && s0.credit), license: copyText(s0 && s0.license), redistributable: true })
   const stkSource = () => ({ kind: 'stk-local', url: '', credit: 'AGI', license: 'AGI SLA', redistributable: false })
   // extra（渲染端送来的 meta 字段）整份盖 frame 时，保住 metaFromGltf 按这份 glb 定下的 importQ：入库时的「出厂映射」只认主进程判的
   function keepImportQ(fx, f0) {
@@ -1030,7 +1055,7 @@ function createModels(opts = {}) {
       const filePath = o && typeof o.path === 'string' && o.path ? o.path : null
       if (filePath) {
         const ext = extOf(filePath)
-        if (ext !== 'glb' && ext !== 'gltf') return { ok: false, error: '只支持 .glb / .gltf' }
+        if (ext !== 'glb' && ext !== 'gltf') return { ok: false, error: '仅支持 .glb / .gltf' }
         name = path.basename(filePath)
         if (ext === 'gltf') { const g = await imp.gltfToGlb({ path: filePath }, { G: glbAdapter(G), log }); bytes = g.glb; srcJson = g.json; gltf = true }
         else bytes = await fsp.readFile(filePath)
@@ -1039,7 +1064,7 @@ function createModels(opts = {}) {
         bytes = toU8(o.bytes)
         if (extOf(name) === 'gltf' || (!L.isGlb(bytes) && bytes[0] === 0x7b)) { const g = await imp.gltfToGlb({ bytes, name }, { G: glbAdapter(G), log }); bytes = g.glb; srcJson = g.json; gltf = true }
       } else return { ok: false, error: '缺少文件' }
-      if (!L.isGlb(bytes)) return { ok: false, error: '不是 glb 文件' }
+      if (!L.isGlb(bytes)) return { ok: false, error: '非 glb 文件' }
       const p = G.parseGlb(bytes)
       if (!p.ok) return { ok: false, error: p.error }
       const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -1088,7 +1113,7 @@ function createModels(opts = {}) {
   async function importCad(o) {
     const file = o && typeof o.path === 'string' ? o.path : ''
     const kind = L.cadKind(file)
-    if (!kind) return { ok: false, error: '只支持 STEP / IGES / BREP' }
+    if (!kind) return { ok: false, error: '仅支持 STEP / IGES / BREP' }
     if (!isFile(file)) return { ok: false, error: '文件不存在' }
     const token = o && typeof o.token === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(o.token) ? o.token : `imp-${now()}-${++_impSeq}`
     const name = path.basename(file)
@@ -1154,7 +1179,7 @@ function createModels(opts = {}) {
     try {
       const { G, S } = await core()
       const glb = toU8(o && o.glb)
-      if (!glb || !L.isGlb(glb)) return { ok: false, error: '不是 glb 数据' }
+      if (!glb || !L.isGlb(glb)) return { ok: false, error: '非 glb 数据' }
       const p = G.parseGlb(glb)
       if (!p.ok) return { ok: false, error: p.error }
       const buf = Buffer.from(glb.buffer, glb.byteOffset, glb.byteLength)
@@ -1164,12 +1189,23 @@ function createModels(opts = {}) {
       const m = o && o.meta && typeof o.meta === 'object' ? plain(o.meta) : {}
       // 装配件（DESIGN3 E4）：id 由渲染端新建文档时生成、终身不变，同 id 再存 = 顶替
       if (typeof m.id === 'string' && ASM_ID_RE.test(m.id)) return await saveAssembly(buf, p.json, m)
-      const isParam = m.source && m.source.kind === 'param'
-      const source = isParam
+      // 元数据副本（工作台模型签「另存副本」）：来源身份仍是 user，署名 / 许可文本保留（NASA 等的署名义务随副本走）
+      const copyOf = typeof m.copyOf === 'string' && m.copyOf ? m.copyOf : ''
+      let copySrc = null
+      if (copyOf) {
+        const cat = await catalog()
+        const ref = cat.byId.get(copyOf)
+        if (ref && !S.isRedistributable(ref)) { log.info(`[models] 拒收元数据副本：${copyOf} 不可再分发`); return { ok: false, code: 'not-redistributable', error: '该模型不可分发。' } }
+        if (!ref && !/^param:[a-z0-9][a-z0-9-]*$/i.test(copyOf)) return { ok: false, code: 'missing', error: '原模型不存在。' }
+        copySrc = copySource(ref ? ref.source : m.source)
+      }
+      const isParam = !copyOf && m.source && m.source.kind === 'param'
+      const source = copySrc || (isParam
         ? { kind: 'param', url: '', credit: '', license: '', redistributable: true }
-        : userSource()
+        : userSource())
       const extra = {}
       for (const k of EDITABLE) if (m[k] !== undefined) extra[k] = m[k]
+      if (copyOf) delete extra.spec
       // 装配文档只配 asm: id（schema.validateMeta 同口径）：param: 带着它会被 buildParamModel 当整星 spec 静默生成成一个点，
       // user: 带着它没有用处（glb 就是成品）。这里摘掉，不让它落盘
       if (S.isAssemblySpec(extra.spec)) { delete extra.spec; log.info('[models] saveImported：非 asm: 条目带的装配文档已丢弃') }
@@ -1225,7 +1261,7 @@ function createModels(opts = {}) {
   }
   async function saveAssemblyNow(buf, json, m) {
     const { S } = await core()
-    if (!S.isAssemblySpec(m.spec)) return { ok: false, code: 'bad-asm', error: '装配件缺装配文档。' }
+    if (!S.isAssemblySpec(m.spec)) return { ok: false, code: 'bad-asm', error: '装配件缺少装配文档。' }
     const cat = await catalog()
     // 授权闸（E4）：装配文档引用的库模型（schema.asmModelRefs，失败即关）必须都在目录里、且可再分发；一个不行整件拒收，
     // 什么都不落盘。先扫原始文档（任何键名、嵌套里的模型 id 都算；授权结论优先于文档合法性），规整之后再扫一遍
@@ -1248,9 +1284,9 @@ function createModels(opts = {}) {
     const va = Asm.validateAssembly(m.spec)
     if (!va.ok) {
       log.info(`[models] 拒收装配件 ${m.id}：${[...va.missing, ...va.errors].slice(0, 3).join('；')}`)
-      return { ok: false, code: 'bad-asm', error: '装配文档非法。' }
+      return { ok: false, code: 'bad-asm', error: '装配文档无效。' }
     }
-    const spec = Asm.normalizeAssembly(m.spec)
+    const spec = Asm.compactAssembly(m.spec)   // 存档形状：规整后剥掉缺省 off / tilt（旧文档字节不变；带扩展字段的 schema = 2）
     const g1 = refGate(spec)
     if (g1) return g1
     m = { ...m, spec }
@@ -1285,7 +1321,7 @@ function createModels(opts = {}) {
       log.warn(`[models] 拒收装配件 ${m.id}：元数据校验 ${(v.errors || []).slice(0, 5).join('；')}`)
       if (!r.existed) removeUserFiles({ glbFile: path.join(dir.user, sha + '.glb'), metaFile })
       invalidate()
-      return { ok: false, code: 'bad-asm', error: '装配件元数据非法。' }
+      return { ok: false, code: 'bad-asm', error: '装配件元数据无效。' }
     }
     writeJsonAtomic(metaFile, next, 2)
     // 顶替：同 id 的旧文件（连同早先被顶替、仍留在盘上的 shadowed）一并删掉；本次这份（字节没变时就是旧文件本身）留着
@@ -1299,12 +1335,74 @@ function createModels(opts = {}) {
   }
 
   /* ─────────────── STK 本机目录（只读） ─────────────── */
-  const defaultStkDir = () => stkDefaultOverride || path.join(process.env.ProgramFiles || 'C:\\Program Files', 'AGI', 'STK 12', 'STKData', 'VO', 'Models')
-  // 字节判据要列的 STK 目录：默认安装位置 + 用户经「从 STK 导入」真导入过东西的目录（state.json 里记着，跨重启）。
+  // 模型目录按注册表认（modelsLogic「本机 STK 定位」）：HKLM\SOFTWARE\AGI\STK\<版本> 的 InstallHome + STKData\VO\Models，
+  // 64 / 32 位两个视图都查、高版本优先、目录在才算；注册表里没有再看 Program Files\AGI\STK*；
+  // 都没有 → found=false，dir 退回 STK 12 的缺省位置（界面报「未找到本机 STK。」；授权闸照旧拿它当路径前缀，无害）。
+  // 结果缓存：找到的一直用到那个目录没了为止；没找到的过 STK_LOCATE_RETRY_MS 再查。
+  const stkFallbackDir = () => path.join(process.env.ProgramFiles || 'C:\\Program Files', 'AGI', 'STK 12', ...L.STK_MODELS_REL)
+  const programRoots = () => stkProgramRoots ||
+    [...new Set([process.env.ProgramFiles, process.env.ProgramW6432, process.env['ProgramFiles(x86)']].filter(Boolean).map((p) => path.join(p, 'AGI')))]
+  let _stkLoc = null      // { dir, found, version, source, at }
+  let _stkLocP = null
+  const locOut = (c) => ({ dir: c.dir, found: c.found, version: c.version, source: c.source })
+  async function locateStkNow() {
+    const reg = []
+    if (regQuery) {
+      const outs = await Promise.all(['/reg:64', '/reg:32'].map((view) =>
+        Promise.resolve().then(() => regQuery(['query', L.STK_REG_KEY, '/s', '/v', 'InstallHome', view])).catch(() => null)))
+      for (const o of outs) if (o) for (const t of L.regOutputTexts(o)) reg.push(...L.parseRegInstallHome(t, process.env))
+    }
+    const dirs = []
+    for (const root of programRoots()) {
+      const ents = await fsp.readdir(root, { withFileTypes: true }).catch(() => [])
+      for (const e of ents) if (e.isDirectory()) dirs.push({ home: path.join(root, e.name), name: e.name })
+    }
+    for (const c of L.stkHomeCandidates(reg, dirs)) {
+      const d = path.join(c.home, ...L.STK_MODELS_REL)
+      const st = await fsp.stat(d).catch(() => null)
+      if (st && st.isDirectory()) return { dir: d, found: true, version: c.version, source: c.source }
+    }
+    return { dir: stkFallbackDir(), found: false, version: '', source: 'fallback' }
+  }
+  // → { dir, found, version, source:'registry'|'program-files'|'fallback'|'override' }
+  function stkLocate() {
+    if (stkDefaultOverride) return Promise.resolve({ dir: stkDefaultOverride, found: isDir(stkDefaultOverride), version: '', source: 'override' })
+    const c = _stkLoc
+    if (c && (c.found ? isDir(c.dir) : now() - c.at < STK_LOCATE_RETRY_MS)) return Promise.resolve(locOut(c))
+    if (_stkLocP) return _stkLocP
+    const p = locateStkNow()
+      .catch((e) => { log.warn(`[models] 查本机 STK 失败：${errText(e)}`); return { dir: stkFallbackDir(), found: false, version: '', source: 'fallback' } })
+      .then((r) => {
+        const prev = _stkLoc
+        _stkLoc = { ...r, at: now() }
+        if (!prev || prev.found !== r.found || L.normWinPath(prev.dir) !== L.normWinPath(r.dir)) {
+          log.info(r.found ? `[models] 本机 STK 模型目录：${r.dir}（${r.source} ${r.version}）` : '[models] 未找到本机 STK')
+          if (prev) {
+            // 认定的目录换了（STK 装上 / 卸掉 / 升级）：同 noteStkDir —— 字节清单重列、「不是 STK」的结论清掉重判、目录重建
+            _stkIndex = null
+            for (const [k, v] of stkVerdictCache) if (!v) stkVerdictCache.delete(k)
+            invalidate()
+          }
+        }
+        return locOut(_stkLoc)
+      })
+      .finally(() => { if (_stkLocP === p) _stkLocP = null })
+    _stkLocP = p
+    return p
+  }
+  const stkDefaultDir = async () => (await stkLocate()).dir
+  // 字节判据要列的 STK 目录：本机 STK 模型目录 + 用户经「从 STK 导入」真导入过东西的目录（state.json 里记着，跨重启）。
   // ★ 这些目录只用于逐字节比对，不做路径前缀判据：用户可能在 pickStkDir 里选的是 C:\ 这种大目录，
   //   拿它当前缀会把整盘的 glb 都判成 STK 的；字节比对则零误判（逐字节相同 = 就是那个文件）。
-  //   路径前缀只认默认目录与 STK 安装树的固定形状（modelsLogic.isStkPath）
-  const knownStkDirs = () => [defaultStkDir(), ...(state().stkDirs || [])]
+  //   路径前缀只认本机 STK 模型目录与 STK 安装树的固定形状（modelsLogic.isStkPath）
+  async function knownStkDirs() {
+    const out = [], seen = new Set()
+    for (const d of [await stkDefaultDir(), ...(state().stkDirs || [])]) {
+      const k = L.normWinPath(d)
+      if (k && !seen.has(k)) { seen.add(k); out.push(d) }
+    }
+    return out
+  }
   function noteStkDir(d) {
     const next = L.rememberStkDir(state(), d)
     if (next === state()) return
@@ -1328,7 +1426,7 @@ function createModels(opts = {}) {
     _stkIndexP = (async () => {
       const files = []
       const seen = new Set()
-      for (const d of knownStkDirs()) {
+      for (const d of await knownStkDirs()) {
         const st = statOr(d)
         if (!st || !st.isDirectory()) continue
         const w = await walkGlbFiles(d, stkWalkLimits)
@@ -1363,7 +1461,7 @@ function createModels(opts = {}) {
   async function stkVerdict({ json, jsonAlt, filePath, sha, size }) {
     const r = L.stkReason(json) || (jsonAlt ? L.stkReason(jsonAlt) : null)
     if (r) return r
-    if (filePath && L.isStkPath(filePath, [defaultStkDir()])) return 'path'
+    if (filePath && L.isStkPath(filePath, [await stkDefaultDir()])) return 'path'
     if (sha && (await localStkHas(sha, size))) return 'bytes'
     return null
   }
@@ -1394,7 +1492,7 @@ function createModels(opts = {}) {
         if (r.ok || !r.needBytes || r.needBytes <= need || bytesRead < need) return r
         need = r.needBytes
       }
-      return { ok: false, error: '读不出 JSON 块' }
+      return { ok: false, error: '无法读取 JSON 块' }
     } finally { await fd.close() }
   }
   function readGmdf(glbFile) {
@@ -1410,7 +1508,7 @@ function createModels(opts = {}) {
     } catch { return L.countAgiRaw(json, gmdf) }   // agi.mjs 出岔子时的纯计数兜底
   }
   async function scanStk(o) {
-    const d = o && typeof o.dir === 'string' && o.dir ? o.dir : defaultStkDir()
+    const d = o && typeof o.dir === 'string' && o.dir ? o.dir : await stkDefaultDir()
     const st = await fsp.stat(d).catch(() => null)
     if (!st || !st.isDirectory()) return { dir: d, exists: false, items: [] }
     const { files, truncated } = await walkGlbFiles(d, stkWalkLimits)
@@ -1422,7 +1520,7 @@ function createModels(opts = {}) {
       const item = { file: path.basename(f), rel, category, bytes: s ? s.size : 0, nodes: 0, attachPoints: 0, articulations: 0, solarPanelGroups: 0, hasGmdf: false }
       try {
         const h = await readGlbJsonFromFile(f)
-        if (!h.ok) { item.error = h.error || '不是 glb'; items.push(item); continue }
+        if (!h.ok) { item.error = h.error || '非 glb 文件'; items.push(item); continue }
         const g = readGmdf(f)
         item.hasGmdf = g.has
         Object.assign(item, await agiCounts(h.json, g.json))
@@ -1434,16 +1532,16 @@ function createModels(opts = {}) {
     return truncated ? { dir: d, exists: true, items, truncated: true } : { dir: d, exists: true, items }
   }
   async function importStk(o) {
-    const d = o && typeof o.dir === 'string' && o.dir ? o.dir : defaultStkDir()
+    const d = o && typeof o.dir === 'string' && o.dir ? o.dir : await stkDefaultDir()
     const rels = Array.isArray(o && o.files) ? o.files : []
     const base = path.resolve(d)
     const imported = [], errors = []
     const { G } = await core()
     for (const rel0 of rels) {
       const rel = L.safeRel(rel0)
-      if (!rel) { errors.push({ file: String(rel0), message: '路径不合法' }); continue }
+      if (!rel) { errors.push({ file: String(rel0), message: '路径无效' }); continue }
       const abs = path.resolve(base, rel)
-      if (!L.isInside(base, abs, path)) { errors.push({ file: rel, message: '路径不合法' }); continue }
+      if (!L.isInside(base, abs, path)) { errors.push({ file: rel, message: '路径无效' }); continue }
       try {
         const bytes = await fsp.readFile(abs)
         const p = G.parseGlb(bytes)
@@ -1455,7 +1553,8 @@ function createModels(opts = {}) {
           glb: bytes, json: p.json, idPrefix: 'stk', title: path.basename(rel).replace(/\.glb$/i, ''),
           kind: L.stkKind(category, rel), fidelity: 'outreach', source: stkSource(), gmdf: g.json || undefined
         })
-        imported.push({ id: r.id, file: rel })
+        // existed：同一文件早就入过库（工作台不再自动分割 / 重存元数据，免得覆盖已标定的部件表）
+        imported.push({ id: r.id, file: rel, existed: !!r.existed })
       } catch (e) { errors.push({ file: rel, message: errText(e) }) }
     }
     if (imported.length) {
@@ -1527,7 +1626,7 @@ function createModels(opts = {}) {
   async function saveThumb(o) {
     const id = String((o && o.id) || '')
     const webp = toU8(o && o.webp)
-    if (!webp || !L.isWebp(webp) || webp.length > MAX_THUMB_BYTES) return { ok: false, error: '不是 WebP 图片' }
+    if (!webp || !L.isWebp(webp) || webp.length > MAX_THUMB_BYTES) return { ok: false, error: '非 WebP 图片' }
     const cat = await catalog()
     const u = cat.userFiles.get(id)
     if (!u && !cat.byId.has(id)) return { ok: false, error: '模型不存在' }
@@ -1800,7 +1899,7 @@ function createModels(opts = {}) {
       else fs.writeFileSync(r.filePath, Buffer.from(await require('./gridXlsx').buildGridWorkbook(gridModelOf(payload))))
     } catch (e) {
       const busy = e && (e.code === 'EBUSY' || e.code === 'EPERM' || e.code === 'EACCES')
-      return { ok: false, error: busy ? `文件可能正被其他程序打开（如 ${csv ? '记事本 / Excel' : 'Excel'}），请关闭后重试` : errText(e) }
+      return { ok: false, error: busy ? `文件可能正被其他程序打开（如 ${csv ? '记事本 / Excel' : 'Excel'}）` : errText(e) }
     }
     log.info(`[models] 导出表格 → ${r.filePath}`)
     return { ok: true, filePath: r.filePath }
@@ -1819,7 +1918,8 @@ function createModels(opts = {}) {
   }
   async function pickStkDir(win) {
     if (!E.dialog) return { canceled: true }
-    const opt = { title: '选择 STK 模型目录', properties: ['openDirectory'], defaultPath: statOr(defaultStkDir()) ? defaultStkDir() : undefined }
+    const d = await stkDefaultDir()
+    const opt = { title: '选择 STK 模型目录', properties: ['openDirectory'], defaultPath: isDir(d) ? d : undefined }
     const r = win ? await E.dialog.showOpenDialog(win, opt) : await E.dialog.showOpenDialog(opt)
     if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { canceled: true }
     return { dir: r.filePaths[0] }
@@ -1830,14 +1930,14 @@ function createModels(opts = {}) {
   // 与导入同一套判据（署名 / AGI 扩展 / 字节）
   async function readFile(p) {
     const f = String(p || '')
-    if (!f || !path.isAbsolute(f)) return { ok: false, error: '路径不合法' }
+    if (!f || !path.isAbsolute(f)) return { ok: false, error: '路径无效' }
     const ext = extOf(f)
     if (!READ_EXTS.has(ext)) return { ok: false, error: '不支持的文件类型' }
     const s = await fsp.stat(f).catch(() => null)
     if (!s || !s.isFile()) return { ok: false, error: '文件不存在' }
     if (s.size > MAX_READ_BYTES) return { ok: false, error: '文件过大' }
     const refused = { ok: false, code: 'stk', error: 'STK 模型不可由此导入。' }
-    if (L.isStkPath(f, [defaultStkDir()])) return refused
+    if (L.isStkPath(f, [await stkDefaultDir()])) return refused
     try {
       const bytes = await fsp.readFile(f)
       if (ext === 'glb' || ext === 'gltf') {
@@ -1885,10 +1985,9 @@ function createModels(opts = {}) {
   return {
     modelsDir, bundleDir, bindingsFile, onChange, start, stop,
     manifest, ensure, thumbnail, cancel, remove, cacheInfo, setCacheCap, openCacheDir, refreshManifest,
-    pickFiles, readFile, importGlb, importCad, saveImported, scanStk, pickStkDir, importStk,
+    pickFiles, readFile, importGlb, importCad, saveImported, stkLocate, scanStk, pickStkDir, importStk,
     saveMeta, getMeta, exportModel, saveThumb, bindingsGet, bindingsSet, handleProtocol,
     saveMask, getMask, exportTable,
-    defaultStkDir,
     // 以下仅供单测
     _flush: flushState, _state: () => state(), _evict: evict, _jobs: jobs, _core: core, _pruneMasks: pruneMasks, _maskFile: maskFile
   }
@@ -1974,7 +2073,7 @@ function tableSource(sh, cols, i) {
 /** 入参校验 + 归一（不摊行）：{style, title, sheets:[{name, note, cols, header, src:{n, at(r, k)}}]}。坏入参抛中文错误 */
 function tableSpec(p) {
   const sheets = Array.isArray(p && p.sheets) ? p.sheets.filter((s) => s && typeof s === 'object') : []
-  if (!sheets.length) throw new Error('没有可导出的数据')
+  if (!sheets.length) throw new Error('无可导出数据')
   if (sheets.length > TABLE_MAX_SHEETS) throw new Error(`工作表超过 ${TABLE_MAX_SHEETS} 张`)
   return {
     style: p.style === 'plain' ? 'plain' : 'report',
@@ -2029,7 +2128,7 @@ function tableCsvText(p) {
     }
     text = lines.join('\r\n') + '\r\n'
   }
-  if (!text) throw new Error('没有可导出的数据')
+  if (!text) throw new Error('无可导出数据')
   if (text.length > TABLE_MAX_CSV) throw new Error('文本过大')
   // eslint-disable-next-line no-control-regex
   const bom = /[^\x00-\x7f]/.test(text) && text.charCodeAt(0) !== 0xfeff ? '﻿' : ''

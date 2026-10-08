@@ -1,4 +1,5 @@
-// 星座卫星精模（「考究版」）注册表：星链 / 一网 / GPS / 北斗 / 伽利略 / 格洛纳斯 / 铱星 / 全球星 / O3b / Kuiper 各型的专门造型。
+// 星座卫星精模（「考究版」）注册表：星链 / 一网 / GPS / 北斗 / 伽利略 / 格洛纳斯 / 铱星 / 全球星 / O3b / Kuiper 各型的专门造型；
+// 2026-10-07 起含知名 GEO 星（geo-comsat / geo-mss / geo-wx / geo-mil.mjs，平台预设 geo-presets.mjs、造型件 geokit.mjs；国内具体星不做）。
 //
 // 2026-09-25 用户：「像 starlink oneweb GPS 北斗等比较有名的星座的卫星模型可以尽量考究一些」。
 // 此前这些星在 3D 页一律落到通用外形（星链 / 一网 → 平板 LEO，GPS / 北斗 / 伽利略 → GEO 大平台的默认卫星），一眼就不对。
@@ -33,11 +34,15 @@ import { IRIDIUM_MODELS } from './iridium.mjs'
 import { GLOBALSTAR_MODELS } from './globalstar.mjs'
 import { O3B_MODELS } from './o3b.mjs'
 import { KUIPER_MODELS } from './kuiper.mjs'
+import { GEO_WX_MODELS } from './geo-wx.mjs'
+import { GEO_MIL_MODELS } from './geo-mil.mjs'
+import { GEO_MSS_MODELS } from './geo-mss.mjs'
+import { GEO_COMSAT_MODELS } from './geo-comsat.mjs'
 
 export { matchFleet }
 
 const ALL = [...STARLINK_MODELS, ...ONEWEB_MODELS, ...KUIPER_MODELS, ...GPS_MODELS, ...BEIDOU_MODELS, ...GALILEO_MODELS, ...GLONASS_MODELS,
-  ...IRIDIUM_MODELS, ...GLOBALSTAR_MODELS, ...O3B_MODELS]
+  ...IRIDIUM_MODELS, ...GLOBALSTAR_MODELS, ...O3B_MODELS, ...GEO_COMSAT_MODELS, ...GEO_MSS_MODELS, ...GEO_WX_MODELS, ...GEO_MIL_MODELS]
 
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const T = {}

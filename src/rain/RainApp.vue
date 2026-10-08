@@ -3,7 +3,7 @@
 // Excel 式批量计算（每行一算例，雨衰以只读计算列进表）+ 右侧单算例细致分析（交互式坐标系 + SatMaster 版详情），
 // 点表格任一行即在右侧细看该算例。算例表与链路预算链路表同一套表格口径（两层表头分区 / 不冻结数据列 / 结果格着色）。
 // 计算在主进程 core.calculateRainAttenuation（复用 ITU-R 传播模型），本组件负责采集/展示/配置持久化。
-import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件（Regen 先例：直接复用）
 import ConfigTree from '../components/ConfigTree.vue'
@@ -163,17 +163,18 @@ function cellClassFn(f, row) {
 }
 
 // —— 计算（批量，一次 IPC）——
+// 返回是否按当前输入算完了整表（逐例算不出的 ✕ 也算算完）：导出前补算要据此决定导不导（见 exportExcel）
 async function compute() {
-  if (!api) { toast('计算需在桌面客户端中运行'); return }
-  if (!cases.length) { toast('请先添加算例'); return }
+  if (!api) { toast('计算需在桌面客户端中运行'); return false }
+  if (!cases.length) { toast('请先添加算例'); return false }
   // 全局几何先行校验（缺了会让全表统一报错，不如一句话说清）
   const pf = (v) => parseFloat(halfStr(v))
   if (orbitMode.value === 'ngso') {
     if (!(pf(ngsoOrbit.alt) > 0) || !Number.isFinite(pf(ngsoOrbit.incl)) || !Number.isFinite(pf(ngsoOrbit.minEl))) {
-      toast('请先在工具栏填写轨道高度 / 倾角 / 最低仰角'); return
+      toast('请先在工具栏填写轨道高度 / 倾角 / 最低仰角'); return false
     }
   } else if (!Number.isFinite(pf(geoSatLon.value))) {
-    toast('请先在工具栏填写 GEO 轨位'); return
+    toast('请先在工具栏填写 GEO 轨位'); return false
   }
   computing.value = true
   try {
@@ -194,7 +195,8 @@ async function compute() {
     resultsStale.value = false
     toast(divMsg || (errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）`
       : `完成，共 ${ids.length} 个算例${divOn.value ? ' · 多站汇总已出' : ''}`))
-  } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {} }
+    return true
+  } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {}; return false }
   finally { computing.value = false }
 }
 // 方向切换：下行/上行影响 G/T 衰减列，已算过则自动重算（单击即定，不存在「打一半」的中间态）
@@ -307,7 +309,12 @@ const detail = computed(() => {
 // —— Excel 导出 ——
 async function exportExcel() {
   if (!api) { toast('导出需在桌面客户端中运行'); return }
-  if (!hasResults.value) { toast('请先计算'); return }
+  if (computing.value) return
+  // 导出讲【当前输入】（口径同链路预算四窗的导出前补算）：输入已变或还没算过，先按当前输入算一遍；
+  // 算不成就不导 —— 文件里不许是新参数配旧雨衰值。原因 compute 已就地提示。
+  if (resultsStale.value || !hasResults.value) {
+    if (!(await compute()) || !hasResults.value) return
+  }
   try {
     const pf = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : null }
     const divOut = (divOn.value && divResult.value && !divResult.value.error) ? JSON.parse(JSON.stringify(divResult.value)) : null
@@ -360,8 +367,12 @@ function serializeState() {
 }
 // 旧存档迁移：几何列曾逐行进表（satLon / orbitAltitude / orbitInclination / minElevation），
 // 现为全局参数 → 取首行值上提；行内所有已移除的键统一清除（见 rainParams.LEGACY_KEYS）。
+// 算例表组件（StationGrid）：载入配置时要清它的撤销 / 重做栈
+const caseGridRef = ref(null)
 function applyState(st) {
   if (!st || typeof st !== 'object') return
+  // 换了一份内容：表格撤销栈里存的是上一份的行，不清的话一按撤销就把它整张灌进当前配置（表格不随配置重建）
+  if (caseGridRef.value) caseGridRef.value.clearHistory()
   if (st.orbitMode) orbitMode.value = st.orbitMode
   if (st.direction) direction.value = st.direction
   if (st.rainModel) rainModel.value = st.rainModel
@@ -433,6 +444,22 @@ async function confirmCfgDlg() {
   const item = await window.api.store.saveConfig('rain', { name, state: serializeState() })
   cfgDlg.open = false; await loadConfigs(); if (item && item.id) { activeId.value = item.id; setBaseline() }
   toast('已保存配置：' + name)
+}
+// 当前工作区直接存成一份新配置并接上（不弹对话框）。带上下文打开时用（见 applyToolContext）；失败返回 null
+async function saveWorkspaceAs(name) {
+  if (!api) return null
+  let item = null
+  try { item = await window.api.store.saveConfig('rain', { name: uniqueCfgName(String(name || '').trim() || defaultCfgName()), state: serializeState() }) }
+  catch (e) { toast('保存失败：' + ((e && e.message) || e)); return null }
+  if (!item || !item.id) return null
+  await loadConfigs()
+  activeId.value = item.id; setBaseline()
+  return configs.value.find((x) => x.id === item.id) || item
+}
+// 出厂空白的内容指纹（与 serializeState 同一口径：行按 applyState 补齐默认列、去掉结果 / 遗留列）
+function blankFingerprint() {
+  const b = blankState()
+  return fingerprintOf({ ...b, cases: b.cases.map((r) => { const o = { ...defaultRow(), ...r }; for (const k of DROP_KEYS) delete o[k]; return o }) })
 }
 async function updateConfig() {
   if (!activeId.value) return
@@ -510,6 +537,69 @@ async function guardedLeave() {
   return true
 }
 
+// —— 主窗口带上下文打开（地图右键 / 卫星信息栏「分析 ▸ 雨衰计算」）——
+// 几何是全局参数（一份配置一颗星 / 一个星座）：带来的星与当前几何不同 → 新建一份配置承接（当前配置有没存的
+// 改动照常先问），原配置不动；相同或没带星 → 只追加算例。GSO 星填定点轨位，非 GSO 星填近圆轨道高度 / 倾角
+// （主窗口那一拍的值）。站址追加成算例并联动 autoGeo 补降雨 / 海拔；新建配置里那条出厂默认算例由站址顶替。
+const _ctxQueue = []
+let _ctxReady = false, _ctxChain = Promise.resolve()
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
+const r2 = (v) => String(Math.round(v * 100) / 100)
+function isCurGeom(s) {
+  if (s.geo) return orbitMode.value === 'geo' && s.slotLon != null && Math.abs(parseFloat(geoSatLon.value) - s.slotLon) < 0.05
+  return orbitMode.value === 'ngso' && s.altKm != null && s.inclDeg != null &&
+    Math.abs(parseFloat(ngsoOrbit.alt) - s.altKm) < 1 && Math.abs(parseFloat(ngsoOrbit.incl) - s.inclDeg) < 0.1
+}
+async function applyToolContext(c) {
+  if (!c) return
+  const s0 = c.sat, sites = c.sites || []
+  // 带来的星取不到几何（导入星历表太短 / 坏表等，发送端给 geo=false 且高度 / 倾角为空）：不换几何、不新建配置，
+  // 站照常追加到当前配置，只如实报一句——不能拿出厂 550 km / 53° 顶替还说「已载入」
+  const geomOk = !!s0 && (s0.geo ? s0.slotLon != null : (s0.altKm != null && s0.inclDeg != null))
+  const s = geomOk ? s0 : null, noGeo = !!s0 && !geomOk
+  let fresh = false, kept = null
+  if (s && !isCurGeom(s)) {
+    // 带来的星与当前几何不同：换一份新配置承接，原来的内容一律不丢——
+    //   ① 有归属配置且改过：现有三选一（保存 / 不保存 / 取消），取消即不动现场；
+    //   ② 没有归属配置、工作区又不是出厂空白（不存配置直接用是支持的用法）：先原样存成一份配置留底；
+    //   ③ 带来的几何 / 站套到出厂空白上，尾部一次存成新配置并接上 —— 列表里那份就是带来的内容，不是一份空白配置
+    if (!(await guardedLeave())) return
+    if (!activeId.value && fingerprint() !== blankFingerprint()) {
+      kept = await saveWorkspaceAs()
+      if (!kept) return   // 存不进去就不动现场
+    }
+    applyState(blankState())
+    fresh = true
+    if (s.geo) { orbitMode.value = 'geo'; if (s.slotLon != null) geoSatLon.value = r2(s.slotLon) }
+    else {
+      orbitMode.value = 'ngso'
+      if (s.altKm != null) ngsoOrbit.alt = String(Math.round(s.altKm))
+      if (s.inclDeg != null) ngsoOrbit.incl = r2(s.inclDeg)
+    }
+  }
+  if (sites.length) {
+    const rows = sites.map((x) => mkCase({ stationName: x.name || '', longitude: String(x.lon), latitude: String(x.lat) }))
+    const at = fresh ? 0 : cases.length
+    cases.splice(at, fresh ? cases.length : 0, ...rows)
+    const fills = []
+    for (let i = at; i < at + rows.length; i++) fills.push(autoGeo(cases[i]))   // 取回响应式代理：异步回填才触发重绘
+    // ★ 等海拔 / 降雨率回填落定再往下走：saveWorkspaceAs 同步序列化，不等就把出厂海拔 '0' 存进新配置
+    //   （切走再切回按海平面算，高原站雨衰偏大），而基线是两次 IPC 往返后才设、那时已含回填值 —— 重开窗口还会误判「已修改」。
+    //   autoGeo 自带 try/catch、从不 reject，取不到就原样留着。
+    await Promise.all(fills)
+  }
+  const who = s0 ? (s0.name || '') : ''
+  if (fresh) await saveWorkspaceAs(who ? who + ' ' + defaultCfgName() : '')
+  const keptTip = kept ? byLang(`原内容已存为「${kept.name}」；`, `Previous content saved as “${kept.name}”; `) : ''
+  const noGeoTip = noGeo ? byLang(`未取到卫星几何：${who}`, `No satellite geometry: ${who}`) : ''
+  toast(keptTip + (sites.length
+    ? (noGeoTip ? noGeoTip + byLang('；', '; ') : '') + byLang(`已添加 ${sites.length} 个算例${who && !noGeo ? '（' + who + '）' : ''}`, `Added ${sites.length} case${sites.length === 1 ? '' : 's'}${who && !noGeo ? ' (' + who + ')' : ''}`)
+    : (noGeoTip || byLang(`已载入卫星几何：${who}`, `Satellite geometry loaded: ${who}`))))
+}
+const _stopCtx = (typeof window !== 'undefined' && window.api && window.api.tools) ? window.api.tools.onContext(onToolContext) : null
+onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
+
 onMounted(async () => {
   try { cities.value = (api && await api.cities()) || [] } catch (e) { cities.value = [] }
   await loadConfigs()
@@ -523,6 +613,7 @@ onMounted(async () => {
     }
   } catch (e) { /* ignore */ }
   api?.onCloseRequested?.(async () => { if (await guardedLeave()) api.confirmClose() })
+  flushToolContext()   // 配置已载入：处理开窗时随窗带来的主窗口上下文
 })
 </script>
 
@@ -600,7 +691,7 @@ onMounted(async () => {
           <!-- 表格口径与链路表统一：两层表头分区（groups）+ 不冻结任何数据列（freeze-keys=false，
                全列随横滚；原先「地球站」列粘性固定，横滚时与其它列错位、和链路表也不一样） -->
           <StationGrid
-            grid-id="rain.cases" :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            ref="caseGridRef" grid-id="rain.cases" :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
             :cities="cities" :city-search="citySearch" :auto-geo="autoGeo"
             :readonly-keys="readonlyKeys" :extra-values="extraValues" :cell-class="cellClassFn" label="算例"
             @row-focus="onRowFocus"
@@ -660,7 +751,7 @@ onMounted(async () => {
               <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
             </select>
           </template>
-          <button class="lb-mini" :disabled="!hasResults" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
+          <button class="lb-mini" :disabled="computing || !cases.length" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
         </div>
         <RainDiversity v-if="divOn" :result="divResult" />
         <div v-else class="lb-result-bd">

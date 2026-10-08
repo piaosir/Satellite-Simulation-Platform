@@ -223,7 +223,8 @@ t('默认卫星：排除名单里的节点永不出现在命中节点里；报�
   const t0 = performance.now()
   const g = W.bodyGeometryFromIR(r.ir, { frame: r.frame, articulations: r.articulations, articulationState: {} })
   const tSoup = performance.now() - t0
-  const own = ['feed_1', 'feed_1_support', 'reflector_1', 'reflector_1_back', 'reflector_1_rim', 'reflector_1_arm']
+  // 自身天线 = 馈源 / 馈源支架 / 反射面 / 展开臂四个部件的全部节点（造型件按材质分桶成多个节点；产品侧 ownAntennaNodes 同口径按部件取）
+  const own = r.parts.filter((p) => ['feed_1', 'feed_1_support', 'reflector_1', 'reflector_1_arm'].includes(p.id)).flatMap((p) => p.nodes)
   const ap = r.attachPoints.find((a) => a.name === 'reflector_1_focus')
   W.computeBodyMask(g, { ...ap, excludeNodes: own })   // 预热 JIT
   const m = W.computeBodyMask(g, { ...ap, excludeNodes: own })
@@ -232,6 +233,30 @@ t('默认卫星：排除名单里的节点永不出现在命中节点里；报�
   const s = M.maskStats(m)
   assert.ok(s.blockedFrac > 0.2 && s.blockedFrac < 0.6, String(s.blockedFrac))
   console.log(`  默认卫星：${g.tris} 三角形（压实后 ${m.stats.keptTris}）· 取几何 ${tSoup.toFixed(1)} ms · 建树 ${m.stats.buildMs.toFixed(1)} ms · 射线 ${m.stats.castMs.toFixed(1)} ms（${m.stats.rays} 条，单线程）· 遮挡立体角 ${(s.blockedFrac * 100).toFixed(1)}% · 最小净空 ${s.minClearanceM.toFixed(3)} m`)
+})
+t('三角形段排除（排查 #10：导入件只占节点里一段三角形的反射面）：排掉同一网格里的后一个盒子 = 只剩前一个盒子的解析真值；Worker 协议同值', () => {
+  // 一个节点、一张网格里焊着两个盒子：三角形 0–11 = A、12–23 = B
+  const A = { min: [0.5, -0.4, -0.4], max: [1.0, 0.4, 0.4] }, B = { min: [-1.2, -0.3, 0.6], max: [-0.6, 0.3, 1.1] }
+  const ma = boxMesh(A.min, A.max), mb = boxMesh(B.min, B.max)
+  const position = new Float32Array([...ma.position, ...mb.position]), index = new Uint32Array([...ma.index, ...Array.from(mb.index, (v) => v + 8)])
+  const ir = { nodes: [{ name: 'root', parent: -1 }, { name: 'pad', parent: 0 }, { name: 'weld', parent: 0, mesh: 0 }], meshes: [{ position, index }] }
+  const g = W.bodyGeometryFromIR(ir, { frame: IDQ })
+  assert.equal(g.tris, 24)
+  const mt = { posBody: [0, 0, 0], dirBody: [0, 0, 1] }, o = M.maskRayOrigin(mt.posBody, mt.dirBody)
+  const tok = M.triExcludeName('weld', [[12, 12]])
+  assert.deepEqual(M.parseTriExclude(tok), { node: 'weld', ranges: [[12, 12]] })
+  assert.equal(M.parseTriExclude('weld'), null)
+  const flags = W.excludedTriFlags(g, ['pad', tok])
+  assert.deepEqual(Array.from(flags), [...Array(12).fill(0), ...Array(12).fill(1)])
+  assert.equal(W.excludedTriFlags(g, ['pad', 'weld']), null, '名单里没有三角形段：不建标志')
+  assert.equal(W.excludedTriFlags(g, [M.triExcludeName('nope', [[0, 5]])]), null, '节点对不上：不排')
+  assert.deepEqual(Array.from(W.excludedTriFlags(g, [M.triExcludeName('weld', [[20, 100]])])).slice(18), [0, 0, 1, 1, 1, 1], '越界的段截到节点三角形数')
+  const m = W.computeBodyMask(g, { ...mt, excludeNodes: [tok] })
+  assert.ok(compare(m, M.boxMask([A], o)).ok, '排掉 B')
+  assert.equal(m.stats.keptTris, 12)
+  assert.ok(compare(W.computeBodyMask(g, mt), M.boxMask([A, B], o)).ok, '不排：两个盒子都挡')
+  const [r] = W.handleMessage({ id: 9, key: 'tri-test|' + W.excludeKey([tok]), geom: g, exclude: [tok], origin: o, rows: Array.from({ length: M.MASK_H }, (_, j) => j) })
+  assert.ok(r.ok && same(r.blocked, m.blocked) && same(r.clearance, m.clearance), 'Worker 消息协议同值')
 })
 t('编解码往返（D18 .bin）：Worker 结果经 encodeMask / decodeMask 逐位不变', () => {
   const m = W.computeBodyMask(boxGeom, MOUNTS[0])

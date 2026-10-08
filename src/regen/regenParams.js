@@ -8,7 +8,9 @@
 //   · 卫星 G/T 从卫星移到发信站——G/T 随波束位置随站而异，是「卫星×发信站」配对量，由各发信站手填（见 uplink 组 G_Ts）。
 // 默认值 = MEO Ku 预设（2026-07 起，替换原「GEO Ku 弯管大站」失真口径——那套全默认会跑出 C/N≈58 dB）：
 //   轨道 8000 km/45°；卫星点波束 G/T 10 dB/K；再生上/下行地面端统一 2.4 m 用户站（工作点 EIRP 42 dBW
-//   ≈0.2W 功放@2.4m）；下行「卫星EIRP」25 dBW 为**该载波**的下行 EIRP（再生直发口径，非整波束饱和值）。
+//   ≈0.2W 功放@2.4m）；下行「再生下行 EIRP」25 dBW 为**该载波**的下行 EIRP（再生直发口径，非整波束饱和值）。
+//   这一列曾与 GSO / NGSO 同叫「卫星EIRP」——那两窗是整波束饱和值（缺省 46），同名不同义，v1.5.0 起按端到端的叫法分开：
+//   GSO / NGSO「卫星饱和 EIRP」、再生式「再生下行 EIRP」。
 //   只影响新建配置初始值；已保存配置不受影响。
 // 每个字段 target：'sat'→satParams，'link'→linkParams，'meta'→仅 UI（载波信号/卫星 id，不进引擎）。
 
@@ -82,7 +84,7 @@ export const FIELD_GROUPS = [
       { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大型关口站长波导为 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', def: '0.5', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'uplinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      { key: 'uplinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
       // —— 工作点（再生上行的功放，随站型入库；target:'op' 不进 linkParams，由 App 换成引擎 power 模式）——
       //   载波「计算方式」=设置工作点(power) 时按此值走引擎 power 模式算上行余量；=设置余量(margin) 时它不参与，
       //   功放由目标余量反解（见 CARRIER_FIELDS 的 calcMode；v1.3.6 曾删过反解档，v1.3.8 随载波入库加回）。
@@ -94,7 +96,7 @@ export const FIELD_GROUPS = [
       { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35', target: 'link' },
       { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75', target: 'link' },
       { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
-      { key: 'downlinkOtherLoss', label: '综合损耗', tip: '综合损耗：指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
+      { key: 'downlinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
     ]
   },
   {
@@ -111,10 +113,6 @@ export const FIELD_GROUPS = [
       // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
       // 配对量，故留在站表逐站手填（不入地球站库）；列位紧跟「卫星」，与它同属卫星列组。
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
-      // 星侧太阳侵入（DESIGN2 D11）：与 G_Ts 同为「卫星×发信站」配对量（这座站落在哪个接收波束、那个波束何时看见太阳），
-      // 故紧跟 G_Ts 同组同列组。引擎只从 uplinkCT / uplinkThermalCN 各减一次，G_Ts 与 SFD 不动；缺省关 = 逐位同旧口径。
-      { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从上行 C/T 与上行热噪声 C/N 中扣除，卫星 G/T 与 SFD 不变；「设置余量」方式由功放抬升补足余量（功放功率与到达通量密度随之升高），「设置工作点」方式功放与到达通量密度不变；关＝不计入', type: 'select', options: ['关', '开'], def: '关', target: 'link' },
-      { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
       { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
@@ -142,7 +140,7 @@ export const FIELD_GROUPS = [
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
       // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
       // 「卫星×收信站」配对量，故留在站表逐站手填；列位紧跟「卫星」，与它同属卫星列组。
-      { key: 'rxEIRP', label: '卫星EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' },
+      { key: 'rxEIRP', label: '再生下行 EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
       { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
@@ -173,7 +171,7 @@ export const FIELD_GROUPS = [
       // 链路的几何与频率复用而变，故聚合成一项挂在这条星间链路上（与 islEirp/islGT 同构），不挂卫星。
       { key: 'islCI', label: '星间C/I', tip: '本跳星间干扰合计载噪比（dB）：星座内邻 ISL 同频、邻道、极化泄漏等之合计，经工程分析后手填；留空＝不计入。发射端为透明星时其转发器互调另按该星工作点折算入账，与本项不重复', unit: 'dB', type: 'num', def: '', target: 'sat' },
       { key: 'islFreq', label: '星间频率', tip: '星间链路频率（GHz，典型 Ka/V 频段星间）', unit: 'GHz', type: 'num', def: '23', target: 'sat' },
-      { key: 'islMiscLoss', label: '综合损耗', tip: '指向/极化/馈线等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '1', target: 'sat' },
+      { key: 'islMiscLoss', label: '其他损耗', tip: '指向/极化/馈线等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '1', target: 'sat' },
       { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：微波须清过大气；0=纯几何视线（仅避开固体地球）', unit: 'km', type: 'num', def: '100', target: 'geom', autoOnly: true },
       // 最大工作距离：把「几何上互视」收窄成「工程上会用这条链路」。留空＝不限，最差工况就落在
       // 擦着地球临边那一瞬（几何可达极限，真系统到那之前早已切换链路）。见 ngsoGeometry.solveIslWorstCase。

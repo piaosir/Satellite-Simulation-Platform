@@ -5,11 +5,11 @@
 // ★ 引 packages/core 一律走相对路径（不用 @core 别名）：单测是裸 node 跑的；渲染端 vite 对相对路径照样解析。
 // ★ 组件清单一律 listComponents(domain) 现取（A3 并行登记新领域组件，这里不写死任何 type）。
 // ★ 界面零说明文字：口径 / 出处 / 范围一律进 title；这里拼的 title 串就是给悬停用的。
-import { getComponent, listComponents, fillParams, checkParams, socketAccepts, ASM_DOMAINS } from '../../packages/core/models/components/index.mjs'
+import { getComponent, getPreset, listComponents, fillParams, checkParams, socketAccepts, ASM_DOMAINS, COMPONENT_CATEGORIES } from '../../packages/core/models/components/index.mjs'
 import { MATERIALS, DENSITY } from '../../packages/core/models/paramBus.mjs'
 import { quatToMat, matToQuat, quatToEulerZYX, fineRotate } from '../../packages/core/models/bodyFrame.mjs'
-import { MOVE_STEPS, ROT_STEPS } from '../../packages/core/models/asmSnap.mjs'
-import { asmHash, componentDensityKeys } from '../../packages/core/models/assembly.mjs'
+import { MOVE_STEPS, MOVE_STEP_OPTS, ROT_STEPS, socketLabel, faceLabel, resolveMoveStep } from '../../packages/core/models/asmSnap.mjs'
+import { asmHash, componentDensityKeys, componentBox } from '../../packages/core/models/assembly.mjs'
 import { normText } from './wbLogic.js'
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
@@ -23,6 +23,9 @@ export const DOMAIN_LABELS = Object.freeze({ spacecraft: '卫星', ground: '地�
 export const DOMAIN_ICONS = Object.freeze({ spacecraft: 'satellite', ground: 'satellite-dish', aircraft: 'plane', ship: 'ship', vehicle: 'car' })
 /** 组件库分组：领域组 + 「通用」（prim.* 基本体）；通用恒排最后 */
 export const LIB_GROUP_LABELS = Object.freeze({ ...DOMAIN_LABELS, common: '通用' })
+/** 领域组里的功能分组（ComponentDef.category；顺序 = core COMPONENT_CATEGORIES）：显示名与小标题图标 */
+export const CATEGORY_LABELS = Object.freeze({ structure: '结构与机构', power: '电源', antenna: '天线', payload: '有效载荷', propulsion: '推进', aocs: '姿轨控', thermal: '热控' })
+export const CATEGORY_ICONS = Object.freeze({ structure: 'box', power: 'sun', antenna: 'satellite-dish', payload: 'scan-eye', propulsion: 'arrow-down', aocs: 'crosshair', thermal: 'grid-3x3' })
 
 /** 部件角色 → 图标（结构树行首、组件卡片占位） */
 export const ROLE_ICONS = Object.freeze({
@@ -37,7 +40,8 @@ export const MATERIAL_LABELS = Object.freeze({
   solar_cell: '电池片', solar_substrate: '太阳翼基板', reflector: '反射面涂层', reflector_mesh: '金属网',
   aluminum: '铝', radiator: 'OSR 散热面', titanium: '钛', carbon: '碳纤维', white_paint: '白漆', glass: '玻璃', dark_metal: '深色金属',
   paint_red: '红漆', paint_navy: '深蓝漆', paint_blue: '蓝漆', paint_green: '绿漆', paint_orange: '橙漆', paint_yellow: '黄漆',
-  paint_grey: '灰漆', rubber: '橡胶', concrete: '混凝土'
+  paint_grey: '灰漆', rubber: '橡胶', concrete: '混凝土',
+  gold_metal: '镀金金属', sunshield: '遮阳膜', ceramic: '陶瓷', black_paint: '消光黑漆', radome: '天线罩', copper: '裸铜', cell_si: '硅电池片'
 })
 export const materialLabel = (k) => (k == null || k === '' ? '组件缺省' : (MATERIAL_LABELS[k] || String(k)))
 /** 材质下拉：'' = 组件缺省，其余按 MATERIALS 的键序 */
@@ -50,7 +54,15 @@ export function materialOptions() {
  * 再退回原值。型号类选项（gat5530 / v130nx …）按产品名显示。
  */
 export const ENUM_LABELS = Object.freeze({
-  noseStyle: { airliner: '客机式', bizjet: '公务机式', uav: '无人机式' },
+  noseStyle: { airliner: '客机式', bizjet: '公务机式', uav: '无人机式', pod: '牵引发动机罩', hale: '高空长航时式' },
+  planform: { helicopter: '直升机桨叶', propeller: '螺旋桨型' },
+  tip: { square: '矩形', swept: '后掠', tapered: '梯形收窄' },
+  hub: { articulated: '全铰接', hingeless: '无铰', compact: '电机罩式' },
+  hand: { ccw: '逆时针', cw: '顺时针' },
+  trSide: { left: '左侧', right: '右侧' },
+  stab: { both: '两侧', right: '仅右侧', left: '仅左侧', none: '无' },
+  gear: { sponson: '浮筒式（收起）', skid: '滑橇', legs: '支腿', none: '无' },
+  layout: { x: 'X 形', plus: '十字形' },
   side: { right: '右', left: '左' },
   winglet: { none: '无', sharklet: '鲨鳍小翼', blended: '融合式小翼', raked: '斜削翼梢' },
   exhaust: { separate: '分开排气', mixed: '混合排气' },
@@ -58,7 +70,7 @@ export const ENUM_LABELS = Object.freeze({
   style: { kingpost: '锥形立柱', tripod: '三脚架', suv: '越野车', pickup: '皮卡', van: '厢式车' },
   gimbal: { azel: '方位俯仰', xy: 'X-Y 座', none: '固定' },
   feedArm: { auto: '自动', boom: '单杆', tripod: '三杆' },
-  kind: { corrugated: '波纹喇叭', horn: '喇叭', lnb: '高频头', patch: '贴片', lae: '远地点发动机', rcs: '姿轨控推力器', ep: '电推力器', radiator: '散热面', cells: '体装电池片' },
+  kind: { corrugated: '波纹喇叭', horn: '喇叭', lnb: 'LNB', patch: '贴片', lae: '远地点发动机', rcs: '姿轨控推力器', ep: '电推力器', radiator: '散热面', cells: '体装电池片' },
   size: { '10ft': '10 ft', '20ft': '20 ft', '40ft': '40 ft', custom: '自定义' },
   form: { shelter: '方舱', container: '集装箱' },
   mli: { none: '无' },
@@ -69,8 +81,14 @@ export const ENUM_LABELS = Object.freeze({
   palette: { mixed: '混色', mono: '单色' },
   paint: { white_paint: '白漆', titanium: '灰漆', dark_metal: '深色金属漆', aluminum: '银色金属漆' }
 })
-export function enumLabel(key, value) {
+/**
+ * 枚举选项的显示名：组件参数自带的 optionLabels（ParamSpec，各组件自定、不串键）> ENUM_LABELS[参数键] > 材质名 > 原值。
+ * spec 可省（老调用）。
+ */
+export function enumLabel(key, value, spec) {
   if (value === null) return '自动'
+  const ol = spec && spec.optionLabels
+  if (ol && Object.hasOwn(ol, String(value))) return ol[String(value)]
   const t = ENUM_LABELS[key]
   if (t && Object.hasOwn(t, value)) return t[value]
   if (typeof value === 'string' && Object.hasOwn(MATERIAL_LABELS, value)) return MATERIAL_LABELS[value]
@@ -79,12 +97,26 @@ export function enumLabel(key, value) {
 
 /** 密度表显示名（与生成页同一套；查不到的键显示原键） */
 export const DENSITY_LABELS = Object.freeze({
-  busVolume: '平台体', panelAreal: '太阳翼基板', cellAreal: '电池片', reflectorAreal: '实面反射面', meshReflectorAreal: '网状反射面',
+  busVolume: '星体', panelAreal: '太阳翼基板', cellAreal: '电池片', reflectorAreal: '实面反射面', meshReflectorAreal: '网状反射面',
   mliAreal: 'MLI', radiatorAreal: '散热面 OSR', hornAreal: '喇叭', towerAreal: '天线塔', arrayAreal: '相控阵', boomLinear: '杆件',
-  laeMass: '远地点发动机', rcsMass: '姿轨控推力器', epMass: '电推力器'
+  laeMass: '远地点发动机', rcsMass: '姿轨控推力器', epMass: '电推力器',
+  apmMass: '双轴指向机构', helixMass: '螺旋阵元', lgaMass: '全向天线', lctMass: '激光通信终端', tankAreal: '贮箱壳体', opticsAreal: '光学相机', lraAreal: '激光角反射器', magMass: '磁强计',
+  epJointMass: '电推臂关节', visorAreal: '遮阳板', baptaMass: '消旋组件', flexAreal: '柔性太阳帆', cubesatMass: '立方星（每 1U）', moduleVolume: '舱段'
 })
-/** 主结构体密度（busVolume 键）按领域的显示名：「平台体」是卫星用语，飞机 / 船 / 车 / 地球站各用各的。键名不变。 */
-export const BUS_VOLUME_LABELS = Object.freeze({ spacecraft: '平台体', aircraft: '机体', ship: '船体', vehicle: '车体', ground: '结构' })
+/** 主结构体密度（busVolume 键）按领域的显示名：「星体」是卫星用语，飞机 / 船 / 车 / 地球站各用各的。键名不变。 */
+export const BUS_VOLUME_LABELS = Object.freeze({ spacecraft: '星体', aircraft: '机体', ship: '船体', vehicle: '车体', ground: '结构' })
+/** 整件的叫法（结构树根节点、整体质量行）：整星 / 整站 / 整机 / 全船 / 整车 */
+export const ROOT_LABELS = Object.freeze({ spacecraft: '整星', ground: '整站', aircraft: '整机', ship: '全船', vehicle: '整车' })
+// 模型类别（schema.MODEL_KINDS）→ 领域：空间站 / 载人 / 深空都按卫星叫；运载器、部件、其他没有专门叫法
+const KIND_DOMAIN = Object.freeze({ spacecraft: 'spacecraft', station: 'spacecraft', crewed: 'spacecraft', deepspace: 'spacecraft', ground: 'ground', aircraft: 'aircraft', ship: 'ship', vehicle: 'vehicle' })
+/**
+ * 整体质量的叫法（快速设置 / 属性面板三处统一一个口径）：领域或模型类别 → 「整星质量」「整机质量」「全船质量」「整车质量」「整站质量」；
+ * 认不出的类别（运载器 / 部件 / 其他）→「整件质量」。飞机、船不再显示「整星」。
+ */
+export function wholeMassLabel(domainOrKind) {
+  const d = KIND_DOMAIN[domainOrKind]
+  return (d ? ROOT_LABELS[d] : '整件') + '质量'
+}
 /**
  * 组件（按参数）生成时实际读了密度表的哪些键：拿一个记录读取的密度表跑一次 build（结果按 type + 参数缓存；参数非法 / 生成失败 → 空）。
  * 注册表动态：A3 新登记的领域件不读密度表（质量走自己的参数），自然不出现在密度节里。
@@ -130,21 +162,21 @@ export function densityRows(density, doc = null, o = {}) {
 }
 
 export const SYM_UI = Object.freeze([
-  { key: 'none', label: '无', short: '无', tip: '不对称' },
+  { key: 'none', label: '无', short: '无', tip: '无对称' },
   { key: 'mirrorXZ', label: '镜像 XZ', short: 'XZ', tip: '镜像 XZ：关于本体 XZ 面镜像（±Y 成对，如一对太阳翼）' },
   { key: 'mirrorYZ', label: '镜像 YZ', short: 'YZ', tip: '镜像 YZ：关于本体 YZ 面镜像（±X 成对，如东西两副反射面）' },
-  { key: 'radial', label: '径向', short: '径向', tip: '径向：绕轴均布 N 件（卫星 / 地球站 / 船 / 车绕本体 Z，飞机绕机身 X）' }
+  { key: 'radial', label: '径向', short: '径向', tip: '径向：绕轴均布 N 件（卫星 / 地球站 / 船舶 / 车辆绕本体 Z，飞机绕机身 X）' }
 ])
 export const SYM_AXIS_OPTIONS = Object.freeze(['+X', '-X', '+Y', '-Y', '+Z', '-Z'])
 export const SPACE_UI = Object.freeze([
   { key: 'body', label: '本体', tip: '本体系：手柄 = 本体 X / Y / Z（与本体轴叠加同色）' },
   { key: 'local', label: '局部', tip: '局部：手柄随组件自身取向' },
-  { key: 'mount', label: '安装面', tip: '安装面：手柄取父件的安装锚点系（插座 / 贴面件恒为此档）' }
+  { key: 'mount', label: '安装面', tip: '安装面：手柄取父件的安装锚点系（接口 / 面安装件固定为此档）' }
 ])
 export const MODE_UI = Object.freeze([
-  { key: 'socket', label: '插座', tip: '本件安装插座贴父件插座：只可绕插座法向滚转' },
-  { key: 'surface', label: '贴面', tip: '贴父件的面：面内 u / v 平移 + 绕法向滚转' },
-  { key: 'free', label: '自由', tip: '相对父件的自由位姿（6 自由度）' }
+  { key: 'socket', label: '接口', tip: '本件安装接口与父件接口对接：接口系内偏移 + 绕接口法向滚转 + 两轴倾角；世界位姿保持，就近取接口' },
+  { key: 'surface', label: '面安装', tip: '安装于父件表面：面内 u / v + 法向偏移 + 绕法向滚转 + 两轴倾角；世界位姿保持，就近取面' },
+  { key: 'free', label: '自由', tip: '6 自由度位姿；保留现有锚点（接口 / 面），位姿相对锚点系' }
 ])
 const SPACE_KEYS = SPACE_UI.map((s) => s.key)
 /** Q 键：本体 → 局部 → 安装面 → 本体 */
@@ -153,10 +185,16 @@ export const nextSpace = (s) => SPACE_KEYS[(SPACE_KEYS.indexOf(s) + 1) % SPACE_K
 // ───────────────────────────── 工具状态（localStorage model/asm/ui）─────────────────────────────
 
 export const UI_KEY = 'model/asm/ui'
+/**
+ * snap.move：平移吸附步长（asmSnap.MOVE_STEP_OPTS：'auto' 或米）；出厂「自动」（锚面短边 / 20 取 1-2-5 档）。
+ * snap.moveSet：用户在功能区手动选过步长（之后按所选；没选过的一律跟出厂缺省走）。
+ */
 export const UI_DEFAULTS = Object.freeze({
-  tool: 'move', space: 'body', snap: Object.freeze({ on: true, move: 0.05, rot: 15 }), sym: Object.freeze({ op: 'none', n: 2 }),
+  tool: 'move', space: 'body', snap: Object.freeze({ on: true, move: 'auto', rot: 15, moveSet: false }), sym: Object.freeze({ op: 'none', n: 2 }),
   dockW: 320, split: 0.42, libQ: '', secOpen: Object.freeze({}), posePreview: false, showCom: true, showSockets: true, showAxes: true, posFrame: 'parent'
 })
+/** 2026-10 之前的出厂平移步长：老偏好里没有 moveSet 标志、值又等于它的，视为从未显式设置（改走新出厂「自动」） */
+const LEGACY_MOVE_DEFAULT = 0.05
 export const DOCK_W_MIN = 260, DOCK_W_MAX = 520
 /** 本机存的工具状态 → 合法值（坏值逐项回缺省；这是便利数据，丢了、改坏了都不许把页面带崩） */
 export function sanitizeUi(raw) {
@@ -166,13 +204,16 @@ export function sanitizeUi(raw) {
   const sym = isObj(r.sym) ? r.sym : {}
   const sec = {}
   if (isObj(r.secOpen)) for (const [k, v] of Object.entries(r.secOpen)) if (typeof v === 'boolean' && k.length <= 64) sec[k] = v
+  // 平移步长：手动选过（moveSet）→ 按所选；老偏好（无标志）只有改过出厂值的才算显式设置；其余 → 出厂「自动」
+  const moveSet = snap.moveSet === true ? MOVE_STEP_OPTS.includes(snap.move) : (MOVE_STEPS.includes(snap.move) && snap.move !== LEGACY_MOVE_DEFAULT)
   return {
     tool: r.tool === 'rotate' ? 'rotate' : 'move',
     space: SPACE_KEYS.includes(r.space) ? r.space : d.space,
     snap: {
       on: typeof snap.on === 'boolean' ? snap.on : d.snap.on,
-      move: MOVE_STEPS.includes(snap.move) ? snap.move : d.snap.move,
-      rot: ROT_STEPS.includes(snap.rot) ? snap.rot : d.snap.rot
+      move: moveSet ? snap.move : d.snap.move,
+      rot: ROT_STEPS.includes(snap.rot) ? snap.rot : d.snap.rot,
+      moveSet
     },
     sym: {
       op: SYM_UI.some((s) => s.key === sym.op) ? sym.op : d.sym.op,
@@ -199,36 +240,88 @@ export const libGroupOf = (def) => (def && typeof def.type === 'string' && def.t
 export function compMatches(def, q) {
   const nq = normText(q)
   if (!nq) return true
-  const hay = [def.titleZh, def.title, def.type]
+  const hay = [def.titleZh, def.title, def.type, ...(Array.isArray(def.aliases) ? def.aliases : [])]
   for (const k of def.keys || []) { const s = def.params[k]; if (s) hay.push(s.label, s.labelEn) }
   return hay.some((s) => s && normText(s).includes(nq))
 }
 
 /**
- * 组件库分组（装配文档领域 domain 下可用的组件；登记顺序）：当前领域组排最前、通用排最后，其余按 ASM_DOMAINS 顺序。
+ * 组件库条目：组件本身（缺省参数）+ 它的各个常用型号（ComponentDef.presets，各占一张卡片、拖入即带这组参数）。
+ * 条目 = {key（卡片键 / 缩略图缓存键：type 或 `${type}#${型号 id}`）, type, preset（型号 id | null）, def, titleZh, title, role,
+ *        category（型号可另给，如体装电池片归电源）, params（型号参数 | null）, aliases}
+ */
+export function libEntries(def) {
+  const out = [{ key: def.type, type: def.type, preset: null, def, titleZh: def.titleZh, title: def.title, role: def.role, category: def.category, params: null, aliases: Array.isArray(def.aliases) ? def.aliases : [] }]
+  for (const p of Array.isArray(def.presets) ? def.presets : []) {
+    out.push({ key: `${def.type}#${p.id}`, type: def.type, preset: p.id, def, titleZh: p.titleZh, title: p.title, role: def.role, category: p.category || def.category, params: p.params, aliases: Array.isArray(p.aliases) ? p.aliases : [] })
+  }
+  return out
+}
+/** 库卡片键 → {type, params}（params：型号参数的拷贝；组件本身 / 型号已不存在 → {}） */
+export function libKeyParams(key) {
+  const s = String(key || ''), i = s.indexOf('#')
+  if (i < 0) return { type: s, params: {} }
+  const type = s.slice(0, i), p = getPreset(type, s.slice(i + 1))
+  return { type, params: p ? { ...p.params } : {} }
+}
+/** 库条目是否匹配搜索词：组件本身同 compMatches；型号按型号名 / 别名 / id，外加所属组件名（搜「螺旋天线」列出全部螺旋型号） */
+export function entryMatches(e, q) {
+  if (!e.preset) return compMatches(e.def, q)
+  const nq = normText(q)
+  if (!nq) return true
+  const hay = [e.titleZh, e.title, e.type, e.preset, e.def.titleZh, e.def.title, ...e.aliases]
+  return hay.some((s) => s && normText(s).includes(nq))
+}
+
+/**
+ * 组件库分组（装配文档领域 domain 下可用的组件；登记顺序，组件后紧跟它的常用型号）：当前领域组排最前、通用排最后，其余按 ASM_DOMAINS 顺序。
+ * 组内有条目带 category（卫星件）时另给 subs：按 COMPONENT_CATEGORIES 顺序的功能小组（结构与机构 / 电源 / 天线 / 有效载荷 / 推进 /
+ * 姿轨控 / 热控），没带 category 的归「其他」排最后；items 仍是全组扁平表（计数 / 懒取缩略图照旧用它）。条目形状见 libEntries。
  * @param {string} domain
  * @param {string} [q] 搜索词
  * @param {object[]} [defs] 组件定义表（缺省 listComponents(domain)；单测注入）
- * @returns {{key:string, label:string, icon:string, items:object[]}[]}
+ * @returns {{key:string, label:string, icon:string, items:object[], subs?:{key:string, label:string, icon:string, items:object[]}[]}[]}
  */
 export function libGroups(domain, q = '', defs) {
   const list = Array.isArray(defs) ? defs : listComponents(domain)
   const by = new Map()
   for (const d of list) {
-    if (!compMatches(d, q)) continue
     const k = libGroupOf(d)
-    if (!by.has(k)) by.set(k, [])
-    by.get(k).push(d)
+    for (const e of libEntries(d)) {
+      if (!entryMatches(e, q)) continue
+      if (!by.has(k)) by.set(k, [])
+      by.get(k).push(e)
+    }
   }
   const order = [domain, ...ASM_DOMAINS.filter((x) => x !== domain), 'common']
   const out = []
-  for (const k of order) if (by.has(k)) out.push({ key: k, label: LIB_GROUP_LABELS[k] || k, icon: k === 'common' ? 'boxes' : (DOMAIN_ICONS[k] || 'hexagon'), items: by.get(k) })
-  for (const [k, items] of by) if (!order.includes(k)) out.push({ key: k, label: LIB_GROUP_LABELS[k] || k, icon: 'hexagon', items })
+  const mk = (k, icon, items) => {
+    const g = { key: k, label: LIB_GROUP_LABELS[k] || k, icon, items }
+    if (items.some((d) => d.category)) {
+      const cats = new Map()
+      for (const d of items) { const c = d.category || 'other'; if (!cats.has(c)) cats.set(c, []); cats.get(c).push(d) }
+      g.subs = [...COMPONENT_CATEGORIES, 'other'].filter((c) => cats.has(c)).map((c) => ({ key: k + '-' + c, label: CATEGORY_LABELS[c] || '其他', icon: CATEGORY_ICONS[c] || 'hexagon', items: cats.get(c) }))
+    }
+    return g
+  }
+  for (const k of order) if (by.has(k)) out.push(mk(k, k === 'common' ? 'boxes' : (DOMAIN_ICONS[k] || 'hexagon'), by.get(k)))
+  for (const [k, items] of by) if (!order.includes(k)) out.push(mk(k, 'hexagon', items))
   return out
 }
 
-/** 组件卡片悬停：中文名 / 英文名 / type */
-export const compTip = (def) => [def.titleZh, def.title && def.title !== def.titleZh ? def.title : '', def.type].filter(Boolean).join('\n')
+// 库卡片悬停：名称 / 英文名 /（型号卡片）所属组件 / 操作要点 / type（末行恒为 type；型号卡片为「type · 型号 id」）。操作要点只放悬停，不占界面
+// 放置中（库拖入 / 重新放置 / 复制后放置）的键位：功能区「吸附」「重新放置」与组件卡片悬停同一份
+export const PLACE_KEYS_TIP = '放置中：Q / E 滚转，Tab 切换落点候选，B 切换安装接口，按住 Alt 移动指针旋转视角，按住 Shift 不吸附，右键或 Esc 取消'
+const LIB_DRAG_TIP = '拖入视口安装：以指针所指的件为安装目标，优先匹配专用接口；拖至结构树某一行 = 安装到该件\n' +
+  '拖动中：Q / E 旋转朝向，Tab 切换落点候选，B 切换安装接口，按住 Alt 移动指针旋转视角，滚轮缩放，按住 Shift 不吸附，Esc 或右键取消\n' +
+  '双击：安装到选中件'
+export const compTip = (e) => [e.titleZh, e.title && e.title !== e.titleZh ? e.title : '', e.preset && e.def ? '组件：' + e.def.titleZh : '', LIB_DRAG_TIP,
+  e.preset ? `${e.type} · ${e.preset}` : e.type].filter(Boolean).join('\n')
+
+/** 平移吸附步长下拉的显示：'auto' → 「自动」，数值 → 「0.05 m」 */
+export const moveStepLabel = (v) => (v === 'auto' ? '自动' : `${v} m`)
+/** 步长读数（米 → 「0.02 m」；三位有效，不出科学计数法） */
+export const fmtStep = (m) => (typeof m === 'number' && m > 0 ? `${String(+m.toPrecision(3))} m` : '')
 
 // ───────────────────────────── 参数行模型（属性面板） ─────────────────────────────
 
@@ -290,6 +383,7 @@ export function paramRows(def, params, ctx = {}) {
   const ill = new Set(ctx.prov && Array.isArray(ctx.prov.illustrative) ? ctx.prov.illustrative : [])
   const touched = new Set(ctx.prov && Array.isArray(ctx.prov.touched) ? ctx.prov.touched : [])
   const srcs = ctx.prov && isObj(ctx.prov.sources) ? ctx.prov.sources : null
+  const keySet = new Set(keyParamsOf(def))
   return def.keys.map((key) => {
     const s = def.params[key]
     const path = `${ctx.compId || ''}.${key}`
@@ -299,7 +393,7 @@ export function paramRows(def, params, ctx = {}) {
     const sv = srcs && Object.hasOwn(srcs, path) && isObj(srcs[path]) ? srcs[path] : null
     const pv = sv && Array.isArray(sv.urls) && !touched.has(path) && sameProvValue(sv.value, p[key]) ? sv : null
     const row = {
-      key, path, label: s.label, unit: s.unit || '', value: p[key], err, illustrative,
+      key, path, label: s.label, unit: s.unit || '', value: p[key], err, illustrative, main: keySet.has(key),
       provenance: pv ? { urls: pv.urls.slice(), derive: pv.derive || null } : null,
       bad: !!err || illustrative,
       title: [paramTitle(s, pv), illustrative ? '模板示意值' : '', err].filter(Boolean).join('\n'),
@@ -309,12 +403,62 @@ export function paramRows(def, params, ctx = {}) {
     if (s.kind === 'bool') row.control = 'bool'
     else if (s.kind === 'enum' || (s.kind === 'int' && Array.isArray(s.options))) {
       row.control = 'select'
-      row.options = s.options.map((v) => ({ value: v, label: s.kind === 'enum' ? enumLabel(key, v) : String(v) }))
+      row.options = s.options.map((v) => ({ value: v, label: s.kind === 'enum' ? enumLabel(key, v, s) : (s.optionLabels && Object.hasOwn(s.optionLabels, String(v)) ? s.optionLabels[String(v)] : String(v)) }))
       if (s.nullable) row.options.unshift({ value: null, label: '自动' })
     } else if (s.kind === 'int') row.integer = true
     return row
   })
 }
+/**
+ * 组件的「主要参数」：快速设置（普通装配件）与属性面板第一档只列这些，其余收进「细节参数」（专业设置照样全量可改）。
+ * 取舍：决定外形与用途的尺度 / 型式（口径、翼展、基板数、座架、船长…）进主要；示意细节（分段、离面、内缩、桁架比、面密度…）不进。
+ * 表里没有的组件退回「前三个数值参数」。键名照组件定义，查不到的键自动略过。
+ */
+export const KEY_PARAMS = Object.freeze({
+  'prim.box': ['xM', 'yM', 'zM'], 'prim.cyl': ['dM', 'hM'],
+  'sat.bus.box': ['xM', 'yM', 'zM', 'mli'], 'sat.bus.cyl': ['dM', 'hM', 'mli', 'drumCells'], 'sat.bus.hex': ['acrossFlatsM', 'hM', 'mli'],
+  'sat.wing': ['panels', 'panelHM', 'panelWM', 'sidePanels', 'yokeLenM', 'tiltDeg', 'cellType'],
+  'sat.wing.hinged': ['lengthM', 'widthM', 'rows', 'cols', 'deployDeg', 'cellType'], 'sat.wing.flex': ['lengthM', 'blanketWM', 'segments', 'mastDM', 'tiltDeg', 'cellType'],
+  'sat.wing.rosa': ['lengthM', 'widthM', 'boomDM', 'rollDM', 'tiltDeg', 'cellType'], 'sat.wing.circular': ['diameterM', 'gores', 'sweepDeg', 'yokeLenM', 'tiltDeg', 'cellType'],
+  'sat.reflector': ['diameterM', 'focalM', 'offsetHM', 'surface', 'feed', 'front', 'support'],
+  'sat.feed.horn': ['kind', 'apertureM', 'apertureBM', 'style', 'finish'], 'sat.array.phased': ['wM', 'hM', 'shape', 'face', 'freqGHz', 'tiles'], 'sat.tower': ['wM', 'hM', 'finish'],
+  'sat.boom': ['lengthM', 'dM', 'style'], 'sat.thruster': ['kind', 'exitDM', 'pair'], 'sat.radiator': ['kind', 'wM', 'hM'],
+  'sat.antenna.gimbal': ['diameterM', 'feed', 'gimbal', 'azDeg', 'tiltDeg'], 'sat.antenna.helix': ['layout', 'freqGHz', 'turns', 'nInner', 'nOuter', 'gridN'],
+  'sat.antenna.omni': ['kind', 'freqGHz', 'style', 'cantDeg'], 'sat.feed.cluster': ['rings', 'hornDM', 'style', 'finish'],
+  'sat.lct': ['type', 'apertureM', 'azDeg', 'tiltDeg'], 'sat.camera': ['type', 'apertureM', 'lengthM', 'cutDeg'], 'sat.lra': ['layout', 'rings', 'ringN', 'cubeDM'],
+  'sat.tank': ['shape', 'diameterM', 'lengthM', 'propellant', 'fill'], 'sat.sensor.mag': ['type', 'scale'],
+  'sat.antenna.lpda': ['fLowGHz', 'fHighGHz', 'tau', 'crossed', 'finish'], 'sat.antenna.shroud': ['style', 'baseDM', 'topDM', 'heightM', 'finish'],
+  'sat.antenna.slot': ['bars', 'freqGHz', 'lengthM', 'fanDeg'], 'sat.instrument': ['xM', 'yM', 'zM', 'window', 'cooler'],
+  'sat.bus.trap': ['lengthM', 'nadirWM', 'zenithWM', 'depthM', 'mli'], 'sat.bus.prism': ['sides', 'diameterM', 'hM', 'mli'],
+  'sat.bus.cubesat': ['xM', 'yM', 'zM', 'skin'], 'sat.bus.sphere': ['diameterM', 'form', 'lonSeg', 'latSeg', 'reflectors'],
+  'sat.bus.module': ['dLargeM', 'lLargeM', 'coneLenM', 'dSmallM', 'lSmallM', 'front', 'aft'], 'sat.bus.flat': ['xM', 'yM', 'zM', 'chamferM', 'nadir'],
+  'sat.dock': ['type', 'sizeM', 'lengthM'],
+  'sat.ep.arm': ['arm', 'thrusters', 'rootDeg', 'elbowDeg', 'tiltDeg', 'finish'], 'sat.visor': ['widthM', 'depthM', 'panels', 'deployDeg', 'finish'],
+  'sat.antenna.despun': ['kind', 'diameterM', 'heightM', 'azDeg', 'elevDeg'],
+  'sat.sensor.star': ['type', 'bodyM', 'hoodDM', 'cantDeg'], 'sat.sensor.sun': ['type', 'wM', 'lM'],
+  'sat.sensor.earth': ['type', 'scale'], 'sat.antenna.ttc': ['kind', 'band', 'mastLenM'],
+  'es.pedestal.azel': ['style', 'elAxisHM', 'azTravelDeg'], 'es.pedestal.xy': ['xAxisHM', 'limitDeg'],
+  'es.refl.prime': ['diameterM', 'fD', 'gimbal', 'el0Deg'], 'es.refl.cass': ['diameterM', 'fD', 'subDM', 'gimbal', 'el0Deg'],
+  'es.refl.offset': ['diameterM', 'offsetDeg', 'gimbal', 'el0Deg'], 'es.subrefl': ['diameterM'], 'es.feed': ['kind', 'apertureDM'],
+  'es.radome': ['diameterM', 'heightM', 'translucent'], 'es.shelter': ['size', 'lengthM', 'widthM', 'heightM'],
+  'es.tower': ['heightM', 'baseWM', 'topWM'], 'es.vsat.mount': ['frameM', 'mastHM'], 'es.pedestal.wheeltrack': ['elAxisHM', 'railDM'], 'es.mast': ['heightM', 'mastDM'],
+  'air.fuselage': ['lengthM', 'widthM', 'heightM', 'noseStyle'], 'air.wing': ['spanM', 'rootChordM', 'sweepDeg', 'engines'],
+  'air.htail': ['spanM', 'rootChordM'], 'air.vtail': ['heightM', 'rootChordM'], 'air.nacelle': ['diameterM', 'lengthM'], 'air.prop': ['diameterM', 'blades'],
+  'air.radome': ['model', 'lengthM', 'heightM', 'antenna'], 'air.turret': ['diameterM'],
+  'air.heli': ['lengthM', 'widthM', 'heightM', 'trSide', 'gear'], 'air.mrbody': ['arms', 'layout', 'wheelbaseM', 'heightM', 'gear'],
+  'air.boom': ['lengthM', 'diameterM', 'fwdFrac'], 'air.rotor': ['diameterM', 'blades', 'planform', 'hand'],
+  'sea.hull': ['loaM', 'beamM', 'depthM', 'draftM'], 'sea.superstructure': ['lengthM', 'widthM', 'tiers'], 'sea.funnel': ['heightM'],
+  'sea.mast': ['heightM', 'radars'], 'sea.containers': ['size', 'bays', 'rows', 'tiers'], 'sea.vsat.radome': ['model', 'diameterM', 'reflectorDM'],
+  'veh.body': ['style', 'lengthM', 'widthM', 'heightM'], 'veh.cotm.flat': ['model', 'lengthM', 'widthM'], 'veh.driveaway': ['model', 'lengthM']
+})
+/** 组件定义 → 主要参数键（按 KEY_PARAMS；表里没有的取前三个数值参数） */
+export function keyParamsOf(def) {
+  if (!def || !Array.isArray(def.keys)) return []
+  const k = KEY_PARAMS[def.type]
+  if (Array.isArray(k)) return k.filter((x) => def.keys.includes(x))
+  return def.keys.filter((x) => def.params[x] && def.params[x].kind === 'num').slice(0, 3)
+}
+
 /** select 的值编码（数字 / 字符串 / null 都能原样来回：option 的 value 只能是串） */
 export const encOpt = (v) => JSON.stringify(v === undefined ? null : v)
 export const decOpt = (s) => { try { return JSON.parse(s) } catch { return null } }
@@ -434,12 +578,115 @@ export function mountChoices(comp) {
   return [{ value: '', label: `缺省（${def.mountSocket}）` }, ...socketsOf(comp).map((s) => ({ value: s.id, label: s.id }))]
 }
 
+// ───────────────────────────── 「安装」节：偏移 / 倾角 / 锚点 / 生效步长（2026-10-06 任务书 §3.3.3） ─────────────────────────────
+// attach 恒为 {mode, socket, face, uv, roll, mount, off, tilt}（assembly.mkAttach）：off = [x, y, 法向]（米，锚系：接口系 / 面系），
+// tilt = [t0, t1]（度，t0 ∈ [−90, 90]）；位姿 M = M父 · 锚系 · T(off) · Rz(roll) · Rx(t0) · Ry(t1) · mount⁻¹。面安装件面内位置走 uv，
+// off 只认法向分量（归一时 off[0] / off[1] 清零）。属性面板的数值写入一律走 setAttach，按「件 + 键」合并撤销（MERGE_MS）。
+
+const z0 = (v) => (v === 0 ? 0 : v)
+/** 下拉选项文字：显示名里没有 id 时补「 · id」（「焦点 · focus」；「接口 +X」「面心 +Z」原样） */
+export const optText = (label, id) => { const l = String(label), i = String(id); return l.includes(i) ? l : `${l} · ${i}` }
+/** 方式 → 「偏移」可编辑分量（接口：x / y / 法向；面安装：法向；自由：无） */
+export const offAxesOf = (mode) => (mode === 'socket' ? [0, 1, 2] : mode === 'surface' ? [2] : [])
+/** attach.off / tilt 的读数（缺省 / 坏值补 0；−0 记 0） */
+export const offOf = (a) => [0, 1, 2].map((k) => (a && Array.isArray(a.off) && isNum(a.off[k]) ? z0(a.off[k]) : 0))
+export const tiltOf = (a) => [0, 1].map((k) => (a && Array.isArray(a.tilt) && isNum(a.tilt[k]) ? z0(a.tilt[k]) : 0))
+/** setAttach 补丁：偏移第 k 分量改成 v（面安装件面内两分量恒 0） */
+export function offPatch(a, k, v) {
+  const off = offOf(a)
+  off[k] = isNum(v) ? z0(v) : 0
+  if (a && a.mode === 'surface') { off[0] = 0; off[1] = 0 }
+  return { off }
+}
+/** setAttach 补丁：倾角第 k 轴改成 v（t0 夹在 ±90°，t1 不夹） */
+export function tiltPatch(a, k, v) {
+  const tilt = tiltOf(a)
+  let x = isNum(v) ? v : 0
+  if (k === 0) x = Math.max(-90, Math.min(90, x))
+  tilt[k] = z0(x)
+  return { tilt }
+}
+/** 属性面板数值写入的撤销合并键：同件同键在 MERGE_MS 内连续输入合成一步 */
+export const attachMergeKey = (id, key) => `${id}|attach.${key}`
+/**
+ * 锚点读数（自由件的参考系）：接口锚 {kind:'socket', id, label} / 面锚 {kind:'face', id, label, uv}；无锚（相对父件）null。
+ * 与 assembly 解算同口径：socket 键非空且方式不是面安装 → 接口锚；否则 face 键非空且方式不是接口 → 面锚。
+ */
+export function anchorOf(a) {
+  if (!a) return null
+  if (typeof a.socket === 'string' && a.socket && a.mode !== 'surface') return { kind: 'socket', id: a.socket, label: socketLabel(a.socket) }
+  if (typeof a.face === 'string' && a.face && a.mode !== 'socket') {
+    const uv = Array.isArray(a.uv) ? [isNum(a.uv[0]) ? z0(a.uv[0]) : 0, isNum(a.uv[1]) ? z0(a.uv[1]) : 0] : [0, 0]
+    return { kind: 'face', id: a.face, label: faceLabel(a.face), uv }
+  }
+  return null
+}
+/** 自由件 t / q（相对锚系）→ 读数 {t, rpy}（3-2-1 欧拉，度；与位置节同口径） */
+export function tqReadout(t, q) {
+  const r = poseReadout(m16FromTQ(Array.isArray(t) && t.length === 3 ? t : [0, 0, 0], Array.isArray(q) && q.length === 4 ? q : [0, 0, 0, 1]))
+  return r ? { t: r.t, rpy: r.rpy } : { t: [0, 0, 0], rpy: [0, 0, 0] }
+}
+/**
+ * 自由件 t / q 换一个分量：k = 0..2 平移 x / y / z（q 原样不动），3..5 roll / pitch / yaw（度，t 原样不动）。返回 {t, q}（新数组）。
+ */
+export function tqWith(t, q, k, v) {
+  const t0 = Array.isArray(t) && t.length === 3 ? t.slice() : [0, 0, 0]
+  const q0 = Array.isArray(q) && q.length === 4 ? q.slice() : [0, 0, 0, 1]
+  if (k < 3) { t0[k] = isNum(v) ? z0(v) : 0; return { t: t0, q: q0 } }
+  const r = tqReadout(t0, q0)
+  const rpy = r.rpy.slice()
+  rpy[k - 3] = isNum(v) ? v : 0
+  const qn = fineRotate([0, 0, 0, 1], rpy[0], rpy[1], rpy[2]).map(clean)
+  return { t: t0, q: qn }
+}
+/** 平面面 faces 里装着接口 s 的那一面（接口原点在面上、法向同向、在面内）；没有 null。生效步长的锚面用。 */
+function faceUnderSocket(faces, s) {
+  if (!s || !Array.isArray(s.pos) || !Array.isArray(s.n)) return null
+  for (const f of faces) {
+    if (!f || f.kind === 'cyl' || !Array.isArray(f.origin) || !Array.isArray(f.n)) continue
+    const tol = 1e-6 * Math.max(1e-3, f.halfU, f.halfV)
+    const rx = s.pos[0] - f.origin[0], ry = s.pos[1] - f.origin[1], rz = s.pos[2] - f.origin[2]
+    const d = rx * f.n[0] + ry * f.n[1] + rz * f.n[2]
+    if (Math.abs(d) > tol || s.n[0] * f.n[0] + s.n[1] * f.n[1] + s.n[2] * f.n[2] < 1 - 1e-9) continue
+    const u = rx * f.u[0] + ry * f.u[1] + rz * f.u[2], v = rx * f.v[0] + ry * f.v[1] + rz * f.v[2]
+    if (Math.abs(u) <= f.halfU + tol && Math.abs(v) <= f.halfV + tol) return f
+  }
+  return null
+}
+/**
+ * 「自动」平移步长的基准（asmSnap.resolveMoveStep / autoGridStep 的 ref）：面安装 / 面锚 → 该面；接口 / 接口锚 → 接口所在的平面面；
+ * 都没有 → 父件包围盒短边（米）。根件 / 找不到父件 null。doc 请传普通（非冻结）副本：componentBox 走组件生成缓存。
+ */
+export function moveStepRef(doc, comp) {
+  if (!comp || comp.parent == null) return null
+  const par = compById(doc, comp.parent)
+  if (!par) return null
+  const a = comp.attach || {}
+  const faces = facesOf(par)
+  if (typeof a.face === 'string' && a.face && a.mode !== 'socket') { const f = faces.find((x) => x.id === a.face); if (f) return f }
+  if (typeof a.socket === 'string' && a.socket && a.mode !== 'surface') {
+    const f = faceUnderSocket(faces, socketsOf(par).find((x) => x.id === a.socket))
+    if (f) return f
+  }
+  let b = null
+  try { b = componentBox(par.type, par.params, doc && isObj(doc.density) ? doc.density : undefined) } catch { b = null }
+  if (!b) return null
+  const e = [b[3] - b[0], b[4] - b[1], b[5] - b[2]].filter((x) => isNum(x) && x > 0)
+  return e.length ? Math.min(...e) : null
+}
+/** 选中件的生效平移步长（米）：move = 'auto' 按 moveStepRef，数值原样；给不出 null */
+export function effMoveStep(doc, comp, move) {
+  if (move !== 'auto') return isNum(move) && move > 0 ? move : null
+  const ref = moveStepRef(doc, comp)
+  return ref == null ? null : resolveMoveStep('auto', ref)
+}
+
 /**
  * 能否「拆分对称」：径向恒可；镜像要组件有镜像钩子或在某个局部面上对称（否则走烘焙镜像，派生件没有对应参数，拆不出来）。
  * @returns {{ok:boolean, why:string}}
  */
 export function splitSymInfo(comp) {
-  if (!comp || !isObj(comp.sym)) return { ok: false, why: '没有对称' }
+  if (!comp || !isObj(comp.sym)) return { ok: false, why: '无对称' }
   if (comp.sym.op === 'radial') return { ok: true, why: '' }
   const def = getComponent(comp.type)
   if (!def) return { ok: false, why: '未知组件' }

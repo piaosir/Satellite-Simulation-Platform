@@ -14,7 +14,7 @@ import CityPicker from '../../components/CityPicker.vue'
 import SatKeyPicker from '../sat/SatKeyPicker.vue'
 import { stationTarget, sampleStates, gimbalStrip, segmentsOf } from '../analysisCore.js'
 import { runHeavy } from '../anaHeavy.js'
-import { resolveOrbit, stateFn } from '../satSources.js'
+import { resolveOrbit, stateFn, antennaExt, lbLibrarySats } from '../satSources.js'
 import { REASON } from '@core/models/gimbal.mjs'
 import { GIMBAL_LABEL, fovFullOf } from '../mountLogic.js'
 import { fmtNum } from '../wbLogic.js'
@@ -61,22 +61,25 @@ async function compute() {
     let target
     if (tk.value === 'station') target = stationTarget(stn.value)
     else {
-      if (!tgtSat.value) throw new Error('未选目标星。')
+      if (!tgtSat.value) throw new Error('未选择目标卫星。')
       const orb = await resolveOrbit(tgtSat.value)
-      if (!orb) throw new Error('找不到目标星的轨道。')
+      if (!orb) throw new Error('未找到目标卫星的轨道数据。')
       const s2 = await sampleStates(stateFn(orb), tMs, { signal, onProgress })
       target = { kind: 'sat', r: s2.r, ok: s2.ok }
     }
     if (!live()) return
     const mk = useMask.value && maskRec.value ? maskRec.value.mask : null
-    const fovDeg = fovFullOf(m)
+    // 固定天线视场留空 = 方向图 −3 dB 全宽：GRD 树天线按峰值增益的等效高斯束、链路预算库条目按 G/T 反推（antennaExt 取峰值 / 库条目）
+    const lbList = m.antennaRef && m.antennaRef.kind === 'lbAntenna' ? await lbLibrarySats().catch(() => []) : []
+    if (!live()) return
+    const fovDeg = fovFullOf(m, antennaExt(lbList))
     prog.value = '…'
     const { ls, tr } = await runHeavy('gimbal', {
       tMs, st: { r: st.r, ok: st.ok }, B: { X: B.X, Y: B.Y, Z: B.Z, ok: B.ok }, target, mount: JSON.parse(JSON.stringify(m)),
       mask: mk ? toRaw(mk) : null, tolDeg: tolDeg.value, fovDeg: fovDeg || undefined
     }, { signal })
     if (!live()) return
-    res.value = Object.freeze({ tMs, tr, ls, mountId: m.id, gimbal: (m.gimbal && m.gimbal.type) || 'none', fovDeg, masked: !!mk, ms: Math.round(performance.now() - t0), target: tk.value === 'station' ? (stn.value.name || `${stn.value.latDeg}, ${stn.value.lonDeg}`) : (tgtSatLabel.value || tgtSat.value) })
+    res.value = Object.freeze({ tMs, tr, ls, mountId: m.id, gimbal: (m.gimbal && m.gimbal.type) || 'none', fovDeg, masked: !!mk, ms: Math.round(performance.now() - t0), target: tk.value === 'station' ? (stn.value.name || `${stn.value.lonDeg}°E, ${stn.value.latDeg}°N`) : (tgtSatLabel.value || tgtSat.value) })
   } catch (e) {
     if (e && e.name !== 'AbortError' && live()) err.value = (e && e.message) || String(e)
   } finally {
@@ -93,8 +96,11 @@ const R = computed(() => {
   if (!r) return null
   const t = r.tr
   const dur = t.durationsSec
+  // 可跟踪比例给不出的两种情况记 null（读数「—」，不是 0 %）：目标全程不可见（分母为 0）；固定天线视场推不出（trackSeries
+  // 只能拿跟踪容差当半视场，那个比例没有意义）
+  const frac = r.gimbal === 'none' && !r.fovDeg ? null : t.trackableFrac
   return {
-    frac: t.trackableFrac, longest: t.longestOutageMin, peak: t.peakRateDegS,
+    frac: Number.isFinite(frac) ? frac : null, longest: t.longestOutageMin, peak: t.peakRateDegS,
     nLimit: t.counts.limit, nMask: t.counts.mask, nRate: t.counts.rate, nNo: t.counts.noTarget, nOk: t.counts.ok,
     minLimit: dur.limit / 60, minMask: dur.mask / 60, minRate: dur.rate / 60, validMin: dur.valid / 60
   }
@@ -116,8 +122,8 @@ const chartData = computed(() => {
 })
 
 // ── 导出 XLSX ──
+// 只出数（CLAUDE.md「结果输出：纯数字」）：逐行「可跟踪 / 超限 / 遮挡 / 跟踪超差」这类结论文字不进表 —— 界面上是着色条带
 const expMsg = ref('')
-const REASON_TEXT = { [REASON.OK]: '可跟踪', [REASON.LIMIT]: '超限', [REASON.MASK]: '遮挡', [REASON.RATE]: '追不上', [REASON.NO_TARGET]: '无目标' }
 async function exportXlsx() {
   const r = res.value
   if (!r) return
@@ -125,7 +131,7 @@ async function exportXlsx() {
   const rows = []
   for (let i = 0; i < r.tMs.length; i++) {
     const n = (v, k = 4) => (Number.isFinite(v) ? +v.toFixed(k) : null)
-    rows.push({ t: fmtTimeFull(r.tMs[i], tz), a1: n(s.a1[i]), a2: n(s.a2[i]), r1: n(s.rate1[i], 5), r2: n(s.rate2[i], 5), err: n(s.errDeg[i]), el: r.ls.elDeg ? n(r.ls.elDeg[i], 3) : null, range: n(r.ls.rangeKm[i], 3), state: REASON_TEXT[s.reason[i]] || '' })
+    rows.push({ t: fmtTimeFull(r.tMs[i], tz), a1: n(s.a1[i]), a2: n(s.a2[i]), r1: n(s.rate1[i], 5), r2: n(s.rate2[i], 5), err: n(s.errDeg[i]), el: r.ls.elDeg ? n(r.ls.elDeg[i], 3) : null, range: n(r.ls.rangeKm[i], 3) })
   }
   const cols = [
     { key: 't', label: '时刻' },
@@ -135,8 +141,7 @@ async function exportXlsx() {
     { key: 'r2', label: '角速率 2', unit: '°/s', num: true },
     { key: 'err', label: '指向误差', unit: '°', num: true },
     ...(r.ls.elDeg ? [{ key: 'el', label: '站心仰角', unit: '°', num: true }] : []),
-    { key: 'range', label: '距离', unit: 'km', num: true },
-    { key: 'state', label: '状态' }
+    { key: 'range', label: '距离', unit: 'km', num: true }
   ]
   const x = await ana.exportTable({ sheets: [{ name: '万向节', cols, rows }], defaultName: ana.fileStem('万向节') + '.xlsx', title: `${S.label} · ${mnt.value ? mnt.value.name : ''} · ${r.target}` })
   expMsg.value = x && x.ok ? '已导出。' : (x && x.missing ? '' : (x && x.error) || '')
@@ -147,15 +152,17 @@ const canXlsx = computed(() => !!(ana.api && ana.api.models && typeof ana.api.mo
 const chartRef = ref(null)
 async function exportPng() {
   if (!chartRef.value || !res.value) return
-  const blob = await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? mnt.value.name : ''} · ${res.value.target}` })
-  const x = await ana.exportBlob(ana.fileStem('万向节'), blob, 'png', 'PNG')
-  expMsg.value = x && x.ok ? '已导出。' : ''
+  let x
+  try { x = await ana.exportBlob(ana.fileStem('万向节'), await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? mnt.value.name : ''} · ${res.value.target}` }), 'png', 'PNG') }
+  catch (e) { x = { ok: false, error: (e && e.message) || String(e) } }
+  const s = ana.exportState(x)
+  expMsg.value = s.msg; expBad.value = s.bad   // ★ 两种导出共用一行状态：先前 XLSX 失败留下的 expBad 要一并改掉，否则成功也是红字
 }
 const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k))
 </script>
 
 <template>
-  <MdSec id="a-gimbal" title="万向节可达" :summary="R ? f(R.frac * 100, 4) + ' %' : ''" tip="挂点系：z = 视轴、y = up、x = y × z；az-el 的方位轴 = up，X-Y 的外轴绕挂点 x。可跟踪比例的分母 = 有目标（地球没挡住）的时长">
+  <MdSec id="a-gimbal" title="万向节可达性" :summary="R && R.frac != null ? f(R.frac * 100, 4) + ' %' : ''" tip="挂点系：z = 视轴、y = 上向、x = y × z；az-el 的方位轴 = 上向，X-Y 的外轴绕挂点 x 轴。可跟踪比例的分母 = 目标可见（未被地球遮挡）的时长">
     <template #actions>
       <button class="lb-mini" :disabled="!res || !canXlsx" :title="canXlsx ? '导出 XLSX（三线表）' : '需在桌面客户端中运行'" @click="exportXlsx"><Icon name="table" :size="12" />XLSX</button>
       <button class="lb-mini" :disabled="!res" title="导出 PNG" @click="exportPng"><Icon name="image" :size="12" />PNG</button>
@@ -168,49 +175,55 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
       </div>
     </div>
     <template v-if="tk === 'station'">
+      <!-- 站址：经度在前（与平台其它站址表同序）、各带可见标签与单位 -->
       <div class="srow">
-        <label title="WGS-84 大地坐标（纬度 / 经度，°）">站址</label>
-        <NumIn :model-value="stn.latDeg" :min="-90" :max="90" :sig="8" title="纬度（°，北正）" @commit="(v) => setStn('latDeg', v)" />
-        <NumIn :model-value="stn.lonDeg" :min="-360" :max="360" :sig="8" title="经度（°，东正）" @commit="(v) => setStn('lonDeg', v)" />
-        <button class="lb-mini lb-mini-ico" title="从城市库选" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
+        <label title="WGS-84 大地经度（东经为正）">经度</label>
+        <NumIn :model-value="stn.lonDeg" :min="-360" :max="360" :sig="8" @commit="(v) => setStn('lonDeg', v)" />
+        <span class="u">°E</span>
+        <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
       </div>
       <div class="srow">
-        <label title="站心仰角低于它的拍记「无目标」（地球 / 地形挡住）">最低仰角</label>
+        <label title="WGS-84 大地纬度（北纬为正）">纬度</label>
+        <NumIn :model-value="stn.latDeg" :min="-90" :max="90" :sig="8" @commit="(v) => setStn('latDeg', v)" />
+        <span class="u">°N</span>
+      </div>
+      <div class="srow">
+        <label title="站心仰角低于此值的时刻记为「目标不可见」（地球 / 地形遮挡）">最低仰角</label>
         <NumIn :model-value="stn.elMinDeg" :min="-5" :max="90" :sig="4" @commit="(v) => setStn('elMinDeg', v)" />
         <span class="u">°</span>
         <span v-if="stn.name" class="ag-name" data-i18n-skip>{{ stn.name }}</span>
       </div>
     </template>
     <div v-else class="srow">
-      <label>目标星</label>
+      <label>目标卫星</label>
       <SatKeyPicker :model-value="tgtSat" :label="tgtSatLabel" @pick="onTgtSat" />
     </div>
     <div class="srow">
-      <label title="实际指向与目标的夹角超过它记「追不上」（过 keyhole、重新捕获时的回转）">跟踪容差</label>
+      <label title="实际指向与目标方向的夹角超过此值时记为「跟踪超差」（过锁孔区、重新捕获时的回转）">跟踪容差</label>
       <NumIn :model-value="tolDeg" :min="0.001" :max="10" :sig="4" @commit="(v) => { tolDeg = v || 0.1 }" />
       <span class="u">°</span>
-      <label class="md-chkrow ag-chk" :class="{ dim: !maskRec }" title="视线落进本挂点的本体遮挡掩模的拍记「遮挡」（先在上面算掩模）"><input v-model="useMask" type="checkbox" :disabled="!maskRec" />查掩模</label>
+      <label class="md-chkrow ag-chk" :class="{ dim: !maskRec }" title="视线落入本挂点本体遮挡掩模的时刻记为「遮挡」（需先计算掩模）"><input v-model="useMask" type="checkbox" :disabled="!maskRec" />计入掩模</label>
     </div>
     <div class="md-acts">
       <button class="lb-mini primary" :disabled="!mnt || busy || ana.tooMany.value" :title="mnt ? GIMBAL_LABEL[(mnt.gimbal && mnt.gimbal.type) || 'none'] : ''" @click="compute"><Icon name="calculator" :size="13" />计算</button>
       <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
       <span v-if="busy" class="md-state"><span class="ag-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
     </div>
-    <div v-if="err" class="md-state bad" data-i18n-skip>{{ err }}</div>
+    <div v-if="err" class="md-state bad">{{ err }}</div>
     <template v-if="R">
       <div class="md-kvs">
-        <div class="md-kv" title="可跟踪时长 / 有目标的时长"><span class="k">可跟踪</span><span class="v" data-i18n-skip>{{ f(R.frac * 100) }}</span><span class="u">%</span></div>
-        <div class="md-kv" title="最长的连续不可跟踪（无目标的拍打断计时）"><span class="k">最长中断</span><span class="v" data-i18n-skip>{{ f(R.longest) }}</span><span class="u">min</span></div>
-        <div class="md-kv" title="相邻两拍指令角之差 / 步长的最大值（需要的角速率；固定天线无）"><span class="k">角速率峰值</span><span class="v" data-i18n-skip>{{ f(R.peak) }}</span><span class="u">°/s</span></div>
-        <div class="md-kv" :title="(fixed ? (res.fovDeg ? '目标在 ' + f(res.fovDeg, 4) + '° 视场外（固定天线）' : '目标偏离视轴超过跟踪容差（固定天线，视场未知）') : '限位内无解') + ' · ' + f(R.minLimit) + ' min'"><span class="k">超限</span><span class="v" data-i18n-skip>{{ R.nLimit }}</span><span class="u">拍</span></div>
-        <div class="md-kv" :title="'视线落进本体遮挡掩模 · ' + f(R.minMask) + ' min'"><span class="k">遮挡</span><span class="v" data-i18n-skip>{{ R.nMask }}</span><span class="u">拍</span></div>
-        <div class="md-kv" :title="'指向误差超过容差（角速率上限 / 过奇点）· ' + f(R.minRate) + ' min'"><span class="k">追不上</span><span class="v" data-i18n-skip>{{ R.nRate }}</span><span class="u">拍</span></div>
-        <div class="md-kv" title="地球挡住 / 取不到星位的拍（不进分母）"><span class="k">无目标</span><span class="v" data-i18n-skip>{{ R.nNo }}</span><span class="u">拍</span></div>
+        <div class="md-kv" title="可跟踪时长 / 目标可见时长"><span class="k">可跟踪</span><span class="v" data-i18n-skip>{{ f(R.frac == null ? null : R.frac * 100) }}</span><span class="u">%</span></div>
+        <div class="md-kv" title="最长连续不可跟踪时长（目标不可见的时刻中断计时）"><span class="k">最长中断</span><span class="v" data-i18n-skip>{{ f(R.longest) }}</span><span class="u">min</span></div>
+        <div class="md-kv" title="相邻时刻指令角之差与步长之比的最大值（所需角速率；固定天线不适用）"><span class="k">角速率峰值</span><span class="v" data-i18n-skip>{{ f(R.peak) }}</span><span class="u">°/s</span></div>
+        <div class="md-kv" :title="(fixed ? (res.fovDeg ? '目标在 ' + f(res.fovDeg, 4) + '° 视场外（固定天线）' : '目标偏离视轴超过跟踪容差（固定天线，视场未知）') : '限位内无解') + ' · ' + f(R.minLimit) + ' min'"><span class="k">超限</span><span class="v" data-i18n-skip>{{ R.nLimit }}</span><span class="u">步</span></div>
+        <div class="md-kv" :title="'视线落入本体遮挡掩模 · ' + f(R.minMask) + ' min'"><span class="k">遮挡</span><span class="v" data-i18n-skip>{{ R.nMask }}</span><span class="u">步</span></div>
+        <div class="md-kv" :title="'指向误差超过容差（受角速率上限 / 奇异点影响）· ' + f(R.minRate) + ' min'"><span class="k">跟踪超差</span><span class="v" data-i18n-skip>{{ R.nRate }}</span><span class="u">步</span></div>
+        <div class="md-kv" title="地球遮挡或无法解算卫星位置的时刻（不计入分母）"><span class="k">目标不可见</span><span class="v" data-i18n-skip>{{ R.nNo }}</span><span class="u">步</span></div>
         <div class="md-kv"><span class="k">耗时</span><span class="v" data-i18n-skip>{{ res.ms }}</span><span class="u">ms</span></div>
       </div>
       <ChartBox ref="chartRef" kind="timeline" :data="chartData" :tz="ana.win.tz" :panel-height="96" />
     </template>
-    <div v-if="expMsg" class="md-state" :class="{ ok: !expBad, bad: expBad }" data-i18n-skip>{{ expMsg }}</div>
+    <div v-if="expMsg" class="md-state" :class="{ ok: !expBad, bad: expBad }">{{ expMsg }}</div>
     <CityPicker v-if="cityOpen" single title="地球站" @add="onCity" @close="cityOpen = false" />
   </MdSec>
 </template>

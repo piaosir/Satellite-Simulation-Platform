@@ -20,7 +20,7 @@
 // 纯函数部分不碰 DOM，node 可直接 import（单测先注册 @core 解析钩子，同 modelRenderStack.test.mjs）。
 import { BufferGeometry, BufferAttribute, Ray, Vector3, DoubleSide } from 'three'
 import { MeshBVH, SAH, CENTER } from 'three-mesh-bvh'
-import { maskDir, maskRayOrigin, MASK_W, MASK_H, MASK_N, MASK_RAY_OFFSET_M } from '@core/models/mask.mjs'
+import { maskDir, maskRayOrigin, MASK_W, MASK_H, MASK_N, MASK_RAY_OFFSET_M, parseTriExclude } from '@core/models/mask.mjs'
 import { DEFAULT_Q_MODEL2BODY } from '@core/models/bodyFrame.mjs'
 import { nodeWorldMatrices } from '@core/models/ir.mjs'
 
@@ -284,6 +284,33 @@ export function excludedNodeFlags(geom, names) {
   return flags
 }
 
+/**
+ * 名单里的三角形段排除名（mask.triExcludeName：导入件只占某节点一段三角形的部件，如自动识别出的反射面）→ 逐三角形标志
+ * Uint8Array(geom.tris)；名单里没有这种名字（或节点 / 段都对不上）返回 null。
+ * 三角形汤里每个节点的三角形是连续一段、节点内按原三角形号排（bodyGeometryFromIR 逐节点铺），首次出现处就是该节点的 0 号三角形；
+ * 段号越出该节点的三角形数时截掉（别的档 LOD 编号不同，调用方只在全精度几何上给段）。
+ */
+export function excludedTriFlags(geom, names) {
+  const toks = (Array.isArray(names) ? names : []).map(parseTriExclude).filter(Boolean)
+  if (!toks.length || !geom || !geom.triNode || !geom.triNode.length) return null
+  const idx = new Map()
+  geom.nodeNames.forEach((nm, i) => { if (!idx.has(nm)) idx.set(nm, i) })
+  const nn = geom.nodeNames.length, tn = geom.triNode
+  const first = new Int32Array(nn).fill(-1), cnt = new Int32Array(nn)
+  for (let t = 0; t < tn.length; t++) { const k = tn[t]; if (first[k] < 0) first[k] = t; cnt[k]++ }
+  const flags = new Uint8Array(tn.length)
+  let any = false
+  for (const tk of toks) {
+    const i = idx.get(tk.node)
+    if (i === undefined || first[i] < 0) continue
+    for (const [s, c] of tk.ranges) {
+      const a = Math.max(0, s), b = Math.min(cnt[i], s + c)
+      for (let k = a; k < b; k++) { flags[first[i] + k] = 1; any = true }
+    }
+  }
+  return any ? flags : null
+}
+
 /** 排除名单的规范键（去重、排序） */
 export const excludeKey = (names) => [...new Set((Array.isArray(names) ? names : []).filter((s) => typeof s === 'string' && s))].sort().join('\u0001')
 
@@ -295,16 +322,18 @@ export const SAH_MAX_TRIS = 30000
 
 /**
  * 按排除标志压实三角形 → MeshBVH（策略见 SAH_MAX_TRIS）。
- * @param o { ownsPositions?: boolean } 调用方把 geom.positions 让给这棵树（Worker 里收到的是结构化克隆出来的私有副本）：
- *          不排除任何三角形时直接用它，不再 slice 一份（IGOAL lod1 省 ~50 MB 峰值内存与 20–30 ms）。
+ * @param o { ownsPositions?: boolean, triFlags?: Uint8Array|null } ownsPositions：调用方把 geom.positions 让给这棵树（Worker 里收到的是
+ *          结构化克隆出来的私有副本）：不排除任何三角形时直接用它，不再 slice 一份（IGOAL lod1 省 ~50 MB 峰值内存与 20–30 ms）。
  *          主线程回退路不给：原数组还挂在调用方的 geom 上、还要发给别的线程，树要独占自己那份。
+ *          triFlags：逐三角形的排除标志（excludedTriFlags），与按节点的 flags 取并
  * @returns {{bvh:MeshBVH|null, keptNode:Int32Array, keptTris:number, buildMs:number}}
  */
 export function buildMaskBvh(geom, flags, o = {}) {
   const t0 = now()
   const tn = geom.triNode, pos = geom.positions
+  const tf = o.triFlags || null
   let kept = 0
-  for (let i = 0; i < tn.length; i++) if (!flags || !flags[tn[i]]) kept++
+  for (let i = 0; i < tn.length; i++) if ((!flags || !flags[tn[i]]) && !(tf && tf[i])) kept++
   const keptNode = new Int32Array(kept)
   if (!kept) return { bvh: null, keptNode, keptTris: 0, buildMs: now() - t0 }
   let arr
@@ -315,7 +344,7 @@ export function buildMaskBvh(geom, flags, o = {}) {
     arr = new Float32Array(kept * 9)
     let k = 0
     for (let i = 0; i < tn.length; i++) {
-      if (flags && flags[tn[i]]) continue
+      if ((flags && flags[tn[i]]) || (tf && tf[i])) continue
       arr.set(pos.subarray(i * 9, i * 9 + 9), k * 9)
       keptNode[k++] = tn[i]
     }
@@ -389,7 +418,7 @@ export function castRows(ctx, origin, rows) {
 export function computeBodyMask(geom, mount, o = {}) {
   const t0 = now()
   const exclude = resolveExclude(geom, mount, o)
-  const ctx = o.ctx || buildMaskBvh(geom, excludedNodeFlags(geom, exclude))
+  const ctx = o.ctx || buildMaskBvh(geom, excludedNodeFlags(geom, exclude), { triFlags: excludedTriFlags(geom, exclude) })
   const rows = Array.from({ length: MASK_H }, (_, j) => j)
   const r = castRows(ctx, maskOrigin(mount), rows)
   return {
@@ -429,7 +458,7 @@ export function handleMessage(msg, o = {}) {
   let ctx = cacheGet(key), buildMs = 0
   if (!ctx) {
     if (!msg.geom) return [{ id, ok: false, needGeom: true }, []]
-    ctx = buildMaskBvh(msg.geom, excludedNodeFlags(msg.geom, msg.exclude), { ownsPositions: !!o.ownsGeom })
+    ctx = buildMaskBvh(msg.geom, excludedNodeFlags(msg.geom, msg.exclude), { ownsPositions: !!o.ownsGeom, triFlags: excludedTriFlags(msg.geom, msg.exclude) })
     buildMs = ctx.buildMs
     cachePut(key, ctx)
   }

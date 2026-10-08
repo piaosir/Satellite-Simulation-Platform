@@ -111,11 +111,14 @@ const fmtPct = (v) => (v <= 0 ? '0%' : v >= 1 ? v.toFixed(2) + '%' : v >= 0.01 ?
 // 按钮长在图上：外层不必先判断「当前是哪张图」，图自己知道自己叫什么、画的是什么。
 const svgEl = ref(null)
 const busy = ref(false)
+const expErr = ref('')
 async function exportPng() {
   if (busy.value) return
-  busy.value = true
-  try { await exportSvgPng(svgEl.value, props.fileName || props.title) }
-  finally { busy.value = false }
+  busy.value = true; expErr.value = ''
+  try {
+    const r = await exportSvgPng(svgEl.value, props.fileName || props.title)
+    if (r && !r.ok && !r.canceled && !r.missing) expErr.value = '导出失败：' + (r.error || '')
+  } finally { busy.value = false }
 }
 defineExpose({ svg: svgEl, exportPng })
 </script>
@@ -125,6 +128,7 @@ defineExpose({ svg: svgEl, exportPng })
     <div class="ci-fig-hd">
       <b class="ci-fig-name">{{ title }}</b>
       <span class="ci-fig-sp" />
+      <span v-if="expErr" class="ci-fig-err" :title="expErr">{{ expErr }}</span>
       <button
         v-if="canExportPng" class="ci-fig-exp" :disabled="busy || pts.length < 2"
         :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">导出</button>
@@ -195,6 +199,7 @@ defineExpose({ svg: svgEl, exportPng })
 }
 .ci-fig-exp:hover:not(:disabled) { border-color: var(--border-strong); }
 .ci-fig-exp:disabled { opacity: 0.45; cursor: default; }
+.ci-fig-err { color: var(--danger); font-size: var(--fs-1); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .pl-bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 0.6; }
 .pl-grid { stroke: var(--border); stroke-width: 0.4; }

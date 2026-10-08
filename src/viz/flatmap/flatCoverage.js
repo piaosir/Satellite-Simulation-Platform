@@ -30,6 +30,8 @@ import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
 // 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
 import { makeProjection, DEFAULT_PROJECTION, isProjection, projParams } from '../geo/projection.js'
+// 经纬图框（SATSOFT 式；地图设置 → 2D 投影）：与视频导出同一支
+import { drawGeoFrame, geoFrameMargins } from '../geo/geoFrame.js'
 // 影像重投影的三角网规划器：CPU 路（导出 / 无 WebGL2 / 环境场栅格）与 GPU 路共用同一份
 import { planRasterMesh, COARSE as MESH_BLOCK } from '../geo/rasterMesh.js'
 // 投影档影像的 GPU 后端（屏上绘制时启用；导出 / 无 WebGL2 / 深缩放退回 warpTri）
@@ -122,6 +124,15 @@ export function createFlatCoverage(canvas) {
   // 各嵌一套，此处按「这条文本里有没有汉字」二选一。null=不分面（屏幕/PNG 走上面的完整回退栈即可）。
   let textFontLatin = null
   const CJK_RE = /[⺀-鿿㐀-䶿豈-﫿　-〿＀-￯]/   // 汉字/假名/中文标点/全角
+  // ---- 经纬图框（SATSOFT 式，见 geo/geoFrame.js；宿主经 setMapFrame 给档位）----
+  // 画在合成的最上层：留白不透明，盖住画布四边那一圈；fit() 按留白把整幅世界收进图框内。
+  // 屏上每帧、PNG / PDF 所见即所得导出一并画；视频取景（exportRender 带 viewport）不画 —— 视频有自己那一档，按成片画。
+  // 宿主在视频取景时挂起它（frameHold）：取景框里看到的就是成片，不能夹着屏上这圈留白。
+  const FRAME_FS = 12                       // 刻度 / 轴标题字号（CSS px；导出按 pixelScale 同比放大）
+  let frameCfg = { on: false, step: 0, fmt: 'num', theme: 'light', lines: true, lang: 'zh' }
+  let frameHold = false, framePlot = null   // framePlot：最近一次画出的图框内区（CSS px），留白处不算地图
+  const frameCache = { key: '', pj: null, L: null }
+  const frameOn = () => frameCfg.on && !frameHold
   // 渲染分辨率倍率（与 3D 同一画质档位）：null=跟随系统 DPR；否则按下面的规则【吸附到 DPR 的整数倍】。
   // ★ 决定文字锐不锐的从来不是倍率高低，是 eff/DPR —— 合成器把画布缩到屏幕的那个比例。等于 1
   //   （像素对位）或 2（2×2 盒式降采样）才不引入重采样；1.5 / 1.33 这类非整数比会把同一根竖笔
@@ -729,7 +740,42 @@ export function createFlatCoverage(canvas) {
     requestDraw()
   }
 
-  function fit() { panQ.reset(); const W = PJ.W, H = PJ.H; base = Math.min(cw / W, ch / H); scale = 1; tx = (cw - W * base) / 2; ty = (ch - H * base) / 2 }
+  // 地图可用区（CSS px）：开着经纬图框时扣掉四边留白，关着就是整块画布。fit 与「定位」的平移钳制（centerOn）同一口径
+  function viewInner() {
+    const M = frameOn() ? geoFrameMargins(FRAME_FS, frameCfg.fmt) : null
+    return { l: M ? M.l : 0, t: M ? M.t : 0, iw: M ? Math.max(1, cw - M.l - M.r) : cw, ih: M ? Math.max(1, ch - M.t - M.b) : ch }
+  }
+  // 适配整幅世界：开着经纬图框时收进留白之内（留白按字宽表估，与字体无关 —— 屏上 / PNG / PDF 三条路 fit 逐位相同，
+  // PDF 预合成的影像底图才对得上矢量层）；关着时与加图框之前逐字相同
+  function fitVals() {
+    const W = PJ.W, H = PJ.H, { l, t, iw, ih } = viewInner()
+    const b = Math.min(iw / W, ih / H)
+    return { base: b, tx: l + (iw - W * b) / 2, ty: t + (ih - H * b) / 2 }
+  }
+  function fit() { panQ.reset(); const f = fitVals(); base = f.base; scale = 1; tx = f.tx; ty = f.ty }
+  // 视图是不是正停在 fit 那一档（平移缩放都没动过）：开关图框 / 换标注格式时只在这时跟着重 fit，不冲掉用户找好的视角
+  function atFit() { const f = fitVals(); return Math.abs(scale - 1) < 1e-9 && Math.abs(base - f.base) <= f.base * 1e-9 && Math.abs(tx - f.tx) < 0.5 && Math.abs(ty - f.ty) < 0.5 }
+  // 「定位」类平移（centerOn）的落点钳制，一个轴：t 平移量、size 世界矩形在这一轴上的屏上长度、[lo, lo + len] 可用区。
+  // 放得下（size ≤ len）→ 世界居中（与 fit 同一摆法）；放不下 → 钳到世界矩形仍盖满可用区为止。
+  // ★ 只管程序发起的平移（定位 / 跟随 / 退出跟随还原），用户手拖照旧不夹（见 worldRect 下的说明）
+  const clampPanAxis = (t, size, lo, len) => (size <= len ? lo + (len - size) / 2 : Math.min(lo, Math.max(lo + len - size, t)))
+  // centerOn 的 ifOffscreen：点离可见区四边都还有这么远（CSS px）就算「在画面里」、不动 —— 大约一个卫星图标那么宽，贴边到看不清才平移
+  const CENTER_EDGE = 24
+  function drawMapFrame() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const T = (zh, en) => (frameCfg.lang === 'en' ? en : zh)
+    framePlot = drawGeoFrame(ctx, cw, ch, { pj: PJ, k: k(), tx, ty, crop: { x: 0, y: 0, w: cw, h: ch } }, frameCfg,
+      { fsA: FRAME_FS, lw: 1, fontStack: textFont, fontLatin: textFontLatin, cache: frameCache }, T)
+  }
+  // 视频取景（exportRender / ensureImagery 的 view 档可选 viewport = { x, y, w, h, s }）：在当前屏上视图里取子矩形（CSS px），
+  // s = 标注缩放。地图变换照搬、平移到取景框原点；动 base 不动 scale —— 图标的克制联动 iz = √scale 留在屏上那一档，
+  // 于是线宽 / 字号 / 图标这些按 CSS px 定尺的东西相对画面整体放大 s 倍，地理范围不变。调用方负责事后复原（两处都存了 SV）。
+  function applyViewport(vp) {
+    const s = vp.s > 0 ? vp.s : 1
+    base = base / s
+    tx = (tx - (Number(vp.x) || 0)) / s; ty = (ty - (Number(vp.y) || 0)) / s
+    cw = Math.max(1, Number(vp.w) || cw) / s; ch = Math.max(1, Number(vp.h) || ch) / s
+  }
   const k = () => base * scale
   // 世界矩形（屏幕 px）：整幅图就这一张，x∈[tx, tx+360k]、y∈[ty, ty+180k]。
   // ★ 一切绘制都裁到它 —— 平面图是【一张完整的世界地图】，不是可以无限横向翻页的瓦片地图。
@@ -1393,7 +1439,21 @@ export function createFlatCoverage(canvas) {
   }
   function drawImagery() {
     if (rotLive) return false    // 转动进行中：整幅影像重投影是每帧几十毫秒，先退回矢量底图（返回 false 即走那条路）
-    if (vecImg) { ctx.drawImage(vecImg, 0, 0, cw, ch); return true }   // 矢量导出：整层已合成为一张，与页面 1:1
+    // 矢量导出：整层已合成为一张，与页面 1:1。
+    // ★ 投影档要按图廓裁：那张 JPEG 是整块矩形（没有 alpha，图廓外垫的是海色），不裁的话罗宾逊 / 方位等距这类
+    //   PDF 图廓外的四角全是海色，而 PNG 那条（逐片重投影）图廓外是底色。等距圆柱下世界就是整块矩形，照旧直接贴。
+    if (vecImg) {
+      if (PJ.identity) ctx.drawImage(vecImg, 0, 0, cw, ch)
+      else {
+        const kk = k(); ctx.save()
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * tx, dpr * ty)
+        traceSphere(ctx); ctx.clip()
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        ctx.drawImage(vecImg, 0, 0, cw, ch)
+        ctx.restore()
+      }
+      return true
+    }
     if (!PJ.identity) {
       // 投影档：瓦片档按片分桶贴（选级与等距圆柱同式，见 drawImageryTilesGL / reprojectRasterTiles）；
       // 整幅档（16K / 8K）下面那两行【一行不动】—— 它们的出图要与改前逐像素 / 逐字节相同。
@@ -2917,11 +2977,15 @@ export function createFlatCoverage(canvas) {
         drawText(l.text, l.lon, l.lat, px, l.color || '#fff', { bold: !!l.bold })
       }
       for (const s of (satLayer.sats || [])) { if (s.lon == null || s.lat == null || s.iconShow === false) continue; drawSatIcon(s.lon, s.lat, (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K, hex(s.color != null ? s.color : 0xffd27a)) }   // 颜色/大小随各星设置；图标按 mz 联动，与卫星名标签同率缩放；iconShow 单独控制显隐
+      // gapFocus：这颗星的图标让给了聚焦图标层（卫星标记归并，见 viz/constellation/satMarkMerge.js），名字按那枚图标的半高让位
+      // —— 与 drawFocusIcons 同一口径：subPx × √scale × SAT_ICON_K
+      const focusHalf = focusCfg.subOn ? (Number(focusCfg.subPx) > 0 ? Number(focusCfg.subPx) : 30) * iz * SAT_ICON_K * 0.5 : 0
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
         const ls = (s.labelSize || 9) * mz
         // 名称紧贴图标：间隙=0，只留图标半高的偏移（无图标时名称直接锚在星位置）
-        drawText(s.name, s.lon, s.lat, ls, hex(s.color != null ? s.color : 0xffd27a), { dy: -(s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0), bold: !!s.labelBold })
+        const half = s.gapFocus ? focusHalf : (s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0)
+        drawText(s.name, s.lon, s.lat, ls, hex(s.labelColor != null ? s.labelColor : (s.color != null ? s.color : 0xffd27a)), { dy: -half, bold: !!s.labelBold })
       }
     }
     ctx.restore()
@@ -3311,7 +3375,7 @@ export function createFlatCoverage(canvas) {
   // 一类实体的屏幕几何（命中与高亮环共用）：逐个回调 fn(x, y, 直径, kind, id)；only = {kind, id} 时只回调那一个
   function entityGeom(kind, fn, only) {
     const iz = izNow()
-    const pick = (id) => !only || only.id === id
+    const pick = (id) => !only || String(only.id) === String(id)   // 链路终点按字符串 id 来查（标记层的 id 可能是数字）
     // 画的是模型俯视图的：按那张图的外廓（peek：只看已出的图，与画面同一张）；否则按符号
     if (kind === 'station') {
       const si = stBox(iz), ext = stExtent(si), d = Math.max(ext.up + ext.down, ext.half * 2)
@@ -3608,6 +3672,247 @@ export function createFlatCoverage(canvas) {
   // 聚焦卫星星下点图标（最上层）：按 iz=√scale 克制联动（与 2D 导出/地球站/航迹一致，防止高倍放大时
   // 膨大、更贴 3D）；多选=每颗各一个。大小/颜色取聚焦设置，单点可用 px/colorHex 覆盖（对星分析用）。
   // 对星指向（Sat-track）目标星高亮环：空心圆套在目标星星下点上，大小按 iz 联动（同卫星图标）
+  // 图上链路（星座 3D 主窗「链路」视图；载荷由 viz/links/useMapLinks.compute 出）：每跳一段——站 ↔ 星下点 / 星下点 ↔ 星下点
+  // 的大圆（宿主已加密，跨 ±180° 由 drawPolyline 切段）；不可见的跳虚线变淡；每跳一枚末端箭头；星节点一枚小圆点。
+  // 实时层：不进静态快照，随宿主每拍 setLinks 重画；导出与屏幕同一支（exportRender 里同序调用）。
+  let mapLinks = []
+  // ── 方向标：末端单箭头（2026-10-08 三轮定稿，取代沿线等距 V 标 —— 一跳一串，支路多了满屏是箭头）──
+  // 与 3D（globe3d/linkLineMaterial.js）同一套参数。每条（子）跳一枚实心箭头，尖停在终点符号外沿 LINK_ARROW_GAP 处
+  // （专业流向图口径：箭头在线端、按线宽定尺寸且细线放大、不压节点 —— Jenny 等 2018）。尾部微凹、1 px 深色衬边（浅色底图 / 影像都立得住）；
+  // 长 6.5 + 2.2w、半宽 2.4 + 1.0w（w = 线宽）。终点符号：站 / 点 / 载具按图上真实画多大（entityGeom 同一支，画模型俯视图的按其外廓），
+  // 星 / 代表点 = 链路自己的小圆点。线身照样画进终点（拓扑上连着），箭头压在线上。
+  // 去叠：载荷 de = false 的不画（汇聚束只留最差那条）；屏上与本链路已画的箭头尖相距不到 2.4 个半宽的不画（缩小后挤在一起的发散束）。
+  //   dir 'static' 静止（出厂）；'flow' 箭头不动，线身淡底（LINK_FLOW_BASE）+ 沿信号方向匀速走的虚线（draw.io / React Flow 的流动边口径）；
+  //   'off' 不画箭头。不可见的跳不流动、淡一档。导出（exporting）一律静止。
+  //   ★ 不跟系统「减少动态效果」（prefers-reduced-motion）走：流动是用户在软件里主动选的（出厂静止），而 Windows 关了
+  //     「动画效果」时 Electron 恒报 reduce —— 跟着它走，这台机器上流动就永远动不起来（2026-10-08 用户实测「流动效果没有」即此）。
+  // ★ 流动的虚线不画在主画布：主画布按需重画（快照 + 实时层整张），逐帧重画太贵 —— 另起一张叠在上面的 FX 画布
+  //   （pointer-events: none，同 inset 铺满），只画虚线、自己一条 rAF；屏上路径由 draw() 每次现投影交给它（平移缩放即更新）。
+  const LINK_FLOW_PX_S = 28, LINK_DASH_ON = 10, LINK_DASH_OFF = 8, LINK_FLOW_BASE = 0.45
+  const LINK_ARROW_GAP = 2, LINK_ARROW_NOTCH = 0.28
+  const linkArrowDims = (ww) => ({ len: 6.5 + 2.2 * ww, hw: 2.4 + 1.0 * ww })
+  let linkFx = []                 // 流动的虚线：[{ path, ww, color, a, ph, s1 }]（屏上 CSS px；s1 = 虚线画到哪 —— 箭头尾凹处，没箭头 = 全长）
+  let fxCanvas = null, fxCtx = null, fxRaf = 0
+  // 跳的屏上路径：经纬折线 → 屏上若干段（跨 2D 切口 / 投影断开处另起一段，判据同 drawPolyline：屏上一步超过半幅世界宽），
+  // 每段带全程累计长 cum（跨缝那一步不计）；L = 全程长
+  function screenPath(pt) {
+    const jump = PJ.W * k() / 2, pieces = []
+    let cur = null, s = 0
+    for (const q of pt) {
+      const x = PX(q[0], q[1]), y = PY(q[1], q[0])
+      if (!Number.isFinite(x) || !Number.isFinite(y)) { cur = null; continue }
+      if (cur) {
+        const j = cur.xs.length - 1, d = Math.hypot(x - cur.xs[j], y - cur.ys[j])
+        if (d <= jump) { s += d; cur.xs.push(x); cur.ys.push(y); cur.cum.push(s); continue }
+      }
+      cur = { xs: [x], ys: [y], cum: [s] }
+      pieces.push(cur)
+    }
+    return { pieces, L: s }
+  }
+  // 屏上路径全程 s 处的点与切向：{ x, y, dx, dy } | null（落在跨缝那一步上）
+  function pathAt(path, s) {
+    for (const q of path.pieces) {
+      const c = q.cum, n = c.length
+      if (n < 2 || s < c[0] - 1e-6 || s > c[n - 1] + 1e-6) continue
+      let i = 1
+      while (i < n - 1 && c[i] < s) i++
+      const sl = c[i] - c[i - 1]
+      const f = sl > 0 ? (s - c[i - 1]) / sl : 0
+      const dx = q.xs[i] - q.xs[i - 1], dy = q.ys[i] - q.ys[i - 1], dl = Math.hypot(dx, dy) || 1
+      return { x: q.xs[i - 1] + dx * f, y: q.ys[i - 1] + dy * f, dx: dx / dl, dy: dy / dl }
+    }
+    return null
+  }
+  // 屏上路径从终点往回、第一次走出圆 (cx, cy, rr) 的那一点的全程路程：终点本就在圆外 → 全长；
+  // 最后一截（跨缝后的那一段）整截都在圆内 → -1（不画箭头）
+  function exitBack(path, cx, cy, rr) {
+    const q = path.pieces[path.pieces.length - 1]
+    if (!q) return -1
+    const xs = q.xs, ys = q.ys, cum = q.cum, n = xs.length, r2 = rr * rr
+    let bx = xs[n - 1], by = ys[n - 1]
+    if ((bx - cx) * (bx - cx) + (by - cy) * (by - cy) >= r2) return cum[n - 1]
+    for (let i = n - 2; i >= 0; i--) {
+      const ax = xs[i], ay = ys[i]
+      if ((ax - cx) * (ax - cx) + (ay - cy) * (ay - cy) >= r2) {
+        // 段 b → a 上走出圆：|b + u(a − b) − c| = rr 在 (0, 1] 里的根（b 在圆内，判别式恒正）
+        const dx = ax - bx, dy = ay - by, fx = bx - cx, fy = by - cy
+        const A = dx * dx + dy * dy, B = 2 * (fx * dx + fy * dy), C = fx * fx + fy * fy - r2
+        const u = A > 0 ? (-B + Math.sqrt(Math.max(0, B * B - 4 * A * C))) / (2 * A) : 0
+        return cum[i + 1] - u * (cum[i + 1] - cum[i])
+      }
+      bx = ax; by = ay
+    }
+    return -1
+  }
+  // 跳终点的符号在屏上的圆 { x, y, r }：站 / 点 / 载具 = 图上那枚符号（entityGeom，与命中、落点环同一支）；
+  // 星 / 代表点 = 链路自己的小圆点（半径含 1 px 衬边）
+  function linkEndDisc(e, path, sel) {
+    const k = e && e.k
+    if (k === 'st' || k === 'pt' || k === 'veh') {
+      let at = null
+      entityGeom(k === 'st' ? 'station' : (k === 'pt' ? 'point' : 'vehicle'), (x, y, d) => { if (!at) at = { x, y, r: d / 2 } }, { id: e.id })
+      if (at) return at
+    }
+    const q = path.pieces[path.pieces.length - 1]
+    if (!q) return null
+    const n = q.xs.length - 1
+    return { x: q.xs[n], y: q.ys[n], r: (k === 'gp' ? (sel ? 4 : 3.2) : (sel ? 4.5 : 3.5)) + 1 }
+  }
+  // 一枚箭头：尖在 (x, y)、朝 (dx, dy)；len 长、hw 半宽、尾部内凹 LINK_ARROW_NOTCH；深色衬边在下。c2 = 主画布（导出时是录制上下文）
+  function drawLinkArrow(c2, x, y, dx, dy, len, hw, color, a) {
+    const nx = -dy * hw, ny = dx * hw
+    const bx = x - dx * len, by = y - dy * len
+    const mx = x - dx * len * (1 - LINK_ARROW_NOTCH), my = y - dy * len * (1 - LINK_ARROW_NOTCH)
+    c2.beginPath(); c2.moveTo(x, y); c2.lineTo(bx + nx, by + ny); c2.lineTo(mx, my); c2.lineTo(bx - nx, by - ny); c2.closePath()
+    c2.lineJoin = 'miter'; c2.miterLimit = 4
+    c2.globalAlpha = a * 0.6; c2.lineWidth = 2; c2.strokeStyle = 'rgb(8,12,18)'; c2.stroke()
+    c2.globalAlpha = a; c2.fillStyle = color; c2.fill()
+    c2.globalAlpha = 1
+  }
+  // 屏上路径 [0, s1] 追加进 c2 的当前路径（跨缝处断开）
+  function traceScreenPath(c2, path, s1) {
+    for (const q of path.pieces) {
+      const n = q.xs.length
+      if (n < 2 || q.cum[0] >= s1) continue
+      c2.moveTo(q.xs[0], q.ys[0])
+      for (let i = 1; i < n; i++) {
+        if (q.cum[i] <= s1) { c2.lineTo(q.xs[i], q.ys[i]); continue }
+        const sl = q.cum[i] - q.cum[i - 1], f = sl > 0 ? (s1 - q.cum[i - 1]) / sl : 0
+        c2.lineTo(q.xs[i - 1] + (q.xs[i] - q.xs[i - 1]) * f, q.ys[i - 1] + (q.ys[i] - q.ys[i - 1]) * f)
+        break
+      }
+    }
+  }
+  // 一跳的流动虚线（FX 画布）：off = 时间 × 速度 + 相位（按周期取模），负的 lineDashOffset = 图样沿路径向前走
+  function drawLinkDashes(c2, f, off) {
+    if (!(f.s1 > 0) || !(f.a > 0.01)) return
+    c2.globalAlpha = f.a
+    c2.lineCap = 'butt'; c2.lineJoin = 'round'
+    c2.setLineDash([LINK_DASH_ON, LINK_DASH_OFF]); c2.lineDashOffset = -off
+    c2.beginPath(); traceScreenPath(c2, f.path, f.s1)
+    c2.lineWidth = f.ww + 0.3; c2.strokeStyle = f.color; c2.stroke()
+    c2.setLineDash([]); c2.lineDashOffset = 0
+    c2.globalAlpha = 1
+  }
+  // FX 画布：主画布的兄弟节点，同 inset 铺满、不吃指针；只在有流动的虚线时显示
+  function fxEnsure() {
+    if (fxCanvas) return true
+    const par = canvas.parentNode
+    if (!par) return false
+    fxCanvas = document.createElement('canvas')
+    fxCanvas.setAttribute('aria-hidden', 'true')
+    fxCanvas.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none'
+    par.insertBefore(fxCanvas, canvas.nextSibling)
+    fxCtx = fxCanvas.getContext('2d')
+    return true
+  }
+  function fxHide() {
+    if (fxRaf) { cancelAnimationFrame(fxRaf); fxRaf = 0 }
+    if (fxCanvas && fxCanvas.style.display !== 'none') { fxCtx.setTransform(1, 0, 0, 1, 0, 0); fxCtx.clearRect(0, 0, fxCanvas.width, fxCanvas.height); fxCanvas.style.display = 'none' }
+  }
+  function setLinkFx(list) { linkFx = list; if (!list.length) fxHide(); else if (!fxRaf && !dead) fxRaf = requestAnimationFrame(fxFrame) }
+  function fxFrame(t) {
+    fxRaf = 0
+    if (dead) return
+    // 平面图没显示（切到 3D：主画布 v-show 收起）或没有可流的：停、收起（再显示时 draw() 会重新起）
+    if (!linkFx.length || !canvas.isConnected || canvas.offsetParent === null || !fxEnsure()) { fxHide(); return }
+    if (fxCanvas.width !== canvas.width || fxCanvas.height !== canvas.height) { fxCanvas.width = canvas.width; fxCanvas.height = canvas.height }
+    fxCanvas.style.display = ''
+    const c2 = fxCtx
+    c2.setTransform(1, 0, 0, 1, 0, 0); c2.clearRect(0, 0, fxCanvas.width, fxCanvas.height)
+    c2.setTransform(dpr, 0, 0, dpr, 0, 0)
+    // 裁到世界矩形（与主画布实时层同一裁剪），开着经纬图框时再裁到图框内区（留白处不画）
+    const wr = worldRect()
+    let x0 = wr.x, y0 = wr.y, x1 = wr.x + wr.w, y1 = wr.y + wr.h
+    if (framePlot) { x0 = Math.max(x0, framePlot.x); y0 = Math.max(y0, framePlot.y); x1 = Math.min(x1, framePlot.x + framePlot.w); y1 = Math.min(y1, framePlot.y + framePlot.h) }
+    c2.save(); c2.beginPath(); c2.rect(x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0)); c2.clip()
+    const P = LINK_DASH_ON + LINK_DASH_OFF
+    for (const f of linkFx) drawLinkDashes(c2, f, ((t / 1000 * LINK_FLOW_PX_S + f.ph * P) % P + P) % P)
+    c2.restore()
+    fxRaf = requestAnimationFrame(fxFrame)
+  }
+  // 一枚屏幕圆点 / 空心圈（链路的代表点 / 取点编辑器的候选点）：深色外垫 + 链路色
+  function linkDot(x, y, r, color, hollow) {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2)
+    if (hollow) {
+      ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(8,12,18,0.85)'; ctx.stroke()
+      ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.stroke()
+    } else {
+      ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(8,12,18,0.85)'; ctx.stroke()
+      ctx.fillStyle = color; ctx.fill()
+    }
+  }
+  function drawLinks() {
+    if (!mapLinks.length) { if (!exporting) setLinkFx([]); return }
+    const calm = exporting   // 导出：一律静止（不走流动虚线，线身实画）
+    const fx = []
+    ctx.save()
+    for (const L of mapLinks) {
+      const w = (Number(L.width) > 0 ? Number(L.width) : 1.2) * (L.sel ? 1.5 : 1)
+      const dir = L.dir === 'off' || L.dir === 'flow' ? L.dir : (L.dir === 'static' ? 'static' : (L.arrows === false ? 'off' : 'static'))
+      const heads = []   // 本链路的各跳（线身先全画完，箭头后放：主跳先、细跳后，按屏上去叠）
+      for (const h of (L.hops || [])) {
+        const pt = h && h.pts
+        if (!pt || pt.length < 2) continue
+        const dash = h.vis ? null : DASH_2D.dash
+        // thin = Polygon / 航迹节点那一束子跳里不是最差的那些：细一档、淡一档（箭头小一号，细线的箭头相对线宽放大）
+        const ww = h.thin ? w * 0.7 : w
+        const la = h.vis ? (h.thin ? (L.sel ? 0.7 : 0.55) : (L.sel ? 1 : 0.9)) : (h.thin ? 0.3 : 0.45)
+        const flow = dir === 'flow' && h.vis && !calm   // 不可见的跳不流动（信号过不去）
+        ctx.globalAlpha = flow ? la * LINK_FLOW_BASE : la   // 流动的跳：主画布只画淡底，虚线在 FX 画布上走
+        drawPolyline(pt, 'rgba(8,12,18,0.5)', ww + 2, false, dash)
+        drawPolyline(pt, L.color, ww, false, dash)
+        if (dir === 'off') continue
+        heads.push({ h, path: screenPath(pt), ww, la, flow })
+      }
+      ctx.globalAlpha = 1
+      const placed = []
+      heads.sort((x, y) => (x.h.thin ? 1 : 0) - (y.h.thin ? 1 : 0))
+      for (const o of heads) {
+        const { h, path, ww } = o
+        const { len, hw } = linkArrowDims(ww)
+        let s1 = path.L   // 流动虚线画到哪：有箭头 = 箭头尾凹处
+        if (h.de !== false) {
+          const c = linkEndDisc(h.e, path, L.sel)
+          const sTip = c ? exitBack(path, c.x, c.y, c.r + LINK_ARROW_GAP) : -1
+          const p = sTip >= len + 6 ? pathAt(path, sTip) : null
+          if (p && !placed.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < hw * 2.4)) {
+            placed.push(p)
+            drawLinkArrow(ctx, p.x, p.y, p.dx, p.dy, len, hw, L.color, (h.thin ? 0.85 : 1) * (h.vis ? 1 : 0.5))
+            s1 = sTip - len * (1 - LINK_ARROW_NOTCH)
+          }
+        }
+        if (o.flow) fx.push({ path, ww, color: L.color, a: o.la, ph: Number(L.ph) || 0, s1 })
+      }
+      for (const st of (L.sats || [])) {
+        const x = PX(st.lon, st.lat), y = PY(st.lat, st.lon)
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+        ctx.beginPath(); ctx.arc(x, y, L.sel ? 4.5 : 3.5, 0, Math.PI * 2)
+        ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(8,12,18,0.85)'; ctx.stroke()
+        ctx.fillStyle = L.color; ctx.fill()
+      }
+      // Polygon / 航迹取到的代表点
+      for (const p of (L.gpts || [])) {
+        const x = PX(p.lon, p.lat), y = PY(p.lat, p.lon)
+        if (Number.isFinite(x) && Number.isFinite(y)) linkDot(x, y, L.sel ? 4 : 3.2, L.color, false)
+      }
+      // 取点编辑器的候选点：空心圈 = 未取、实心点 = 已取；悬停的那个再套一圈白（编辑手柄，导出图不画）
+      const cs = exporting ? [] : (L.cands || [])
+      for (const c of cs) {
+        const x = PX(c.lon, c.lat), y = PY(c.lat, c.lon)
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+        if (c.sel) linkDot(x, y, 4.6, L.color, false); else linkDot(x, y, 5, L.color, true)
+      }
+      for (const c of cs) {
+        if (!c.hi) continue
+        const x = PX(c.lon, c.lat), y = PY(c.lat, c.lon)
+        if (Number.isFinite(x) && Number.isFinite(y)) linkDot(x, y, 9, '#ffffff', true)
+      }
+    }
+    ctx.restore()
+    if (!exporting) setLinkFx(fx)   // 流动虚线交给 FX 画布（屏上路径随这次 draw 的视图现投影）
+  }
   function drawBoreRings() {
     if (!boreRings.length) return
     const iz = Math.sqrt(scale) * SAT_ICON_K
@@ -3771,11 +4076,13 @@ export function createFlatCoverage(canvas) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
+    drawLinks()           // 图上链路（实时层，压在星下点 / 聚焦星图标之下）
     drawSubPoint()        // 星下点标记：压在最上面，任何图层都不许盖住它
     drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
     drawBoreRings()       // 对星指向目标星高亮环
     ctx.restore()
     if (dropHl) drawDropRing()   // 拖放落点高亮（实时层：按目标此刻的屏幕位置，不进快照、不进导出）
+    if (frameOn()) drawMapFrame(); else framePlot = null   // 经纬图框：最上层（留白盖住画布四边，刻度随平移缩放每帧现量）
     if (globalThis.__staticStat) globalThis.__staticStat.drawMs = +(performance.now() - _tIn).toFixed(1)
   }
 
@@ -3938,7 +4245,33 @@ export function createFlatCoverage(canvas) {
     }
     return inside
   }
+  // ---- 卫星拾取（与 3D 同一套：单击聚焦 / Ctrl·Shift 单击加入或移出 / 右键压星出卫星菜单）----
+  // 2D 不画星座点云，图上的星全是「被别的功能画出来的」：聚焦集、天线树卫星、对星覆盖目标星……
+  // 候选由宿主在点击那一刻现给 [{ lat, lon, ref }]（与 3D pickExtraAt 同一份来源，见 setPickExtras），
+  // 只在点击 / 右键时调用，不进逐帧。命中半径与 3D PICK_PX 同一手感。
+  let onPick = null, pickExtras = null, onPanEnd = null
+  let clickArm = null   // 本次左键按下点（只在落到「平移」那一支时武装）：抬起时位移 ≤ 6 px 才算点击
+  let panSX = 0, panSY = 0   // 平移起手点：抬起时位移 > 6 px 才算用户真拖了画面（onPanEnd）
+  const SAT_PICK_PX = 14
+  function satAtScreen(clientX, clientY) {
+    if (!pickExtras) return null
+    let list = null
+    try { list = pickExtras() } catch { list = null }
+    if (!list || !list.length) return null
+    const r = canvas.getBoundingClientRect()
+    const mx = clientX - r.left, my = clientY - r.top
+    let best = null, bd = Infinity
+    for (const c of list) {
+      if (!c || !Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue
+      const x = PX(c.lon, c.lat), y = PY(c.lat, c.lon)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue
+      const dd = Math.hypot(x - mx, y - my)
+      if (dd <= SAT_PICK_PX && dd < bd) { bd = dd; best = { ref: c.ref, x, y, dist: dd } }
+    }
+    return best
+  }
   function onDown(e) {
+    clickArm = null
     if (editVerts && e.button === 0) {
       if (editVerts.move) {
         if (pointInEditPoly(e.clientX, e.clientY)) {
@@ -3991,6 +4324,9 @@ export function createFlatCoverage(canvas) {
     // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
     // canvas 截走 → 「画完 Polygon 后输入框不能聚焦」。故非左键直接返回，绝不捕获。
     if (e.button !== 0) return
+    // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑：这两种都不选星
+    if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
+    panSX = e.clientX; panSY = e.clientY
     dragging = true; lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
@@ -4042,6 +4378,12 @@ export function createFlatCoverage(canvas) {
       } else if (onBoxSelect) onBoxSelect('end', null)
     }
     if (placeArmed) { placeArmed = false; const ll = screenToLonLat(placeSX, placeSY); if (ll && onPlace) onPlace(ll) }   // 原地抬起 = 点击放置
+    // 原地抬起 = 点选：压着星 → 交回 ref；点空白交回 null（宿主决定空白点不改聚焦，与 3D 同口径）
+    const arm = clickArm; clickArm = null
+    if (arm && e && e.button === 0 && onPick && Math.abs(e.clientX - arm.x) + Math.abs(e.clientY - arm.y) <= 6) {
+      const hit = satAtScreen(e.clientX, e.clientY)
+      onPick(hit ? hit.ref : null, !!(e.ctrlKey || e.metaKey || e.shiftKey))
+    }
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
@@ -4058,6 +4400,7 @@ export function createFlatCoverage(canvas) {
     const wasDragging = dragging
     dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
     if (wasDragging) scheduleRebuild()   // §4.3：按着指针时不补建，松手之后按 idle 补一次
+    if (wasDragging && e && onPanEnd && Math.abs(e.clientX - panSX) + Math.abs(e.clientY - panSY) > 6) onPanEnd()
     canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : (rotMode ? 'grab' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE))
     // 显式释放指针捕获（不只依赖 pointerup 的隐式释放）：pointercancel / 抬起点在画布外等边角情形下隐式释放可能不发生，
     // 残留捕获会把之后所有点击截给 canvas，导致输入框点不进。有 e.pointerId 就按其释放，无（onLeave 调用）则整体兜底。
@@ -4084,9 +4427,11 @@ export function createFlatCoverage(canvas) {
     }
     return best ? { lon: best[0], lat: best[1] } : { lon: PJ.lon0 + 180, lat: 0 }
   }
-  // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null
+  // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null（经纬图框的留白同样不算地图）
   function screenToLonLat(clientX, clientY) {
     const r = canvas.getBoundingClientRect(), kk = k()
+    const P = frameOn() ? framePlot : null, sx = clientX - r.left, sy = clientY - r.top
+    if (P && (sx < P.x || sy < P.y || sx > P.x + P.w || sy > P.y + P.h)) return null
     const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
     const q = PJ.inv(wx, wy)                                    // 平面之外（信箱留白 / 圆锥扇外）返回 null
     return q ? { lon: q[0], lat: q[1] } : null
@@ -4321,6 +4666,37 @@ export function createFlatCoverage(canvas) {
     setLandColors(s) { setLandPalette(s); geoCache.clear(); buildBaseGeo(resolvedFeatures(curDetail()), curThin()); invalidateStatic(); requestDraw() },
     setOnRightClick(fn) { onRightClick = fn },
     setOnHover(fn) { onHover = fn },
+    // 卫星拾取：onPick(ref|null, additive)；pickExtras() → [{ lat, lon, ref }]（宿主现给，见 satAtScreen）
+    setOnPick(fn) { onPick = typeof fn === 'function' ? fn : null },
+    setPickExtras(fn) { pickExtras = typeof fn === 'function' ? fn : null },
+    // 用户自己拖动画面松手（位移 > 6 px）：宿主据此让「跟随」之类的自动定位让位
+    setOnPanEnd(fn) { onPanEnd = typeof fn === 'function' ? fn : null },
+    satAtScreen,
+    // 把某经纬度瞬时平移到画面中心：不改缩放、不做过渡（2D 的「定位」、跟随卫星、退出跟随时把正看着的那一点留在中心）。
+    // 画面中心 = 地图可用区（开着经纬图框时是留白之内）的中心。返回是否真的动了。
+    // ifOffscreen：点已在画面里（离可见区四边都还有 CENTER_EDGE，或 opts.edge 给的 CSS px）就不动 —— 只有真出了画面、
+    //   或贴边到看不清才平移。原来是「不在中部 80% 就动」：整幅视图下一颗本来就看得见、只是落在外缘 10% 的星，也被整图拽到正中。
+    // ★ 落点钳制（clampPanAxis）：平移后世界矩形横向放得下就横向居中，放不下就钳到仍盖满可用区；纵向同理。
+    //   不钳的话整幅视图下把贴边的点拽到正中，整张图横移半屏、另一侧露出大片空白（定位外缘的星、拖动接管退出跟随
+    //   都踩过：左侧空 573 px）。点本在世界矩形里，钳完它仍在画面内，只是不一定正好在中心。
+    centerOn(lon, lat, opts) {
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || cw < 2 || ch < 2) return false
+      const x = PX(lon, lat), y = PY(lat, lon)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+      if (opts && opts.ifOffscreen) {
+        // 可见区：开着经纬图框时是上一帧画出的图框内区（留白盖住的不算看得见），否则整块画布
+        const V = frameOn() && framePlot ? framePlot : { x: 0, y: 0, w: cw, h: ch }
+        const e = Math.min(Number(opts.edge) >= 0 ? Number(opts.edge) : CENTER_EDGE, V.w / 4, V.h / 4)
+        if (x >= V.x + e && x <= V.x + V.w - e && y >= V.y + e && y <= V.y + V.h - e) return false
+      }
+      const kk = k(), I = viewInner()
+      const nx = clampPanAxis(tx + I.l + I.iw / 2 - x, PJ.W * kk, I.l, I.iw)
+      const ny = clampPanAxis(ty + I.t + I.ih / 2 - y, PJ.H * kk, I.t, I.ih)
+      if (Math.abs(nx - tx) < 1e-6 && Math.abs(ny - ty) < 1e-6) return false
+      const q = panQ.step(tx, ty, nx - tx, ny - ty, dpr); tx = q[0]; ty = q[1]
+      requestDraw(); scheduleRebuild()
+      return true
+    },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => scaleToT(),
     setZoom: (t) => setZoomT(t),
@@ -4338,6 +4714,13 @@ export function createFlatCoverage(canvas) {
     // 完整视图记忆：缩放 scale + 画面中心的「世界坐标」(cx=lon-LON0, cy=90-lat)。
     // 用世界中心点而非 tx/ty → 窗口尺寸变化后仍能复原到同一地理中心。setView 需在 resize 后调用（base 已就绪）。
     getView() { const kk = k(); return { scale, cx: (cw / 2 - tx) / kk, cy: (ch / 2 - ty) / kk } },
+    // 画面中心对应的经纬度（落在平面之外返回 null）。换投影中心前先取它、换完 centerOn 回去 = 正看着的那一点留在画面中心
+    viewCenterLL() {
+      const kk = k()
+      if (!(kk > 0) || cw < 2 || ch < 2) return null
+      const q = PJ.inv((cw / 2 - tx) / kk, (ch / 2 - ty) / kk)
+      return q && Number.isFinite(q[0]) && Number.isFinite(q[1]) ? { lon: q[0], lat: q[1] } : null
+    },
     // 键盘方向键：把视窗中心按屏幕像素平移（dxPx 右为正 → 中心东移，dyPx 下为正 → 中心南移）。
     // tx/ty 为 CSS 像素平移量（与鼠标拖拽同一坐标系），故与缩放无关：每次移动固定屏幕距离。
     panByPixels(dxPx, dyPx) {
@@ -4521,19 +4904,49 @@ export function createFlatCoverage(canvas) {
     setOnMarkerDrag(fn) { onMarkerDrag = fn },
     // p：单个 {lat,lon} 或数组，兼容旧单选调用；聚焦星每帧实时绘制，不在快照内
     setBoreRings(p) { boreRings = (Array.isArray(p) ? p : []).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
+    setLinks(list) { mapLinks = Array.isArray(list) ? list : []; requestDraw() },   // 图上链路（见 drawLinks）
+    // 拾取辅助（「链路分析」图上点选 Polygon / 航迹 / 候选点）：屏幕点 → 经纬度 | null；经纬度 → 屏幕坐标（client 像素）| null
+    lonLatAt: (clientX, clientY) => screenToLonLat(clientX, clientY),
+    screenOfLL(lat, lon) {
+      const x = PX(lon, lat), y = PY(lat, lon)
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+      const r = canvas.getBoundingClientRect()
+      return { x: x + r.left, y: y + r.top }
+    },
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },
     // g：单个 {footprint,track} 或数组（多选=每颗都画），随时间实时，不入快照
     setSelGeom(g) { selGeomList = Array.isArray(g) ? g.filter(Boolean) : (g ? [g] : []); dlDirty = true; requestDraw() },
     // 聚焦卫星显示样式（轨道线只在 3D 有，这里收轨迹/覆盖圈/星下点图标三项）
-    setFocusStyle(s) { Object.assign(focusCfg, s || {}); dlDirty = true; requestDraw() },
+    // 卫星层里图标让给聚焦图标层的名字（gapFocus）按聚焦图标的大小让位、且在文字快照里：大小 / 开关一变就得重排
+    setFocusStyle(s) {
+      const px0 = focusCfg.subPx, on0 = focusCfg.subOn
+      Object.assign(focusCfg, s || {}); dlDirty = true
+      if ((focusCfg.subPx !== px0 || focusCfg.subOn !== on0) && satLayer && (satLayer.sats || []).some((q) => q && q.gapFocus)) invalidateText()
+      requestDraw()
+    },
     setSatLayer(spec) { satLayer = spec; dlDirty = true; invalidateText(); requestDraw() },
     resize() { resizeNow() },
     reset() { fit(); invalidateStatic(); requestDraw() },
     // 当前屏幕视图的逻辑尺寸（CSS px）：供「所见即所得」导出按当前画面比例/范围出图
     viewportSize: () => ({ w: cw, h: ch }),
+    // 视频导出的经纬图框：此刻的投影与屏上变换（世界平面 → 画布 CSS px = p·k + t）。值是快照，平移缩放后重取
+    geoView: () => ({ pj: PJ, k: k(), tx, ty }),
+    // 平面图自己的经纬图框（地图设置 → 2D 投影）：{ on, step, fmt, theme, lines, lang }。
+    // 视图正停在 fit 那一档时跟着按新留白重 fit（整幅世界收进图框）；用户缩放平移过就不动视角，留白只是盖住四边
+    setMapFrame(cfg) {
+      const c = cfg || {}
+      const was = atFit()
+      frameCfg = { on: !!c.on, step: Number(c.step) > 0 ? Number(c.step) : 0, fmt: c.fmt === 'hemi' ? 'hemi' : 'num', theme: c.theme === 'dark' ? 'dark' : 'light', lines: c.lines !== false, lang: c.lang === 'en' ? 'en' : 'zh' }
+      if (was && !atFit()) { fit(); invalidateStatic(); if (onZoom) onZoom(scaleToT()) }
+      requestDraw()
+    },
+    // 视频取景期间挂起 / 恢复（不动视角）：取景框里看到的就是成片，屏上这圈留白不该夹在里面
+    setFrameHold(v) { if (frameHold === !!v) return; frameHold = !!v; requestDraw() },
     // 整幅世界图在当前屏幕画布上 fit 后的逻辑尺寸（CSS px，严格 2:1）：全球图导出以此为逻辑大小、
     // 只提像素倍率 → 恒定屏幕 px 的线宽/图标/注记与在屏整幅图完全同比例（所见即所得）。画布未就绪返回 null。
-    fittedWorldSize() { const sb = Math.min(cw / 360, ch / 180); return (cw > 50 && ch > 50) ? { w: 360 * sb, h: 180 * sb } : null },
+    // ★ 按投影平面的实际宽高比（PJ.W × PJ.H）取：等距圆柱是 360 × 180，与原来逐位相同；方位等距是 360 × 360 的圆盘，
+    //   写死 2:1 时全球图两侧各空出四分之一、圆盘只有名义分辨率的一半。
+    fittedWorldSize() { const sb = Math.min(cw / PJ.W, ch / PJ.H); return (cw > 50 && ch > 50) ? { w: PJ.W * sb, h: PJ.H * sb } : null },
     // 导出平面图到任意 2D 上下文：离屏高清 canvas → PNG；svgcanvas → SVG/PDF。
     // opts: { width, height, pixelScale=1, background=true, fontFamily, fontFamilyLatin, view=false, raster=false }。
     //   raster=true：输出目标是真 canvas（PNG），影像底图照画；缺省 false 供 svgcanvas 录制（PDF/SVG），影像跳过。
@@ -4550,6 +4963,7 @@ export function createFlatCoverage(canvas) {
       const SV = { dpr, cw, ch, base, scale, tx, ty }
       dpr = o.pixelScale || 1
       if (o.view !== true) { cw = o.width || cw; ch = o.height || ch; fit() }
+      else if (o.viewport) applyViewport(o.viewport)
       let plan = null, zT = -1, tilesT = null
       try {
         if (PJ.identity) plan = imageryPlan()
@@ -4604,7 +5018,7 @@ export function createFlatCoverage(canvas) {
       img.bakedPx = cvI.width      // 调用方据此如实报出「影像层实际多少像素宽」
       return img
     },
-    // 当前底图精细化档（导出前临时换成最细、用完复位，见 exportFlat 的 withFinestBasemap）
+    // 当前底图精细化档（= 设置里的底图精度；出图也按这一档，不另换档）
     getMapDetail: () => ({ detail: mapDetail0, thin: mapThin }),
     exportRender(targetCtx, opts) {
       const o = opts || {}
@@ -4617,7 +5031,7 @@ export function createFlatCoverage(canvas) {
       vecImg = (!rasterOut && o.imagery) ? o.imagery : null   // 矢量导出的影像底图（见 bakeImagery）
       if (o.fontFamily) textFont = o.fontFamily
       if (o.fontFamilyLatin) textFontLatin = o.fontFamilyLatin
-      if (viewMode) { /* 保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
+      if (viewMode) { if (o.viewport) applyViewport(o.viewport) /* 否则保留当前屏幕视图（cw/ch/base/scale/tx/ty 不变） */ }
       else { cw = W; ch = H; fit() }
       const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
@@ -4628,10 +5042,12 @@ export function createFlatCoverage(canvas) {
       drawAboveContent(rx, ry, rw, rh)
       ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
       drawFieldOverlays()
+      drawLinks()
       drawSubPoint()
       drawFocusIcons()
       drawBoreRings()
       ctx.restore()
+      if (frameOn() && !o.viewport) drawMapFrame()   // 经纬图框所见即所得（视频取景带 viewport：视频自己那一档按成片画，这里不画）
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false; vecImg = null
       staticValid = false; requestDraw()
     },
@@ -4641,6 +5057,9 @@ export function createFlatCoverage(canvas) {
     destroy() {
       dead = true
       if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
+      if (fxRaf) { cancelAnimationFrame(fxRaf); fxRaf = 0 }
+      if (fxCanvas && fxCanvas.parentNode) fxCanvas.parentNode.removeChild(fxCanvas)   // 链路流动虚线的叠加画布
+      fxCanvas = null; fxCtx = null
       if (idleTimer) { clearTimeout(idleTimer); idleTimer = 0 }
       if (tileTimer) { clearTimeout(tileTimer); tileTimer = 0 }        // 瓦片到货去抖：到期会 rebuildAtRest + 重绘
       if (imgLiveOffTimer) { clearTimeout(imgLiveOffTimer); imgLiveOffTimer = 0 }

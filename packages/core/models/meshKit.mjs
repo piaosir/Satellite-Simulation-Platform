@@ -157,6 +157,68 @@ export function annulus(mb, c, d, rIn, rOut, seg, nrmv) {
     if (facing) { mb.t(o0, o1, i0); mb.t(o1, i1, i0) } else { mb.t(o0, i0, o1); mb.t(o1, i0, i1) }
   }
 }
+/**
+ * 回转体（车削）：轮廓 prof = [[r, z], …]（r ≥ 0 为离轴距离、z 为沿轴位置，按顺序连成母线）绕轴 p0 + z·d 转一圈，seg 段。
+ * 法向按母线切向（外法向 = 母线切向绕轴面内转 −90°；母线自下而上、r 在右侧时朝外）。相邻两段夹角超过 creaseDeg 的折点
+ * 拆成两圈顶点（硬棱：法兰、台阶、喷管喉部收口），其余平滑。r = 0 的点退化为轴上一点（扇形收口）。inward 翻转朝向（内壁）。
+ * uv：u = 周向弧长（按该点半径）、v = 母线累计长度（米制，与其余原语同口径）。
+ * 只加几何、不登记质量元（细部造型；质量由调用方的组件质量元承担）。
+ */
+export function lathe(mb, p0, dir, profIn, seg = 32, { creaseDeg = 30, inward = false } = {}) {
+  const d = nrm(dir), [e1, e2] = perpPair(d)
+  // 相邻重合点去掉（零长母线段没有法向）
+  const prof = []
+  for (const q of profIn) { const t = prof[prof.length - 1]; if (!t || Math.hypot(q[0] - t[0], q[1] - t[1]) > 1e-9) prof.push(q) }
+  const m = prof.length
+  if (m < 2) return
+  // 每段母线的外法向（轮廓平面内：沿 (dz, −dr) 方向，r 增大一侧为外）
+  const segN = []
+  for (let i = 0; i + 1 < m; i++) {
+    const dr = prof[i + 1][0] - prof[i][0], dz = prof[i + 1][1] - prof[i][1], L = Math.hypot(dr, dz) || 1
+    segN.push([dz / L, -dr / L])
+  }
+  const cosC = Math.cos(creaseDeg * Math.PI / 180)
+  // 每个轮廓点出 1 或 2 个「环」（硬棱处拆开）：{r, z, nr, nz, s}
+  const rings = []
+  let s = 0
+  for (let i = 0; i < m; i++) {
+    if (i > 0) s += Math.hypot(prof[i][0] - prof[i - 1][0], prof[i][1] - prof[i - 1][1])
+    const nPrev = i > 0 ? segN[i - 1] : null, nNext = i + 1 < m ? segN[i] : null
+    const [r, z] = prof[i]
+    if (nPrev && nNext && nPrev[0] * nNext[0] + nPrev[1] * nNext[1] < cosC) {
+      rings.push({ r, z, nr: nPrev[0], nz: nPrev[1], s, end: true })
+      rings.push({ r, z, nr: nNext[0], nz: nNext[1], s, start: true })
+    } else {
+      const a = nPrev || nNext, b = nNext || nPrev
+      let nr = a[0] + b[0], nz = a[1] + b[1]
+      const L = Math.hypot(nr, nz) || 1
+      nr /= L; nz /= L
+      rings.push({ r, z, nr, nz, s, end: !!nPrev, start: !!nNext })
+    }
+  }
+  const sg = inward ? -1 : 1
+  const ringBase = rings.map((R) => {
+    const base = mb.vcount
+    for (let j = 0; j <= seg; j++) {
+      const th = (2 * Math.PI * j) / seg, q = add(scl(e1, Math.cos(th)), scl(e2, Math.sin(th)))
+      const n = add(scl(q, R.nr * sg), scl(d, R.nz * sg))
+      mb.v(madd(madd(p0, d, R.z), q, R.r), n, (2 * Math.PI * Math.max(R.r, 1e-6) * j) / seg, R.s)
+    }
+    return base
+  })
+  // 相邻两环（同一段母线的两端）之间铺四边形：硬棱处拆开的两环之间不铺（它们重合）
+  for (let k = 0; k + 1 < rings.length; k++) {
+    const A = rings[k], B = rings[k + 1]
+    if (!A.start || !B.end) continue
+    if (A.r === B.r && A.z === B.z) continue
+    const a0 = ringBase[k], b0 = ringBase[k + 1]
+    for (let j = 0; j < seg; j++) {
+      const p = a0 + j, q = a0 + j + 1, r = b0 + j, t = b0 + j + 1
+      if (!inward) { mb.t(p, q, r); mb.t(q, t, r) } else { mb.t(p, r, q); mb.t(q, r, t) }
+    }
+  }
+}
+
 /** 喇叭：外壁 + 内壁 + 口沿 + 喉部封口（闭合壳，单面材质即可两面都有东西看）。throat → aperture 沿 dir。 */
 export function horn(mb, aperture, dir, ra, lenM, seg = 24) {
   const d = nrm(dir), throat = madd(aperture, d, -lenM), rt = ra * 0.3, wall = Math.max(0.002, ra * 0.04)

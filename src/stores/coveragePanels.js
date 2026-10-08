@@ -11,6 +11,8 @@ export const covNav = reactive({
   toggleGrd: null, toggleCov: null, togglePoly: null,
   // 导出入口（顶栏「导出图」）：在 3D 页注册 exportMap('png2'|'png4'|'pdf')，离开页面复位
   exportAvail: false, exportMap: null,
+  // 「导出视频…」：3D 页注册 exportVideo()（开 / 关视频导出面板，见 viz/video/useVideoExport.js），离开页面复位
+  exportVideo: null,
   // 发送到小程序入口（顶栏「导出」菜单）：3D 页注册 sendMiniapp()（构建快照→上传COS→弹密钥），离开页面复位
   sendMiniapp: null,
   // 同一菜单的「发送航迹到小程序」：3D 页注册 sendTrajMiniapp()（标记层航迹逐条成件 → 发送弹窗），离开页面复位

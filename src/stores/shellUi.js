@@ -2,9 +2,10 @@ import { reactive, watch } from 'vue'
 
 // 壳层 UI 状态（本地记忆）：
 //  - side：侧栏当前视图（VS Code 活动栏范式，同屏只显示一个视图；'' = 侧栏收起）
-//          'constellation' 星座 | 'antenna' 对地覆盖分析 | 'satcov' 对星覆盖分析 | 'beams' 天线波束合成
-//          | 'vis' 可见性分析 | 'poly' Polygon | 'gxt' 覆盖图 | 'markers' 标记 | 'env' 环境场
-//          | 'envLive' 实时气象 | 'focus' 聚焦卫星（显示样式） | 'model' 卫星模型 | 'geo' 地图设置
+//          'constellation' 星座 | 'antenna' 对地覆盖分析 | 'satcov' 对星覆盖分析 | 'beams' 电磁波束仿真
+//          | 'vis' 可见性分析 | 'poly' Polygon | 'gxt' 覆盖图 | 'markers' 地图标记设置 | 'links' 目标间链路建链
+//          | 'env' 环境场显示 | 'envLive' 实时气象分析 | 'model' 仿真对象模型 | 'focus' 卫星聚焦特效设置（显示样式）
+//          | 'geo' 地图综合设置
 //  - sideLast：收起前停在哪个视图（恒为非空，见下面 sideCtx）
 //  - toolbar / log：图标工具栏、底部日志窗格显隐
 //  - exw：侧栏宽度（px）；exwVis：可见性分析视图的专属宽度（时段过境双时刻表格+甘特轴信息密度高，
@@ -17,7 +18,7 @@ const KEY = 'shell-ui-v2'
 // 注意：这张表是 side 的持久化白名单，活动栏新增一项就必须同步加进来，
 // 否则重开软件后 localStorage 里的值过不了 :18 的校验、静默回落到 'constellation'
 //（'env' 曾经就漏在这里，表现为「环境场不被记忆」）。
-const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'env', 'envLive', 'focus', 'model', 'geo']
+const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'links', 'env', 'envLive', 'model', 'focus', 'geo']
 // 出厂宽度 340（原 300）：参数行是「标签列 + 控件 + 读数列」三段，300px 下控件那段只剩一百出头，
 // 英文标签列还要再宽一档 —— 拖过一次的用户读的是自己存的值，这里只管第一次打开时的观感。
 export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400, satInfo: true, satInfoW: 300 })

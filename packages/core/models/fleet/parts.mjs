@@ -45,7 +45,7 @@ export function group(B, id, name, role) {
  *   normal     静止位姿下电池面法向（⟂ span）
  *   panels     [{x, y, w, h}]：板在翼局部系里的矩形（x 横向中心、y 沿翼展起点、w 横宽、h 沿翼展长）；
  *              或给 n / panelW / panelH / gap，按一列排（y 从 yokeLen 起）
- *   yokeLen    轭（连接架）长；yoke:'V' | 'rod' | 'none'
+ *   yokeLen    轭（连接架）长；yoke:'V' | 'trap' | 'rod' | 'none'；yokeW 轭张开宽度（缺省 = 全部板横向外包，十字形翼给主列板宽）
  *   sadaLen / sadaD   驱动机构外露段（不随翼转，并进平台体部件）
  *   t          板厚；margin 电池区离板边；frameW 板边框宽（0 = 不画）
  *   hingeR     板间铰链半径（0 = 不画）
@@ -54,6 +54,7 @@ export function group(B, id, name, role) {
  *   efficiency 太阳翼组效率（%）
  *   articulate 是否设单轴转动关节（缺省 true）；limits [min, max]（度）
  *   bothFaces  双面都是电池片（部分 LEO 平板翼背面也贴片时用，缺省 false）
+ *   onWing     (F) => 节点名[]：在翼局部系 F 里登记随翼转动的附加件（B.item 时 F 传翼局部系），返回的节点名并进本翼关节
  * @returns {{F, tip, cellArea, nodes}}
  */
 export function wing(B, o) {
@@ -79,13 +80,14 @@ export function wing(B, o) {
     cyl(sm, toB([0, -0.01, 0]), toB([0, sadaLen, 0]), sadaD / 2, 24, true, true)
     ring(sm, toB([0, sadaLen * 0.35, 0]), y, sadaD / 2, sadaD * 0.68, 24)
     ring(sm, toB([0, sadaLen * 0.35, 0]), scl(y, -1), sadaD / 2, sadaD * 0.68, 24)
-    B.item(`${name}_sada`, { part: o.sadaPart || { id: 'bus', name: '平台体', role: 'bus' }, role: 'bus', mat: o.sadaMat || 'aluminum', mb: sm })
+    B.item(`${name}_sada`, { part: o.sadaPart || { id: 'bus', name: '星体', role: 'bus' }, role: 'bus', mat: o.sadaMat || 'aluminum', mb: sm })
   }
   const artNodes = []
   // 轭：V 形双杆 + 横梁（长轭）或单杆（短轭）；翼局部系几何，随翼转
   if (yokeLen > 0.01 && o.yoke !== 'none') {
     const ym = new MB(), r = (o.yokeD || 0.05) / 2
-    const W0 = Math.max(...panels.map((p) => Math.abs(p.x) + p.w / 2)) * 2
+    // 轭的张开宽度：缺省按全部板的横向外包；带侧板（十字形翼）时由调用方给主列板宽 yokeW，免得 V 轭被侧板撑宽
+    const W0 = isNum(o.yokeW) && o.yokeW > 0 ? o.yokeW : Math.max(...panels.map((p) => Math.abs(p.x) + p.w / 2)) * 2
     const y0 = sadaLen, y1 = sadaLen + yokeLen - r
     if (o.yoke === 'rod' || yokeLen < 0.3) truss(ym, [[0, y0, 0], [0, y1 + r, 0]], r, 10)
     else if (o.yoke === 'trap') {
@@ -140,6 +142,18 @@ export function wing(B, o) {
       const yj = (a.y + a.h + b.y) / 2
       for (const s of [1, -1]) hinge(hin, [a.x + s * (a.w / 2 - 0.12 * a.w), yj, 0], [1, 0, 0], o.hingeR, 0.08 * a.w, 10)
     }
+    // 十字形翼的侧板：与主列那块并排（同一行、横向相邻）时，沿共边（平行翼展）上下各一个铰链
+    for (let i = 0; i < panels.length; i++) {
+      for (let j = 0; j < panels.length; j++) {
+        const a = panels[i], b = panels[j]
+        if (i === j || b.x <= a.x) continue
+        const gapX = (b.x - b.w / 2) - (a.x + a.w / 2)
+        const y0 = Math.max(a.y, b.y), y1 = Math.min(a.y + a.h, b.y + b.h)
+        if (gapX < -1e-6 || gapX > 0.2 || y1 - y0 < 0.5 * Math.min(a.h, b.h)) continue
+        const xj = a.x + a.w / 2 + gapX / 2, L = y1 - y0
+        for (const s of [1, -1]) hinge(hin, [xj, (y0 + y1) / 2 + s * 0.38 * L, 0], [0, 1, 0], o.hingeR, 0.08 * L, 10)
+      }
+    }
   }
   B.item(`${name}_substrate`, { part, role: 'solarArray', mat: o.backMat || 'solar_substrate', mb: sub_, F })
   B.item(`${name}_cells`, { part, role: 'solarArray', mat: o.cellMat || 'solar_cell', mb: cells, F })
@@ -157,6 +171,8 @@ export function wing(B, o) {
   }
   if (frm.tcount) { B.item(`${name}_frame`, { part, role: 'solarArray', mat: o.frameMat || 'carbon', mb: frm, F }); artNodes.push(`${name}_frame`) }
   if (hin.tcount) { B.item(`${name}_hinges`, { part, role: 'solarArray', mat: 'titanium', mb: hin, F }); artNodes.push(`${name}_hinges`) }
+  // 随翼转动的附加件（如 GOES-R 翼根的太阳指向平台）：调用方在翼局部系 F 里登记节点，返回节点名并进本翼关节
+  if (typeof o.onWing === 'function') for (const nm of o.onWing(F) || []) artNodes.push(nm)
   // 质量：给了整翼质量就按面积摊；否则按面密度
   const areal = (dens.panelAreal + dens.cellAreal)
   const kM = isNum(o.massKg) && o.massKg > 0 ? o.massKg / panelArea : areal

@@ -18,6 +18,8 @@
 //
 // ★ 通用造型工具（superRing / loft / extrude / roundRect / decal / wheel / datumAp / matOr …）一律从 ./shapeKit.mjs 取；
 //   关节小工具（STAGE / gimbalFrame / azStage）从 ./ground.mjs 取（与 air / sea 同一口径）。
+// ★ 安装基面 / 接口收件清单（2026-10 §3.3.1 核对结论，本轮无收紧）：车体 roof / bed 专用前缀表、hitch 只收基本体、车顶面可装（大件）；
+//   平板动中通只有自身安装接口；展开座 el 只收反射面。
 //
 // 导出：
 //   VEH_COMPONENTS   车辆组件定义（veh.body / veh.cotm.flat / veh.driveaway）
@@ -252,7 +254,7 @@ const vehBody = {
     rackHM: num(0.1, 'm', '车顶架高', { min: 0.02, max: 0.4, title: '车顶到架顶' }),
     mirrors: bool(true, '后视镜'),
     paint: enm('white_paint', ['white_paint', 'titanium', 'dark_metal', 'aluminum'], '车漆', { title: 'white_paint = 白漆；titanium = 灰；dark_metal = 深色金属漆；aluminum = 银色金属漆' }),
-    massKg: num(null, 'kg', '整备质量', { nullable: true, gt: 0, title: '留空 = 2600 / 2200 / 3500 kg（示意）；给了装配件目标质量时由它吃余量' })
+    massKg: num(null, 'kg', '整备质量', { nullable: true, gt: 0, title: '留空 = 2600 / 2200 / 3500 kg（示意）；装配件指定目标质量时由其承担质量差额' })
   },
   validate: (p) => {
     const g = vehGeom(p), e = []
@@ -263,7 +265,7 @@ const vehBody = {
     if (!(g.T - g.tireW >= 0.3)) e.push('轮距过小')
     if (!(g.T + g.tireW <= 1.02 * g.W)) e.push('轮距超出车宽')
     if (!(g.clr <= 0.3 * g.Hr && g.hSill + 0.1 < g.hCowl)) e.push('离地间隙过大')
-    if (!(g.xCowl - g.xWsTop < 0.7 * g.L && g.xWsTop > g.xRoofEnd + 0.3 && g.rack[1] - g.rack[0] >= 0.3)) e.push('车长不足以放下车顶')
+    if (!(g.xCowl - g.xWsTop < 0.7 * g.L && g.xWsTop > g.xRoofEnd + 0.3 && g.rack[1] - g.rack[0] >= 0.3)) e.push('车长不足以容纳车顶')
     else if (!(Number.isFinite(g.roofHalf) && g.roofHalf >= 0.25)) e.push('车宽不足')
     return e
   },
@@ -436,7 +438,7 @@ const panelDims = (p) => (p.model === 'custom' ? { L: p.lengthM, W: p.widthM, H:
 const cotmFlat = {
   type: 'veh.cotm.flat', domain: ['vehicle', 'ship', 'ground', 'aircraft'], title: 'Flat-panel COTM terminal', titleZh: '平板动中通', role: 'feed',
   params: {
-    model: enm('kymeta-u8', ['kymeta-u8', 'custom'], '型号', { source: KYMETA_U8_URL, title: 'kymeta-u8 = Kymeta Hawk u8（89.5 × 89.5 × 14 cm）；custom = 按下面三项' }),
+    model: enm('kymeta-u8', ['kymeta-u8', 'custom'], '型号', { source: KYMETA_U8_URL, title: 'kymeta-u8 = Kymeta Hawk u8（89.5 × 89.5 × 14 cm）；custom = 按以下三项' }),
     lengthM: num(0.895, 'm', '长', { gt: 0.05, max: 3, source: KYMETA_U8_URL, title: '型号 custom 时生效' }),
     widthM: num(0.895, 'm', '宽', { gt: 0.05, max: 3, source: KYMETA_U8_URL, title: '型号 custom 时生效' }),
     heightM: num(0.14, 'm', '高', { gt: 0.02, max: 1, source: KYMETA_U8_URL, title: '型号 custom 时生效；含安装脚' }),
@@ -496,7 +498,7 @@ function dwGeom(p) {
 const driveaway = {
   type: 'veh.driveaway', domain: ['vehicle'], title: 'Drive-away antenna mount', titleZh: '车顶展开座', role: 'boom',
   params: {
-    model: enm('inetvu-1202', ['inetvu-1202', 'custom'], '型号', { source: INETVU_URL, title: 'inetvu-1202 = C-COM iNetVu 1202（收拢 203 × 124 × 35 cm）；custom = 按下面三项' }),
+    model: enm('inetvu-1202', ['inetvu-1202', 'custom'], '型号', { source: INETVU_URL, title: 'inetvu-1202 = C-COM iNetVu 1202（收拢 203 × 124 × 35 cm）；custom = 按以下三项' }),
     lengthM: num(2.03, 'm', '长', { gt: 0.5, max: 5, source: INETVU_URL, title: '收拢外形长 = 底板占地长；型号 custom 时生效' }),
     widthM: num(1.24, 'm', '宽', { gt: 0.4, max: 3, source: INETVU_URL, title: '收拢外形宽 = 底板占地宽；型号 custom 时生效' }),
     heightM: num(0.35, 'm', '收拢高', { gt: 0.1, max: 1.5, source: INETVU_URL, title: '收拢总高；型号 custom 时生效' }),

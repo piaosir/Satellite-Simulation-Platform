@@ -1,6 +1,6 @@
 // 飞机内置实体模板数据（三期契约 DESIGN3 §1 P1b、E13；A3 规格 §7.3 记录形状、§7.4「飞机」）。
 //
-// 纯数据 + 小的派生计算；只 import components/air.mjs 的派生辅助与 ./common.mjs（不 import assembly / components/index，防环）。
+// 纯数据 + 小的派生计算；只 import components/air.mjs、components/rotorcraft.mjs 的派生辅助与 ./common.mjs（不 import assembly / components/index，防环）。
 // 汇总、校验、冻结与对外 API 在 models/entityTemplates.mjs（集成包）。巡航构型（不带起落架）。
 //
 // ★ 数值口径：
@@ -12,6 +12,10 @@
 //       'vtailHeight'   heightM − with.gearClearM − bDown0 + z(fus 的 vtail 插座)       bDown0 = fus.heightM / 2
 //       'vtailSpan'     2 × (heightM − with.gearClearM − bDown0 + z(fus 的 htail 插座)) / tan(ht.dihedralDeg)
 //       'lengthMinusProp' lengthM − propReach(prop 组件参数)
+//       'heliTrH'       overallHeightM − tailRotorDiameterM / 2 − with.gearClearM（尾桨轴高：座舱机腹到尾桨轴，尾桨盘顶 = 旋翼转动时最高点）
+//       'heliTrArm'     overallLengthM − (mainRotorDiameterM + tailRotorDiameterM) / 2（尾桨力臂：主旋翼盘前缘到尾桨盘后缘 = 旋翼转动时全长）
+//       'heliMastH'     fuselageHeightM − with.gearClearM − (z(root 接口) − z(rotor 接口)) − 3 × rotorHubT(rotor)（旋翼头顶 = 机身高）
+//       'propPitchDeg'  atan(propPitchIn / (0.75π × propDiameterIn))（螺旋桨型旋翼 0.75 半径处桨距角）
 //     heightM 为对象型（777：{min, max}）时 with.pick 指定取哪个键。插座 z 取 air.getFuselageSockets(fus 参数)。
 //   垂尾高 / V 尾展长的通式：地面 z_g = 机腹（bDown0）+ 离地净空 gearClearM（示意）；垂尾顶 z = s_z − h；令 z_g − 垂尾顶 = 全机高。
 //   模板一律 tailUpsweep = 1（尾锥顶线平直，s_z = −bUp0），此时垂尾高 = 全机高 − 净空 − 机身高。
@@ -23,6 +27,7 @@
 //   ops = 运行参数（E7 / E8 用）：只有 G650 有出处的初始巡航高度；其余 cruiseAltM = null（走航迹自带高度或 E7 缺省）。
 
 import { GAT5530_URL, getFuselageSockets, propReach } from '../components/air.mjs'
+import { getHeliSockets, rotorHubT } from '../components/rotorcraft.mjs'
 import { dim, round9, record } from './common.mjs'
 
 // ───────────────────────────── 出处 ─────────────────────────────
@@ -41,7 +46,12 @@ const U = Object.freeze({
   mq9: 'http://web.archive.org/web/20250102145026/https://www.af.mil/About-Us/Fact-Sheets/Display/Article/104470/mq-9-reaper/',
   mq9old: 'http://web.archive.org/web/20210602135216/https://www.af.mil/About-Us/Fact-Sheets/Display/Article/104470/mq-9-reaper/',
   gat5530: GAT5530_URL,
-  gat5510: 'https://www.viasat.com/products/terminals-and-radios/gat-5510/'
+  gat5510: 'https://www.viasat.com/products/terminals-and-radios/gat-5510/',
+  aw139tcds: 'https://www.easa.europa.eu/en/downloads/7949/en',
+  aw139: 'https://www.leonardodrs.com/wp-content/uploads/2023/08/aw139_search_and_rescue-brochure.pdf',
+  astro: 'https://freeflysystems.com/astro/specs',
+  jump20: 'http://web.archive.org/web/20250426213609/https://www.avinc.com/images/uploads/product_docs/Jump20_Datasheet_Land_13_241008.pdf',
+  rq4: 'http://web.archive.org/web/20260930071356/https://www.af.mil/About-Us/Fact-Sheets/Display/Article/104516/rq-4-global-hawk/'
 })
 
 const GAT5530_DIMS = () => ({
@@ -121,7 +131,7 @@ const a320 = (() => {
       'fus.heightM': { dims: ['fuselageWidthM'], derive: 'fuselageWidthM × hRatio', fn: 'mul', with: { ...w } },
       'wing.spanM': { dim: 'wingspanM' }, 'ht.spanM': { dim: 'horizontalTailSpanM' },
       'eng.diameterM': mulP('fuselageWidthM', ed, 'fuselageWidthM × engDRatio（短舱最大径 / 机身宽，示意比例）'),
-      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 插座)', fn: 'vtailHeight', with: { ...gc } },
+      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 接口)', fn: 'vtailHeight', with: { ...gc } },
       'rdm.baseRadiusM': { dims: ['fuselageWidthM'], derive: 'fuselageWidthM × hRatio / 2', fn: 'mul', with: { ...w, half: 0.5 } },
       ...GAT5530_PROV('rdm')
     },
@@ -141,8 +151,8 @@ const a320 = (() => {
 // —— 波音 737-800（带翼梢小翼）
 const b737 = (() => {
   const dims = {
-    wingspanM: dim(35.79, 'm', U.b737, '三视图读图'), lengthM: dim(39.47, 'm', U.b737), heightM: dim(12.55, 'm', U.b737, '三视图读图'),
-    fuselageWidthM: dim(3.76, 'm', U.b737, '客舱剖面外廓宽，读图'), maxOperatingAltitudeFt: dim(41000, 'ft', U.b737tcds, '型号合格证数据单'),
+    wingspanM: dim(35.79, 'm', U.b737, '三视图量取'), lengthM: dim(39.47, 'm', U.b737), heightM: dim(12.55, 'm', U.b737, '三视图量取'),
+    fuselageWidthM: dim(3.76, 'm', U.b737, '客舱剖面外廓宽，图纸量取'), maxOperatingAltitudeFt: dim(41000, 'ft', U.b737tcds, '型号合格证数据单'),
     ...GAT5530_DIMS()
   }
   const w = { hRatio: 1.066 }, gc = { gearClearM: 1.6 }
@@ -159,7 +169,7 @@ const b737 = (() => {
       'eng.lengthM': mulP('fuselageWidthM', el, 'fuselageWidthM × engLRatio（短舱长 / 机身宽，示意比例：短舱贴翼的短涵道形）'),
       'eng.pylonHM': mulP('fuselageWidthM', ep, 'fuselageWidthM × pylonRatio（挂架净距 / 机身宽，示意比例）'),
       'ht.spanM': mulP('wingspanM', hs, 'wingspanM × htSpanRatio（平尾展 / 翼展，示意比例）'),
-      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 插座)', fn: 'vtailHeight', with: { ...gc } },
+      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 接口)', fn: 'vtailHeight', with: { ...gc } },
       'rdm.baseRadiusM': { dims: ['fuselageWidthM'], derive: 'fuselageWidthM × hRatio / 2', fn: 'mul', with: { ...w, half: 0.5 } },
       ...GAT5530_PROV('rdm')
     },
@@ -198,7 +208,7 @@ const a330 = (() => {
       'eng.diameterM': mulP('fuselageWidthM', ed, 'fuselageWidthM × engDRatio（短舱最大径 / 机身宽，示意比例）'),
       'eng.lengthM': mulP('fuselageWidthM', el, 'fuselageWidthM × engLRatio（短舱长 / 机身宽，示意比例）'),
       'ht.spanM': mulP('wingspanM', hs, 'wingspanM × htSpanRatio（平尾展 / 翼展，示意比例）'),
-      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 插座)', fn: 'vtailHeight', with: { ...gc } },
+      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 接口)', fn: 'vtailHeight', with: { ...gc } },
       'rdm.baseRadiusM': { dims: ['fuselageWidthM'], derive: 'fuselageWidthM × hRatio / 2', fn: 'mul', with: { ...w, half: 0.5 } },
       ...GAT5530_PROV('rdm')
     },
@@ -218,7 +228,7 @@ const a330 = (() => {
 // —— 波音 777-300ER（斜削翼梢；机高取地面间隙表上限 = 包络口径）
 const b777 = (() => {
   const dims = {
-    wingspanM: dim(64.8, 'm', U.b777, '三视图读图'), lengthM: dim(73.86, 'm', U.b777, '读图'), fuselageWidthM: dim(6.2, 'm', U.b777, '读图'),
+    wingspanM: dim(64.8, 'm', U.b777, '三视图量取'), lengthM: dim(73.86, 'm', U.b777, '图纸量取'), fuselageWidthM: dim(6.2, 'm', U.b777, '图纸量取'),
     heightM: dim({ min: 18.24, max: 18.85 }, 'm', U.b777, '地面间隙表垂尾顶，随装载姿态变化'),
     maxOperatingAltitudeFt: dim(43100, 'ft', U.b777tcds, '型号合格证数据单'),
     ...GAT5530_DIMS()
@@ -236,7 +246,7 @@ const b777 = (() => {
       'eng.diameterM': mulP('fuselageWidthM', ed, 'fuselageWidthM × engDRatio（短舱最大径 / 机身宽，示意比例）'),
       'eng.lengthM': mulP('fuselageWidthM', el, 'fuselageWidthM × engLRatio（短舱长 / 机身宽，示意比例）'),
       'ht.spanM': mulP('wingspanM', hs, 'wingspanM × htSpanRatio（平尾展 / 翼展，示意比例）'),
-      'vt.heightM': { dims: ['heightM'], derive: 'heightM(max) − gearClearM − bDown0 + z(vtail 插座)', fn: 'vtailHeight', with: { ...gc, pick: 'max' } },
+      'vt.heightM': { dims: ['heightM'], derive: 'heightM(max) − gearClearM − bDown0 + z(vtail 接口)', fn: 'vtailHeight', with: { ...gc, pick: 'max' } },
       'rdm.baseRadiusM': { dims: ['fuselageWidthM'], derive: 'fuselageWidthM × hRatio / 2', fn: 'mul', with: { ...w, half: 0.5 } },
       ...GAT5530_PROV('rdm')
     },
@@ -257,7 +267,7 @@ const b777 = (() => {
 const g650 = (() => {
   const dims = {
     wingspanM: dim(30.35, 'm', U.g650, '官网存档页'), lengthM: dim(30.4, 'm', U.g650), heightM: dim(7.82, 'm', U.g650),
-    cabinWidthM: dim(2.49, 'm', U.g650, '客舱内宽，不是机身外径'),
+    cabinWidthM: dim(2.49, 'm', U.g650, '客舱内宽，非机身外径'),
     cruiseMachHighSpeed: dim(0.9, 'Mach', U.g650), cruiseMachLongRange: dim(0.85, 'Mach', U.g650), mmo: dim(0.925, 'Mach', U.g650),
     initialCruiseAltitudeFt: dim(41000, 'ft', U.g650), maxCruiseAltitudeFt: dim(51000, 'ft', U.g650),
     antennaSweptVolumeCm: dim({ D: 31.7, H: 33.3 }, 'cm', U.gat5510, '机载 Ka 小天线扫掠体积')
@@ -286,7 +296,7 @@ const g650 = (() => {
       'vt.rootChordM': mulP('lengthM', vc, 'lengthM × vtChordRatio（垂尾根弦 / 全机长，示意比例）'),
       'ht.spanM': mulP('wingspanM', hs, 'wingspanM × htSpanRatio（平尾展 / 翼展，示意比例）'),
       'ht.rootChordM': mulP('wingspanM', hc, 'wingspanM × htSpanRatio × htChordRatio（平尾根弦 / 平尾展，示意比例）'),
-      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 插座)', fn: 'vtailHeight', with: { ...gc } },
+      'vt.heightM': { dims: ['heightM'], derive: 'heightM − gearClearM − bDown0 + z(vtail 接口)', fn: 'vtailHeight', with: { ...gc } },
       'rdm.sweptDM': { dim: 'antennaSweptVolumeCm', pick: 'D', k: 0.01 },
       'rdm.sweptHM': { dim: 'antennaSweptVolumeCm', pick: 'H', k: 0.01 },
       'rdm.baseRadiusM': { dims: ['cabinWidthM'], derive: 'cabinWidthM × wallRatio × hRatio / 2', fn: 'mul', with: { ...w, ...hr, half: 0.5 } }
@@ -345,7 +355,7 @@ const mq9 = (() => {
       'wing.spanM': { dim: 'wingspanM' },
       'wing.rootChordM': mulP('wingspanM', rc, 'wingspanM × rootChordRatio（翼根弦 / 翼展，示意比例）'),
       'wing.rootYM': mulP('lengthM', ry, 'lengthM × rootYRatio（翼根外露站位 / 全长，示意比例）'),
-      'ht.spanM': { dims: ['heightM'], derive: '2 × (heightM − gearClearM − bDown0 + z(htail 插座)) / tan(ht.dihedralDeg)', fn: 'vtailSpan', with: { ...gc } },
+      'ht.spanM': { dims: ['heightM'], derive: '2 × (heightM − gearClearM − bDown0 + z(htail 接口)) / tan(ht.dihedralDeg)', fn: 'vtailSpan', with: { ...gc } },
       'ht.rootChordM': mulP('wingspanM', hc, 'wingspanM × htChordRatio（V 尾根弦 / 翼展，示意比例）'),
       'vt.heightM': mulP('heightM', vh, 'heightM × ventralHRatio（腹鳍高 / 全机高，示意比例）'),
       'vt.rootChordM': mulP('lengthM', vc, 'lengthM × ventralChordRatio（腹鳍根弦 / 全长，示意比例）'),
@@ -358,4 +368,239 @@ const mq9 = (() => {
   })
 })()
 
-export const AIR_TEMPLATES = [a320, b737, a330, b777, g650, mq9]
+// ───────────────────────────── 旋翼机 / 垂直起降 / 无人机 ─────────────────────────────
+
+/**
+ * 直升机旋翼轴高：旋翼头顶（地面起）= 机身高出处值 → 旋翼轴高 = fuselageHeightM − gearClearM − (z(root 接口) − z(rotor 接口)) − 3 × 桨毂半厚。
+ * root 接口 = 座舱机腹、rotor 接口 = 整流罩顶（air.heli）；桨毂顶在安装面上方 旋翼轴高 + 3 × 半厚（air.rotor）。
+ */
+function heliMastH(dims, gearClearM, heli, rotor) {
+  const s = getHeliSockets(heli), zRoot = s.find((q) => q.id === 'root').pos[2], zRot = s.find((q) => q.id === 'rotor').pos[2]
+  return dims.fuselageHeightM.value - gearClearM - (zRoot - zRot) - 3 * rotorHubT(rotor)
+}
+/** 螺旋桨桨距角（0.75 半径处，度）：atan(桨距 / (0.75π × 直径))。 */
+const pitchDeg = (pitch, dia) => Math.atan(pitch / (0.75 * Math.PI * dia)) * 180 / Math.PI
+/**
+ * T 尾（垂尾 + 垂尾顶平尾）最后端相对垂尾根前缘的 x（负数；与 air.mjs 的 vtailGeom / tailStations 同式）：
+ * 模板按它把垂尾放到「T 尾后缘与机身尾端齐平」。
+ */
+function tTailAft(vt, ht) {
+  const H = vt.heightM, cR = vt.rootChordM, cT = vt.taper * cR, T = Math.tan(vt.sweepDeg * Math.PI / 180) - 0.25 * (cT - cR) / H
+  const b = ht.spanM / 2, hR = ht.rootChordM, hT = ht.taper * hR, Th = Math.tan(ht.sweepDeg * Math.PI / 180) - 0.25 * (hT - hR) / b
+  const tipX = -H * T - 0.3 * cT
+  return Math.min(-cR, -H * T - cT, tipX - hR, tipX - b * Th - hT)
+}
+/** 平尾 / V 尾最后端相对根前缘的 x（负数；tailStations 同式）。 */
+function tailAft(ht) {
+  const b = ht.spanM / 2, cR = ht.rootChordM, cT = ht.taper * cR, T = Math.tan(ht.sweepDeg * Math.PI / 180) - 0.25 * (cT - cR) / b
+  return Math.min(-cR, -b * T - cT)
+}
+
+// —— 莱昂纳多 AW139（中型双发直升机：五片全铰接主旋翼、四片尾桨、浮筒式收放起落架）
+//    旋翼转动全长闭合尾桨力臂、旋翼转动全高闭合尾桨轴高（尾桨盘顶 = 最高点）、机身高（取至旋翼头顶）闭合旋翼轴高
+const aw139 = (() => {
+  const dims = {
+    fuselageLengthM: dim(13.53, 'm', U.aw139tcds, '型号合格证数据单「机身」，标准机头（长机头 13.73 m）'),
+    fuselageWidthM: dim(2.26, 'm', U.aw139tcds, '型号合格证数据单「机身」'),
+    fuselageHeightM: dim(3.72, 'm', U.aw139tcds, '型号合格证数据单「机身」高度，按至旋翼头顶理解', 'secondary'),
+    mainRotorDiameterM: dim(13.8, 'm', U.aw139tcds, '五片桨叶，全铰接式'),
+    tailRotorDiameterM: dim(2.7, 'm', U.aw139tcds, '四片桨叶'),
+    overallLengthM: dim(16.66, 'm', U.aw139, '旋翼转动时全长'),
+    overallHeightM: dim(4.98, 'm', U.aw139, '旋翼转动时全高'),
+    cabinLengthM: dim(2.7, 'm', U.aw139, '客舱内部长'), cabinWidthM: dim(2.1, 'm', U.aw139, '客舱内部宽'), cabinHeightM: dim(1.42, 'm', U.aw139, '客舱内部高'),
+    maxOperatingAltitudeFt: dim(20000, 'ft', U.aw139tcds, '型号合格证数据单'),
+    mtomKg: dim(6400, 'kg', U.aw139tcds, '型号合格证数据单；选装套件 6800 kg'),
+    cruiseSpeedKmh: dim(306, 'km/h', U.aw139)
+  }
+  const gc = { gearClearM: 0.4 }
+  const hr = { extRatio: 1.32 }, br = { boomRatio: 0.36 }, fc = { finChordRatio: 0.092 }, ss = { stabRatio: 0.21 }, dl = { deckRatio: 0.42 }, dh = { deckHRatio: 0.4 }
+  const heli = {
+    lengthM: dims.fuselageLengthM.value, widthM: dims.fuselageWidthM.value, heightM: mulV(dims, 'cabinHeightM', hr),
+    noseFrac: 0.17, cabinFrac: 0.29, aftFrac: 0.12, boomDM: mulV(dims, 'fuselageWidthM', br), boomTaper: 0.55, boomZFrac: -0.4, boomUpDeg: 1.5,
+    trHM: dims.overallHeightM.value - dims.tailRotorDiameterM.value / 2 - gc.gearClearM, trZFrac: 0.8, trSide: 'left',
+    trArmM: dims.overallLengthM.value - (dims.mainRotorDiameterM.value + dims.tailRotorDiameterM.value) / 2,
+    finChordM: mulV(dims, 'fuselageLengthM', fc), finTaper: 0.62, finSweepDeg: 40, ventral: true,
+    stab: 'both', stabSpanM: mulV(dims, 'fuselageLengthM', ss), stabHFrac: 0, endplates: false,
+    deckLM: mulV(dims, 'fuselageLengthM', dl), deckHM: mulV(dims, 'cabinHeightM', dh), deckWFrac: 0.72, engines: 2, gear: 'sponson'
+  }
+  const rotor = { diameterM: dims.mainRotorDiameterM.value, blades: 5, planform: 'helicopter', chordFrac: 0.075, tip: 'swept', pitchDeg: 8, twistDeg: -10, coningDeg: 2.5, hub: 'articulated', hand: 'ccw' }
+  rotor.mastHM = heliMastH(dims, gc.gearClearM, heli, rotor)
+  const tr = { diameterM: dims.tailRotorDiameterM.value, blades: 4, planform: 'helicopter', chordFrac: 0.17, tip: 'square', pitchDeg: 10, twistDeg: -4, coningDeg: 0, hub: 'articulated', hand: 'cw' }
+  return rec({
+    id: 'ent:aw139', title: 'Leonardo AW139', titleZh: '莱昂纳多 AW139', representative: 'AW139（标准机头，型号合格证数据单 + 搜救型宣传册）',
+    dims,
+    prov: {
+      'heli.lengthM': { dim: 'fuselageLengthM' }, 'heli.widthM': { dim: 'fuselageWidthM' },
+      'heli.heightM': mulP('cabinHeightM', hr, 'cabinHeightM × extRatio（座舱外廓高 / 客舱内高，示意比例）'),
+      'heli.boomDM': mulP('fuselageWidthM', br, 'fuselageWidthM × boomRatio（尾梁根部直径 / 机身宽，示意比例）'),
+      'heli.trHM': { dims: ['overallHeightM', 'tailRotorDiameterM'], derive: 'overallHeightM − tailRotorDiameterM / 2 − gearClearM（尾桨盘顶 = 旋翼转动时最高点）', fn: 'heliTrH', with: { ...gc } },
+      'heli.trArmM': { dims: ['overallLengthM', 'mainRotorDiameterM', 'tailRotorDiameterM'], derive: 'overallLengthM − (mainRotorDiameterM + tailRotorDiameterM) / 2（主旋翼盘前缘到尾桨盘后缘 = 旋翼转动时全长）', fn: 'heliTrArm', with: {} },
+      'heli.finChordM': mulP('fuselageLengthM', fc, 'fuselageLengthM × finChordRatio（垂尾根弦 / 机身长，示意比例）'),
+      'heli.stabSpanM': mulP('fuselageLengthM', ss, 'fuselageLengthM × stabRatio（平尾展长 / 机身长，示意比例）'),
+      'heli.deckLM': mulP('fuselageLengthM', dl, 'fuselageLengthM × deckRatio（整流罩长 / 机身长，示意比例）'),
+      'heli.deckHM': mulP('cabinHeightM', dh, 'cabinHeightM × deckHRatio（整流罩高 / 客舱内高，示意比例）'),
+      'rotor.diameterM': { dim: 'mainRotorDiameterM' },
+      'rotor.mastHM': { dims: ['fuselageHeightM'], derive: 'fuselageHeightM − gearClearM − (z(root 接口) − z(rotor 接口)) − 3 × 桨毂半厚', fn: 'heliMastH', with: { ...gc } },
+      'tr.diameterM': { dim: 'tailRotorDiameterM' }
+    },
+    ops: { maxOperatingAltitudeFt: { value: 20000, source: U.aw139tcds }, cruiseSpeedKmh: { value: 306, source: U.aw139 }, cruiseAltM: null },
+    needsInput: ['cruiseAltitudeFt'],
+    doc: {
+      kind: 'assembly', schema: 1, domain: 'aircraft', name: '莱昂纳多 AW139', density: {}, massTargetKg: null,
+      comps: [
+        { id: 'heli', type: 'air.heli', parent: null, params: heli },
+        { id: 'rotor', type: 'air.rotor', parent: 'heli', attach: { mode: 'socket', socket: 'rotor' }, params: rotor },
+        { id: 'tr', type: 'air.rotor', parent: 'heli', attach: { mode: 'socket', socket: 'trotor' }, params: tr }
+      ]
+    }
+  })
+})()
+
+// —— Freefly Astro Max（小型四旋翼：X 布局、22 in 折叠桨两正两反、T 形脚架、云台吊舱）
+const astro = (() => {
+  const dims = {
+    wheelbaseMm: dim(930, 'mm', U.astro, '展开对角尺寸（不含桨）'),
+    propDiameterIn: dim(22, 'in', U.astro, '折叠桨 22 × 7.0 in'), propPitchIn: dim(7, 'in', U.astro, '折叠桨 22 × 7.0 in'),
+    heightMm: dim(359, 'mm', U.astro, '展开高度'),
+    mtowG: dim(8700, 'g', U.astro, '随海拔变化'), emptyWeightG: dim(3523, 'g', U.astro, '典型空机重量')
+  }
+  const tu = { mm: 0.001, turretRatio: 0.11 }
+  const body = { arms: 4, layout: 'x', wheelbaseM: dims.wheelbaseMm.value * 0.001, heightM: dims.heightMm.value * 0.001, gear: 'skid', gnss: true, battery: true }
+  const rp = (hand) => ({ diameterM: dims.propDiameterIn.value * 0.0254, blades: 2, planform: 'propeller', chordFrac: 0.18, pitchDeg: pitchDeg(dims.propPitchIn.value, dims.propDiameterIn.value), coningDeg: 1, hub: 'compact', hand })
+  const pp = { dims: ['propPitchIn', 'propDiameterIn'], derive: 'atan(propPitchIn / (0.75π × propDiameterIn))（0.75 半径处桨距角）', fn: 'propPitchDeg', with: {} }
+  return rec({
+    id: 'ent:astro-max', title: 'Freefly Astro Max', titleZh: 'Astro Max 四旋翼无人机', representative: 'Astro Max（厂家规格页）',
+    dims,
+    prov: {
+      'body.wheelbaseM': { dim: 'wheelbaseMm', k: 0.001 }, 'body.heightM': { dim: 'heightMm', k: 0.001 },
+      'rot.diameterM': { dim: 'propDiameterIn', k: 0.0254 }, 'rot2.diameterM': { dim: 'propDiameterIn', k: 0.0254 },
+      'rot.pitchDeg': { ...pp }, 'rot2.pitchDeg': { ...pp },
+      'tur.diameterM': mulP('wheelbaseMm', tu, 'wheelbaseMm × mm × turretRatio（吊舱球径 / 轴距，示意比例）')
+    },
+    ops: { cruiseAltM: null },
+    needsInput: ['cruiseAltitudeM', 'cruiseSpeedKmh'],
+    doc: {
+      kind: 'assembly', schema: 1, domain: 'aircraft', name: 'Astro Max 四旋翼无人机', density: {}, massTargetKg: null,
+      comps: [
+        { id: 'body', type: 'air.mrbody', parent: null, params: body },
+        { id: 'rot', type: 'air.rotor', parent: 'body', attach: { mode: 'socket', socket: 'm1' }, params: rp('ccw'), sym: { op: 'mirrorXZ' } },
+        { id: 'rot2', type: 'air.rotor', parent: 'body', attach: { mode: 'socket', socket: 'm2' }, params: rp('cw'), sym: { op: 'mirrorXZ' } },
+        { id: 'tur', type: 'air.turret', parent: 'body', attach: { mode: 'socket', socket: 'gimbal' }, params: { diameterM: mulV(dims, 'wheelbaseMm', tu) } }
+      ]
+    }
+  })
+})()
+
+// —— AeroVironment JUMP 20（中型复合翼垂直起降：上单翼 + 两根翼下撑杆各挂前后升力螺旋桨、机头牵引螺旋桨、T 尾、腹部光电吊舱）
+//    全长 = 机头螺旋桨整流锥尖到 T 尾后缘（T 尾后缘与机身尾端齐平；巡航时升力桨顺桨停在纵向，桨盘不超出全长）
+const jump20 = (() => {
+  const dims = {
+    wingspanM: dim(5.7, 'm', U.jump20, '数据表「18.8 ft (5.7 m)」'), lengthM: dim(2.9, 'm', U.jump20, '数据表「9.5 ft (2.9 m)」'),
+    mgtowKg: dim(97.5, 'kg', U.jump20, '最大起飞重量（含燃油与载荷）'), payloadKg: dim(13.6, 'kg', U.jump20, '可用载荷'),
+    operatingAltitudeFt: dim(17000, 'ft', U.jump20, '密度高度'), speedKt: dim(50, 'kt', U.jump20)
+  }
+  const pd = { propDRatio: 0.24 }, fw = { fusWRatio: 0.115 }, fh = { fusWRatio: 0.115, hRatio: 1.15 }, rc = { rootChordRatio: 0.075 }
+  const bl = { boomLRatio: 0.35 }, bd = { boomDRatio: 0.014 }, ld = { liftDRatio: 0.165 }
+  const vh = { vtHRatio: 0.2 }, vc = { vtChordRatio: 0.14 }, hs = { htSpanRatio: 0.3 }, hc = { htChordRatio: 0.11 }, td = { turretRatio: 0.075 }
+  const prop = { diameterM: mulV(dims, 'lengthM', pd), blades: 2, pitchDeg: 25 }
+  const vt = { heightM: mulV(dims, 'lengthM', vh), rootChordM: mulV(dims, 'lengthM', vc), taper: 0.6, sweepDeg: 28, tc: 0.1, dorsal: false }
+  const ht = { spanM: mulV(dims, 'wingspanM', hs), rootChordM: mulV(dims, 'lengthM', hc), taper: 0.6, sweepDeg: 8, dihedralDeg: 0, tcRoot: 0.1, tcTip: 0.09 }
+  const fL = dims.lengthM.value - propReach(prop)
+  const fus = {
+    lengthM: fL, widthM: mulV(dims, 'lengthM', fw), heightM: mulV(dims, 'lengthM', fh), noseStyle: 'pod', noseFrac: 0.16, tailFrac: 0.45, tailUpsweep: 0.75,
+    windows: false, doors: false, fairing: false, wingXFrac: 0.35, wingZFrac: -0.9, vtailXFrac: 1 + tTailAft(vt, ht) / fL, crownXFrac: 0.5
+  }
+  const lift = (hand) => ({ diameterM: mulV(dims, 'wingspanM', ld), blades: 2, planform: 'propeller', chordFrac: 0.16, pitchDeg: 12, coningDeg: 0, hub: 'compact', hand })
+  return rec({
+    id: 'ent:jump20', title: 'AeroVironment JUMP 20', titleZh: 'JUMP 20 复合翼无人机', representative: 'JUMP 20（数据表 2024-10 版存档）',
+    dims,
+    prov: {
+      'fus.lengthM': { dims: ['lengthM'], derive: 'lengthM − propReach(prop)', fn: 'lengthMinusProp', with: {} },
+      'fus.widthM': mulP('lengthM', fw, 'lengthM × fusWRatio（机身宽 / 全长，示意比例）'),
+      'fus.heightM': mulP('lengthM', fh, 'lengthM × fusWRatio × hRatio（机身高 = 机身宽 × 高宽比，示意比例）'),
+      'wing.spanM': { dim: 'wingspanM' },
+      'wing.rootChordM': mulP('wingspanM', rc, 'wingspanM × rootChordRatio（翼根弦 / 翼展，示意比例）'),
+      'boom.lengthM': mulP('wingspanM', bl, 'wingspanM × boomLRatio（撑杆长 / 翼展，示意比例）'),
+      'boom.diameterM': mulP('wingspanM', bd, 'wingspanM × boomDRatio（撑杆直径 / 翼展，示意比例）'),
+      'lf.diameterM': mulP('wingspanM', ld, 'wingspanM × liftDRatio（升力桨直径 / 翼展，示意比例）'),
+      'lr.diameterM': mulP('wingspanM', ld, 'wingspanM × liftDRatio（升力桨直径 / 翼展，示意比例）'),
+      'prop.diameterM': mulP('lengthM', pd, 'lengthM × propDRatio（牵引桨直径 / 全长，示意比例）'),
+      'vt.heightM': mulP('lengthM', vh, 'lengthM × vtHRatio（垂尾高 / 全长，示意比例）'),
+      'vt.rootChordM': mulP('lengthM', vc, 'lengthM × vtChordRatio（垂尾根弦 / 全长，示意比例）'),
+      'ht.spanM': mulP('wingspanM', hs, 'wingspanM × htSpanRatio（平尾展长 / 翼展，示意比例）'),
+      'ht.rootChordM': mulP('lengthM', hc, 'lengthM × htChordRatio（平尾根弦 / 全长，示意比例）'),
+      'tur.diameterM': mulP('lengthM', td, 'lengthM × turretRatio（光电球径 / 全长，示意比例）')
+    },
+    ops: { operatingAltitudeFt: { value: 17000, source: U.jump20 }, speedKt: { value: 50, source: U.jump20 }, cruiseAltM: null },
+    needsInput: ['cruiseAltitudeFt'],
+    doc: {
+      kind: 'assembly', schema: 1, domain: 'aircraft', name: 'JUMP 20 复合翼无人机', density: {}, massTargetKg: null,
+      comps: [
+        { id: 'fus', type: 'air.fuselage', parent: null, params: fus },
+        { id: 'wing', type: 'air.wing', parent: 'fus', attach: { mode: 'socket', socket: 'wing' }, params: { spanM: dims.wingspanM.value, rootChordM: mulV(dims, 'wingspanM', rc), taper: 0.6, sweepDeg: 0, dihedralDeg: 2, kinkFrac: 0, tcRoot: 0.15, tcTip: 0.12, twistDeg: -2, winglet: 'none', engines: 1, engYFrac: 0.3, flapTracks: 0 }, sym: { op: 'mirrorXZ' } },
+        { id: 'boom', type: 'air.boom', parent: 'wing', attach: { mode: 'socket', socket: 'eng1' }, params: { lengthM: mulV(dims, 'wingspanM', bl), diameterM: mulV(dims, 'wingspanM', bd), fwdFrac: 0.36 } },
+        { id: 'lf', type: 'air.rotor', parent: 'boom', attach: { mode: 'socket', socket: 'fwd' }, params: lift('ccw') },
+        { id: 'lr', type: 'air.rotor', parent: 'boom', attach: { mode: 'socket', socket: 'aft' }, params: lift('cw') },
+        { id: 'vt', type: 'air.vtail', parent: 'fus', attach: { mode: 'socket', socket: 'vtail' }, params: vt },
+        { id: 'ht', type: 'air.htail', parent: 'vt', attach: { mode: 'socket', socket: 'tip' }, params: ht },
+        { id: 'prop', type: 'air.prop', parent: 'fus', attach: { mode: 'socket', socket: 'nose' }, params: prop },
+        { id: 'tur', type: 'air.turret', parent: 'fus', attach: { mode: 'socket', socket: 'chin' }, params: { diameterM: mulV(dims, 'lengthM', td) } }
+      ]
+    }
+  })
+})()
+
+// —— RQ-4B 全球鹰（高空长航时：机头大鼓包内装卫通天线、上单翼、背负涡扇、V 尾）
+//    V 尾展长按全机高闭合（同 MQ-9A）；V 尾与短舱的最后端都不超出机身尾端（全长 = 机身长）
+const rq4 = (() => {
+  const dims = {
+    wingspanM: dim(39.8, 'm', U.rq4, '事实页 130.9 ft'), lengthM: dim(14.5, 'm', U.rq4, '事实页 47.6 ft'), heightM: dim(4.7, 'm', U.rq4, '事实页 15.3 ft'),
+    emptyWeightKg: dim(6781, 'kg', U.rq4), mtowKg: dim(14628, 'kg', U.rq4),
+    ceilingFt: dim(60000, 'ft', U.rq4), speedKt: dim(310, 'kt', U.rq4), thrustLbf: dim(7600, 'lbf', U.rq4, '涡扇发动机推力')
+  }
+  const gc = { gearClearM: 0.75 }
+  const fw = { fusWRatio: 0.095 }, fh = { fusWRatio: 0.095, hRatio: 1.12 }, rc = { rootChordRatio: 0.048 }, hc = { htChordRatio: 0.1 }
+  const ed = { engDRatio: 0.085 }, el = { engLRatio: 0.3 }, ep = { pylonRatio: 0.0015 }
+  const L = dims.lengthM.value
+  const fus = {
+    lengthM: L, widthM: mulV(dims, 'lengthM', fw), heightM: mulV(dims, 'lengthM', fh), noseStyle: 'hale', noseFrac: 0.28, tailFrac: 0.32, tailUpsweep: 0.55,
+    windows: false, doors: false, fairing: false, wingXFrac: 0.4, wingZFrac: -0.85, htailXFrac: 0.85, vtailXFrac: 0.9, crownXFrac: 0.5, aftEngXFrac: 0.8
+  }
+  const eng = { diameterM: mulV(dims, 'lengthM', ed), lengthM: mulV(dims, 'lengthM', el), flatBottom: false, exhaust: 'mixed', pylonHM: mulV(dims, 'lengthM', ep), overhangFrac: 0.5 }
+  // 短舱尾锥距机身尾端 0.04 × 全长；V 尾后缘与尾端齐平（V 尾展长随插座高度变，迭代到不动点）
+  fus.aftEngXFrac = 1 - (1 - eng.overhangFrac) * eng.lengthM / L - 0.04
+  const ht = { rootChordM: mulV(dims, 'lengthM', hc), taper: 0.55, sweepDeg: 30, dihedralDeg: 50, tcRoot: 0.11, tcTip: 0.09 }
+  for (let it = 0; it < 8; it++) {
+    ht.spanM = vtailSpan(dims, gc.gearClearM, fus, ht.dihedralDeg)
+    fus.htailXFrac = 1 + tailAft(ht) / L
+  }
+  return rec({
+    id: 'ent:rq4b', title: 'RQ-4B Global Hawk', titleZh: 'RQ-4B 全球鹰无人机', representative: 'RQ-4B（美国空军事实页 2026-09 存档）',
+    dims,
+    prov: {
+      'fus.lengthM': { dim: 'lengthM' },
+      'fus.widthM': mulP('lengthM', fw, 'lengthM × fusWRatio（机身宽 / 全长，示意比例）'),
+      'fus.heightM': mulP('lengthM', fh, 'lengthM × fusWRatio × hRatio（机身高 = 机身宽 × 高宽比，示意比例）'),
+      'wing.spanM': { dim: 'wingspanM' },
+      'wing.rootChordM': mulP('wingspanM', rc, 'wingspanM × rootChordRatio（翼根弦 / 翼展，示意比例）'),
+      'ht.spanM': { dims: ['heightM'], derive: '2 × (heightM − gearClearM − bDown0 + z(htail 接口)) / tan(ht.dihedralDeg)', fn: 'vtailSpan', with: { ...gc } },
+      'ht.rootChordM': mulP('lengthM', hc, 'lengthM × htChordRatio（V 尾根弦 / 全长，示意比例）'),
+      'eng.diameterM': mulP('lengthM', ed, 'lengthM × engDRatio（短舱最大径 / 全长，示意比例）'),
+      'eng.lengthM': mulP('lengthM', el, 'lengthM × engLRatio（短舱长 / 全长，示意比例）'),
+      'eng.pylonHM': mulP('lengthM', ep, 'lengthM × pylonRatio（挂架净距 / 全长，示意比例）')
+    },
+    ops: { ceilingFt: { value: 60000, source: U.rq4 }, speedKt: { value: 310, source: U.rq4 }, cruiseAltM: null },
+    needsInput: ['cruiseAltitudeFt', 'cruiseSpeedKt'],
+    doc: {
+      kind: 'assembly', schema: 1, domain: 'aircraft', name: 'RQ-4B 全球鹰无人机', density: {}, massTargetKg: null,
+      comps: [
+        { id: 'fus', type: 'air.fuselage', parent: null, params: fus },
+        { id: 'wing', type: 'air.wing', parent: 'fus', attach: { mode: 'socket', socket: 'wing' }, params: { spanM: dims.wingspanM.value, rootChordM: mulV(dims, 'wingspanM', rc), taper: 0.33, sweepDeg: 5, dihedralDeg: 3, kinkFrac: 0, tcRoot: 0.16, tcTip: 0.12, twistDeg: -2, winglet: 'none', engines: 0, flapTracks: 0 }, sym: { op: 'mirrorXZ' } },
+        { id: 'ht', type: 'air.htail', parent: 'fus', attach: { mode: 'socket', socket: 'htail' }, params: ht },
+        { id: 'eng', type: 'air.nacelle', parent: 'fus', attach: { mode: 'socket', socket: 'dorsal' }, params: eng }
+      ]
+    }
+  })
+})()
+
+export const AIR_TEMPLATES = [a320, b737, a330, b777, g650, aw139, astro, jump20, mq9, rq4]

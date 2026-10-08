@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 // ── 星侧太阳侵入的渲染端半截（api.sunOutage.satIntrusion）──
 // ① GRD 树天线键 folder|name → {found, file, cfg}：卫星树与各天线设置由 3D 页持久化在 localStorage('globe3d/settings').grd
@@ -184,6 +184,12 @@ contextBridge.exposeInMainWorld('api', {
     onCloseRequested: (cb) => ipcRenderer.on('linkbudget:closeRequested', cb),
     confirmClose: () => ipcRenderer.invoke('linkbudget:confirmClose')
   },
+  // 带上下文打开计算窗（主窗口右键 / 卫星信息栏「分析」/ 链路视图「导入链路预算」）：kind ∈ linkbudget | ngso | regen | e2e | suntool | rain | ci；
+  // ctx = { sat?, sites?, links? }（主进程清洗成纯数据）。接收端用 onContext 订阅，返回退订函数。
+  tools: {
+    open: (kind, ctx) => ipcRenderer.invoke('tool:open', kind, ctx),
+    onContext: (cb) => { const h = (_e, c) => cb(c); ipcRenderer.on('tool:context', h); return () => ipcRenderer.removeListener('tool:context', h) }
+  },
   // NGSO 链路预算独立窗口的开窗/关窗守卫（计算/几何/导出/城市等能力复用上面的 linkBudget.*）
   ngso: {
     open: () => ipcRenderer.invoke('ngso:open'),
@@ -359,6 +365,11 @@ contextBridge.exposeInMainWorld('api', {
     listConfigs: (ns) => ipcRenderer.invoke('store:config:list', ns),
     listAllConfigs: () => ipcRenderer.invoke('store:config:listAll'),
     saveConfig: (ns, cfg) => ipcRenderer.invoke('store:config:save', { ns, cfg }),
+    // 自动保存：只更新已有配置（查无此项回 { gone:true }，不新建）；patch = { state, name?, nameAuto? }，调用方须给纯数据
+    updateConfigState: (ns, id, patch) => ipcRenderer.invoke('store:config:updateState', { ns, id, ...(patch || {}) }),
+    listVersions: (ns, id) => ipcRenderer.invoke('store:versions:list', { ns, id }),
+    getVersion: (ns, id, verId) => ipcRenderer.invoke('store:versions:get', { ns, id, verId }),
+    addVersion: (ns, id, version) => ipcRenderer.invoke('store:versions:add', { ns, id, version }),
     deleteConfig: (ns, id) => ipcRenderer.invoke('store:config:delete', { ns, id }),
     reorderConfigs: (ns, ids) => ipcRenderer.invoke('store:config:reorder', { ns, ids }),
     // 展开 payload 而不是嵌一层：它常常是渲染端的响应式对象，展开后进 IPC 的是纯数据（结构化克隆过不了 Proxy）
@@ -395,6 +406,15 @@ contextBridge.exposeInMainWorld('api', {
   visAccess: { exportExcel: (payload) => ipcRenderer.invoke('vis:exportAccessExcel', payload) },
   // 覆盖图导出：保存二进制（PNG/PDF）到用户选定路径 / 读取系统字体（PDF 嵌入用：TNR 西文 + 中文面）
   exportFile: (payload) => ipcRenderer.invoke('file:save', payload),
+  // 视频导出（H.264 MP4 / 图片序列）：开会话 → 按位置流式写 / 逐帧写 → 收尾（见 electron/services/videoFile.js）
+  video: {
+    begin: (o) => ipcRenderer.invoke('video:begin', o),
+    write: (token, position, bytes) => ipcRenderer.invoke('video:write', token, position, bytes),
+    frame: (token, index, bytes) => ipcRenderer.invoke('video:frame', token, index, bytes),
+    end: (token, keep) => ipcRenderer.invoke('video:end', token, keep),
+    reveal: (p) => ipcRenderer.invoke('video:reveal', p),
+    openPath: (p) => ipcRenderer.invoke('video:openPath', p)
+  },
   // PFD Mask 生成（ITU-R S.1503）：参数进、XML 文本与统计出；落盘走 exportFile / exportFiles
   pfdMask: { open: () => ipcRenderer.invoke('pfd:open') },
   pfdGenerate: (params) => ipcRenderer.invoke('pfd:generate', params),
@@ -506,6 +526,9 @@ contextBridge.exposeInMainWorld('api', {
   models: {
     open: (o) => ipcRenderer.invoke('modelwb:open', o ? JSON.parse(JSON.stringify(o)) : undefined),
     onTarget: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('modelwb:target', h); return () => ipcRenderer.removeListener('modelwb:target', h) },
+    // 关窗守卫（模型工作台，2026-10-06）：主进程拦下 close 转来此事件；渲染端把草稿 / 待存改动落定后调 confirmClose() 才真关（主进程 3 s 兜底）
+    onCloseRequested: (cb) => { const h = () => cb(); ipcRenderer.on('modelwb:closeRequested', h); return () => ipcRenderer.removeListener('modelwb:closeRequested', h) },
+    confirmClose: () => ipcRenderer.invoke('modelwb:confirmClose'),
     manifest: () => ipcRenderer.invoke('models:manifest'),
     ensure: (o) => ipcRenderer.invoke('models:ensure', o ? { id: o.id, lod: o.lod } : o),
     thumbnail: (id) => ipcRenderer.invoke('models:thumbnail', id),
@@ -516,10 +539,19 @@ contextBridge.exposeInMainWorld('api', {
     openCacheDir: () => ipcRenderer.invoke('models:openCacheDir'),
     refreshManifest: () => ipcRenderer.invoke('models:refreshManifest'),
     pickFiles: () => ipcRenderer.invoke('models:pickFiles'),
+    // 拖进来的文件：用 webUtils 从【真实 File 对象】取本机路径，登记给 readFile / importGlb / importCad 放行；
+    // 返回与 files 一一对应的路径（取不到为 ''）。页面脚本伪造不出带本机路径的 File，所以只能登记用户真拖进来的文件
+    droppedPaths: (files) => {
+      const out = []
+      for (const f of Array.from(files || [])) { let p = ''; try { p = webUtils.getPathForFile(f) || '' } catch { p = '' } out.push(p) }
+      const ok = out.filter(Boolean)
+      return ok.length ? ipcRenderer.invoke('models:allowPaths', ok).then(() => out, () => out) : Promise.resolve(out)
+    },
     readFile: (path) => ipcRenderer.invoke('models:readFile', path),
     importGlb: (o) => ipcRenderer.invoke('models:importGlb', o && o.bytes ? { bytes: o.bytes, name: o.name } : { path: o && o.path }),
     importCad: (o) => ipcRenderer.invoke('models:importCad', { path: o && o.path, token: o && o.token }),
     saveImported: (o) => ipcRenderer.invoke('models:saveImported', { glb: o && o.glb, meta: o && o.meta ? JSON.parse(JSON.stringify(o.meta)) : null }),
+    stkLocate: () => ipcRenderer.invoke('models:stkLocate'),
     scanStk: (o) => ipcRenderer.invoke('models:scanStk', { dir: o && o.dir }),
     pickStkDir: () => ipcRenderer.invoke('models:pickStkDir'),
     importStk: (o) => ipcRenderer.invoke('models:importStk', { dir: o && o.dir, files: o && o.files ? [...o.files] : [] }),

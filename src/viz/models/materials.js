@@ -22,7 +22,8 @@ import * as THREE from 'three'
 //   反射面：通信星的天线反射面多为白色热控漆（碳纤维面板外喷白漆），漫反射为主。
 export const MATERIAL_KEYS = ['mli_gold', 'mli_silver', 'mli_black', 'solar_cell', 'solar_substrate', 'reflector', 'reflector_mesh',
   'aluminum', 'radiator', 'titanium', 'carbon', 'kapton_black', 'white_paint', 'glass', 'dark_metal',
-  'paint_red', 'paint_navy', 'paint_blue', 'paint_green', 'paint_orange', 'paint_yellow', 'paint_grey', 'rubber', 'concrete']
+  'paint_red', 'paint_navy', 'paint_blue', 'paint_green', 'paint_orange', 'paint_yellow', 'paint_grey', 'rubber', 'concrete',
+  'gold_metal', 'sunshield', 'ceramic', 'black_paint', 'radome', 'copper', 'cell_si']
 
 const PRESETS = {
   // ★ 金 / 银箔粗糙度 0.32 / 0.30（DESIGN 写 0.28 / 0.25；W5 一度抬到 0.45）：光滑金属在太阳档里只有镜面方向那一小块亮、
@@ -58,7 +59,19 @@ const PRESETS = {
   paint_yellow:    { phys: false, color: [0.80, 0.60, 0.08], metalness: 0, roughness: 0.55 },
   paint_grey:      { phys: false, color: [0.45, 0.47, 0.50], metalness: 0, roughness: 0.45 },
   rubber:          { phys: false, color: [0.02, 0.02, 0.02], metalness: 0, roughness: 0.9 },
-  concrete:        { phys: false, color: [0.55, 0.54, 0.50], metalness: 0, roughness: 0.95 }
+  concrete:        { phys: false, color: [0.55, 0.54, 0.50], metalness: 0, roughness: 0.95 },
+  // 星上硬件（hardware.mjs）：阿洛丁 / 镀金金属件（略带磨砂）、锗镀黑聚酰亚胺遮阳膜（深灰、膜面清漆层给出微弱金属光泽）、
+  // 氮化硼陶瓷（白、哑光）、消光黑漆（遮光罩 / 喷管 / 喇叭内壁）
+  gold_metal:      { phys: false, color: [0.85, 0.62, 0.28], metalness: 1, roughness: 0.3 },
+  sunshield:       { phys: true, color: [0.027, 0.028, 0.032], metalness: 0.55, roughness: 0.45, clearcoat: 0.6, clearcoatRoughness: 0.25 },
+  ceramic:         { phys: false, color: [0.78, 0.77, 0.74], metalness: 0, roughness: 0.8 },
+  black_paint:     { phys: false, color: [0.025, 0.025, 0.028], metalness: 0, roughness: 0.55 },
+  // 星上天线（antennas.mjs）：天线罩 / 阵面罩（石英布、锗涂层 Kapton 一类白色介质罩，漫反射、比白漆更哑）；裸铜（螺旋阵元、贴片）。
+  // 数值与星座精模定制色同值——精模改走语义键后外观不变
+  radome:          { phys: false, color: [0.80, 0.80, 0.77], metalness: 0, roughness: 0.78 },
+  copper:          { phys: false, color: [0.80, 0.46, 0.28], metalness: 1, roughness: 0.35 },
+  // 硅太阳电池（亮蓝；汇流条由造型画白线，不走电池纹理）。与星座精模定制色同值
+  cell_si:         { phys: false, color: [0.05, 0.11, 0.42], metalness: 0.25, roughness: 0.28 }
 }
 
 // 每种程序纹理一格对应的实际尺寸（米）。电池片：8 列 × 4 行、单片 40 × 80 mm → 0.32 m 见方。
@@ -491,7 +504,7 @@ export function applyDegenerateFallback(root) {
       m.metalness = p.metallic; m.roughness = p.roughness
       if (m.specularIntensity === 0) m.specularIntensity = 1
       m.needsUpdate = true
-      fixed.push(m.name || '（无名）')
+      fixed.push(m.name || '（未命名）')
     }
   }
   return { share: +share.toFixed(4), fixed }
@@ -565,7 +578,7 @@ export function gltfMaterialFallback(json) {
       pbr.roughnessFactor = p.roughness
       delete mat.extensions.KHR_materials_specular
       if (!Object.keys(mat.extensions).length) delete mat.extensions
-      out.degenerate.fixed.push(mat.name || '（无名）')
+      out.degenerate.fixed.push(mat.name || '（未命名）')
     }
   }
   if (out.degenerate.fixed.length) {

@@ -18,10 +18,12 @@ import { DOC_FONT_STACK } from '../shared/lbFont.js'
 export const PNG_SCALE = 6
 
 // 只搬这些属性：全量 cssText 会把上千条声明抄进每个节点，SVG 体积暴涨且栅格化变慢
+// ★ 不搬 font-family：它是屏上无衬线的计算值，逐节点写死会把根节点那条衬线（见 svgToPngBlob）整个盖掉，
+//   导出的图就还是界面字体。不写，各节点从根上继承报告字体。
 const INK = [
   'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width', 'stroke-opacity',
   'stroke-dasharray', 'stroke-dashoffset', 'stroke-linecap', 'stroke-linejoin',
-  'opacity', 'font-family', 'font-size', 'font-weight', 'font-style',
+  'opacity', 'font-size', 'font-weight', 'font-style',
   'letter-spacing', 'text-anchor', 'dominant-baseline'
 ]
 
@@ -103,19 +105,22 @@ export async function svgToPngBlob(svgEl, opt = {}) {
 
 const safeName = (s) => String(s || '图').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
 
-/** 出图并落盘（走通用 file:save 通道，与雨衰 / 链路预算的「出图」同一条路）。 */
+/**
+ * 出图并落盘（走通用 file:save 通道，与雨衰 / 链路预算的「出图」同一条路）。
+ * 返回 file:save 的结果：{ ok:true } / { ok:false, canceled:true } / { ok:false, error }。
+ * ★ file:save 写失败（文件被占用等）不抛、只回 error —— 调用方得看返回值，否则就是「点了没反应」。
+ */
 export async function exportSvgPng(svgEl, name, opt = {}) {
-  if (!exportFile || !svgEl) return false
+  if (!exportFile || !svgEl) return { ok: false, missing: true }
   let blob = null
-  try { blob = await svgToPngBlob(svgEl, opt) } catch (e) { return false }
-  if (!blob) return false
+  try { blob = await svgToPngBlob(svgEl, opt) } catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
+  if (!blob) return { ok: false, error: '出图失败' }
   try {
     const data = new Uint8Array(await blob.arrayBuffer())
-    await exportFile({
+    return await exportFile({
       defaultName: safeName(name) + '.png',
       data,
       filters: [{ name: 'PNG 图片', extensions: ['png'] }]
     })
-    return true
-  } catch (e) { return false }        // 用户取消即可，不打扰
+  } catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
 }

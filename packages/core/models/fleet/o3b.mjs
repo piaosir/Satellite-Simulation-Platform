@@ -31,7 +31,7 @@ const Z = [0, 0, 1]
 function buildGen1(B) {
   const LX = 3.2, WN = 1.7, WZ = 1.0, D = 1.2
   const Fb = frame(P(0, 0, 0), [0, 1, 0], [0, 0, 1], [1, 0, 0])      // 截面在 (Y, Z)，沿 X 挤出
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   prism(g.mb('struct_grey'), Fb, [[-WN / 2, D / 2], [WN / 2, D / 2], [WZ / 2, -D / 2], [-WZ / 2, -D / 2]], -LX / 2, LX / 2)
   prism(g.mb('mli_gold'), Fb, [[-WN / 2 - 0.012, D / 2 + 0.006], [WN / 2 + 0.012, D / 2 + 0.006], [WZ / 2 + 0.012, -D / 2 - 0.012], [-WZ / 2 - 0.012, -D / 2 - 0.012]], -LX / 2 - 0.012, LX / 2 + 0.012)
   // 对地面外缘平板檐（照片）+ 端面两个灰色矩形盒
@@ -74,7 +74,7 @@ function buildGen1(B) {
 // ───────────────────────────── mPOWER（Boeing 702X） ─────────────────────────────
 function buildMpower(B) {
   const h = P(1.1, 0.65, 1.5), ZN = h[2]          // 对地面 2.2（X）× 1.3（Y），深 3.0 m（按堆叠照片估）
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, P(0, 0, 0), h, 0.03)
   skinBox(g, BODY, P(0, 0, 0), h, { '+x': 'mli_black', '-x': 'mli_black', '+y': 'radiator', '-y': 'radiator', '+z': 'mli_black', '-z': 'mli_black' })
   // 背地面中央矩形格栅窗口（功能未知）

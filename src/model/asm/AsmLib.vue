@@ -1,9 +1,10 @@
 <script setup>
 // 装配页组件库（契约 §6.3）：listComponents(文档领域) 按首领域分组（当前领域在前、通用在后）的卡片网格 + 「从模板开始」。
+//   · 卡片 = 库条目（asmLogic.libEntries）：组件本身 + 它的常用型号（ComponentDef.presets，拖入 / 双击即带型号参数）；卡片键 d.key。
 //   · 拖入用 pointer 方案（不用 HTML5 拖放：那条路与整窗文件拖放冲突、拖动中没有 pointermove、修饰键不实时）：
 //     卡片上左键按下、越过 DRAG_START_PX 就交给编辑器 beginDragFromLib（它接管 window 级 move / up / Esc / 滚轮）。
 //   · 双击卡片 = quickAdd（空文档作根；否则接到选中件第一个兼容空闲插座）。
-//   · 缩略图按可见性懒取（IntersectionObserver → wb.componentThumb，串行出图、本机缓存）；未出图前放角色图标。
+//   · 缩略图按可见性懒取（IntersectionObserver → wb.componentThumb(卡片键)，串行出图、本机缓存；型号按型号参数出图）；未出图前放角色图标。
 import { inject, computed, ref, watch, nextTick, onMounted, onBeforeUnmount, onActivated } from 'vue'
 import Icon from '../../components/Icon.vue'
 import { DRAG_START_PX } from '@core/models/asmSnap.mjs'
@@ -21,12 +22,18 @@ const groups = computed(() => libGroups(domain.value, props.q))
 const nComps = computed(() => groups.value.reduce((n, g) => n + g.items.length, 0))
 const editLock = computed(() => ui.posePreview)
 
-// 实体模板：库清单里的 ent 条目（异步加载完才有；没有就整区不出）
+// 「从模板新建」两路来源（卡片单击 = 打开模板签，与库页双击模板、功能区「新建 ▸ 从模板新建」同一行为，2026-10-06 任务书 §3.2）：
+//   · 实体模板（地球站 / 飞机 / 船 / 车）：库清单里的 ent 条目（异步加载完才有）；
+//   · 卫星：内置参数化整星模板（默认卫星 / SSL-1300 / 立方星…）→ 驱动装配件模板签。
+//   模板签是新签（同一模板已开着 = 激活它），不替换当前文档；原样不入库，编辑时自动创建副本。
+//     星座精模（fleet）不是 paramBus spec、拆不出组件，不列；用户另存的参数化件不是模板，仍走库页右键。
+const satTpl = (e) => e.origin === 'template' && !e.fleet && wb.TEMPLATE_IDS.includes(e.templateId)
 const tplGroups = computed(() => {
   const by = new Map()
   for (const e of st.list) {
-    if (e.origin !== 'entTemplate' || !matchQuery(e, props.q)) continue
-    const d = NEW_DOMAINS.includes(e.kind) ? e.kind : 'ground'
+    const ent = e.origin === 'entTemplate'
+    if (!(ent || satTpl(e)) || !matchQuery(e, props.q)) continue
+    const d = !ent ? 'spacecraft' : NEW_DOMAINS.includes(e.kind) ? e.kind : 'ground'
     if (!by.has(d)) by.set(d, [])
     by.get(d).push(e)
   }
@@ -37,6 +44,8 @@ const nTpls = computed(() => tplGroups.value.reduce((n, g) => n + g.items.length
 
 const isOpen = (k) => ui.secOpen['lib-' + k] !== false
 function toggle(k) { ui.secOpen = { ...ui.secOpen, ['lib-' + k]: !isOpen(k) } }
+/** 组内的卡片块：有功能小组（libGroups 的 subs）按小组排，否则一整块（无小标题） */
+const blocksOf = (g) => (g.subs && g.subs.length ? g.subs : [{ key: g.key + '-all', label: '', icon: '', items: g.items }])
 
 // ── 缩略图懒取 ──
 const rootEl = ref(null)
@@ -47,7 +56,7 @@ function observeAll() {
     io = new IntersectionObserver((ents) => {
       for (const en of ents) {
         if (!en.isIntersecting) continue
-        const t = en.target.getAttribute('data-type')
+        const t = en.target.getAttribute('data-ckey')
         if (t) wb.componentThumb(t)
         const id = en.target.getAttribute('data-ent')
         if (id) { const e = wb.byId(id); if (e) wb.requestThumb(e) }
@@ -55,7 +64,7 @@ function observeAll() {
       }
     }, { root: rootEl.value, rootMargin: '160px 0px' })
   }
-  for (const el of rootEl.value.querySelectorAll('[data-type]')) if (!st.compThumbs[el.getAttribute('data-type')]) io.observe(el)
+  for (const el of rootEl.value.querySelectorAll('[data-ckey]')) if (!st.compThumbs[el.getAttribute('data-ckey')]) io.observe(el)
   for (const el of rootEl.value.querySelectorAll('[data-ent]')) if (!st.thumbs[el.getAttribute('data-ent')]) io.observe(el)
 }
 watch([groups, tplGroups, () => ui.secOpen], () => nextTick(observeAll), { deep: false })
@@ -69,10 +78,10 @@ const pressed = ref('')
 let press = null
 function onDown(ev, def) {
   if (ev.button !== 0 || editLock.value) return
-  press = { type: def.type, x: ev.clientX, y: ev.clientY, id: ev.pointerId }
-  pressed.value = def.type
+  press = { type: def.type, params: def.params || null, x: ev.clientX, y: ev.clientY, id: ev.pointerId }
+  pressed.value = def.key
   // 还没过拖动门槛就预热：几何建进缓存、边线 / BVH 插队进 Worker、ghost 材质异步编译——真拖起来第一帧不卡
-  if (typeof asm.prewarm === 'function') asm.prewarm(def.type)
+  if (typeof asm.prewarm === 'function') asm.prewarm(def.type, def.params ? { params: def.params } : undefined)
   window.addEventListener('pointermove', onMove, true)
   window.addEventListener('pointerup', endPress, true)
   window.addEventListener('pointercancel', endPress, true)
@@ -82,11 +91,11 @@ function onMove(ev) {
   if (!press || ev.pointerId !== press.id) return
   const dx = ev.clientX - press.x, dy = ev.clientY - press.y
   if (dx * dx + dy * dy < DRAG_START_PX * DRAG_START_PX) return
-  const type = press.type
+  const type = press.type, params = press.params
   endPress()
   // 选中的文字 / 焦点框别跟着拖（卡片本身 user-select:none，这里防的是搜索框里残留的选区）
   try { window.getSelection() && window.getSelection().removeAllRanges() } catch { /* 无 */ }
-  asm.beginDragFromLib(type, ev.clientX, ev.clientY)
+  asm.beginDragFromLib(type, ev.clientX, ev.clientY, params ? { params } : undefined)
 }
 function endPress() {
   press = null
@@ -96,8 +105,8 @@ function endPress() {
   window.removeEventListener('pointercancel', endPress, true)
   window.removeEventListener('blur', endPress)
 }
-function quick(def) { if (!editLock.value) asm.quickAdd(def.type) }
-function fromTemplate(e) { wb.requestAssembly({ kind: 'template', entId: e.id }) }
+function quick(def) { if (!editLock.value) asm.quickAdd(def.type, def.params || null) }
+function fromTemplate(e) { wb.openInDesign(e.id) }
 const tplTip = (e) => [e.titleZh, e.title && e.title !== e.titleZh ? e.title : '', e.source && e.source.credit, e.source && e.source.url].filter(Boolean).join('\n')
 
 onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
@@ -105,7 +114,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
 
 <template>
   <div ref="rootEl" class="asm-lib">
-    <div v-if="!nComps && !nTpls" class="asm-empty">{{ q ? '没有匹配的组件。' : '还没有组件。' }}</div>
+    <div v-if="!nComps && !nTpls" class="asm-empty">{{ q ? '无匹配组件。' : '暂无组件。' }}</div>
 
     <section v-for="g in groups" :key="g.key" class="asm-lg">
       <div class="sect acc" :title="g.label + '组件'" @click="toggle(g.key)">
@@ -114,15 +123,24 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
         <span class="sect-t">{{ g.label }}</span>
         <span class="cnt" data-i18n-skip>{{ g.items.length }}</span>
       </div>
-      <div v-show="isOpen(g.key)" class="asm-grid">
-        <div v-for="d in g.items" :key="d.type" class="asm-card" :class="{ press: pressed === d.type, lock: editLock }" :data-type="d.type"
-             :title="editLock ? '初值姿态下不可编辑' : compTip(d)" draggable="false"
-             @pointerdown="onDown($event, d)" @dblclick="quick(d)" @dragstart.prevent>
-          <div class="asm-card-img">
-            <img v-if="st.compThumbs[d.type]" :src="st.compThumbs[d.type]" alt="" draggable="false" decoding="async" />
-            <Icon v-else class="asm-card-ph" :name="roleIcon(d.role)" :size="26" :stroke-width="1.2" />
+      <div v-show="isOpen(g.key)" class="asm-blocks">
+        <!-- 卫星组按功能分小组（结构与机构 / 电源 / 天线 / 有效载荷 / 推进 / 姿轨控 / 热控）；其余领域一整块 -->
+        <div v-for="b in blocksOf(g)" :key="b.key" class="asm-tg-grp">
+          <div v-if="b.label" class="asm-tg-h acc" @click="toggle(b.key)">
+            <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen(b.key) }" :size="11" />
+            <Icon :name="b.icon" :size="12" /><span>{{ b.label }}</span><span class="cnt" data-i18n-skip>{{ b.items.length }}</span>
           </div>
-          <div class="asm-card-name" data-i18n-skip>{{ d.titleZh || d.title }}</div>
+          <div v-show="!b.label || isOpen(b.key)" class="asm-grid">
+            <div v-for="d in b.items" :key="d.key" class="asm-card" :class="{ press: pressed === d.key, lock: editLock }" :data-ckey="d.key" :data-type="d.type"
+                 :title="editLock ? '初值姿态下不可编辑' : compTip(d)" draggable="false"
+                 @pointerdown="onDown($event, d)" @dblclick="quick(d)" @dragstart.prevent>
+              <div class="asm-card-img">
+                <img v-if="st.compThumbs[d.key]" :src="st.compThumbs[d.key]" alt="" draggable="false" decoding="async" />
+                <Icon v-else class="asm-card-ph" :name="roleIcon(d.role)" :size="26" :stroke-width="1.2" />
+              </div>
+              <div class="asm-card-name">{{ d.titleZh || d.title }}</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -131,7 +149,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
       <div class="sect acc" @click="toggle('tpl')">
         <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen('tpl') }" :size="12" />
         <Icon name="layers" :size="13" />
-        <span class="sect-t">从模板开始</span>
+        <span class="sect-t">从模板新建</span>
         <span class="cnt" data-i18n-skip>{{ nTpls }}</span>
       </div>
       <template v-if="isOpen('tpl')">
@@ -187,4 +205,8 @@ html:not([data-theme='dark']) .asm-card-img img { filter: drop-shadow(0 0 0.6px 
 .asm-tg-grp { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
 .asm-tg-h { display: flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); padding: 2px 0; }
 .asm-tg-h .app-icon { color: var(--text-faint); }
+.asm-blocks { display: flex; flex-direction: column; gap: 6px; }
+.asm-tg-h.acc { cursor: pointer; user-select: none; margin-inline: -4px; padding: 2px 4px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
+.asm-tg-h.acc:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.asm-tg-h .cnt { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 </style>

@@ -10,7 +10,8 @@
 //   { id, kind:'export'（缺省）, doc, base:{id, name}, thumb?:number（边长，0 / 缺 = 不出） }
 //     → { id, ok:true, glb:ArrayBuffer（transfer）, satsimJson, meta, spec, thumb:ArrayBuffer|null, thumbType, thumbErr? } | { id, ok:false, code, error }
 //   { id, kind:'thumbAsm', doc, size } → { id, ok:true, thumb, thumbType } | { id, ok:false, code, error }
-//   { id, kind:'thumbComp', type, size, haveSig? } → { id, ok:true, sig, same?:true, thumb?, thumbType? } | { id, ok:false, ... }
+//   { id, kind:'thumbComp', type, size, haveSig?, params? } → { id, ok:true, sig, same?:true, thumb?, thumbType? } | { id, ok:false, ... }
+//     （params = 常用型号卡片的型号参数；缺 = 缺省参数）
 //   { id, kind:'thumbParam', spec, size } → { id, ok:true, thumb, thumbType } | { id, ok:false, code, error }（参数化模板卡片）
 //   { id, kind:'densKeys', domain } → { id, ok:true, keys:string[] }（本领域组件缺省参数生成时读到的密度表键：属性面板密度节用，不在主线程把整个领域生成一遍）
 //     （haveSig = 主线程本机缓存里那张的几何签名：一样就不出图，只回 same）
@@ -82,7 +83,7 @@ async function doThumbAsm(d) {
 async function doThumbComp(d) {
   const { id, type, size, haveSig } = d
   let r
-  try { r = buildComponent(type, {}) } catch (e) { self.postMessage({ id, ok: false, code: 'build', error: errText(e) }); return }
+  try { r = buildComponent(type, d.params && typeof d.params === 'object' ? d.params : {}) } catch (e) { self.postMessage({ id, ok: false, code: 'build', error: errText(e) }); return }
   const sig = compSig(r)
   if (haveSig && haveSig === sig) { self.postMessage({ id, ok: true, sig, same: true }); return }
   // 卫星件局部 −Z 贴父面、几何朝 +Z 长（显示系 +Z 朝下）：出图时绕 X 转 180°，一律「立着」拍；地面 / 飞机 / 船 / 车件本来就朝上长

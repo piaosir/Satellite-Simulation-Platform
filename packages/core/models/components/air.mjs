@@ -1,7 +1,7 @@
 // 飞机领域装配组件（三期契约 DESIGN3 §1 P1b、E5、E13；A3 规格 §4）。
 //
 // 纯 ESM、零 three 依赖、node 可测、确定性（同参数同 IR 字节；无随机数 / 时钟）。几何按真实结构比例参数化：
-//   air.fuselage  机身：超椭圆截面放样（钝圆 / 尖 / 无人机卫通鼓包三种机头、机头下垂、上翘尾锥、APU 排气口），
+//   air.fuselage  机身：超椭圆截面放样（钝圆 / 尖 / 无人机卫通鼓包 / 牵引式发动机罩 / 高空长航时大鼓包五种机头、机头下垂、上翘尾锥、APU 排气口），
 //                 贴皮的风挡 / 舷窗带 / 舱门线（贴机身解析面，不是平板），翼身整流罩；根件，发 datum 挂点
 //   air.wing      单侧机翼：NACA 翼型放样（1/4 弦后掠、上反、梢根比、内段后缘平直的转折、线性扭转、弯度），
 //                 融合式 / 鲨鳍 / 斜削翼梢，襟翼滑轨整流罩；左翼由镜像钩子生成（整体 y 取反，逐位对称）
@@ -10,6 +10,8 @@
 //   air.prop      螺旋桨：椭圆整流锥 + 扭转桨叶（按 0.75R 桨距角定几何螺距），关节 spin
 //   air.radome    机载卫通天线罩：泪滴平面 × 低矮穹顶（底面可随机身圆柱下弯），罩内方位俯仰天线（关节 gimbal、挂点 boresight）
 //   air.turret    光电球：吊挂座 + 方位筒 + 叉臂 + 球 + 窗口（关节 gimbal、挂点 boresight）
+//   旋翼机与垂直起降的四件（air.rotor 旋翼、air.heli 直升机机身、air.mrbody 多旋翼机体、air.boom 旋翼撑杆）在 rotorcraft.mjs，
+//   这里只按组件库顺序排进 AIR_COMPONENTS。
 //
 // ★ 局部坐标 = 飞机本体 FRD（+X 机头、+Y 右翼、+Z 向下；E5，assembly.mjs DOMAIN_FRAMES.aircraft），组件口径见 shapeKit.mjs 文件头：
 //   机身原点 = 机身轴线的半长处（机身参考点，挂点 datum）；机翼 / 平尾原点 = 中线处翼根前缘，横向对齐（latMount n = −Y）
@@ -24,6 +26,10 @@
 //   派生件 = 参数翻转后的逐位镜像（与机翼 side 钩子同一套数学）。螺旋桨桨叶带扭转、不声明对称面。
 // ★ 缺省参数一律示意值（source:'illustrative'，取整数量级，口径进悬停 title）；只有卫通罩 GAT-5530 预设带出处（厂家数据表）。
 //   内置目录不带相关型号（用户 2026-09-24 定），这里的缺省与预设都不指向那些型号。
+// ★ 安装基面 / 接口收件清单（2026-10 §3.3.1 核对结论，本轮无收紧）：机身十个接口全是专用（翼根 / 平尾 / 垂尾 / 腹鳍 / 尾吊 / 尾锥 /
+//   背部罩 / 颔部光电球 / 机头牵引螺旋桨 / 背负短舱）、四段局部弧安装面（full = false）照常可装；机翼发动机挂点收短舱与旋翼撑杆、
+//   翼尖只收基本体；垂尾 top 只收罩；平尾 / 短舱 / 螺旋桨 / 机载罩 / 光电球只有自身安装接口、没有面。
+//   机头接口（n = +X）装螺旋桨是牵引式（桨在机头前方，件绕 Z 转 180°）；背负接口（n = −Z）装短舱是倒扣在机身上方（件绕 X 转 180°）。
 //
 // 导出：
 //   AIR_COMPONENTS     组件定义（登记顺序即组件库卡片顺序）
@@ -38,6 +44,7 @@ import {
   solidCompItems, shellMass, apLocal, put, putFramed, stage, datumAp, matOr, smooth01, mirrorCopyY, scaleMass
 } from './shapeKit.mjs'
 import { STAGE, gimbalFrame, azStage } from './ground.mjs'
+import { ROTORCRAFT } from './rotorcraft.mjs'
 
 // ───────────────────────────── 常量 / 预设 ─────────────────────────────
 
@@ -123,20 +130,28 @@ function lowerAt(st, xc) {
 const NOSE = Object.freeze({
   airliner: Object.freeze({ uE: 1.8, uP: 0.75, dE: 2.3, dP: 0.5, wE: 2.1, wP: 0.55, droop: 0.25 }),
   bizjet: Object.freeze({ uE: 1.7, uP: 0.85, dE: 2.0, dP: 0.62, wE: 1.9, wP: 0.62, droop: 0.12 }),
-  uav: Object.freeze({ uE: 2.0, uP: 0.5, dE: 2.0, dP: 0.55, wE: 2.0, wP: 0.5, droop: 0.05 })
+  uav: Object.freeze({ uE: 2.0, uP: 0.5, dE: 2.0, dP: 0.55, wE: 2.0, wP: 0.5, droop: 0.05 }),
+  // 牵引式发动机罩：三条母线都收到 tip × 等直段（不收成尖），前端是装螺旋桨的平面圆盘
+  pod: Object.freeze({ uE: 2.0, uP: 0.5, dE: 2.0, dP: 0.5, wE: 2.0, wP: 0.5, droop: 0, tip: 0.32 }),
+  hale: Object.freeze({ uE: 2.0, uP: 0.5, dE: 2.0, dP: 0.5, wE: 2.0, wP: 0.5, droop: 0.05 })
 })
 /** 无人机机头上部卫通鼓包（机头段 s ∈ [0,1]，s = 1 处归零与等直段相接）。 */
 const uavBump = (s) => 0.45 * (Math.exp(-(((s - 0.55) / 0.25) ** 2)) - Math.exp(-((0.45 / 0.25) ** 2)) * s * s * s)
+/** 高空长航时无人机机头大鼓包（罩内大口径卫通天线；同上，s = 1 处归零）。 */
+const haleBump = (s) => 0.85 * (Math.exp(-(((s - 0.62) / 0.3) ** 2)) - Math.exp(-((0.38 / 0.3) ** 2)) * s * s * s)
+const NOSE_BUMP = Object.freeze({ uav: uavBump, hale: haleBump })
+/** 无人机机头（无风挡 / 舷窗 / 舱门线）。 */
+const UNMANNED = Object.freeze(['uav', 'pod', 'hale'])
 
 /** 机身几何：截面函数 sec(x) → {a 半宽, bUp 上半高, bDown 下半高, zc 截面中心 z}。 */
 function fusGeom(p) {
   const L = p.lengthM, W = p.widthM, H = auto(p.heightM, 1.05 * W), a0 = W / 2, b0 = H / 2
   const Ln = p.noseFrac * L, Lt = p.tailFrac * L, xN = L / 2 - Ln, xT = -L / 2 + Lt
-  const ns = NOSE[p.noseStyle] || NOSE.airliner, uav = p.noseStyle === 'uav', upS = p.tailUpsweep
+  const ns = NOSE[p.noseStyle] || NOSE.airliner, bump = NOSE_BUMP[p.noseStyle] || null, tip = ns.tip || 0, upS = p.tailUpsweep
   const sec = (x) => {
     if (x > xN) {
-      const s = clampN((L / 2 - x) / Ln, 0, 1), k = (e, q) => (1 - (1 - s) ** e) ** q
-      return { a: a0 * k(ns.wE, ns.wP), bUp: b0 * k(ns.uE, ns.uP) * (uav ? 1 + uavBump(s) : 1), bDown: b0 * k(ns.dE, ns.dP), zc: ns.droop * b0 * (1 - s) ** 2 }
+      const s = clampN((L / 2 - x) / Ln, 0, 1), k = (e, q) => tip + (1 - tip) * (1 - (1 - s) ** e) ** q
+      return { a: a0 * k(ns.wE, ns.wP), bUp: b0 * k(ns.uE, ns.uP) * (bump ? 1 + bump(s) : 1), bDown: b0 * k(ns.dE, ns.dP), zc: ns.droop * b0 * (1 - s) ** 2 }
     }
     if (x < xT) {
       const t = clampN((xT - x) / Lt, 0, 1), q = 1 - 0.92 * t ** 1.6
@@ -146,7 +161,7 @@ function fusGeom(p) {
   }
   const topZ = (x) => { const s = sec(x); return s.zc - s.bUp }
   const bellyZ = (x) => { const s = sec(x); return s.zc + s.bDown }
-  return { L, W, H, a0, b0, Ln, Lt, xN, xT, sec, topZ, bellyZ }
+  return { L, W, H, a0, b0, Ln, Lt, xN, xT, tip, sec, topZ, bellyZ }
 }
 /** 机身解析面上的点（θ 自顶 −Z 起向 +Y 转；上下半椭圆，与 superRing(e = 2) 同式）。 */
 const fusP = (g, x, th) => { const s = g.sec(x), c = Math.cos(th); return [x, s.a * Math.sin(th), s.zc - (c >= 0 ? s.bUp : s.bDown) * c] }
@@ -235,13 +250,14 @@ function fuselageFaces(g) {
   }
   const top = arc(b0, a0), side = arc(a0, b0)
   // 圆心 = 机身轴 + ref·c（c = A − ρ）：u1 = 0 处的面点 = ref·(c + ρ) = ref·A，恰是椭圆顶点
-  const face = (id, ref, a) => ({ id, kind: 'cyl', origin: [z0(xm), z0(ref[1] * a.c), z0(ref[2] * a.c)], axis: [1, 0, 0], ref, radius: a.rho, halfU, halfV: a.halfV })
+  // 四段都是局部弧（半角 ≤ 90°）：full = false，面内夹紧不回绕（gizmo / 推断越过弧端不会跳到对侧）
+  const face = (id, ref, a) => ({ id, kind: 'cyl', origin: [z0(xm), z0(ref[1] * a.c), z0(ref[2] * a.c)], axis: [1, 0, 0], ref, radius: a.rho, halfU, halfV: a.halfV, full: false })
   return [face('skin', [0, 0, -1], top), face('belly', [0, 0, 1], top), face('sideR', [0, 1, 0], side), face('sideL', [0, -1, 0], side)]
 }
 
 /** 舱门位置与尺寸（按机身尺度推；右侧）。 */
 function fusDoors(g, p) {
-  if (!p.doors || p.noseStyle === 'uav') return []
+  if (!p.doors || UNMANNED.includes(p.noseStyle)) return []
   const biz = p.noseStyle === 'bizjet', sc = biz ? clampN(g.W / 2.8, 0.7, 1.2) : clampN(g.W / 3.95, 0.6, 1.2)
   const w = (biz ? 0.9 : 0.85) * sc, h = (biz ? 1.6 : 1.85) * sc, zf = (biz ? 0.42 : 0.35) * g.b0
   const x1 = g.xN - (biz ? 0.55 : 1.1) * sc, x2 = g.xT - 0.3 * g.Lt
@@ -255,7 +271,7 @@ const fuselage = {
     lengthM: num(38, 'm', '机身长', { gt: 2, max: 100, title: '机头尖到尾锥端；模板取全机长' }),
     widthM: num(3.9, 'm', '机身宽', { gt: 0.3, max: 10, title: '等直段外廓宽' }),
     heightM: num(null, 'm', '机身高', { nullable: true, gt: 0.3, max: 12, title: '等直段外廓高；留空 = 宽 × 1.05' }),
-    noseStyle: enm('airliner', ['airliner', 'bizjet', 'uav'], '机头', { title: 'airliner = 钝圆机头 + 风挡；bizjet = 尖机头；uav = 机头上部卫通鼓包、无舷窗' }),
+    noseStyle: enm('airliner', ['airliner', 'bizjet', 'uav', 'pod', 'hale'], '机头', { title: 'airliner = 钝圆机头 + 风挡；bizjet = 尖机头；uav = 机头上部卫通鼓包、无舷窗；pod = 牵引式发动机罩（前端装螺旋桨）；hale = 高空长航时大鼓包（罩内大口径卫通天线）' }),
     noseFrac: num(0.1, '', '机头段', { min: 0.04, max: 0.3, title: '机头段长 / 机身长' }),
     tailFrac: num(0.27, '', '尾锥段', { min: 0.1, max: 0.45, title: '尾锥段长 / 机身长' }),
     tailUpsweep: num(0.85, '', '尾部上翘', { min: 0, max: 1, title: '1 = 顶线平直、收缩全在机腹；0 = 上下对称收缩' }),
@@ -267,11 +283,11 @@ const fuselage = {
     wingZFrac: num(0.3, '', '机翼高低', { min: -0.9, max: 0.9, title: '翼根相对机身轴 / 半机身高；正 = 下单翼' }),
     htailXFrac: num(0.85, '', '平尾位置', { min: 0.5, max: 1, title: '平尾根前缘距机头 / 机身长' }),
     vtailXFrac: num(0.78, '', '垂尾位置', { min: 0.5, max: 1, title: '垂尾根前缘距机头 / 机身长' }),
-    crownXFrac: num(0.45, '', '背部天线位置', { min: 0.1, max: 0.9, title: '背部插座距机头 / 机身长' }),
-    aftEngXFrac: num(0.78, '', '尾吊发动机位置', { min: 0.5, max: 0.95, title: '尾吊短舱插座距机头 / 机身长' }),
+    crownXFrac: num(0.45, '', '背部天线位置', { min: 0.1, max: 0.9, title: '背部接口距机头距离 / 机身长' }),
+    aftEngXFrac: num(0.78, '', '尾部发动机位置', { min: 0.5, max: 0.95, title: '尾吊 / 背负短舱接口距机头距离 / 机身长' }),
     aftEngZFrac: num(-0.2, '', '尾吊发动机高低', { min: -1, max: 1, title: '相对该截面中心 / 半高；正 = 下' }),
     arealKgM2: num(40, 'kg/m²', '结构面密度', { gt: 0, max: 500, title: '蒙皮 + 框桁 + 系统按表面积折算' }),
-    massKg: num(null, 'kg', '机身质量', { nullable: true, gt: 0, title: '留空按面密度；装配件给目标质量时由它吃余量' }),
+    massKg: num(null, 'kg', '机身质量', { nullable: true, gt: 0, title: '留空按面密度估算；装配件指定目标质量时由其承担质量差额' }),
     seg: int(48, '周向分段', { min: 16, max: 128 })
   },
   validate: (p) => (p.noseFrac + p.tailFrac < 0.9 ? [] : ['机头段与尾锥段过长']),
@@ -290,7 +306,9 @@ const fuselage = {
       latSocket('aftEng', [xe, ye, ze], sz, ACC('air.nacelle')),
       sock('tail', [-L / 2, 0, g.sec(-L / 2).zc], [-1, 0, 0], [0, 0, -1], Math.max(0.1, 0.1 * g.W), 90, ACC('air.prop')),
       sock('crown', [xc, 0, g.topZ(xc)], [0, 0, -1], [1, 0, 0], sz, 90, ACC('air.radome', 'veh.cotm')),
-      sock('chin', [xk, 0, g.bellyZ(xk)], [0, 0, 1], [1, 0, 0], sz, 90, ACC('air.turret'))
+      sock('chin', [xk, 0, g.bellyZ(xk)], [0, 0, 1], [1, 0, 0], sz, 90, ACC('air.turret')),
+      sock('nose', [L / 2, 0, g.sec(L / 2).zc], [1, 0, 0], [0, 0, -1], Math.max(0.05, g.tip ? 2 * g.tip * g.a0 : 0.1 * g.W), 90, ACC('air.prop')),
+      sock('dorsal', [xe, 0, g.topZ(xe)], [0, 0, -1], [1, 0, 0], sz, 90, ACC('air.nacelle'))
     ]
   },
   faces: (p) => fuselageFaces(fusGeom(p)),
@@ -305,8 +323,13 @@ const fuselage = {
     for (let j = 0; j < 14; j++) xs.push(g.xT - (j / 13) ** 0.9 * g.Lt)
     const skin = new MB()
     const lf = loft(skin, xs.map((x) => { const s = g.sec(x); return { c: [x, 0, s.zc], ring: superRing(seg, s.a, s.bUp, s.bDown, 2) } }))
-    for (let j = 0; j < seg; j++) { const q = 3 * (lf.v0 + j); skin.n[q] = 1; skin.n[q + 1] = 0; skin.n[q + 2] = 0 }   // 机头尖极点法向 +X
-    const skinIt = put(ctx, 'skin', 'bus', part, p.noseStyle === 'uav' ? WING_PAINT : 'white_paint', skin)
+    // 机头尖极点法向 +X；牵引式发动机罩前端不收尖，另封一块前端面（螺旋桨整流锥盖在上面）
+    if (!g.tip) for (let j = 0; j < seg; j++) { const q = 3 * (lf.v0 + j); skin.n[q] = 1; skin.n[q + 1] = 0; skin.n[q + 2] = 0 }
+    const unmanned = UNMANNED.includes(p.noseStyle)
+    const skinIt = put(ctx, 'skin', 'bus', part, unmanned && p.noseStyle !== 'pod' ? WING_PAINT : 'white_paint', skin)
+    const nm = new MB()
+    if (g.tip) cap(nm, lf.G[0], [1, 0, 0], [xs[0], 0, g.sec(xs[0]).zc])
+    const noseIt = put(ctx, 'nosecap', 'bus', part, 'dark_metal', nm)
     // 尾端 APU 排气口封口（深色）
     const cm = new MB(), last = lf.G[lf.G.length - 1], xe = xs[xs.length - 1]
     cap(cm, last, [-1, 0, 0], [xe, 0, g.sec(xe).zc])
@@ -315,7 +338,7 @@ const fuselage = {
     const wm = new MB(), dm = new MB(), lift = 0.004 + 0.0005 * g.W
     for (const q of WINDSHIELD[p.noseStyle] || []) skinQuad4(wm, g, q, 1.5 * lift)
     const doors = fusDoors(g, p)
-    if (p.windows && p.noseStyle !== 'uav') {
+    if (p.windows && !unmanned) {
       const biz = p.noseStyle === 'bizjet', sc = biz ? clampN(g.W / 2.8, 0.7, 1.2) : clampN(g.W / 3.95, 0.6, 1.2)
       const hw = (biz ? 0.26 : 0.115) * sc, hh = (biz ? 0.19 : 0.165) * sc, zw = (biz ? -0.08 : -0.2) * g.b0
       const outline = roundRect(hw, hh, Math.min(hw, hh) * (biz ? 0.95 : 0.6), 3)
@@ -351,7 +374,7 @@ const fuselage = {
       put(ctx, 'fairing', 'other', { id: 'fairing', name: '翼身整流罩', role: 'other' }, 'white_paint', fm)
     }
     // —— 质量：蒙皮按面密度；给了总量就按闭合体积分布
-    if (p.massKg !== null && p.massKg > 0) solidCompItems(ctx, 'fuselage', [skinIt, capIt], 1, p.massKg)
+    if (p.massKg !== null && p.massKg > 0) solidCompItems(ctx, 'fuselage', [skinIt, capIt, noseIt].filter(Boolean), 1, p.massKg)
     else shellMass(ctx, 'fuselage', skinIt, p.arealKgM2)
     datumAp(ctx)
     return ctx
@@ -435,7 +458,7 @@ const wing = {
   type: 'air.wing', domain: ['aircraft'], title: 'Wing', titleZh: '机翼', role: 'other',
   params: {
     side: enm('right', ['right', 'left'], '侧别', { title: '左翼由镜像生成' }),
-    spanM: num(36, 'm', '翼展', { gt: 1, max: 100, title: '两翼尖间距（含翼梢小翼）；本件造单侧' }),
+    spanM: num(36, 'm', '翼展', { gt: 1, max: 100, title: '两翼尖间距（含翼梢小翼）；本组件生成单侧机翼' }),
     rootChordM: num(null, 'm', '翼根弦长', { nullable: true, gt: 0, title: '机身中线处；留空 = 0.2 × 翼展' }),
     taper: num(0.24, '', '梢根比', { min: 0.05, max: 1 }),
     sweepDeg: num(25, '°', '后掠角', { min: -10, max: 60, title: '外段 1/4 弦线' }),
@@ -457,7 +480,7 @@ const wing = {
   },
   validate: (p) => {
     const g = wingGeom(p), e = []
-    if (p.engines === 2 && !(p.engYFrac < p.eng2YFrac)) e.push('发动机展向位置顺序不对')
+    if (p.engines === 2 && !(p.engYFrac < p.eng2YFrac)) e.push('发动机展向位置顺序错误')
     if (g.Hw >= 0.3 * g.b) e.push('小翼过高')
     if (!(g.cK > 0.05 * g.cR)) e.push('转折处弦长过小')
     if (!(g.yR < 0.9 * g.yTip)) e.push('翼根外露过大')
@@ -470,7 +493,7 @@ const wing = {
     const eys = p.engines >= 1 ? [p.engYFrac * g.b, ...(p.engines === 2 ? [p.eng2YFrac * g.b] : [])] : []
     eys.forEach((y, i) => {
       const s = g.st(y), q = lowerAt(s, 0.12)
-      out.push(sock(`eng${i + 1}`, [q[0], sg * q[1], q[2]], [0, 0, 1], [1, 0, 0], Math.max(0.1, 0.2 * s.c), 90, ACC('air.nacelle')))
+      out.push(sock(`eng${i + 1}`, [q[0], sg * q[1], q[2]], [0, 0, 1], [1, 0, 0], Math.max(0.1, 0.2 * s.c), 90, ACC('air.nacelle', 'air.boom')))
     })
     const t = g.st(g.yTip), tc = add(t.le, scl(secFrame(t.s, t.tw).ch, 0.5 * t.c))
     out.push(sock('tip', [tc[0], sg * tc[1], tc[2]], [0, sg, 0], [1, 0, 0], Math.max(0.05, 0.3 * t.c), 90, ACC()))
@@ -520,7 +543,7 @@ const htail = {
     rootChordM: num(null, 'm', '根弦长', { nullable: true, gt: 0, title: '中线处；留空 = 0.28 × 展长' }),
     taper: num(0.3, '', '梢根比', { min: 0.05, max: 1 }),
     sweepDeg: num(29, '°', '后掠角', { min: -10, max: 60, title: '1/4 弦线' }),
-    dihedralDeg: num(6, '°', '上反角', { min: -15, max: 60, title: 'V 尾填 30–50' }),
+    dihedralDeg: num(6, '°', '上反角', { min: -15, max: 60, title: 'V 形尾翼取 30–50' }),
     tcRoot: num(0.11, '', '根部相对厚度', { min: 0.04, max: 0.25 }),
     tcTip: num(0.09, '', '梢部相对厚度', { min: 0.04, max: 0.25 }),
     arealKgM2: num(30, 'kg/m²', '结构面密度', { gt: 0, max: 600, title: '按平面投影面积折算' }),
@@ -804,7 +827,7 @@ function rdmDims(p) {
 const radome = {
   type: 'air.radome', domain: ['aircraft'], title: 'Satcom radome', titleZh: '机载卫通罩', role: 'other',
   params: {
-    model: enm('gat5530', ['gat5530', 'custom'], '型号', { source: GAT5530_URL, title: 'gat5530 = Viasat GAT-5530（罩 235 × 107 × 32 cm，扫掠体积 Ø99.7 × 28.7 cm）；custom = 按下面尺寸' }),
+    model: enm('gat5530', ['gat5530', 'custom'], '型号', { source: GAT5530_URL, title: 'gat5530 = Viasat GAT-5530（罩 235 × 107 × 32 cm，扫掠体积 Ø99.7 × 28.7 cm）；custom = 按以下尺寸' }),
     lengthM: num(2.35, 'm', '长', { gt: 0, max: 10, source: GAT5530_URL, title: '型号 custom 时生效' }),
     widthM: num(1.07, 'm', '宽', { gt: 0, max: 5, source: GAT5530_URL, title: '型号 custom 时生效' }),
     heightM: num(0.32, 'm', '高', { gt: 0, max: 3, source: GAT5530_URL, title: '型号 custom 时生效' }),
@@ -921,4 +944,4 @@ const turret = {
   }
 }
 
-export const AIR_COMPONENTS = Object.freeze([fuselage, wing, htail, vtail, nacelle, prop, radome, turret])
+export const AIR_COMPONENTS = Object.freeze([fuselage, ROTORCRAFT.heli, ROTORCRAFT.mrbody, wing, htail, vtail, ROTORCRAFT.boom, nacelle, prop, ROTORCRAFT.rotor, radome, turret])

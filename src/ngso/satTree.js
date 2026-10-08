@@ -11,6 +11,8 @@
 //   「自动最差工况」两种模式，见各窗口的「几何」开关）。GEO 窗口的方向图取值不受影响（口径正确），
 //   仍走 src/linkbudget/grdParam.js + src/shared/lbGrdImport.js。
 
+import { withTreeEpoch } from '../shared/treeOrbitEpoch.js'
+
 const GEO_ALT = 35786   // GEO 标称高度（km），与 useGrdCoverage 预置星一致
 
 /**
@@ -38,7 +40,8 @@ export function loadSatTree() {
       live: !!lp,
       // 轨道来源（经典六根数 / OMM / NORAD 号）：供链路预算按真实轨道做 SGP4 互视最差几何；
       // 无轨道信息的星（如 GEO 预置）退化为按星下点高度作静止几何（见各窗口的 treeNodeOrbit）。
-      noradId: s.noradId || null, kind: s.kind || '', elements: s.elements || null, omm: s.omm || null
+      // 根数的历元（elements.epoch）在这里规范一次：3D 页还没迁移的旧节点按旧数据常量补，读的各窗口拿到的都是带 Z 的串
+      noradId: s.noradId || null, kind: s.kind || '', elements: s.elements ? withTreeEpoch(s.elements) : null, omm: s.omm || null
     }
   })
   return { sats }

@@ -71,11 +71,14 @@ const chartData = computed(() => {
 })
 const chartRef = ref(null)
 const expMsg = ref('')
+const expBad = ref(false)
+function setExp(x) { const s = ana.exportState(x); expMsg.value = s.msg; expBad.value = s.bad }
 async function exportPng() {
   if (!chartRef.value || !res.value) return
-  const blob = await chartRef.value.exportPng({ scale: 4, title: `${S.label} · 太阳翼功率` })
-  const x = await ana.exportBlob(`${S.label || 'sat'}_太阳翼功率`, blob, 'png', 'PNG')
-  expMsg.value = x && x.ok ? '已导出。' : ''
+  let x
+  try { x = await ana.exportBlob(`${S.label || 'sat'}_太阳翼功率`, await chartRef.value.exportPng({ scale: 4, title: `${S.label} · 太阳翼功率` }), 'png', 'PNG') }
+  catch (e) { x = { ok: false, error: (e && e.message) || String(e) } }
+  setExp(x)
 }
 async function exportXlsx() {
   const r = res.value
@@ -92,11 +95,11 @@ async function exportXlsx() {
   const x = await ana.exportTable({
     sheets: [
       { name: '功率', cols, rows },
-      { name: '日均', cols: [{ key: 'd', label: '日期（UTC）' }, { key: 'mean', label: '日均', unit: 'W', num: true }, { key: 'min', label: '最小', unit: 'W', num: true }, { key: 'max', label: '最大', unit: 'W', num: true }, { key: 'cov', label: '样本覆盖', unit: '%', num: true }], rows: daily }
+      { name: '日均', cols: [{ key: 'd', label: '日期（UTC）' }, { key: 'mean', label: '日均', unit: 'W', num: true }, { key: 'min', label: '最小', unit: 'W', num: true }, { key: 'max', label: '最大', unit: 'W', num: true }, { key: 'cov', label: '样本覆盖率', unit: '%', num: true }], rows: daily }
     ],
     defaultName: `${S.label || 'sat'}_太阳翼功率.xlsx`, title: `${S.label} · 太阳翼功率`
   })
-  expMsg.value = x && x.ok ? '已导出。' : ''
+  setExp(x)
 }
 const canXlsx = computed(() => !!(ana.api && ana.api.models && typeof ana.api.models.exportTable === 'function'))
 const f = (v, k = 5) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k))
@@ -105,28 +108,30 @@ const f = (v, k = 5) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
 <template>
   <MdSec id="a-power" title="太阳翼功率" :summary="res ? f(res.p.meanW) + ' W' : ''" tip="W = S₀·(1 AU / R)²·A·η·cos⁺θ·e，S₀ = 1361 W/m²（IAU 2015 B3）；相对值 = Σ Aη·cos⁺θ·e / Σ Aη；地影 = 圆锥 + 半影（eclipseFactor）；不计温度系数、老化、本体遮挡">
     <template #actions>
-      <button class="lb-mini" :disabled="!res || !canXlsx" :title="canXlsx ? '导出 XLSX（逐拍 + 日均）' : '需在桌面客户端中运行'" @click="exportXlsx"><Icon name="table" :size="12" />XLSX</button>
+      <button class="lb-mini" :disabled="!res || !canXlsx" :title="canXlsx ? '导出 XLSX（逐时刻 + 日均）' : '需在桌面客户端中运行'" @click="exportXlsx"><Icon name="table" :size="12" />XLSX</button>
       <button class="lb-mini" :disabled="!res" title="导出 PNG" @click="exportPng"><Icon name="image" :size="12" />PNG</button>
     </template>
     <div v-if="!cur.meta" class="lb-placeholder an-l">未载入模型。</div>
-    <div v-else-if="!pm.panels.length" class="lb-placeholder an-l" :title="pm.warnings.join('\n')">没有太阳翼部件。</div>
+    <div v-else-if="!pm.panels.length" class="lb-placeholder an-l" :title="pm.warnings.join('\n')">无太阳翼部件。</div>
     <template v-else>
       <div class="md-kvs">
         <div class="md-kv" :title="pm.panels.map((p) => p.name + '：' + f(p.areaM2, 4) + ' m² · ' + p.efficiencyPct + ' %' + (p.articulation ? ' · 对日 ' + p.articulation.name : '')).join('\n')"><span class="k">电池板</span><span class="v" data-i18n-skip>{{ pm.panels.length }}</span></div>
         <div class="md-kv"><span class="k">电池面积</span><span class="v" data-i18n-skip>{{ f(pm.panels.reduce((s, p) => s + (p.areaM2 || 0), 0), 5) }}</span><span class="u">m²</span></div>
       </div>
+      <!-- 取板时的告警（关节无转轴按固定法向算、部件无法向未计入）：有电池板时同样要看得到，不只进空态的 title -->
+      <div v-for="(w, i) in pm.warnings" :key="i" class="md-state warn"><Icon name="alert-triangle" :size="12" />{{ w }}</div>
       <div class="md-acts">
-        <button class="lb-mini primary" :disabled="busy || !S.binding || ana.tooMany.value" title="按时段逐拍算（姿态律 × 太阳 × 地影）" @click="compute"><Icon name="calculator" :size="13" />计算</button>
+        <button class="lb-mini primary" :disabled="busy || !S.binding || ana.tooMany.value" title="按时段逐步计算（姿态律 × 太阳方向 × 地影）" @click="compute"><Icon name="calculator" :size="13" />计算</button>
         <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
         <span v-if="busy" class="md-state"><span class="ap-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
       </div>
-      <div v-if="err" class="md-state bad" data-i18n-skip>{{ err }}</div>
+      <div v-if="err" class="md-state bad">{{ err }}</div>
       <template v-if="res">
         <div class="md-kvs">
-          <div class="md-kv" title="时段内按时间加权的平均功率（整个时段，不是逐日；逐日平均见 XLSX「日均」表）"><span class="k">平均</span><span class="v" data-i18n-skip>{{ f(res.p.meanW) }}</span><span class="u">W</span></div>
+          <div class="md-kv" title="时段内按时间加权的平均功率（全时段，非逐日；逐日平均见 XLSX「日均」表）"><span class="k">平均</span><span class="v" data-i18n-skip>{{ f(res.p.meanW) }}</span><span class="u">W</span></div>
           <div class="md-kv"><span class="k">最小</span><span class="v" data-i18n-skip>{{ f(res.p.minW) }}</span><span class="u">W</span></div>
           <div class="md-kv"><span class="k">最大</span><span class="v" data-i18n-skip>{{ f(res.p.maxW) }}</span><span class="u">W</span></div>
-          <div class="md-kv" title="Σ S₀·A·η（1 AU 正入射、全日照）"><span class="k">满额</span><span class="v" data-i18n-skip>{{ f(res.p.nominalW) }}</span><span class="u">W</span></div>
+          <div class="md-kv" title="Σ S₀·A·η（1 AU 正入射、全日照）"><span class="k">额定</span><span class="v" data-i18n-skip>{{ f(res.p.nominalW) }}</span><span class="u">W</span></div>
           <div class="md-kv" title="时段内按时间加权的平均相对值"><span class="k">平均相对值</span><span class="v" data-i18n-skip>{{ f(res.p.meanRel, 4) }}</span></div>
           <div class="md-kv" title="全日照时长占比（本影与半影之外）"><span class="k">受照</span><span class="v" data-i18n-skip>{{ f(res.p.sunlitFrac * 100, 4) }}</span><span class="u">%</span></div>
           <div class="md-kv" title="本影 + 半影时长"><span class="k">地影</span><span class="v" data-i18n-skip>{{ f((res.p.eclipseSec + res.p.penumbraSec) / 60, 4) }}</span><span class="u">min</span></div>
@@ -135,7 +140,7 @@ const f = (v, k = 5) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
         <ChartBox ref="chartRef" kind="timeline" :data="chartData" :tz="ana.win.tz" :panel-height="96" />
       </template>
     </template>
-    <div v-if="expMsg" class="md-state ok">{{ expMsg }}</div>
+    <div v-if="expMsg" class="md-state" :class="{ ok: !expBad, bad: expBad }">{{ expMsg }}</div>
   </MdSec>
 </template>
 

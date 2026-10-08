@@ -3,6 +3,7 @@
 // 三套数据仍是页面里的 points / stations / trajectories 三个 ref（本模块受注入的引用，改后调 sync 落盘+推图）。
 import { ref } from 'vue'
 import { sheetToRecords, sheetToTsv } from '../../shared/gridXlsx.js'
+import { lonLatPasteKeys } from '../../shared/pasteLonLat.js'
 // 说明行「飞行; 巡航高度=10668 m; 速度=850 km/h; 起始=…; 模型=…; 图标=… px」的解析（DESIGN3 E7；相对路径：node 单测直接 import）
 import { parseTrajNote, WP_ALT_M_MIN, CRUISE_ALT_M_MAX } from '../../../packages/core/models/entityRuntime.mjs'
 import { trajWaypointInfo } from '../../../packages/core/models/trajKinematics.mjs'
@@ -183,7 +184,10 @@ export function trajsFromSheets(sheets, opts = {}) {
 }
 
 // parseTime(text, refMs) → UTC ms | NaN：航迹表格「时间」列的读法（页面按显示时区装；只敲时分时日期取 refMs 那天）
-export function useMarkerTable({ points, stations, trajectories, newId, sync, parseTime }) {
+// nowMs() → UTC ms：时间轴当前时刻（页面传 () => clock.tMs）。航点排不出时刻、航迹也没起始时，只敲时分取它那一天 ——
+//   与平台其它「此刻」同口径（取时间轴游标），不取系统当天；不给就退回系统钟
+export function useMarkerTable({ points, stations, trajectories, newId, sync, parseTime, nowMs }) {
+  const nowRef = () => { const v = typeof nowMs === 'function' ? Number(nowMs()) : NaN; return Number.isFinite(v) ? v : Date.now() }
   // 坐标写入：合法数字→写入；空串→清空(null，该行暂不参与渲染)；非数字文本→保留原值（坐标列不存文本）
   function setCoord(obj, key, val) {
     const v = num(val)
@@ -214,8 +218,9 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync, pa
   function clearHistory() { undoStack.length = 0; redoStack.length = 0; _flags() }
 
   // ===== 通用行操作工厂（点标记 / 地球站共用；航迹航点因嵌套单列另写）=====
-  // cols：该网格列 key 顺序（末尾恒为 'lon','lat'）；makeEmpty：新建一行空对象；setCell：写一格。
-  function makeLayer(getList, setList, cols, makeEmpty, setCell) {
+  // cols：该网格列 key 顺序（末尾恒为 'lon','lat'）；makeEmpty：新建一行空对象；setCell：写一格；
+  // textKeys：文本列（从这些列起粘的窄块按「末两格 = 经纬度」落位，见 pasteBlock）。
+  function makeLayer(getList, setList, cols, makeEmpty, setCell, textKeys = ['name']) {
     // 追加式批量（无选区/空表）：每行一条，约定【末两列=经度、纬度】，之前的文本列依次填非坐标列。末两列非数字的行跳过。
     function pasteAppend(text) {
       const textCols = cols.slice(0, cols.length - 2)   // 坐标之外的文本列（点标记 / 地球站均为['name']）
@@ -238,13 +243,17 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync, pa
     function pasteBlock(anchorId, startKey, text) {
       const grid = parseGrid(text); if (!grid.length) return 0
       const c0 = Math.max(0, cols.indexOf(startKey))
+      // 经纬度前插过新列：v1.4.13 列序的窄块（「名称 / 经度 / 纬度」、点标记「经度 / 纬度」）按「末两格 = 经纬度」落位，
+      // 否则经度会落进口径 / 名称列（见 shared/pasteLonLat.js）；其余块照旧按位置
+      const keysOf = lonLatPasteKeys(cols, cols[c0], grid, { textKeys }) || ((cells) => cells.map((_, ci) => cols[c0 + ci]))
       const list = [...getList()]
       let idx = anchorId ? list.findIndex((r) => r.id === anchorId) : list.length
       if (idx < 0) idx = list.length
       grid.forEach((cells, ri) => {
         let r = list[idx + ri]
         if (!r) { r = makeEmpty(); list[idx + ri] = r }
-        cells.forEach((val, ci) => { const key = cols[c0 + ci]; if (key) setCell(r, key, val) })
+        const keys = keysOf(cells)
+        cells.forEach((val, ci) => { const key = keys[ci]; if (key) setCell(r, key, val) })
       })
       setList(list.filter(Boolean))
       return grid.length
@@ -274,25 +283,35 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync, pa
     (r, k, v) => { if (k === 'lon' || k === 'lat') setCoord(r, k, v); else { const t = String(v == null ? '' : v).trim(); if (t) r.name = t; else delete r.name } }
   )
 
-  // ---- 地球站：列 [名称, 经度, 纬度] ----
-  const ST_COLS = ['name', 'lon', 'lat']
+  // ---- 地球站：列 [名称, 天线口径, 天线罩, 功放功率, 经度, 纬度]（口径 / 天线罩是站参数，导入链路预算时对号地球站库；插在坐标之前，「末两列 = 经纬度」粘贴约定不变）----
+  // 口径：正数（m，≤ 1000）写入，留空删除，其余文本不落；天线罩：「有 / 是 / ✓ / yes / 1 …」= 有，「无 / 否 / no / 0」或留空 = 无，其余不落
+  const ST_COLS = ['name', 'diaM', 'radome', 'pwrW', 'lon', 'lat']
+  const RADOME_YES = /^(有|是|带罩|有罩|✓|√|y|yes|true|1)$/i, RADOME_NO = /^(无|否|无罩|不带|×|n|no|false|0)$/i
+  function stSetCell(r, k, v) {
+    const t = String(v == null ? '' : v).trim()
+    if (k === 'lon' || k === 'lat') { setCoord(r, k, v); return }
+    if (k === 'diaM') { const d = num(v); if (d != null && d > 0 && d <= 1000) r.diaM = d; else if (!t) delete r.diaM; return }
+    if (k === 'radome') { if (RADOME_YES.test(t)) r.radome = true; else if (!t || RADOME_NO.test(t)) delete r.radome; return }
+    if (k === 'pwrW') { const w = num(v); if (w != null && w > 0 && w <= 100000) r.pwrW = w; else if (!t) delete r.pwrW; return }
+    r[k] = String(v == null ? '' : v)
+  }
   const stLayer = makeLayer(
     () => stations.value, (a) => { stations.value = a }, ST_COLS,
     () => ({ id: newId(), name: '', lat: null, lon: null }),
-    (r, k, v) => { if (k === 'lon' || k === 'lat') setCoord(r, k, v); else r[k] = String(v == null ? '' : v) }
+    stSetCell
   )
 
   // ---- 航迹航点：对某条航迹的 pts 操作。坐标列恒为 [经度, 纬度]；网格整列序见 wpColKeys（高度 / 时间 / 推算四列）----
   const WP_COLS = ['lon', 'lat']
   const trajOf = (id) => trajectories.value.find((t) => t.id === id)
   const isFirstWp = (t, p) => t.pts.find(finLL) === p
-  // 该航点此刻的排程时刻（改时间只敲时分时取它的日期）：排不出程退起始、再退现在
+  // 该航点此刻的排程时刻（改时间只敲时分时取它的日期）：排不出程退起始、再退时间轴当前时刻（不是系统当天）
   function refTimeOf(t, p) {
     const i = t.pts.indexOf(p)
     let e = null
     try { e = i >= 0 ? trajWaypointInfo(t)[i] : null } catch { e = null }
     if (e && Number.isFinite(e.tMs)) return e.tMs
-    return Number.isFinite(t.t0Ms) ? t.t0Ms : Date.now()
+    return Number.isFinite(t.t0Ms) ? t.t0Ms : nowRef()
   }
   // 写一格：经纬度照旧；高度 = 高度钉点（空 → 删钉点回推算，越界不落）；时间 = 时刻钉点（首航点即起始 t0Ms；空 → 删）；推算列不落
   function wpSetCell(t, p, key, val) {
@@ -327,7 +346,9 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync, pa
   function wpPasteAppend(trajId, text) {
     const t = trajOf(trajId); if (!t) return 0
     const last = [...t.pts].reverse().find((p) => Number.isFinite(p.tMs))
-    const add = parseWpLines(text, newId, { layout: wpColKeys(t.kind), parseTime, refMs: last ? last.tMs : t.t0Ms })
+    // 只敲时分的首行：日期沿用末个定时航点 → 航迹起始 → 时间轴当前时刻（同 refTimeOf）
+    const refMs = last ? last.tMs : (Number.isFinite(t.t0Ms) ? t.t0Ms : nowRef())
+    const add = parseWpLines(text, newId, { layout: wpColKeys(t.kind), parseTime, refMs })
     if (t.kind !== 'flight') for (const p of add) delete p.altM
     if (add.length) { t.pts = [...t.pts, ...add]; normFirstPin(t) }
     return add.length

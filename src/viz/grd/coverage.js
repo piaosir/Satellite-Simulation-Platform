@@ -161,6 +161,37 @@ export function attAxesReadout(meta, basis) {
   }
   return { az: ae.az, el: ae.el, psi }
 }
+// 对地定向三个姿态偏置此刻各自推动读数里的哪个量（面板在偏置标签上标注用）：{ roll, pitch, yaw }，各取 'az' | 'el' | 'psi'（null = 退化）。
+// 3-2-1 序的三根转轴（标准 ECEF）：偏航 = 轨道系 Z（地心天底 −Ŝ），滚转 = 本体 X（最后一转绕新 X），俯仰 = 中间那根 Y′——
+// 3-2-1 的中间轴恒同时垂直于首末两轴，故 Y′ = nrm(Z_orb × X_body)（俯仰 ±90°、首末两轴平行时退用本体 Y）。
+// 转轴离视轴不到 45°（|k·z| ≥ |k×z|）：这一转主要是方向图绕视轴自转 → ψ；否则视轴在动：绕该轴把视轴小转 1 mrad，
+// 看 attAxesReadout 的 Az / El 谁变得多 —— 与读数行同一条式子，标注不会跟读数各说各的。
+// ★ ψ 不拿读数差来比：读数 ψ 以 ẑ × 视轴为参考，高纬上视轴东西一动参考轴自己就跟着转（子午线收敛，53°N 处
+//   俯仰 1° 读数 ψ 变 ≈ tan 53° = 1.33°，比 Az 还多），比读数会把俯仰误标成 ψ。
+// 赤道 GEO + 视轴近本体 +Z：滚转 → El、俯仰 → Az、偏航 → ψ（SATSOFT 手册：E-W / N-S 指向误差即 pitch / roll）；
+// 极轨上滚转与俯仰对调，倾斜轨道随航向变（读数系是东 / 北，轨道系是沿迹 / 垂直航迹）。basis 须带 body（beamBasisFrom 的 att 分支）。
+export function attBiasTags(meta, basis) {
+  const bd = basis && basis.body
+  if (!meta || !basis || !isAxis(basis.S) || !isAxis(basis.z) || !isAxis(basis.x) || !bd || !isAxis(bd.x)) return null
+  const z = nrm(basis.z)
+  const r0 = attAxesReadout(meta, { S: basis.S, x: basis.x, z })
+  if (!r0 || !Number.isFinite(r0.az) || !Number.isFinite(r0.el)) return null
+  const zo = nrm(sc(basis.S, -1)), xb = nrm(bd.x)
+  let yp = crs(zo, xb)
+  yp = Math.hypot(yp[0], yp[1], yp[2]) > 1e-9 ? nrm(yp) : (isAxis(bd.y) ? nrm(bd.y) : null)
+  const c = Math.cos(1e-3), s = Math.sin(1e-3)
+  const tagOf = (k) => {
+    if (!k) return null
+    const kz = crs(k, z)
+    if (Math.abs(dt(k, z)) >= Math.hypot(kz[0], kz[1], kz[2])) return 'psi'
+    const z1 = add(add(sc(z, c), sc(kz, s)), sc(k, dt(k, z) * (1 - c)))      // Rodrigues：视轴绕 k 转 1 mrad
+    const r = attAxesReadout(meta, { S: basis.S, x: basis.x, z: z1 })
+    if (!r || !Number.isFinite(r.az) || !Number.isFinite(r.el)) return null
+    const da = Math.abs(r.az - r0.az), de = Math.abs((((r.el - r0.el) % 360) + 540) % 360 - 180)
+    return Math.max(da, de) > 1e-9 ? (de >= da ? 'el' : 'az') : null
+  }
+  return { roll: tagOf(xb), pitch: tagOf(yp), yaw: tagOf(zo) }
+}
 
 // 方向式天线姿态：boresight 由「相对星下天底的 az/el 方向」直接给定（igrid6 约定），
 // 不经过地表目标点 → boresight 可指向任意方向，包括越过地平的深空（El 超出地球张角即指深空）。

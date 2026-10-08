@@ -12,6 +12,7 @@ import { defaultsFor } from './params.js'
 import { toHalf, halfStr } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
 import { cityName, cityNameKeys } from '../shared/cityName.js'   // 城市名是数据、呈现层翻不到：英文界面下导入列表与写进站名的一律取英文名
 import CityPicker from '../components/CityPicker.vue'   // 导入站址对话框（与性能指标表「典型城市」同一份）
+import { pointFallbackName, stationFallbackName } from '../shared/markerNames.js'   // 无名标记兜底名（全平台一个口径）
 
 // 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
 // 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
@@ -21,6 +22,9 @@ const props = defineProps({
   cities: { type: Array, default: () => [] },
   label: { type: String, default: '' },
   autoGeo: { type: Function, default: null },
+  // 站型钩子 (row, kind, item)：「导入站址」导入标记层的地球站时，站带天线口径 / 天线罩（item.diaM / item.radome）就交给宿主
+  // 按站型对号地球站库（shared/lbStationType.js）；不传 = 只写站址（雨衰 / 日凌等没有地球站库的表）
+  siteType: { type: Function, default: null },
   roLabel: { type: String, default: '' },          // 只读末列标题（EIRP / G/T）
   roUnit: { type: String, default: '' },
   roValues: { type: Object, default: () => ({}) },  // { _id: 计算值 }，计算后回填
@@ -567,6 +571,10 @@ function restore(snap) { props.stations.splice(0, props.stations.length, ...snap
 function pushUndo() { undoStack.value.push(snapshot()); if (undoStack.value.length > 100) undoStack.value.shift(); redoStack.value = [] }
 function undo() { if (!undoStack.value.length) return; redoStack.value.push(snapshot()); restore(undoStack.value.pop()) }
 function redo() { if (!redoStack.value.length) return; undoStack.value.push(snapshot()); restore(redoStack.value.pop()) }
+// 宿主载入 / 切换配置时调：栈里是上一份配置的行快照，留着的话一按撤销就把那份表整个灌进当前配置
+// （链路预算四窗是自动保存，约 1 s 后就写进当前配置）。表格组件不随配置重建，栈只能由宿主显式清。
+function clearHistory() { undoStack.value = []; redoStack.value = [] }
+defineExpose({ clearHistory })
 
 // —— 行多选（行级批量）——
 const sel = ref({})
@@ -1224,8 +1232,8 @@ function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/m
 function markerSections() {
   const mk = readMarkers()
   const groups = []
-  const pts = (mk.points || []).map((p, i) => ({ id: 'pt:' + (p.id || i), name: String(p.name || '').trim() || '点标记' + (i + 1), lon: p.lon, lat: p.lat }))
-  const sts = (mk.stations || []).map((s, i) => ({ id: 'st:' + (s.id || i), name: s.name || ('地球站' + (i + 1)), lon: s.lon, lat: s.lat }))
+  const pts = (mk.points || []).map((p, i) => ({ id: 'pt:' + (p.id || i), name: String(p.name || '').trim() || pointFallbackName(i), lon: p.lon, lat: p.lat }))
+  const sts = (mk.stations || []).map((s, i) => ({ id: 'st:' + (s.id || i), name: String(s.name || '').trim() || stationFallbackName(i), lon: s.lon, lat: s.lat, diaM: s.diaM, radome: s.radome === true, pwrW: s.pwrW }))
   if (pts.length) groups.push({ id: 'points', name: '点标记', nameEn: 'Points', items: pts })
   if (sts.length) groups.push({ id: 'stations', name: '地球站', nameEn: 'Earth Stations', items: sts })
   ;(mk.trajectories || []).forEach((t, k) => {
@@ -1294,6 +1302,7 @@ function importItems(items) {
       if (g.lat && it.lat != null) row[g.lat] = clampLatLon(it.lat)
     }
     if (props.autoGeo && g) props.autoGeo(row, undefined, g.kind)
+    if (props.siteType && g && (it.diaM != null || it.radome === true || it.pwrW != null)) props.siteType(row, g.kind, it)
     imp.lastId = row._id
     if (imp.at != null) imp.at++   // 光标模式：写完一行目标下移一行
   }

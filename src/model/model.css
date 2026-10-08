@@ -8,6 +8,7 @@
 .md-grid td.eg-c.md-bad .eg-v { color: var(--danger); }
 .md-grid td.eg-c.md-dim .eg-v { color: var(--text-faint); }
 .md-grid td.eg-c.md-ok .eg-v { color: var(--ok); }
+.md-grid td.eg-c.md-warn .eg-v { color: var(--warn); }
 .md-grid td.eg-c.md-mono .eg-v { font-family: var(--font-mono); }
 
 /* 勾选列（checkCol.js）：格内画一个复选框；勾上＝机位色实底 + 背景色的勾（accent 实底字色一律 var(--bg)） */

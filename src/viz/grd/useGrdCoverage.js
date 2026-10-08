@@ -4,7 +4,7 @@
 import { ref, reactive, watch, nextTick } from 'vue'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, attBiasTags, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
@@ -13,6 +13,7 @@ import { materialize as anMaterialize, parseRecord as anParseRecord, recordToTex
 import { RS_GEO, A, B, E2, geodeticToEcef, geocentricToEcef, ecefToGeodetic, rayEllipsoid, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
 import { appAlert } from '../../stores/alert.js'   // 应用内提示，替代会夺焦点的原生 alert
+import { normEpoch, withTreeEpoch, needsTreeEpoch } from '../../shared/treeOrbitEpoch.js'   // 轨道根数星的历元（elements.epoch）口径
 
 const perfNow = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
 
@@ -76,6 +77,8 @@ function satHull(c) {
 //   mount（实际生效的挂点 id）、src（该挂点 + 姿态律绑定内容的签名串）、body:{X,Y,Z}（本体三轴，指向误差绕它施加）。
 // hooks.getMountOptions(antKey) → [{id, name, match}]、hooks.getAttLaw(antKey) → 律名：「挂点」下拉与读数用。
 // hooks.attReady() → false = 宿主的本体绑定还在路上（启动时）：这时解出的是缺省挂点 / nadir 律，不据此写 attEquiv。缺省视为就绪。
+// hooks.getBodyAttitude / setBodyAttitude / getBodyAttSeed / bodyTargetKey / bodyKeyLabel / openBodyEditor：「姿态 + 挂点」一节
+//   就地改本星姿态律用（见下方 bodyAttitude 一段）；不给 = 面板不出姿态律那几行。
 // 由宿主页注入——星历/时间轴都在页面手里，本模块不自己碰 SGP4。
 export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = {}) {
   // 卫星树（唯一真相）：预置星(index) / 自定义星 / 星座关联星 共用同一数组。
@@ -391,8 +394,32 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!antMeta()) return
     s.boreMount = typeof id === 'string' ? id : ''
   }
-  // 「姿态 + 挂点」读数（聚焦天线；面板 boreTip 用）：{ law, cfgLaw, fallback, mount, az, el, psi, lon, lat } —— 全是数字 / 标识，没有判定。
+  // 「姿态 + 挂点」一节就地改本星的姿态律（面板 GrdAttitudeFields 用；key 缺省 = 聚焦天线）。全部转宿主 hooks：
+  //   getBodyAttitude(antKey)  → { satKey, attitude:{law, params} } | null（本星绑定里的姿态律；读宿主的响应式版本号，绑定一变面板就醒）
+  //   setBodyAttitude(antKey, attitude) → Promise<{ok, code?, errors}>（与已有绑定合并后落盘，先落本地缓存）
+  //   getBodyAttSeed(meta)     → { X, Y, Z, S, gmstRad } | null（此刻的本体三轴 / 星位 / GMST：切到目标 / 惯性律时据此补内容，视轴不跳）
+  //   bodyTargetKey(item)      → 本体身份键 | null（目标星搜索结果 → target 律的 satKey）
+  //   bodyKeyLabel(satKey)     → 显示名
+  //   openBodyEditor(antKey)   → 打开模型工作台「卫星」页（挂点表在那里编辑）
+  // 姿态律改了不必这边手动重投影：宿主绑定一变就清掉挂点轴缓存并补一拍（tickLive 按挂点轴签名判 moved）。
+  function bodyAttitude(key) {
+    try { return hooks.getBodyAttitude ? hooks.getBodyAttitude(key || active.value) || null : null } catch { return null }
+  }
+  function setBodyAttitude(att, key) {
+    if (!hooks.setBodyAttitude) return Promise.resolve({ ok: false, code: 'no-host', errors: [] })
+    try { return Promise.resolve(hooks.setBodyAttitude(key || active.value, att)) } catch { return Promise.resolve({ ok: false, code: 'host', errors: [] }) }
+  }
+  function bodyAttSeed() {
+    const m = antMeta()
+    try { return m && hooks.getBodyAttSeed ? hooks.getBodyAttSeed(m) || null : null } catch { return null }
+  }
+  const attTargetKey = (item) => { try { return hooks.bodyTargetKey ? hooks.bodyTargetKey(item) || null : null } catch { return null } }
+  const attKeyLabel = (satKey) => { try { return hooks.bodyKeyLabel ? hooks.bodyKeyLabel(satKey) || '' : '' } catch { return '' } }
+  const bodyEditorOk = () => !!hooks.openBodyEditor
+  function openBodyEditor(key) { try { if (hooks.openBodyEditor) hooks.openBodyEditor(key || active.value) } catch { /* 宿主打不开工作台：静默 */ } }
+  // 「姿态 + 挂点」读数（聚焦天线；面板 boreTip 用）：{ law, cfgLaw, fallback, mount, az, el, psi, lon, lat, tags } —— 全是数字 / 标识，没有判定。
   // law = 实际生效的律（宿主随轴带回的；没带就是绑定里配的那条），cfgLaw = 绑定里配的；两者不同即律退过（目标 / 太阳解不出 → 对地定向）
+  // tags = 滚转 / 俯仰 / 偏航偏置此刻各推动 Az / El / ψ 中的哪一个（coverage.attBiasTags；宿主没带本体轴 → null）
   function attReadout() {
     const m = antMeta(); if (!m || s.boreType !== 'att') return null
     const { ax, meta: mm, b } = attBasisNow(m, s)   // 与 attEquivNow 同一条式子、同一个星位
@@ -401,7 +428,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const g = P ? ecefToGeodetic(P[0], P[1], P[2]) : null
     const cfgLaw = attLaw()
     const law = (ax && typeof ax.law === 'string' && ax.law) || cfgLaw
-    return { law, cfgLaw, fallback: !!(ax && ax.fallback), mount: s.boreMount || '', resolved: !!ax, az: r.az, el: r.el, psi: r.psi, lon: g ? g.lon : null, lat: g ? g.lat : null }
+    return { law, cfgLaw, fallback: !!(ax && ax.fallback), mount: s.boreMount || '', resolved: !!ax, az: r.az, el: r.el, psi: r.psi, lon: g ? g.lon : null, lat: g ? g.lat : null,
+      bodyYaw: ax && Number.isFinite(ax.yawDeg) ? ax.yawDeg : null,   // 本体偏航（宿主随轴带回：nadir = 偏航偏置、yawSteer = 此刻的导引角）
+      tags: ax ? attBiasTags(mm, b) : null }
   }
   // D9：宿主定时把「当前仿真时刻的等效手动指向」写回某根天线（不必是聚焦天线）。只写该天线 cfg 上的 attEquiv（纯数据），
   // 不碰其余指向字段、不碰面板态、不触发重投影（att 档的投影由姿态签名驱动）。还没载入的天线写进待恢复的那份 cfg。
@@ -781,6 +810,21 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   function persistSats() {
     try { localStorage.setItem(SATS_KEY, JSON.stringify(sats.value.filter((s) => s && s.kind && s.kind !== 'preset').map(bareSat))) } catch { /* ignore */ }
   }
+  // 轨道根数星的历元跟着节点存（elements.epoch，ISO UTC 带 Z；口径见 shared/treeOrbitEpoch.js）。
+  // 旧存档的根数没有历元 → 补上：自己带了能解的历元就规范成带 Z 的串；没带就沿用 prev（同一节点上已有的根数 ——
+  //   restoreState 叠加时存档那份不带历元，不能冲掉 restoreSats 刚补上 / 用户改过的那个），再没有才取旧数据常量
+  //   TREE_ORBIT_LEGACY_EPOCH —— 其它窗口读没迁移的节点也按这个常量，补写前后、窗口之间星位都不跳。
+  // 已是规范串原样返回同一个对象（缓存签名不翻）；返回值 !== 入参 ⇔ 补过。
+  function withEpoch(el, prev) {
+    if (!el || typeof el !== 'object') return el || null
+    if (!needsTreeEpoch(el)) return el
+    if (normEpoch(el.epoch)) return withTreeEpoch(el)
+    const pe = prev && typeof prev === 'object' ? normEpoch(prev.epoch) : null
+    return pe ? { ...el, epoch: pe } : withTreeEpoch(el)
+  }
+  // 恢复时补过历元：页面在设置自动落盘装上之后据此补存一次 globe3d/settings（别的窗口读的是那一份），见 takeEpochMigrated
+  let _epochMigrated = false
+  function takeEpochMigrated() { const v = _epochMigrated; _epochMigrated = false; return v }
   // 从 localStorage 恢复用户星，合并进 sats（按 folder 去重：磁盘 index 星优先/带天线，本地星补齐缺失的）
   function restoreSats() {
     let arr = null
@@ -788,19 +832,23 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     if (!Array.isArray(arr) || !arr.length) return
     const have = new Set(sats.value.map((s) => s.folder))
     const add = []
+    let mig = false
     for (const s of arr) {
       if (!s || !s.folder || have.has(s.folder)) continue
       have.add(s.folder)
+      const elements = withEpoch(s.elements)
+      if (elements && elements !== s.elements) mig = true
       add.push({
         folder: s.folder, satName: s.satName || '卫星', kind: s.kind || 'custom',
         lon: Number(s.lon) || 0, lat: Number(s.lat) || 0, altKm: Number(s.altKm) || GEO_ALT,
-        noradId: s.noradId || null, elements: s.elements || null, els: s.els != null ? s.els : '5,10',
+        noradId: s.noradId || null, elements, els: s.els != null ? s.els : '5,10',
         elevColor: s.elevColor || '#ffffff', elevShow: !!s.elevShow, elevWidth: Number(s.elevWidth) || 1.3,
         elevLabelSize: Number(s.elevLabelSize) || 18, iconSize: Number(s.iconSize) || 10, labelSize: Number(s.labelSize) || 4,
         iconShow: s.iconShow !== false, labelShow: s.labelShow !== false, labelBold: !!s.labelBold, elevLabelBold: !!s.elevLabelBold, antennas: []
       })
     }
     if (add.length) { sats.value = [...sats.value, ...add]; for (const s of add) expanded.value = { ...expanded.value, [s.folder]: true } }
+    if (mig) { _epochMigrated = true; persistSats() }   // 补上的历元当场落盘：下次恢复读到的就是节点自己的
   }
 
   // 天线 key 的增删改广播：本模块自己那份 selected 就地维护，但【对星覆盖分析】另存一份 selected
@@ -826,7 +874,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       kind: draft.noradId ? 'linked' : (draft.elements ? 'orbit' : 'custom'),
       lon: Number(draft.lon) || 0, lat: Number(draft.lat) || 0, altKm: Number(draft.altKm) || GEO_ALT,
       noradId: draft.noradId || null,
-      elements: draft.elements || null,
+      elements: withEpoch(draft.elements),   // 页面草稿恒带历元（新建 = 时间轴当前时刻）；兜底补齐
       els: draft.els != null ? draft.els : '5,10',
       elevColor: draft.color || '#ffffff', elevShow: false, elevWidth: Number(draft.elevWidth) || 1.3,
       elevLabelSize: Number(draft.elevLabelSize) || 18,
@@ -862,6 +910,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const n = sats.value.find((x) => x.folder === folder); if (!n) return
     // 位置（经纬度/高度 或 轨道根数）变化 → 编辑后让该星天线覆盖图跟随重投影（仰角线由页面 redrawSats 处理）
     const moved = ('lon' in patch && Number(patch.lon) !== n.lon) || ('lat' in patch && Number(patch.lat) !== n.lat) || ('altKm' in patch && Number(patch.altKm) !== n.altKm) || ('elements' in patch)
+    if ('elements' in patch) patch = { ...patch, elements: withEpoch(patch.elements, n.elements) }   // 补丁里的根数没带历元：沿用节点自己的（兜底）
     Object.assign(n, patch)
     if (moved) reprojectSat(folder)
     persistSats()
@@ -1936,11 +1985,22 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     scheduleRecomputeActive()   // 跟手：只重算聚焦层 + 补当前视图（labelT 变更同源触发 watch(s.levels) 亦会回存）
   }
   const curAzEl = (m, lon, lat) => surfaceAzEl(m.satLon, m.satLat || 0, m.satAlt, lon, lat)
+  // 把最近一次光标落点写成视轴（rAF 合帧的那一下；松手时还压在队列里就当场补一次）
+  function applyBeamDrag() {
+    if (!_drag || !_dragLL || s.boreType === 'att') return
+    const m = antMeta(); if (!m) return
+    const c = curAzEl(m, _dragLL.lon, _dragLL.lat)
+    s.boreType = 'azel'
+    s.boreAz = +(_drag.base.az + (c.az - _drag.cur0.az)).toFixed(3)
+    s.boreEl = +(_drag.base.el + (c.el - _drag.cur0.el)).toFixed(3)
+  }
   function beamDrag(ll, phase) {
     // 姿态 + 挂点：不接受拖拽（否则起拖那一下会把 att 静默改成 azel、松手再改成 geo）
     if (s.boreType === 'att') { if (_dragRaf) { cancelAnimationFrame(_dragRaf); _dragRaf = 0 } _drag = null; _dragging = false; return }
     if (phase === 'end') {   // 松手：退出拖拽态；boresight 落在可见地表则转回 geo（面板便于精调），地平外保持 azel
-      if (_dragRaf) { cancelAnimationFrame(_dragRaf); _dragRaf = 0 }
+      // 最后一帧还压在 rAF 队列里就松手了（快拖快放）→ 先补一次，否则末位光标位置被丢掉、指向差一截；
+      // 按下到松手不足一帧时整次拖动都在这一下里（同 shellDrag）
+      if (_dragRaf) { cancelAnimationFrame(_dragRaf); _dragRaf = 0; applyBeamDrag() }
       _drag = null; _dragging = false
       if (s.boreType === 'azel') { const g = boreGround(); if (g) { s.boreType = 'geo'; s.boreLon = +g.lon.toFixed(4); s.boreLat = +g.lat.toFixed(4) } }
       recompute(); return
@@ -1952,19 +2012,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       // 锚点：当前 boresight 的 az/el（geo 模式由其落点换算）+ 起拖光标的 az/el
       const base = s.boreType === 'azel' ? { az: s.boreAz || 0, el: s.boreEl || 0 } : dirToAzEl(m.satLon, m.satLat || 0, m.satAlt, s.boreLon == null ? m.satLon : s.boreLon, s.boreLat || 0)
       _drag = { base, cur0: curAzEl(m, ll.lon, ll.lat) }
+      _dragLL = null
       return
     }
     if (!_drag) return
     _dragLL = ll
     if (_dragRaf) return                       // rAF 节流：每帧最多重投影一次
-    _dragRaf = requestAnimationFrame(() => {
-      _dragRaf = 0
-      if (!_drag || s.boreType === 'att') return
-      const c = curAzEl(m, _dragLL.lon, _dragLL.lat)
-      s.boreType = 'azel'
-      s.boreAz = +(_drag.base.az + (c.az - _drag.cur0.az)).toFixed(3)
-      s.boreEl = +(_drag.base.el + (c.el - _drag.cur0.el)).toFixed(3)
-    })
+    _dragRaf = requestAnimationFrame(() => { _dragRaf = 0; applyBeamDrag() })
   }
 
   // 拖拽波束【对星覆盖分析视图】：绕【源星】转视轴 —— 光标在屏幕上移动多少，视轴就绕相机的右/上轴转多少
@@ -2086,12 +2140,15 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 先恢复卫星：自定义/星座关联星补建到树；所有星（含预置）叠加用户编辑（名称/位置/关联/仰角线）。
     // 预置星节点本身由 index 复现，这里仅叠加用户改过的字段；预置星 kind 始终保持 'preset'。
     if (Array.isArray(st.sats)) {
+      let mig = false
       for (const ss of st.sats) {
         let node = sats.value.find((x) => x.folder === ss.folder)
         if (!node) {
           if (!ss.kind || ss.kind === 'preset') continue   // 预置星已不在 index（如已删/改版）→ 跳过
+          const elements = withEpoch(ss.elements)
+          if (elements && elements !== ss.elements) mig = true
           node = { folder: ss.folder, satName: ss.satName || '卫星', kind: ss.kind, antennas: [],
-            lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements: ss.elements || null,
+            lon: ss.lon, lat: ss.lat, altKm: ss.altKm, noradId: ss.noradId || null, elements,
             els: '5,10', elevColor: '#ffffff', elevShow: false, elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, labelShow: true, iconShow: true, labelBold: false, elevLabelBold: false }
           sats.value = [...sats.value, node]
         }
@@ -2108,7 +2165,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         if (Number.isFinite(ss.lat)) node.lat = ss.lat
         if (Number.isFinite(ss.altKm)) node.altKm = ss.altKm
         node.noradId = ss.noradId || null
-        if ('elements' in ss) node.elements = ss.elements || null
+        if ('elements' in ss) {
+          // 存档那份没带历元：沿用节点上已有的（restoreSats 刚补上的 / 本会话改过的），不冲掉
+          const elements = withEpoch(ss.elements, node.elements)
+          if (elements && elements !== ss.elements) mig = true
+          node.elements = elements
+        }
         if (ss.els != null) node.els = ss.els
         if (ss.elevColor) node.elevColor = ss.elevColor
         if (typeof ss.elevShow === 'boolean') node.elevShow = ss.elevShow
@@ -2122,6 +2184,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
           }
         }
       }
+      // 补过历元：globe3d/grdSats 当场落（索引没载成时树不全，不拿残树盖它）；globe3d/settings 由页面补存（takeEpochMigrated）
+      if (mig) { _epochMigrated = true; if (loaded) persistSats() }
     }
     // 灌入【所有】已存档天线设置到 pending（含未绘制/清除绘图的）：天线一经加载即套用；getState 时一并回存 → 不丢失。
     pendingCfgs.clear()
@@ -2293,12 +2357,13 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, buildAxisRays, boreModeOf, setBoreMode,
     setBoreSat, boreSatResolved, setBorePoint, syncBorePoint, shellDrag, beamBasis,
     setBoreSource, setBoreMount, mountOptions, attLaw, attReadout, setAttEquiv, attReady,
+    bodyAttitude, setBodyAttitude, bodyAttSeed, attTargetKey, attKeyLabel, bodyEditorOk, openBodyEditor,
     activeBeams, beamListOn, isBeamOn, setBeamsToPlot, renameBeam,
     beamQuery, setBeamQuery, filteredBeams,
     deleteBeam, deleteCheckedBeams,
     loadIndex, setActive, toggleAnt, toggleSatAll, toggleExpand, addLevel, removeLevel, moveLevel, insertLevel, levelsText, pasteLevels, generateLevels, applyLineToAll, schemeOf, applyScheme, applySchemeTo, antList, importGrd, importSynthGrd,
     createAnalyticAntenna, updateAnalyticAntenna, analyticRecordOf, anRev,
-    addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys,
+    addSatellite, addElevLine, updateSatellite, removeSatellite, removeAntenna, renameAntenna, setElev, onTreeKeys, takeEpochMigrated,
     setDragBore, beamDrag, dragLabel, setDragLabel, labelDrag, getState, restoreState, recompute, onZoomEnd, clearAll, clearDrawing, setActiveKey, pathLossSpanDb,
     setLivePos, setEphReady, invalidateLive, tickLive, getPerfContext, ensureAntLoaded, exportContours,
     livePeak, setLivePeak, bestPeakOf, beamAtDensity

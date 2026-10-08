@@ -53,6 +53,7 @@ export const LB_DOC_EN = {
   '浓': 'Heavy',
   '数据': 'Data',
   '导出': 'Export',
+  '导出失败': 'Export failed',
   '复位': 'Reset',
   ' · 恒定': ' · constant',
 

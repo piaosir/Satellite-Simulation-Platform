@@ -31,14 +31,18 @@ async function autoSeg() {
   if (!root) return
   busy.value = true; segErr.value = ''
   const t0 = performance.now()
+  // 发起识别的那一件（id + 几何版本）：Worker 回来时当前件换了 / 几何改过，结果作废，不整表写进别的件（会自动落盘）
+  const s0 = cur.id + '|' + cur.geomRev
+  const live = () => cur.id + '|' + cur.geomRev === s0
   try {
     const seg = await wb.analyzer.segment(root, wb.viewMeta())
+    if (!live()) return
     segMs.value = Math.round(performance.now() - t0)
     wb.edit((x) => {
       const n = mergeSegment(JSON.parse(JSON.stringify(x)), seg)
       x.parts = n.parts; x.attachPoints = n.attachPoints; x.solarPanelGroups = n.solarPanelGroups
     })
-  } catch (e) { segErr.value = (e && e.message) || String(e) }
+  } catch (e) { if (live()) segErr.value = (e && e.message) || String(e) }
   finally { busy.value = false }
 }
 
@@ -46,7 +50,7 @@ async function autoSeg() {
 const ROLE_OPTS = PART_ROLES.map((r) => ({ value: r, label: ROLE_LABEL[r] || r }))
 // 列序：确认要看的（角色、f/D、残差）排在左栏可见范围内，面积 / 法向 / 焦距 / 口径往后放（横向滚动看）
 const COLS = [
-  { key: 'ok', label: '✓', w: 26, align: 'center', editable: false, tip: '已确认（点表头全选；空格翻转选中行）' },
+  { key: 'ok', label: '✓', w: 26, align: 'center', editable: false, tip: '已确认（单击表头全选；空格键切换选中行）' },
   { key: 'name', label: '名称', w: 92 },
   { key: 'role', label: '角色', w: 54, options: ROLE_OPTS },
   { key: 'fd', label: 'f/D', num: true, w: 48, editable: false, tip: '反射面：抛物面拟合的焦距 / 口径' },
@@ -118,7 +122,7 @@ function menuItems({ rows }) {
 
 // ============ 选中 ↔ 预览高亮 ============
 watch(() => [g.rect.value.r0, g.rect.value.r1, cur.rev], () => {
-  if (wb.st.tab !== 'model') return
+  if (!wb.designModel()) return
   const r = g.rect.value
   const ids = r.r0 < 0 ? [] : g.rows.value.slice(r.r0, r.r1 + 1).map((p) => p.id)
   hl.parts.value = ids
@@ -146,22 +150,22 @@ const byRole = computed(() => {
 </script>
 
 <template>
-  <MdSec id="m-parts" title="部件" :count="parts.length || null" :summary="byRole">
+  <MdSec id="m-parts" title="部件" :count="parts.length || null" :summary="byRole" summary-lit>
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini primary" :disabled="ro || !rootOk || busy" title="材质分组 → 节点 → 连通分量 + 平面聚类（太阳翼）→ 抛物面拟合（反射面，自动挂点）；在后台线程跑，全精度 lod0" @click="autoSeg">
+        <button class="lb-mini primary" :disabled="ro || !rootOk || busy" title="材质分组 → 节点 → 连通分量 + 平面聚类（太阳翼）→ 抛物面拟合（反射面，自动挂点）；后台线程运行，全精度 lod0" @click="autoSeg">
           <Icon name="scan-eye" :size="13" />{{ busy ? '识别中…' : '自动识别' }}
         </button>
-        <button class="lb-mini" :class="{ on: picking }" :disabled="!rootOk || !parts.length" title="在预览里点模型，选中它所在的部件" @click="togglePick">
+        <button class="lb-mini" :class="{ on: picking }" :disabled="!rootOk || !parts.length" title="在预览中点选模型，选中其所属部件" @click="togglePick">
           <Icon name="square-dashed-mouse-pointer" :size="13" />在预览中点选
         </button>
         <span class="sp"></span>
         <span v-if="segMs != null" class="md-state" data-i18n-skip>{{ segMs }} ms</span>
       </div>
-      <div v-if="segErr" class="md-state bad" data-i18n-skip>{{ segErr }}</div>
+      <div v-if="segErr" class="md-state bad">{{ segErr }}</div>
       <div class="md-grid tall" @click.capture="chk.onClickCapture" @keydown.capture="chk.onKeyCapture">
         <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :menu-items="menuItems"
-                   :head-tip="(c) => c.tip || c.label" empty-text="还没有部件。" />
+                   :head-tip="(c) => c.tip || c.label" empty-text="暂无部件。" />
       </div>
     </template>
   </MdSec>

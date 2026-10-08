@@ -356,23 +356,31 @@ async function pngDataUrl(scale) {
     return cv.toDataURL('image/png')
   } catch (e) { return '' }                  // 渲染失败：没有这张图即可，不打断上层
 }
+// file:save 写失败（文件被占用：CSV 正开在 Excel 里最常见）不抛、只回 {ok:false,error}；取消回 canceled。
+// 看返回值，失败就在按钮旁出错误本身 —— 原先丢掉返回值，点了没反应
+const expErr = ref('')
+const failText = (r) => t.value('导出失败') + '：' + ((r && r.error) || '')
 async function exportPng() {
   if (!exportFile) return
+  expErr.value = ''
   const url = await pngDataUrl(PNG_SCALE)
-  if (!url) return
+  if (!url) { expErr.value = t.value('导出失败'); return }
   try {
     const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
-    await exportFile({ defaultName: figName.value + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
-  } catch (e) { /* 用户取消即可 */ }
+    const r = await exportFile({ defaultName: figName.value + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
+    if (r && !r.ok && !r.canceled) expErr.value = failText(r)
+  } catch (e) { expErr.value = failText({ error: (e && e.message) || String(e) }) }
 }
 async function exportCsv() {
   if (!exportFile || !plotEl.value) return
+  expErr.value = ''
   const csv = plotEl.value.toCSV()
   if (!csv) return
   try {
     // BOM：Excel 认这个才不会把中文表头读成乱码
-    await exportFile({ defaultName: figName.value + '.csv', data: new TextEncoder().encode('﻿' + csv), filters: [{ name: t.value('CSV 表格'), extensions: ['csv'] }] })
-  } catch (e) { /* 用户取消即可 */ }
+    const r = await exportFile({ defaultName: figName.value + '.csv', data: new TextEncoder().encode('﻿' + csv), filters: [{ name: t.value('CSV 表格'), extensions: ['csv'] }] })
+    if (r && !r.ok && !r.canceled) expErr.value = failText(r)
+  } catch (e) { expErr.value = failText({ error: (e && e.message) || String(e) }) }
 }
 
 // —— 会话持久化（三窗各存各的）——
@@ -415,6 +423,7 @@ defineExpose({
       <b class="sp-name">{{ t('地理场图') }}</b>
       <span class="sp-sub">{{ t('站址经纬度') }}</span>
       <span class="sp-flex"></span>
+      <span v-if="expErr" class="sp-err" :title="expErr">{{ expErr }}</span>
       <button class="sp-exp" :title="t('导出网格数据为 CSV（一行一格）')" @click="exportCsv">{{ t('数据') }}</button>
       <button class="sp-exp" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('导出') }}</button>
     </div>
@@ -538,6 +547,7 @@ defineExpose({
    且与并排那张图（LbLinkPane）的题行不再同高（两张图的题行必须是一套） */
 .sp-hd .sp-exp { height: auto; padding: 1px 6px; }
 .sp-exp:hover { color: var(--text); border-color: var(--border-strong); }
+.sp-err { color: var(--danger); font-size: calc(var(--lb-fs, 11px) - 1px); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .sp-ph { padding: 16px 4px; font-size: var(--lb-fs, 11px); color: var(--text-faint); text-align: center; }
 .sp-note { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: calc(var(--lb-fs, 11px) - 1px); padding-top: 2px; }

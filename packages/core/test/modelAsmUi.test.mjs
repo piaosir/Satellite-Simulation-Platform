@@ -215,15 +215,15 @@ ok('拆分对称判据：径向恒可；镜像要钩子或对称面，烘焙件�
 })
 
 // ─────────────────────────── 组件库 ───────────────────────────
-ok('libGroups：当前领域组在前、通用（prim.*）在后；只列该领域可用组件；搜索（中英文 / type / 参数名）', () => {
+ok('libGroups：当前领域组在前、通用（prim.*）在后；只列该领域可用组件（组件本身 + 常用型号）；搜索（中英文 / type / 参数名）', () => {
   const g = L.libGroups('spacecraft')
   assert.equal(g[0].key, 'spacecraft'); assert.equal(g[g.length - 1].key, 'common')
-  const all = g.flatMap((x) => x.items.map((d) => d.type))
+  const all = g.flatMap((x) => x.items.filter((d) => !d.preset).map((d) => d.type))
   assert.deepEqual(all.slice().sort(), C.listComponents('spacecraft').map((d) => d.type).sort())
   assert.ok(g.find((x) => x.key === 'common').items.every((d) => d.type.startsWith('prim.')))
   for (const dom of ['ground', 'aircraft', 'ship', 'vehicle']) {
     const gg = L.libGroups(dom)
-    const types = gg.flatMap((x) => x.items.map((d) => d.type))
+    const types = gg.flatMap((x) => x.items.filter((d) => !d.preset).map((d) => d.type))
     assert.deepEqual(types.slice().sort(), C.listComponents(dom).map((d) => d.type).sort(), dom)
     if (gg.length > 1 && C.listComponents(dom).some((d) => d.domain[0] === dom && !d.type.startsWith('prim.'))) assert.equal(gg[0].key, dom)
     assert.equal(gg[gg.length - 1].key, 'common')
@@ -261,14 +261,15 @@ ok('pickDraft：同 id 且草稿更新才用；库里没盖过戳 → 草稿胜�
   assert.equal(L.sanitizeProv(null), null)
   assert.equal(L.provKey('asm:0123456789ab'), 'model/asm/prov/asm:0123456789ab')
 })
-ok('sanitizeUi：坏值逐项回缺省；栏宽 / 比例夹在范围里；步长只认 MOVE_STEPS / ROT_STEPS', () => {
+ok('sanitizeUi：坏值逐项回缺省；栏宽 / 比例夹在范围里；步长只认 MOVE_STEP_OPTS / ROT_STEPS', () => {
   const d = L.sanitizeUi(null)
   assert.deepEqual(d, JSON.parse(JSON.stringify(L.UI_DEFAULTS)))
+  // 老偏好（没有 moveSet 标志）：改过出厂值的（0.5 ≠ 旧出厂 0.05）算显式设置，保持
   const s = L.sanitizeUi({ tool: 'rotate', space: 'mount', snap: { on: false, move: 0.5, rot: 90 }, sym: { op: 'radial', n: 6 }, dockW: 9999, split: 0.01, libQ: 'x', secOpen: { a: true, b: 'no' }, posePreview: true, showCom: false, showSockets: false, posFrame: 'body' })
-  assert.deepEqual(s, { tool: 'rotate', space: 'mount', snap: { on: false, move: 0.5, rot: 90 }, sym: { op: 'radial', n: 6 }, dockW: L.DOCK_W_MAX, split: 0.15, libQ: 'x', secOpen: { a: true }, posePreview: true, showCom: false, showSockets: false, showAxes: true, posFrame: 'body' })
+  assert.deepEqual(s, { tool: 'rotate', space: 'mount', snap: { on: false, move: 0.5, rot: 90, moveSet: true }, sym: { op: 'radial', n: 6 }, dockW: L.DOCK_W_MAX, split: 0.15, libQ: 'x', secOpen: { a: true }, posePreview: true, showCom: false, showSockets: false, showAxes: true, posFrame: 'body' })
   assert.equal(L.sanitizeUi({ showAxes: false }).showAxes, false, '原点三轴开关')
   const b = L.sanitizeUi({ tool: 'scale', space: 'world', snap: { move: 0.07, rot: 7 }, sym: { op: 'mirror', n: 9 }, dockW: 10, split: 'x' })
-  assert.deepEqual([b.tool, b.space, b.snap.move, b.snap.rot, b.sym.op, b.sym.n, b.dockW, b.split], ['move', 'body', 0.05, 15, 'none', 2, L.DOCK_W_MIN, 0.42])
+  assert.deepEqual([b.tool, b.space, b.snap.move, b.snap.rot, b.sym.op, b.sym.n, b.dockW, b.split], ['move', 'body', 'auto', 15, 'none', 2, L.DOCK_W_MIN, 0.42])
   assert.deepEqual(['body', 'local', 'mount'].map(L.nextSpace), ['local', 'mount', 'body'])
 })
 
@@ -341,7 +342,7 @@ ok('densityRows：DENSITY 全部键、显示名 / 单位 / 缺省值 / 覆盖值
   const rows = L.densityRows({ busVolume: 300 })
   assert.deepEqual(rows.map((r) => r.key), Object.keys(PB.DENSITY))
   const bv = rows.find((r) => r.key === 'busVolume')
-  assert.deepEqual([bv.label, bv.unit, bv.def, bv.value], ['平台体', 'kg/m³', PB.DENSITY.busVolume.value, 300])
+  assert.deepEqual([bv.label, bv.unit, bv.def, bv.value], ['星体', 'kg/m³', PB.DENSITY.busVolume.value, 300])
   assert.ok(rows.filter((r) => r.key !== 'busVolume').every((r) => r.value === null && r.label !== r.key))
   assert.match(bv.title, /^示意值：/)
 })

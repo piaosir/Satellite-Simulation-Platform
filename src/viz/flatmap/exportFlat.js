@@ -5,10 +5,11 @@
 // 影像底图两条路各自成图但同一张画面：PNG 逐片直接画；PDF 由 bakeImagery 预合成一张 JPEG 垫底
 // （逐片塞进 SVG 才是不可用的那种，整层一张不是）。
 //
-// ★「放大也要和原图一致」的三个前提，缺一条就是「一放大细节就差了」：
+// ★「放大也要和原图一致」的两个前提，缺一条就是「一放大细节就差了」：
 //   ① 五类边界线必须走 compat 回放 —— svgcanvas 的 stroke() 不认 Path2D 入参（见 flatCoverage 的 drawBorders）
-//   ② 出图恒用最细底图 10m —— 屏上那档是给帧率用的（出厂「高」= 50m），一放大就是折线
-//   ③ 影像底图按目标像素宽预合成，不是跟着页面 pt 数走
+//   ② 影像底图按目标像素宽预合成，不是跟着页面 pt 数走
+// 底图精度（50m / 10m）这里不换档：出图就用平面渲染器当前那一档，即「设置 → 显示画质」的底图精度，与屏上同一档。
+// （2026-10-08 用户定：跟设置走。此前恒换 10m 出图，设置成 50m 也照出 10m —— 勿再改回强制 10m。）
 import { jsPDF } from 'jspdf'
 import { svg2pdf } from 'svg2pdf.js'
 import { Context as SvgContext } from 'svgcanvas'
@@ -39,17 +40,6 @@ if (!SvgContext.prototype.__perfPatched) {
   P.__perfPatched = true
 }
 
-// 出图恒用【最细】底图（10m，不抽稀），画完复位。
-// 屏上那一档（设置→显示画质，出厂「高」= 50m）是给帧率用的：出图是一次性的交付件，且矢量 PDF 与
-// 高倍 PNG 都是拿来放大着看的 —— 50m 的海岸线一放大就是一段一段的折线，这正是「一放大细节就差了」。
-// 两条导出路径共用这一支，PNG 与 PDF 才不会一细一粗。
-async function withFinestBasemap(flat, fn) {
-  const cur = flat.getMapDetail ? flat.getMapDetail() : null
-  const need = !!(cur && (cur.detail !== '10m' || cur.thin > 0)) && !!flat.setMapDetail
-  if (need) await flat.setMapDetail('10m', 0)
-  try { return await fn() } finally { if (need) await flat.setMapDetail(cur.detail, cur.thin) }
-}
-
 // 高清 PNG：factor=像素倍率。view=true 时按当前屏幕视图(所见即所得)出图，逻辑尺寸取屏幕 cw×ch；
 // 否则整幅世界图：逻辑尺寸取屏幕上整幅世界图 fit 后的大小（fittedWorldSize），仅把像素倍率补足到
 // base×factor 的输出分辨率 → 恒定屏幕 px 的线宽/图标/注记与软件里整幅图完全同比例（所见即所得）。
@@ -59,31 +49,29 @@ async function withFinestBasemap(flat, fn) {
 // 视口尺寸浮动（同一个 4× 在 1280 宽和 1920 宽的窗口上出的图不一样大）。
 // 上限来自 Chromium 画布：单边 ≤ 65535 且总面积 ≤ 268 MPix，超了 toBlob 直接返回 null。
 export async function renderFlatPNG(flat, { base = 2000, factor = 2, targetW = 0, view = false } = {}) {
-  return withFinestBasemap(flat, async () => {
-    let W, H, ps = factor
-    if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
-    else {
-      const f = flat.fittedWorldSize && flat.fittedWorldSize()
-      if (f) { W = f.w; H = f.h; ps = (base * factor) / W }   // 输出位图仍为 base×factor 宽
-      else { W = base; H = Math.round(base / 2) }             // 画布未就绪的兜底：按名义尺寸出图
-    }
-    if (targetW > 0) ps = targetW / W
-    // 画布面积封顶：超限时 toBlob 返回 null，报错信息又只有一句「toBlob 失败」，极难对上因果。
-    // 这里主动按面积折算回去，并把实际出图尺寸随返回值带出去，文件名写实数不写请求数。
-    const MAXPIX = 268435456, MAXDIM = 65535
-    ps = Math.min(ps, Math.sqrt(MAXPIX / (W * H)), MAXDIM / W, MAXDIM / H)
-    const cv = document.createElement('canvas')
-    cv.width = Math.round(W * ps); cv.height = Math.round(H * ps)
-    // 先把这次出图要用的影像瓦片等到位，再同步渲染 —— 少了这一步，导出的图上会缺一大块
-    // （exportRender 是同步的，当时不在缓存里的片就永远没画上）。没开影像时是个空操作。
-    if (flat.ensureImagery) await flat.ensureImagery({ width: W, height: H, pixelScale: ps, view })
-    flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view, raster: true })
-    const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    // 兼容旧调用：返回值仍可当 Uint8Array 用（老调用方只取字节），实际尺寸挂在自有属性上。
-    bytes.outW = cv.width; bytes.outH = cv.height
-    return bytes
-  })
+  let W, H, ps = factor
+  if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
+  else {
+    const f = flat.fittedWorldSize && flat.fittedWorldSize()
+    if (f) { W = f.w; H = f.h; ps = (base * factor) / W }   // 输出位图仍为 base×factor 宽
+    else { W = base; H = Math.round(base / 2) }             // 画布未就绪的兜底：按名义尺寸出图
+  }
+  if (targetW > 0) ps = targetW / W
+  // 画布面积封顶：超限时 toBlob 返回 null，报错信息又只有一句「toBlob 失败」，极难对上因果。
+  // 这里主动按面积折算回去，并把实际出图尺寸随返回值带出去，文件名写实数不写请求数。
+  const MAXPIX = 268435456, MAXDIM = 65535
+  ps = Math.min(ps, Math.sqrt(MAXPIX / (W * H)), MAXDIM / W, MAXDIM / H)
+  const cv = document.createElement('canvas')
+  cv.width = Math.round(W * ps); cv.height = Math.round(H * ps)
+  // 先把这次出图要用的影像瓦片等到位，再同步渲染 —— 少了这一步，导出的图上会缺一大块
+  // （exportRender 是同步的，当时不在缓存里的片就永远没画上）。没开影像时是个空操作。
+  if (flat.ensureImagery) await flat.ensureImagery({ width: W, height: H, pixelScale: ps, view })
+  flat.exportRender(cv.getContext('2d'), { width: W, height: H, pixelScale: ps, view, raster: true })
+  const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  // 兼容旧调用：返回值仍可当 Uint8Array 用（老调用方只取字节），实际尺寸挂在自有属性上。
+  bytes.outW = cv.width; bytes.outH = cv.height
+  return bytes
 }
 
 // 矢量 PDF：svgcanvas 录制 → svg2pdf。fonts={cjk,latin,latinBold,latinItalic} 各为 TTF 的 base64
@@ -92,9 +80,6 @@ export async function renderFlatPNG(flat, { base = 2000, factor = 2, targetW = 0
 // imageryPx：影像底图预合成位图的目标宽（px，缺省 7680 = 与「8K PNG」同一档）。矢量层放大到多少倍
 // 都清晰，唯独影像是位图 —— 这一个数就是「PDF 放大到几倍影像还不糊」的那条线。
 export async function renderFlatPDF(flat, { base = 2000, fonts = null, view = false, imageryPx = 7680 } = {}) {
-  return withFinestBasemap(flat, () => pdfBody(flat, { base, fonts, view, imageryPx }))
-}
-async function pdfBody(flat, { base, fonts, view, imageryPx }) {
   let W, H
   if (view) { const v = flat.viewportSize(); W = Math.max(1, Math.round(v.w)); H = Math.max(1, Math.round(v.h)) }
   else {

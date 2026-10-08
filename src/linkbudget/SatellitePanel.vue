@@ -115,7 +115,7 @@ watch(() => props.sel.fpId, loadFpPlan)
 
 <template>
   <div class="sp">
-    <!-- 方向图：从卫星树选星 + 为「卫星EIRP / 卫星G/T」匹配天线（横排一行三选），
+    <!-- 方向图：从卫星树选星 + 为「卫星饱和 EIRP / 卫星G/T」匹配天线（横排一行三选），
          写入本条目的 grd 属性；工作台卫星分区第三行只做只读速览。 -->
     <div class="sp-grd">
       <div class="sp-gmain">
@@ -129,7 +129,7 @@ watch(() => props.sel.fpId, loadFpPlan)
           </select>
         </label>
         <template v-if="antGroups.length">
-          <label class="sp-gf" title="按各收信站经纬度取该天线多波束最大 Parameter → 回填收信站「卫星EIRP」">
+          <label class="sp-gf" title="按各收信站经纬度取该天线多波束最大 Parameter → 回填收信站「卫星饱和 EIRP」">
             <span class="sp-gl">EIRP 天线</span>
             <select v-model="sel.eirpKey" class="sp-gi" :class="{ unset: !sel.eirpKey }">
               <option value="">— 未匹配 —</option>

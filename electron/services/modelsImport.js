@@ -276,7 +276,7 @@ function runCadWorker({ file, kind, name, onPhase }) {
       if (msg.type === 'error') return finish(reject, new Error(msg.message || 'CAD 导入失败'))
     })
     worker.on('error', (e) => finish(reject, e))
-    worker.on('exit', (code) => { if (!done) finish(reject, new Error(`CAD 进程退出（${code}）`)) })
+    worker.on('exit', (code) => { if (!done) finish(reject, new Error(`CAD 进程异常退出（${code}）`)) })
     // 只传路径、由 worker 自己读：百 MB 级的装配体不必先在主线程读一遍再拷过去
     worker.postMessage({ kind, name, params: OCCT_PARAMS, file })
   })

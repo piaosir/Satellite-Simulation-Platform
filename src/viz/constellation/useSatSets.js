@@ -1,16 +1,17 @@
-// 卫星集注册表：把「内置星座 / 卫星组 / 导入星历组 / 自定义星座」摊成一张【有序表】，每一项同一套口径 ——
+// 卫星集注册表：把「卫星天线树 / 内置星座 / 卫星组 / 导入星历组 / 自定义星座」摊成一张【有序表】，每一项同一套口径 ——
 // 显隐、顺序、改名、配色、剔除成员、删除、重置。
 //
-// 各类的「本体」仍在各自的库里（satGroups / customConst / 主进程 custom.json / CelesTrak 组），这里只记
+// 各类的「本体」仍在各自的库里（satGroups / customConst / 主进程 custom.json / CelesTrak 组 / 天线树），这里只记
 // 【顺序 + 可见集合 + 覆盖层】：
 //   · 内置星座没有自己的存储，改名 / 改色 / 剔星 / 删除都是覆盖（items[id]），「重置」= 把覆盖删掉；
 //   · 导入组的剔星也记在这里（组本身在 custom.json，不动它）；
-//   · 卫星组 / 自定义星座的名字、颜色、成员由各自的库管，这里不记第二份。
-// id 约定：'g:<内置组 key>' | 's:<卫星组 id>' | 'i:<导入组 id>' | 'c:<自定义星座 id>'；'q' 是搜索结果（不入表、不入序）。
+//   · 卫星组 / 自定义星座的名字、颜色、成员由各自的库管，这里不记第二份；
+//   · 卫星天线树（恒一行 't:tree'）：成员 = 天线树里的卫星（增删改名归天线树管），这里只记它的顺序与显隐。
+// id 约定：'t:tree' | 'g:<内置组 key>' | 's:<卫星组 id>' | 'i:<导入组 id>' | 'c:<自定义星座 id>'；'q' 是搜索结果（不入表、不入序）。
 import { ref } from 'vue'
 
 const STORE_KEY = 'constellation3d/satSets'
-export const kindOf = (id) => ({ g: 'builtin', s: 'group', i: 'import', c: 'custom', q: 'search' }[String(id || '')[0]] || '')
+export const kindOf = (id) => ({ t: 'tree', g: 'builtin', s: 'group', i: 'import', c: 'custom', q: 'search' }[String(id || '')[0]] || '')
 const clean = (o) => {
   const out = {}
   for (const k of Object.keys(o || {})) {

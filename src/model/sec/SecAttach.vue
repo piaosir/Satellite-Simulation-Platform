@@ -1,5 +1,5 @@
 <script setup>
-// 挂点（AGI attach point；任务书 §5.5）：表格编辑位置 / 视轴 / 上向（本体系），「在预览中点选」点表面新增（命中点为位置、
+// 挂点（AGI attach point；任务书 §5.5）：表格编辑位置 / 视轴 / 上向（本体系），「表面拾取」点表面新增（命中点为位置、
 // 面法向为视轴、上向按二期契约 D1：本体 −Y 在视轴法平面的投影，退化取 +X —— bodyFrame.defaultUpBody），复制 / 删除。
 // 选中行 = 预览里该挂点换色放大并画上向。
 import { computed, inject, watch, nextTick, onBeforeUnmount } from 'vue'
@@ -26,13 +26,13 @@ const COLS = [
   { key: 'px', label: 'X', unit: 'm', num: true, w: 56, tip: '位置（本体系）' },
   { key: 'py', label: 'Y', unit: 'm', num: true, w: 56 },
   { key: 'pz', label: 'Z', unit: 'm', num: true, w: 56 },
-  { key: 'dx', label: '视轴 x', num: true, w: 54, tip: '视轴单位矢量（本体系；改完自动归一）' },
+  { key: 'dx', label: '视轴 x', num: true, w: 54, tip: '视轴单位矢量（本体系；修改后自动归一化）' },
   { key: 'dy', label: '视轴 y', num: true, w: 54 },
   { key: 'dz', label: '视轴 z', num: true, w: 54 },
   { key: 'ux', label: '上向 x', num: true, w: 54, tip: '上向（天线 +y）；缺省 = 本体 −Y 在视轴法平面的投影' },
   { key: 'uy', label: '上向 y', num: true, w: 54 },
   { key: 'uz', label: '上向 z', num: true, w: 54 },
-  { key: 'node', label: '节点', w: 90, editable: false, tip: '挂点所在的模型节点（导入件的 attach point 节点；导出时自由挂点另建空节点）' }
+  { key: 'node', label: '节点', w: 90, editable: false, tip: '挂点所在的模型节点（导入模型的 attach point 节点；导出时为自由挂点另建空节点）' }
 ]
 const MAP = { px: V('posBody', 0), py: V('posBody', 1), pz: V('posBody', 2), dx: V('dirBody', 0), dy: V('dirBody', 1), dz: V('dirBody', 2), ux: V('upBody', 0), uy: V('upBody', 1), uz: V('upBody', 2) }
 function text(r, c) {
@@ -84,14 +84,14 @@ const cellClass = (r, c) => (c.num ? 'md-mono' : (c.key === 'node' ? 'md-dim' : 
 
 // 选中 → 预览高亮
 watch(() => [g.rect.value.r0, g.rect.value.r1, cur.rev], () => {
-  if (wb.st.tab !== 'model') return
+  if (!wb.designModel()) return
   const r = g.rect.value
   const row = r.r0 >= 0 && r.r0 === r.r1 ? g.rows.value[r.r0] : null
   const vp = getVp()
   if (vp) vp.setAttachHighlight(row ? row.name : null)
 })
 
-// 在预览中点选新增
+// 表面拾取新增（与卫星页挂点表同名同行为；部件节的「在预览中点选」只是选中部件，叫法不同）
 const picking = computed(() => pick.owner.value === 'attach')
 function togglePick() {
   if (picking.value) { pick.stop('attach'); return }
@@ -135,14 +135,14 @@ onBeforeUnmount(() => pick.stop('attach'))
   <MdSec id="m-attach" title="挂点" :count="aps.length || null">
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini" :class="{ on: picking }" :disabled="ro || !rootOk" title="在预览里点模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
-          <Icon name="locate-fixed" :size="13" />在预览中点选
+        <button class="lb-mini" :class="{ on: picking }" :disabled="ro || !rootOk" title="在预览中点击模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
+          <Icon name="locate-fixed" :size="13" />表面拾取
         </button>
         <button class="lb-mini" :disabled="ro || g.rect.value.r0 < 0" title="复制所选挂点" @click="duplicate"><Icon name="copy" :size="13" />复制</button>
         <button class="lb-mini" :disabled="ro || !g.canDelete.value || g.rect.value.r0 < 0" title="删除所选挂点" @click="g.deleteRows()"><Icon name="trash" :size="13" />删除</button>
       </div>
       <div class="md-grid">
-        <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :menu-items="menuItems" :head-tip="(c) => c.tip || c.label" empty-text="还没有挂点。" />
+        <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :menu-items="menuItems" :head-tip="(c) => c.tip || c.label" empty-text="暂无挂点。" />
       </div>
     </template>
   </MdSec>

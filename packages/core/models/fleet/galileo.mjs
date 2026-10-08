@@ -36,7 +36,7 @@ function buildGalileo(B, o) {
   const c0 = scl(o.com, -1)                    // 盒中心在质心原点下的位置
   const at = (x, y, z) => add(c0, P(x, y, z))  // 研究稿给的「相对盒中心」坐标 → 质心原点坐标
   const ZN = hb[2]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, c0, hb, 0.02)
   skinBox(g, BODY, c0, hb, { '+x': 'mli_black', '-x': 'radiator', '+y': 'mli_black', '-y': 'mli_black', '+z': 'mli_black', '-z': 'mli_black' })
   // ±Y 面大片 OSR（GSC：OSR 占 ±Y 面积的 55–65 %）：面中部一整块，翼根 SADM 周围留黑 MLI

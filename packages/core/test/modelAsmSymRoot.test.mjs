@@ -104,12 +104,19 @@ t('setAttach / setMode 把带对称的件挪到对称面上：同一条命令去
   // 不在对称面上：对称照留
   const r2 = S.applyCmd(d, { type: 'setAttach', id: 'refl', attach: { roll: 30 } })
   assert.ok(r2.ok && !r2.symDropped && S.compById(r2.doc, 'refl').sym)
-  // setMode：自由件切插座，最近的空闲插座在对称面上（+X）
+  // setMode：自由件切插座，阈值内最近的空闲插座是 +X（对称面上）。口径变化（2026-10 §3.3.1 保位姿）：以前吸到 +X 后件落在对称面上
+  // 才触发去对称；现在偏移进 off（接口系 y = −Y 方向 0.12 m）、世界位姿不变，件仍在 y = 0.12 处，对称照留
   const df = docOf([BUS, { id: 'refl', type: 'sat.reflector', parent: 'bus', attach: { mode: 'free' }, t: [1, 0.12, 0], q: [0, 0.7071067811865476, 0, 0.7071067811865476], sym: { op: 'mirrorXZ' } }])
   const r3 = S.applyCmd(df, { type: 'setMode', id: 'refl', mode: 'socket' })
   assert.ok(r3.ok, r3.error)
-  assert.equal(S.compById(r3.doc, 'refl').attach.socket, '+X')
-  assert.deepEqual(r3.symDropped, ['refl'])
+  const a3 = S.compById(r3.doc, 'refl').attach
+  assert.equal(a3.socket, '+X')
+  near(a3.off[1], -0.12, 1e-12, 'off：接口系 y = 本体 −Y')
+  assert.equal(r3.symDropped, undefined)
+  nearM(poses(r3.doc).get('refl'), poses(df).get('refl'), 1e-9, '世界位姿不变')
+  // 真挪到对称面上（setAttach 把 off 清零）：同一条命令去掉对称
+  const r4 = S.applyCmd(r3.doc, { type: 'setAttach', id: 'refl', attach: { off: [0, 0, 0] } })
+  assert.deepEqual(r4.symDropped, ['refl'])
 })
 
 // ═════════════════════════ ③ 换根 ═════════════════════════
@@ -242,8 +249,8 @@ t('componentFacts / componentDensityKeys：轻层取质量 / 包围盒 / 读到�
 
 t('属性面板密度行：主结构体密度按领域取名（平台体 / 机体 / 船体 / 车体 / 结构）；给了 domainKeys 就不在主线程生成整个领域', () => {
   const lab = (domain) => L.densityRows({ busVolume: 300 }, { domain, comps: [] }, { domainKeys: ['busVolume'] }).find((r) => r.key === 'busVolume').label
-  assert.deepEqual(['spacecraft', 'aircraft', 'ship', 'vehicle', 'ground'].map(lab), ['平台体', '机体', '船体', '车体', '结构'])
-  assert.equal(L.densityRows({ busVolume: 300 }).find((r) => r.key === 'busVolume').label, '平台体', '不给文档：原口径')
+  assert.deepEqual(['spacecraft', 'aircraft', 'ship', 'vehicle', 'ground'].map(lab), ['星体', '机体', '船体', '车体', '结构'])
+  assert.equal(L.densityRows({ busVolume: 300 }).find((r) => r.key === 'busVolume').label, '星体', '不给文档：原口径')
   const rows = L.densityRows({}, { domain: 'aircraft', comps: [] }, { domainKeys: [] })
   assert.deepEqual(rows, [], '领域键未到、文档空、没改过：不列')
 })
@@ -261,7 +268,8 @@ t('fnv1a64Hex：16 位分量写法与 BigInt 参考逐位相同', () => {
   }
   for (const c of cases) assert.equal(fnv1a64Hex(c), ref(c), JSON.stringify(c))
   const doc = A.specToAssembly(templateSpec(DEFAULT_TEMPLATE_ID).spec)
-  assert.equal(A.asmHash(doc), ref(canon(A.normalizeAssembly(doc))), 'asmHash 与参考实现同值')
+  // 口径（2026-10 §3.3.1）：asmHash 对 compactAssembly 形式算（剥掉缺省 off / tilt：旧文档哈希不变）
+  assert.equal(A.asmHash(doc), ref(canon(A.compactAssembly(doc))), 'asmHash 与参考实现同值')
 })
 
 console.log(`modelAsmSymRoot: ${n} 项通过`)

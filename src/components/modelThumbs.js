@@ -1,7 +1,8 @@
 // 模型缩略图（3D 页共用：「卫星模型」侧栏的库网格 / 当前卫星、标记侧栏的「模型」小块、模型选择弹层）。
 // 从 ModelSidePanel 原样抽出来的一份模块级单例 —— 侧栏与弹层共享同一份缓存，同一张图不画两遍。
 //   · 有文件的模型：主进程 models.thumbnail（远端的由主进程下到本机缓存）；
-//   · 参数化模板 param:：主进程回 missing → 现场生成（与模型工作台同一套 thumbs.renderThumb、同一把 localStorage 钥匙）；
+//   · 参数化模板 param:：主进程回 missing → 现场生成（与模型工作台同一套 thumbs.renderThumb、同一把 localStorage 钥匙，值 {sig, url}
+//     按几何签名作废）；
 //   · 实体模板 ent:（地球站 / 飞机 / 船 / 车）：buildAssembly 现场出图，缓存键与工作台 wbStore.entThumb 同一把
 //     （model/entThumb/<TPL_THUMB_VER>-r2/<id>，值 {sig: asmHash(doc), url}）—— 两个窗口同源，谁先画谁存，模板数据改了按哈希自动重画。
 // 现场出图一张占主线程几十毫秒：排队、两张之间让一次空闲回调（同 wbStore.pumpRender），侧栏一展开十几张卡片不把界面卡住。
@@ -90,13 +91,15 @@ async function paramThumb(id) {
   if (!tid && isFleetId(id)) return fleetThumb(id)
   if (!tid) return ''
   sweepOldTplThumbs()
-  try { const u = localStorage.getItem(TPL_THUMB_KEY(tid)); if (u) return u } catch { /* 无 */ }
+  // 值 {sig, url}：sig = 生成结果的几何签名（与工作台 wbStore.templateThumb 同式），生成器造型改了自动重画；老格式（裸 data URL）当过期
   const t = templateSpec(tid)
   const r = buildParamModel(t.spec)
+  const key = TPL_THUMB_KEY(tid), sig = fleetSig(r)
+  try { const c = JSON.parse(localStorage.getItem(key) || 'null'); if (c && c.sig === sig && c.url) return c.url } catch { /* 坏缓存 / 老格式：重画 */ }
   const rt = irToThree(r.ir)
   try {
     const url = await blobToDataUrl(await renderThumb(rt, { frame: r.frame, units: { scaleToMeters: 1 } }, { size: 384 }))
-    try { localStorage.setItem(TPL_THUMB_KEY(tid), url) } catch { /* 配额满：下次再画 */ }
+    try { localStorage.setItem(key, JSON.stringify({ sig, url })) } catch { /* 配额满：下次再画 */ }
     return url
   } finally { disposeObject(rt) }
 }

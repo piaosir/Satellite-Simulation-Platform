@@ -320,20 +320,26 @@ function onMove(e) {
 function onLeave() { hover.value = null; draw() }
 
 // —— 导出 PNG ——
+// file:save 写失败（文件被占用等）不抛、只回 {ok:false,error}：看返回值，失败就在按钮旁出错误本身
+const expErr = ref('')
 async function exportPng() {
   if (!exportFile) return
-  // 高 DPI 导出（逻辑 880×470 × 3 → 2640×1410 物理像素），报告里放大也清晰
-  const scale = 3
-  const W = 880, H = 470
-  const cv = document.createElement('canvas')
-  cv.width = W * scale; cv.height = H * scale
-  const ctx = cv.getContext('2d'); ctx.scale(scale, scale)
-  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
-  drawTo(ctx, W, H, true)
-  const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  const nm = '雨衰曲线_' + (AXES[axis.value].label) + (props.station ? ('_' + props.station) : '') + '.png'
-  try { await exportFile({ defaultName: nm, data: bytes, filters: [{ name: 'PNG 图片', extensions: ['png'] }] }) } catch (e) { /* ignore */ }
+  expErr.value = ''
+  try {
+    // 高 DPI 导出（逻辑 880×470 × 3 → 2640×1410 物理像素），报告里放大也清晰
+    const scale = 3
+    const W = 880, H = 470
+    const cv = document.createElement('canvas')
+    cv.width = W * scale; cv.height = H * scale
+    const ctx = cv.getContext('2d'); ctx.scale(scale, scale)
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high'
+    drawTo(ctx, W, H, true)
+    const blob = await new Promise((res, rej) => cv.toBlob((b) => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png'))
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    const nm = '雨衰曲线_' + (AXES[axis.value].label) + (props.station ? ('_' + props.station) : '') + '.png'
+    const r = await exportFile({ defaultName: nm, data: bytes, filters: [{ name: 'PNG 图片', extensions: ['png'] }] })
+    if (r && !r.ok && !r.canceled) expErr.value = '导出失败：' + (r.error || '')
+  } catch (e) { expErr.value = '导出失败：' + ((e && e.message) || e) }
 }
 
 let _ro = null
@@ -366,6 +372,7 @@ const hoverText = computed(() => hover.value
         <span class="rp-unit">{{ curAxis.unit }}</span>
       </span>
       <span class="rp-flex"></span>
+      <span v-if="expErr" class="rp-err" :title="expErr">{{ expErr }}</span>
       <button class="rp-png" :disabled="!points.length" title="导出曲线为 PNG（用于报告）" @click="exportPng">导出 PNG</button>
     </div>
     <div ref="wrap" class="rp-canvas-wrap">
@@ -393,6 +400,7 @@ const hoverText = computed(() => hover.value
 .rp-png { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--r-ctl, 2px); cursor: pointer; }
 .rp-png:hover:not(:disabled) { border-color: var(--accent); }
 .rp-png:disabled { opacity: .5; cursor: default; }
+.rp-err { color: var(--danger); font-size: var(--fs-1); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rp-canvas-wrap { position: relative; padding: 4px; }
 .rp-canvas-wrap canvas { display: block; width: 100%; }
 .rp-loading { position: absolute; top: 8px; right: 12px; font-size: var(--fs-2); color: var(--text-faint); }

@@ -340,6 +340,60 @@ approx('ln(e)=1', run('ln(e)'), 1, 1e-12)
   ok('lin(dBHz) → Hz', fu('lin([合计 C/N₀])') === 'Hz', fu('lin([合计 C/N₀])'))
 }
 
+// —— 列名改名后旧公式照样认（v1.5.0 上线前排查 #50）——
+// 「卫星EIRP」拆成「卫星饱和 EIRP」（GSO / NGSO）与「再生下行 EIRP」（再生式），「综合损耗」统一回「其他损耗」。
+// 存着的公式按旧名引用：载入时 migrateLegacyFieldRefs 改写，改写后必须在【按真实字段表搭出来的池】里解析得通。
+{
+  const { migrateLegacyFieldRefs, labeledResultPool } = await import('../../../src/shared/lbResultLabels.js')
+  const G = await import('../../../src/linkbudget/params.js')
+  const N = await import('../../../src/ngso/ngsoParams.js')
+  const R = await import('../../../src/regen/regenParams.js')
+  // 池的搭法镜像各窗的 customPool（CC_INPUT_SPECS + 词表），样本里每个数值字段都给值
+  const specsOf = (M, extra = []) => [
+    { fields: M.SAT_FIELDS, group: '卫星' }, { fields: M.CARRIER_FIELDS, group: '载波' },
+    { fields: M.TX_FIELDS, side: 'tx' }, { fields: M.ES_TX_FIELDS, side: 'tx' }, { fields: M.ES_COMMON_FIELDS, side: 'tx' },
+    { fields: M.RX_FIELDS, side: 'rx' }, { fields: M.ES_RX_FIELDS, side: 'rx' }, { fields: M.ES_COMMON_FIELDS, side: 'rx', useRxKey: true },
+    ...extra
+  ]
+  const sampleOf = (specs) => { const s = {}; for (const sp of specs) for (const f of sp.fields) if (f.type === 'num') { s[f.key] = 1; if (f.rxKey) s[f.rxKey] = 1 } return s }
+  const poolOf = (specs) => buildPool(schemaInputPool(specs, sampleOf(specs)), labeledResultPool(new Set(['EIRPsResult', 'uplinkMiscLossResult', 'downlinkMiscLossResult'])))
+  const labelOfKey = (pool, k) => (pool.find((x) => x.key === k) || {}).label
+  const defs = (exprs) => exprs.map((e, i) => ({ id: 'm' + i, label: 'c' + i, expr: e, dp: 2 }))
+
+  // GSO：新名与出参 EIRPsResult 同名同单位 → 按名引用判歧义，旧引用落键名
+  const gPool = poolOf(specsOf(G)), gRs = makeResolver(gPool)
+  ok('GSO：rxEIRP 列名改为「卫星饱和 EIRP」', labelOfKey(gPool, 'rxEIRP') === '卫星饱和 EIRP')
+  ok('GSO：新名与出参同名同单位 ⇒ 按名引用有歧义（这就是旧引用要落键名的原因）', gRs('卫星饱和 EIRP') === null && /歧义/.test(gRs.explain('卫星饱和 EIRP')))
+  const g = migrateLegacyFieldRefs(defs(['[卫星EIRP] - 3', '[卫星EIRP(dBW)] + [其他损耗（收）]', '[卫星饱和 EIRP(dBW)] - 0.5', 'uplinkCN + 1']), 'GEO')
+  ok('GSO：[卫星EIRP] → rxEIRP（含带单位写法）', g[0].expr === 'rxEIRP - 3' && g[1].expr === 'rxEIRP + [其他损耗（收）]', g.map((d) => d.expr).join(' | '))
+  ok('GSO：按名引用出参的 [卫星饱和 EIRP…] → EIRPsResult', g[2].expr === 'EIRPsResult - 0.5', g[2].expr)
+  ok('GSO：无关公式原样（同一个对象）', g[3].expr === 'uplinkCN + 1')
+  ok('GSO：改写后在真实池里解析得通', [g[0], g[1], g[2]].every((d) => validateExpr(d.expr, gRs, gPool) === null),
+    [g[0], g[1], g[2]].map((d) => validateExpr(d.expr, gRs, gPool)).join(' | '))
+  ok('幂等：再过一遍原样返回同一个数组', migrateLegacyFieldRefs(g, 'GEO') === g)
+  const plain = defs(['uplinkCN + 1'])
+  ok('没有可改的：原样返回同一个数组（调用方据此判断不必回写）', migrateLegacyFieldRefs(plain, 'GEO') === plain)
+
+  // NGSO：EIRP 同 GSO；「综合损耗（发）/（收）」→「其他损耗（发）/（收）」，单位写法保留
+  const nPool = poolOf(specsOf(N)), nRs = makeResolver(nPool)
+  ok('NGSO：两侧损耗列名统一为「其他损耗」', labelOfKey(nPool, 'uplinkOtherLoss') === '其他损耗（发）' && labelOfKey(nPool, 'downlinkOtherLoss') === '其他损耗（收）',
+    labelOfKey(nPool, 'uplinkOtherLoss') + ' / ' + labelOfKey(nPool, 'downlinkOtherLoss'))
+  const n = migrateLegacyFieldRefs(defs(['[综合损耗（发）(dB)] + [综合损耗（收）]', '[卫星EIRP] - [综合损耗（发）]']), 'NGSO')
+  ok('NGSO：[综合损耗（发）(dB)] → [其他损耗（发）(dB)]', n[0].expr === '[其他损耗（发）(dB)] + [其他损耗（收）]' && n[1].expr === 'rxEIRP - [其他损耗（发）]', n.map((d) => d.expr).join(' | '))
+  ok('NGSO：改写后解析到原来那两个键', nRs('其他损耗（发）(dB)') === 'uplinkOtherLoss' && nRs('其他损耗（收）') === 'downlinkOtherLoss' && n.every((d) => validateExpr(d.expr, nRs, nPool) === null))
+
+  // 再生式：[卫星EIRP] → [再生下行 EIRP]（不撞名，保留按名引用）；出参「卫星饱和 EIRP」不动
+  const rSpecs = specsOf(R, [{ fields: R.ISL_FIELDS, group: '星间' }])
+  const rPool = poolOf(rSpecs), rRs = makeResolver(rPool)
+  ok('再生式：rxEIRP 列名改为「再生下行 EIRP」', labelOfKey(rPool, 'rxEIRP') === '再生下行 EIRP')
+  const r = migrateLegacyFieldRefs(defs(['[卫星EIRP(dBW)] - 1', '[卫星饱和 EIRP] + [综合损耗（收）(dB)]', '[综合损耗] * 2']), 'REGEN')
+  ok('再生式：[卫星EIRP(dBW)] → [再生下行 EIRP(dBW)]', r[0].expr === '[再生下行 EIRP(dBW)] - 1', r[0].expr)
+  ok('再生式：出参 [卫星饱和 EIRP] 不动、损耗改名', r[1].expr === '[卫星饱和 EIRP] + [其他损耗（收）(dB)]', r[1].expr)
+  ok('再生式：改写后解析得通', rRs('再生下行 EIRP(dBW)') === 'rxEIRP' && validateExpr(r[0].expr, rRs, rPool) === null && validateExpr(r[1].expr, rRs, rPool) === null,
+    [validateExpr(r[0].expr, rRs, rPool), validateExpr(r[1].expr, rRs, rPool)].join(' | '))
+  ok('非数组 / 坏条目容错', migrateLegacyFieldRefs(null, 'GEO') === null && migrateLegacyFieldRefs([null, { id: 'x' }], 'GEO').length === 2)
+}
+
 console.log(`
 === ${pass} passed, ${fail} failed ===`)
 if (fail) process.exit(1)

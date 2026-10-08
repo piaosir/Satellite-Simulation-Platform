@@ -249,8 +249,8 @@ const es73 = cassStation({
     mountType: dim('az-el (kingpost)', null, U.cpi73, '方位俯仰立柱座'),
     elevationRangeDeg: dim({ min: 0, max: 90 }, 'deg', U.cpi73),
     azimuthRangeDeg: dim(200, 'deg', U.cpi73, 'KX200 方位行程'),
-    elAxisHeightM: dim(3.704, 'm', U.cpi73, '侧视图读图：地面到俯仰轴'),
-    overallHeightAt90ElM: dim(8.23, 'm', U.cpi73, '读图：仰角 90° 总高'),
+    elAxisHeightM: dim(3.704, 'm', U.cpi73, '侧视图量取：地面至俯仰轴'),
+    overallHeightAt90ElM: dim(8.23, 'm', U.cpi73, '图纸量取：仰角 90° 总高'),
     reflectorMassKg: dim(998, 'kg', U.cpi73, '反射面质量（KX200 列）')
   }
 })
@@ -262,8 +262,8 @@ const es90 = cassStation({
     mountType: dim('az-el (kingpost)', null, U.cpi90, '方位俯仰立柱座'),
     elevationRangeDeg: dim({ min: 0, max: 90 }, 'deg', U.cpi90),
     azimuthRangeDeg: dim(200, 'deg', U.cpi90, 'KX200 方位行程'),
-    elAxisHeightM: dim(4.48, 'm', U.cpi90, '侧视图读图：地面到俯仰轴'),
-    overallHeightAt90ElM: dim(9.991, 'm', U.cpi90, '读图：仰角 90° 总高'),
+    elAxisHeightM: dim(4.48, 'm', U.cpi90, '侧视图量取：地面至俯仰轴'),
+    overallHeightAt90ElM: dim(9.991, 'm', U.cpi90, '图纸量取：仰角 90° 总高'),
     hubDiameterM: dim(1.78, 'm', U.cpi90, '中心舱直径')
   }
 })
@@ -274,8 +274,8 @@ const es111 = cassStation({
     apertureM: dim(11.1, 'm', U.cpi111), optics: dim('cassegrain', null, U.cpi111),
     mountType: dim('az-el', null, U.cpi111),
     elevationRangeDeg: dim({ min: 0, max: 90 }, 'deg', U.cpi111),
-    elAxisHeightM: dim(6.026, 'm', U.cpi111, '侧视图读图：地面到俯仰轴'),
-    overallHeightAt90ElM: dim(12.655, 'm', U.cpi111, '读图：仰角 90° 总高')
+    elAxisHeightM: dim(6.026, 'm', U.cpi111, '侧视图量取：地面至俯仰轴'),
+    overallHeightAt90ElM: dim(12.655, 'm', U.cpi111, '图纸量取：仰角 90° 总高')
   }
 })
 
@@ -286,8 +286,8 @@ const es131 = cassStation({
     mountType: dim('az-el', null, U.cpi131),
     elevationRangeDeg: dim({ min: 0, max: 90 }, 'deg', U.cpi131),
     azimuthRangeDeg: dim(180, 'deg', U.cpi131, 'KX 座方位行程'),
-    elAxisHeightM: dim(7.087, 'm', U.cpi131, '侧视图读图：地面到俯仰轴'),
-    overallHeightAt90ElM: dim(15.064, 'm', U.cpi131, '读图：仰角 90° 总高')
+    elAxisHeightM: dim(7.087, 'm', U.cpi131, '侧视图量取：地面至俯仰轴'),
+    overallHeightAt90ElM: dim(15.064, 'm', U.cpi131, '图纸量取：仰角 90° 总高')
   }
 })
 

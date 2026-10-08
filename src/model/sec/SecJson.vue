@@ -15,7 +15,7 @@ const ro = computed(() => !cur.editable)
 const api = typeof window !== 'undefined' ? window.api : null
 const state = ref(null)   // {kind:'ok'|'bad', text}
 const FIELD_LABEL = { title: '名称', titleZh: '中文名', kind: '类别', group: '分组', fidelity: '细节档', units: '单位', frame: '本体轴', parts: '部件',
-  massProps: '质量特性', attachPoints: '挂点', articulations: '关节', solarPanelGroups: '太阳翼组', noObscurationNodes: '不遮挡节点', tags: '标签', aliases: '别名' }
+  massProps: '质量特性', attachPoints: '挂点', articulations: '关节', solarPanelGroups: '太阳翼组', noObscurationNodes: '遮挡计算排除节点', tags: '标签', aliases: '别名' }
 const safeName = () => String(wb.displayTitle(m.value) || 'model').replace(/[\\/:*?"<>|]+/g, '_')
 
 async function saveText(text, name) {
@@ -60,20 +60,20 @@ async function pasteJson() {
 </script>
 
 <template>
-  <MdSec id="m-json" title="JSON" :default-open="false" tip="ModelMeta（与导出件同名 .satsim.json 同口径）；导入只覆盖元数据字段，编号、来源、文件以库里为准">
+  <MdSec id="m-json" title="JSON" :default-open="false" tip="ModelMeta（与导出模型同名 .satsim.json 格式一致）；导入仅覆盖元数据字段，编号、来源与文件以库中记录为准">
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini" :disabled="!api" title="整份元数据另存为 .satsim.json" @click="exportMeta"><Icon name="file-down" :size="12" />导出…</button>
-        <button class="lb-mini" :disabled="!api || !(m.attachPoints && m.attachPoints.length)" title="只导出挂点 {attachPoints:[…]}" @click="exportAttach"><Icon name="locate-fixed" :size="12" />导出挂点…</button>
-        <button class="lb-mini" title="整份元数据复制到剪贴板" @click="copyMeta"><Icon name="copy" :size="12" />复制</button>
+        <button class="lb-mini" :disabled="!api" title="完整元数据另存为 .satsim.json" @click="exportMeta"><Icon name="file-down" :size="12" />导出…</button>
+        <button class="lb-mini" :disabled="!api || !(m.attachPoints && m.attachPoints.length)" title="仅导出挂点 {attachPoints:[…]}" @click="exportAttach"><Icon name="locate-fixed" :size="12" />导出挂点…</button>
+        <button class="lb-mini" title="将完整元数据复制到剪贴板" @click="copyMeta"><Icon name="copy" :size="12" />复制</button>
       </div>
       <div class="md-acts">
-        <button class="lb-mini" :disabled="ro" title="从 .satsim.json / 挂点 JSON 文件导入（整份元数据或只挂点）" @click="pickFile"><Icon name="upload" :size="12" />导入…</button>
+        <button class="lb-mini" :disabled="ro" title="从 .satsim.json / 挂点 JSON 文件导入（完整元数据或仅挂点）" @click="pickFile"><Icon name="upload" :size="12" />导入…</button>
         <button class="lb-mini" :disabled="ro" title="从剪贴板导入" @click="pasteJson"><Icon name="clipboard" :size="12" />粘贴</button>
         <input ref="fileEl" type="file" accept=".json,application/json" hidden @change="onFile" />
       </div>
       <div v-if="state" class="md-state" :class="state.kind === 'bad' ? 'bad' : 'ok'" :title="state.text">
-        <Icon :name="state.kind === 'bad' ? 'alert-triangle' : 'check'" :size="12" /><span class="js-t" data-i18n-skip>{{ state.text }}</span>
+        <Icon :name="state.kind === 'bad' ? 'alert-triangle' : 'check'" :size="12" /><span class="js-t">{{ state.text }}</span>
       </div>
     </template>
   </MdSec>

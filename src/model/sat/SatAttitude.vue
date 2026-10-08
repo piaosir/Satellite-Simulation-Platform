@@ -1,7 +1,10 @@
 <script setup>
 // 卫星页「姿态律」（DESIGN2 §1 / 任务书 §6.2；数学在 packages/core/models/attitude.mjs，参数口径在 schema.mjs ATTITUDE_PARAM_DEFAULTS）：
-//   nadir 对地（可加固定偏航）· yawSteer 偏航导引（太阳翼轴 ⟂ 太阳）· sun 指定本体轴对日 · inertial 固定惯性姿态（TEME）·
-//   target 指定本体轴指向地球站 / 另一颗星。参数改一格即写回绑定（400 ms 防抖落盘）；切律不丢别的律填过的参数（schema 照留）。
+//   nadir 对地（可加相对轨道系的滚转 / 俯仰 / 偏航偏置）· yawSteer 偏航导引（太阳翼轴 ⟂ 太阳）· sun 指定本体轴对日 ·
+//   inertial 固定惯性姿态（TEME）· target 指定本体轴指向地球站 / 另一颗星 / 空间点；sun、target 另有次约束与次约束轴。
+//   参数改一格即写回绑定（400 ms 防抖落盘）；切律不丢别的律填过的参数（schema 照留）。
+//   ★ 覆盖分析「天线 boresight · 姿态 + 挂点」一节（components/GrdAttitudeFields.vue）改的是同一份 attitude，两处参数键一一对应：
+//     这里加了键，那边也要能看见（否则一边写进去的值另一边成了看不见的状态）。
 import { ref, computed, inject, watch } from 'vue'
 import Icon from '../../components/Icon.vue'
 import MdSec from '../MdSec.vue'
@@ -11,6 +14,8 @@ import SatKeyPicker from './SatKeyPicker.vue'
 import { LAWS, LAW_LABEL, AXIS_OPTIONS, axisKeyOf, SECONDARY_LABEL } from '../mountLogic.js'
 import { ATTITUDE_SECONDARY, normalizeAttitude } from '@core/models/schema.mjs'
 import { keyLabel } from '../satStore.js'
+import { targetView } from '../../viz/models/attEdit.js'
+import { geocentricToEcef } from '../../viz/wgs84.js'
 
 const sat = inject('sat')
 const S = sat.st
@@ -29,6 +34,8 @@ function setLaw(v) { setAtt((a) => { a.law = v }) }
 function setParam(k, v) { setAtt((a) => { if (v === null || v === undefined || v === '') delete a.params[k]; else a.params[k] = v }) }
 const axisKey = (k, def) => axisKeyOf(P.value[k]) || def
 function setAxis(k, key) { const o = AXIS_OPTIONS.find((a) => a.key === key); setParam(k, o ? o.v.slice() : null) }
+// 次约束轴：没写 = 缺省（随次约束）；写了却不是坐标轴（JSON 导入的任意方向）显示成自定义方向
+const sAxKey = computed(() => (P.value.secondaryAxis == null ? '' : (axisKeyOf(P.value.secondaryAxis) || '__custom')))
 
 // inertial：欧拉角（3-2-1，度）与四元数二选一——给了 q 就以 q 为准
 const inMode = computed(() => (Array.isArray(P.value.q) ? 'q' : 'euler'))
@@ -50,9 +57,20 @@ const tgt = computed(() => P.value.target || null)
 const tgtKind = computed(() => (tgt.value ? tgt.value.kind : 'station'))
 function setTarget(t) { setParam('target', t) }
 function setTgtKind(k) {
+  if (tgt.value && tgtKind.value === k) { tgtKindUi.value = ''; return }   // 点的就是当前这一类：不重置已填的目标
   if (k === 'station') setTarget({ kind: 'station', latDeg: 39.9, lonDeg: 116.4, altM: 0, name: '' })
-  else setTarget(null)
+  else if (k === 'ecef') {
+    // 空间点（地心球面口径，存成 ecefKm）：从当前地球站的经纬度起步，高度 0
+    const v = targetView(P.value)
+    setTarget({ kind: 'ecef', ecefKm: geocentricToEcef(v.kind === 'station' ? v.lon : 0, v.kind === 'station' ? v.lat : 0, 0) })
+  } else setTarget(null)
   tgtKindUi.value = k
+}
+const ptView = computed(() => targetView(P.value))
+function setPoint(k, v) {
+  const p = ptView.value.kind === 'ecef' ? { ...ptView.value } : { lat: 0, lon: 0, altKm: 0 }
+  p[k] = v == null ? 0 : v
+  setTarget({ kind: 'ecef', ecefKm: geocentricToEcef(p.lon, p.lat, p.altKm) })
 }
 // 点了「卫星」、还没选星时（target 为空）界面先切到选星框；有了真目标就跟数据走。组件常驻（KeepAlive），换星必须复位
 const tgtKindUi = ref('')
@@ -62,7 +80,7 @@ watch(() => (tgt.value ? tgt.value.kind : ''), (k) => { if (k) tgtKindUi.value =
 function setStation(k, v) {
   const t = tgt.value && tgt.value.kind === 'station' ? { ...tgt.value } : { kind: 'station', latDeg: 0, lonDeg: 0, altM: 0 }
   t[k] = v == null ? 0 : v
-  if (k !== 'name') delete t.name
+  if (k === 'latDeg' || k === 'lonDeg') delete t.name   // 站名是选城市时带进来的标注：坐标一动就不再对（改站高不影响）
   setTarget(t)
 }
 const cityOpen = ref(false)
@@ -84,23 +102,35 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
 </script>
 
 <template>
-  <MdSec id="s-att" title="姿态律" :summary="summary" tip="本体系：+X 速度、+Y 补全右手、+Z 天底；姿态律给出本体三轴在地固系下的朝向（逐时刻），挂点视轴随之转">
+  <MdSec id="s-att" title="姿态律" :summary="summary" summary-lit tip="本体系：+X 速度方向、+Y 按右手系补全、+Z 天底；姿态律给出本体三轴在地固系中的逐时刻指向，挂点视轴随之转动">
     <template v-if="att">
       <div class="srow">
-        <label>律</label>
+        <label>姿态律</label>
         <select class="ci sa-sel" :value="law" @change="setLaw($event.target.value)">
           <option v-for="l in LAWS" :key="l" :value="l">{{ LAW_LABEL[l] }}</option>
         </select>
       </div>
-      <!-- nadir -->
-      <div v-if="law === 'nadir'" class="srow">
-        <label title="绕本体 +Z（天底）的固定偏航角，右手">偏航偏置</label>
-        <NumIn :model-value="P.yawBiasDeg ?? 0" :min="-360" :max="360" :sig="6" @commit="(v) => setParam('yawBiasDeg', v || null)" />
-        <span class="u">°</span>
-      </div>
+      <!-- nadir：相对轨道系的姿态偏置（3-2-1：先偏航、再俯仰、后滚转；与覆盖分析「姿态 + 挂点」一节同一组键） -->
+      <template v-if="law === 'nadir'">
+        <div class="srow">
+          <label title="绕本体 +X（沿迹）的固定滚转，右手；正值使视轴 +Z 向 −Y 侧倾（赤道顺行轨道即向北）">滚转偏置</label>
+          <NumIn :model-value="P.rollBiasDeg ?? 0" :min="-360" :max="360" :sig="6" @commit="(v) => setParam('rollBiasDeg', v || null)" />
+          <span class="u">°</span>
+        </div>
+        <div class="srow">
+          <label title="绕本体 +Y 的固定俯仰，右手；正值使视轴 +Z 向 +X（沿迹）侧倾">俯仰偏置</label>
+          <NumIn :model-value="P.pitchBiasDeg ?? 0" :min="-360" :max="360" :sig="6" @commit="(v) => setParam('pitchBiasDeg', v || null)" />
+          <span class="u">°</span>
+        </div>
+        <div class="srow">
+          <label title="绕本体 +Z（天底）的固定偏航角，右手定则">偏航偏置</label>
+          <NumIn :model-value="P.yawBiasDeg ?? 0" :min="-360" :max="360" :sig="6" @commit="(v) => setParam('yawBiasDeg', v || null)" />
+          <span class="u">°</span>
+        </div>
+      </template>
       <!-- yawSteer -->
       <div v-else-if="law === 'yawSteer'" class="srow">
-        <label title="偏航导引后太阳落在本体 +X 还是 −X 一侧的半平面（太阳翼轴 ±Y 始终垂直太阳）">太阳侧</label>
+        <label title="偏航导引后太阳所在的本体半平面（+X 侧或 −X 侧；太阳翼轴 ±Y 始终垂直于太阳方向）">太阳侧</label>
         <div class="lbu-seg sa-seg">
           <button :class="{ on: (P.sunSide || '+X') === '+X' }" @click="setParam('sunSide', '+X')">+X</button>
           <button :class="{ on: P.sunSide === '-X' }" @click="setParam('sunSide', '-X')">−X</button>
@@ -113,10 +143,18 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
           <select class="ci sa-ax" :value="axisKey('axis', law === 'sun' ? '-Z' : '+Z')" @change="setAxis('axis', $event.target.value)">
             <option v-for="a in AXIS_OPTIONS" :key="a.key" :value="a.key">{{ a.key.replace('-', '−') }}</option>
           </select>
-          <label class="sa-l2" title="主轴对准后剩下的绕主轴转角由次约束定：次轴落在「主方向–次方向」平面里、朝次方向一侧">次约束</label>
+          <label class="sa-l2" title="主轴对准后，绕主轴的剩余转角由次约束确定：次轴位于「主方向–次方向」平面内并朝向次方向一侧">次约束</label>
           <select class="ci sa-ax" :value="P.secondary || ''" @change="setParam('secondary', $event.target.value || null)">
             <option value="">缺省</option>
             <option v-for="k in ATTITUDE_SECONDARY" :key="k" :value="k">{{ SECONDARY_LABEL[k] || k }}</option>
+          </select>
+        </div>
+        <div class="srow">
+          <label title="朝向次约束方向的本体轴；缺省随次约束（对地 +Z、轨道法向 −Y、速度 / 太阳 +X）">次约束轴</label>
+          <select class="ci sa-sel" :value="sAxKey" @change="setAxis('secondaryAxis', $event.target.value)">
+            <option value="">缺省</option>
+            <option v-for="a in AXIS_OPTIONS" :key="a.key" :value="a.key">{{ a.key.replace('-', '−') }}</option>
+            <option v-if="sAxKey === '__custom'" value="__custom" disabled>自定义方向</option>
           </select>
         </div>
         <template v-if="law === 'target'">
@@ -125,19 +163,48 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
             <div class="lbu-seg sa-seg">
               <button :class="{ on: kindShown === 'station' }" @click="setTgtKind('station')">地球站</button>
               <button :class="{ on: kindShown === 'sat' }" @click="setTgtKind('sat')">卫星</button>
+              <button :class="{ on: kindShown === 'ecef' }" title="地心经纬度 + 高度（与覆盖分析手动「空间点」指向同一口径）" @click="setTgtKind('ecef')">空间点</button>
             </div>
           </div>
           <template v-if="kindShown === 'station'">
+            <!-- 站址：经度在前（与平台其它站址表同序）、各带可见标签与单位 -->
             <div class="srow">
-              <label title="WGS-84 大地坐标">站址</label>
-              <NumIn :model-value="tgt && tgt.kind === 'station' ? tgt.latDeg : null" :min="-90" :max="90" :sig="8" title="纬度（°，北正）" @commit="(v) => setStation('latDeg', v)" />
-              <NumIn :model-value="tgt && tgt.kind === 'station' ? tgt.lonDeg : null" :min="-360" :max="360" :sig="8" title="经度（°，东正）" @commit="(v) => setStation('lonDeg', v)" />
-              <button class="lb-mini lb-mini-ico" title="从城市库选" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
+              <label title="WGS-84 大地经度（东经为正）">经度</label>
+              <NumIn :model-value="tgt && tgt.kind === 'station' ? tgt.lonDeg : null" :min="-360" :max="360" :sig="8" @commit="(v) => setStation('lonDeg', v)" />
+              <span class="u">°E</span>
+              <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
+            </div>
+            <div class="srow">
+              <label title="WGS-84 大地纬度（北纬为正）">纬度</label>
+              <NumIn :model-value="tgt && tgt.kind === 'station' ? tgt.latDeg : null" :min="-90" :max="90" :sig="8" @commit="(v) => setStation('latDeg', v)" />
+              <span class="u">°N</span>
+            </div>
+            <div class="srow">
+              <label title="WGS-84 大地高">站高</label>
+              <NumIn :model-value="tgt && tgt.kind === 'station' ? (tgt.altM || 0) : null" :min="-12000" :max="100000000" :sig="8" @commit="(v) => setStation('altM', v)" />
+              <span class="u">m</span>
             </div>
             <div v-if="tgt && tgt.name" class="md-kvs"><div class="md-kv"><span class="k">站名</span><span class="v sa-name" data-i18n-skip>{{ tgt.name }}</span></div></div>
           </template>
+          <template v-else-if="kindShown === 'ecef'">
+            <div class="srow">
+              <label title="地心经度（东经为正）">经度</label>
+              <NumIn :model-value="ptView.kind === 'ecef' ? ptView.lon : null" :min="-360" :max="360" :sig="8" @commit="(v) => setPoint('lon', v)" />
+              <span class="u">°E</span>
+            </div>
+            <div class="srow">
+              <label title="地心纬度（北纬为正）">纬度</label>
+              <NumIn :model-value="ptView.kind === 'ecef' ? ptView.lat : null" :min="-90" :max="90" :sig="8" @commit="(v) => setPoint('lat', v)" />
+              <span class="u">°N</span>
+            </div>
+            <div class="srow">
+              <label title="地心球面 r = 6378.137 km + 该值">高度</label>
+              <NumIn :model-value="ptView.kind === 'ecef' ? ptView.altKm : null" :min="0" :max="10000000" :sig="8" @commit="(v) => setPoint('altKm', v)" />
+              <span class="u">km</span>
+            </div>
+          </template>
           <div v-else class="srow">
-            <label>目标星</label>
+            <label>目标卫星</label>
             <SatKeyPicker :model-value="tgt && tgt.kind === 'sat' ? tgt.satKey : ''" :label="tgtSatLabel" @pick="onTgtSat" />
           </div>
         </template>
@@ -145,22 +212,23 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
       <!-- inertial -->
       <template v-else-if="law === 'inertial'">
         <div class="srow">
-          <label title="本体 → TEME 惯性系的固定旋转（TEME 与 J2000 差岁差 + 章动，2026 年约 0.36°）">给法</label>
+          <label title="本体 → TEME 惯性系的固定旋转（TEME 与 J2000 相差岁差与章动，2026 年约 0.36°）">定义方式</label>
           <div class="lbu-seg sa-seg">
             <button :class="{ on: inMode === 'euler' }" @click="setInMode('euler')">欧拉角</button>
             <button :class="{ on: inMode === 'q' }" @click="setInMode('q')">四元数</button>
           </div>
         </div>
         <div v-if="inMode === 'euler'" class="srow">
-          <label title="3-2-1 顺序：先偏航（绕 Z）、再俯仰（绕 Y）、最后滚转（绕 X），度">偏航 / 俯仰 / 滚转</label>
+          <label title="3-2-1 顺序：先偏航（绕 Z），再俯仰（绕 Y），最后滚转（绕 X），单位为度">偏航 / 俯仰 / 滚转</label>
           <div class="md-v3">
             <NumIn :model-value="euler.yaw" :min="-360" :max="360" :sig="6" @commit="(v) => setEuler('yaw', v)" />
             <NumIn :model-value="euler.pitch" :min="-360" :max="360" :sig="6" @commit="(v) => setEuler('pitch', v)" />
             <NumIn :model-value="euler.roll" :min="-360" :max="360" :sig="6" @commit="(v) => setEuler('roll', v)" />
           </div>
+          <span class="u">°</span>
         </div>
         <div v-else class="srow">
-          <label title="[x, y, z, w]，改完自动归一">q</label>
+          <label title="[x, y, z, w]，修改后自动归一化">q</label>
           <div class="sa-q4">
             <NumIn v-for="i in [0, 1, 2, 3]" :key="i" :model-value="P.q ? P.q[i] : (i === 3 ? 1 : 0)" :min="-1" :max="1" :sig="7" @commit="(v) => setQ(i, v)" />
           </div>

@@ -813,7 +813,9 @@ function _islLos(pA, pB, blockRadiusKm) {
 }
 
 // 建 ISL 端点：satrec（elements/omm/tle/circular 合成）或 snapshot（固定 ECEF）。失败带 reason。
-function _islNode(orbit) {
+// t0ISO：本次扫描起点。虚拟圆轨道不带历元时以它为历元（起点处相位 = 给定的 Ω / M）——不取墙钟：起点是时间轴时刻，
+//   墙钟历元会让暂停的时间轴上两次「计算」相隔几分钟就给出不同的星间距离 / 可用度（全软件一条时间线）
+function _islNode(orbit, t0ISO) {
   const o = orbit || {};
   if (o.type === 'unresolved') return { reason: o.reason || '所选卫星轨道未能解析，无法确定其几何' };
   if (o.type === 'snapshot') {
@@ -828,7 +830,7 @@ function _islNode(orbit) {
     const a = RE_KM + altKm;
     const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI);
     let satrec;
-    try { satrec = buildSatrec({ type: 'omm', meanMotion, ecc: 0, incl: inclDeg, raan: Number(o.raanDeg) || 0, argp: 0, ma: Number(o.maDeg) || 0, epoch: o.epoch || new Date().toISOString() }); }
+    try { satrec = buildSatrec({ type: 'omm', meanMotion, ecc: 0, incl: inclDeg, raan: Number(o.raanDeg) || 0, argp: 0, ma: Number(o.maDeg) || 0, epoch: o.epoch || t0ISO || new Date().toISOString() }); }
     catch (e) { return { reason: '虚拟圆轨道构建失败：' + e.message }; }
     return { node: { kind: 'sat', satrec }, method: '闭式球面', representative: true, elements: staticElements(satrec) };
   }
@@ -884,7 +886,7 @@ function _islPerMin(nd) {
 
 function solveIslWorstCase(opts) {
   opts = opts || {};
-  const A = _islNode(opts.orbitA), B = _islNode(opts.orbitB);
+  const A = _islNode(opts.orbitA, opts.t0ISO), B = _islNode(opts.orbitB, opts.t0ISO);
   if (A.reason) return { feasible: false, reason: '发射卫星：' + A.reason };
   if (B.reason) return { feasible: false, reason: '接收卫星：' + B.reason };
   const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 24;
@@ -1050,7 +1052,7 @@ function solveIslWorstCase(opts) {
 // opts = { orbitA(发射), orbitB(接收), t0ISO?, horizonHours?, atmMarginKm?, maxSamples? }
 function sampleIslRangeSeries(opts) {
   opts = opts || {};
-  const A = _islNode(opts.orbitA), B = _islNode(opts.orbitB);
+  const A = _islNode(opts.orbitA, opts.t0ISO), B = _islNode(opts.orbitB, opts.t0ISO);
   if (A.reason) return { ok: false, reason: '卫星一：' + A.reason };
   if (B.reason) return { ok: false, reason: '卫星二：' + B.reason };
   const horizonHours = Number(opts.horizonHours) > 0 ? Number(opts.horizonHours) : 6;

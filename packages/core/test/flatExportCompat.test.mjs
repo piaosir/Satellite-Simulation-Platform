@@ -11,8 +11,8 @@
 //
 // 另外两条同源的不变量：
 //   · bakeBorders 必须同时存下点列（pts）—— compat 分支要按点回放，只有 Path2D 是放不出来的
-//   · 出图必须恒用最细底图（exportFlat 的 withFinestBasemap）—— 屏上那档是给帧率的，
-//     50m 的海岸线一放大就是折线（「一放大细节就差了」）
+//   · 出图的底图精度跟「设置 → 显示画质」那一档走：exportFlat 不换档，导出前把平面渲染器对齐到设置那一档
+//     并等它落地（2026-10-08 用户定。此前恒换 10m 出图，设置成 50m 也照出 10m）
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -22,6 +22,9 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..', '..', '..')
 const FLAT = readFileSync(join(ROOT, 'src', 'viz', 'flatmap', 'flatCoverage.js'), 'utf8')
 const EXPORT = readFileSync(join(ROOT, 'src', 'viz', 'flatmap', 'exportFlat.js'), 'utf8')
+const PAGE = readFileSync(join(ROOT, 'src', 'pages', 'ConstellationMap3D.vue'), 'utf8')
+const SCENE = readFileSync(join(ROOT, 'src', 'viz', 'globe3d', 'scene.js'), 'utf8')
+const VIDEO = readFileSync(join(ROOT, 'src', 'viz', 'video', 'useVideoExport.js'), 'utf8')
 
 let pass = 0, fail = 0
 const ok = (name, cond, note) => {
@@ -64,11 +67,20 @@ ok('④ 矢量导出有预合成的影像底图（bakeImagery + vecImg）',
   '整层合成一张 JPEG 垫底，不是逐片塞进 SVG')
 ok('⑤ drawBelowContent 的影像判据认 vecImg', /rasterOut \|\| vecImg/.test(FLAT))
 
-// ---------- ④ 出图恒用最细底图 ----------
-ok('⑥ exportFlat 有 withFinestBasemap 并强制 10m', /withFinestBasemap/.test(EXPORT) && /setMapDetail\('10m', 0\)/.test(EXPORT))
-const wrapped = (EXPORT.match(/return withFinestBasemap\(flat/g) || []).length
-ok('⑦ PNG 与 PDF 两条路都套上了它（否则两份出图一细一粗）', wrapped === 2, '套了 ' + wrapped + ' 处')
-ok('⑧ 用完复位屏上精度', /finally \{ if \(need\) await flat\.setMapDetail\(cur\.detail, cur\.thin\) \}/.test(EXPORT))
+// ---------- ④ 出图的底图精度跟设置走 ----------
+ok('⑥ exportFlat 不换底图档（PNG 与 PDF 都按平面渲染器当前那一档出）', !/setMapDetail|'10m'/.test(EXPORT))
+{
+  // 平面渲染器懒创建、起手按 10m 建，ensureFlat 推设置那一档时没 await —— 导出这一路必须等它落地再出图
+  const em = /async function exportMap\([\s\S]*?\r?\n\}/.exec(PAGE)
+  const b = em ? em[0] : ''
+  const s = b.indexOf('await flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)')
+  const r = b.search(/renderFlat(PNG|PDF)\(flat/)
+  ok('⑦ exportMap 出图前把平面渲染器对齐到设置那一档并等它落地', s > 0 && r > s, em ? '' : '没找到 exportMap')
+}
+{
+  const sn = /async function snapshot\([\s\S]*?\n  \}/.exec(SCENE)
+  ok('⑧ 3D 截图与视频逐帧同样不换底图档', !!sn && !/setMapDetail/.test(sn[0]) && !/setMapDetail/.test(VIDEO), sn ? '' : '没找到 scene.snapshot')
+}
 
 // ---------- ⑤ 争议叠加面不并入同色 path ----------
 // 导出把同色陆地面合并成一条 evenodd path（省 svg2pdf 的节点数），前提是同一条 path 里的面互不重叠。

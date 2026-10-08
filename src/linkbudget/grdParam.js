@@ -95,7 +95,12 @@ export async function sampleAntennaParams(node, ant, cfg, points) {
 // 存活波束；lbGrdImport.test.mjs 拿采样器源码对拍这份清单）。设置对象里其余全是 3D 页的绘制项（等值线电平与
 // 颜色 / 线宽 / 填充 / 要画哪些波束 / 波束改名…），改它们不该动链路表。
 // attEquiv（D9）：「姿态 + 挂点」档由 3D 页按仿真时刻写回的等效手动指向 {boreAz, boreEl, yaw}，采样器照 azel 吃。
-export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon', 'boreLat', 'attEquiv', 'pol', 'gainOffset', 'pathLoss', 'keptSets']
+// borePt*：「空间点指向」档的那个点（地心球坐标）。对星跟踪（+ 偏置）两档采样器一律不取值（主进程拿不到目标星此刻的星位），
+// 故目标星 boreSat 与偏置 boreOffAz / boreOffEl 采样器不读、不进清单 —— 那两档取不到值，指纹里有没有它们都不会引发回填
+// （没取到值时 fillFromAnt 把指纹退回原样）；切出那两档时 boreType 本身已变、照常重取。
+export const SAMPLE_CFG_KEYS = ['boreType', 'boreAz', 'boreEl', 'yaw', 'boreLon', 'boreLat', 'borePtLon', 'borePtLat', 'borePtAlt', 'attEquiv', 'pol', 'gainOffset', 'pathLoss', 'keptSets']
+// 只在「空间点指向」档才进指纹的键：别的档采样器不读它们，切走后留在设置里的旧值不该让指纹翻动（同 attEquiv 只认 att 档）
+const POINT_ONLY_KEYS = new Set(['borePtLon', 'borePtLat', 'borePtAlt'])
 
 // 对外：某路天线的回填指纹「基底」（不含站址那一段）＝决定取值的输入里【用户能改的】那部分：
 // 天线文件 + 采样吃的那几项设置 + 静态星位。
@@ -115,7 +120,11 @@ export function grdFillBase(node, ant, cfg) {
   const spec = specOf(node, ant, cfg)
   if (!spec) return ''
   const c = {}
-  for (const k of SAMPLE_CFG_KEYS) if (k !== 'attEquiv' && spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]
+  const isPoint = spec.cfg.boreType === 'point'
+  for (const k of SAMPLE_CFG_KEYS) {
+    if (k === 'attEquiv' || (POINT_ONLY_KEYS.has(k) && !isPoint)) continue
+    if (spec.cfg[k] !== undefined && spec.cfg[k] !== null) c[k] = spec.cfg[k]
+  }
   const eq = spec.cfg.attEquiv
   const att = spec.cfg.boreType === 'att'
     ? { mount: typeof spec.cfg.boreMount === 'string' ? spec.cfg.boreMount : '', eq: eq && typeof eq === 'object' ? (typeof eq.sig === 'string' ? eq.sig : '?') : null }

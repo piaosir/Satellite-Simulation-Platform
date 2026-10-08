@@ -19,7 +19,7 @@ const groups = computed(() => { void cur.rev; return (m.value && Array.isArray(m
 const partsOf = (name) => (m.value && Array.isArray(m.value.parts) ? m.value.parts.filter((p) => p.solarGroup === name) : [])
 const COLS = [
   { key: 'name', label: '名称', w: 110 },
-  { key: 'eff', label: '效率', unit: '%', num: true, w: 58, tip: '光电转换效率（百分数，AGI_stk_metadata 口径）' },
+  { key: 'eff', label: '效率', unit: '%', num: true, w: 58, tip: '光电转换效率（百分数，AGI_stk_metadata 定义）' },
   { key: 'nodes', label: '节点', num: true, w: 48, editable: false },
   { key: 'area', label: '面积', unit: 'm²', num: true, w: 66, editable: false, tip: '关联太阳翼部件的单面投影面积之和' }
 ]
@@ -57,7 +57,7 @@ const g = useGridSelect({
 })
 const cellClass = (r, c) => (c.num ? 'md-mono' : null)
 watch(() => [g.rect.value.r0, g.rect.value.r1, cur.rev], () => {
-  if (wb.st.tab !== 'model') return
+  if (!wb.designModel()) return
   const r = g.rect.value
   const vp = getVp()
   if (!vp) return
@@ -88,11 +88,11 @@ function fromParts() {
   <MdSec id="m-solar" title="太阳翼组" :count="groups.length || null">
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini" :disabled="ro || !freeArrays.length" title="给还没进组的太阳翼部件各建一组（效率 28 %）" @click="fromParts"><Icon name="plus" :size="12" />从太阳翼部件生成</button>
+        <button class="lb-mini" :disabled="ro || !freeArrays.length" title="为尚未归组的太阳翼部件各建一组（效率 28 %）" @click="fromParts"><Icon name="plus" :size="12" />从太阳翼部件生成</button>
         <button class="lb-mini" :disabled="ro || !g.canDelete.value || g.rect.value.r0 < 0" @click="g.deleteRows()"><Icon name="trash" :size="12" />删除</button>
       </div>
       <div class="md-grid short">
-        <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :head-tip="(c) => c.tip || c.label" empty-text="没有太阳翼组。" />
+        <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :head-tip="(c) => c.tip || c.label" empty-text="无太阳翼组。" />
       </div>
     </template>
   </MdSec>

@@ -28,7 +28,14 @@ export const FLEET_MATCH_IDS = Object.freeze([
   'gps-iir', 'gps-iirm', 'gps-iif', 'gps-iii', 'gps-iii-lra',
   'beidou3-meo-cast', 'beidou3-meo-cast-sar', 'beidou3-meo-secm-a', 'beidou3-meo-secm-b', 'beidou3-igso', 'beidou3-geo', 'beidou2-geo', 'beidou2-igso',
   'galileo-foc', 'galileo-iov', 'glonass-m', 'glonass-k1', 'glonass-k2',
-  'iridium-next', 'globalstar-2', 'globalstar-1', 'globalstar-2r', 'o3b-gen1', 'o3b-mpower'
+  'iridium-next', 'globalstar-2', 'globalstar-1', 'globalstar-2r', 'o3b-gen1', 'o3b-mpower',
+  // GEO 名星（2026-10-07）
+  'viasat-1', 'viasat-2', 'viasat-3', 'jupiter-3', 'echostar-19', 'echostar-17', 'sky-muster', 'ka-sat', 'konnect', 'konnect-vhts', 'ses-17',
+  'intelsat-epic-702mp', 'intelsat-32e', 'intelsat-40e', 'asiasat-4', 'asiasat-5', 'asiasat-6', 'asiasat-8', 'asiasat-9', 'astra-2e', 'astra-1p',
+  'hotbird-13f', 'ses-14', 'ses-15', 'intelsat-9', 'thaicom-4', 'turksat-5a', 'turksat-5b', 'mev', 'dfh4', 'dfh4e',
+  'inmarsat-4', 'alphasat', 'inmarsat-5', 'inmarsat-gx5', 'inmarsat-6', 'thuraya-2', 'thuraya-4', 'terrestar', 'skyterra-1', 'muos',
+  'goes-r', 'goes-u', 'msg', 'mtg-i', 'mtg-s', 'himawari',
+  'skynet-5', 'wgs', 'aehf', 'sbirs-geo', 'luch-5', 'edrs-c', 'syracuse-4a', 'syracuse-4b'
 ])
 const OK = new Set(FLEET_MATCH_IDS)
 
@@ -59,6 +66,76 @@ const BEIDOU_NORAD = (() => {
 })()
 /** GLONASS-K 系列编号（名称括号里的 7xxK）→ 'k1' | 'k2'（IAC 2026-09-24 星座表：703K / 704K 为 K2）。 */
 export const GLONASS_K_VARIANT = Object.freeze({ '702': 'k1', '703': 'k2', '704': 'k2', '705': 'k1', '706': 'k1', '707': 'k1', '708': 'k1', '713': 'k1' })
+
+/**
+ * GEO 名星（2026-10-07）：CelesTrak 名称 → 型号，[正则, 型号 id, 规则键]，按序首中即返回。
+ * ★ 口径（用户）：只收国外星 + 亚洲卫星 + 东方红四号 / 四号增强型【平台】的出口星；国内具体星（中星 / 亚太 / 天链 / 天通 / 风云……）不配，
+ *   照旧落 GEO 缺省（单测 ⑥ 守着）。名称写法按随包快照 resources/omm/csv_geo 逐颗核过（如「INTELSAT 32E (IS-32E)」「WGS F1 (USA 195)」）。
+ */
+export const GEO_RULES = Object.freeze([
+  // —— 高通量
+  [/^VIASAT-1$/, 'viasat-1', 'viasat-1'],
+  [/^VIASAT-2$/, 'viasat-2', 'viasat-2'],
+  [/^VIASAT-3\b/, 'viasat-3', 'viasat-3'],
+  [/^(JUPITER 3|ECHOSTAR 24)\b/, 'jupiter-3', 'jupiter-3'],
+  [/^ECHOSTAR 19$/, 'echostar-19', 'echostar-19'],
+  [/^ECHOSTAR 17$/, 'echostar-17', 'echostar-17'],
+  [/^SKY MUSTER\b/, 'sky-muster', 'sky-muster'],
+  [/^EUTELSAT KA-SAT\b/, 'ka-sat', 'ka-sat'],
+  [/^EUTELSAT KONNECT VHTS$/, 'konnect-vhts', 'konnect-vhts'],
+  [/^EUTELSAT KONNECT$/, 'konnect', 'konnect'],
+  [/^SES-17$/, 'ses-17', 'ses-17'],
+  [/^INTELSAT (33E|35E|37E)\b/, 'intelsat-epic-702mp', 'intelsat-epic-702mp'],
+  [/^INTELSAT 32E\b/, 'intelsat-32e', 'intelsat-32e'],
+  [/^INTELSAT 40E\b/, 'intelsat-40e', 'intelsat-40e'],
+  // —— 固定 / 直播、亚洲卫星
+  [/^INTELSAT 90\d\b/, 'intelsat-9', 'intelsat-9'],
+  [/^ASIASAT 4$/, 'asiasat-4', 'asiasat-4'],
+  [/^ASIASAT [57]$/, 'asiasat-5', 'asiasat-5'],
+  [/^ASIASAT 6$/, 'asiasat-6', 'asiasat-6'],
+  [/^ASIASAT 8\b/, 'asiasat-8', 'asiasat-8'],
+  [/^ASIASAT 9$/, 'asiasat-9', 'asiasat-9'],
+  [/^ASTRA 2[EFG]$/, 'astra-2e', 'astra-2e'],
+  [/^ASTRA 1P\b/, 'astra-1p', 'astra-1p'],
+  [/^EUTELSAT HOTBIRD 13[FG]$/, 'hotbird-13f', 'hotbird-13f'],
+  [/^SES-14$/, 'ses-14', 'ses-14'],
+  [/^SES-15$/, 'ses-15', 'ses-15'],
+  [/^(THAICOM 4|IPSTAR)\b/, 'thaicom-4', 'thaicom-4'],
+  [/^TURKSAT 5A$/, 'turksat-5a', 'turksat-5a'],
+  [/^TURKSAT 5B$/, 'turksat-5b', 'turksat-5b'],
+  [/^MEV-[12]$/, 'mev', 'mev'],
+  // —— 东方红四号 / 四号增强型平台（只配出口星）
+  [/^(BELINTERSAT-1|LAOSAT 1|TKSAT-1|NIGCOMSAT 1R|ALCOMSAT 1)\b/, 'dfh4', 'dfh4'],
+  [/^PAKSAT-MM1$/, 'dfh4e', 'dfh4e'],
+  // —— 移动通信
+  [/^INMARSAT 5-F\d$/, 'inmarsat-5', 'inmarsat-5'],
+  [/^INMARSAT GX5$/, 'inmarsat-gx5', 'inmarsat-gx5'],
+  [/^INMARSAT 6-F\d$/, 'inmarsat-6', 'inmarsat-6'],
+  [/^THURAYA-[23]$/, 'thuraya-2', 'thuraya-2'],
+  [/^THURAYA-4\b/, 'thuraya-4', 'thuraya-4'],
+  [/^(TERRESTAR-1|ECHOSTAR 21)$/, 'terrestar', 'terrestar'],
+  [/^SKYTERRA 1$/, 'skyterra-1', 'skyterra-1'],
+  [/^MUOS-\d$/, 'muos', 'muos'],
+  // —— 气象
+  [/^GOES[ -]?(16|17|18)$/, 'goes-r', 'goes-r'],
+  [/^GOES[ -]?19$/, 'goes-u', 'goes-u'],
+  [/^METEOSAT-(9|10|11)\b/, 'msg', 'msg'],
+  [/^(METEOSAT-12\b|MTG-I\d)/, 'mtg-i', 'mtg-i'],
+  [/^MTG-S\d/, 'mtg-s', 'mtg-s'],
+  [/^HIMAWARI-[89]$/, 'himawari', 'himawari'],
+  // —— 移动通信
+  [/^INMARSAT 4-F[1-3]$/, 'inmarsat-4', 'inmarsat-4'],
+  [/^ALPHASAT$/, 'alphasat', 'alphasat'],
+  // —— 军用 / 中继
+  [/^SKYNET 5[A-D]$/, 'skynet-5', 'skynet-5'],
+  [/^WGS (F\d+|\d+)\b/, 'wgs', 'wgs'],
+  [/^AEHF-\d\b/, 'aehf', 'aehf'],
+  [/^SBIRS GEO-\d\b/, 'sbirs-geo', 'sbirs-geo'],
+  [/^LUCH-5[ABV]$/, 'luch-5', 'luch-5'],
+  [/^EDRS-C$/, 'edrs-c', 'edrs-c'],
+  [/^SYRACUSE 4A$/, 'syracuse-4a', 'syracuse-4a'],
+  [/^SYRACUSE 4B$/, 'syracuse-4b', 'syracuse-4b']
+].map(Object.freeze))
 
 const P = (id, rule) => (OK.has(id) ? { id: `param:${id}`, rule } : null)
 
@@ -136,6 +213,9 @@ export function matchFleet(sat) {
   // —— O3b
   if (/^O3B MPOWER\b/.test(name)) return P('o3b-mpower', 'fleet:o3b-mpower')
   if (/^O3B (PFM|FM\d+)\b/.test(name)) return P('o3b-gen1', 'fleet:o3b')
+
+  // —— GEO 名星（逐颗 / 逐系列；表见 GEO_RULES）
+  for (const [re, id, key] of GEO_RULES) if (re.test(name)) return P(id, `fleet:${key}`)
 
   return null
 }

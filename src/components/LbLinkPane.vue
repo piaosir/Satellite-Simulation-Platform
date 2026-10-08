@@ -105,14 +105,18 @@ function pngDataUrl(scale) {
   if (!globe || !hasGeom.value) return ''
   try { return globe.snapshot(scale || 4) } catch (e) { return '' }
 }
+// file:save 写失败（文件被占用等）不抛、只回 {ok:false,error}；取消回 canceled。失败就在按钮旁出错误本身
+const expErr = ref('')
 async function exportPng() {
   if (!exportFile) return
+  expErr.value = ''
   const url = pngDataUrl(4)
-  if (!url) return
+  if (!url) { expErr.value = t.value('导出失败'); return }
   try {
     const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
-    await exportFile({ defaultName: t.value('链路视图') + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
-  } catch (e) { /* 用户取消或取帧失败：不出图即可 */ }
+    const r = await exportFile({ defaultName: t.value('链路视图') + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
+    if (r && !r.ok && !r.canceled) expErr.value = t.value('导出失败') + '：' + (r.error || '')
+  } catch (e) { expErr.value = t.value('导出失败') + '：' + ((e && e.message) || e) }
 }
 
 // —— 供「报告导出」逐条链路取图 ——
@@ -133,6 +137,7 @@ defineExpose({
       <b class="lk-name">{{ t('链路视图') }}</b>
       <span class="lk-sub">{{ t('站星几何') }}</span>
       <span class="lk-flex"></span>
+      <span v-if="expErr" class="lk-err" :title="expErr">{{ expErr }}</span>
       <button class="lk-btn" :title="t('导出为 PNG 图片（4 倍分辨率）')" @click="exportPng">{{ t('导出') }}</button>
     </div>
 
@@ -191,6 +196,7 @@ defineExpose({
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
 }
 .lk-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.lk-err { color: var(--danger); font-size: calc(var(--lb-fs, 11px) - 1px); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .lk-box { position: relative; border: 1px solid var(--lb-rule); background: var(--bg); overflow: hidden; }
 .lk-cv { position: absolute; inset: 0; }

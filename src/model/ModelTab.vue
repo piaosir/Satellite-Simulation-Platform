@@ -59,7 +59,7 @@ const lodPending = computed(() => cur.kind === 'glb' && cur.lod && cur.lod !== '
 
 // Ctrl+Z / Ctrl+Y：焦点不在输入框 / 表格里时撤销元数据改动（表格自己的撤销也走同一个栈）
 function onKey(e) {
-  if (!(e.ctrlKey || e.metaKey) || wb.st.tab !== 'model') return
+  if (!(e.ctrlKey || e.metaKey) || !wb.designModel()) return
   if (e.target && (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || (e.target.closest && e.target.closest('.eg-scroll')))) return
   const k = e.key.toLowerCase()
   if (k === 'z' && !e.shiftKey) { if (wb.undo()) e.preventDefault() }

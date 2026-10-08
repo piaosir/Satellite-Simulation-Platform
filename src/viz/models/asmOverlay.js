@@ -1,9 +1,11 @@
-// 装配编辑器的叠加指示（P3，CONTRACT §5.3 / §5.4-B）：插座标记、目标面轮廓、吸附锚点（面心 / 边中点 / 角点 / 网格 / 插座）、质心记号。
+// 装配编辑器的叠加指示（P3，CONTRACT §5.3 / §5.4-B）：插座标记、目标面轮廓、吸附锚点（面心 / 边中点 / 角点 / 网格 / 插座）、质心记号、
+// 牵引线（磁吸时指针 → 实际落点）、推断引导线（吸到面的中线 / 边线时贯穿整个面）。
 //
 // 全部挂在 vp.overlay 里一个本体系组下（矩阵 = 显示矩阵）：清深度后画在最上层、不吃 AO / 色调映射、不进拾取。
 // 屏幕恒定尺寸：点状记号走 gl_PointSize（CSS 像素 × 设备像素比，不随距离变）；质心轴线按相机距离每帧缩放（tick，零分配）。
 // 插座标记在着色器里按「朝外法向是否朝向相机」取舍：背面的插座不画；被别的件挡住的（编辑器按视线判、相机停下后更新）也不画——
-// 半透明叠在正对相机的面上，会被误认成这个面上的插座。
+// 半透明叠在正对相机的面上，会被误认成这个面上的插座。当前吸附的那一个（state 2）例外：指针下的件把落点定在它背面的插座上
+// （机翼进机身中线的翼根、馈源进盘面前方的焦点）时，落点照样要看得见。
 // 颜色按主题（palette）：浅色底用深墨 + 白晕、深色底用亮色 + 黑晕，叠在任何颜色的模型上都读得出。
 import * as THREE from 'three'
 
@@ -16,6 +18,7 @@ const pointVS = `
 attribute vec3 aNrm;
 attribute float aState;
 attribute float aOcc;
+attribute float aDed;
 uniform vec3 uCam;
 uniform float uPx;
 uniform float uDpr;
@@ -23,9 +26,11 @@ varying float vState;
 varying float vFace;
 varying float vSize;
 varying float vOcc;
+varying float vDed;
 void main() {
   vState = aState;
   vOcc = aOcc;
+  vDed = aDed;
   if (aState < -0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; vFace = 0.0; vSize = 1.0; return; }
   vFace = dot(aNrm, uCam - position) >= 0.0 ? 1.0 : 0.0;
   float k = aState > 1.5 ? 1.7 : (aState > 0.5 ? 1.25 : 1.0);
@@ -42,20 +47,22 @@ varying float vState;
 varying float vFace;
 varying float vSize;
 varying float vOcc;
+varying float vDed;
 void main() {
   vec2 p = gl_PointCoord * 2.0 - 1.0;
   float r = length(p);
   if (r > 1.0) discard;
   float px = 2.0 / max(vSize, 1.0);
   vec3 col = vState > 1.5 ? uC2 : (vState > 0.5 ? uC1 : uC0);
-  float dotR = vState > 1.5 ? 0.36 : 0.2;
+  // 专用接口（限定收件类型）实心圆；通用接口空心环，当前吸附的那一个环里加一个点
+  float dotR = vDed > 0.5 ? 0.52 : (vState > 1.5 ? 0.36 : 0.0);
   float ring = smoothstep(0.5 - px, 0.5 + px, r) * (1.0 - smoothstep(0.8 - px, 0.8 + px, r));
-  float dotc = 1.0 - smoothstep(dotR - px, dotR + px, r);
+  float dotc = dotR > 0.0 ? 1.0 - smoothstep(dotR - px, dotR + px, r) : 0.0;
   float halo = 1.0 - smoothstep(1.0 - 2.0 * px, 1.0, r);
   float ink = max(ring, dotc);
   vec3 c = mix(uHalo, col, ink);
-  // 背面（朝外法向背离相机）与被别的件挡住的插座一律不画：叠在正对相机的面上会被误认成这个面上的插座
-  if (vFace < 0.5 || vOcc > 0.5) discard;
+  // 背面（朝外法向背离相机）与被别的件挡住的插座不画：叠在正对相机的面上会被误认成这个面上的插座；当前吸附的那一个照画
+  if ((vFace < 0.5 || vOcc > 0.5) && vState < 1.5) discard;
   float a = max(ink, halo * 0.6);
   gl_FragColor = vec4(c, a);
   #include <colorspace_fragment>
@@ -131,7 +138,7 @@ export function createAsmOverlay(overlayScene, displayMatrix) {
   const sockU = { uCam: { value: new THREE.Vector3() }, uPx: { value: SOCKET_PX }, uDpr: dpr, uC0: { value: new THREE.Color() }, uC1: { value: new THREE.Color() }, uC2: { value: new THREE.Color() }, uHalo: { value: new THREE.Color() } }
   const sockMat = pointMat(socketFS, sockU, pointVS)
   const sockGeo = new THREE.BufferGeometry()
-  let sockCap = 0, sockN = 0, sockState = null, sockOcc = null
+  let sockCap = 0, sockN = 0, sockState = null, sockOcc = null, sockDed = null
   const sockPts = new THREE.Points(sockGeo, sockMat); sockPts.frustumCulled = false; sockPts.renderOrder = 60; sockPts.visible = false
   group.add(sockPts)
   function ensureSock(n) {
@@ -145,15 +152,20 @@ export function createAsmOverlay(overlayScene, displayMatrix) {
     sockOcc = new THREE.BufferAttribute(new Float32Array(sockCap), 1)
     sockOcc.setUsage(THREE.DynamicDrawUsage)
     sockGeo.setAttribute('aOcc', sockOcc)
+    sockDed = new THREE.BufferAttribute(new Float32Array(sockCap), 1)
+    sockGeo.setAttribute('aDed', sockDed)
   }
   const sockets = {
-    /** 设标记（本体系位置 / 朝外法向，Float64Array 3n；state 缺省 0）。 */
-    set(pos, nrm, n, state = 0) {
+    /**
+     * 设标记（本体系位置 / 朝外法向，Float64Array 3n；state 缺省 0）。ded（可选，长度 ≥ n 的数组）：第 i 个是专用接口（限定收件类型）
+     * 时非 0 → 画实心圆，否则空心环。
+     */
+    set(pos, nrm, n, state = 0, ded = null) {
       ensureSock(n)
-      const P = sockGeo.attributes.position.array, N = sockGeo.attributes.aNrm.array, S = sockState.array
+      const P = sockGeo.attributes.position.array, N = sockGeo.attributes.aNrm.array, S = sockState.array, Dd = sockDed.array
       for (let i = 0; i < 3 * n; i++) { P[i] = pos[i]; N[i] = nrm[i] }
-      for (let i = 0; i < n; i++) { S[i] = state; sockOcc.array[i] = 0 }
-      sockOcc.needsUpdate = true
+      for (let i = 0; i < n; i++) { S[i] = state; sockOcc.array[i] = 0; Dd[i] = ded && ded[i] ? 1 : 0 }
+      sockOcc.needsUpdate = true; sockDed.needsUpdate = true
       sockN = n
       sockGeo.setDrawRange(0, n)
       sockGeo.attributes.position.needsUpdate = true; sockGeo.attributes.aNrm.needsUpdate = true; sockState.needsUpdate = true
@@ -258,6 +270,62 @@ export function createAsmOverlay(overlayScene, displayMatrix) {
     hide() { faceLines.visible = false; fillMesh.visible = false }
   }
 
+  // —— 推断引导线：吸到面的中线 / 边线时，沿那条线贯穿整个面（平面面；SketchUp「在轴上 / 在边上」）——
+  const guideArr = new Float32Array(12)
+  const guideGeo = new THREE.BufferGeometry()
+  guideGeo.setAttribute('position', new THREE.BufferAttribute(guideArr, 3).setUsage(THREE.DynamicDrawUsage))
+  guideGeo.setDrawRange(0, 0)
+  const guideMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.85, depthTest: false, depthWrite: false, toneMapped: false })
+  const guideLines = new THREE.LineSegments(guideGeo, guideMat); guideLines.frustumCulled = false; guideLines.renderOrder = 59; guideLines.visible = false
+  group.add(guideLines)
+  const GF = new Float64Array(16), GT = new Float64Array(16)
+  let gw = 0
+  function gpt(M, x, y) {
+    const o = gw * 3
+    guideArr[o] = M[0] * x + M[4] * y + M[12]; guideArr[o + 1] = M[1] * x + M[5] * y + M[13]; guideArr[o + 2] = M[2] * x + M[6] * y + M[14]
+    gw++
+  }
+  const guide = {
+    /**
+     * R = 该件渲染矩阵（本体系），f = 平面面，gu / gv = u / v 是否吸在线上（1 / 0），uv = [u, v]（面坐标）。零分配。
+     * gu：线沿 v 方向、在 u = uv[0] 处；gv：线沿 u 方向、在 v = uv[1] 处。
+     */
+    show(R, f, faceFrameFn, gu, gv, uv) {
+      if (f.kind === 'cyl' || (!gu && !gv)) { guideLines.visible = false; return }
+      faceFrameFn(GF, f, 0, 0); mulInto(GT, R, GF)
+      gw = 0
+      if (gu) { gpt(GT, uv[0], -f.halfV); gpt(GT, uv[0], f.halfV) }
+      if (gv) { gpt(GT, -f.halfU, uv[1]); gpt(GT, f.halfU, uv[1]) }
+      guideGeo.setDrawRange(0, gw)
+      guideGeo.attributes.position.needsUpdate = true
+      guideLines.visible = gw > 0
+    },
+    hide() { guideLines.visible = false }
+  }
+
+  // —— 牵引线：落点不在指针下（磁吸到插座 / 面，或指针下的件把落点定在它的专用插座上）时，从指针连到落点 ——
+  const leadArr = new Float32Array(6)
+  const leadGeo = new THREE.BufferGeometry()
+  leadGeo.setAttribute('position', new THREE.BufferAttribute(leadArr, 3).setUsage(THREE.DynamicDrawUsage))
+  const leadMat = new THREE.LineDashedMaterial({ transparent: true, opacity: 0.9, depthTest: false, depthWrite: false, toneMapped: false, dashSize: 1, gapSize: 1 })
+  const leadDist = new THREE.BufferAttribute(new Float32Array(2), 1).setUsage(THREE.DynamicDrawUsage)
+  leadGeo.setAttribute('lineDistance', leadDist)
+  const leadLine = new THREE.LineSegments(leadGeo, leadMat); leadLine.frustumCulled = false; leadLine.renderOrder = 61; leadLine.visible = false
+  group.add(leadLine)
+  const leader = {
+    /** 本体系两点 a[ao..] → b[bo..]；dash = 一节虚线的长度（米，按像素换好的）。零分配（坐标从数组读）。 */
+    show(a, ao, b, bo, dash) {
+      for (let k = 0; k < 3; k++) { leadArr[k] = a[ao + k]; leadArr[3 + k] = b[bo + k] }
+      const dx = leadArr[3] - leadArr[0], dy = leadArr[4] - leadArr[1], dz = leadArr[5] - leadArr[2]
+      leadDist.array[0] = 0; leadDist.array[1] = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      leadDist.needsUpdate = true
+      leadMat.dashSize = dash > 0 ? dash : 1; leadMat.gapSize = leadMat.dashSize * 0.7
+      leadGeo.attributes.position.needsUpdate = true
+      leadLine.visible = true
+    },
+    hide() { leadLine.visible = false }
+  }
+
   // —— 吸附锚点 ——
   const mkU = { uPx: { value: MARKER_PX }, uDpr: dpr, uKind: { value: 2 }, uCol: { value: new THREE.Color() }, uHalo: { value: new THREE.Color() } }
   const mkGeo = new THREE.BufferGeometry()
@@ -341,12 +409,13 @@ export function createAsmOverlay(overlayScene, displayMatrix) {
   function setPalette(p) {
     sockU.uC0.value.setHex(p.amber); sockU.uC1.value.setHex(p.candidate); sockU.uC2.value.setHex(p.accent); sockU.uHalo.value.setHex(p.halo)
     faceMat.color.setHex(p.accent); fillMat.color.setHex(p.accent)
+    guideMat.color.setHex(p.accent); leadMat.color.setHex(p.accent)
     mkU.uCol.value.setHex(p.accent); mkU.uHalo.value.setHex(p.halo)
     comU.uHalo.value.setHex(p.halo)
     drawLabels(p.halo)
   }
   return {
-    group, sockets, face, marker, com, originAxes, originScene, setPalette,
+    group, sockets, face, guide, leader, marker, com, originAxes, originScene, setPalette,
     setDpr(v) { dpr.value = v > 0 ? v : 1 },
     /** 每帧：相机位置换本体系（插座正背面判定）、质心轴线 / 原点三轴按距离定长、轴名字按像素定大小。零分配。 */
     tick(camera, cssH) {
@@ -370,11 +439,12 @@ export function createAsmOverlay(overlayScene, displayMatrix) {
         for (let k = 0; k < 3; k++) { labels[k].scale.set(ls, ls, 1); labels[k].position.set(k === 0 ? off : 0, k === 1 ? off : 0, k === 2 ? off : 0) }
       }
     },
-    hideDrag() { face.hide(); marker.hide() },
+    hideDrag() { face.hide(); marker.hide(); guide.hide(); leader.hide() },
     dispose() {
       overlayScene.remove(group)
       if (originScene.parent) originScene.parent.remove(originScene)
       sockGeo.dispose(); sockMat.dispose(); faceGeo.dispose(); faceMat.dispose(); fillGeo.dispose(); fillMat.dispose()
+      guideGeo.dispose(); guideMat.dispose(); leadGeo.dispose(); leadMat.dispose()
       mkGeo.dispose(); mkPts.material.dispose(); comGeo.dispose(); comPts.material.dispose(); axGeo.dispose(); axMat.dispose()
       oaDepthMat.dispose(); oaTopMat.dispose()
       for (const l of labels) { l.material.map.dispose(); l.material.dispose() }

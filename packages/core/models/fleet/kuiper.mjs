@@ -24,7 +24,7 @@ const Z = [0, 0, 1]
 function buildKuiper(B) {
   const LX = 1.8, WN = 0.7, WZ = 0.46, D = 0.55
   const Fb = frame(P(0, 0, 0), [0, 1, 0], [0, 0, 1], [1, 0, 0])
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   prism(g.mb('struct_grey'), Fb, [[-WN / 2, D / 2], [WN / 2, D / 2], [WZ / 2, -D / 2], [-WZ / 2, -D / 2]], -LX / 2, LX / 2)
   prism(g.mb('mirror_film'), Fb, [[-WN / 2 - 0.01, D / 2 + 0.004], [WN / 2 + 0.01, D / 2 + 0.004], [WZ / 2 + 0.01, -D / 2 - 0.01], [-WZ / 2 - 0.01, -D / 2 - 0.01]], -LX / 2 + 0.02, LX / 2 - 0.02)
   g.flush()

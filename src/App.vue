@@ -14,7 +14,7 @@ import cmdIndex from './shared/cmdIndex.data.js'
 import { kwOf, kwId } from './shared/cmdKeywords.js'
 import { revealSection, revealRow } from './stores/panelSections'
 import { getLang, setLang } from './shared/i18n/runtime'
-import { playing as clockPlaying, isLive as clockLive, play as clockPlay, pause as clockPause, goLive as clockGoLive } from './stores/simClock'
+import { playing as clockPlaying, isLive as clockLive, play as clockPlay, pause as clockPause, goLive as clockGoLive, initClockMirror } from './stores/simClock'
 import { quality, effective as displayQuality, setTier, setField, TIERS } from './stores/displayQuality'
 import { activation, activationLocked, initActivation, refreshActivation, activationText, lockTitle } from './stores/activation'
 import SettingsModal from './components/SettingsModal.vue'
@@ -55,21 +55,22 @@ const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/�
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
 // 视图内容由 3D 页 Teleport 挂入 #side-view；可用性来自 covNav（polyAvail 无 IPC 依赖，可兼作「页面已挂载」信号）
 const pageReady = computed(() => covNav.polyAvail)
-// 可见性分析紧跟 Polygon；天线波束合成 / 覆盖等值线显示（GXT · KML）为低频功能，排其后
+// 可见性分析紧跟 Polygon；电磁波束仿真 / 覆盖等值线显示（GXT · KML）为低频功能，排其后；仿真对象模型排在卫星聚焦特效设置之上
 const sideViews = computed(() => [
   { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
   { key: 'antenna', label: '对地覆盖分析', icon: 'earth', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 波束在地球上的覆盖范围 / 性能指标表（GRD）' },
   { key: 'satcov', label: '对星覆盖分析', icon: 'orbit', disabled: !covNav.grdAvail, hint: '同一棵天线树 → 波束在各轨道壳层上的投影（含反天底侧）/ 对星性能指标表' },
   { key: 'poly', label: 'Polygon（协调区）', icon: 'hexagon', disabled: !covNav.polyAvail, hint: '协调区多边形：绘制 / 调点 / 扩缩 / 导出' },
   { key: 'vis', label: '可见性分析', icon: 'eye', disabled: !pageReady.value, hint: '选目标（地球站 / 点 / 航迹 / Polygon）→ 设仰角门限 → 算可见卫星（复刻 STK Access / Coverage）' },
-  { key: 'beams', label: '天线波束合成', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
+  { key: 'beams', label: '电磁波束仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
   { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
-  { key: 'markers', label: '标记', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
-  { key: 'env', label: '环境场', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
-  { key: 'envLive', label: '实时气象', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
-  { key: 'focus', label: '聚焦卫星', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
-  { key: 'model', label: '卫星模型', icon: 'box', disabled: !pageReady.value, hint: '聚焦星的 3D 模型：模型绑定 / 球面图标 / 跟随卫星视图 / 模型库（NASA · 参数化 · 本机导入）' },
-  { key: 'geo', label: '地图设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
+  { key: 'markers', label: '地图标记设置', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
+  { key: 'links', label: '目标间链路建链', icon: 'waypoints', disabled: !pageReady.value, hint: '建链：在图上依次点选或在链路详情中检索地球站 / 卫星，建立单向链路，再导入链路预算（STK Chain 范式）' },
+  { key: 'env', label: '环境场显示', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
+  { key: 'envLive', label: '实时气象分析', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
+  { key: 'model', label: '仿真对象模型', icon: 'box', disabled: !pageReady.value, hint: '聚焦星的 3D 模型：模型绑定 / 球面图标 / 跟随卫星视图 / 模型库（NASA · 参数化 · 本机导入）' },
+  { key: 'focus', label: '卫星聚焦特效设置', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
+  { key: 'geo', label: '地图综合设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
 function setSide(k) {
@@ -158,7 +159,7 @@ function openCi() { window.api?.interference?.open?.() }
 function openPfdMask() { window.api?.pfdMask?.open?.() }
 function openFreqPlan() { window.api?.freqPlan?.open?.() }
 function openSsa() { window.api?.ssa?.open?.() }
-// 模型工作台（独立窗口）：入口只有「卫星模型」侧栏按钮 / 本处的搜索命令 —— 不进菜单与工具栏（入口不重复；信息栏「编辑…」先落到「卫星模型」侧栏）。
+// 模型工作台（独立窗口）：入口只有「仿真对象模型」侧栏按钮 / 本处的搜索命令 —— 不进菜单与工具栏（入口不重复；信息栏「编辑…」先落到「仿真对象模型」侧栏）。
 // 出 IPC 的参数现造纯数据；未激活时主进程 gate 回 {locked:true}，这里静默（runCommand 的 lock 闸已先拦一道）
 function openModelWb(o) { try { const r = window.api?.models?.open?.(JSON.parse(JSON.stringify(o || {}))); if (r && r.catch) r.catch(() => {}) } catch { /* ignore */ } }
 
@@ -246,7 +247,10 @@ const menus = computed(() => [
     { label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     { sep: true },
     { label: '发送覆盖图到小程序…', icon: 'upload', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() },
-    { label: '发送航迹到小程序…', icon: 'upload', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() }
+    { label: '发送航迹到小程序…', icon: 'upload', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() },
+    // 追加在末尾：appCommands 的命令 id 按下标生成（menu.export.N），插在中间会让「最近使用」指错命令
+    { sep: true },
+    { label: '导出视频…', icon: 'video', lock: true, disabled: !covNav.exportVideo, hint: '按时间段逐帧渲染当前 3D / 2D 视图，导出 H.264 MP4 或 PNG / JPEG 图片序列，可叠加时间、卫星、站星几何、场强、图例等信息', run: () => covNav.exportVideo && covNav.exportVideo() }
   ] },
   { key: 'tools', label: '工具', items: [
     { label: '绑定小程序账号…', icon: 'wechat', lock: true, hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
@@ -307,10 +311,11 @@ function tbClick(b) {
 // 带拨杆 / 子菜单的分区由星座地图页登记（PAGE_SECS，见其 pageCommands），这里不再登记分区本身，但其参数行照常登记。
 // 同视图同标题的分区（波束合成按模式分成 bs-antp / bs-pam、bs-cov / bs-pcov）合成一条，keys 全带上，谁在 DOM 里就定位谁。
 const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-adm', 'geo-chain', 'geo-space', 'geo-proj', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
-// 参数行里页面已用拨杆登记过的（'分区键|行名'）：宇宙空间六个子项在页面登记成带勾选的 geo.space.*，这里不再登记成定位行
-const PAGE_ROWS = new Set(['星空', '大气辉光', '太阳', '地球影像', '晨昏效果', '晨昏线'].map((l) => 'geo-space|' + l))
+// 参数行里页面已用拨杆登记过的（'分区键|行名'）：宇宙空间八个子项在页面登记成带勾选的 geo.space.*，这里不再登记成定位行
+// ★ 与页面 pageCommands 的子项表逐项对齐（漏一项，标题栏搜索就出两条同名结果；cmdIndex.test 钉着）
+const PAGE_ROWS = new Set(['星空', '行星', '大气辉光', '太阳', '月球', '地球影像', '晨昏效果', '晨昏线'].map((l) => 'geo-space|' + l))
 // 标题是动态文本的分区，这里给个固定名；"<view>-top" 是视图里第一个分区之前的内容，缺省不带分区名（星座视图那块是生成星座向导）
-const SEC_TITLES = { 'bs-mode': '天线类型', 'vis-list': '可见卫星', 'constellation-top': '生成星座' }
+const SEC_TITLES = { 'bs-mode': '天线类型', 'vis-list': '可见卫星', 'constellation-top': '生成卫星或星座' }
 const SECTIONS = (() => {
   const out = [], byTitle = new Map()
   for (const s of cmdIndex) {
@@ -364,9 +369,9 @@ function appCommands() {
   }
   // 模型工作台：id 手写固定（不挂菜单 —— 菜单命令的 id 按下标生成，中间插一项后面全移位）
   out.push(
-    { id: 'model.open', label: '模型工作台', icon: 'box', group: '卫星模型', keywords: kwId('model.open'), lock: true, run: () => openModelWb({ tab: 'lib' }) },
-    { id: 'model.import', label: '导入 3D 模型', icon: 'import', group: '卫星模型', keywords: kwId('model.import'), lock: true, run: () => openModelWb({ tab: 'import' }) },
-    { id: 'model.gen', label: '参数化生成卫星模型', icon: 'sliders-horizontal', group: '卫星模型', keywords: kwId('model.gen'), lock: true, run: () => openModelWb({ tab: 'gen' }) }
+    { id: 'model.open', label: '模型工作台', icon: 'box', group: '仿真对象模型', keywords: kwId('model.open'), lock: true, run: () => openModelWb({ tab: 'lib' }) },
+    { id: 'model.import', label: '导入 3D 模型', icon: 'import', group: '仿真对象模型', keywords: kwId('model.import'), lock: true, run: () => openModelWb({ tab: 'import' }) },
+    { id: 'model.gen', label: '参数化生成卫星模型', icon: 'sliders-horizontal', group: '仿真对象模型', keywords: kwId('model.gen'), lock: true, run: () => openModelWb({ tab: 'gen' }) }
   )
   const lang = getLang()
   out.push(
@@ -411,7 +416,7 @@ function findInConstellation(q) {
   ui.side = 'constellation'
   nextTick(() => {
     covNav.searchSats && covNav.searchSats(q)
-    const el = document.querySelector('#side-view .ptool .search input')
+    const el = document.querySelector('#side-view .lp-search input')
     // 侧栏滚动容器跨视图共用，上个视图滚到哪这里就停在哪：把搜索框滚回视野再聚焦
     if (el) { try { el.scrollIntoView({ block: 'center' }); el.focus() } catch { /* ignore */ } }
   })
@@ -459,6 +464,7 @@ watch(() => theme.resolved, () => nextTick(syncTitleOverlay))
 window.api?.omm?.onLog?.((p) => logMsg(p && p.text, (p && p.level) || 'info'))
 
 onMounted(() => {
+  initClockMirror()   // 主窗口的时钟往 localStorage 写场景时刻镜像（别的窗口「当前时刻」读它，见 shared/sceneClock.js）
   window.addEventListener('keydown', onKey)
   window.api?.app?.version?.().then((v) => { appVersion.value = v || '' }).catch(() => { /* 浏览器直跑无 IPC */ })
   syncTitleOverlay()

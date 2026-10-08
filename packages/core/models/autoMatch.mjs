@@ -5,7 +5,8 @@
 //   ② 具名规则（≥ 60 条）：CelesTrak / SATCAT 名称正则（个别加 NORAD 号兜底）→ NASA 3D 模型；
 //      候选按优先顺序列出，available 里没有的自动试下一个；一个都没有就落到下一条规则（任务书口径）。
 //   ②′ 星座精模（2026-09-25，fleet/match.mjs）：星链 v1.0 / v1.5 / V2 Mini / 直连手机、一网、Kuiper、GPS IIR / IIR-M / IIF / III、
-//      北斗二号 / 三号各型、伽利略 IOV / FOC、格洛纳斯 M / K、铱星 NEXT、全球星、O3b / mPOWER → param:<型号>（运行时现生成，恒可用）
+//      北斗二号 / 三号各型、伽利略 IOV / FOC、格洛纳斯 M / K、铱星 NEXT、全球星、O3b / mPOWER → param:<型号>（运行时现生成，恒可用）；
+//      2026-10-07 起含 GEO 名星（国外高通量 / 移动通信 / 直播 / 气象 / 军用中继、亚洲卫星、东四 / 东四增强平台出口星，fleet/match.mjs 的 GEO_RULES）
 //   ③ 大型平板 LEO 星座（按名称前缀或 entry.group）→ param:flat-leo（精模没接住的：国网、千帆）
 //   ④ 立方星（名字带 1U–12U / CUBESAT / 已知 3U 系列）→ param:cubesat-<n>u
 //   ⑤ 轨道类别 GEO（orbitKind，来自页面 cardFor().kind）→ prefs.geoDefault（缺省 = 默认卫星 param:default-sat；是 NASA id 但不可用时
@@ -49,7 +50,7 @@ export const RULES = Object.freeze([
   R('tdrs-gen1', /^TDRS[ -]?[1-7]$/, [TDRS_A, TDRS_E, TDRS_B]),
   R('tdrs-gen2-3', /^TDRS[ -]?(8|9|1[0-3])$/, [TDRS_D, TDRS_E, TDRS_A]),
   R('tdrs', /^TDRS\b/, [TDRS_D, TDRS_A]),
-  R('goes', /^GOES[ -]?\d+/, ['geostationary-operational-environmental-satellites'], { note: '模型为 GOES-N/O/P 外形；GOES-R 系列无独立模型，同用它' }),
+  R('goes', /^(GOES[ -]?([1-9]|1[0-5])|EWS-G\d+)\b/, ['geostationary-operational-environmental-satellites'], { note: '模型为 GOES-N/O/P 外形（GOES 13–15；EWS-G2 / EWS-G3 即 GOES 15 / 14）；GOES 16 起的 GOES-R 系列走星座精模' }),
   R('landsat-1-3', /^LANDSAT[ -]?[123]$/, ['landsat-1-2-and-3']),
   R('landsat-4-5', /^LANDSAT[ -]?[45]$/, ['landsat-4-and-5']),
   R('landsat-7', /^LANDSAT[ -]?7$/, ['landsat-7']),
@@ -59,7 +60,7 @@ export const RULES = Object.freeze([
   R('aura', /^(AURA|EOS[ -]?CHEM[ -]?1?)$/, ['aura-c', 'aura-b', 'aura-a', 'aura-d']),
   R('jason-1', /^JASON[ -]?1$/, ['jason-1']),
   R('jason-2', /^(JASON[ -]?2|OSTM)\b/, ['ocean-surface-topography-mission-ostm-jason-2']),
-  R('jason-3', /^JASON[ -]?3$/, ['ocean-surface-topography-mission-ostm-jason-2', 'jason-1'], { note: '同 Proteus 平台，用 Jason-2 外形' }),
+  R('jason-3', /^JASON[ -]?3$/, ['ocean-surface-topography-mission-ostm-jason-2', 'jason-1'], { note: '同为 Proteus 平台，采用 Jason-2 外形' }),
   R('sentinel-6', /^(SENTINEL[ -]?6|MICHAEL FREILICH)/, ['jason-continuity-of-service-sentinel-6']),
   R('topex', /^TOPEX/, ['topex-poseidon']),
   R('suomi-npp', /^(SUOMI\b|NPP$|NPOESS PREPARATORY)/, ['suomi-national-polar-orbiting-partnership-suomi-npp']),

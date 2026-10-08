@@ -84,7 +84,7 @@ function buildBds3MeoCast(B, { sar = false } = {}) {
   const ZN = 1.20
   const T1 = { c: P(0, 0, 0.55), h: P(0.84, 0.65, 0.65) }
   const T2 = { c: P(0, 0, -0.525), h: P(0.5, 0.65, 0.425) }
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   busBlock(g, T1.c, T1.h, { '+x': 'mli_gold', '-x': 'kapton_black', '+y': 'radiator', '-y': 'radiator', '+z': 'kapton_black', '-z': 'mli_gold' })
   busBlock(g, T2.c, T2.h, { '+x': 'mli_gold', '-x': 'radiator', '+y': 'radiator', '-y': 'radiator', '-z': 'mli_gold' })
   // 姿轨控 5 N 推力器：背地端四角斜出 + ±X 面各两台（锥形喷管）
@@ -149,7 +149,7 @@ function buildBds3MeoCast(B, { sar = false } = {}) {
 function buildBds3MeoSecm(B, { dims, lra }) {
   const [X, Y, Zh] = dims, hx = X / 2, hy = Y / 2, hz = Zh / 2
   const ZN = hz
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   busBlock(g, P(0, 0, 0), P(hx, hy, hz), { '+x': 'radiator', '-x': 'radiator', '+y': 'radiator', '-y': 'radiator', '+z': 'white_paint', '-z': 'mli_silver' }, 0.025)
   // 侧面的金色窄条（渲染：+Y 面靠 +X 端一道竖向金色压条）
   for (const s of [1, -1]) quadPts(g.mb('mli_gold'), P(hx - 0.34, s * (hy + 0.016), -0.3), P(hx - 0.25, s * (hy + 0.016), -0.3), P(hx - 0.25, s * (hy + 0.016), 0.3), P(hx - 0.34, s * (hy + 0.016), 0.3), P(0, s, 0))
@@ -214,7 +214,7 @@ function buildBds3MeoSecm(B, { dims, lra }) {
 function buildDfh3bNav(B, { geo }) {
   const ZN = 1.95, ZB = -1.65
   const h = P(1.05, 1.18, (ZN - ZB) / 2), c = P(0, 0, (ZN + ZB) / 2)
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   busBlock(g, c, h, { '+x': 'mli_gold', '-x': 'mli_gold', '+y': 'radiator', '-y': 'radiator', '+z': 'kapton_black', '-z': 'mli_gold' }, 0.03)
   // 背地端：星箭对接环 + 490 N 远地点发动机
   cyl(g.mb('aluminum'), P(0, 0, ZB - 0.012), P(0, 0, ZB - 0.11), 0.6, 48, false, false)
@@ -297,7 +297,7 @@ function buildDfh3bNav(B, { geo }) {
 // GEO 另有一副 ≈ 2 m 通信抛物面（面积 3.14 m²，+X 面折叠、展开后接 +Z 面）与 C 频段喇叭（+X 面）。
 function buildDfh3Nav(B, { geo }) {
   const c = P(-0.15, 0, 0), h = P(1.0, 0.86, 1.1), ZN = 1.1
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   bevelBox(g.mb('struct_grey'), BODY, c, h, 0.025)
   // 热控：金色 MLI 为主；GEO 渲染是亮橙金 + ±Y 面黑色散热片，IGSO / MEO 是淡金 + ±Y 面嵌 OSR
   skinBox(g, BODY, c, h, { '+x': 'mli_gold', '-x': 'mli_gold', '+z': 'mli_gold', '-z': 'mli_gold', '+y': 'mli_gold', '-y': 'mli_gold' })

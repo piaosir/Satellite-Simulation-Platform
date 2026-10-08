@@ -32,13 +32,22 @@ export const mapCrs = reactive({
   // 跟随：星下点动的时候，画面（投影中心）要不要跟着走。手动拖画面即自动关掉 —— 否则下一拍就被拉回去。
   subFollow: true,
   // 光标额外读数档：off 只有经纬度 ｜ azel 天线系方位/仰角 ｜ uv 同一方向的方向余弦
-  lookMode: 'off'
+  lookMode: 'off',
+  // 2D 经纬图框（SATSOFT 式，与视频导出同一支 drawGeoFrame）：图框外留白 + 四边内向刻度 + 度数标注 + 轴标题 + 框内点线网格。
+  // 与 proj 同族：只改平面图怎么画（PNG / PDF 所见即所得一并带上），不进任何计算。
+  //   on 出厂开（2026-10-08 起，见 MAP_CRS_REV）；step 0 = 自动；fmt 'num' −50.00 / 'hemi' 50°W；theme 留白底色 'light' | 'dark'；lines 框内点线网格
+  frame: { on: true, step: 0, fmt: 'num', theme: 'light', lines: true }
 })
 export const MAP_CRS_DEF = {
   datum: 'wgs84', fmt: 'deg', lon0: -30, proj: DEFAULT_PROJECTION,
   lat0: 0, par1: ALBERS_PARALLELS[0], par2: ALBERS_PARALLELS[1],
-  subPt: null, subFollow: true, lookMode: 'off'
+  subPt: null, subFollow: true, lookMode: 'off',
+  frame: { on: true, step: 0, fmt: 'num', theme: 'light', lines: true }
 }
+// 存档版本：出厂值改过一次就 +1（同 viewPrefs 的 VIEW_PREFS_REV）。视图快照存 crs 时带上 rev；版本落后的存档里，
+// 改过出厂值的那几项不认（是旧出厂值顺手存下来的，不是用户挑的），按新出厂值入场；存过一次之后版本齐平，照旧跟着存档走。
+//   1：经纬图框出厂改开（frame.on）
+export const MAP_CRS_REV = 1
 export const LOOK_MODES = [
   { k: 'off', zh: '关', en: 'Off' },
   { k: 'azel', zh: 'az/el', en: 'az/el' },
@@ -69,6 +78,30 @@ export function setMapCrs(patch) {
   if ('subPt' in patch) mapCrs.subPt = normSubPt(patch.subPt)
   if (typeof patch.subFollow === 'boolean') mapCrs.subFollow = patch.subFollow
   if (isLookMode(patch.lookMode)) mapCrs.lookMode = patch.lookMode
+  // 图框逐项合并（只给了几项也行），每项认得才收、认不得留原值；整份换成新对象（MAP_CRS_DEF 那份不被改到）
+  if (patch.frame && typeof patch.frame === 'object') mapCrs.frame = normFrame(patch.frame, mapCrs.frame)
+}
+// 读回视图快照里的 crs：版本落后的先剔掉改过出厂值的项（见 MAP_CRS_REV），其余照 setMapCrs 逐项收
+export function restoreMapCrs(saved) {
+  if (!saved || typeof saved !== 'object') return
+  if (!(saved.rev >= 1) && saved.frame && typeof saved.frame === 'object') {
+    const frame = { ...saved.frame }
+    delete frame.on
+    setMapCrs({ ...saved, frame })
+    return
+  }
+  setMapCrs(saved)
+}
+function normFrame(v, cur) {
+  const c = cur || {}
+  const step = Number(v.step)
+  return {
+    on: typeof v.on === 'boolean' ? v.on : !!c.on,
+    step: Number.isFinite(step) && step >= 0 && step <= 90 ? step : (Number(c.step) || 0),
+    fmt: v.fmt === 'num' || v.fmt === 'hemi' ? v.fmt : (c.fmt === 'hemi' ? 'hemi' : 'num'),
+    theme: v.theme === 'light' || v.theme === 'dark' ? v.theme : (c.theme === 'dark' ? 'dark' : 'light'),
+    lines: typeof v.lines === 'boolean' ? v.lines : c.lines !== false
+  }
 }
 // 星下点入库前规整：认不出来源就当没设，免得存档里一个半拉子对象让读数逻辑到处判空
 function normSubPt(v) {

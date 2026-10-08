@@ -109,7 +109,33 @@ function saveConfig(ns, cfg) {
   })
   return out
 }
-function deleteConfig(ns, id) { migrateNs(ns); return mutate(cfgFile(ns), [], (list) => list.filter((c) => c.id !== id)) !== null }
+// 自动保存专用（链路预算四窗）：只更新已有配置的 state（可顺带改自动名），【不新建】。
+// saveConfig 是 upsert 且会沿用传入的 id —— 删掉当前配置时若还有一次防抖写盘挂着，用它就会以原 id
+// 把刚删的配置原样写回来。这里查无此项一律返回 { gone:true }，什么都不写。
+// patch：{ state, name?, nameAuto? }；name 只在非空时生效（自动名由渲染端算好传来）。
+function updateConfigState(ns, id, patch) {
+  migrateNs(ns)
+  const p = patch || {}
+  let out = null, gone = false
+  const r = mutate(cfgFile(ns), [], (list) => {
+    const i = list.findIndex((c) => c && c.id === id && c.type !== 'folder')
+    if (i < 0) { gone = true; return undefined }      // undefined = 不写盘（见 mutate）
+    const next = { ...list[i], state: p.state, updatedAt: new Date().toISOString() }
+    if (typeof p.name === 'string' && p.name.trim()) next.name = p.name.trim()
+    if (typeof p.nameAuto === 'boolean') next.nameAuto = p.nameAuto
+    list[i] = next; out = next
+    return list
+  })
+  if (gone) return { ok: false, gone: true }
+  if (r === null || !out) return { ok: false, error: '配置库文件与其备份均无法读取，未写入' }
+  return { ok: true, updatedAt: out.updatedAt, name: out.name }
+}
+function deleteConfig(ns, id) {
+  migrateNs(ns)
+  const ok = mutate(cfgFile(ns), [], (list) => list.filter((c) => c.id !== id)) !== null
+  if (ok) dropVersions(ns, [id])
+  return ok
+}
 // 按给定 id 顺序重排本命名空间；未列出的保持原相对序追加在后
 function reorderConfigs(ns, ids) {
   migrateNs(ns)
@@ -167,7 +193,46 @@ function deleteFolder(ns, id) {
     removed = subtreeIds(list, id)
     return list.filter((c) => !removed.has(c.id))
   })
-  return next === null ? [] : Array.from(removed)
+  if (next === null) return []
+  dropVersions(ns, Array.from(removed))
+  return Array.from(removed)
+}
+
+// ---- 配置的历史版本（链路预算四窗自动保存的后悔药）----
+// 一份配置一个文件 versions/<ns>/<配置 id>.json：[{ id, t, kind, name, meta, hash, state }, …]，新的在前。
+//   · 不并进 configs.<ns>.json —— 那份每次自动保存都要整写，历史混在里头就跟着一起重写；
+//   · 也不全窗合成一份 —— 30 档 × 几十份配置的场景能到几十 MB，每次留档整写一遍会卡住主进程。
+// kind：'open' 打开时 / 'auto' 定时 / 'restore' 还原前。hash 由渲染端按场景指纹算：与最新一档相同就不重复留档。
+const VERSION_CAP = 30
+// 配置 id 由 genId 生成（[0-9a-z-]）；旧库 / 导入件万一带了别的字符，一律折成 _，不许拼出目录穿越
+function verFile(ns, cfgId) { cfgFile(ns); return path.join('versions', ns, String(cfgId).replace(/[^A-Za-z0-9_-]/g, '_') + '.json') }   // 借 cfgFile 校验命名空间
+function readVersions(ns, cfgId) { const v = read(verFile(ns, cfgId), []); return Array.isArray(v) ? v : [] }
+function listVersions(ns, cfgId) {
+  return readVersions(ns, cfgId).map((v) => ({ id: v.id, t: v.t, kind: v.kind, name: v.name || '', meta: v.meta || null }))   // 清单不带 state（还原时再取）
+}
+function getVersion(ns, cfgId, verId) {
+  return readVersions(ns, cfgId).find((v) => v.id === verId) || null
+}
+function addVersion(ns, cfgId, v) {
+  if (!cfgId || !v || !v.state) return null
+  const f = verFile(ns, cfgId)
+  fs.mkdirSync(path.dirname(file(f)), { recursive: true })
+  let out = null
+  mutate(f, [], (list0) => {
+    const list = Array.isArray(list0) ? list0 : []
+    if (v.hash && list[0] && list[0].hash === v.hash) { out = list[0]; return undefined }   // 与最新一档相同
+    const item = { id: genId(), t: new Date().toISOString(), kind: String(v.kind || 'auto'), name: String(v.name || ''), meta: v.meta || null, hash: String(v.hash || ''), state: v.state }
+    out = item
+    return [item, ...list].slice(0, VERSION_CAP)
+  })
+  return out ? { id: out.id, t: out.t, kind: out.kind } : null
+}
+// 配置删了，它的历史一并删（连 .bak，不留孤儿）
+function dropVersions(ns, ids) {
+  for (const id of ids || []) {
+    const f = file(verFile(ns, id))
+    for (const p of [f, f + '.bak', f + '.tmp']) { try { fs.rmSync(p, { force: true }) } catch (e) { /* 删不掉下次再说，不拦删配置 */ } }
+  }
 }
 
 // ---- 链路预算全局资源库（地球站/卫星/载波，按体制命名空间 geo/ngso/regen 各一套）----
@@ -189,7 +254,8 @@ function setSettings(patch) {
 
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
-  listConfigs, listAllConfigs, saveConfig, deleteConfig, reorderConfigs, moveItem, deleteFolder,
+  listConfigs, listAllConfigs, saveConfig, updateConfigState, deleteConfig, reorderConfigs, moveItem, deleteFolder,
+  listVersions, getVersion, addVersion,
   getLibrary, saveLibrary,
   getSettings, setSettings,
   _dir: dir

@@ -334,6 +334,19 @@ resources/imagery/
 # NASA 3D 语料（npm run nasa3d:fetch 落盘的 glb 原件 + .sha256 旁车 + meta.json，外加 catalog.json / corpus-report / 失败清单，
 # 七组约 0.5 GB）：原件只读保存、可随时重下，不进 git。
 .models-src/
+# NASA SVS「CGI Moon Kit」月球原件（npm run moon:textures 自动下载：LROC 彩色 16 位 TIFF + LOLA 高程，约 95 MB），可随时重下，不进 git；
+# 成品 src/viz/globe3d/textures/moon_lroc_4k.jpg / moon_relief_1k.png 照常入库。
+.moon-src/
+# 宇宙空间 · 月球验证台（npx electron .moonharness/app：月相 / 贴图取向 / 月食 / 地球遮挡 / 侧栏读数，截图落 scratchpad），本地开发用，不进仓库
+.moonharness/
+# NASA SVS「Deep Star Maps 2020」两层 8K EXR + HEASARC 耶鲁亮星表（npm run stars:textures 自动下载，约 190 MB），可随时重下，不进 git；
+# 成品 src/viz/globe3d/textures/stars_mw_8k.jpg / stars_mw_color_1k.png 与 src/viz/globe3d/starfield.data.js 照常入库。
+.stars-src/
+# 宇宙空间 · 星空验证台（npx electron .skyharness/app），本地开发用，不进仓库
+.skyharness/
+# IMCCE VSOP87B 行星级数原件 + JPL Horizons 对拍取数（node scripts/build-planet-series.mjs 自动下载级数，约 4.4 MB），可随时重下，不进 git；
+# 成品 src/viz/planets.data.js 照常入库。
+.planets-src/
 # 语料离线管线（scripts/nasa3d/build.mjs）的加工产物 lod0/1/2 + manifest，同样不进 git。
 # ★ 只忽略 build/models/：build/ 下的 icon.ico / icon.png 是打包图标，照常入库。
 build/models/
@@ -356,3 +369,17 @@ build/review/
 # name satsim-updtest、快捷方式全关），真跑 NSIS 安装 / 更新 / 卸载并在各阶段强杀，核对安装目录恒为完整旧版或完整新版；
 # 工作目录默认 %TEMP%\satsim-updharness（峰值约 5 GB，不在仓库里）。★ 测试包里的 app.asar 仍是正式包：别带 --force-run 跑。
 .updharness/
+# 跟随卫星视角下的工具态验证台（node .followdragharness/seed.mjs && npx electron .followdragharness/app）：真 Electron 整页，
+# 合成真鼠标事件验拖波束 / 拖标签 / 绘制 / 拖标记 / 放置 / 方向键在跟随中可用、且工具态里局部相机不转。
+.followdragharness/
+# 覆盖分析「天线 boresight · 姿态 + 挂点」本体姿态律面板验证台（npx vite --config .attharness/vite.config.mjs，launch.json 的 att-harness）：
+# 真 useGrdCoverage + bodyRuntime + GrdSetSections/GrdAttitudeFields + 3D 场景，绑定表 IPC 换内存假件；「面板自检」用真 DOM 事件点遍五律。
+.attharness/
+# 链路预算四窗纯自动保存验证台（npx vite --config .autosaveharness/vite.config.mjs，launch.json 的 autosave-harness；?w=geo|ngso|regen|e2e）：
+# 真窗口整页挂载，store.* 按 storage.js 语义在内存里实现（window.__H 可查写盘次数 / 历史版本 / 关窗回调）。
+.autosaveharness/
+# 图上链路方向标候选对比台（npx vite --config .lnkdirharness/vite.config.mjs，launch.json 的 lnkdir-harness；globe.html = 3D 链路材质）：
+.lnkdirharness/
+# 跟随视角一致性验证台（node .fsvharness/seed.mjs && npx electron .fsvharness/app）：真 Electron + vite dev 渲染端，
+# userData 指到 .fsvharness/ud（运行时 Chromium 缓存约 85 MB），本地开发用，不进仓库。
+.fsvharness/

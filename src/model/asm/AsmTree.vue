@@ -3,18 +3,26 @@
 // （ConfigTree 只许文件夹有子项）。行 = 文档主件按树序；派生件不单列，用对称角标 ×n 给出件数。
 //   · 选择：单击选中、Ctrl 切换、Shift 按行序连选；选择的真相在编辑器（select 事件回写 ui.selIds），这里只发命令。
 //   · 键盘：↑↓ 移选、←→ 折叠 / 展开（或跳父 / 首子）、F2 改名、Delete 删除、Enter 取景（处理过的键 preventDefault，全局快捷键不再重复处理）。
-//   · 行拖动改父件（pointer 方案，越过 4 px 开始）：落在另一行 = reparent（方式变自由、保持世界位姿）；拖到树外取消。
-//   · 右键菜单（树与视口 context 事件共用一份：ui.ctx）。
-import { inject, computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+//   · 行拖动改父件（pointer 方案，越过 4 px 开始）：落在另一行 = reparent（保持世界位姿、就近取锚）；拖到树外取消。
+//   · 视口里拖入 / 重新放置时，落点所在的件那一行同样亮起（ui.dragTarget，实线框）；把组件拖到某一行上 = 装到那一件（编辑器 targetAt）。
+//     树内拖行改父件的目标行另用虚线框（.reparent），两种拖动的高亮不混。
+//   · 右键菜单（树与视口 context 事件共用一份：ui.ctx）；按键标签只写在菜单项右侧。
+//   · 行区高度（表头 + 全部行）经 natural 事件报给 AsmDock：结构树按行数自适应高度（上限 = 分隔比例）。
+//   · 2026-10 统一设计：最上面一行是根节点（整星 / 整站 / 整机 / 全船 / 整车），点它 = 清选择 = 属性面板显示模型级属性；
+//     组件行整体缩进一级挂在它下面。根节点行不带 data-id（编辑器 targetAt 只认组件行）。驱动装配件里改写过的件行尾一枚机位色点、
+//     附加件（不由总体参数生成）一枚「＋」，个数 / 口径只进 title。
+import { inject, computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from '../../components/Icon.vue'
 import { DRAG_START_PX } from '@core/models/asmSnap.mjs'
 import { defaultAsmName } from '@core/models/asmMeta.mjs'
 import { getComponent } from '@core/models/components/index.mjs'
-import { flattenTree, subtreeIds, compById, splitSymInfo, DOMAIN_LABELS } from '../asmLogic.js'
+import { flattenTree, subtreeIds, compById, splitSymInfo, DOMAIN_LABELS, DOMAIN_ICONS } from '../asmLogic.js'
+import { isDriven, driveMarks } from '@core/models/drive.mjs'
 
 const asm = inject('asm')
 const wb = inject('wb')
 const ui = asm.ui
+const emit = defineEmits(['natural'])
 
 const doc = computed(() => asm.doc.value)
 const domain = computed(() => (doc.value && doc.value.domain) || wb.asm.domain || 'spacecraft')
@@ -27,6 +35,37 @@ const rows = computed(() => (doc.value ? flattenTree(doc.value, collapsed.value)
 const selSet = computed(() => new Set(ui.selIds))
 const badSet = computed(() => new Set(Object.keys(ui.invalid || {})))
 const rootEl = ref(null)
+// ── 自然高度（表头 + 行区 + 内边距）→ AsmDock：树按行数自适应 ──
+const boxEl = ref(null), rowsEl = ref(null)
+let rsz = null, natRaf = 0, natLast = -1
+function reportNatural() {
+  natRaf = 0
+  const b = boxEl.value, r = rowsEl.value, t = rootEl.value
+  if (!b || !r || !t) return
+  const hd = b.firstElementChild ? b.firstElementChild.getBoundingClientRect().height : 0
+  const cs = getComputedStyle(t)
+  const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0)
+  const h = Math.ceil(hd + r.getBoundingClientRect().height + pad)
+  if (Math.abs(h - natLast) < 1) return
+  natLast = h
+  emit('natural', h)
+}
+// 观察回调里不直接改布局（树区高度一变，滚动条出没又改行宽 → 同一帧里 ResizeObserver 回环告警）：排到下一帧报
+const queueNatural = () => { if (!natRaf) natRaf = requestAnimationFrame(reportNatural) }
+onMounted(() => {
+  if (typeof ResizeObserver === 'function' && rowsEl.value) { rsz = new ResizeObserver(queueNatural); rsz.observe(rowsEl.value) }
+  reportNatural()
+})
+// 根节点与驱动状态
+const ROOT_LABELS = { spacecraft: '整星', ground: '整站', aircraft: '整机', ship: '全船', vehicle: '整车' }
+const driven = computed(() => isDriven(doc.value))
+const marks = computed(() => (driven.value ? driveMarks(doc.value) : {}))
+function overN(id) {
+  const m = marks.value[id]
+  if (!m || m.user) return 0
+  return Object.values(m.params || {}).filter((x) => x === 'over').length + ['attach', 'pose', 'mass', 'material', 'name', 'sym'].filter((k) => m[k]).length
+}
+const isUser = (id) => !!(marks.value[id] && marks.value[id].user)
 
 function toggle(id) {
   const s = new Set(collapsed.value)
@@ -124,7 +163,7 @@ function commitDoc() {
 }
 
 // ── 行拖动改父件 ──
-const dragId = ref(''), dropId = ref(''), dropBad = ref('')
+const dragId = ref(''), dropId = ref(''), dropBad = ref('')   // 树内拖行改父件（目标行 .reparent 虚线框；视口拖入的落点行是 .drop 实线框）
 let drag = null
 function onRowDown(ev, r) {
   if (ev.button !== 0 || ui.renaming || r.locked || !r.parent) return
@@ -186,7 +225,7 @@ const ctxOne = computed(() => (ctxComps.value.length === 1 ? ctxComps.value[0] :
 const ctxPos = computed(() => {
   const c = ui.ctx
   if (!c) return {}
-  const w = 200, h = 330
+  const w = 200, h = 360
   return { left: Math.max(4, Math.min(c.x, window.innerWidth - w - 6)) + 'px', top: Math.max(4, Math.min(c.y, window.innerHeight - h - 6)) + 'px' }
 })
 const ctxAllHidden = computed(() => ctxComps.value.length > 0 && ctxComps.value.every((c) => c.hidden))
@@ -194,6 +233,8 @@ const ctxAllLocked = computed(() => ctxComps.value.length > 0 && ctxComps.value.
 const ctxAnyLocked = computed(() => ctxComps.value.some((c) => c.locked))
 const ctxHasRoot = computed(() => ctxComps.value.some((c) => c.parent === null))
 const ctxSplit = computed(() => (ctxOne.value ? splitSymInfo(ctxOne.value) : { ok: false, why: '' }))
+// 重新放置（G）：单选、非根、未锁定、非初值姿态（与功能区「重新放置」同判据）
+const ctxPick = computed(() => !!ctxOne.value && !ctxHasRoot.value && !ctxAnyLocked.value && !ui.posePreview && !ui.dragging)
 function closeCtx() { ui.ctx = null }
 // 菜单动作只按调用时刻那份 ui.ctx 取件（关菜单会把 ui.ctx 置空、依赖它的 computed 随之变空）：先取件再关菜单
 function ctxDo(fn) { const c = ui.ctx; if (c) fn(c); ui.ctx = null }
@@ -207,26 +248,33 @@ const doRoot = (c) => { const o = oneOf(c); if (o) asm.cmd({ type: 'setRoot', id
 function onCtxKey(ev) { if (ev.key === 'Escape' && ui.ctx) { ui.ctx = null; ev.preventDefault() } }
 window.addEventListener('keydown', onCtxKey, true)
 
-onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKey, true) })
+onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKey, true); if (rsz) rsz.disconnect(); rsz = null; if (natRaf) cancelAnimationFrame(natRaf); natRaf = 0 })
 </script>
 
 <template>
-  <div class="asm-treebox">
+  <div ref="boxEl" class="asm-treebox">
     <div class="asm-hd">
       <span class="asm-hd-k">结构</span>
       <input v-if="docRenaming" ref="docIn" v-model="docDraft" class="asm-hd-in" spellcheck="false" :placeholder="defaultAsmName(domain)"
              @keydown.enter.prevent="commitDoc" @keydown.esc.prevent="docRenaming = false" @blur="commitDoc" />
-      <span v-else class="asm-hd-t" data-i18n-skip :title="docName + '\n双击改名'" @dblclick="startDocRename">{{ docName }}</span>
+      <span v-else class="asm-hd-t" :title="docName + '\n双击重命名'" @dblclick="startDocRename"><span data-i18n-skip>{{ docName }}</span></span>
       <span class="asm-hd-tag" :title="'领域：' + DOMAIN_LABELS[domain]">{{ DOMAIN_LABELS[domain] }}</span>
-      <span class="asm-hd-n" data-i18n-skip :title="'件数 ' + nAll + ' · 主件 ' + nComps">{{ nAll }}</span>
+      <span class="asm-hd-n" :title="'件数 ' + nAll + ' · 主件 ' + nComps">{{ nAll }}</span>
     </div>
     <div ref="rootEl" class="asm-tree" tabindex="0" @keydown="onKey" @click.self="asm.select([])">
-      <div v-if="!rows.length" class="asm-empty">还没有组件。</div>
+      <div ref="rowsEl" class="asm-tree-rows">
+      <div class="asm-tr asm-tr-root" :class="{ on: !ui.selIds.length }" data-root="1" :title="ROOT_LABELS[domain] + '：模型级属性（质量特性、挂点、关节、太阳翼组…）'" @click="asm.select([])">
+        <span class="asm-tr-chev empty"></span>
+        <span class="asm-tr-ic"><Icon :name="DOMAIN_ICONS[domain] || 'boxes'" :size="13" /></span>
+        <span class="asm-tr-nm" data-i18n-skip>{{ ROOT_LABELS[domain] || '整体' }}<span class="asm-tr-id">{{ docName }}</span></span>
+        <span v-if="driven" class="asm-tr-drv" title="总体参数驱动"><Icon name="link-2" :size="11" /></span>
+      </div>
+      <div v-if="!rows.length" class="asm-empty">暂无组件。</div>
       <div v-for="r in rows" :key="r.id" class="asm-tr" :data-id="r.id"
-           :class="{ on: selSet.has(r.id), pri: ui.primary === r.id, bad: badSet.has(r.id), hid: r.hidden, dragging: dragId === r.id, drop: dropId === r.id, nodrop: dropBad === r.id, renaming: ui.renaming === r.id }"
-           :style="{ paddingLeft: (6 + r.depth * 14) + 'px' }" :title="r.type"
+           :class="{ on: selSet.has(r.id), pri: ui.primary === r.id, bad: badSet.has(r.id), hid: r.hidden, dragging: dragId === r.id, reparent: dropId === r.id, drop: ui.dragging && ui.dragTarget === r.id, nodrop: dropBad === r.id, renaming: ui.renaming === r.id }"
+           :style="{ paddingLeft: (6 + (r.depth + 1) * 14) + 'px' }" :title="r.type"
            @pointerdown="onRowDown($event, r)" @click="onRowClick($event, r)" @dblclick="startRename(r.id)" @contextmenu.prevent.stop="onCtx($event, r)">
-        <span v-for="d in r.depth" :key="'g' + d" class="asm-tr-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
+        <span v-for="d in r.depth + 1" :key="'g' + d" class="asm-tr-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
         <span class="asm-tr-chev" :class="{ empty: !r.hasKids }" @click.stop="r.hasKids && toggle(r.id)" @pointerdown.stop @dblclick.stop>
           <Icon v-if="r.hasKids" name="chevron-down" class="disc" :class="{ shut: !r.open }" :size="12" />
         </span>
@@ -235,6 +283,8 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
                @click.stop @dblclick.stop @pointerdown.stop @keydown.enter.prevent.stop="commitRename" @keydown.esc.prevent.stop="cancelRename" @blur="commitRename" />
         <span v-else class="asm-tr-nm" data-i18n-skip>{{ r.label }}<span class="asm-tr-id">{{ r.id }}</span></span>
         <span v-if="r.sym" class="asm-tr-sym" :title="r.sym.tip"><Icon :name="r.sym.icon" :size="11" /><b data-i18n-skip>×{{ r.sym.n }}</b></span>
+        <span v-if="driven && overN(r.id)" class="asm-tr-ovr" :title="'已改写 ' + overN(r.id) + ' 项'"></span>
+        <span v-else-if="driven && isUser(r.id)" class="asm-tr-usr" title="附加件（不由总体参数生成）">＋</span>
         <span v-if="r.hidden || r.locked" class="asm-tr-st">
           <Icon v-if="r.hidden" name="eye-off" :size="12" /><Icon v-if="r.locked" name="lock" :size="12" />
         </span>
@@ -242,6 +292,7 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
           <button class="asm-tr-ico" :title="r.hidden ? '显示' : '隐藏'" :data-act="'hide-' + r.id" @click="setHidden(r)"><Icon :name="r.hidden ? 'eye-off' : 'eye'" :size="12" /></button>
           <button class="asm-tr-ico" :title="r.locked ? '解锁' : '锁定'" :data-act="'lock-' + r.id" @click="setLocked(r)"><Icon :name="r.locked ? 'lock' : 'lock-open'" :size="12" /></button>
         </span>
+      </div>
       </div>
     </div>
 
@@ -251,10 +302,11 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
           <button class="lb-ctx-i" data-act="ctx-rename" :disabled="!ctxOne || ctxAnyLocked" @click="ctxDo(doRename)">重命名<span class="asm-kbd">F2</span></button>
           <button class="lb-ctx-i" data-act="ctx-frame" @click="ctxDo(() => asm.frameSelection())">取景<span class="asm-kbd">F</span></button>
           <div class="lb-ctx-sep"></div>
+          <button class="lb-ctx-i" data-act="ctx-pickup" :disabled="!ctxPick" @click="ctxDo(() => asm.pickup())">重新放置<span class="asm-kbd">G</span></button>
           <button class="lb-ctx-i" data-act="ctx-duplicate" :disabled="ui.posePreview" @click="ctxDo(() => asm.duplicate())">复制<span class="asm-kbd">Ctrl+D</span></button>
           <button class="lb-ctx-i" data-act="ctx-mirror" :disabled="ctxHasRoot || ctxAnyLocked" @click="ctxDo(() => asm.mirror())">镜像<span class="asm-kbd">M</span></button>
           <button class="lb-ctx-i" data-act="ctx-split" :disabled="!ctxSplit.ok || ctxAnyLocked" :title="ctxSplit.why" @click="ctxDo(doSplit)">拆分对称</button>
-          <button class="lb-ctx-i" data-act="ctx-root" :disabled="!ctxOne || ctxHasRoot || ctxAnyLocked" @click="ctxDo(doRoot)">设为根</button>
+          <button class="lb-ctx-i" data-act="ctx-root" :disabled="!ctxOne || ctxHasRoot || ctxAnyLocked" @click="ctxDo(doRoot)">设为根件</button>
           <div class="lb-ctx-sep"></div>
           <button class="lb-ctx-i" data-act="ctx-hide" @click="ctxDo(doHidden)">{{ ctxAllHidden ? '显示' : '隐藏' }}</button>
           <button class="lb-ctx-i" data-act="ctx-lock" @click="ctxDo(doLocked)">{{ ctxAllLocked ? '解锁' : '锁定' }}</button>
@@ -280,6 +332,8 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
 .asm-tr.bad .asm-tr-nm { color: var(--danger); }
 .asm-tr.dragging { opacity: .4; }
 .asm-tr.drop { background: var(--surface-2); box-shadow: inset 0 0 0 1.5px var(--accent-ui); }
+/* 树内拖行改父件的目标行：虚线框（与视口拖入落点行的实线框区分） */
+.asm-tr.reparent { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); outline: 1px dashed var(--accent-ui); outline-offset: -2px; }
 .asm-tr.nodrop { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 60%, transparent); }
 /* 层级导引线：top/bottom 拉满整行，逐行首尾相接（ConfigTree 同式） */
 .asm-tr-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); pointer-events: none; }
@@ -306,4 +360,11 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
 .asm-tr-rename { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); height: var(--h-ctl-sm); margin: -1px 0; padding: 0 5px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent-ui); border-radius: var(--r-ctl); }
 .asm-tr-rename:focus { outline: none; }
 .asm-ctx { min-width: 188px; }
+/* 根节点行：比组件行重一档（字重），选中态同组件行 */
+.asm-tr-root .asm-tr-nm { font-weight: 600; color: var(--text); }
+.asm-tr-root .asm-tr-ic { color: var(--text-muted); }
+.asm-tr-drv { flex: none; display: inline-flex; align-items: center; height: 1.35em; margin-left: 4px; color: var(--accent-ui); opacity: .8; }
+/* 驱动装配件：改写过的件（机位色点）、附加件（＋） */
+.asm-tr-ovr { flex: none; align-self: center; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: var(--accent-ui); }
+.asm-tr-usr { flex: none; height: 1.35em; display: inline-flex; align-items: center; margin-left: 3px; font-size: var(--fs-1); font-weight: 700; color: var(--text-faint); }
 </style>

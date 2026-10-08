@@ -26,6 +26,7 @@
 //     （位置与视轴合成射线起点进签名，见函数头注）
 //   maskRayOrigin(posBody, boresightBody, out) / buildMask(castFn) / rayAabb(o, d, min, max) / boxMask(boxes, origin)（解析真值，给 Worker 对拍）
 //   sunScanBin(angleDeg) / sunScanAngleDeg(bin)
+//   TRI_EXCLUDE_PREFIX / triExcludeName(node, ranges) / parseTriExclude(name)：节点内三角形段的排除名（混在排除名单里传）
 //   maskToCsv(mask) → 'az,el,blocked,clearanceM' 文本
 
 export const MASK_W = 360
@@ -313,6 +314,36 @@ export function sunScanBin(angleDeg) {
 export function sunScanAngleDeg(bin) {
   const a = (((bin % SUN_SCAN_BINS) + SUN_SCAN_BINS) % SUN_SCAN_BINS) * (360 / SUN_SCAN_BINS)
   return a > 180 ? a - 360 : a
+}
+
+// ─────────────────────────────── 三角形段排除 ───────────────────────────────
+// 导入件的部件常常只是某个节点里的一段三角形（自动识别出的反射面和本体焊在同一个网格里：部件只有 triRanges、没有整节点）。
+// 这种部件要从掩模里排除，按节点名排不了——整节点排掉连本体一起没了。做法：编码成一个「排除名」混进排除名单，与节点名
+// 走同一条路（签名 ex 段、Worker 池缓存键、Worker 消息都只认字符串数组）；Worker 端 bodyMask.worker.excludedTriFlags 认出它、
+// 按 bodyGeometryFromIR 的三角形汤次序（逐节点连续、节点内按原三角形号）落成逐三角形标志。前缀带 U+0001，节点名里不会出现。
+// ranges 是节点内的局部三角形号 [[起始, 个数], …]（segment.mjs 的 triRanges 同口径，按全精度 lod0 编号）。
+
+export const TRI_EXCLUDE_PREFIX = '\u0001tri\u0001'
+/** 节点 + 三角形段 → 排除名（段按起点排序、合并重叠，同一组段恒得同一个串） */
+export function triExcludeName(node, ranges) {
+  const rs = (Array.isArray(ranges) ? ranges : [])
+    .filter((r) => Array.isArray(r) && Number.isInteger(r[0]) && Number.isInteger(r[1]) && r[0] >= 0 && r[1] > 0)
+    .map((r) => [r[0], r[1]]).sort((a, b) => a[0] - b[0])
+  const out = []
+  for (const r of rs) {
+    const last = out[out.length - 1]
+    if (last && r[0] <= last[0] + last[1]) last[1] = Math.max(last[1], r[0] + r[1] - last[0])
+    else out.push(r)
+  }
+  return out.length && typeof node === 'string' && node ? TRI_EXCLUDE_PREFIX + node + '\u0001' + out.map((r) => r[0] + '+' + r[1]).join(',') : null
+}
+/** 排除名 → {node, ranges}；不是三角形段排除名返回 null */
+export function parseTriExclude(name) {
+  if (typeof name !== 'string' || !name.startsWith(TRI_EXCLUDE_PREFIX)) return null
+  const rest = name.slice(TRI_EXCLUDE_PREFIX.length), k = rest.lastIndexOf('\u0001')
+  if (k <= 0) return null
+  const ranges = rest.slice(k + 1).split(',').map((s) => s.split('+').map(Number)).filter((r) => r.length === 2 && Number.isInteger(r[0]) && Number.isInteger(r[1]) && r[0] >= 0 && r[1] > 0)
+  return ranges.length ? { node: rest.slice(0, k), ranges } : null
 }
 
 // ─────────────────────────────── 导出 CSV ───────────────────────────────

@@ -16,6 +16,7 @@ import { RE_KM } from '../shared/slantRange.js'
 import { rateFactors } from '../shared/carrierRate.js'   // 调制因子/FEC/帧效率/扩频：与引擎同一套换算链
 import { normalizePhy, effectiveThresholdDb } from '../shared/ntnPhy.js'   // 3GPP NTN：门限已是占用带宽内的 C/N，只折算重复
 import { byLang } from '../shared/i18n/lang.js'          // 出厂占位站名按平台语言出字（名字是数据，呈现层翻不到）
+import { lbOrbitSpec } from '../shared/lbTreeOrbit.js'    // 选星 spec 送引擎前补历元（旧库条目根数 spec 缺历元按所选树节点的补）
 
 export function defaultsFor(fields) {
   const o = {}
@@ -86,10 +87,6 @@ export const SAT_FIELDS = [
   { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度（km）。选星后由所选卫星轨道自动确定', unit: 'km', type: 'num', def: '1200', grp: 'orbit' },
   { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角（°）。选星后由所选卫星轨道自动确定', unit: '°', type: 'num', def: '53', grp: 'orbit' },
   { key: 'gt', label: '卫星 G/T', tip: '卫星接收品质因数 G/T（dB/K）：按该站对本星的波束位置手动输入（平台既定：不做方向图自动取值）', unit: 'dB/K', type: 'num', def: '2', grp: 'rx' },
-  // 星侧太阳侵入（DESIGN2 D11）：同属接收组（grp 'rx'，透明 / 再生节点检查器都出）；链上节点可覆盖。
-  // 只作用于这颗星【接住的星地上行跳】：linkChain 复用 gtDeg 通道，本跳 G/T 取 卫星 G/T − 该值。
-  { key: 'satSunIntrusion', label: '星侧太阳侵入', tip: '星侧太阳侵入：太阳落进卫星接收天线方向图，星上系统噪温升高。开＝按「太阳侵入 ΔG/T」从这颗星接住的星地上行跳的 G/T 中扣除（到达电平与卫星 G/T 读数不变）；关＝不计入', type: 'select', options: ['关', '开'], def: '关', grp: 'rx' },
-  { key: 'satSunGtLoss', label: '太阳侵入 ΔG/T', tip: '星侧太阳侵入的等效 G/T 损失（dB）：ΔG/T = 10·lg(1 + ΔT/T_sys)，ΔT 为太阳引起的星上噪温升、T_sys 为星上接收系统噪温。取模型工作台「分析 › 星侧太阳侵入」的最坏值（「复制最坏 ΔG/T」）；仅「星侧太阳侵入 = 开」时生效', unit: 'dB', type: 'num', def: '0', grp: 'rx' },
   { key: 'sfdRef', label: '卫星 SFD', tip: '饱和通量密度 SFD（dBW/m²，参考 G/T）', unit: 'dBW/m²', type: 'num', def: '-84', grp: 'txp' },
   { key: 'sfdGtRef', label: 'SFD 参考 G/T', tip: 'SFD 标称所依据的参考 G/T（dB/K）；引擎入口按 有效SFD = SFD + 参考G/T 换算', unit: 'dB/K', type: 'num', def: '0', grp: 'txp' },
   { key: 'BOi', label: '输入回退 IBO', unit: 'dB', type: 'num', def: '6', grp: 'txp' },
@@ -129,7 +126,9 @@ export function normNgsoSat(ns) {
 //   · NGSO 选星 —— 真实轨道根数（SGP4/SDP4）；
 //   · NGSO 手填 —— 圆轨道高度 + 倾角（闭式最差几何，无相位）。
 // 返回 null＝这颗星没有可用轨道，自动几何对涉及它的跳无解（由调用方报因，绝不兜底编数）。
-export function orbitSpecOf(cfg) {
+// treeSats＝卫星树（ngso/satTree.js 的 sats）：选星的根数 spec 缺历元时按所选树节点的历元补（找不到节点按旧数据常量），
+// 不让主进程按计算那一刻编一个 —— 与 3D 页同一颗星同一时刻同一处。
+export function orbitSpecOf(cfg, treeSats) {
   if (!cfg) return null
   const f = cfg.form || {}
   if ((f.orbitClass || 'GSO') === 'GSO') {
@@ -137,7 +136,7 @@ export function orbitSpecOf(cfg) {
     return isFinite(lon) ? { type: 'snapshot', lonDeg: lon, latDeg: 0, altKm: 35786 } : null
   }
   const ns = cfg.ngsoSat
-  if (ns && ns.mode !== 'manual' && ns.orbit && ns.orbit.type !== 'unresolved') return JSON.parse(JSON.stringify(ns.orbit))
+  if (ns && ns.mode !== 'manual' && ns.orbit && ns.orbit.type !== 'unresolved') return lbOrbitSpec(ns, treeSats)
   const alt = parseFloat(halfStr(f.orbitAltitude))
   if (!(alt > 0)) return null
   return { type: 'circular', altKm: alt, inclDeg: parseFloat(halfStr(f.orbitInclination)) || 0 }
@@ -171,11 +170,11 @@ export const HOP_GS_FIELDS = [
   { key: 'polarization', label: '极化', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'V' },
   { key: 'slantRange', label: '斜距', tip: '本跳的星地斜距（km）。留空即报错——端到端窗口不按轨道高度兜底换算（几何全部手填）。可用「斜距工具」按站址纬度/海拔/仰角/轨道高度算出后填入', unit: 'km', type: 'num', def: '' },
   { key: 'elevation', label: '仰角', tip: '本跳对卫星的仰角（°）：直接送进引擎，不解算轨道。GSO 跳选星后斜距/仰角为真几何联动回填；手改仰角后斜距不再联动，按所填值计算', unit: '°', type: 'num', def: '25' },
-  { key: 'miscLoss', label: '附加损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '0.3' }
+  { key: 'miscLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '0.3' }
 ]
 // 星地跳的【侧向】默认频率/极化：上行一套、下行一套。频率与极化是有向量——改拓扑时新跳与
 // 来源跳方向相反（链首接卫星把上行跳变成下行跳这类），承接过来就是串味，此时取本侧默认。
-// 几何量（斜距/仰角/附加损耗）与方向无关，照旧承接。见 E2eLinkBudgetApp 的 reseedHop。
+// 几何量（斜距/仰角/其他损耗）与方向无关，照旧承接。见 E2eLinkBudgetApp 的 reseedHop。
 export const GS_SIDE_DEFAULTS = {
   up: { frequency: '14.25', polarization: 'V' },
   down: { frequency: '12.50', polarization: 'H' }
@@ -188,7 +187,7 @@ export const HOP_ISL_FIELDS = [
   // 星间干扰：与星地那四项不是同一个物理域（真空段无雨致去极化、无地面 ASI 路径），且随这条
   // 链路的几何与频率复用而变，故聚合成一项挂在跳上（与 islEirp/islGT 同构），不挂卫星。
   { key: 'islCI', label: '星间C/I', tip: '本跳星间干扰合计载噪比（dB）：星座内邻 ISL 同频、邻道、极化泄漏等之合计，经工程分析后手填；留空＝不计入。发射端为透明星时其转发器互调另按该星工作点折算入账，与本项不重复', unit: 'dB', type: 'num', def: '' },
-  { key: 'miscLoss', label: '附加损耗', unit: 'dB', type: 'num', def: '1' }
+  { key: 'miscLoss', label: '其他损耗', unit: 'dB', type: 'num', def: '1' }
 ]
 export const HOP_LASER_FIELDS = [
   { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km）。留空即报错', unit: 'km', type: 'num', def: '' },

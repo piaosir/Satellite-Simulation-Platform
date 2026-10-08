@@ -106,7 +106,9 @@ eq(P.INSTALLER_ARGS, ['--updated', '/S', '--force-run'], '安装器参数与 ele
   ok(i0 > 0, "main.js 里有 app.on('before-quit')")
   const body = src.slice(i0, src.indexOf('\n})', i0))
   const released = [...new Set([...body.matchAll(/(_\w+AllowClose)\s*=\s*true/g)].map((m) => m[1]))].sort()
-  ok(declared.length >= 7, `带关窗守卫的窗口 ≥ 7 扇（实得 ${declared.length}：${declared.join(' ')}）`)
+  ok(declared.length >= 8, `带关窗守卫的窗口 ≥ 8 扇（实得 ${declared.length}：${declared.join(' ')}）`)
+  // 模型工作台（2026-10-06 起带守卫：关窗前落定各签草稿与入库作业）必须在表里
+  ok(declared.includes('_modelAllowClose'), '模型工作台的关窗守卫 _modelAllowClose 已声明')
   eq(released, declared, `before-quit 放行表与守卫对账零缺口（漏了：${declared.filter((d) => released.indexOf(d) < 0).join(' ') || '无'}）`)
 }
 

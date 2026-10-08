@@ -10,6 +10,7 @@ import MdSec from '../MdSec.vue'
 import NumIn from '../NumIn.vue'
 import { irLayout } from '../../viz/models/irToThree.js'
 import { STAGE_LABEL, STAGE_TYPE_LIST, stageUnit, fmtNum, uniqueName, newArticulation, newStage, retypeStage } from '../wbLogic.js'
+import { UNIT_SCALE, UNIT_LIST } from '@core/models/units.mjs'
 
 const wb = inject('wb')
 const getVp = inject('viewport')
@@ -18,6 +19,14 @@ const { cur } = wb
 const m = computed(() => cur.meta)
 const ro = computed(() => !cur.editable)
 const arts = computed(() => { void cur.rev; return (m.value && Array.isArray(m.value.articulations) ? m.value.articulations : []) })
+// 平移 stage 的量是模型单位：缩放比恰是 m / cm / mm / in / ft 之一就标那个单位，否则标「模型单位」（按已知尺寸缩放过的件）
+const lenUnit = computed(() => {
+  void cur.rev
+  const sc = m.value && m.value.units && m.value.units.scaleToMeters
+  const u = Number.isFinite(sc) && sc > 0 ? UNIT_LIST.find((k) => Math.abs(UNIT_SCALE[k] - sc) <= 1e-12 * UNIT_SCALE[k]) : 'm'
+  return u || '模型单位'
+})
+const unitOf = (type) => (/Translate$/.test(type) ? ' ' + lenUnit.value : stageUnit(type))
 
 // ============ 滑杆（只驱动预览）============
 // 滑杆当前值（关节名 → stage 名 → 值）；换模型清零（视口那边换模型也清，同一模型换 LOD 两边都留着）
@@ -200,41 +209,41 @@ function newArt() {
 <template>
   <MdSec id="m-artic" title="关节" :count="arts.length || null">
     <template #actions>
-      <button class="lb-mini" :disabled="ro || !m" title="新建关节（绕节点局部 Z 轴转 ±180°），随后在预览里点要动的件" @click="newArt"><Icon name="plus" :size="12" />新建关节</button>
+      <button class="lb-mini" :disabled="ro || !m" title="新建关节（绕节点局部 Z 轴旋转 ±180°），随后在预览中点选需驱动的部件" @click="newArt"><Icon name="plus" :size="12" />新建关节</button>
     </template>
     <template v-if="m">
-      <div v-if="!arts.length" class="lb-placeholder ar-none">没有关节。</div>
+      <div v-if="!arts.length" class="lb-placeholder ar-none">无关节。</div>
       <template v-else>
-        <div class="md-acts"><span class="sp"></span><button class="lb-mini" title="全部关节回初值（只影响预览）" @click="resetAll"><Icon name="undo-2" :size="12" />全部复位</button></div>
+        <div class="md-acts"><span class="sp"></span><button class="lb-mini" title="全部关节恢复初值（仅影响预览）" @click="resetAll"><Icon name="undo-2" :size="12" />全部复位</button></div>
         <div v-for="a in arts" :key="a.name" class="ar" @mouseenter="hover(a)" @mouseleave="hover(null)">
           <div class="ar-hd">
-            <input class="ci ar-name" type="text" :value="a.name" :disabled="ro" spellcheck="false" data-i18n-skip title="关节名（AGI：不含空白，同一模型内唯一）"
+            <input class="ci ar-name" type="text" :value="a.name" :disabled="ro" spellcheck="false" title="关节名称（AGI：不含空白字符，模型内唯一）"
                    @change="renameArt(a, $event.target.value); $event.target.value = a.name" @keydown.enter="$event.target.blur()" />
             <span class="ar-c" :title="(a.nodes || []).join('\n')"><span data-i18n-skip>{{ (a.nodes || []).length }}</span> 节点</span>
             <span class="sp"></span>
-            <button class="lb-mini lb-mini-ico" title="该关节回初值（只影响预览）" @click="reset(a)"><Icon name="undo-2" :size="12" /></button>
-            <button class="lb-mini lb-mini-ico" :disabled="ro" title="删除这条关节" @click="removeArt(a)"><Icon name="trash" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="该关节恢复初值（仅影响预览）" @click="reset(a)"><Icon name="undo-2" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" :disabled="ro" title="删除该关节" @click="removeArt(a)"><Icon name="trash" :size="12" /></button>
           </div>
           <!-- 节点 -->
           <div class="ar-nodes">
             <span v-for="n in a.nodes || []" :key="n" class="ar-chip" :title="n">
               <span class="ar-chip-t" data-i18n-skip>{{ n }}</span>
-              <button v-if="!ro" class="ar-chip-x" title="移出这条关节" @click="removeNode(a, n)"><Icon name="x" :size="10" /></button>
+              <button v-if="!ro" class="ar-chip-x" title="从该关节移除" @click="removeNode(a, n)"><Icon name="x" :size="10" /></button>
             </span>
             <span v-if="!(a.nodes || []).length" class="ar-empty">无节点。</span>
           </div>
           <div v-if="!ro" class="ar-row">
-            <select class="ci ar-add" value="" :disabled="!nodeList.length" title="加节点（IR 节点名；缩进 = 层级）" @change="addNode(a, $event.target.value); $event.target.value = ''">
-              <option value="">加节点…</option>
+            <select class="ci ar-add" value="" :disabled="!nodeList.length" title="添加节点（IR 节点名；缩进表示层级）" @change="addNode(a, $event.target.value); $event.target.value = ''">
+              <option value="">添加节点…</option>
               <option v-for="r in nodeList" :key="r.name" :value="r.name" :disabled="(a.nodes || []).includes(r.name)" data-i18n-skip>{{ indent(r.depth) + r.name }}</option>
             </select>
-            <button class="lb-mini" :class="{ on: pickingFor === a.name }" :disabled="!nodeList.length" title="在预览里点模型，把被点中的节点加进这条关节" @click="togglePick(a)">
+            <button class="lb-mini" :class="{ on: pickingFor === a.name }" :disabled="!nodeList.length" title="在预览中点选模型，将选中节点加入该关节" @click="togglePick(a)">
               <Icon name="square-dashed-mouse-pointer" :size="12" />点选
             </button>
           </div>
           <!-- pointingVector -->
           <div class="ar-row">
-            <label class="ar-lab" title="pointingVector：该关节要指向目标时，节点局部系里朝向目标的那个方向（单轴对日等用；留空 = 无）">指向</label>
+            <label class="ar-lab" title="pointingVector：关节指向目标时，节点局部坐标系中朝向目标的方向（用于单轴对日等；留空 = 无）">指向</label>
             <div class="md-v3 ar-pv">
               <NumIn v-for="k in [0, 1, 2]" :key="k" :model-value="a.pointingVector ? a.pointingVector[k] : null" allow-empty :disabled="ro" :sig="6" @commit="(v) => setPv(a, k, v)" />
             </div>
@@ -243,24 +252,24 @@ function newArt() {
           <!-- stages -->
           <div v-for="s in a.stages" :key="s.name" class="ar-st">
             <div class="ar-row">
-              <input class="ci ar-sn" type="text" :value="s.name" :disabled="ro" spellcheck="false" data-i18n-skip title="stage 名（不含空白，本关节内唯一）"
+              <input class="ci ar-sn" type="text" :value="s.name" :disabled="ro" spellcheck="false" title="stage 名称（不含空白字符，关节内唯一）"
                      @change="renameStage(a, s, $event.target.value); $event.target.value = s.name" @keydown.enter="$event.target.blur()" />
               <select class="ci ar-ty" :value="s.type" :disabled="ro" title="变换类型（节点局部系；角度为度、平移为模型单位）" @change="setType(a, s, $event.target.value)">
                 <option v-for="t in STAGE_TYPE_LIST" :key="t" :value="t">{{ STAGE_LABEL[t] || t }}</option>
               </select>
               <input class="ar-sl" type="range" :min="s.minimumValue" :max="s.maximumValue" :step="stepOf(s)" :value="valOf(a, s)"
                      :title="'拖动驱动预览（' + s.minimumValue + ' … ' + s.maximumValue + '）'" @input="onSlide(a, s, $event.target.value)" />
-              <span class="ar-v" data-i18n-skip>{{ fmtNum(valOf(a, s), 4) }}{{ stageUnit(s.type) }}</span>
+              <span class="ar-v"><span data-i18n-skip>{{ fmtNum(valOf(a, s), 4) }}</span>{{ unitOf(s.type) }}</span>
             </div>
             <div class="ar-lim">
               <label title="最小值">最小</label><NumIn :model-value="s.minimumValue" :disabled="ro" :sig="6" @commit="(v) => setStage(a, s, 'minimumValue', v)" />
               <label title="最大值">最大</label><NumIn :model-value="s.maximumValue" :disabled="ro" :sig="6" @commit="(v) => setStage(a, s, 'maximumValue', v)" />
-              <label title="初值（STK 加载模型时的位置；预览、缩略图、包围盒都按它）">初值</label><NumIn :model-value="s.initialValue" :disabled="ro" :sig="6" @commit="(v) => setStage(a, s, 'initialValue', v)" />
-              <button class="lb-mini lb-mini-ico" :disabled="ro" title="把滑杆当前位置设为初值" @click="toInitial(a, s)"><Icon name="check" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" :disabled="ro || (a.stages || []).length <= 1" title="删除这个 stage" @click="removeStage(a, s)"><Icon name="trash" :size="12" /></button>
+              <label title="初值（STK 加载模型时的位置；预览、缩略图与包围盒均以此为准）">初值</label><NumIn :model-value="s.initialValue" :disabled="ro" :sig="6" @commit="(v) => setStage(a, s, 'initialValue', v)" />
+              <button class="lb-mini lb-mini-ico" :disabled="ro" title="将滑杆当前位置设为初值" @click="toInitial(a, s)"><Icon name="check" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" :disabled="ro || (a.stages || []).length <= 1" title="删除该 stage" @click="removeStage(a, s)"><Icon name="trash" :size="12" /></button>
             </div>
           </div>
-          <div v-if="!ro" class="md-acts"><button class="lb-mini" title="加一个 stage（按顺序右乘在前面的变换之后）" @click="addStage(a)"><Icon name="plus" :size="12" />加 stage</button></div>
+          <div v-if="!ro" class="md-acts"><button class="lb-mini" title="添加一个 stage（按顺序右乘于前序变换之后）" @click="addStage(a)"><Icon name="plus" :size="12" />添加 stage</button></div>
         </div>
       </template>
     </template>

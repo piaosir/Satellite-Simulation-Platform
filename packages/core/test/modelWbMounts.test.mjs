@@ -1,5 +1,5 @@
 // 模型工作台「卫星」页纯逻辑（src/model/mountLogic.js）单测：绑定工作副本归一、挂点表格 行 ⇄ mount（视轴 az / el 与掩模 D2 同口径、
-// 滚转与报告挂点表同口径）、从 attach point / 预览点选 / 模板新增、复制、JSON 进出、天线引用选项与方向图宽度。
+// 滚转 0 = D1 缺省上向）、从 attach point / 预览点选 / 模板新增、复制、JSON 进出、天线引用选项与方向图宽度。
 // 裸 node 跑：mountLogic.js 只 import packages/core（相对路径），不碰 three / vue / DOM。
 import assert from 'node:assert/strict'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,7 +13,8 @@ const BF = await imp('../models/bodyFrame.mjs')
 const SCH = await imp('../models/schema.mjs')
 const PB = await imp('../models/paramBus.mjs')
 const PT = await imp('../models/paramTemplates.mjs')
-const LBL = await imp('../../../src/shared/lbBodyLayout.js')
+const DR = await imp('../models/drive.mjs')
+const AS = await imp('../models/assembly.mjs')
 
 let n = 0
 const ok = (name, fn) => { fn(); n++ }
@@ -34,15 +35,12 @@ ok('视轴 az / el 与掩模 D2 口径逐位一致（mask.maskAzEl），往返�
   assert.deepEqual(M.azElOf([0, 1, 0]), { az: 90, el: 0 })
   nearV(M.dirOfAzEl(0, -90), [0, 0, -1], 1e-15)
 })
-ok('滚转：0 = D1 缺省上向；往返；与报告挂点表（lbBodyLayout.mountReadout）同一个数', () => {
+ok('滚转：0 = D1 缺省上向；往返', () => {
   for (let k = 0; k < 300; k++) {
     const d = rdir(), roll = rnd() * 360 - 180
     const u = M.upOfRoll(d, roll)
     near(u[0] * d[0] + u[1] * d[1] + u[2] * d[2], 0, 1e-12, '⟂')
     near(M.rollOf(d, u), roll, 1e-9, 'roll')
-    const r = LBL.mountReadout({ id: 'a', posBody: [0, 0, 0], boresightBody: d, upBody: u })
-    near(r.rollDeg, roll, 1e-9, 'report')
-    near(r.azDeg, M.azElOf(d).az, 1e-12); near(r.elDeg, M.azElOf(d).el, 1e-12)
   }
   nearV(M.upOfRoll([0, 0, 1], 0), BF.defaultUpBody([0, 0, 1]))
   assert.equal(M.rollOf([0, 0, 1], [0, -1, 0]), 0)
@@ -122,7 +120,8 @@ ok('模板套用：默认卫星对上参数化模型的四个反射面焦点（�
 ok('反射面焦点挂点自动排除自身天线（反射面 / 展开臂 / 馈源 / 馈源支架）；模板与「从 attach point」两条路同口径，用户填过的不覆盖', () => {
   const r = PB.buildTemplateModel('default-sat')
   const own3 = M.ownAntennaNodes(r.parts, 'reflector_3_focus')
-  assert.deepEqual([...own3].sort(), ['feed_3', 'feed_3_support', 'reflector_3', 'reflector_3_arm', 'reflector_3_back', 'reflector_3_rim'])
+  // 造型件按材质分桶成多个节点（喇叭外壳 / 口环 / 内腔 / 遮阳膜 / 馈电链法兰、反射面背架），全在自身部件里
+  assert.deepEqual([...own3].sort(), ['feed_3', 'feed_3_aluminum', 'feed_3_black_paint', 'feed_3_gold_metal', 'feed_3_sunshield', 'feed_3_support', 'reflector_3', 'reflector_3_arm', 'reflector_3_back', 'reflector_3_frame', 'reflector_3_rim'])
   assert.deepEqual(M.ownAntennaNodes(r.parts, 'nadir_center'), [])
   assert.deepEqual(M.ownAntennaNodes(null, 'reflector_3_focus'), [])
   const a = M.applyTemplate('default-sat', [], r.attachPoints, 'append', r.parts)
@@ -139,6 +138,81 @@ ok('反射面焦点挂点自动排除自身天线（反射面 / 展开臂 / 馈�
   assert.deepEqual(M.applyMountEdit(blank, 'attachPoint', 'reflector_3_focus', { attachPoints: r.attachPoints, parts: r.parts }).excludeNodes, own3)
   const mine = { ...blank, excludeNodes: ['bus'] }
   assert.deepEqual(M.applyMountEdit(mine, 'attachPoint', 'reflector_3_focus', { attachPoints: r.attachPoints, parts: r.parts }).excludeNodes, ['bus'])
+})
+ok('装配件 / 驱动装配件（2026-10）的反射面焦点挂点 reflN_focus：排除本件（反射面 + 自带馈源）+ 同号馈源支架 / 展开臂 / 铰座，不串号；派生件 reflN-k 同理', () => {
+  const r = AS.buildAssembly(DR.newDrivenDoc({ templateId: 'default-sat' }))
+  assert.deepEqual([...M.ownAntennaNodes(r.parts, 'refl1_focus')].sort(),
+    ['arm1a_boom', 'hinge1_box', 'refl1_feed', 'refl1_feed_aluminum', 'refl1_feed_black_paint', 'refl1_feed_gold_metal', 'refl1_feed_sunshield',
+      'refl1_reflector', 'refl1_reflector_back', 'refl1_reflector_frame', 'refl1_reflector_frame_aluminum', 'refl1_reflector_rim', 'sup1_boom', 'sup1b_boom', 'sup1c_boom'])
+  assert.deepEqual(M.ownAntennaNodes(r.parts, 'bus_nadir_center'), [])
+  const fake = ['refl1_reflector', 'refl10_reflector', 'sup1_boom', 'sup10_boom', 'sup1b_boom', 'arm1a_boom', 'arm10a_boom', 'refl1-1_reflector', 'arm1a-1_boom', 'sup1-1_boom', 'sup1b-1_boom', 'bus_bus']
+    .map((id) => ({ id, nodes: [id] }))
+  assert.deepEqual(M.ownAntennaNodes(fake, 'refl1_focus'), ['refl1_reflector', 'sup1_boom', 'sup1b_boom', 'arm1a_boom'])
+  assert.deepEqual(M.ownAntennaNodes(fake, 'refl1-1_focus'), ['refl1-1_reflector', 'arm1a-1_boom', 'sup1-1_boom', 'sup1b-1_boom'])
+  // 模板（挂点名经别名对上）与「从 attach point」两条路同口径
+  const a = M.applyTemplate('default-sat', [], r.attachPoints, 'append', r.parts)
+  assert.equal(a.unmatched.length, 0)
+  for (const m of a.mounts) {
+    const k = /^refl(\d+)_focus$/.exec(m.attachPoint)[1]
+    assert.deepEqual(m.excludeNodes, M.ownAntennaNodes(r.parts, m.attachPoint), m.id)
+    assert.ok(m.excludeNodes.includes(`refl${k}_reflector`) && !m.excludeNodes.some((x) => x.startsWith(`refl${k === '1' ? 2 : 1}_`)), m.id)
+  }
+  const ap = r.attachPoints.find((x) => x.name === 'refl2_focus')
+  assert.deepEqual(M.mountFromAttachPoint(ap, [], r.parts).excludeNodes, M.ownAntennaNodes(r.parts, 'refl2_focus'))
+})
+ok('排查 #10：库里拖进来的首副反射面（id refl、挂点 refl_focus）与导入件自动识别的 reflector<n>_focus 也认出自身天线；导入件只占一段三角形的部件走三角形段排除', () => {
+  // 普通装配件：用户拖入的第一副反射面组件 id = refl（compIdFor 首个不带号）→ 部件 refl_reflector / refl_feed …；不串到 refl2、sup / arm
+  const doc = AS.normalizeAssembly({ kind: 'assembly', domain: 'spacecraft', comps: [
+    { id: 'bus', type: 'sat.bus.box', parent: null, params: {} },
+    { id: 'refl', type: 'sat.reflector', parent: 'bus', attach: { mode: 'socket', socket: '+X' }, params: {} },
+    { id: 'refl2', type: 'sat.reflector', parent: 'bus', attach: { mode: 'socket', socket: '-X' }, params: {} }
+  ] })
+  const r = AS.buildAssembly(doc)
+  assert.ok(r.attachPoints.some((a) => a.name === 'refl_focus'), '挂点 refl_focus')
+  const own = M.ownAntennaNodes(r.parts, 'refl_focus')
+  assert.ok(own.length && own.every((x) => x.startsWith('refl_')), `refl_focus 排除本件：${own}`)
+  assert.ok(!M.ownAntennaNodes(r.parts, 'refl2_focus').some((x) => x.startsWith('refl_')), 'refl2 不串到 refl')
+  // 导入件（segment.mjs）：反射面部件 reflector-<n>（反写 attachPoint）+ 同号馈源 feed-<n>；整节点进 excludeNodes，节点内的段进三角形段排除名
+  const parts = [
+    { id: 'reflector-1', role: 'reflector', attachPoint: 'reflector1_focus', nodes: ['dish_rim'], triRanges: [{ node: 'mesh_7', ranges: [[40, 10], [0, 20]] }, { node: 'mesh_2', ranges: [[5, 5]] }] },
+    { id: 'feed-1', role: 'feed', nodes: ['horn_a'] },
+    { id: 'reflector-2', role: 'reflector', attachPoint: 'reflector2_focus', nodes: [], triRanges: [{ node: 'mesh_7', ranges: [[100, 30]] }] },
+    { id: 'bus', role: 'bus', nodes: ['body'] }
+  ]
+  assert.deepEqual(M.ownAntennaNodes(parts, 'reflector1_focus'), ['dish_rim', 'horn_a'])
+  const tris = M.ownAntennaTris(parts, 'reflector1_focus')
+  assert.deepEqual(tris.map(MASK.parseTriExclude), [{ node: 'mesh_2', ranges: [[5, 5]] }, { node: 'mesh_7', ranges: [[0, 20], [40, 10]] }], '同节点的段合并、排序')
+  assert.deepEqual(M.ownAntennaTris(parts, 'reflector2_focus').map(MASK.parseTriExclude), [{ node: 'mesh_7', ranges: [[100, 30]] }])
+  assert.deepEqual(M.ownAntennaTris(parts, 'nadir_center'), [])
+  // 掩模排除名单 / 签名：只有 glb 件载着 lod0 时加三角形段；没有三角形段的挂点签名与旧式逐字相同
+  const mount = SCH.defaultMount({ id: 'a', attachPoint: 'reflector1_focus', posBody: [0, 0, 1], boresightBody: [0, 0, 1], excludeNodes: ['dish_rim', 'horn_a'] })
+  const glb0 = { meta: { id: 'u1', files: { lod0: { sha256: 'ef'.repeat(32) } }, parts }, kind: 'glb', lod: 'lod0', id: 'u1' }
+  assert.deepEqual(M.maskExcludeOf(glb0, mount), ['dish_rim', 'horn_a', ...tris])
+  assert.deepEqual(M.maskExcludeOf({ ...glb0, lod: 'lod2' }, mount), ['dish_rim', 'horn_a'], '别的档三角形重编过号：不加')
+  assert.deepEqual(M.maskExcludeOf({ ...glb0, kind: 'tpl' }, mount), ['dish_rim', 'horn_a'])
+  const plainSig = MASK.maskSignature({ modelSha: 'ef'.repeat(32), lod: 'lod0', articulations: {}, mountPos: mount.posBody, mountBoresight: mount.boresightBody, excludeNodes: mount.excludeNodes })
+  assert.notEqual(M.maskSigFor(glb0, mount, {}), plainSig, '带三角形段：签名变（旧的错掩模不再认）')
+  assert.equal(M.maskSigFor(glb0, { ...mount, attachPoint: 'nadir_center' }, {}), plainSig, '没认出自身反射面的挂点：签名照旧')
+})
+ok('排查 #17：固定天线引用 GRD 树天线 / 链路预算库条目、视场留空 → 视场按方向图 −3 dB（峰值增益等效高斯束 / G/T 反推），推不出为 null', () => {
+  const ext = {
+    grdPeakDbi: (k) => ({ 'CS26|Ku': 40, 'CS26|GT1': 36 })[k] ?? null,
+    lbInfo: (id) => ({ 'geo:g1': { gtDbK: 3, grdKey: 'CS26|GT1' }, 'geo:g2': { gtDbK: 3, grdKey: '' }, 'geo:g3': { gtDbK: null, grdKey: '' } })[id] || null
+  }
+  const eq = (g) => Math.sqrt(16 * Math.LN2 / Math.pow(10, g / 10)) * 180 / Math.PI
+  near(M.hpbwFromPeakDbi(40), eq(40), 1e-12); assert.equal(M.hpbwFromPeakDbi(0), null); assert.equal(M.hpbwFromPeakDbi(null), null)
+  const grd = { kind: 'grd', id: 'CS26|Ku' }
+  near(M.hpbwOf(grd, undefined, ext), eq(40), 1e-12, 'GRD：峰值 40 dBi → 约 1.9°')
+  assert.equal(M.hpbwOf(grd), null, '不给 ext：同改前')
+  near(M.hpbwOf({ kind: 'lbAntenna', id: 'geo:g1' }, undefined, ext), eq(36), 1e-12, '库条目挂了 G/T 方向图：按那副 GRD')
+  near(M.hpbwOf({ kind: 'lbAntenna', id: 'geo:g2' }, undefined, { ...ext, sysTempK: 400 }), M.hpbwFromGt(3, 400), 1e-12, '没挂方向图：G/T 反推')
+  assert.equal(M.hpbwOf({ kind: 'lbAntenna', id: 'geo:g3' }, undefined, ext), null)
+  const m = { ...M.blankMount([]), antennaRef: grd }
+  near(M.fovFullOf(m, ext), eq(40), 1e-12, '视场留空 = −3 dB 全宽')
+  near(M.coneHalfOf(m, ext), eq(40) / 2, 1e-12)
+  assert.equal(M.fovFullOf({ ...m, antennaRef: { kind: 'grd', id: 'X|none' } }, ext), null, '峰值推不出：null（界面「—」）')
+  near(M.fovFullOf({ ...m, antennaRef: { kind: 'lbAntenna', id: 'geo:g2' }, sysTempK: 250 }, ext), M.hpbwFromGt(3, 250), 1e-12, '挂点自己的 T_sys 优先')
+  assert.equal(M.fovFullOf({ ...m, fovDeg: 12 }, ext), 12, '挂点视场优先')
 })
 ok('JSON 进出：往返逐字相等；认 {mounts}、裸数组、整条绑定；id 与已有撞了改名；坏条丢弃并报错', () => {
   const a = M.applyTemplate('goes', [], []).mounts
@@ -191,7 +265,7 @@ ok('天线引用：下拉编码 ⇄ antennaRef、显示名、方向图 −3 dB �
 ok('表格行：显示文本（数字 6 位有效、万向节显示名）、默认卫星 Ku 点波束一行', () => {
   const m = M.applyTemplate('default-sat', [], []).mounts[2]
   const r = M.mountRow(m, [])
-  assert.deepEqual([r.name, r.px, r.py, r.pz, r.az, r.el, r.roll, r.gimbal, r.a1Min, r.a2Max, r.sysTempK], ['Ku 可动点波束 1', 0, 0.35, 2.462, 0, 90, 0, 'xy', -9, 9, 500])
+  assert.deepEqual([r.name, r.px, r.py, r.pz, r.az, r.el, r.roll, r.gimbal, r.a1Min, r.a2Max, r.sysTempK], ['Ku 可动点波束 1', 0, 0.35, 2.41, 0, 90, 0, 'xy', -9, 9, 500])
   assert.equal(M.cellText(r, { key: 'gimbal' }), 'X-Y')
   assert.equal(M.cellText({ x: 1 / 3 }, { key: 'x', num: true }), '0.333333')
   assert.equal(M.cellText({ x: null }, { key: 'x', num: true }), '')

@@ -8,7 +8,7 @@
 //   ④ 透明度作用于整枚符号（描边一起淡），与文字标注那条口径一致；
 //   ⑤ 序号徽标的配色可换，且【换了颜色就得真换】（3D 那边按签名缓存贴图，键漏了配色就会拿回旧图）；
 //   ⑥ 地球站符号只此一枚（Noto 六色天线 + 深色套边），不着色也不换形状；
-//   ⑦ 标记表格只管坐标：点标记 [经度,纬度]、地球站 [名称,经度,纬度]，末两列恒为经纬度（批量粘贴按此解析）。
+//   ⑦ 标记表格：点标记 [名称,经度,纬度]、地球站 [名称,天线口径,天线罩,经度,纬度]，末两列恒为经纬度（批量粘贴按此解析）。
 import {
   MARK_SHAPES, MARK_SHAPE_KEYS, isMarkShape, MARK_TEX_FILL,
   paintMarkSymbol, symbolAnchorY, texCenterY, symbolUp, symbolDown
@@ -142,7 +142,7 @@ ok('isMarkShape 认得几何件、不认天线件', isMarkShape('circle') && !is
   let nid = 0
   const mk = useMarkerTable({ points, stations, trajectories, newId: () => 'm' + (++nid), sync: () => {} })
   ok('点标记列：名称（可空）+ 经纬度', mk.PT_COLS.join(',') === 'name,lon,lat')
-  ok('地球站列：名称 + 经纬度', mk.ST_COLS.join(',') === 'name,lon,lat')
+  ok('地球站列：名称 + 天线口径 + 天线罩 + 功放功率 + 经纬度（站参数插在坐标之前）', mk.ST_COLS.join(',') === 'name,diaM,radome,pwrW,lon,lat')
   ok('航点列：只有经纬度两列', mk.WP_COLS.join(',') === 'lon,lat')
   mk.ptLayer.pasteAppend(['120\t30', '121\t31'].join('\n'))
   ok('点标记粘贴：两行都进来了，坐标落在末两列', points.value.length === 2 && points.value[0].lon === 120 && points.value[1].lat === 31)
@@ -153,6 +153,14 @@ ok('isMarkShape 认得几何件、不认天线件', isMarkShape('circle') && !is
   ok('点标记名称清空即删字段', !('name' in points.value[2]))
   mk.stLayer.pasteAppend(['北京站', '116.4', '39.9'].join('\t'))
   ok('地球站粘贴：名称 + 坐标各就各位', stations.value.length === 1 && stations.value[0].name === '北京站' && stations.value[0].lon === 116.4 && stations.value[0].lat === 39.9)
+  ok('地球站粘贴：老三列不带站参数', !('diaM' in stations.value[0]) && !('radome' in stations.value[0]))
+  mk.stLayer.pasteAppend(['喀什站', '4.5', '有', '40', '75.99', '39.47'].join('	'))
+  const ks = stations.value[1]
+  ok('地球站粘贴：口径 / 天线罩 / 坐标各就各位', ks && ks.name === '喀什站' && ks.diaM === 4.5 && ks.radome === true && ks.pwrW === 40 && ks.lon === 75.99 && ks.lat === 39.47)
+  mk.stLayer.update(ks.id, { diaM: 'abc', radome: '是' })
+  ok('地球站：口径填文本不落（保留原值）', ks.diaM === 4.5 && ks.radome === true)
+  mk.stLayer.update(ks.id, { diaM: '', radome: '无' })
+  ok('地球站：口径清空 / 天线罩写「无」即删字段', !('diaM' in ks) && !('radome' in ks))
 }
 
 // ===== ⑧ 线型表：侧栏给几档，两个渲染器就得认几档 =====

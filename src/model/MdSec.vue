@@ -9,6 +9,7 @@ const props = defineProps({
   title: { type: String, required: true },
   count: { type: [Number, String], default: null },     // 标题后的计数读数（运行时数据）
   summary: { type: String, default: '' },               // 折叠时也看得到的一行读数
+  summaryLit: { type: Boolean, default: false },        // summary 是界面语汇（跟界面语言走）而非数据 / 名字
   defaultOpen: { type: Boolean, default: true },
   tip: { type: String, default: '' }                    // 节名悬停口径
 })
@@ -24,7 +25,7 @@ defineExpose({ open: () => { open.value = true } })
       <Icon class="md-sec-chev" :name="open ? 'chevron-down' : 'chevron-right'" :size="12" />
       <span class="md-sec-t" :title="tip || null">{{ title }}</span>
       <span v-if="count != null && count !== ''" class="md-sec-n" data-i18n-skip>{{ count }}</span>
-      <span v-if="summary" class="md-sec-sum" :title="summary" data-i18n-skip>{{ summary }}</span>
+      <span v-if="summary" class="md-sec-sum" :title="summary" :data-i18n-skip="summaryLit ? null : ''">{{ summary }}</span>
       <span class="md-sec-sp"></span>
       <span class="md-sec-acts" @click.stop><slot name="actions" /></span>
     </header>

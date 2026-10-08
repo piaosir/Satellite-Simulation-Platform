@@ -521,9 +521,16 @@ function createCiWindow() {
 }
 
 // 卫星模型工作台：独立 BrowserWindow，单例复用。
-// 不设关窗守卫——元数据改一下即经 models:saveMeta 落盘（与频率计划同形态），关窗无可丢之物；
-// 也因此不声明 _modelAllowClose（updaterPending.test.mjs ⑤ 会对账每个守卫都进了 before-quit）。
+// 设关窗守卫（2026-10-06 设计页文档标签条，任务书 §3.4）——元数据改动虽即时落盘，但装配签的提交是「停手 1.5 s 自动入库」，
+// 多个签各有排着的草稿 / 入库作业，关窗有可丢之物。与链路预算窗口的「转问用户」不同，这里不弹框：close 时转给渲染端
+// （modelwb:closeRequested），渲染端同步写全部签草稿、等待存的入库作业跑完后回 modelwb:confirmClose 才真关；
+// 渲染端卡住 / 没挂监听，3 s 后主进程自己放行（草稿已在渲染端同步段写上，下次开窗按草稿恢复）。
+// _modelAllowClose 已登记进 before-quit 放行表（updaterPending.test.mjs ⑤ 源码级对账）。
+// 菜单：removeMenu()——Electron 缺省菜单的 Ctrl+W（关窗）/ Ctrl+R（重载）/ Alt（唤出菜单栏）在这扇窗里都是误伤：
+// Ctrl+W / Ctrl+Tab 由渲染端按文档签处理（关签 / 切签）；打包版再在 before-input-event 吞掉 Ctrl+R / Ctrl+Shift+R（重载会丢掉内存里的撤销栈）。
 let _modelWin = null
+let _modelAllowClose = false
+let _modelCloseT = null
 function createModelWindow() {
   if (_modelWin && !_modelWin.isDestroyed()) {
     if (_modelWin.isMinimized()) _modelWin.restore()
@@ -546,15 +553,35 @@ function createModelWindow() {
       devTools: !app.isPackaged
     }
   })
+  win.removeMenu()
   if (process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'] + '/model.html')
   } else {
     win.loadFile(join(__dirname, '../renderer/model.html'))
   }
   bindDevTools(win)
-  win.on('closed', () => { _modelWin = null })
+  if (app.isPackaged) {
+    win.webContents.on('before-input-event', (e, input) => {
+      if (input.type === 'keyDown' && (input.control || input.meta) && !input.alt && String(input.key || '').toLowerCase() === 'r') e.preventDefault()
+    })
+  }
+  _modelAllowClose = false
+  clearTimeout(_modelCloseT); _modelCloseT = null
+  win.on('close', (e) => {
+    if (_modelAllowClose) return
+    e.preventDefault()
+    if (_modelCloseT) return   // 已转给渲染端、正在落定：重复点 X 不重发
+    _modelCloseT = setTimeout(confirmCloseModel, 3000)
+    try { win.webContents.send('modelwb:closeRequested') } catch { confirmCloseModel() }
+  })
+  win.on('closed', () => { _modelWin = null; clearTimeout(_modelCloseT); _modelCloseT = null })
   _modelWin = win
   return win
+}
+function confirmCloseModel() {
+  clearTimeout(_modelCloseT); _modelCloseT = null
+  _modelAllowClose = true
+  if (_modelWin && !_modelWin.isDestroyed()) _modelWin.close()
 }
 
 // 雨衰计算：独立 BrowserWindow，单例复用（通用于各类卫星；与链路预算工作台同模式，带关窗守卫）。
@@ -780,7 +807,7 @@ app.whenReady().then(async () => {
   const { register } = require(join(root, 'electron/ipc/register'))
   register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget: createLinkBudgetWindow, openSunOutage: createSunOutageWindow, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso: createNgsoWindow, confirmCloseNgso, openRegen: createRegenWindow, confirmCloseRegen, openE2e: createE2eWindow, confirmCloseE2e, openRain: createRainWindow, confirmCloseRain, openCi: createCiWindow, openPfd: createPfdWindow, openSsa: createSsaWindow, confirmCloseSsa, freqPlan, openFreqPlan: createFreqPlanWindow, notifyFreqPlan, activation, weather, gfs, updater,
     perfWin: { open: createPerfWindow, push: perfWinPush, act: perfWinAct, close: perfWinClose, setTitle: perfWinSetTitle, list: perfWinList, self: perfWinSelf },
-    models, openModel: createModelWindow })
+    models, openModel: createModelWindow, confirmCloseModel })
   // 模型服务的变化（远端清单 / 下载进度 / 导入 / 元数据 / 绑定 / 缓存）广播到所有窗口：3D 页、侧栏、工作台各自取需要的
   models.onChange((ev) => {
     for (const w of BrowserWindow.getAllWindows()) {
@@ -847,6 +874,7 @@ app.on('before-quit', () => {
   _soAllowClose = true
   _rainAllowClose = true
   _ssaAllowClose = true
+  _modelAllowClose = true
 })
 
 app.on('window-all-closed', () => {

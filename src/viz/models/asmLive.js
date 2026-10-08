@@ -356,9 +356,9 @@ export function palette(dark) {
 
 // ───────────────────────────── 淡染 / 描边 / 占位层 ─────────────────────────────
 
-export const FX = Object.freeze({ HOVER: 1, SEL: 2, SEL_WEAK: 4, CLASH: 8, INVALID: 16, MOVING: 32 })
-/** 描边线宽（CSS 像素）：选中 2、拾起中 1.5；悬停 / 派生件用 1 px 细线。选中件另有 2.5 px 剪影外轮廓。 */
-const SEL_PX = 2, MOVE_PX = 1.5, SIL_PX = 2.5
+export const FX = Object.freeze({ HOVER: 1, SEL: 2, SEL_WEAK: 4, CLASH: 8, INVALID: 16, MOVING: 32, TARGET: 64 })
+/** 描边线宽（CSS 像素）：选中 2、拾起中 1.5、拖入 / 拾起的落点所在件 1.5（虚一档）；悬停 / 派生件用 1 px 细线。选中件另有 2.5 px 剪影外轮廓。 */
+const SEL_PX = 2, MOVE_PX = 1.5, TARGET_PX = 1.5, SIL_PX = 2.5
 
 // 选中件的剪影外轮廓（屏幕等宽）：只画背面、顶点沿投影后的法向在裁剪空间外推 SIL_PX 像素——件本身的正面把里面盖住，
 // 只剩轮廓外缘一圈。折角边线（25°）画不出光滑曲面的剪影（机身、天线罩、碟面外缘），白件落在深色底上就只剩几根线；
@@ -386,10 +386,11 @@ const _vp4 = new THREE.Vector4()
 /**
  * 按条目的叠加标记（FX 位）在 fxRoot 里建描边 / 淡染组：update(list) 只重建标记变了（或边线刚到）的条目；follow() 每帧拷矩阵（零分配）。
  * list 元素须有 {id, fx, item, m:Float64Array(16) 渲染矩阵, rels?:THREE.Matrix4[]（网格相对条目的当前矩阵，含初值姿态）}。
- * ★ 层级：选中 > 拾起 > 悬停（Onshape / SketchUp 口径：选中是视口里最显眼的一层）——
+ * ★ 层级：选中 > 拾起 > 落点所在件 > 悬停（Onshape / SketchUp 口径：选中是视口里最显眼的一层）——
  *   选中 = accent 实色 2 px 粗线（LineSegments2，屏幕像素定宽）+ 2.5 px 剪影外轮廓（光滑曲面也勾得出外形）+ 被挡住的那部分再画一趟
  *   （深度 GREATER、30 %）：被别的件挡住也看得出轮廓；
- *   拾起中的子树 = accent 1.5 px；派生件 = accent 50 % 细线；悬停 = accent 45 % 细线。
+ *   拾起中的子树 = accent 1.5 px；拖入 / 拾起时落点所在的件（要装到哪一件上）= accent 70 % 1.5 px；派生件 = accent 50 % 细线；
+ *   悬停 = accent 45 % 细线。
  * ★ 不做面淡染（accent 在线性空间里 10 % 混色感知上等于 25–35 %，选中件会被染成灰紫）；只有穿插 / 非法件保留 danger 淡染（报错要一眼看见）。
  * ★ 边线由几何 Worker 预先算好（cache.edgesIf / linesOf）；还没到的件这一次不画边线，到了编辑器再 update 一次。
  */
@@ -410,7 +411,7 @@ export function createFxLayer(fxRoot, cache) {
   const silBefore = (renderer) => { renderer.getViewport(_vp4); sil.uniforms.uRes.value.set(_vp4.z, _vp4.w) }
   const M = {
     danger: mk({ opacity: 0.3 }),
-    sel: fat(SEL_PX, 1), move: fat(MOVE_PX, 0.9), sil,
+    sel: fat(SEL_PX, 1), move: fat(MOVE_PX, 0.9), target: fat(TARGET_PX, 0.7), sil,
     selHidden: line(0.3, { depthFunc: THREE.GreaterDepth }),
     weak: line(0.5), hover: line(0.45),
     ph: line(0.9)
@@ -419,7 +420,7 @@ export function createFxLayer(fxRoot, cache) {
   const byId = new Map()   // id → {g, mask, item, ready, src}
   function setPalette(p) {
     M.danger.color.setHex(p.danger)
-    M.sel.color.setHex(p.accent); M.move.color.setHex(p.accent); M.selHidden.color.setHex(p.accent); M.sil.uniforms.uColor.value.setHex(p.accent)
+    M.sel.color.setHex(p.accent); M.move.color.setHex(p.accent); M.target.color.setHex(p.accent); M.selHidden.color.setHex(p.accent); M.sil.uniforms.uColor.value.setHex(p.accent)
     M.weak.color.setHex(p.accent); M.hover.color.setHex(p.accent)
     M.ph.color.setHex(p.danger)
   }
@@ -428,17 +429,17 @@ export function createFxLayer(fxRoot, cache) {
     const g = new THREE.Group(); g.matrixAutoUpdate = false; g.name = 'fx:' + e.id
     const mask = e.fx
     const tint = mask & (FX.CLASH | FX.INVALID) ? M.danger : null
-    const sel = !!(mask & FX.SEL), mov = !sel && !!(mask & FX.MOVING)
-    const thin = sel || mov ? null : mask & FX.SEL_WEAK ? M.weak : mask & FX.HOVER ? M.hover : null
+    const sel = !!(mask & FX.SEL), mov = !sel && !!(mask & FX.MOVING), tgt = !sel && !mov && !!(mask & FX.TARGET)
+    const thin = sel || mov || tgt ? null : mask & FX.SEL_WEAK ? M.weak : mask & FX.HOVER ? M.hover : null
     if (e.item) {
       const im = e.item.meshes
       for (let k = 0; k < im.length; k++) {
         const mm = im[k], rel = e.rels && e.rels[k] ? e.rels[k] : mm.rel
         if (tint) add(g, new THREE.Mesh(mm.geometry, tint), rel, 6)
         if (sel && mm.geometry.attributes.normal) { const s = new THREE.Mesh(mm.geometry, M.sil); s.onBeforeRender = silBefore; add(g, s, rel, 7) }
-        if (sel || mov) {
+        if (sel || mov || tgt) {
           const lg = cache.linesOf(e.item, mm.geometry)
-          if (lg) add(g, new LineSegments2(lg, sel ? M.sel : M.move), rel, 8)
+          if (lg) add(g, new LineSegments2(lg, sel ? M.sel : mov ? M.move : M.target), rel, 8)
           if (sel) { const eg = cache.edgesIf(e.item, mm.geometry); if (eg) add(g, new THREE.LineSegments(eg, M.selHidden), rel, 7) }
         } else if (thin) {
           const eg = cache.edgesIf(e.item, mm.geometry)
@@ -460,7 +461,7 @@ export function createFxLayer(fxRoot, cache) {
     const tri = new THREE.BufferGeometry(); tri.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3))
     const seg = new LineSegmentsGeometry().setPositions([0, 0, 0, 1, 0, 0])
     tri.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3))
-    g.add(new THREE.Mesh(tri, M.danger), new THREE.Mesh(tri, M.sil), new LineSegments2(seg, M.sel), new LineSegments2(seg, M.move), new THREE.LineSegments(tri, M.selHidden), new THREE.LineSegments(tri, M.weak), new THREE.LineSegments(tri, M.hover), new THREE.LineSegments(phGeo, M.ph))
+    g.add(new THREE.Mesh(tri, M.danger), new THREE.Mesh(tri, M.sil), new LineSegments2(seg, M.sel), new LineSegments2(seg, M.move), new LineSegments2(seg, M.target), new THREE.LineSegments(tri, M.selHidden), new THREE.LineSegments(tri, M.weak), new THREE.LineSegments(tri, M.hover), new THREE.LineSegments(phGeo, M.ph))
     g.userData.dispose = () => { tri.dispose(); seg.dispose() }
     return g
   }

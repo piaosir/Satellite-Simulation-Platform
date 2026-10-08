@@ -15,13 +15,93 @@ const solarFlux = require('../services/solarFlux')
 // 卫星模型：modelwb:open 的目标参数清洗（纯函数；服务本体由 main 构造后传进来）
 const { sanitizeTarget: sanitizeModelTarget } = require('../services/modelsLogic')
 
+// tool:open 的上下文载荷清洗：只认身份与站址，现造纯数据并限长（渲染端 Proxy / 超长串 / 非法坐标一律挡在这里）。
+//   sat   = { id, name, noradId, geo, slotLon, folder, altKm, inclDeg }（身份与定点经度；不送 satrec）
+//   sites = [{ name, lat, lon, role }]，role ∈ 'tx' | 'rx' | 'both' | ''（链路预算按它写发 / 收哪一侧）
+//   links = [{ name, nameAuto, nodes, hops, grp?, sl? }]：图上链路（形状见 packages/core/models/mapLinks.mjs 的 chainPayload / linkStrands）——
+//           nodes 为 {t:'es', name, lat, lon, diaM?, radome?, pwrW?, altM?} | {t:'sat', key, name, noradId, geo, slotLon, folder, altKm, inclDeg, regen}，
+//           hops[i].type ∈ up | down | isl | laser（节点 i → i+1）；坏节点 / 跳数对不上的整条丢掉。
+//           Polygon / 航迹节点在主窗已按支路展开成单点载荷：altM = 航迹代表点的实际高度（m），grp = 来源链路 id，sl = 支路名；
+//           一条链路至多 512 条支路，故条数上限放到 2000
+// 三样都没有就返回 null（不送）。
+function sanitizeToolContext(o) {
+  if (!o || typeof o !== 'object') return null
+  const str = (v, n) => (v == null ? '' : String(v)).slice(0, n)
+  const num = (v) => (v === null || v === undefined || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null))
+  const out = {}
+  const s = o.sat
+  if (s && typeof s === 'object' && (s.name || s.noradId || s.id)) {
+    const slot = num(s.slotLon)
+    out.sat = {
+      id: str(s.id, 160), name: str(s.name, 160), noradId: str(s.noradId, 24).replace(/[^\w-]/g, ''),
+      geo: !!s.geo, slotLon: slot != null && Math.abs(slot) <= 360 ? slot : null,
+      folder: str(s.folder, 160), altKm: num(s.altKm), inclDeg: num(s.inclDeg)
+    }
+  }
+  if (Array.isArray(o.sites)) {
+    const sites = []
+    for (const x of o.sites.slice(0, 200)) {
+      if (!x || typeof x !== 'object') continue
+      const lat = num(x.lat), lon = num(x.lon)
+      if (lat == null || lon == null || Math.abs(lat) > 90 || Math.abs(lon) > 360) continue
+      sites.push({ name: str(x.name, 120), lat, lon, role: ['tx', 'rx', 'both'].includes(x.role) ? x.role : '' })
+    }
+    if (sites.length) out.sites = sites
+  }
+  if (Array.isArray(o.links)) {
+    const HOPS = ['up', 'down', 'isl', 'laser']
+    const links = []
+    for (const l of o.links.slice(0, 2000)) {
+      if (!l || typeof l !== 'object' || !Array.isArray(l.nodes)) continue
+      const nodes = []
+      let bad = false
+      for (const n of l.nodes.slice(0, 32)) {
+        if (n && n.t === 'es') {
+          const lat = num(n.lat), lon = num(n.lon)
+          if (lat == null || lon == null || Math.abs(lat) > 90 || Math.abs(lon) > 360) { bad = true; break }
+          const e = { t: 'es', name: str(n.name, 120), lat, lon }
+          const d = num(n.diaM)
+          if (d != null && d > 0 && d <= 1000) e.diaM = d
+          if (n.radome === true) e.radome = true
+          const w = num(n.pwrW)
+          if (w != null && w > 0 && w <= 100000) e.pwrW = w
+          const h = num(n.altM)
+          if (h != null && h >= -1000 && h <= 30000) e.altM = h   // 航迹代表点的实际高度（m；与航迹钉高同范围）
+          nodes.push(e)
+        } else if (n && n.t === 'sat') {
+          const slot = num(n.slotLon)
+          nodes.push({
+            t: 'sat', key: str(n.key, 200), name: str(n.name, 160), noradId: str(n.noradId, 24).replace(/[^\w-]/g, ''), geo: !!n.geo,
+            slotLon: slot != null && Math.abs(slot) <= 360 ? slot : null, folder: str(n.folder, 160), altKm: num(n.altKm), inclDeg: num(n.inclDeg), regen: !!n.regen
+          })
+        } else { bad = true; break }
+      }
+      if (bad || nodes.length < 2) continue
+      const hops = (Array.isArray(l.hops) ? l.hops : []).slice(0, nodes.length - 1).map((h) => ({ type: h && HOPS.includes(h.type) ? h.type : '' }))
+      if (hops.length !== nodes.length - 1 || hops.some((h) => !h.type)) continue
+      const lk = { name: str(l.name, 300), nameAuto: l.nameAuto !== false, nodes, hops }
+      const grp = str(l.grp, 80), sl = str(l.sl, 200)
+      if (grp) lk.grp = grp
+      if (sl) lk.sl = sl
+      links.push(lk)
+    }
+    if (links.length) out.links = links
+  }
+  return (out.sat || out.sites || out.links) ? out : null
+}
+
 // 写盘失败的友好文案：目标文件被其他程序占用（PDF/图片查看器打开着）→ EBUSY/EPERM/EACCES。
 const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-  ? '文件可能正被其他程序打开（如 PDF 查看器），请关闭后重试'
+  ? '文件可能正被其他程序打开（如 PDF 查看器）'
   : (err && err.message) || String(err))
 
+// 保存框预填的文件名只当【文件名】用：Windows 上 defaultPath 里的 / \ 会被当成路径分隔，
+// 「合计 C/N.png」「中星6E C/Ku 频率计划.png」预填出来只剩「N.png」「Ku 频率计划.png」；
+// 其余 :*?"<>| 是文件名非法字符（对话框拒收或当成通配符）。一律换成 -。
+const safeSaveName = (s, dflt) => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/\s+/g, ' ').trim() || dflt
+
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin, models, openModel }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin, models, openModel, confirmCloseModel }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -56,6 +136,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'updater:state', 'updater:check', 'updater:install',
     // 窗口关闭确认：拦掉会导致功能窗口关不干净（锁定期间窗口仍在，只是被遮罩盖住）
     'linkbudget:confirmClose', 'ngso:confirmClose', 'regen:confirmClose', 'e2e:confirmClose', 'rain:confirmClose', 'ssa:confirmClose', 'suntool:confirmClose',
+    'modelwb:confirmClose',
     // 性能指标表窗口的中继（开窗 perfwin:open 仍在锁内；这几条只搬运两窗之间的消息，不产出交付物）
     'perfwin:push', 'perfwin:act', 'perfwin:close', 'perfwin:setTitle', 'perfwin:list', 'perfwin:self',
     // ② 浏览面（只读查询，不产出交付物）
@@ -412,7 +493,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       if (src.synth) return src.analytic ? { ok: false, synth: true, analytic: true } : { ok: false, synth: true }
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
-        defaultPath: defaultName || 'pattern.grd',
+        defaultPath: safeSaveName(defaultName, 'pattern.grd'),
         filters: [{ name: 'GRASP 网格', extensions: ['grd'] }, { name: '所有文件', extensions: ['*'] }]
       })
       if (canceled || !filePath) return { ok: false, canceled: true }
@@ -667,6 +748,23 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('e2e:open', gate(() => { if (openE2e) openE2e(); return true }))
   ipcMain.handle('e2e:confirmClose', () => { if (confirmCloseE2e) confirmCloseE2e(); return true })
 
+  // ---- 带上下文打开计算窗（主窗口右键 / 卫星信息栏「分析」：选中的星与站带进去）----
+  // 已开 = 聚焦后立即送；新开 = 等页面加载完再送（同 freqPlan:open）。载荷只收身份与站址，
+  // 在这里现造成纯数据并限长；接收端（各窗 onContext）只追加算例 / 链路行或新建一份配置，不改动现有配置。
+  const TOOL_OPENERS = { linkbudget: openLinkBudget, ngso: openNgso, regen: openRegen, e2e: openE2e, suntool: openSunOutage, rain: openRain, ci: openCi }
+  ipcMain.handle('tool:open', gate((_e, kind, ctx) => {
+    const open = TOOL_OPENERS[kind]
+    if (!open) return false
+    const win = open()
+    const c = sanitizeToolContext(ctx)
+    if (win && c) {
+      const send = () => { try { win.webContents.send('tool:context', c) } catch { /* 窗口已关 */ } }
+      if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send)
+      else send()
+    }
+    return true
+  }))
+
   // ---- 雨衰计算（独立窗口 · 通用于各类卫星 · 批量/单算例/曲线计算 + Excel 导出）----
   ipcMain.handle('rain:open', gate(() => { if (openRain) openRain(); return true }))
   // 干扰分析（C/I）独立窗口：只读消费者——读三库与 GRD，不写回任何库
@@ -723,7 +821,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const nameMap = { pdf: 'PDF 文档', json: 'JSON 数据', svg: 'SVG 矢量图', png: 'PNG 图片', xlsx: 'Excel 工作簿' }
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
         title: '导出频率计划',
-        defaultPath: (defaultName || '频率计划') + '.' + ext,
+        defaultPath: safeSaveName(defaultName, '频率计划') + '.' + ext,
         filters: [{ name: nameMap[ext], extensions: [ext] }]
       })
       if (canceled || !filePath) return { canceled: true }
@@ -781,6 +879,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
     return true
   }))
+  // 模型工作台关窗守卫：渲染端落定（草稿 / 待存改动）后回执，主进程真关（UNGATED：锁定期间也得关得掉）
+  ipcMain.handle('modelwb:confirmClose', () => { if (confirmCloseModel) confirmCloseModel(); return true })
   if (models) {
     // 出参一律过一遍纯数据（服务内部已是纯对象；Buffer 由结构化克隆转成 Uint8Array）
     const winOf = (e) => BrowserWindow.fromWebContents(e.sender)
@@ -797,11 +897,36 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('models:setCacheCap', safe((_e, b) => models.setCacheCap(b)))
     ipcMain.handle('models:openCacheDir', safe(() => models.openCacheDir()))
     ipcMain.handle('models:refreshManifest', safe(() => models.refreshManifest()))
-    ipcMain.handle('models:pickFiles', safe((e) => models.pickFiles(winOf(e))))
-    ipcMain.handle('models:readFile', safe((_e, p) => models.readFile(p)))
-    ipcMain.handle('models:importGlb', safe((_e, o) => models.importGlb(o)))
-    ipcMain.handle('models:importCad', safe((_e, o) => models.importCad(o)))
+    // 渲染端读 / 转本机模型文件只限「用户亲手选过（pickFiles）或拖进来（preload 用 webUtils 从真实 File 取路径后
+    // models:allowPaths 登记）」那几处目录及其子目录 —— 伴随的 .mtl / 贴图 / .bin 都在里面。渲染端随手给的任意路径不放行
+    //（加固：页面万一被注入脚本，也不能借 readFile / importCad 读任意位置的图片、模型文件）
+    const modelRoots = new Set()
+    const normFsPath = (p) => { const r = path.resolve(String(p)); return process.platform === 'win32' ? r.toLowerCase() : r }
+    const allowModelDirOf = (p) => { if (typeof p === 'string' && p && path.isAbsolute(p)) modelRoots.add(normFsPath(path.dirname(p))) }
+    const under = (q, r) => q.startsWith(r.endsWith(path.sep) ? r : r + path.sep)
+    // OBJ 的 .mtl 常按「../textures/x.png」引用上一级目录的贴图（导出器把模型与贴图分目录放）：材质库与贴图类扩展名再放宽到
+    // 授权根的上一层（及其子目录）；模型文件与其余类型仍只限授权根本身。盘符根（上一层还是自己）不再放宽
+    const SIDECAR_EXT = new Set(['.mtl', '.png', '.jpg', '.jpeg', '.webp', '.tga', '.bmp', '.gif', '.tif', '.tiff', '.dds', '.ktx2'])
+    const modelPathAllowed = (p) => {
+      if (typeof p !== 'string' || !p || !path.isAbsolute(p)) return false
+      const q = normFsPath(p)
+      for (const r of modelRoots) if (under(q, r)) return true
+      if (!SIDECAR_EXT.has(path.extname(q).toLowerCase())) return false
+      for (const r of modelRoots) { const up = path.dirname(r); if (up !== r && under(q, up)) return true }
+      return false
+    }
+    const NOT_ALLOWED = { ok: false, error: '路径未授权' }
+    ipcMain.handle('models:pickFiles', safe(async (e) => {
+      const r = await models.pickFiles(winOf(e))
+      for (const f of Array.isArray(r) ? r : []) allowModelDirOf(f && f.path)
+      return r
+    }))
+    ipcMain.handle('models:allowPaths', safe((_e, ps) => { for (const p of Array.isArray(ps) ? ps.slice(0, 1000) : []) allowModelDirOf(p); return true }))
+    ipcMain.handle('models:readFile', safe((_e, p) => (modelPathAllowed(p) ? models.readFile(p) : NOT_ALLOWED)))
+    ipcMain.handle('models:importGlb', safe((_e, o) => (o && !o.bytes && o.path != null && !modelPathAllowed(o.path) ? NOT_ALLOWED : models.importGlb(o))))
+    ipcMain.handle('models:importCad', safe((_e, o) => (o && modelPathAllowed(o.path) ? models.importCad(o) : NOT_ALLOWED)))
     ipcMain.handle('models:saveImported', safe((_e, o) => models.saveImported(o)))
+    ipcMain.handle('models:stkLocate', safe(() => models.stkLocate()))
     ipcMain.handle('models:scanStk', safe((_e, o) => models.scanStk(o)))
     ipcMain.handle('models:pickStkDir', safe((e) => models.pickStkDir(winOf(e))))
     ipcMain.handle('models:importStk', safe((_e, o) => models.importStk(o)))
@@ -853,7 +978,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('rain:exportExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: (payload && payload.defaultName) || '雨衰计算结果.xlsx',
+      defaultPath: safeSaveName(payload && payload.defaultName, '雨衰计算结果.xlsx'),
       filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -863,7 +988,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
     }
   })
 
@@ -872,7 +997,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('vis:exportAccessExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: ((payload && payload.defaultName) || '过境窗口') + '.xlsx',
+      defaultPath: safeSaveName(payload && payload.defaultName, '过境窗口') + '.xlsx',
       filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -882,7 +1007,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
     }
   })
 
@@ -892,7 +1017,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       title: (payload && payload.title) || '导出 Excel',
-      defaultPath: (payload && payload.defaultName) || '表格.xlsx',
+      defaultPath: safeSaveName(payload && payload.defaultName, '表格.xlsx'),
       filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -902,7 +1027,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
     }
   })
   ipcMain.handle('grid:importXlsx', async (e, opt) => {
@@ -1461,7 +1586,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('sunoutage:exportExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: (payload && payload.defaultName) || '日凌预报.xlsx',
+      defaultPath: safeSaveName(payload && payload.defaultName, '日凌预报.xlsx'),
       filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1471,14 +1596,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
     }
   })
   // Word 报告：payload = { result, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
   ipcMain.handle('sunoutage:exportWord', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: (payload && payload.defaultName) || '日凌预报报告.docx',
+      defaultPath: safeSaveName(payload && payload.defaultName, '日凌预报报告.docx'),
       filters: [{ name: 'Word 文档', extensions: ['docx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1488,7 +1613,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word）' : (err.message || String(err)) }
     }
   })
   // ICS 日历（多站 × 多季一份）：事件时刻恒用 UTC（导入方自动换算本地时区）；
@@ -1501,7 +1626,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const ics = core().buildIcs({ name: `日凌预报 ${satName} ${p.year != null ? p.year : ''}`.trim(), events })
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: p.defaultName || `日凌预报_${satName}_${p.year != null ? p.year : ''}.ics`,
+      defaultPath: safeSaveName(p.defaultName || `日凌预报_${satName}_${p.year != null ? p.year : ''}.ics`, '日凌预报.ics'),
       filters: [{ name: 'iCalendar 日历', extensions: ['ics'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1525,6 +1650,12 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('store:config:reorder', (_e, { ns, ids }) => storage.reorderConfigs(ns, ids))
   ipcMain.handle('store:config:move', (_e, { ns, id, parentId, anchorId, position }) => storage.moveItem(ns, id, parentId, anchorId, position))
   ipcMain.handle('store:config:deleteFolder', (_e, { ns, id }) => storage.deleteFolder(ns, id))
+  // 自动保存（链路预算四窗）：只更新、不新建（已删的配置不会被迟到的写盘复活），见 storage.updateConfigState
+  ipcMain.handle('store:config:updateState', (_e, { ns, id, state, name, nameAuto }) => storage.updateConfigState(ns, id, { state, name, nameAuto }))
+  // 配置的历史版本：清单不带 state，还原时按 id 取整份
+  ipcMain.handle('store:versions:list', (_e, { ns, id }) => storage.listVersions(ns, id))
+  ipcMain.handle('store:versions:get', (_e, { ns, id, verId }) => storage.getVersion(ns, id, verId))
+  ipcMain.handle('store:versions:add', (_e, { ns, id, version }) => storage.addVersion(ns, id, version))
   ipcMain.handle('store:settings:get', () => storage.getSettings())
   // ---- 只许渲染端写它自己的偏好项（2026-08-11 授权审计）----
   // 原先是 (_e, s) => storage.setSettings(s)：无任何键名过滤，而 setSettings 是浅合并，
@@ -1567,7 +1698,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('file:save', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: payload.defaultName || 'export.bin',
+      defaultPath: safeSaveName(payload.defaultName, 'export.bin'),
       filters: payload.filters || [{ name: '所有文件', extensions: ['*'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1702,6 +1833,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
   })
 
+  // ---- 视频导出（H.264 MP4 / 图片序列）：开会话、按位置流式写、收尾（见 services/videoFile.js）。全部在授权锁内 ----
+  require('../services/videoFile').registerVideoIpc(ipcMain, { dialog, BrowserWindow, shell: require('electron').shell, safeSaveName, writeErrText })
+
   // ---- 批量落盘到一个目录：mask 分文件导出 + §E3 的参数存档一起出 ----
   // payload: { dirLabel?, files:[{filename, text}] }
   ipcMain.handle('file:saveMany', async (e, payload) => {
@@ -1732,7 +1866,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return {
         ok: false, dir, written,
-        error: busy ? '目标文件可能正被其他程序打开，请关闭后重试' : (err.message || String(err))
+        error: busy ? '目标文件可能正被其他程序打开' : (err.message || String(err))
       }
     }
   })
@@ -1799,7 +1933,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, filePath }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word / Excel），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word / Excel）' : (err.message || String(err)) }
     }
   })
 
@@ -1825,7 +1959,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       title: (isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : '保存报告') + (formats.length > 1 ? '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : ''),
-      defaultPath: ((payload && payload.defaultName) || (isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告')) + '.' + formats[0],
+      defaultPath: safeSaveName(payload && payload.defaultName, isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告') + '.' + formats[0],
       filters: formats.map((f) => EXT[f])
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -1879,7 +2013,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       return { ok: true, files, filePath: files[0] }
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
-      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel / PDF 阅读器），请关闭后重试' : (err.message || String(err)) }
+      return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel / PDF 阅读器）' : (err.message || String(err)) }
     }
   })
   // ---- 应用版本（帮助 → 关于 对话框显示）----

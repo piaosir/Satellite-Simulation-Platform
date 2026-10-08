@@ -753,21 +753,32 @@ export function useLiveField(host) {
   //   true  用户点了按钮 —— 允许发 HTTP，一站一次，且一次买下整条时间轴（horizonMs 给到末帧）；
   //   false 时间轴联动 —— 只在主进程已买到的序列里查，查不到就留空并如实写「尚未获取该站数据」。
   let obsSeq = 0
+  // 带时刻行的和风读数与时间轴无关（气象对齐到它那一刻的帧、星位取它自己那一刻）：按「帧时刻 + 几何 + 链路参数 + 点」记一份，
+  // 时钟每拍只重取不带时刻的那一组 —— 在轨卫星档每行时刻各成一组（几何逐行不同），不记的话几十个航点就是每拍几十次往返。
+  // 条目带「代」：真取数（allowFetch）开始与结束各换一代 —— 买到的序列变了，之前与取数期间查到的（可能是「尚未获取」）一律作废；
+  // 只读当代的条目
+  let obsCache = new Map(), obsGen = 0
   async function refreshObs(allowFetch) {
     if (!window.api?.weather?.obs) { if (allowFetch) siteMsg.value = '和风天气通道不可用'; return }
     const pts = sites.value.filter((s) => Number.isFinite(Number(s.lon)) && Number.isFinite(Number(s.lat)))
     if (!pts.length) { if (allowFetch) siteMsg.value = '尚未添加站点'; siteObs.value = {}; return }
+    if (allowFetch) obsGen++
+    const gen = obsGen
     // 取值时刻：优先用已取回栅格的那一帧（两个数据源摆在同一张表里，必须对齐同一时刻）
     const fi = frameInfo.value
     const tMs = (meta.value && fi.idx >= 0 && fi.inRange) ? fi.t : clock.tMs
-    // 带时刻的站（航迹航点）各取自己那一刻（同样先对齐到最近的气象帧）：按整点分组，每组一次 IPC；
+    // 带时刻的站（航迹航点）：气象值取离自己那一刻最近的帧（同样对齐到帧，与栅格列同一时刻）；卫星几何取【行自己的时刻】
+    // （satArgsAtMemo(s.tMs)，与 refreshSites 同口径 —— 原来取的是对齐后的帧时刻，在轨卫星档 LEO 目标差出几分钟的星位）。
+    // 分组：按帧整点；在轨卫星档几何逐行不同，再按行时刻分开（轨位 / 手动星下点两档几何与时刻无关，只按帧），每组一次 IPC。
     // 买数据的时间跨度也要盖到最晚那个航点（逐小时预报最长 240 h，更远的主进程照实报取不到）
     const tOf = (s) => { if (!Number.isFinite(s.tMs)) return tMs; const f = frameNear(s.tMs); return f.idx >= 0 && f.inRange ? f.t : s.tMs }
+    const perTime = satMode.value === 'sat'
     const groups = new Map()
     for (const s of pts) {
-      const t = tOf(s), k = Number.isFinite(s.tMs) ? 'h' + Math.floor(t / 3600000) : 'c'
+      const own = Number.isFinite(s.tMs), t = tOf(s)
+      const k = own ? 'h' + Math.floor(t / 3600000) + (perTime ? '@' + s.tMs : '') : 'c'
       let g = groups.get(k)
-      if (!g) { g = { tMs: t, own: Number.isFinite(s.tMs), pts: [] }; groups.set(k, g) }
+      if (!g) { g = { tMs: t, own, sat: own ? satArgsAtMemo(s.tMs) : satArgs(), pts: [] }; groups.set(k, g) }
       g.pts.push(s)
     }
     const sp = timeSpan.value
@@ -775,29 +786,40 @@ export function useLiveField(host) {
     for (const g of groups.values()) if (g.own) horizonMs = Math.max(horizonMs, g.tMs - Date.now())
     const seq = ++obsSeq
     if (allowFetch) { obsBusy.value = true; siteMsg.value = `获取和风数据…（${pts.length} 站，逐站各一次请求）` }
+    const linkSig = JSON.stringify([parseFloat(freq.value), pol.value, pathModel.value, cloudMode.value])
+    const used = new Set()
     try {
       const m = {}
       let ok = 0, n = 0, tAt = 0
       for (const g of groups.values()) {
-        const r = await window.api.weather.obs({
-          pts: g.pts.map((s) => ({ id: s.id, lat: Number(s.lat), lon: Number(s.lon) })),
-          tMs: g.tMs, allowFetch: !!allowFetch, horizonMs,
-          ...(g.own ? satArgsAt(g.tMs) : satArgs()), freq: parseFloat(freq.value), pol: pol.value,
-          pathModel: pathModel.value, cloudMode: cloudMode.value
-        })
-        if (seq !== obsSeq) return                      // 快拖时间轴时慢的那次回来就丢掉
+        const ck = g.own ? g.tMs + '|' + JSON.stringify(g.sat) + '|' + linkSig + '|' + g.pts.map((s) => s.id + ':' + s.lon + ',' + s.lat).join(';') : ''
+        if (ck) used.add(ck)
+        const hit = ck && !allowFetch ? obsCache.get(ck) : null
+        let r = hit && hit.gen === obsGen ? hit.r : null
+        if (!r) {
+          r = await window.api.weather.obs({
+            pts: g.pts.map((s) => ({ id: s.id, lat: Number(s.lat), lon: Number(s.lon) })),
+            tMs: g.tMs, allowFetch: !!allowFetch, horizonMs,
+            ...g.sat, freq: parseFloat(freq.value), pol: pol.value,
+            pathModel: pathModel.value, cloudMode: cloudMode.value
+          })
+          if (ck && r && !r.error && gen === obsGen) obsCache.set(ck, { gen, r })   // 先记再判过期：被新一拍顶掉的那次也把这组攒下，下一拍直接用
+          if (seq !== obsSeq) return                      // 快拖时间轴时慢的那次回来就丢掉
+        }
         if (!r || r.error) { if (allowFetch) siteMsg.value = (r && r.error) || '和风数据获取失败'; continue }
         for (const row of (r.rows || [])) { m[row.id] = row; n++; if (row.ok) ok++ }
         if (!g.own && ok) tAt = r.t || g.tMs
       }
+      // 本次没用到的组（站删了 / 换星 / 改链路参数）与过了代的条目清掉
+      for (const [k, v] of obsCache) if (!used.has(k) || v.gen !== obsGen) obsCache.delete(k)
       siteObs.value = m
       obsAt.value = ok ? (tAt || tMs) : 0
       if (ok) obsArmed.value = true
       if (allowFetch) siteMsg.value = `和风数据 ${ok}/${n} 站` + (ok < n ? '（其余见备注列）' : '')
-    } catch (e) { if (allowFetch) siteMsg.value = e.message || String(e) } finally { if (allowFetch) obsBusy.value = false }
+    } catch (e) { if (allowFetch) siteMsg.value = e.message || String(e) } finally { if (allowFetch) { obsBusy.value = false; obsGen++ } }
   }
   const fetchObsAll = () => refreshObs(true)
-  function clearObs() { siteObs.value = {}; obsAt.value = 0; obsArmed.value = false }
+  function clearObs() { siteObs.value = {}; obsAt.value = 0; obsArmed.value = false; obsGen++; obsCache = new Map() }
   // 站点被删掉时顺手清掉它的和风值，不留孤儿
   watch(() => sites.value.map((s) => s.id).join(','), (ids) => {
     const keep = new Set(ids.split(','))

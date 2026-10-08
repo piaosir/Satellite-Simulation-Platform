@@ -38,7 +38,10 @@ export const FLEET_MATERIALS = Object.freeze({
   dark_glass: Object.freeze({ color: [0.01, 0.012, 0.015], metalness: 0, roughness: 0.04 }), // 光学窗口
   nav_red: Object.freeze({ color: [0.30, 0.05, 0.035], metalness: 0.35, roughness: 0.45 }),    // 暗红螺旋阵元（北斗五院星 / 东三B 的导航阵，官方渲染即此色）
   gold_metal: Object.freeze({ color: [0.85, 0.62, 0.28], metalness: 1, roughness: 0.3 }),      // 镀金金属件（螺旋、接地杯、细连杆）
-  cell_si: Object.freeze({ color: [0.05, 0.11, 0.42], metalness: 0.25, roughness: 0.28 })       // 硅太阳电池（亮蓝，北斗二号 / 东三平台）
+  cell_si: Object.freeze({ color: [0.05, 0.11, 0.42], metalness: 0.25, roughness: 0.28 }),      // 硅太阳电池（亮蓝，北斗二号 / 东三平台）
+  cell_brown: Object.freeze({ color: [0.07, 0.045, 0.03], metalness: 0.3, roughness: 0.22 }),    // 深褐三结电池（GOES-R 实拍 / 官方渲染：近黑褐色带金色汇流条）
+  cell_violet: Object.freeze({ color: [0.065, 0.05, 0.22], metalness: 0.3, roughness: 0.3 }),    // 紫蓝硅电池（Meteosat 第二代太阳鼓实拍）
+  kevlar: Object.freeze({ color: [0.61, 0.50, 0.24], metalness: 0, roughness: 0.7 })             // 凯夫拉夹层（双栅反射面前壳 / 周边围带，#CDBB86）
 })
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v)

@@ -8,6 +8,7 @@
 // dev 与打包都实测过）。消息：{ id, op, payload } → { id, ok, result } | { id, ok:false, error }。
 // 入参 / 出参都是纯数据；大数组走 transfer（调用方传完别再用）。
 import { estimateMassProps } from '@core/models/massProps.mjs'
+import { estimateByParts, partInertiaPerKg } from '@core/models/partMass.mjs'
 import { autoSegment } from '@core/models/segment.mjs'
 import { nodeWorldMatrices, irStats } from '@core/models/ir.mjs'
 import { MeshoptSimplifier } from 'meshoptimizer'
@@ -19,16 +20,41 @@ function mul4(a, b) {
   return o
 }
 
-// estimate 档：IR 各实例乘节点世界矩阵（再乘模型系 → 本体系，含米制缩放），拼起来一次判闭合 / 积分
-function massProps({ ir, massKg, bodyMatrix, tol }) {
+// IR 各实例乘节点世界矩阵（再乘模型系 → 本体系，含米制缩放）；带节点名（部件归属按节点名 / 实例内三角形区间认）
+function instancesOf(ir, bodyMatrix) {
   const W = nodeWorldMatrices(ir)
-  const meshes = []
+  const out = []
   ir.nodes.forEach((n, i) => {
     if (!Number.isInteger(n.mesh) || !ir.meshes[n.mesh] || !W[i]) return
     const m = ir.meshes[n.mesh]
-    meshes.push({ position: m.position, index: m.index || null, matrix: bodyMatrix ? mul4(bodyMatrix, W[i]) : W[i] })
+    out.push({ node: n.name, position: m.position, index: m.index || null, matrix: bodyMatrix ? mul4(bodyMatrix, W[i]) : W[i] })
   })
-  return estimateMassProps({ meshes, massKg, tol })
+  return out
+}
+// 部件：元数据里有就用（用户确认 / 改过角色的那份）；没有就现场自动识别一遍（同 segment 操作）
+function partsFor(ir, parts, bodyMatrix) {
+  if (Array.isArray(parts) && parts.length) return parts
+  try { return autoSegment(ir, { bodyMatrix }).parts || [] } catch { return [] }
+}
+// estimate 档（2026-10 审查 P0-1）：按部件类型赋密度（partMass.estimateByParts）——不闭合网格不再拿面积形心冒充质心、
+// 闭合网格也不再整体均质；部件拆不出来时才退回整体积分（闭合 → 均质实体；不闭合 → 只给面积、不给质心）
+function massProps({ ir, massKg, bodyMatrix, tol, parts }) {
+  const inst = instancesOf(ir, bodyMatrix)
+  const ps = partsFor(ir, parts, bodyMatrix)
+  const r = ps.length ? estimateByParts({ instances: inst, parts: ps, massKg, tol }) : null
+  if (r) {
+    const whole = estimateMassProps({ meshes: inst, tol })
+    return { ...r, closed: !!(whole && whole.closed), volumeM3: whole && whole.closed ? whole.volumeM3 : null, areaM2: whole ? whole.areaM2 : r.areaM2, nParts: ps.length }
+  }
+  const o = estimateMassProps({ meshes: inst, massKg, tol })
+  if (o) { o.confidence = 'low'; o.method = o.closed ? 'uniform' : 'none' }   // 整体均质只是退路：可信度一律 low（审查 P1-2）
+  if (o && !o.closed) o.comBody = null
+  return o
+}
+// 组件档（审查 P0-2）：各部件单位质量的自身惯量（用户逐件给质量时 × 质量，再平行轴合成）
+function partInertia({ ir, bodyMatrix, tol, parts }) {
+  const inst = instancesOf(ir, bodyMatrix)
+  return partInertiaPerKg({ instances: inst, parts: partsFor(ir, parts, bodyMatrix), tol })
 }
 
 // 焊接（任务书 §5.3「焊接后再简化」）：按「全部属性逐位相同」合并顶点 —— 简化器要共享顶点才能折叠边。
@@ -141,6 +167,7 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
   try {
     let result, transfer = []
     if (op === 'massProps') result = massProps(payload)
+    else if (op === 'partInertia') result = partInertia(payload)
     else if (op === 'segment') result = autoSegment(payload.ir, payload.opts || {})
     else if (op === 'stats') result = irStats(payload.ir)
     else if (op === 'simplify') [result, transfer] = await simplifyMeshes(payload)

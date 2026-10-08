@@ -12,6 +12,9 @@ import CityPicker from '../components/CityPicker.vue'   // 站名旁「典型城
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import { useConfigTree } from '../shared/useConfigTree.js'
+import { useConfigAutosave } from '../shared/useConfigAutosave.js'
+import { useConfigVersions } from '../shared/useConfigVersions.js'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
@@ -28,8 +31,13 @@ import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllIncl
 import { fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import ChainStrip from './ChainStrip.vue'
 import E2eFields from './E2eFields.vue'
-import E2eSatPanel from './E2eSatPanel.vue'
+import E2eSatPanel, { treeNodeOrbit, orbitToForm } from './E2eSatPanel.vue'   // 后两者：刷新卫星树时重解已选星（与面板选星同一份代码）
 import { loadSatTree } from '../ngso/satTree.js'
+import { loadCustomSats } from '../ngso/satSearchPool.js'   // 自定义星座星（现读，历元按当天场景历元规则解析）
+import { pickedTreeNode, scenarioEpochPatch, pinCircularEpoch } from '../shared/lbTreeOrbit.js'
+import { GEO_T0_MODES, normGeoT0Mode, normGeoT0ISO, geoT0State, resolveGeoT0ISO, sceneSecondISO, t0InputValue, parseT0Input } from '../shared/geoT0.js'   // 自动几何的搜索起点：时间轴 / 系统时钟 / 指定
+import TzPicker from '../components/TzPicker.vue'
+import { tzTag, normTzMode } from '../shared/tz.js'
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import {
   ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS,
@@ -47,6 +55,12 @@ import { stableStringify } from '../shared/configDirty.js'
 import { slantWgs84Max } from '../shared/slantRange.js'
 import { pf } from '../shared/num.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'
+// 图上链路导入（星座 3D 主窗「链路」视图建的链 → 本窗一条条链，见下方 importChains）
+import LinkImportDialog from '../components/LinkImportDialog.vue'
+import { esStationType } from '../shared/lbStationType.js'
+import { radomeLossDb } from '../../packages/core/models/mapLinks.mjs'
+import { findPoolByNorad, orbitSpecOf as poolOrbitSpecOf } from '../ngso/satSearchPool.js'   // 别名：e2eParams 另有一个按库条目出 spec 的 orbitSpecOf
+import { isSatNamePlaceholder } from '../shared/lbAutoName.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
 const LIB_NS = 'e2e'
@@ -564,13 +578,10 @@ async function fillSite(nd, pend) {
   let g = null
   try { g = await api.linkBudget.geoFill(pend.lat, pend.lon) } catch (e) { g = null }
   if (!g || _siteSeq.get(nd._id) !== seq) return
-  const clean = !isDirty()
-  let wrote = false
-  if (g.rainRate != null && nd.rainRate === pend.rain) { nd.rainRate = String(g.rainRate); wrote = true }
-  if (g.altitude != null && nd.altitude === pend.alt) { nd.altitude = String(g.altitude); wrote = true }
-  // 自动取值不是「用户的改动」：取值前本就干净（刚载入 / 刚新建）就把脏态基线推到新值，
-  // 否则会「什么都没改却提示未保存」（GEO 窗的 GRD 回填踩过同一个坑，同一套修法）
-  if (wrote && clean) setBaseline()
+  if (g.rainRate != null && nd.rainRate === pend.rain) nd.rainRate = String(g.rainRate)
+  if (g.altitude != null && nd.altitude === pend.alt) nd.altitude = String(g.altitude)
+  // 站址取到的降雨率 / 海拔与手改一样随自动保存落盘（屏幕上是什么，盘上就是什么）。
+  // ★ 不在这里推进基线：自动保存下那等于把它标成已落盘，它就永远写不进去
 }
 // 全链扫描。mode：
 //   'live'  —— 站址与上次不同就重取（常态：打字 / 选城市 / 粘贴 / 新建或复制节点都走这条）；
@@ -653,12 +664,31 @@ const geoManual = computed(() => geoMode.value === 'manual')
 const HORIZONS = [{ v: 6, l: '6 小时' }, { v: 12, l: '12 小时' }, { v: 24, l: '24 小时' }, { v: 48, l: '2 天' }, { v: 72, l: '3 天' }, { v: 168, l: '7 天' }]
 const geoHorizonHours = ref(Number(localStorage.getItem('e2e/horizonHours')) || 24)
 watch(geoHorizonHours, (v) => { try { localStorage.setItem('e2e/horizonHours', String(v)) } catch (e) { /* ignore */ } })
+// 搜索时窗起点（场景级，随场景存档；口径见 shared/geoT0.js）：时间轴 / 系统时钟 / 指定。
+// 切到「指定」而还没有时刻时，以时间轴此刻（取整到秒）作初值。
+const geoT0Mode = ref('scene')
+const geoT0ISO = ref('')
+watch(geoT0Mode, (m) => { if (m === 'fixed' && !normGeoT0ISO(geoT0ISO.value)) geoT0ISO.value = sceneSecondISO() })
+// 「起点 = 指定」的时刻框按这个时区档位显示与解释（换档不改所指的瞬间；记在本机，同 NGSO / 再生式两窗的时标档位）。
+// 草稿只在回车 / 失焦提交：datetime-local 每敲一键就发一次 input，年份段键到一半是 0002 —— 逐键提交会把公元 2 年落进场景。
+const TZ_KEY = 'e2e/geo/tz'
+const tzMode = ref(normTzMode((() => { try { return localStorage.getItem(TZ_KEY) } catch (e) { return null } })(), 'utc'))
+watch(tzMode, (v) => { try { localStorage.setItem(TZ_KEY, String(v)) } catch (e) { /* ignore */ } })
+const t0Draft = ref(null)
+const t0Val = computed(() => (t0Draft.value != null ? t0Draft.value : t0InputValue(geoT0ISO.value, tzMode.value)))
+const t0RefMs = computed(() => { const t = Date.parse(geoT0ISO.value); return Number.isFinite(t) ? t : Date.now() })
+const t0TzTag = computed(() => (tzMode.value === 'utc' ? 'UTCG' : tzTag(tzMode.value, t0RefMs.value)))
+function t0Commit() {
+  const typed = t0Draft.value; t0Draft.value = null
+  const iso = typed == null ? null : parseT0Input(typed, tzMode.value)
+  if (iso) geoT0ISO.value = iso
+}
 // 卫星树（星座3D 页导入的星，作 NGSO 取星来源之一；窗口重获焦点时刷新）
 const satTree = ref(loadSatTree().sats)
 const geoSolved = reactive({})   // 链路_id → [{ slantRange, elevation } | { rangeKm }]，自动档解出的几何
 
 const satCfgOf = (nd) => (nd && nd.kind !== 'es') ? resolveSat(nd.satId) : null
-const satOrbitOf = (nd) => orbitSpecOf(satCfgOf(nd))
+const satOrbitOf = (nd) => orbitSpecOf(satCfgOf(nd), satTree.value)
 const satLabelOf = (nd) => (nd && (nd.name || ((satCfgOf(nd) || {}).name) || '')) || ''
 
 // —— 手动几何的派生建议值（口径见 e2eParams.js 的 gsoLookAngles/suggestIslRangeKm 头注）——
@@ -733,8 +763,9 @@ const stationGeoOf = (nd, hop) => ({
   minElevDeg: pf(hop.elevation) || 0, freqGHz: pf(hop.frequency) || 14
 })
 // 解一条链的全部跳几何，就地写进 chain（送算的那份纯数据）。失败即返回报因，绝不兜底编数。
+// 时窗起点按场景的「起点」设置取（shared/geoT0.js，与 NGSO / 再生式同口径）：时间轴此刻 / 点「计算」时的系统时间 / 指定时刻。
 async function solveChainGeometry(row, chain) {
-  const t0ISO = new Date().toISOString()
+  const t0ISO = resolveGeoT0ISO(geoT0Mode.value, geoT0ISO.value)
   const solved = []
   for (let i = 0; i < row.hops.length; i++) {
     const a = row.nodes[i], b = row.nodes[i + 1], h = row.hops[i]
@@ -756,7 +787,8 @@ async function solveChainGeometry(row, chain) {
       chain.hops[i].elevation = w.elevDeg.toFixed(2)
       solved.push({ slantRange: w.slantKm.toFixed(2), elevation: w.elevDeg.toFixed(2), method: g.method || '' })
     } else {
-      const orbitA = satOrbitOf(a), orbitB = satOrbitOf(b)
+      // 手动圆轨道历元钉到本链 t0（pinCircularEpoch）：主进程星间端点缺历元按计算那一刻补，与时间轴上的 t0 不同步
+      const orbitA = pinCircularEpoch(satOrbitOf(a), t0ISO), orbitB = pinCircularEpoch(satOrbitOf(b), t0ISO)
       if (!orbitA || !orbitB) return { error: `第 ${i + 1} 跳：星间两端须各有可用轨道（「${satLabelOf(!orbitA ? a : b)}」缺轨道）` }
       let g = null
       try { g = await api.linkBudget.islGeometry({ orbitA, orbitB, t0ISO, horizonHours: geoHorizonHours.value, freqGHz: pf(h.frequency) || 23 }) } catch (e) { g = null }
@@ -779,30 +811,43 @@ const notice = ref('')
 let _noticeT = null
 function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 const resultsStale = ref(false)
-function markStale() { if (Object.keys(results).length) resultsStale.value = true }
+// 输入代次：每次 markStale +1（有没有结果都记）。compute 开算时记下、算完比一次 —— 算的途中改了链，
+// 灯就保持亮（早先算完一律熄灯，期间那一笔改动从此不认账）
+let _inGen = 0
+function markStale() { _inGen++; if (Object.keys(results).length) resultsStale.value = true }
 
 async function compute() {
   if (!api) { toast('计算需在桌面客户端中运行'); return }
   computing.value = true
   try {
+    // 开算前先让已排队的「输入已变」监听跑完（点「计算」之前那一笔改动不算「期间」），再记输入代次
+    await nextTick()
+    const gen0 = _inGen
+    // 链快照：本批只算开算那一刻的这些链（逐链几何与引擎之间有多次 IPC 往返，期间增删链不许让遍历跳行 / 重行）
+    const jobChains = chains.slice()
     const chainOf = {}     // 送进引擎的那份链描述子（自动档已注入解出的几何），SLA 档位扫描要照它重跑
-    for (const row of chains) {
+    for (const row of jobChains) {
+      const gone = () => !chains.includes(row)   // 期间被删掉的链：不再算、也不往结果表里落
+      if (gone()) continue
       const chain = buildChain(row, { es: resolveEs, sat: resolveSat })
       // 自动档：先按各跳的星与站解几何，写进这份链描述子（用户单元格不动）
       delete geoSolved[row._id]
       if (!geoManual.value) {
         const g = await solveChainGeometry(row, chain)
+        if (gone()) continue
         if (g.error) { delete results[row._id]; errors[row._id] = g.error; continue }
         geoSolved[row._id] = g.solved
       }
       let r
       try { r = await api.linkBudget.chainCompute(chain) } catch (err) { r = { success: false, message: (err && err.message) || String(err) } }
+      if (gone()) continue
       if (r && r.success) { results[row._id] = r.data; delete errors[row._id]; chainOf[row._id] = chain }
       else { delete results[row._id]; errors[row._id] = (r && r.message) || '计算失败' }
     }
-    resultsStale.value = false
-    const bad = chains.filter((r) => errors[r._id]).length
-    toast(bad ? `已计算 ${chains.length} 条，其中 ${bad} 条报错` : `已计算 ${chains.length} 条链路`)
+    resultsStale.value = _inGen !== gen0   // 算的途中输入又变了：这批结果对应的是开算那一刻，灯保持亮
+    const done = jobChains.filter((r) => chains.includes(r))
+    const bad = done.filter((r) => errors[r._id]).length
+    toast(bad ? `已计算 ${done.length} 条，其中 ${bad} 条报错` : `已计算 ${done.length} 条链路`)
     // SLA 档位扫描只在用得着时跑、且不 await（每链 9 档 = 9 次整链重算，不该跟着每次「计算」全表跑）
     _slaChainOf = chainOf
     invalidateSlaScan()
@@ -913,7 +958,23 @@ const slaOpts = computed(() => chains
 const slaChain = computed(() => chains[slaIdx.value] || null)
 const slaLinkName = computed(() => (slaChain.value ? (slaChain.value.name || '') : ''))
 const slaLinkError = computed(() => (slaChain.value ? (errors[slaChain.value._id] || '') : ''))
-function openSlaDlg() {
+// 结果是否对应「此刻这套输入」：输入已变、有链既没结果也没报错 → 补算一遍。
+// 正在算（用户刚点过「计算」）就等它算完再判，不并发再起一轮。
+function computeIdle() {
+  if (!computing.value) return Promise.resolve()
+  return new Promise((res) => { const stop = watch(computing, (v) => { if (!v) { stop(); res() } }) })
+}
+const allComputed = () => chains.every((r) => results[r._id] || errors[r._id])
+async function ensureFreshResults(step) {
+  await computeIdle()
+  if (!resultsStale.value && allComputed()) return true
+  if (step) step(reportLang.value === 'en' ? 'Computing…' : '计算…', 0, 1)
+  await compute()
+  return !resultsStale.value && allComputed()
+}
+// 建议值必须出自「此刻这套输入」：没算过或输入已变，先算一遍再开
+async function openSlaDlg() {
+  if (!(await ensureFreshResults())) return
   // 对齐到当前聚焦链；它要是还没算过（不在下拉里），退到第一条算过的 —— 否则下拉框空着、
   // 正文也空着，看着像坏了
   const i0 = Math.min(Math.max(0, curIdx.value), Math.max(0, chains.length - 1))
@@ -1008,11 +1069,14 @@ const reportLinks = computed(() => chains
   }))
 const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
   api,
-  bodyLayout: () => ({ ns: LIB_NS, sats: reportLinks.value.flatMap((l) => ((chains.find((r) => r._id === l.rowId) || {}).nodes || []).map(satCfgOf)) }),   // 第 5 章：各条链上的卫星节点所用库条目
   orbitType: ORBIT,
   fieldGroups: [],
   nextTick,
   links: () => reportLinks.value,
+  // 报告讲【全部链、当前输入】：没算过 / 输入已变的导出前先补算（口径同再生式 computeMissing）。
+  // 逐链报错照旧作为「计算失败」进报告。
+  canReport: () => chains.length > 0,
+  beforeReport: async (step) => { if (!(await ensureFreshResults(step))) throw new Error('计算失败') },
   selected: () => curIdx.value,
   setSelected: (i) => { curIdx.value = i },
   showViz: () => false,
@@ -1123,7 +1187,7 @@ const spaceHops = computed(() => {
 })
 // 距离工具的两端候选＝卫星库条目，各带自己的轨道（GSO 定点 / NGSO 选星或手填）；
 // 库里那颗星没有可用轨道时 orbit 为 null，工具里退回「自定义轨道」四项。
-const islToolSats = computed(() => satConfigs.map((c) => ({ id: c.id, name: c.name || c.form.satelliteName || c.id, orbit: orbitSpecOf(c), summary: satSummary(c) })))
+const islToolSats = computed(() => satConfigs.map((c) => ({ id: c.id, name: c.name || c.form.satelliteName || c.id, orbit: orbitSpecOf(c, satTree.value), summary: satSummary(c) })))
 const islToolHop = computed(() => (sel.type === 'hop' && isSpaceHop(selHopType.value)) ? cur.value.hops[sel.index] : null)
 // 打开工具时两端直接落在本跳那两颗星上
 const islToolSrc = computed(() => {
@@ -1149,19 +1213,31 @@ const STATE_KEY = 'e2e/last'
 //   透传给期待 id 的 IPC（拖拽整条静默失效）、右键 @context 没接（.prevent 还把系统菜单一并吃掉）、
 //   剪贴板整套没有、新建配置不载入也不展开父级（存进去了却看不见，随后「保存」写回的还是旧配置）。
 //   收进公共实现后这些一次补齐。
+// 场景自动保存（2026-10-06 起取代「保存」按钮）：工作区恒对应一份配置，改动约 1 s 后写回（shared/useConfigAutosave.js）；
+// 后悔药是历史版本（shared/useConfigVersions.js + LbVersionsDialog）。localStorage 只记「上次打开的是哪一份」。
 const cfgTree = useConfigTree({
   ns: 'e2e', orbitType: ORBIT, api, storageKey: 'e2e/expandedFolders',
-  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName,
+  autosave: true, onNameAuto: (id) => { if (id === activeId.value) autosave.flush() }
 })
 const {
-  configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu,
-  loadConfigs, uniqueCfgName, activeName, applyConfig, selectConfig,
-  openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, ctxMenu,
+  loadConfigs, uniqueCfgName, activeName, selectConfig, ensureActive, duplicateItem,
   toggleFolder, expandFolder, expandAll, collapseAll, persistExpanded,
   addFolder, addBlankConfig, removeConfig, removeFolder, onDeleteItem, onMove, moveToRoot,
   startRename, commitRename, cancelRename,
   copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, ctxDo, onCfgKey
 } = cfgTree
+const autosave = useConfigAutosave({
+  ns: 'e2e', api, activeId, itemById: cfgTree.itemById, serialize: serializeState, fingerprint: fingerprintOf,
+  autoName: defaultCfgName, uniqueName: uniqueCfgName, summarize: (st) => ({ label: cfgLabelOf(st) }), toast
+})
+const { error: saveError } = autosave
+let stopAutosaveListen = null
+onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.dispose() })
+const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
+  ns: 'e2e', api, tree: cfgTree, autosave, applyState, summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
+})
 
 // 老场景迁移（体制曾经是库引用 + 链级速率）：把引用解析成节点上那份体制，链级速率落到链首。
 // 迁完就地把老字段删掉，存回去时不再带它们。
@@ -1182,7 +1258,8 @@ function migrateCarriers(row) {
 }
 // 场景出口（存盘 / 指纹 / localStorage 三处共用）。纯数据的保证在 e2eParams 那一侧，
 // 见 serializeChainsState 的头注：节点上的 carrier / ov 是嵌套对象，浅拷会漏响应式 Proxy 出去。
-function serializeState() { return serializeChainsState(chains, geoMode.value, { ...slaParams }) }
+// 搜索起点两键并在场景顶层：缺省（时间轴）不写，老场景载入再存逐字不变（指纹即整份场景）
+function serializeState() { return Object.assign(serializeChainsState(chains, geoMode.value, { ...slaParams }), geoT0State(geoT0Mode.value, geoT0ISO.value)) }
 // 「新建空白配置」当场用出厂默认造的那份场景（见下方 blankState）：它不是【存过盘的场景】，
 // 里头的降雨率/海拔是 schema 默认值而非用户定过的数 ⇒ 载入后照站址取一遍，别把出厂值当成手改值供着。
 // 按引用认这一份：saveConfig 半路失败没走到 applyState 时，也不会误伤下一次真正的载入。
@@ -1197,6 +1274,9 @@ function applyState(st) {
   st = JSON.parse(JSON.stringify(st))
   // 老场景（无此字段）一律回手动——它们的结果本就是手填几何算出来的，不静默改口径
   geoMode.value = st.geoMode === 'auto' ? 'auto' : 'manual'
+  // 搜索起点：旧场景无此两键 → 时间轴（每份场景都显式落定，不沿用上一份的设置）
+  geoT0Mode.value = normGeoT0Mode(st.geoT0Mode)
+  geoT0ISO.value = normGeoT0ISO(st.geoT0ISO)
   // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
   Object.assign(slaParams, normSlaParams(st.slaParams))
   for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k]
@@ -1218,55 +1298,42 @@ function applyState(st) {
   segments.value = []
   syncChainNames()
 }
-let _stateT = null
-// 工作状态落 localStorage 的唯一出口。关窗 / 刷新前必须同步冲刷一次：600ms 防抖窗内的改动
-// 若不冲刷，「保存修改 → 关窗 → 重开」会被更旧的 localStorage 快照盖回去（重开时 applyState(st)
-// 叠在已保存配置之上），看起来就是保存没生效。
-function flushSaveState() {
-  clearTimeout(_stateT)
-  try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ }
-}
-function scheduleSaveState() {
-  clearTimeout(_stateT)
-  _stateT = setTimeout(() => { flushSaveState(); dirtyFlag.value = isDirty() }, 600)
-}
 // SLA 的采用值/勾选在 chains 里（row.sla）自然被这条深监听盯住；参数是场景级，另列进来。
-// ★ 只跟存盘与指纹，不 markStale：改 SLA 建议的采用值不会让引擎结果失效（它是结论不是入参）。
-watch([chains, activeId, geoMode], () => { syncChainNames(); markStale(); scheduleSaveState() }, { deep: true })
-watch(slaParams, scheduleSaveState, { deep: true })
+// ★ 只跟存盘，不 markStale：改 SLA 建议的采用值不会让引擎结果失效（它是结论不是入参）。
+// 场景一变就交给自动保存（防抖写回当前配置）；「上次打开的是哪一份」随 activeId 记一笔
+watch([chains, activeId, geoMode], () => { syncChainNames(); markStale(); autosave.touch() }, { deep: true })
+watch([geoT0Mode, geoT0ISO], () => { markStale(); autosave.touch() })
+watch(slaParams, () => autosave.touch(), { deep: true })
+watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* ignore */ } })
 // 库条目与搜索时窗同样是计算输入：改了就亮「输入已变」
 watch([esConfigs, satConfigs, geoHorizonHours], () => markStale(), { deep: true })
 
-// 场景指纹：只认序列化后的场景（三库是全局资产、不入指纹，故关窗另有 flushLibSave 兜底）
-function fingerprint() { return stableStringify(serializeState()) }
-let activeBaseline = ''
-const dirtyFlag = ref(false)
-function setBaseline() { activeBaseline = fingerprint(); dirtyFlag.value = false }
-function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline }
+// 场景指纹：只认序列化后的场景（三库是全局资产、不入指纹，库有自己的防抖写盘，关窗另有 flushLibSave 兜底）
+function fingerprintOf(st) { return stableStringify(st) }
+// 一份配置刚载入工作区：以当前内容为已落盘基线（useConfigTree 在载入 / 新建后调）
+function setBaseline() { autosave.attach() }
 
 // —— 命名配置 CRUD ——
 // 树本身的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js（见文件上方 useConfigTree(...) 注入点）。
-// 这里只留本窗特有的两件：保存为新配置的预填名、空白配置的内容。
+// 这里只留本窗特有的几件：配置的自动名、空白配置的内容、确认框。
 // 空白场景放一条默认链（站-星-站）而不是空数组：本窗口的工作对象就是链，
 // 一条都没有的场景选中后无处可编辑，反倒像「载入没生效」。
-function defaultCfgName() { return byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Links`) }
+// 自动名（名字随内容的配置用），按平台语言出字；cfgLabelOf 是同一句话按【存档内容】出（历史版本那一列读数）
+function defaultCfgName() { return byLang(`端到端 ${chains.length} 条`, `${chains.length} End-to-End Link${chains.length === 1 ? '' : 's'}`) }
+function cfgLabelOf(st) {
+  const n = st && Array.isArray(st.chains) ? st.chains.length : 0
+  return byLang(`端到端 ${n} 条`, `${n} End-to-End Link${n === 1 ? '' : 's'}`)
+}
 function blankState() { _blankSt = serializeChainsState([defaultChain()], 'manual', { ...DEFAULT_SLA_PARAMS }); return _blankSt }
 
 const confirmDlg = reactive({ open: false, msg: '' })
 let _confirmResolve = null
 function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
 function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-const leaveDlg = reactive({ open: false, name: '' })
-let _leaveResolve = null
-function leaveAnswer(ans) { leaveDlg.open = false; const r = _leaveResolve; _leaveResolve = null; if (r) r(ans) }
+// 离开当前配置（切换 / 新建 / 副本）前：把没落盘的改动写进去；写不进去（盘满 / 文件被占用 / 未激活）才问一句
 async function guardedLeave() {
-  if (!isDirty()) return true
-  const ans = await new Promise((res) => { leaveDlg.name = activeName(); leaveDlg.open = true; _leaveResolve = res })
-  if (ans === 'cancel') return false
-  // 选了「保存」而没存进去就不放行：改动还在窗口里，用户看到失败提示后可重试或改选「不保存」。
-  // （放行＝当场丢数据，而这条路上的失败恰恰是最不该静默的那种。）
-  if (ans === 'save') return await updateConfig()
-  return true
+  if (await autosave.flush()) return true
+  return await askConfirm(`「${activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要离开？`)
 }
 
 // ============ 链路列表（上区）============
@@ -1302,7 +1369,272 @@ async function refreshLatest() {
 }
 // 卫星树来自主窗口「星座3D」页（localStorage 同源共享）：窗口重获焦点即重读，
 // 纳入此后新导入的星。树里暂时没有的节点不清空所选——已存的轨道根数照常参与计算。
-function reloadSatTree() { try { satTree.value = loadSatTree().sats } catch (e) { /* keep */ } }
+// 链上用着的、取自卫星树的星按树里现在的节点重解轨道（口径同 NGSO reloadSatTree：3D 页改了根数 / 历元即跟上）；
+// 自定义星座星（搜索选的，或树里关联到合成号的）换成当前场景历元（见 shared/lbTreeOrbit.js）。轨道只在真变了时写（免得自动保存空转）；
+// 关联星此刻反解不出（离线）不拿 unresolved 顶掉已存的轨道。
+async function reloadSatTree() {
+  try { satTree.value = loadSatTree().sats } catch (e) { /* keep */ }
+  const targets = new Set()
+  for (const row of chains) for (const nd of (row.nodes || [])) { const c = satCfgOf(nd); if (c) targets.add(c) }
+  let cust = null
+  const custSats = () => { if (!cust) { try { cust = loadCustomSats().sats } catch (e) { cust = [] } } return cust }
+  for (const c of targets) {
+    const ns = c.ngsoSat
+    if (!ns || ns.mode === 'manual' || ((c.form && c.form.orbitClass) || 'GSO') === 'GSO') continue   // GSO 只认定点经度，不取星
+    const node = pickedTreeNode(ns, satTree.value)
+    if (node) {
+      let orbit = null
+      try { orbit = await treeNodeOrbit(node) } catch (e) { orbit = null }   // 反解失败：留着已存的轨道
+      if (ns.mode !== 'tree' || ns.folder !== node.folder) continue   // 反解期间用户另选了星：不拿旧节点顶掉新选的
+      if (orbit && orbit.type !== 'unresolved') {
+        // 先换成当前场景历元再比（候选池按窗口缓存，历元可能是旧的）：否则每次刷新都「写旧→换新」两遍，结果标过期、库空存一次
+        if (orbit.type === 'elements') orbit = scenarioEpochPatch(orbit, custSats()) || orbit
+        ns.name = node.satName; ns.noradId = node.noradId || null; c.form.satelliteName = node.satName
+        if (stableStringify(orbit) !== stableStringify(ns.orbit)) { ns.orbit = orbit; orbitToForm(c.form, orbit) }
+        continue
+      }
+    }
+    if (!ns.orbit || ns.orbit.type !== 'elements') continue
+    const p = scenarioEpochPatch(ns.orbit, custSats())
+    if (p) ns.orbit = p
+  }
+}
+
+// ============ 导入图上链路 ============
+// 星座 3D 主窗「链路」视图建的 STK Chain 式单向链路 → 本窗一条条链（载荷形状见 packages/core/models/mapLinks.mjs 的 chainPayload）。
+// 两个入口：链路列表「导入链路」对话框拉取 / tool:open 的 ctx.links 推送。对话框那条也走 onToolContext 的队列——
+// 库与配置载入完（onMounted 末尾 flushToolContext）之前一律排队：_libLoaded 之前加进库的条目会被随后载入的库整份顶掉。
+// 口径：只追加，既有的链与库条目一字不动；当前配置只有一条没动过的出厂默认链时由导入的链顶替（isFactoryChain）。
+//   星：satEntryForCtx 库里找同一颗（NORAD → 天线树 folder → GSO 同名同轨位 → 同轨道类型同名），没有就新建并定轨，定完才落链：
+//       GSO（载荷 geo 且带定点经度）只认定点经度；NGSO 取星同资源库取星器（天线树节点 → treeNodeOrbit；目录星 → 星历池按 NORAD），
+//       取不到退回手动轨道（高度 / 倾角取主窗口那一拍的值）。同一批里同一颗星（satKey）只解一次；解不出的那颗星所在链路算跳过。
+//   站：站名 / 经纬度入节点（降雨率 / 海拔由 scanSites 按站址取）；带天线口径 → 按口径对号地球站库（shared/lbStationType.js），
+//       没带口径沿用缺省引用（库第一份，同新建节点）。本窗的地球站库没有损耗字段，天线罩记不进库条目：
+//       罩损（mapLinks.radomeLossDb，按该跳频率分档）并进与它相邻的星地跳「其他损耗」——自它发出的上行跳、进它的下行跳。
+//   跳：按类型播种（同 reseedHop：星地按上 / 下行侧向默认，星间 / 激光走星间默认）；斜距 / 星间距离留空，手动档由 scanGeoSeeds 给建议值。
+//   节点：链端卫星恒为再生（与引擎端点归一同口径），中间卫星按载荷的转发方式；体制落链首（defaultCarrier），段起点照抄。
+const _ctxQueue = []
+let _ctxReady = false, _ctxChain = Promise.resolve()
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
+async function applyToolContext(c) {
+  if (c && c.links) await importChains(c.links)   // 本窗只收图上链路
+}
+const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
+onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
+const linkImpOpen = ref(false)
+const onLinkImport = (list) => onToolContext({ links: list })
+
+const ctxNameKey = (s) => String(s || '').trim().toLowerCase()
+const isGsoCfg = (c) => ((c && c.form && c.form.orbitClass) || 'GSO') === 'GSO'
+const lonGap = (a, b) => Math.abs((((a - b) % 360) + 540) % 360 - 180)   // 经度差（°，跨 ±180° 取近端）
+// 载荷的星节点 → satEntryForCtx 认的形状（noradId 恒为字符串，缺项一律空值）
+const ctxSatOf = (n) => ({
+  name: String(n.name || '').trim(), noradId: n.noradId == null ? '' : String(n.noradId), folder: n.folder ? String(n.folder) : '',
+  geo: n.geo === true, slotLon: Number.isFinite(n.slotLon) ? n.slotLon : null,
+  altKm: Number.isFinite(n.altKm) ? n.altKm : null, inclDeg: Number.isFinite(n.inclDeg) ? n.inclDeg : null
+})
+// 星历池记录 → 条目存的轨道 spec（字段同 E2eSatPanel.pickSearch；星历点序列走 satSearchPool 的唯一出口，取不到返回 null）
+function searchOrbitOf(rec) {
+  if (rec.orbitType === 'elements' && rec.elements) {
+    const e = rec.elements
+    return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
+  }
+  if (rec.orbitType === 'ephem') { try { return poolOrbitSpecOf(rec) } catch (e) { return null } }
+  return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
+}
+// 卫星库条目：找同一颗，没有就新建并定轨（返回响应式代理）。星名为空 / 出厂占位名「Satellite」不参与按名认星；
+// 按名认星只认同轨道类型的条目——同名的 NGSO 条目拿给 GSO 星用（或反过来），几何整个是错的。
+async function satEntryForCtx(s) {
+  const node = s.folder ? satTree.value.find((n) => n.folder === s.folder) : null
+  const gso = s.geo && s.slotLon != null
+  const nm = isSatNamePlaceholder(s.name) ? '' : ctxNameKey(s.name)
+  const hit = (s.noradId && satConfigs.find((c) => c.ngsoSat && c.ngsoSat.noradId != null && String(c.ngsoSat.noradId) === s.noradId)) ||
+    (node && satConfigs.find((c) => c.ngsoSat && c.ngsoSat.folder === node.folder)) ||
+    (gso && nm && satConfigs.find((c) => isGsoCfg(c) && [c.form.satelliteName, c.name].some((v) => ctxNameKey(v) === nm) && lonGap(pf(c.form.orbitLongitude), s.slotLon) <= 0.01 + 1e-9)) ||
+    (nm && satConfigs.find((c) => isGsoCfg(c) === gso && ctxNameKey(c.form.satelliteName) === nm))
+  if (hit) return hit
+  satConfigs.push(makeSatConfig())
+  const cfg = satConfigs[satConfigs.length - 1]   // 取回响应式代理：定轨回填才触发重绘与存盘
+  const f = cfg.form, ns = cfg.ngsoSat
+  if (nm) f.satelliteName = s.name
+  if (gso) {
+    f.orbitClass = 'GSO'
+    f.orbitLongitude = String(Math.round(s.slotLon * 100) / 100)
+  } else {
+    f.orbitClass = 'NGSO'
+    // 先落主窗口那一拍的高度 / 倾角：取星成功由 orbitToForm 覆盖；取不到（离线 / 合成星 / 未解析）它就是手动轨道
+    if (s.altKm != null) f.orbitAltitude = String(Math.round(s.altKm))
+    if (s.inclDeg != null) f.orbitInclination = String(Math.round(s.inclDeg * 100) / 100)
+    if (node) {   // 同资源库「卫星/天线树」取星（E2eSatPanel.onPickTree）
+      ns.mode = 'tree'; ns.name = node.satName; ns.noradId = node.noradId || null; ns.folder = node.folder
+      f.satelliteName = node.satName
+      let orbit = null
+      try { orbit = await treeNodeOrbit(node) } catch (e) { orbit = null }
+      if (ns.mode === 'tree' && ns.folder === node.folder) { ns.orbit = orbit; orbitToForm(f, orbit) }
+    } else if (s.noradId) {   // 同资源库「星历搜索」取星（E2eSatPanel.pickSearch）
+      let rec = null
+      try { rec = await findPoolByNorad(s.noradId) } catch (e) { rec = null }
+      const orbit = rec ? searchOrbitOf(rec) : null
+      if (orbit) {
+        ns.mode = 'search'; ns.name = rec.name; ns.noradId = rec.noradId || null; ns.folder = ''; ns.orbit = orbit
+        f.satelliteName = rec.name
+        orbitToForm(f, orbit)
+      }
+    }
+  }
+  syncAutoNames(satConfigs, 'sat')
+  return cfg
+}
+// 站型对号（只按口径）→ 库条目 id；站没带口径返回 ''（沿用缺省引用＝库第一份，同新建节点）。
+// 新条目当场落库（id 规则同 duplicateEsConfig）：同一批里下一个同口径的站就命中它，不再另建一份。
+function esIdForSite(p) {
+  const t = esStationType(esConfigs, { diaM: Number(p.diaM), radome: p.radome === true, prefer: esConfigs[0], lossKeys: null })
+  if (!t) return ''
+  if (t.hit) return t.hit.id
+  esConfigs.push({ id: 'es' + (_esSeq++), name: t.make.name, nameAuto: t.make.nameAuto, form: t.make.form })
+  syncAutoNames(esConfigs, 'es')
+  return esConfigs[esConfigs.length - 1].id
+}
+// 本窗收任何有效链路。推来的 ctx.links 只经主进程清洗过形状，结构判据（同 mapLinks.linkIssues）在这里再校一遍：
+// ≥ 2 节点、跳数 = 节点数 − 1、站有经纬度、相邻不同为地球站、相邻不为同一颗星、跳类型与两端相符、激光跳两端须为再生卫星（链端卫星恒再生）
+const okSite = (p) => !!p && p.t === 'es' && Number.isFinite(Number(p.lat)) && Number.isFinite(Number(p.lon))
+function chainFits(c) {
+  const ps = c && Array.isArray(c.nodes) ? c.nodes : [], hs = c && Array.isArray(c.hops) ? c.hops : []
+  const last = ps.length - 1
+  if (ps.length < 2 || hs.length !== last) return false
+  if (!ps.every((p) => okSite(p) || (!!p && p.t === 'sat'))) return false
+  const regenAt = (i) => ps[i].t === 'sat' && (i === 0 || i === last || ps[i].regen === true)
+  for (let i = 0; i < last; i++) {
+    const a = ps[i], b = ps[i + 1], t = hs[i] && hs[i].type
+    if (a.t === 'es' && b.t === 'es') return false
+    const want = a.t === 'es' ? ['up'] : b.t === 'es' ? ['down'] : ['isl', 'laser']
+    if (!want.includes(t)) return false
+    if (a.t === 'sat' && b.t === 'sat' && String(a.key || '') !== '' && String(a.key) === String(b.key)) return false
+    if (t === 'laser' && !(regenAt(i) && regenAt(i + 1))) return false
+  }
+  return true
+}
+// 航迹代表点带实际高度（altM）的站节点：海拔写它，站址取值只补降雨率、不按地形改写海拔（见 importChains 末尾的 _sitePend 预置）
+const ALT_KEEP = Object.freeze({})
+// 载荷 → 一条链（纯数据；ents[i] = 第 i 个节点所用的卫星库条目，站节点为 null）；fixAlt（可缺）收集带实际高度的站节点
+function chainFromPayload(c, ents, fixAlt) {
+  const ps = c.nodes, last = ps.length - 1
+  const nodes = ps.map((p, i) => {
+    if (p.t === 'es') {
+      const nd = newEsNode(String(p.name || '').trim() || nodeName(i === 0 ? 'tx' : i === last ? 'rx' : 'relay'))
+      nd.longitude = String(p.lon); nd.latitude = String(p.lat)
+      if (Number.isFinite(p.altM)) { nd.altitude = String(Math.round(p.altM)); if (fixAlt) fixAlt.push(nd) }
+      nd.esId = esIdForSite(p)
+      // 功放功率：站带了就写成节点级覆盖（库条目不动）；只在本站发出上行时有意义（链尾收信站不写）
+      const w = Number(p.pwrW)
+      if (i < last && Number.isFinite(w) && w > 0) nd.opPowerW = String(w)
+      return nd
+    }
+    const nd = newSatNode(i === 0 || i === last || p.regen === true ? 'regen' : 'txp', String(p.name || '').trim())
+    nd.satId = ents[i].id
+    return nd
+  })
+  const hops = c.hops.map((hp, i) => {
+    const t = hp.type
+    const h = newHop(t === 'laser' ? 'laser' : 'rf')
+    Object.assign(h, isSpaceHop(t) ? defaultsFor(HOP_ISL_FIELDS) : GS_SIDE_DEFAULTS[t])
+    if ((t === 'up' && ps[i].radome === true) || (t === 'down' && ps[i + 1].radome === true)) {
+      h.miscLoss = String(Math.round(((pf(h.miscLoss) || 0) + radomeLossDb(pf(h.frequency))) * 100) / 100)
+    }
+    return h
+  })
+  nodes[0].carrier = defaultCarrier()
+  const own = c.nameAuto === false ? String(c.name || '').trim() : ''
+  const row = { _id: uid('c'), name: own, nameAuto: !own, nodes, hops }
+  ensureSegCarriers(row)
+  return row
+}
+// 没动过的出厂默认链（新建配置自带的那条站-星-站）：与 defaultChain() 逐项相同（_id、自动链名不论，占位站名哪种语言都算）。
+// 工作台自己推出来的值不算改动：站址自动取到的降雨率 / 海拔（同 scanSites 那条 geoFill 通道按站址现取一次比对）、
+// 手动几何的派生建议值（在副本上按 hopSeedInfo 同式现推；apply 只写它推出来的那几格，先垫空认出是哪几格）。
+const GEO_KEYS = ['slantRange', 'elevation', 'rangeKm']
+async function isFactoryChain(row) {
+  if (!row || row.nameAuto === false || row.sla) return false
+  const ref = defaultChain()
+  if (row.nodes.length !== ref.nodes.length || row.hops.length !== ref.hops.length) return false
+  const bare = (o) => { const r = JSON.parse(JSON.stringify(o)); delete r._id; return r }
+  const phName = (v) => { for (const k in NODE_NAMES) if (isDefaultName(v, ...NODE_NAMES[k])) return '#' + k; return v }
+  const dry = JSON.parse(JSON.stringify(row))
+  const derived = dry.hops.map((h, i) => {
+    const info = hopSeedInfo(dry, i)
+    if (!info) return {}
+    for (const k of GEO_KEYS) h[k] = undefined
+    info.apply()
+    const o = {}
+    for (const k of GEO_KEYS) if (h[k] !== undefined) o[k] = h[k]
+    return o
+  })
+  for (let i = 0; i < ref.hops.length; i++) {
+    const a = bare(row.hops[i]), b = bare(ref.hops[i]), d = derived[i]
+    for (const k of Object.keys(d)) if (a[k] === d[k]) a[k] = b[k]
+    if (stableStringify(a) !== stableStringify(b)) return false
+  }
+  for (let i = 0; i < ref.nodes.length; i++) {
+    const a = bare(row.nodes[i]), b = bare(ref.nodes[i])
+    const site = a.kind === 'es' && b.kind === 'es'
+    const got = site ? { rainRate: a.rainRate, altitude: a.altitude } : null
+    if (site) { a.name = phName(a.name); b.name = phName(b.name); a.rainRate = b.rainRate; a.altitude = b.altitude }
+    if (stableStringify(a) !== stableStringify(b)) return false
+    if (!site || (got.rainRate === b.rainRate && got.altitude === b.altitude)) continue
+    let g = null
+    if (api) { try { g = await api.linkBudget.geoFill(pf(b.latitude), pf(b.longitude)) } catch (e) { g = null } }
+    for (const k of ['rainRate', 'altitude']) {
+      if (got[k] !== b[k] && !(g && g[k] != null && got[k] === String(g[k]))) return false
+    }
+  }
+  return true
+}
+async function importChains(list) {
+  const all = Array.isArray(list) ? list : []
+  const fit = all.filter(chainFits)
+  let skipped = all.length - fit.length
+  const byKey = new Map(), jobs = []
+  for (const c of fit) {
+    const ents = []
+    for (const p of c.nodes) {
+      if (p.t !== 'sat') { ents.push(null); continue }
+      const k = String(p.key || '')
+      let e = null
+      if (k && byKey.has(k)) e = byKey.get(k)
+      else {
+        try { e = await satEntryForCtx(ctxSatOf(p)) } catch (err) { e = null }
+        if (k) byKey.set(k, e)
+      }
+      if (!e) break
+      ents.push(e)
+    }
+    if (ents.length !== c.nodes.length) { skipped++; continue }
+    jobs.push({ c, ents })
+  }
+  if (!jobs.length) { toast(byLang('没有可导入的链路', 'No applicable links')); return }
+  // 顶替判定是最后一个 await：其后建链、改表一气呵成，中途不让出主线程
+  const lone = chains.length === 1 ? chains[0] : null
+  let swap = false
+  if (lone) { try { swap = await isFactoryChain(lone) } catch (e) { swap = false } }
+  const fixAlt = []
+  const rows = jobs.map(({ c, ents }) => chainFromPayload(c, ents, fixAlt))
+  if (swap && chains.length === 1 && chains[0] === lone) {
+    chains.splice(0, 1)
+    delete results[lone._id]; delete errors[lone._id]; delete geoSolved[lone._id]
+  }
+  // 带实际高度的站：先预置一份「海拔不认」的取值快照（ALT_KEEP 与任何现值都不等），scanSites 发现新站址时沿用它 → 只补降雨率
+  for (const nd of fixAlt) _sitePend.set(nd._id, { rain: nd.rainRate, alt: ALT_KEEP })
+  const at = chains.length
+  chains.push(...rows)
+  syncChainNames()
+  curIdx.value = at; sel.type = 'node'; sel.index = 0
+  const n = new Set(jobs.map((j, i) => j.c.grp || '#' + i)).size, nChains = rows.length   // 一条图上链路（grp）可展开成多条链（支路）
+  toast(byLang(
+    `已导入 ${n} 条链路${nChains > n ? `（${nChains} 条链）` : ''}${skipped ? `，${skipped} 条不适用已跳过` : ''}`,
+    `Imported ${n} link${n === 1 ? '' : 's'}${nChains > n ? ` (${nChains} chains)` : ''}${skipped ? `, ${skipped} skipped (not applicable)` : ''}`))
+  await flushLibSave()   // 新链引用的库条目先落盘（库改动不入场景指纹，见 flushLibSave 头注）
+}
 
 function onGlobalKey(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); compute() }
@@ -1316,32 +1648,40 @@ onMounted(async () => {
   _libLoaded = true
   scheduleLibSave()
   await loadConfigs()
-  try {
-    const raw = localStorage.getItem(STATE_KEY)
-    if (raw) {
-      const st = JSON.parse(raw)
-      const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
-      else applyState(st)
-    }
-  } catch (e) { /* ignore */ }
-  // 没有可恢复的工作状态 ⇒ 台面上这条是出厂默认链：按站址取一遍降雨率/海拔
-  //（存盘场景走 applyState 里那条，一律存盘值优先）
-  if (!_siteFp.size) scanSites('all')
+  // 打开上次那份配置；它没了就开树上第一份，一份都没有就新建一份空白配置（工作区恒对应一份配置；
+  // 新建的空白配置在 applyState 里按站址取一遍降雨率 / 海拔，存盘场景一律存盘值优先）。
+  // 迁移（v1.5.0 及以前「上次会话」存的是整份场景）：
+  //   · 对应的配置还在 → 把那份没点保存的改动接上，随即由自动保存写盘（写盘前先给它留一档「打开时」）；
+  //   · 不属于任何配置的草稿（旧版本本窗会原样恢复它）→ 落成一份新配置并打开，升级后第一眼看到的与升级前一致；
+  //     与某份已存配置逐字相同的不另落，直接打开那一份。
+  let last = null
+  try { last = JSON.parse(localStorage.getItem(STATE_KEY) || 'null') } catch (e) { last = null }
+  const oldScene = !!(last && Array.isArray(last.chains) && last.chains.length)
+  if (oldScene && !last.activeId && api) {
+    const draft = { ...last }
+    delete draft.activeId
+    const fp = stableStringify(draft)
+    const same = configs.value.find((c) => c.type !== 'folder' && c.state && stableStringify(c.state) === fp)
+    if (same) await ensureActive(same.id)
+    else await cfgTree.createAndOpen({ state: draft, name: cfgLabelOf(draft), nameAuto: true })
+  }
+  await ensureActive(last && last.activeId)
+  if (oldScene && last.activeId && last.activeId === activeId.value) { applyState(last); autosave.touch() }
+  try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* ignore */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   for (const row of chains) migrateCarriers(row)   // 老库读进来之后再迁一次（体制引用 → 节点上那份）
   syncChainNames()
-  // 关窗序：守卫（可保存/取消）→ 冲刷工作状态（防抖窗内的改动）→ 冲刷资源库 → 放行关闭
+  // 关窗：把场景与资源库挂起的写盘冲掉即放行（观感上秒关）；只有场景写不进磁盘时才问一句
   api?.e2e?.onCloseRequested?.(async () => {
-    // 守卫里抛错就不放行，但必须把因由说出来——否则表现是「点了保存，窗口既不关也没动静」
-    let go = false
-    try { go = await guardedLeave() } catch (e) { toast('关闭前保存失败：' + errText(e)); return }
-    if (!go) return
-    flushSaveState(); await flushLibSave(); api.e2e.confirmClose()
+    const ok = await autosave.flush()
+    await flushLibSave()
+    if (!ok && !(await askConfirm(`「${activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要关闭窗口？`))) return
+    api.e2e.confirmClose()
   })
+  stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏 / 刷新前立即写盘
   window.addEventListener('keydown', onGlobalKey)
   window.addEventListener('focus', reloadSatTree)
-  window.addEventListener('beforeunload', flushSaveState)   // 开发态刷新 / 兜底
+  flushToolContext()   // 库与配置已载入：处理开窗时随窗带来的图上链路、以及载入期间对话框排进队的导入
 })
 </script>
 
@@ -1350,11 +1690,14 @@ onMounted(async () => {
     <ActivationLock />
     <!-- 配置右键菜单（五窗共用一份，条目与快捷键一致） -->
     <ConfigTreeMenu
-      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api"
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api" autosave
       @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
-      @save-new="openSaveDlg" @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
       @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
     />
+    <!-- 历史版本（自动保存的后悔药）：还原 / 用那一版另建副本 -->
+    <LbVersionsDialog v-model:open="verDlg.open" ns="e2e" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
     <div class="lb-body">
       <!-- ① 左侧栏：配置列表 / 资源库 二选一 -->
       <aside v-show="sideView" class="lb-col lb-side" :class="[sideView === 'library' ? 'lb-lib' : 'lb-configs', { resizing: sideResizing }]" :style="{ width: sideWidth + 'px' }">
@@ -1420,10 +1763,9 @@ onMounted(async () => {
         <div class="lbr">
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="!api" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" @click="saveCurrent">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
-                保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
-              </button>
+              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
               <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（城市库 / 载波信号选项）" @click="refreshLatest">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
                 刷新
@@ -1441,9 +1783,19 @@ onMounted(async () => {
                 <label title="几何来源：自动最差＝按各跳卫星的轨道解最差工况（GSO 静止几何 / NGSO 选星走 SGP4 / NGSO 手填走圆轨道闭式；星间跳按两星轨道取时窗内最大距离），此时「仰角」字段是最低仰角门限；手动＝斜距与仰角、星间距离由各跳自己填"><span>几何</span>
                   <select v-model="geoMode" style="width: 86px"><option v-for="g in GEO_MODES" :key="g.v" :value="g.v">{{ g.l }}</option></select>
                 </label>
-                <label v-if="!geoManual" title="从计算此刻起在此时窗内解最差工况几何"><span>时窗</span>
+                <label v-if="!geoManual" title="从起点起在此时窗内解最差工况几何"><span>时窗</span>
                   <select v-model.number="geoHorizonHours" style="width: 86px"><option v-for="h in HORIZONS" :key="h.v" :value="h.v">{{ h.l }}</option></select>
                 </label>
+              </div>
+              <!-- 搜索起点另起一列（第三行会把功能区撑高）：指定档在下一行给时刻框 + 时区角标 -->
+              <div v-if="!geoManual" class="lbr-form">
+                <label title="搜索时窗起点：时间轴＝主窗口时间轴当前时刻；系统时钟＝点「计算」时的系统时间；指定＝给定时刻（随配置保存）"><span>起点</span>
+                  <select v-model="geoT0Mode" style="width: 86px"><option v-for="m in GEO_T0_MODES" :key="m.v" :value="m.v">{{ m.l }}</option></select>
+                </label>
+                <div v-if="geoT0Mode === 'fixed'" class="lbr-row">
+                  <input type="datetime-local" step="1" class="lbr-dt" title="搜索时窗起点" :value="t0Val" @input="t0Draft = $event.target.value" @blur="t0Commit" @keyup.enter="t0Commit" />
+                  <TzPicker v-model="tzMode" :ms="t0RefMs" class="lbr-tz" title="时刻的时标时区：本机 / UTC / UTC±N">{{ t0TzTag }}</TzPicker>
+                </div>
               </div>
               <button class="lbr-big primary" :disabled="computing" :title="`计算全部 ${chains.length} 条链路（Ctrl+Enter）`" @click="compute">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
@@ -1463,11 +1815,11 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
-              <button class="lbr-big" :disabled="!reportLinks.length" :title="reportLinks.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '尚无计算结果'" @click="openSlaDlg">
+              <button class="lbr-big" :disabled="!chains.length" :title="chains.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '请至少添加一条链路'" @click="openSlaDlg">
                 <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
                 SLA
               </button>
-              <button class="lbr-big" :disabled="reportDlg.busy || !reportLinks.length" :title="reportLinks.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '尚无计算结果'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !chains.length" :title="chains.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '请至少添加一条链路'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
@@ -1485,6 +1837,7 @@ onMounted(async () => {
           <LbSection id="links" title="端到端链路" :count="chains.length">
             <template #actions>
               <button class="lb-mini" title="新增一条链路（站-星-站）" @click="addChain">＋ 链路</button>
+              <button class="lb-mini" title="导入星座 3D 主窗中建立的链路" @click="linkImpOpen = true">导入链路</button>
             </template>
             <div class="e2-tbl-wrap">
               <table class="e2-tbl">
@@ -1680,34 +2033,13 @@ onMounted(async () => {
 
     <!-- 典型城市…（站名旁的按钮）：CityPicker 单选，点一行即把站名与站址一并写入当前节点 -->
     <CityPicker v-if="cityDlg" single @add="pickCity($event[0])" @close="cityDlg = false" />
+    <!-- 导入链路（链路列表的按钮）：星座 3D 主窗建的图上链路，勾选后经 onLinkImport 排进上下文队列 -->
+    <LinkImportDialog v-if="linkImpOpen" kind="e2e" @import="onLinkImport" @close="linkImpOpen = false" />
 
     <LbReportDialog :open="reportDlg.open" :lang="reportLang" orbit-type="E2E"
-                    :link-count="reportLinks.length" :viz-available="false" :sla-count="slaCount" store-key="e2e"
+                    :link-count="chains.length" :viz-available="false" :sla-count="slaCount" store-key="e2e"
                     :busy="reportDlg.busy" :progress="reportDlg.progress"
                     @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
-
-    <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">保存为新配置</div>
-        <div class="lb-dlg-bd"><input v-model="cfgDlg.name" class="lb-input" placeholder="配置名称" @keyup.enter="confirmCfgDlg" /></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="cfgDlg.open = false">取消</button>
-          <button class="lb-mini primary" @click="confirmCfgDlg">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="leaveDlg.open" class="lb-mask" @click="leaveAnswer('cancel')">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">配置已修改</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">「<b data-i18n-skip>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
-          <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>
-          <button class="lb-mini primary" @click="leaveAnswer('save')">保存</button>
-        </div>
-      </div>
-    </div>
 
     <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
       <div class="lb-dlg" @click.stop>

@@ -34,6 +34,7 @@ import { nonFiniteReport, buildParamModel, MATERIALS } from '../models/paramBus.
 import { templateSpec, TEMPLATE_IDS, DEFAULT_TEMPLATE_ID } from '../models/paramTemplates.mjs'
 import { Q_YUP_ZENITH } from '../models/bodyFrame.mjs'
 import { isValidModelId, parseModelId } from '../models/schema.mjs'
+import { socketSingle, compById, applyCmd } from '../models/asmSnap.mjs'
 
 let n = 0
 const t = (name, fn) => { try { fn(); n++ } catch (e) { console.error(`✗ ${name}\n  ${e.stack || e.message}`); process.exitCode = 1 } }
@@ -158,7 +159,7 @@ const DOMAIN_OF = { es: 'ground', air: 'aircraft', sea: 'ship', veh: 'vehicle' }
 const singleDoc = (type, domain) => ({ kind: 'assembly', schema: 1, domain, name: 't', comps: [{ id: 'c1', type, parent: null }] })
 
 const GROUND = ['es.pedestal.azel', 'es.pedestal.xy', 'es.refl.prime', 'es.refl.cass', 'es.refl.offset', 'es.subrefl', 'es.feed', 'es.radome', 'es.shelter', 'es.tower', 'es.vsat.mount', 'es.pedestal.wheeltrack', 'es.mast']
-const AIR = ['air.fuselage', 'air.wing', 'air.htail', 'air.vtail', 'air.nacelle', 'air.prop', 'air.radome', 'air.turret']
+const AIR = ['air.fuselage', 'air.heli', 'air.mrbody', 'air.wing', 'air.htail', 'air.vtail', 'air.boom', 'air.nacelle', 'air.prop', 'air.rotor', 'air.radome', 'air.turret']
 const SEA = ['sea.hull', 'sea.superstructure', 'sea.funnel', 'sea.mast', 'sea.containers', 'sea.vsat.radome']
 const VEH = ['veh.body', 'veh.cotm.flat', 'veh.driveaway']
 const DOMAIN_TYPES = [...GROUND, ...AIR, ...SEA, ...VEH]
@@ -166,7 +167,7 @@ const DEFS = DOMAIN_TYPES.map(getComponent)
 
 // ───────────────────────── ① 登记 ─────────────────────────
 
-t('登记：ground 13 / air 8 / sea 6 / veh 3 件全在注册表、登记顺序即组件库顺序、领域含本领域；卫星库仍 15 件', () => {
+t('登记：ground 13 / air 12 / sea 6 / veh 3 件全在注册表、登记顺序即组件库顺序、领域含本领域；卫星库 44 件（42 卫星 + 2 基本体）', () => {
   const types = componentTypes()
   for (const ty of DOMAIN_TYPES) assert.ok(types.includes(ty), `缺 ${ty}`)
   const tail = types.slice(types.indexOf('es.pedestal.azel'))
@@ -181,7 +182,7 @@ t('登记：ground 13 / air 8 / sea 6 / veh 3 件全在注册表、登记顺序�
       assert.ok(s.source === 'illustrative' || /^https?:\/\/\S+$/.test(s.source), `${def.type}.${k} 出处须为 illustrative 或 URL：${s.source}`)
     }
   }
-  assert.equal(listComponents('spacecraft').length, 15)
+  assert.equal(listComponents('spacecraft').length, 44)
   for (const [d, list] of [['ground', GROUND], ['aircraft', AIR], ['ship', SEA], ['vehicle', VEH]]) {
     const got = listComponents(d).map((x) => x.type)
     for (const ty of list) if (getComponent(ty).domain.includes(d)) assert.ok(got.includes(ty), `${d} 库缺 ${ty}`)
@@ -354,8 +355,9 @@ t('插座贴面：非安装、非轴心的水平插座（n = ±Z）落在网格�
 })
 
 t('accepts 推荐组合：父插座推荐的每一类子件，滚转 0° 装上去与父件同向（旋转为单位阵）；只有有意的横装 / 倒装 / 焦点件除外', () => {
-  // X-Y 座 Y 轴插座朝天（碟面装上去视轴指天顶）；焦点插座接馈源 / 副面（口面朝碟）；机腹腹鳍倒装；尾吊短舱横装
-  const WL = new Set(['es.pedestal.xy#y', 'air.fuselage#ventral', 'air.fuselage#aftEng'])
+  // X-Y 座 Y 轴插座朝天（碟面装上去视轴指天顶）；焦点插座接馈源 / 副面（口面朝碟）；机腹腹鳍倒装；尾吊短舱横装；
+  // 机头牵引螺旋桨反装（桨在机头前方）；背负短舱倒扣；直升机尾桨横装（桨轴沿 ±Y）
+  const WL = new Set(['es.pedestal.xy#y', 'air.fuselage#ventral', 'air.fuselage#aftEng', 'air.fuselage#nose', 'air.fuselage#dorsal', 'air.heli#trotor'])
   let cnt = 0
   for (const pdef of DEFS) {
     for (const s of pdef.sockets(fillParams(pdef, {}))) {
@@ -441,8 +443,8 @@ t('镜像·尾吊短舱（G650ER，mirrorXZ 在短舱上）：钩子档、全部
   sameSet(vset(bl, [1, -1, 1]), vset(br), '派生件 = 主件关于 xz 镜像（风扇旋向相反）')
 })
 
-t('镜像·钩子参数：机翼 side、短舱 fanHand 翻转，再翻回原值；翻转旋向的短舱 = 原短舱关于 xz 面逐位镜像；短舱不声明对称面', () => {
-  for (const [ty, key] of [['air.wing', 'side'], ['air.nacelle', 'fanHand']]) {
+t('镜像·钩子参数：机翼 side、短舱 fanHand、旋翼 hand 翻转，再翻回原值；翻转旋向的短舱 / 旋翼 = 原件关于 xz 面逐位镜像；二者不声明对称面', () => {
+  for (const [ty, key] of [['air.wing', 'side'], ['air.nacelle', 'fanHand'], ['air.rotor', 'hand']]) {
     const w = getComponent(ty), p = fillParams(w, {})
     const m1 = w.mirror(p, 'xz'), m2 = w.mirror(m1, 'xz')
     assert.notEqual(m1[key], p[key], `${ty}.${key} 翻转`)
@@ -458,6 +460,37 @@ t('镜像·钩子参数：机翼 side、短舱 fanHand 翻转，再翻回原值�
     sameSet(vset(P0, [1, -1, 1]), vset(P1), `短舱 ${JSON.stringify(raw)} 翻转旋向 = xz 镜像`)
     assert.throws(() => sameSet(vset(P0, [1, -1, 1]), vset(P0), '风扇确有手性（自身不关于 xz 对称）'))
   }
+  const rot = getComponent('air.rotor')
+  assert.equal(rot.symmetricPlanes, undefined, '旋翼桨叶有手性，不声明对称面')
+  for (const raw of [{}, { planform: 'propeller', hub: 'compact', blades: 2 }, { hub: 'hingeless', blades: 3, tip: 'tapered', coningDeg: 4 }]) {
+    const p = fillParams(rot, raw)
+    const P0 = allPts(meshes(A.buildComponent('air.rotor', p))), P1 = allPts(meshes(A.buildComponent('air.rotor', rot.mirror(p, 'xz'))))
+    sameSet(vset(P0, [1, -1, 1]), vset(P1), `旋翼 ${JSON.stringify(raw)} 翻转旋向 = xz 镜像`)
+    assert.throws(() => sameSet(vset(P0, [1, -1, 1]), vset(P0), '桨叶确有手性（自身不关于 xz 对称）'))
+  }
+})
+
+t('镜像·多旋翼旋翼随对称复制（Astro Max）：派生件走旋翼钩子档、几何 = 主件关于 xz 镜像；右前 / 右后两桨反向，对角两桨同向', () => {
+  const rec = E.getEntityTemplate('ent:astro-max'), r = built('ent:astro-max'), plan = A.solvePose(rec.doc)
+  for (const k of ['rot~1', 'rot2~1']) assert.equal(plan.get(k).mode, 'hook', `${k} 档位`)
+  for (const [a, b] of [['rot', 'rot-1'], ['rot2', 'rot2-1']]) {
+    const A0 = allPts(meshes(r, (nm) => nm.startsWith(a + '_'))), B0 = allPts(meshes(r, (nm) => nm.startsWith(b + '_')))
+    assert.ok(A0.length && A0.length === B0.length, `${a} / ${b} 网格`)
+    sameSet(vset(A0, [1, -1, 1]), vset(B0), `${b} = ${a} 关于 xz 镜像`)
+  }
+  const hand = (cid) => rec.doc.comps.find((c) => c.id === cid).params.hand
+  assert.notEqual(hand('rot'), hand('rot2'), '右前 / 右后两桨反向')
+  assert.equal(getComponent('air.rotor').mirror({ hand: hand('rot2') }, 'xz').hand, hand('rot'), '左后（右后的镜像）与右前同向')
+})
+
+t('单件插座：直升机尾桨轴（air.heli singleSockets）上的件不吃工具栏缺省对称，主旋翼轴与其它件照常；显式设对称照常生效', () => {
+  const d = E.entityTemplateDoc('ent:aw139').doc
+  assert.equal(socketSingle(d, compById(d, 'tr')), true, '尾桨')
+  assert.equal(socketSingle(d, compById(d, 'rotor')), false, '主旋翼')
+  assert.equal(socketSingle(d, compById(d, 'heli')), false, '根件')
+  for (const id of ['ent:jump20', 'ent:astro-max', 'ent:b737-800']) { const j = E.entityTemplateDoc(id).doc; for (const c of j.comps) assert.equal(socketSingle(j, c), false, `${id} ${c.id}`) }
+  assert.equal(applyCmd(d, { type: 'setSym', id: 'tr', sym: { op: 'mirrorXZ' } }).ok, true, '显式设对称照常生效')
+  assert.deepStrictEqual([...getComponent('air.heli').singleSockets], ['trotor'])
 })
 
 // ───────────────────────── ⑤′ 专项几何回归 ─────────────────────────
@@ -688,13 +721,13 @@ t('领域本体轴·各领域锚点：船 / 车 / 飞机 datum 在文档原点�
 
 // ───────────────────────── ⑦ 模板 ─────────────────────────
 
-t('模板目录：id 唯一合规、共 23 个、不与参数化模板 / 旧 id / 其它前缀撞；深冻结；取不到返回 null；文档副本互不共享', () => {
-  assert.equal(IDS.length, 23)
+t('模板目录：id 唯一合规、共 27 个、不与参数化模板 / 旧 id / 其它前缀撞；深冻结；取不到返回 null；文档副本互不共享', () => {
+  assert.equal(IDS.length, 27)
   assert.equal(new Set(IDS).size, IDS.length, 'id 唯一')
   const counts = Object.fromEntries(E.ENTITY_DOMAINS.map((d) => [d, E.listEntityTemplates(d).length]))
-  assert.deepStrictEqual(counts, { ground: 11, aircraft: 6, ship: 3, vehicle: 3 })
-  assert.equal(E.listEntityTemplates().length, 23)
-  assert.deepStrictEqual(E.ENTITY_TEMPLATES.map((r) => r.domain), [...Array(11).fill('ground'), ...Array(6).fill('aircraft'), ...Array(3).fill('ship'), ...Array(3).fill('vehicle')], '界面顺序：地球站 → 飞机 → 船 → 车')
+  assert.deepStrictEqual(counts, { ground: 11, aircraft: 10, ship: 3, vehicle: 3 })
+  assert.equal(E.listEntityTemplates().length, 27)
+  assert.deepStrictEqual(E.ENTITY_TEMPLATES.map((r) => r.domain), [...Array(11).fill('ground'), ...Array(10).fill('aircraft'), ...Array(3).fill('ship'), ...Array(3).fill('vehicle')], '界面顺序：地球站 → 飞机 → 船 → 车')
   for (const id of IDS) {
     assert.ok(E.ENTITY_ID_RE.test(id), id)
     assert.ok(isValidModelId(id) && parseModelId(id).prefix === 'ent', `${id} 与 schema 的 ent 前缀同式`)
@@ -725,7 +758,7 @@ t('模板目录：id 唯一合规、共 23 个、不与参数化模板 / 旧 id 
     for (const c of r0.doc.comps) for (const k of Object.keys(c.params || {})) { const p = `${c.id}.${k}`; assert.ok(Object.hasOwn(r0.prov, p) || dd.illustrative.includes(p), `${x} ${p} 漏归类`) }
   }
   const cat = E.entityTemplateCatalog()
-  assert.equal(cat.length, 23)
+  assert.equal(cat.length, 27)
   for (const c of cat) {
     const r0 = E.getEntityTemplate(c.id)
     assert.equal(c.templateId, c.id); assert.equal(c.kind, r0.modelKind); assert.equal(c.group, r0.modelKind); assert.equal(c.fidelity, 'parametric')
@@ -774,6 +807,15 @@ function recompute(rec, path, p) {
     case 'vtailHeight': { const f = fus(); return vOf(d0, w.pick) - w.gearClearM - f.heightM / 2 + sockZ('air.fuselage', f, 'vtail') }
     case 'vtailSpan': { const f = fus(); return 2 * (d0.value - w.gearClearM - f.heightM / 2 + sockZ('air.fuselage', f, 'htail')) / Math.tan(compOf(rec, 'ht').params.dihedralDeg * Math.PI / 180) }
     case 'lengthMinusProp': return d0.value + A.buildComponent('air.prop', compOf(rec, 'prop').params).bbox.min[0]
+    case 'heliTrH': return d0.value - dims[p.dims[1]].value / 2 - w.gearClearM
+    case 'heliTrArm': return d0.value - (dims[p.dims[1]].value + dims[p.dims[2]].value) / 2
+    case 'heliMastH': {
+      const hs = getComponent('air.heli').sockets(fillParams(getComponent('air.heli'), compOf(rec, 'heli').params)), z = (sid) => hs.find((q) => q.id === sid).pos[2]
+      const rp = fillParams(getComponent('air.rotor'), compOf(rec, 'rotor').params), cpt = rp.hub === 'compact'
+      const T = ((cpt ? 0.42 : 0.22) * (rp.hubDM === null ? (cpt ? 0.08 : 0.1) * rp.diameterM : rp.hubDM)) / 2
+      return d0.value - w.gearClearM - (z('root') - z('rotor')) - 3 * T
+    }
+    case 'propPitchDeg': return (Math.atan(d0.value / (0.75 * Math.PI * dims[p.dims[1]].value)) * 180) / Math.PI
     case 'rowsFromBeam': return Math.floor((d0.value - w.marginM) / (w.boxWM + w.rowGapM))
     case 'bridgeTiers': return Math.ceil((w.hatchHM + d0.value * w.boxHM + w.clearM) / w.tierHM)
     case 'funnelHeight': return w.hatchHM + d0.value * w.boxHM + w.extraM
@@ -815,16 +857,46 @@ t('prov 对拍：每条按 dim / pick / k 或派生式子独立重算 = 文档�
   assert.equal(D('ent:ulcs-24k', 'loaM'), 399.95); assert.equal(D('ent:container-14k', 'deckRows'), 20)
 })
 
-t('几何闭合出处尺寸：飞机全长 / 翼展 / 全机高；地面站俯仰轴高 + 最前点距离 = 90° 总高；船长宽吃水；车长宽高；罩与终端外形', () => {
+t('几何闭合出处尺寸：飞机全长 / 翼展 / 全机高（直升机：机身长、旋翼转动全长 / 全高、旋翼头顶高；多旋翼：轴距、桨径、全高）；地面站俯仰轴高 + 最前点距离 = 90° 总高；船长宽吃水；车长宽高；罩与终端外形', () => {
   for (const id of IDS) {
     const rec = E.getEntityTemplate(id), r = built(id), P = allPts(meshes(r)), bb = bboxOf(P)
     if (rec.domain === 'aircraft') {
-      nearRel(bb.size[0], vOf(rec.dims.lengthM), 0.005, `${id} 全机长`)
-      nearRel(bb.size[1], vOf(rec.dims.wingspanM), 0.005, `${id} 翼展`)
-      const hp = [rec.prov['vt.heightM'], rec.prov['ht.spanM']].find((x) => x && (x.fn === 'vtailHeight' || x.fn === 'vtailSpan')), f = fillParams(getComponent('air.fuselage'), compOf(rec, 'fus').params)
-      const zg = f.heightM / 2 + hp.with.gearClearM
-      nearRel(zg - bb.mn[2], vOf(rec.dims.heightM, hp.with.pick), 0.01, `${id} 全机高`)
-      assert.ok(bb.mx[2] < zg, `${id} 全部顶点在地面以上（最低 ${bb.mx[2].toFixed(3)} < ${zg.toFixed(3)}）`)
+      const rootType = rec.doc.comps.find((c) => c.parent === null).type, o = r.specOriginBody
+      const apPos = (nm) => { const a = r.attachPoints.find((q) => q.name === nm); assert.ok(a, `${id} 缺挂点 ${nm}`); return a.posBody.map((v, k) => v + o[k]) }
+      if (rootType === 'air.heli') {
+        // 机身长 = 机身件（不含旋翼）包围盒长；旋翼转动全长 / 全高按桨盘包络（主旋翼盘前缘、尾桨盘后缘 / 顶）；旋翼头顶 = 机身高；地面 = 座舱机腹 + 离地净空
+        const hs = getComponent('air.heli').sockets(fillParams(getComponent('air.heli'), compOf(rec, 'heli').params))
+        const body = bboxOf(allPts(meshes(r, (nm) => nm.startsWith('heli_')))), mr = apPos('rotor_hub'), tr = apPos('tr_hub')
+        const Rm = rec.dims.mainRotorDiameterM.value / 2, Rt = rec.dims.tailRotorDiameterM.value / 2
+        nearRel(body.size[0], rec.dims.fuselageLengthM.value, 0.005, `${id} 机身长`)
+        const front = Math.max(body.mx[0], mr[0] + Rm), aft = Math.min(body.mn[0], mr[0] - Rm, tr[0] - Rt)
+        nearRel(front - aft, rec.dims.overallLengthM.value, 0.005, `${id} 旋翼转动全长`)
+        const zg = hs.find((q) => q.id === 'root').pos[2] + rec.prov['heli.trHM'].with.gearClearM
+        const head = bboxOf(allPts(meshes(r, (nm) => nm === 'rotor_head'))), rot = bboxOf(allPts(meshes(r, (nm) => nm.startsWith('rotor_'))))
+        nearRel(zg - Math.min(body.mn[2], rot.mn[2], tr[2] - Rt), rec.dims.overallHeightM.value, 0.01, `${id} 旋翼转动全高（尾桨盘顶最高）`)
+        nearRel(zg - head.mn[2], rec.dims.fuselageHeightM.value, 0.01, `${id} 旋翼头顶高`)
+        assert.ok(bb.mx[2] < zg, `${id} 全部顶点在地面以上（最低 ${bb.mx[2].toFixed(3)} < ${zg.toFixed(3)}）`)
+      } else if (rootType === 'air.mrbody') {
+        // 对角电机（右前 m1 / 左后 = 右后的镜像）桨毂水平间距 = 轴距；桨径；地面到机体最高点（不含旋翼）= 全高
+        const bs = getComponent('air.mrbody').sockets(fillParams(getComponent('air.mrbody'), compOf(rec, 'body').params)), zg = bs.find((q) => q.id === 'root').pos[2]
+        const h1 = apPos('rot_hub'), h3 = apPos('rot2-1_hub')
+        near(Math.hypot(h1[0] - h3[0], h1[1] - h3[1]), rec.dims.wheelbaseMm.value * 0.001, 1e-6, `${id} 轴距`)
+        const rb = A.buildComponent('air.rotor', compOf(rec, 'rot').params).bbox
+        nearRel(rb.max[0] - rb.min[0], rec.dims.propDiameterIn.value * 0.0254, 0.005, `${id} 桨径（两叶顺纵向停放）`)
+        const frame = bboxOf(allPts(meshes(r, (nm) => nm.startsWith('body_'))))
+        nearRel(zg - frame.mn[2], rec.dims.heightMm.value * 0.001, 0.01, `${id} 全高`)
+        assert.ok(bb.mx[2] <= zg + 1e-9, `${id} 全部顶点在地面以上（最低 ${bb.mx[2].toFixed(4)} ≤ ${zg.toFixed(4)}）`)
+        assert.ok(bb.mn[2] >= frame.mn[2] - 1e-9, `${id} 旋翼不高于机体最高点`)
+      } else {
+        nearRel(bb.size[0], vOf(rec.dims.lengthM), 0.005, `${id} 全机长`)
+        nearRel(bb.size[1], vOf(rec.dims.wingspanM), 0.005, `${id} 翼展`)
+        const hp = [rec.prov['vt.heightM'], rec.prov['ht.spanM']].find((x) => x && (x.fn === 'vtailHeight' || x.fn === 'vtailSpan'))
+        if (hp) {
+          const f = fillParams(getComponent('air.fuselage'), compOf(rec, 'fus').params), zg = f.heightM / 2 + hp.with.gearClearM
+          nearRel(zg - bb.mn[2], vOf(rec.dims.heightM, hp.with.pick), 0.01, `${id} 全机高`)
+          assert.ok(bb.mx[2] < zg, `${id} 全部顶点在地面以上（最低 ${bb.mx[2].toFixed(3)} < ${zg.toFixed(3)}）`)
+        } else assert.ok(!Object.hasOwn(rec.dims, 'heightM'), `${id} 有全机高出处却没有闭合它的派生`)
+      }
     } else if (rec.domain === 'ground') {
       const ped = compOf(rec, 'ped'), refl = compOf(rec, 'refl')
       if (rec.prov['ped.elAxisHM']) {
@@ -968,7 +1040,7 @@ t('禁词：模板全部字符串、四个领域组件的名称 / 标签 / 悬�
     for (const k of def.keys) { const s = def.params[k]; fields.push(s.label, s.title || '', ...(s.kind === 'enum' ? s.options.map(String) : [])) }
     for (const f of fields) { const m = stripUrls(f).match(BANNED); assert.ok(!m, `${def.type} 命中禁词「${m && m[0]}」：${f}`) }
   }
-  const files = ['components/ground.mjs', 'components/air.mjs', 'components/sea.mjs', 'components/veh.mjs', 'components/shapeKit.mjs', 'entityTemplates.mjs',
+  const files = ['components/ground.mjs', 'components/air.mjs', 'components/rotorcraft.mjs', 'components/sea.mjs', 'components/veh.mjs', 'components/shapeKit.mjs', 'entityTemplates.mjs',
     ...readdirSync(MODELS + 'entityTemplates').filter((f) => f.endsWith('.mjs')).map((f) => `entityTemplates/${f}`)]
   assert.ok(files.length >= 11, '扫描文件数')
   for (const f of files) {
@@ -982,7 +1054,11 @@ t('禁词：模板全部字符串、四个领域组件的名称 / 标签 / 悬�
 
 t('金标准不变：fixtures/models/parambus.golden.json 的 sha256', () => {
   const buf = readFileSync(new URL('./fixtures/models/parambus.golden.json', import.meta.url))
-  assert.equal(createHash('sha256').update(buf).digest('hex'), '374a9e20d5412d50f5c478c3c778db2dff65cc2ba90d7de96afc3a4254b55fa6')
+  // 2026-10-08 重录（v1.5.0 排查 #8 / #55）：立方星体装电池片逐面登记部件（parts / 节点 extras.part 变）、星体部件名「平台体」→「星体」
+  //（全部模板的 parts 摘要变）；网格 / 质量特性 / 挂点 / 关节 / 太阳翼组 / 包围盒逐字节不变
+  // 2026-10-08 再录（卫星模型真实感大修）：侧挂反射面 f/D 1.6 + 背架 + 单臂 ADTM、硬件造型库（喇叭 / 喷管 / 敏感器 / 测控）、
+  // 十字翼侧板位置、对地板喇叭让位（deckSpots）、SSL-1300 / E3000 / SB4000 模板改单一代表星 → 网格 / 质量特性 / 挂点全部变
+  assert.equal(createHash('sha256').update(buf).digest('hex'), '9e929638c9b264058abc888cb3d90f719c8fc37eb71cc969347f82fe6d67e181')
 })
 
 console.log(`  参数边界：合法 ${boundaryStats.ok} 例生成、非法 ${boundaryStats.rejected} 例拒收`)

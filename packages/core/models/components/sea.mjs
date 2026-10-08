@@ -29,6 +29,8 @@
 // ★ 对称面声明都是真的：船体左右两半逐位取反生成（截面行显式取反、干舷与水线带右舷造好后整体镜像复制），
 //   带螺旋桨时不声明对称面（右旋桨有手性）；集装箱颜色不对称，不声明。
 // ★ 材质：船壳红 / 深蓝 / 甲板绿 / 集装箱彩色 / 舷灯 / 救生艇橙走 shapeKit.matOr（计划键落地后自动升级，今天回退到现有键）。
+// ★ 安装基面 / 接口收件清单（2026-10 §3.3.1 核对结论，本轮无收紧）：船体 deck / bow / stern 通用（大件）、甲板平面全可装；
+//   上层建筑 top / 左右翼台、烟囱 top、桅杆平台 / 横桁都是专用前缀表；集装箱、船载罩只有自身安装接口、没有面。
 //
 // 导出：
 //   SEA_COMPONENTS   组件定义（sea.hull / sea.superstructure / sea.funnel / sea.mast / sea.containers / sea.vsat.radome）
@@ -376,7 +378,7 @@ const hull = {
     propDM: num(null, 'm', '桨径', { nullable: true, gt: 0, title: '留空 = 0.65 × 吃水' }),
     stations: int(48, '纵向站数', { min: 16, max: 160 }),
     ringPts: int(24, '半截面点数', { min: 8, max: 64 }),
-    massKg: num(null, 'kg', '船体质量', { nullable: true, gt: 0, title: '留空 = 0.25 × 1025 kg/m³ × 方形系数 × 0.97 × 总长 × 型宽 × 吃水（空船占满载的示意比例）；装配件给目标质量时由它吃余量' })
+    massKg: num(null, 'kg', '船体质量', { nullable: true, gt: 0, title: '留空 = 0.25 × 1025 kg/m³ × 方形系数 × 0.97 × 总长 × 型宽 × 吃水（空船占满载的示意比例）；装配件指定目标质量时由其承担质量差额' })
   },
   validate: (p) => {
     const e = [], T = auto(p.draftM, 0.5 * p.depthM)
@@ -717,7 +719,7 @@ const mast = {
   type: 'sea.mast', domain: ['ship'], title: 'Mast', titleZh: '桅杆', role: 'boom',
   params: {
     heightM: num(8, 'm', '高', { gt: 0.5, max: 40, title: '安装面到桅顶平台顶面' }),
-    dM: num(0.45, 'm', '主杆直径', { gt: 0.05, max: 3, title: '根部直径，向上收到 0.7 倍' }),
+    dM: num(0.45, 'm', '主杆直径', { gt: 0.05, max: 3, title: '根部直径，向上收缩至 0.7 倍' }),
     platform: bool(true, '桅顶平台'),
     platformWM: num(2.2, 'm', '平台直径', { gt: 0.3, max: 10 }),
     yard: bool(true, '横桁'),
@@ -864,10 +866,10 @@ const containers = {
     bayGapM: num(1.2, 'm', '贝间距', { min: 0, max: 5, title: '相邻两贝的净距（绑扎桥所在）' }),
     rowGapM: num(0.08, 'm', '列间隙', { min: 0, max: 0.5 }),
     hatchHM: num(1.8, 'm', '舱口盖高', { min: 0, max: 4, title: '安装面到舱口盖顶（含围板）' }),
-    lashing: bool(true, '绑扎桥', { title: '贝间距 ≥ 0.4 m 时画' }),
-    stepFwd: int(0, '前端减层', { min: 0, max: 10, title: '最前一贝少放几层，向后按贝线性回到 0' }),
+    lashing: bool(true, '绑扎桥', { title: '贝间距 ≥ 0.4 m 时生成' }),
+    stepFwd: int(0, '前端减层', { min: 0, max: 10, title: '最前一贝减少的层数，向后逐贝线性递减至 0' }),
     stepBays: int(3, '减层贝数', { min: 1, max: 10 }),
-    outboardDrop: int(0, '舷侧减层', { min: 0, max: 6, title: '最外一列少放几层，向内每列少减一层' }),
+    outboardDrop: int(0, '舷侧减层', { min: 0, max: 6, title: '最外一列减少的层数，向内每列递减一层' }),
     seed: int(1, '配色种子', { min: 0, max: 9999 }),
     palette: enm('mixed', ['mixed', 'mono'], '配色', { title: 'mixed = 多色混装；mono = 单色' }),
     loadKg: num(14000, 'kg', '单箱平均总重', { gt: 0, max: 40000, title: '箱体 + 货物' })
@@ -968,7 +970,7 @@ const vsatRadome = {
   params: {
     model: enm('v130nx', ['v100nx', 'v130nx', 'v240m', 'custom'], '型号', {
       source: V130NX_URL,
-      title: `v100nx = Intellian v100NX（罩高 145.8 cm、罩径 137.9 cm、反射面 105 cm、113 kg）${V100NX_URL}；v130nx = Intellian v130NX（168.1 cm、172.4 cm、125 cm、150 kg）${V130NX_URL}；v240m = Intellian v240M（431 cm、391 cm、240 cm、1133 kg）${V240M_URL}；custom = 按下面三项`
+      title: `v100nx = Intellian v100NX（罩高 145.8 cm、罩径 137.9 cm、反射面 105 cm、113 kg）${V100NX_URL}；v130nx = Intellian v130NX（168.1 cm、172.4 cm、125 cm、150 kg）${V130NX_URL}；v240m = Intellian v240M（431 cm、391 cm、240 cm、1133 kg）${V240M_URL}；custom = 按以下三项`
     }),
     heightM: num(1.681, 'm', '罩高', { gt: 0, max: 10, source: V130NX_URL, title: '型号 custom 时生效' }),
     diameterM: num(1.724, 'm', '罩径', { gt: 0, max: 10, source: V130NX_URL, title: '型号 custom 时生效' }),
@@ -985,7 +987,7 @@ const vsatRadome = {
   validate: (p) => {
     const e = p.elMinDeg <= p.elMaxDeg ? [] : ['仰角下限大于上限']
     const g = vsatGeom(p)
-    if (!(g.H >= 1.1 * g.Rs)) e.push('罩高与罩径不成截球')
+    if (!(g.H >= 1.1 * g.Rs)) e.push('罩高与罩径无法构成截球')
     else if (p.antenna && (Math.hypot(g.xRim, g.Rr) > 0.97 * g.Rs || g.ya > 0.95 * g.Rs || g.xv + 0.5 * g.Dr > 0.95 * g.Rs)) e.push('反射面口径过大')
     return e
   },

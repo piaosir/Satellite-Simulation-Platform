@@ -1,24 +1,44 @@
-// 装配页会话（P3，契约 scratchpad p3/CONTRACT.md §6.6）：ModelApp 建一份、provide('asm')。
+// 装配会话（P3，契约 scratchpad p3/CONTRACT.md §6.6）：ModelApp 建一份、provide('asm')。
+// 2026-10 起没有独立的「装配」页签：设计页激活的是装配签（wb.designAsm()）时本会话激活，激活的是模型签 / 没有签时休眠。
 //
 // 分工：
-//   · 文档与交互全在编辑器（src/viz/models/assemblyEditor.js，第一次进装配页才建）；本会话只做三件事：
-//     ① 页签进出时借还视口（wb.lendViewport / reclaimViewport）并 attach / detach 编辑器；
+//   · 文档与交互全在编辑器（src/viz/models/assemblyEditor.js，第一次进装配视图才建）；本会话只做四件事：
+//     ① 进出装配视图时借还视口（wb.lendViewport / reclaimViewport）并 attach / detach 编辑器；
 //     ② 把编辑器事件落进一份响应式 ui（树 / 属性 / 功能区 / 读数只读它）：stats / drag 节流到 ≤ 15 Hz，松手后精确一次；
-//     ③ 消费 wb.asm.req（库页「在装配页打开」、功能区「新建」、「从模板开始」、「转为装配」），并把每次提交交给 wb（草稿 + 自动入库）。
+//     ③ 编辑器跟着激活签走（2026-10-06 文档标签条）：换到另一个装配签时，编辑器里那份的状态（撤销栈 / 选择 / 相机 / 对称档 / 初值姿态）
+//        暂存回它的 DocState（wb.stashDoc），再载入新签（有暂存按暂存还原，否则按它最近一次提交、取景、对称缺省（飞机「镜像 XZ」、
+//        其余「无」）、零位）；
+//        每次提交交给 wb，按「编辑器里载着的是哪份文档」回写（草稿 + 自动入库）；那份文档的内容被整份换掉（「另存副本并还原原件」，
+//        wb.docEpoch 变了）之后编辑器里的旧版本作废：不暂存、提交不回写，换上它时按新内容重载；
+//     ④ 驱动装配件（drive.mjs）：快速设置改驱动参数 → 三方合并 → 编辑器整文档替换（一步撤销）；联动参数直写驱动参数；
+//        删除对应整星列表条目的件 = 删条目（关联支架 / 展开臂随之去掉）。
 //   · 编辑器对象 markRaw、放在响应式之外（three 对象挂满全身，Vue 深代理会把它弄坏）。编辑器模块（TransformControls / BVH 求交 …）
 //     第一次进装配页才动态 import：没用过装配页的窗口不为它付加载与解析的代价。
-//   · 快捷键（§5.5）在这里分发：页签守卫 st.tab === 'asm'；焦点在输入框 / 下拉 / 可编辑区 / 表格里、输入法组字中、事件已被处理（树的
+//   · 快捷键（§5.5）在这里分发：守卫 = 设计页的装配视图（wb.designAsm()）；焦点在输入框 / 下拉 / 可编辑区 / 表格里、输入法组字中、事件已被处理（树的
 //     Delete / 回车）时一律不管。1 / 3 / 7 / 0 视角与 F 取景仍归 ModelApp（F 在装配页转给 frameSelection）。
-//   · 工具状态（吸附 / 对称 / 坐标系 / 栏宽 …）存 localStorage model/asm/ui（便利数据，坏了回缺省）。
+//   · 工具状态（吸附 / 坐标系 / 栏宽 …）存 localStorage model/asm/ui（便利数据，坏了回缺省）。对称档与初值姿态不进本机记忆：
+//     只在签内有效（随暂存走），新签缺省对称「无」（飞机「镜像 XZ」）、「零位」。
 import { reactive, shallowRef, markRaw, watch } from 'vue'
 import { theme } from '../stores/theme.js'
-import { curLang } from '../shared/i18n/lang.js'
-import { UI_KEY, sanitizeUi, nextSpace } from './asmLogic.js'
+import { curLang, byLang } from '../shared/i18n/lang.js'
+import { UI_KEY, sanitizeUi, nextSpace, subtreeIds, compById, compLabel } from './asmLogic.js'
+import { trimHistory } from './wbLogic.js'
 import { clearBuildCache } from '@core/models/assembly.mjs'
+import { removeComps } from '@core/models/asmSnap.mjs'
+import { isDriven, rebaseDrive, writeThrough, driveRemove, resetToBase, detachDrive, resetAllOverrides, restoreSuppressed } from '@core/models/drive.mjs'
 
 const errText = (e) => (e && e.message) || String(e)
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
 const UI_HZ_MS = 66   // 拖动中 UI 读数 / 属性面板刷新间隔（≤ 15 Hz）
+const SYM_DEFAULT = Object.freeze({ op: 'none', n: 2 })   // 新签的对称档
+// 飞机装配件新签缺省「镜像 XZ」（2026-10-07）：机翼 / 平尾 / 翼吊发动机几乎总是成对，落在中线上的件（垂尾、平尾、背部罩、颔部光电球）
+// 编辑器按几何自动不带对称（onSymLocus），所以缺省开着只省事、不出错
+const SYM_AIRCRAFT = Object.freeze({ op: 'mirrorXZ', n: 2 })
+const symDefaultFor = (d) => ({ ...(d && d.domain === 'aircraft' ? SYM_AIRCRAFT : SYM_DEFAULT) })
+// 换下的装配签只留最近这么多步撤销（多签常驻的撤销栈全是整份文档 JSON；激活签自己的栈上限照编辑器的 UNDO_CAP）
+const STASH_HIST_MAX = 30
+// 方向键微调（编辑器 nudge）：键名（小写）→ 方向
+const NUDGE_KEYS = Object.freeze({ arrowleft: 'left', arrowright: 'right', arrowup: 'up', arrowdown: 'down', pageup: 'pageup', pagedown: 'pagedown' })
 
 /**
  * @param {{wb:object, getVp:()=>object|null, ov?:object}} o
@@ -29,29 +49,40 @@ export function createAsmSession({ wb, getVp }) {
 
   const ui = reactive({
     ready: false, active: false,
-    tool: prefs.tool, space: prefs.space, snap: { ...prefs.snap }, sym: { ...prefs.sym },
-    posePreview: prefs.posePreview, showCom: prefs.showCom, showSockets: prefs.showSockets, showAxes: prefs.showAxes, posFrame: prefs.posFrame,
+    tool: prefs.tool, space: prefs.space, snap: { ...prefs.snap }, sym: { ...SYM_DEFAULT },
+    posePreview: false, showCom: prefs.showCom, showSockets: prefs.showSockets, showAxes: prefs.showAxes, posFrame: prefs.posFrame,
     selIds: [], primary: null, canUndo: false, canRedo: false,
     mode: 'idle', status: { kind: '', text: '' }, dragging: false, dragKind: '',
+    dragTarget: '',   // 拖入 / 拾起中落点所在的件（主件 id；结构树对应行高亮）
     invalid: {},
     stats: { count: 0, tris: 0, massKg: 0, com: [0, 0, 0], inertiaDiag: [0, 0, 0], inertia: null, bbox: [0, 0, 0, 0, 0, 0], clashes: 0, invalid: 0, massWarn: '' },
     dockW: prefs.dockW, split: prefs.split, libQ: prefs.libQ, secOpen: { ...prefs.secOpen },
     ctx: null,        // 右键菜单 {ids, x, y}（树 / 视口共用一份）
     live: null,       // 拖动中被拖件（且是选中件）的实时量 {id, parent, attach, t, q, m, pm}（编辑器 liveOf：小对象，不深拷整份文档）
-    renaming: ''      // 结构树里正在改名的件
+    renaming: '',     // 结构树里正在改名的件
+    // 光标读数（编辑器 cursor 事件，拖动中逐帧）：指针右下的「目标件 · 接口 / 面 · 推断 · i/n · 滚转°」；只有 asm/AsmCursor.vue 读它
+    cursor: { on: false, x: 0, y: 0, text: '' },
+    step: null        // 平移网格的生效步长读数（编辑器 step 事件 {move: 设置值 'auto' | 米, m: 生效米数}）
   })
   const doc = shallowRef(null)     // 编辑器最近一次提交的冻结快照（树 / 属性面板只读它）
   let editor = null
   const offs = []
-  let started = false, attached = false, busy = null, pendingLoad = null, loadSeq = 0, loadSeen = -1
-  let docFor = ''                  // 编辑器里这份文档属于哪个装配件 id（「打开同一件」时跳过重载的判据）
+  let started = false, attached = false, loadSeq = 0, loadSeen = -1
+  // 编辑器里现在载着哪份文档（DocState 对象；按对象认、不按 id：关签后同 id 重开是另一份，另存换 id 后还是这一份）。
+  // 编辑器的 change / invalid 事件一律回写到它，不看此刻激活的是哪个签
+  let loaded = null
+  // 载入时那份文档的内容代次（wb.docEpoch）：「另存副本并还原原件」把原件内容整份换掉时代次 +1，编辑器里的旧版本作废——
+  // 不再暂存它、提交不再回写，换上它时按新内容重载
+  let loadedEpoch = -1
+  const fresh = () => !!loaded && wb.docEpoch(loaded) === loadedEpoch
+  let switchMs = 0                 // 最近一次装配签互切（暂存 + 载入）的耗时（验证台读数）
 
-  // ── 工具状态落盘（防抖）──
+  // ── 工具状态落盘（防抖；对称档与初值姿态不落盘，只在签内有效）──
   let prefT = 0
-  watch(() => [ui.tool, ui.space, ui.snap.on, ui.snap.move, ui.snap.rot, ui.sym.op, ui.sym.n, ui.dockW, ui.split, ui.libQ, ui.posePreview, ui.showCom, ui.showSockets, ui.showAxes, ui.posFrame, JSON.stringify(ui.secOpen)], () => {
+  watch(() => [ui.tool, ui.space, ui.snap.on, ui.snap.move, ui.snap.rot, ui.dockW, ui.split, ui.libQ, ui.showCom, ui.showSockets, ui.showAxes, ui.posFrame, JSON.stringify(ui.secOpen)], () => {
     clearTimeout(prefT)
     prefT = setTimeout(() => {
-      const v = { tool: ui.tool, space: ui.space, snap: plain(ui.snap), sym: plain(ui.sym), dockW: ui.dockW, split: ui.split, libQ: ui.libQ, secOpen: plain(ui.secOpen), posePreview: ui.posePreview, showCom: ui.showCom, showSockets: ui.showSockets, showAxes: ui.showAxes, posFrame: ui.posFrame }
+      const v = { tool: ui.tool, space: ui.space, snap: plain(ui.snap), dockW: ui.dockW, split: ui.split, libQ: ui.libQ, secOpen: plain(ui.secOpen), showCom: ui.showCom, showSockets: ui.showSockets, showAxes: ui.showAxes, posFrame: ui.posFrame }
       try { localStorage.setItem(UI_KEY, JSON.stringify(v)) } catch { /* 便利数据 */ }
     }, 300)
   })
@@ -108,12 +139,15 @@ export function createAsmSession({ wb, getVp }) {
     if (!d) return
     if (d.phase === 'start') {
       ui.dragging = true; ui.dragKind = d.kind || ''; liveId = d.id || null
+      ui.dragTarget = ''
       wb.asmSetDragging(true)
     } else if (d.phase === 'move') {
       liveId = d.id || liveId
+      const tg = d.kind === 'gizmo' ? '' : (d.target || '')
+      if (ui.dragTarget !== tg) ui.dragTarget = tg
       if (!liveT) liveT = setTimeout(flushLive, UI_HZ_MS)
     } else {
-      ui.dragging = false; ui.dragKind = ''
+      ui.dragging = false; ui.dragKind = ''; ui.dragTarget = ''
       clearTimeout(liveT); liveT = 0; liveId = null; ui.live = null
       wb.asmSetDragging(false)
       flushStats()
@@ -125,8 +159,8 @@ export function createAsmSession({ wb, getVp }) {
     on('change', (e) => {
       if (!e || !e.doc) return
       doc.value = e.doc
-      if (e.reason === 'load') { loadSeen = loadSeq; wb.asmAdopt(e.doc, e.json) }
-      else if (e.changed !== false) wb.asmCommit(e.doc, e.json)   // Esc 取消 / 点了手柄没拖 / 原地放下：只换快照，不算一次提交
+      if (e.reason === 'load') { loadSeen = loadSeq; if (loaded) wb.asmAdopt(e.doc, e.json, loaded) }
+      else if (e.changed !== false && fresh()) wb.asmCommit(e.doc, e.json, loaded)   // Esc 取消 / 点了手柄没拖 / 原地放下：只换快照，不算一次提交
       // 选中件被删掉了（撤销 / 删除）：选择由编辑器发 select 事件，这里只防树上还挂着改名框
       if (ui.renaming && !e.doc.comps.some((c) => c.id === ui.renaming)) ui.renaming = ''
     })
@@ -137,7 +171,40 @@ export function createAsmSession({ wb, getVp }) {
     on('history', (h) => { ui.canUndo = !!(h && h.canUndo); ui.canRedo = !!(h && h.canRedo) })
     on('mode', (m) => { if (m && m.state) ui.mode = m.state })
     on('context', (c) => { if (c) ui.ctx = { ids: Array.isArray(c.ids) ? c.ids.slice() : [], x: c.clientX, y: c.clientY } })
-    on('invalid', (e) => { const by = (e && e.byId) || {}; ui.invalid = plain(by); wb.asmSetInvalid(Object.keys(by).length) })
+    // 光标读数：编辑器每帧复用同一个对象发，这里逐字段拷（文字没变不写，免得读数组件白白重排）
+    on('cursor', (c) => {
+      const u = ui.cursor
+      if (!c || !c.on) { if (u.on) u.on = false; return }
+      if (u.x !== c.x) u.x = c.x
+      if (u.y !== c.y) u.y = c.y
+      if (u.text !== c.text) u.text = c.text
+      if (!u.on) u.on = true
+    })
+    on('step', (s) => { ui.step = s && typeof s === 'object' ? { move: s.move, m: Number(s.m) || 0 } : null })
+    on('invalid', (e) => { const by = (e && e.byId) || {}; ui.invalid = plain(by); if (fresh()) wb.asmSetInvalid(Object.keys(by).length, loaded) })
+  }
+  // 编辑器桥（wb 不直接碰编辑器）：另存副本时取原签在编辑器里的相机 / 选择 / 对称档 / 初值姿态；模板签分叉后出状态短语
+  wb.setEditorBridge({
+    stateOf(d) {
+      if (d && d === loaded && fresh() && editor) {
+        let s = null
+        try { s = editor.getState() } catch { s = null }
+        return s ? { sel: s.sel, view: s.view, sym: { ...ui.sym }, posePreview: ui.posePreview } : null
+      }
+      const k = d && d.stash
+      return k && k.state ? { sel: k.state.sel || [], view: k.state.view || null, sym: k.sym || null, posePreview: !!k.posePreview } : null
+    },
+    // 分叉发生在提交路径上：等编辑器把这次提交自己的状态（吸附结果 / 穿插告警）发完再出；状态片被占着就出在功能区状态区，不盖告警
+    forked(d) {
+      const msg = byLang('已创建副本。', 'Copy created.')
+      setTimeout(() => { if (d === loaded && ui.active && !ui.status.text) setStatus('', msg, 3000); else wb.toast(msg) }, 0)
+    }
+  })
+  /** 视口外的屏幕点落在结构树哪一行（拖入 / 拾起时指针移到树行上 = 装到那一件）；不在行上 null。 */
+  function treeRowAt(x, y) {
+    const el = document.elementFromPoint(x, y)
+    const row = el && el.closest ? el.closest('.asm-tree .asm-tr[data-id]') : null
+    return row ? row.getAttribute('data-id') : null
   }
   let edLoad = null
   async function ensureEditor() {
@@ -148,7 +215,7 @@ export function createAsmSession({ wb, getVp }) {
     let mod
     try { mod = await edLoad } catch (e) { edLoad = null; console.error('[asm] 编辑器模块：', e); setStatus('error', errText(e), 6000); return null }
     if (editor) return editor
-    editor = markRaw(mod.createAssemblyEditor(vp, { theme: theme.resolved === 'dark' ? 'dark' : 'light', lang: () => (curLang() === 'en' ? 'en' : 'zh') }))
+    editor = markRaw(mod.createAssemblyEditor(vp, { theme: theme.resolved === 'dark' ? 'dark' : 'light', lang: () => (curLang() === 'en' ? 'en' : 'zh'), targetAt: treeRowAt }))
     wire(editor)
     return editor
   }
@@ -164,7 +231,7 @@ export function createAsmSession({ wb, getVp }) {
     } catch (e) { console.warn('[asm] 工具状态：' + errText(e)) }
   }
 
-  // ── 页签进出 ──
+  // ── 页签进出 / 换签 ──
   async function activate() {
     if (ui.active) return
     const vp = getVp()
@@ -174,97 +241,90 @@ export function createAsmSession({ wb, getVp }) {
     const ed = await ensureEditor()
     if (!ed || !ui.active) return   // 等编辑器模块期间又切走了：deactivate 已还视口
     // attach 抛了也按「已借上」处理：它多半只是某个叠加件没建起来，live 根与指针钩子已经挂上；
-    // 当成没挂上的话之后的文档全压在 pendingLoad 里，整页卡在空文档（detach 照样会调，钩子撤得掉）
+    // 当成没挂上的话之后的文档一份也载不进来，整页卡在空文档（detach 照样会调，钩子撤得掉）
     try { ed.attach() } catch (e) { console.error('[asm] attach：', e) } finally { attached = true }
     pushPrefs(ed)
     ui.ready = true
-    if (pendingLoad) { const p = pendingLoad; pendingLoad = null; loadDoc(p.doc, p.o) }
-    if (wb.asm.req) await consumeReq()
-    else if (!doc.value) {
-      await run(async () => {
-        if (doc.value || pendingLoad || wb.asm.req) return   // 排队期间别的请求已经载入了文档
-        const r = await wb.resumeAssembly()
-        if (doc.value || wb.asm.req) return
-        loadDoc((r || wb.newAssembly('spacecraft')).doc, { fit: true })
-      })
-    }
+    syncDoc()
   }
+  /**
+   * 离开装配视图（切到模型签 / 关掉最后一个装配签 / 离开设计页）：detach 编辑器（文档留在里面休眠，换回同一签不重载）、还视口。
+   * 离开设计页才立即入库（库 / 导出页要看到最新的）；签之间切换只写草稿（wb.activateDoc 已写），排着的自动入库照常在后台跑。
+   */
   function deactivate() {
     if (!ui.active) return
     ui.active = false
     ui.ctx = null; ui.renaming = ''
     if (editor && attached) { try { editor.detach() } catch (e) { console.error('[asm] detach：', e) } }
     attached = false
-    wb.flushAssemblySave()
+    if (st.tab !== 'design' && wb.isDocOpen(loaded)) wb.flushDocSave(loaded)
     wb.reclaimViewport()
     // 模块级生成缓存（网格数组住在 JS 堆里）不在离开装配页之后常驻；编辑器解算计划里的轻结果照留，回来不重生成
     clearBuildCache()
   }
-  /** 串行跑一段异步（打开 / 恢复 / 换文档不交错） */
-  function run(fn) {
-    const p = (busy || Promise.resolve()).then(fn).catch((e) => { console.error('[asm]', e); setStatus('error', errText(e), 4000) })
-    busy = p
-    p.finally(() => { if (busy === p) busy = null })
-    return p
+  /**
+   * 编辑器跟上激活签：已经载着它就不动；否则先把编辑器里那份的状态暂存回它的 DocState（它还开着的话），再载入激活签。
+   * 同步做完（没有 await）：Ctrl+Tab 连按不会交错。
+   */
+  function syncDoc() {
+    const d = wb.activeAsmDoc()
+    if (!d || !editor || !ui.active || !attached || (loaded === d && fresh())) return
+    const t0 = performance.now()
+    stashLoaded()
+    const s = wb.takeStash(d)
+    let src = null
+    if (s) { try { src = JSON.parse(s.json) } catch { src = null } }
+    const base = src || wb.docOf(d)
+    ui.sym = s && s.sym ? { ...s.sym } : symDefaultFor(base)
+    ui.posePreview = !!(s && s.posePreview)
+    ui.ctx = null; ui.renaming = ''
+    loaded = d
+    loadedEpoch = wb.docEpoch(d)
+    if (src) loadDoc(src, { fit: false, state: s.state })
+    else loadDoc(base, { fit: true })
+    switchMs = performance.now() - t0
+  }
+  /** 编辑器里载着的那份 → 暂存（撤销栈截到最近 STASH_HIST_MAX 步；文档 JSON 由 wb 取它最近一次提交） */
+  function stashLoaded() {
+    const a = loaded
+    if (!a || !editor || !wb.isDocOpen(a) || !fresh()) return
+    let state = null
+    try { state = trimHistory(editor.getState(), STASH_HIST_MAX) } catch (e) { console.warn('[asm] 暂存：' + errText(e)); state = null }
+    wb.stashDoc(a, { state, sym: { ...ui.sym }, posePreview: ui.posePreview })
   }
   function loadDoc(d, o = {}) {
-    if (!d) return
-    if (!editor || !ui.active || !attached) { pendingLoad = { doc: d, o }; return }
+    if (!d || !editor || !ui.active || !attached) return
     const seq = ++loadSeq
-    docFor = wb.asm.id
-    try { editor.load(d, { fit: o.fit !== false }) } catch (e) {
+    const target = loaded
+    try { editor.load(d, { fit: o.fit !== false, state: o.state || null }) } catch (e) {
       console.error('[asm] load：', e); setStatus('error', errText(e), 4000)
       // 抛在工作文档换上之后（叠加层 / 取景出错）：树与属性跟着编辑器实际持有的那份走，不挂着上一份
       let g = null
       try { g = editor.getDoc() } catch { g = null }
-      if (g && g.domain === d.domain && g.comps.length === d.comps.length && loadSeen !== seq) { doc.value = Object.freeze(g); wb.asmAdopt(doc.value, JSON.stringify(g)) }
+      if (g && g.domain === d.domain && g.comps.length === d.comps.length && loadSeen !== seq) { doc.value = Object.freeze(g); wb.asmAdopt(doc.value, JSON.stringify(g), target) }
       return
     }
     // 编辑器 load 会同步发 change(load)；万一没发，这里兜一份快照（不然树 / 属性还挂着上一份文档）
     if (loadSeen !== seq) {
       const g = editor.getDoc()
-      if (g) { doc.value = Object.freeze(g); wb.asmAdopt(doc.value, JSON.stringify(g)) }
+      if (g) { doc.value = Object.freeze(g); wb.asmAdopt(doc.value, JSON.stringify(g), target) }
     }
     ui.live = null
     pushPrefs(editor)
   }
-  /**
-   * 当前文档有改动而且存不进去（非法件 / 上次入库失败）：换文档前问一句。
-   * 返回 'ok'（不用问）/ 'discard'（问过、确认放弃：调用方先 wb.discardAssembly，随后换文档时的 flush 不会把它存进库）/ false（取消）
-   */
-  async function confirmDiscard() {
-    if (!(wb.asm.dirty && (wb.asm.invalid > 0 || !!wb.asm.saveErr))) return 'ok'
-    return (await wb.askConfirm('放弃未保存的改动？')) ? 'discard' : false
-  }
-  function consumeReq() {
-    return run(async () => {
-      const req = wb.asm.req
-      wb.asm.req = null
-      if (!req || !ui.active) return
-      if (req.kind === 'open' && req.id === wb.asm.id && doc.value && docFor === req.id) return
-      const c = await confirmDiscard()
-      if (!c) return
-      if (c === 'discard' && typeof wb.discardAssembly === 'function') wb.discardAssembly()
-      let r = null
-      if (req.kind === 'open') r = await wb.openAssembly(req.id)
-      else if (req.kind === 'new') r = wb.newAssembly(req.domain)
-      else if (req.kind === 'template') r = wb.fromTemplate(req.entId)
-      else if (req.kind === 'spec') r = req.from ? await wb.assemblyFromEntry(req.from) : wb.assemblyFromSpec(req.spec, req.base || {})
-      if (r && r.doc) loadDoc(r.doc, { fit: true })
-    })
-  }
-  watch(() => wb.asm.req, (r) => { if (r && ui.active) consumeReq() })
-  // 页签驱动：先于卫星页等的视口联动注册（ModelApp 在 setup 里先建本会话），切走时先还视口、它们再喂
-  watch(() => st.tab, (t, o) => {
+  // 视图驱动：先于卫星页等的视口联动注册（ModelApp 在 setup 里先建本会话），切走时先还视口、它们再喂。
+  // 激活签换成另一个装配签（设计页上停着不动）：只换编辑器里的文档
+  watch(() => [wb.designAsm(), wb.activeAsmDoc()], ([on]) => {
     if (!started) return
-    if (t === 'asm') activate()
-    else if (o === 'asm') deactivate()
+    if (!on) deactivate()
+    else if (!ui.active) activate()
+    else syncDoc()
   })
   watch(() => theme.resolved, (t) => { if (editor && typeof editor.setTheme === 'function') editor.setTheme(t === 'dark' ? 'dark' : 'light') })
   /** ModelApp 在视口建好、清单读过之后调一次 */
   function start() {
     started = true
-    if (st.tab === 'asm') activate()
+    if (wb.designAsm()) activate()
   }
 
   // ── 薄包装（统一 catch；失败只写状态短语）──
@@ -291,31 +351,109 @@ export function createAsmSession({ wb, getVp }) {
   const undo = () => call('undo')
   const redo = () => call('redo')
   const duplicate = () => call('duplicate')
-  const remove = () => call('remove')
   const pickup = () => call('pickup')
   const mirror = () => call('mirror')
-  const quickAdd = (type) => call('quickAdd', type)
+  /** 双击库卡片：params = 常用型号的型号参数（组件本身传 null） */
+  const quickAdd = (type, params) => call('quickAdd', type, params ? { params } : {})
   const beginDragFromLib = (type, x, y, o) => !!call('beginDragFromLib', type, x, y, o || {})
   /** 库卡片按下（还没过拖动门槛）：编辑器先把这件建进缓存、边线 / BVH 插队、ghost 材质异步编译 */
   const prewarm = (type, o) => { if (editor && ui.active && typeof editor.prewarmGhost === 'function') call('prewarmGhost', type, o || {}) }
-  /** 保存：立即入库（有未存改动时） */
-  function save() { return wb.flushAssemblySave() }
-  /** 另存：当前文档存成新 id（原件在库里不动） */
-  async function saveAs() {
-    const d = editor ? editor.getDoc() : null
+  // ── 驱动装配件（快速设置层，drive.mjs）──
+  const curDoc = () => { if (!editor) return null; try { return editor.getDoc() } catch { return null } }
+  const nameOfId = (d, id) => { const c = compById(d, id); return c ? compLabel(c) : id }
+  /** 整文档替换（编辑器 replaceDoc：入撤销栈；同 mergeKey 500 ms 内合并成一步）；失败写状态短语 */
+  function replaceDoc(next, o = {}) {
+    if (!editor || typeof editor.replaceDoc !== 'function') return { ok: false }
+    let r
+    try { r = editor.replaceDoc(next, { label: o.label || 'replace', mergeKey: o.mergeKey }) } catch (e) { r = { ok: false, error: errText(e) } }
+    if (r && r.ok === false && r.error) setStatus('error', r.error, 4000)
+    return r || { ok: false }
+  }
+  /**
+   * 改驱动参数（快速设置面板 / 联动参数直写）：新整星 spec → 三方合并（改写保留、关联件重排）→ 整文档替换。
+   * 驱动参数不合法时文档不动、状态行报原因。o.mergeKey：数字框连续输入合成一步撤销。
+   */
+  function driveSet(nextSpec, o = {}) {
+    const d = curDoc()
+    if (!d || !isDriven(d)) return { ok: false }
+    const r = rebaseDrive(d, nextSpec)
+    if (!r.ok) { setStatus('error', r.error, 4000); return r }
+    const out = replaceDoc(r.doc, { label: 'drive', mergeKey: o.mergeKey })
+    if (out.ok && r.rehomed.length) setStatus('warn', `${r.rehomed.map((id) => nameOfId(r.doc, id)).join('、')} 改为自由安装。`, 4000)
+    return out
+  }
+  /** 设参数：驱动装配件里与整星参数一一对应的参数直写驱动参数（关联件随之重排）；其余照常改本件 */
+  function setParams(id, params, o = {}) {
+    const d = curDoc()
+    if (d && isDriven(d)) {
+      const spec = writeThrough(d, id, params)
+      if (spec) return driveSet(spec, { mergeKey: o.mergeKey || `p|${id}|${Object.keys(params).sort().join(',')}` })
+    }
+    return cmd({ type: 'setParams', id, params })
+  }
+  /**
+   * 删除选中件（整棵子树，同编辑器口径）。驱动装配件：子树里对应整星列表条目的件（反射面 / 太阳翼 / 附加件）从驱动参数删条目，
+   * 关联支架 / 展开臂随新基线去掉；其余件照常删（删掉的生成件以后改驱动参数也不会回来）。一步撤销。
+   */
+  function remove() {
+    const d = curDoc()
+    const sel = ui.selIds.map((id) => String(id).split('~')[0])
+    if (d && isDriven(d) && sel.length) {
+      const all = new Set()
+      for (const id of sel) for (const x of subtreeIds(d, id)) all.add(x)
+      // 锁定件不删（同编辑器的删除命令 removeComps）：驱动这一支先改 spec 再合并，不经 removeComps，锁定要在这里先查
+      if ([...all].some((id) => { const c = compById(d, id); return !!(c && c.locked) })) { setStatus('warn', '件已锁定。', 4000); return false }
+      const r = driveRemove(d, [...all])
+      if (r) {
+        const rb = rebaseDrive(d, r.spec)
+        if (!rb.ok) { setStatus('error', rb.error, 4000); return false }
+        let next = rb.doc
+        const left = [...all].filter((id) => compById(next, id))
+        if (left.length) {
+          const rr = removeComps(next, left)
+          if (!rr.ok) { setStatus('warn', rr.error, 4000); return false }
+          next = rr.doc
+        }
+        return replaceDoc(next, { label: 'remove' }).ok
+      }
+    }
+    return !!call('remove')
+  }
+  /** 恢复驱动值：what = 参数键 / 'pose' / 'mass' / 'material' / 'name' / 'all' */
+  function resetBase(id, what = 'all') {
+    const d = curDoc()
+    if (!d || !isDriven(d)) return false
+    const next = resetToBase(d, id, what)
+    return next ? replaceDoc(next, { label: 'reset' }).ok : false
+  }
+  /** 全部改写一次恢复 / 找回删掉的驱动件（各一步撤销） */
+  function resetAll() { const d = curDoc(); const next = d && isDriven(d) ? resetAllOverrides(d) : null; return next ? replaceDoc(next, { label: 'reset' }).ok : false }
+  function restoreDeleted() { const d = curDoc(); const next = d && isDriven(d) ? restoreSuppressed(d) : null; return next ? replaceDoc(next, { label: 'restore' }).ok : false }
+  /** 解除驱动：组件原样保留，转成普通装配件（快速设置不再联动） */
+  function detach() {
+    const d = curDoc()
+    if (!d || !isDriven(d)) return false
+    return replaceDoc(detachDrive(d), { label: 'detach' }).ok
+  }
+
+  /** 保存：立即入库（有未存改动时；从未入库的新文档原样也能存） */
+  function save() { return wb.flushDocSave(loaded || wb.activeAsmDoc(), { force: true }) }
+  /**
+   * 另存副本（§3.2）：当前内容存成新 id 的副本、作为新签打开并激活，原签保留。o.restore = 「另存副本并还原原件」：原件写回打开时的快照。
+   * 新签的相机 / 选择 / 对称档沿用（编辑器桥），撤销栈从新签开始。
+   */
+  async function saveAs(o = {}) {
+    const d = loaded && wb.isDocOpen(loaded) ? loaded : wb.activeAsmDoc()
     if (!d) return null
-    const r = await wb.saveAssembly(d, { asNew: true })
-    // 另存成功：编辑器里这份文档换成了新 id（wb.asm.id）——之后在库页双击这件新的另存件，判「打开同一件」时对得上，不重读、不清撤销栈
-    if (r && r.ok && wb.asm.id === r.id) docFor = wb.asm.id
-    if (r && r.ok) wb.toast('已另存。')
-    else if (r && (r.error || r.code === 'invalid' || r.code === 'empty')) setStatus('error', r.error || (r.code === 'empty' ? '还没有组件。' : '参数非法。'), 4000)
+    const r = await wb.saveDocCopy(d.id, { restore: !!o.restore })
+    if (r && r.ok === false && r.code !== 'unavailable') setStatus('error', r.error || (r.code === 'empty' ? '暂无组件。' : r.code === 'invalid' ? '参数无效。' : '保存失败'), 4000)
     return r
   }
 
   // ── 快捷键 ──
   const editing = (t) => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable || !!(t.closest && t.closest('.eg-scroll')))
   function onKey(e) {
-    if (st.tab !== 'asm' || !editor || !ui.active) return
+    if (!wb.designAsm() || !editor || !ui.active) return
     if (e.defaultPrevented || e.isComposing || editing(e.target)) return
     if (document.querySelector('.lb-mask')) return   // 应用内确认框开着
     const k = String(e.key || '').toLowerCase()
@@ -324,6 +462,13 @@ export function createAsmSession({ wb, getVp }) {
       if (k === 'z' && !e.shiftKey) { undo(); e.preventDefault() }
       else if (k === 'y' || (k === 'z' && e.shiftKey)) { redo(); e.preventDefault() }
       else if (k === 'd') { duplicate(); e.preventDefault() }
+      return
+    }
+    // 方向键 / PageUp / PageDown：微调选中件（按住连续走、Shift 细调；结构树有焦点时方向键归树导航）
+    const nd = NUDGE_KEYS[k]
+    if (nd && !e.altKey) {
+      if (e.target && e.target.closest && e.target.closest('.asm-tree')) return
+      if (call('nudge', nd, e.shiftKey)) e.preventDefault()
       return
     }
     if (e.altKey || e.repeat) return
@@ -356,8 +501,11 @@ export function createAsmSession({ wb, getVp }) {
 
   return {
     ui, doc, editor: () => editor,
+    // 编辑器里载着的文档（DocState）/ 最近一次装配签互切耗时（ms，验证台读数）
+    loadedDoc: () => loaded, switchMs: () => switchMs,
     start, activate, deactivate, onKey, dispose,
     cmd, select, frameSelection, setTool, setSpace, setSnap, setSym, setPosePreview, setShowCom, setShowSockets, setShowAxes, poseOf,
-    undo, redo, duplicate, remove, pickup, mirror, quickAdd, beginDragFromLib, prewarm, save, saveAs, setStatus
+    undo, redo, duplicate, remove, pickup, mirror, quickAdd, beginDragFromLib, prewarm, save, saveAs, setStatus,
+    replaceDoc, driveSet, setParams, resetBase, resetAll, restoreDeleted, detach
   }
 }

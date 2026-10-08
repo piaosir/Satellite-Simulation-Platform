@@ -361,8 +361,9 @@ for (const { k, zh } of PROJECTIONS) {
   const seg = (src, from, to) => src.slice(src.indexOf(from), src.indexOf(to))
 
   ok('⑪ flatCoverage 用的是投影模块，不是自己再算一份', /from '\.\.\/geo\/projection\.js'/.test(FLAT) && /makeProjection\(/.test(FLAT))
+  // fit 的可用区：关着经纬图框时就是整块画布（iw = cw、ih = ch），开着时扣掉图框留白（见 fitVals）
   ok('⑪ fit / worldRect 按投影的平面尺寸算（不再写死 360×180）',
-    /base = Math\.min\(cw \/ W, ch \/ H\)/.test(FLAT) && /w: PJ\.W \* kk, h: PJ\.H \* kk/.test(FLAT))
+    /const W = PJ\.W, H = PJ\.H/.test(FLAT) && /Math\.min\(iw \/ W, ih \/ H\)/.test(FLAT) && /w: PJ\.W \* kk, h: PJ\.H \* kk/.test(FLAT))
   ok('⑪ 环绕副本改走 wraps()（非周期平面只画一份）',
     /const wraps = \(\) => \(PJ\.periodX \? WRAP3 : WRAP1\)/.test(FLAT) &&
     (FLAT.match(/of wraps\(\)/g) || []).length >= 9 &&

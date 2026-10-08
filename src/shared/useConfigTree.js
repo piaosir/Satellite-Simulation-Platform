@@ -52,7 +52,16 @@ export function useConfigTree(opts) {
     setBaseline = () => {}, // () => void：重置脏态基线
     guardedLeave = async () => true,   // 离开已改动配置前的三选一，返回是否放行
     askConfirm = async () => true,     // (msg) => Promise<boolean>
-    defaultCfgName = () => newCfgName()  // 「保存为新配置」的预填名
+    defaultCfgName = () => newCfgName(),  // 「保存为新配置」的预填名
+    // 自动保存模式（链路预算四窗，2026-10-06；见 shared/useConfigAutosave.js）：工作区恒对应一份配置——
+    //   · 新建的配置名字随内容（nameAuto：名字由自动保存按窗口的 defaultCfgName 写回）；改过名即钉死，清空名字交还自动命名；
+    //   · 删配置先经 askConfirm（连同历史版本一起删，删了找不回）；
+    //   · 删掉当前配置（或连它一起删的文件夹）就打开树序上相邻的一份，一份不剩则新建一份空白配置；
+    //   · 复制当前配置取工作区现值（列表里那份可能还差最后不到 1 s 的改动）；「创建副本」一步建好并打开。
+    // guardedLeave / setBaseline 照旧由窗口注入：自动保存窗口里它们分别是「先把改动写盘」与「以当前内容为已落盘基线」。
+    // 雨衰 / 空间态势 / 日凌三窗不开，行为与此前逐字相同。
+    autosave = false,
+    onNameAuto = () => {}              // (id) => void：某配置交还了自动命名（窗口据此当场重写当前配置的名字）
   } = opts
 
   const configs = ref([])
@@ -92,8 +101,9 @@ export function useConfigTree(opts) {
     catch (e) { configs.value = [] }
     pruneExpanded()
   }
-  function uniqueCfgName(base) {
-    const names = new Set(configs.value.map((c) => c.name))
+  // selfId：给某一项起名时不跟它自己比（自动命名每次写盘都会重算，不排除自己就会给自己加上「 2」）
+  function uniqueCfgName(base, selfId = null) {
+    const names = new Set(configs.value.filter((c) => selfId == null || c.id !== selfId).map((c) => c.name))
     if (!names.has(base)) return base
     let i = 2; while (names.has(base + ' ' + i)) i++
     return base + ' ' + i
@@ -120,6 +130,18 @@ export function useConfigTree(opts) {
     if (item && item.id) { activeId.value = item.id; focusId.value = item.id; setBaseline() }
     toast('已保存配置：' + name)
   }
+  // 当前工作区直接存成一份新配置并接上（不弹对话框；名字缺省走窗口的 defaultCfgName）。带上下文打开窗口时用：
+  // 没有归属配置、又不是出厂空白的工作区先这样存一份留底，带来的内容再存成另一份——两份都不丢。返回新项，失败返回 null
+  async function saveWorkspaceAs(name) {
+    if (!needApi()) return null
+    let item = null
+    try { item = await api.store.saveConfig(ns, { name: uniqueCfgName(String(name || '').trim() || defaultCfgName()), state: serializeState() }) }
+    catch (e) { toast('保存失败：' + errText(e)); return null }
+    if (!item || !item.id) return null
+    await loadConfigs()
+    activeId.value = item.id; focusId.value = item.id; setBaseline(); revealItem(item.id)
+    return itemById(item.id)
+  }
   // 返回是否真的存进去了——关窗守卫要按它决定放不放行
   async function updateConfig() {
     if (!api || !activeId.value) return false
@@ -144,11 +166,67 @@ export function useConfigTree(opts) {
     if (!needApi()) return
     if (!(await guardedLeave())) return
     const state = blankState()
-    const item = await api.store.saveConfig(ns, { name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
+    const item = await api.store.saveConfig(ns, { name: uniqueCfgName(newCfgName()), ...(autosave ? { nameAuto: true } : {}), state, parentId: parentId || null })
     expandFolder(parentId)          // 建在折叠文件夹里时不展开＝新配置当场「消失」
     await loadConfigs()
     if (item && item.id) { activeId.value = item.id; focusId.value = item.id; applyState(state); setBaseline() }
     toast('已添加空白配置')
+  }
+
+  // —— 自动保存模式：工作区恒对应一份配置 ——
+  const allFolderIds = () => new Set(configs.value.filter((c) => c.type === 'folder').map((c) => c.id))
+  // 展开某项的全部祖先：打开 / 新建在折叠文件夹里的配置时，树上看得见它
+  function revealItem(id) {
+    const byId = new Map(configs.value.map((c) => [c.id, c]))
+    const s = new Set(expandedFolders.value)
+    let changed = false
+    let p = byId.get(id) && byId.get(id).parentId
+    while (p != null && byId.has(p)) { if (!s.has(p)) { s.add(p); changed = true } p = byId.get(p).parentId }
+    if (changed) { expandedFolders.value = s; persistExpanded() }
+  }
+  // 工作区挂上一份配置：preferId 还在就开它，否则按树序（全展开）开第一份配置；一份都没有就新建一份空白配置
+  async function ensureActive(preferId = null) {
+    const cur = itemById(activeId.value)
+    if (cur && cur.type !== 'folder') return cur
+    const order = flattenTree(configs.value, allFolderIds()).map((r) => r.item).filter((x) => x.type !== 'folder')
+    const c = (preferId != null && order.find((x) => x.id === preferId)) || order[0] || null
+    if (c) { applyConfig(c); revealItem(c.id); return c }
+    if (!api) return null
+    const state = blankState()
+    const item = await api.store.saveConfig(ns, { name: uniqueCfgName(newCfgName()), ...(autosave ? { nameAuto: true } : {}), state, parentId: null })
+    await loadConfigs()
+    if (item && item.id) { activeId.value = item.id; focusId.value = item.id; applyState(state); setBaseline() }
+    return itemById(item && item.id)
+  }
+  // 删掉当前配置后接替它的那一份：树序（全展开）里它之后第一份不在被删集合里的配置，没有就往前找
+  function successorOf(removed) {
+    const order = flattenTree(configs.value, allFolderIds()).map((r) => r.item)
+    const i = order.findIndex((x) => x.id === activeId.value)
+    const ok = (x) => x && x.type !== 'folder' && !removed.has(x.id)
+    for (let k = i + 1; k < order.length; k++) if (ok(order[k])) return order[k].id
+    for (let k = i - 1; k >= 0; k--) if (ok(order[k])) return order[k].id
+    return null
+  }
+  // 新建一份配置并打开（副本 / 历史版本另建副本共用）：先把当前配置的改动写盘，落在 anchorId 之后
+  async function createAndOpen({ state, name, nameAuto = false, parentId = null, anchorId = null }) {
+    if (!needApi() || !state) return null
+    if (!(await guardedLeave())) return null
+    const item = await api.store.saveConfig(ns, { name: uniqueCfgName(name || newCfgName()), ...(nameAuto ? { nameAuto: true } : {}), state, parentId: parentId != null ? parentId : null })
+    if (!item || !item.id) return null
+    if (anchorId) await api.store.moveItem(ns, { id: item.id, parentId: parentId != null ? parentId : null, anchorId, position: 'after' })
+    await loadConfigs()
+    const n = itemById(item.id)
+    if (n) { applyConfig(n); revealItem(n.id) }
+    return n
+  }
+  // 「创建副本」：紧跟原项之后、打开副本（同 macOS「复制」取代「另存为」）；不动剪贴板。
+  // 名字随内容的原项，副本也随内容；钉死名字的原项，副本叫「原名 副本」
+  async function duplicateItem(c) {
+    if (!c || c.type === 'folder') return
+    const state = JSON.parse(JSON.stringify(c.id === activeId.value ? serializeState() : c.state))
+    const auto = !!c.nameAuto
+    const n = await createAndOpen({ state, name: auto ? c.name : copyNameOf(c.name), nameAuto: auto, parentId: c.parentId != null ? c.parentId : null, anchorId: c.id })
+    if (n) toast('已创建副本：' + n.name)
   }
 
   // —— 改名 ——
@@ -163,8 +241,14 @@ export function useConfigTree(opts) {
     const c = itemById(id)
     const nm = (editing.name || '').trim()
     editing.id = null
-    // 只传 { id, name }：saveConfig 做 merge，既不动 state/parentId，又对文件夹（无 state）通用，且规避 Proxy 克隆报错
-    if (c && nm && nm !== c.name) { await api.store.saveConfig(ns, { id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
+    // 自动保存模式：名字清空 = 交还自动命名（同资源库条目的口径）
+    if (autosave && c && !nm && c.type !== 'folder') {
+      if (!c.nameAuto) { await api.store.saveConfig(ns, { id: c.id, nameAuto: true }); await loadConfigs(); onNameAuto(c.id); toast('已恢复自动命名') }
+      return
+    }
+    // 只传 { id, name }：saveConfig 做 merge，既不动 state/parentId，又对文件夹（无 state）通用，且规避 Proxy 克隆报错。
+    // 名字随内容的配置一经改名即钉死（nameAuto 置 false）
+    if (c && nm && nm !== c.name) { await api.store.saveConfig(ns, { id: c.id, name: nm, ...(c.nameAuto ? { nameAuto: false } : {}) }); await loadConfigs(); toast('已改名：' + nm) }
   }
 
   // —— 删除 ——
@@ -177,19 +261,31 @@ export function useConfigTree(opts) {
   }
   async function removeConfig(id) {
     if (!api || id == null) return
+    // 自动保存模式先确认（行尾 ×、右键「删除」、Delete 键三条路都经这里）：删配置连它的历史版本一起删
+    // （storage.deleteConfig → dropVersions），删的若是当前配置工作区还会当场换成相邻那一份——误点一下就整份找不回。
+    // 确认框与删文件夹同一个（窗口注入的 askConfirm）。不开自动保存的窗口删了工作区内容还在、可重新保存，照旧直接删。
+    if (autosave) {
+      const c = itemById(id)
+      if (!(await askConfirm(`删除配置「${c ? c.name : ''}」？其历史版本一并删除。`))) return
+    }
+    const next = (autosave && id === activeId.value) ? successorOf(new Set([id])) : null
     await api.store.deleteConfig(ns, id)
     forgetIds([id])
     await loadConfigs()
+    if (autosave && activeId.value == null) await ensureActive(next)
   }
   // 级联删子项：非空先确认，并清掉受影响的 activeId / focus / 剪贴板 / 展开态
   async function removeFolder(folder) {
     if (!api || !folder) return
     const hasChildren = configs.value.some((c) => c.parentId === folder.id)
     if (hasChildren && !(await askConfirm(`删除文件夹「${folder.name}」及其中全部子项？此操作不可撤销。`))) return
+    const sub = descendantsOf(folder.id)
+    const next = (autosave && activeId.value != null && sub.has(activeId.value)) ? successorOf(sub) : null
     const removed = (await api.store.deleteFolder(ns, folder.id)) || [folder.id]
     forgetIds(removed)
     await loadConfigs()
     toast('已删除文件夹：' + folder.name)
+    if (autosave && activeId.value == null) await ensureActive(next)
   }
   function onDeleteItem(item) { if (!item) return; if (item.type === 'folder') removeFolder(item); else removeConfig(item.id) }
 
@@ -219,7 +315,9 @@ export function useConfigTree(opts) {
   function copyItem(c) {
     if (!c) return
     if (c.type === 'folder') { toast('文件夹只能剪切，不能复制'); return }
-    cfgClip.value = { mode: 'copy', id: c.id, name: c.name, isFolder: false, state: JSON.parse(JSON.stringify(c.state)) }
+    // 自动保存模式下复制当前配置取工作区现值：列表里那份可能还差最后不到 1 s 的改动
+    const st = (autosave && c.id === activeId.value) ? serializeState() : c.state
+    cfgClip.value = { mode: 'copy', id: c.id, name: c.name, isFolder: false, nameAuto: !!(autosave && c.nameAuto), state: JSON.parse(JSON.stringify(st)) }
     toast('已复制：' + c.name)
   }
   function cutItem(c) {
@@ -233,7 +331,10 @@ export function useConfigTree(opts) {
     if (!clip || !needApi()) return
     let movingId = clip.id
     if (clip.mode === 'copy') {
-      const item = await api.store.saveConfig(ns, { name: uniqueCfgName(copyNameOf(clip.name)), state: JSON.parse(JSON.stringify(clip.state)) })
+      // 名字随内容的原项，粘出来的也随内容（名字先占原名去重，打开时按内容重算）；钉死名字的叫「原名 副本」
+      const item = await api.store.saveConfig(ns, clip.nameAuto
+        ? { name: uniqueCfgName(clip.name), nameAuto: true, state: JSON.parse(JSON.stringify(clip.state)) }
+        : { name: uniqueCfgName(copyNameOf(clip.name)), state: JSON.parse(JSON.stringify(clip.state)) })
       movingId = item && item.id
     }
     if (!movingId) return
@@ -320,7 +421,9 @@ export function useConfigTree(opts) {
     configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu, rows,
     // 载入 / 保存
     loadConfigs, uniqueCfgName, activeName, itemById,
-    applyConfig, selectConfig, openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+    applyConfig, selectConfig, openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent, saveWorkspaceAs,
+    // 自动保存模式
+    ensureActive, revealItem, createAndOpen, duplicateItem,
     // 树结构
     toggleFolder, expandFolder, expandAll, collapseAll, persistExpanded, pruneExpanded,
     addFolder, addBlankConfig, removeConfig, removeFolder, onDeleteItem, onMove, moveToRoot,

@@ -9,12 +9,13 @@
 //   · 天线引用 antennaRef：{kind:'grd', id:'folder|name'}（GRD 树天线）| {kind:'lbAntenna', id:'<ns>:<条目 id>'}（链路预算卫星库）|
 //     {kind:'param', spec:{diameterM, freqGHz, efficiency, gainDbi, hpbwDeg, pattern}}（参数化口径）| null。
 //   · 视场锥半角（预览）与 −3 dB 全宽（星侧太阳侵入）：fovDeg 优先；否则按参数化口径 hpbwDeg → 70λ/D（20.98547 / (f·D)，与日凌核同式）
-//     → 增益 G 反推 θ ≈ √(41253 / G)（高斯主瓣 Ω ≈ θ²，全向 0 dBi 这类给不出锥）。
+//     → 增益 G 反推 θ ≈ √(41253 / G)（高斯主瓣 Ω ≈ θ²，全向 0 dBi 这类给不出锥）；GRD 树天线按峰值增益的等效高斯束、链路预算卫星库条目
+//     按 G/T 反推（这两种要调用方给 ext：峰值与库条目在 localStorage / 主进程里，见 satSources.antennaExt）。
 // ★ 引 packages/core 一律走相对路径（单测是裸 node，认不得 vite 的 @core 别名）。
 import { normalizeMount, normalizeAttitude, defaultMount, isValidModelId, ATTITUDE_LAWS } from '../../packages/core/models/schema.mjs'
 import { defaultUpBody, isUpDegenerate } from '../../packages/core/models/bodyFrame.mjs'
 import { applyMountTemplate, listMountTemplates } from '../../packages/core/models/mountTemplates.mjs'
-import { maskSignature } from '../../packages/core/models/mask.mjs'
+import { maskSignature, triExcludeName } from '../../packages/core/models/mask.mjs'
 import { BAND_FREQ } from '../linkbudget/satPresets.js'
 
 const D2R = Math.PI / 180, R2D = 180 / Math.PI
@@ -47,7 +48,7 @@ export function normalizeBinding(b) {
   const m = isObj(src.model) ? src.model : {}
   const id = m.id === undefined ? 'auto' : m.id
   out.model = { ...m, id: id === 'auto' || id === null || isValidModelId(id) ? id : 'auto' }
-  if (out.model.id !== id) errors.push('model.id：非法，按自动')
+  if (out.model.id !== id) errors.push('model.id 无效，按自动处理')
   if (src.massProps !== undefined) out.massProps = src.massProps
   const ids = new Set()
   for (const [i, mm] of (Array.isArray(src.mounts) ? src.mounts : []).entries()) {
@@ -60,12 +61,13 @@ export function normalizeBinding(b) {
   out.attitude = normalizeAttitude(src.attitude, { path: 'attitude', errors }).attitude
   return { binding: out, errors }
 }
-/** 姿态律还是缺省（nadir、除 0 偏航外没有参数）：模板 / JSON 导入带来的姿态律只在这种时候采用，用户改过的不覆盖 */
+/** 姿态律还是缺省（nadir、除 0 偏置外没有参数）：模板 / JSON 导入带来的姿态律只在这种时候采用，用户改过的不覆盖 */
+const ZERO_OK = new Set(['rollBiasDeg', 'pitchBiasDeg', 'yawBiasDeg'])
 export function isDefaultAttitude(att) {
   if (!isObj(att)) return true
   if (att.law && att.law !== 'nadir') return false
   const p = isObj(att.params) ? att.params : {}
-  return !Object.keys(p).some((k) => p[k] != null && !(k === 'yawBiasDeg' && p[k] === 0))
+  return !Object.keys(p).some((k) => p[k] != null && !(ZERO_OK.has(k) && p[k] === 0))
 }
 /** 绑定是不是「什么都没写」（模型自动、无挂点、nadir 无参数、没有质量覆盖）：落盘时写 null 删掉这条，绑定表不留空壳 */
 export function isEmptyBinding(b) {
@@ -250,24 +252,46 @@ export function antennaLabel(ref, options) {
   return o ? o.label : v.replace(/^(grd|lb):/, '')
 }
 
+/** 与峰值增益 G₀（dBi）等效的理想高斯束 −3 dB 全宽（°）：∫G dΩ = 4π ⇒ θB = √(16·ln2 / G₀)（主进程星侧太阳侵入网格外回退同式）；G₀ ≤ 0 dBi 给 null */
+export function hpbwFromPeakDbi(peakDbi) {
+  return isNum(peakDbi) && peakDbi > 0 ? Math.sqrt(16 * Math.LN2 / Math.pow(10, peakDbi / 10)) * R2D : null
+}
 /**
- * 方向图 −3 dB 全宽（°）：参数化口径 hpbwDeg → 70λ/D → 增益反推；给不出返回 null。
- * freqGHz 可外给（分析页用户填的频率优先于口径里的）。
+ * 方向图 −3 dB 全宽（°）：
+ *   参数化口径：hpbwDeg → 70λ/D → 增益反推；
+ *   GRD 树天线：峰值增益的等效高斯束（hpbwFromPeakDbi；峰值由 ext.grdPeakDbi(folder|name) 给——3D 页卫星树存着每副导入天线的峰值）；
+ *   链路预算卫星库条目：挂了 G/T 方向图的按那副 GRD 天线同上，否则按 G/T 反推（hpbwFromGt，T_sys = ext.sysTempK）；条目由 ext.lbInfo(ns:id) 给。
+ * 给不出返回 null。freqGHz 可外给（分析页用户填的频率优先于口径里的）。ext 不给时 GRD / 链路预算引用一律 null（同改前）。
+ * @param {{grdPeakDbi?:(key:string)=>number|null, lbInfo?:(id:string)=>{gtDbK, grdKey}|null, sysTempK?:number}} [ext]
  */
-export function hpbwOf(ref, freqGHz) {
-  if (!isObj(ref) || ref.kind !== 'param' || !isObj(ref.spec)) return null
-  const sp = ref.spec
-  if (isNum(sp.hpbwDeg) && sp.hpbwDeg > 0) return sp.hpbwDeg
-  const f = isNum(freqGHz) && freqGHz > 0 ? freqGHz : sp.freqGHz
-  if (isNum(sp.diameterM) && sp.diameterM > 0 && isNum(f) && f > 0) return 20.98547 / (f * sp.diameterM)
-  if (isNum(sp.gainDbi) && sp.gainDbi > 3) return Math.sqrt(41253 / Math.pow(10, sp.gainDbi / 10))
+export function hpbwOf(ref, freqGHz, ext) {
+  if (!isObj(ref)) return null
+  if (ref.kind === 'param') {
+    if (!isObj(ref.spec)) return null
+    const sp = ref.spec
+    if (isNum(sp.hpbwDeg) && sp.hpbwDeg > 0) return sp.hpbwDeg
+    const f = isNum(freqGHz) && freqGHz > 0 ? freqGHz : sp.freqGHz
+    if (isNum(sp.diameterM) && sp.diameterM > 0 && isNum(f) && f > 0) return 20.98547 / (f * sp.diameterM)
+    if (isNum(sp.gainDbi) && sp.gainDbi > 3) return Math.sqrt(41253 / Math.pow(10, sp.gainDbi / 10))
+    return null
+  }
+  if (!isObj(ext)) return null
+  const peakOf = (key) => (typeof ext.grdPeakDbi === 'function' && key ? ext.grdPeakDbi(key) : null)
+  if (ref.kind === 'grd') return hpbwFromPeakDbi(peakOf(ref.id))
+  if (ref.kind === 'lbAntenna') {
+    const info = typeof ext.lbInfo === 'function' ? ext.lbInfo(ref.id) : null
+    if (!isObj(info)) return null
+    return (info.grdKey ? hpbwFromPeakDbi(peakOf(info.grdKey)) : null) || hpbwFromGt(info.gtDbK, ext.sysTempK)
+  }
   return null
 }
-/** 视场锥半角（°，预览画锥用）：fovDeg/2 优先，否则 −3 dB 半宽；都没有返回 null（不画锥） */
-export function coneHalfOf(m) {
+/** 挂点自己的 T_sys 优先（G/T 反推增益用） */
+const extFor = (m, ext) => (isObj(ext) ? { ...ext, sysTempK: isNum(m.sysTempK) && m.sysTempK > 0 ? m.sysTempK : ext.sysTempK } : undefined)
+/** 视场锥半角（°，预览画锥用）：fovDeg/2 优先，否则 −3 dB 半宽（ext 同 hpbwOf）；都没有返回 null（不画锥） */
+export function coneHalfOf(m, ext) {
   if (!m) return null
   if (isNum(m.fovDeg) && m.fovDeg > 0) return Math.min(180, m.fovDeg) / 2
-  const h = hpbwOf(m.antennaRef)
+  const h = hpbwOf(m.antennaRef, undefined, extFor(m, ext))
   return h ? h / 2 : null
 }
 /** 全向天线（参数化口径 pattern = 'omni'，或只给了 ≤ 3 dBi 的增益、没有口径 / 波束宽）：视场按全空间 */
@@ -278,13 +302,13 @@ export function isOmni(ref) {
   return isNum(sp.gainDbi) && sp.gainDbi <= 3 && !(isNum(sp.hpbwDeg) && sp.hpbwDeg > 0) && !(isNum(sp.diameterM) && sp.diameterM > 0)
 }
 /**
- * 视场全锥角（°；万向节「固定天线」判可跟踪用）：挂点 fovDeg → 方向图 −3 dB 全宽（与表格「视场」列留空的口径、预览里画的锥同一个）→
- * 全向天线 360°；都给不出返回 null（gimbal.trackSeries 退回跟踪容差）。
+ * 视场全锥角（°；万向节「固定天线」判可跟踪用）：挂点 fovDeg → 方向图 −3 dB 全宽（与表格「视场」列留空的口径、预览里画的锥同一个；
+ * GRD / 链路预算引用要给 ext，见 hpbwOf）→ 全向天线 360°；都给不出返回 null（分析页显示「—」，不拿跟踪容差冒充视场）。
  */
-export function fovFullOf(m) {
+export function fovFullOf(m, ext) {
   if (!m) return null
   if (isNum(m.fovDeg) && m.fovDeg > 0) return Math.min(360, m.fovDeg)
-  const h = hpbwOf(m.antennaRef)
+  const h = hpbwOf(m.antennaRef, undefined, extFor(m, ext))
   if (h) return Math.min(360, h)
   return isOmni(m.antennaRef) ? 360 : null
 }
@@ -295,24 +319,24 @@ export function freqOf(ref) { return isObj(ref) && ref.kind === 'param' && isObj
 
 /** 表格列（ExcelGrid col：key / label / unit / num / w / tip；枚举列 options 由页面按当前数据现给） */
 export const MOUNT_COLS = [
-  { key: 'name', label: '名称', w: 120, tip: '挂点名（本星内可重名，id 唯一）' },
+  { key: 'name', label: '名称', w: 120, tip: '挂点名称（同一卫星内可重名，id 唯一）' },
   { key: 'attachPoint', label: 'attach point', w: 108, tip: '引用的模型挂点（几何来源）；空 = 自由挂点' },
   { key: 'px', label: 'X', unit: 'm', num: true, w: 58, tip: '位置（本体系，米；+X 速度）' },
   { key: 'py', label: 'Y', unit: 'm', num: true, w: 58, tip: '位置（本体系，米）' },
   { key: 'pz', label: 'Z', unit: 'm', num: true, w: 58, tip: '位置（本体系，米；+Z 天底）' },
-  { key: 'az', label: '视轴 az', unit: '°', num: true, w: 60, tip: '视轴方位（本体系，自 +X 向 +Y，0–360°；与掩模图同一口径 D2）' },
+  { key: 'az', label: '视轴 az', unit: '°', num: true, w: 60, tip: '视轴方位（本体系，自 +X 向 +Y，0–360°；与掩模图定义一致）' },
   { key: 'el', label: '视轴 el', unit: '°', num: true, w: 60, tip: '视轴俯仰（本体系，+90° = 本体 +Z 天底、−90° = 天顶）' },
   { key: 'roll', label: '滚转', unit: '°', num: true, w: 54, tip: '上向（天线 +y）相对缺省上向（本体 −Y 在视轴法平面的投影）绕视轴的右手角' },
   { key: 'fov', label: '视场', unit: '°', num: true, w: 54, tip: '视场全锥角；留空 = 按方向图 −3 dB' },
-  { key: 'gimbal', label: '万向节', w: 64, tip: '无 / 方位-俯仰（az-el）/ X-Y 两轴（轴向定义见 gimbal.mjs：az-el 方位轴 = up；X-Y 的 a1 绕挂点 x、a2 绕转过后的 y）' },
-  { key: 'a1Min', label: 'a1 下限', unit: '°', num: true, w: 58, tip: '外轴限位下限（az-el：方位；X-Y：X 轴）' },
-  { key: 'a1Max', label: 'a1 上限', unit: '°', num: true, w: 58, tip: '外轴限位上限' },
+  { key: 'gimbal', label: '万向节', w: 64, tip: '无 / 方位-俯仰（az-el）/ X-Y 两轴（az-el 方位轴 = 上向；X-Y 的 a1 绕挂点 x 轴、a2 绕转动后的 y 轴）' },
+  { key: 'a1Min', label: 'a1 下限', unit: '°', num: true, w: 58, tip: '外轴限位下限（az-el：方位；X-Y：X 轴）；上下限恰差 360° = 不限位（连续转动）' },
+  { key: 'a1Max', label: 'a1 上限', unit: '°', num: true, w: 58, tip: '外轴限位上限；上下限恰差 360° = 不限位（连续转动）' },
   { key: 'a2Min', label: 'a2 下限', unit: '°', num: true, w: 58, tip: '内轴限位下限（az-el：俯仰；X-Y：Y 轴）' },
   { key: 'a2Max', label: 'a2 上限', unit: '°', num: true, w: 58, tip: '内轴限位上限' },
-  { key: 'rate', label: '角速率上限', unit: '°/s', num: true, w: 74, tip: '两轴角速率上限；留空 = 不限速' },
-  { key: 'antenna', label: '天线', w: 150, tip: '天线引用：GRD 树天线（folder|name）/ 链路预算卫星库条目 / 参数化口径（不另设天线概念）' },
+  { key: 'rate', label: '角速率上限', unit: '°/s', num: true, w: 74, tip: '两轴角速率上限；留空 = 不限' },
+  { key: 'antenna', label: '天线', w: 150, tip: '天线引用：GRD 树天线（folder|name）/ 链路预算卫星库条目 / 参数化口径（不另设天线实体）' },
   { key: 'sysTempK', label: 'T_sys', unit: 'K', num: true, w: 58, tip: '星上接收系统噪声温度（星侧太阳侵入 ΔG/T = 10·lg(1 + ΔT / T_sys)）' },
-  { key: 'exclude', label: '排除节点', w: 120, tip: '算本体遮挡时不当遮挡体的节点（逗号分隔；连同子孙；模型标了「不遮挡」的节点另外自动排除）' }
+  { key: 'exclude', label: '排除节点', w: 120, tip: '计算本体遮挡时排除的节点（逗号分隔，含子节点；模型中标记为「不遮挡」的节点另行自动排除）' }
 ]
 export const GIMBAL_LABEL = { none: '无', azel: 'az-el', xy: 'X-Y' }
 
@@ -464,22 +488,89 @@ export function applyMountEdit(m, key, value, ctx = {}) {
 // ───────────────────────────── 新增 / 复制 / 删除 ─────────────────────────────
 
 /**
- * 反射面焦点挂点（参数化模型的 reflector_N_focus）自己那副天线的节点：反射面（含背壳 / 边环 / 网状桁架）、展开臂、同号馈源与馈源支架
- * （与 modelBodyMask 单测的「自身天线」名单同一套）。
+ * 反射面焦点挂点自己那副天线的部件判据（id → 是不是它的）；不是反射面焦点挂点返回 null。三种命名：
+ *   · 参数化模型 reflector_N_focus：反射面（含背壳 / 边环 / 网状桁架）、展开臂、同号馈源与馈源支架（与 modelBodyMask 单测的「自身天线」名单同一套）；
+ *   · 装配件 / 驱动装配件 refl<n>_focus（对称派生件 refl<n>-<k>_focus），部件 id = `${组件前缀}_${短名}`：反射面本件（含自带馈源）+
+ *     同号馈源支架 sup<n> + 展开臂 arm<n><a…> + 铰座 hinge<n>。用户从库里拖进来的第一副反射面组件 id 是 refl（不带号，compIdFor
+ *     首个不带号）→ 挂点 refl_focus：只认反射面本件（不带号的没有生成的支架 / 展开臂）；
+ *   · 导入件自动识别 reflector<n>_focus（segment.mjs：部件 reflector-<n>、近焦点的馈源 feed-<n>，反射面部件还反写了 attachPoint）；
+ *   · 装配件其余天线 / 载荷组件的 <组件前缀>_boresight（_focus）：本组件全部部件（2026-10-08 天线组件补全：双轴指向天线的视线起点在
+ *     正馈喇叭口面上、螺旋 / 全向天线在阵元中段，不排除就整片判成自遮挡）。
+ */
+function ownAntennaMatcher(apName) {
+  const name = String(apName || '')
+  const m = /^reflector_(\d+)_focus$/.exec(name)
+  if (m) { const ids = new Set([`reflector_${m[1]}`, `reflector_${m[1]}_arm`, `feed_${m[1]}`, `feed_${m[1]}_support`]); return (p) => ids.has(p.id) }
+  const a = /^refl(\d*)((?:-\d+)?)_focus$/.exec(name)
+  if (a) {
+    const n = a[1], k = a[2] || ''
+    if (!n) return (p) => typeof p.id === 'string' && p.id.startsWith(`refl${k}_`)
+    const pre = [`refl${n}${k}_`, `hinge${n}${k}_`]
+    // 展开臂分节 arm<n>a / b…；馈源支架（三脚架 / 两根撑杆，2026-10-08 起）sup<n>、sup<n>b、sup<n>c
+    const armRe = new RegExp(`^arm${n}[a-z]${k}_`), supRe = new RegExp(`^sup${n}[a-z]?${k}_`)
+    return (p) => typeof p.id === 'string' && (pre.some((x) => p.id.startsWith(x)) || armRe.test(p.id) || supRe.test(p.id))
+  }
+  const g = /^reflector(\d+)_focus$/.exec(name)
+  if (g) { const ids = new Set([`reflector-${g[1]}`, `feed-${g[1]}`]); return (p) => ids.has(p.id) || p.attachPoint === name }
+  // 装配件里其余天线 / 载荷组件的挂点 <组件前缀>_boresight（_focus）：双轴指向天线、相控阵、螺旋 / 全向 / 对数周期天线、馈源阵、
+  // 激光终端、光学相机……视线起点就在本组件的口面 / 相位中心上，本组件的全部部件（部件 id = `${组件前缀}_${短名}`）不算遮挡
+  const c = /^([a-z][a-z0-9]{0,23}(?:-\d+)?)_(?:boresight|focus)$/.exec(name)
+  if (c) { const pre = c[1] + '_'; return (p) => typeof p.id === 'string' && p.id.startsWith(pre) }
+  return null
+}
+
+/**
+ * 反射面焦点挂点自己那副天线的整节点（判据见 ownAntennaMatcher）。
  * 波束就是它们形成的，不算这个挂点的遮挡体；不排除的话，射线起点（焦点 + 1 cm·视轴）就在馈源喇叭口面上（口面中心 = 焦点），
  * 天底一侧整片判成遮挡、天线视角满屏是喇叭内壁。其它挂点名返回 []。
- * @param parts meta.parts（{id, nodes}[]）
+ * 导入件的反射面多半只是某节点里的一段三角形（部件只有 triRanges、没有整节点）——那一段由 ownAntennaTris 另给。
+ * @param parts meta.parts（{id, nodes, triRanges?}[]）
  */
 export function ownAntennaNodes(parts, apName) {
-  const m = /^reflector_(\d+)_focus$/.exec(String(apName || ''))
-  if (!m || !Array.isArray(parts)) return []
-  const ids = new Set([`reflector_${m[1]}`, `reflector_${m[1]}_arm`, `feed_${m[1]}`, `feed_${m[1]}_support`])
+  if (!Array.isArray(parts)) return []
+  const hit = ownAntennaMatcher(apName)
+  if (!hit) return []
   const out = []
   for (const p of parts) {
-    if (!p || !ids.has(p.id) || !Array.isArray(p.nodes)) continue
+    if (!p || !hit(p) || !Array.isArray(p.nodes)) continue
     for (const nm of p.nodes) if (typeof nm === 'string' && nm && !out.includes(nm)) out.push(nm)
   }
   return out
+}
+
+/**
+ * 反射面焦点挂点自己那副天线、只占节点里一段三角形的部分（部件 triRanges）→ 三角形段排除名（mask.triExcludeName；同一节点的段并成一条）。
+ * 不进挂点的排除节点列表（那是用户可见、可改的节点名单），由 maskExcludeOf 在算掩模 / 判签名时现取。
+ */
+export function ownAntennaTris(parts, apName) {
+  if (!Array.isArray(parts)) return []
+  const hit = ownAntennaMatcher(apName)
+  if (!hit) return []
+  const byNode = new Map()
+  for (const p of parts) {
+    if (!p || !hit(p) || !Array.isArray(p.triRanges)) continue
+    for (const tr of p.triRanges) {
+      if (!isObj(tr) || typeof tr.node !== 'string' || !tr.node || !Array.isArray(tr.ranges)) continue
+      const a = byNode.get(tr.node) || []
+      for (const r of tr.ranges) if (Array.isArray(r)) a.push(r)
+      byNode.set(tr.node, a)
+    }
+  }
+  const out = []
+  for (const [node, rs] of [...byNode].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))) { const nm = triExcludeName(node, rs); if (nm) out.push(nm) }
+  return out
+}
+
+/**
+ * 算掩模 / 判掩模签名用的排除名单：挂点 excludeNodes ∪ 导入件自身反射面的三角形段（ownAntennaTris）。三角形段按全精度 lod0 编号，
+ * 只在 glb 件载着 lod0 时加（别的档三角形重编过号；参数化 / 装配件的部件都是整节点，用不上）。
+ * @param model {meta, kind, lod}（工作台当前模型，同 maskSigFor）
+ */
+export function maskExcludeOf(model, mount) {
+  const ex = mount && Array.isArray(mount.excludeNodes) ? mount.excludeNodes.slice() : []
+  if (!model || model.kind !== 'glb' || (model.lod || 'lod0') !== 'lod0' || !mount || !mount.attachPoint) return ex
+  const tris = ownAntennaTris(model.meta && model.meta.parts, mount.attachPoint)
+  return tris.length ? [...ex, ...tris] : ex
 }
 
 /** 从模型 attach point 新增（位置 / 视轴 / 上向取挂点）；名字 = 挂点名；反射面焦点挂点带上自身天线的排除节点（ownAntennaNodes） */
@@ -572,6 +663,8 @@ export function articulationStateOf(meta, vals) {
 }
 /**
  * 掩模签名：model = {meta, kind, lod, id}（工作台当前模型），mount 取 posBody / boresightBody / excludeNodes，art = articulationStateOf 的结果。
+ * 排除名单取 maskExcludeOf（挂点排除节点 + 导入件自身反射面的三角形段）：与分析页实际算掩模时给 Worker 的同一份——
+ * 不带三角形段时（参数化 / 装配件、没认出自身反射面的挂点）与旧签名逐字相同，老掩模照认。
  * @param {number|null} [sunBin] 对日扫描档号（0…11）；主掩模 null
  */
 export function maskSigFor(model, mount, art, sunBin = null) {
@@ -579,7 +672,7 @@ export function maskSigFor(model, mount, art, sunBin = null) {
   return maskSignature({
     modelSha: maskModelSha(meta, model && model.lod, model && model.id), lod: maskLodOf(model && model.kind, model && model.lod),
     frame: meta.frame, scaleToMeters: meta.units && meta.units.scaleToMeters,
-    articulations: art, mountPos: mount.posBody, mountBoresight: mount.boresightBody, excludeNodes: mount.excludeNodes,
+    articulations: art, mountPos: mount.posBody, mountBoresight: mount.boresightBody, excludeNodes: maskExcludeOf(model, mount),
     noObscurationNodes: meta.noObscurationNodes, sunBin
   })
 }
@@ -596,9 +689,9 @@ export function mountsToJson(mounts, extra = {}) {
  */
 export function mountsFromJson(text, takenIds = []) {
   let j
-  try { j = JSON.parse(String(text || '')) } catch (e) { return { mounts: null, errors: ['不是 JSON：' + ((e && e.message) || e)] } }
+  try { j = JSON.parse(String(text || '')) } catch (e) { return { mounts: null, errors: ['非 JSON 格式：' + ((e && e.message) || e)] } }
   const arr = Array.isArray(j) ? j : (isObj(j) && Array.isArray(j.mounts) ? j.mounts : null)
-  if (!arr) return { mounts: null, errors: ['没有 mounts 数组'] }
+  if (!arr) return { mounts: null, errors: ['缺少 mounts 数组'] }
   const errors = []
   const taken = new Set(takenIds)
   const out = []

@@ -3,11 +3,13 @@
 import { reactive, computed } from 'vue'
 import { timeGrid, gridCount, sampleStates, attitudeSeries, stationTarget, MAX_SAMPLES, abortErr } from './analysisCore.js'
 import { stateFn, resolveOrbit } from './satSources.js'
+import { sceneNowMs } from '../shared/sceneClock.js'
 import { byLang } from '../shared/i18n/lang.js'
 
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v } catch { return d } }
 const lsSet = (k, v) => { try { localStorage.setItem(k, v) } catch { /* 便利数据 */ } }
-const minuteNow = () => Math.floor(Date.now() / 60000) * 60000
+/** 「当前时刻」取整到分：主窗口时间轴上的此刻（场景时刻，全软件一条时间线），不取本窗口的系统钟 */
+export const minuteNow = () => Math.floor(sceneNowMs() / 60000) * 60000
 
 export function createAnaContext({ wb, sat }) {
   const api = typeof window !== 'undefined' ? window.api : null
@@ -29,7 +31,10 @@ export function createAnaContext({ wb, sat }) {
   const tasks = new Map()
   function keyOf() {
     const b = sat.st.binding
-    return JSON.stringify([sat.st.satKey, b ? b.attitude : null, win.t0, win.hours, win.stepS])
+    const att = b ? b.attitude : null
+    // 轨道版本：3D 页改了解出本星轨道的树节点（根数 / 历元）→ orbitRev 翻；target 律的目标星每次现解，树一变也要重算（treeRev）
+    const tgt = att && att.law === 'target' && att.params && att.params.target
+    return JSON.stringify([sat.st.satKey, att, win.t0, win.hours, win.stepS, sat.st.orbitRev, tgt && tgt.kind === 'sat' ? sat.st.treeRev : 0])
   }
   /** target 律的目标（逐拍 ECEF km）；目标星另解一次轨道 */
   async function targetFn(att, tMs, o) {
@@ -53,11 +58,11 @@ export function createAnaContext({ wb, sat }) {
     t.p = (async () => {
       const orbit = await sat.ensureOrbit()
       if (signal.aborted) throw abortErr()
-      if (!orbit) throw new Error(sat.st.orbitErr || byLang('找不到这颗星的轨道。', 'No orbit.'))
+      if (!orbit) throw new Error(sat.st.orbitErr || byLang('未找到该卫星的轨道数据。', 'No orbit data for this satellite.'))
       const tMs = timeGrid(win.t0, win.t0 + win.hours * 3600e3, win.stepS)
-      if (!tMs) throw new Error(byLang('样本数过多，请加大步长。', 'Too many samples.'))
+      if (!tMs) throw new Error(byLang('样本数过多。', 'Too many samples.'))
       const st = await sampleStates(stateFn(orbit), tMs, { signal, onProgress: prog('orbit') })
-      if (!st.nOk) throw new Error(byLang('时段内取不到星位。', 'No positions in window.'))
+      if (!st.nOk) throw new Error(byLang('时段内无法解算卫星位置。', 'No satellite positions in the window.'))
       const att = JSON.parse(JSON.stringify(sat.st.binding.attitude))
       const targetAt = await targetFn(att, tMs, { signal })
       const B = await attitudeSeries(att, st, tMs, { targetAt: targetAt ? (i) => targetAt(i) : null, signal, onProgress: prog('attitude') })
@@ -84,7 +89,7 @@ export function createAnaContext({ wb, sat }) {
    * @returns {Promise<{tMs:Float64Array, st:object, B:object, key:string}>}
    */
   async function series(o = {}) {
-    if (!sat.st.satKey || !sat.st.binding) throw new Error(byLang('未选卫星。', 'No satellite.'))
+    if (!sat.st.satKey || !sat.st.binding) throw new Error(byLang('未选择卫星。', 'No satellite selected.'))
     if (o.signal && o.signal.aborted) throw abortErr()
     const key = keyOf()
     if (cache && cache.key === key) return cache
@@ -104,12 +109,22 @@ export function createAnaContext({ wb, sat }) {
   const safeName = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'export'
   async function exportText(defaultName, text, ext, label) {
     if (!api || !api.exportFile) return null
-    return api.exportFile({ defaultName: safeName(defaultName) + '.' + ext, data: text, filters: [{ name: label || ext.toUpperCase(), extensions: [ext] }] })
+    try { return await api.exportFile({ defaultName: safeName(defaultName) + '.' + ext, data: text, filters: [{ name: label || ext.toUpperCase(), extensions: [ext] }] }) }
+    catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
   }
   async function exportBlob(defaultName, blob, ext, label) {
     if (!api || !api.exportFile) return null
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    return api.exportFile({ defaultName: safeName(defaultName) + '.' + ext, data: bytes, filters: [{ name: label || ext.toUpperCase(), extensions: [ext] }] })
+    try {
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      return await api.exportFile({ defaultName: safeName(defaultName) + '.' + ext, data: bytes, filters: [{ name: label || ext.toUpperCase(), extensions: [ext] }] })
+    } catch (e) { return { ok: false, error: (e && e.message) || String(e) } }
+  }
+  // 导出结果 → 状态行：成功「已导出。」；取消 / 通道缺失不出字；写盘失败（文件被占用等）出错误本身，bad 走告警色。
+  // file:save 写失败不抛、只回 {ok:false,error}，调用方不看返回值就是「点了没反应」。
+  function exportState(x) {
+    if (x && x.ok) return { msg: '已导出。', bad: false }
+    if (!x || x.canceled || x.missing) return { msg: '', bad: false }
+    return { msg: x.error || '导出失败', bad: true }
   }
   /** XLSX（主进程 exceljs 三线表）：models.exportTable；通道没有返回 {ok:false, missing:true} */
   async function exportTable(o) {
@@ -119,5 +134,5 @@ export function createAnaContext({ wb, sat }) {
   }
   const fileStem = (what) => `${sat.st.label || 'sat'}_${(sat.selMount.value && (sat.selMount.value.name || sat.selMount.value.id)) || ''}_${what}`
 
-  return { win, saveWin, nSamples, tooMany, series, invalidate, exportText, exportBlob, exportTable, fileStem, api }
+  return { win, saveWin, nSamples, tooMany, series, invalidate, exportText, exportBlob, exportState, exportTable, fileStem, api }
 }

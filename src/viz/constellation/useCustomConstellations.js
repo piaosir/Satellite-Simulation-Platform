@@ -172,6 +172,19 @@ export function useCustomConstellations(onChange) {
     } catch { /* 存储失败不影响功能 */ }
   }
 
+  // 页面开着跨过本地零点：按「每天更新」规则重解场景历元（昨天的人为值作废 → 今天 08:00）。别的窗口（NGSO / 再生式 / 端到端 / 工作台）
+  // 每次都现解，3D 页只在 load 时解一次 —— 不跟着换，过了零点同一颗合成星两处相位就不同。变了：作废合成 satrec、落盘、通知页面；返回是否变了
+  function refreshDayEpoch() {
+    if (manualDay && manualDay !== localDayStr(new Date())) manualDay = null
+    const v = manualDay ? scenarioEpoch.value : defaultEpoch()
+    if (v === scenarioEpoch.value) return false
+    scenarioEpoch.value = v
+    built.clear()
+    persist()
+    notify()
+    return true
+  }
+
   // 从本地恢复（只存参数，此处按参数重建 satrec）。不触发 onChange —— 由页面 loadGroup→rebuildRenderSet 统一渲染。
   function load() {
     try {
@@ -227,7 +240,7 @@ export function useCustomConstellations(onChange) {
     preview.value = { editId: draft.id || null, cfg: normalize({ ...draft, id: '__preview__', noradBase: PREVIEW_BASE }) }
   }
 
-  return { list, scenarioEpoch, setScenarioEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, previewEntries, previewEditId, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
+  return { list, scenarioEpoch, setScenarioEpoch, refreshDayEpoch, add, update, remove, toggle, showOnly, setPreview, count, entriesForRender, previewEntries, previewEditId, catalog, satsOf, findByNorad, load, PLANE_PALETTE }
 }
 
 /* ===================== 只读读取（供「文件管理 · 星历」镜像展示 / 导出，无需实例化 composable） ===================== */

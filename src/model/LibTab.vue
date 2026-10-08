@@ -1,12 +1,16 @@
 <script setup>
-// 库页：缩略图画廊（NASA 3D Resources 的观感）+ 搜索 / 分段 / 类别 + 右键菜单 + 选中即预览、双击进模型页。
+// 库页：缩略图画廊（NASA 3D Resources 的观感）+ 搜索 / 分段 / 类别 + 右键菜单 + 选中即预览、双击在设计页打开。
 // 缩略图按可见性懒取（IntersectionObserver）：远端条目经 models:thumbnail 按需下载、参数化模板现场出图、本机缺图的补拍。
-// 装配件（asm:）双击 / 右键进装配页；实体模板（ent:）右键「从此模板新建装配」；参数化卫星右键「转为装配件」。
+// 单击 / 方向键 = 选中（视口预览）；离开设计页之后在这里选过的那一项，进设计页时打开为签（wb.notePick，事件触发）。
+// 打开（双击 / Enter / 右键「打开」，wb.openInDesign）= 打开或激活签：装配件 → 装配签；卫星整星模板 / 实体模板 → 模板签
+// （原样不入库，编辑时自动创建副本）；其余 → 模型签。右键「查看模型属性」= 模型签（模板 / 装配件也按只读模型看）。
+// 进库页时选中项跟随设计页激活签对应的库条目（wbStore 里做），这里只负责滚到可见。
+// 右键「新建副本」（§3.2）：装配件不经编辑直接复制一份（新 id、「<名称> 副本」）并在设计页打开为新签。
 import { ref, computed, inject, watch, nextTick, onMounted, onBeforeUnmount, onActivated } from 'vue'
 import Icon from '../components/Icon.vue'
 import { byLang, curLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
-import { SEGMENTS, CATEGORIES, filterEntries, entryFacts, displayName, fmtBytes, fmtInt, categoryOf, bodyBoxOfMeta } from './wbLogic.js'
+import { SEGMENTS, CATEGORIES, filterEntries, entryFacts, displayName, fmtBytes, fmtInt, categoryOf, bodyBoxOfMeta, previewLod } from './wbLogic.js'
 import { DEFAULT_MODEL_ID, resolveParamModelId } from '@core/models/paramTemplates.mjs'
 
 const wb = inject('wb')
@@ -83,32 +87,36 @@ watch(shown, () => nextTick(observeAll))
 watch(() => st.list, () => nextTick(observeAll))
 onMounted(() => nextTick(observeAll))
 onActivated(() => nextTick(() => { observeAll(); scrollToSel() }))
+// 选中项跟随激活签（进库页时 wbStore 换选中）：滚到可见
+watch(() => st.selId, () => { if (st.tab === 'lib') nextTick(scrollToSel) })
 onBeforeUnmount(() => { if (io) io.disconnect(); io = null })
 
 // ============ 选中 / 预览 / 打开 ============
 function pick(e) {
   if (!e) return
-  wb.select(e.id, { lod: 'lod2' })
+  wb.notePick(e.id)
+  wb.select(e.id, { lod: previewLod(e) })
 }
 function openModel(e) {
   if (!e) return
-  // 装配件：改动只能在装配页（模型页对它只读）
-  if (isAsm(e)) { openAssembly(e); return }
-  if (st.selId !== e.id) wb.select(e.id, { lod: 'lod0' })
-  st.tab = 'model'
+  wb.openInDesign(e.id)
 }
+/** 模型签：直接在设计页模型视图看这一件（模板 / 装配件只读，可看质量特性、挂点、关节等模型级属性） */
 function openModelPage(e) {
   if (!e) return
-  if (st.selId !== e.id) wb.select(e.id, { lod: 'lod0' })
-  st.tab = 'model'
+  wb.openModelTab(e.id)
 }
 // ── 装配 ──
 const isAsm = (e) => typeof e.id === 'string' && e.id.startsWith('asm:')
 const isEnt = (e) => e.origin === 'entTemplate' || (typeof e.id === 'string' && e.id.startsWith('ent:'))
-const canToAsm = (e) => { const f = entryFacts(e); return f.param && !isAsm(e) && !isEnt(e) && !e.fleet && (e.kind || 'spacecraft') === 'spacecraft' }
-function openAssembly(e) { wb.requestAssembly({ kind: 'open', id: e.id }) }
-function newFromTemplate(e) { wb.requestAssembly({ kind: 'template', entId: e.id }) }
-function toAssembly(e) { wb.requestAssembly({ kind: 'spec', from: e.id }) }
+const isTpl = (e) => isEnt(e) || (e.origin === 'template' && !e.fleet)
+/** 已存参数化件（param:<哈希>）：以它的整星参数新建驱动装配件 */
+const canCopy = (e) => { const f = entryFacts(e); return f.param && !isAsm(e) && !isTpl(e) && !e.fleet && (e.kind || 'spacecraft') === 'spacecraft' }
+function copyAssembly(e) { wb.requestAssembly({ kind: 'spec', from: e.id }) }
+/** 装配件：不经编辑直接复制并打开（已打开着 = 按签里的当前内容） */
+const canDup = (e) => isAsm(e) && !!wb.api
+function dupAssembly(e) { wb.copyLibAsm(e.id) }
+const openTip = (e) => (isTpl(e) ? '在设计页打开为模板签（编辑时自动创建副本）' : '在设计页打开')
 const KIND_ICON = { ground: 'satellite-dish', aircraft: 'plane', ship: 'ship', vehicle: 'car' }
 const phIcon = (e) => KIND_ICON[e.kind] || 'satellite'
 function scrollToSel() {
@@ -169,21 +177,21 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
     <div class="lib-bar">
       <label class="lib-search">
         <Icon name="search" :size="13" />
-        <input v-model="q" class="lib-q" type="text" spellcheck="false" placeholder="搜索" title="按中英文名、编号、标签、别名搜索；大小写、全角半角、连字符不计" />
+        <input v-model="q" class="lib-q" type="text" spellcheck="false" placeholder="搜索" title="按中英文名称、编号、标签、别名搜索；不区分大小写、全角半角与连字符" />
         <button v-if="q" type="button" class="lib-x" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
       </label>
       <select v-model="cat" class="ci lib-cat" title="类别">
         <option value="all">全部类别</option>
         <option v-for="c in cats" :key="c.key" :value="c.key">{{ c.label }}</option>
       </select>
-      <button class="lb-mini lb-mini-ico" :disabled="!wb.api || !!st.busy" title="重新拉取云端模型清单" @click="wb.refreshRemote()"><Icon name="refresh-cw" :size="13" /></button>
+      <button class="lb-mini lb-mini-ico" :disabled="!wb.api || !!st.busy" title="刷新云端模型清单" @click="wb.refreshRemote()"><Icon name="refresh-cw" :size="13" /></button>
     </div>
     <div class="lbu-seg lib-seg">
       <button v-for="s in SEGMENTS" :key="s.key" :class="{ on: seg === s.key }" :title="s.tip + ' · ' + segCount[s.key]" @click="seg = s.key">{{ s.label }}</button>
     </div>
 
     <div ref="gridEl" class="lib-grid" tabindex="0" @keydown="navKey">
-      <div v-if="!shown.length" class="lb-placeholder lib-empty">{{ st.list.length ? '没有匹配的模型。' : '还没有模型。' }}</div>
+      <div v-if="!shown.length" class="lb-placeholder lib-empty">{{ st.list.length ? '无匹配模型。' : '暂无模型。' }}</div>
       <div v-for="e in shown" :key="e.id" class="card" :class="{ on: st.selId === e.id, busy: !!dlOf(e) }" :data-id="e.id"
            @click="pick(e)" @dblclick="openModel(e)" @contextmenu="openCtx($event, e)">
         <div class="card-img">
@@ -191,12 +199,12 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
           <Icon v-else class="card-ph" :name="phIcon(e)" :size="30" :stroke-width="1.2" />
           <div class="card-bd">
             <span v-if="FID[e.fidelity]" class="card-b" :title="FID[e.fidelity].tip"><Icon :name="FID[e.fidelity].icon" :size="11" /></span>
-            <span v-if="e.units && e.units.sizeVerified === false && e.fidelity !== 'parametric' && e.origin !== 'template'" class="card-b dim" title="尺寸未核定：比例按包围盒量级推断，可在「模型」页用已知尺寸反算"><Icon name="ruler" :size="11" /></span>
+            <span v-if="e.units && e.units.sizeVerified === false && e.fidelity !== 'parametric' && e.origin !== 'template'" class="card-b dim" title="尺寸未核定：比例按包围盒量级推断，可在设计页快速设置「尺寸」中按已知尺寸反算"><Icon name="ruler" :size="11" /></span>
             <span v-if="entryFacts(e).stk" class="card-b" title="STK 本机模型：不可导出、不可分发（AGI SLA）"><Icon name="lock" :size="11" /></span>
             <span v-if="isAsm(e)" class="card-b" title="装配件"><Icon name="package" :size="11" /></span>
             <span v-else-if="isEnt(e)" class="card-b" title="实体模板"><Icon name="layers" :size="11" /></span>
-            <span v-if="entryFacts(e).cloud && !entryFacts(e).ready && !dlOf(e)" class="card-b" title="云端：选中时下载预览档"><Icon name="cloud-download" :size="11" /></span>
-            <span v-if="isGeoDefault(e)" class="card-b acc" title="GEO 通信星的默认模型"><Icon name="star" :size="11" /></span>
+            <span v-if="entryFacts(e).cloud && !entryFacts(e).ready && !dlOf(e)" class="card-b" title="云端模型：选中时下载预览精度文件"><Icon name="cloud-download" :size="11" /></span>
+            <span v-if="isGeoDefault(e)" class="card-b acc" title="GEO 通信卫星默认模型"><Icon name="star" :size="11" /></span>
           </div>
           <div v-if="dlOf(e)" class="card-prog" :title="dlOf(e).lod + ' ' + pctOf(e) + '%'"><i :style="{ width: pctOf(e) + '%' }"></i></div>
         </div>
@@ -213,17 +221,17 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
     <Teleport to="body">
       <div v-if="ctx" class="lb-ctx-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
         <div class="lb-ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
-          <button class="lb-ctx-i" @click="ctxDo(openModelPage)">在模型页打开</button>
-          <button v-if="isAsm(ctx.e)" class="lb-ctx-i" data-act="lib-open-asm" @click="ctxDo(openAssembly)">在装配页打开</button>
-          <button v-else-if="isEnt(ctx.e)" class="lb-ctx-i" data-act="lib-from-tpl" @click="ctxDo(newFromTemplate)">从此模板新建装配</button>
-          <button v-else-if="canToAsm(ctx.e)" class="lb-ctx-i" data-act="lib-to-asm" title="按组件拆成装配文档（参数一一对应），在装配页继续手工增删" @click="ctxDo(toAssembly)">转为装配件</button>
+          <button class="lb-ctx-i" data-act="lib-open" :title="openTip(ctx.e)" @click="ctxDo(openModel)">打开</button>
+          <button v-if="canDup(ctx.e)" class="lb-ctx-i" data-act="lib-dup" title="复制为新的装配件并在设计页打开" @click="ctxDo(dupAssembly)">新建副本</button>
+          <button v-if="canCopy(ctx.e)" class="lb-ctx-i" data-act="lib-copy" title="以本模型的整星参数新建驱动装配件（快速设置与逐件编辑均可用，原件不变）" @click="ctxDo(copyAssembly)">新建可编辑副本</button>
+          <button class="lb-ctx-i" data-act="lib-props" title="在设计页模型视图中查看质量特性、挂点、关节等模型级属性" @click="ctxDo(openModelPage)">查看模型属性</button>
           <div class="lb-ctx-sep"></div>
           <button v-if="!dlOf(ctx.e)" class="lb-ctx-i" :disabled="!canDownload(ctx.e)" @click="ctxDo((e) => wb.download(e.id, 'lod0'))">下载完整模型</button>
           <button v-else class="lb-ctx-i" @click="ctxDo((e) => wb.cancel(e.id))">取消下载</button>
           <button v-if="!ctxFacts.local && !ctxFacts.stk" class="lb-ctx-i" :disabled="!canRemoveCache(ctx.e)" @click="ctxDo((e) => wb.remove(e.id))">移除缓存</button>
           <button v-if="canDelete(ctx.e)" class="lb-ctx-i danger" @click="ctxDo((e) => wb.remove(e.id))">删除</button>
           <div class="lb-ctx-sep"></div>
-          <button class="lb-ctx-i" :disabled="!wb.api || isGeoDefault(ctx.e) || ctxFacts.stk || !canGeoDefault(ctx.e)" :title="canGeoDefault(ctx.e) ? '3D 页自动匹配不到具体型号的 GEO 通信星用这个模型' : '只有卫星类模型能设为 GEO 默认'" @click="ctxDo((e) => wb.setGeoDefault(e.id))">设为 GEO 默认</button>
+          <button class="lb-ctx-i" :disabled="!wb.api || isGeoDefault(ctx.e) || ctxFacts.stk || !canGeoDefault(ctx.e)" :title="canGeoDefault(ctx.e) ? '3D 页中未匹配到具体型号的 GEO 通信卫星采用此模型' : '仅卫星类模型可设为 GEO 默认模型'" @click="ctxDo((e) => wb.setGeoDefault(e.id))">设为 GEO 默认模型</button>
         </div>
       </div>
     </Teleport>

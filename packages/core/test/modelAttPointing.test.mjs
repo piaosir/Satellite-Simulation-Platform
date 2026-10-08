@@ -24,6 +24,8 @@
 //   ⑫ 时段扫描「输入已变」认指向：程序性改写（锁定 azel 钉 geo、不锁定 geo 随星平移含慢漂舍入、att 定时写回）不算；
 //      用户改纬度 / 换挂点 / 改 Rot 算，改回复原。
 //   ⑬ 换聚焦不改任何天线的指向（boreType 换算 watch 改 flush 'sync' 的回归）；用户切档照旧无缝换算。
+//   ⑭ 偏置标签的读数标注 attBiasTags：赤道 GEO 滚转 → El、俯仰 → Az、偏航 → ψ（含偏置 / Rot / 无速度固定星）；极轨对调；
+//      53° 倾角升交点与轨道顶点各一种；随机星位 / 航向 / 偏置 / 偏轴挂点下与「真把该偏置加 0.01° 走一遍姿态律」读数里变得最多的那个量一致。
 // 渲染端 bodyRuntime.js 用 @core/… 别名：先注册解析钩子再动态导入（写法同 modelBodyRuntime.test.mjs）。
 import assert from 'node:assert/strict'
 import { register, createRequire } from 'node:module'
@@ -705,6 +707,96 @@ await t('⑬ 换聚焦不改任何天线的指向（geo 目标点 / azel 偏置�
   const gb = g.boreGround()
   assert.ok(Math.abs(gb.lon - 105) < 0.01 && Math.abs(gb.lat - 5) < 0.01, `切档后落点 ${gb.lon},${gb.lat}`)
   console.log(`  ⑬ 换聚焦 3 轮：A azel(1.5, −0.8) / B geo(105, 5) 逐字不变；B 切本体固定 → az/el ${g.s.boreAz}/${g.s.boreEl}（落点 ${gb.lon.toFixed(4)}, ${gb.lat.toFixed(4)}）`)
+})
+
+// ───────────────────────── ⑭ 偏置标签的读数标注（attBiasTags）─────────────────────────
+// 星位 S + 惯性速度 v + 偏置 p + 挂点 frame + Rot → 带本体轴的 att 基底（与宿主 getAttAxes → beamBasisFrom 同一条路）
+const attBasisOf = (meta, v, p, frame = DEF_FRAME, rot = 0) => {
+  const S = W.geodeticToEcef(meta.satLon, meta.satLat, meta.satAlt)
+  const bd = AT.attitudeBasisEcef('nadir', p, { rEcef: S, vInertialEcef: v })
+  return COV.beamBasisFrom(meta, { boreType: 'att', yaw: rot }, null, { ...axesOf(bd, frame), body: { X: bd.X.slice(), Y: bd.Y.slice(), Z: bd.Z.slice() } })
+}
+const enu = (lon, lat) => {
+  const l = lon * D2R, f = lat * D2R
+  return { e: [-Math.sin(l), Math.cos(l), 0], n: [-Math.sin(f) * Math.cos(l), -Math.sin(f) * Math.sin(l), Math.cos(f)] }
+}
+const horiz = (lon, lat, headingDeg, speed = 7.5) => {   // 当地水平、航向自北顺时针
+  const { e, n: nn } = enu(lon, lat), h = headingDeg * D2R
+  return [0, 1, 2].map((i) => (nn[i] * Math.cos(h) + e[i] * Math.sin(h)) * speed)
+}
+
+await t('⑭ 偏置标注：赤道 GEO 滚转 → El、俯仰 → Az、偏航 → ψ（偏置 / Rot / 固定星不改结论）；极轨对调；53° 倾角升交点与顶点', () => {
+  const GEO = { roll: 'el', pitch: 'az', yaw: 'psi' }, POLAR = { roll: 'az', pitch: 'el', yaw: 'psi' }
+  for (const lon of [-120, 0, 105.5, 115.5]) {
+    const meta = { satLon: lon, satLat: 0, satAlt: GEO_ALT }
+    for (const v of [horiz(lon, 0, 90, 3.0747), undefined]) {
+      for (const [p, rot] of [[null, 0], [{ rollBiasDeg: 3, pitchBiasDeg: 3 }, 0], [{ rollBiasDeg: -5, pitchBiasDeg: 2, yawBiasDeg: 17 }, 33], [{ yawBiasDeg: -30 }, -90]]) {
+        assert.deepEqual(COV.attBiasTags(meta, attBasisOf(meta, v, p, DEF_FRAME, rot)), GEO, `GEO ${lon}° ${JSON.stringify(p)} Rot ${rot}`)
+      }
+    }
+    // 偏轴挂点（视轴偏本体 +Z 8°）结论不变
+    const fr = AT.mountFrame({ boresightBody: nrm([Math.tan(5 * D2R), Math.tan(-6 * D2R), 1]), upBody: [0, -1, 0] })
+    assert.deepEqual(COV.attBiasTags(meta, attBasisOf(meta, undefined, { rollBiasDeg: 1 }, fr)), GEO, `GEO ${lon}° 偏轴挂点`)
+  }
+  // 截图那一组：115.5°E、滚转 3 / 俯仰 3 → 读数 Az 2.996 / El 3.004，标注 El / Az
+  const m115 = { satLon: 115.5, satLat: 0, satAlt: GEO_ALT }, b115 = attBasisOf(m115, undefined, { rollBiasDeg: 3, pitchBiasDeg: 3 })
+  const r115 = COV.attAxesReadout(m115, b115)
+  assert.equal(r115.az.toFixed(3), '2.996'); assert.equal(r115.el.toFixed(3), '3.004')
+  // 极轨（i = 90°）过赤道：北行 / 南行
+  for (const lon of [0, 60, -150]) {
+    for (const hd of [0, 180]) {
+      const meta = { satLon: lon, satLat: 0, satAlt: 800 }
+      assert.deepEqual(COV.attBiasTags(meta, attBasisOf(meta, horiz(lon, 0, hd), null)), POLAR, `极轨 ${lon}° 航向 ${hd}°`)
+    }
+  }
+  // 53° 倾角：升交点航向 37°（偏南北）→ 同极轨；轨道顶点航向 90°（正东）→ 同 GEO
+  const node = { satLon: 30, satLat: 0, satAlt: 550 }, apex = { satLon: 120, satLat: 53, satAlt: 550 }
+  assert.deepEqual(COV.attBiasTags(node, attBasisOf(node, horiz(30, 0, 37), null)), POLAR, '53° 升交点')
+  assert.deepEqual(COV.attBiasTags(apex, attBasisOf(apex, horiz(120, 53, 90), null)), GEO, '53° 轨道顶点')
+  // 缺本体轴 / 坏入参 → null（面板就不标）
+  const { body: _drop, ...noBody } = b115
+  assert.equal(COV.attBiasTags(m115, noBody), null)
+  assert.equal(COV.attBiasTags(null, b115), null)
+  assert.equal(COV.attBiasTags(m115, { ...b115, body: { x: [0, 0, 0], y: [0, 1, 0], z: [0, 0, 1] } }), null)
+  console.log(`  ⑭ GEO El/Az/ψ（截图组读数 Az ${r115.az.toFixed(3)} / El ${r115.el.toFixed(3)}）；极轨 Az/El/ψ；53° 升交点 Az/El、顶点 El/Az`)
+})
+
+// 实测口径（不借实现里的转轴式子）：真把该偏置加 0.01° 走一遍姿态律，两副天线基底之间的小转动 ω = ½ Σ e_i × e_i′；
+// ω 贴着视轴（|ω·z| > |ω×z|）= 方向图自转 → ψ，否则比读数里 Az / El 谁变得多。ψ 不拿读数差比（高纬子午线收敛，见 attBiasTags 头注）
+await t('⑭ 偏置标注与「真加 0.01° 偏置走一遍姿态律」的实测结果一致（随机星位 / 航向 / 偏置 / Rot / 偏轴挂点，600 组）', () => {
+  let seed = 20261006
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 }
+  const EPS = 0.01, KEYS = [['roll', 'rollBiasDeg'], ['pitch', 'pitchBiasDeg'], ['yaw', 'yawBiasDeg']]
+  const omega = (b0, b1) => { const w = [0, 0, 0]; for (const e of ['x', 'y', 'z']) { const c = cross(b0[e], b1[e]); for (let i = 0; i < 3; i++) w[i] += c[i] / 2 } return w }
+  let checked = 0, ties = 0, swapped = 0, spins = 0
+  for (let i = 0; i < 600; i++) {
+    const leo = i % 3 !== 0
+    const meta = { satLon: 360 * rnd() - 180, satLat: leo ? 160 * rnd() - 80 : 0, satAlt: leo ? 400 + 1600 * rnd() : GEO_ALT }
+    const v = horiz(meta.satLon, meta.satLat, 360 * rnd(), leo ? 7.5 : 3.0747)
+    const p = { rollBiasDeg: 60 * rnd() - 30, pitchBiasDeg: 60 * rnd() - 30, yawBiasDeg: 360 * rnd() - 180 }
+    const fr = AT.mountFrame({ boresightBody: nrm([0.2 * rnd() - 0.1, 0.2 * rnd() - 0.1, 1]), upBody: [0, -1, 0] })
+    const rot = 360 * rnd() - 180
+    const b0 = attBasisOf(meta, v, p, fr, rot), r0 = COV.attAxesReadout(meta, b0)
+    const tags = COV.attBiasTags(meta, b0)
+    assert.ok(tags, `第 ${i} 组标注为空`)
+    if (tags.roll === 'az') swapped++
+    for (const [k, key] of KEYS) {
+      const b1 = attBasisOf(meta, v, { ...p, [key]: p[key] + EPS }, fr, rot), r1 = COV.attAxesReadout(meta, b1)
+      const w = omega(b0, b1), spin = Math.abs(dot(w, b0.z)), move = len(cross(w, b0.z))
+      const da = Math.abs(r1.az - r0.az), de = Math.abs(wrap180(r1.el - r0.el))
+      const [hi, lo] = spin > move ? [spin, move] : [move, spin]
+      if (hi < 1.05 * lo) { ties++; continue }                          // 自转与视轴移动一样多：标哪个都对，不判
+      let want = 'psi'
+      if (move > spin) {
+        if (Math.max(da, de) < 1.05 * Math.min(da, de)) { ties++; continue }   // Az / El 动得一样多，同上
+        want = de > da ? 'el' : 'az'
+      } else spins++
+      assert.equal(tags[k], want, `第 ${i} 组 ${k}：标注 ${tags[k]}，实测 ${want}（ΔAz ${da} ΔEl ${de} 自转 ${spin} 移动 ${move}；${JSON.stringify(meta)} ${JSON.stringify(p)}）`)
+      checked++
+    }
+  }
+  assert.ok(checked > 1700, `判了 ${checked} 项`)
+  console.log(`  ⑭ 随机 600 组：判 ${checked} 项全对（其中 ψ ${spins} 项；并列不判 ${ties} 项）；滚转标 Az 的 ${swapped} 组（航向偏南北 / 大偏航）`)
 })
 
 console.log(`modelAttPointing: ${n} 项通过`)

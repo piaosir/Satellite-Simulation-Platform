@@ -12,6 +12,9 @@
 //   对地挂点（视轴 +Z、up −Y）上两种奇点都在视轴 90° 外，跟地球站碰不到；把 up 定在哪决定 keyhole 在哪。
 //   每个方向有两组解：主解 (a1, a2)（a2 ∈ [−90°, 90°]）与翻转解 (a1 + 180°, 180° − a2)，再加 360° 的整数倍；
 //   在限位内挑离「当前实际角度」最近的一组（连续性优先，线缆缠绕式的大行程限位 [−270°, 270°] 也照此选）。
+//   连续轴：限位跨度恰为 360°（缺省 [−180°, 180°]，schema 口径「即不限位」= 滑环、可无限转）不当硬限位——解卷绕（命令角取离
+//   实际角最近的等价角、执行机构走最短路）、速率按最短角差算；输出的 a1 / act1 折回限位窗内。跨度 > 360° 是线缆缠绕
+//   （到头必须倒转回卷，那一下的速率是真的），跨度 < 360° 是真限位，两者行为不变。
 //
 // ── trackSeries 的物理模型 ──
 //   每拍：目标方向 → 限位内最近解（命令角）；执行机构按角速率上限从上一拍的实际角追命令角（每轴单步 ≤ rate·Δt）；
@@ -27,7 +30,7 @@
 //     （视轴 +Z、up −Y）——缺省挂点系不是恒等（x = −X_B、y = −Y_B），所以不能把挂点系方向直接当本体系查掩模；结果 frameDefaulted 标出。
 //
 // 导出：GIMBAL_TYPES / REASON / solveAzEl / solveXY / solveGimbal / dirFromAzEl / dirFromXY / dirFromGimbal /
-//       normalizeGimbal / pickSolution / trackSeries
+//       normalizeGimbal / isContinuousAxis / pickSolution / trackSeries
 
 import { dirBodyToMount, dirMountToBody, mountFrame } from './attitude.mjs'
 import { maskLookup } from './mask.mjs'
@@ -113,6 +116,12 @@ export function normalizeGimbal(g, rateOverride) {
 }
 
 const EPS_LIM = 1e-9
+/** 限位跨度恰为 360°（[−180, 180] 一类）= 连续轴（滑环，可无限转）：限位窗只是读数的折回区间，不是硬限位 */
+export function isContinuousAxis(lo, hi) { return Number.isFinite(lo) && Number.isFinite(hi) && Math.abs(hi - lo - 360) <= EPS_LIM }
+// 角差折到 (−180, 180]（连续轴的「最短角差」）
+const wrap180 = (x) => { const v = ((x % 360) + 540) % 360 - 180; return v === -180 ? 180 : v }
+// 连续轴的读数折回限位窗 [lo, lo + 360]：窗内的原样留（端点 180 不改写成 −180），窗外的按 360° 整数倍挪进来
+const intoWindow = (v, lo, hi) => (v >= lo && v <= hi ? v : v - 360 * Math.floor((v - lo) / 360))
 // base + 360k 里落在 [lo, hi] 内、离 ref 最近的一个；没有返回 NaN
 function nearestCongruent(base, ref, lo, hi) {
   const k0 = Math.round((ref - base) / 360)
@@ -177,6 +186,13 @@ export function trackSeries(dirs, tMs, limits, rateLimitDegS, mask, opts = {}) {
   const lim = normalizeGimbal(limits, rateLimitDegS)
   const fixed = lim.type === 'none'
   const type = lim.type === 'xy' ? 'xy' : 'azel'
+  // 连续轴（跨度恰 360°，见头注）：解算时该轴不设界——命令角取离实际角最近的等价角（可越出窗口），执行机构走最短路；
+  // 实际角每步折回窗内（不让它绕几十圈后丢精度），读数 a1 / a2 / act1 / act2 也折回窗内，速率按最短角差
+  const cont1 = !fixed && isContinuousAxis(lim.a1Min, lim.a1Max), cont2 = !fixed && isContinuousAxis(lim.a2Min, lim.a2Max)
+  const limS = cont1 || cont2
+    ? { ...lim, a1Min: cont1 ? -Infinity : lim.a1Min, a1Max: cont1 ? Infinity : lim.a1Max, a2Min: cont2 ? -Infinity : lim.a2Min, a2Max: cont2 ? Infinity : lim.a2Max }
+    : lim
+  const win1 = (v) => (cont1 ? intoWindow(v, lim.a1Min, lim.a1Max) : v), win2 = (v) => (cont2 ? intoWindow(v, lim.a2Min, lim.a2Max) : v)
   const frameDefaulted = !isFrame(o.frame)
   const frame = frameDefaulted ? mountFrame(o.mount && typeof o.mount === 'object' ? o.mount : null) : o.frame
   const bodyIn = o.dirFrame === 'body'
@@ -223,15 +239,17 @@ export function trackSeries(dirs, tMs, limits, rateLimitDegS, mask, opts = {}) {
         else rs = REASON.OK
       } else {
         solveGimbal(type, dm, hasAct ? c1 : undefined, sol)
-        solved = pickSolution(sol.a1, sol.a2, lim, hasAct ? c1 : 0, hasAct ? c2 : 0, pick)
+        solved = pickSolution(sol.a1, sol.a2, limS, hasAct ? c1 : 0, hasAct ? c2 : 0, pick)
         if (!solved) rs = REASON.LIMIT
       }
       if (solved) {
-        a1[i] = pick.a1; a2[i] = pick.a2
+        a1[i] = win1(pick.a1); a2[i] = win2(pick.a2)
         if (prevCmdI >= 0) {
           const dt = (tMs[i] - tMs[prevCmdI]) / 1000
           if (dt > 0) {
-            rate1[i] = Math.abs(pick.a1 - a1[prevCmdI]) / dt; rate2[i] = Math.abs(pick.a2 - a2[prevCmdI]) / dt
+            // 连续轴按最短角差（上一拍的读数已折回窗内、这一拍的命令角可能在窗外，差值本身对 360° 取模才是转过的角）
+            const d1 = pick.a1 - a1[prevCmdI], d2 = pick.a2 - a2[prevCmdI]
+            rate1[i] = Math.abs(cont1 ? wrap180(d1) : d1) / dt; rate2[i] = Math.abs(cont2 ? wrap180(d2) : d2) / dt
             if (prevCmdI === i - 1) {                 // 只拿相邻两拍算「需要的速率」峰值（隔着限位空档的回转不算）
               if (pk1 == null || rate1[i] > pk1) pk1 = rate1[i]
               if (pk2 == null || rate2[i] > pk2) pk2 = rate2[i]
@@ -239,13 +257,14 @@ export function trackSeries(dirs, tMs, limits, rateLimitDegS, mask, opts = {}) {
           }
         }
         prevCmdI = i
-        if (!hasAct) { c1 = pick.a1; c2 = pick.a2; hasAct = true }
+        if (!hasAct) { c1 = win1(pick.a1); c2 = win2(pick.a2); hasAct = true }
         else {
           const dt = i > 0 ? Math.max(0, (tMs[i] - tMs[i - 1]) / 1000) : 0
           const s1 = lim.rate1 == null ? Infinity : lim.rate1 * dt, s2 = lim.rate2 == null ? Infinity : lim.rate2 * dt
-          const e1 = pick.a1 - c1, e2 = pick.a2 - c2
+          const e1 = pick.a1 - c1, e2 = pick.a2 - c2   // 连续轴的命令角取在离 c 最近处，|e| ≤ 180：走最短路
           c1 += Math.abs(e1) <= s1 ? e1 : Math.sign(e1) * s1
           c2 += Math.abs(e2) <= s2 ? e2 : Math.sign(e2) * s2
+          c1 = win1(c1); c2 = win2(c2)
         }
         dirFromGimbal(type, c1, c2, da)
         const cosE = Math.max(-1, Math.min(1, da[0] * dm[0] + da[1] * dm[1] + da[2] * dm[2]))

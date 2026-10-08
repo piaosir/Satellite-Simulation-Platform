@@ -38,7 +38,7 @@
 //     代理过不了结构化克隆，即 memory「IPC 不能收响应式代理」那个坑的 postMessage 版。）
 import { threeToIR } from './irToThree.js'
 import {
-  MASK_W, MASK_H, MASK_N, bodyGeometryFromIR, geometryHash, excludedNodeFlags, excludeKey, buildMaskBvh,
+  MASK_W, MASK_H, MASK_N, bodyGeometryFromIR, geometryHash, excludedNodeFlags, excludedTriFlags, excludeKey, buildMaskBvh,
   maskOrigin, castRows, articulationSignature, resolveExclude
 } from './bodyMask.worker.js'
 
@@ -166,7 +166,7 @@ export function createBodyMaskPool(o = {}) {
     let buildMs = 0, ctx
     if (!mainCtx || mainCtx.key !== gkey) {
       // ctx 取局部：让出期间别的计算可能把 mainCtx 换成另一份几何
-      ctx = buildMaskBvh(g, excludedNodeFlags(g, exclude))
+      ctx = buildMaskBvh(g, excludedNodeFlags(g, exclude), { triFlags: excludedTriFlags(g, exclude) })
       mainCtx = { key: gkey, ctx }
       buildMs = ctx.buildMs
       await yieldMain()

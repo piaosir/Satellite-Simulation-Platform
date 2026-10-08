@@ -197,7 +197,8 @@ t('网格顶点满足抛物面定义；由网格反求焦距 ≈ 给定焦距（
       const mesh = r.ir.meshes[node.mesh]
       const ap = r.attachPoints.find((x) => x.name === `reflector_${i + 1}_focus`)
       const F = ap.posBody, a = ap.dirBody
-      const f0 = spec.reflectors[i].focalM ?? D.fdSolid * spec.reflectors[i].diameterM
+      const ri = spec.reflectors[i]
+      const f0 = ri.focalM ?? (String(ri.slot || '').startsWith('deck') ? D.fdSolid : D.fdSide) * ri.diameterM
       let worst = 0, sumF = 0, cnt = 0, minFacing = Infinity
       for (let k = 0; k < mesh.position.length; k += 3) {
         // 反射面节点本身无旋转，只有平移（本体系）；根节点才转到模型轴
@@ -220,8 +221,11 @@ t('网格顶点满足抛物面定义；由网格反求焦距 ≈ 给定焦距（
 })
 
 t('网状反射面：只有金属网（reflector_mesh、双面、半透明）+ 周边桁架，没有实心背壳 / 边环', () => {
-  for (const id of ['ssl1300', 'eurostar3000']) {
-    const r = buildTemplateModel(id)
+  // 模板里已没有网状反射面（2026-10-08 SSL-1300 / E3000 都改单一代表星）：拿默认卫星换一副超网状门限的侧挂反射面
+  const base = templateSpec('default-sat').spec
+  const meshSpec = { ...clone(base), reflectors: [{ slot: '+X', diameterM: 9, mesh: true, feedType: 'array' }, ...clone(base.reflectors).slice(1)] }
+  for (const [id, spec] of [['mesh9', meshSpec]]) {
+    const r = buildParamModel(spec)
     const names = new Set(r.ir.nodes.map((x) => x.name))
     const front = nodeByName(r.ir, 'reflector_1'), mat = matByNode(r.ir, front)
     assert.equal(mat.key, 'reflector_mesh'); assert.equal(mat.doubleSided, true); assert.ok(mat.opacity < 1)
@@ -425,7 +429,8 @@ t('全部模板 × 附加件：侧挂 / 塔馈 / 网状 / 馈源阵反射面、�
     const hz = b.zM / 2
     const variants = {
       base: base,
-      addSide: { ...clone(base), reflectors: [...base.reflectors, { mount: 'side', diameterM: 0.9 * s0 }] },
+      // 加一副侧挂：四个侧挂槽位都占满的模板（SSL-1300 东西各两副）先让出最后一副
+      addSide: { ...clone(base), reflectors: [...(base.reflectors.filter((r) => r.mount === 'side').length >= 4 ? base.reflectors.slice(0, -1) : base.reflectors), { mount: 'side', diameterM: 0.9 * s0 }] },
       sideDeck: { ...clone(base), reflectors: [{ slot: '+X', diameterM: 0.9 * s0 }, { slot: 'deck+Y', diameterM: 0.5 * s0 }] },
       meshArray: { ...clone(base), reflectors: [{ slot: '-X', diameterM: 2.5 * s0, mesh: true, feedType: 'array' }, { slot: 'deck-Y', diameterM: 0.6 * s0, mesh: true }] },
       tilted: { ...clone(base), reflectors: [{ slot: '+X', diameterM: 0.8 * s0, boresightBody: [0.3, 0.2, 1] }, { slot: '-X', diameterM: 0.8 * s0, boresightBody: [0, 0, 1], offsetDirBody: [0, 1, 0.2] }] },
@@ -516,11 +521,22 @@ t('模板字段：非空值必须带出处（结构属性除外）；fieldGaps �
     assert.equal(tpl.fieldGaps.length > 0, tpl.needsInput.length > 0, `${id} 有数据缺口 ⇔ 有 needsInput`)
   }
   // 布局类参数取自代表星的，source 里点名
-  assert.match(TEMPLATES.ssl1300.fields.reflectors.source, /^代表星 TerreStar-1：https:/)
-  assert.match(TEMPLATES.eurostar3000.fields.reflectors.source, /^代表星 Inmarsat-4：https:/)
+  assert.match(TEMPLATES.ssl1300.fields.reflectors.source, /^代表星 EchoStar XVII：https:/)
+  // SSL-1300 十字翼：3 块串联 + 中间一块两侧挂侧板（代表星渲染计数）；四副侧挂反射面（东西各两副叠放），口径是缺口
+  const ss = templateSpec('ssl1300')
+  assert.deepStrictEqual(ss.spec.wings.map((w) => [w.side, w.panels, w.sidePanels]), [['+Y', 3, 2], ['-Y', 3, 2]])
+  assert.equal(normalizeSpec(ss.spec).wings[0].sidePanelAt, 2, '侧板挂中间一块（外侧还有一块：十字形）')
+  assert.deepStrictEqual(ss.spec.reflectors.map((r) => r.slot), ['+X', '-X', '+X2', '-X2'])
+  assert.ok(ss.spec.reflectors.every((r) => r.mesh === false && r.focalM === 4), '侧挂实面 f/D 1.6')
+  const sr = buildTemplateModel('ssl1300')
+  near(sr.bboxBody.max[1] - sr.bboxBody.min[1], 26.07, 1e-6, 'SSL-1300 跨度复现 EchoStar XVII 26.07 m')
+  assert.match(TEMPLATES.eurostar3000.fields.reflectors.source, /^代表星 Yahsat Y1A：https:/)
   assert.match(TEMPLATES.spacebus4000.fields.spanM.source, /^代表星 Eutelsat W3B：/)
   const e3 = templateSpec('eurostar3000')
-  assert.equal(e3.specSources.reflectors.rep, 'Inmarsat-4'); assert.match(e3.specSources.reflectors.url, /^https:/)
+  assert.equal(e3.specSources.reflectors.rep, 'Yahsat Y1A'); assert.match(e3.specSources.reflectors.url, /^https:/)
+  assert.deepStrictEqual(e3.spec.reflectors.map((r) => r.slot), ['+X', '-X', '+X2', '-X2'], 'E3000：Y1A 东西各两副')
+  // Spacebus 4000：Solarbus W61 侧板挂第 2 块（十字，外侧还有两块）
+  assert.ok(templateSpec('spacebus4000').spec.wings.every((w) => w.sidePanels === 2 && w.sidePanelAt === 2))
   // 平台通用指标不带代表星前缀（SB4000 的板数取自平台综述，不是某颗星）
   const sb = templateSpec('spacebus4000')
   assert.equal(sb.specSources['wings[*].panels'].source, 'https://www.engineering.org.cn/engi/CN/10.1016/j.eng.2022.04.013')
@@ -564,7 +580,7 @@ t('缺口口径：needsInput = fill:"none" 那份 spec 的 validateSpec().missin
   // 审查复现：反射面缺数据的模板在 none 档必须报缺（旧实现永远进不了 missing）
   assert.deepStrictEqual(templateSpec('default-sat', { fill: 'none' }).needsInput, ['bus.xM', 'bus.yM', 'bus.zM', 'wings', 'reflectors'])
   for (const id of ['default-sat', 'spacebus4000']) assert.ok(validateSpec(templateSpec(id, { fill: 'none' }).spec).missing.includes('reflectors'), `${id} 反射面报缺`)
-  assert.deepStrictEqual(templateSpec('ssl1300', { fill: 'none' }).needsInput, ['wings'])
+  assert.deepStrictEqual(templateSpec('ssl1300', { fill: 'none' }).needsInput, ['wings[0].panelHM', 'wings[0].panelWM', 'wings[1].panelHM', 'wings[1].panelWM', 'reflectors[0].diameterM', 'reflectors[1].diameterM', 'reflectors[2].diameterM', 'reflectors[3].diameterM'])
   assert.deepStrictEqual(templateSpec('flat-leo', { fill: 'none' }).needsInput, ['bus.zM', 'wings[0].panels'])
   // 用户只把平台体与翼补上、反射面仍空 → 仍然不能生成（旧实现这里放行，生成出一颗没有反射面的星）
   const d = templateSpec('default-sat', { fill: 'none' })
@@ -576,10 +592,10 @@ t('缺口口径：needsInput = fill:"none" 那份 spec 的 validateSpec().missin
   withBlank.reflectors[0].diameterM = 2.2
   assert.ok(validateSpec(withBlank).ok)
   assert.equal(buildParamModel(withBlank).parts.filter((p) => p.role === 'reflector').length, 1)
-  // SSL-1300：翼数未知 → 加翼后条目字段（板数 / 板尺寸）继续报缺
+  // SSL-1300：翼数 / 板数有出处、板尺寸没有 → 加翼后条目的板尺寸继续报缺（板数不报）
   const ssl = templateSpec('ssl1300', { fill: 'none' })
-  const sslW = { ...ssl.spec, wings: [{ side: '+Y', ...ssl.itemDefaults.wing }] }
-  assert.deepStrictEqual(validateSpec(sslW).missing, ['wings[0].panels', 'wings[0].panelHM', 'wings[0].panelWM'])
+  const sslW = { ...ssl.spec, wings: [{ side: '+Y', ...ssl.itemDefaults.wing }], reflectors: [] }
+  assert.deepStrictEqual(validateSpec(sslW).missing, ['wings[0].panelHM', 'wings[0].panelWM'])
   // 审查点名的 illustrative 写法：默认卫星 fill 档
   assert.deepStrictEqual(templateSpec('default-sat').illustrative, ['bus.xM', 'bus.yM', 'bus.zM', 'wings', 'reflectors', 'reflectors[0].diameterM', 'reflectors[1].diameterM', 'reflectors[2].diameterM', 'reflectors[3].diameterM'])
   assert.deepStrictEqual(templateSpec('spacebus4000').illustrative, ['wings', 'reflectors'], 'SB4000 反射面口径有出处，只有数量是示意')
@@ -616,13 +632,15 @@ t('立方星：CDS 尺寸复现、四根导轨贯通全长、展开板选项、�
 // 原 dfh4e 模板两档 spec（撤下前由 templateSpec('dfh4e') 逐字段导出；template / name 两个记录字段不参与几何，另比）。
 // 导出时核过：两份去掉 template / name 后的 specHash 与撤下前的原模板相同（fill 档 949cffb8062993c8、none 档 02852a1beb3b6138），
 // 生成几何摘要（IR 网格逐字节 + 节点 / 挂点 / 关节 / 太阳翼组 / 质量特性 / 部件 / 包围盒）3b40967f66f46f10a2fd763628e9523e 相同。
+// 2026-10-08：东西侧挂实面反射面焦径比按调研改为 1.6（细节档 fdSide；Airbus US 11,858,663 / Thales US 8,487,830），两副侧挂的焦距 2 → 4；
+// 其余字段与原模板逐字段相同。
 const ORIG_DFH4E_FILL = {
   layout: 'geo', detailPreset: 'geo', massTargetKg: 5550,
   bus: { shape: 'box', xM: 2.36, yM: 2.1, zM: 3.6, mli: 'mli_gold', massKg: null },
   wings: ['+Y', '-Y'].map((side) => ({ side, panels: 4, panelHM: 3.3, panelWM: 2.36, sidePanels: 0, yokeLenM: 2.5, gapM: 0.05, tiltDeg: 0, axis: 'y' })),
   reflectors: [
-    { slot: '+X', mount: 'side', diameterM: 2.5, focalM: 2, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false },
-    { slot: '-X', mount: 'side', diameterM: 2.5, focalM: 2, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false },
+    { slot: '+X', mount: 'side', diameterM: 2.5, focalM: 4, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false },
+    { slot: '-X', mount: 'side', diameterM: 2.5, focalM: 4, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false },
     { slot: 'deck+Y', mount: 'deck', diameterM: 1.2, focalM: 0.96, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false },
     { slot: 'deck-Y', mount: 'deck', diameterM: 1.2, focalM: 0.96, offsetHM: null, posBody: null, boresightBody: [0, 0, 1], feedType: 'horn', mesh: false, shaped: false }
   ],

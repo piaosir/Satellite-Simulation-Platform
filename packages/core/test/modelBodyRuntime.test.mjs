@@ -322,4 +322,59 @@ await t('⑨ mountAxesAt 附带项与 bindSigOf；验证台注入口不进 Node'
   assert.equal(typeof rt._putMask, 'undefined', 'Node 里 import.meta.env 不在：验证台注入口不导出')
 })
 
+await t('⑩ setAttitude：与已有绑定合并、先落本地再落盘、坏值丢弃报回；拒写 → 重读复位；isPlainNadir 认三个偏置；mountAxesAt 带本体偏航', async () => {
+  const disk = { 'norad:25544': { model: { id: 'auto' }, mounts: [{ id: 'm1', name: 'M1', posBody: [0, 0, 0], boresightBody: [0, 0, 1], upBody: [0, -1, 0] }], attitude: { law: 'nadir', params: {} } } }
+  let fail = false
+  const calls = [], ls = new Set()
+  const api = { models: {
+    async bindingsGet() { return JSON.parse(JSON.stringify({ schema: 1, prefs: null, bindings: disk })) },
+    async bindingsSet(o) {
+      calls.push(JSON.parse(JSON.stringify(o)))
+      if (fail) return { ok: false, code: 'corrupt' }
+      if (o.binding) disk[o.satKey] = JSON.parse(JSON.stringify(o.binding)); else delete disk[o.satKey]
+      for (const f of ls) f({ type: 'bindings' })          // 同主进程：写成功即广播，各窗口重读
+      return { ok: true }
+    },
+    onChanged(cb) { ls.add(cb); return () => ls.delete(cb) }
+  } }
+  const rt = BR.createBodyRuntime({ api })
+  await rt.ready()
+  assert.equal(rt.isPlainNadir('norad:25544'), true)
+  const p = rt.setAttitude('norad:25544', { law: 'nadir', params: { rollBiasDeg: 0.5, pitchBiasDeg: 'x' } })
+  // 本地缓存当场就是新值（画面当拍跟上，不等 IPC）
+  assert.deepEqual(rt.attitudeFor('norad:25544'), { law: 'nadir', params: { rollBiasDeg: 0.5 } })
+  assert.equal(rt.isPlainNadir('norad:25544'), false, '滚转偏置 ≠ 常量 nadir')
+  const r = await p
+  assert.equal(r.ok, true)
+  assert.ok(r.errors.some((e) => e.includes('pitchBiasDeg')), '归一丢掉的坏值照实报回')
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].binding.mounts.map((m) => m.id), ['m1'], '挂点原样')
+  assert.deepEqual(calls[0].binding.model, { id: 'auto' }, '模型原样')
+  assert.deepEqual(calls[0].binding.attitude, { law: 'nadir', params: { rollBiasDeg: 0.5 } }, '送出去的是归一后的姿态（主进程见到被清洗过的条目会整条拒写）')
+  // 还没有绑定的星：从空绑定起
+  await rt.setAttitude('grdsat:F1', { law: 'yawSteer', params: { sunSide: '-X' } })
+  assert.deepEqual(disk['grdsat:F1'], { model: { id: 'auto' }, mounts: [], attitude: { law: 'yawSteer', params: { sunSide: '-X' } } })
+  // 主进程拒写 → 重读复位到盘上那份
+  fail = true
+  const r2 = await rt.setAttitude('norad:25544', { law: 'sun', params: {} })
+  assert.equal(r2.ok, false); assert.equal(r2.code, 'corrupt')
+  assert.equal(rt.attitudeFor('norad:25544').law, 'nadir', '拒写后本地缓存回到盘上那份')
+  assert.equal((await rt.setAttitude('bad key', { law: 'nadir' })).code, 'bad-key')
+  // 本体偏航：nadir = 偏航偏置、yawSteer = 此刻的导引角、其余律无定义（null）
+  fail = false
+  const ctx = { rEcef: geoR, tMs: T0 }
+  await rt.setAttitude('norad:25544', { law: 'nadir', params: { yawBiasDeg: 7 } })
+  assert.equal(rt.mountAxesAt('norad:25544', '', ctx).yawDeg, 7)
+  await rt.setAttitude('norad:25544', { law: 'yawSteer', params: {} })
+  const ys = rt.mountAxesAt('norad:25544', '', ctx)
+  assert.ok(Number.isFinite(ys.yawDeg) && ys.yawDeg === rt.attitudeBasisAt('norad:25544', ctx).yawDeg)
+  await rt.setAttitude('norad:25544', { law: 'sun', params: {} })
+  assert.equal(rt.mountAxesAt('norad:25544', '', ctx).yawDeg, null)
+  // 没有 api（单测 / 验证台）：只改本地缓存
+  const rt0 = BR.createBodyRuntime()
+  const r0 = await rt0.setAttitude('norad:1', { law: 'inertial', params: { eulerDeg: { yaw: 10 } } })
+  assert.equal(r0.ok, true); assert.equal(rt0.attitudeFor('norad:1').law, 'inertial')
+  rt.dispose()
+})
+
 console.log(`modelBodyRuntime: ${n} 项通过`)

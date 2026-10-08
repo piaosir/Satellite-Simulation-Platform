@@ -13,8 +13,10 @@ import { ref, reactive, computed, watch } from 'vue'
 import { generateConstellation, validateWalker } from '../viz/constellation/walker.js'
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
+import { sceneNowMs } from '../shared/sceneClock.js'   // 「当前时刻」＝主窗口时间轴上的此刻（全软件一条时间线）
 
 const KEY = 'ci/panel'
+const minuteIso = (ms) => new Date(Math.floor(ms / 60000) * 60000).toISOString()   // 取整分的 ISO（UTC）
 // NGSO 面板态的版本号。v2 = 「抽样上限」的出厂默认由 200 改成留空（全量），见 load() 里的迁移。
 const NGSO_STATE_V = 2
 const api = typeof window !== 'undefined' ? window.api : null
@@ -120,7 +122,9 @@ export function useInterference() {
     patternKind: 'average',
     applyPolarization: true,
     thresholdDb: 15,
-    startIso: '',                    // 空 = 计算时取当前时刻（本层填，引擎不碰 Date.now）
+    // 起始时刻（可自定义；不随配置存盘）：每次打开窗口取时间轴当前时刻（取整分），「此刻」再取一次；
+    // 空串（旧调用方）= 计算时取时间轴当前时刻（sceneNowMs，本层填，引擎不碰 Date.now）。结束时刻 = 起始 + 时窗
+    startIso: minuteIso(sceneNowMs()),
     inlineGuardDeg: '',              // 空 = 半功率半角（B4：in-line 由规避角定义，不由波束宽定义）
     // 历元编排（P3）。single = 单历元（旧行为）；repeat = 时窗按回归周期取；
     // monte-carlo = 在一条长基线上按 seed 抽 count 个起点，样本池合并出一条 CDF + 置信区间。
@@ -177,6 +181,8 @@ export function useInterference() {
   }
 
   // GRD 树三源合并：星座3D 页导入的 + 链路预算导入的 + 本窗口导入的
+  // 星座3D 树里的实时星（关联星 / 轨道根数星）：星位取主窗口按时间轴此刻写的 globe3d/grdLive，覆盖存盘的旧快照
+  // （口径逐字同链路预算 linkbudget/grdParam.js 的 loadSatTree：只认存盘树里此刻仍是实时星的节点；关联星此刻解不出星历 → noEph，不取值）。
   function loadGrdTree() {
     const read = (key, pick) => {
       try {
@@ -186,9 +192,22 @@ export function useInterference() {
     }
     const nodes = []
     const g3 = read('globe3d/settings', (d) => d && d.grd)
+    const lv = read('globe3d/grdLive')
+    const live = (lv && lv.pos) || {}
+    const gone = new Set(Array.isArray(lv && lv.noEph) ? lv.noEph.map(String) : [])
     for (const s of ((g3 && g3.sats) || [])) {
       const ants = (s.antennas || []).filter((a) => a && a.imported && a.file)
-      if (ants.length) nodes.push({ origin: '星座3D', folder: s.folder, satName: s.satName || s.folder, lon: +s.lon || 0, lat: +s.lat || 0, altKm: +s.altKm || 35786, antennas: ants })
+      if (!ants.length) continue
+      const lp = (s.noradId || s.elements) ? live[s.folder] : undefined
+      const noEph = !lp && !!s.noradId && gone.has(String(s.folder))
+      const lon = lp ? Number(lp.lon) : (+s.lon || 0)
+      const lat = lp ? Number(lp.lat) : (+s.lat || 0)
+      const altKm = lp ? Number(lp.altKm) : (+s.altKm || 35786)
+      // 实时星：天线基底也用实时星位（antennaSpec 先认天线记录里的 satLon/satLat/satAlt 快照）
+      nodes.push({
+        origin: '星座3D', folder: s.folder, satName: s.satName || s.folder, lon, lat, altKm, live: !!lp || noEph, noEph,
+        antennas: lp ? ants.map((a) => ({ ...a, satLon: lon, satLat: lat, satAlt: altKm })) : ants
+      })
     }
     for (const key of ['lb/grdSats', 'ci/grdSats']) {
       const st = read(key)
@@ -337,9 +356,12 @@ export function useInterference() {
     if (!api || !api.interference) { msg.value = '需在桌面客户端中运行'; return }
     busy.value = true; msg.value = ''
     try {
-      const r = await api.interference.asi(asiPayload())
+      const payload = asiPayload()
+      const fp = JSON.stringify(payload)          // 开算那一刻的入参（「输入已变」比的就是它，见文件末 stale）
+      const r = await api.interference.asi(payload)
       if (!r || !r.ok) { msg.value = '计算失败：' + ((r && r.error) || '未知错误'); asi.result = null; return }
       asi.result = r
+      ranFp.asi = fp
       const warns = [...((r.downlink && r.downlink.warnings) || []), ...((r.uplink && r.uplink.warnings) || [])]
       msg.value = warns.length ? warns[0] : ''
     } finally { busy.value = false }
@@ -351,6 +373,8 @@ export function useInterference() {
   async function sampleXpiFromGrd() {
     const a = currentAntenna.value
     if (!a) { msg.value = '先选一副 GRD 方向图'; return }
+    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }   // 源星此刻解不出星位：不拿存盘旧星位顶替（同链路预算 grdParam）
+    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
     if (!api || !api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
     busy.value = true
     try {
@@ -358,11 +382,12 @@ export function useInterference() {
       // 共/交比。此前用 pol:'P1/P2' 走 sampleMax 是错的——既把共极化认反（真实文件多为 P2 才是
       // 共极化，取出来是负数），又在各波束的比值里取最大（跟该点实际收哪个波束无关）。
       const spec = antennaSpec(a)
+      const at = xpiLoc()                         // 这个值是在哪个站址、哪副天线上取的（「输入已变」要认它）
       const r = await api.linkBudget.grdSampleXpd({ ...spec, points: [{ lon: +site.lon, lat: +site.lat }] })
       const v = r && r.ok && Array.isArray(r.values) ? r.values[0] : null
       if (!v) { msg.value = '该站址落在方向图网格域外，或卫星不可见'; xpi.satGrdRatioDb = ''; xpi.satGrdDetail = null; return }
       xpi.satGrdRatioDb = v.xpdDb
-      xpi.satGrdDetail = v
+      xpi.satGrdDetail = { ...v, at }
       msg.value = `卫星侧 XPD = ${v.xpdDb.toFixed(2)} dB（服务波束 #${v.servingIdx}，共极化分量 P${v.coPolIndex}：共 ${v.coPolDb.toFixed(1)} / 交 ${v.xPolDb.toFixed(1)} dB）`
     } finally { busy.value = false }
   }
@@ -400,6 +425,8 @@ export function useInterference() {
     busy.value = true
     try {
       const satDb = xpi.satSource === 'grd' ? numOr(xpi.satGrdRatioDb, null) : numOr(xpi.satManualDb, null)
+      // GRD 那一段按「取值时」的站址 / 天线记：之后站址或天线换了、却没重取，结果照样算过期
+      const fp = fpXpi(xpi.satGrdDetail ? xpi.satGrdDetail.at : null)
       const r = await api.interference.xpi({
         satellite: satDb == null ? null : { db: satDb, source: xpi.satSource === 'grd' ? 'grd' : 'manual' },
         earthStation: esDesc(),
@@ -407,6 +434,7 @@ export function useInterference() {
       })
       if (!r || !r.ok) { msg.value = '计算失败：' + ((r && r.error) || '未知错误'); xpi.result = null; return }
       xpi.result = r.result
+      ranFp.xpi = fp
       if (!r.result) msg.value = '三段全缺 —— 至少给一段才能合成'
     } finally { busy.value = false }
   }
@@ -417,11 +445,14 @@ export function useInterference() {
   async function computeCci() {
     const a = currentAntenna.value
     if (!a) { msg.value = '先选一副 GRD 方向图'; return }
+    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }   // 源星此刻解不出星位：不拿存盘旧星位顶替（同链路预算 grdParam）
+    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
     if (!api || !api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
     const pts = cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat))
     if (!pts.length) { msg.value = '至少给一个取值点'; return }
     busy.value = true; msg.value = ''
     try {
+      const fp = fpCci()
       const spec = antennaSpec(a)
       const r = await api.linkBudget.grdSampleCci({
         ...spec,
@@ -437,6 +468,7 @@ export function useInterference() {
         rows: pts.map((p, i) => ({ name: p.name || `点${i + 1}`, lon: +p.lon, lat: +p.lat, cciDb: r.cci[i], servingIdx: r.serving[i] })),
         coloring: r.coloring, beamIdx: r.beamIdx || [], colors: r.colors
       }
+      ranFp.cci = fp
       const none = cci.result.rows.filter((x) => x.cciDb == null).length
       if (none === cci.result.rows.length) msg.value = '全部取值点均无有效结果 —— 请核查站址是否落在方向图覆盖内，或该色下无同色波束'
     } finally { busy.value = false }
@@ -451,6 +483,8 @@ export function useInterference() {
   async function computeCciField() {
     const a = currentAntenna.value
     if (!a) { msg.value = '先选一副 GRD 方向图'; return }
+    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }   // 源星此刻解不出星位：不拿存盘旧星位顶替（同链路预算 grdParam）
+    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
     if (!api || !api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
     const b = cci.bounds
     const step = Math.max(0.05, +cci.fieldStep || 1)
@@ -463,6 +497,7 @@ export function useInterference() {
     }
     busy.value = true; msg.value = `C/CCI 场计算… ${nx}×${ny} 格`
     try {
+      const fp = fpCciField()
       const xs = new Float64Array(nx), ys = new Float64Array(ny)
       for (let i = 0; i < nx; i++) xs[i] = +b.lonMin + i * step
       for (let j = 0; j < ny; j++) ys[j] = +b.latMin + j * step
@@ -480,6 +515,7 @@ export function useInterference() {
       let n = 0
       for (let k = 0; k < z.length; k++) { const v = r.cci[k]; z[k] = v == null ? NaN : v; if (v != null) n++ }
       cci.field = { xs, ys, nx, ny, z, coloring: r.coloring, beamIdx: r.beamIdx || [], colors: r.colors, valid: n }
+      ranFp.cciField = fp
       msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '场图全域无有效值 —— 请核查方向图覆盖范围与复用色数（色数≥波束数时无同色波束）'
     } finally { busy.value = false }
   }
@@ -494,6 +530,8 @@ export function useInterference() {
     //   walker         → 只有设计参数时的方案比选。
     // 出 IPC 的东西一律现造纯对象/纯数组（切断任何响应式代理），口径同本文件其余几处 payload：
     // 结构化克隆搬不动 Vue 的代理，一旦漏进去就是 invoke 当场抛（见 satGroupIds 的头注）。
+    // 起点：给了 startIso 用它，留空取主窗口时间轴上的此刻（场景时刻；实时档即系统钟）。walker 的设计历元取同一刻。
+    const startMs = ngso.startIso ? Date.parse(ngso.startIso) : sceneNowMs()
     const grp = (g) => {
       if (g.source === 'group' && String(g.group || '').startsWith('cc:')) {
         const cc = ccSats[g.group] || []
@@ -508,7 +546,7 @@ export function useInterference() {
       }
       return g.source === 'group'
         ? { source: 'group', group: g.group, limit: numOr(g.limit, undefined), satIds: satGroupIds[g.group] ? satGroupIds[g.group].map(String) : undefined }
-        : { source: 'walker', name: g.name, altKm: +g.altKm, incl: +g.incl, planes: +g.planes, perPlane: +g.perPlane, phase: +g.phase, epoch: ngso.startIso || new Date().toISOString() }
+        : { source: 'walker', name: g.name, altKm: +g.altKm, incl: +g.incl, planes: +g.planes, perPlane: +g.perPlane, phase: +g.phase, epoch: ngso.startIso || new Date(startMs).toISOString() }
     }
     return {
       station: { lon: +site.lon, lat: +site.lat, alt: +site.alt },
@@ -522,7 +560,7 @@ export function useInterference() {
         selfSystem: !!g.selfSystem
       })),
       minElevDeg: +ngso.minElevDeg,
-      startMs: ngso.startIso ? Date.parse(ngso.startIso) : Date.now(),
+      startMs,
       horizonSec: +ngso.horizonH * 3600,
       stepSec: +ngso.stepSec,
       patternKind: ngso.patternKind,
@@ -664,6 +702,9 @@ export function useInterference() {
   //   故取 3×10⁸。再往上（数小时）才真该拦下来重新设算例。
   const NGSO_MAX_WORK = 3e8
   let _ngsoToken = 0
+  let _ngsoFp = ''
+  /** 起始时刻取时间轴当前时刻（取整分） */
+  function ngsoStartNow() { ngso.startIso = minuteIso(sceneNowMs()) }
 
   async function computeNgso() {
     if (!api || !api.interference) { msg.value = '需在桌面客户端中运行'; return }
@@ -681,6 +722,7 @@ export function useInterference() {
       return
     }
     busy.value = true; ngso.result = null; ngso.progress = 0; msg.value = '扫描中…'
+    _ngsoFp = fpNgso()                            // 开扫那一刻的入参；结果回来时才认（见 onNgsoDone）
     let r = null
     try { r = await api.interference.ngsoStart(ngsoPayload()) }
     catch (e) { busy.value = false; msg.value = '启动出错：' + ((e && e.message) || e); return }
@@ -707,6 +749,7 @@ export function useInterference() {
       busy.value = false
       if (!p.ok) { msg.value = '扫描失败：' + (p.error || '未知错误'); return }
       ngso.result = p.result
+      ranFp.ngso = _ngsoFp
       const w = (p.result.warnings || [])[0]
       msg.value = w || `完成（${p.result.elapsedMs} ms，${p.result.samples} 个有效样本）`
     })
@@ -880,7 +923,7 @@ export function useInterference() {
       if (!e || (e.key !== SAT_GROUPS_KEY && e.key !== CUSTOM_CONSTS_KEY)) return
       loadNgsoGroups()
     })
-    window.addEventListener('focus', () => { loadNgsoGroups() })
+    window.addEventListener('focus', () => { loadNgsoGroups(); loadGrdTree() })   // GRD 树顺带重读：实时星位跟上主窗口时间轴（同链路预算窗口）
   }
 
   // ---------------------------------------------------------------------------
@@ -998,6 +1041,48 @@ export function useInterference() {
     }
   })
 
+  // ---------------------------------------------------------------------------
+  // 「输入已变」（与链路预算 / 雨衰 / 日凌同一盏灯）：每页结果记下【开算那一刻】的入参指纹，现值对不上就亮。
+  // 本窗不存配置、结果也不随入参自动重算——从主窗口「分析 ▸ 干扰分析」带进新星 / 新站后，入参与顶栏都换了，
+  // 下面却还是上一次的数；手改入参同理。比的是指纹而不是「动过没有」：带进来的星站与现值相同、改了又改回，都不亮。
+  // 指纹只取各页真正入算的量（站名 / 星名 / 门限线这类只影响显示的不进），且全是小对象，computed 逐次重算无负担。
+  // ---------------------------------------------------------------------------
+  const ranFp = reactive({ asi: '', xpi: '', cci: '', cciField: '', ngso: '' })
+  // C/XPI 卫星侧 GRD 那一段的取值位置：站址 + 天线。现值与取值时不同 ⇒ 表里「本站处 XPD」已不是本站的
+  const xpiLoc = () => JSON.stringify([+site.lon, +site.lat, cci.antennaKey])
+  function fpXpi(at) {
+    const grd = xpi.satSource === 'grd'
+    const has = grd && xpi.satGrdRatioDb !== '' && xpi.satGrdRatioDb != null
+    return JSON.stringify({ src: xpi.satSource, sat: grd ? xpi.satGrdRatioDb : xpi.satManualDb, es: esDesc(), rain: xpi.rainXpdDb, at: has ? (at || null) : null })
+  }
+  const cciShared = () => ({ k: cci.antennaKey, c: cci.colors, o: cci.coloringOverride, s: cci.servingIdx, f: cci.floorDb })
+  const fpCci = () => JSON.stringify({ ...cciShared(), p: cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat)).map((p) => [+p.lon, +p.lat]) })
+  const fpCciField = () => JSON.stringify({ ...cciShared(), b: cci.bounds, st: cci.fieldStep })
+  // NGSO：不走 ngsoPayload —— 自定义星座会把成千颗星的根数整份带上，且起点留空时取的是走动的时间轴此刻
+  const fpNgso = () => JSON.stringify({
+    st: [site.lon, site.lat, site.alt], rx: [site.rxDiameterM, site.rxEfficiency, site.rxFreqGHz],
+    car: [carrier.eirpDbW, carrier.bandwidthHz, carrier.dnPolarization],
+    n: [ngso.minElevDeg, ngso.horizonH, ngso.stepSec, ngso.patternKind, ngso.applyPolarization, ngso.startIso, ngso.inlineGuardDeg],
+    ep: ngso.epochs, noise: ngso.noise, cr: ngso.criteria,
+    rain: [ngso.rain.on, ngso.rain.thresholdDb, ngso.rain.applyToInterference, ngso.rain.on ? ngso.rain.cdf : null],
+    sp: ngso.satPattern, w: ngso.wanted, i: ngso.interferers
+  })
+  const stale = computed(() => ({
+    asi: !!asi.result && JSON.stringify(asiPayload()) !== ranFp.asi,
+    xpi: !!xpi.result && fpXpi(xpiLoc()) !== ranFp.xpi,
+    cci: !!cci.result && fpCci() !== ranFp.cci,
+    cciField: !!cci.field && fpCciField() !== ranFp.cciField,
+    ngso: !!ngso.result && fpNgso() !== ranFp.ngso
+  }))
+
+  // 对星指向（跟踪目标星 / 目标星 + 偏置）的方向图：主进程拿不到目标星此刻的星位，采样器对这两档一律不取值
+  // （grdSampler.makeSampleCtx 返回 null）。在这里先拦下、给一句明确的状态，免得落成「域外 / 无同色波束」那类误导性的空结果。
+  const BORE_SAT_MSG = '对星指向的方向图无法按地面点取值'
+  function boreToSat(a) {
+    const bt = a && (grdTree.value.cfgs[a.node.folder + '::' + a.ant.name] || {}).boreType
+    return bt === 'sat' || bt === 'satoff'
+  }
+
   const hoveredId = ref('')
   function setHover(id) { hoveredId.value = id || '' }
 
@@ -1009,9 +1094,9 @@ export function useInterference() {
     ngsoGroups, groupStats, groupsErr, loadNgsoGroups, ensureGroup,
     loadLibraries, loadGrdTree, importGrdHere,
     computeAsi, computeXpi, computeCci, computeCciField, sampleXpiFromGrd,
-    computeNgso, cancelNgso, estimateNgso, loadRainCdf,
+    computeNgso, cancelNgso, estimateNgso, loadRainCdf, ngsoStartNow,
     addSource, removeSource, addFromLibrary,
     addCciPoint, removeCciPoint, addNgsoGroup, removeNgsoGroup,
-    geoData, hoveredId, setHover, load, persist
+    geoData, hoveredId, setHover, load, persist, stale
   }
 }

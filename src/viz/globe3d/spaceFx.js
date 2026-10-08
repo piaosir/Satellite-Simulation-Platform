@@ -1,137 +1,58 @@
-// 宇宙空间效果（地图设置 · 宇宙空间）：星空 / 大气辉光 / 太阳 三件 + 一个地球遮挡球。
+// 宇宙空间效果（地图设置 · 宇宙空间）：星空 / 大气辉光 / 太阳 / 月球 四件 + 一个地球遮挡球。
 // 普通球面视图与跟随卫星视图同一套（前身 followFx.js 只在跟随时画；2026-09-24 用户改成地图设置里的开关，跟随只改视角）。
 //
 // ── 拆开实现 ──
-// 三件各有自己的几何 / 着色器 / 材质，各自 create / dispose、彼此不引用：关掉哪件就只放掉哪件的 GPU 资源，
+// 四件各有自己的几何 / 着色器 / 材质，各自 create / dispose、彼此不引用：关掉哪件就只放掉哪件的 GPU 资源，
 // 一件都不开时 createSpaceFx 根本不会被建（scene.js 里总开关关 = spaceFx 为 null = 地球那一趟之后什么都不画）。
-// createSpaceFx 只是编排器：按开关懒建三件、把星空 / 太阳的网格挂进同一个场景、一次 render 按 renderOrder 画完；
-// 大气的网格挂进【地球场景】、在地球那一趟里画（见 ③ 节头注）。
+// createSpaceFx 只是编排器：按开关懒建各件、把星空 / 太阳的网格挂进同一个场景、一次 render 按 renderOrder 画完；
+// 大气与月球的网格挂进【地球场景】、在地球那一趟里画（见 ③ / ⑤ 节头注）。
 //
 // ── 画在哪 ──
 // 全用地球相机、场景单位 = 地球半径。①②③ 在 scene.js 的【第二趟】（地球那一趟之后、叠加层之前），④ 在地球那一趟里：
 //   ① 地球遮挡球：写深度不写颜色。半径 0.997 恒在地表之下 —— 地球那一趟写过深度的像素它必然测试不过，一个值都不改；
 //      只在地球材质没写深度的像素上补一层。只在星空 / 太阳要画时画（大气在地球那一趟里，用不着它）。
-//   ② 星空：银河带（开机烘一次的纹理，贴在银纬 ±24° 的带状网格上）+ 恒星（点精灵）。都钉在远平面、做深度测试 ——
+//   ② 星空：银河底图（NASA 星图，等经纬贴满整个天球网格）+ 亮星（耶鲁亮星表 9096 颗，点精灵）。都钉在远平面、做深度测试 ——
 //      地球、遮挡球、任何写了深度的东西（轨道线…）后面的星自然被挡掉，不必逐像素判「在不在地球背后」。
 //   ③ 太阳：日面 + 紧贴的日冕（远平面上的一小片，深度测试：沉到地球背后就被挡掉）。
 //   ④ 大气辉光：按视线与地球的几何逐像素解析求光学厚度（Chapman 近似，不步进 —— 无分层条纹、与分辨率无关），加法混合。
 //      网格只取临边一圈（盘面 0.8R → 大气外沿；盘心那一大块不画 —— 全屏画一遍在集显 2× 渲染倍率下就吃掉 0.3 ms 的预算）。
 //      挂在【地球那一趟】的不透明队列、底图之后与一切透明数据层之前：数据层叠在它上面，颜色不被染；片元深度解析地写、测深度。
 //      星空 / 日面在第二趟里照样叠在它上面（它不写深度）。详见 ③ 节头注。
-//   ⑤ 眩光（叠加层之后、最后画，见 renderGlare）：屏幕空间、只罩太阳周围一块，
-//      强度 × 太阳在不在画面里 × 地球挡了多少 × 调用方给的外部系数（跟随视图里主星模型挡太阳）。
+//   ⑤ 月球：真球、真位置（约 60 个地球半径处，在 far 之内）、写深度，挂在【地球那一趟】的不透明队列（底图之后、大气之前）。
+//      第二趟的星空 / 日面钉在远平面，测深度测不过它 → 月掩星、日面被月面挡住（日食）自然成立。详见 ⑤ 节头注。
+//   ⑥ 眩光（叠加层之后、最后画，见 renderGlare）：屏幕空间、只罩太阳周围一块，
+//      强度 × 太阳在不在画面里 × 地球挡了多少 × 月面挡了多少 × 调用方给的外部系数（跟随视图里主星模型挡太阳）。
 //
 // ── 坐标 ──
-// 场景轴 = ECEF (X, Z, −Y)。恒星 / 银河在惯性系（ICRS 赤经赤纬），每拍由 setTime 给 GMST：ECI → 地固 → 场景。
-// 于是惯性视角下星空相对屏幕不动、地球在转 —— 与轨道圈同一口径。岁差（J2000 与历元之差 ~0.3°）画面上看不出，不做。
+// 场景轴 = ECEF (X, Z, −Y)。恒星 / 银河在 ICRF（J2000 赤经赤纬），每拍由 setTime 给时刻：ICRF → 地固（IAU 1976 岁差 + 章动 + GAST，
+// lunar.js icrfToEcef，与月球同一条链）→ 场景。于是惯性视角下星空相对屏幕不动、地球在转 —— 与轨道圈同一口径；
+// 岁差也得做：2026 年整天球已偏 0.36°，不做的话月掩星（月掩昴星团 / 毕宿五 / 轩辕十四）会错开大半个月面。
 // 太阳方向由调用方按 terminator.solarGeometry 的日下点给（场景轴单位矢量）—— 与晨昏效果、晨昏线同一个太阳。
+// 月球的月心位置与月面姿态由调用方按 lunar.js 给（场景坐标 + 场景←月面固连系旋转），同一时刻、同一个 GMST。
 //
-// ── 星表 ──
-// 约 110 颗亮于 ~3 等的恒星（赤经 h / 赤纬 ° / V 星等 / B−V 色指数），取自公开星表常用值、精度到 0.01 h / 0.01°，
-// 画面用途足够。更暗的星（3–6.8 等）按真实星等计数律 N(<m) ∝ 10^(0.46 m) 程序化生成、向银道面集中，
-// 种子固定 —— 每次打开位置相同、绝不闪烁。
+// ── 星表与银河 ──
+// 全是真实数据：亮星 = 耶鲁亮星表 BSC5（V ≤ 约 6.5，逐颗真位置 / 星等 / 颜色），其余 17 亿颗星与银河 = NASA SVS 星图（Gaia DR2 等）。
+// 由 scripts/build-star-textures.mjs 生成，画法见 ② 节头注，来源与授权见 docs/地图数据来源台账.md #17。
 import * as THREE from 'three'
+import { MOON_R_KM, EARTH_SHADOW_KM, SUN_R_KM, AU_KM, discOverlap, icrfToEcef } from '../lunar.js'
+import { PLANETS, planetEphemeris, decodePlanetSeries } from '../planets.js'
 
 /** 软件光栅（SwiftShader / llvmpipe / 微软基本显示驱动…）：逐像素解析的大气与眩光太贵，只留星空与日面 */
 export function isSoftwareRenderer(name) { return /swiftshader|llvmpipe|softpipe|basic render|software|warp/i.test(String(name || '')) }
 
-// [赤经 h, 赤纬 °, V, B−V]
-const BRIGHT = [
-  [6.752, -16.716, -1.46, 0.00], [6.399, -52.696, -0.74, 0.15], [14.660, -60.834, -0.27, 0.71], [14.261, 19.182, -0.05, 1.23],
-  [18.616, 38.784, 0.03, 0.00], [5.278, 45.998, 0.08, 0.80], [5.242, -8.202, 0.13, -0.03], [7.655, 5.225, 0.34, 0.42],
-  [1.629, -57.237, 0.46, -0.16], [5.919, 7.407, 0.50, 1.85], [14.064, -60.373, 0.61, -0.23], [19.846, 8.868, 0.77, 0.22],
-  [12.443, -63.099, 0.76, -0.24], [4.599, 16.509, 0.86, 1.54], [16.490, -26.432, 0.96, 1.83], [13.420, -11.161, 0.97, -0.23],
-  [7.755, 28.026, 1.14, 1.00], [22.961, -29.622, 1.16, 0.09], [20.690, 45.280, 1.25, 0.09], [12.795, -59.689, 1.25, -0.24],
-  [10.140, 11.967, 1.40, -0.11], [6.977, -28.972, 1.50, -0.21], [7.577, 31.888, 1.58, 0.03], [17.560, -37.104, 1.62, -0.22],
-  [12.519, -57.113, 1.63, 1.59], [5.419, 6.350, 1.64, -0.21], [5.438, 28.608, 1.65, -0.13], [9.220, -69.717, 1.67, 0.00],
-  [5.603, -1.202, 1.69, -0.18], [22.137, -46.961, 1.73, -0.13], [5.679, -1.943, 1.77, -0.21], [12.900, 55.960, 1.77, -0.02],
-  [11.062, 61.751, 1.79, 1.07], [3.405, 49.861, 1.79, 0.48], [7.140, -26.393, 1.83, 0.68], [8.159, -47.337, 1.83, -0.22],
-  [17.622, -42.998, 1.86, 0.40], [18.403, -34.385, 1.85, -0.03], [8.375, -59.510, 1.86, 1.28], [13.792, 49.313, 1.86, -0.19],
-  [5.992, 44.948, 1.90, 0.08], [16.811, -69.028, 1.91, 1.44], [6.629, 16.399, 1.92, 0.00], [20.427, -56.735, 1.94, -0.20],
-  [8.745, -54.709, 1.96, 0.04], [6.378, -17.956, 1.98, -0.23], [9.460, -8.659, 1.98, 1.44], [2.530, 89.264, 1.98, 0.60],
-  [2.120, 23.463, 2.00, 1.15], [10.333, 19.842, 2.01, 1.13], [0.727, -17.987, 2.04, 1.02], [18.921, -26.297, 2.05, -0.13],
-  [14.111, -36.370, 2.06, 1.01], [1.162, 35.621, 2.05, 1.58], [0.140, 29.091, 2.06, -0.11], [5.796, -9.670, 2.07, -0.18],
-  [14.845, 74.156, 2.08, 1.47], [17.582, 12.560, 2.08, 0.15], [3.136, 40.956, 2.09, -0.05], [2.065, 42.330, 2.10, 1.37],
-  [11.818, 14.572, 2.14, 0.09], [22.711, -46.885, 2.10, 1.60], [8.060, -40.003, 2.21, -0.27], [9.285, -59.275, 2.21, 0.18],
-  [9.133, -43.433, 2.21, 1.66], [15.578, 26.715, 2.22, -0.02], [13.399, 54.925, 2.23, 0.02], [20.370, 40.257, 2.23, 0.67],
-  [0.675, 56.537, 2.24, 1.17], [17.943, 51.489, 2.24, 1.52], [5.533, -0.299, 2.25, -0.22], [0.153, 59.150, 2.28, 0.34],
-  [16.006, -22.622, 2.29, -0.12], [16.836, -34.293, 2.29, 1.15], [14.699, -47.388, 2.30, -0.15], [14.592, -42.158, 2.31, -0.19],
-  [11.031, 56.382, 2.34, -0.02], [14.750, 27.074, 2.35, 0.97], [21.736, 9.875, 2.38, 1.52], [17.708, -39.030, 2.39, -0.22],
-  [0.438, -42.306, 2.40, 1.09], [11.897, 53.695, 2.41, 0.04], [17.173, -15.725, 2.43, 0.06], [23.063, 28.083, 2.42, 1.67],
-  [21.310, 62.586, 2.45, 0.22], [7.402, -29.303, 2.45, -0.08], [9.368, -55.011, 2.47, -0.14], [12.263, -17.542, 2.59, -0.11],
-  [23.079, 15.205, 2.48, -0.04], [3.038, 4.090, 2.53, 1.64], [11.235, 20.524, 2.56, 0.12], [16.091, -19.806, 2.56, -0.07],
-  [5.546, -17.822, 2.58, 0.21], [15.283, -9.383, 2.61, -0.11], [15.738, 6.426, 2.63, 1.17], [1.911, 20.808, 2.64, 0.13],
-  [1.430, 60.235, 2.66, 0.13], [13.911, 18.398, 2.68, 0.58], [17.513, -37.296, 2.70, -0.22], [13.036, 10.959, 2.83, 0.94],
-  [14.848, -16.042, 2.75, 0.15], [0.221, 15.184, 2.83, -0.23], [19.044, -29.880, 2.60, 0.08], [18.350, -29.828, 2.70, 1.38],
-  [18.466, -25.422, 2.81, 1.02], [21.784, -16.127, 2.85, 0.29], [19.771, 10.613, 2.72, 1.52], [19.512, 27.960, 3.05, 1.13],
-  [0.945, 60.717, 2.47, -0.15], [1.907, 63.670, 3.37, -0.15], [14.073, 64.376, 3.65, -0.05], [12.252, -58.749, 2.79, -0.23],
-  // 昴星团（肉眼能认出的一小撮）
-  [3.791, 24.105, 2.87, -0.09], [3.819, 24.053, 3.62, -0.08], [3.747, 24.113, 3.70, -0.11], [3.763, 24.368, 3.87, -0.07],
-  [3.772, 23.948, 4.18, -0.06], [3.754, 24.467, 4.30, -0.11]
-]
-
-// 银河坐标轴（ICRS 单位矢量）：北银极 α=192.8595°、δ=+27.1283°；银心 α=266.405°、δ=−28.936°
-const NGP = [-0.86767, -0.19808, 0.45598]
-const GCN = [-0.05487, -0.87344, -0.48384]
-// 第三轴 Y = Z × X（l = 90° 指向天鹅座，α ≈ 21.2 h、δ ≈ +48°）
-const GY = [NGP[1] * GCN[2] - NGP[2] * GCN[1], NGP[2] * GCN[0] - NGP[0] * GCN[2], NGP[0] * GCN[1] - NGP[1] * GCN[0]]
-
 const D2R = Math.PI / 180
-function radec(raH, decDeg, out, o) {
-  const a = raH * 15 * D2R, d = decDeg * D2R
-  out[o] = Math.cos(d) * Math.cos(a); out[o + 1] = Math.cos(d) * Math.sin(a); out[o + 2] = Math.sin(d)
-}
-// B−V → 线性 RGB（按黑体色温的近似，够画面用）
-function bvColor(bv, out, o) {
-  const t = Math.max(-0.4, Math.min(2.0, bv))
-  let r, g, b
-  if (t < 0.4) { r = 0.72 + 0.7 * (t + 0.4); g = 0.82 + 0.35 * (t + 0.4); b = 1.0 }
-  else if (t < 1.0) { r = 1.0; g = 1.0 - 0.28 * (t - 0.4); b = 1.0 - 0.75 * (t - 0.4) }
-  else { r = 1.0; g = 0.83 - 0.18 * (t - 1.0); b = 0.55 - 0.25 * (t - 1.0) }
-  out[o] = Math.min(1, r); out[o + 1] = Math.min(1, g); out[o + 2] = Math.max(0.2, Math.min(1, b))
-}
 
-// 固定种子的伪随机（mulberry32）：星场每次一样、不闪
-function rng(seed) {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6D2B79F5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-export const FAINT_N = 6000
-/** 恒星几何（ICRS 单位矢量 + 颜色 + 星等）。导出给单测：亮星表逐颗、暗星数、种子不变 */
-export function buildStarArrays() {
-  const n = BRIGHT.length + FAINT_N
-  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3), mag = new Float32Array(n)
-  let k = 0
-  for (const s of BRIGHT) { radec(s[0], s[1], pos, k * 3); bvColor(s[3], col, k * 3); mag[k] = s[2]; k++ }
-  const R = rng(0x5a7e11)
-  // 星等：在 [3.0, 6.8] 上按累计计数律 N(<m) ∝ 10^(0.46 m) 反演抽样
-  const m0 = 3.0, m1 = 6.8, span = Math.pow(10, 0.46 * (m1 - m0)) - 1
-  while (k < n) {
-    const u = R(), v = R()
-    const z = 2 * u - 1, ph = 2 * Math.PI * v, rr = Math.sqrt(1 - z * z)
-    const x = rr * Math.cos(ph), y = rr * Math.sin(ph)
-    // 向银道面集中：银纬 |b| 越小接受率越高（暗星在银河带上约是两极的 3 倍）
-    const sb = x * NGP[0] + y * NGP[1] + z * NGP[2]
-    const bDeg = Math.asin(Math.max(-1, Math.min(1, sb))) / D2R
-    if (R() > 0.34 + 0.66 * Math.exp(-(bDeg * bDeg) / (18 * 18))) continue
-    pos[k * 3] = x; pos[k * 3 + 1] = y; pos[k * 3 + 2] = z
-    mag[k] = m0 + Math.log10(1 + R() * span) / 0.46
-    bvColor(-0.2 + R() * 1.6, col, k * 3)
-    k++
-  }
-  return { pos, col, mag, nBright: BRIGHT.length }
-}
-/** 惯性系 → 场景轴（行主序 3×3）：先绕 Z 转 −gmst 到地固（xe = c·x + s·y，ye = −s·x + c·y），再 (X,Y,Z) → (X, Z, −Y) */
+/** 惯性系 → 场景轴（行主序 3×3），只转 GMST：先绕 Z 转 −gmst 到地固（xe = c·x + s·y，ye = −s·x + c·y），再 (X,Y,Z) → (X, Z, −Y)。
+ *  星空现走 icrfToSceneRows（多了岁差与章动）；这一版留作没给时刻时的退路，也是单测里「与卫星 eciToEcf 同一个转动」的基准 */
 export function inertialToSceneRows(gmst) {
   const c = Math.cos(gmst), s = Math.sin(gmst)
   return [c, s, 0, 0, 0, 1, s, -c, 0]
+}
+/** ICRF → 场景轴（行主序 3×3）：lunar.icrfToEcef（IAU 1976 岁差 + 章动 + GAST，与月球同一条链）再换轴 (X, Y, Z) → (X, Z, −Y)。
+ *  gmst：同一时刻的 sat.gstime（调用方已算过就传，不重算） */
+export function icrfToSceneRows(date, gmst) {
+  const R = icrfToEcef(date, gmst)
+  return [R[0], R[1], R[2], R[6], R[7], R[8], -R[3], -R[4], -R[5]]
 }
 
 // ======================================================================================
@@ -148,16 +69,6 @@ vec4 farClip(vec3 d) {
   p.z = p.w * 0.99999;
   return p;
 }`
-const NOISE_GLSL = `
-float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-float vnoise(vec3 x) {
-  vec3 i = floor(x), f = fract(x);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
-             mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
-}
-float fbm(vec3 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++) { s += a * vnoise(p); p *= 2.03; a *= 0.5; } return s; }`
-const v3 = (a) => `vec3(${a.map((x) => x.toFixed(6)).join(', ')})`
 
 // ======================================================================================
 // ① 地球遮挡球
@@ -173,153 +84,411 @@ function createOccluder() {
 }
 
 // ======================================================================================
-// ② 星空：银河带 + 恒星
+// ② 星空：银河底图 + 亮星
 // ======================================================================================
-const MW_BAND = 24 * D2R        // 银河带网格半宽（银纬）：带内亮度 exp(−(sin b / 0.15)²) 在 24° 处 < 2e-3
-const MW_W = 2048, MW_H = 192   // 烘焙纹理（银经 × 银纬）：~5.7 px/° × 4.4 px/°，比 fbm 的最细一档（~2.5°）密一倍以上
-const MW_SCALE = 1.25           // 烘焙时除以它（mw 峰值 ~1.15），显示时乘回
-const MW_GAIN = 0.1             // 银河整体亮度（与跟随视图时代的 uMilky 同值）
-const MW_BAKE_FRAG = `
-uniform float uBand;
-varying vec2 vUv;
-${NOISE_GLSL}
-void main() {
-  float l = vUv.x * 6.28318530718;
-  float b = (vUv.y * 2.0 - 1.0) * uBand;
-  vec3 di = ${v3(GCN)} * (cos(b) * cos(l)) + ${v3(GY)} * (cos(b) * sin(l)) + ${v3(NGP)} * sin(b);
-  float sb = sin(b), gc = cos(b) * cos(l);
-  float band = exp(-(sb * sb) / (0.15 * 0.15));
-  float core = smoothstep(-0.2, 1.0, gc);
-  float cloud = fbm(di * 7.0) * 0.8 + fbm(di * 23.0) * 0.35;
-  float dust = smoothstep(0.35, 0.75, fbm(di * 11.0 + 3.1));   // 暗带：银河中线附近的尘埃裂缝
-  float mw = band * (0.35 + 0.65 * core) * cloud * (1.0 - 0.55 * dust * exp(-(sb * sb) / (0.05 * 0.05)));
-  // 银心方向偏暖（老年恒星）、盘面外侧偏冷：肉眼看银河是灰白里带一点黄
-  vec3 col = mix(vec3(0.70, 0.78, 0.98), vec3(1.0, 0.90, 0.74), core * core) * mw;
-  gl_FragColor = vec4(col / ${MW_SCALE.toFixed(2)}, 1.0);
+// ── 定调：人眼在轨看到的天空（2026-10-07 用户：「真实且没那么抢戏」）──
+//   亮于 6.5 等的星是一个个清楚的点、银河是一道淡淡的光，更暗的星单颗看不见、只汇进银河 —— 不是长曝光照片那种满屏细碎星点
+//  （先做过那一版：8K 底图把 6.5–11.5 等的星当颗粒原样留着，满天沙粒压过了地球与数据层）。外加两条眼睛 / 相机本来就有的适应：
+//   太阳在画面里时整体压暗（dim）、受光的地球（和月球）占画面越多曝光越低（adapt，见编排器 adaptFactor）。
+// ── 数据（scripts/build-star-textures.mjs 生成；来源、授权与署名见 docs/地图数据来源台账.md #17）──
+//   · 底图 stars_mw_4k.jpg + stars_mw_color_1k.png：NASA SVS「Deep Star Maps 2020」的 milkyway（Gaia DR2）+ hiptyc（Tycho / Hipparcos）
+//     两层做成的【弥漫光】—— 亮星表里的星抹掉、其余暗星滤成「看不清的星光」。尘埃带、煤袋、大小麦哲伦云、ω Cen 都是星表数据画出来的。
+//     4K 单通道亮度（texel = (Y / LMAX)^(1/GAMMA)，Y 是辐亮度）+ 1K 归一化颜色；等经纬、中线 = 赤经 0h、赤经向左增大、上 = +90°。
+//   · 亮星 starfield.data.js：耶鲁亮星表 BSC5 的 9096 颗（V ≤ 约 6.5），星位推到 STAR_EPOCH，B−V 定颜色；画成点精灵。
+// ── 曝光与显示曲线 ──
+//   显示线性值 x：星 = E0 · 10^(−0.4V) · PSF(r)（E0 = 一颗 0 等星在 CSS 像素面积上的总能量）；
+//   银河 = X · Y，X = STAR_MW_VIS · E0 · Ω_ref / KSR（Ω_ref = 42° 视场、900 CSS 像素高时一个像素的立体角；KSR = 底图单位下一颗 0 等星的
+//   辐亮度对立体角的积分，构建时拿三千多颗孤立星标定）。STAR_MW_VIS = 1 时银河与星是同一把物理尺（长曝光照片的比例）；
+//   人眼对低面亮度的弥漫光远不如对点源敏感，银河在肉眼里比照片淡得多 —— 取 0.5。X 不随窗口尺寸变：拉大窗口，银河的面亮度不变。
+//   显示曲线 tone(x) = sRGB(肩部(x))：0.6 以下线性，以上指数收向 1 —— 亮星核心渐渐变白，不是一刀削平。
+//   ★ 精灵用加法叠在底图上，曲线却不是线性的：精灵输出 tone(xb + x) − tone(xb)（xb = 顶点着色器在该星方向取的底图），
+//     叠完正好等于 tone(底图 + 星)。直接输出 tone(x) 的话，银河亮处的星会被凭空加亮一截（sRGB 在暗端斜率 12.92）。
+// ── PSF（能量按 CSS 像素面积记，核心宽度按物理像素记）──
+//   核心高斯 σ = 0.6 物理像素（按屏幕像素密度折成 CSS 像素：高分屏上星点照样锐；渲染像素不足 0.6 时放宽 ——
+//   采样太稀时亚像素位置一变亮度就跳，转动时星会闪）占 93% 能量，
+//   余 7% 进 Moffat 宽晕（β = 2、a = 3.5）：暗星就是一个点，越亮的星晕越显 —— 天狼星、金星一眼比 2 等星亮得多
+//   （镜头与人眼的散射本来如此），靠的不是把核心画大。晕给多了满天亮星个个顶着一团光（先给过 12%），收到 7%。
+//   精灵半径逐星算到「贡献降到 sRGB 半级」，晕到边上 smoothstep 收到 0，方框不露边。
+// ── 颜色 ── B−V → 有效温度（Ballesteros 2012）→ 黑体谱 → CIE 1931（Wyman–Sloan–Shirley 2013 解析拟合）→ 线性 sRGB（D65）→ 亮度归一，
+//   与 SVS 星图同一口径（Mitchell Charity 的黑体色）；饱和度收到 0.75（人眼看星色本就淡）。
+// ── 载入 ── 星表动态 import（勾上星空才拉，167 KB）；两张贴图异步载入，到手前精灵照画（身后底图当 0），底图不画。
+const STAR_LUM_URL = new URL('./textures/stars_mw_4k.jpg', import.meta.url).href
+const STAR_COL_URL = new URL('./textures/stars_mw_color_1k.png', import.meta.url).href
+/** 一颗 0 等星的总能量（显示线性值 × CSS 像素²），星空亮度 1、未压暗时 */
+export const STAR_E0 = 60
+/** 银河相对「与星同一把物理尺」的比例（见上） */
+export const STAR_MW_VIS = 0.5
+const STAR_SIG_PHYS = 0.6, STAR_SIG_RPX = 0.6  // 核心 σ（物理像素）与它在渲染像素上的下限
+const STAR_HALO = 0.07, STAR_HALO_A = 3.5, STAR_HALO_B = 2
+const STAR_HALO_N = (STAR_HALO_B - 1) / (Math.PI * STAR_HALO_A * STAR_HALO_A)   // Moffat 归一化系数
+const STAR_THR = 1.5e-4                          // 精灵半径算到的门限：sRGB 暗端半级（0.5 / 255 / 12.92）
+const STAR_SAT = 0.75
+// 底图色度饱和度：SVS 按 Gaia BP/RP「凭目测」配的色偏红褐（盘面星被尘埃消光染红），照搬时整条银河像一片褐色星云；
+// 收到 0.6 后核球偏暖白、尘埃带暗褐、麦云蓝白 —— 与按日光白平衡定标的银河全景照片（Mellinger、ESO / Brunier）观感一致
+const STAR_BG_SAT = 0.6
+const STAR_SOFT_R = 6                            // 软件光栅：精灵半径封顶（CSS 像素），晕只留个意思
+const OMEGA_REF = (2 * Math.tan(21 * D2R) / 900) ** 2
+const SKY_NU = 256, SKY_NV = 128                 // 天球网格：1.4° 一格，网格内 uv 线性插值与等经纬映射之差 < 0.25′（4K 像元 5.3′）
+
+/** starfield.data.js 的 STAR_DATA（base64，每颗 14 字节小端）→ 定长数组。导出给单测 */
+export function decodeStarData(mod) {
+  const s = atob(mod.STAR_DATA), n = mod.STAR_COUNT
+  if (s.length !== n * 14) throw new Error('starfield.data.js 长度不对：' + s.length + ' ≠ ' + n + ' × 14')
+  const bin = new Uint8Array(s.length)
+  for (let i = 0; i < s.length; i++) bin[i] = s.charCodeAt(i)
+  const dv = new DataView(bin.buffer)
+  const ra = new Float64Array(n), dec = new Float64Array(n), mag = new Float32Array(n), bv = new Float32Array(n), hr = new Uint16Array(n)
+  for (let k = 0; k < n; k++) {
+    const o = k * 14
+    ra[k] = dv.getFloat32(o, true); dec[k] = dv.getFloat32(o + 4, true)
+    mag[k] = dv.getInt16(o + 8, true) / 100; bv[k] = dv.getInt16(o + 10, true) / 1000; hr[k] = dv.getUint16(o + 12, true)
+  }
+  return { n, ra, dec, mag, bv, hr }
+}
+
+// CIE 1931 2° 配色函数的分段高斯解析拟合（Wyman, Sloan & Shirley 2013，JCGT 2(2)），380–780 nm 上与表值差 < 1%
+const cmf = (l, mu, s1, s2) => { const t = (l - mu) / (l < mu ? s1 : s2); return Math.exp(-0.5 * t * t) }
+function blackbodyRgb(T) {
+  let X = 0, Y = 0, Z = 0
+  for (let l = 380; l <= 780; l += 5) {
+    const B = Math.pow(l, -5) / Math.expm1(1.4387769e7 / (l * T))   // 普朗克（常数因子约掉）：c2 = hc/k = 1.4387769e7 nm·K
+    X += B * (1.056 * cmf(l, 599.8, 37.9, 31.0) + 0.362 * cmf(l, 442.0, 16.0, 26.7) - 0.065 * cmf(l, 501.1, 20.4, 26.2))
+    Y += B * (0.821 * cmf(l, 568.8, 46.9, 40.5) + 0.286 * cmf(l, 530.9, 16.3, 31.1))
+    Z += B * (1.217 * cmf(l, 437.0, 11.8, 36.0) + 0.681 * cmf(l, 459.0, 26.0, 13.8))
+  }
+  // XYZ → 线性 sRGB（D65）；色域外（极冷星的蓝通道）夹到 0
+  const r = Math.max(0, 3.2406 * X - 1.5372 * Y - 0.4986 * Z)
+  const g = Math.max(0, -0.9689 * X + 1.8758 * Y + 0.0415 * Z)
+  const b = Math.max(0, 0.0557 * X - 0.2040 * Y + 1.0570 * Z)
+  const L = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  return [r / L, g / L, b / L]
+}
+const BV_LO = -0.4, BV_HI = 2.4, BV_N = 225     // B−V 查表：0.0125 一档（Ballesteros 式在这个范围外不可信，夹到两端）
+let bvLut = null
+/** B−V → 线性 sRGB，亮度归一（0.2126 r + 0.7152 g + 0.0722 b = 1）。sat：0 = 白、1 = 黑体本色 */
+export function starColorBV(bv, sat = STAR_SAT) {
+  if (!bvLut) {
+    bvLut = new Float64Array(BV_N * 3)
+    for (let i = 0; i < BV_N; i++) {
+      const b = BV_LO + (BV_HI - BV_LO) * i / (BV_N - 1)
+      const c = blackbodyRgb(4600 * (1 / (0.92 * b + 1.7) + 1 / (0.92 * b + 0.62)))   // Ballesteros 2012：B−V → T_eff
+      bvLut[i * 3] = c[0]; bvLut[i * 3 + 1] = c[1]; bvLut[i * 3 + 2] = c[2]
+    }
+  }
+  const f = (Math.max(BV_LO, Math.min(BV_HI, Number.isFinite(bv) ? bv : 0.6)) - BV_LO) / (BV_HI - BV_LO) * (BV_N - 1)
+  const i = Math.min(BV_N - 2, Math.floor(f)), t = f - i
+  const out = [0, 0, 0]
+  for (let c = 0; c < 3; c++) out[c] = 1 + ((bvLut[i * 3 + c] * (1 - t) + bvLut[(i + 1) * 3 + c] * t) - 1) * sat
+  return out
+}
+
+/** 赤经 / 赤纬（rad）→ 底图 uv（u 向右、v 向上；three 的 flipY 贴图里 v = 1 是图的上边 = +90°） */
+export function starMapUv(ra, dec) {
+  return [(((0.5 - ra / (2 * Math.PI)) % 1) + 1) % 1, 0.5 + dec / Math.PI]
+}
+/** 天球网格：等经纬 nu × nv 格，顶点 = ICRF 单位矢量，uv 与底图同一套（u = 0.5 − α/2π，v = 0.5 + δ/π）。
+ *  u = 0 与 u = 1 两列顶点重合但分开存 —— 三角形内部永远不跨接缝，mipmap 选级不会在接缝上算出一条竖线。导出给单测 */
+export function skySphereArrays(nu = SKY_NU, nv = SKY_NV) {
+  const pos = new Float32Array((nu + 1) * (nv + 1) * 3), uv = new Float32Array((nu + 1) * (nv + 1) * 2)
+  let k = 0
+  for (let j = 0; j <= nv; j++) {
+    const v = j / nv, de = (v - 0.5) * Math.PI, cd = Math.cos(de), sd = Math.sin(de)
+    for (let i = 0; i <= nu; i++) {
+      const u = i / nu, ra = (0.5 - u) * 2 * Math.PI
+      pos[k * 3] = cd * Math.cos(ra); pos[k * 3 + 1] = cd * Math.sin(ra); pos[k * 3 + 2] = sd
+      uv[k * 2] = u; uv[k * 2 + 1] = v
+      k++
+    }
+  }
+  const idx = new Uint32Array(nu * nv * 6)
+  let q = 0
+  for (let j = 0; j < nv; j++) {
+    for (let i = 0; i < nu; i++) {
+      const a = j * (nu + 1) + i, b = a + 1, c = a + nu + 1, d = c + 1
+      idx[q++] = a; idx[q++] = b; idx[q++] = d; idx[q++] = a; idx[q++] = d; idx[q++] = c
+    }
+  }
+  return { pos, uv, idx }
+}
+
+// 显示曲线：0.6 以下线性、以上指数肩部收向 1，再 sRGB 编码（底图与精灵同一条）
+const TONE_GLSL = `
+vec3 shoulder(vec3 x) {
+  return mix(x, 0.6 + 0.4 * (1.0 - exp(-(x - 0.6) / 0.4)), step(vec3(0.6), x));
+}
+vec3 srgbEnc(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+vec3 tone(vec3 x) { return srgbEnc(shoulder(max(x, vec3(0.0)))); }`
+// 底图解码：亮度 texel（(Y / LMAX)^(1/GAMMA)）× 归一化颜色（max 通道 = 1，这里按亮度归一）→ 线性辐亮度（SVS 星图单位）
+const SKY_GLSL = `
+uniform sampler2D uLum;
+uniform sampler2D uCol;
+uniform vec2 uEnc;
+vec3 skyLin(float t, vec3 n) {
+  vec3 c = n / max(dot(n, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+  return uEnc.x * pow(t, uEnc.y) * mix(vec3(1.0), c, ${STAR_BG_SAT.toFixed(2)});
 }`
-const MW_VERT = `
+const SKY_VERT = `
 uniform mat3 uI2S;
 varying vec2 vUv;
 ${FAR_GLSL}
 void main() { vUv = uv; gl_Position = farClip(uI2S * position); }`
-const MW_FRAG = `
-uniform sampler2D uTex;
-uniform float uGain;
+const SKY_FRAG = `
+uniform float uX;
 varying vec2 vUv;
+${SKY_GLSL}
+${TONE_GLSL}
 ${DITHER_GLSL}
 void main() {
-  vec3 c = texture2D(uTex, vUv).rgb * (${(MW_SCALE * MW_GAIN).toFixed(4)} * uGain);
-  gl_FragColor = vec4(max(vec3(0.0), c + dither8(gl_FragCoord.xy) * step(0.0015, c.g)), 1.0);
+  vec3 v = tone(uX * skyLin(texture2D(uLum, vUv).r, texture2D(uCol, vUv).rgb));
+  gl_FragColor = vec4(max(vec3(0.0), v + dither8(gl_FragCoord.xy) * step(0.002, v.g)), 1.0);
 }`
-// 恒星：只用方向、钉在远平面
+// 亮星：只用方向、钉在远平面。精灵尺寸、核心 σ 都在顶点里按星等定，片元只求值。
+// 行星（PLANET）共用这一份：position 是场景系里的真位置（地球半径为单位），按「相机 → 行星」取方向（视差，见 ②b 节头注）
 const STAR_VERT = `
 attribute float mag;
 uniform mat3 uI2S;
 uniform float uPx;
-uniform float uGain;
-varying vec3 vCol;
+uniform float uE0;
+uniform float uX;
+uniform float uBg;
+uniform float uMaxR;
+uniform float uSig;
+varying vec3 vE;
+varying vec3 vXb;
+varying float vR;
+varying float vSig;
 ${FAR_GLSL}
+${SKY_GLSL}
 void main() {
+#ifdef PLANET
+  gl_Position = farClip(normalize(position - cameraPosition));
+#else
   gl_Position = farClip(uI2S * position);
-  float flux = pow(10.0, -0.4 * (mag - 1.0));                // 以 1 等星为 1
-  // 亮度按流量的 0.35 次方压缩（人眼对星等近似对数响应；线性映射下 5 等以下全看不见，天空只剩几十颗）
-  gl_PointSize = clamp(1.5 + 1.2 * sqrt(flux), 1.5, 5.5) * uPx;
-  vCol = color * clamp(0.42 + 0.62 * pow(flux, 0.35), 0.36, 1.4) * uGain;
+#endif
+  float E = uE0 * exp2(-1.32877124 * mag);                                   // 10^(−0.4 m)
+  float sig = max(uSig, ${STAR_SIG_RPX.toFixed(2)} / uPx);                  // CSS 像素
+  float pk = E * ${(1 - STAR_HALO).toFixed(4)} / (6.28318531 * sig * sig);  // 核心峰值
+  float hk = E * ${(STAR_HALO * STAR_HALO_N).toExponential(8)};             // 晕峰值
+  float rg = sig * sqrt(2.0 * log(max(pk / ${STAR_THR.toExponential(3)}, 1.0)));
+  float rh = ${STAR_HALO_A.toFixed(2)} * sqrt(max(pow(hk / ${STAR_THR.toExponential(3)}, ${(1 / STAR_HALO_B).toFixed(4)}) - 1.0, 0.0));
+  vR = min(max(max(rg, rh) + 0.5, 2.0 * sig), uMaxR);
+  vSig = sig;
+  vE = E * color;
+  gl_PointSize = 2.0 * vR * uPx;
+#ifdef PLANET
+  vXb = vec3(0.0);   // 行星都亮（天王星 5.7 等以外全亮于 1 等），身后银河那点底子不必计
+#else
+  // 这颗星身后的底图：LOD 2（4×4 像元 ≈ 21′ 的平均）—— 星本身已从底图抹掉，取到的是它背后的银河
+  vec2 st = vec2(0.5 - atan(position.y, position.x) * 0.159154943, 0.5 + asin(clamp(position.z, -1.0, 1.0)) * 0.318309886);
+  vXb = uBg * uX * skyLin(textureLod(uLum, st, 2.0).r, textureLod(uCol, st, 0.0).rgb);
+#endif
 }`
 const STAR_FRAG = `
-varying vec3 vCol;
+varying vec3 vE;
+varying vec3 vXb;
+varying float vR;
+varying float vSig;
+${TONE_GLSL}
 void main() {
-  vec2 c = gl_PointCoord * 2.0 - 1.0;
-  float r2 = dot(c, c);
-  if (r2 > 1.0) discard;
-  gl_FragColor = vec4(vCol * exp(-r2 * 2.5), 1.0);
+  vec2 d = (gl_PointCoord - 0.5) * (2.0 * vR);                               // 到星心（CSS 像素）
+  float r2 = dot(d, d);
+  if (r2 > vR * vR) discard;
+  float core = ${(1 - STAR_HALO).toFixed(4)} / (6.28318531 * vSig * vSig) * exp(-0.5 * r2 / (vSig * vSig));
+  float halo = ${(STAR_HALO * STAR_HALO_N).toExponential(8)} * pow(1.0 + r2 / ${(STAR_HALO_A * STAR_HALO_A).toFixed(2)}, ${(-STAR_HALO_B).toFixed(2)})
+             * (1.0 - smoothstep(0.7 * vR, vR, sqrt(r2)));
+  gl_FragColor = vec4(tone(vXb + vE * (core + halo)) - tone(vXb), 1.0);
 }`
 const FS_VERT = 'varying vec2 vNdc;\nvoid main() { vNdc = position.xy; gl_Position = vec4(position.xy, 0.0, 1.0); }'
 
-// 银河带网格：银经 2° × 银纬 4° 一格，顶点 = ICRS 单位矢量，uv 与烘焙纹理同一套（u = l / 2π，v = (b / 半宽 + 1) / 2）
-function mwBandGeometry() {
-  const NU = 180, NV = 12
-  const pos = new Float32Array((NU + 1) * (NV + 1) * 3), uv = new Float32Array((NU + 1) * (NV + 1) * 2)
-  let k = 0
-  for (let j = 0; j <= NV; j++) {
-    const b = (j / NV * 2 - 1) * MW_BAND, cb = Math.cos(b), sb = Math.sin(b)
-    for (let i = 0; i <= NU; i++) {
-      const l = i / NU * 2 * Math.PI, cl = Math.cos(l), sl = Math.sin(l)
-      for (let a = 0; a < 3; a++) pos[k * 3 + a] = GCN[a] * cb * cl + GY[a] * cb * sl + NGP[a] * sb
-      uv[k * 2] = i / NU; uv[k * 2 + 1] = j / NV
-      k++
-    }
-  }
-  const idx = []
-  for (let j = 0; j < NV; j++) for (let i = 0; i < NU; i++) {
-    const a = j * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1
-    idx.push(a, b, d, a, d, c)
-  }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2))
-  g.setIndex(idx)
-  return g
+/** 星（与行星）的曝光 E0：星空亮度 × 太阳压暗（最多压到 40%）× 适应系数 */
+export function starExposure(gain, dim, adapt) {
+  const a = Number.isFinite(adapt) ? Math.max(0, Math.min(1, adapt)) : 1
+  return STAR_E0 * gain * (1 - 0.6 * Math.max(0, Math.min(1, dim || 0))) * a
 }
 
-export function createStarfield(renderer) {
+/**
+ * @param {THREE.WebGLRenderer} renderer
+ * @param {boolean} [soft] 软件光栅：精灵半径封顶 STAR_SOFT_R（晕只留个意思）
+ */
+export function createStarfield(renderer, soft) {
   const I2S = { value: new THREE.Matrix3() }
-  // —— 银河：开机烘一次（GPU 上跑那段 fbm，~1 ms），之后每帧只是一次纹理采样 ——
-  const rt = new THREE.WebGLRenderTarget(MW_W, MW_H, { depthBuffer: false, stencilBuffer: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter })
-  rt.texture.wrapS = THREE.RepeatWrapping
-  rt.texture.wrapT = THREE.ClampToEdgeWrapping
-  {
-    const q = new THREE.PlaneGeometry(2, 2)
-    const m = new THREE.ShaderMaterial({ uniforms: { uBand: { value: MW_BAND } }, vertexShader: 'varying vec2 vUv;\nvoid main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }', fragmentShader: MW_BAKE_FRAG, depthTest: false, depthWrite: false })
-    const sc = new THREE.Scene(), o = new THREE.Mesh(q, m)
-    o.frustumCulled = false; sc.add(o)
-    const prev = renderer.getRenderTarget(), ac = renderer.autoClear
-    try {
-      renderer.setRenderTarget(rt)
-      renderer.autoClear = true
-      renderer.render(sc, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1))
-    } finally { renderer.setRenderTarget(prev); renderer.autoClear = ac }
-    q.dispose(); m.dispose()
-  }
-  const mwGeo = mwBandGeometry()
-  const mwU = { uI2S: I2S, uTex: { value: rt.texture }, uGain: { value: 1 } }
-  const mwMat = new THREE.ShaderMaterial({ uniforms: mwU, vertexShader: MW_VERT, fragmentShader: MW_FRAG, side: THREE.DoubleSide,
+  const U = { uI2S: I2S, uLum: { value: null }, uCol: { value: null }, uEnc: { value: new THREE.Vector2(0.5, 2.2) }, uX: { value: 0 } }
+  // —— 底图：整个天球一张网格，两张贴图都到手才画 ——
+  const A = skySphereArrays()
+  const skyGeo = new THREE.BufferGeometry()
+  skyGeo.setAttribute('position', new THREE.BufferAttribute(A.pos, 3))
+  skyGeo.setAttribute('uv', new THREE.BufferAttribute(A.uv, 2))
+  skyGeo.setIndex(new THREE.BufferAttribute(A.idx, 1))
+  const skyMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.DoubleSide,
     depthTest: true, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false })
-  const mw = new THREE.Mesh(mwGeo, mwMat)
-  mw.frustumCulled = false
-  mw.renderOrder = 1
-  // —— 恒星 ——
-  const S = buildStarArrays()
+  const sky = new THREE.Mesh(skyGeo, skyMat)
+  sky.frustumCulled = false
+  sky.renderOrder = 1
+  sky.visible = false
+  // —— 亮星：星表到手才画 ——
+  const starU = { ...U, uPx: { value: 1 }, uE0: { value: STAR_E0 }, uBg: { value: 0 }, uMaxR: { value: 64 }, uSig: { value: STAR_SIG_PHYS } }
   const starGeo = new THREE.BufferGeometry()
-  starGeo.setAttribute('position', new THREE.BufferAttribute(S.pos, 3))
-  starGeo.setAttribute('color', new THREE.BufferAttribute(S.col, 3))
-  starGeo.setAttribute('mag', new THREE.BufferAttribute(S.mag, 1))
-  const starU = { uI2S: I2S, uPx: { value: 1 }, uGain: { value: 1 } }
   const starMat = new THREE.ShaderMaterial({ uniforms: starU, vertexShader: STAR_VERT, fragmentShader: STAR_FRAG, vertexColors: true,
     depthTest: true, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false })
   const stars = new THREE.Points(starGeo, starMat)
   stars.frustumCulled = false
   stars.renderOrder = 2
-  let gain = 1, gmst = NaN
-  function setGmst(g) {
-    if (!Number.isFinite(g) || g === gmst) return
-    gmst = g
-    I2S.value.set(...inertialToSceneRows(g))
+  stars.visible = false
+  let gain = 1, nStars = 0, ksr = 0, haveLum = false, haveCol = false, disposed = false
+  // 点精灵尺寸上限（渲染像素）：桌面 GPU 一般 ≥ 256（ANGLE / D3D11 是 1024），取不到按 64
+  let maxPt = 64
+  try { const r = renderer.getContext().getParameter(renderer.getContext().ALIASED_POINT_SIZE_RANGE); if (r && r[1] > 0) maxPt = r[1] } catch { /* 无 GL 的环境 */ }
+  const syncBg = () => { sky.visible = haveLum && haveCol && ksr > 0; starU.uBg.value = sky.visible ? 1 : 0 }
+  import('./starfield.data.js').then((mod) => {
+    if (disposed) return
+    const S = decodeStarData(mod)
+    const pos = new Float32Array(S.n * 3), col = new Float32Array(S.n * 3), mag = new Float32Array(S.n)
+    for (let k = 0; k < S.n; k++) {
+      const cd = Math.cos(S.dec[k])
+      pos[k * 3] = cd * Math.cos(S.ra[k]); pos[k * 3 + 1] = cd * Math.sin(S.ra[k]); pos[k * 3 + 2] = Math.sin(S.dec[k])
+      const c = starColorBV(S.bv[k])
+      col[k * 3] = c[0]; col[k * 3 + 1] = c[1]; col[k * 3 + 2] = c[2]
+      mag[k] = S.mag[k]
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    starGeo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+    starGeo.setAttribute('mag', new THREE.BufferAttribute(mag, 1))
+    U.uEnc.value.set(mod.STAR_BG.LMAX, mod.STAR_BG.GAMMA)
+    ksr = mod.STAR_BG_KSR
+    nStars = S.n
+    stars.visible = true
+    syncBg()
+  }).catch(() => { /* 星表模块缺失（漏打包）：不画亮星，底图照画不了（缺标定），星空整件不出 */ })
+  // —— 底图贴图：亮度单通道 R8（WebGL2 允许 DOM 图像源直传 R8，浏览器取红通道）、色度 RGBA；都是编码过的数据，不做 sRGB 解码 / 色彩管理 ——
+  // 亮度图先 img.decode() 在后台线程解完再交给 three，免得第一次上传时主线程卡一下；超出显卡上限时 three 自己缩
+  const aniso = Math.max(1, Math.min(8, renderer.capabilities && renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1))
+  const prep = (t, red) => {
+    if (red) t.format = THREE.RedFormat
+    t.colorSpace = THREE.NoColorSpace
+    t.wrapS = THREE.RepeatWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+    t.anisotropy = aniso
+    t.needsUpdate = true
+    return t
   }
-  setGmst(0)
+  const ready = (t, red, done) => {
+    if (disposed) { t.dispose(); return }
+    const go = () => { if (disposed) { t.dispose(); return } done(prep(t, red)); syncBg() }
+    if (t.image && typeof t.image.decode === 'function') t.image.decode().then(go, go)
+    else go()
+  }
+  try {
+    const loader = new THREE.TextureLoader()
+    loader.load(STAR_LUM_URL, (t) => ready(t, true, (x) => { U.uLum.value = x; haveLum = true }), undefined, () => {})
+    loader.load(STAR_COL_URL, (t) => ready(t, false, (x) => { U.uCol.value = x; haveCol = true }), undefined, () => {})
+  } catch { /* 没有 DOM 的环境（单测）：只有精灵 */ }
+  I2S.value.set(...inertialToSceneRows(0))
   return {
-    objects: [mw, stars],
+    objects: [sky, stars],
     setStyle(o) { if (o && Number.isFinite(Number(o.gain))) gain = Math.max(0, Math.min(4, Number(o.gain))) },
-    setGmst,
-    /** dim：太阳在画面里时人眼被晃，恒星与银河整体压暗（0..1，NASA Eyes 同样如此） */
-    update(r, dim) {
-      starU.uPx.value = r.getPixelRatio()
-      const g = gain * (1 - 0.6 * Math.max(0, Math.min(1, dim || 0)))
-      starU.uGain.value = g
-      mwU.uGain.value = g
+    /** rows：ICRF → 场景（行主序 3×3，icrfToSceneRows / inertialToSceneRows） */
+    setFrame(rows) { if (rows && rows.length === 9) I2S.value.set(...rows) },
+    /** dim：太阳在画面里时人眼被晃，恒星与银河整体压暗（0..1，NASA Eyes 同样如此）；adapt：受光天体占画面带来的曝光系数（0..1，见编排器）。
+     *  压的都是曝光，底图与精灵一起压 */
+    update(r, dim, adapt) {
+      const px = r.getPixelRatio(), dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
+      starU.uPx.value = px
+      starU.uSig.value = STAR_SIG_PHYS / dpr
+      starU.uMaxR.value = Math.min(soft ? STAR_SOFT_R : Infinity, maxPt / (2 * px))
+      const E0 = starExposure(gain, dim, adapt)
+      starU.uE0.value = E0
+      U.uX.value = ksr > 0 ? STAR_MW_VIS * E0 * OMEGA_REF / ksr : 0
     },
-    stats: () => ({ stars: S.pos.length / 3, bright: S.nBright, gain }),
-    dispose() { rt.dispose(); mwGeo.dispose(); mwMat.dispose(); starGeo.dispose(); starMat.dispose() }
+    stats: () => ({ stars: nStars, bg: sky.visible, gain, x: U.uX.value }),
+    dispose() {
+      disposed = true
+      skyGeo.dispose(); skyMat.dispose(); starGeo.dispose(); starMat.dispose()
+      if (U.uLum.value) U.uLum.value.dispose()
+      if (U.uCol.value) U.uCol.value.dispose()
+    }
+  }
+}
+
+// ======================================================================================
+// ②b 行星：水、金、火、木、土、天王六颗 —— 与亮星同一套点精灵、曝光与显示曲线
+// ======================================================================================
+// 位置：src/viz/planets.js（VSOP87B，对 JPL Horizons / DE441 实测 ≤ 0.6″、天王星 ≤ 1.5″）给地心 ICRF 位置（AU），
+// 这里乘 ICRF → 场景的转动、换成地球半径，作为场景系里的真位置；着色器按「相机 → 行星」取方向 —— 视差是真的：
+// 相机最远离地心 50 个地球半径，金星下合时只有约 6600 个地球半径远，不按相机取方向，机位一动它就和恒星错开最多 0.4°。
+// 亮度：视星等（Mallama & Hilton 2018，含相位、土星环倾角、天王星亚纬度；水金木对 Horizons 逐位一致到 0.001 等）
+// → 与恒星同一条 E0 · 10^(−0.4V)；颜色：各行星（反射太阳光后的）B−V，走恒星同一条映射。
+// 星历缓存：模拟时间变化不到 20 s 不重算（水星地心角速度最快约 0.06″/s，20 s 才 1.2″）；ICRF → 场景的转动每拍都换（地球在转）。
+const RE_PER_AU = AU_KM / 6371
+const PLANET_CACHE_MS = 20000
+/**
+ * @param {THREE.WebGLRenderer} renderer
+ * @param {boolean} [soft] 软件光栅：精灵半径封顶
+ */
+export function createPlanets(renderer, soft) {
+  const n = PLANETS.length
+  const U = {
+    uI2S: { value: new THREE.Matrix3() }, uLum: { value: null }, uCol: { value: null }, uEnc: { value: new THREE.Vector2(1, 1) }, uX: { value: 0 },
+    uPx: { value: 1 }, uE0: { value: STAR_E0 }, uBg: { value: 0 }, uMaxR: { value: 64 }, uSig: { value: STAR_SIG_PHYS }
+  }
+  const pos = new Float32Array(n * 3), mag = new Float32Array(n), col = new Float32Array(n * 3)
+  PLANETS.forEach((P, k) => { const c = starColorBV(P.bv); col[k * 3] = c[0]; col[k * 3 + 1] = c[1]; col[k * 3 + 2] = c[2] })
+  const geo = new THREE.BufferGeometry()
+  const posAttr = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage)
+  const magAttr = new THREE.BufferAttribute(mag, 1).setUsage(THREE.DynamicDrawUsage)
+  geo.setAttribute('position', posAttr)
+  geo.setAttribute('mag', magAttr)
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3))
+  const mat = new THREE.ShaderMaterial({ defines: { PLANET: '' }, uniforms: U, vertexShader: STAR_VERT, fragmentShader: STAR_FRAG, vertexColors: true,
+    depthTest: true, depthWrite: false, transparent: true, blending: THREE.AdditiveBlending, toneMapped: false })
+  const pts = new THREE.Points(geo, mat)
+  pts.frustumCulled = false
+  pts.renderOrder = 2.5      // 亮星之后、日面之前
+  pts.visible = false
+  let series = null, eph = null, ephMs = NaN, pendDate = null, rows = inertialToSceneRows(0), gain = 1, disposed = false
+  let maxPt = 64
+  try { const r = renderer.getContext().getParameter(renderer.getContext().ALIASED_POINT_SIZE_RANGE); if (r && r[1] > 0) maxPt = r[1] } catch { /* 无 GL 的环境 */ }
+  function place() {
+    if (!eph) return
+    for (let k = 0; k < n; k++) {
+      const v = eph[k].icrf
+      for (let r = 0; r < 3; r++) pos[k * 3 + r] = (rows[r * 3] * v[0] + rows[r * 3 + 1] * v[1] + rows[r * 3 + 2] * v[2]) * RE_PER_AU
+      mag[k] = eph[k].mag
+    }
+    posAttr.needsUpdate = true
+    magAttr.needsUpdate = true
+    pts.visible = true
+  }
+  function setTime(date, frame) {
+    if (frame && frame.length === 9) rows = frame
+    if (date == null) { place(); return }
+    const ms = date instanceof Date ? date.getTime() : Number(date)
+    if (!series) { pendDate = ms; return }
+    if (!eph || !(Math.abs(ms - ephMs) < PLANET_CACHE_MS)) { eph = planetEphemeris(ms, series); ephMs = ms }
+    place()
+  }
+  import('../planets.data.js').then((mod) => {
+    if (disposed) return
+    series = decodePlanetSeries(mod)
+    if (pendDate != null) setTime(pendDate)
+  }).catch(() => { /* 级数模块缺失（漏打包）：不画行星 */ })
+  return {
+    objects: [pts],
+    setStyle(o) { if (o && Number.isFinite(Number(o.gain))) gain = Math.max(0, Math.min(4, Number(o.gain))) },
+    /** date：时刻（Date / 毫秒）；frame：ICRF → 场景（行主序 3×3，与星空同一个） */
+    setTime,
+    update(r, dim, adapt) {
+      const px = r.getPixelRatio(), dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1
+      U.uPx.value = px
+      U.uSig.value = STAR_SIG_PHYS / dpr
+      U.uMaxR.value = Math.min(soft ? STAR_SOFT_R : Infinity, maxPt / (2 * px))
+      U.uE0.value = starExposure(gain, dim, adapt)
+    },
+    /** 验证台 / 单测读数：各行星的视星等、地距（AU）与场景系方向 */
+    stats: () => ({ ready: pts.visible, planets: eph ? eph.map((e, k) => ({ key: e.key, mag: +e.mag.toFixed(2), delta: +e.delta.toFixed(4), scene: [pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]] })) : null }),
+    dispose() { disposed = true; geo.dispose(); mat.dispose() }
   }
 }
 
@@ -639,19 +808,281 @@ export function createSunFx() {
 }
 
 // ======================================================================================
+// ⑤ 月球：NASA LRO 月面贴图（LROC 彩色 + LOLA 坡度）的真球 —— 真实地心位置、月相、天平动，含地照与月食地影
+// ======================================================================================
+// 位置与姿态由 scene.js 每拍按 lunar.js 算好喂进来（setState：月心场景坐标 + 场景←月面固连系旋转），本层只管画。
+//
+// ── 为什么挂在【地球那一趟】、按真实深度画 ──
+//   月球在 56–64 个地球半径处，相机 far = 120 ≥ maxDistance 50 + 64 → 它恒在视锥里，可以画成真球、写真深度，不必像日面那样钉远平面：
+//   · 进地球场景的不透明队列（MOON_EARTH_ORDER 0.4：底图 0 之后、大气辉光 0.5 之前）：地球、轨道线、数据层照常压在它前面 ——
+//     轨道线 / 覆盖线 depthWrite=false，月球若放第二趟画，GEO 圈从月面前经过时会被月面盖掉；
+//     第二趟的星空 / 日面钉在远平面，测深度测不过它 → 月掩星、月面挡住日面（日食）自然成立；
+//     临边大气辉光（加法、不写深度）排在它之后，月出月落贴着地球临边时辉光照样叠在月面上。
+//   · 视差是真的：相机在 50 个地球半径内任意处，看到的月球方向与大小都按真实几何（与地心看可差数度）。
+//   · 「大小」只放大显示半径、不挪月心；光照与地影一律取【真实半径】上的点（放大后月食的本影位置、日月几何都不变）。
+//   · 跟随远地点在月球外侧的高椭圆轨道星时月球可能超出 far：顶点着色器把深度夹在远平面内一丝（仍在星空之前），不被裁掉。
+// ── 光照（线性空间算、最后编码回 sRGB；彩色贴图按 sRGB 纹理硬件解码成线性）──
+//   · 月面反射：lunar-Lambert（McEwen 1996）—— 满月整盘不压暗边（月球特有的「平」），弦月朝晨昏线渐暗。
+//   · 地形：LOLA 坡度图扰动法线（坡面朝日更亮）。不做自阴影，故【几何】晨昏线以外一律不受光（smoothstep 收边），
+//     免得夜侧朝阳的坡面凭空发亮。
+//   · 地照：地球反光照亮月面暗部，强度随「从月球看地球的相位」（新月前后地球是满地）—— 蛾眉月时暗部隐约可见。
+//   · 地影：月面上每一点看日面被地球挡住多少（Danjon 地影，与 lunar.js earthShadowFraction 同一个式子的 GLSL 版，改动两边同步）；
+//     本影里只剩地球大气折射的暗红光（越往本影中心越暗）。
+// ── 晨昏效果关（地球与卫星全亮）时月球照样有月相：月相是日月几何本身，不是画面「打光」，关掉它等于把月球画错。
+export const MOON_EARTH_ORDER = 0.4
+/** 坡度图编码满量程（★ 与 scripts/build-moon-textures.mjs 的 SLOPE_SCALE 同值） */
+export const MOON_SLOPE_SCALE = 0.8
+/** 显示放大倍数的出厂值：与日面的放大口径一致（SUN_R_VIS / SUN_R_TRUE ≈ 1.72）—— 日月在天上本就一样大，放大也该一样 */
+export const MOON_SCALE_DEF = 1.7
+const RE_KM = 6371   // 场景单位（scene.js / focusLanes.RE）
+const MOON_SEG_W = 128, MOON_SEG_H = 64
+// 地照强度：地球满相时暗部亮度相对满月受光处的比例。物理上约 1e-4，画面上看不见 —— 取 0.02：蛾眉月的暗部刚好浮出轮廓（照片长曝光的观感）；
+// 验证台试过 0.035，残月暗部连月海轮廓都清清楚楚，弦月的明暗对比被冲淡
+const MOON_EARTHSHINE = 0.02
+const MOON_MAP_URL = new URL('./textures/moon_lroc_4k.jpg', import.meta.url).href
+const MOON_RELIEF_URL = new URL('./textures/moon_relief_1k.png', import.meta.url).href
+// 网格局部 → 月面固连系（ME）：SphereGeometry 的 u = (lon + 180°)/360°、局部 +Y 是北极 → body = (x, −z, y)（行主序）。
+// 贴图那头的取向（图中线 = 0°、东经在右、北在上）由 scripts/build-moon-textures.mjs 用已知地物自检，这头由单测按网格 uv 逐顶点钉住
+export const MOON_LOCAL = Object.freeze([1, 0, 0, 0, 0, -1, 0, 1, 0])
+/**
+ * lunar.js 的结果 → createMoonFx.setState 要的场景量：月心（ECEF km → 场景轴 (X, Z, −Y)、单位地球半径）、
+ * 场景←月面固连旋转（ECEF←月面固连阵左乘同一个换轴阵：行 x ← x、y ← z、z ← −y）。
+ * @param {{ecef:number[]}} pos moonPosition 的结果
+ * @param {number[]} M moonBodyToEcef 的结果（行主序 3×3）
+ * @param {number} [sunKm] 日地距离
+ */
+export function moonSceneState(pos, M, sunKm) {
+  const e = pos.ecef
+  return {
+    center: [e[0] / RE_KM, e[2] / RE_KM, -e[1] / RE_KM],
+    rot: [M[0], M[1], M[2], M[6], M[7], M[8], -M[3], -M[4], -M[5]],
+    sunKm
+  }
+}
+const MOON_VERT = `
+varying vec2 vUv;
+varying vec3 vL;
+varying vec3 vW;
+void main() {
+  vUv = uv;
+  vL = position;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vW = wp.xyz;
+  vec4 p = projectionMatrix * viewMatrix * wp;
+  if (p.w > 0.0) p.z = min(p.z, p.w * 0.99998);   // 超出 far 的极端机位：夹在远平面内一丝（仍在星空 0.99999 之前）
+  gl_Position = p;
+}`
+const MOON_FRAG = `
+uniform sampler2D uMap;
+uniform sampler2D uRelief;
+uniform float uReliefK;
+uniform mat3 uRot;
+uniform vec3 uCenter;
+uniform vec3 uSun;
+uniform float uRtrue;
+uniform float uRsh;
+uniform float uSunAng;
+uniform float uEs;
+varying vec2 vUv;
+varying vec3 vL;
+varying vec3 vW;
+${DITHER_GLSL}
+// 两个小圆（角半径 r1、r2，圆心角距 d）的重叠面积 —— lunar.js discOverlap 的 GLSL 版
+float discOverlap(float r1, float r2, float d) {
+  if (d >= r1 + r2) return 0.0;
+  float rmin = min(r1, r2);
+  if (d <= abs(r1 - r2)) return 3.14159265 * rmin * rmin;
+  float a1 = acos(clamp((d * d + r1 * r1 - r2 * r2) / (2.0 * d * r1), -1.0, 1.0));
+  float a2 = acos(clamp((d * d + r2 * r2 - r1 * r1) / (2.0 * d * r2), -1.0, 1.0));
+  float k = max(0.0, (-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2));
+  return r1 * r1 * a1 + r2 * r2 * a2 - 0.5 * sqrt(k);
+}
+vec3 toSrgb(vec3 c) {
+  c = clamp(c, 0.0, 1.0);
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+void main() {
+  vec3 nl = normalize(vL);
+  vec3 n0 = normalize(uRot * nl);                       // 几何法线（场景系）
+  vec3 n = n0;
+  // 地形：局部 +Y = 月面北极 → 东向 = Y × n、北向 = n × 东（极点附近东向退化，不扰动）
+  vec3 el = vec3(nl.z, 0.0, -nl.x);
+  float le = length(el);
+  if (uReliefK > 0.0 && le > 0.02) {
+    el /= le;
+    vec3 nr = cross(nl, el);
+    vec2 s = (texture2D(uRelief, vUv).rg * 2.0 - 1.0) * (${MOON_SLOPE_SCALE.toFixed(3)} * uReliefK);
+    n = normalize(n0 - uRot * (el * s.x + nr * s.y));
+  }
+  vec3 v = normalize(cameraPosition - vW);
+  float mu0g = dot(n0, uSun);
+  float mu0 = max(dot(n, uSun), 0.0);
+  float mu = max(dot(n, v), 0.0);
+  float a = degrees(acos(clamp(dot(uSun, v), -1.0, 1.0)));                     // 相位角（此点看日与相机）
+  float Lp = clamp(1.0 - 0.019 * a + 2.42e-4 * a * a - 1.46e-6 * a * a * a, 0.0, 1.0);
+  float lit = (2.0 * Lp * mu0 / max(mu0 + mu, 1e-3) + (1.0 - Lp) * mu0) * smoothstep(-0.015, 0.02, mu0g);
+  // 地影：真实半径上的这一点看日面被地球挡住多少（小角度用 atan2(|s×e|, s·e)，float 下比 acos 稳）
+  vec3 P = uCenter + n0 * uRtrue;
+  float dd = length(P);
+  vec3 e = -P / dd;
+  float rE = asin(min(1.0, uRsh / dd));
+  float gam = atan(length(cross(uSun, e)), dot(uSun, e));
+  float sh = 1.0 - discOverlap(uSunAng, rE, gam) / (3.14159265 * uSunAng * uSunAng);
+  float um = clamp((rE - uSunAng - gam) / max(rE - uSunAng, 1e-6), 0.0, 1.0);   // 进本影的深度：边缘 0 → 地影轴 1
+  vec3 red = vec3(1.0, 0.36, 0.13) * mix(0.07, 0.018, um) * (1.0 - sh);
+  vec3 alb = texture2D(uMap, vUv).rgb;
+  vec3 col = alb * ((vec3(sh) + red) * lit + vec3(0.78, 0.86, 1.0) * (uEs * max(dot(n, e), 0.0)));
+  gl_FragColor = vec4(toSrgb(col) + dither8(gl_FragCoord.xy), 1.0);
+}`
+
+/**
+ * @param {THREE.WebGLRenderer} renderer
+ * setStyle({ scale })：显示放大倍数；setSun(v)：太阳方向（场景系单位矢量）；
+ * setState({ center:[x,y,z] 场景单位, rot:[9] 场景←月面固连系（行主序）, sunKm? 日地距离 })：每拍一次。贴图到手前不画（不闪一个灰球）。
+ */
+export function createMoonFx(renderer) {
+  const U = {
+    uMap: { value: null }, uRelief: { value: null }, uReliefK: { value: 0 },
+    uRot: { value: new THREE.Matrix3() }, uCenter: { value: new THREE.Vector3(60, 0, 0) }, uSun: { value: new THREE.Vector3(1, 0, 0) },
+    uRtrue: { value: MOON_R_KM / RE_KM }, uRsh: { value: EARTH_SHADOW_KM / RE_KM }, uSunAng: { value: Math.asin(SUN_R_KM / AU_KM) }, uEs: { value: 0 }
+  }
+  const geo = new THREE.SphereGeometry(1, MOON_SEG_W, MOON_SEG_H)
+  const mat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: MOON_VERT, fragmentShader: MOON_FRAG,
+    depthTest: true, depthWrite: true, transparent: false, toneMapped: false })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.renderOrder = MOON_EARTH_ORDER
+  mesh.frustumCulled = false   // 超出 far 的极端机位靠顶点着色器夹深度，包围球剔除会抢先把它整个丢掉
+  mesh.visible = false
+  let scale = MOON_SCALE_DEF, ready = false, haveState = false, disposed = false
+  const _m = new THREE.Matrix4(), _c = new THREE.Vector3(), _q = new THREE.Quaternion()
+  const caps = renderer.capabilities || {}
+  const maxTex = caps.maxTextureSize || 4096
+  const aniso = Math.max(1, Math.min(8, caps.getMaxAnisotropy ? caps.getMaxAnisotropy() : 1))
+  function prep(t, srgb) {
+    // 纹理上限不到 4096 的机器（WebGL2 下限是 2048）：缩到 2048 宽再上，超限时 WebGL 不报错、只出一个黑球
+    if (t.image && t.image.width > maxTex) {
+      const w = Math.min(maxTex, 2048), h = w / 2, cv = document.createElement('canvas')
+      cv.width = w; cv.height = h
+      cv.getContext('2d').drawImage(t.image, 0, 0, w, h)
+      t.image = cv
+    }
+    t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
+    t.wrapS = THREE.RepeatWrapping
+    t.wrapT = THREE.ClampToEdgeWrapping
+    t.anisotropy = aniso
+    t.needsUpdate = true
+    return t
+  }
+  const show = () => { mesh.visible = ready && haveState }
+  // 贴图缺失（漏打包）/ 没有 DOM 的环境（单测）：不画月球、别的照常；坡度图缺失：退回光滑球，彩色照画
+  try {
+    const loader = new THREE.TextureLoader()
+    loader.load(MOON_MAP_URL, (t) => {
+      if (disposed) { t.dispose(); return }
+      U.uMap.value = prep(t, true); ready = true; show()
+    }, undefined, () => {})
+    loader.load(MOON_RELIEF_URL, (t) => {
+      if (disposed) { t.dispose(); return }
+      U.uRelief.value = prep(t, false); U.uReliefK.value = 1
+    }, undefined, () => {})
+  } catch { /* 同上 */ }
+  // 地照 ∝ 从月球看地球的相位：地球相位角 = 日—地—月夹角 ψ，照亮比例 (1 + cos ψ) / 2（新月时 ψ≈0、地球满相）
+  function syncEarthshine() {
+    const L = U.uCenter.value.length()
+    const cpsi = L > 0 ? U.uSun.value.dot(U.uCenter.value) / L : 0
+    U.uEs.value = MOON_EARTHSHINE * (1 + cpsi) / 2
+  }
+  function syncScale() { mesh.scale.setScalar(U.uRtrue.value * scale) }
+  syncScale()
+  return {
+    objects: [],               // 第二趟里没有它的东西
+    earthObjects: [mesh],      // 地球那一趟（由编排器挂进地球场景）
+    mesh,
+    setStyle(o) {
+      if (o && Number.isFinite(Number(o.scale))) { scale = Math.max(1, Math.min(10, Number(o.scale))); syncScale() }
+    },
+    setSun(v) { U.uSun.value.copy(v); syncEarthshine() },
+    setState(st) {
+      if (!st || !st.center || !st.rot) return
+      if (Number.isFinite(st.sunKm) && st.sunKm > 0) U.uSunAng.value = Math.asin(SUN_R_KM / st.sunKm)   // 日面角半径随日地距离 ±1.7%
+      U.uCenter.value.set(st.center[0], st.center[1], st.center[2])
+      mesh.position.copy(U.uCenter.value)
+      // 场景←网格局部 = 场景←月面固连 · 月面固连←网格局部
+      const r = st.rot, l = MOON_LOCAL, m = new Array(9)
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) m[i * 3 + j] = r[i * 3] * l[j] + r[i * 3 + 1] * l[3 + j] + r[i * 3 + 2] * l[6 + j]
+      U.uRot.value.set(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8])
+      _m.set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1)
+      mesh.quaternion.copy(_q.setFromRotationMatrix(_m))
+      haveState = true; syncEarthshine(); show()
+    },
+    /** 日面（显示角半径 sunR）还露出多少：相机看显示大小的月盘挡住它的比例（眩光 / 星空压暗按它乘，日食时眩光随之收掉） */
+    sunVisibility(camera, sunDir, sunR) {
+      if (!mesh.visible) return 1
+      _c.copy(U.uCenter.value).sub(camera.position)
+      const d = _c.length()
+      if (!(d > 0)) return 1
+      const rho = Math.asin(Math.min(1, U.uRtrue.value * scale / d))
+      const sep = Math.acos(Math.max(-1, Math.min(1, _c.dot(sunDir) / d)))
+      return 1 - discOverlap(sunR, rho, sep) / (Math.PI * sunR * sunR)
+    },
+    stats: () => ({ ready, visible: mesh.visible, scale, relief: U.uReliefK.value, center: U.uCenter.value.toArray(), earthshine: U.uEs.value }),
+    dispose() {
+      disposed = true
+      geo.dispose(); mat.dispose()
+      if (U.uMap.value) U.uMap.value.dispose()
+      if (U.uRelief.value) U.uRelief.value.dispose()
+    }
+  }
+}
+
+// ======================================================================================
+// 自动曝光（人眼 / 相机的适应）
+// ======================================================================================
+// 画面里受光的地球占得越多，星空（亮星、行星、银河）曝光越低：白天的地球占满屏时只剩约 1/3（−1.2 等），
+// 远眺（地球只占一小点）或对着夜半球时满曝光 —— 在轨照片里亮地球与星空很少同时拍得清，就是这个道理；
+// 用在这里正合适：拉近看地球、看数据时天空自己退下去，远眺时它才出来。
+// 估法：屏幕上 32 × 18 个点各打一条视线（格距约 1.3°：拉近拉远时一个点进出地球只改 0.35%，看不出跳），撞上地球（单位球）的按受光程度记亮度 —— 昼半球 1、夜半球 1 − 夜区压暗程度
+//（晨昏效果关时地球全亮，夜半球同样记 1），中间用晨昏带的软边接上；没撞上的记 0。系数 = 1 / (1 + ADAPT_K · 平均亮度)。
+// 每帧 576 条射线求交，几十微秒；随相机连续变，不另做时间平滑。
+const ADAPT_K = 2
+const AD_NX = 32, AD_NY = 18
+const _adP = new THREE.Vector3(), _adD = new THREE.Vector3()
+/** @param {THREE.Camera} camera 已 updateMatrixWorld；@param {THREE.Vector3} sunS 太阳方向（场景轴单位矢量）；@param {number} night 夜区压暗程度 0..1 */
+export function adaptFactor(camera, sunS, night) {
+  const C = camera.position, cc = C.lengthSq() - 1
+  const nd = Math.max(0, Math.min(1, Number(night) || 0))
+  let sum = 0
+  for (let iy = 0; iy < AD_NY; iy++) {
+    for (let ix = 0; ix < AD_NX; ix++) {
+      _adD.set((ix + 0.5) / AD_NX * 2 - 1, (iy + 0.5) / AD_NY * 2 - 1, 0.5).unproject(camera).sub(C).normalize()
+      const b = C.dot(_adD), disc = b * b - cc
+      if (disc < 0) continue
+      const t = -b - Math.sqrt(disc)
+      if (t < 0) continue
+      _adP.copy(C).addScaledVector(_adD, t)
+      const mu = _adP.dot(sunS)
+      const lit = Math.max(0, Math.min(1, (mu + 0.08) / 0.2))   // 晨昏带软边：太阳高度 −4.6° … +6.9°
+      sum += lit + (1 - lit) * (1 - nd)
+    }
+  }
+  return 1 / (1 + ADAPT_K * sum / (AD_NX * AD_NY))
+}
+
+// ======================================================================================
 // 编排器
 // ======================================================================================
 /**
  * @param {THREE.WebGLRenderer} renderer
  * @param {THREE.Scene} [earthScene] 地球场景：大气挂进去、在地球那一趟里画（不给就不画大气）
- * 用法（scene.js）：setStars / setAtmosphere / setSun 传 null = 关（放掉该件的 GPU 资源），传 {…} = 开 + 样式；
- * setTime(太阳场景轴单位矢量, GMST) 每拍一次；每帧 prepare 在地球那一趟之前、renderMain 在它之后、renderGlare 在叠加层之后。
+ * @param {() => number} [nightDark] 夜半球压得多暗（0 = 晨昏效果关、地球全亮 … 1 = 全黑），自动曝光按它估画面里的亮度
+ * 用法（scene.js）：setStars / setPlanets / setAtmosphere / setSun / setMoon 传 null = 关（放掉该件的 GPU 资源），传 {…} = 开 + 样式；
+ * setTime(太阳场景轴单位矢量, GMST, 月球状态, 时刻) 每拍一次；每帧 prepare 在地球那一趟之前、renderMain 在它之后、renderGlare 在叠加层之后。
  */
-export function createSpaceFx(renderer, earthScene) {
+export function createSpaceFx(renderer, earthScene, nightDark) {
   const scene = new THREE.Scene()
-  let occ = null, stars = null, atmo = null, sun = null, soft = null
+  let occ = null, stars = null, planets = null, atmo = null, sun = null, moon = null, soft = null
   const sunS = new THREE.Vector3(1, 0, 0)
-  let gmst = 0, lastGlare = 0
+  let lastGlare = 0, moonState = null, starFrame = inertialToSceneRows(0), lastDate = null, lastAdapt = 1
   const attach = (fx) => {
     for (const o of fx.objects) scene.add(o)
     if (fx.earthObjects && earthScene) for (const o of fx.earthObjects) earthScene.add(o)
@@ -674,15 +1105,26 @@ export function createSpaceFx(renderer, earthScene) {
     } catch { soft = false }
     return soft
   }
+  // 日面被（显示大小的）月盘挡掉的比例 → 1 = 没挡。月球关着 / 太阳关着都是 1
+  const moonSunVis = (camera) => (moon && sun ? moon.sunVisibility(camera, sunS, SUN_R_VIS) : 1)
   function syncOcc() {
-    const want = !!(stars || sun)
+    const want = !!(stars || sun || planets)
     if (want && !occ) occ = attach(createOccluder())
     else if (!want && occ) occ = detach(occ)
   }
   return {
     setStars(o) {
       if (!o) stars = detach(stars)
-      else { if (!stars) { stars = attach(createStarfield(renderer)); stars.setGmst(gmst) } stars.setStyle(o) }
+      else { if (!stars) { stars = attach(createStarfield(renderer, weak())); stars.setFrame(starFrame) } stars.setStyle(o) }
+      syncOcc()
+    },
+    /** 行星：null = 关，{ gain } = 开（亮度跟星空同一个滑块） */
+    setPlanets(o) {
+      if (!o) planets = detach(planets)
+      else {
+        if (!planets) { planets = attach(createPlanets(renderer, weak())); planets.setTime(lastDate, starFrame) }
+        planets.setStyle(o)
+      }
       syncOcc()
     },
     setAtmosphere(o) {
@@ -694,55 +1136,82 @@ export function createSpaceFx(renderer, earthScene) {
       else { if (!sun) { sun = attach(createSunFx()); sun.setSun(sunS) } sun.setStyle(o) }
       syncOcc()
     },
-    /** dir：太阳（场景轴单位矢量，THREE.Vector3 或 [x,y,z]）；g：GMST（rad） */
-    setTime(dir, g) {
+    /** 月球：null = 关（放掉网格与两张贴图），{ scale } = 开 + 显示放大倍数。挂在地球场景里，不需要遮挡球 */
+    setMoon(o) {
+      if (!o) moon = detach(moon)
+      else {
+        if (!moon) { moon = attach(createMoonFx(renderer)); moon.setSun(sunS); if (moonState) moon.setState(moonState) }
+        moon.setStyle(o)
+      }
+    },
+    /** dir：太阳（场景轴单位矢量，THREE.Vector3 或 [x,y,z]）；g：GMST（rad）；ms：月球状态（见 createMoonFx.setState，可缺）；
+     *  date：同一时刻（给了星空走 ICRF → 场景的整条链：岁差 + 章动 + GAST；不给只转 GMST） */
+    setTime(dir, g, ms, date) {
       if (dir) {
         if (dir.isVector3) sunS.copy(dir); else sunS.set(dir[0], dir[1], dir[2])
         sunS.normalize()
         if (atmo) atmo.setSun(sunS)
         if (sun) sun.setSun(sunS)
+        if (moon) moon.setSun(sunS)
       }
-      if (Number.isFinite(g)) { gmst = g; if (stars) stars.setGmst(g) }
+      if (Number.isFinite(g)) {
+        starFrame = date != null ? icrfToSceneRows(date, g) : inertialToSceneRows(g)
+        if (stars) stars.setFrame(starFrame)
+      }
+      if (date != null) lastDate = date
+      if (planets) planets.setTime(date != null ? date : null, starFrame)
+      if (ms) { moonState = ms; if (moon) moon.setState(ms) }
     },
-    any: () => !!(stars || atmo || sun),
+    any: () => !!(stars || planets || atmo || sun || moon),
     /** 地球那一趟【之前】：大气在那一趟里画，它的标高 / 视轴 / 环带半径要先按本帧相机摆好 */
     prepare(camera, w, h) { if (atmo) atmo.update(camera, w, h) },
     renderMain(r, camera, w, h) {
-      if (!stars && !sun) return   // 大气在地球那一趟里画（prepare 摆好），这一趟只有星空 / 日面
+      if (!stars && !planets && !sun) return   // 大气在地球那一趟里画（prepare 摆好），这一趟只有星空 / 行星 / 日面
       camera.updateMatrixWorld()
-      if (stars) stars.update(r, sun ? sun.dimFactor(camera) : 0)
+      if (stars || planets) {
+        const dim = sun ? sun.dimFactor(camera) * moonSunVis(camera) : 0
+        lastAdapt = adaptFactor(camera, sunS, nightDark ? nightDark() : 0)
+        if (stars) stars.update(r, dim, lastAdapt)
+        if (planets) planets.update(r, dim, lastAdapt)
+      }
       const ac = r.autoClear
       r.autoClear = false
       try { r.render(scene, camera) } finally { r.autoClear = ac }
     },
     renderGlare(r, camera, w, h, extVis) {
-      lastGlare = sun && !weak() ? sun.renderGlare(r, camera, w, h, extVis) : 0
+      // 月面挡住日面多少（日食）：日面本身由深度测试挡掉，屏幕空间的眩光得在这里一并收
+      const ev = (extVis == null ? 1 : extVis) * moonSunVis(camera)
+      lastGlare = sun && !weak() ? sun.renderGlare(r, camera, w, h, ev) : 0
       return lastGlare
     },
     /** 验证台 / 调试读数 */
-    stats: () => ({ stars: stars ? stars.stats() : null, atmo: atmo ? atmo.stats() : null, sun: sun ? sun.stats() : null, occluder: !!occ, glare: lastGlare, soft: weak() }),
+    stats: () => ({ stars: stars ? stars.stats() : null, planets: planets ? planets.stats() : null, atmo: atmo ? atmo.stats() : null, sun: sun ? sun.stats() : null, moon: moon ? moon.stats() : null, occluder: !!occ, glare: lastGlare, adapt: lastAdapt, soft: weak() }),
     sunDir: () => [sunS.x, sunS.y, sunS.z],
     /** 验证台量帧时用：大气的两块网格（环带 ring / 贴进大气时的全屏 fs，都在地球场景里） */
     _atmoMeshes: () => (atmo ? atmo.meshes : null),
-    dispose() { occ = detach(occ); stars = detach(stars); atmo = detach(atmo); sun = detach(sun) }
+    /** 验证台用：月球网格（地球场景里） */
+    _moonMesh: () => (moon ? moon.mesh : null),
+    /** 验证台用：当前 ICRF → 场景的转动（行主序 3×3） */
+    _starFrame: () => starFrame.slice(),
+    dispose() { occ = detach(occ); stars = detach(stars); planets = detach(planets); atmo = detach(atmo); sun = detach(sun); moon = detach(moon) }
   }
 }
 
 // ======================================================================================
 // 设置口径（地图设置 · 宇宙空间）：出厂值、取值范围与存档迁移 —— 页面与单测共用这一份
 // ======================================================================================
-/** 出厂值：总开关另存（出厂关）；打开总开关即得完整效果（前五项勾、晨昏线不勾）。
+/** 出厂值：总开关另存（出厂关）；打开总开关即得完整效果（晨昏线以外各项都勾）。
  *  地球影像 = 原「影像底图」并进来（2026-09-24 用户定）：档位 / 亮度仍存在页面的 imagery.k / bright，这里只管勾不勾。
  *  shadeColor / shadeOpacity：晨昏线自带的夜区阴影（硬边、整个夜半球一个不透明度，v1.4.13「夜区遮罩」的出厂值）——
  *  只在晨昏效果【不勾】时画；晨昏效果勾着时夜区由它接管（柔和过渡带），不叠两层。强度 0 = 只剩线 */
 export const SPACE_DEF = Object.freeze({
-  stars: true, starGain: 1, atmo: true, atmoGain: 1, sun: true, sunGlare: 1, img: true,
+  stars: true, starGain: 1, planets: true, atmo: true, atmoGain: 1, sun: true, sunGlare: 1, moon: true, moonScale: MOON_SCALE_DEF, img: true,
   night: true, nightColor: '#030814', nightOpacity: 0.72, line: false, lineColor: '#ffd27a', lineWidth: 1.2, lineOpacity: 0.75,
   shadeColor: '#0a1120', shadeOpacity: 0.42
 })
 /** 数值项的取值范围（= 侧栏滑块的 min / max）：存档里越界的值夹回来，而不是原样喂给着色器 */
 export const SPACE_RANGE = Object.freeze({
-  starGain: [0.2, 2], atmoGain: [0.2, 2], sunGlare: [0, 2], nightOpacity: [0, 0.95], lineWidth: [0.1, 4], lineOpacity: [0, 1], shadeOpacity: [0, 0.95]
+  starGain: [0.2, 2], atmoGain: [0.2, 2], sunGlare: [0, 2], moonScale: [1, 10], nightOpacity: [0, 0.95], lineWidth: [0.1, 4], lineOpacity: [0, 1], shadeOpacity: [0, 0.95]
 })
 const HEX6 = /^#[0-9a-fA-F]{6}$/
 function pickSpace(out, src, pairs) {
@@ -759,7 +1228,7 @@ function pickSpace(out, src, pairs) {
  *   新存档：spaceOn + space，逐字段合并（缺的 / 类型不对的保留出厂值，数值夹进滑块范围）。
  *   老存档（v1.4.13 及以前：晨昏线四个字段 termOn / termNight / termLine / termStyle，影像底图 imagery.on 另算）——
  *   原样还原老画面，别让老用户一升级就突变：
- *     termOn=true 或 imagery.on=true → 总开关开，星空 / 大气辉光 / 太阳 / 晨昏效果【不勾】，地球影像 = 旧 imagery.on；
+ *     termOn=true 或 imagery.on=true → 总开关开，星空 / 行星 / 大气辉光 / 太阳 / 月球 / 晨昏效果【不勾】，地球影像 = 旧 imagery.on；
  *       termOn=true 时晨昏线勾上：旧「夜区遮罩」→ 晨昏线的夜区阴影（同是硬边，颜色 / 透明度照搬），旧「分界线」→ 线（颜色 / 线粗 / 透明度照搬）；
  *       旧版只开了其中一样的，另一样的强度 / 透明度置 0（缺省两样都开）；
  *     termOn=false（且影像底图没开）→ 总开关关，子项按新出厂值（打开总开关即得完整效果）。
@@ -774,7 +1243,7 @@ export function spaceFromSaved(s) {
   const img = !!(s.imagery && typeof s.imagery === 'object' && s.imagery.on === true)
   if (term || img) {
     const shade = term && s.termNight !== false, line = term && s.termLine !== false
-    Object.assign(out, { stars: false, atmo: false, sun: false, img, night: false, line: shade || line })
+    Object.assign(out, { stars: false, planets: false, atmo: false, sun: false, moon: false, img, night: false, line: shade || line })
     if (term && s.termStyle && typeof s.termStyle === 'object') {
       pickSpace(out, s.termStyle, [['shadeColor', 'nightColor'], ['shadeOpacity', 'nightOpacity'], ['lineColor', 'lineColor'], ['lineWidth', 'lineWidth'], ['lineOpacity', 'lineOpacity']])
     }

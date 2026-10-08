@@ -4,7 +4,9 @@
 // 每条挂点的方向图量都够算星侧太阳侵入 ΔT（不会因「没有方向图」静默记 0）。
 
 import assert from 'node:assert/strict'
-import { MOUNT_TEMPLATES, listMountTemplates, mountTemplate, applyMountTemplate } from '../models/mountTemplates.mjs'
+import { MOUNT_TEMPLATES, listMountTemplates, mountTemplate, applyMountTemplate, apAliases } from '../models/mountTemplates.mjs'
+import { newDrivenDoc } from '../models/drive.mjs'
+import { buildAssembly } from '../models/assembly.mjs'
 import { TEMPLATE_IDS } from '../models/paramTemplates.mjs'
 import { normalizeMount, validateBindings } from '../models/schema.mjs'
 import { defaultUpBody } from '../models/bodyFrame.mjs'
@@ -112,6 +114,29 @@ t('applyMountTemplate：有同名挂点 → 位姿取模型；没有 → attachP
   assert.ok(b.mounts.every((m) => m.attachPoint === null), '不留悬空引用')
   assert.deepEqual(b.mounts[0].posBody, [4, 0, 2])
   assert.equal(applyMountTemplate('nope'), null)
+})
+
+t('装配件 / 驱动装配件（2026-10）：模板挂点名经 apAliases 对上装配件挂点（reflN_focus / bus_* / wing1_axis / wing1-1_axis）；默认卫星与 SSL-1300 全部 matched、位姿取装配件、attachPoint 改成模型里的实际名', () => {
+  assert.deepEqual(apAliases('reflector_2_focus'), ['reflector_2_focus', 'refl2_focus'])
+  assert.deepEqual(apAliases('nadir_center'), ['nadir_center', 'bus_nadir_center'])
+  assert.deepEqual(apAliases('wing_-Y_axis'), ['wing_-Y_axis', 'wing1-1_axis', 'wing2_axis'])
+  assert.deepEqual(apAliases('SA_E_Attachpoint'), ['SA_E_Attachpoint'])
+  for (const id of ['default-sat', 'ssl1300']) {
+    const r = buildAssembly(newDrivenDoc({ templateId: id }))
+    const a = applyMountTemplate(id, { attachPoints: r.attachPoints })
+    assert.deepEqual(a.errors, [], id)
+    assert.deepEqual(a.unmatched, [], id)
+    assert.equal(a.matched.length, mountTemplate(id).mounts.filter((m) => m.attachPoint).length, id)
+    for (const m of a.mounts) {
+      if (!m.attachPoint) continue
+      const ap = r.attachPoints.find((x) => x.name === m.attachPoint)
+      assert.ok(ap, `${id}/${m.id} → ${m.attachPoint}`)
+      for (let k = 0; k < 3; k++) near(m.posBody[k], ap.posBody[k], 1e-12, `${id}/${m.id} pos`)
+    }
+  }
+  // 原名优先：参数化模型照旧取原名
+  assert.deepEqual(applyMountTemplate('default-sat', { attachPoints: buildTemplateModel('default-sat').attachPoints }).matched,
+    ['reflector_1_focus', 'reflector_2_focus', 'reflector_3_focus', 'reflector_4_focus'])
 })
 
 t('applyMountTemplate：up 取模板（投到模型视轴法平面），不取挂点节点的上向——STK tdrs 式镜像挂点（SA_E 上向 −X、SA_W 上向 +X）两副都保持北向；模板 up 与视轴平行时退到挂点 up、再退 D1', () => {

@@ -622,7 +622,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <div class="pw-r"><label>波束间最小间隔角</label><input class="pi w90" type="number" step="any" v-model.number="down.beamMinSepDeg" /><span class="pu">°</span></div>
             <div class="pw-r"><label>波束排布假设</label>
               <select class="w260" v-model="down.beamLayout"><option v-for="o in BEAM_LAYOUTS" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
-            <p v-if="down.beamLayout === 'single'" class="pw-note bad">「仅主波束」会低估多波束叠加，掩模仅供对照。</p>
+            <p v-if="down.beamLayout === 'single'" class="pw-note bad" title="「仅主波束」会低估多波束叠加">掩模仅供对照。</p>
           </div>
 
           <div class="pw-grp"><h3>上行功率控制</h3>

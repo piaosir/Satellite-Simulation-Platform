@@ -5,7 +5,7 @@
 // 计算在主进程（core.calculateSunOutageSeasons，v5.2 引擎），本组件只负责采集 / 展示 / 持久化。
 // 取星两档：定轨＝把卫星当理想地球静止轨道（按轨位）；星历＝按该星 GP 根数逐时刻 SGP4 推算。
 // 判据两档：恶化门限＝ D(θ) ≥ D_th；纯几何＝ θ_th ≡ θ_3dB = 70λ/D。
-import { ref, reactive, shallowRef, computed, watch, onMounted } from 'vue'
+import { ref, reactive, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'
@@ -174,14 +174,15 @@ function cellClassFn(f, row) {
 }
 
 // ============ 计算（按 8 行一块分批，算完一块就上屏）============
+// 返回是否按当前输入算完了整表（逐站算不出的 ✕ 也算算完）：导出前补算要据此决定导不导（见 runExport）
 let _gen = 0
 async function compute() {
-  if (!api) { toast('计算需在桌面客户端中运行'); return }
-  if (!stations.length) { toast('请先添加地球站'); return }
+  if (!api) { toast('计算需在桌面客户端中运行'); return false }
+  if (!stations.length) { toast('请先添加地球站'); return false }
   const y = parseInt(String(halfStr(year.value)), 10)
-  if (!(y >= 1900 && y <= 2200)) { toast('年份需在 1900 ~ 2200 之间'); return }
-  if (sat.source === 'slot' && !Number.isFinite(pf(sat.slotLon))) { toast('请先填写卫星轨位'); return }
-  if (criterion.mode === 'degradation' && !(pf(criterion.degDb) > 0)) { toast('恶化门限需大于 0 dB'); return }
+  if (!(y >= 1900 && y <= 2200)) { toast('年份需在 1900 ~ 2200 之间'); return false }
+  if (sat.source === 'slot' && !Number.isFinite(pf(sat.slotLon))) { toast('请先填写卫星轨位'); return false }
+  if (criterion.mode === 'degradation' && !(pf(criterion.degDb) > 0)) { toast('恶化门限需大于 0 dB'); return false }
 
   const gen = ++_gen
   computing.value = true
@@ -194,7 +195,7 @@ async function compute() {
       const chunk = JSON.parse(JSON.stringify(specs.slice(i, i + 8)))   // 出 IPC 前落成纯数据
       progress.value = specs.length > 8 ? byLang(`计算中… ${Math.min(i + 8, specs.length)}/${specs.length}`, `Computing… ${Math.min(i + 8, specs.length)}/${specs.length}`) : ''
       const out = await api.computeBatch(chunk)
-      if (gen !== _gen) return                                        // 重算期间又点了计算：本轮作废
+      if (gen !== _gen) return false                                  // 重算期间又点了计算：本轮作废
       const arr = Array.isArray(out) ? out : []
       for (let j = 0; j < arr.length; j++) if (ids[i + j]) acc[ids[i + j]] = arr[j]
       resultById.value = { ...acc }
@@ -204,8 +205,10 @@ async function compute() {
     const errs = Object.values(acc).filter((x) => { const a = x && (x.vernal || x.autumnal); return !a || a.error }).length
     toast(errs ? byLang(`完成，${errs}/${ids.length} 个地球站算不出（见表内 ✕）`, `Done, ${errs}/${ids.length} stations failed`)
       : byLang(`完成，共 ${ids.length} 个地球站`, `Done, ${ids.length} stations`))
+    return true
   } catch (e) {
     if (gen === _gen) { toast('计算失败：' + ((e && e.message) || e)); resultById.value = {} }
+    return false
   } finally {
     if (gen === _gen) { computing.value = false; progress.value = '' }
   }
@@ -299,6 +302,58 @@ function setSatSource(s) {
   if (s === 'ephemeris' && !canEphem.value) return
   sat.source = s
 }
+
+// —— 主窗口带上下文打开（地图右键 / 卫星信息栏「分析 ▸ 日凌预报」）——
+// 一份配置一颗星：带来的星不是当前这颗 → 新建一份配置承接（当前配置有没存的改动照常先问），原配置不动；
+// 是同一颗 → 只追加站。星取自星历池（按 NORAD，与搜索选星同一出口 pickSat）；池里没有就按定点经度（轨位法）。
+// 站址追加成行；新建的配置里那条出厂默认行由站址行顶替。开窗时配置未载入则排队。
+const _ctxQueue = []
+let _ctxReady = false, _ctxChain = Promise.resolve()
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
+const ctxNameKey = (s) => String(s || '').trim().toLowerCase()
+const isCurSat = (s) => (s.noradId && sat.noradId ? String(sat.noradId) === s.noradId : ctxNameKey(sat.name) === ctxNameKey(s.name))
+async function applyToolContext(c) {
+  if (!c) return
+  const s = c.sat, sites = c.sites || []
+  let fresh = false, kept = null
+  if (s && !isCurSat(s)) {
+    // 带来的是另一颗星：换一份新配置承接，原来的内容一律不丢——
+    //   ① 有归属配置且改过：现有三选一（保存 / 不保存 / 取消），取消即不动现场；
+    //   ② 没有归属配置、工作区又不是出厂空白（不存配置直接用是支持的用法）：先原样存成一份配置留底；
+    //   ③ 带来的星 / 站套到出厂空白上，按出厂名（星名 + 年份）一次存成新配置并接上（尾部 saveWorkspaceAs）——
+    //      列表里那份就是带来的内容，不是一份空白「新配置」，之后也不会无端弹保存提示
+    if (!(await guardedLeave())) return
+    if (!activeId.value && fingerprint() !== stableStringify(normState(blankState()))) {
+      kept = await cfgTree.saveWorkspaceAs()
+      if (!kept) return   // 存不进去就不动现场
+    }
+    applyState(blankState())
+    fresh = true
+    let rec = null
+    if (s.noradId) { try { rec = await findPoolByNorad(s.noradId) } catch (e) { rec = null } }
+    if (rec) {
+      const lon = slotLonOf(rec)
+      pickSat({ ...rec, _slot: Number.isFinite(lon) ? lon : (s.slotLon != null ? s.slotLon : NaN) })
+    } else {
+      // 池里没有（离线 / 天线树虚拟星的合成号）：不记编号，免得之后「刷新星历」按一个查不到的号去找
+      Object.assign(sat, { name: s.name || sat.name, noradId: '', orbit: null, epoch: '', inclDeg: null, groupLabel: '', source: 'slot' })
+      if (s.slotLon != null) sat.slotLon = s.slotLon.toFixed(2)
+    }
+  }
+  if (sites.length) {
+    const rows = sites.map((x) => mkRow({ stationName: x.name || '', longitude: String(x.lon), latitude: String(x.lat) }))
+    if (fresh) stations.splice(0, stations.length, ...rows)
+    else stations.push(...rows)
+  }
+  if (fresh) await cfgTree.saveWorkspaceAs()
+  const keptTip = kept ? byLang(`原内容已存为「${kept.name}」；`, `Previous content saved as “${kept.name}”; `) : ''
+  toast(keptTip + (sites.length
+    ? byLang(`已添加 ${sites.length} 个地球站（${sat.name}）`, `Added ${sites.length} station${sites.length === 1 ? '' : 's'} (${sat.name})`)
+    : byLang(`已载入卫星：${sat.name}`, `Satellite loaded: ${sat.name}`)))
+}
+const _stopCtx = (typeof window !== 'undefined' && window.api && window.api.tools) ? window.api.tools.onContext(onToolContext) : null
+onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
 const slotText = computed(() => fmtGeoSlot(pf(sat.slotLon)) || (sat.slotLon ? sat.slotLon + '°E' : '—'))
 // 星历档读数：历元 · 距各分点天数 · 倾角（含运行时数据的读数行，口径说明放 title）
 const epochRead = computed(() => {
@@ -454,7 +509,12 @@ function exportPayload() {
 }
 const fileBase = computed(() => `日凌预报_${(sat.name || '').trim() || slotText.value}_${year.value}`)
 async function runExport(kind) {
-  if (!api || !hasResults.value) return
+  if (!api || computing.value) return
+  // 导出讲【当前输入】（口径同链路预算四窗的导出前补算）：输入已变或还没算过，先按当前输入算一遍；
+  // 算不成就不导 —— 文件里不许是新参数配旧日凌窗口。原因 compute 已就地提示。
+  if (resultsStale.value || !hasResults.value) {
+    if (!(await compute()) || !hasResults.value) return
+  }
   const p = exportPayload()
   p.defaultName = `${fileBase.value}.${kind === 'excel' ? 'xlsx' : kind === 'word' ? 'docx' : 'ics'}`
   const fn = kind === 'excel' ? api.exportExcel : kind === 'word' ? api.exportWord : api.exportIcs
@@ -484,7 +544,11 @@ function serializeState() {
     stations: stations.map((r) => { const o = {}; for (const k in r) if (k !== '_id') o[k] = r[k]; return o })
   })
 }
+// 站表组件（StationGrid）：载入配置时要清它的撤销 / 重做栈
+const stationGridRef = ref(null)
 function applyState(st) {
+  // 换了一份内容：表格撤销栈里存的是上一份的行，不清的话一按撤销就把它整张灌进当前配置（表格不随配置重建）
+  if (stationGridRef.value) stationGridRef.value.clearHistory()
   const s = normState(st)
   // orbit 原样落回（含将来的 { type, ref } 引用形状）：引用怎么解析是主进程 resolveOrbitSpec 的事，窗口不碰
   Object.assign(sat, s.sat)
@@ -573,6 +637,7 @@ onMounted(async () => {
     flushSaveState(); api.confirmClose()
   })
   window.addEventListener('beforeunload', flushSaveState)
+  flushToolContext()   // 配置已载入：处理开窗时随窗带来的主窗口上下文
 })
 </script>
 
@@ -595,9 +660,9 @@ onMounted(async () => {
         <span>F10.7 数据</span> <b data-i18n-skip>{{ sfText }}</b>
       </button>
       <TzPicker v-model="tzMode" align="right" title="逐日表与报告的时标（ICS 日历事件恒用 UTC，导入后由日历软件换算）" />
-      <button class="lb-mini" :disabled="!api || !hasResults" title="导出 Excel（两张三线表：地球站参数 / 逐日日凌窗口）" @click="runExport('excel')">导出 Excel</button>
-      <button class="lb-mini" :disabled="!api || !hasResults" title="导出 Word 报告（逐站一节）" @click="runExport('word')">导出 Word</button>
-      <button class="lb-mini" :disabled="!api || !hasResults" title="RFC 5545 iCalendar，Outlook / Google / Apple 日历直接导入，含提前 1 天与 30 分钟提醒" @click="runExport('ics')">导出 ICS</button>
+      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="导出 Excel（两张三线表：地球站参数 / 逐日日凌窗口）" @click="runExport('excel')">导出 Excel</button>
+      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="导出 Word 报告（逐站一节）" @click="runExport('word')">导出 Word</button>
+      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="RFC 5545 iCalendar，Outlook / Google / Apple 日历直接导入，含提前 1 天与 30 分钟提醒" @click="runExport('ics')">导出 ICS</button>
     </div>
 
     <div class="lb-body">
@@ -699,7 +764,7 @@ onMounted(async () => {
 
         <div class="rain-grid">
           <StationGrid
-            grid-id="sun.stations" :stations="stations" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            ref="stationGridRef" grid-id="sun.stations" :stations="stations" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
             :cities="cities" :city-search="citySearch"
             :extra-values="extraValues" :cell-class="cellClassFn" :focus-id="selectedId" label="地球站"
             @row-focus="onRowFocus"

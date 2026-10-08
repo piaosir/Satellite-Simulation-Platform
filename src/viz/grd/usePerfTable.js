@@ -13,6 +13,7 @@
 import { ref, computed } from 'vue'
 import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb, refinedPeakDb } from './coverage.js'
 import { cityNameKeys } from '../../shared/cityName.js'   // 城市名反查中英两名都收（英文界面填的是 Beijing）
+import { lonLatPasteKeys } from '../../shared/pasteLonLat.js'
 
 let _seq = 1
 const newId = () => 'st' + Date.now().toString(36) + (_seq++)
@@ -387,13 +388,18 @@ export function usePerfTable() {
     if (!activeKey.value) return 0
     const grid = parseGrid(text); if (!grid.length) return 0
     const c0 = Math.max(0, EDIT_COLS.indexOf(startKey))
+    // 时间 / 高度插在经纬度前：v1.4.13 列序的窄块（「国家 / 城市 / 代号 / 经度 / 纬度」）按「末两格 = 经纬度」落位，
+    // 否则纬度进了高度、经纬度留空（覆盖已有行时坐标不换、名字换了）——见 shared/pasteLonLat.js；其余块照旧按位置
+    const keysOf = lonLatPasteKeys(EDIT_COLS, EDIT_COLS[c0], grid, { textKeys: ['country', 'city', 'desig'] }) ||
+      ((cells) => cells.map((_, ci) => EDIT_COLS[c0 + ci]))
     const list = [...stations.value]
     let idx = startId ? list.findIndex((s) => s.id === startId) : list.length
     if (idx < 0) idx = list.length
     grid.forEach((cells, ri) => {
       let s = list[idx + ri]
       if (!s) { s = { id: newId(), country: '', city: '', desig: '', lon: null, lat: null, tMs: null, altM: null }; list[idx + ri] = s }
-      cells.forEach((val, ci) => { const key = EDIT_COLS[c0 + ci]; if (key) setStationCell(s, key, val) })
+      const keys = keysOf(cells)
+      cells.forEach((val, ci) => { const key = keys[ci]; if (key) setStationCell(s, key, val) })
     })
     stations.value = list.filter(Boolean)
     return grid.length

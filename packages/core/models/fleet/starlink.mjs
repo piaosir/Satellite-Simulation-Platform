@@ -36,7 +36,7 @@ const chamRect = (a, b, c) => [[-a + c, -b], [a - c, -b], [a, -b + c], [a, b - c
 // ───────────────────────────── v1.0 / v1.5（平板本体 + 单翼） ─────────────────────────────
 function buildV1(B, { visor = false, lasers = 0, mirror = false } = {}) {
   const hx = 0.65, hy = 1.4, hz = 0.1           // 本体 1.3（X）× 2.8（Y）× 0.2（Z）
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   const Fb = frame(P(0, 0, 0), [1, 0, 0], [0, 1, 0], [0, 0, 1])
   const outline = chamRect(hx, hy, 0.1)
   prism(g.mb('struct_grey'), Fb, outline, -hz, hz, { cap0: true, cap1: false })
@@ -110,7 +110,7 @@ const dotSign = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 // ───────────────────────────── V2 Mini（含优化版 / 直连手机） ─────────────────────────────
 function buildV2(B, { dtc = false } = {}) {
   const hx = 2.05, hy = 1.35, hz = 0.15         // 本体 4.1（X）× 2.7（Y）× 0.3（Z）
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   const Fb = frame(P(0, 0, 0), [1, 0, 0], [0, 1, 0], [0, 0, 1])
   prism(g.mb('struct_grey'), Fb, chamRect(hx, hy, 0.12), -hz, hz, { cap0: true, cap1: false })
   // 对地面：第二代介质镜面膜整面覆盖

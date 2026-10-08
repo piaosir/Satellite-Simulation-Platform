@@ -226,10 +226,6 @@ function buildUpHopParams(chain, es, sat, hop, carrier) {
   lp.upcValue = es.upcValue;
   lp.uplinkOtherLoss = hop.miscLoss;               // 附加损耗随 hop（不在站上重复计一份）
   lp.G_Ts = sat.gt;                                // 接收卫星的 G/T
-  // 星侧太阳侵入（DESIGN2 D11）：递给引擎只为让它回显 satSunGtLossResult（关闭时 '0.00'）——本模块电平
-  // 自己递推，引擎里那份 C/T 扣减不被读取；取值见 probeUpHop 的 gtDeg（复用下行降雨 G/T 劣化同一条通道）。
-  lp.satSunIntrusion = sat.satSunIntrusion;
-  lp.satSunGtLoss = sat.satSunGtLoss;
   // 下行占位：地理镜像本站，使弯管引擎下行几何良定（不参与取数）
   lp.rxEarthStationLocation = es.name || '';
   lp.rxLongitude = es.longitude;
@@ -597,11 +593,9 @@ function computeLinkChain(chain) {
         const arrive = level - rec.fsl - rec.atm - rec.rain - rec.cloud - rec.misc;
         ledger.push({ kind: 'chk', seg: s, label: '到达载波电平 C', value: arrive, unit: 'dBW' });
         // —— 接收 G/T ——
-        // 上行跳的 gtDeg ＝ 接收星的星侧太阳侵入 ΔG/T（关闭 0：gtSat − 0 === gtSat，逐位不变）；下行跳 ＝ 降雨 G/T 劣化
-        const gtRx = (rec.type === 'up') ? (rec.gtSat - rec.gtDeg) : (rec.gt - rec.gtDeg);
+        const gtRx = (rec.type === 'up') ? rec.gtSat : (rec.gt - rec.gtDeg);
         if (rec.type === 'up') {
           ledger.push({ kind: 'gain', seg: s, label: '卫星 G/T', value: rec.gtSat, unit: 'dB/K' });
-          if (rec.gtDeg > 0) ledger.push({ kind: 'loss', seg: s, label: '星侧太阳侵入 G/T 劣化', value: rec.gtDeg, unit: 'dB' });
         } else {
           // 收信站段只留两行算式：G/T 与它的降雨劣化。G/T 的来处（天线增益 − 系统噪温(dB) −
           // 馈线损耗，噪温再拆成天线/接收机/雨/云四项）不进这条加减链——引擎各出参各自 toFixed(2)，
@@ -655,7 +649,7 @@ function computeLinkChain(chain) {
           ledger.push({ kind: 'base', seg: s, label: '星间发射 EIRP', value: rec.islEirp, unit: 'dBW' });
           ledger.push({ kind: 'loss', seg: s, label: '自由空间损耗', value: rec.fsl, unit: 'dB' });
           ledger.push({ kind: 'gain', seg: s, label: '星间接收 G/T', value: rec.islGT, unit: 'dB/K' });
-          ledger.push({ kind: 'loss', seg: s, label: '附加损耗', value: rec.misc, unit: 'dB' });
+          ledger.push({ kind: 'loss', seg: s, label: '其他损耗', value: rec.misc, unit: 'dB' });   // 行名与四窗输入列、其余详细预算同名（v1.5.0 起统一叫「其他损耗」）
           ledger.push({ kind: 'gain', seg: s, label: '−k − 10·lgB', value: kMinusBw(rec.noiseBW), unit: 'dB' });
           // 这一行记【热噪】：星间干扰与（发射端为透明星时的）转发器互调各自摊成「损失 + 检查点」
           // 一对接在其后，逐行可手算。两者都没有时热噪即本跳 C/N，这一行逐字与从前相同。
@@ -1110,7 +1104,7 @@ function probeUpHop(chain, es, sat, hop, carrier) {
     cloud: numOr(d.uplinkCloudAttenuation, 0),
     misc: numOr(d.uplinkMiscLossResult, 0),
     gtSat: numOr(d.satelliteGTResult, 0),
-    gtDeg: numOr(d.satSunGtLossResult, 0),         // 星侧太阳侵入 ΔG/T（引擎回显；关闭 '0.00' → 0）
+    gtDeg: 0,
     effXpol: num(d.effectiveXpolUplinkFactorResult),
     rainXPD: num(d.uplinkRainXPDResult),
     totalAtten: num(d.uplinkTotalAttenuationResult),

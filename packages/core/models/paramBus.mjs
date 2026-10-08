@@ -49,6 +49,7 @@
 //   buildFeed(ctx, r, i, L, towerTop)→ 馈源（L 不带平台半边长 h、towerTop 为空时不画支架）
 //   resolveDensity(over)             → 密度表取值（DENSITY.value，over 逐项覆盖）；createCtx({dens: …}) 用
 //   SOLAR_EFFICIENCY_DEFAULT         → 太阳翼组效率缺省（%）
+//   defaultSidePanelAt(panels)       → 侧板缺省挂在第几块（倒数第二块 → 十字形翼）
 //   canon(v) / fnv1a64Hex(str)       → 规范化 JSON / FNV-1a 64（specHash = fnv1a64Hex(canon(normalizeSpec(spec)))）
 //   nonFiniteReport(res)             → 生成结果里含非有限数的对象名（出口兜底）
 
@@ -58,9 +59,13 @@ import { attachNodeMatrix } from './agi.mjs'
 // 网格原语 / 质量元 / 生成上下文（DESIGN3 §1 P0 从本文件原样抽出，装配组件共用；零漂移由 modelMeshKit 金标准看守）
 import {
   isNum, isVec3, add, sub, scl, cross, len, nrm, reject, madd, clampN, z0, IDR, rApply, rotAboutLocalY, m3zero, m3add, pAxis, rotInertia,
-  MB, quad, box, perpPair, frustum, tube, annulus, horn, worldPositions, meshArea,
+  MB, quad, box, perpPair, frustum, tube, annulus, horn, worldPositions, meshArea, shellProps,
   createCtx, addItem, comp, boxComp, plateComp, rodComp, shellComp, pointComp, addAp, paraLayout, colMajor
 } from './meshKit.mjs'
+// 星上硬件造型库（喇叭 / 馈电链 / 喷管 / SADA 护套 / 对接环 …，2026-10-08）：只出网格，质量元照旧由本文件按包络登记
+import { feedHorn, feedChain, bellNozzle, rcsPod, rcsThruster, hallThruster, earthSensor, starTrackerHead, wedgeMount, wcaHorn, ttcBicone, sadaBoot, lvRing, reflectorBacking, adtmBlock } from './hardware.mjs'
+import { siLines } from './solarArrays.mjs'
+import { quadPts } from './fleet/kit.mjs'
 
 // ───────────────────────────── 常量 ─────────────────────────────
 
@@ -88,7 +93,22 @@ export const DENSITY = Object.freeze({
   boomLinear: Object.freeze({ value: 1.0, unit: 'kg/m', source: 'illustrative', note: '碳纤维管（轭 / 展开臂）线密度量级' }),
   laeMass: Object.freeze({ value: 4.5, unit: 'kg', source: 'illustrative', note: '400 N 级远地点发动机量级' }),
   rcsMass: Object.freeze({ value: 0.35, unit: 'kg', source: 'illustrative', note: '10 N 级推力器量级' }),
-  epMass: Object.freeze({ value: 2.0, unit: 'kg', source: 'illustrative', note: '电推力器量级' })
+  epMass: Object.freeze({ value: 2.0, unit: 'kg', source: 'illustrative', note: '电推力器量级' }),
+  // 星上天线 / 有效载荷组件（components/satAntenna.mjs、satUnit.mjs，2026-10-08）
+  apmMass: Object.freeze({ value: 4.0, unit: 'kg', source: 'illustrative', note: '双轴天线指向机构（两只旋转作动器 + 支架 + 旋转关节）量级；反射面另按面密度计' }),
+  helixMass: Object.freeze({ value: 0.25, unit: 'kg', source: 'illustrative', note: '单个轴向模螺旋阵元（含接地杯与支撑）量级；L 频段导航阵元' }),
+  lgaMass: Object.freeze({ value: 0.15, unit: 'kg', source: 'illustrative', note: '全向 / 低增益天线（单极子、四臂螺旋、贴片）量级' }),
+  lctMass: Object.freeze({ value: 15, unit: 'kg', source: 'illustrative', note: '激光通信终端（口径 80 mm 级，含粗指向机构与光学头）量级；组件按口径平方缩放' }),
+  tankAreal: Object.freeze({ value: 6.0, unit: 'kg/m²', source: 'illustrative', note: '钛合金推进剂贮箱壳体面密度量级（壁厚约 1.3 mm，含焊缝与凸台）' }),
+  opticsAreal: Object.freeze({ value: 450, unit: 'kg/m²', source: 'illustrative', note: '光学相机按入瞳面积折算的质量密度量级（主次镜 + 镜筒 + 遮光罩 + 焦面），0.3 m 口径约 32 kg' }),
+  lraAreal: Object.freeze({ value: 25, unit: 'kg/m²', source: 'illustrative', note: '激光角反射器阵（熔石英角锥棱镜 + 铝托板）面密度量级' }),
+  magMass: Object.freeze({ value: 0.3, unit: 'kg', source: 'illustrative', note: '三轴磁通门磁强计探头量级' }),
+  epJointMass: Object.freeze({ value: 3.5, unit: 'kg', source: 'illustrative', note: '电推力器指向臂单个转动关节（展开铰链驱动或指向机构的一根轴，含支架）量级；推力器与臂杆另计' }),
+  visorAreal: Object.freeze({ value: 1.2, unit: 'kg/m²', source: 'illustrative', note: '遮阳板（泡沫芯板或聚酰亚胺膜 + 边框）面密度量级' }),
+  baptaMass: Object.freeze({ value: 15, unit: 'kg', source: 'illustrative', note: '机械消旋组件（轴承与功率传输组件 BAPTA + 消旋电机 + 桅杆接口）量级' }),
+  flexAreal: Object.freeze({ value: 1.1, unit: 'kg/m²', source: 'illustrative', note: '柔性太阳电池帆（电池片 + 聚酰亚胺基底 + 互连）面密度量级；伸展杆、收纳箱另计' }),
+  cubesatMass: Object.freeze({ value: 1.33, unit: 'kg', source: 'illustrative', note: '立方星每 1U 体积的质量量级（CubeSat 设计规范 CDS 第 13 版的 1U 上限 1.33 kg，第 14 版放宽到 2 kg）；立方星星体按包络体积 / 1U 体积折算' }),
+  moduleVolume: Object.freeze({ value: 150, unit: 'kg/m³', source: 'illustrative', note: '密封舱段等效体密度量级：空间站核心舱约 22.5 t ÷ 160 m³ ≈ 140、货运飞船约 13.5 t ÷ 88 m³ ≈ 150 kg/m³' })
 })
 
 /** IR 材质库（线性色；W5 materials.js 按 key 换成真正的 PBR 材质，这里给的是无程序纹理时的合理回退）。 */
@@ -117,7 +137,19 @@ export const MATERIALS = Object.freeze({
   paint_yellow: Object.freeze({ color: [0.8, 0.6, 0.08], metalness: 0, roughness: 0.55 }),
   paint_grey: Object.freeze({ color: [0.45, 0.47, 0.5], metalness: 0, roughness: 0.45 }),
   rubber: Object.freeze({ color: [0.02, 0.02, 0.02], metalness: 0, roughness: 0.9 }),
-  concrete: Object.freeze({ color: [0.55, 0.54, 0.5], metalness: 0, roughness: 0.95 })
+  concrete: Object.freeze({ color: [0.55, 0.54, 0.5], metalness: 0, roughness: 0.95 }),
+  // 星上硬件造型库（hardware.mjs，2026-10-08）：阿洛丁 / 镀金件（馈源口沿、线圈、注入器颈）、锗镀黑聚酰亚胺遮阳膜（深灰微金属光泽，
+  // 调研 #2E2F33）、氮化硼陶瓷（霍尔放电通道环，白）、消光黑漆（遮光罩 / 喷管 / 喇叭内壁）。与星座精模的同名定制色同值
+  gold_metal: Object.freeze({ color: [0.85, 0.62, 0.28], metalness: 1, roughness: 0.3 }),
+  sunshield: Object.freeze({ color: [0.027, 0.028, 0.032], metalness: 0.55, roughness: 0.45 }),
+  ceramic: Object.freeze({ color: [0.78, 0.77, 0.74], metalness: 0, roughness: 0.8 }),
+  black_paint: Object.freeze({ color: [0.025, 0.025, 0.028], metalness: 0, roughness: 0.55 }),
+  // 星上天线造型库（antennas.mjs，2026-10-08）：天线罩 / 阵面罩（石英布、锗涂层 Kapton 的白色介质罩，比白漆更哑）、裸铜（螺旋阵元、
+  // 贴片、馈线）。与星座精模的同名定制色同值（精模从此改走语义键，外观不变）
+  radome: Object.freeze({ color: [0.80, 0.80, 0.77], metalness: 0, roughness: 0.78 }),
+  copper: Object.freeze({ color: [0.80, 0.46, 0.28], metalness: 1, roughness: 0.35 }),
+  // 硅太阳电池（亮蓝，东三平台 / 北斗二号 / 早期卫星；solarArrays.mjs 另画白色汇流条）。与星座精模 FLEET_MATERIALS.cell_si 同值
+  cell_si: Object.freeze({ color: [0.05, 0.11, 0.42], metalness: 0.25, roughness: 0.28 })
 })
 
 export const SOLAR_EFFICIENCY_DEFAULT = 28   // 太阳翼组效率缺省（百分数，AGI_stk_metadata 口径；装配件太阳翼组件同一缺省）
@@ -143,7 +175,7 @@ export const LAYOUT_PRESETS = Object.freeze({
 })
 
 // 各生成器从细节档里读的键。PRESET_KEYS[layout] ⊆ 该族每一档的键（单测逐档查有限数）。
-const KEYS_REFLECTOR = ['fdSolid', 'fdMesh', 'meshAboveDM', 'feedInsetM', 'feedStandoffM', 'wallGapM', 'shellM', 'towerWM', 'reflDetailScale', 'meshTrussDepthFrac', 'meshTrussRodFrac']
+const KEYS_REFLECTOR = ['fdSide', 'fdSolid', 'fdMesh', 'meshAboveDM', 'feedInsetM', 'feedStandoffM', 'wallGapM', 'shellM', 'towerWM', 'reflDetailScale', 'meshTrussDepthFrac', 'meshTrussRodFrac']
 const KEYS_WING = ['sadaLenM', 'sadaDM', 'yokeRodDM', 'panelTM', 'cellMarginM', 'gapM']
 export const PRESET_KEYS = Object.freeze({
   geo: Object.freeze([...KEYS_WING, ...KEYS_REFLECTOR, 'yokeLenM', 'mliOffM', 'radiatorFrac', 'adapterDM', 'adapterHM', 'deckHorns', 'hornApM', 'hornLenM', 'laeExitDM', 'laeLenM', 'rcsExitDM', 'rcsLenM']),
@@ -157,6 +189,13 @@ export const PRESET_KEYS = Object.freeze({
  */
 const OFFSET_PAR_MIN = 0.05
 const hasPreset = (k) => typeof k === 'string' && Object.hasOwn(DETAIL_PRESETS, k)
+/**
+ * 侧板缺省挂在第几块（1 起）：倒数第二块（外侧还留一块 → 十字形，SSL-1300 / Spacebus 4000 在轨外形），只有一块时就是它。
+ * 板数不是正整数时回 1（validateSpec 另报 panels 的错）。装配组件（components/sat.mjs）与设计页快速设置同一缺省。
+ */
+export function defaultSidePanelAt(panels) {
+  return Number.isInteger(panels) && panels >= 2 ? panels - 1 : 1
+}
 const slotSign = (slot) => (slot.startsWith('-') || slot === 'deck-Y' ? -1 : 1)
 /** 槽位推出的缺省偏置方向（自母轴指向口径中心）：侧挂向外（±X），塔馈向南北（±Y）。 */
 const slotOffsetDir = (slot) => (slot.startsWith('deck') ? [0, slotSign(slot), 0] : [slotSign(slot), 0, 0])
@@ -167,7 +206,9 @@ const slotOffsetDir = (slot) => (slot.startsWith('deck') ? [0, slotSign(slot), 0
  * @property {number} panels        串联板数（沿翼展）
  * @property {number} panelHM       单板沿翼展长（m）
  * @property {number} panelWM       单板横宽（m，垂直翼轴、在板面内）
- * @property {number} [sidePanels] 最外一块两侧的侧板数（0 或 2，Spacebus 4000 类）
+ * @property {number} [sidePanels] 侧板数（0 或 2）：挂在第 sidePanelAt 块两侧、与主列垂直展开（SSL-1300 / Spacebus 4000 类十字形翼）
+ * @property {number} [sidePanelAt] 侧板挂在第几块（自翼根数起，1 … panels）；缺省 = 倒数第二块（panels ≥ 2；外侧还有一块 → 十字形），
+ *           只有一块时就是这一块。只在 sidePanels = 2 时有意义；sidePanels = 0 时不写进归一结果（specHash 与改前一致）
  * @property {number} yokeLenM      轭长：SADA 外端到第一块板内缘（m）；0 = 无轭
  * @property {number} gapM          板间缝（m）
  * @property {number} [tiltDeg]     绕翼轴转角（度；0 时电池面朝 −Z_body，即天顶）——烘进几何，关节初值记 0
@@ -227,10 +268,17 @@ export function normalizeSpec(spec) {
   s.bus = { shape: 'box', mli: null, massKg: null, ...(s.bus && typeof s.bus === 'object' ? s.bus : {}) }
   if (s.layout === 'cubesat' && (s.wings === undefined || s.wings === null)) s.wings = []
   if (Array.isArray(s.wings)) {
-    s.wings = s.wings.map((w) => ({
-      sidePanels: 0, yokeLenM: isNum(D.yokeLenM) ? D.yokeLenM : 0, gapM: isNum(D.gapM) ? D.gapM : 0.02, tiltDeg: 0, axis: 'y',
-      efficiency: SOLAR_EFFICIENCY_DEFAULT, ...(w && typeof w === 'object' ? w : {})
-    }))
+    s.wings = s.wings.map((w) => {
+      const o = {
+        sidePanels: 0, yokeLenM: isNum(D.yokeLenM) ? D.yokeLenM : 0, gapM: isNum(D.gapM) ? D.gapM : 0.02, tiltDeg: 0, axis: 'y',
+        efficiency: SOLAR_EFFICIENCY_DEFAULT, ...(w && typeof w === 'object' ? w : {})
+      }
+      // 侧板位置缺省：倒数第二块（十字形；2026-10-08 前恒挂最外一块 = T 字形，与 SSL-1300 / Spacebus 4000 在轨外形不符）
+      if (o.sidePanels === 2 && (o.sidePanelAt === undefined || o.sidePanelAt === null)) o.sidePanelAt = defaultSidePanelAt(o.panels)
+      // 没有侧板时这一项不起作用：不留在归一结果里（驱动装配件可能写回 null），specHash 与引入它之前一致
+      if (o.sidePanels !== 2 && (o.sidePanelAt === undefined || o.sidePanelAt === null)) delete o.sidePanelAt
+      return o
+    })
   }
   // reflectors：省略 = 无；null = 待填（保留 null，validateSpec 报缺）
   if (s.reflectors === undefined) s.reflectors = []
@@ -298,6 +346,7 @@ export function validateSpec(spec) {
       pos(w.yokeLenM, `${p}.yokeLenM`, true); pos(w.gapM, `${p}.gapM`, true)
       if (!isNum(w.tiltDeg)) errors.push(`${p}.tiltDeg：须为数`)
       if (!(w.sidePanels === 0 || w.sidePanels === 2)) errors.push(`${p}.sidePanels：须为 0 或 2`)
+      else if (w.sidePanels === 2 && Number.isInteger(w.panels) && !(Number.isInteger(w.sidePanelAt) && w.sidePanelAt >= 1 && w.sidePanelAt <= w.panels)) errors.push(`${p}.sidePanelAt：须为 1–${w.panels} 的整数`)
       if (w.hingeBody !== undefined && !isVec3(w.hingeBody)) errors.push(`${p}.hingeBody：须为 [x,y,z]`)
       if (!(isNum(w.efficiency) && w.efficiency >= 0 && w.efficiency <= 100)) errors.push(`${p}.efficiency：须在 0–100`)
     })
@@ -421,7 +470,7 @@ function newCtx(spec) {
 function buildGeoBus(ctx) {
   const { spec, D, dens } = ctx
   const h = [spec.bus.xM / 2, spec.bus.yM / 2, spec.bus.zM / 2]
-  const busPart = { id: 'bus', name: '平台体', role: 'bus' }
+  const busPart = { id: 'bus', name: '星体', role: 'bus' }
   const mb = new MB(); box(mb, [0, 0, 0], h)
   addItem(ctx, { name: 'bus', role: 'bus', part: busPart, mat: 'aluminum', mb })
   const V = spec.bus.xM * spec.bus.yM * spec.bus.zM
@@ -447,56 +496,224 @@ function buildGeoBus(ctx) {
       ctx.parts.get(`radiator_${side}`).areaM2 = sp.area
     }
   }
-  if (spec.detail.adapter) {
-    // 星箭对接环：背地面（−Z）中心的铝环；环径不超过平台短边的 90 %
-    const rOut = Math.min(D.adapterDM / 2, 0.45 * Math.min(spec.bus.xM, spec.bus.yM)), rIn = rOut * 0.94, hh = D.adapterHM
-    const am = new MB(), c0 = [0, 0, -h[2]], c1 = [0, 0, -h[2] - hh]
-    frustum(am, c0, rOut, c1, rOut, 48, false, false, false)
-    frustum(am, c0, rIn, c1, rIn, 48, false, false, true)
-    annulus(am, c1, [0, 0, -1], rIn, rOut, 48, [0, 0, -1])
-    addItem(ctx, { name: 'bus_adapter', role: 'bus', part: busPart, mat: 'aluminum', mb: am })
-  }
+  // 星箭对接环：背地面（−Z）中心；环径不超过平台短边的 90 %
+  if (spec.detail.adapter) busAdapter(ctx, busPart, h, Math.min(D.adapterDM / 2, 0.45 * Math.min(spec.bus.xM, spec.bus.yM)), D.adapterHM)
   return h
 }
 
-/** 推力器：远地点发动机（背地面中心）+ 8 个姿轨控推力器（背地面四角斜出 + 东西面四个）。dir = 喷流方向。 */
-function buildGeoThrusters(ctx, h) {
-  const { D, dens } = ctx
-  const lm = new MB(), exitR = D.laeExitDM / 2
-  const p0 = [0, 0, -h[2]], p1 = [0, 0, -h[2] - D.laeLenM]
-  frustum(lm, p0, exitR * 0.35, p1, exitR, 32, true, false, false)
-  frustum(lm, p0, exitR * 0.35 * 0.85, p1, exitR * 0.94, 32, false, false, true)
-  addItem(ctx, { name: 'thruster_lae', role: 'thruster', part: { id: 'thruster_lae', name: '远地点发动机', role: 'thruster' }, mat: 'titanium', mb: lm })
-  pointComp(ctx, 'thruster_lae', dens.laeMass, [0, 0, -h[2] - D.laeLenM * 0.4])
-  const rm = new MB(), er = D.rcsExitDM / 2, inset = Math.min(0.15, 0.2 * Math.min(h[0], h[1]))
-  const list = []
-  for (const sx of [1, -1]) for (const sy of [1, -1]) list.push([[sx * (h[0] - inset), sy * (h[1] - inset), -h[2]], nrm([sx * 0.35, sy * 0.35, -1])])
-  for (const sx of [1, -1]) for (const sy of [1, -1]) list.push([[sx * h[0], sy * (h[1] - inset), -h[2] + inset], [sx, 0, 0]])
-  list.forEach(([p, d], i) => {
-    frustum(rm, p, er * 0.35, madd(p, d, D.rcsLenM), er, 12, true, false, false)
-    pointComp(ctx, `thruster_rcs_${i + 1}`, dens.rcsMass, madd(p, d, D.rcsLenM * 0.4))
-  })
-  addItem(ctx, { name: 'thruster_rcs', role: 'thruster', part: { id: 'thruster_rcs', name: '姿轨控推力器', role: 'thruster' }, mat: 'titanium', mb: rm })
+/**
+ * 星箭对接环（卫星侧，hardware.lvRing：圆柱段 + 下缘 V 形包带法兰）：背地面中心向 −Z 伸出 hh。只画不计质量（并进平台体）。
+ * 整星与装配件平台体组件共用。
+ */
+export function busAdapter(ctx, part, h, rOut, hh) {
+  const am = new MB()
+  lvRing(() => am, { c: [0, 0, -h[2]], dir: [0, 0, -1], up: [1, 0, 0], D: 2 * rOut, H: hh, seg: 64 })
+  addItem(ctx, { name: 'bus_adapter', role: 'bus', part, mat: 'aluminum', mb: am })
 }
 
-/** 对地板（+Z）小喇叭（测控 / 信标）与地球敏感器。避开中心天线塔与东西缘的馈源。 */
-function buildDeckHorns(ctx, h, n) {
+/**
+ * GEO 姿轨控推力器（10 N）布局（整星与装配件 satSpecToComps 共用）：背地面四角斜出 4 处 + 东西面近背地端 4 处。
+ * d = 喷流方向；up = 一处两只（A/B 主备）喷管排开的方向；face = 装在哪个面。
+ * @returns {{p:number[], d:number[], up:number[], face:string}[]}
+ */
+export function rcsLayout(h) {
+  const inset = Math.min(0.15, 0.2 * Math.min(h[0], h[1]))
+  const list = []
+  for (const sx of [1, -1]) for (const sy of [1, -1]) list.push({ p: [sx * (h[0] - inset), sy * (h[1] - inset), -h[2]], d: nrm([sx * 0.35, sy * 0.35, -1]), up: [sx, -sy, 0], face: '-Z' })
+  for (const sx of [1, -1]) for (const sy of [1, -1]) list.push({ p: [sx * h[0], sy * (h[1] - inset), -h[2] + inset], d: [sx, 0, 0], up: [0, 0, 1], face: sx > 0 ? '+X' : '-X' })
+  return list
+}
+
+/**
+ * 推力器（调研 components.md §7）：远地点发动机（背地面中心；hardware.bellNozzle 'lae'：铂铑燃烧室 + 深色延伸段钟形喷管、出口唇环，
+ * 燃烧室与阀头缩在星体里，露出的是喷管）+ 8 处 10 N 姿轨控（rcsLayout；每处一只 MLI 小支架上并排两只钟形喷管，hardware.rcsPod）。
+ * 质量点照旧（远地点发动机 laeMass 在出口前 0.4 laeLenM、每处一只 rcsMass 在 0.4 rcsLenM）——造型细部不改质量模型。
+ */
+function buildGeoThrusters(ctx, h) {
   const { D, dens } = ctx
-  const spots = [[0.76, 0.6], [-0.76, -0.6], [0.76, -0.6], [-0.76, 0.6]]
-  const ra = D.hornApM / 2
+  addHw(ctx, 'thruster_lae', { id: 'thruster_lae', name: '远地点发动机', role: 'thruster' }, 'thruster', 'dark_metal',
+    (put) => bellNozzle(put, { exit: [0, 0, -h[2] - D.laeLenM], dir: [0, 0, -1], up: [1, 0, 0], kind: 'lae', De: D.laeExitDM }))
+  pointComp(ctx, 'thruster_lae', dens.laeMass, [0, 0, -h[2] - D.laeLenM * 0.4])
+  const list = rcsLayout(h)
+  addHw(ctx, 'thruster_rcs', { id: 'thruster_rcs', name: '姿轨控推力器', role: 'thruster' }, 'thruster', 'mli_gold',
+    (put) => { for (const q of list) rcsPod(put, { base: q.p, dir: q.d, up: q.up, scale: D.rcsExitDM / 0.05 }) })
+  list.forEach((q, i) => pointComp(ctx, `thruster_rcs_${i + 1}`, dens.rcsMass, madd(q.p, q.d, D.rcsLenM * 0.4)))
+}
+
+/** 对地板小喇叭 / 地球敏感器的首选位置（平台半边长的比例）：前三处喇叭、第四处地球敏感器（整星与装配件共用；实际落点见 deckSpots）。 */
+export const DECK_SPOTS = Object.freeze([[0.76, 0.6], [-0.76, -0.6], [0.76, -0.6], [-0.76, 0.6]])
+const DECK_SCALES = [1, 0.85, 1.15, 0.7, 1.3, 0.55, 0.4, 0.25]
+/** 点 p 到线段 ab 在对地板（xy）上投影的距离 */
+const segDistXY = (p, a, b) => {
+  const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy
+  const t = l2 > 1e-18 ? clampN(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2, 0, 1) : 0
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+}
+
+/**
+ * 对地板上方的遮挡件（deckSpots 用；整星与装配件共用）：馈源本体（馈电链尾 back → 口面的外包胶囊：喇叭 1.23 a/2、平面阵半边长）
+ * + 支架杆；塔馈另加口面投影圆（对地板喇叭朝 +Z，头顶不能被反射面盖住）。
+ * @returns {{a:number[], b:number[], r:number}[]}
+ */
+export function deckKeepOfFeed(r, L, back, towerTop) {
+  const at = L.feedAt || L.F
+  const out = [{ a: back, b: at, r: r.feedType === 'array' ? feedArraySize(r, L.D, L.k) / 2 : 1.23 * feedHornGeom(r, L).ap / 2 }]
+  if (towerTop || L.h) { const rr = feedSupportR(L); for (const [p0, p1] of feedSupportRods(back, L, towerTop)) out.push({ a: p0, b: p1, r: rr }) }
+  if (L.mount === 'deck') out.push({ a: L.Pc, b: L.Pc, r: L.D / 2 })
+  return out
+}
+
+/** 天线塔（towerH 为 null = 没塔）与对地板测控天线（sensors 关时没有）的遮挡（deckSpots 用；整星与装配件共用）。 */
+export function deckKeepOfDeck(h, D, tw, towerH, ttcKind, sensors) {
+  const out = []
+  if (towerH !== null) out.push({ a: [0, 0, h[2]], b: [0, 0, h[2] + towerH], r: tw * Math.SQRT1_2 })
+  if (sensors) {
+    const SL = geoSensorLayout(h, D, ttcKind)
+    for (const q of SL.ttc) if (q.face === '+Z') out.push({ a: q.base, b: madd(q.base, q.dir, q.mastLen + 0.06 * SL.ks), r: 0.07 * SL.ks })
+  }
+  return out
+}
+
+/**
+ * 对地板小喇叭 / 地球敏感器的落点（整星与装配件共用）。首选 DECK_SPOTS；遮挡件（keep，端点都不高于对地板的不算）投影到对地板后
+ * 与本件外包圆（喇叭 1.23 a/2、地球敏感器 0.12 m×ks）留 0.03 m×k 净空，件与件之间同样留净空。首选点被占就在 x / y 各按
+ * DECK_SCALES 缩放出的候选里取离首选点最近的空位，全被占回首选点（穿插检查会报出来）。
+ * 东西各挂两副反射面（E3000 / SSL-1300 类）时下层馈源的三脚架正落在对地板角上，喇叭得往里让。
+ * @param {number} n 喇叭数（> 3 只放 3 个；≥ 1 时另放地球敏感器）
+ * @returns {(number[]|null)[]} 4 个 [x, y]（没放的为 null）
+ */
+export function deckSpots(h, D, keep, n) {
+  const k = D.reflDetailScale, ks = D.hornApM / 0.12, gap = 0.03 * k
+  const rad = (i) => (i < 3 ? 1.23 * D.hornApM / 2 : 0.12 * ks)
+  const obs = keep.filter((o) => Math.max(o.a[2], o.b[2]) > h[2] + 1e-9)
+  const out = [null, null, null, null]
+  for (const i of [0, 1, 2, 3]) {
+    if (i < 3 ? i >= n : n < 1) continue
+    const r = rad(i), xm = h[0] - r - 0.02 * k, ym = h[1] - r - 0.02 * k
+    const p0 = [DECK_SPOTS[i][0] * h[0], DECK_SPOTS[i][1] * h[1]]
+    const ok = (p) => obs.every((o) => segDistXY(p, o.a, o.b) > o.r + r + gap) &&
+      out.every((q, j) => q === null || Math.hypot(p[0] - q[0], p[1] - q[1]) > rad(j) + r + gap)
+    let best = null, bd = Infinity
+    for (const sx of DECK_SCALES) for (const sy of DECK_SCALES) {
+      const p = [clampN(sx * p0[0], -xm, xm), clampN(sy * p0[1], -ym, ym)]
+      const d = Math.hypot(p[0] - p0[0], p[1] - p0[1])
+      if (d < bd - 1e-12 && ok(p)) { best = p; bd = d }
+    }
+    out[i] = best || p0
+  }
+  return out
+}
+
+/**
+ * 馈源喇叭的质量元：外包锥面（口部外半径 1.23 a、长 L、24 段）× 喇叭面密度——造型细部（台阶 / 波纹 / 馈电链）不改质量模型。
+ * 整星（侧挂馈源 / 对地板喇叭 / 显式附加喇叭）与装配件 sat.feed.horn 同一式子，转为装配后质量逐项对得上。
+ */
+export function hornShellMass(ctx, name, ap, dir, D, L) {
+  const env = new MB()
+  horn(env, ap, dir, 1.23 * D / 2, L, 24)
+  const sp = shellProps(worldPositions(env, IDR, [0, 0, 0]), env.idx, ctx.dens.hornAreal)
+  comp(ctx, name, 'shell', sp.massKg, sp.com, sp.I)
+  return sp
+}
+
+/**
+ * 对地板（+Z）小喇叭（信标 / 测控；台阶锥本色铝喇叭）与地球敏感器（IRES 类金色盒 + 顶窗，只画不计质量）。
+ * 落点由 deckSpots 避开天线塔、反射面、馈源与支架、测控天线——所以排在反射面之后建。
+ */
+function buildDeckHorns(ctx, h, n) {
+  const { D, spec } = ctx
+  const spots = deckSpots(h, D, ctx.deckKeep.concat(deckKeepOfDeck(h, D, ctx.towerW, ctx.towerBuilt ? ctx.towerH : null, spec.detail.ttc, spec.detail.sensors !== false)), n)
   for (let i = 0; i < Math.min(n, 3); i++) {
-    const [fx, fy] = spots[i], hm = new MB(), ap = [fx * h[0], fy * h[1], h[2] + D.hornLenM]
-    horn(hm, ap, [0, 0, 1], ra, D.hornLenM, 20)
-    const it = addItem(ctx, { name: `deck_horn_${i + 1}`, role: 'feed', part: { id: `deck_horn_${i + 1}`, name: `对地板喇叭 ${i + 1}`, role: 'feed' }, mat: 'aluminum', mb: hm })
-    const sp = shellComp(ctx, `deck_horn_${i + 1}`, it, dens.hornAreal)
-    ctx.parts.get(`deck_horn_${i + 1}`).areaM2 = sp.area
-    ctx.parts.get(`deck_horn_${i + 1}`).normalBody = [0, 0, 1]
+    const [x, y] = spots[i], ap = [x, y, h[2] + D.hornLenM]
+    const id = `deck_horn_${i + 1}`
+    addHw(ctx, id, { id, name: `对地板喇叭 ${i + 1}`, role: 'feed' }, 'feed', 'aluminum',
+      (put) => feedHorn(put, { ap, dir: [0, 0, 1], up: [1, 0, 0], D: D.hornApM, L: D.hornLenM, style: 'terraced', mat: { body: 'aluminum', rim: 'gold_metal', inner: 'black_paint' }, seg: 20 }))
+    const sp = hornShellMass(ctx, id, ap, [0, 0, 1], D.hornApM, D.hornLenM)
+    ctx.parts.get(id).areaM2 = sp.area
+    ctx.parts.get(id).normalBody = [0, 0, 1]
   }
   if (n >= 1) {
-    const [fx, fy] = spots[3], sm = new MB(), e = Math.max(0.04, D.hornApM * 0.6)
-    box(sm, [fx * h[0], fy * h[1], h[2] + e / 2], [e / 2, e / 2, e / 2], ['+x', '-x', '+y', '-y', '+z'])
-    addItem(ctx, { name: 'earth_sensor', role: 'sensor', part: { id: 'earth_sensor', name: '地球敏感器', role: 'sensor' }, mat: 'dark_metal', mb: sm })
+    const [x, y] = spots[3]
+    addHw(ctx, 'earth_sensor', { id: 'earth_sensor', name: '地球敏感器', role: 'sensor' }, 'sensor', 'gold_metal',
+      (put) => earthSensor(put, { base: [x, y, h[2]], dir: [0, 0, 1], up: [1, 0, 0], type: 'ires', scale: D.hornApM / 0.12 }))
   }
+}
+
+/**
+ * GEO 平台敏感器 / 测控天线布局（整星与装配件共用；调研 components.md §4–§5，位置是工程示意）：
+ *   星敏两头：北板（−Y）对地端的楔形座上，视轴离 −Y 35°、方位 −45° / −135°（偏东 / 偏西并朝背地），两头相隔 48°——
+ *            躲开太阳（赤道面 ±23.4° + 26° 排除角）、地球（18.5° 排除角）与南北翼；
+ *   测控：对地板一角的桅杆顶（朝 +Z）+ 背地面对角（朝 −Z，躲开远地点发动机、对接环与姿控支架）。
+ *         kind 'wca'（欧洲平台：两只宽波束「管」喇叭）/ 'bicone'（北美平台：对地板桅杆上是双锥全向天线）。
+ * 尺寸随 ks（= 对地板喇叭口径 / 0.12：GEO 档 1、小平台 0.5）。
+ * @returns {{stars:{base, n, dir, cantDeg, rollDeg, uv}[], ttc:{kind, base, dir, mastLen, face, uv}[], ks:number}}
+ */
+export function geoSensorLayout(h, D, ttcKind) {
+  const ks = D.hornApM / 0.12
+  const a = 35 * Math.PI / 180, stars = []
+  for (const az of [-45, -135]) {
+    const t = az * Math.PI / 180
+    const dir = [Math.sin(a) * Math.cos(t), -Math.cos(a), Math.sin(a) * Math.sin(t)]
+    const x = Math.sign(Math.cos(t)) * 0.22 * ks, z = h[2] - 0.3 * ks
+    // −Y 面的面系：u = +Z、v = n × u = −X；倾斜方位角（自 u 量起）= atan2(视轴在 v 上的分量, 在 u 上的分量)
+    const rollDeg = Math.atan2(-dir[0], dir[2]) * 180 / Math.PI
+    // 斜装方向（视轴在安装面内的投影）：楔形座的方块边与光学头的接插件都朝它（装配件星敏组件局部 +X 经滚转后就是它）
+    const tilt = nrm([dir[0], 0, dir[2]])
+    stars.push({ base: [x, -h[1], z], n: [0, -1, 0], dir, tilt, cantDeg: 35, rollDeg, uv: [z, -x] })
+  }
+  const kind = ttcKind === 'bicone' ? 'bicone' : 'wca'
+  const ttc = [
+    { kind, base: [-0.85 * h[0], -0.85 * h[1], h[2]], dir: [0, 0, 1], mastLen: 0.45 * ks, face: '+Z', uv: [-0.85 * h[0], -0.85 * h[1]] },
+    // −Z 面系：u = +X、v = n × u = −Y
+    { kind: 'wca', base: [0.55 * h[0], 0.75 * h[1], -h[2]], dir: [0, 0, -1], mastLen: 0.1 * ks, face: '-Z', uv: [0.55 * h[0], -0.75 * h[1]] }
+  ]
+  return { stars, ttc, ks }
+}
+
+/** 星敏感器（两头，hardware.starTrackerHead 'hydra' 在楔形座上）+ 测控天线（WCA / 双锥 + 桅杆）。只画不计质量（敏感器 / 天线组件同口径）。 */
+function buildGeoSensors(ctx, h) {
+  const { spec, D } = ctx
+  const L = geoSensorLayout(h, D, spec.detail.ttc)
+  L.stars.forEach((s, i) => {
+    const id = `star_tracker_${i + 1}`
+    addHw(ctx, id, { id, name: `星敏感器 ${i + 1}`, role: 'sensor' }, 'sensor', 'aluminum', (put) => {
+      const w = wedgeMount(put, { base: s.base, n: s.n, top: s.dir, size: 1.33 * 0.135 * L.ks, up: s.tilt })
+      starTrackerHead(put, { base: w.top, dir: s.dir, up: s.tilt, type: 'hydra', scale: L.ks, seg: 32 })
+    })
+  })
+  L.ttc.forEach((q, i) => {
+    const id = `ttc_antenna_${i + 1}`
+    addHw(ctx, id, { id, name: `测控天线 ${i + 1}`, role: 'feed' }, 'feed', 'aluminum', (put) => ttcAntenna(put, { base: q.base, dir: q.dir, up: [1, 0, 0], kind: q.kind, mastLen: q.mastLen, scale: L.ks }))
+  })
+}
+
+/**
+ * 测控天线（整星与装配件 sat.antenna.ttc 共用）：桅杆（白漆细管 + 脚法兰）顶上一只宽波束「管」喇叭（WCA）或双锥全向天线（带琥珀色圆极化套筒）。
+ * o = { base（安装面中心）, dir（朝外）, up?, kind:'wca'|'bicone', band?:'Ku'|'C', mastLen, scale?, polarizer? }
+ * @returns {{top:number[]}}
+ */
+export function ttcAntenna(put, o) {
+  const k = isNum(o.scale) ? o.scale : 1, d = nrm(o.dir)
+  if (o.kind === 'bicone') return ttcBicone(put, { base: o.base, dir: d, up: o.up, band: o.band, mastLen: o.mastLen, polarizer: o.polarizer, mastR: 0.018 * k, scale: k })
+  const mastR = 0.018 * k
+  let top = o.base
+  if (o.mastLen > 0.002) {
+    cylP(put('white_paint'), o.base, madd(o.base, d, o.mastLen), mastR)
+    cylP(put('aluminum'), o.base, madd(o.base, d, 0.006 * k), 2 * mastR)
+    top = madd(o.base, d, o.mastLen)
+  }
+  wcaHorn(put, { base: top, dir: d, up: o.up, band: o.band, scale: k })
+  return { top: madd(top, d, 0.06 * k * (o.band === 'C' ? 2.5 : 1)) }
+}
+const cylP = (mb, p0, p1, r) => frustum(mb, p0, r, p1, r, 16, false, true, false)
+
+/**
+ * 电推力器造型（整星 LEO 平板与装配件 sat.thruster 'ep' 共用）：霍尔推力器（hardware.hallThruster，放电通道直径 Dch）出口面在安装点沿
+ * 喷流 L 处（不足本体深 1.2 Dch 时取本体深）；本体背面到安装面之间补一段方形支座。
+ */
+export function epThruster(put, base, dir, up, Dch, L) {
+  const d = nrm(dir), Lb = 1.2 * Dch, zE = Math.max(L, Lb)
+  return hallThruster(put, { exit: madd(base, d, zE), dir: d, up, Dch, standoff: zE - Lb })
 }
 
 /**
@@ -505,7 +722,9 @@ function buildDeckHorns(ctx, h, n) {
  * 再绕 y_l 转 tiltDeg。原点 = 铰点（缺省南北面中心）。板面中面过转轴（基板 z_l∈[−t/2, t/2]）。
  * 组件复用：ctx = meshKit.createCtx({dens})，w 给 hingeBody（如 [0,0,0]）就不读 ctx.spec；节点 / 挂点名固定为 wing_±Y_*，
  * 两副翼要各开一个 ctx（合并时加组件 id 前缀）。
- * opt = {sadaLenM, sadaDM, yokeRodDM, panelTM, cellMarginM, articulate, sadaPart?, sadaMassKg?}：
+ * opt = {sadaLenM, sadaDM, yokeRodDM, panelTM, cellMarginM, articulate, sadaPart?, sadaMassKg?,
+ *        yokeStyle?, columns?, cellMat?, bothFaces?, frame?, hinges?, concentrator?}（后七项是装配组件 sat.wing 的可选外形，2026-10-08
+ *        「太阳翼种类补全」；整星不传 → 与旧版逐字节相同）：
  *   sadaPart   SADA 节点归哪个部件。缺省：整星（ctx.spec 在）并进平台体 {id:'bus'}——SADA 质量由平台质量兜着；
  *              组件（无 ctx.spec）单独成件 {id:'wing_±Y_sada', name:'太阳翼驱动机构 ±Y', role:'bus'}，不凭空冒出 id='bus' 的假平台件。
  *   sadaMassKg SADA 质量（kg）：给了正有限数才登记一个实心圆柱质量元（名 wing_±Y_sada）；整星不传（平台质量已含）。
@@ -523,12 +742,11 @@ export function buildWing(ctx, w, opt) {
   const t = opt.panelTM, m = opt.cellMarginM, W = w.panelWM, H = w.panelHM
   const artNodes = [], cellNodes = [], wingPart = { id: wname, name: `太阳翼 ${w.side}`, role: 'solarArray' }
   const toW = (p) => add(hinge, rApply(R, p))
-  // SADA：固定在平台上（不随关节转），用未转的 R0
+  // SADA：固定在平台上（不随关节转）。驱动机构本体装在南北板里，外面只露输出端 + 翼根支座、裹一只 MLI 护套（hardware.sadaBoot，
+  // 调研 components.md §8.1）：总长 = sadaLenM、护套底径 = sadaDM
   if (opt.sadaLenM > 0) {
-    const sm = new MB()
-    tube(sm, [0, -0.01, 0], [0, opt.sadaLenM, 0], opt.sadaDM / 2, 24)
     const sadaPart = opt.sadaPart || (ctx.spec ? { id: 'bus' } : { id: `${wname}_sada`, name: `太阳翼驱动机构 ${w.side}`, role: 'bus' })
-    addItem(ctx, { name: `${wname}_sada`, role: 'bus', part: sadaPart, mat: 'aluminum', mb: sm, R: R0, t: hinge })
+    addHw(ctx, `${wname}_sada`, sadaPart, 'bus', 'aluminum', (put) => sadaBoot(put, { root: hinge, dir: [0, s, 0], up: [1, 0, 0], kz: opt.sadaLenM / 0.25, kr: opt.sadaDM / 0.26 }))
     if (isNum(opt.sadaMassKg) && opt.sadaMassKg > 0) {
       // 实心圆柱（沿局部 y，长 = 画出的 −0.01 … sadaLenM）：轴向 m r²/2、横向 m(3r² + L²)/12
       const mS = opt.sadaMassKg, rS = opt.sadaDM / 2, lS = opt.sadaLenM + 0.01, iT = mS * (3 * rS * rS + lS * lS) / 12
@@ -536,40 +754,97 @@ export function buildWing(ctx, w, opt) {
     }
   }
   const y0 = opt.sadaLenM + w.yokeLenM
-  // 轭：长的画 V 形双杆 + 横梁；短的（< 0.3 m）画单根短杆
+  // 轭：长的画 V 形双杆 + 横梁；短的（< 0.3 m）画单根短杆。opt.yokeStyle 可指定 'v' / 'trap'（梯形框 + 交叉斜撑，北斗二号 / 东三平台）/ 'rod' /
+  // 'scissor'（剪叉式展开架：交叉杆逐节伸出，星链 V2 Mini 翼根）
   if (w.yokeLenM > 0.01) {
     const ym = new MB(), r = opt.yokeRodDM / 2
     const root = [0, opt.sadaLenM, 0]
-    const rods = w.yokeLenM >= 0.3
+    const style = opt.yokeStyle && opt.yokeStyle !== 'auto' ? opt.yokeStyle : (w.yokeLenM >= 0.3 ? 'v' : 'rod')
+    const ya = opt.sadaLenM, yb = y0 - r, ta = 0.22 * W, tb = 0.42 * W
+    const rods = style === 'v'
       ? [[root, [0.4 * W, y0 - r, 0]], [root, [-0.4 * W, y0 - r, 0]], [[-0.4 * W, y0 - r, 0], [0.4 * W, y0 - r, 0]]]
-      : [[root, [0, y0, 0]]]
+      : style === 'trap'
+        ? [[[-ta, ya, 0], [-tb, yb, 0]], [[ta, ya, 0], [tb, yb, 0]], [[-tb, yb, 0], [tb, yb, 0]], [[-ta, ya, 0], [ta, ya, 0]], [[-ta, ya, 0], [tb, yb, 0]], [[ta, ya, 0], [-tb, yb, 0]]]
+        : style === 'scissor' ? scissorRods(ya, yb, 0.25 * W, Math.max(2, Math.round((yb - ya) / (0.5 * W))))
+          : [[root, [0, y0, 0]]]
     rods.forEach(([a, b], i) => { tube(ym, a, b, r, 10); rodComp(ctx, `${wname}_yoke_${i + 1}`, toW(a), toW(b)) })
     addItem(ctx, { name: `${wname}_yoke`, role: 'boom', part: { id: `${wname}_yoke`, name: `太阳翼轭 ${w.side}`, role: 'boom' }, mat: 'carbon', mb: ym, R, t: hinge })
     artNodes.push(`${wname}_yoke`)
   }
   let cellArea = 0
+  // 可选外形（装配组件）：多列 / 硅电池汇流条 / 双面电池 / 板框 / 板间铰链 / 聚光板；装饰件各并成一个随翼转的节点
+  const cols = Number.isInteger(opt.columns) && opt.columns > 1 ? opt.columns : 1
+  const cellMat = opt.cellMat || 'solar_cell'
+  const deco = { lines: cellMat === 'cell_si' ? new MB() : null, frame: opt.frame ? new MB() : null, hinges: opt.hinges ? new MB() : null, conc: opt.concentrator ? new MB() : null }
+  const FI = { o: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] }
   const panelAt = (tag, cx, yStart) => {
     const cy = yStart + H / 2
-    const sm = new MB(); box(sm, [cx, cy, 0], [W / 2, H / 2, t / 2])
-    const sub_ = addItem(ctx, { name: `${wname}_${tag}_substrate`, role: 'solarArray', part: wingPart, mat: 'solar_substrate', mb: sm, R, t: hinge })
-    plateComp(ctx, sub_.name, dens.panelAreal * W * H, toW([cx, cy, 0]), R, W, H)
-    const cm = new MB(), cw = Math.max(0.001, W / 2 - m), ch = Math.max(0.001, H / 2 - m)
-    quad(cm, [cx, cy, t / 2 + CELL_LIFT], [cw, 0, 0], [0, ch, 0])
-    const cel = addItem(ctx, { name: `${wname}_${tag}_cells`, role: 'solarArray', part: wingPart, mat: 'solar_cell', mb: cm, R, t: hinge })
-    const ca = 4 * cw * ch
-    plateComp(ctx, cel.name, dens.cellAreal * ca, toW([cx, cy, t / 2 + CELL_LIFT]), R, 2 * cw, 2 * ch)
-    cellArea += ca
-    artNodes.push(sub_.name, cel.name); cellNodes.push(cel.name)
+    const sw = cols > 1 ? (W - (cols - 1) * w.gapM) / cols : W
+    for (let j = 0; j < cols; j++) {
+      const x = cols > 1 ? cx - W / 2 + sw / 2 + j * (sw + w.gapM) : cx
+      const tg = cols > 1 ? `${tag}c${j + 1}` : tag
+      const sm = new MB(); box(sm, [x, cy, 0], [sw / 2, H / 2, t / 2])
+      const sub_ = addItem(ctx, { name: `${wname}_${tg}_substrate`, role: 'solarArray', part: wingPart, mat: 'solar_substrate', mb: sm, R, t: hinge })
+      plateComp(ctx, sub_.name, dens.panelAreal * sw * H, toW([x, cy, 0]), R, sw, H)
+      const cm = new MB(), cw = Math.max(0.001, sw / 2 - m), ch = Math.max(0.001, H / 2 - m)
+      quad(cm, [x, cy, t / 2 + CELL_LIFT], [cw, 0, 0], [0, ch, 0])
+      if (opt.bothFaces) quad(cm, [x, cy, -t / 2 - CELL_LIFT], [0, ch, 0], [cw, 0, 0])
+      const cel = addItem(ctx, { name: `${wname}_${tg}_cells`, role: 'solarArray', part: wingPart, mat: cellMat, mb: cm, R, t: hinge })
+      const ca = 4 * cw * ch
+      plateComp(ctx, cel.name, dens.cellAreal * ca, toW([x, cy, t / 2 + CELL_LIFT]), R, 2 * cw, 2 * ch)
+      if (opt.bothFaces) plateComp(ctx, `${cel.name}_back`, dens.cellAreal * ca, toW([x, cy, -t / 2 - CELL_LIFT]), R, 2 * cw, 2 * ch)
+      cellArea += ca
+      artNodes.push(sub_.name, cel.name); cellNodes.push(cel.name)
+      if (deco.lines) {
+        siLines(deco.lines, FI, x, cy, cw, ch, t / 2 + CELL_LIFT + 0.0007, [0, 0, 1])
+        if (opt.bothFaces) siLines(deco.lines, FI, x, cy, cw, ch, -t / 2 - CELL_LIFT - 0.0007, [0, 0, -1])
+      }
+      if (deco.frame) {
+        const fw = Math.min(0.02, 0.04 * Math.min(sw, H)), fz = t / 2 + 0.002
+        box(deco.frame, [x - sw / 2 + fw / 2, cy, 0], [fw / 2, H / 2, fz], ['+x', '-x', '+z', '-z'])
+        box(deco.frame, [x + sw / 2 - fw / 2, cy, 0], [fw / 2, H / 2, fz], ['+x', '-x', '+z', '-z'])
+        box(deco.frame, [x, cy - H / 2 + fw / 2, 0], [sw / 2, fw / 2, fz], ['+y', '-y', '+z', '-z'])
+        box(deco.frame, [x, cy + H / 2 - fw / 2, 0], [sw / 2, fw / 2, fz], ['+y', '-y', '+z', '-z'])
+      }
+    }
+    if (deco.conc) {
+      // 聚光板：两条长边（沿翼展）各一条，自板边向电池面一侧外倾 60°（板宽 0.45 W），双面
+      const wr = 0.45 * W, cA = Math.cos(60 * Math.PI / 180), sA = Math.sin(60 * Math.PI / 180)
+      for (const s of [1, -1]) {
+        const xe = cx + s * W / 2, x2 = xe + s * wr * cA, z2 = t / 2 + wr * sA
+        const a = [xe, cy - H / 2, t / 2], b2 = [xe, cy + H / 2, t / 2], c = [x2, cy + H / 2, z2], d = [x2, cy - H / 2, z2]
+        const n = nrm(cross(sub(b2, a), sub(d, a)))
+        quadPts(deco.conc, a, b2, c, d, n); quadPts(deco.conc, a, d, c, b2, scl(n, -1))
+        plateComp(ctx, `${wname}_${tag}_conc${s > 0 ? 'a' : 'b'}`, dens.mliAreal * wr * H, toW([(xe + x2) / 2, cy, (t / 2 + z2) / 2]), R, wr, H)
+      }
+    }
   }
   for (let k = 0; k < w.panels; k++) panelAt(String(k + 1), 0, y0 + k * (H + w.gapM))
   if (w.sidePanels === 2) {
-    const yl = y0 + (w.panels - 1) * (H + w.gapM)
-    panelAt(`${w.panels}a`, W + w.gapM, yl); panelAt(`${w.panels}b`, -(W + w.gapM), yl)
+    // 侧板挂在第 at 块两侧（缺省倒数第二块 → 十字形；见 defaultSidePanelAt）
+    const at = Number.isInteger(w.sidePanelAt) ? Math.min(w.panels, Math.max(1, w.sidePanelAt)) : defaultSidePanelAt(w.panels)
+    const yl = y0 + (at - 1) * (H + w.gapM)
+    panelAt(`${at}a`, W + w.gapM, yl); panelAt(`${at}b`, -(W + w.gapM), yl)
+    if (deco.hinges) for (const s of [1, -1]) for (const f of [-0.38, 0.38]) tube(deco.hinges, [s * (W / 2 + w.gapM / 2), yl + H / 2 + f * H - 0.04 * H, 0], [s * (W / 2 + w.gapM / 2), yl + H / 2 + f * H + 0.04 * H, 0], Math.max(0.008, 0.6 * t), 10)
+  }
+  if (deco.hinges) {
+    // 板间铰链：相邻两块之间（主列），两端各一只
+    for (let k = 1; k < w.panels; k++) {
+      const yj = y0 + k * (H + w.gapM) - w.gapM / 2
+      for (const s of [1, -1]) tube(deco.hinges, [s * 0.38 * W - 0.04 * W, yj, 0], [s * 0.38 * W + 0.04 * W, yj, 0], Math.max(0.008, 0.6 * t), 10)
+    }
+  }
+  for (const [k, mat] of [['lines', 'white_paint'], ['frame', 'carbon'], ['hinges', 'titanium'], ['conc', 'aluminum']]) {
+    if (!deco[k] || !deco[k].tcount) continue
+    const nm = `${wname}_${k === 'conc' ? 'concentrators' : k}`
+    addItem(ctx, { name: nm, role: 'solarArray', part: wingPart, mat, mb: deco[k], R, t: hinge })
+    artNodes.push(nm)
   }
   const p = ctx.parts.get(wname)
   p.areaM2 = cellArea; p.normalBody = nrm(R[2])
   if (opt.articulate) {
-    ctx.arts.push({ name: wname, nodes: artNodes, stages: [{ name: 'rotate', type: 'yRotate', minimumValue: -180, maximumValue: 180, initialValue: 0 }] })
+    // pointingVector = 节点局部 +Z（电池面法向）：导到 STK 后太阳翼可直接单轴对日（审查 P1-8；节点局部系即翼局部系）
+    ctx.arts.push({ name: wname, nodes: artNodes, stages: [{ name: 'rotate', type: 'yRotate', minimumValue: -180, maximumValue: 180, initialValue: 0 }], pointingVector: [0, 0, 1] })
   }
   ctx.spg.push({ name: wname, nodes: cellNodes, efficiency: w.efficiency })
   addAp(ctx, `${wname}_axis`, hinge, [0, s, 0])
@@ -577,12 +852,103 @@ export function buildWing(ctx, w, opt) {
   return { hinge, tipBody: toW([0, tipY, 0]) }
 }
 
+/** 剪叉式展开架的杆（翼局部系 xy 平面，ya → yb、半宽 hw、n 节）：每节两根交叉杆 + 两端横杆 */
+function scissorRods(ya, yb, hw, n) {
+  const P = (k, s) => [s * hw, ya + ((yb - ya) * k) / n, 0], out = []
+  for (let k = 0; k < n; k++) out.push([P(k, -1), P(k + 1, 1)], [P(k, 1), P(k + 1, -1)])
+  out.push([P(0, -1), P(0, 1)], [P(n, -1), P(n, 1)])
+  return out
+}
+
 /** 平面馈源阵边长：给了 feedApertureM 就用，否则按口径 12 % 取、夹在 (0.6–2 m)×k（示意）。 */
 const feedArraySize = (r, Dm, k) => (isNum(r.feedApertureM) ? r.feedApertureM : clampN(0.12 * Dm, 0.6 * k, 2.0 * k))
+
+/**
+ * 硬件造型件落进生成上下文（hardware.mjs 按材质分桶出网格）：主材质的桶叫 name，其余桶叫 name_<材质键>，都登记在同一部件下。
+ * 只登记几何节点、不登记质量元（质量由调用方按包络另记）。build(put) 的返回值原样带回。装配组件（components/sat.mjs）同一口径。
+ * @returns {{ret:any, items:object[]}}
+ */
+export function addHw(ctx, name, part, role, mainMat, build) {
+  const buckets = new Map()
+  const put = (k) => { if (!Object.hasOwn(MATERIALS, k)) throw new Error(`paramBus：硬件造型件用了未知材质 ${k}（生成器内部错误）`); if (!buckets.has(k)) buckets.set(k, new MB()); return buckets.get(k) }
+  put(mainMat)
+  const ret = build(put)
+  const items = []
+  for (const [k, mb] of buckets) if (mb.tcount) items.push(addItem(ctx, { name: k === mainMat ? name : `${name}_${k}`, role, part, mat: k, mb }))
+  return { ret, items }
+}
+
+/**
+ * 馈源喇叭的轴向几何（整星 buildFeed 与装配件 satSpecToComps / 反射面组件焦点插座共用同一式子）。
+ * 口径缺省 0.03 × 焦距：馈源要在反射面张角上打出 −12 dB 边缘照射，口径随焦距线性涨（调研 components.md §2.1：f/D 1.6 的 2.4 m Ku
+ * 反射面配 ≈ 4.4 λ = 0.11 m 的喇叭；对地板 f/D 0.8 的小反射面只要 2–3 λ），夹在 0.06–0.3 m × k；
+ * 喇叭长 2.12 × 口径（窄张角 12° 的波纹锥喇叭，L/D 2.12）；之后接馈电链（圆波导颈 + 极化器 + 正交模变换器方盒，共 ≈ 5.3 λ，λ = 口径 / 2.8）。
+ * @returns {{ap:number, hl:number, back:number[]}} back = 馈电链尾中心（支架落脚的起点）
+ */
+export const feedApDefault = (f, k) => clampN(0.03 * f, 0.06 * k, 0.3 * k)
+export function feedHornGeom(r, L) {
+  const k = L.k
+  const ap = isNum(r.feedApertureM) ? r.feedApertureM : feedApDefault(L.f, k)
+  const hl = 2.12 * ap, lam = ap / 2.8
+  const dir = nrm(sub(L.Pc, L.F))
+  return { ap, hl, dir, back: madd(L.F, dir, -(hl + 0.035 * hl + 5.32 * lam)) }
+}
+
+/**
+ * 馈源支架（整星与装配件共用）：侧挂馈源 = 三脚架落到对地板（不是一根圆柱——在轨照片里都是支架 / 撑杆框，调研 part_feeds §2(d)）；
+ * 塔馈 = 两根撑杆接到塔顶。返回线段表 [[p0, p1], …]（不足 2 cm 的段丢掉）。
+ */
+export function feedSupportRods(back, L, towerTop) {
+  const k = L.k, h = L.h
+  const segs = []
+  if (towerTop) {
+    for (const sx of [1, -1]) segs.push([back, [sx * 0.12 * k, clampN(back[1], -0.2 * k, 0.2 * k), towerTop]])
+  } else if (h) {
+    const cx = clampN(back[0], -h[0] + 0.05 * k, h[0] - 0.05 * k), cy = clampN(back[1], -h[1] + 0.05 * k, h[1] - 0.05 * k)
+    const sx = Math.sign(back[0]) || 1, d = 0.14 * k
+    for (const [ox, oy] of [[sx * d, d], [sx * d, -d], [-sx * d, 0]]) {
+      segs.push([back, [clampN(cx + ox, -h[0] + 0.03 * k, h[0] - 0.03 * k), clampN(cy + oy, -h[1] + 0.03 * k, h[1] - 0.03 * k), h[2]]])
+    }
+  }
+  // 各杆的上端接在馈电链尾托架（0.1 m×k 见方）朝自己落脚点那一侧的棱上，不共用一个点：几根杆夹角小（长三脚架只差几度）时
+  // 共点会在顶端互相吃进去一大截（转为装配后的穿插检测按两杆端帽深度放行，管不到这么长的重叠）
+  const out = []
+  for (const [a, b] of segs) {
+    const hz = [b[0] - a[0], b[1] - a[1], 0], l = len(hz)
+    const a1 = l > 1e-9 ? madd(a, hz, 0.05 * k / l) : a
+    if (len(sub(b, a1)) > 0.02 * k) out.push([a1, b])
+  }
+  return out
+}
+/** 馈源支架杆半径（整星与装配件共用） */
+export const feedSupportR = (L) => Math.max(0.008 * L.k, 0.012 * Math.min(1, L.D / 2.5))
 const isMeshRefl = (r, D) => r.mesh === true || r.diameterM > D.meshAboveDM
-const focalOf = (r, D) => (isNum(r.focalM) ? r.focalM : (isMeshRefl(r, D) ? D.fdMesh : D.fdSolid) * r.diameterM)
+/** 焦距：spec 给了用它，否则按焦径比——网状 / 对地板塔馈实面 / 东西侧挂实面各一档（装配件 satSpecToComps、设计页 effFocalM 同式） */
+const focalOf = (r, D) => (isNum(r.focalM) ? r.focalM : (isMeshRefl(r, D) ? D.fdMesh : r.mount === 'deck' ? D.fdSolid : D.fdSide) * r.diameterM)
 /** 塔馈反射面缺省偏置：口径中心离母轴 = 半口径 + 0.1 m×k。塔高（buildReflectors）与布局两处都用，必须同一个式子。 */
 const deckOffset = (r, D) => (isNum(r.offsetHM) ? r.offsetHM : r.diameterM / 2 + 0.1 * D.reflDetailScale)
+
+/** 天线塔外表面：平台 MLI 同色（无 MLI 时白漆）。装配件 satSpecToComps 同式。 */
+export const towerFinish = (spec) => (spec.detail.mli && spec.bus.mli ? spec.bus.mli : 'white_paint')
+/** 反射面正面 / 背面外观选项 → 材质键（调研 components.md §1(c)）。 */
+const REFL_FRONT = Object.freeze({ white: 'reflector', sunshield: 'sunshield', silver: 'mli_silver' })
+const REFL_REAR = Object.freeze({ cfrp: 'carbon', mli_gold: 'mli_gold', mli_black: 'mli_black' })
+
+/**
+ * 侧挂实面反射面的两轴展开机构与单臂（整星与装配件共用；调研 components.md §1(d)(e)：Airbus US 11,858,663——支撑框内侧横梁上的
+ * 连接点由一根直臂接到侧壁背地端附近的展开机构 ADTM；ESA ADS 项目臂长 1.8 m 量级）。
+ * ADTM 装在侧壁上：高度取连接点下方 0.35 m×k（夹在侧壁内）、横向比连接点再往 −e2 偏 0.25 R（与 hardware.adtmBlock 同一套盒 / 鼓尺寸）；
+ * 臂径 Ø ≈ 0.07 m（2.45 m 反射面）。L 须带 link（reflectorBacking 的连接点）、h、s、k。
+ * @returns {{base:number[], n:number[], out:number[], link:number[], r:number, k:number}}
+ */
+export function sideArmGeom(L) {
+  const h = L.h, k = L.k, R = L.D / 2
+  const y = clampN(L.link[1] - 0.25 * R * L.e2[1], -h[1] + 0.15 * k, h[1] - 0.15 * k)
+  const z = clampN(L.link[2] - 0.35 * k, -h[2] + 0.2 * k, h[2] - 0.2 * k)
+  const base = [L.s * h[0], y, z], n = [L.s, 0, 0]
+  // 输出端 = 盒高 0.15k + 鼓 1 中心高 0.048k + 鼓 2 伸出 0.09k（hardware.adtmBlock）
+  return { base, n, out: madd(base, n, 0.288 * k), link: L.link.slice(), r: Math.max(0.012 * k, 0.035 * Math.min(1.5, L.D / 2.45)), k }
+}
 
 /**
  * 反射面几何解算（全部 double，本体系 spec 原点）。
@@ -622,13 +988,18 @@ function reflectorLayout(ctx, r, resolved) {
   // 母抛物面几何（顶点 / 口径面点 / 法向）交给 meshKit.paraLayout；这里只补整星语义（挂法、槽位符号、网状、平台半边长）
   const L = paraLayout(F, a, u, f, Dm, dc, k)
   L.mount = r.mount; L.s = s; L.mesh = mesh; L.h = h
+  // 东西侧挂实面：Airbus 式矩形支撑框 + 单臂两轴展开机构（buildReflectorArm）；对地板塔馈只有背架（固定在支撑杆上）
+  L.support = side && !mesh ? 'rect' : 'none'
   return L
 }
 
 /**
  * 偏置抛物面反射面。正面网格：中心点 + 12 圈 × 48 段（口径面极坐标，米制 uv）。
- *   L 至少带 paraLayout 的全部字段 + mesh（布尔）；读 ctx.D 的 shellM / meshTrussDepthFrac / meshTrussRodFrac 与 ctx.dens。r 不读。
- *   实面：正面（reflector，朝焦点）+ 背壳（carbon，沿法向退 shellM）+ 边缘厚度环。
+ *   L 至少带 paraLayout 的全部字段 + mesh（布尔），可带 support（'rect' | 'none'）；读 ctx.D 的 shellM / meshTrussDepthFrac /
+ *   meshTrussRodFrac 与 ctx.dens。r 只读外观选项（都可省）：front（'white' 白漆 | 'sunshield' 锗膜遮阳罩深灰 | 'silver' 银色遮阳罩）、
+ *   rear（'cfrp' 本色碳纤维 | 'mli_gold' 背面整包金色 MLI）、backing（'ring8' | 'none'）、support（覆盖 L.support）。
+ *   实面：正面（朝焦点）+ 背壳（沿法向退 shellM）+ 边缘厚度环 + 背架（SPRINT 八边形环框，金色 MLI）+ 可选支撑框（hardware.reflectorBacking）；
+ *     背架 / 支撑框只画不计质量（reflectorAreal 已含背筋）。遮阳罩正面另贴一圈口缘压边带（浅灰 / 金色，调研 components.md §1(c)）。
  *   网状（mesh）：只有一层金属网（reflector_mesh：双面、半透明）+ 周边桁架（AstroMesh 类：前后两环 + 竖杆 + 交替斜杆）。
  *     不画实心背壳——否则从背面看是整块黑碟、从正面看是金网叠黑壳，半透明网白做（09-23 审查）。
  *     桁架质量已按口径面积摊进 meshReflectorAreal，不另计。
@@ -638,12 +1009,17 @@ export function buildReflector(ctx, r, i, L) {
   const R = L.D / 2
   const fm = new MB()
   const grid = []
+  // 网状径向肋式（伞状）：肋在 nRib 个方位上，肋间网面外缘向里收成扇贝形（越靠口缘收得越多，最深 4 % 半径）
+  const radial = L.mesh && r && r.meshStyle === 'radial'
+  const nRib = radial ? (L.D < 8 ? 12 : 16) : 0
   const c0 = fm.v(L.P(L.dc, 0), L.N(L.dc, 0), 0, 0)
   for (let k = 1; k <= PARA_NR; k++) {
     const rho = (R * k) / PARA_NR, row = []
     for (let j = 0; j < PARA_NA; j++) {
-      const ph = (2 * Math.PI * j) / PARA_NA, x1 = L.dc + rho * Math.cos(ph), x2 = rho * Math.sin(ph)
-      row.push(fm.v(L.P(x1, x2), L.N(x1, x2), rho * Math.cos(ph), rho * Math.sin(ph)))
+      const ph = (2 * Math.PI * j) / PARA_NA
+      const rr = radial ? rho * (1 - 0.04 * Math.sin(Math.PI * ((j * nRib / PARA_NA) % 1)) * (k / PARA_NR) ** 2) : rho
+      const x1 = L.dc + rr * Math.cos(ph), x2 = rr * Math.sin(ph)
+      row.push(fm.v(L.P(x1, x2), L.N(x1, x2), rr * Math.cos(ph), rr * Math.sin(ph)))
     }
     grid.push(row)
   }
@@ -656,11 +1032,51 @@ export function buildReflector(ctx, r, i, L) {
   }
   const id = `reflector_${i + 1}`
   const part = { id, name: `反射面 ${i + 1}`, role: 'reflector' }
-  const front = addItem(ctx, { name: id, role: 'reflector', part, mat: L.mesh ? 'reflector_mesh' : 'reflector', mb: fm })
+  const frontKey = r && r.front, rearKey = r && r.rear
+  const front = addItem(ctx, { name: id, role: 'reflector', part, mat: L.mesh ? 'reflector_mesh' : (REFL_FRONT[frontKey] || 'reflector'), mb: fm })
   const outer = grid[PARA_NR - 1]
   const pAt = (vi) => [fm.p[3 * vi], fm.p[3 * vi + 1], fm.p[3 * vi + 2]]
   const nAt = (vi) => [fm.n[3 * vi], fm.n[3 * vi + 1], fm.n[3 * vi + 2]]
-  if (L.mesh) {
+  if (radial) {
+    // 径向肋（碳纤维，贴在网面背后）+ 口径中心毂：肋沿抛物面自 0.06 R 伸到口缘
+    const tm = new MB(), rr = Math.max(0.01 * L.k, 0.0035 * L.D)
+    for (let q = 0; q < nRib; q++) {
+      const ph = (2 * Math.PI * q) / nRib, c = Math.cos(ph), sn = Math.sin(ph)
+      const pts = []
+      for (let k = 0; k <= PARA_NR; k++) {
+        const rho = R * (0.06 + 0.94 * k / PARA_NR), x1 = L.dc + rho * c, x2 = rho * sn
+        pts.push(madd(L.P(x1, x2), L.N(x1, x2), -1.3 * rr))
+      }
+      for (let k = 0; k < PARA_NR; k++) tube(tm, pts[k], pts[k + 1], rr, 6)
+    }
+    addItem(ctx, { name: `${id}_truss`, role: 'reflector', part, mat: 'carbon', mb: tm })
+    const hm = new MB(), hr = Math.max(0.06 * L.k, 0.05 * L.D)
+    tube(hm, madd(L.Pc, L.nc, 0.01 * L.D), madd(L.Pc, L.nc, -0.08 * L.D), hr, 24)
+    addItem(ctx, { name: `${id}_hub`, role: 'reflector', part, mat: 'aluminum', mb: hm })
+  } else if (L.mesh && r && r.meshStyle === 'modular') {
+    // 构架式（模块化可展开桁架）：口径面三角网格（边长 D/8）的前后两层桁杆 + 节点竖杆，网边一道前环
+    const tm = new MB(), rr = Math.max(0.006 * L.k, 0.0022 * L.D), dp = D.meshTrussDepthFrac * L.D, sp = L.D / 8
+    const R2 = (0.985 * R) ** 2, h3 = Math.sqrt(3) / 2, nI = Math.ceil(R / sp) + 2
+    const nodes = new Map()
+    for (let j = -nI; j <= nI; j++) {
+      for (let q = -nI; q <= nI; q++) {
+        const x = (q + j / 2) * sp, y = j * h3 * sp
+        if (x * x + y * y > R2) continue
+        const P = L.P(L.dc + x, y), N = L.N(L.dc + x, y)
+        nodes.set(q + ',' + j, { q, j, f: madd(P, N, -0.5 * rr), b: madd(P, N, -dp) })
+      }
+    }
+    for (const nd of nodes.values()) {
+      for (const [dq, dj] of [[1, 0], [0, 1], [-1, 1]]) {
+        const m2 = nodes.get((nd.q + dq) + ',' + (nd.j + dj))
+        if (!m2) continue
+        tube(tm, nd.f, m2.f, rr, 4); tube(tm, nd.b, m2.b, 0.8 * rr, 4)
+      }
+      tube(tm, nd.f, nd.b, 0.8 * rr, 4)
+    }
+    for (let j = 0; j < PARA_NA; j++) tube(tm, pAt(outer[j]), pAt(outer[(j + 1) % PARA_NA]), 1.2 * rr, 6)
+    addItem(ctx, { name: `${id}_truss`, role: 'reflector', part, mat: 'carbon', mb: tm })
+  } else if (L.mesh) {
     // 周边桁架：外圈每隔一个顶点取一个节点（24 格），前环贴网边、后环沿法向退 depth
     const depth = D.meshTrussDepthFrac * L.D, rr = Math.max(0.01 * L.k, D.meshTrussRodFrac * L.D)
     const tm = new MB(), ringF = [], ringB = []
@@ -689,8 +1105,24 @@ export function buildReflector(ctx, r, i, L) {
       rm.v(p, rad, s0, 0); rm.v(madd(p, n, -sh), rad, s0, sh)
     }
     for (let j = 0; j < PARA_NA; j++) { const f0 = 2 * j, b0 = f0 + 1, f1 = f0 + 2, b1 = f0 + 3; rm.t(f0, b0, f1); rm.t(f1, b0, b1) }
-    addItem(ctx, { name: `${id}_back`, role: 'reflector', part, mat: 'carbon', mb: bm })
-    addItem(ctx, { name: `${id}_rim`, role: 'reflector', part, mat: 'carbon', mb: rm })
+    const rearMat = REFL_REAR[rearKey] || 'carbon'
+    addItem(ctx, { name: `${id}_back`, role: 'reflector', part, mat: rearMat, mb: bm })
+    addItem(ctx, { name: `${id}_rim`, role: 'reflector', part, mat: rearMat, mb: rm })
+    // 遮阳罩口缘压边带：正面最外 0.015 m×k 一圈（沿法向抬 1 mm 防闪烁）
+    if (frontKey === 'sunshield' || frontKey === 'silver') {
+      const tm = new MB(), w = Math.min(0.015 * L.k, 0.1 * R), rIn = R - w
+      for (let j = 0; j <= PARA_NA; j++) {
+        const ph = (2 * Math.PI * (j % PARA_NA)) / PARA_NA, c = Math.cos(ph), sn = Math.sin(ph)
+        const x1o = L.dc + R * c, x2o = R * sn, x1i = L.dc + rIn * c, x2i = rIn * sn
+        const no = L.N(x1o, x2o), ni = L.N(x1i, x2i)
+        tm.v(madd(L.P(x1o, x2o), no, 0.001), no, R * c, R * sn); tm.v(madd(L.P(x1i, x2i), ni, 0.001), ni, rIn * c, rIn * sn)
+      }
+      for (let j = 0; j < PARA_NA; j++) { const o0 = 2 * j, i0 = o0 + 1, o1 = o0 + 2, i1 = o0 + 3; tm.t(o0, o1, i0); tm.t(i0, o1, i1) }
+      addItem(ctx, { name: `${id}_tape`, role: 'reflector', part, mat: frontKey === 'silver' ? 'gold_metal' : 'white_paint', mb: tm })
+    }
+    // 背架 + 支撑框（连接点记进 L.link，供展开臂接）
+    const bk = (r && r.backing) || 'ring8', sup = (r && r.support) || L.support || 'none'
+    if (bk !== 'none' || sup !== 'none') L.link = addHw(ctx, `${id}_frame`, part, 'reflector', 'mli_gold', (put) => reflectorBacking(put, L, { sh, backing: bk, support: sup })).ret.link
   }
   const sp = shellComp(ctx, id, front, L.mesh ? dens.meshReflectorAreal : dens.reflectorAreal)
   const p = ctx.parts.get(id)
@@ -724,34 +1156,51 @@ export function buildFeed(ctx, r, i, L, towerTop) {
     const it = addItem(ctx, { name: id, role: 'feed', part, mat: 'white_paint', mb: fm })
     shellComp(ctx, id, it, dens.hornAreal)
   } else {
-    const ap = isNum(r.feedApertureM) ? r.feedApertureM : clampN(0.08 * L.D, 0.1 * k, 0.4 * k)
-    const hl = 1.6 * ap
-    horn(fm, L.F, dir, ap / 2, hl, 24)
-    back = madd(L.F, dir, -hl)
-    const it = addItem(ctx, { name: id, role: 'feed', part, mat: 'aluminum', mb: fm })
-    shellComp(ctx, id, it, dens.hornAreal)
+    // 波纹锥喇叭（在轨外观：金色 MLI 外壳 + 金属口环 + 锗膜遮阳盖）+ 馈电链（极化器 + 正交模变换器方盒 + 波导端口）。
+    // L.feedAt / L.feedDir：格里高利双反射面的馈源在第二焦点、朝副面（装配件反射面组件的副反射面选项给；整星不给）
+    const g = feedHornGeom(r, L)
+    const at = L.feedAt || L.F, fdir = L.feedDir ? nrm(L.feedDir) : dir
+    addHw(ctx, id, part, 'feed', 'mli_gold', (put) => {
+      const hh = feedHorn(put, { ap: at, dir: fdir, D: g.ap, L: g.hl, style: 'smooth', mat: { body: 'mli_gold', rim: 'gold_metal', inner: 'black_paint' }, cap: 'ge', seg: 28 })
+      feedChain(put, { throat: hh.throat, dir: fdir, D: g.ap, mat: { body: 'mli_gold', flange: 'aluminum' }, seg: 16 })
+    })
+    back = L.feedAt ? madd(at, fdir, -(g.hl * 1.035 + 5.32 * g.ap / 2.8)) : g.back
+    hornShellMass(ctx, id, at, fdir, g.ap, g.hl)
+    ctx.parts.get(id).normalBody = fdir
   }
-  ctx.parts.get(id).normalBody = dir
-  // 支架：侧挂 → 竖直落到对地板；塔馈 → 水平接到塔顶中心。
+  if (!ctx.parts.get(id).normalBody) ctx.parts.get(id).normalBody = dir
+  if (ctx.deckKeep) ctx.deckKeep.push(...deckKeepOfFeed(r, L, back, towerTop))
+  // 支架：侧挂 → 三脚架落到对地板；塔馈 → 两根撑杆接塔顶（feedSupportRods，装配件同一式子）。
   // 组件模式（L 不带平台半边长 h、也没有塔顶）：不画支架——馈源怎么撑由装配件自己决定（整星路径恒带 h，不受影响）
-  const sm = new MB()
-  const h = L.h
-  if (!towerTop && !h) return
-  const foot = towerTop ? [0, clampN(back[1], -0.2 * k, 0.2 * k), towerTop] : [clampN(back[0], -h[0] + 0.05 * k, h[0] - 0.05 * k), clampN(back[1], -h[1] + 0.05 * k, h[1] - 0.05 * k), h[2]]
-  if (len(sub(foot, back)) > 0.02 * k) {
-    tube(sm, back, foot, Math.max(0.01 * k, 0.02 * Math.min(1, L.D / 2.5)), 8)
-    addItem(ctx, { name: `${id}_support`, role: 'boom', part: { id: `${id}_support`, name: `馈源支架 ${i + 1}`, role: 'boom' }, mat: 'carbon', mb: sm })
-    rodComp(ctx, `${id}_support`, back, foot)
+  if (!towerTop && !L.h) return
+  const segs = feedSupportRods(back, L, towerTop)
+  if (segs.length) {
+    const sm = new MB(), rr = feedSupportR(L)
+    segs.forEach(([p0, p1], j) => { tube(sm, p0, p1, rr, 8); rodComp(ctx, `${id}_support_${j + 1}`, p0, p1) })
+    box(sm, back, [0.05 * k, 0.05 * k, 0.05 * k])
+    addItem(ctx, { name: `${id}_support`, role: 'boom', part: { id: `${id}_support`, name: `馈源支架 ${i + 1}`, role: 'boom' }, mat: 'aluminum', mb: sm })
   }
 }
 
 /**
- * 反射面展开臂 / 支撑杆。实面接背壳：侧挂 = 侧壁铰点 → 内缘背面 → 背面中心；塔馈 = 对地板两根支撑。
- * 网状没有背壳可接，臂只接桁架：侧挂 = 铰点分别到内缘（φ=π）桁架后环与前环节点，成 V 形；塔馈 = 对地板到内外缘后环。
+ * 反射面展开臂 / 支撑杆。
+ *   侧挂实面：侧壁背地端附近的两轴展开机构（ADTM）→ 一根直臂 → 支撑框内侧横梁上的连接点（sideArmGeom；臂与机构裹金色 MLI）。
+ *   塔馈实面：对地板两根支撑 + 内缘到背面中心一根。
+ *   网状没有背壳可接，臂只接桁架：侧挂 = 铰点分别到内缘（φ=π）桁架后环与前环节点，成 V 形；塔馈 = 对地板到内外缘后环。
  */
 function buildReflectorArm(ctx, r, i, L) {
   const { D } = ctx
   const h = L.h, k = L.k, R = L.D / 2
+  if (L.mount === 'side' && !L.mesh && L.link) {
+    const g = sideArmGeom(L)
+    const id = `reflector_${i + 1}_arm`
+    addHw(ctx, id, { id, name: `反射面展开臂 ${i + 1}`, role: 'boom' }, 'boom', 'mli_gold', (put) => {
+      adtmBlock(put, { base: g.base, n: g.n, up: [0, 1, 0], k: g.k })
+      tube(put('mli_gold'), g.out, g.link, g.r, 12)
+    })
+    rodComp(ctx, `${id}_1`, g.out, g.link)
+    return
+  }
   const am = new MB(), rodR = Math.max(0.015 * k, 0.025 * Math.min(2, L.D / 2.5))
   const behind = L.mesh ? D.meshTrussDepthFrac * L.D : D.shellM
   const back = (x1, x2, off) => madd(L.P(x1, x2), L.N(x1, x2), -(behind + off))
@@ -790,11 +1239,14 @@ function buildReflectors(ctx) {
     th = Math.max(th, f - near * near / (4 * f) + 0.15 * k)
   }
   ctx.towerH = spec.tower && isNum(spec.tower.hM) ? spec.tower.hM : th
-  if (deck.length || (spec.tower && isNum(spec.tower.hM))) {
-    const tw = spec.tower && isNum(spec.tower.wM) ? spec.tower.wM : D.towerWM
+  ctx.towerW = spec.tower && isNum(spec.tower.wM) ? spec.tower.wM : D.towerWM
+  ctx.towerBuilt = !!(deck.length || (spec.tower && isNum(spec.tower.hM)))
+  if (ctx.towerBuilt) {
+    const tw = ctx.towerW
     const tm = new MB()
     box(tm, [0, 0, h[2] + ctx.towerH / 2], [tw / 2, tw / 2, ctx.towerH / 2], ['+x', '-x', '+y', '-y', '+z'])
-    const it = addItem(ctx, { name: 'antenna_tower', role: 'boom', part: { id: 'antenna_tower', name: '天线塔', role: 'boom' }, mat: 'white_paint', mb: tm })
+    // 塔裹平台同色 MLI（调研 components.md §3(c)：在轨照片里塔 / 支架都包 MLI，不是白漆）
+    const it = addItem(ctx, { name: 'antenna_tower', role: 'boom', part: { id: 'antenna_tower', name: '天线塔', role: 'boom' }, mat: towerFinish(spec), mb: tm })
     shellComp(ctx, 'antenna_tower', it, dens.towerAreal)
   }
   // 解算顺序：先内槽后外槽（外槽的偏置依赖内槽口径）
@@ -817,18 +1269,29 @@ function buildReflectors(ctx) {
   })
 }
 
+/** 显式附加喇叭的长度（口面 posBody 往后 2.12 × 口径；装配件 satSpecToComps 同式） */
+export const extraHornLen = (ap) => 2.12 * ap
+
 /** 显式附加件：feeds / booms / thrusters / radiators。 */
 function buildExtras(ctx) {
   const { spec, dens } = ctx
   const h = [spec.bus.xM / 2, spec.bus.yM / 2, spec.bus.zM / 2]
   spec.feeds.forEach((f, i) => {
-    const m = new MB(), d = nrm(f.dirBody)
+    const d = nrm(f.dirBody), id = `extra_feed_${i + 1}`, part = { id, name: `馈源 ${i + 1}`, role: 'feed' }
     if (f.kind === 'patchArray') {
-      const [e1, e2] = perpPair(d), a = f.apertureM / 2
+      const m = new MB(), [e1, e2] = perpPair(d), a = f.apertureM / 2
       quad(m, madd(f.posBody, d, 0.005), scl(e1, a), scl(e2, a)); quad(m, f.posBody, scl(e2, a), scl(e1, a))
-    } else horn(m, f.posBody, d, f.apertureM / 2, 1.6 * f.apertureM, 20)
-    const it = addItem(ctx, { name: `extra_feed_${i + 1}`, role: 'feed', part: { id: `extra_feed_${i + 1}`, name: `馈源 ${i + 1}`, role: 'feed' }, mat: f.kind === 'patchArray' ? 'white_paint' : 'aluminum', mb: m })
-    shellComp(ctx, it.name, it, dens.hornAreal)
+      const it = addItem(ctx, { name: id, role: 'feed', part, mat: 'white_paint', mb: m })
+      shellComp(ctx, it.name, it, dens.hornAreal)
+      return
+    }
+    // 波纹锥喇叭（台阶锥、阿洛丁金色）+ 线极化馈电链；质量按外包锥面（与装配件 sat.feed.horn 同式）
+    const L = extraHornLen(f.apertureM)
+    addHw(ctx, id, part, 'feed', 'gold_metal', (put) => {
+      const hh = feedHorn(put, { ap: f.posBody, dir: d, D: f.apertureM, L, style: 'terraced', mat: { body: 'gold_metal', rim: 'gold_metal', inner: 'black_paint' }, seg: 24 })
+      feedChain(put, { throat: hh.throat, dir: d, D: f.apertureM, kind: 'linear', seg: 16 })
+    })
+    hornShellMass(ctx, id, f.posBody, d, f.apertureM, L)
   })
   spec.booms.forEach((b, i) => {
     const m = new MB(); tube(m, b.fromBody, b.toBody, b.dM / 2, 10)
@@ -836,10 +1299,10 @@ function buildExtras(ctx) {
     rodComp(ctx, `boom_${i + 1}`, b.fromBody, b.toBody)
   })
   spec.thrusters.forEach((t, i) => {
-    const m = new MB(), d = nrm(t.dirBody)
-    frustum(m, t.posBody, t.exitDM * 0.175, madd(t.posBody, d, t.lengthM), t.exitDM / 2, 16, true, false, false)
-    addItem(ctx, { name: `thruster_${i + 1}`, role: 'thruster', part: { id: `thruster_${i + 1}`, name: `推力器 ${i + 1}`, role: 'thruster' }, mat: 'titanium', mb: m })
-    pointComp(ctx, `thruster_${i + 1}`, dens.rcsMass, t.posBody)
+    // 钟形喷管（10 N 级双组元姿控造型，出口面在安装点沿喷流 lengthM 处；装配件 sat.thruster 'rcs' 同式）；质量点在安装点
+    const d = nrm(t.dirBody), id = `thruster_${i + 1}`
+    addHw(ctx, id, { id, name: `推力器 ${i + 1}`, role: 'thruster' }, 'thruster', 'titanium', (put) => rcsThruster(put, { base: t.posBody, dir: d, De: t.exitDM, L: t.lengthM, seg: 16 }))
+    pointComp(ctx, id, dens.rcsMass, t.posBody)
   })
   const FACE = { '+X': [0, [1, 0, 0]], '-X': [0, [-1, 0, 0]], '+Y': [1, [0, 1, 0]], '-Y': [1, [0, -1, 0]], '+Z': [2, [0, 0, 1]], '-Z': [2, [0, 0, -1]] }
   spec.radiators.forEach((r, i) => {
@@ -857,11 +1320,13 @@ function buildGeoLayout(ctx) {
   const { spec, D } = ctx
   const h = buildGeoBus(ctx)
   ctx.hRefl = h
+  ctx.deckKeep = []
   if (spec.detail.thrusters) buildGeoThrusters(ctx, h)
-  if (spec.detail.deckHorns > 0) buildDeckHorns(ctx, h, spec.detail.deckHorns)
+  if (spec.detail.sensors !== false) buildGeoSensors(ctx, h)
   const wopt = { sadaLenM: D.sadaLenM, sadaDM: D.sadaDM, yokeRodDM: D.yokeRodDM, panelTM: D.panelTM, cellMarginM: D.cellMarginM, articulate: true }
   for (const w of spec.wings) buildWing(ctx, w, wopt)
   buildReflectors(ctx)
+  if (spec.detail.deckHorns > 0) buildDeckHorns(ctx, h, spec.detail.deckHorns)
   buildExtras(ctx)
   addAp(ctx, 'nadir_center', [0, 0, h[2]], [0, 0, 1])
   addAp(ctx, 'zenith_center', [0, 0, -h[2]], [0, 0, -1])
@@ -871,7 +1336,7 @@ function buildLeoLayout(ctx) {
   const { spec, D, dens } = ctx
   const h = [spec.bus.xM / 2, spec.bus.yM / 2, spec.bus.zM / 2]
   ctx.hRefl = h
-  const busPart = { id: 'bus', name: '平台体', role: 'bus' }
+  const busPart = { id: 'bus', name: '星体', role: 'bus' }
   const mb = new MB(); box(mb, [0, 0, 0], h)
   addItem(ctx, { name: 'bus', role: 'bus', part: busPart, mat: 'aluminum', mb })
   boxComp(ctx, 'bus', isNum(spec.bus.massKg) ? spec.bus.massKg : dens.busVolume * spec.bus.xM * spec.bus.yM * spec.bus.zM, [0, 0, 0], h)
@@ -896,10 +1361,9 @@ function buildLeoLayout(ctx) {
   const wopt = { sadaLenM: D.sadaLenM, sadaDM: D.sadaDM, yokeRodDM: D.yokeRodDM, panelTM: D.panelTM, cellMarginM: D.cellMarginM, articulate: true }
   for (const w of spec.wings) buildWing(ctx, w, wopt)
   if (spec.detail.thrusters) {
-    // 电推力器：背速度面（−X）中心，喷流 −X
-    const tm = new MB(), p0 = [-h[0], 0, 0]
-    frustum(tm, p0, D.thrusterDM / 2, madd(p0, [-1, 0, 0], D.thrusterLenM), D.thrusterDM / 2 * 0.8, 20, false, true, false)
-    addItem(ctx, { name: 'thruster_ep', role: 'thruster', part: { id: 'thruster_ep', name: '电推力器', role: 'thruster' }, mat: 'dark_metal', mb: tm })
+    // 电推力器：背速度面（−X）中心，喷流 −X（霍尔推力器造型，放电通道直径 = thrusterDM；装配件 sat.thruster 'ep' 同式）
+    const p0 = [-h[0], 0, 0]
+    addHw(ctx, 'thruster_ep', { id: 'thruster_ep', name: '电推力器', role: 'thruster' }, 'thruster', 'aluminum', (put) => epThruster(put, p0, [-1, 0, 0], [0, 0, 1], D.thrusterDM, D.thrusterLenM))
     pointComp(ctx, 'thruster_ep', dens.epMass, madd(p0, [-1, 0, 0], D.thrusterLenM / 2))
   }
   buildReflectors(ctx)
@@ -913,7 +1377,7 @@ function buildCubesatLayout(ctx) {
   const X = spec.bus.xM, Y = spec.bus.yM, Z = spec.bus.zM
   const rw = D.railWM, foot = D.railFootM
   const zb = Z - 2 * foot, hb = [X / 2 - D.bodyInsetM, Y / 2 - D.bodyInsetM, zb / 2]
-  const busPart = { id: 'bus', name: '平台体', role: 'bus' }
+  const busPart = { id: 'bus', name: '星体', role: 'bus' }
   const bm = new MB(); box(bm, [0, 0, 0], hb)
   addItem(ctx, { name: 'bus', role: 'bus', part: busPart, mat: 'dark_metal', mb: bm })
   // CDS：四根角导轨贯通全长（含两端端脚）
@@ -930,17 +1394,19 @@ function buildCubesatLayout(ctx) {
       ['+Y', [0, hb[1] + lift, 0], [0, 0, hb[2] * fr], [(X / 2 - rw) * fr, 0, 0]],
       ['-Y', [0, -hb[1] - lift, 0], [(X / 2 - rw) * fr, 0, 0], [0, 0, hb[2] * fr]]
     ]
-    let area = 0
     for (const [tag, c, u, v] of faces) {
       const cm = new MB(); quad(cm, c, u, v)
       const nm = `body_cells_${tag}`
-      addItem(ctx, { name: nm, role: 'solarArray', part: { id: 'body_cells', name: '体装电池片', role: 'solarArray' }, mat: 'solar_cell', mb: cm })
-      const a = 4 * len(u) * len(v); area += a
+      // 逐面一个部件、各带外法向与本面面积（同装配件 components/sat.mjs：每面一件体装电池片）。四面合成一个部件时太阳翼功率
+      // 只能按面数均分面积：方截面（1U–3U、12U）碰巧对，6U 的 ±X 面 0.047 m²、±Y 面 0.019 m² 被均分成各 0.033 m²，功率偏 −30 % ~ +71 %
+      addItem(ctx, { name: nm, role: 'solarArray', part: { id: nm, name: `体装电池片 ${tag}`, role: 'solarArray' }, mat: 'solar_cell', mb: cm })
+      const a = 4 * len(u) * len(v)
       const n = nrm(cross(u, v)), Rf = [nrm(u), nrm(v), n]
+      const p = ctx.parts.get(nm)
+      p.areaM2 = a; p.normalBody = n.slice()
       plateComp(ctx, nm, dens.cellAreal * a, c, Rf, 2 * len(u), 2 * len(v))
       cellNodes.push(nm)
     }
-    ctx.parts.get('body_cells').areaM2 = area
     ctx.spg.push({ name: 'body', nodes: cellNodes, efficiency: SOLAR_EFFICIENCY_DEFAULT })
   }
   // 反射面的「平台」：侧壁取导轨外缘（CDS 包络），对地板取结构体顶面（不是导轨端脚——塔 / 支架落在端脚上会悬空）

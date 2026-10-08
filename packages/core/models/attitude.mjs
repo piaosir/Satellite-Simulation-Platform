@@ -223,7 +223,10 @@ export function eclipseFactor(rEcefKm, sunDirUnitEcef, opts) {
 //   prevYawDeg    yawSteer 在奇点（太阳恰在 ±Z 上）取上一拍的偏航，保证连续；缺省 0
 //
 // 各律（本体系：+X 速度、+Z 天底、+Y 补全）：
-//   nadir     +Z 指地心、+X = 惯性速度 ⟂Z 的投影、+Y = Z × X（赤道顺行 = 南）。params.yawBiasDeg 可加固定偏航。
+//   nadir     +Z 指地心、+X = 惯性速度 ⟂Z 的投影、+Y = Z × X（赤道顺行 = 南）。可加相对该轨道系的固定姿态偏置
+//             params.rollBiasDeg / pitchBiasDeg / yawBiasDeg（度）：3-2-1 序（先偏航绕 Z、再俯仰绕新 Y、后滚转绕新 X，
+//             与 inertial 的 eulerDeg 同序）。本体系即航空口径（X 前、Y 右、Z 下）：滚转正 = 视轴 +Z 向 −Y 侧倾（赤道顺行即向北）、
+//             俯仰正 = +Z 向 +X 侧倾（顺行即向东）、偏航正 = +X 向 +Y 转。只给偏航时与早先的 yawInPlace 逐位相同。
 //   yawSteer  nadir 再绕 +Z 偏航 ψ，使太阳翼轴（±Y）⟂ 太阳：推导见 yawSteerPsi 头注。
 //   sun       params.axis（本体，缺省 −Z）精确指太阳；次约束 params.secondary（缺省：axis ∥ ±Z 时 'velocity'，否则 'nadir'）。
 //   inertial  params.q（本体 → TEME 惯性系，[x,y,z,w]）或 params.eulerDeg {yaw, pitch, roll}（3-2-1）。
@@ -302,6 +305,26 @@ function yawInPlace(out, yawDeg) {
   const x0 = X[0], x1 = X[1], x2 = X[2], y0 = Y[0], y1 = Y[1], y2 = Y[2]
   X[0] = c * x0 + s * y0; X[1] = c * x1 + s * y1; X[2] = c * x2 + s * y2
   Y[0] = c * y0 - s * x0; Y[1] = c * y1 - s * x1; Y[2] = c * y2 - s * x2
+  return out
+}
+
+/**
+ * 就地按 3-2-1 欧拉角转本体三轴（度，右手）：先偏航 ψ 绕 Z、再俯仰 θ 绕新 Y、后滚转 φ 绕新 X —— R = Rz(ψ)·Ry(θ)·Rx(φ)，
+ * 与 inertial 律 eulerDeg 的 quatFromEulerZYX 同序。R 的第 k 列是新轴 k 在旧本体系下的分量：X' = R00·X + R10·Y + R20·Z，Y'、Z' 同理。
+ * θ = φ = 0 时与 yawInPlace 同式（调用方只给偏航时仍走 yawInPlace，逐位不变）。标量展开、零分配。
+ */
+function rpyInPlace(out, yawDeg, pitchDeg, rollDeg) {
+  const cy = Math.cos(yawDeg * D2R), sy = Math.sin(yawDeg * D2R)
+  const cp = Math.cos(pitchDeg * D2R), sp = Math.sin(pitchDeg * D2R)
+  const cr = Math.cos(rollDeg * D2R), sr = Math.sin(rollDeg * D2R)
+  const r00 = cy * cp, r10 = sy * cp, r20 = -sp
+  const r01 = cy * sp * sr - sy * cr, r11 = sy * sp * sr + cy * cr, r21 = cp * sr
+  const r02 = cy * sp * cr + sy * sr, r12 = sy * sp * cr - cy * sr, r22 = cp * cr
+  const X = out.X, Y = out.Y, Z = out.Z
+  const x0 = X[0], x1 = X[1], x2 = X[2], y0 = Y[0], y1 = Y[1], y2 = Y[2], w0 = Z[0], w1 = Z[1], w2 = Z[2]
+  X[0] = r00 * x0 + r10 * y0 + r20 * w0; X[1] = r00 * x1 + r10 * y1 + r20 * w1; X[2] = r00 * x2 + r10 * y2 + r20 * w2
+  Y[0] = r01 * x0 + r11 * y0 + r21 * w0; Y[1] = r01 * x1 + r11 * y1 + r21 * w1; Y[2] = r01 * x2 + r11 * y2 + r21 * w2
+  Z[0] = r02 * x0 + r12 * y0 + r22 * w0; Z[1] = r02 * x1 + r12 * y1 + r22 * w1; Z[2] = r02 * x2 + r12 * y2 + r22 * w2
   return out
 }
 
@@ -453,8 +476,9 @@ function nadirFallback(ctx, o) {
 }
 function lawNadir(law, p, ctx, o) {
   nadirInto(ctx.rEcef, ctx.vInertialEcef, o)
-  const bias = Number(p.yawBiasDeg) || 0
-  if (bias) yawInPlace(o, bias)
+  const bias = Number(p.yawBiasDeg) || 0, pitch = Number(p.pitchBiasDeg) || 0, roll = Number(p.rollBiasDeg) || 0
+  if (pitch || roll) rpyInPlace(o, bias, pitch, roll)
+  else if (bias) yawInPlace(o, bias)
   o.law = 'nadir'; o.yawDeg = bias; o.fallback = law !== 'nadir' && law != null && !ATT_LAWS.includes(law)
   return o
 }

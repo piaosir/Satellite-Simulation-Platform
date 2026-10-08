@@ -112,7 +112,7 @@ const rec = (packed, i) => { const f = new Float32Array(packed.buf, i * REC_BYTE
   // flatCoverage 的两处分叉都把导出（compat / exporting）挡在 GPU 路之外，且线程序挂在 glField 的同一上下文上
   const FLAT = readFileSync(join(ROOT, 'src', 'viz', 'flatmap', 'flatCoverage.js'), 'utf8')
   ok(/const lnOk = \(\) => !compat && !exporting && !!glLines\(\)/.test(FLAT), 'flatCoverage：线的 GPU 路闸门含 !compat && !exporting')
-  ok(/setSelGeom\(g\) \{[^\n]*dlDirty = true/.test(FLAT) && /setFocusStyle\(s\) \{[^\n]*dlDirty = true/.test(FLAT) && /setGeom\(g\) \{[^\n]*dlDirty = true/.test(FLAT) && /setSatLayer\(spec\) \{[^\n]*dlDirty = true/.test(FLAT), 'flatCoverage：数据线四个入口都置 dlDirty')
+  ok(/setSelGeom\(g\) \{[^\n]*dlDirty = true/.test(FLAT) && /setFocusStyle\(s\) \{[\s\S]{0,200}?dlDirty = true/.test(FLAT) && /setGeom\(g\) \{[^\n]*dlDirty = true/.test(FLAT) && /setSatLayer\(spec\) \{[^\n]*dlDirty = true/.test(FLAT), 'flatCoverage：数据线四个入口都置 dlDirty')
   const GLF = readFileSync(join(ROOT, 'src', 'viz', 'flatmap', 'glField.js'), 'utf8')
   ok(/lines\(\) \{/.test(GLF) && /gll = null/.test(GLF), 'glField：线程序挂在同一上下文上，上下文丢失即作废')
 }

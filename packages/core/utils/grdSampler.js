@@ -71,6 +71,23 @@ function antennaBasis(satLon, boreLon, boreLat, yawDeg, satLat, altKm) {
   if (yawDeg) { const c = Math.cos(yawDeg * D2R), sn = Math.sin(yawDeg * D2R); const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2; }
   return { S, x, y, z };
 }
+// 地心球坐标 → ECEF（src/viz/wgs84.js 的 geocentricToEcef 同源）：r = A + h、纬度是【地心】纬度。
+// 「空间点指向」的目标点按这套口径给（壳层与空间点共用，见那边的注释），不能拿 geodeticToEcef 顶替。
+function geocentricToEcef(lonDeg, latDeg, hKm) {
+  const lat = latDeg * D2R, lon = lonDeg * D2R, r = A + (hKm || 0), cl = Math.cos(lat);
+  return [r * cl * Math.cos(lon), r * cl * Math.sin(lon), r * Math.sin(lat)];
+}
+// 视轴直指空间一点 T（ECEF km）的基底（src/viz/grd/coverage.js 的 antennaBasisEcef 同源，改动请两处对照）。
+// x/y 参考约定与 antennaBasis 一致（x = ẑ_ECEF × z，y = z × x）；z 近乎平行于地轴时 ẑ × z 退化 → 退用 x̂ × z。
+function antennaBasisEcef(S, T, yawDeg) {
+  yawDeg = yawDeg || 0;
+  const z = nrm(sub(T, S));
+  let x = crs([0, 0, 1], z);
+  x = (Math.hypot(x[0], x[1], x[2]) > 1e-9) ? nrm(x) : nrm(crs([1, 0, 0], z));
+  let y = crs(z, x);
+  if (yawDeg) { const c = Math.cos(yawDeg * D2R), sn = Math.sin(yawDeg * D2R); const x2 = add(sc(x, c), sc(y, sn)), y2 = add(sc(y, c), sc(x, -sn)); x = x2; y = y2; }
+  return { S, x, y, z };
+}
 // 方向式天线姿态（azel 模式：boresight 由相对天底的 az/el 给定，导入天线默认）
 function antennaBasisAzEl(satLon, satLat, altKm, azDeg, elDeg, yawDeg) {
   satLat = satLat || 0; altKm = altKm === undefined ? H : altKm; azDeg = azDeg || 0; elDeg = elDeg || 0; yawDeg = yawDeg || 0;
@@ -283,8 +300,13 @@ function makeSampleCtx(loaded, sat, cfg) {
   // 姿态 + 挂点（'att'，DESIGN2 D9）：主进程拿不到姿态律与星历，吃 3D 页按仿真时刻写回 cfg 的等效手动指向
   // attEquiv {boreAz, boreEl, yaw}（yaw 已含「旋转 Rot」偏置，不再叠 c.yaw），照 azel 档建基底；没写过（老存档 /
   // 3D 页还没跑到那一拍）退回天底 + 偏置，与渲染端 beamBasisFrom 的 att 缺轴口径一致。
-  // （sat / satoff / point 三档在这里仍落进 geo 分支 —— 既有问题，范围外，见二期报告。）
+  // 对星三档（与渲染端 beamBasisFrom 逐档对照）：
+  //   · 'point' 空间点指向：视轴直指 (borePtLon, borePtLat, borePtAlt)（地心球坐标），点是钉死的定点，主进程照样建得出基底；
+  //   · 'sat' / 'satoff' 对星跟踪（+ 偏置）：基底要目标星【此刻】的星位，那份星历在渲染端按时间轴解，主进程拿不到 ——
+  //     一律不取值（返回 null，各调用方走既有的「取不到」：链路预算回填格子不动、C/I 报不可取值）。
+  //   早先这三档全落进下面的 geo 分支（按 boreLon/boreLat 的地面点建基底），与 3D 覆盖图可差几十 dB，且静默。
   const bt = c.boreType || 'azel';
+  if (bt === 'sat' || bt === 'satoff') return null;
   const eq = bt === 'att' ? c.attEquiv : null;
   const basis = bt === 'att'
     ? (eq && Number.isFinite(eq.boreAz) && Number.isFinite(eq.boreEl) && Number.isFinite(eq.yaw)
@@ -292,7 +314,9 @@ function makeSampleCtx(loaded, sat, cfg) {
       : antennaBasisAzEl(satLon, satLat, satAlt, 0, 0, c.yaw || 0))
     : bt === 'azel'
       ? antennaBasisAzEl(satLon, satLat, satAlt, c.boreAz || 0, c.boreEl || 0, c.yaw || 0)
-      : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
+      : bt === 'point'
+        ? antennaBasisEcef(geodeticToEcef(satLon, satLat, satAlt), geocentricToEcef(c.borePtLon == null ? satLon : c.borePtLon, c.borePtLat || 0, c.borePtAlt || 0), c.yaw || 0)
+        : antennaBasis(satLon, c.boreLon == null ? satLon : c.boreLon, c.boreLat || 0, c.yaw || 0, satLat, satAlt);
   const par = { pol: c.pol || 'RSS', gainOffset: Number(c.gainOffset) || 0, pathLoss: c.pathLoss || 'none' };
   const all = loaded.beams;
   const keep = Array.isArray(c.keptSets) ? c.keptSets : null;

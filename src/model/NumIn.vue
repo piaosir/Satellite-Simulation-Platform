@@ -3,7 +3,11 @@
 // 为什么不用 v-model.number / type=number：前者在「−」「1.」这类中间态上把值改成 0（memory 输入框跳变陷阱），
 // 后者吃不了全角「－」（读出来是空串）。表单外回车不发 change（memory sat-edit-live-apply 坑 1），故回车在 keydown 里自己落值；
 // 落值只挂失焦 + 回车两处，不再挂 change（change 在失焦时也会发，挂上就是同一次改动提交两遍）。
-import { ref, watch } from 'vue'
+// 同一份量多个写入方（属性面板 / gizmo / 撤销 / 换签 / 驱动参数联动，2026-10-06 任务书 §3.3.3）时的三条规则：
+//   ① 只有本次聚焦内键入过（input 事件）才在失焦 / 回车时提交——点进来又点出去、Tab 穿过，一律不提交；
+//   ② 外部值变了（聚焦中也一样）→ 丢弃草稿、显示新值、清掉「键入过」：失焦时不会把旧草稿写回去（撤销后被写回、换签后写进新文档）；
+//   ③ 禁用（只读 / 拖动中）或组件已卸载时不提交：卸载时浏览器补发的 blur 落不到别的件上。
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { num } from '../shared/num.js'
 
 const props = defineProps({
@@ -29,11 +33,17 @@ function fmt(v) {
   return String(Number(v.toPrecision(props.sig)))
 }
 const draft = ref(fmt(props.modelValue))
-let focused = false
-watch(() => props.modelValue, (v) => { if (!focused) draft.value = fmt(v) })
+let typed = false, dead = false
+// 规则 ②：外部值变了 → 草稿作废（聚焦中也一样）
+watch(() => props.modelValue, (v) => { draft.value = fmt(v); typed = false })
+onBeforeUnmount(() => { dead = true })
 
 function commit() {
-  // 草稿还是显示值原样（只是点进来又点出去 / Esc）：不提交 —— 显示按 sig 位有效数字取整，拿它当新值会把
+  if (dead) return
+  // 规则 ①③：没键入过 / 禁用 → 只把显示对齐当前值
+  if (!typed || props.disabled) { typed = false; draft.value = fmt(props.modelValue); return }
+  typed = false
+  // 草稿还是显示值原样（键入后又改回去）：不提交 —— 显示按 sig 位有效数字取整，拿它当新值会把
   // 1234.56789 悄悄改成 1234.568，还凭空压一条撤销、把质量特性的来源翻成「手填」
   if (draft.value === fmt(props.modelValue)) return
   let n = num(draft.value)
@@ -47,16 +57,17 @@ function commit() {
   draft.value = fmt(n)
   if (n !== props.modelValue) { emit('update:modelValue', n); emit('commit', n) }
 }
+function onInput() { typed = true }
 function onKey(e) {
   if (e.key === 'Enter') { commit(); e.target.select && e.target.select() }
-  else if (e.key === 'Escape') { draft.value = fmt(props.modelValue); e.target.blur() }
+  else if (e.key === 'Escape') { typed = false; draft.value = fmt(props.modelValue); e.target.blur() }
 }
 </script>
 
 <template>
   <input class="ci md-num" :class="{ bad }" type="text" inputmode="decimal" spellcheck="false" autocomplete="off"
          v-model="draft" :disabled="disabled" :placeholder="placeholder" :title="title || null"
-         @focus="focused = true" @blur="focused = false; commit()" @keydown="onKey" />
+         @input="onInput" @blur="commit" @keydown="onKey" />
 </template>
 
 <style scoped>

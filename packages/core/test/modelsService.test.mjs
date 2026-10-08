@@ -7,6 +7,7 @@
 // ③ saveMeta：本机件改原件、远端 / 内置写覆盖层；source / files 不许渲染端改（授权闸的依据）；
 // ④ bindings 读写、清洗、损坏拒写；
 // ⑤ scanStk 对 buildGlb 合成的临时目录（挂点 / 关节 / 太阳翼组计数、.gmdf 优先、类别、坏文件）；importStk 身份与路径白名单；
+// ⑤c 本机 STK 定位（假注册表）：InstallHome 高版本优先、模型目录在才算、Program Files 兜底、GBK 输出、缓存与重查；
 // ⑥ 导出闸：redistributable=false 拒绝，换 id / 带 AGI 署名 / extras 声明不可分发的字节也拒；
 // ⑦ models:// 协议：白名单 400、缺件 404、缩略图内置兜底、> 4 MB 流式、ACAO 头；
 // ⑧ 下载：刷新远端 manifest（ETag 304、坏条目丢弃）、并发下载 + sha256 校验 + 原子落盘、Range 续传、取消保留 .part、
@@ -347,6 +348,18 @@ try {
     const r = await A.saveImported({ glb: conv, meta: { title: 'OBJ 转换件', source: { kind: 'nasa' }, fidelity: 'outreach' } })
     eq([r.ok, r.id, r.meta.source.kind, r.meta.title], [true, 'user:' + sha(conv).slice(0, 12), 'user', 'OBJ 转换件'], '渲染端转好的 glb 入库；来源只能是 user')
     eq((await A.saveImported({ glb: glbOf(makeGltf({ copyright: AGI_COPY, names: ['q'] })), meta: {} })).code, 'stk', '带 AGI 署名的不许从这条路进')
+    // 元数据副本（copyOf，工作台模型签「另存副本」2026-10-06）：身份 user、可分发；署名 / 出处按目录里的原条目保留（不信送来的）；不带 spec
+    const cpg = glbOf(makeGltf({ names: ['copy_root'] }))
+    const cp = await A.saveImported({ glb: cpg, meta: { title: 'Builtin Sat Copy', titleZh: '内置卫星 副本', copyOf: 'nasa:builtin-sat', source: { kind: 'nasa', credit: '伪造', redistributable: true }, spec: { template: 'default-sat' } } })
+    eq([cp.ok, cp.id, cp.meta.source.kind, cp.meta.source.credit, cp.meta.source.url, cp.meta.source.redistributable, cp.meta.spec == null, cp.meta.titleZh],
+      [true, 'user:' + sha(cpg).slice(0, 12), 'user', 'NASA', 'https://science.nasa.gov/3d-resources/builtin-sat/', true, true, '内置卫星 副本'], '元数据副本：user 身份、署名按原条目保留、不带 spec')
+    // 不在目录里的内置参数化件（星座精模 param:<型号>）：署名取送来的；查不到的其它 id 拒收；不可分发的原件拒收
+    const cf = await A.saveImported({ glb: glbOf(makeGltf({ names: ['fleet_copy'] })), meta: { title: 'Starlink Copy', copyOf: 'param:starlink-v1', source: { kind: 'param', credit: '卫星仿真平台精细建模', license: 'param' } } })
+    eq([cf.ok, cf.id.slice(0, 5), cf.meta.source.kind, cf.meta.source.credit, cf.meta.source.license], [true, 'user:', 'user', '卫星仿真平台精细建模', 'param'], '星座精模的元数据副本：user 身份、署名保留')
+    eq((await A.saveImported({ glb: glbOf(makeGltf({ names: ['nope_copy'] })), meta: { title: 'x', copyOf: 'user:000000000000' } })).code, 'missing', '原条目查不到 → missing')
+    const stkRef = (await A.manifest()).models.find((x) => x.id.startsWith('stk:'))
+    if (stkRef) eq((await A.saveImported({ glb: glbOf(makeGltf({ names: ['stk_copy'] })), meta: { title: 'x', copyOf: stkRef.id } })).code, 'not-redistributable', 'STK 本机件不给出元数据副本')
+    else ok(false, '目录里应已有 STK 件（前面的用例导入过）')
     const pg = glbOf(makeGltf({ names: ['bus', 'wing'] }))
     const p = await A.saveImported({ glb: pg, meta: { id: 'param:0123456789ab', title: '默认卫星 改', source: { kind: 'param' }, spec: { template: 'default-sat' } } })
     eq([p.ok, p.id, (await A.getMeta(p.id)).source.kind], [true, 'param:0123456789ab', 'param'], '参数化另存：id 用 specHash')
@@ -476,6 +489,103 @@ try {
     const sc = await D.scanStk({ dir: deep })
     eq([sc.exists, sc.items.length, sc.truncated], [true, 3, true], 'scanStk 到上限即停并标 truncated')
     D.stop()
+  }
+
+  /* ⑤c 本机 STK 定位（stkLocate）：注册表 InstallHome（高版本优先、模型目录在才算）→ Program Files\AGI\STK* → 缺省位置；
+        缺省目录贯通 scanStk / pickStkDir / 字节判据；没找到的过 30 s 重查、找到的目录没了也重查；给了 stkDefaultDir 就不查注册表 */
+  {
+    const base = join(root, 'stk-locate')
+    const modelsOf = (home) => join(home, 'STKData', 'VO', 'Models')
+    const progAgi = join(base, 'Program Files', 'AGI')
+    const h12 = join(progAgi, 'STK 12')               // 注册表 12.0 → 这里（模型目录在）
+    const h13 = join(base, 'D', 'STK13')               // 注册表 13.0 → 装过、模型目录没了
+    const hZh = join(base, '软件', 'STK 11')            // 普通中文 Windows：reg.exe 按 GBK 写出来的路径
+    mkdirSync(join(modelsOf(h12), 'Space'), { recursive: true })
+    mkdirSync(h13, { recursive: true })
+    mkdirSync(modelsOf(hZh), { recursive: true })
+    for (const n of ['STK 10', 'STK MATLAB Connector']) mkdirSync(join(progAgi, n), { recursive: true })   // 没有模型目录 / 不是 STK 本体
+    const onlyHere = glbOf(makeGltf({ names: ['OnlyInLocatedStk'] }))   // 无署名、无 AGI 扩展：只有字节判据认得出
+    writeFileSync(join(modelsOf(h12), 'Space', 'only.glb'), onlyHere)
+    const regOut = (rows) => rows.map(([v, home]) => `\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\AGI\\STK\\${v}\r\n    InstallHome    REG_SZ    ${home}\\\r\n`).join('') +
+      `\r\nEnd of search: ${rows.length} match(es) found.\r\n`
+    const fakeReg = (views) => {
+      const f = async (args) => { f.calls.push(args.join(' ')); return views[args[args.length - 1]] ?? null }
+      f.calls = []
+      return f
+    }
+    const KEY_Q = 'query HKLM\\SOFTWARE\\AGI\\STK /s /v InstallHome'
+
+    // ① 注册表两个版本：13.0 的模型目录没了 → 取 12.0；64 / 32 位视图都查
+    const reg1 = fakeReg({ '/reg:64': Buffer.from(regOut([['12.0', h12], ['13.0', h13]]), 'utf8') })
+    let dlgPath = null
+    const Q = createModels({ appRoot: REPO, log: quietLog(), regQuery: reg1, stkProgramRoots: [join(base, 'nowhere')],
+      electron: { dialog: { showOpenDialog: async (o) => { dlgPath = o.defaultPath; return { canceled: true } } } } })
+    eq(await Q.stkLocate(), { dir: modelsOf(h12), found: true, version: '12.0', source: 'registry' }, '注册表：高版本的模型目录不在 → 退到下一个版本')
+    eq(reg1.calls.sort(), [KEY_Q + ' /reg:32', KEY_Q + ' /reg:64'], '64 / 32 位两个视图都查')
+    const sc = await Q.scanStk({})
+    eq([sc.dir, sc.exists, sc.items.map((i) => i.rel)], [modelsOf(h12), true, ['Space/only.glb']], 'scanStk 不给目录 → 扫认出来的那个')
+    await Q.pickStkDir()
+    eq(dlgPath, modelsOf(h12), 'pickStkDir 的对话框从认出来的目录开')
+    const copy = join(base, 'elsewhere', 'only-copy.glb')
+    mkdirSync(dirname(copy), { recursive: true })
+    writeFileSync(copy, onlyHere)
+    eq((await Q.readFile(copy)).code, 'stk', '字节判据比对的是认出来的 STK 目录（拷到别处的原样字节照样认出）')
+    eq(reg1.calls.length, 2, '找到的结果缓存着：后续调用不再查注册表')
+    Q.stop()
+
+    // ② 注册表里没有 → Program Files\AGI\STK*（STK 10 没有模型目录、STK MATLAB Connector 不算）
+    const Q2 = createModels({ appRoot: REPO, log: quietLog(), regQuery: fakeReg({}), stkProgramRoots: [progAgi] })
+    eq(await Q2.stkLocate(), { dir: modelsOf(h12), found: true, version: '12', source: 'program-files' }, '注册表里没有 → Program Files 里的 STK 12')
+    Q2.stop()
+
+    // ③ 普通中文 Windows：reg.exe 输出是 GBK 字节
+    const gbkMap = new Map()
+    {
+      const dec = new TextDecoder('gbk')
+      for (let a = 0x81; a <= 0xfe; a++) for (let b = 0x40; b <= 0xfe; b++) {
+        if (b === 0x7f) continue
+        const ch = dec.decode(Uint8Array.of(a, b))
+        if (ch.length === 1 && ch !== '�' && !gbkMap.has(ch)) gbkMap.set(ch, [a, b])
+      }
+    }
+    const gbk = (s) => Buffer.from([...s].flatMap((ch) => (ch.charCodeAt(0) < 0x80 ? [ch.charCodeAt(0)] : gbkMap.get(ch))))
+    const gbkBytes = gbk(regOut([['11.0', hZh]]))
+    let utf8Ok = true
+    try { new TextDecoder('utf-8', { fatal: true }).decode(gbkBytes) } catch { utf8Ok = false }
+    ok(!utf8Ok, '夹具：GBK 字节不是合法 UTF-8')
+    const Q3 = createModels({ appRoot: REPO, log: quietLog(), regQuery: fakeReg({ '/reg:64': gbkBytes }), stkProgramRoots: [] })
+    eq(await Q3.stkLocate(), { dir: modelsOf(hZh), found: true, version: '11.0', source: 'registry' }, 'GBK 输出里的中文安装路径照样认出')
+    Q3.stop()
+
+    // ④ 都没有 → 缺省位置、found=false；30 s 内不重查，过了再查（STK 刚装上）；找到的目录没了也重查
+    let clock = 1e12
+    const views = {}
+    const reg4 = fakeReg(views)
+    const log4 = quietLog()
+    const Q4 = createModels({ appRoot: REPO, log: log4, regQuery: reg4, stkProgramRoots: [], now: () => clock })
+    const [a1, a2] = await Promise.all([Q4.stkLocate(), Q4.stkLocate()])
+    eq([a1.found, a1.source, a1.version, a2 === a1 || JSON.stringify(a2) === JSON.stringify(a1)], [false, 'fallback', '', true], '都没有 → found=false')
+    ok(/[\\/]AGI[\\/]STK 12[\\/]STKData[\\/]VO[\\/]Models$/.test(a1.dir), 'dir 退回 STK 12 的缺省位置')
+    eq(reg4.calls.length, 2, '并发的两次调用共用一次查询')
+    eq((await Q4.scanStk({})).dir, a1.dir, 'scanStk 不给目录且没找到 → 扫缺省位置（exists 随本机，不断言）')
+    const hNew = join(base, 'E', 'STK 12 new')
+    mkdirSync(modelsOf(hNew), { recursive: true })
+    views['/reg:64'] = regOut([['12.0', hNew]])
+    clock += 29 * 1000
+    eq([(await Q4.stkLocate()).found, reg4.calls.length], [false, 2], '没找到的结论 30 s 内沿用')
+    clock += 2 * 1000
+    eq(await Q4.stkLocate(), { dir: modelsOf(hNew), found: true, version: '12.0', source: 'registry' }, '过了 30 s 重查：刚装上的 STK 认得出')
+    eq(reg4.calls.length, 4, '重查了一次')
+    ok(log4.lines.some((l) => l.includes('本机 STK 模型目录：' + modelsOf(hNew))), '认定的目录换了记日志')
+    rmSync(join(base, 'E'), { recursive: true, force: true })
+    eq([(await Q4.stkLocate()).found, reg4.calls.length], [false, 6], '找到的目录没了 → 立刻重查')
+    Q4.stop()
+
+    // ⑤ 给了 stkDefaultDir（单测钉目录）→ 不查注册表
+    const reg5 = fakeReg({ '/reg:64': regOut([['12.0', h12]]) })
+    const Q5 = createModels({ appRoot: REPO, log: quietLog(), regQuery: reg5, stkDefaultDir: stkDefault })
+    eq([await Q5.stkLocate(), reg5.calls.length], [{ dir: stkDefault, found: true, version: '', source: 'override' }, 0], 'stkDefaultDir 优先、不查注册表')
+    Q5.stop()
   }
 
   /* ⑩ 导入件本体轴缺省按来源（轴映射终案 ②，bodyFrame.defaultImportQ）；挂点位姿按同一个 q 换算 */
@@ -608,7 +718,7 @@ try {
     eq(gm.sheets[0].cols, [{ num: false, fix: undefined, align: undefined }, { num: true, fix: 2, align: undefined }, { num: true, fix: 3, align: undefined }], '列口径透传')
     let threw = ''
     try { createModels.tableGridModel({ sheets: [] }) } catch (e) { threw = e.message }
-    eq(threw, '没有可导出的数据', '没有表 → 报错')
+    eq(threw, '无可导出数据', '没有表 → 报错')
     threw = ''
     try { createModels.tableGridModel({ sheets: [{ name: 'x', cols: [] }] }) } catch (e) { threw = e.message }
     ok(/没有列/.test(threw), '没有列 → 报错')
@@ -624,7 +734,7 @@ try {
     eq([ws.getCell('B1').border.top.style, ws.getCell('B1').border.bottom.style, ws.getCell('B4').border.bottom.style, ws.getCell('B2').border && ws.getCell('B2').border.left], ['medium', 'thin', 'medium', undefined], '三线表：顶线粗、栏目线细、末行底线粗、无竖线')
     saveTo2.path = null
     eq(await E2.exportTable({ sheets: [sheet] }), { ok: false, canceled: true }, '取消保存框 → canceled')
-    eq((await E2.exportTable({ sheets: [] })).error, '没有可导出的数据', '空表不弹框直接报错')
+    eq((await E2.exportTable({ sheets: [] })).error, '无可导出数据', '空表不弹框直接报错')
 
     // CSV：现成文本（maskToCsv）原样；一张表按 RFC 4180；含中文前置 BOM
     saveTo2.path = join(root, 'mask.csv')
@@ -790,7 +900,7 @@ try {
     // 缺装配文档 / 不是装配文档 → bad-asm，不落盘
     const nFiles = () => readdirSync(userDirC).length
     const n0 = nFiles()
-    eq(await C.saveImported({ glb: asmGlb('asm:0000000000aa', YUP, null), meta: asmMeta('asm:0000000000aa', asmSpec(), { spec: undefined }) }), { ok: false, code: 'bad-asm', error: '装配件缺装配文档。' }, 'asm 缺装配文档 → bad-asm')
+    eq(await C.saveImported({ glb: asmGlb('asm:0000000000aa', YUP, null), meta: asmMeta('asm:0000000000aa', asmSpec(), { spec: undefined }) }), { ok: false, code: 'bad-asm', error: '装配件缺少装配文档。' }, 'asm 缺装配文档 → bad-asm')
     eq((await C.saveImported({ glb: asmGlb('asm:0000000000ab', YUP, null), meta: asmMeta('asm:0000000000ab', { kind: 'satellite' }) })).code, 'bad-asm', 'spec 不是装配文档 → bad-asm')
     eq(nFiles(), n0, 'bad-asm 不落盘')
 

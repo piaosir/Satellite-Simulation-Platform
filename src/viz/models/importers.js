@@ -138,7 +138,7 @@ async function importObj(bytes, name, readSibling, warnings) {
     for (const n of mtlNames) {
       let b = null
       try { b = readSibling ? await readSibling(n) : null } catch { b = null }
-      if (b) mtlTexts.push(new TextDecoder('utf-8').decode(b)); else warnings.push('缺材质库 ' + baseName(n))
+      if (b) mtlTexts.push(new TextDecoder('utf-8').decode(b)); else warnings.push('缺少材质库 ' + baseName(n))
     }
     if (mtlTexts.length) {
       const texNames = []
@@ -161,7 +161,7 @@ async function importObj(bytes, name, readSibling, warnings) {
     if (!o.isMesh) return
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && m.isMeshPhongMaterial && !known.has(m.name)) m.userData.__noMaterial = true
   })
-  if (side) { side.cleanup(); if (side.missing.size) warnings.push('缺贴图 ' + [...side.missing].slice(0, 5).join('、')) }
+  if (side) { side.cleanup(); if (side.missing.size) warnings.push('缺少贴图 ' + [...side.missing].slice(0, 5).join('、')) }
   return { root, unitHint }
 }
 
@@ -195,7 +195,7 @@ async function importFbx(bytes, name, readSibling, warnings) {
     const table = [[1, 'cm'], [100, 'm'], [0.1, 'mm'], [2.54, 'in'], [30.48, 'ft']]
     for (const [v, u] of table) if (Math.abs(usf / v - 1) < 0.01) unitHint = u
   }
-  if (side.missing.size) warnings.push('缺贴图 ' + [...side.missing].slice(0, 5).join('、'))
+  if (side.missing.size) warnings.push('缺少贴图 ' + [...side.missing].slice(0, 5).join('、'))
   return { root, unitHint, fbxUnitScaleFactor: Number.isFinite(usf) ? usf : null }
 }
 
@@ -222,6 +222,6 @@ export async function importFile(file, o = {}) {
     throw new Error((fmt.toUpperCase()) + ' 解析失败：' + ((e && e.message) || e))
   }
   const fin = finish(r.root, file.name)
-  if (!fin.tris) throw new Error('文件里没有三角形。')
+  if (!fin.tris) throw new Error('文件中不含三角形。')
   return { root: r.root, format: fmt, unitHint: r.unitHint, fbxUnitScaleFactor: r.fbxUnitScaleFactor, tris: fin.tris, ms: Math.round(performance.now() - t0), warnings, materialFallback: fin.materialFallback }
 }

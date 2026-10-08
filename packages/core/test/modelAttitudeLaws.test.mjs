@@ -110,6 +110,40 @@ t('nadir：速度缺省按 ω⊕ẑ × r 合成（赤道 GEO → +X = 东）；�
   assert.equal(OMEGA_EARTH_RAD_S, 7.292115e-5)
 })
 
+t('nadir 姿态偏置：只给偏航与 yawFromNadir 逐位相同；滚转 / 俯仰按 3-2-1（先偏航、再绕新 Y 俯仰、后绕新 X 滚转）与 Rodrigues 逐轴复算 < 1e-12；GEO 上滚转正 = 视轴北倾、俯仰正 = 视轴东倾；偏置全 0 与不给逐位相同', () => {
+  const rot = (v, k, deg) => { const c = Math.cos(deg * D2R), s = Math.sin(deg * D2R), kv = dot(k, v), kx = cross(k, v); return [0, 1, 2].map((i) => v[i] * c + kx[i] * s + k[i] * kv * (1 - c)) }
+  for (let k = 0; k < 300; k++) {
+    const ctx = randomCtx()
+    const N = attitudeBasisEcef('nadir', null, ctx)
+    const yaw = rnd() * 360 - 180, pitch = rnd() * 180 - 90, roll = rnd() * 360 - 180
+    const by = attitudeBasisEcef('nadir', { yawBiasDeg: yaw }, ctx), ry = yawFromNadir(N, yaw)
+    for (const ax of ['X', 'Y', 'Z']) for (let i = 0; i < 3; i++) assert.equal(by[ax][i], ry[ax][i], `只给偏航逐位 ${ax}${i}`)
+    let X = N.X, Y = N.Y, Z = N.Z
+    ;[X, Y] = [rot(X, Z, yaw), rot(Y, Z, yaw)]
+    ;[X, Z] = [rot(X, Y, pitch), rot(Z, Y, pitch)]
+    ;[Y, Z] = [rot(Y, X, roll), rot(Z, X, roll)]
+    const b = attitudeBasisEcef('nadir', { yawBiasDeg: yaw, pitchBiasDeg: pitch, rollBiasDeg: roll }, ctx)
+    checkOrtho(b, 1e-12, 'RPY 偏置')
+    assert.ok(Math.max(ang(b.X, X), ang(b.Y, Y), ang(b.Z, Z)) < 1e-12, 'RPY 与逐轴复算一致')
+    assert.equal(b.law, 'nadir'); assert.equal(b.fallback, false); assert.equal(b.yawDeg, yaw)
+  }
+  // 方向口径：赤道顺行 GEO（+X 东、+Y 南、+Z 地心）
+  const lon = 105.5 * D2R, r = [RS_GEO * Math.cos(lon), RS_GEO * Math.sin(lon), 0]
+  const east = [-Math.sin(lon), Math.cos(lon), 0]
+  const bR = attitudeBasisEcef('nadir', { rollBiasDeg: 1 }, { rEcef: r })
+  near(Math.asin(bR.Z[2]) * R2D, 1, 1e-12, '滚转 +1° → 视轴北倾 1°')
+  near(dot(bR.Z, east), 0, 1e-15, '滚转不带东西分量')
+  const bP = attitudeBasisEcef('nadir', { pitchBiasDeg: 1 }, { rEcef: r })
+  near(Math.asin(dot(bP.Z, east)) * R2D, 1, 1e-12, '俯仰 +1° → 视轴东倾 1°')
+  near(bP.Z[2], 0, 1e-15, '俯仰不带南北分量')
+  const b0 = attitudeBasisEcef('nadir', { rollBiasDeg: 0, pitchBiasDeg: 0, yawBiasDeg: 0 }, { rEcef: r }), bn = attitudeBasisEcef('nadir', null, { rEcef: r })
+  for (const ax of ['X', 'Y', 'Z']) for (let i = 0; i < 3; i++) assert.equal(b0[ax][i], bn[ax][i], `偏置全 0 逐位 ${ax}${i}`)
+  // 律退回 nadir（目标解不出）时不带偏置：退的是「纯天底」，偏置只属于 nadir 律自己
+  const bf = attitudeBasisEcef('target', { rollBiasDeg: 5, target: null }, { rEcef: r })
+  assert.equal(bf.fallback, true)
+  for (const ax of ['X', 'Y', 'Z']) for (let i = 0; i < 3; i++) assert.equal(bf[ax][i], bn[ax][i], `退回纯天底 ${ax}${i}`)
+})
+
 // ───────────────────────── ② yawSteer ─────────────────────────
 t('yawSteer：翼轴（±Y）·太阳 < 1e-6（实测 1e-15 量级）；sunSide +X / −X 分别让太阳落在 ±X′ 半平面', () => {
   let worst = 0

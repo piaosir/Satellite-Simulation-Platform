@@ -13,6 +13,8 @@ import { appAlert } from '../stores/alert.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
+import { lonLatPasteKeys } from '../shared/pasteLonLat.js'
+import { sceneNowMs } from '../shared/sceneClock.js'
 import { useBridge, useMirror } from './bridge.js'
 import { persistedRef } from './prefs.js'
 import PwMenu from './PwMenu.vue'
@@ -32,6 +34,8 @@ const fmtLL = (lon, lat) => `${Math.abs(lon).toFixed(2)}°${lon < 0 ? 'W' : 'E'}
 // 「时间」列按主窗口的显示时区读写；带时刻的行读那一刻的气象帧 / 和风值 / 卫星几何，不带的跟时间轴
 const tzMode = computed(() => (st.tzMode == null ? 'local' : st.tzMode))
 const tText = (ms) => fmtTzTime(ms, tzMode.value)
+// 只敲时分（12:00）落在时间轴当前那一天，不落在系统今天：日期基准＝宿主推来的 nowMs（有的话）> 主窗口时钟镜像（sceneClock）
+const sceneBaseMs = () => { const t = Number(st.nowMs); return Number.isFinite(t) && t > 0 ? t : sceneNowMs() }
 const siteSig = (list) => JSON.stringify((list || []).map((s) => [s.id, s.name, s.tMs, s.lon, s.lat, s.src]))
 useMirror(st, 'sites', {
   sigOf: siteSig,
@@ -54,7 +58,7 @@ function siteUpdate(id, key, val) {
   const t = String(val == null ? '' : val).trim()
   if (key === 'tMs') {
     if (t === '') { s.tMs = null; return }
-    const ms = parseTzText(t, tzMode.value, Number.isFinite(s.tMs) ? s.tMs : Date.now())
+    const ms = parseTzText(t, tzMode.value, Number.isFinite(s.tMs) ? s.tMs : sceneBaseMs())
     if (Number.isFinite(ms)) s.tMs = ms
     return
   }
@@ -73,10 +77,15 @@ function pasteBlock(anchorId, startKey, text) {
   const r0 = list.findIndex((x) => x.id === anchorId); if (r0 < 0) return 0
   const c0 = inCols.findIndex((c) => c.key === startKey); if (c0 < 0) return 0
   const grid = String(text || '').replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map((l) => l.split('\t'))
+  // 时间插在经纬度前：v1.4.13 列序的窄块（「站名 / 经度 / 纬度」）按「末两格 = 经纬度」落位，
+  // 否则纬度写进经度、得到一个看着正常的错坐标（见 shared/pasteLonLat.js）；其余块照旧按位置
+  const keys0 = inCols.map((c) => c.key)
+  const keysOf = lonLatPasteKeys(keys0, startKey, grid, { textKeys: ['name'] }) || ((cells) => cells.map((_, dc) => keys0[c0 + dc]))
   grid.forEach((cells, dr) => {
     const ri = r0 + dr
     while (ri >= list.length) list.push(newSite({}))
-    cells.forEach((v, dc) => { const c = inCols[c0 + dc]; if (c) siteUpdate(list[ri].id, c.key, v) })
+    const keys = keysOf(cells)
+    cells.forEach((v, dc) => { const k = keys[dc]; if (k) siteUpdate(list[ri].id, k, v) })
   })
   return grid.length
 }
@@ -91,7 +100,7 @@ function pasteAppend(text) {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue
     // 经纬度前一格是时刻（本表复制出来的整行：站名 / 时间 / 经度 / 纬度）→ 取作该行时刻，不并进站名
     let head = p.slice(0, p.length - 2), tMs = null
-    if (head.length) { const ms = parseTzText(head[head.length - 1], tzMode.value, Date.now()); if (Number.isFinite(ms)) { tMs = ms; head = head.slice(0, -1) } }
+    if (head.length) { const ms = parseTzText(head[head.length - 1], tzMode.value, sceneBaseMs()); if (Number.isFinite(ms)) { tMs = ms; head = head.slice(0, -1) } }
     sites.value.push(newSite({ name: head.length ? head.join(' ') : fmtLL(lon, lat), tMs, lon, lat }))
     n++
   }
@@ -152,7 +161,7 @@ async function importXlsx() {
   for (const rec of (records || [])) {
     const lon = Number(rec.lon), lat = Number(rec.lat)
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
-    const ms = rec.tMs != null && String(rec.tMs).trim() !== '' ? parseTzText(rec.tMs, tzMode.value, Date.now()) : NaN
+    const ms = rec.tMs != null && String(rec.tMs).trim() !== '' ? parseTzText(rec.tMs, tzMode.value, sceneBaseMs()) : NaN
     sites.value.push(newSite({ name: String(rec.name || '').trim() || fmtLL(lon, lat), tMs: Number.isFinite(ms) ? ms : null, lon, lat }))
     n++
   }
@@ -173,7 +182,7 @@ const colObsOff = (k) => { const c = colDef(k); return !!(c && c.obs) && !st.obs
 const colOff = (k) => colSatOff(k) || colObsOff(k)
 const colTip = (k) => {
   const c = colDef(k)
-  if (colSatOff(k)) return '须先在主窗口「实时气象 · 链路参数」指定目标卫星'
+  if (colSatOff(k)) return '须先在主窗口「实时气象分析 · 链路参数」指定目标卫星'
   if (colObsOff(k)) return '须先在表内执行「获取和风数据」'
   return (c && c.tip) || (c ? c.label : k)
 }
@@ -268,7 +277,7 @@ function dragSplit(e) {
 
     <section class="pw-res">
       <div class="pw-bar">
-        <span class="pw-t">计算结果<em>只读 · 随时间轴更新</em></span>
+        <span class="pw-t" title="只读 · 随时间轴更新">计算结果</span>
         <span class="ptb" :class="{ dis: fetchDis }" :title="pointOk ? '向和风天气请求各站在时间轴当前时刻的值，写入「和风」列组（逐站各一次请求，按站计费；本小时取实况观测，未来取逐小时预报，无历史数据。取一次即覆盖整条时间轴，之后拖动时间轴不再发请求）' : (st.pointMsg || '和风天气未配置')" @click="fetchObs">
           <Icon name="cloud-rain" :size="12" /> {{ st.obsBusy ? '获取中…' : `获取和风数据（${sites.length} 站）` }}</span>
         <span v-if="obsAtText" class="pw-cnt" title="和风列对应的时刻与口径，与左侧模式列同一时刻"><span>和风</span> <span data-i18n-skip>{{ obsAtText }}</span></span>

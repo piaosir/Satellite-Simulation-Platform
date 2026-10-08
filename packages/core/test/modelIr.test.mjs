@@ -144,7 +144,7 @@ for (let k = 0; k < 300 && same; k++) {
   same = JSON.stringify(I.uniqueNodeNames(list)) === JSON.stringify(refUnique(list))
 }
 ok(same, '300 张随机名字表：结果与逐次从 2 数起的参考实现逐位相同')
-ok(['mli_gold', 'solar_cell', 'reflector', 'dark_metal'].every((k) => I.MATERIAL_KEYS.includes(k)) && I.MATERIAL_KEYS.length === 24, '材质键 24 个（契约 §3.1 的 15 个 + A3 扩充 9 个）')
+ok(['mli_gold', 'solar_cell', 'reflector', 'dark_metal', 'gold_metal', 'sunshield'].every((k) => I.MATERIAL_KEYS.includes(k)) && I.MATERIAL_KEYS.length === 31, '材质键 31 个（契约 §3.1 的 15 个 + A3 扩充 9 个 + 星上硬件 4 个 + 星上天线 2 个 + 硅电池 1 个）')
 eq(I.PART_ROLES.length, 9, '部件角色 9 个')
 
 console.log(`modelIr: ${pass} 项通过`)

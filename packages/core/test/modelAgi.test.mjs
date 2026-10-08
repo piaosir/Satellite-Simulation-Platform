@@ -69,7 +69,7 @@ eq(r.articulations[2].nodes, ['node_7'], '无名节点按 node_<下标> 记')
 eq(r.solarPanelGroups, [{ name: 'Main', efficiency: 28, nodes: ['WingPY_Cells', 'WingNY_Cells'] }], '太阳翼组')
 eq(r.noObscurationNodes, ['Boom'], '不遮挡节点')
 eq(r.nodeCount, 9, '节点数')
-ok(has(r.warnings, 'Nope') && has(r.warnings, '#7 无名') && has(r.warnings, 'Unused'), '未定义引用 / 无名节点 / 无节点关节 都进警告')
+ok(has(r.warnings, 'Nope') && has(r.warnings, '#7 未命名') && has(r.warnings, 'Unused'), '未定义引用 / 无名节点 / 无节点关节 都进警告')
 eq(r.errors, [], '合法文件无错误')
 
 // 坏结构不抛
@@ -125,7 +125,7 @@ const e1 = A.applyAgiToGltfJson(stripped, {
 })
 ok(has(e1.errors, 'Missing') && has(e1.errors, 'Nowhere'), '找不到的节点记错误')
 ok(has(e1.errors, 'Has Space') && has(e1.errors, 'stage 名「a」重复') && has(e1.errors, 'b c') && has(e1.errors, 'twist'), '坏名 / 重名 stage / 未知类型记错误并跳过')
-ok(has(e1.errors, '已挂关节「A1」') && has(e1.errors, '已在太阳翼组「G1」') && has(e1.errors, 'A1」重复') && has(e1.errors, 'G3'), '一节点一关节、一节点一组；重名关节；效率越界')
+ok(has(e1.errors, '已关联关节「A1」') && has(e1.errors, '已属于太阳翼组「G1」') && has(e1.errors, 'A1」重复') && has(e1.errors, 'G3'), '一节点一关节、一节点一组；重名关节；效率越界')
 const e1r = A.readAgiFromGltfJson(e1.json)
 eq(e1r.articulations.map((a) => [a.name, a.nodes, a.stages.map((s) => s.name)]), [['A1', ['Dish'], ['a']], ['A2', [], ['z']]], '合法部分照写（A2 节点被 A1 先占）')
 eq(e1r.noObscurationNodes, ['Bus'], '不遮挡节点照写')

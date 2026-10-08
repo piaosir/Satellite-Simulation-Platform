@@ -32,9 +32,12 @@ html[data-theme='dark'] {
   --lb-lv1: #82a9c6; --lb-lv2: #5cbf94; --lb-lv3: #d8a73a; --lb-lv4: #e26a6a;
 }
 
-/* —— 未保存脏点：挂在功能区「保存」大按钮右上角（v1.4.4 顶栏撤销后唯一落点） —— */
+/* —— 未保存脏点：挂在功能区「保存」大按钮右上角（v1.4.4 顶栏撤销后唯一落点）——
+   链路预算四窗自 2026-10-06 改自动保存后不再有它，空间态势 / 日凌仍用 —— */
 .lbx-dirty { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--warn); }
 .lbr-big .lbx-dirty { position: absolute; top: 3px; right: 3px; }
+/* 自动保存写盘失败的告警（只在失败时出现，单击重试）：危险色字与图标，悬停也不退回正文色 */
+.lbr-big.lbx-savefail, .lbr-big.lbx-savefail:hover:not(:disabled) { color: var(--danger); }
 
 /* —— 功能区（MATLAB App 工具条式）：分组大按钮 + 组内小表单 + 组名注脚，组间竖分隔线 —— */
 .lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; }
@@ -75,6 +78,12 @@ html[data-theme='dark'] {
 .lbr-form input { width: 58px; font-family: var(--font-mono); }
 .lbr-form input:disabled { color: var(--text-faint); background: var(--surface-2); }
 .lbr-form .lbr-u { color: var(--text-faint); font-size: var(--fs-2); }
+/* 自动几何「起点 = 指定」那一行（NGSO / 再生式 / 端到端）：时刻框 + 时区角标，对齐上一行的控件（让出标签列 26px + 间距 5px）。
+   不用 label 包：点角标会被转发成点时刻框。时刻框宽由 datetime-local 自己的分段定，覆盖上面数值框的 58px */
+.lbr-form .lbr-row { display: flex; align-items: center; gap: 4px; padding-left: 31px; white-space: nowrap; }
+.lbr-form input.lbr-dt { width: auto; }
+.lbr-form .lbr-tz { display: inline-flex; align-items: center; height: var(--h-ctl); padding: 0 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); background-color: var(--field-bg); color: var(--text-muted); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.lbr-form .lbr-tz:hover, .lbr-form .lbr-tz.open { color: var(--text); border-color: var(--field-border-hover); }
 /* 功能区右缘状态位（达标徽章 / 输入已变） */
 .lbr-status { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 6px; }
 /* 资源库子导航按钮（段选式方角，用于左侧栏 .lb-lib-tabs） */

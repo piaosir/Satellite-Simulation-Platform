@@ -129,6 +129,50 @@ ok('对地取值不受影响（缺省参数 = 传 0）',
   sampler.sampleMax(LOADED, SAT, nadir, 0, 0) === sampler.sampleMax(LOADED, SAT, nadir, 0, 0, 0))
 ok('天底正下方仍取到值', Math.abs(sampler.sampleMax(LOADED, SAT, nadir, 0, 0) - 20) < 1e-6)
 
+// —— ⑥b 对星三档（v1.5.0 上线前排查·既有低频项）：早先 sat / satoff / point 全落进 geo 分支（按地面点建基底），
+// 与 3D 覆盖可差几十 dB 且静默。现在 point 按空间点建基底（与渲染端 beamBasisFrom 同口径），sat / satoff 取不到就不取。
+console.log('\n=== 对星三档：空间点 / 对星跟踪 ===\n')
+{
+  const COV = await import('../../../src/viz/grd/coverage.js')
+  // 窄网格（uv ±0.05 ≈ ±2.9° 视锥）常值场：落在视锥里 = 20 dB，视锥外 = null —— 看得出视轴到底指向哪
+  const n = 9, f = new Float32Array(n * n).fill(10), z0 = new Float32Array(n * n)
+  const NARROW = { igrid: 1, icomp: 3, ncomp: 2, beams: [{ grid: { XS: -0.05, YS: -0.05, XE: 0.05, YE: 0.05, NX: n, NY: n }, c1re: f, c1im: z0, c2re: z0, c2im: z0 }] }
+  const S550 = { lon: 0, lat: 0, alt: 550 }
+  const PT = { boreType: 'point', borePtLon: 3, borePtLat: 0, borePtAlt: 0, yaw: 0, pol: 'RSS' }
+  const hit = sampler.sampleMax(NARROW, S550, PT, 3, 0), miss = sampler.sampleMax(NARROW, S550, PT, 0, 0)
+  ok('空间点指向：视轴落在那个点上（该点取到值）', hit !== null && Math.abs(hit - 20) < 1e-6, `实际 ${hit}`)
+  ok('空间点指向：天底不在视锥里（不再按地面星下点建基底）', miss === null, `实际 ${miss}`)
+  // 与渲染端同一基底（逐分量）：GEO / LEO、带 yaw、点在空中
+  let worst = 0
+  for (const [meta, st] of [
+    [{ satLon: 110.5, satLat: 0, satAlt: 35786 }, { boreType: 'point', borePtLon: 100, borePtLat: 30, borePtAlt: 0, yaw: 7 }],
+    [{ satLon: 20, satLat: 41, satAlt: 550 }, { boreType: 'point', borePtLon: 25, borePtLat: 38, borePtAlt: 1200, yaw: -15 }],
+    [{ satLon: -60, satLat: 0, satAlt: 35786 }, { boreType: 'point', borePtLat: 5, yaw: 0 }]              // 点经度缺省 → 星下经度
+  ]) {
+    const ctx = sampler.makeSampleCtx(LOADED, { lon: meta.satLon, lat: meta.satLat, alt: meta.satAlt }, st)
+    const ref = COV.beamBasisFrom(meta, st)
+    for (const k of ['S', 'x', 'y', 'z']) for (let i = 0; i < 3; i++) worst = Math.max(worst, Math.abs(ctx.basis[k][i] - ref[k][i]))
+  }
+  ok('空间点指向：主进程基底与渲染端 beamBasisFrom 逐分量一致（< 1e-9）', worst < 1e-9, `最大差 ${worst}`)
+  // 对星跟踪（+ 偏置）：主进程拿不到目标星此刻的星位 —— 一律取不到，不退回地面指向
+  for (const bt of ['sat', 'satoff']) {
+    const c = { boreType: bt, boreSat: '41866', boreOffAz: 0.5, boreOffEl: -0.5, boreLon: 0, boreLat: 0, pol: 'RSS' }
+    const all = sampler.sampleAll(LOADED, SAT, c, 0, 0)
+    ok(`${bt}：采样上下文为空、各入口取不到`, sampler.makeSampleCtx(LOADED, SAT, c) === null && sampler.sampleMax(LOADED, SAT, c, 0, 0) === null
+      && sampler.sampleXpd(LOADED, SAT, c, 0, 0) === null && all.values.length === 0 && all.beamIdx.length === 0)
+  }
+  // C/I（C/CCI 场图与逐点）同用这只采样器：对星跟踪档给出全空结果而不是抛错
+  const ciCci = createRequire(import.meta.url)('../utils/interference/ciCci.js')
+  let threw = '', r = null
+  try { r = ciCci.cciOverPoints(sampler, LOADED, SAT, { boreType: 'sat', pol: 'RSS' }, [{ lon: 0, lat: 0 }, { lon: 1, lat: 1 }], { colors: 4 }) } catch (e) { threw = e.message }
+  ok('C/CCI：对星跟踪档逐点全为 null、不抛错', !threw && r && r.cci.every((v) => v === null) && r.serving.every((v) => v === null), threw)
+  // 回填指纹：空间点那三个键只在 point 档进指纹（切走后留在设置里的旧值不让指纹翻动）
+  const node = { folder: 'X', lon: 0, lat: 0, altKm: 550, live: false }, ant = { name: 'A', file: 'a.grd', satLon: 0, satLat: 0, satAlt: 550 }
+  const fb = (cfg) => geo.grdFillBase(node, ant, cfg)
+  ok('point 档：改那个点 ⇒ 指纹变', fb(PT) !== fb({ ...PT, borePtLon: 4 }) && fb(PT) !== fb({ ...PT, borePtAlt: 100 }))
+  ok('非 point 档：留着的旧 borePt* 不进指纹', fb({ boreType: 'azel', boreAz: 1 }) === fb({ boreType: 'azel', boreAz: 1, borePtLon: 9, borePtLat: 9, borePtAlt: 9 }))
+}
+
 // —— ⑦ 手动几何：斜距 ⇄ 轨道高度 ⇄ 仰角（渲染端 shared/slantRange.js）——
 // 两套模型都要钉：球模型必须与引擎逐位一致（它是引擎镜像）；WGS-84 椭球必须与暴力扫方位一致
 // （「斜距工具」用的就是它，口径＝绕站一圈的最大斜距）。

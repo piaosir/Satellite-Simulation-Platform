@@ -24,7 +24,13 @@ export const MATERIAL_KEYS = Object.freeze([
   'mli_gold', 'mli_silver', 'mli_black', 'solar_cell', 'solar_substrate', 'reflector', 'reflector_mesh',
   'aluminum', 'radiator', 'titanium', 'carbon', 'kapton_black', 'white_paint', 'glass', 'dark_metal',
   // A3（非卫星领域）扩充：船壳 / 甲板 / 集装箱 / 机翼漆面、轮胎、混凝土基础（A3 规格 §11-3、编排者裁定 §12-3）
-  'paint_red', 'paint_navy', 'paint_blue', 'paint_green', 'paint_orange', 'paint_yellow', 'paint_grey', 'rubber', 'concrete'
+  'paint_red', 'paint_navy', 'paint_blue', 'paint_green', 'paint_orange', 'paint_yellow', 'paint_grey', 'rubber', 'concrete',
+  // 星上硬件造型库扩充（2026-10-08，hardware.mjs）：阿洛丁 / 镀金金属件、锗镀黑聚酰亚胺遮阳膜、霍尔推力器陶瓷、消光黑漆（遮光罩内壁 / 喷管内壁）
+  'gold_metal', 'sunshield', 'ceramic', 'black_paint',
+  // 星上天线造型库扩充（2026-10-08，antennas.mjs）：天线罩（白色介质罩）、裸铜
+  'radome', 'copper',
+  // 太阳翼造型库扩充（2026-10-08，solarArrays.mjs）：硅太阳电池（亮蓝，与星座精模定制色同值）
+  'cell_si'
 ])
 export const PART_ROLES = Object.freeze(['bus', 'solarArray', 'reflector', 'feed', 'boom', 'radiator', 'thruster', 'sensor', 'other'])
 export const UNIT_HINTS = Object.freeze(['m', 'cm', 'mm', 'in', 'ft', 'unknown'])

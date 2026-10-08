@@ -48,7 +48,10 @@ t('参数化兜底 id 都是真实模板；默认卫星 = param:default-sat', ()
 const CASES = [
   ['TDRS 13', 42915, 'GEO', 'geo', N('tracking-and-data-relay-satellites-tdrs-d'), 'tdrs-gen2-3'],
   ['TDRS 3', 19548, 'GEO', 'geo', N('tracking-and-data-relay-satellites-tdrs-a'), 'tdrs-gen1'],
-  ['GOES 18', 51850, 'GEO', 'geo', N('geostationary-operational-environmental-satellites'), 'goes'],
+  // 2026-10-07：GOES 16 起（GOES-R 系列）改走 GEO 精模；NASA 的 GOES-N/O/P 外形只配 GOES 13–15 与 EWS-G2 / G3
+  ['GOES 18', 51850, 'GEO', 'geo', 'param:goes-r', 'fleet:goes-r'],
+  ['GOES 19', 60133, 'GEO', 'geo', 'param:goes-u', 'fleet:goes-u'],
+  ['EWS-G2 (GOES 15)', 36411, 'GEO', 'geo', N('geostationary-operational-environmental-satellites'), 'goes'],
   ['LANDSAT 9', 49260, 'LEO', 'other', N('landsat-8'), 'landsat-8-9'],
   ['LANDSAT 7', 25682, 'LEO', 'other', N('landsat-7'), 'landsat-7'],
   ['ISS (ZARYA)', 25544, 'LEO', 'stations', N('international-space-station-iss-d-igoal'), 'iss'],
@@ -145,7 +148,8 @@ t('名称归一：全角 / 小写 / 多空格', () => {
   assert.equal(normalizeName('  ｔｅｒｒａ  '), 'TERRA')
   assert.equal(match({ name: 'ｔｅｒｒａ' }).id, N('terra'))
   assert.equal(match({ name: 'tdrs   13' }).rule, 'tdrs-gen2-3')
-  assert.equal(match({ name: 'goes-16' }).rule, 'goes')
+  assert.equal(match({ name: 'goes-16' }).rule, 'fleet:goes-r')
+  assert.equal(match({ name: 'goes  15' }).rule, 'goes')
 })
 
 t('available 缺候选：先换同规则的下一个候选，再落到下一条规则', () => {
@@ -182,13 +186,13 @@ t('prefs.geoDefault：生效；是 NASA id 但不可用时退回默认卫星；�
 
 t('orbitKind 缺失时 GEO 运营商名兜底；给了非 GEO 类别就不兜底', () => {
   assert.deepStrictEqual(match({ name: 'ZHONGXING-26' }), { id: DEF, rule: 'geo-name-hint' })
-  assert.deepStrictEqual(match({ name: 'INTELSAT 901' }), { id: DEF, rule: 'geo-name-hint' })
+  assert.deepStrictEqual(match({ name: 'INTELSAT 39' }), { id: DEF, rule: 'geo-name-hint' })
   assert.deepStrictEqual(match({ name: 'ZHONGXING-26', orbitKind: 'IGSO' }), { id: DEF, rule: 'fallback' })
   assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }), { id: 'param:galileo-foc', rule: 'fleet:galileo-foc' }, '伽利略的 GSAT 不能当 GEO 通信星')
   // 两条路给的模型同是默认卫星，区别在 GEO 偏好只作用于 GEO 那条
   assert.deepStrictEqual(match({ name: 'GSAT0203 (GALILEO 8)' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:galileo-foc', rule: 'fleet:galileo-foc' })
   assert.deepStrictEqual(match({ name: 'GSAT-30', orbitKind: '' }), { id: DEF, rule: 'fallback' }, '印度通信星 GSAT-30 不能当伽利略（GEO 名称兜底本就不收 GSAT）')
-  assert.deepStrictEqual(match({ name: 'INTELSAT 901' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:ssl1300', rule: 'geo-name-hint' })
+  assert.deepStrictEqual(match({ name: 'INTELSAT 39' }, { prefs: { geoDefault: 'param:ssl1300' } }), { id: 'param:ssl1300', rule: 'geo-name-hint' })
 })
 
 t('入参容错：空对象 / null', () => {

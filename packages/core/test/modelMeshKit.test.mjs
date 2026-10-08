@@ -98,7 +98,8 @@ function goldenCases() {
     const b = base.bus, s0 = Math.min(b.xM, b.yM), hz = b.zM / 2
     // 前五个与 modelParamBus ⑥ 同口径
     const v = {
-      addSide: { ...clone(base), reflectors: [...base.reflectors, { mount: 'side', diameterM: 0.9 * s0 }] },
+      // 加一副侧挂：四个侧挂槽位都占满的模板（SSL-1300 东西各两副）先让出最后一副
+      addSide: { ...clone(base), reflectors: [...(base.reflectors.filter((r) => r.mount === 'side').length >= 4 ? base.reflectors.slice(0, -1) : base.reflectors), { mount: 'side', diameterM: 0.9 * s0 }] },
       sideDeck: { ...clone(base), reflectors: [{ slot: '+X', diameterM: 0.9 * s0 }, { slot: 'deck+Y', diameterM: 0.5 * s0 }] },
       meshArray: { ...clone(base), reflectors: [{ slot: '-X', diameterM: 2.5 * s0, mesh: true, feedType: 'array' }, { slot: 'deck-Y', diameterM: 0.6 * s0, mesh: true }] },
       tilted: { ...clone(base), reflectors: [{ slot: '+X', diameterM: 0.8 * s0, boresightBody: [0.3, 0.2, 1] }, { slot: '-X', diameterM: 0.8 * s0, boresightBody: [0, 0, 1], offsetDirBody: [0, 1, 0.2] }] },
@@ -470,7 +471,8 @@ t('组件复用：buildWing / buildReflector / buildFeed 脱离整星 ctx（无 
   nearV(ctx.parts.get('wing_-Y').normalBody, [0, 0, -1], 0, '电池面朝 −Z（天顶）')
   // 部件：组件模式下 SADA 单独成件，不冒出 id='bus' 的假平台件；不给 sadaMassKg 就不记 SADA 质量元
   assert.deepStrictEqual([...ctx.parts.keys()], ['wing_-Y_sada', 'wing_-Y_yoke', 'wing_-Y'])
-  assert.deepStrictEqual(ctx.parts.get('wing_-Y_sada'), { id: 'wing_-Y_sada', name: '太阳翼驱动机构 -Y', role: 'bus', nodes: ['wing_-Y_sada'], areaM2: 0 })
+  // SADA 外露部分按材质分桶（贴壁法兰 / 输出短桩铝、MLI 护套、翼根支座钛）
+  assert.deepStrictEqual(ctx.parts.get('wing_-Y_sada'), { id: 'wing_-Y_sada', name: '太阳翼驱动机构 -Y', role: 'bus', nodes: ['wing_-Y_sada', 'wing_-Y_sada_mli_gold', 'wing_-Y_sada_titanium'], areaM2: 0 })
   for (const p of ctx.parts.values()) assert.ok(/^[^\x00-\x7f]/.test(p.name), `部件名是中文：${p.name}`)
   assert.ok(!ctx.comps.some((q) => q.name === 'wing_-Y_sada'), '不给 sadaMassKg 不记 SADA 质量')
   assert.throws(() => PB.buildWing(K.createCtx({ dens: PB.resolveDensity() }), { ...w, hingeBody: undefined }, opt), /未给 hingeBody/, '组件用法漏给铰点 → 明确报错')
@@ -478,7 +480,7 @@ t('组件复用：buildWing / buildReflector / buildFeed 脱离整星 ctx（无 
   const cm = K.createCtx({ dens: PB.resolveDensity(), D })
   const hb = [0.2, 1.1, -0.3], mS = 4.2
   PB.buildWing(cm, { ...w, side: '+Y', hingeBody: hb }, { ...opt, sadaMassKg: mS, sadaPart: { id: 'bus' } })
-  assert.deepStrictEqual(cm.parts.get('bus').nodes, ['wing_+Y_sada'], '显式 sadaPart')
+  assert.deepStrictEqual(cm.parts.get('bus').nodes, ['wing_+Y_sada', 'wing_+Y_sada_mli_gold', 'wing_+Y_sada_titanium'], '显式 sadaPart')
   const qS = cm.comps.find((q) => q.name === 'wing_+Y_sada')
   assert.equal(qS.kind, 'cylinder'); assert.equal(qS.massKg, mS)
   const rS = D.sadaDM / 2, lS = D.sadaLenM + 0.01, iT = mS * (3 * rS * rS + lS * lS) / 12
@@ -500,7 +502,9 @@ t('组件复用：buildWing / buildReflector / buildFeed 脱离整星 ctx（无 
   const sp = PB.buildReflector(c2, {}, 0, L)
   assert.ok(sp.area > Math.PI * (Dm / 2) ** 2, '抛物面面积 > 口径面积')
   PB.buildFeed(c2, { feedType: 'horn' }, 0, L, null)
-  assert.deepStrictEqual(c2.items.map((x) => x.name), ['reflector_1', 'reflector_1_back', 'reflector_1_rim', 'feed_1'], '无平台 → 无馈源支架')
+  // 反射面：正面 / 背壳 / 边环 / 背架；馈源：喇叭与馈电链按材质分桶——都在，唯独没有支架
+  assert.deepStrictEqual(c2.items.map((x) => x.name).filter((nm) => !/^feed_1_/.test(nm)), ['reflector_1', 'reflector_1_back', 'reflector_1_rim', 'reflector_1_frame', 'feed_1'])
+  assert.ok(!c2.items.some((x) => x.name === 'feed_1_support'), '无平台 → 无馈源支架')
   const ap = c2.aps.find((x) => x.name === 'reflector_1_focus'); nearV(ap.posBody, F, 0, '焦点挂点'); nearV(ap.dirBody, a, 0, '视轴')
   assert.equal(c2.parts.get('reflector_1').fitted.focalM, f)
   nearV(c2.parts.get('feed_1').normalBody, K.nrm(K.sub(L.Pc, F)), 0, '喇叭朝口径中心')

@@ -436,6 +436,82 @@ function isInside(base, abs, p) {
   return !!rel && rel !== '..' && !rel.startsWith('..' + p.sep) && !p.isAbsolute(rel)
 }
 
+/* ============================ 本机 STK 定位 ============================ */
+// STK 安装时在 HKLM\SOFTWARE\AGI\STK\<版本> 下写 InstallHome（本机 STK 12 实测：键 12.0、值 C:\Program Files\AGI\STK 12\）；
+// 模型目录 = InstallHome\STKData\VO\Models。主进程拿 reg.exe 查（64 / 32 位两个视图），这里只管解码、解析、排序。
+const STK_REG_KEY = 'HKLM\\SOFTWARE\\AGI\\STK'
+const STK_MODELS_REL = ['STKData', 'VO', 'Models']
+
+// reg.exe 写管道按 OEM 代码页编码：开了「使用 Unicode UTF-8 提供全球语言支持」的机器是 UTF-8，普通中文 Windows 是 GBK（936）。
+// 先按 UTF-8 严格解，解不通再按 GB18030（GBK 的超集）；纯 ASCII 两种解法相同，只出一份。
+// 两种都解得通又不一样（GBK 字节恰好也是合法 UTF-8，极少见）就都给，调用方按目录在不在挑
+function regOutputTexts(bytes) {
+  if (typeof bytes === 'string') return [bytes]
+  if (!(bytes instanceof Uint8Array)) return []
+  const out = []
+  try { out.push(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch { /* 不是 UTF-8 */ }
+  try { const g = new TextDecoder('gb18030').decode(bytes); if (!out.includes(g)) out.push(g) } catch { /* 没有 GB18030 解码器 */ }
+  return out
+}
+// %VAR% 展开（REG_EXPAND_SZ）。变量名按 Windows 口径不分大小写；没有的变量原样留着（拼出来的目录自然不在）
+function expandWinEnv(s, env) {
+  const low = {}
+  for (const k of Object.keys(env || {})) low[k.toLowerCase()] = env[k]
+  return String(s || '').replace(/%([^%\\]+)%/g, (m, k) => (typeof low[k.toLowerCase()] === 'string' ? low[k.toLowerCase()] : m))
+}
+// reg query <STK_REG_KEY> /s /v InstallHome 的输出 → [{ version, home }]。输出形如
+//   HKEY_LOCAL_MACHINE\SOFTWARE\AGI\STK\12.0
+//       InstallHome    REG_SZ    C:\Program Files\AGI\STK 12\
+// 末行「End of search: …」随系统语言变，不认它。只收 STK 键下一层（版本号）子键的值；32 位视图打出来是
+// …\WOW6432Node\AGI\STK\<版本>，同样认。home 只收盘符开头的路径：相对路径会按进程当前目录解析，
+// UNC（网络共享）路径不通时一次 stat 要等几十秒。
+function parseRegInstallHome(text, env) {
+  const out = []
+  let version = null
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^HKEY_/i.test(line)) {
+      const m = /\\AGI\\STK\\([^\\]+?)\s*$/i.exec(line)
+      version = m ? m[1] : null
+      continue
+    }
+    if (version == null) continue
+    const v = /^\s+InstallHome\s+(REG_SZ|REG_EXPAND_SZ)\s+(.*?)\s*$/i.exec(line)
+    if (!v) continue
+    const home = v[1].toUpperCase() === 'REG_EXPAND_SZ' ? expandWinEnv(v[2], env) : v[2]
+    if (/^[A-Za-z]:[\\/]/.test(home)) out.push({ version, home })
+  }
+  return out
+}
+// 版本号降序比较：抽出全部数字段逐段比（「12.0」「STK 12」「STK 11.6」都认）；没有数字的排最后、彼此不动（sort 稳定）
+function versionNums(s) { const m = String(s || '').match(/\d+/g); return m ? m.map(Number) : [] }
+function cmpVersionDesc(a, b) {
+  const x = versionNums(a), y = versionNums(b)
+  if (!x.length || !y.length) return (y.length ? 1 : 0) - (x.length ? 1 : 0)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (y[i] || 0) - (x[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+// 候选 STK 安装目录（按优先级、去重）：注册表各版本（高版本在前）→ Program Files\AGI 下「STK + 版本号」的文件夹
+// （STK 12 / STK11 …，同目录的 STK MATLAB Connector 之类不算；注册表里没有时才轮到：绿色拷贝 / 注册表被清过；同样高版本在前）。
+// reg = parseRegInstallHome 的结果；dirs = [{ home, name }]（name = 文件夹名）。
+// 调用方按顺序看 home\STKData\VO\Models 在不在，第一个在的就是 → [{ home, version, source:'registry'|'program-files' }]
+function stkHomeCandidates(reg = [], dirs = []) {
+  const out = []
+  const seen = new Set()
+  const add = (home, version, source) => {
+    const k = normWinPath(home)
+    if (!k || seen.has(k)) return
+    seen.add(k)
+    out.push({ home, version, source })
+  }
+  for (const r of [...(reg || [])].sort((a, b) => cmpVersionDesc(a.version, b.version))) add(r.home, String(r.version), 'registry')
+  const named = (dirs || []).filter((d) => d && /^STK[\s_-]*\d/i.test(String(d.name || '')))
+  for (const d of named.sort((a, b) => cmpVersionDesc(a.name, b.name))) add(d.home, versionNums(d.name).join('.'), 'program-files')
+  return out
+}
+
 /* ============================ 其它小工具 ============================ */
 
 // 覆盖层文件名：模型 id 里有 ':'（Windows 文件名非法）与 '~'，按百分号转义成安全文件名
@@ -532,6 +608,7 @@ module.exports = {
   lodOrder, planEnsure,
   isGlb, isWebp, countTris,
   extractAgiRaw, applyAgiRaw, countAgiRaw, usesAgiExtensions, stkReason, looksLikeStk, isStkPath, normWinPath, isInside,
+  STK_REG_KEY, STK_MODELS_REL, regOutputTexts, expandWinEnv, parseRegInstallHome, cmpVersionDesc, stkHomeCandidates,
   idToFileStem, safeRel, cadKind, stkKind, sanitizeTarget, sameJson,
   hdr, parseContentRange, makeThrottle
 }

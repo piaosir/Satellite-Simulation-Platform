@@ -9,7 +9,8 @@
 // 撤销：绑定快照栈（换星清空），Ctrl+Z / Ctrl+Y 在卫星页生效。
 import { reactive, computed, watch } from 'vue'
 import { normalizeBinding, emptyBinding, isEmptyBinding, coneHalfOf, articulationStateOf, maskSigFor } from './mountLogic.js'
-import { resolveOrbit } from './satSources.js'
+import { resolveOrbit, catalogPool, catalogPoolReady, grdTreeSats, lbLibrarySats } from './satSources.js'
+import { treeRows, lbRows, metaForKey, mergeHint, keyNeedsPool, treeSigMap, changedFolders } from './satPickLogic.js'
 import { match as autoMatch } from '@core/models/autoMatch.mjs'
 import { decodeMask, maskRayOrigin } from '@core/models/mask.mjs'
 import { byLang } from '../shared/i18n/lang.js'
@@ -31,7 +32,8 @@ export function keyLabel(k) {
 export function createSatStore(wb) {
   const api = wb.api
   const st = reactive({
-    satKey: '', label: '', hint: null,     // 当前卫星（hint：选星时手里的来源记录，解析轨道用）
+    satKey: '', label: '', hint: null,     // 当前卫星（hint：选星时手里的来源记录 {poolRec, treeNode, lbEntry, orbitKind}，解析轨道 / 自动匹配模型用）
+    metaRev: 0,                             // 选星后异步回填了名字 / hint（自动匹配的输入变了）+1
     binding: null,                          // 工作副本
     errors: [],                             // 归一时丢掉 / 纠正的项
     all: {}, prefs: {}, loaded: false,      // 绑定表（主进程）
@@ -39,6 +41,7 @@ export function createSatStore(wb) {
     mountSel: '',                           // 选中挂点 id
     undoN: 0, redoN: 0,
     orbit: null, orbitKey: '', orbitErr: '', orbitBusy: false,
+    orbitRev: 0, treeRev: 0,                // 当前星的轨道因天线树节点改动作废 +1 / 天线树任一节点的轨道相关字段变了 +1（分析页星位缓存的键带上）
     maskRev: 0                              // 掩模缓存变了 +1（预览红色球面片、分析页读数跟着刷新）
   })
   // 掩模缓存（不进响应式：每张 65160 格 × 5 B）：挂点 id → {sig, mask:{blocked, clearance, hitNode?, nodeNames?}, originBody, stats?, ms?, sun?}
@@ -73,25 +76,68 @@ export function createSatStore(wb) {
 
   // ───────── 选星 ─────────
   /**
+   * 没带名字或 hint（3D 页「编辑…」只给 satKey、启动时接着上次那颗星只有 {satKey, label}），
+   * 或 hint 里没有池记录而这颗星在候选池里、池又还没建好（池没好时点了关联星的树行）：
+   *   ① 选中的同一拍，先按手边现成的来源（卫星天线树 + 已建好的候选池）同步补上——预览按 satKey 变化重判自动模型时输入已齐；
+   *   ② 再异步读链路预算卫星库 + 候选池（只有键在池里时才建池，keyNeedsPool）补全（backfill）。
+   *      只补不改：名字只替换键名兜底（keyLabel），hint 只补空缺字段；不动轨道缓存 / 撤销栈 / 绑定副本。换了星（或又选了一次）就作废。
    * @param {{satKey:string, label?:string, hint?:object}} o
    */
   async function selectSat(o) {
     if (!o || !o.satKey) return
     if (pend) await flushSave()
     if (!st.loaded) await loadAll()
+    const seq = ++metaSeq
+    const nodes = treeNodes()
+    const poolLater = !(o.hint && o.hint.poolRec) && !catalogPoolReady() && keyNeedsPool(o.satKey, nodes)
+    const needMeta = !o.label || !o.hint || poolLater
+    const m0 = needMeta ? syncMeta(o.satKey, nodes) : null
+    const fb = keyLabel(o.satKey)
     st.satKey = o.satKey
-    st.label = o.label || keyLabel(o.satKey)
-    st.hint = o.hint ? { ...o.hint } : null
+    st.label = (o.label && o.label !== fb ? o.label : '') || (m0 && m0.label) || fb
+    st.hint = mergeHint(o.hint ? { ...o.hint } : null, m0 && m0.hint)
     const nb = normalizeBinding(st.all[o.satKey] || emptyBinding())
     st.binding = nb.binding
     st.errors = nb.errors
     st.mountSel = st.binding.mounts.length ? st.binding.mounts[0].id : ''
     st.saveErr = ''
-    st.orbit = null; st.orbitKey = ''; st.orbitErr = ''
+    // 重选（哪怕同一颗）轨道也按现在的来源重解：orbitRev +1，分析页按旧轨道算的星位缓存跟着作废
+    // （库条目 / 树节点可能已改；轨道丢了之后 syncTree 认不出依赖的节点，不翻就会命中旧缓存）
+    st.orbit = null; st.orbitKey = ''; st.orbitErr = ''; st.orbitRev++
     masks.clear(); st.maskRev++
     clearUndo()
     st.rev++
-    try { localStorage.setItem('model/satLast', JSON.stringify({ satKey: st.satKey, label: st.label })) } catch { /* 便利数据 */ }
+    saveLast()
+    if (needMeta) backfill(o.satKey, seq, nodes)
+  }
+  function saveLast() { try { localStorage.setItem('model/satLast', JSON.stringify({ satKey: st.satKey, label: st.label })) } catch { /* 便利数据 */ } }
+
+  // ───────── 选星回填（名字 / hint） ─────────
+  let metaSeq = 0
+  function treeNodes() { try { return grdTreeSats() } catch { return [] } }
+  // 同步那一份：卫星天线树（localStorage）+ 已建好的候选池（没建好就只有树）
+  function syncMeta(key, nodes) {
+    const pool = catalogPoolReady()
+    let tree = []
+    try { tree = treeRows(nodes, pool && pool.byNorad) } catch { tree = [] }
+    return metaForKey(key, { tree, poolByKey: pool && pool.byKey })
+  }
+  // 候选池要联网刷新 active 全域、再解析上万条：lbsat / 无关联的 grdsat 键用不上，只拿已建好的
+  async function backfill(key, seq, nodes) {
+    const wantPool = keyNeedsPool(key, nodes)
+    const [lb, pool] = await Promise.all([lbLibrarySats().catch(() => []), wantPool ? catalogPool().catch(() => null) : catalogPoolReady()])
+    if (seq !== metaSeq || st.satKey !== key) return
+    let tree = []
+    try { tree = treeRows(nodes, pool && pool.byNorad) } catch { tree = [] }
+    const m = metaForKey(key, { tree, lb: lbRows(lb), poolByKey: pool && pool.byKey })
+    if (!m) return
+    let changed = false
+    if (m.label && m.label !== st.label && (!st.label || st.label === keyLabel(key))) { st.label = m.label; changed = true }
+    const h = mergeHint(st.hint, m.hint)
+    if (h !== st.hint) { st.hint = h; changed = true }
+    if (!changed) return
+    st.metaRev++
+    saveLast()
   }
   function clearSat() { if (pend) flushSave(); st.satKey = ''; st.label = ''; st.binding = null; st.mountSel = ''; st.orbit = null; st.orbitKey = ''; clearUndo(); st.rev++ }
 
@@ -159,6 +205,8 @@ export function createSatStore(wb) {
 
   /**
    * 这颗星用哪个模型：绑定写了具体 id 就用它；'auto' 按 autoMatch（名称 / NORAD / 组，与 3D 页同一口径；轨道类别未知时按名称兜底）；null = 不配模型。
+   * 名称取候选池记录的星名（3D 页按星座条目名匹配；树 / 库里的显示名是用户起的，可能是「中星 6E」这类匹配不上的叫法），没有才用显示名；
+   * 轨道类别取 hint.orbitKind（satPickLogic 给树 / 库 / 编目行算好的区制；只有绑定记录、没回填到来源的星为空）。
    * @returns {{id:string|null, auto:boolean}}
    */
   function resolvedModel() {
@@ -168,28 +216,99 @@ export function createSatStore(wb) {
     if (id === null) return { id: null, auto: false }
     if (id && id !== 'auto') return { id, auto: false }
     const k = st.satKey
-    const nm = st.label || ''
+    const h = st.hint || {}
+    const nm = (h.poolRec && h.poolRec.name) || st.label || ''
     const m = /^norad:(\d+)$/.exec(k)
     const available = new Set(wb.st.list.map((e) => e.id))
-    const hit = autoMatch({ name: nm, noradId: m ? m[1] : null, orbitKind: st.hint && st.hint.orbitKind ? st.hint.orbitKind : '', group: '' }, { available, prefs: st.prefs || undefined })
+    const hit = autoMatch({ name: nm, noradId: m ? m[1] : null, orbitKind: h.orbitKind || '', group: '' }, { available, prefs: st.prefs || undefined })
     return { id: hit ? hit.id : null, auto: true, rule: hit ? hit.rule : '' }
   }
 
-  // ───────── 轨道（分析页用；按星缓存） ─────────
+  // ───────── 轨道（分析页用；按星缓存，天线树节点改了作废——见下节） ─────────
   async function ensureOrbit() {
-    if (!st.satKey) return null
-    if (st.orbit && st.orbitKey === st.satKey) return st.orbit
-    const key = st.satKey
-    st.orbitBusy = true; st.orbitErr = ''
-    let o = null
-    try { o = await resolveOrbit(key, st.hint || {}) } catch (e) { st.orbitErr = errText(e) }
-    st.orbitBusy = false
-    if (key !== st.satKey) return null
-    st.orbit = o ? Object.freeze(o) : null
-    st.orbitKey = key
-    if (!o && !st.orbitErr) st.orbitErr = byLang('找不到这颗星的轨道。', 'No orbit for this satellite.')
-    return st.orbit
+    for (;;) {
+      if (!st.satKey) return null
+      if (st.orbit && st.orbitKey === st.satKey) return st.orbit
+      const key = st.satKey, rev = st.orbitRev, sigs0 = treeSig
+      st.orbitBusy = true; st.orbitErr = ''
+      let o = null, err = ''
+      try { o = await resolveOrbit(key, st.hint || {}) } catch (e) { err = errText(e) }
+      st.orbitBusy = false
+      if (key !== st.satKey) return null
+      // 解析途中解出它的那个树节点又改了：按现在的节点重解
+      if (rev !== st.orbitRev || (o && o.treeFolder != null && treeSig !== sigs0 && treeSig.get(o.treeFolder) !== sigs0.get(o.treeFolder))) continue
+      st.orbitErr = err
+      st.orbit = o ? Object.freeze(o) : null
+      st.orbitKey = key
+      if (!o && !st.orbitErr) st.orbitErr = byLang('未找到该卫星的轨道数据。', 'No orbit data for this satellite.')
+      return st.orbit
+    }
   }
+
+  // ───────── 天线树改动（3D 页改了根数 / 历元 / OMM / 关联号 / 固定星位置） ─────────
+  // 'globe3d/settings' 的 storage 事件（别的窗口写才触发；200 ms 合并）+ 窗口获得焦点再核一次。按节点比「轨道相关」签名
+  // （satPickLogic.treeOrbitSig：根数星 / 关联星的实时星位不进签名，否则 3D 页每存一次设置就作废一次）：
+  //   · 解出当前轨道的那个节点（orbit.treeFolder）变了 → 轨道作废、orbitRev +1（分析页共用星位缓存的键带它）；
+  //   · hint 里的节点快照换成现在的（区制变了 metaRev +1，自动匹配模型跟着重判）；
+  //   · 任一节点变了 treeRev +1（target 律的目标星每次计算现解，缓存键带它）。
+  let treeSig = treeSigMap(treeNodes())
+  function syncTree() {
+    const nodes = treeNodes()
+    const next = treeSigMap(nodes)
+    const changed = changedFolders(treeSig, next)
+    if (!changed.size) return
+    treeSig = next
+    st.treeRev++
+    const tn = st.hint && st.hint.treeNode
+    const fresh = tn && tn.folder != null && changed.has(String(tn.folder)) ? nodes.find((n) => n && String(n.folder) === String(tn.folder)) : null
+    if (fresh) {
+      const pool = catalogPoolReady()
+      let kind = ''
+      try { const row = treeRows([fresh], pool && pool.byNorad)[0]; kind = (row && row.hint && row.hint.orbitKind) || '' } catch { kind = '' }
+      const h = { ...st.hint, treeNode: fresh }
+      const kindChanged = !!kind && kind !== h.orbitKind
+      if (kindChanged) h.orbitKind = kind
+      st.hint = h
+      if (kindChanged) st.metaRev++
+    }
+    // 当前星依赖的节点：解出来的轨道认 treeFolder；还没解出来（或没解出）认 hint 里的节点 / grdsat 键 / 从树挑的库条目
+    const gm = /^grdsat:(.+)$/.exec(st.satKey || '')
+    const ln = st.hint && st.hint.lbEntry && st.hint.lbEntry.ngsoSat
+    const lf = ln && ln.mode === 'tree' && ln.folder != null && ln.folder !== '' ? String(ln.folder) : null
+    const dep = st.orbit ? st.orbit.treeFolder : (tn && tn.folder != null ? String(tn.folder) : (gm ? gm[1] : lf))
+    if (dep != null && changed.has(String(dep))) {
+      const again = !!(st.orbit || st.orbitErr)
+      st.orbit = null; st.orbitKey = ''; st.orbitErr = ''; st.orbitRev++
+      if (again) ensureOrbit().catch(() => {})   // 轨道错误读数跟上；分析结果等下次「计算」按新轨道重算
+    }
+  }
+  // 自定义星座（3D 页「生成卫星或星座」/ 编辑 / 改场景历元）变了：靠它解轨道的当前星（cc: 键、候选池里的合成星、
+  // 库条目里存的合成星根数）按新的星座 / 场景历元重解 —— hint 里那条池记录是旧池的，先换成重建后的池里那一条
+  async function syncCustom() {
+    st.treeRev++   // target 律目标星每次计算现解，缓存键带它
+    const key = st.satKey, h = st.hint || {}
+    const lbOrb = h.lbEntry && h.lbEntry.ngsoSat && h.lbEntry.ngsoSat.orbit
+    const dep = /^cc:/.test(key || '') || !!(h.poolRec && h.poolRec.orbitType === 'elements') || !!(lbOrb && lbOrb.type === 'elements' && lbOrb.noradId != null)
+    if (!key || !dep) return
+    let pool = null
+    try { pool = await catalogPool() } catch { pool = null }
+    if (key !== st.satKey) return
+    if (h.poolRec && pool) {
+      const row = (pool.byKey && pool.byKey.get(key)) || (pool.byNorad && pool.byNorad.get(String(h.poolRec.noradId)))
+      st.hint = { ...st.hint, poolRec: row ? row.rec : undefined }
+    }
+    const again = !!(st.orbit || st.orbitErr)
+    st.orbit = null; st.orbitKey = ''; st.orbitErr = ''; st.orbitRev++
+    if (again) ensureOrbit().catch(() => {})
+  }
+  let treeT = 0, custT = 0
+  const onTreeStorage = (e) => {
+    if (e && e.key === 'globe3d/settings') { clearTimeout(treeT); treeT = setTimeout(syncTree, 200) }
+    else if (e && e.key === 'constellation3d/customConsts') { clearTimeout(custT); custT = setTimeout(() => { syncCustom().catch(() => {}) }, 200) }
+  }
+  const onTreeFocus = () => { clearTimeout(treeT); treeT = 0; syncTree() }
+  const hasWin = typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+  if (hasWin) { window.addEventListener('storage', onTreeStorage); window.addEventListener('focus', onTreeFocus) }
 
   // ───────── 掩模 ─────────
   /** 工作台当前模型（掩模签名的模型那一半）；没载入返回 null */
@@ -238,7 +357,12 @@ export function createSatStore(wb) {
     if (m && m.maskSig && !maskOf(m.id)) loadMask(m.id)
   })
 
-  function dispose() { if (pend) flushSave(); if (offChanged) try { offChanged() } catch { /* ignore */ } }
+  function dispose() {
+    if (pend) flushSave()
+    if (offChanged) try { offChanged() } catch { /* ignore */ }
+    clearTimeout(treeT); clearTimeout(custT)
+    if (hasWin) { window.removeEventListener('storage', onTreeStorage); window.removeEventListener('focus', onTreeFocus) }
+  }
 
   return {
     st, mounts, selMount, boundList,

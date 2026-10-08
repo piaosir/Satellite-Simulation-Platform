@@ -10,8 +10,12 @@ import assert from 'node:assert/strict'
 import {
   SOLAR_CONSTANT_W_M2, DEFAULT_EFFICIENCY_PCT, panelPower, panelsFromMeta, trackedNormal, arrayPowerAt, arrayPowerSeries, sunGeometrySeries
 } from '../models/power.mjs'
-import { eclipseFactor, sunEcefApprox, sunDistanceAu, AU_KM, attitudeBasisEcef, losToBody } from '../models/attitude.mjs'
-import { buildTemplateModel } from '../models/paramBus.mjs'
+import { eclipseFactor, sunEcefApprox, sunDistanceAu, AU_KM, attitudeBasisEcef, losToBody, OMEGA_EARTH_RAD_S } from '../models/attitude.mjs'
+import { buildTemplateModel, buildParamModel } from '../models/paramBus.mjs'
+import { templateSpec, TEMPLATE_IDS } from '../models/paramTemplates.mjs'
+import { buildAssembly } from '../models/assembly.mjs'
+import { newDrivenDoc } from '../models/drive.mjs'
+import { assemblyModelMeta } from '../models/asmMeta.mjs'
 
 let n = 0
 const t = (name, fn) => { try { fn(); n++ } catch (e) { console.error(`✗ ${name}\n  ${e.stack || e.message}`); process.exitCode = 1 } }
@@ -99,17 +103,68 @@ t('panelsFromMeta（参数化默认卫星）：两翼各一块、效率取组、
   near(arrayPowerAt(panels, [0, Math.sin(b), -Math.cos(b)], 1, 1).rel, Math.cos(b), 1e-12, '至点 cos β')
 })
 
-t('panelsFromMeta（参数化立方星）：体装电池片按 _±X/_±Y 拆四面；太阳方位 φ → |cos φ| + |sin φ|', () => {
+t('panelsFromMeta（参数化立方星）：体装电池片逐面一个部件（外法向 ±X/±Y、本面面积）；太阳方位 φ → A_x|cos φ| + A_y|sin φ|', () => {
   const r = buildTemplateModel('cubesat-3u')
   const { panels } = panelsFromMeta(r)
   assert.equal(panels.length, 4)
   const Af = panels[0].areaM2
-  for (const p of panels) near(p.areaM2, Af, 1e-15, '均分')
+  for (const p of panels) near(p.areaM2, Af, 1e-15, '方截面四面同面积')
+  assert.ok(panels.every((p) => p.group === 'body'), '四面同属太阳翼组 body')
   for (const phi of [0, 17, 45, 120, 250]) {
     const s = [Math.cos(phi * D2R), Math.sin(phi * D2R), 0]
     const w = arrayPowerAt(panels, s, 1, 1).W
     near(w, 1361 * 0.28 * Af * (Math.abs(Math.cos(phi * D2R)) + Math.abs(Math.sin(phi * D2R))), 1e-9, `φ=${phi}`)
   }
+  // 6U：截面 2U × 3U 不是方的——±X 面 ≈ 0.0472 m²、±Y 面 ≈ 0.0187 m²（网格实测；改前四面均分成各 0.033 m²，功率偏 −30 % ~ +71 %）
+  const r6 = buildTemplateModel('cubesat-6u')
+  const p6 = panelsFromMeta(r6).panels
+  assert.equal(p6.length, 4)
+  const meshArea = (name) => {
+    const m = r6.ir.meshes.find((x) => x.name === name), P = m.position, I = m.index
+    let A = 0
+    for (let k = 0; k < I.length; k += 3) {
+      const a = I[k] * 3, b = I[k + 1] * 3, c = I[k + 2] * 3
+      const u = [P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]], v = [P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]]
+      A += Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2
+    }
+    return A
+  }
+  const ax = (p) => (Math.abs(p.normalBody[0]) > 0.5 ? 'X' : 'Y')
+  for (const p of p6) {
+    const tag = (p.normalBody[0] + p.normalBody[1] > 0 ? '+' : '-') + ax(p)
+    near(p.areaM2, meshArea(`body_cells_${tag}`), 1e-6, `6U ${tag} 面积 = 网格`)
+    assert.equal(Math.abs(p.normalBody[0]) + Math.abs(p.normalBody[1]), 1, '外法向沿坐标轴')
+  }
+  const Ax = p6.find((p) => ax(p) === 'X').areaM2, Ay = p6.find((p) => ax(p) === 'Y').areaM2
+  near(Ax, 0.0472, 0.0005, '±X 面'); near(Ay, 0.0187, 0.0005, '±Y 面')
+  near(arrayPowerAt(p6, [0, 1, 0], 1, 1).W, 1361 * 0.28 * Ay, 1e-9, '太阳在 +Y：只 +Y 面发电')
+  near(arrayPowerAt(p6, [1, 0, 0], 1, 1).W, 1361 * 0.28 * Ax, 1e-9, '太阳在 +X：只 +X 面发电')
+})
+
+t('panelsFromMeta（装配件 / 驱动装配件）：转轴按关节名前缀认（wing1_wing → wing1_axis）；12 个模板与参数化件逐板同轴、GEO 日均功率一致', () => {
+  // 审查实测（10-08）：太阳翼组件挂点改名 axis，装配后是 wing1_axis，旧代码只找 wing1_wing_axis → 全当固定板，GEO 日均只有正确值的 ~1/3
+  const RG = 42164.17, N = 145, t0 = Date.UTC(2026, 2, 20, 12)
+  const tMs = new Float64Array(N), rE = new Float64Array(3 * N), vE = new Float64Array(3 * N)
+  for (let i = 0; i < N; i++) { tMs[i] = t0 + i * 600000; rE[3 * i] = RG; vE[3 * i + 1] = OMEGA_EARTH_RAD_S * RG }
+  const g = sunGeometrySeries({ tMs, rEcef: rE, vInertialEcef: vE, law: 'nadir' })
+  const mean = (panels) => arrayPowerSeries({ panels, tMs, sunBody: g.sunBody, eclipse: g.eclipse, auDist: g.auDist }).meanW
+  const rows = []
+  for (const id of TEMPLATE_IDS) {
+    const pp = panelsFromMeta(JSON.parse(JSON.stringify(buildParamModel(templateSpec(id).spec))))
+    const pa = panelsFromMeta(JSON.parse(JSON.stringify(assemblyModelMeta(buildAssembly(newDrivenDoc({ templateId: id })), { id: 'asm:0123456789ab' }))))
+    assert.equal(pa.warnings.length, 0, `${id}：${pa.warnings.join('；')}`)
+    const nArt = (ps) => ps.filter((p) => p.articulation && p.articulation.axisBody).length
+    assert.equal(nArt(pa.panels), nArt(pp.panels), `${id} 带转轴的板数`)
+    const ma = mean(pa.panels), mp = mean(pp.panels)
+    near(ma, mp, 1e-9 * Math.max(1, mp), `${id} 日均功率`)
+    if (nArt(pp.panels)) rows.push(`${id} ${mp.toFixed(0)} W`)
+  }
+  // 关节名不带前缀、挂点名就是「<关节名>_axis」的老路径照旧；前缀取最长：x_y_wing → x_y_axis 先于 x_axis
+  const mk = (aps) => panelsFromMeta({ parts: [{ id: 'p', role: 'solarArray', nodes: ['n'], areaM2: 1, normalBody: [0, 0, -1] }], articulations: [{ name: 'x_y_wing', nodes: ['n'], stages: [{ name: 'r', type: 'yRotate' }] }], attachPoints: aps })
+  assert.deepEqual(mk([{ name: 'x_axis', dirBody: [1, 0, 0] }, { name: 'x_y_axis', dirBody: [0, 1, 0] }]).panels[0].articulation.axisBody, [0, 1, 0])
+  assert.deepEqual(mk([{ name: 'x_y_wing_axis', dirBody: [0, 0, 1] }, { name: 'x_y_axis', dirBody: [0, 1, 0] }]).panels[0].articulation.axisBody, [0, 0, 1])
+  assert.equal(mk([{ name: 'z_axis', dirBody: [0, 1, 0] }]).warnings.length, 1, '前缀对不上：仍按固定法向并告警')
+  console.log('  装配件 = 参数化件（GEO 春分日均）：' + rows.join('，'))
 })
 
 t('panelsFromMeta：没有法向 / 没有转轴的记 warnings；axisFor 回调；缺省效率', () => {

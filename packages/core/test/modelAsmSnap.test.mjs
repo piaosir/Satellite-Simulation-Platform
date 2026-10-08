@@ -347,7 +347,7 @@ t('setParams / rename / setHidden / setLocked / setMaterial / setMass / setDoc�
   r = S.applyCmd(r.doc, { type: 'setDoc', patch: { massTargetKg: null, density: { busVolume: null } } })
   assert.equal(r.doc.massTargetKg, null); assert.deepEqual(r.doc.density, { towerAreal: 3 })
   assert.equal(S.applyCmd(d, { type: 'nope' }).error, '未知命令。')
-  assert.equal(S.applyCmd(d, { type: 'rename', id: 'zzz', name: 'a' }).error, '找不到组件。')
+  assert.equal(S.applyCmd(d, { type: 'rename', id: 'zzz', name: 'a' }).error, '未找到组件。')
   assert.equal(S.applyCmd(d, { type: 'setSym', id: 'bus', sym: { op: 'mirrorXZ' } }).error, '根件不能对称。')
 })
 
@@ -369,10 +369,10 @@ t('setMode：socket → free → surface → socket 世界位姿不变；没有�
   const Pb = worldPoses(r.doc).get('box')
   nearM(Pb, P0.get('box'), 1e-12, 'box → free')
   // 馈源件（父件反射面没有面）→ surface 拒收
-  assert.equal(S.applyCmd(d, { type: 'setMode', id: 'feed', mode: 'surface' }).error, '没有可贴的面。')
+  assert.equal(S.applyCmd(d, { type: 'setMode', id: 'feed', mode: 'surface' }).error, '无可安装面。')
   // 反射面唯一的插座 focus 已被 feed 占着之外没有别的兼容插座：feed 自己占的不算占用
   assert.ok(S.applyCmd(S.applyCmd(d, { type: 'setMode', id: 'feed', mode: 'free' }).doc, { type: 'setMode', id: 'feed', mode: 'socket' }).ok)
-  assert.equal(S.applyCmd(d, { type: 'setMode', id: 'bus', mode: 'free' }).error, '根件没有安装方式。')
+  assert.equal(S.applyCmd(d, { type: 'setMode', id: 'bus', mode: 'free' }).error, '根件无安装方式。')
 })
 
 t('reparent：保持世界位姿、方式变自由；成环 / 嵌套对称 / 根件拒收', () => {
@@ -423,7 +423,8 @@ t('setSym：嵌套拒收；splitSym：钩子件参数镜像、位姿 = 原派生
   const r = S.applyCmd(d, { type: 'splitSym', id: 'wing' })
   assert.ok(r.ok, r.error)
   const w2 = r.doc.comps.find((c) => c.type === 'sat.wing' && c.id !== 'wing')
-  assert.equal(w2.id, 'wing2'); assert.equal(w2.attach.mode, 'free'); assert.equal(w2.sym, null)
+  // 口径变化（2026-10 §3.3.1 拆分保锚）：副本按世界位姿就近取锚、方式随原件——原件是 +Y 接口件，副本落回 −Y 接口（以前一律无锚自由件）
+  assert.equal(w2.id, 'wing2'); assert.equal(w2.attach.mode, 'socket'); assert.equal(w2.attach.socket, '-Y'); assert.equal(w2.sym, null)
   assert.equal(w2.params.tiltDeg, -20, '钩子镜像参数')
   assert.equal(S.compById(r.doc, 'wing').sym, null)
   nearM(A.solvePose(r.doc).get('wing2').m, P0.get('wing~1').m, 1e-9, '位姿 = 原派生件')
@@ -440,19 +441,22 @@ t('setSym：嵌套拒收；splitSym：钩子件参数镜像、位姿 = 原派生
   const d4 = docOf([BUS, { id: 'ab', type: 'test.asymbox', parent: 'bus', attach: { mode: 'socket', socket: '+Y' }, sym: { op: 'mirrorXZ' } }])
   assert.equal(A.solvePose(d4).get('ab~1').mode, 'bake')
   assert.equal(S.applyCmd(d4, { type: 'splitSym', id: 'ab' }).error, '该组件不能拆分对称。')
-  assert.equal(S.applyCmd(d, { type: 'splitSym', id: 'refl' }).error, '该组件没有对称。')
+  assert.equal(S.applyCmd(d, { type: 'splitSym', id: 'refl' }).error, '该组件无对称。')
 })
 
 t('setAttach：合并安装字段；自由件带 t / q；根件拒收', () => {
   const d = wingDoc()
   let r = S.applyCmd(d, { type: 'setAttach', id: 'box', attach: { uv: [0.1, 0.1], roll: 45 } })
-  assert.deepEqual(S.compById(r.doc, 'box').attach, { mode: 'surface', socket: null, face: '+Z', uv: [0.1, 0.1], roll: 45, mount: null })
+  // 口径变化（2026-10 §3.3.1）：归一 attach 恒带 off / tilt（缺省 [0,0,0] / [0,0]）；setAttach 白名单收 off / tilt
+  assert.deepEqual(S.compById(r.doc, 'box').attach, { mode: 'surface', socket: null, face: '+Z', uv: [0.1, 0.1], roll: 45, mount: null, off: [0, 0, 0], tilt: [0, 0] })
+  r = S.applyCmd(d, { type: 'setAttach', id: 'box', attach: { off: [0, 0, 0.2], tilt: [15, 0] } })
+  assert.deepEqual([S.compById(r.doc, 'box').attach.off, S.compById(r.doc, 'box').attach.tilt, r.doc.schema], [[0, 0, 0.2], [15, 0], 2], '扩展字段写进文档、schema 升 2')
   r = S.applyCmd(d, { type: 'setAttach', id: 'box', attach: { mode: 'free' }, t: [0, 0, 2], q: [0, 0, 0.3826834323650898, 0.9238795325112867] })
   const c = S.compById(r.doc, 'box')
   assert.equal(c.attach.mode, 'free'); assert.deepEqual(c.t, [0, 0, 2])
   r = S.applyCmd(d, { type: 'setAttach', id: 'box', attach: { mode: 'socket', socket: '-Y' } })
   assert.equal(S.compById(r.doc, 'box').attach.socket, '-Y'); assert.equal(S.compById(r.doc, 'box').attach.uv, null)
-  assert.equal(S.applyCmd(d, { type: 'setAttach', id: 'bus', attach: { roll: 1 } }).error, '根件没有安装方式。')
+  assert.equal(S.applyCmd(d, { type: 'setAttach', id: 'bus', attach: { roll: 1 } }).error, '根件无安装方式。')
 })
 
 t('addComp / removeComps / duplicateComps：id、父子、根件与锁定规则、对称组', () => {
@@ -552,7 +556,92 @@ t('计划过继：拓扑变了（换父）只重建计划、不重跑组件生�
   assert.ok(performance.now() - t1 < 15, `新 out 的 combineMass ${(performance.now() - t1).toFixed(2)} ms`)
 })
 
-t('热路径零分配（独立进程量 new_space）：pickNearest / offer / faceInferIO / clampIO / twistDeg / snapTo / snapAngle / uvOnFaceP / liveBox / faceAtHit / mirrorHitToPrimary / massCombine', () => {
+// ═════════════════════════ ⑤ 落点判定（2026-10 交互优化）═════════════════════════
+
+t('faceInfer 推断线（平面）：中线 / 边线吸住一向、另一向照网格；gu / gv 标出吸在线上的那一向；linePx 缺省不吸线', () => {
+  const f = { id: '+Z', kind: 'plane', origin: [0, 0, 0], n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], halfU: 1, halfV: 0.5 }
+  const o = { u: 0, v: 0, kind: -1, gu: -1, gv: -1 }
+  // ppm 100 → 推断点半径 0.12 m、推断线半径 0.08 m
+  S.faceInfer(f, 0.43, 0.06, 100, 12, 0.05, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [0.45, 0, S.INFER.CLINE, 0, 1], 'v 吸到中线、u 照网格')
+  S.faceInfer(f, -0.05, 0.31, 100, 12, 0.05, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [0, 0.3, S.INFER.CLINE, 1, 0], 'u 吸到中线')
+  S.faceInfer(f, 0.95, 0.27, 100, 12, 0.05, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [1, 0.25, S.INFER.ELINE, 1, 0], 'u 吸到边线')
+  S.faceInfer(f, -0.37, -0.44, 100, 12, 0, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [-0.37, -0.5, S.INFER.ELINE, 0, 1], '网格关：另一向原样')
+  S.faceInfer(f, 0.43, 0.06, 100, 12, 0.05, o); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [0.45, 0.05, S.INFER.GRID, 0, 0], 'linePx 缺省 = 不吸线（旧口径）')
+  S.faceInfer(f, 0.05, 0.03, 100, 12, 0.05, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [0, 0, S.INFER.CENTER, 0, 0], '推断点先接走')
+  S.faceInfer(f, 0.43, 0.27, 100, 12, 0.05, o, 8); assert.deepEqual([o.u, o.v, o.kind, o.gu, o.gv], [0.45, 0.25, S.INFER.GRID, 0, 0], '离线都远：网格')
+  assert.ok(S.INFER_LINE_PX <= S.INFER_PX / Math.SQRT2, '两条线同时吸住的地方恰被推断点先接走')
+})
+
+t('faceMagnetIO：射线与平面面求交、夹进面内；背面 / 面在射线后面 / 柱面不算；镜像渲染矩阵给出主件面坐标', () => {
+  const f = { id: '+Z', kind: 'plane', origin: [0, 0, 1], n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], halfU: 1, halfV: 0.5 }
+  const I = S.m4Ident(new Float64Array(16))
+  const io = { u: 0, v: 0, x: 0, y: 0, z: 0, c: -1 }
+  const ray = (o, d) => new Float64Array([...o, ...d])
+  assert.equal(S.faceMagnetIO(f, I, ray([0.3, 0.2, 5], [0, 0, -1]), io), true)
+  assert.deepEqual([io.u, io.v, io.x, io.y, io.z, io.c], [0.3, 0.2, 0.3, 0.2, 1, 0], '交点在面内：c = 0（磁吸不认，面被挡着）')
+  assert.equal(S.faceMagnetIO(f, I, ray([3, 0.2, 5], [0, 0, -2]), io), true, '方向不必归一')
+  assert.deepEqual([io.u, io.v, io.x, io.c], [1, 0.2, 1, 1], '落在面外：夹到边上、c = 1（近失）')
+  assert.equal(S.faceMagnetIO(f, I, ray([0, 0, -5], [0, 0, 1]), io), false, '从背面看')
+  assert.equal(S.faceMagnetIO(f, I, ray([0, 0, 0], [0, 0, -1]), io), false, '面在射线后面')
+  assert.equal(S.faceMagnetIO(f, I, ray([0, 0, 5], [1, 0, 0]), io), false, '与面平行')
+  assert.equal(S.faceMagnetIO({ ...f, kind: 'cyl' }, I, ray([0, 0, 5], [0, 0, -1]), io), false, '柱面不参与')
+  // 转过、挪过的件：交点按件局部系给面坐标，本体系点 = M · 面上那一点
+  const M = S.m4RotZ(new Float64Array(16), 90); M[12] = 1; M[13] = 2; M[14] = 3
+  const w = xf(M, [0.3, 0.2, 1])
+  assert.equal(S.faceMagnetIO(f, M, ray([w[0], w[1], w[2] + 4], [0, 0, -1]), io), true)
+  near(io.u, 0.3, 1e-12, 'u'); near(io.v, 0.2, 1e-12, 'v'); near(io.x, w[0], 1e-12, 'x'); near(io.y, w[1], 1e-12, 'y'); near(io.z, w[2], 1e-12, 'z')
+  // 镜像派生件（渲染矩阵把 y 列取反）：给的是主件的面坐标
+  const G = Float64Array.from(M); G[4] = -G[4]; G[5] = -G[5]; G[6] = -G[6]
+  const wg = xf(G, [0.3, 0.2, 1])
+  assert.equal(S.faceMagnetIO(f, G, ray([wg[0], wg[1], wg[2] + 4], [0, 0, -1]), io), true)
+  near(io.u, 0.3, 1e-12, '镜像 u'); near(io.v, 0.2, 1e-12, '镜像 v')
+})
+
+t('socketDedicated / socketLabel：accepts 里非 prim. 的前缀匹配才算专用；接口中文名与兜底', () => {
+  const fus = getComponent('air.fuselage'), refl = getComponent('sat.reflector'), bus = getComponent('sat.bus.box')
+  const wingS = fus.sockets(fillParams(fus, {})).find((s) => s.id === 'wing')
+  assert.equal(S.socketDedicated(wingS, 'air.wing'), true, '机翼进翼根')
+  assert.equal(S.socketDedicated(wingS, 'prim.box'), false, '基本体只是占位')
+  assert.equal(S.socketDedicated(wingS, 'air.nacelle'), false, '不兼容')
+  const focus = refl.sockets(fillParams(refl, {})).find((s) => s.id === 'focus')
+  assert.equal(S.socketDedicated(focus, 'sat.feed.horn'), true, '馈源进焦点')
+  assert.equal(S.socketDedicated(bus.sockets(fillParams(bus, {})).find((s) => s.id === '+Y'), 'sat.wing'), false, 'accepts null 的通用接口')
+  assert.equal(S.socketDedicated(null, 'sat.wing'), false)
+  assert.equal(S.socketLabel('focus'), '焦点')
+  assert.equal(S.socketLabel('+Y'), '接口 +Y')
+  assert.equal(S.socketLabel('constructor'), '接口 constructor', '只认自有键')
+})
+
+t('occupiedSocketKeys / freeSocketsOf(poses)：子件安装点落在接口上 = 占用（面安装在面心、显式接口）；偏开不算；exclude 排除', () => {
+  const d = docOf([BUS,
+    { id: 'thr', type: 'sat.thruster', parent: 'bus', attach: { mode: 'surface', face: '+Y', uv: [0, 0] } },
+    { id: 'thr2', type: 'sat.thruster', parent: 'bus', attach: { mode: 'surface', face: '-Y', uv: [0.5, 0.3] } },
+    { id: 'wing', type: 'sat.wing', parent: 'bus', attach: { mode: 'socket', socket: '+X' } }
+  ])
+  const P = A.solvePose(d)
+  const occ = S.occupiedSocketKeys(d, P)
+  assert.ok(occ.has('bus|+Y'), '面心面安装占 +Y 接口')
+  assert.ok(occ.has('bus|+X'), '显式接口')
+  assert.ok(!occ.has('bus|-Y'), '偏开 0.58 m 不算')
+  assert.ok(!occ.has('bus|+Z'))
+  assert.ok(!S.occupiedSocketKeys(d, P, new Set(['thr'])).has('bus|+Y'), 'exclude')
+  assert.ok(S.occupiedSocketKeys(d, worldPoses(d)).has('bus|+Y'), 'Float64Array 形式的位姿表')
+  assert.ok(!S.usedSocketKeys(d).has('bus|+Y'), 'usedSocketKeys 只认显式接口')
+  assert.deepEqual(S.freeSocketsOf(d, 'bus', 'prim.box', null, P).map((s) => s.id).sort(), ['+Z', '-X', '-Y', '-Z'].sort(), '根件的安装接口也能接')
+  assert.ok(S.freeSocketsOf(d, 'bus', 'sat.thruster', 'thr', P).some((s) => s.id === '+Y'), '换位的件自己占的不算')
+  assert.ok(S.freeSocketsOf(d, 'bus', 'prim.box').some((s) => s.id === '+Y'), '不给位姿表 = 旧口径')
+  // 件自己占着的接口（busySockets）：自带馈源的反射面占焦点，关掉自带馈源才放出来
+  const r1 = docOf([BUS, { id: 'refl', type: 'sat.reflector', parent: 'bus', attach: { mode: 'socket', socket: '+X' } }])
+  const r0 = docOf([BUS, { id: 'refl', type: 'sat.reflector', parent: 'bus', attach: { mode: 'socket', socket: '+X' }, params: { feed: 'none' } }])
+  assert.ok(S.occupiedSocketKeys(r1, A.solvePose(r1)).has('refl|focus'), '自带馈源占焦点')
+  assert.ok(!S.occupiedSocketKeys(r0, A.solvePose(r0)).has('refl|focus'), '不带馈源放出焦点')
+  assert.deepEqual(S.freeSocketsOf(r1, 'refl', 'sat.feed.horn', null, A.solvePose(r1)).map((s) => s.id), [])
+  assert.deepEqual(S.freeSocketsOf(r0, 'refl', 'sat.feed.horn', null, A.solvePose(r0)).map((s) => s.id), ['focus'])
+  const g1 = docOf([{ id: 'ped', type: 'es.pedestal.azel', parent: null }, { id: 'refl', type: 'es.refl.prime', parent: 'ped', attach: { mode: 'socket', socket: 'el' } }], 'ground')
+  assert.ok(S.occupiedSocketKeys(g1, A.solvePose(g1)).has('refl|focus'), '主焦反射面自带馈源')
+})
+
+t('热路径零分配（独立进程量 new_space）：pickNearest / offer / faceInferIO（含 shortPx）/ clampIO（含局部弧）/ autoGridStep / twistDeg / snapTo / snapAngle / uvOnFaceP / liveBox / faceAtHit / mirrorHitToPrimary / massCombine', () => {
   const url = new URL('../models/asmSnap.mjs', import.meta.url).href
   const src = [
     `import * as S from '${url}'`,
@@ -564,8 +653,11 @@ t('热路径零分配（独立进程量 new_space）：pickNearest / offer / fac
     'const h = S.createHysteresis(4)',
     "const pf = { id: '+Z', kind: 'plane', origin: [0, 0, 1], n: [0, 0, 1], u: [1, 0, 0], v: [0, 1, 0], halfU: 1, halfV: 0.5 }",
     "const cf = { id: 'side', kind: 'cyl', origin: [0, 0, 0.5], axis: [0, 0, 1], ref: [1, 0, 0], radius: 0.2, halfU: 0.5, halfV: Math.PI * 0.2 }",
+    // 局部弧（2026-10：clampIO 夹紧不回绕）
+    "const af = { id: 'skin', kind: 'cyl', origin: [0, 0, 0.5], axis: [1, 0, 0], ref: [0, 0, -1], radius: 1.8, halfU: 4, halfV: 1.5, full: false }",
     'const faces = [pf, cf]',
-    "const o = { u: 0.5, v: 0.5, kind: 0, ppm: 150.5, d: 0.5, tol: 0.002 }, o2 = { u: 0.5, v: 0.5 }",
+    "const o = { u: 0.5, v: 0.5, kind: 0, ppm: 150.5, d: 0.5, tol: 0.002, gu: 0, gv: 0 }, o2 = { u: 0.5, v: 0.5 }",
+    "const mg = { u: 0.5, v: 0.5, x: 0.5, y: 0.5, z: 0.5 }, ray = new Float64Array([0.3, 0.2, 9, 0.01, 0.02, -1])",
     'const M = S.m4RotZ(new Float64Array(16), 33); M[12] = 1; M[13] = 2; M[14] = 3',
     'const F = S.faceFrame(new Float64Array(16), pf, 0, 0)',
     'const B = 32, boxes = new Float64Array(6 * B), mats = new Float64Array(16 * B), out6 = new Float64Array(6)',
@@ -587,6 +679,12 @@ t('热路径零分配（独立进程量 new_space）：pickNearest / offer / fac
     '  faceAtHit: (i) => { S.faceAtHit(faces, M, p, nn, undefined, o) },',
     '  mirrorHitToPrimary: (i) => { S.mirrorHitToPrimary(M, M, (i & 1) ? "xz" : null, p, nn, oP, oN) },',
     '  massCombine: (i) => { mats4[12] = 0.001 * (i % 100); S.massCombine(ma0, ma1, mats4, 2, mout) },',
+    '  faceInferLine: (i) => { o.u = 0.002 * (i % 900) - 0.9; o.v = 0.001 * (i % 700) - 0.35; o.ppm = 150 + (i % 50); S.faceInferIO(pf, o, 12, 0.05, 8) },',
+    '  faceMagnetIO: (i) => { ray[0] = 0.3 + 0.001 * (i % 500); S.faceMagnetIO(pf, M, ray, mg) },',
+    // 2026-10：推断半径随面屏上短边自适应（shortPx 按约定传整数像素）、局部弧夹紧、自动网格步长
+    '  faceInferShort: (i) => { o.u = 0.002 * (i % 900) - 0.9; o.v = 0.001 * (i % 700) - 0.35; o.ppm = 150 + (i % 50); S.faceInferIO(pf, o, 12, 0.05, 8, 40 + (i % 200)) },',
+    '  clampArc: (i) => { o2.u = 0.006 * (i % 900) - 2.7; o2.v = 0.009 * (i % 800) - 3.6; S.clampIO(af, o2) },',
+    '  autoGrid: (i) => { acc[0] += S.autoGridStep((i & 1) ? pf : cf) },',
     '  scalars: (i) => { o.u = 0.002 * (i % 900) - 0.9; o2.v = 0.001 * (i % 700) - 0.35; acc[0] += S.twistDeg(M) + S.snapTo(o.u, 0.05) + S.snapAngle(o2.v * 100, 15) }',
     '}',
     'const noop = () => {}',
@@ -601,7 +699,7 @@ t('热路径零分配（独立进程量 new_space）：pickNearest / offer / fac
   ].join('\n')
   const res = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', src], { encoding: 'utf8', timeout: 120000 }).trim().split('\n').pop())
   assert.ok(res.acc)
-  assert.equal(Object.keys(res.res).length, 10)
+  assert.equal(Object.keys(res.res).length, 15)
   for (const [k, v] of Object.entries(res.res)) assert.ok(v <= 4, `${k} 每帧分配 ${v.toFixed(1)} B`)
 })
 

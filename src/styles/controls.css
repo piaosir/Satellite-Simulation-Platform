@@ -462,7 +462,7 @@ html[lang="en"] .srow.sub { --srow-lab: 73px; }
 /* 菜单 / 下拉里的项不过渡：扫过一串菜单项时拖出的淡尾读起来像卡顿（VS Code / Win32 菜单均瞬时） */
 :where(.mpanel, .ms-pop, .ms-sub, .ctx-menu, .lmenu, .lp-menu, .lp-drop, .fd-menu, .expmenu,
        .lb-ctx, .sg-ctx, .sg-dd, .eg-ctx, .pwm, .cmenu, .ddm, .rlmode-menu, .tzp-menu, .so-drop,
-       .e2-city-pop) :where(button, [class]) { transition: none; }
+       .e2-city-pop, .spk-pop) :where(button, [class]) { transition: none; }
 /* 同上，列表 / 目录行：只收行所在的列表容器，弹层里的动作键（ExcelGrid 的 pick-foot 插槽、波束弹层的清空 / 应用）照旧过渡 */
 :where(.eg-pick-l, .addpop, .spop, .bp-list, .ssa-toc) :where(button, [class]) { transition: none; }
 /* 墨色实底主按钮：按下罩换 --press-ink（原罩在墨底上看不出，见 global.css）。

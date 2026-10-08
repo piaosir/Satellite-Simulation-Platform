@@ -68,7 +68,15 @@ export function createAnalyzer() {
     /** estimate 档质量特性（massKg 给了才有惯量） */
     massProps(root, meta, o = {}) {
       const ir = threeToIR(root, { uv: false, normal: false })
-      return call('massProps', { ir, massKg: o.massKg, bodyMatrix: bodyM(meta), tol: o.tol }, irTransferables(ir))
+      // 部件归属（按部件类型赋密度，partMass.mjs）：元数据里的部件随行；没有时 Worker 现场自动识别
+      const parts = meta && Array.isArray(meta.parts) ? JSON.parse(JSON.stringify(meta.parts)) : null
+      return call('massProps', { ir, massKg: o.massKg, bodyMatrix: bodyM(meta), tol: o.tol, parts }, irTransferables(ir))
+    },
+    /** 各部件单位质量的自身惯量（组件档：逐件给质量时补自身惯量，不当质点）→ [{id, role, comBody, inertiaPerKg}] */
+    partInertia(root, meta, o = {}) {
+      const ir = threeToIR(root, { uv: false, normal: false })
+      const parts = meta && Array.isArray(meta.parts) ? JSON.parse(JSON.stringify(meta.parts)) : null
+      return call('partInertia', { ir, bodyMatrix: bodyM(meta), tol: o.tol, parts }, irTransferables(ir))
     },
     /** 自动部件分割（segment.mjs）；opts 透传（planar / reflector / efficiency …），bodyMatrix 自动带上 */
     segment(root, meta, opts = {}) {

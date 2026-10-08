@@ -102,5 +102,41 @@ ok('表名为空用兜底名', noname[0].name === 'Track', noname[0].name)
 ok('空工作簿返回空数组', trajsFromSheets([], { newId }).length === 0 && trajsFromSheets(null, { newId }).length === 0)
 ok('只有说明表 → 一条航迹都不建', trajsFromSheets([{ name: '说明', rows: [['A', '飞行']] }], { newId }).length === 0)
 
+// ---- 航迹表格「时间」列只敲时分：航点排不出时刻、航迹也没起始时，日期取时间轴那一天（nowMs），不取系统当天（2026-10-08 #35）----
+{
+  const { ref } = await import('vue')
+  const { useMarkerTable } = await import('../../../src/viz/markers/useMarkerTable.js')
+  const { parseTzText } = await import('../../../src/shared/tzText.js')
+  const NOW = Date.UTC(2031, 4, 17, 9, 0, 0)   // 时间轴游标：离系统当天很远的一天
+  const mkTraj = () => ref([{ id: 't1', name: '航行1', kind: 'sea', pts: [{ id: 'a', lat: 30, lon: 120 }, { id: 'b', lat: 31, lon: 121 }] }])
+  const mkTable = (trajectories, nowMs) => useMarkerTable({
+    points: ref([]), stations: ref([]), trajectories, newId: newId, sync: () => {},
+    parseTime: (s, r) => parseTzText(s, 'utc', r), nowMs
+  })
+  {
+    const tr = mkTraj(), mk = mkTable(tr, () => NOW)
+    mk.wpUpdate('t1', 'b', { tMs: '10:30' })
+    ok('改格：第二航点只敲时分 → 落在时间轴那天', tr.value[0].pts[1].tMs === Date.UTC(2031, 4, 17, 10, 30), new Date(tr.value[0].pts[1].tMs).toISOString())
+  }
+  {
+    const tr = mkTraj(), mk = mkTable(tr, () => NOW)
+    mk.wpUpdate('t1', 'a', { tMs: '08:15' })
+    ok('改格：首航点只敲时分 → 起始落在时间轴那天', tr.value[0].t0Ms === Date.UTC(2031, 4, 17, 8, 15), String(tr.value[0].t0Ms))
+  }
+  {
+    const tr = ref([{ id: 't1', name: '航行1', kind: 'sea', pts: [] }]), mk = mkTable(tr, () => NOW)
+    const n = mk.wpPasteAppend('t1', '经度\t纬度\t时间\n122\t32\t11:15\n123\t33\t13:45')
+    const t = tr.value[0]
+    ok('粘贴：首行只写时分 → 起始落在时间轴那天，下一行沿用同一天', n === 2 && t.t0Ms === Date.UTC(2031, 4, 17, 11, 15) && t.pts[1].tMs === Date.UTC(2031, 4, 17, 13, 45), JSON.stringify({ n, t0: t.t0Ms, p1: t.pts[1] && t.pts[1].tMs }))
+  }
+  {
+    const tr = mkTraj()
+    tr.value[0].t0Ms = Date.UTC(2030, 0, 2, 6, 0)
+    const mk = mkTable(tr, () => NOW)
+    mk.wpUpdate('t1', 'b', { tMs: '07:00' })
+    ok('航迹有起始时仍以排程 / 起始那天为准（不被时间轴顶掉）', new Date(tr.value[0].pts[1].tMs).toISOString().slice(0, 10) === '2030-01-02', new Date(tr.value[0].pts[1].tMs).toISOString())
+  }
+}
+
 console.log(`markerTraj: ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

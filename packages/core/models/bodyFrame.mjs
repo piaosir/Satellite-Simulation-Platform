@@ -153,16 +153,29 @@ export function quatNormalize(q) {
   return [q[0] / n, q[1] / n, q[2] / n, q[3] / n]
 }
 
-/** 归一 + 符号规范化（w ≥ 0；w = 0 时第一个非零分量取正），让同一旋转只有一种写法。 */
+// 「已是单位长」的门限：4 ulp（≈ 8.9e-16）。除一次模长后的结果模长落在 1 ± 2 ulp 以内，过得了这道门，再归一就不再除
+const QUAT_UNIT_EPS = 4 * Number.EPSILON
+
+/**
+ * 归一 + 符号规范化（w ≥ 0；w = 0 时第一个非零分量取正），让同一旋转只有一种写法（q 与 −q 逐位同值）。
+ * 已是单位长（|‖q‖ − 1| ≤ 4 ulp）的只做符号规范、不再除模长：每次都除的话，模长差 1 ulp 的四元数每归一一次末位就跳一次
+ *（v → v/‖v‖ 在单位长附近可以一直游走、不收敛），「归一结果再归一逐位不变」不成立——normalizeAssembly 不再幂等，驱动装配件
+ * 三方合并逐字节比较时基线展开臂被误判成「位置改写」、朝向卡在旧值（v1.5.0 排查 #11）。非单位长的输入照旧除一次。
+ */
 export function quatCanonical(q) {
-  const u = quatNormalize(q)
-  if (!u) return null
+  if (!isQuatLike(q)) return null
+  const n = Math.hypot(q[0], q[1], q[2], q[3])
+  if (!(n > 1e-12)) return null
+  const u = Math.abs(n - 1) <= QUAT_UNIT_EPS ? [q[0], q[1], q[2], q[3]] : [q[0] / n, q[1] / n, q[2] / n, q[3] / n]
   let flip = u[3] < 0
   if (u[3] === 0) {
     for (let i = 0; i < 3; i++) { if (u[i] !== 0) { flip = u[i] < 0; break } }
   }
-  // 把 −0 也抹成 0：JSON 里 −0 与 0 写法不同，会让「同一个旋转两次存盘字节不同」
-  return (flip ? u.map((v) => -v) : u).map((v) => (v === 0 ? 0 : v))
+  // 把 −0 也抹成 0：JSON 里 −0 与 0 写法不同，会让「同一个旋转两次存盘字节不同」。
+  // 用字面量建数组（不用 map）：map 出来的是「有洞」数组，与 JSON / 字面量的紧凑数组不同形状，装配解算热路径的同一读取点
+  // 混进两种形状会反复去优化（modelAsmFreeze 量出来每帧几 KB 分配）
+  const s = flip ? -1 : 1, c = (v) => (v === 0 ? 0 : s * v)
+  return [c(u[0]), c(u[1]), c(u[2]), c(u[3])]
 }
 
 /** 是否单位四元数（|‖q‖ − 1| ≤ tol）。校验器用；tol 默认 1e-6，够 JSON 往返的 15 位有效数字。 */

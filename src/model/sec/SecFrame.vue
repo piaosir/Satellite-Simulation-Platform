@@ -24,11 +24,11 @@ const fine = computed(() => relativeEulerZYX(q.value, base.value) || { rollDeg: 
 const factoryQ = computed(() => factoryFrameQ(m.value))
 const isFactory = computed(() => sameRotation(q.value, factoryQ.value, 1e-6))
 const factoryTip = computed(() => (sameRotation(factoryQ.value, Q_STK, 1e-6)
-  ? '回到导入缺省：STK 映射（glTF +Y ↦ 本体 +Z 天底、+Z ↦ +X 速度）'
-  : '回到导入缺省：+Y 天顶（glTF +Y ↦ 本体 −Z 天顶、+Z ↦ +X 速度）')
-  + '\n按来源：本工具导出 / 转换的件（带 extras.satsim，含 OBJ / STL / FBX）、STK 本机件、带 AGI 扩展、参数化件 → STK 映射；'
+  ? '恢复导入缺省：STK 映射（glTF +Y ↦ 本体 +Z 天底、+Z ↦ +X 速度）'
+  : '恢复导入缺省：+Y 天顶（glTF +Y ↦ 本体 −Z 天顶、+Z ↦ +X 速度）')
+  + '\n按来源：本工具导出 / 转换的模型（含 extras.satsim，包括 OBJ / STL / FBX）、STK 本机模型、含 AGI 扩展的模型、参数化模型 → STK 映射；'
   + 'NASA、普通 glb / glTF、STEP / IGES / BREP → +Y 天顶'
-  + '\n本机导入 / 社区件：当前朝向最近的 90° 基准是上面两种之一就取它，否则按有无 AGI 扩展')
+  + '\n本机导入 / 社区模型：若当前朝向最接近的 90° 基准为上述两种之一则取该基准，否则按是否含 AGI 扩展判定')
 
 function setQ(qn) {
   if (!qn || sameRotation(qn, q.value, 1e-9)) return
@@ -66,11 +66,11 @@ const AXC = { x: 'fr-x', y: 'fr-y', z: 'fr-z' }
 
 <template>
   <MdSec id="m-frame" title="本体轴" :summary="isFactory ? '' : 'q ' + q.map((v) => fmtNum(v, 3)).join(', ')"
-         tip="本体系：+X 速度、+Y 补全右手、+Z 天底（STK 缺省 Nadir 姿态同口径）">
+         tip="本体系：+X 速度方向、+Y 按右手系补全、+Z 天底（与 STK 缺省 Nadir 姿态定义一致）">
     <template v-if="m">
       <div class="fr-steps">
         <button v-for="s in STEPS" :key="s[0] + s[1]" class="lb-mini fr-step" :class="AXC[s[0]]" :disabled="ro"
-                :title="'模型在本体系里绕本体 ' + s[0].toUpperCase() + ' 轴转 ' + (s[1] > 0 ? '+' : '−') + '90°（挂点、部件、质心随模型一起转）'" @click="step(s[0], s[1])">
+                :title="'模型在本体系中绕本体 ' + s[0].toUpperCase() + ' 轴旋转 ' + (s[1] > 0 ? '+' : '−') + '90°（挂点、部件、质心随模型同步旋转）'" @click="step(s[0], s[1])">
           <b>{{ s[0].toUpperCase() }}</b><span data-i18n-skip>{{ s[1] > 0 ? '+90°' : '−90°' }}</span>
         </button>
       </div>
@@ -80,14 +80,14 @@ const AXC = { x: 'fr-x', y: 'fr-y', z: 'fr-z' }
         <NumIn :model-value="+fine.pitchDeg.toFixed(6)" :min="-90" :max="90" :sig="6" :disabled="ro" @commit="(v) => setFine('pitchDeg', v)" /><span class="u">°</span></div>
       <div class="srow"><label title="绕本体 Z 轴的微调">偏航</label>
         <NumIn :model-value="+fine.yawDeg.toFixed(6)" :min="-180" :max="180" :sig="6" :disabled="ro" @commit="(v) => setFine('yawDeg', v)" /><span class="u">°</span></div>
-      <div class="srow"><label title="模型原点在本体系里的位置（米）；改它等于把模型整体平移，挂点等随模型一起移">原点</label>
+      <div class="srow"><label title="模型原点在本体系中的位置（米）；修改即整体平移模型，挂点等随模型同步平移">原点</label>
         <div class="md-v3">
           <NumIn v-for="k in [0, 1, 2]" :key="k" :model-value="t[k]" :sig="6" :disabled="ro" @commit="(v) => setT(k, v)" />
         </div><span class="u">m</span></div>
       <div class="md-acts">
-        <button class="lb-mini" :disabled="ro || isFactory" :title="factoryTip" @click="factory"><Icon name="undo-2" :size="12" />出厂映射</button>
-        <button class="lb-mini" :disabled="ro || !com" title="平移模型，使质心落在本体原点" @click="originToCom">原点移到质心</button>
-        <button class="lb-mini" :disabled="ro" title="平移模型，使包围盒中心落在本体原点" @click="originToCenter">原点移到几何中心</button>
+        <button class="lb-mini" :disabled="ro || isFactory" :title="factoryTip" @click="factory"><Icon name="undo-2" :size="12" />恢复缺省映射</button>
+        <button class="lb-mini" :disabled="ro || !com" title="平移模型，使质心与本体原点重合" @click="originToCom">原点移到质心</button>
+        <button class="lb-mini" :disabled="ro" title="平移模型，使包围盒中心与本体原点重合" @click="originToCenter">原点移到几何中心</button>
       </div>
       <label class="md-chkrow" title="轴向已与实物 / 文档核对（装配核定）">
         <input type="checkbox" :checked="!!(m.frame && m.frame.verified)" :disabled="ro" @change="setVerified($event.target.checked)" />本体轴已核定

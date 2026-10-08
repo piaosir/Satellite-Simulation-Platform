@@ -1739,6 +1739,79 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   ok('无可用星历时回 null', S.statsOf([{ satrec: {} }, { satrec: null }]) === null);
 }
 
+// ═══ 窗口层：「输入已变」灯（src/ci/useInterference.js 的 stale，v1.5.0 上线前排查 #6）═══
+// 从主窗口「分析 ▸ 干扰分析」带进新星 / 新站后，入参换了、结果还是上一次的 —— 各页按【开算那一刻的入参指纹】判过期。
+// 假 api 只回固定结果：这里验的是「哪些改动算输入已变」，不是 C/I 数值。
+{
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  let ngsoDone = null;
+  globalThis.window = {
+    addEventListener: () => {},
+    api: {
+      interference: {
+        asi: async () => ({ ok: true, downlink: { ciDb: 20, sources: [] }, uplink: { ciDb: 25, sources: [] } }),
+        xpi: async () => ({ ok: true, result: { xpiDb: 18, terms: [] } }),
+        xpiTerm: async () => ({ ok: true, term: { db: 30 } }),
+        ngsoEstimate: async () => ({ ok: true, work: 10 }),
+        ngsoStart: async () => ({ ok: true, token: 7, T: 10 }),
+        onNgsoProgress: () => {}, onNgsoDone: (fn) => { ngsoDone = fn },
+        groups: async () => ({ ok: true, groups: [] })
+      },
+      linkBudget: {
+        grdSampleXpd: async () => ({ ok: true, values: [{ xpdDb: 21.5, servingIdx: 0, coPolIndex: 1, coPolDb: 40, xPolDb: 18.5 }] }),
+        grdSampleCci: async (req) => ({ ok: true, cci: req.points.map(() => 12), serving: req.points.map(() => 0), coloring: { 0: 1 }, beamIdx: [0], colors: 4 })
+      }
+    }
+  };
+  const { useInterference } = await import('../../../src/ci/useInterference.js');
+  const I = useInterference();
+  const st = () => I.stale.value;
+  ok('没算过不亮', !st().asi && !st().xpi && !st().cci && !st().cciField && !st().ngso);
+  await I.computeAsi();
+  ok('C/ASI 算完不亮', !!I.asi.result && !st().asi);
+  I.carrier.satLonDeg = 125; I.carrier.satName = '新星';
+  ok('★ 带进新星（轨位变）→ 亮', st().asi);
+  I.carrier.satLonDeg = 110.5;
+  ok('改回原值 → 灭（比的是指纹，不是「动过没有」）', !st().asi);
+  I.site.name = '别名';
+  ok('站名 / 星名不入算 → 不亮', !st().asi);
+  I.site.lon = 100;
+  ok('★ 带进新站（站址变）→ 亮', st().asi);
+  await I.computeAsi();
+  ok('重算后灭', !st().asi);
+  // C/XPI：卫星侧 GRD 值是在哪个站址 / 天线上取的也算入参 —— 站址换了没重取，重算也照样亮
+  I.grdTree.value = { sats: [{ folder: 'F', satName: 'S', lon: 110, lat: 0, altKm: 35786, antennas: [{ name: 'A', file: 'a.grd', beams: 1 }] }], cfgs: { 'F::A': { boreType: 'geo' } } };
+  I.cci.antennaKey = 'F::A';
+  await I.sampleXpiFromGrd(); await I.computeXpi();
+  ok('C/XPI 算完不亮', !!I.xpi.result && !st().xpi);
+  I.site.lat = 30;
+  ok('C/XPI：站址变了 → 亮', st().xpi);
+  await I.computeXpi();
+  ok('C/XPI：卫星侧没在新站重取就重算 → 仍亮', st().xpi);
+  await I.sampleXpiFromGrd(); await I.computeXpi();
+  ok('C/XPI：重取 + 重算 → 灭', !st().xpi);
+  // 对星跟踪的方向图：主进程不取值，这里给一句明确状态（不落成「域外 / 无同色波束」那类空结果）
+  I.grdTree.value = { ...I.grdTree.value, cfgs: { 'F::A': { boreType: 'satoff' } } };
+  await I.computeCci();
+  ok('对星指向的方向图：C/CCI 明确拦下', /对星指向/.test(I.msg.value), I.msg.value);
+  I.grdTree.value = { ...I.grdTree.value, cfgs: { 'F::A': { boreType: 'point' } } };
+  await I.computeCci(); await I.computeCciField();
+  ok('C/CCI 逐点 / 场图算完都不亮', !!I.cci.result && !!I.cci.field && !st().cci && !st().cciField);
+  I.cci.fieldStep = 2;
+  ok('改场图步长 → 只场图亮', st().cciField && !st().cci);
+  // NGSO：结果异步回来（onNgsoDone）；扫描期间改了入参 → 回来就亮
+  await I.computeNgso();
+  I.ngso.stepSec = 20;
+  ngsoDone({ token: 7, ok: true, result: { warnings: [], elapsedMs: 1, samples: 10 } });
+  ok('NGSO：扫描期间改了步长 → 结果回来就亮', !!I.ngso.result && st().ngso);
+  I.ngso.stepSec = 10;
+  ok('NGSO：改回 → 灭', !st().ngso);
+  I.ngso.thresholdDb = 9;
+  ok('NGSO：门限线只影响图上显示 → 不亮', !st().ngso);
+  delete globalThis.window;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
 

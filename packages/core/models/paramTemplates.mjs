@@ -8,8 +8,9 @@
 //   · fieldGaps 列「生成几何必需、但查不到」的模板字段（功率 / 寿命一类只做展示的空值不列）。立方星除尺寸 / 质量
 //     外的项是标准本身不规定，不算缺失。
 //   · GEO 平台的布局类参数（反射面数量与口径、翼板数、板尺寸）只查到代表星的数时，用代表星（任务书口径）；
-//     因此 SSL-1300 是 TerreStar-1 的 18 m 网状反射面、E3000 是 Inmarsat-4 的 9 m——两者都是非典型大口径
-//     移动通信星，用户要常规 Ku/Ka 星时自己改口径。
+//     一个模板只认一颗代表星（2026-10-08：SSL-1300 原先平台体 / 翼展取 EchoStar XVII、反射面却取 TerreStar-1 的 18 m 网状，
+//     两颗星拼起来哪颗都不像，改为全取 EchoStar XVII——翼型与反射面数量按其发射手册渲染计数，口径未公开留作缺口）。
+//     E3000 同理改为全取 Yahsat Y1A（原反射面取 Inmarsat-4 的 9 m L 频段网状）。
 //   · 轭长、板间缝、反射面焦径比、馈源口径、推力器尺寸……这些「工程细节」没有任何平台公开，也不是平台数据，
 //     放在 DETAIL_PRESETS（全部 source:'illustrative'）。能由有出处的跨度反推的（轭长）优先反推，并记 derived。
 //
@@ -60,6 +61,8 @@ const S = {
   ESA_E3000_LX: 'https://connectivity.esa.int/projects/eurostar-e3000-large-mechanical-platform-development',
   ESA_E3000_SA: 'https://connectivity.esa.int/projects/e3000-second-generation-solar-array',
   INMARSAT4: 'https://web.archive.org/web/20180324040905/https://www.inmarsat.com/about-us/about-usour-satellites/inmarsat-4/',
+  GUNTER_Y1A: 'https://space.skyrocket.de/doc_sdat/yahsat-1a.htm',
+  CEAS2007: 'https://www.fzt.haw-hamburg.de/pers/Scholz/ewade/2007/CEAS2007/papers2007/ceas-2007-073.pdf',
   MCDOWELL_STARSIM: 'https://planet4589.org/astro/starsim/index.html',
   NSSDC_STARLINK: 'https://nssdc.gsfc.nasa.gov/nmc/spacecraft/display.action?id=2019-074D',
   SFN_STARLINK_V2: 'https://spaceflightnow.com/2023/02/26/spacex-unveils-first-batch-of-larger-upgraded-starlink-satellites/',
@@ -128,9 +131,9 @@ const GEO_FILL = Object.freeze({
 //   这些常数按 GEO 米级反射面定（1 = 原值），照搬到 1 m 平台或 10 cm 立方星上会比星体还粗。
 //   meshTrussDepthFrac / meshTrussRodFrac：网状反射面周边桁架深度 / 杆半径占口径的比例（AstroMesh 类外观）。
 
-// 平台 ~1 m 量级（通用小卫星 / LEO 平板）共用的反射面细节
+// 平台 ~1 m 量级（通用小卫星 / LEO 平板）共用的反射面细节（侧挂几何按 GEO 档同比例缩：净空 ≈ 0.35 D、f/D 1.6）
 const REFL_SMALL = Object.freeze({
-  feedInsetM: 0.05, feedStandoffM: 0.1, wallGapM: 0.1, fdSolid: 0.8, fdMesh: 0.5, meshAboveDM: 5, shellM: 0.02, towerWM: 0.25,
+  feedInsetM: -0.04, feedStandoffM: 0.1, wallGapM: 0.34, fdSide: 1.6, fdSolid: 0.8, fdMesh: 0.5, meshAboveDM: 5, shellM: 0.02, towerWM: 0.25,
   reflDetailScale: 0.5, meshTrussDepthFrac: 0.05, meshTrussRodFrac: 0.0025
 })
 
@@ -144,9 +147,13 @@ export const DETAIL_PRESETS = Object.freeze({
     mliOffM: 0.02,                       // MLI 离结构面距离（包覆层单独成节点）
     radiatorFrac: 0.8,                   // 南北面 OSR 散热面覆盖比例（按边长）
     adapterDM: 1.194, adapterHM: 0.12,   // 星箭对接环（常见 Ø1194 mm 档，示意）
-    feedInsetM: 0.1, feedStandoffM: 0.25,// 侧挂反射面馈源：离东西侧壁内缩、高出对地板
-    wallGapM: 0.2,                       // 侧挂反射面内缘离侧壁的净空
-    fdSolid: 0.8, fdMesh: 0.5,           // 母抛物面焦径比 f/D：实面 / 网状
+    // 侧挂反射面（调研 components.md §1(b)：Airbus US 11,858,663 权利要求 D 2.2–2.7 m 配 F 3.58–4.20 m、母轴到近缘 0.65–1.30 m；
+    // Thales US 8,487,830「单偏置 D ≥ 2 m 时 f ≥ 1.5 D」）：馈源在对地板东西棱外 8 cm、高出 0.25 m；内缘离侧壁 0.93 m（母轴到近缘 0.85 m）；
+    // f/D 1.6 → 反射面落在背地端附近、口缘面离水平约 15°（在轨照片）
+    feedInsetM: -0.08, feedStandoffM: 0.25,  // 馈源相位中心离东西侧壁的内缩（负 = 伸出壁外）、高出对地板
+    wallGapM: 0.93,                      // 侧挂反射面内缘离侧壁的净空
+    fdSide: 1.6,                         // 侧挂实面反射面焦径比
+    fdSolid: 0.8, fdMesh: 0.5,           // 母抛物面焦径比 f/D：对地板（塔馈）实面 / 网状
     meshAboveDM: 5,                      // 口径超过它按可展开网状反射面画（reflector_mesh）
     shellM: 0.02,                        // 实面反射面边缘厚度环（任务书：2 cm）
     towerWM: 0.5,                        // 对地板天线塔截面边长（有对地板反射面才画）
@@ -181,7 +188,7 @@ export const DETAIL_PRESETS = Object.freeze({
     bodyInsetM: 0.0015,      // 侧板相对导轨外缘内缩：体装电池片（离板 1 mm）仍在导轨包络内（CDS：导轨外缘即包络）
     patchWM: 0.05,           // 对地端贴片天线边长（示意）
     // 反射面（模板本身没有；用户加的——RainCube 一类分米级可展开天线）：比 0.3 m 大按网状画，附件尺寸缩到 GEO 的 1/10
-    feedInsetM: 0.01, feedStandoffM: 0.02, wallGapM: 0.01, fdSolid: 0.6, fdMesh: 0.5, meshAboveDM: 0.3, shellM: 0.003, towerWM: 0.03,
+    feedInsetM: 0.01, feedStandoffM: 0.02, wallGapM: 0.01, fdSide: 0.6, fdSolid: 0.6, fdMesh: 0.5, meshAboveDM: 0.3, shellM: 0.003, towerWM: 0.03,
     reflDetailScale: 0.1, meshTrussDepthFrac: 0.05, meshTrussRodFrac: 0.0025
   })
 })
@@ -198,7 +205,7 @@ export const DETAIL_PRESETS = Object.freeze({
 // bus.value = {xM, yM, zM}（本体轴，见文件头映射规则）；panelSize.value = {alongM 沿翼展, acrossM 横宽}；
 // reflectors.value = {count, diametersM:number[]|null}。
 
-const GEO_COMMON_NOTE_BUS_ENVELOPE = '发射手册给的是整星收拢包络（含收拢天线），当平台体用偏大'
+const GEO_COMMON_NOTE_BUS_ENVELOPE = '发射手册给出的是整星收拢包络（含收拢天线），用作平台体尺寸偏大'
 
 const T = {}
 
@@ -235,7 +242,10 @@ T[DEFAULT_TEMPLATE_ID] = {
 T.ssl1300 = {
   id: 'ssl1300', title: 'SSL-1300', titleZh: 'SSL-1300（Maxar 1300）', layout: 'geo', detail: 'geo',
   manufacturer: 'Space Systems Loral / Maxar',
-  representative: 'EchoStar XVII（Jupiter 1）；反射面取 TerreStar-1',
+  // 2026-10-08：代表星统一为 EchoStar XVII（原先平台体 / 翼展取它、反射面却取 TerreStar-1 的 18 m S 频段网状——拼出来的星两颗都不像）。
+  // 翼型与反射面数量按 Arianespace VA207 发射手册渲染计数（SSL-1300 十字翼：3 块串联、中间一块两侧挂侧板；东西每侧两副反射面叠放），
+  // 与 NASA 的 SSL-1300 模型同构型
+  representative: 'EchoStar XVII（Jupiter 1）',
   fields: {
     bus: F({ xM: 3.2, yM: 3.1, zM: 8.0 }, 'm', S.VA207, { rep: 'EchoStar XVII',
       confidence: 'primary',
@@ -246,16 +256,18 @@ T.ssl1300 = {
     payloadPowerKW: NIL('kW', 'SSL 未单列载荷功率'),
     totalPowerKW: F({ min: 5, max: 25 }, 'kW', S.SSL_ARCHIVE, { confidence: 'primary', note: 'SSL 官网存档：全寿命整星功率 5–25 kW；EchoStar XVII 16.1 kW' }),
     designLifeYr: F(15, 'yr', S.VA207, { rep: 'EchoStar XVII', confidence: 'primary', note: 'EchoStar XVII' }),
-    wings: NIL('翼', '未找到逐字来源'),
-    panelsPerWing: NIL('块', '未找到可核对来源'),
+    wings: F(2, '翼', S.VA207, { rep: 'EchoStar XVII', confidence: 'secondary', note: 'VA207 手册第 7 页渲染：南北两翼' }),
+    panelsPerWing: F(3, '块', S.VA207, { rep: 'EchoStar XVII', confidence: 'secondary', note: 'VA207 手册第 7 页渲染逐块计数：每翼 3 块串联' }),
+    sidePanelsPerWing: F(2, '块', S.VA207, { rep: 'EchoStar XVII',
+      confidence: 'secondary', note: '同页渲染：中间一块两长边各挂一块侧板（十字形翼；SSL 专利 US 6,010,096 实施例同此构型）'
+    }),
     panelSize: NIL('m', '未找到'),
     spanM: F(26.07, 'm', S.VA207, { rep: 'EchoStar XVII', confidence: 'primary', note: 'EchoStar XVII「Span in orbit 26.07 m」' }),
-    reflectors: F({ count: 1, diametersM: [18] }, '副', S.NSSDC_TERRESTAR1, { rep: 'TerreStar-1',
-      confidence: 'primary',
-      note: '代表星 TerreStar-1（LS-1300S）S 频段 MSS「18 m deployable reflector」，非典型大型网状反射面；常规 Ku/Ka 1300 星反射面口径无公开一手数据'
+    reflectors: F({ count: 4, diametersM: null }, '副', S.VA207, { rep: 'EchoStar XVII',
+      confidence: 'secondary', note: 'VA207 手册渲染：东西每侧两副反射面叠放（Ka 多波束）；口径未公开'
     })
   },
-  fieldGaps: ['wings', 'panelsPerWing', 'panelSize']
+  fieldGaps: ['panelSize', 'reflectors.diametersM']
 }
 
 T.spacebus4000 = {
@@ -276,11 +288,15 @@ T.spacebus4000 = {
     wings: NIL('翼', '未找到逐字来源'),
     panelsPerWing: F(4, '块', S.ENG2022, {
       confidence: 'primary',
-      note: '《Engineering》2022 表 2「four solar panels and two side solar panels」（原文拼作 PaceBus4000，同行功率 / 电池类型与 Thales 说明有出入，谨慎用）：串联 4 块 + 侧板 2 块'
+      note: '《Engineering》2022 表 2「four solar panels and two side solar panels」（原文拼作 PaceBus4000，同行功率 / 电池类型与 Thales 说明有出入，谨慎使用）：串联 4 块 + 侧板 2 块'
     }),
-    sidePanelsPerWing: F(2, '块', S.ENG2022, { confidence: 'primary', note: '同上；侧板的拼接位置无公开几何，生成器画在最外一块两侧' }),
+    sidePanelsPerWing: F(2, '块', S.ENG2022, { confidence: 'primary', note: '同上' }),
+    sidePanelAt: F(2, '块', S.CEAS2007, {
+      confidence: 'secondary',
+      note: 'TAS Solarbus 翼族（Carpine & Laduree，CEAS 2007 图 1）：W61 = 4 块串联 + 2 块侧板挂【第 2 块】两侧（十字形，外侧还有两块）；W3B 渲染同此构型'
+    }),
     panelSize: F({ alongM: 3.66, acrossM: 2.22 }, 'm', S.ENG2022, {
-      confidence: 'primary', note: '表 2「3.66 × 2.22」未注明方向：按 W3B 跨度 34 m 自洽判 3.66 m 沿翼展（反过来轭长 > 6 m 不合理）'
+      confidence: 'primary', note: '表 2「3.66 × 2.22」未注明方向：按 W3B 跨度 34 m 自洽判定 3.66 m 沿翼展（反之轭长 > 6 m，不合理）'
     }),
     spanM: F(34, 'm', S.V197, { rep: 'Eutelsat W3B', confidence: 'primary', note: 'W3B「Span in orbit 34 m」' }),
     reflectors: F({ count: null, diametersM: [2.4] }, '副', S.SKYROCKET_SB, {
@@ -293,7 +309,8 @@ T.spacebus4000 = {
 T.eurostar3000 = {
   id: 'eurostar3000', title: 'Eurostar 3000', titleZh: '欧洲之星3000（Eurostar E3000）', layout: 'geo', detail: 'geo',
   manufacturer: 'Airbus Defence and Space（原 EADS Astrium）',
-  representative: 'Yahsat Y1A；反射面取 Inmarsat-4',
+  // 2026-10-08：反射面也取 Y1A（原先取 Inmarsat-4 的 9 m L 频段网状——Y1A 的平台体配一副移动通信大网面，拼出来的星两颗都不像）
+  representative: 'Yahsat Y1A',
   fields: {
     bus: F({ xM: 2.1, yM: 2.3, zM: 5.5 }, 'm', S.VA201, { rep: 'Yahsat Y1A',
       confidence: 'primary',
@@ -314,12 +331,12 @@ T.eurostar3000 = {
       confidence: 'primary', note: '「panel size of 3.050 x 2.28 m」/「3.915 x 2.28 m」；2.28 m 与平台东西边相当判为横宽'
     }),
     spanM: F(39.4, 'm', S.VA201, { rep: 'Yahsat Y1A', confidence: 'primary', note: 'Y1A「Span in orbit 39.4 m」' }),
-    reflectors: F({ count: 1, diametersM: [9] }, '副', S.INMARSAT4, { rep: 'Inmarsat-4',
-      confidence: 'primary',
-      note: '代表星 Inmarsat-4（E3000 派生）L 频段主反射面「Nine metres wide」，非典型大口径；常规 E3000 Ku/Ka 星反射面口径无一手来源'
+    reflectors: F({ count: 4, diametersM: null }, '副', S.GUNTER_Y1A, { rep: 'Yahsat Y1A',
+      confidence: 'secondary',
+      note: 'Gunter「equipped with a total of 9 antennas, 4 of which can be deployed」；渲染：东西每侧两副可展开反射面（另有对地板塔上一副、可转点波束三副未建）；口径未公开'
     })
   },
-  fieldGaps: ['wings']
+  fieldGaps: ['wings', 'reflectors.diametersM']
 }
 
 T['flat-leo'] = {
@@ -336,7 +353,7 @@ T['flat-leo'] = {
     dryMassKg: NIL('kg', '未公开'),
     payloadPowerKW: NIL('kW', '未公开'),
     totalPowerKW: NIL('kW', '未公开'),
-    designLifeYr: F(5, 'yr', S.SPACECOM_STARLINK, { confidence: 'secondary', note: '媒体口径约 5 年' }),
+    designLifeYr: F(5, 'yr', S.SPACECOM_STARLINK, { confidence: 'secondary', note: '媒体报道约 5 年' }),
     wings: F(1, '翼', S.NSSDC_STARLINK, { rep: 'Starlink v1.0', confidence: 'primary', note: '「a flat panel design with a single solar panel」' }),
     panelsPerWing: NIL('块', '未公开'),
     panelSize: F({ alongM: 8.1, acrossM: 2.8 }, 'm', S.MCDOWELL_STARSIM, { rep: 'Starlink v1.5', confidence: 'secondary', note: 'v1.5 单翼阵列「2.8 x 8.1m」' }),
@@ -365,7 +382,7 @@ for (const [id, u, dims, mMax, quote] of CUBESAT_ROWS) {
         confidence: 'primary',
         note: `NASA《State-of-the-Art of Small Spacecraft Technology》2023 表 6-1「${quote}」（mm→m）；轴向按 CDS：Z 为导轨方向（长轴）`
       }),
-      launchMassKg: F({ max: mMax }, 'kg', S.CDS_14_1, { confidence: 'primary', note: 'CDS Rev 14.1 表 1 典型最大质量（可按任务放宽）；生成器把它当估算质量' }),
+      launchMassKg: F({ max: mMax }, 'kg', S.CDS_14_1, { confidence: 'primary', note: 'CDS Rev 14.1 表 1 典型最大质量（可按任务放宽）；生成器将其作为估算质量' }),
       wings: F(0, '翼', null, { note: '标准未规定展开板；缺省体装电池片（结构选项，非数值来源）' })
     },
     fieldGaps: []
@@ -383,7 +400,7 @@ T.generic = {
     panelsPerWing: F(2, '块', 'illustrative'),
     panelSize: F({ alongM: 1.0, acrossM: 0.9 }, 'm', 'illustrative'),
     spanM: NIL('m', '由轭长与板长决定'),
-    reflectors: F({ count: 0, diametersM: [] }, '副', 'illustrative', { note: '盒 + 两翼；对地板只放小喇叭' })
+    reflectors: F({ count: 0, diametersM: [] }, '副', 'illustrative', { note: '盒体 + 两翼；对地板仅布置小喇叭' })
   },
   fieldGaps: []
 }
@@ -487,7 +504,7 @@ function geoSpec(tpl, fill, out) {
     }
     if (pick) {
       panels = pick.n; panelSize = pick.p
-      panelsSrc = der(`由${spanTxt}（${f.spanM.url}）反推：只有 ${pick.kind === 'long' ? 'L 型（长板）' : 'S 型（短板）'} ${pick.n} 块时轭长落在 0.5–4 m`, f.panelsPerWing.url)
+      panelsSrc = der(`由${spanTxt}（${f.spanM.url}）反推：仅 ${pick.kind === 'long' ? 'L 型（长板）' : 'S 型（短板）'} ${pick.n} 块时轭长处于 0.5–4 m`, f.panelsPerWing.url)
       panelSrc = der(`${pick.kind === 'long' ? '长板' : '短板'} ${pick.p.alongM} × ${pick.p.acrossM} m（${f.panelSize.url}）`, f.panelSize.url)
     } else { panels = null; panelSize = null }
   }
@@ -497,6 +514,9 @@ function geoSpec(tpl, fill, out) {
   if (nData !== null) ss['wings[*].panels'] = panelsSrc
   const sidePanels = isNum(val(f.sidePanelsPerWing)) ? val(f.sidePanelsPerWing) : 0
   if (sidePanels) ss['wings[*].sidePanels'] = src(f.sidePanelsPerWing)
+  // 侧板挂在第几块：有出处就写进条目（Spacebus 4000 的 W61 挂第 2 块）；没有就留给生成器缺省（倒数第二块）
+  const sideAt = sidePanels === 2 && isNum(val(f.sidePanelAt)) ? val(f.sidePanelAt) : null
+  if (sideAt !== null) ss['wings[*].sidePanelAt'] = src(f.sidePanelAt)
   ss['wings[*].gapM'] = ill(`示意值 ${D.gapM} m`)
 
   // 示意补位的取值（只在 fill 模式真正写进 spec）
@@ -506,7 +526,7 @@ function geoSpec(tpl, fill, out) {
     // 跨度有出处时按跨度排得下的块数（轭长 ≥ 1 m）取，否则 4 块
     const wl = wingLenOf(bus.yM)
     nFill = wl !== null ? Math.max(1, Math.floor((wl - D.sadaLenM - 1 + D.gapM) / (psFill.alongM + D.gapM))) : 4
-    nFillNote = wl !== null ? `示意值：按${spanTxt}排得下的块数（轭长 ≥ 1 m）` : '示意值：每翼 4 块'
+    nFillNote = wl !== null ? `示意值：按${spanTxt}可容纳的块数（轭长 ≥ 1 m）` : '示意值：每翼 4 块'
   }
 
   // 轭长：跨度（精确值，不是下限）+ 平台 Y + 块数 + 板长齐了就反推；否则示意。块数 / 板长取本模式下条目里实际写的值
@@ -532,13 +552,13 @@ function geoSpec(tpl, fill, out) {
   // 「加翼」初值：只放有出处 / 可反推的值，查不到的为 null
   out.itemDefaults.wing = {
     panels: nData, panelHM: psData ? psData.alongM : null, panelWM: psData ? psData.acrossM : null,
-    sidePanels, yokeLenM: ykData ? ykData.value : D.yokeLenM, gapM: D.gapM, tiltDeg: 0, axis: 'y'
+    sidePanels, ...(sideAt !== null ? { sidePanelAt: sideAt } : {}), yokeLenM: ykData ? ykData.value : D.yokeLenM, gapM: D.gapM, tiltDeg: 0, axis: 'y'
   }
 
   let wingList = null
   if (isNum(nWings)) {
     wingList = []
-    if (nWings > 2) out.warnings.push(`翼数 ${nWings} 超出南北两翼布局，只画 2 翼`)
+    if (nWings > 2) out.warnings.push(`翼数 ${nWings} 超出南北两翼布局，仅生成 2 翼`)
     const sides = nWings >= 2 ? ['+Y', '-Y'] : (nWings === 1 ? ['+Y'] : [])
     sides.forEach((side, i) => {
       // 翼数有出处 → 条目字段缺口进 needsInput；翼数本身是示意（只有 fill 模式走到这）→ 只进 illustrative
@@ -558,8 +578,9 @@ function geoSpec(tpl, fill, out) {
   const dList = rv && Array.isArray(rv.diametersM) && rv.diametersM.length ? rv.diametersM : null
   const mkRefl = (slot, D0) => {
     const mesh = D0 > D.meshAboveDM
-    const fd = mesh ? D.fdMesh : D.fdSolid
-    const r = { ...blankReflector(), diameterM: D0, focalM: Math.round(fd * D0 * 1000) / 1000, feedType: mesh ? 'array' : 'horn', mesh }
+    // 焦径比：网状 / 对地板塔馈实面 / 东西侧挂实面各一档；没定槽位的实面（「加反射面」初值）焦距留空 → 生成器按挂法取
+    const fd = mesh ? D.fdMesh : slot && slot.startsWith('deck') ? D.fdSolid : D.fdSide
+    const r = { ...blankReflector(), diameterM: D0, focalM: mesh || slot ? Math.round(fd * D0 * 1000) / 1000 : null, feedType: mesh ? 'array' : 'horn', mesh }
     return slot ? { slot, mount: slot.startsWith('deck') ? 'deck' : 'side', ...r } : r
   }
   out.itemDefaults.reflector = dList && dList.length === 1 ? mkRefl(null, dList[0]) : blankReflector()
@@ -568,11 +589,23 @@ function geoSpec(tpl, fill, out) {
     // 数量与口径都有出处（SSL-1300 / E3000 的代表星）
     reflectors = []
     for (let i = 0; i < rv.count && i < SIDE_SLOTS.length; i++) reflectors.push(mkRefl(SIDE_SLOTS[i], dList[Math.min(i, dList.length - 1)]))
-    if (rv.count > SIDE_SLOTS.length) out.warnings.push(`反射面 ${rv.count} 副超出东西侧 ${SIDE_SLOTS.length} 个槽位，只画 ${SIDE_SLOTS.length} 副`)
+    if (rv.count > SIDE_SLOTS.length) out.warnings.push(`反射面 ${rv.count} 副超出东西侧 ${SIDE_SLOTS.length} 个槽位，仅生成 ${SIDE_SLOTS.length} 副`)
     ss.reflectors = src(f.reflectors); ss['reflectors[*].diameterM'] = src(f.reflectors)
   } else if (rv && rv.count === 0) {
     reflectors = []
     ss.reflectors = src(f.reflectors)
+  } else if (rv && isNum(rv.count) && rv.count > 0) {
+    // 数量有出处、口径没有（SSL-1300 的 EchoStar XVII：东西每侧两副叠放）：按东西侧挂槽位排，口径是缺口
+    ss.reflectors = src(f.reflectors)
+    const d1 = D.illustrativeReflectorDM
+    reflectors = []
+    for (let i = 0; i < rv.count && i < SIDE_SLOTS.length; i++) {
+      const r = mkRefl(SIDE_SLOTS[i], d1)
+      r.diameterM = gap(`reflectors[${i}].diameterM`, d1, `示意值：${fillWhy}侧挂 ${d1} m`, 'reflectors[*].diameterM')
+      if (r.diameterM === null) r.focalM = null
+      reflectors.push(r)
+    }
+    if (rv.count > SIDE_SLOTS.length) out.warnings.push(`反射面 ${rv.count} 副超出东西侧 ${SIDE_SLOTS.length} 个槽位，仅生成 ${SIDE_SLOTS.length} 副`)
   } else if (dList) {
     // 只有口径（Spacebus 4000）：数量是缺口；示意 2 副（东西各一），口径有出处
     ss['reflectors[*].diameterM'] = src(f.reflectors)
@@ -582,8 +615,8 @@ function geoSpec(tpl, fill, out) {
     reflectors = gap('reflectors', [mkRefl('+X', d1), mkRefl('-X', d1), mkRefl('deck+Y', d2), mkRefl('deck-Y', d2)], '示意值：东西侧各 1 副 + 对地板南北各 1 副')
     if (reflectors) reflectors.forEach((r, i) => illOnly(`reflectors[${i}].diameterM`, r.diameterM, `示意值：侧挂 ${d1} m、对地板 ${d2} m`, 'reflectors[*].diameterM'))
   }
-  ss['reflectors[*].focalM'] = ill(`示意值：f/D ${D.fdSolid}（实面）/ ${D.fdMesh}（网状，> ${D.meshAboveDM} m）`)
-  ss['reflectors[*].offsetHM'] = ill('自动：内缘离侧壁留净空')
+  ss['reflectors[*].focalM'] = ill(`示意值：f/D ${D.fdSide}（东西侧挂实面）/ ${D.fdSolid}（对地板实面）/ ${D.fdMesh}（网状，> ${D.meshAboveDM} m）`)
+  ss['reflectors[*].offsetHM'] = ill('自动：内缘与侧壁保留净空')
 
   const mt = massTarget(f)
   if (mt.src) ss.massTargetKg = mt.src
@@ -623,7 +656,7 @@ function leoSpec(tpl, fill, out) {
   out.itemDefaults.reflector = blankReflector()
   // 单翼（McDowell：阵列沿 2.8 m 边伸出，一侧），翼数有出处 → 条目字段缺口进 needsInput
   const w = { side: '+Y', ...out.itemDefaults.wing }
-  if (nData === null) w.panels = gap('wings[0].panels', 1, '示意值：单条连续阵列画作 1 块', 'wings[*].panels')
+  if (nData === null) w.panels = gap('wings[0].panels', 1, '示意值：单条连续阵列按 1 块生成', 'wings[*].panels')
   const mt = massTarget(f)
   if (mt.src) ss.massTargetKg = mt.src
   out.spec = {
@@ -654,7 +687,7 @@ function cubesatSpec(tpl, fill, out) {
   }
   out.itemDefaults.reflector = blankReflector()
   ss['bus.xM'] = src(f.bus); ss['bus.yM'] = src(f.bus); ss['bus.zM'] = src(f.bus)
-  ss.massTargetKg = { ...src(f.launchMassKg), note: 'CDS 典型最大质量，当整星估算质量用' }
+  ss.massTargetKg = { ...src(f.launchMassKg), note: 'CDS 典型最大质量，用作整星估算质量' }
   ss['cubesat.bodyCells'] = ill('示意：体装电池片')
 }
 

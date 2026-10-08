@@ -20,7 +20,7 @@ const emit = defineEmits(['pick', 'clear', 'close'])
 
 const DOMAINS = [
   { k: '', t: '全部' }, { k: 'ground', t: '地球站' }, { k: 'aircraft', t: '飞机' },
-  { k: 'ship', t: '船' }, { k: 'vehicle', t: '车' }, { k: 'space', t: '航天器' }
+  { k: 'ship', t: '船舶' }, { k: 'vehicle', t: '车辆' }, { k: 'space', t: '航天器' }
 ]
 const ENT_KINDS = new Set(['ground', 'aircraft', 'ship', 'vehicle'])
 const domOf = (m) => (ENT_KINDS.has(m.kind) ? m.kind : 'space')
@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-if="value" class="mpp-foot">
-          <span class="lnk" title="卸下模型" @click="emit('clear'); emit('close')">清除</span>
+          <span class="lnk" title="移除模型" @click="emit('clear'); emit('close')">清除</span>
         </div>
       </div>
     </div>

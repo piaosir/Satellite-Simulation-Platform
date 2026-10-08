@@ -21,7 +21,7 @@ import { MASK_CHART_CALIBER, coneOutline } from '../../viz/models/maskChart.js'
 import { maskStats, encodeMask, maskToCsv, sunScanAngleDeg, SUN_SCAN_BINS } from '@core/models/mask.mjs'
 import { articulationSunAngle, rotateAboutAxis } from '@core/models/attitude.mjs'
 import { panelsFromMeta } from '@core/models/power.mjs'
-import { coneHalfOf, fovFullOf, maskSigFor } from '../mountLogic.js'
+import { coneHalfOf, fovFullOf, maskSigFor, maskExcludeOf } from '../mountLogic.js'
 import { stateFn } from '../satSources.js'
 import { fmtNum } from '../wbLogic.js'
 
@@ -112,7 +112,8 @@ async function compute() {
   const sk = S.satKey, mid = m.id
   const state = sat.artState()
   const sig = maskSigFor(model, m, state, null)
-  const mount = { posBody: m.posBody.slice(), dirBody: m.boresightBody.slice(), excludeNodes: (m.excludeNodes || []).slice() }
+  // 排除名单与签名同一份（maskExcludeOf：挂点排除节点 + 导入件自身反射面的三角形段）
+  const mount = { posBody: m.posBody.slice(), dirBody: m.boresightBody.slice(), excludeNodes: maskExcludeOf(model, m) }
   // 算完（每个 await 之后）核对：还是这颗星、这个挂点仍在、当前输入的期望签名仍是开算时那个 —— 否则结果丢掉，不写进别的星 / 别的位姿
   const live = () => {
     if (S.satKey !== sk || signal.aborted) return false
@@ -167,7 +168,7 @@ async function compute() {
         if (sun) x.maskSun = plain(sun); else delete x.maskSun
       }, { undo: false })
     }
-    earthDisk.value = await earthDiskFor()
+    refreshEarthDisk()
   } catch (e) {
     if (e && e.name !== 'AbortError') err.value = (e && e.message) || String(e)
   } finally {
@@ -191,6 +192,16 @@ async function earthDiskFor() {
   const r = Math.hypot(...s.rEcef)
   return r > 6378.137 ? Math.asin(6378.137 / r) * R2D : null
 }
+// 地球盘虚线跟着输入走（不只在算完那一刻取一次）：换星 / 换挂点 / 改姿态律 / 轨道或时段变了都重取；
+// 取的途中输入又变了，以最后一次为准
+let diskSeq = 0
+async function refreshEarthDisk() {
+  const seq = ++diskSeq
+  let v = null
+  try { v = await earthDiskFor() } catch { v = null }
+  if (seq === diskSeq) earthDisk.value = v
+}
+watch(() => [S.satKey, S.mountSel, S.binding && S.binding.attitude ? S.binding.attitude.law : '', S.orbitRev, ana.win.t0], refreshEarthDisk, { immediate: true })
 const chartData = computed(() => (rec.value ? { blocked: rec.value.mask.blocked, clearance: rec.value.mask.clearance, hitNode: rec.value.mask.hitNode, nodeNames: rec.value.mask.nodeNames } : null))
 const overlays = computed(() => {
   const m = mnt.value
@@ -217,16 +228,18 @@ watch(() => S.mountSel, () => { if (satView.av.value && mnt.value && satView.av.
 
 // ── 导出 ──
 const expMsg = ref('')
+const expBad = ref(false)
+function setExp(x) { const s = ana.exportState(x); expMsg.value = s.msg; expBad.value = s.bad }
 async function exportCsv() {
   if (!rec.value) return
-  const r = await ana.exportText(ana.fileStem('掩模'), maskToCsv(rec.value.mask), 'csv', 'CSV')
-  expMsg.value = r && r.ok ? '已导出。' : ''
+  setExp(await ana.exportText(ana.fileStem('掩模'), maskToCsv(rec.value.mask), 'csv', 'CSV'))
 }
 async function exportPng() {
   if (!chartRef.value || !rec.value) return
-  const blob = await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? (mnt.value.name || mnt.value.id) : ''}` })
-  const r = await ana.exportBlob(ana.fileStem('掩模'), blob, 'png', 'PNG')
-  expMsg.value = r && r.ok ? '已导出。' : ''
+  let r
+  try { r = await ana.exportBlob(ana.fileStem('掩模'), await chartRef.value.exportPng({ scale: 4, title: `${S.label} · ${mnt.value ? (mnt.value.name || mnt.value.id) : ''}` }), 'png', 'PNG') }
+  catch (e) { r = { ok: false, error: (e && e.message) || String(e) } }
+  setExp(r)
 }
 const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
 </script>
@@ -241,12 +254,12 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
       <button class="lb-mini primary" :disabled="!mnt || !cur.meta || busy" title="按当前模型、选中挂点与关节值计算（Worker 池）" @click="compute"><Icon name="calculator" :size="13" />计算</button>
       <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
       <span v-if="busy" class="md-state"><span class="an-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
-      <label v-if="solar.length" class="md-chkrow an-chk" title="按太阳在本体系的方位量化 12 档（翼转 30° 一档）各算一张，查表时按当时太阳角取最近档">
+      <label v-if="solar.length" class="md-chkrow an-chk" title="按太阳在本体系中的方位量化为 12 档（太阳翼每转 30° 一档）分别计算，查表时取与当前太阳角最接近的一档">
         <input v-model="sunScan" type="checkbox" />对日扫描
       </label>
     </div>
-    <div v-if="err" class="md-state bad" data-i18n-skip>{{ err }}</div>
-    <div v-if="saved === false && rec" class="md-state warn" title="掩模文件没有落盘（主进程通道不可用或写失败）；预览与读数照常">未保存</div>
+    <div v-if="err" class="md-state bad">{{ err }}</div>
+    <div v-if="saved === false && rec" class="md-state warn" title="掩模文件未写入磁盘（主进程通道不可用或写入失败）；预览与读数不受影响">未保存</div>
 
     <!-- 关节 -->
     <div v-if="arts.length" class="an-arts">
@@ -258,34 +271,35 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
           <span class="an-v" data-i18n-skip>{{ fmtNum(valOf(a, s, i), 4) }}</span>
         </template>
       </div>
-      <div class="md-acts"><span class="sp"></span><button class="lb-mini" title="全部关节回初值" @click="resetArts"><Icon name="undo-2" :size="12" />复位</button></div>
+      <div class="md-acts"><span class="sp"></span><button class="lb-mini" title="全部关节恢复初值" @click="resetArts"><Icon name="undo-2" :size="12" />复位</button></div>
     </div>
 
     <template v-if="rec">
       <div class="md-kvs">
-        <div class="md-kv" title="遮挡格立体角之和 / 4π（按立体角加权）"><span class="k">遮挡立体角</span><span class="v" data-i18n-skip>{{ pct(stats.blockedFrac) }}</span><span class="u">%</span></div>
-        <div class="md-kv" title="遮挡格里最近的命中距离（挂点到本体最近处）"><span class="k">最小净空</span><span class="v" data-i18n-skip>{{ stats.minClearanceM == null ? '—' : fmtNum(stats.minClearanceM, 4) }}</span><span class="u">m</span></div>
-        <div v-if="rec.ms != null" class="md-kv" title="建树 + 射线（Worker 池墙钟）"><span class="k">耗时</span><span class="v" data-i18n-skip>{{ rec.ms }}</span><span class="u">ms</span></div>
-        <div v-if="rec.sunBins" class="md-kv" :title="'对日扫描 ' + rec.sunBins + ' 档 + 当前关节值一张，合计墙钟'"><span class="k">对日扫描</span><span class="v" data-i18n-skip>{{ rec.sunBins }} · {{ rec.totalMs }}</span><span class="u">ms</span></div>
+        <div class="md-kv" title="遮挡网格立体角之和 / 4π（按立体角加权）"><span class="k">遮挡立体角</span><span class="v" data-i18n-skip>{{ pct(stats.blockedFrac) }}</span><span class="u">%</span></div>
+        <div class="md-kv" title="遮挡网格中最近的命中距离（挂点至本体最近点）"><span class="k">最小净空</span><span class="v" data-i18n-skip>{{ stats.minClearanceM == null ? '—' : fmtNum(stats.minClearanceM, 4) }}</span><span class="u">m</span></div>
+        <div v-if="rec.ms != null" class="md-kv" title="BVH 构建 + 射线求交（Worker 池墙钟时间）"><span class="k">耗时</span><span class="v" data-i18n-skip>{{ rec.ms }}</span><span class="u">ms</span></div>
+        <div v-if="rec.sunBins" class="md-kv" title="按太阳翼转角量化的档数（每档一张掩模）"><span class="k">对日扫描</span><span class="v" data-i18n-skip>{{ rec.sunBins }}</span><span class="u">档</span></div>
+        <div v-if="rec.sunBins" class="md-kv" :title="'对日扫描 ' + rec.sunBins + ' 档 + 当前关节状态 1 张，合计墙钟时间'"><span class="k">合计耗时</span><span class="v" data-i18n-skip>{{ rec.totalMs }}</span><span class="u">ms</span></div>
         <div v-if="rec.tris" class="md-kv"><span class="k">三角形</span><span class="v" data-i18n-skip>{{ rec.tris }}</span></div>
       </div>
       <div class="md-acts">
         <div class="lbu-seg an-seg">
-          <button :class="{ on: mode === 'blocked' }" title="遮挡格实填" @click="mode = 'blocked'">遮挡</button>
-          <button :class="{ on: mode === 'clearance' }" title="遮挡格按最近遮挡距离着色" @click="mode = 'clearance'">净空</button>
+          <button :class="{ on: mode === 'blocked' }" title="遮挡网格实心填充" @click="mode = 'blocked'">遮挡</button>
+          <button :class="{ on: mode === 'clearance' }" title="遮挡网格按最近遮挡距离着色" @click="mode = 'clearance'">净空</button>
         </div>
         <span class="sp"></span>
-        <label class="md-chkrow an-chk" title="预览里画掩模球面片（半径 = 2 × 包围半径，球心 = 射线起点）"><input v-model="satView.maskOn.value" type="checkbox" />球面片</label>
+        <label class="md-chkrow an-chk" title="在预览中绘制掩模球面片（半径 = 2 × 包围球半径，球心 = 射线起点）"><input v-model="satView.maskOn.value" type="checkbox" />球面片</label>
       </div>
       <ChartBox ref="chartRef" kind="mask" :data="chartData" :overlays="overlays" :mode="mode" />
     </template>
     <div class="srow an-av">
-      <button class="lb-mini" :class="{ on: avOn }" :disabled="!mnt || !cur.meta" title="相机放到挂点上沿视轴看：本体半透明红、掩模边界黄线、视场圈青线" @click="toggleAv"><Icon name="scan-eye" :size="13" />天线视角</button>
-      <label class="an-l" title="天线视角的竖直视场（全角）；缺省 = 挂点视场，没有则取方向图 −3 dB 全宽（全向天线 170°），夹在 1°–170°">视场</label>
+      <button class="lb-mini" :class="{ on: avOn }" :disabled="!mnt || !cur.meta" title="相机置于挂点并沿视轴观察：本体半透明红色、掩模边界黄线、视场圈青线" @click="toggleAv"><Icon name="scan-eye" :size="13" />天线视角</button>
+      <label class="an-l" title="天线视角的竖直视场（全角）；缺省 = 挂点视场，未设置时取方向图 −3 dB 全宽（全向天线 170°），限定在 1°–170°">视场</label>
       <NumIn :model-value="avFov" :min="1" :max="170" :sig="4" allow-empty :placeholder="String(Math.round(avFovDefault * 10) / 10)" @commit="setAvFov" />
       <span class="u">°</span>
     </div>
-    <div v-if="expMsg" class="md-state ok">{{ expMsg }}</div>
+    <div v-if="expMsg" class="md-state" :class="{ ok: !expBad, bad: expBad }">{{ expMsg }}</div>
   </MdSec>
 </template>
 

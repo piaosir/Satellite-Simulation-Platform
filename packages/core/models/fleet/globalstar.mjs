@@ -28,7 +28,7 @@ function buildGS(B, o) {
   // 梯形截面在 (X, Z) 平面、沿 Y 挤出（局部 x = 本体 X、y = 本体 Z、z = 本体 −Y… 取 z = 本体 Y 保持右手：x = Z × Y? 直接用 x=X, y=Z 需 z = X × Z = −Y）
   const Fb = frame(P(0, 0, 0), [1, 0, 0], [0, 0, 1], [0, -1, 0])
   const sec = [[-Wn / 2, D / 2], [Wn / 2, D / 2], [Wz / 2, -D / 2], [-Wz / 2, -D / 2]]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   prism(g.mb('struct_grey'), Fb, sec, -Ly / 2, Ly / 2)
   const secM = [[-Wn / 2 - 0.012, D / 2 + 0.006], [Wn / 2 + 0.012, D / 2 + 0.006], [Wz / 2 + 0.012, -D / 2 - 0.012], [-Wz / 2 - 0.012, -D / 2 - 0.012]]
   prism(g.mb(o.skin || 'mli_gold'), Fb, secM, -Ly / 2 + 0.03, Ly / 2 - 0.03)

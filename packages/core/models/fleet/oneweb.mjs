@@ -30,7 +30,7 @@ function buildOneWeb(B) {
   // 梯形棱柱：截面在 (Y, Z) 平面，沿 X 挤出（局部系 x = 本体 Y、y = 本体 Z、z = 本体 X）
   const Fb = frame(P(0, 0, 0), [0, 1, 0], [0, 0, 1], [1, 0, 0])
   const sec = [[-WN / 2, DZ / 2], [WN / 2, DZ / 2], [WZ / 2, -DZ / 2], [-WZ / 2, -DZ / 2]]
-  const g = group(B, 'bus', '平台体', 'bus')
+  const g = group(B, 'bus', '星体', 'bus')
   prism(g.mb('struct_grey'), Fb, sec, -LX / 2, LX / 2)
   // MLI：同形略大一圈（离结构面 1.5 cm）
   const secM = [[-WN / 2 - 0.012, DZ / 2 + 0.006], [WN / 2 + 0.012, DZ / 2 + 0.006], [WZ / 2 + 0.012, -DZ / 2 - 0.012], [-WZ / 2 - 0.012, -DZ / 2 - 0.012]]

@@ -11,8 +11,11 @@ import { shellUi, sideCtx, SAT_INFO_W_LIM } from '../stores/shellUi'
 import { isSecOpen, toggleSec, setSecOpen, revealSection } from '../stores/panelSections'
 import { registerCommands } from '../stores/commands'
 import { kwId } from '../shared/cmdKeywords.js'
-import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, capped as clockCapped, restoreState as clockRestore } from '../stores/simClock'
+import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, capped as clockCapped, restoreState as clockRestore, setRange as clockSetRange, bootSceneMs } from '../stores/simClock'
 import { STEP_PRESETS, SPEED_PRESETS, followWindow, snapMs, fmtStepShort, fmtRate, fmtOffset } from '../shared/simClockCore.js'
+import { SPAN_MIN_SEC, SPAN_MAX_SEC, fmtSpanSec, normPeriod } from '../shared/tlPeriod.js'
+import { computeRuler, LAB_PAD } from '../shared/tlRuler.js'
+import TimelineSettings from '../components/TimelineSettings.vue'
 import { uiFont } from '../stores/uiFont'
 import { logMsg, diagMsg } from '../stores/log'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
@@ -32,8 +35,10 @@ import SatFinderDialog from '../components/SatFinderDialog.vue'
 import { useSatSets } from '../viz/constellation/useSatSets.js'
 import { ownerName } from '../shared/satcatCodes.js'
 import { loadSatcatIndex } from '../shared/satcatIndex.js'
-import { makePredicate, emptyFilters, normalize as normalizeFilters, isEmpty as isFilterEmpty } from '../shared/satFilter.js'
+import { makePredicate, emptyFilters, normalize as normalizeFilters, isEmpty as isFilterEmpty, metricsOf } from '../shared/satFilter.js'
 import MiniSendDialog from '../components/MiniSendDialog.vue'
+import VideoExportPanel from '../components/VideoExportPanel.vue'
+import { useVideoExport } from '../viz/video/useVideoExport.js'
 import { MANUAL as COV_MANUAL, targetOptions as covTargetOptions, defaultTarget as covDefaultTarget, resolveTarget as resolveCovTarget, covUnit, parseCustoms, rememberTarget as rememberCovTarget } from '../shared/covMiniExport.js'
 import { trajItemsOf } from '../shared/trajMiniExport.js'
 defineOptions({ inheritAttrs: false })   // 不把父级传入的 title 落到根节点（去掉鼠标悬停的“星座3D”原生提示）
@@ -48,10 +53,21 @@ import { thumbs as mdlThumbs, requestThumb as mdlRequestThumb } from '../compone
 import { createEntityLayer } from '../viz/globe3d/entityLayer.js'
 // 平面图上挂了模型的站 / 点 / 载具：画这件模型的正射俯视图（离屏出图器，与 3D 模型图标同一份模型、同一套打光）
 import { createEntitySprites } from '../viz/flatmap/entitySprites.js'
-import { entityTemplateCatalog } from '@core/models/entityTemplates.mjs'
-import { makeTrajState, CRUISE_ALT_M_DEFAULT, trajWaypointInfo, trajLine3, trajStartMs, trajEndMs, trajLengthM, trajCruiseAltM, trajDefaultCruiseAltM } from '@core/models/trajKinematics.mjs'
-import { ENT_PX_MIN, ENT_PX_MAX, entityKey, normEntityModel, normTrack, normTrajMotion, sanitizeMarkers, trajMoving, trajEntityKind, trajLinePts, trajNoteOf, parseDateTimeText, partsToUtcMs, makeTrackState, pickTrackTarget, vehicleStateAt } from '@core/models/entityRuntime.mjs'
+import { entityTemplateCatalog, getEntityTemplate } from '@core/models/entityTemplates.mjs'
+import { okDiaM, okPwrW, linkTargets, hopKind, satRegenAt, satLaserAt, ISSUE_TEXT, LINK_NODES_MAX, isAreaNode } from '@core/models/mapLinks.mjs'
+import { pgRing, pgContains, pgAreaKm2, pickFamStat, pickCount as linkPickCount } from '@core/models/mapLinkPoints.mjs'   // 链路分析：Polygon / 航迹节点的代表点
+import { linkPointLabel } from '../shared/linkPointNames.js'
+import LinkPickEditor from '../components/LinkPickEditor.vue'
+import { useMapLinks, LINK_STYLE_DEF, LINK_STYLE_REV, HOP_TEXT } from '../viz/links/useMapLinks.js'   // 图上链路（「链路」视图）
+import { createLinkPickSource } from '../viz/links/linkPickSource.js'                 // 「链路」视图节点选择器的候选
+import { fmtKm } from '../viz/links/linkGeom.js'
+import LinkNodePicker from '../components/LinkNodePicker.vue'
+import { makeTrajState, CRUISE_ALT_M_DEFAULT, trajWaypointInfo, trajLine3, trajDefaultCruiseAltM, densifyGreatCircle } from '@core/models/trajKinematics.mjs'
+import { ENT_PX_MIN, ENT_PX_MAX, entityKey, normEntityModel, normTrack, normTrajMotion, sanitizeMarkers, trajMoving, trajEntityKind, trajLinePts, trajNoteOf, makeTrackState, pickTrackTarget, vehicleStateAt } from '@core/models/entityRuntime.mjs'
+import { makeStationLook, bestLook, lookAt, labelTrackOf, markLabelText, fmtAz1, fmtDeg1 } from '../viz/markers/markElev.js'   // 站 / 点标记上的聚焦卫星仰角标注
 import NumIn from '../model/NumIn.vue'
+import { trajTiming, retimeTraj, defaultSpeedKmh } from '@core/models/trajTiming.mjs'   // 航迹时间：出发 / 到达 / 历时 / 速度 四项联动
+import TrajTimeFields from '../components/TrajTimeFields.vue'
 import { createBodyRuntime, qB2LFromBasis, attEquivOf } from '../viz/models/bodyRuntime.js'
 import { satKeyOf as coreSatKeyOf, grdSatKey, parseModelId, isValidSatKey } from '@core/models/schema.mjs'
 import { match as matchModel } from '@core/models/autoMatch.mjs'
@@ -74,8 +90,9 @@ import { POV_META, CUSTOM_POV, povTableOf, normMapPov } from '../viz/geo/povList
 import { CUSTOMIZABLE_DISPUTES, OWNER_ZH } from '../viz/geo/frozen.js'
 import { getMapPov, onMapPov, saveMapPov } from '../stores/mapPov.js'
 import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
-import { mapCrs, setMapCrs, MAP_CRS_DEF, lon0ToCenter, centerToLon0, projOpts, LOOK_MODES } from '../stores/mapCrs.js'
+import { mapCrs, setMapCrs, restoreMapCrs, MAP_CRS_DEF, MAP_CRS_REV, lon0ToCenter, centerToLon0, projOpts, LOOK_MODES } from '../stores/mapCrs.js'
 import { PROJECTIONS, projParams } from '../viz/geo/projection.js'
+import { GEO_STEPS } from '../viz/geo/geoFrame.js'   // 经纬图框的间隔档（地图设置 → 2D 投影）
 import { waterList } from '../viz/geo/waterNames.js'
 import { CHAINS, CHAIN_DEF } from '../viz/geo/islandChains.js'
 import { DATUMS } from '../viz/geo/datum.js'
@@ -88,11 +105,11 @@ import { useEnvField } from '../viz/env/useEnvField.js'
 import { useLiveField } from '../viz/env/useLiveField.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
-import { createNoradResolver, foldersForNorads, linkedNodesOf, linkMissing as treeLinkMissing, followFolder as treeFollowFolder, ephGroupsToLoad, grdLivePayload, createLiveThrottle, focusStale, createFollowGate, synthGroupDrives, treeNavState, nodeLinkId } from '../viz/grd/treeLink.js'
-import { syncTreeGeoEntries, TREE_GEO_LABEL } from '../viz/grd/treeGeo.js'
+import { createNoradResolver, foldersForNorads, linkedNodesOf, linkMissing as treeLinkMissing, followFolder as treeFollowFolder, ephGroupsToLoad, grdLivePayload, createLiveThrottle, focusStale, createFollowGate, synthGroupDrives, treeNavState, nodeLinkId, treeSetMembers } from '../viz/grd/treeLink.js'
+import { syncTreeGeoEntries, isTreeGeoId, TREE_GEO_LABEL, TREE_GEO_GROUP } from '../viz/grd/treeGeo.js'
 import { buildRecord as anBuildRecord, freshModel as anFreshModel } from '../viz/grd/gaussStk.js'   // 树上「新建高斯天线」（别名：波束合成那边也可能直接引这个模块）
 import { useSatPerfTable } from '../viz/grd/useSatPerfTable.js'
-import { sampleBeamAtEcef, satLookAt } from '../viz/grd/coverage.js'
+import { sampleBeamAtEcef, satLookAt, groundLookAngles } from '../viz/grd/coverage.js'
 import SatCovPanel from '../components/SatCovPanel.vue'
 import { createPerfWinHost } from '../viz/grd/perfWinHost.js'
 import SatCovShellPicker from '../components/SatCovShellPicker.vue'
@@ -108,15 +125,18 @@ import sat from '../viz/constellation/satellite.js'
 // 本文件从前有 15 处 sat.propagate，全部改到这里 —— 少改一处，点序列星就在那处静默出 NaN。
 import { posAt, isEphemEntry, propagatorLabel, periodMinOf, keepInRenderSet } from '../viz/constellation/satPos.js'
 import { metricsFromEntry } from '../shared/satrecMetrics.js'
+import { elementsOmm, normEpoch } from '../shared/treeOrbitEpoch.js'   // 天线树轨道根数星：根数 + 节点自己的历元 → omm2satrec 入参（全软件同一口径）
 import { tableFrom } from '../viz/constellation/ephemTable.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
 import { createFocusGeomPool } from '../viz/constellation/focusGeomPool.js'
 import { footprintRing } from '../viz/constellation/focusFootprint.js'
 import { swathK, sectionOf, groundMotion, buildSwath, swathFlatGeom } from '../viz/constellation/focusSwath.js'
+import { MARK_RANK, NO_KEYS, keysOf, anyOf, withoutClaimed, withoutClaimedDots, mergeLayerSats, claimSig } from '../viz/constellation/satMarkMerge.js'
 import { pf } from '../shared/num.js'
 import { vecToLatLon, llaToVec } from '../viz/globe3d/focusLanes.js'
 import { solarGeometry } from '../viz/terminator.js'
+import { moonPosition, moonPhase, sunDistanceKm } from '../viz/lunar.js'
 import { SPACE_DEF, spaceFromSaved } from '../viz/globe3d/spaceFx.js'
 import * as W from '../viz/wgs84.js'
 import { parseOMMCsv, fetchGroupLiveOrSup } from '../viz/constellation/tle.js'
@@ -126,9 +146,10 @@ import { makeSatSetItem } from '../shared/satconMiniExport.js'
 import { walkerCode, orbitPeriodMin, validateWalker } from '../viz/constellation/walker.js'
 import OD from '../viz/constellation/orbitDesign.js'   // 轨道向导求解器（九种类型 -> 六根数）
 import { classifyOrbit } from '../shared/orbitClass.js'
-import { fmtGeoSlot, geoSlotOfSatrec, geoSlotOfOmm } from '../shared/geoSlot.js'
+import { fmtGeoSlot, geoSlotOfSatrec, geoSlotOfOmm, isGeoSatrec, geoLonAtEpoch } from '../shared/geoSlot.js'
 import { byLang, curLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
-import { onLangChange } from '../shared/i18n/runtime.js'   // 切界面语言时，地图上的地名跟着换语言（见 syncNameLang）
+import { pointFallbackName, stationFallbackName } from '../shared/markerNames.js'   // 无名标记兜底名（全平台一个口径）
+import { onLangChange, t as i18nT } from '../shared/i18n/runtime.js'   // 切界面语言时，地图上的地名跟着换语言（见 syncNameLang）；i18nT：画进视频的内置分组名显式取译文
 
 // 分组与「星座地图」(2D) 完全一致：同一份列表 / 顺序 / 默认「中国星网」。
 const GROUPS = [
@@ -202,18 +223,19 @@ const admName2 = ref(curLang() === 'en' ? 'en' : 'local')
 const admQuery1 = ref('')          // 国家搜索框
 let provincesData = null
 let citiesData = null
-// 宇宙空间（地图设置 · 宇宙空间）：总开关 + 六项，各项拆开实现、各存各的字段 ——
-//   星空 / 大气辉光 / 太阳：scene.setSpace（viz/globe3d/spaceFx.js，仅 3D）；地球影像：applyImagery（3D + 平面图，原「影像底图」并进来）；
+// 宇宙空间（地图设置 · 宇宙空间）：总开关 + 七项，各项拆开实现、各存各的字段 ——
+//   星空 / 大气辉光 / 太阳 / 月球：scene.setSpace（viz/globe3d/spaceFx.js，仅 3D；月球星历与姿态在 viz/lunar.js）；地球影像：applyImagery（3D + 平面图，原「影像底图」并进来）；
 //   晨昏效果：夜区按太阳高度角 0° → −18° 柔和压暗（3D 着色器 + 平面图栅格），卫星模型按太阳打光（关着 = 全亮）；
 //   晨昏线：分界线 + 自带的硬边夜区阴影（3D + 平面图；阴影只在晨昏效果不勾时画，不叠两层）。
 // 时刻取时间轴当前值 calcAt()（非系统时钟）——拖时间轴 / 实时推进时太阳、星空、晨昏随之移动，
 // 与卫星星位同一个 UTC 时刻、同一个自转相位（GMST 复用 sat.gstime，见 viz/terminator.js）。
-// 总开关出厂关；打开即得完整效果（前五项勾、晨昏线不勾）。老存档（termOn / termNight / termLine / termStyle）的迁移见 restoreSettings。
+// 总开关出厂关；打开即得完整效果（晨昏线以外各项都勾）。老存档（termOn / termNight / termLine / termStyle）的迁移见 restoreSettings。
 // 跟随卫星只改视角：这里的开关普通视图与跟随视图同一套，跟随不单独开 / 关任何一项。
 // 出厂值 / 取值范围 / 存档迁移在 viz/globe3d/spaceFx.js（SPACE_DEF / spaceFromSaved，单测 modelSpaceEnv 守着）。
 const spaceOn = ref(false)
 const space = reactive({ ...SPACE_DEF })
 const spaceSub = ref(null)      // 当前日下点 {lat, lon}，供侧栏读数（applySpace 时回填）
+const spaceMoon = ref(null)     // 当前月下点与照亮比例 { sub:{lat, lon}, illum }，供侧栏读数（月球勾着时 applySpace 回填，否则 null）
 // 岛链参考线（第一 / 第二 / 第三）：默认整层不画，逐条可勾。表在 viz/geo/islandChains.js。
 // ★ 它不是边界、不表达归属，故不进主权解算层那一套（边界线一节），自成一个可关的叠加层。
 const chainOn = ref(false)
@@ -238,6 +260,7 @@ const keyword = ref('')
 //   点结果聚焦时 selEntries 里存的就是 Proxy，喂给聚焦几何 Worker 时 postMessage 结构化克隆直接抛 DataCloneError，
 //   整条聚焦管线当场哑掉（轨迹 / 覆盖圈全不画、时钟拍卡住）；与在球上点选拿到的原始条目也认不出是同一颗。
 const searchResults = shallowRef([])
+const searchOpenTick = ref(0)   // 标题栏「在星座中搜索」每调一次自增：侧栏搜索下拉据此重新展开并聚焦（同一个词再搜一次也算）
 const selected = ref(null)
 // 覆盖圈定义（常驻时间条，未聚焦卫星时置灰）：按「波束角」(星上全锥角) 或「最低仰角」(地球站约束) 二选一
 const fpMode = ref('beam')     // 'beam' | 'elev'
@@ -296,6 +319,13 @@ const grd = useGrdCoverage(() => scene, () => flat, () => flatView.value, {
   attReady: () => bodyRt.isLoaded(),
   getMountOptions: (antKey) => grdMountOptions(antKey),
   getAttLaw: (antKey) => grdAttLaw(antKey),
+  // 「姿态 + 挂点」一节就地改本星姿态律（与模型工作台卫星页同一份绑定，见 grdBodyAttitude 一段）
+  getBodyAttitude: (antKey) => grdBodyAttitude(antKey),
+  setBodyAttitude: (antKey, att) => grdSetBodyAttitude(antKey, att),
+  getBodyAttSeed: (meta) => grdBodyAttSeed(meta),
+  bodyTargetKey: (item) => grdBodyTargetKey(item),
+  bodyKeyLabel: (satKey) => bodyKeyLabel(satKey),
+  openBodyEditor: (antKey) => grdOpenBodyEditor(antKey),
   // 切到「空间点」指向时，指向点默认落在哪层壳上（取对星覆盖分析里第一层显示中的壳层）
   defaultBoreAlt: () => satcovDragAlt(),
   // 2D 平面图只有一块 GRD 场，对地/对星共用 → 按当前【上下文视图】定归属（另一半见下面 satcov 的第 7 参）。
@@ -328,6 +358,9 @@ const satPerf = useSatPerfTable()
 // 可见性分析（复刻 STK Access / Coverage）：选目标（站/点/航迹/Polygon）→ 仰角门限 → 算可见卫星。
 // 宿主能力全经 getter/箭头注入（避免 TDZ；stations/points/renderEntries 等在下方定义，仅运行时调用）。
 // 卫星集按 vis.satSrc 分派：''=当前显示（renderEntries）；内置分组/卫星组/自定义卫星=异步解析缓存（见 visSatResolve）。
+// 覆盖分析热力图最近一次推给渲染器的那份：平面渲染器是懒创建的（首次切 2D / 首次导出才建），
+// 在那之前算出的热力图只进了 3D —— feedFlat 据此补推，否则「全球图」导出与首次切 2D 都缺这一层。
+let covGridLast = null
 const vis = useVisibility({
   getStations: () => stations.value, getPoints: () => points.value, getTrajectories: () => trajectories.value,
   getPolys: () => polys.value, getSatSet: () => (vis.satSrc.value ? visSatCache : renderEntries),
@@ -337,11 +370,12 @@ const vis = useVisibility({
   drawCov: (spec) => {
     if (spec && spec.fillBands && spec.fillBands.length) {
       const layer = { id: spec.id, fillBands: spec.fillBands }, opts = { alpha: spec.alpha }
+      covGridLast = { layer, opts }
       if (scene) scene.setCovGrid(layer, opts)
       if (flat) flat.setCovGrid(layer, opts)
-    } else { if (scene) scene.clearCovGrid(); if (flat) flat.clearCovGrid() }
+    } else { covGridLast = null; if (scene) scene.clearCovGrid(); if (flat) flat.clearCovGrid() }
   },
-  setCovAlpha: (a) => { if (scene) scene.setCovGridAlpha(a); if (flat) flat.setCovGridAlpha(a) }
+  setCovAlpha: (a) => { if (covGridLast) covGridLast.opts = { ...covGridLast.opts, alpha: a }; if (scene) scene.setCovGridAlpha(a); if (flat) flat.setCovGridAlpha(a) }
 })
 
 // ===== 环境场渲染槽的归属闸 =====
@@ -549,15 +583,17 @@ function computeVisibilityGeometry() {
   for (const r of rs) {
     if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
     const hot = hid && String(r.noradId) === hid
+    const key = satIdOf(r)   // 卫星标记归并用（pushGeom）：在轨点 / 星下点图标被聚焦层认领时让位
     items.push({
       satPos: { lat: r.subLat, lon: r.subLon, altKm: r.altKm, color: hot ? '#efeae0' : (vis.iconColor.value || '#4caf82') },
       // 视线连线可关（showLines）：星多时几百根线糊成扇面；关线只影响呈现，在轨点/星下点/悬停高亮照常
       orbit: vis.showLines.value ? [{ lat: tgt.lat, lon: tgt.lon, altKm: 0 }, { lat: r.subLat, lon: r.subLon, altKm: r.altKm }] : null,
       // raw：这条是【目标→星的视线斜线】，不是聚焦星的轨道线 —— 钉出厂样式，不跟「显示设置 · 轨道线」变色/关掉
       raw: true,
-      primary: hot
+      primary: hot,
+      key
     })
-    subs.push({ lat: r.subLat, lon: r.subLon, px: subPx, colorHex: icNum })
+    subs.push({ lat: r.subLat, lon: r.subLon, px: subPx, colorHex: icNum, key })
   }
   return { items, subs }
 }
@@ -834,16 +870,34 @@ function requestSearchPoolForBore() {
     refreshPositions()
   })
 }
-// 天线树里的同步轨道定点星在星座里生成的那批条目（viz/grd/treeGeo.js；由 syncTreeGeo 按树重建，对象跨重建复用）。
-// 普通变量不进 ref：条目要进选中集、喂聚焦几何 Worker，深响应读出来是 Proxy 会 DataCloneError。
-// treeGeoIdMap（folder → 合成号串）是给树一侧（高亮 / 两钮 / 信息卡天线节）派生用的响应式镜像。
+// ===== 轨道根数模拟星：用经典根数自建 satrec，复用 SGP4 引擎自行解算（不并入真实星座 entries）=====
+// ★ 放在天线树虚拟星条目（treeGeo）之前：syncTreeGeo 的立即 watch 在 setup 期就按 orbitSatrec 给轨道根数星建条目，晚声明会撞 TDZ
+// 经典轨道根数 → satrec（复用 omm2satrec）。elements 角度单位 °，altKm 视作近地点高度（圆轨道 e=0 即轨道高度）。
+// 历元 = 节点自己存的 elements.epoch（新建取时间轴当前时刻，弹窗里可改；旧节点恢复时补成固定常量），各星可以不同。
+//   原先是页面加载那一刻的共享锚点：每次切回本页都换一个，同一时刻星跳到轨道别处，别的窗口（链路预算 / 模型工作台）
+//   又各编各的 —— 现在历元跟节点走，全软件拿同一份根数 + 历元（shared/treeOrbitEpoch.elementsOmm）、按同一条时间轴推演。
+function elementsToSatrec(el) { return sat.omm2satrec(elementsOmm(el, 'SIM')) }
+// 模拟星 satrec 缓存：根数签名不变则复用（签名含历元：改根数 / 改历元都重建）
+const customSatrecs = new Map()   // folder -> { sig, rec }
+function orbitSatrec(node) {
+  const sig = JSON.stringify(node.elements)
+  const hit = customSatrecs.get(node.folder)
+  if (hit && hit.sig === sig) return hit.rec
+  const rec = elementsToSatrec(node.elements)
+  customSatrecs.set(node.folder, { sig, rec })
+  return rec
+}
+// 天线树里的虚拟星（定点星 / 轨道根数星）在星座里生成的那批条目（viz/grd/treeGeo.js；由 syncTreeGeo 按树重建，对象跨重建复用），
+// 归卫星集「卫星天线树」（'t:tree'）。普通变量不进 ref：条目要进选中集、喂聚焦几何 Worker，深响应读出来是 Proxy 会 DataCloneError。
+// treeGeoIdMap（folder → 合成号串，只含真出了条目的）是给树一侧（高亮 / 两钮 / 信息卡天线节 / 卫星集成员）派生用的响应式镜像。
 const treeGeoCache = new Map()     // folder → 条目
 let treeGeoList = []               // 按树序
 let treeGeoById = new Map()        // 合成号串 → 条目
 const treeGeoIdMap = shallowRef(new Map())
+const treeGeoTick = ref(0)          // 条目表每重建一轮自增（rec 就地换了号却没变：「卫星天线树」成员表的行右读数据此重算）
 // 身份串 → 卫星条目。★【全量】解析，不限于在场：对星跟踪的目标星可以是任何一颗目录星 /
 // 自定义星座合成星 / 卫星组成员，它没被渲染出来不影响指向解算（与搜索池同一口径，见 satcovSearch）。
-// 顺序＝在场（与点云同一批对象）→ 天线树定点星（小眼睛关着也在）→ 全量在轨目录 → 自定义星座（含隐藏的座，取最新一次生成的合成星）。
+// 顺序＝在场（与点云同一批对象）→ 天线树虚拟星（小眼睛关着、那一集关着也在）→ 全量在轨目录 → 自定义星座（含隐藏的座，取最新一次生成的合成星）。
 function satEntryById(id) {
   if (!id) return null
   const isN = id.startsWith('n:'), key = id.slice(2)
@@ -868,7 +922,7 @@ function liveSatPosAt(id, tMs) {
   try {
     const e = satEntryById(id)
     if (!e || !e.rec) return null
-    const t = new Date(Number(tMs) || Date.now())
+    const t = new Date(Number(tMs) || clock.tMs)   // 没给时刻：取时间轴此刻（不取系统钟）
     const pv = posAt(e, t)
     if (!pv || !pv.position) return null
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(t))
@@ -933,7 +987,7 @@ function bodyEntryOf(noradId) {
   }
   return e || customConst.findByNorad(id) || null
 }
-// 条目 → 本体身份键（模型绑定 / 姿态 / 挂点）。天线树定点同步星的星座条目按它的 folder 认 grdsat:<folder> ——
+// 条目 → 本体身份键（模型绑定 / 姿态 / 挂点）。天线树虚拟星（定点 / 轨道根数）的星座条目按它的 folder 认 grdsat:<folder> ——
 // 与树上 GRD 天线同一个身份：在星座里给它挂的模型 / 姿态律，就是它那几根天线的本体（D8）
 function satKeyOf(e) { return e && e._grdFolder ? grdSatKey(e._grdFolder) : coreSatKeyOf(e) }
 function grdSatKeyOfNode(node, en) {
@@ -994,7 +1048,7 @@ function grdAttAxes(meta, st) {
     const mid = key ? grdMountIdFor(key, antKey, st) : ''
     const ax = ctx ? bodyRt.mountAxesAt(key, mid, ctx) : null
     // 附带项（W12 契约：有就用）：实际生效的律 / 律退过 / 实际生效的挂点 / 绑定内容签名（链路预算回填指纹）/ 本体三轴（指向误差绕它施加）
-    r = ax ? { z: ax.z, up: ax.up, S: ax.S, law: ax.law, fallback: ax.fallback, mount: ax.mount, src: bodyRt.bindSigOf(key, mid), body: ax.body } : null
+    r = ax ? { z: ax.z, up: ax.up, S: ax.S, law: ax.law, fallback: ax.fallback, mount: ax.mount, src: bodyRt.bindSigOf(key, mid), body: ax.body, yawDeg: ax.yawDeg } : null
   } catch { r = null }
   _attMap.set(ck, r)
   return r
@@ -1021,6 +1075,80 @@ function grdAttLaw(antKey) {
 }
 provide('grdMountOptions', grdMountOptions)
 provide('grdAttLaw', grdAttLaw)
+// 「姿态 + 挂点」一节就地改本星姿态律（GrdAttitudeFields → grd.bodyAttitude / setBodyAttitude …）：
+// 一颗星一个本体姿态 —— 改的是绑定表里这颗星的 attitude（与模型工作台卫星页、3D 模型姿态、本星其余天线同一份），不是天线设置。
+// 写回走 bodyRt.setAttitude（与已有绑定合并、先落本地缓存再落盘）；缓存一变 onBodyRtChange 就清挂点轴缓存、补一拍画面与
+// D9 等效指向，GRD 投影签名带着挂点轴，变了自动重投 —— 这边不必另外通知覆盖重算。
+function grdBodyKeyOf(antKey) {
+  const folder = String(antKey || '').split('|')[0]
+  return folder ? (grdSatKeyOfNode(grdNodeOf(folder)) || grdSatKey(folder)) : null
+}
+function grdBodyAttitude(antKey) {
+  void bodyVer.value
+  const key = grdBodyKeyOf(antKey)
+  if (!key) return null
+  const a = bodyRt.attitudeFor(key)
+  return { satKey: key, attitude: { law: a.law, params: JSON.parse(JSON.stringify(a.params || {})) } }
+}
+function grdSetBodyAttitude(antKey, att) {
+  const key = grdBodyKeyOf(antKey)
+  return key ? bodyRt.setAttitude(key, att) : Promise.resolve({ ok: false, code: 'no-key', errors: [] })
+}
+// 场景此刻的本体三轴 / 星位 / GMST：切到「对目标定向 / 惯性定向」时 attEdit 据此补目标 / 冻结姿态，切过去那一刻视轴不跳。
+// GMST 与 inertial 律在同一时刻会用的那个一致（有星历 = ctx.gmstRad，固定星 = 按场景时刻现算，与 bodyRuntime 同口径），
+// 否则冻结下来的惯性姿态会差一个自转角
+function grdBodyAttSeed(meta) {
+  if (!meta || !meta.folder) return null
+  try {
+    const node = grdNodeOf(meta.folder)
+    const en = node && node.noradId ? bodyEntryOf(node.noradId) : null
+    const key = grdSatKeyOfNode(node, en) || grdSatKey(meta.folder)
+    const tMs = calcAt().getTime()
+    const ctx = key ? grdBodyCtx(node, meta, tMs, en) : null
+    const b = ctx ? bodyRt.attitudeBasisAt(key, ctx) : null
+    if (!b) return null
+    let S
+    if (ctx.rEcef) S = [ctx.rEcef[0], ctx.rEcef[1], ctx.rEcef[2]]
+    else { const e = sat.eciToEcf(ctx.pv.position, ctx.gmstRad); S = [e.x, e.y, e.z] }
+    const g = Number.isFinite(ctx.gmstRad) ? ctx.gmstRad : sat.gstime(new Date(tMs))
+    return { X: b.X.slice(), Y: b.Y.slice(), Z: b.Z.slice(), S, gmstRad: g }
+  } catch { return null }
+}
+// 目标星搜索结果（satcovSearch 的条目 {name, noradId}）→ target 律的 satKey：与模型绑定同一套身份（satKeyOf：天线树虚拟星 →
+// grdsat:<folder>、自定义星座合成星 → cc:…、点序列星 → ephem:…、目录星 → norad:…）；条目解析不到就按 NORAD 退一步
+function grdBodyTargetKey(item) {
+  if (!item) return null
+  const e = satEntryById(item.noradId ? 'n:' + item.noradId : 'm:' + item.name)
+  let k = e ? satKeyOf(e) : null
+  if (!k && item.noradId) k = 'norad:' + Number(item.noradId)
+  return k && isValidSatKey(k) ? k : null
+}
+// 本体身份键 → 显示名：在场 / 全量目录 / 自定义星座 / 点序列星里找得到就用星名，否则取键里带的名字
+function bodyKeyLabel(satKey) {
+  if (!satKey) return ''
+  try {
+    if (satKey.startsWith('grdsat:')) { const n = grdNodeOf(satKey.slice(7)); return n ? (n.satName || n.folder) : satKey.slice(7) }
+    const m = /^norad:(\d+)$/.exec(satKey)
+    if (m) { const e = satEntryById('n:' + m[1]); return e ? e.name : 'NORAD ' + m[1] }
+    const e = renderEntries.find((x) => satKeyOf(x) === satKey) || bodyKeyFallback(satKey)
+    if (e) return e.name
+  } catch { /* 目录还没就绪：退回键里的名字 */ }
+  const i = satKey.lastIndexOf(':')
+  return i >= 0 ? satKey.slice(i + 1) : satKey
+}
+// 不在场的 cc: / ephem: 键（target 律的目标星可以是没显示的自定义星座 / 点序列星）：到自定义星座全集（含隐藏）与点序列星历里找
+function bodyKeyFallback(satKey) {
+  try {
+    if (satKey.startsWith('cc:')) return customConst.catalog().find((x) => satKeyOf(x) === satKey) || null
+    if (satKey.startsWith('ephem:')) return ephAll.find((x) => satKeyOf(x) === satKey) || null
+  } catch { /* 目录还没就绪 */ }
+  return null
+}
+// 挂点表与姿态律的完整编辑在模型工作台「卫星」页：带这颗星的身份键打开
+function grdOpenBodyEditor(antKey) {
+  const key = grdBodyKeyOf(antKey)
+  if (key) openModelWorkbench({ tab: 'sat', satKey: key })
+}
 // D9：att 档天线把「当前仿真时刻的等效手动指向」attEquiv {boreAz, boreEl, yaw} 写进自己的 cfg —— 主进程 sampler / 链路预算 / C·CI
 // 不认姿态，照 azel 档吃它。
 //   · 算：1 s 一次、带尾沿 —— 被节流掉的那一拍排一个定时器补上（停表后最后一次步进 / 拖游标一定写得进去）；
@@ -1144,7 +1272,7 @@ function bodyTargetEcef(satKey, tMs) {
     else {
       if (_bodyKeySrc !== renderEntries) { _bodyKeySrc = renderEntries; _bodyKeyCache = new Map() }
       if (_bodyKeyCache.has(satKey)) e = _bodyKeyCache.get(satKey)
-      else { e = renderEntries.find((x) => satKeyOf(x) === satKey) || null; _bodyKeyCache.set(satKey, e) }
+      else { e = renderEntries.find((x) => satKeyOf(x) === satKey) || bodyKeyFallback(satKey); _bodyKeyCache.set(satKey, e) }
     }
     if (!e) return null
     // 自定义星座合成星走场景历元轴（ccTimeAt，与 satLivePos / 画面同一口径）
@@ -1293,10 +1421,11 @@ async function satcovScanWindows(key) {
 }
 // 「同步到时间轴」：把主时间轴跳到时窗游标那一刻（与「跳到指定时刻」同一路径——窗口以该时刻重新居中）。
 // 表本身不用动：win.on 档下 satcovClockTick 不接管，表仍是游标那一刻的数，这一步只是让画面追上表。
+// ★ 走 reanchorAt（先落锚点与窗口、再设时刻）：原来先设时刻后换锚点，clockSetTime 同步 emit → followCursor 按旧锚点
+//   把跳远了的游标当成「跑出窗口」平移尺子，随后锚点一换，时间窗落在离游标很远的地方、窗里看不到游标
 function satcovSeekClock(tMs) {
   if (!Number.isFinite(tMs)) return
-  winStartMin.value = -PAST_FRAC * windowMin.value
-  clockSetTime(tMs); baseTime.value = clock.tMs
+  reanchorAt(tMs)
 }
 // 指标表里点「聚焦」：旋转地球正对该星并选中（与搜索结果点选、双击定位同一路径）
 async function satcovFocusTarget(t) {
@@ -1433,7 +1562,7 @@ async function satcovSearch(q, limit = 60, exclude = null) {
     if (seen.has(k) || (skip && skip.has(k))) return
     seen.add(k)
     total++
-    if (out.length < cap) out.push({ name: e.name, noradId: e.noradId, group: e.group, tag: grpHit.get(String(e.noradId)) || e.groupLabel || GROUP_LABEL[e.group] || '', slot: geoSlotOfSatrec(e.rec) })   // slot 是纯字符串，保持结果无 satrec/Proxy
+    if (out.length < cap) out.push({ name: e.name, noradId: e.noradId, group: e.group, tag: grpHit.get(String(e.noradId)) || e.groupLabel || GROUP_LABEL[e.group] || '', slot: geoSlotOfSatrec(e.rec), syn: !!e._grdFolder })   // slot 是纯字符串，保持结果无 satrec/Proxy；syn = 天线树虚拟星（合成号不当 NORAD 显示）
   }
   // 两轮都【扫到底】不提前 break：列表截断到 cap，命中总数照实数（两万多条上做 includes 是毫秒级）
   for (const e of renderEntries) if (match(e)) push(e)        // 在场的排前面
@@ -1840,7 +1969,7 @@ const satGrpRenameEl = ref(null)  // 重命名输入框 DOM（保存后自动聚
 const setRenameEl = (el) => { if (el) satGrpRenameEl.value = el }   // 函数式 template ref：只在挂载时记录，卸载(null)不清
 // 「行内展开」：内置分组 / 卫星组 / 自定义星座 三处共用一套展开态，同一时刻只展开一处 ——
 // 侧栏窄，同屏只该有一个上下文；也把「上万条列表」的内存与渲染开销钉死在一份上。
-const expTag = ref('')            // ''=未展开 | 'g:<分组key>' | 's:<卫星组id>' | 'c:<自定义星座id>'
+const expTag = ref('')            // ''=未展开 | 't:tree' | 'g:<分组key>' | 's:<卫星组id>' | 'i:<导入组id>' | 'c:<自定义星座id>' | 'q'
 const expItems = shallowRef([])   // 内置分组的异步列表结果（原始数组，勿深响应式：三万条建代理就卡住了）
 const expLoading = ref(false)
 const expErr = ref('')
@@ -2082,7 +2211,7 @@ function wizPreviewSelect() {
   if (_wizSavedSel === null) { _wizSavedSel = selEntries.slice(); _wizFaced = false; _wizCommitted = false; _wizAllMode = null }
   const pv = customConst.previewEntries()
   if (!pv.length) {                                                       // 参数非法 → 没有预览星，预览星从选中集退出
-    if (selEntries.some((e) => e.group === PREVIEW_GROUP)) { selEntries = []; selEntry = null; closeCard() }
+    if (selEntries.some((e) => e.group === PREVIEW_GROUP)) { selEntries = []; selEntry = null; closeCard(); _selSysVer = selVer.value }
     return
   }
   const all = !!(constModal.value && constModal.value.pvAll)
@@ -2119,7 +2248,7 @@ function wizPreviewRelease() {
     if (m) back.push(m)
   }
   selEntries = back; selEntry = back.length ? back[back.length - 1] : null
-  if (!selEntry) { closeCard(); return }
+  if (!selEntry) { closeCard(); _selSysVer = selVer.value; return }
   refreshSelection(); _selSysVer = selVer.value; saveSelection()
 }
 function removeConst(c) { expDrop('c:' + c.id); satSets.drop('c:' + c.id); customConst.remove(c.id); registerSets(); applySetsChanged() }
@@ -2149,14 +2278,18 @@ const scenarioEpochLocal = computed({
   set: (v) => applyScenarioEpoch(new Date(v))
 })
 function applyScenarioEpoch(d) { if (!d || isNaN(d)) return; customConst.setScenarioEpoch(d.toISOString()); rebindSelection('') }
-function scenarioEpochNow() { applyScenarioEpoch(new Date()) }
+function scenarioEpochNow() { applyScenarioEpoch(new Date(Math.floor(clock.tMs / 1000) * 1000)) }   // 「当前」＝时间轴此刻（与树星历元「此刻」同一口径），不取系统时钟
+// 页面开着跨过本地零点：场景历元按「每天更新」规则换成今天的（别的窗口每次现解，3D 页不跟就两处相位不同）。每分钟 + 窗口获得焦点各核一次
+let dayEpochBeat = null
+function checkDayEpoch() { if (customConst.refreshDayEpoch()) rebindSelection('') }
 
 const fmtSlot = fmtGeoSlot   // °E/°W 格式化统一走 shared/geoSlot.js（模板日下点等处沿用旧名）
 const fmtDate = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
 
 // ===================== 信息卡（字段/顺序与 2D 完全一致） =====================
-function cardFor(e) {
-  const now = isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元解算
+// tMs：显式给时刻（视频导出逐帧取读数）；不给 = 时钟此刻
+function cardFor(e, tMs) {
+  const now = Number.isFinite(tMs) ? new Date(tMs) : isCustomEntry(e) ? ccTimeAt() : calcAt(), gmst = sat.gstime(now)   // 合成星按场景历元解算
   const pv = posAt(e, now)
   if (!pv || !pv.position) return null
   const gd = sat.eciToGeodetic(pv.position, gmst), v = pv.velocity, r = pv.position
@@ -2166,7 +2299,10 @@ function cardFor(e) {
   // 星历点序列星没有 satrec：倾角 / 周期 / 近远地点由采样表算（shared/satrecMetrics.js 那一份算式，
   // 与「查找卫星」筛选器共用），Ω / ω / M 这类只有平根数才有的量一律留空 —— 不由位置反推假根数。
   const rec = e.rec || null
-  const g = metricsFromEntry(e) || {}
+  // 天线树里非同步高度的定点（rec.__fix 且不在同步轨道带）：空间里钉住的一个点，那份读数根数没有轨道意义 ——
+  // 根数 / 区制 / 周期一律不出（周期为 null，「轨迹周期」读数随之不出）
+  const pin = !!(rec && rec.__fix && !rec.__fix.sync)
+  const g = pin ? {} : (metricsFromEntry(e) || {})
   const periodMin = g.periodMin != null ? g.periodMin : null          // 轨道周期(min)，估不出为 null
   const meanMotion = g.meanMotion != null ? g.meanMotion : null       // 平均运动(rev/day)
   const apoKm = g.apogeeKm != null ? g.apogeeKm : null, perKm = g.perigeeKm != null ? g.perigeeKm : null
@@ -2177,26 +2313,29 @@ function cardFor(e) {
     ? classifyOrbit({ aKm: meanKm != null ? RE + meanKm : null, e: g.ecc, inclDeg: g.incl, perigeeAltKm: perKm, apogeeAltKm: apoKm, periodMin })
     : ''
   const ang = (x) => (x == null || !Number.isFinite(x) ? '' : (((x / DEG) % 360 + 360) % 360).toFixed(2))
+  // 天线树虚拟星：轨道根数星出历元（节点自己存的 elements.epoch，就是推演用的那个）；定点星那份根数的历元只是读数参考，不出
+  const epMs = e._grdFolder && e._treeKind !== 'orbit' ? null : epochMsOf(rec)
   return {
-    name: e.name, noradId: e._grdFolder ? '' : e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || '', kind,   // 天线树定点星的合成号不是 NORAD，不上信息栏
+    name: e.name, noradId: e._grdFolder ? '' : e.noradId, group: e.groupLabel || GROUP_LABEL[e.group] || '', kind,   // 天线树虚拟星的合成号不是 NORAD，不上信息栏
     slot: geoSlotOfSatrec(rec),   // GEO 才有定点标注（严区制判定，与分组无关；历元值缓存，不随时钟漂移）
     alt: gd.height.toFixed(0), lat: sat.degreesLat(gd.latitude).toFixed(2), lon: sat.degreesLong(gd.longitude).toFixed(2),
-    hasEl: !!rec || periodMin != null || g.incl != null,   // 有没有可显示的根数行（星历星只可能有倾角 / 周期 / 平均运动）
+    hasEl: !pin && (!!rec || periodMin != null || g.incl != null),   // 有没有可显示的根数行（星历星只可能有倾角 / 周期 / 平均运动）
     incl: g.incl != null ? g.incl.toFixed(2) : '', ecc: g.ecc != null ? g.ecc.toFixed(5) : '',
     period: periodMin != null ? periodMin.toFixed(1) : '', periodMinRaw: periodMin,
     perigee: perKm != null ? perKm.toFixed(0) : '', apogee: apoKm != null ? apoKm.toFixed(0) : '',
     meanMotion: meanMotion != null ? meanMotion.toFixed(4) : '',
-    raan: rec ? ang(rec.nodeo) : '', argp: rec ? ang(rec.argpo) : '', ma: rec ? ang(rec.mo) : '',
+    raan: rec && !pin ? ang(rec.nodeo) : '', argp: rec && !pin ? ang(rec.argpo) : '', ma: rec && !pin ? ang(rec.mo) : '',
     speedAbs: speedAbs.toFixed(3), speedRel: speedRel.toFixed(3),
     // 卫星信息栏新增读数（数据现成，不出判定）：半长轴 a = RE + (近地点 + 远地点)/2；
     // 历元取 satrec.jdsatepoch（星历点序列星没有 rec → 不出）；历元龄 = 本卡时刻 − 历元（合成星同样按 ccTimeAt 口径）
     aKm: meanKm != null ? (RE + meanKm).toFixed(0) : '',
-    epochMs: epochMsOf(rec),
-    epochAgeD: epochMsOf(rec) != null ? ((now - epochMsOf(rec)) / 864e5).toFixed(2) : ''
+    epochMs: epMs,
+    epochAgeD: epMs != null ? ((now - epMs) / 864e5).toFixed(2) : ''
   }
 }
-// 定点星（rec.__fix）那份根数只供读数，历元只是读数参考、不是星历历元 → 不出历元 / 历元龄
-function epochMsOf(rec) { return rec && !rec.__fix && Number.isFinite(rec.jdsatepoch) ? (rec.jdsatepoch + (rec.jdsatepochF || 0) - 2440587.5) * 864e5 : null }
+// 定点星（rec.__fix）那份根数只供读数，历元只是读数参考、不是星历历元 → 不出历元 / 历元龄（天线树定点星另在 cardFor 里不出）
+// 取整到毫秒：儒略日双精度换回毫秒约一半落在整秒之下零点几微秒，读数按秒截断就比弹窗里存的历元早一秒
+function epochMsOf(rec) { return rec && !rec.__fix && Number.isFinite(rec.jdsatepoch) ? Math.round((rec.jdsatepoch + (rec.jdsatepochF || 0) - 2440587.5) * 864e5) : null }
 
 // ===================== 选中几何：轨道圈 / 星下点轨迹 / 覆盖足迹 =====================
 // 为所有选中星各画一组轨道圈/星下点轨迹/覆盖足迹；星下点轨迹/覆盖足迹固定原色多颗叠画，轨道圈固定原色仅 primary 加粗加亮区分聚焦星。
@@ -2259,6 +2398,7 @@ const focusLod = (n) => {
 // ★ 时钟那条铁律由 refreshPositions 守：本拍几何没画完就不算一拍完（见那里的 await 与 scene.holdFrames）。
 let geomPool = null
 let poolEntries = null, poolPrimary = null
+let poolKeys = NO_KEYS        // 选中集的身份串（satIdOf）：随选中集换新、不原地改 —— 卫星标记归并按它认「聚焦层在画谁」
 let ringEpoch = null          // 轨道圈参考历元：全体环共用一刻 —— 只有共用，整组才能只设一个四元数
 let ringDirty = true          // 环的顶点要不要重来（线型/开关变了算，颜色/线宽不算：那是材质的事）
 function syncPool(draw, primary) {
@@ -2271,13 +2411,15 @@ function syncPool(draw, primary) {
   //   主选变了同样算：主/非主两桶的线宽与透明度不同（orbP / orb），不重建就换不过来。
   ringDirty = true
   poolEntries = draw.slice(); poolPrimary = primary
+  poolKeys = new Set(draw.map(satIdOf))
   // eph 表与 satrec 一样是纯数据，结构化克隆得动 Worker；下游 focusGeomTick 走 posAt，两种都认。
   geomPool.setSats(draw.map((e) => ({ key: satIdOf(e), rec: e.eph || e.rec, cc: isCustomEntry(e), color: hexNum(satDotHex(e)) })),
     primary ? satIdOf(primary) : null)
 }
-// 只「算」不「推」：返回 Promise<{shards, ringBuild, spin} | null>；null＝这一拍被更新的一拍顶掉了，别画。
+// 只「算」不「推」：返回 Promise<{shards, ringBuild, spin, keys, subOn, dotOn} | null>；null＝这一拍被更新的一拍顶掉了，别画。
+// keys / subOn / dotOn：这一份几何画的是哪几颗星、带没带星下点图标 / 在轨点（发起时钉住，与 shards 同一拍）—— 卫星标记归并据此认领（pushGeom）
 function startFocusGeometry() {
-  if (!scene || !geomPool || !selEntries.length) { ringEpoch = null; poolEntries = null; return Promise.resolve({ shards: [], ringBuild: true, spin: 0 }) }
+  if (!scene || !geomPool || !selEntries.length) { ringEpoch = null; poolEntries = null; poolKeys = NO_KEYS; return Promise.resolve({ shards: [], ringBuild: true, spin: 0, keys: NO_KEYS, subOn: false, dotOn: false }) }
   const now = calcAt(), nowMs = now.getTime(), gmstNow = sat.gstime(now)
   const ccNow = ccTimeAt(now)
   const draw = selEntries                                     // 选中集全画：几何不再有颗数上限
@@ -2317,10 +2459,11 @@ function startFocusGeometry() {
   }
   // spin = 参考 gmst − 当前 gmst：地球东转了 ΔGMST，环相对地球就反着转这么多（llaToVec 里 Y 是极轴）
   const spin = orbOn && epoch ? epoch.gmst - gmstNow : 0
+  const keys = poolKeys
   return geomPool.compute(p).then((shards) => {
     if (!shards) return null
     if (reRing) { ringEpoch = epoch; ringDirty = false }
-    return { shards, ringBuild: reRing, spin }
+    return { shards, ringBuild: reRing, spin, keys, subOn: p.style.subOn, dotOn: p.style.dotOn }
   })
 }
 // 波束角档的 ε=0 上限：主选那颗由 Worker 一并回填（placeholder 常显上限；用户超限回写夹断值，锁定态不回写）
@@ -2427,9 +2570,10 @@ function focusGeomStatic(node, color) {
   const fp = footprintAtEcef(W.geodeticToEcef(lon, lat, h), h)
   return { item: { footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { footprint: fp, sub: { lat, lon } } }
 }
-// 只「算」不「推」：返回 { items(3D), subs(3D 星下点图标), subs2d(2D 星下点图标), flat(2D 轨迹/足迹) }，
+// 只「算」不「推」：返回 { items(3D，satPos 即在轨点), subs(星下点图标，3D / 2D 同一份), flat(2D 轨迹/足迹) }，items / subs 各带身份串 key，
 // 由 commitGeometry 与聚焦星几何、可见性叠加层合并后一次性提交（三者共用同一 replace-all 通道）。
-// subs2d 只含【目标星】：源星在 2D 已由 redrawSats 画了自己的卫星图标（小眼睛的老作用），再叠一个就是重影。
+// 源星在 2D 还有天线树自己的卫星图标、可见星也可能是同一颗：同一颗星只留一枚图标 / 一颗在轨点，由卫星标记归并定
+//（satMarkMerge.js：特效压过可见性与卫星自身图标，名字照留）。
 // ★ 不看侧栏、也不看当前停在哪个视图：判据只有【画哪些天线】（satcov.selected）——与 3D 壳层场同一条
 //   存续口径（场景内容离开面板不撤，要收走一律走「清除绘图」）。早先按 shellUi.side 门控，收起侧栏
 //   壳层还在、配套的轨道线/星下点/高亮环却整批消失，成了「关个侧栏图少一半」。
@@ -2455,18 +2599,18 @@ function grdBoreTargetRings(seen) {
   return out
 }
 function computeSatcovFocusGeometry() {
-  const empty = { items: [], subs: [], subs2d: [], flat: [], rings: [] }
+  const empty = { items: [], subs: [], flat: [], rings: [] }
   if (!scene) return empty
   // 一颗天线都没勾就早退：commitGeometry 每拍都走，没有这一句就是每帧把整棵树的 key 拼一遍白算
   if (!satcov.selected.value.length) { const r = grdBoreTargetRings(new Set(selEntries.map((e) => satIdOf(e)))); return r.length ? { ...empty, rings: r } : empty }
-  const items = [], subs = [], subs2d = [], flatGeom = [], rings = []
+  const items = [], subs = [], flatGeom = [], rings = []
   const seen = new Set(selEntries.map((e) => satIdOf(e)))   // 已被点选的星不重画一遍（几何完全一致）
-  const add = (id, g, on2d) => {
+  const add = (id, g) => {
     if (!g || (id && seen.has(id))) return
-    if (id) seen.add(id)
+    if (id) { seen.add(id); g.item.key = id; if (g.sub) g.sub.key = id }
     items.push(g.item); flatGeom.push(g.flat)
     if (g.item.satPos) rings.push(g.item.satPos)             // 金色高亮环：套在星本体上（在轨高度，不是星下点）
-    if (g.sub) { subs.push(g.sub); if (on2d) subs2d.push(g.sub) }
+    if (g.sub) subs.push(g.sub)
   }
   for (const node of grdSats.value) {
     if (node.kind === 'elevline' || !satVisible(node)) continue
@@ -2474,18 +2618,21 @@ function computeSatcovFocusGeometry() {
     if (!keys.length) continue
     const en = node.noradId ? liveEntryOf(node.noradId) : null
     if (node.noradId && !en) continue                    // 关联星不在当前星历：它的波束不画，特效也不按存盘旧位置画
-    if (en) add(satIdOf(en), focusGeomOfRec(en.rec, isCustomEntry(en), satDotHex(en)), false)
-    else if (node.elements) { let rec = null; try { rec = orbitSatrec(node) } catch { rec = null }; add('f:' + node.folder, focusGeomOfRec(rec, false, node.elevColor), false) }
-    else add('f:' + node.folder, focusGeomStatic(node, node.elevColor), false)
+    // 天线树虚拟星在星座里有条目（合成号）：去重按条目身份认 —— 它正被点选着时（几何已在 lanes 里）不再画第二遍。几何口径不变
+    const tge = node.noradId ? null : treeGeoCache.get(String(node.folder))
+    const fid = tge ? satIdOf(tge) : 'f:' + node.folder
+    if (en) add(satIdOf(en), focusGeomOfRec(en.rec, isCustomEntry(en), satDotHex(en)))
+    else if (node.elements) { let rec = null; try { rec = orbitSatrec(node) } catch { rec = null }; add(fid, focusGeomOfRec(rec, false, node.elevColor)) }
+    else add(fid, focusGeomStatic(node, node.elevColor))
     for (const k of keys) {
       const st = (grd.getPerfContext(k) || {}).settings
       if (!st || (st.boreType !== 'sat' && st.boreType !== 'satoff')) continue
       const te = satEntryById(st.boreSat)
-      if (te) add(satIdOf(te), focusGeomOfRec(te.rec, isCustomEntry(te), satDotHex(te)), true)
+      if (te) add(satIdOf(te), focusGeomOfRec(te.rec, isCustomEntry(te), satDotHex(te)))
     }
   }
   rings.push(...grdBoreTargetRings(seen))
-  return { items, subs, subs2d, flat: flatGeom, rings }
+  return { items, subs, flat: flatGeom, rings }
 }
 
 // 统一提交：聚焦选中集（Worker 池）+ 可见性叠加层 + 对星聚焦特效，合并后一次性喂给两个渲染器。
@@ -2509,19 +2656,39 @@ function commitGeometry() {
 function pushGeom() {
   if (!scene || !lastGeom) return
   const { g, vg, sf } = lastGeom
-  // 逐拍现算的少量条目（可见性视线/可见星点、对星聚焦特效）仍走老通道；聚焦选中集走预制顶点通道
-  scene.setSelectionSet([...vg.items, ...sf.items])
+  // 卫星标记归并（viz/constellation/satMarkMerge.js）：同一颗星只留一枚星下点图标、一颗在轨点 —— 聚焦选中集 → 对星覆盖特效 → 可见性
+  // → 天线树卫星自身图标。前两档同一套样式，它们此刻在画的身份串就是「认领」集；后面的撤掉被认领的那几颗的这枚标记（名字 / 视线照留）。
+  // 图标与在轨点各按各的开关认领：聚焦那边哪一类关着，那一类就不认领、低档照画。
+  const subOn = !!focusStyle.subOn, dotOn = !!focusStyle.dotOn
+  const sfKeys = subOn ? keysOf(sf.subs) : NO_KEYS
+  const sfDotKeys = dotOn ? keysOf(sf.items) : NO_KEYS               // 对星特效的在轨点走 setSelectionSet（聚焦样式，dotOn 管）
+  // 逐拍现算的少量条目（可见性视线/可见星点、对星聚焦特效）仍走老通道；聚焦选中集走预制顶点通道。
+  // 可见星的在轨点（出厂样式恒画）让给聚焦层已画的（lanes 里，这份几何带没带在轨点看 g.dotOn）与对星特效的
+  scene.setSelectionSet([...withoutClaimedDots(vg.items, anyOf(g.dotOn ? g.keys : null, sfDotKeys)), ...sf.items])
   scene.setFocusLanes(g.shards, { ringBuild: g.ringBuild })
   scene.setOrbitRingSpin(g.spin || 0)   // 轨道圈：几何只在重建那拍换，平时每拍只设这一个四元数
   applyBeamLimit(g.shards)
   scene.setHighlightLLA(sf.rings)                                   // 聚焦星那批高亮环已在 lanes 里
-  scene.setFocusSatLLA([...vg.subs, ...(focusStyle.subOn ? sf.subs : [])])
+  // 3D：聚焦星的图标在 lanes 里（这份几何带没带图标看 g.subOn）；可见星那份剔掉被认领的
+  scene.setFocusSatLLA([...withoutClaimed(vg.subs, anyOf(g.subOn ? g.keys : null, sfKeys)), ...(subOn ? sf.subs : [])])
+  // 2D：聚焦星的图标只在这份几何带了平面图打包时才真画（平面图不在看就没打包）
+  const has2d = g.shards.some((sh) => sh.flat)
   if (flat) {
     const f = flatGeomOf(g.shards)                                  // 平面图不在看时 shards 里没打包，这里自然是空的
-    flat.setFocusSat([...(focusStyle.subOn ? f.subs : []), ...sf.subs2d])
+    flat.setFocusSat(subOn ? [...f.subs, ...sf.subs] : [])
     flat.setSelGeom(sf.flat && sf.flat.length ? [...f.geom, ...sf.flat] : f.geom)
     flat.setBoreRings(sf.rings.filter((q) => q.bore).map((q) => ({ lat: q.lat, lon: q.lon, color: focusStyle.ringColor, px: focusStyle.ringPx })))
   }
+  setSubClaim2D(anyOf(subOn && has2d ? g.keys : null, sfKeys))
+}
+// 2D 卫星层（天线树卫星图标 / 可见星图标）的那半边归并在 redrawSats 里做，这里只交认领集；
+// 卫星层里被认领的那几颗变了才重画卫星层（选中集几千颗、卫星层几颗，按卫星层那几颗比，不按整个选中集比）
+let _subClaim2D = NO_KEYS       // 2D 聚焦图标层此刻在画的身份串（Set 或 anyOf 的只读并）
+let _layerSubKeys = []          // 上一次 redrawSats 卫星层里带身份串的那几颗（去重、按出现次序）
+let _layerClaimSig = ''         // 其中被认领的那几颗（claimSig）
+function setSubClaim2D(claim) {
+  _subClaim2D = claim
+  if (claimSig(_layerSubKeys, claim) !== _layerClaimSig) redrawSats()
 }
 
 // 足迹的纯几何部分（按当前 fpMode 口径）：本页与聚焦几何 Worker 共用 focusFootprint.js 那一份定义。
@@ -2559,13 +2726,15 @@ function rebuildRenderSet() {
     refreshPositions()
     return
   }
-  // 地图 = 全部可见卫星集的并集，按 NORAD 去重；同号谁优先：自定义星座 > 导入组 > 搜索结果 > 卫星组 > 内置组。
+  // 地图 = 全部可见卫星集的并集，按 NORAD 去重；同号谁优先：自定义星座 > 导入组 > 搜索结果 > 卫星组 > 内置组 > 卫星天线树里的关联星。
   // 内置组 / 导入组的「剔除」（satSets.hiddenOf）在这里生效；点序列星【一律留在集里】，
   // 出了采样时段只是这一拍不画（渲染集不随时钟重建，剔出去就再也回不来了）。
   const now = calcAt()
   const out = [], seen = new Set()
   const add = (list, hidden) => {
-    for (const e of list) {
+    for (let e of list) {
+      // 天线树虚拟星也会经卫星组 / 搜索结果缓存的对象进来：一律换成树那边此刻的活条目（节点删了就不画，换了根数 / 同名新建认新的）
+      if (e._grdFolder) { e = treeGeoById.get(String(e.noradId)); if (!e) continue }
       const k = String(e.noradId)
       if (seen.has(k) || (hidden && hidden.has(k))) continue
       if (!isCustomEntry(e) && !keepInRenderSet(e, now)) continue   // 只剔 SGP4 解不出来的；星历星留下，画不画逐拍由 refreshPositions 定
@@ -2576,8 +2745,11 @@ function rebuildRenderSet() {
   const editId = customConst.previewEditId()
   for (const c of customConst.list.value) if (vis.has('c:' + c.id) && c.id !== editId) add(customConst.satsOf(c.id))
   add(customConst.previewEntries())                                        // 向导「仅预览」关着时：预览叠在别的集之上
-  // 天线树定点同步星：不入卫星集注册表（增删改名、显隐都归天线树管），显隐跟树上那颗星的小眼睛走
-  add(treeGeoList.filter((e) => { const n = grdNodeOf(e._grdFolder); return !!n && satVisible(n) }))
+  // 卫星集「卫星天线树」：虚拟星（定点 / 轨道根数，合成号不与目录撞）跟这一集的眼睛，再逐颗跟树上那颗星的小眼睛走。
+  // 与别的集同一套「仅显示」口径：搜索 / 查找出结果（showSearchHits → soloOn('q')）或 Alt+眼睛仅显示别的集时，这一集也暂隐
+  // （星名 / 2D 图标由 redrawSats 照画、pickExtraSats 照样点得中），点「仅显示：X」还原
+  const treeOn = vis.has(TREE_SET)
+  if (treeOn) add(treeGeoList.filter((e) => { const n = grdNodeOf(e._grdFolder); return !!n && satVisible(n) }))
   const real = []                                                          // 已加载的真实星（GRD 关联星解算 / 搜索池未就绪时的回退）
   for (const g of importGroups.value) {
     const id = 'i:' + g.id; if (!vis.has(id)) continue
@@ -2588,6 +2760,14 @@ function rebuildRenderSet() {
   for (const id of vis) if (id[0] === 's') { const c = sgEntries.get(id.slice(2)); if (c) add(c.entries) }
   for (const id of vis) if (id[0] === 'g') { const list = groupEntries.get(id.slice(2)) || []; add(list, satSets.hiddenOf(id)); for (const e of list) real.push(e) }
   entries = real
+  // 「卫星天线树」里的关联星排在最后：别的可见集里已有同号对象就用那一份（选中集按对象认星，不能因为多开了这一集换了对象）；
+  // 都没有才补 liveEntryOf 那一份（在场 → 全量池 → 点序列 → 自定义星座）。不进 real（它们不是「已加载的那批」）。
+  // 放在 entries = real 之后：解析按这一版在场集来
+  if (treeOn) {
+    const linked = []
+    for (const n of grdSats.value) { if (!isTreeLinkedNode(n) || !satVisible(n)) continue; const e = liveEntryOf(n.noradId); if (e) linked.push(e) }
+    add(linked)
+  }
   entSetVer.value++   // 树上「关联星缺失」重判（见 linkMissSet）；本函数只在挂载后（有 scene）走到这里，声明早已就位
   resolverVer.value++   // 关联星解析换了源：依赖星位的 computed 重算
   renderEntries = out
@@ -2629,6 +2809,16 @@ function rebuildRenderSet() {
 // ★ async：聚焦几何摊给 Worker 池之后是异步产出的，而「一次时钟回调 = 一个时刻的完整画面」这条铁律
 //   要求本拍没画完就不算完 —— 故函数末尾 await 本拍的几何，时钟那边也 await 本函数（见 onTick 处）。
 //   期间由 scene.holdFrames 掐住出帧，杜绝「星在 t、轨道在 t−Δ」同框。跟不上就是拍率自然掉，由 achieved 如实读出。
+// 本拍渲染集的星位快照 { src: renderEntries, pos: [{lat,lon,altKm}], idx: Map | null }（只存引用，不另算）：
+// 「链路」视图的节点选择器给几千颗场景星排仰角时直接读它，免得每颗再跑一遍 SGP4。渲染集换了（src 不再是同一个数组）即作废
+let _lnkTick = null
+// 每拍跟着时刻走的选中读数：主选信息卡、聚焦集列表、站 / 点上的仰角标注（只重推点 / 站两层：航迹不随时间变，运动档载具由 feedEntities 挪）。
+// 渲染集空 / 非空两条分支都走这里：渲染集空着时选中集不清、聚焦几何照样随时钟动，原来那条分支漏了这几样，信息卡与仰角标注停在旧时刻。
+// mkLive：本拍仰角标注要不要刷（markElevLive；正常分支在主循环前已算过，传进来免算第二遍）
+function tickSelReadouts(mkLive = markElevLive()) {
+  if (selEntry) { const c = cardFor(selEntry); if (c) selected.value = c; buildSelList() }
+  if (mkLive) pushMarkerLabels()
+}
 async function refreshPositions() {
   if (!scene) return
   nowStamp.value = Date.now()                                          // 「此刻」红标记参考
@@ -2643,10 +2833,17 @@ async function refreshPositions() {
   scene.setEarthSpin(gmst)
   // renderEntries 已含可见自定义星座（即使内置组选「无」也可能非空），故只按空判断，不再短路 'none'
   if (!renderEntries.length) {
-    scene.setSatellites([]); shownCount.value = 0; _tickEcefN = 0
+    scene.setSatellites([]); shownCount.value = 0; _tickEcefN = 0; _lnkTick = null
+    _icPv.clear(); _icPvT = NaN   // 这一拍没有主循环收 pv：别让聚焦快照 / 图标认上一拍留下的
+    // 跟随卫星：锚点先于本拍各路几何给场景（以主星为端点的线按它分近截，见 scene.setFollowAnchor）
+    const ccN = ccTimeAt(now)
+    const fo0 = followPrep(now, gmst, ccN, sat.gstime(ccN))
+    scene.setFollowAnchor(fo0 ? fo0.st.anchor : null)
     if (vis.open.value) vis.recompute()
+    tickSelReadouts()   // 渲染集空着，选中集照样在（聚焦几何照样随时钟动）：信息卡与站 / 点仰角标注也得跟着走
     commitGeometry()
-    feedModels(now, gmst, null)
+    pushLinks()   // 图上链路随时钟（链路里的星不一定在渲染集里）
+    feedModels(now, gmst, fo0)
     if (hasLinkedElev() || vis.open.value) redrawSats()
     // 与正常分支同款带 extras 并接 satcovTick：GRD 关联星按星历解算不依赖在场星（satLivePos 走
     // 全量目录），「无」分组下时间推进照样要修 meta。早先这里无参 tickLive 且不接对星，对星那份
@@ -2673,14 +2870,21 @@ async function refreshPositions() {
     if (!_tickEcef || _tickEcef.length < n * 3) _tickEcef = new Float64Array(Math.max(1024, n * 3))
     _tickEcefN = n
   } else _tickEcefN = 0
-  // 跟随卫星：主星本拍状态先算好，逐星循环里顺手收 500 km 内的邻星（只在跟随时多这一份 ECEF 旋转）
+  // 跟随卫星：主星本拍状态先算好，逐星循环里顺手收 500 km 内的邻星（只在跟随时多这一份 ECEF 旋转）。
+  // 锚点先于本拍各路几何（聚焦几何 / 可见性 / 链路 / GRD 视轴 / 对星射线）给场景：以主星为端点的线按它分近截（见 scene.setFollowAnchor）
   const fo = followPrep(now, gmst, ccNow, ccGmst)
+  scene.setFollowAnchor(fo ? fo.st.anchor : null)
+  // 模型图标 / 站点仰角标注：聚焦星的 pv 顺手存下（feedModels 与 focusSnapAt 同一时刻直接用，见 satModelState）
+  const mkLive = markElevLive()
+  const icSel = selEntries.length && (iconFeedOn() || mkLive) ? new Set(selEntries) : null
+  _icPv.clear(); _icPvT = icSel ? now.getTime() : NaN
   for (let k = 0; k < n; k++) {
     const e = renderEntries[k]
     const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
     let pos
     try {
       const pv = posAt(e, t)
+      if (icSel && t === now && icSel.has(e)) _icPv.set(e, pv)
       if (pv && pv.position) {
         const gd = sat.eciToGeodetic(pv.position, g); pos = { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height }
         if (wantEcef) { const ecf = sat.eciToEcf(pv.position, g); _tickEcef[k * 3] = ecf.x; _tickEcef[k * 3 + 1] = ecf.y; _tickEcef[k * 3 + 2] = ecf.z }
@@ -2693,15 +2897,12 @@ async function refreshPositions() {
   }
   if (fo) fo.scanned = true   // 邻星已在上面的逐星循环里收齐
   scene.setSatellites(positions, colors)
+  _lnkTick = { src: renderEntries, pos: positions, idx: null }   // 「链路」视图节点选择器：场景星的此刻位置直接取这一拍（只存引用）
   shownCount.value = drawn
   if (vis.open.value) vis.recompute()   // 可见性：可见星随时间轴/实时重算（commitGeometry 读取其结果）
-  if (selEntry) {
-    const c = cardFor(selEntry); if (c) selected.value = c
-    buildSelList()
-    // 随卫星移动刷新标记仰角：只重推点 / 站两层（航迹不随时间变，不再每拍整组重建；运动档载具由 feedEntities 挪）
-    if (points.value.length || stations.value.length) pushMarkerLabels()
-  } else if (stElevTracked()) pushMarkerLabels()   // 没有聚焦星时，站标签读指定跟踪星的仰角也要随时间刷新
+  tickSelReadouts(mkLive)
   commitGeometry()   // 聚焦星几何 + 可见性叠加层合并提交：二者同时呈现、均随时间轴移动（聚焦星星下点/轨迹不再被可见性覆盖）
+  pushLinks()        // 图上链路随时钟
   feedModels(now, gmst, fo)   // 模型图标 / 跟随视图：与本拍星位同一时刻（落在 holdFrames 闸内）
   if (hasLinkedElev() || vis.open.value) redrawSats()   // 星座关联星仰角线 / 可见性目标点：随时间轴/实时跟踪
   // 星动 → GRD 覆盖随时间轴移动；两张性能指标表与对星壳层也随之重算（取值/几何都依赖星位推出的 basis）
@@ -2807,6 +3008,7 @@ function ensureSetsLoaded() {
     if (id[0] === 'g') ensureGroup(id.slice(2))
     else if (id[0] === 's') ensureSatGroupEntries(id.slice(2))
     else if (id[0] === 'i') ensureImportEntries(id.slice(2))
+    else if (id === TREE_SET && !poolReady && apiOk && grdSats.value.some(isTreeLinkedNode)) ensureSearchPool().then(treeLinkedRebuild)   // 关联星要全量池才解得全
   }
 }
 // OMM 读数：可见内置组里最新的一份下载时间
@@ -2885,14 +3087,16 @@ const filterKw = ref('')   // 当前筛选词（独立于 keyword —— pickRes
 // 全部可见集的名字。lit＝这个 name 是界面词（内置组名）而不是用户数据；用户起的名字不翻。
 const satSetLabel = computed(() => {
   void poolTick.value
-  const ids = [...satSets.visible.value]
-  const names = ids.map((id) => setName(id)).filter(Boolean)
-  if (!names.length) return { kind: '', name: '无', lit: true }
-  if (names.length === 1) {
+  // 「卫星天线树」一颗星都没往图上加（树里没星 / 小眼睛全关）就不算进来：这一行默认开着，不然「星座 · GEO」会读成「混合 · 卫星天线树 + GEO」
+  const treeAdds = () => treeSetMembers(grdSats.value, treeGeoIdMap.value).some((m) => satVisible(m.node))
+  const ids = [...satSets.visible.value].filter((id) => !!setName(id) && (id !== TREE_SET || treeAdds()))   // 名字与种类取自同一份 id 表
+  if (!ids.length) return { kind: '', name: '无', lit: true }
+  if (ids.length === 1) {
     const k = ids[0][0]
-    return { kind: k === 'g' ? '星座' : k === 's' ? '卫星组' : k === 'i' ? '导入星历' : k === 'c' ? '自定义星座' : '搜索', name: names[0], lit: k === 'g' && !satSets.nameOf(ids[0]) }
+    if (k === 't') return { kind: '', name: TREE_GEO_LABEL, lit: true }   // 「卫星天线树」本身就是种类名，不再叠一层
+    return { kind: k === 'g' ? '星座' : k === 's' ? '卫星组' : k === 'i' ? '导入星历' : k === 'c' ? '自定义星座' : '搜索', name: setName(ids[0]), lit: k === 'g' && !satSets.nameOf(ids[0]) }
   }
-  return { kind: '混合', name: names.join(' + ') }
+  return { kind: '混合', name: ids.map((id) => setName(id)).join(' + ') }
 })
 // 【必须等在建的那一次】：早先「poolLoading 就早退」会让第二个调用方在池子只建了一半时就拿 searchSource()
 // 回退到当前组 entries —— 表现是「点了没反应 / 说卫星不在星历中」，跨组的那批星明明在目录里。
@@ -2945,7 +3149,7 @@ function refreshSearchPool() {
 const searchSource = () => {
   const base = poolReady && searchPool.length ? searchPool : entries
   const cc = customConst.catalog()
-  const head = treeGeoList.length ? treeGeoList.concat(cc) : cc   // 天线树定点星也搜得到（合成号不与目录撞）
+  const head = treeGeoList.length ? treeGeoList.concat(cc) : cc   // 天线树虚拟星也搜得到（合成号不与目录撞）
   return head.length ? head.concat(base) : base
 }
 
@@ -2964,7 +3168,8 @@ function bumpSelSignal() {
   selVer.value++
 }
 // 波束合成跟随主选只认用户动作（闸见 treeLink.createFollowGate，watch(selVer) 里每版都喂）：
-//   _selSysVer —— 程序性刷新产生的那一版 selVer（跨会话恢复选中 / 自定义星座重绑 / 向导预览），紧跟在那次 refreshSelection 之后记；
+//   _selSysVer —— 程序性刷新产生的那一版 selVer（跨会话恢复选中 / 自定义星座重绑 / 向导预览 / 树节点掉星，含它们连带的清空），
+//                 紧跟在那次 refreshSelection / closeCard 之后记（右侧信息栏的自动弹出 / 收起也按它排除程序性改选）；
 //   _primPickVer —— 用户显式点名主选（点选 / 设为主选）的那一版。
 // 声明放在这里而不是 watcher 旁：rebuildRenderSet / 向导预览比那段代码先定义，别踩 TDZ。
 let _selSysVer = -1, _primPickVer = -1
@@ -2992,8 +3197,11 @@ function selectSat(e, face, additive) {
 // 点云只装渲染集，这些星看得见点不中。只在点击那一刻由 scene 调用（pickExtraAt），不进逐拍。
 // 来源与画它的地方一一对应：聚焦集（commitGeometry）· 可见性结果（computeVisibilityGeometry）·
 // 天线树关联星名（redrawSats）· 对星覆盖源星 / 目标星（computeSatcovFocusGeometry）。在渲染集里的交给点云，这里跳过。
-function pickExtraSats() {
-  const cloud = focusStyle.cloudOn
+// opts.flat：2D 平面图来要候选（flatCoverage.satAtScreen）——2D 不画点云，渲染集里的星不交给点云、照样进候选；
+// 可见性结果在 2D 不画星，不进候选（免得点中一处空白选上一颗看不见的星）。
+function pickExtraSats(opts) {
+  const flat2d = !!(opts && opts.flat)
+  const cloud = !flat2d && focusStyle.cloudOn
   const inSet = new Set(), out = []
   if (cloud) for (const e of renderEntries) inSet.add(e.noradId ? 'n:' + e.noradId : 'm:' + e.name)
   const now = calcAt(), ccNow = ccTimeAt(now), gmst = sat.gstime(now), ccGmst = sat.gstime(ccNow)
@@ -3015,14 +3223,21 @@ function pickExtraSats() {
     out.push({ lat: p.lat, lon: p.lon, altKm: p.altKm, ref: e })
   }
   for (const e of selEntries) push(e)
-  if (vis.open.value && vis.mode.value !== 'coverage' && vis.results.value.length) {
+  // 图上链路里的卫星（不一定在点云 / 聚焦集里）：建链时也要点得中
+  for (const l of links.value) if (l.show !== false) for (const n of l.nodes) if (n.k === 'sat') push(linkSatEntry(n.key))
+  if (!flat2d && vis.open.value && vis.mode.value !== 'coverage' && vis.results.value.length) {
     const src = vis.satSrc.value ? visSatCache : renderEntries
     const byId = new Map()
     for (const e of src) byId.set(String(e.noradId), e)
     for (const r of vis.results.value) if (Number.isFinite(r.subLat)) push(byId.get(String(r.noradId)) || satEntryById('n:' + r.noradId), { lat: r.subLat, lon: r.subLon, altKm: r.altKm })
   }
   for (const node of grdSats.value) {
-    if (!node.noradId || node.kind === 'elevline') continue
+    if (node.kind === 'elevline') continue
+    if (!node.noradId) {   // 天线树虚拟星：「卫星天线树」那一集关着时它不在点云里，但名字照样由 redrawSats 画在球上
+      const te = treeGeoCache.get(String(node.folder))
+      if (te && node.labelShow !== false) push(te)
+      continue
+    }
     const cov = satcov.selected.value.length && satVisible(node) && (node.antennas || []).some((a) => satcov.selected.value.includes(grd.keyOf(node.folder, a.name)))
     if (node.labelShow !== false || cov) push(liveEntryOf(node.noradId))
     if (!cov) continue
@@ -3063,6 +3278,8 @@ function faceEntry(e) {
   if (!pv || !pv.position) return
   const gd = sat.eciToGeodetic(pv.position, gmst)
   const lat = sat.degreesLat(gd.latitude), lon = sat.degreesLong(gd.longitude)
+  // 2D：把星下点平移进画面（不缩放、不做过渡；已在画面中部就不动）——3D 那台相机此时看不见，转它没有意义
+  if (flatView.value && flat) { flat.centerOn(lon, lat, { ifOffscreen: true }); return }
   const phi = (90 - lat) * Math.PI / 180, theta = (lon + 180) * Math.PI / 180
   scene.faceTo({ x: -Math.sin(phi) * Math.cos(theta), y: Math.cos(phi), z: Math.sin(phi) * Math.sin(theta) })
 }
@@ -3090,7 +3307,7 @@ function rebindSelection(preferGroup) {
     else { dropped = true; if (selEntry === e) selEntry = null }               // 该槽位已不存在
   }
   selEntries = next
-  if (!selEntries.length) { closeCard(); return }
+  if (!selEntries.length) { closeCard(); _selSysVer = selVer.value; return }
   if (!selEntry || !selEntries.includes(selEntry)) selEntry = selEntries[selEntries.length - 1]
   // 掉了星（选中集变了 / 主选可能换了）也要刷：selPrimNorad / selNoradList 只在 refreshSelection 里跟，
   // 不刷就还指着掉了的那颗 —— 信息卡「天线」节与「＋」、树上高亮都在对着一颗已经不在选中集里的星
@@ -3433,6 +3650,7 @@ function applyModelStyle() {
   modelLayer.setIconStyle({ on: focusStyle.modelOn, px: focusStyle.modelPx })
   modelLayer.setHud({ bodyAxes: focusStyle.hudAxes, lvlh: focusStyle.hudLvlh, nadir: focusStyle.hudNadir, velocity: focusStyle.hudVel, sun: focusStyle.hudSun, isl: focusStyle.hudIsl, es: focusStyle.hudEs, mounts: focusStyle.hudMounts })
   feedModelsNow()
+  pushLinks()   // 链路箭头让模型图标的大小跟着「显示 / 图标大小」变（见 linkIconPx）
   // 标记实体共用「显示」拨杆（大小不共用：标记的模型跟标记自己的图标大小，见 entIconPxOf）：
   // 开关一动，标签让位（载荷 iconPx）与平面图俯视图（m2d）随之重推；没有任何实体挂模型时载荷不变，不必推
   if (hasEntityModels()) pushMarkers()
@@ -3440,12 +3658,18 @@ function applyModelStyle() {
 
 // —— 每拍几何 ——
 // 一颗星此刻的状态（算式在 modelLayer.satStateAt：锚点 llaToVec 大地版、LVLH 按真 ECEF r / 惯性速度、地影因子）
+// 本拍主循环（refreshPositions）已经推过的聚焦星直接拿它那份 pv：图标颗数不设上限之后（一整个星座几千颗），
+// 每颗再跑一遍 SGP4 就是主循环的一大半开销。只认同一时刻（_icPvT）的，拍外（改样式 / 换绑定）照旧现推
+const _icPv = new Map()
+let _icPvT = NaN
 function satModelState(e, now, gmst, ccNow, ccGmst, sunE) {
   const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
-  let pv = null
-  try { pv = posAt(e, t) } catch { pv = null }
+  let pv = t.getTime() === _icPvT ? _icPv.get(e) : undefined
+  if (pv === undefined) { try { pv = posAt(e, t) } catch { pv = null } }
   return satStateAt(pv, g, sunE)
 }
+// 本拍要不要给图标收 pv（与 feedModels 画图标的条件同）。跟随中照画（主星与邻星除外，见 feedModels）
+const iconFeedOn = () => !!(modelLayer && !flatView.value && focusStyle.modelOn && selEntries.length)
 // 本体 → L（modelLayer 的 qB2L）：按绑定的姿态律（DESIGN2 §4 第一条）。没绑定 / 纯 nadir 直接给常量（与解算结果差 1e-16，
 // 省一次解算）；太阳按场景时刻 tMs（与画面晨昏线同源）。st = satStateAt 的结果（rE / vE 已是 ECEF 轴向的真位置 / 惯性速度）
 const _qbBasis = makeBasis()
@@ -3508,20 +3732,24 @@ function followScan(fo) {
 function followStateOf(fo) {
   const st = fo.st
   let others
-  const hit = !fo.scanned && followOthersCache && followOthersCache.tMs === fo.tMs && followOthersCache.key === following.value && followOthersCache.ver === bodyRt.version()
+  // 邻星表按「时刻 + 主星 + 绑定版本 + 聚焦集 + 图标开关」缓存（聚焦集 / 图标开关改了，邻星的「图标大小兜底」标记跟着变）
+  const sv = selVer.value + '|' + (focusStyle.modelOn ? 1 : 0)
+  const hit = !fo.scanned && followOthersCache && followOthersCache.tMs === fo.tMs && followOthersCache.key === following.value && followOthersCache.ver === bodyRt.version() && followOthersCache.sv === sv
   if (hit) others = followOthersCache.others
   else {
     if (!fo.scanned) followScan(fo)
     others = []
     fo.cand.sort((a, b) => a.d2 - b.d2)
+    const foc = focusStyle.modelOn ? new Set(selEntries) : null
     for (const c of fo.cand.slice(0, 16)) {
       const nb = satStateAt(c.pv, c.g, fo.sn.sunE)
       if (!nb) continue
       const mo = modelOf(c.e)
       const n = neighborInL(st, nb, bodyQB2L(mo.key, nb, fo.tMs))   // 邻星本体 → 主星 L 系（邻星自己的姿态律）
-      others.push({ key: mo.key || c.e.name, modelId: mo.id, frame: mo.frame, relL: n.relL, qB2L: n.qB2L, anchorS: n.anchorS, name: displaySatName(c.e.name) })
+      // icon：聚焦集里有模型的邻星 —— 3D 视图里它画着模型图标，跟随视角里屏上至少画到图标那么大（见 modelLayer updateFollow）
+      others.push({ key: mo.key || c.e.name, modelId: mo.id, frame: mo.frame, relL: n.relL, qB2L: n.qB2L, anchorS: n.anchorS, name: displaySatName(c.e.name), icon: !!(foc && mo.id && foc.has(c.e)) })
     }
-    followOthersCache = { tMs: fo.tMs, key: following.value, ver: bodyRt.version(), others }
+    followOthersCache = { tMs: fo.tMs, key: following.value, ver: bodyRt.version(), sv, others }
   }
   const mo = modelOf(followEntry)
   // HUD「地球站」：标记层地球站里此刻看得见主星的（仰角 ≥ 0°），近者优先 12 支（开关关着不算）
@@ -3557,26 +3785,32 @@ function followNearOf(fo) {
 function feedModels(now, gmst, fo) {
   if (!modelLayer || !scene) return
   const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)
-  const sn = fo ? fo.sn : sunStateAt(now)
+  // 跟随：主星本拍状态先出 —— 主星与 500 km 内的邻星在局部那一趟按真实尺寸画（聚焦的邻星另按图标大小兜底），图标表得先剔掉它们
+  const f = following.value ? (fo || followPrep(now, gmst, ccNow, ccGmst)) : null
+  if (f) scene.setFollowAnchor(f.st.anchor)
+  const fs = f ? followStateOf(f) : null
+  const sn = f ? f.sn : sunStateAt(now)
   modelLayer.setSun(sn.sunS, gmst)
   const list = []
-  if (!flatView.value && focusStyle.modelOn && !following.value && selEntries.length) {
-    // 主选排第一（超过 32 颗时保证主选有图标）
-    const order = selEntry ? [selEntry, ...selEntries.filter((x) => x !== selEntry)] : selEntries
-    for (const e of order) {
-      if (list.length >= 32) break
+  if (iconFeedOn()) {
+    // 聚焦集里每颗有模型的星都画（颗数不设上限：图标按模型实例化画，见 viz/globe3d/iconBatch.js）。
+    // 跟随中照画（2026-10-08 用户：跟随视角里别的聚焦星只剩高亮环、没有模型，与 3D 视图对不上），主星与局部那一趟的邻星除外
+    const tMs = now.getTime()
+    const local = fs ? new Set(fs.others.map((o) => o.key)) : null
+    for (const e of selEntries) {
+      if (fs && e === followEntry) continue
       const mo = modelOf(e)
       if (!mo.id) continue
+      const key = mo.key || e.name
+      if (local && local.has(key)) continue
       const st = satModelState(e, now, gmst, ccNow, ccGmst, sn.sunE)
       if (!st) continue
-      list.push({ key: mo.key || e.name, modelId: mo.id, frame: mo.frame, px: focusStyle.modelPx, anchor: st.anchor, qL2S: st.qL2S, qB2L: bodyQB2L(mo.key, st, now.getTime()), altKm: st.altKm, eclipse: st.ecl })
+      list.push({ key, modelId: mo.id, frame: mo.frame, px: focusStyle.modelPx, anchor: st.anchor, qL2S: st.qL2S, qB2L: bodyQB2L(mo.key, st, tMs), altKm: st.altKm, eclipse: st.ecl })
     }
   }
+  _icPv.clear(); _icPvT = NaN   // 本拍用完即弃（别让下一拍之前的拍外喂数误拿）
   modelLayer.setIcons(list)
-  if (following.value) {
-    const f = fo || followPrep(now, gmst, ccNow, ccGmst)
-    if (f) modelLayer.follow(followStateOf(f))
-  }
+  if (fs) modelLayer.follow(fs)
   feedEntities(now, sn)   // 标记实体（运动档载具 / 站天线跟踪 / 实体模型图标）：与本拍星位同一个 now（落在 holdFrames 闸内）
 }
 // 选中 / 绑定 / 样式变了：不等下一拍（时钟停着时可能永远等不到），当场按当前时刻喂一次
@@ -3600,8 +3834,9 @@ function startFollow(e) {
   const now = calcAt(), gmst = sat.gstime(now)
   const fo = followPrep(now, gmst, ccTimeAt(now), sat.gstime(ccTimeAt(now)))
   if (!fo) { following.value = ''; followEntry = null; return }
-  modelLayer.setIcons([])
-  modelLayer.follow(followStateOf(fo))
+  // 锚点给场景（以主星为端点的线 —— 链路 / 视线 / 视轴 / 射线 —— 出帧前按它分近截补建）；图标与跟随状态同一拍喂（主星与邻星剔出图标）
+  scene.setFollowAnchor(fo.st.anchor)
+  feedModels(now, gmst, fo)
   scene.setFollowDriver(modelLayer.followDriver())   // 只换相机：地图内容、宇宙空间 / 晨昏一概不动（归地图设置的开关）
   zoom.value = modelLayer.getFollowZoom()
   refreshSelModel()
@@ -3612,11 +3847,14 @@ function stopFollow() {
   followEntry = null
   followOthersCache = null
   if (modelLayer) modelLayer.follow(null)
-  if (scene) { scene.setFollowOrbit(null); scene.setFollowDriver(null) }   // 主选轨道线交还环组那条 orbP
+  if (scene) { scene.setFollowOrbit(null); scene.setFollowAnchor(null); scene.setFollowDriver(null) }   // 主选轨道线交还环组那条 orbP；链路 / 视线等近截交还地球那一趟
   pushZoom()
   feedModelsNow()
 }
-function toggleFollow() { if (following.value) stopFollow(); else startFollow(selEntry) }
+function toggleFollow() {
+  if (flatView.value) { if (flatFollowing.value) stopFlatFollow(); else startFlatFollow(selEntry); return }   // 2D＝星下点跟随
+  if (following.value) stopFollow(); else startFollow(selEntry)
+}
 // 地球影像 → 两个视图，各自对齐到「此刻该用哪一档」（imageryPlan）。
 // ★ 3D 球不上瓦片档：选「高精」（瓦片金字塔）时 3D 用 16K 整幅（2026-09-24 用户定「宇宙投影影像底图现在用的高精吧，改为16K」——
 //   从太空看整颗球，整幅一次到位），平面图照旧吃瓦片（放大看细节靠它）；16K / 8K 两档 2D / 3D 同档。
@@ -3727,6 +3965,12 @@ function faceEntries(list) {
   if (!n) return
   const m = Math.hypot(x, y, z)
   if (!(m > 1e-6)) return
+  if (flatView.value && flat) {   // 2D：方向均值折回经纬度，平移进画面（同 faceEntry）
+    const lat = 90 - Math.acos(Math.max(-1, Math.min(1, y / m))) / DEG
+    const lon = ((Math.atan2(z / m, -x / m) / DEG - 180) % 360 + 540) % 360 - 180
+    flat.centerOn(lon, lat, { ifOffscreen: true })
+    return
+  }
   scene.faceTo({ x: x / m, y: y / m, z: z / m })
 }
 // —— 按最新真实星历核对全部卫星组：自动移除已离轨的成员 ——
@@ -3835,6 +4079,7 @@ let _poolSwapSeen = 0
 function onPoolSwapped() {
   if (!poolReady || !scene || _poolSwapSeen === poolTick.value) return
   _poolSwapSeen = poolTick.value
+  treeLinkedRebuild()   // 「卫星天线树」开着时，其中的关联星按新池重解（池没就绪那会儿解不出的这时才进渲染集）
   relinkTick()
 }
 watch(poolTick, onPoolSwapped)
@@ -3869,7 +4114,7 @@ watch(poolTick, () => {
     const out = []
     for (const r of rs) {
       const en = idx.get(String(r.noradId))
-      if (!en) { changed++; continue }                       // 池里没有了：去掉这一行
+      if (!en) { if (Number(r.noradId) >= 900000) out.push(r); else changed++; continue }   // 池里没有了：去掉这一行（自定义星座合成星 / 天线树虚拟星本就不在池里，照留）
       if (en === r.en) { out.push(r); continue }
       changed++
       out.push({ ...r, en, slot: geoSlotOfSatrec(en.rec) })
@@ -3903,22 +4148,63 @@ function slotByNorad(nid) {
   const en = poolIndex().get(String(nid))
   return en ? geoSlotOfSatrec(en.rec) : ''
 }
+// 「卫星天线树」成员表（按树序）：虚拟星的行右小字给定点标注，没有就给区制 + 高度（非同步高度的定点给「定点 · 高度」）——
+// 合成号不当 NORAD 显示；关联星给定点标注 + NORAD。签名不变就返回同一个数组（SatList 换数组要按 id 重挂选择集）
+let _treeExp = { sig: null, out: [] }
+const kmText = (v) => (Number.isFinite(Number(v)) ? `${Math.round(Number(v))} km` : '')
+// 虚拟星的行右小字（node = 它在树上的节点，取根数高度用）
+function treeVirtSub(e, node) {
+  const rec = e && e.rec
+  if (!rec) return ''
+  const slot = geoSlotOfSatrec(rec)
+  if (slot) return slot
+  if (rec.__fix && !rec.__fix.sync) return `定点 · ${kmText(rec.__fix.altKm)}`
+  return [orbitKindOf(e), kmText(rec.__fix ? rec.__fix.altKm : ((node && node.elements) || {}).altKm)].filter(Boolean).join(' · ')
+}
+// 别的成员表（搜索结果 / 卫星组）里碰到合成号段的星：行右小字同上、悬停只给名字 —— 合成号不当 NORAD 显示；
+// 节点已删（死号）小字留空。调用方的缓存要跟 treeGeoTick
+function expTreeItem(id, name, dot) {
+  const nid = String(id), e = treeGeoById.get(nid) || null
+  const nm = name || (e && e.name) || TREE_GEO_LABEL
+  const sub = e ? treeVirtSub(e, grdNodeOf(e._grdFolder)) : ''
+  return { id: nid, name: nm, lc: (sub ? nm + ' ' + sub : nm).toLowerCase(), sub, tip: nm, dot: dot || '' }
+}
+function treeExpItems() {
+  void poolTick.value; void treeGeoTick.value   // 池就绪补关联星的定点标注；虚拟星的 rec 由 syncTreeGeo 就地换
+  const out = []
+  for (const m of treeSetMembers(grdSats.value, treeGeoIdMap.value)) {
+    let sub = ''
+    if (m.virtual) {
+      sub = treeVirtSub(treeGeoById.get(m.id), m.node)
+    } else {
+      const e = liveEntryOf(m.id), slot = e && e.rec ? geoSlotOfSatrec(e.rec) : ''
+      sub = slot ? `${slot} · NORAD ${m.id}` : `NORAD ${m.id}`
+    }
+    const name = m.name || (m.virtual ? String(m.folder) : 'NORAD ' + m.id)
+    out.push({ id: m.id, name, lc: (name + ' ' + sub).toLowerCase(), sub, tip: name, dot: '' })
+  }
+  const sig = out.map((it) => it.id + '|' + it.name + '|' + it.sub).join('\n')
+  if (sig !== _treeExp.sig) _treeExp = { sig, out }
+  return _treeExp.out
+}
 const expList = computed(() => {
   const tag = expTag.value
   if (!tag) return expItems.value
-  if (tag === 'q') { void filterN.value; return filterEntries.map((e) => expMkItem(e.noradId, e.name, '', '', e.rec ? geoSlotOfSatrec(e.rec) : '')) }
+  if (tag === TREE_SET) return treeExpItems()
+  if (tag === 'q') { void filterN.value; if (filterEntries.some((e) => e._grdFolder)) void treeGeoTick.value; return filterEntries.map((e) => (e._grdFolder ? expTreeItem(e.noradId, e.name, '') : expMkItem(e.noradId, e.name, '', '', e.rec ? geoSlotOfSatrec(e.rec) : ''))) }
   if (tag[0] === 'g' || tag[0] === 'i') { const h = satSets.hiddenOf(tag); return h.size ? expItems.value.filter((it) => !h.has(String(it.id))) : expItems.value }
   if (tag[0] === 's') {
     const g = satGroups.find(tag.slice(2))
     const src = g ? g.sats : null
     if (!src) return []
     const tick = poolTick.value              // 池就绪后重映射一次（补 GEO 定点标注）
+    const tt = src.some((s) => isTreeGeoId(s.id)) ? treeGeoTick.value : 0   // 成员里有天线树虚拟星（合成号段）才跟树重读（换数组会清掉列表选择）
     if (!poolReady) ensureSearchPool()       // 后台建池；就绪前列表先出（无标注）
     // 缓存键含组色：逐颗色变会换 sats 数组（colorSats 不可变更新），组色变则数组不动，得单独盯
-    if (expMemCache.src !== src || expMemCache.gc !== g.color || expMemCache.tick !== tick) {
+    if (expMemCache.src !== src || expMemCache.gc !== g.color || expMemCache.tick !== tick || expMemCache.tt !== tt) {
       // 组里只要有任何配色，未着色成员给透明占位点 —— 名字列对齐，不然行首参差
       const pad = (!!g.color || src.some((s) => s.color)) ? 'transparent' : ''
-      expMemCache = { src, gc: g.color, tick, out: src.map((s) => expMkItem(s.id, s.name, '', s.color || g.color || pad, slotByNorad(s.id))) }
+      expMemCache = { src, gc: g.color, tick, tt, out: src.map((s) => (isTreeGeoId(s.id) ? expTreeItem(s.id, s.name, s.color || g.color || pad) : expMkItem(s.id, s.name, '', s.color || g.color || pad, slotByNorad(s.id)))) }
     }
     return expMemCache.out
   }
@@ -3936,6 +4222,7 @@ const expActions = computed(() => {
   ]
   if (expTag.value[0] === 's') a.push({ key: 'rmfrom', label: '移出', icon: 'minus', title: '把选中的卫星从本组移出', tone: 'warn' })
   if (expTag.value[0] === 'g' || expTag.value[0] === 'i') a.push({ key: 'hide', label: '剔除', icon: 'eye-off', title: '把选中的卫星从本集剔除（菜单「恢复剔除」可撤）', tone: 'warn' })
+  if (expTag.value === TREE_SET) a.push({ key: 'reveal', label: '在天线树中显示', icon: 'earth', title: '切到对地覆盖分析视图，展开并定位到选中的第一颗星' })
   return a
 })
 // 把列表里选中的这批星解析成可渲染 entries。
@@ -3945,6 +4232,14 @@ async function expResolve(sats, tagOverride) {
   const want = new Map((sats || []).map((s) => [String(s.noradId), s]))
   if (!want.size) return []
   const tag = tagOverride || expTag.value, key = tag.slice(2)
+  // 卫星天线树：虚拟星的条目在内存里（合成号）；关联星与树联动同一条解析路（在场 → 全量池 → 点序列 → 自定义星座），
+  // 先等星历源就绪（挂载后几秒全量目录 / 隐藏点序列组的表还在建）
+  if (tag === TREE_SET) {
+    await awaitLinkEph()
+    const out = [], seen = new Set()
+    for (const id of want.keys()) { const e = satEntryById('n:' + id) || liveEntryOf(id); if (e && !seen.has(e)) { seen.add(e); out.push(e) } }
+    if (out.length) return out
+  }
   // 自定义星座合成星本来就在内存里（build 有签名缓存）：直接挑，不必为它先建全量搜索池
   if (tag[0] === 'c') {
     const out = []
@@ -4003,9 +4298,11 @@ async function visSatResolve() {
   visSatBusy.value = true
   let ents = [], err = ''
   try {
-    const roster = src[0] === 's'
-      ? (satGroups.find(src.slice(2)).sats || []).map((s) => ({ noradId: s.id, name: s.name }))
-      : (await grpSatList(src.slice(2))).map((it) => ({ noradId: it.id, name: it.name }))
+    const roster = src === TREE_SET
+      ? treeSetMembers(grdSats.value, treeGeoIdMap.value).map((m) => ({ noradId: m.id, name: m.name }))
+      : src[0] === 's'
+        ? (satGroups.find(src.slice(2)).sats || []).map((s) => ({ noradId: s.id, name: s.name }))
+        : (await grpSatList(src.slice(2))).map((it) => ({ noradId: it.id, name: it.name }))
     if (seq !== visSatSeq) return
     ents = await expResolve(roster, src)
   } catch (e) { err = (e && e.message) || String(e) }
@@ -4016,6 +4313,8 @@ async function visSatResolve() {
   vis.recompute(); redrawSats(); commitGeometry()
 }
 watch(() => vis.satSrc.value, visSatResolve)
+// 正在分析「卫星天线树」：树上增删 / 改星就重解（TREE_SET 声明在后，getter 里写字面量免 TDZ）
+watch(() => (vis.satSrc.value === 't:tree' ? treeGeoTick.value : -1), (v) => { if (v >= 0) visSatResolve() })
 // 正被分析的卫星组被删 → 回退「当前显示」，不留死 id
 watch(() => satGroups.list.value.length, () => {
   const src = String(vis.satSrc.value || '')
@@ -4073,6 +4372,10 @@ async function expLoad(tag) {
 async function expLocate(it, row) {
   const tag = String((row && row.id) || expTag.value || '')
   const nid = String(it.id)
+  if (tag === TREE_SET) {   // 与树上双击星名同一条路（等星历源、作废过期的那套都在 focusTreeSat 里）
+    const node = linkedNodesOf(grdSats.value, nid, treeGeoIdMap.value)[0]
+    if (node) { focusTreeSat(node, { force: true }); return }
+  }
   if (tag[0] === 'i') {
     let hit = null
     try { hit = (await ensureImportEntries(tag.slice(2))).find((e) => String(e.noradId) === nid || (e.key != null && String(e.key) === nid)) || null } catch { hit = null }
@@ -4087,6 +4390,11 @@ function expOnAction(key, p) {
   const sats = (p.items || []).map((it) => ({ noradId: it.id, name: it.name }))
   if (!sats.length) return
   if (key === 'focus') { expFocus(sats, expLabel.value || '所选卫星'); return }
+  if (key === 'reveal') {
+    const node = linkedNodesOf(grdSats.value, sats[0].noradId, treeGeoIdMap.value)[0]
+    revealInTree(node ? node.folder : '')
+    return
+  }
   if (key === 'rmfrom') {
     const g = satGroups.find(expTag.value.slice(2)); if (!g) return
     const n = satGroups.removeSats(g.id, sats.map((s) => s.noradId))
@@ -4135,6 +4443,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onExpEsc, true))
 // 注册表 satSets 只记【顺序 / 可见集合 / 内置项覆盖层（改名 · 剔星 · 删除）】，本体仍在各自的库里；
 // 内置组的颜色沿用 groupColors（随设置持久化，渲染取色链直接读它），故不在注册表里存第二份。
 const satSets = useSatSets()
+// 「卫星天线树」恒一行：成员 = 天线树里的卫星（虚拟星的星座条目 + 关联星；增删改名归天线树管），这里只管它的顺序 / 显隐 / 星点色
+const TREE_SET = 't:tree'
 const SEARCH_LAYER_HEX = '#ffd166'
 const BUILTIN_KEYS = GROUPS.filter((g) => g.key !== 'none' && g.key !== 'custom').map((g) => g.key)
 const groupEntries = new Map()     // 内置组 key -> entries（已加载）
@@ -4151,6 +4461,7 @@ let setsSeeded = false
 function setName(id) {
   const k = id[0], r = id.slice(2)
   if (id === 'q') return filterKw.value ? `搜索「${filterKw.value}」` : '搜索结果'
+  if (k === 't') return TREE_GEO_LABEL
   if (k === 'g') return satSets.nameOf(id) || GROUP_LABEL[r] || r
   if (k === 's') { const g = satGroups.find(r); return g ? g.name : '' }
   if (k === 'i') { const g = importGroups.value.find((x) => x.id === r); return g ? g.name : '' }
@@ -4159,14 +4470,17 @@ function setName(id) {
 }
 function setCount(id) {
   const k = id[0], r = id.slice(2), hidden = satSets.hiddenOf(id).size
+  if (k === 't') return treeSetMembers(grdSats.value, treeGeoIdMap.value).length
   if (k === 'g') { const list = groupEntries.get(r); if (list) return Math.max(0, list.length - hidden); const c = groupCounts.value[r]; return c == null ? '' : Math.max(0, c - hidden) }
   if (k === 'i') { const g = importGroups.value.find((x) => x.id === r); return g ? Math.max(0, (g.count || 0) - hidden) : 0 }
   return 0
 }
 const impSub = (g) => (g.kind === 'ephem' ? `星历 · ${impDay(g.t0)} → ${impDay(g.t1)}` : `${g.formatLabel || g.format || '—'} · ${g.importedAt ? impDay(Date.parse(g.importedAt)) : '—'}`)
-// 各库现有的集都登记进表（首轮按 内置 → 卫星组 → 导入 → 自定义 排在末尾；之后新出现的排最前）；本体没了的引用跟着掉
+// 各库现有的集都登记进表（首轮按 卫星天线树 → 内置 → 卫星组 → 导入 → 自定义 排在末尾；之后新出现的排最前）；本体没了的引用跟着掉。
+// 卫星天线树恒在（树空着也是一行，0 颗）
 function registerSets() {
   const ids = [
+    TREE_SET,
     ...BUILTIN_KEYS.map((k) => 'g:' + k),
     ...satGroups.list.value.map((g) => 's:' + g.id),
     ...importGroups.value.map((g) => 'i:' + g.id),
@@ -4184,16 +4498,24 @@ function soloSet(id) { satSets.soloOn(id); applySetsChanged() }
 function restoreSets() { satSets.restore((id) => id !== 'q' || filterEntries.length > 0); applySetsChanged() }
 function reorderSet(id, to) { satSets.move(id, to) }
 // 首次进页：读注册表；没有存档就按旧存档迁移（「当前分组」+ 自定义星座 / 导入组各自的 visible 标志）
+// 卫星天线树：没有存档 → 显示；存档里还没有这一行（升级上来的）→ 显示并置顶 —— 树里的同步定点星原先不归任何一集、恒在图上，
+//   升级后地图上不能少星。仅显示态下同样并进去，并记进还原集（还原之后也还在）。
 function initSatSets(legacy) {
   const had = satSets.load()
+  const treeNew = !satSets.order.value.includes(TREE_SET)
   registerSets()
   if (!had) {
-    const vis = []
+    const vis = [TREE_SET]
     const key = legacy && legacy.groupKey ? legacy.groupKey : GROUPS[DEFAULT_GROUP].key
     if (key === 'custom') { for (const g of importGroups.value) if (g.visible !== false) vis.push('i:' + g.id) }
     else if (BUILTIN_KEYS.includes(key)) vis.push('g:' + key)
     for (const c of customConst.list.value) if (c.visible !== false) vis.push('c:' + c.id)
     satSets.setVisible(vis)
+  } else if (treeNew) {
+    satSets.move(TREE_SET, 0)
+    const s = satSets.solo.value
+    if (s && !s.prev.includes(TREE_SET)) satSets.solo.value = { ...s, prev: [...s.prev, TREE_SET] }
+    satSets.setVisible([...satSets.visible.value, TREE_SET])
   }
   applySetsChanged()
 }
@@ -4208,16 +4530,22 @@ async function loadGroupCounts() {
 }
 
 // —— 面板数据 ——
+// 集名是不是界面词（lit：跟界面语言走，面板不挂 data-i18n-skip）：卫星天线树 / 没改过名的内置星座 / 搜索结果那一行；
+// 用户起的名字（卫星组 / 导入 / 自定义星座 / 改过名的内置星座）是数据，不翻（同节点选择器 lnkSetList 的 lit）
+const setNameLit = (id) => id === TREE_SET || id === 'q' || (id[0] === 'g' && !satSets.nameOf(id))
 const setRows = computed(() => {
   void poolTick.value; void groupCounts.value
   const vis = satSets.visible.value, ov = satSets.items.value
   const rows = []
   for (const id of satSets.order.value) {
     const k = id[0], r = id.slice(2)
-    if (k === 'g') {
+    if (id === TREE_SET) {
+      // 颗数随树（grdSats / 合成号映射）变；星点色只染虚拟星（关联星仍按它所属的组着色）
+      rows.push({ id, kind: 'tree', name: TREE_GEO_LABEL, lit: true, count: setCount(id), sub: '', color: groupColors[TREE_GEO_GROUP] || '', colorable: true, visible: vis.has(id), renamable: false, icon: 'earth', iconTitle: '天线树中的卫星（定点星 / 轨道根数星 / 关联星）', modified: false })
+    } else if (k === 'g') {
       const g = GROUPS.find((x) => x.key === r); if (!g) continue
       const o = ov[id] || {}
-      rows.push({ id, kind: 'builtin', name: o.name || g.label, count: setCount(id), sub: '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，菜单里可重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
+      rows.push({ id, kind: 'builtin', name: o.name || g.label, lit: !o.name, count: setCount(id), sub: '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，菜单里可重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
     } else if (k === 's') {
       const g = satGroups.find(r); if (!g) continue
       rows.push({ id, kind: 'group', name: g.name, count: g.sats.length, sub: '', color: g.color || '', colorable: true, visible: vis.has(id), renamable: true, icon: 'layers', iconTitle: '卫星组：按 NORAD 记录的成员集', modified: false })
@@ -4232,20 +4560,26 @@ const setRows = computed(() => {
   }
   return rows
 })
-const searchRow = computed(() => (filterN.value > 0 ? { id: 'q', kind: 'search', name: setName('q'), count: filterN.value, sub: '', color: SEARCH_LAYER_HEX, colorable: false, visible: satSets.visible.value.has('q'), renamable: false } : null))
+const searchRow = computed(() => (filterN.value > 0 ? { id: 'q', kind: 'search', name: setName('q'), lit: true, count: filterN.value, sub: '', color: SEARCH_LAYER_HEX, colorable: false, visible: satSets.visible.value.has('q'), renamable: false } : null))
 // shown 取【本拍真画出来的】颗数，不是集合规模 —— 星历星在采样时段外仍留在集里（见 keepInRenderSet），
 // 读 satCount 会在一个点都看不见时报出「显示 N 颗」。
-const setSummary = computed(() => ({ shown: shownCount.value, layers: satSets.visible.value.size, dataTime: dataTime.value, status: status.value }))
-const soloInfo = computed(() => (satSets.solo.value ? { id: satSets.solo.value.id, name: setName(satSets.solo.value.id) } : null))
+const setSummary = computed(() => {
+  const vis = satSets.visible.value
+  // 「卫星天线树」开着但一颗星都没往图上加：不算一集（与 satSetLabel 同一口径）
+  const treeIdle = vis.has(TREE_SET) && !treeSetMembers(grdSats.value, treeGeoIdMap.value).some((m) => satVisible(m.node))
+  return { shown: shownCount.value, layers: vis.size - (treeIdle ? 1 : 0), dataTime: dataTime.value, status: status.value }
+})
+const soloInfo = computed(() => (satSets.solo.value ? { id: satSets.solo.value.id, name: setName(satSets.solo.value.id), lit: setNameLit(satSets.solo.value.id) } : null))
 const setSearch = computed(() => ({
   keyword: keyword.value,
-  results: searchResults.value.map((r) => ({ noradId: r.noradId, name: r.name, groupLabel: r.groupLabel, slot: r.slot, picked: selNorads.value.has(String(r.noradId)), en: r.en })),
+  openTick: searchOpenTick.value,
+  results: searchResults.value.map((r) => ({ noradId: r.noradId, name: r.name, groupLabel: r.groupLabel, slot: r.slot, picked: selNorads.value.has(String(r.noradId)), syn: !!(r.en && r.en._grdFolder), en: r.en })),   // syn：天线树虚拟星（合成号不当 NORAD 显示）
   finderActive: !isFilterEmpty(satFilters)
 }))
 const addItems = computed(() => {
   const out = [
     { key: 'group', label: '新建卫星组', icon: 'folder-plus' },
-    { key: 'wizard', label: '生成星座…', icon: 'orbit' },
+    { key: 'wizard', label: '生成卫星或星座…', icon: 'orbit' },
     { key: 'import', label: '导入星历文件…', icon: 'import' },
     { key: 'finder', label: '从目录查找…', icon: 'filter' }
   ]
@@ -4263,6 +4597,18 @@ function setMenuItems(row) {
     { key: 'expand', label: expTag.value === id ? '收起成员' : '展开成员', icon: 'list' }
   ]
   if (k === 'search') return head.concat([{ sep: true }, { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' }, { key: 'copy', label: '复制卫星', icon: 'copy' }, { sep: true }, { key: 'close', label: '关闭', icon: 'x' }])
+  // 卫星天线树：成员与名字归天线树管 —— 不改名、不粘贴、不删除
+  if (k === 'tree') return head.concat([
+    { sep: true },
+    { key: 'up', label: '上移', icon: 'arrow-up', disabled: idx <= 0 },
+    { key: 'down', label: '下移', icon: 'arrow-down', disabled: idx < 0 || idx >= n - 1 },
+    { sep: true },
+    { key: 'copy', label: '复制卫星', icon: 'copy' },
+    { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' },
+    { sep: true },
+    { key: 'reveal', label: '在天线树中显示', icon: 'earth' },
+    row.color ? { key: 'colorReset', label: '恢复默认颜色', icon: 'undo-2' } : null
+  ]).filter(Boolean)
   const clip = satClip.value
   const sel = selList.value.length
   const items = head.concat([
@@ -4307,6 +4653,7 @@ async function setSatsOf(id) {
   const k = id[0], r = id.slice(2)
   try {
     if (id === 'q') return filterEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
+    if (k === 't') return treeSetMembers(grdSats.value, treeGeoIdMap.value).map((m) => ({ noradId: m.id, name: m.name }))   // 成员就在树里，不走名录（grpSatList 会拿 'tree' 去联网）
     if (k === 's') { const g = satGroups.find(r); return g ? g.sats.map((x) => ({ noradId: x.id, name: x.name })) : [] }
     if (k === 'c') return customConst.satsOf(r).map((e) => ({ noradId: e.noradId, name: e.name }))
     const hidden = satSets.hiddenOf(id)
@@ -4361,6 +4708,7 @@ async function setAction(key, row) {
   if (key === 'up') { satSets.moveBy(id, -1); return }
   if (key === 'down') { satSets.moveBy(id, 1); return }
   if (key === 'send') { sendSatsToMiniapp(); return }
+  if (key === 'reveal') { revealInTree(''); return }
   if (key === 'paste') { setPaste(row); return }
   if (key === 'colorReset') { setColorOf(row, ''); return }
   if (key === 'unhide') { satSets.unhide(id); applySetsChanged(); return }
@@ -4400,6 +4748,7 @@ function setRename(row, name) {
 }
 async function setColorOf(row, hex) {
   const k = row.kind, r = row.id.slice(2)
+  if (k === 'tree') { if (hex) setGroupColor(TREE_GEO_GROUP, hex); else resetGroupColor(TREE_GEO_GROUP); return }   // 与内置组同一套：groupColors 随设置持久化
   if (k === 'builtin') { if (hex) setGroupColor(r, hex); else resetGroupColor(r); return }
   if (k === 'group') { satGroups.setColor(r, hex || ''); return }
   if (k === 'custom') { customConst.update(r, hex ? { color: hex, colorByPlane: false } : { colorByPlane: true }); return }
@@ -4418,7 +4767,7 @@ function onAdd(key) {
   if (key === 'wizard') { openConstWizard(); return }
   if (key === 'import') { importTleToLibrary(); return }
   if (key === 'finder') { openFinder(); return }
-  if (key === 'resetOrder') { satSets.resetOrder(BUILTIN_KEYS.map((k) => 'g:' + k)); return }
+  if (key === 'resetOrder') { satSets.resetOrder([TREE_SET, ...BUILTIN_KEYS.map((k) => 'g:' + k)]); return }
   if (key.indexOf('builtin:') === 0) { const id = 'g:' + key.slice(8); satSets.restoreRemoved(id); satSets.toggle(id); applySetsChanged() }
 }
 
@@ -4449,7 +4798,8 @@ const finderHits = computed(() => {
 })
 const finderItems = computed(() => {
   const hits = finderHits.value, slotOk = hits.length <= 3000   // GEO 定点标注逐颗要传播一次：几千颗以内才做
-  return hits.map((en) => expMkItem(en.noradId, en.name, `${en.name} · ${en.groupLabel || GROUP_LABEL[en.group] || ''} · NORAD ${en.noradId}`, '', slotOk && en.rec ? geoSlotOfSatrec(en.rec) : ''))
+  return hits.map((en) => (en._grdFolder ? expTreeItem(en.noradId, en.name, '')   // 天线树虚拟星：合成号不当 NORAD 显示
+    : expMkItem(en.noradId, en.name, `${en.name} · ${en.groupLabel || GROUP_LABEL[en.group] || ''} · NORAD ${en.noradId}`, '', slotOk && en.rec ? geoSlotOfSatrec(en.rec) : '')))
 })
 const finderGroups = computed(() => satGroups.list.value.map((g) => ({ id: g.id, name: g.name, count: g.sats.length })))
 function finderLabel() {
@@ -4770,13 +5120,19 @@ const trkSwStyle = computed(() => {
 const track = ref(null)
 // —— 可配置时间窗 + 自适应刻度尺（参考 Cesium Timeline / DAW scrubber）——
 const PAST_FRAC = 0.25                                   // 窗口内展示的「过去」占比（可回看过去）
-// 跨度上下限：2min ~ 30 天。★下限压到 2 min 是为了游标的秒级——600 px 上 2 min ＝ 0.2 s/px，
-// 拖动吸附随之细到 1 s（见 scrubSnapSec）；原来的 10 min 下限只能吸到 5~10 s。
-const WIN_MIN = 2, WIN_MAX = 43200
-// 时间窗预设。★ 只是【下拉里的常用档】，不是可选跨度的全集 —— 滚轮照样缩放到 2 min ~ 30 天之间任意值，
-// 落到预设之外就在下拉里挂一条自定义档（isCustomWindow）。
-const WINDOW_PRESETS = [{ v: 720, l: '12h' }, { v: 1440, l: '24h' }, { v: 2880, l: '2d' }, { v: 4320, l: '3d' }, { v: 10080, l: '7d' }]
-const NICE = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 14400, 21600, 43200, 86400, 172800, 345600, 604800]   // 「整齐」刻度阶梯(秒)；10800 = 3h 档
+// 时间窗跨度上下限（分钟，可带秒的零头）：1 s ~ 100 年，与时段同一口径（shared/tlPeriod.js）。
+// 原来封在 2 min ~ 30 天、且只能取下拉五档或滚轮近似值；现在跨度 / 起止时刻都在「时间轴设置」浮层里任意键入。
+const WIN_MIN = SPAN_MIN_SEC / 60, WIN_MAX = SPAN_MAX_SEC / 60
+const roundSecMin = (min) => Math.round(min * 60) / 60      // 跨度落到整秒
+// —— 时段（见 shared/tlPeriod.js 文件头）——
+// roll 滚动：只定跨度，时间窗随游标走（改造前的行为，出厂档）；
+// fixed 固定：起止时刻钉死，尺子缩放只看细节、时段本身不动；连播到终止时刻按 tlEnd 停止 / 循环 / 继续（时钟里做，simClockCore.boundStep）。
+// ★ 时段只管连播：拖动 / 键入 / 步进 / 此刻 / 实时都能去时段之外（尺子上画斜纹），不因设了时段收窄自由度。
+const tlMode = ref('roll')
+const tlStart = ref(null), tlStop = ref(null)   // 固定档起止（UTC ms）
+const tlEnd = ref('stop')                       // 'stop' | 'loop' | 'continue'
+const tlFixed = computed(() => tlMode.value === 'fixed' && Number.isFinite(tlStart.value) && Number.isFinite(tlStop.value) && tlStop.value > tlStart.value)
+watch([tlFixed, tlStart, tlStop, tlEnd], () => clockSetRange(tlFixed.value ? { startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value } : null), { immediate: true })
 // —— 时间轴读数时区：'local'（本机，默认）| 'utc' | 数字（相对 UTC 的固定偏移，分钟）——
 // 只影响【显示】：Date 内部是 UTC 毫秒数，星位/晨昏线全程走 getUTC*，换档不改变任何计算结果。
 // 加它是因为晨昏线、星历历元、过境窗口都是 UTC 口径，对国际时刻时需要直接读 UTC 而不是心算 −8；
@@ -4793,11 +5149,8 @@ const tMin = (d) => tD(d).getUTCMinutes()
 const tSec = (d) => tD(d).getUTCSeconds()
 // 当前档位角标（如 UTC / UTC+8）：本机档按当刻实际偏移取，夏令时与半时区都能如实标出
 const tzLabel = computed(() => { void tzMode.value; return tzTag(tzMode.value, clock.tMs) })
-// —— 刻度尺 v3（精密仪器）——
-// 标签贴在各自刻线右侧 3px；刻度分三级（带字长刻线 / 6px 次刻 / 3px 细刻），只靠长短与灰阶区分。
-// 主步长按【实测字宽】取（界面字体用户可改，不能按字符数估），标签最小间距 56px；多级格式同 OpenMCT：
-// 主步长 ≥ 1 天或逢该档位午夜 → MM-DD（日界），否则 ≥ 1 min → HH:MM，否则 HH:MM:SS。
-const LAB_PAD = 3, LAB_GAP = 6, FLIP_GAP = 16, LAB_MIN_STEP = 56, MID_MIN_PX = 14, TINY_MIN_PX = 6, TXT_CLEAR = 3, PIN_CLEAR = 4
+// —— 刻度尺 v3（精密仪器）——排布计算在 shared/tlRuler.js（时段放开到 100 年后补了月 / 年日历档）。
+// 这里只留取宽（实测字宽，界面字体用户可改）与读数块定宽的量法。
 const _lw = new Map(); let _lwCtx = null
 function labW(s, stack) {                     // 10px 标签的实测宽（含 letter-spacing .01em）；按「字体|串」缓存
   const k = stack + '|' + s
@@ -4824,75 +5177,80 @@ function roC1Em(stack) {                      // 读数列 1 的定宽（em）�
   }
   return v
 }
-// o: { anchorMs, wStart, wMin, W, hp, snapX, tzOffMin(ms), parts(ms)→{mo,d,h,mi,s}, lw(s), nowX|null, pinX|null, tagSides: [] | ['r','l'] | ['l'] | ['r'], tagW }
-// 返回 { labels:[{x,label,day,flip,st}], poles:[{x,day}], majors:[x], mids:[x], tinies:[x], tag:'l'|'r'|null }，x 均已落整设备像素
-function computeRuler(o) {
-  const { W } = o, p2 = (n) => String(n).padStart(2, '0')
-  const span = o.wMin * 60, leftMs = o.anchorMs + o.wStart * 60000
-  // 以左边缘所在日的午夜为对齐基准。★必须跟着 tzMode 走（UTC / 固定偏移档下按本地午夜对齐，刻度落在碎数上）
-  const off = o.tzOffMin(leftMs) * 60000, d0 = new Date(leftMs + off)
-  const epoch = (Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), d0.getUTCDate()) - off) / 1000
-  const start = leftMs / 1000 - epoch, end = start + span, pps = W / span
-  const pick = (w) => NICE.find((s) => s * pps >= Math.max(w + LAB_PAD + 12, LAB_MIN_STEP)) || NICE[NICE.length - 1]
-  let main = pick(o.lw('00:00'))
-  if (main < 60) main = pick(o.lw('00:00:00'))
-  const div = (m, minPx) => { for (let i = NICE.indexOf(m) - 1; i >= 0; i--) { const s = NICE[i]; if (m % s === 0 && s * pps >= minPx && m / s <= 6) return s } return 0 }
-  const mid = div(main, MID_MIN_PX), tiny = div(mid || main, TINY_MIN_PX)
-  const px = (t) => o.snapX((t - start) * pps)
-  const on = (t, s) => Math.abs(t / s - Math.round(t / s)) < 1e-9
-  const cands = []
-  for (let t = Math.ceil(start / main) * main; t <= end + 1e-6; t += main) {
-    const x = px(t)
-    if (x < 0 || x > W) continue
-    const q = o.parts((epoch + t) * 1000), day = q.h === 0 && q.mi === 0 && q.s === 0
-    const label = main >= 86400 || day ? `${p2(q.mo)}-${p2(q.d)}` : main >= 60 ? `${p2(q.h)}:${p2(q.mi)}` : `${p2(q.h)}:${p2(q.mi)}:${p2(q.s)}`
-    cands.push({ x, label, day, w: o.lw(label) })
+// 读数副行的日期带年份（时段可跨年 / 跨世纪）：列 1 取「时刻主行」与「YYYY-MM-DD」两者较宽的那个，
+// 后者按 8×最宽数字 + 2×连字符量（em，副行字号）—— 宽度只随字体变，拖动中恒定
+const _d1 = new Map()
+function roD1Em(stack) {
+  let v = _d1.get(stack)
+  if (v == null) {
+    _lwCtx = _lwCtx || document.createElement('canvas').getContext('2d')
+    _lwCtx.font = '100px ' + stack
+    let dg = 0
+    for (let i = 0; i < 10; i++) dg = Math.max(dg, _lwCtx.measureText(String(i)).width)
+    v = Math.ceil((8 * dg + 2 * _lwCtx.measureText('-').width) / 100 * 1000 + 50) / 1000
+    _d1.set(stack, v)
   }
-  // 障碍：此刻线（含停在此刻时与它重合的游标）、实时档钉在 25% 的游标 —— 字与它们至少隔 3 / 4px，线永不穿字
-  const obs = []
-  if (o.nowX != null) obs.push([o.nowX - TXT_CLEAR, o.nowX + o.hp + TXT_CLEAR])
-  if (o.pinX != null) obs.push([o.pinX - PIN_CLEAR, o.pinX + PIN_CLEAR])
-  // taken: [左, 右, 左侧须留的空]。翻到刻线左侧的日界标签左边多留（FLIP_GAP）：否则「12:00  09-24|」读成一个时刻
-  const taken = []
-  const clearOf = (a, b, gapL) => taken.every(([l, r, gl]) => b + Math.max(LAB_GAP, gl) <= l || a - gapL >= r)
-  const free = (a, b, gapL = LAB_GAP) => a >= 0 && b <= W && obs.every(([l, r]) => b <= l || a >= r) && clearOf(a, b, gapL)
-  const labels = [], poles = [], majors = []
-  const put = (c, side) => labels.push({ x: c.x, label: c.label, day: c.day, flip: side === 'l',
-    st: side === 'l' ? { right: (W - c.x + LAB_PAD) + 'px' } : { left: (c.x + LAB_PAD) + 'px' } })
-  // ① 日界：先右；右边被此刻 / 钉住的游标 / 右端占了就翻到刻线左侧；两边都不行才不写字 —— 日界刻线无论如何保持全高
-  for (const c of cands) {
-    if (!c.day) continue
-    const R = [c.x + LAB_PAD, c.x + LAB_PAD + c.w], L = [c.x - LAB_PAD - c.w, c.x - LAB_PAD]
-    const side = free(R[0], R[1]) ? 'r' : free(L[0], L[1], FLIP_GAP) ? 'l' : null
-    if (side) { taken.push(side === 'r' ? [R[0], R[1], LAB_GAP] : [L[0], L[1], FLIP_GAP]); put(c, side) }
-    poles.push({ x: c.x, day: true })
-  }
-  // ② 其余主刻：只挂右侧；放不下就退成 10px 短主刻
-  for (const c of cands) {
-    if (c.day) continue
-    const R = [c.x + LAB_PAD, c.x + LAB_PAD + c.w]
-    if (free(R[0], R[1])) { taken.push([R[0], R[1], LAB_GAP]); put(c, 'r'); poles.push({ x: c.x, day: false }) }
-    else majors.push(c.x)
-  }
-  // ③「此刻」最后放、只让不抢：刻度标签一个都不因它挪动（它换边 / 隐现时尺上别的字纹丝不动）
-  let tag = null
-  if (o.nowX != null) {
-    const n = o.nowX, box = { r: [n + o.hp + LAB_PAD, n + o.hp + LAB_PAD + o.tagW], l: [n - LAB_PAD - o.tagW, n - LAB_PAD] }
-    for (const s of o.tagSides) { const [a, b] = box[s]; if (a >= 0 && b <= W && clearOf(a, b, LAB_GAP)) { tag = s; break } }
-  }
-  const mids = [], tinies = []
-  if (mid) for (let t = Math.ceil(start / mid) * mid; t <= end + 1e-6; t += mid) if (!on(t, main)) mids.push(px(t))
-  if (tiny) for (let t = Math.ceil(start / tiny) * tiny; t <= end + 1e-6; t += tiny) if (!on(t, mid || main)) tinies.push(px(t))
-  return { labels, poles, majors, mids, tinies, tag }
+  return v
 }
 const winEndMin = computed(() => winStartMin.value + windowMin.value)
-const isCustomWindow = computed(() => !WINDOW_PRESETS.some((w) => w.v === windowMin.value))
-function fmtSpan(min) {
-  // 先把总时长取整到小时再拆天：零头小时单独取整会进位成 24（滚轮 4320×1.15ⁿ 到 11491 min 读成「7d24h」）
-  if (min >= 1440) { const hT = Math.round(min / 60), d = Math.floor(hT / 24), rh = hT % 24; return rh ? `${d}d${rh}h` : `${d}d` }
-  const h = Math.floor(min / 60), m = min % 60; return h ? (m ? `${h}h${m}m` : `${h}h`) : `${m}m`
+// 当前时间窗两端（UTC ms）：滚动档的「时段」就是它；切到固定档时以它起算
+const viewLoMs = computed(() => baseTime.value + winStartMin.value * 60000)
+const viewHiMs = computed(() => viewLoMs.value + windowMin.value * 60000)
+// 「跨度 / 时段」钮上的读数：固定档写时段时长，滚动档写时间窗跨度
+const tlBtnLabel = computed(() => fmtSpanSec(tlFixed.value ? (tlStop.value - tlStart.value) / 1000 : windowMin.value * 60))
+// 时间窗设到 [lo, hi]（ms）
+function setViewMs(lo, hi) {
+  windowMin.value = clamp((hi - lo) / 60000, WIN_MIN, WIN_MAX)
+  winStartMin.value = (lo - baseTime.value) / 60000
+  winExact = null
 }
-const customWinLabel = computed(() => fmtSpan(windowMin.value))
+// 时间窗对准整个时段（浮层「缩放至时段」/ 双击刻度尺）。★ 实时中先停在当前时刻：实时档锚点每拍跟着系统钟走，
+// 对准了下一拍也会被拖走；游标在时段外就夹进来（与 STK 改动画时段后当前时刻回到时段内同理）
+function fitPeriod() {
+  if (!tlFixed.value) return
+  if (live.value) clockSetTime(clock.tMs)
+  setViewMs(tlStart.value, tlStop.value)
+  clampCursorIntoWindow()
+}
+// 浮层回传的时段：固定档起止一变就对准时间窗；切回滚动档时间窗原地不动
+function onTlPeriod(p) {
+  const n = normPeriod(p)
+  tlEnd.value = n.end
+  if (n.mode !== 'fixed') { tlMode.value = 'roll'; saveSettings(); return }
+  const moved = !tlFixed.value || n.startMs !== tlStart.value || n.stopMs !== tlStop.value
+  tlMode.value = 'fixed'; tlStart.value = n.startMs; tlStop.value = n.stopMs
+  if (moved) fitPeriod()
+  saveSettings()
+}
+const tlsEl = ref(null)
+// 时间轴设置浮层起始旁「此刻」取的时刻 = 时间轴游标（同航迹出发 / 卫星历元的「此刻」）。给函数：模板不逐拍读 clock
+const tlNowMs = () => clock.tMs
+// 步长 / 倍速下拉的「自定义…」：开设置浮层并聚焦对应那一格；下拉本身退回当前值（v-memo 挡着重渲，得手工改回）
+function onStepSel(e) {
+  const v = e.target.value
+  if (v === 'custom') { e.target.value = String(clock.stepSec); if (tlsEl.value) tlsEl.value.openAt(e.target, 'right', 'step'); return }
+  setStepSec(Number(v))
+}
+function onSpeedSel(e) {
+  const v = e.target.value
+  if (v === 'custom') { e.target.value = String(clock.speed); if (tlsEl.value) tlsEl.value.openAt(e.target, 'right', 'speed'); return }
+  setSpeedVal(Number(v))
+}
+// 刻度尺上的时段标记：时段外斜纹 + 起止两道括线（固定档；x 已落整设备像素，窗外为 null）
+// ★ 括线判据放宽半像素、夹回轨道内画：时间窗正好对准时段（fitPeriod / 双击刻度尺）时，两端经「锚点 + 分钟偏移」往返
+//   会落到 [0, W] 外几个 ulp —— 严格比较下约 3% 的时段组合右括线不画。右括线落到右端时与端刻同位（snapX(W) − 1 设备像素），不出轨道
+const perMark = computed(() => {
+  if (!tlFixed.value) return null
+  const W = trackWidthPx.value, lo = viewLoMs.value, span = windowMin.value * 60000
+  const xa = (tlStart.value - lo) / span * W, xb = (tlStop.value - lo) / span * W
+  const inTrack = (x) => x >= -0.5 && x <= W + 0.5
+  return {
+    l: xa > 0 ? snapX(Math.min(xa, W)) : 0,
+    r: xb < W ? snapX(Math.max(xb, 0)) : W,
+    xa: inTrack(xa) ? snapX(clamp(xa, 0, W)) : null,
+    xb: inTrack(xb) ? Math.min(snapX(clamp(xb, 0, W)), snapX(W) - hpPx.value) : null
+  }
+})
 // 对星指标表窗口的时刻读数：取【时间轴游标】calcAt()，不是系统时钟（与晨昏线/可见性同口径）
 const timeText = computed(() => {
   void tzMode.value
@@ -4916,16 +5274,17 @@ function onLeave() { hoverShow.value = false }
 const hoverLabel = computed(() => {
   if (!hoverShow.value) return ''
   const q = tzParts(snapMs(baseTime.value + (winStartMin.value + hoverF.value * windowMin.value) * 60000, snapSec.value * 1000), tzMode.value), p = (n) => String(n).padStart(2, '0')
-  return `${p(q.mo)}-${p(q.d)} ${p(q.h)}:${p(q.mi)}:${p(q.s)}`
+  return `${q.y}-${p(q.mo)}-${p(q.d)} ${p(q.h)}:${p(q.mi)}:${p(q.s)}`
 })
-// 时刻片在标签行内（不再浮到地图上）：按实测宽夹在轨道两端之内
-const tipLeft = computed(() => { const w = labW('00-00 00:00:00', uiFont.stack) + 10; return clamp(hoverX.value - w / 2, 0, Math.max(0, trackWidthPx.value - w)) })
+// 时刻片在标签行内（不再浮到地图上）：按实测宽夹在轨道两端之内。带年份（时段可跨年）
+const TIP_PROTO = '0000-00-00 00:00:00'
+const tipLeft = computed(() => { const w = labW(TIP_PROTO, uiFont.stack) + 10; return clamp(hoverX.value - w / 2, 0, Math.max(0, trackWidthPx.value - w)) })
 // 时刻片压到的刻度标签 / 「此刻」整枚让掉（visibility，连衬底一起）—— 不留「09-」「12:0」半截字，也不在片外留一块
 // 遮游标针的空白衬底。盒子与 computeRuler 同口径（左右各含 2px 衬底，再放 1px 量宽余量）。
 // 返回串（让掉的标签序号，t = 此刻），只在片滑过标签边界时变 → 刻度层的 v-memo 平时照样整段跳过
 const tipHideKey = computed(() => {
   if (!hoverShow.value || scrubbing.value) return ''
-  const stack = uiFont.stack, a = tipLeft.value, b = a + labW('00-00 00:00:00', stack) + 10, rl = ruler.value, out = []
+  const stack = uiFont.stack, a = tipLeft.value, b = a + labW(TIP_PROTO, stack) + 10, rl = ruler.value, out = []
   const hit = (x0, x1) => x1 + 3 > a && x0 - 3 < b
   rl.labels.forEach((q, i) => { const w = labW(q.label, stack), x0 = q.flip ? q.x - LAB_PAD - w : q.x + LAB_PAD; if (hit(x0, x0 + w)) out.push(i) })
   if (rl.tag && nowX.value != null) { const w = Math.max(labW('此刻', stack), labW('Now', stack)), n = nowX.value + (rl.tag === 'r' ? hpPx.value + LAB_PAD : -LAB_PAD - w); if (hit(n, n + w)) out.push('t') }
@@ -4935,7 +5294,7 @@ const tipHide = computed(() => new Set(tipHideKey.value ? tipHideKey.value.split
 // 时刻片与握柄（±hdw/2）横向相交 → 握柄让掉；只在布尔翻转时改 class，逐帧仍只写 --ph-x
 const tipOverHd = computed(() => {
   if (!hoverShow.value || scrubbing.value) return false
-  const a = tipLeft.value, b = a + labW('00-00 00:00:00', uiFont.stack) + 10, h = Math.round(4 * hairDpr.value) / hairDpr.value
+  const a = tipLeft.value, b = a + labW(TIP_PROTO, uiFont.stack) + 10, h = Math.round(4 * hairDpr.value) / hairDpr.value
   return b + 1 > phX.value - h && a - 1 < phX.value + h   // 1px：片宽是 canvas 估的（DOM 里 tabular-nums 可能略宽）
 })
 // 刻度线 / 此刻线 / 游标针落整设备像素：1px 在 125% / 150% 缩放下是 1.25 / 1.5 设备像素，
@@ -4976,6 +5335,7 @@ const ruler = computed(() => {
   const r = computeRuler({
     anchorMs: baseTime.value, wStart: winStartMin.value, wMin: windowMin.value, W, hp: hpPx.value, snapX,
     tzOffMin: (ms) => tzOffMin(tzMode.value, ms), parts: (ms) => tzParts(ms, tzMode.value), lw,
+    dateMs: (Y, Mo, D) => tzToMs(tzMode.value, Y, Mo, D, 0, 0, 0),
     nowX: nowInWin.value ? nowX.value : null, pinX: pinX.value,
     tagSides: tagKey.value.split(''), tagW: Math.max(lw('此刻'), lw('Now'))
   })
@@ -5115,14 +5475,23 @@ function onWheel(e) {
   const r = track.value.getBoundingClientRect(), f = clamp01((e.clientX - r.left) / r.width)
   const cursorOff = winStartMin.value + f * windowMin.value
   winExact = clamp((winExact ?? windowMin.value) * k, WIN_MIN, WIN_MAX)
-  const w = Math.round(winExact)
+  const w = roundSecMin(winExact)            // 落到整秒（原来取整分钟：2 min 以下缩不进去）
   if (w === windowMin.value) return
   windowMin.value = w
-  winStartMin.value = live.value ? -PAST_FRAC * w : cursorOff - f * w
+  let s = live.value ? -PAST_FRAC * w : cursorOff - f * w
+  // ★ 只换尺子、不动时刻（同 setWindow）：以指针处为锚缩放后游标若出了窗，就平移尺子把游标留在窗边内一丝 ——
+  //   原来是把游标夹回窗边，指针离游标远时滚一下轮，仿真时刻就被拽到窗边（星位 / 覆盖 / 各计算窗口跟着变）。
+  //   一丝 = 6 ms（不足窗宽 1/4 时取 1/4）：窗两端取整到整毫秒（winMsRange）后游标仍在窗内，clampCursorIntoWindow 不再改时刻
+  if (!live.value) {
+    const o = offMin.value, d = Math.min(1e-4, w / 4)
+    if (o < s + d) s = o - d
+    else if (o > s + w - d) s = o - w + d
+  }
+  winStartMin.value = s
   clampCursorIntoWindow()
   saveSettings()
 }
-watch(windowMin, (v) => { if (winExact != null && Math.round(winExact) !== v) winExact = null })   // 下拉 / 存档改了跨度：丢掉滚轮的零头
+watch(windowMin, (v) => { if (winExact != null && roundSecMin(winExact) !== v) winExact = null })   // 下拉 / 存档改了跨度：丢掉滚轮的零头
 // 缩放/换跨度后游标可能落到窗外 → 夹回来（时刻本身被改动才通知时钟，避免每次滚轮都白刷一拍：
 // 尺子变了星并没有动，刻度是 computed 自己会重算，7000 颗星的 SGP4 没必要跟着滚轮跑）
 function clampCursorIntoWindow() {
@@ -5130,11 +5499,15 @@ function clampCursorIntoWindow() {
   const t = clamp(clock.tMs, lo, hi)
   if (t !== clock.tMs) clockSetTime(t)
 }
-// 预设/自定义跨度：窗口居中重置（含 PAST_FRAC 过去），游标夹入新范围
+// 预设 / 自定义跨度：只换尺子、不动时刻 —— 以游标为准重排时间窗（游标落在 PAST_FRAC 处，同「跳到时刻」/ 回到此刻后的窗位）。
+// ★ 原来按锚点重排（winStartMin = −PAST_FRAC·W）：播放 / 拖动 / 步进都不改锚点，走远之后改跨度，游标落在新窗外被夹回窗边，
+//   仿真时刻被拽回锚点附近（播放到锚点后 50 h 点「12h」，时刻倒退到锚点后约 9 h），星位与各计算窗口一起跳。
+// 实时档锚点每拍跟着游标走（偏移恒为 0）：按 0 算，与原来同值
 function setWindow(min) {
-  windowMin.value = clamp(Math.round(min), WIN_MIN, WIN_MAX)
-  winStartMin.value = -PAST_FRAC * windowMin.value
-  clampCursorIntoWindow()
+  const w = clamp(roundSecMin(min), WIN_MIN, WIN_MAX)
+  windowMin.value = w
+  winStartMin.value = (live.value ? 0 : offMin.value) - PAST_FRAC * w
+  clampCursorIntoWindow()                 // 游标已在窗内 PAST_FRAC 处，这里只是兜底，不会再改时刻
   saveSettings()
 }
 // 换锚点 + 设时刻（此刻 / 停在当前时刻 / 跳到时刻）。★先落锚点与窗口、再设时刻 —— clockSetTime 同步 emit → refreshPositions
@@ -5166,8 +5539,17 @@ function followCursor() {
   // 钳到窗口边上的时刻经 setTime 的 Math.round 可能落到边外 <1 ms（滚轮缩放后窗口两端是小数毫秒）：不算跑出窗口，否则整页平移 75%
   const lo = winStartMin.value, hi = winEndMin.value, e = 1 / 60000, o = offMin.value
   const off = o < lo && o > lo - e ? lo : o > hi && o < hi + e ? hi : o
-  const ws = followWindow(off, lo, windowMin.value, PAST_FRAC, clock.mode === 'play' ? clockEff.value : 0)
-  if (ws != null) winStartMin.value = ws
+  let ws = followWindow(off, lo, windowMin.value, PAST_FRAC, clock.mode === 'play' ? clockEff.value : 0)
+  if (ws == null) return
+  // 固定时段：游标在时段内时，跟随也不把时间窗带出时段（时间窗比时段宽时不管）—— 时间窗正好对准时段时就纹丝不动，
+  // 否则快档「钉住游标、尺子连续滑」会把尺子滑出时段，循环 / 停止档的时段边界随之看不见。
+  // ★ 比较带容差：时间窗 = 时段（fitPeriod）时 a、b 数学上相等，浮点往返却常差几个 ulp、b 略小于 a —— 严格的 b >= a
+  //   在约 1% 的时段组合下判成「时间窗比时段宽」不夹，快档时尺子照样滑出去。容差 1e-6 min（60 µs）盖得住百年量级偏移的舍入
+  if (tlFixed.value && clock.tMs >= tlStart.value && clock.tMs <= tlStop.value) {
+    const a = (tlStart.value - baseTime.value) / 60000, b = (tlStop.value - baseTime.value) / 60000 - windowMin.value
+    if (b >= a - 1e-6) ws = clamp(ws, a, Math.max(a, b))
+  }
+  if (Math.abs(ws - winStartMin.value) > 1e-9) winStartMin.value = ws
 }
 // —— 跳到指定时刻（精确到秒）——
 // 拖游标的吸附粒度受像素限制（24 h 窗口下 1 px = 144 s），要落在某个确切的秒上只能键入。
@@ -5244,9 +5626,13 @@ const CENTER_PRESETS = [
   { v: 0, zh: '0°' }, { v: 60, zh: '60°E' }, { v: 105, zh: '105°E' }, { v: 150, zh: '150°E' },
   { v: 180, zh: '180°' }, { v: -60, zh: '60°W' }, { v: -100, zh: '100°W' }
 ]
-function resetCrs() { projSpin.value = false; setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) { flat.setRotateMode(false); flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj, projOpts()) }; if (imageryOn.value) applyImagery(true) }
+function resetCrs() { forgetFlatFollow(); projSpin.value = false; setMapCrs(MAP_CRS_DEF); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) { flat.setRotateMode(false); flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj, projOpts()); flat.setMapFrame(mapFrameCfg()) }; if (imageryOn.value) applyImagery(true) }
 // 2D 投影档：只改平面图怎么画（3D 球体不受影响 —— 它本来就是球，没有投影这回事）
 function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj, projOpts()); if (imageryOn.value) applyImagery(true) }
+// 2D 经纬图框（SATSOFT 式：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格，与视频导出同一支 geo/geoFrame.js）。
+// 档位在 mapCrs.frame（随视图存档）；轴标题按界面语言出，切语言时重推（syncNameLang）
+const mapFrameCfg = () => ({ ...mapCrs.frame, lang: curLang() })
+function setMapFrame(p) { setMapCrs({ frame: p }); if (flat) flat.setMapFrame(mapFrameCfg()) }
 
 // ── 逐投影的可调参数 ───────────────────────────────────────────────────────
 // 哪档摆哪几个控件由 projParams 说了算（见 geo/projection.js 的 PROJ_PARAMS）：
@@ -5286,7 +5672,7 @@ const subPtPos = computed(() => {
     return { lon: p.lon, lat: p.lat || 0, alt: p.altKm, name: n.satName || sp.name }
   }
   const e = satEntryById(sp.id)
-  if (!e || !e.rec) return null
+  if (!e || (!e.rec && !e.eph)) return null           // 点序列星历星（.e / OEM / SP3）只有 eph，posAt 两种都认
   const t = calcAt(), tm = isCustomEntry(e) ? ccTimeAt(t) : t
   try {
     const pv = posAt(e, tm)
@@ -5319,6 +5705,10 @@ const subPtRead = computed(() => {
 //   · 时间闸  —— LEO 快的时候每秒扫几度，按这个节拍跟，画面是一跳一跳地追上去。
 const FOLLOW_DEG = 0.25, FOLLOW_MS = 250
 let followT = 0, followAt = null
+// 2D「跟随卫星」（信息栏 / 右键 / 命令，见 startFlatFollow）借的就是这套星下点跟随：
+//   _flatFollowSat     —— 本次跟随由「跟随卫星」发起：每拍另把星下点留在画面里（出了中部 80% 就平移回中心）
+//   _flatFollowOwnsSub —— 「星下点」那一节是跟随替用户展开的：退出跟随时收回去（用户自己开着的不碰）
+let _flatFollowSat = false, _flatFollowOwnsSub = false
 // ★ keepView：跟随时【不许动缩放】—— 换平面的默认路子会 fit() 一次，时间轴每跳一下
 //   就把用户放大看的那一块打回全图。投影中心在平面上的位置是固定的（方位等距即圆心 W/2,H/2），
 //   故视图原样留着，圆心在屏幕上的位置也就不动，只有底下的地球在转。
@@ -5350,9 +5740,86 @@ watch(subPtPos, (p) => {
   if (!moved || now - followT < FOLLOW_MS) return
   followT = now; followAt = { lon: p.lon, lat: p.lat }
   centerOnSubPt(p, true)          // 跟随：缩放不动
+  // 「跟随卫星」：投影中心只管经度（等距圆柱等档），纬向漂出画面的 LEO 另平移回来；不动缩放。
+  // ★ edge = 可见区短边的 10%：centerOn 的 ifOffscreen 缺省只在离四边不到 24 px 时才平移（那是给「定位」的），
+  //   跟随要保住原来「出了中部 80% 就回中」的手感；量不到画布尺寸就不传（centerOn 内部还会把 edge 夹到宽高的 1/4 以内）
+  if (_flatFollowSat && flat && flatView.value) {
+    const cv = flatCanvas.value, sd = cv ? Math.min(cv.clientWidth, cv.clientHeight) : 0
+    flat.centerOn(p.lon, p.lat, sd > 0 ? { ifOffscreen: true, edge: Math.round(0.1 * sd) } : { ifOffscreen: true })
+  }
 }, { immediate: true })
 // 用户自己动了画面 → 关掉跟随。否则下一拍又被拉回星下点，怎么拖都拖不走。
 function dropFollow() { if (mapCrs.subFollow) setMapCrs({ subFollow: false }) }
+
+// ── 2D 跟随卫星 ────────────────────────────────────────────────────────────
+// 与 3D 相机跟随同一入口（信息栏跟随钮 / 右键「跟随卫星」/ 命令 / Esc），语义按视图分：2D 把这颗星设成星下点参考、
+// 展开「星下点」那一节并跟随（投影中心随星下点走），起手先把星下点平移到画面中心。
+// 退出：再点一次 / Esc / 自己拖动画面（接管）/ 收起那一节或手改投影中心（dropFollow 那几处）。
+const flatFollowing = computed(() => flatView.value && subOpen.value && !!mapCrs.subFollow && !!mapCrs.subPt && mapCrs.subPt.src === 'sat')
+// 进入 2D 跟随前的星下点参考 / 投影中心 / 视图。跟随借用的是 mapCrs 这几项（会存盘），退出时还回去
+//（同 3D 跟随退出复原相机）——否则投影中心停在那颗星最后的星下点、用户原来的星下点参考被换掉，重启后仍是这样
+let _flatFollowPrev = null
+function startFlatFollow(e) {
+  if (!e || !flat) return
+  // 首次进入才记；跟随中换一颗星不覆盖（还原的是进入跟随之前那一份）
+  if (!_flatFollowSat || !_flatFollowPrev) {
+    _flatFollowPrev = { lon0: mapCrs.lon0, lat0: mapCrs.lat0, subPt: mapCrs.subPt ? { ...mapCrs.subPt } : null, subFollow: mapCrs.subFollow, view: flat.getView() }
+  }
+  if (e !== selEntry) {
+    if (selEntries.includes(e)) { _userSelTick++; selEntry = e; refreshSelection(); saveSelection() }   // 换主选（同 setPrimary）
+    else selectSat(e, false, true)   // 追加式选中：不冲掉用户整理好的聚焦集（同 3D startFollow）
+  }
+  if (projSpin.value) { projSpin.value = false; flat.setRotateMode(false) }   // 与「拖动调整」互斥（同 projCenterToSat）
+  if (!subOpen.value) { _flatFollowOwnsSub = true; subOpen.value = true }
+  _flatFollowSat = true
+  applySubPt({ src: 'sat', id: satIdOf(e), name: e.name })
+  const p = subPtPos.value
+  if (p) flat.centerOn(p.lon, p.lat)
+}
+// keepView：拖画面接管时不跳回进入前那一屏，只把正看着的那一点留在画面中心；Esc / 再点 = 连视图一起回到进入前
+// leaving：离开本页（整页切走 / 重挂 / 关软件）—— 平面图马上要拆，不再重建它；进入前的视图直接写进视图记忆（重开按它恢复）
+function stopFlatFollow(keepView, leaving) {
+  const pv = _flatFollowPrev; _flatFollowPrev = null
+  _flatFollowSat = false
+  dropFollow()
+  if (_flatFollowOwnsSub) { _flatFollowOwnsSub = false; subOpen.value = false }
+  if (!pv) return
+  const c = keepView === true && flat && !leaving ? flat.viewCenterLL() : null
+  setMapCrs({ subPt: pv.subPt, subFollow: pv.subFollow, lon0: pv.lon0, lat0: pv.lat0 })
+  crsCenterShown.value = lon0ToCenter(mapCrs.lon0)
+  followT = 0; followAt = null
+  if (leaving) {
+    if (pv.view) { savedView.flat = pv.view; try { localStorage.setItem(VIEW_KEY, JSON.stringify(savedView)) } catch { /* 存不下不影响用 */ } }
+    return
+  }
+  if (!flat) return
+  flat.setLon0(mapCrs.lon0, true, projOpts())   // 切口与中心纬度一次重建，不 fit
+  if (c) flat.centerOn(c.lon, c.lat)
+  else if (pv.view) flat.setView(pv.view)
+}
+// 跟随借走的状态整份作废（不还原）：投影整档恢复出厂 / 读回存档之后，「进入跟随前那一份」已不是之前了 ——
+// 留着的话下一次跟随不再重记（startFlatFollow 只在首次进入时记），退出时把作废的旧值盖回来
+function forgetFlatFollow() {
+  _flatFollowPrev = null; _flatFollowSat = false
+  if (_flatFollowOwnsSub) { _flatFollowOwnsSub = false; subOpen.value = false }
+}
+// 离开本页（整页切走 / 重挂 / 关软件）：跟随借走的投影中心 / 星下点参考 / 视图还回去并立刻落盘 —— 存档里留着借走的值的话，
+// 重开就停在那颗星最后的星下点上、原来的星下点参考也被换掉。卸载钩子里自动落盘的 watch 已停，故这里同步 saveSettings
+function flatFollowLeave() {
+  if (!_flatFollowPrev && !_flatFollowSat) return
+  stopFlatFollow(false, true)
+  saveSettings()
+}
+if (typeof window !== 'undefined') window.addEventListener('beforeunload', flatFollowLeave)
+function onFlatPanEnd() { if (_flatFollowSat && flatFollowing.value) stopFlatFollow(true) }
+// 跟随被别处停掉（收起那一节 / 手改投影中心 / 拖动调整）：两个标志跟着复位，不留陈旧态；
+// 投影中心是用户刚亲手改的，不动；只把跟随借走的星下点参考还回去
+function releaseFlatFollowRef() {
+  const pv = _flatFollowPrev; _flatFollowPrev = null
+  if (pv && mapCrs.subPt && mapCrs.subPt.src === 'sat') setMapCrs({ subPt: pv.subPt })
+}
+watch(() => mapCrs.subFollow, (v) => { if (!v) { _flatFollowSat = false; releaseFlatFollowRef() } })
+watch(subOpen, (v) => { if (!v) { _flatFollowOwnsSub = false; _flatFollowSat = false; releaseFlatFollowRef() } })
 
 // ── 设定星下点 ─────────────────────────────────────────────────────────────
 function applySubPt(v) {
@@ -5443,6 +5910,8 @@ const projSatTitle = computed(() => {
 // 展开时若已经设过星下点，顺带把圆心拉回去并重新跟随（跟随关掉之后拖走了，用它拉回来）。
 function projCenterToSat() {
   subOpen.value = !subOpen.value
+  // 收起这一节＝结束跟随：「跟随卫星」借走的投影中心 / 星下点参考 / 视图整套还回去（同 Esc；原来只还了星下点参考）
+  if (!subOpen.value && _flatFollowPrev) { stopFlatFollow(); return }
   if (!subOpen.value) { dropFollow(); return }        // 关掉＝画面不再跟着星下点走（数据不动，再点开还在）
   // ★ 与「拖动调整」互斥：投影中心要么跟星下点、要么由手拖，最多开一个
   if (projSpin.value) { projSpin.value = false; if (flat) flat.setRotateMode(false) }
@@ -5455,8 +5924,9 @@ const projSpin = ref(false)
 function toggleProjSpin() {
   projSpin.value = !projSpin.value
   if (flat) flat.setRotateMode(projSpin.value)
-  // ★ 与「星下点」互斥：开了手拖就收起星下点那一节（准星不画、跟随停掉），否则下一拍又被拉回去
-  if (projSpin.value && subOpen.value) { subOpen.value = false; dropFollow() }
+  // ★ 与「星下点」互斥：开了手拖就收起星下点那一节（准星不画、跟随停掉），否则下一拍又被拉回去。
+  //   「跟随卫星」中收起 = 结束跟随，借走的投影中心 / 星下点参考 / 视图整套还回去（同 Esc），再从还回去的中心起手拖
+  if (projSpin.value && subOpen.value) { subOpen.value = false; if (_flatFollowPrev) stopFlatFollow(); else dropFollow() }
 }
 // 转动回调：拖动中逐帧只更新读数，松手那一次才是终值（两者都要写回 mapCrs，
 // 否则拖完切个档就弹回旧中心）。crsCenterShown 跟着走，面板上的数字与图上恒一致。
@@ -5537,6 +6007,8 @@ function syncNameLang() {
   if (oceanNameMode.value !== 'off') setWaterNameMode('ocean', en ? 'en' : 'zh')
   if (seaNameMode.value !== 'off') setWaterNameMode('sea', en ? 'en' : 'zh')
   if (chainStyle.name !== 'off') setChainName(en ? 'en' : 'zh')
+  if (flat) flat.setMapFrame(mapFrameCfg())   // 经纬图框的轴标题跟界面语言（标注是数字，不分语言）
+  pushMarkerLabels()   // 站 / 点上的仰角标注按界面语言出字（viz/markers/markElev.js）：停表时等不到下一拍
   saveSettings()
 }
 const offLang = onLangChange(syncNameLang)
@@ -5646,18 +6118,17 @@ function navTick() {
 }
 function navStop() { navHeld.clear(); if (navRaf) { cancelAnimationFrame(navRaf); navRaf = 0 } }
 function onNavKeyDown(e) {
-  // Esc = 退出跟随卫星（焦点在输入框里的 Esc 归输入框；输入法组字中的归输入法）
-  if (e.key === 'Escape' && following.value && !e.isComposing && !e.defaultPrevented) {
-    const el = e.target
-    if (!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable))) { stopFollow(); return }
-  }
-  // Esc = 站点栅编辑态的出口：一次退框选/加站（选中的站保留），再一次清选。
-  // 只在波束合成面板开着、且焦点不在输入框里时接管
-  if (e.key === 'Escape' && bs.open.value) {
+  // Esc 由里往外退一层（焦点在输入框里的 Esc 归输入框；输入法组字中的归输入法）：
+  //   ① 站点栅编辑态（波束合成面板开着时的框选 / 加站，选中的站保留）—— 跟随卫星视角里也能加站，先退跟随就成了外层先拆、工具态还挂着
+  //   ② 退出跟随卫星  ③ 清站点选择
+  // 已被里层消费的 Esc（defaultPrevented：建链取消、菜单关闭…）一层都不再退 —— 一次 Esc 只退一层
+  if (e.key === 'Escape' && !e.isComposing && !e.defaultPrevented) {
     const el = e.target
     if (!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable))) {
-      if (bs.stEditOn.value || bs.stPick.value) { if (bs.stEditOn.value) bs.toggleStEdit(); if (bs.stPick.value) bs.toggleStPick(); return }
-      if (bs.stSel.value.size) { bs.clearStSel(); return }
+      if (bs.open.value && (bs.stEditOn.value || bs.stPick.value)) { if (bs.stEditOn.value) bs.toggleStEdit(); if (bs.stPick.value) bs.toggleStPick(); return }
+      if (following.value && !e.defaultPrevented) { stopFollow(); return }
+      if (flatFollowing.value && !e.defaultPrevented) { stopFlatFollow(); return }   // 2D 星下点跟随同样由 Esc 退出
+      if (bs.open.value && bs.stSel.value.size) { bs.clearStSel(); return }
     }
   }
   if (e.key === 'Shift') { navHeld.add('Shift'); return }
@@ -5689,12 +6160,18 @@ async function applyFlat(v) {
   // 卫星层（含波束合成草图）在 2D 期间挂起未同步 → 这里一次性补建（见 redrawSats 尾注）。
   if (!v) {
     flatPainted.value = false
+    // 2D 跟随卫星只在平面图里有（同上面切 2D 先退 3D 跟随）：切回 3D 走与 Esc 同一套完整还原（投影中心 / 星下点参考 / 视图）——
+    // 不退的话借走的值留在存档里，3D 下星下点跟随还每 250 ms 整份重烘一遍看不见的平面图
+    if (_flatFollowPrev || _flatFollowSat) stopFlatFollow()
     scene && scene.resume()
+    // 模型图标：2D 期间每拍喂的是空表（iconFeedOn 认 3D），回到 3D 时钟停着就等不到下一拍 —— 当场按此刻喂一次，否则图标一直淡出着
+    feedModelsNow()
     if (satSpec3dDirty && scene) { scene.setSatLayer(satSpec3dPending); satSpec3dDirty = false; satSpec3dPending = null }
     // 2D 期间两个覆盖视图的 3D 通道都被闸着（recompute 的 isFlat 门）→ 切回必须各补一次全量，
     // 不能再只看面板开关：2D 里播放过的话，场景里的场还停在切走那一刻，星早走远了。
     grd.recompute()
     satcov.recompute()   // 内部 panelOn/_painted 闸自己管：没画过不推
+    pushLinksNow()       // 图上链路：2D 期间 3D 循环停着，回来按此刻补一份（停表时等不到下一拍）
     pushZoom(); return
   }
   await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
@@ -5716,6 +6193,9 @@ function ensureFlat() {
     flat.setRenderScale(displayQuality.value.pixelRatio); flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     flat.setWheelStep(viewPrefs.wheelStep2d)   // 平面渲染器按需建：滚轮比例在这里补推一次
     flat.setOnRightClick(onMapRightClick); flat.setOnHover(onHoverLL); flat.setOnBeamDrag(onBeamDragAny); flat.setBeamDragMode(grd.dragBore.value)
+    // 卫星点选（与 3D 同一套：单击聚焦 / Ctrl·Shift 单击增减）：候选现给 = 2D 实际画出来的星（见 pickExtraSats 的 flat 档）
+    flat.setOnPick(onMapPick); flat.setPickExtras(() => pickExtraSats({ flat: true }))
+    flat.setOnPanEnd(onFlatPanEnd)   // 跟随卫星中自己拖了画面 = 接管，退出跟随
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
     flat.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽：压在符号上按住即拖（须先进「调整位置」/「调点」，见 markDragKinds）
@@ -5744,6 +6224,8 @@ function feedFlat() {
   //   视图 / 图层重新抻一遍；且存档恢复时 mapCrs 已经是目标值，不先推就按出厂档画了一帧。
   flat.setLon0(mapCrs.lon0)
   flat.setProjection(mapCrs.proj, projOpts())
+  flat.setMapFrame(mapFrameCfg())        // 经纬图框的留白参与 fit：跟切口 / 投影一起先推
+  flat.setFrameHold(vexp.open.value)     // 视频取景期间挂起（取景框里看到的即成片）
   flat.setNameMode(nameMode.value)
   flat.setWaterMode({ ocean: oceanNameMode.value, sea: seaNameMode.value })
   flat.setWaterOff({ ...waterOff })
@@ -5772,6 +6254,8 @@ function feedFlat() {
   envLive.redraw()  // 实时气象场：同上。两张场共用一个槽，次序无所谓——归属闸挡着，关着的那一方清不掉对方
   applySpace()      // 宇宙空间（晨昏效果 / 晨昏线）：同上，平面图懒创建，切过来补喂当前时刻那一份（关着则清层）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
+  if (covGridLast) flat.setCovGrid(covGridLast.layer, covGridLast.opts)   // 覆盖分析热力图：建平面渲染器之前算的只进了 3D（见 covGridLast）
+  pushLinks()       // 图上链路：平时只在每拍 / 改动时推，暂停态下首次切 2D / 导出时得补推一份
   syncEdit()        // 调点态（Polygon / 标记「调整点位置」）：切入平面图时接上拖拽
   // ★ 返回这次几何的 Promise：commitGeometry 已改异步（逐颗几何在 Worker 池里算），
   //   切平面图与出图两处都必须等它落定 —— 否则平面图会先画一帧空的（切换时闪一下），
@@ -5822,13 +6306,13 @@ async function exportMap(fmt, scope) {
     //   恒答 'paths'，这一轮就照旧出分带多边形 → PNG/PDF 与改造前逐字节相同。
     flat.setExporting(true)
     await feedFlat()   // resize() 仅首帧 fit，已交互过的缩放/平移会保留 → view 模式即所见即所得
+    // 底图精度跟「设置 → 显示画质」那一档走，与屏上同一档（exportFlat 不另换档）。平面渲染器是懒创建的、
+    // 起手按 10m 建，ensureFlat 里那次换档没等它落地 —— 这里等到位再出图（已是这一档时直接返回）。
+    await flat.setMapDetail(displayQuality.value.mapDetail, displayQuality.value.mapThin)
     await nextTick()
     const tag = view ? '截图' : '全球图'
     const { renderFlatPNG, renderFlatPDF } = await import('../viz/flatmap/exportFlat.js')
     if (fmt === 'pdf') {
-      // 矢量 PDF【不跟】「设置」里的底图精度：那一档是给屏上帧率用的（出厂「高」= 50m），
-      // 而 PDF 是拿来放大着看的交付件 —— 50m 的海岸线一放大就是折线。导出恒用 10m，画完复位
-      // （见 exportFlat 的 withFinestBasemap；PNG 同此，两份出图不会一细一粗）。
       const fonts = await getPdfFonts()
       const bytes = await renderFlatPDF(flat, { base: 2400, fonts, view })
       await saveExport(bytes, `覆盖图_${tag}.pdf`, [{ name: 'PDF 矢量图', extensions: ['pdf'] }])
@@ -5885,6 +6369,170 @@ async function exportGlobeShot(fmt) {
   finally { exporting.value = false }
 }
 
+// ===================== 视频导出（H.264 MP4 / PNG · JPEG 图片序列，见 viz/video/useVideoExport.js）=====================
+// 本页只给能力：舞台、视图、两个渲染器、时区、时间轴、候选清单与逐帧叠加数据。逐帧走时钟（setTime 等这一拍画完）由导出器自己做。
+const stageWrapEl = ref(null)      // 地图区（取景框按它的 CSS 尺寸取）
+const vexpPvEl = ref(null)         // 屏上取景预览层
+const fmtPtLL = (lat, lon) => (Number.isFinite(lat) && Number.isFinite(lon) ? Math.abs(lat).toFixed(2) + (lat >= 0 ? '°N ' : '°S ') + Math.abs(lon).toFixed(2) + (lon >= 0 ? '°E' : '°W') : '—')
+function videoAntLabel(key) {
+  const [folder, ant] = String(key || '').split('|')
+  const node = (grd.sats.value || []).find((x) => x.folder === folder)
+  return (node ? node.satName : folder) + ' · ' + (ant || '')
+}
+function videoPoints() {
+  const m = new Map()
+  for (const s of stations.value) m.set('s:' + s.id, { id: 's:' + s.id, name: (s.name || '').trim() || fmtPtLL(s.lat, s.lon), lat: s.lat, lon: s.lon, altM: Number.isFinite(s.altM) ? s.altM : 0 })
+  points.value.forEach((q, i) => m.set('p:' + q.id, { id: 'p:' + q.id, name: (q.name || q.label || '').trim() || ('#' + (i + 1) + ' ' + fmtPtLL(q.lat, q.lon)), lat: q.lat, lon: q.lon, altM: 0 }))
+  return m
+}
+function videoSources() {
+  const pts = [...videoPoints().values()]
+  return {
+    sats: selList.value.map((x) => ({ name: x.name })),
+    stations: pts.filter((x) => x.id.startsWith('s:')).map((x) => ({ id: x.id, name: x.name })),
+    points: pts.filter((x) => x.id.startsWith('p:')).map((x) => ({ id: x.id, name: x.name })),
+    antennas: (grd.selected.value || []).map((key) => ({ key, label: videoAntLabel(key) })),
+    activeAnt: grd.active.value || ''
+  }
+}
+// 一颗星在 tMs 的星下点 / 高度 / 速度（与画面同一份星历；合成星按场景历元）
+function videoSatState(e, tMs) {
+  try {
+    const t = new Date(tMs), tt = isCustomEntry(e) ? ccTimeAt(t) : t
+    const pv = posAt(e, tt)
+    if (!pv || !pv.position) return null
+    const gd = sat.eciToGeodetic(pv.position, sat.gstime(tt))
+    const v = pv.velocity ? Math.hypot(pv.velocity.x, pv.velocity.y, pv.velocity.z) : NaN
+    return { lat: sat.degreesLat(gd.latitude), lon: sat.degreesLong(gd.longitude), altKm: gd.height, vKms: v }
+  } catch { return null }
+}
+// 聚焦卫星版块：与右侧「卫星信息栏」同一份读数（cardFor 按帧时刻取，串格式逐字相同），外加该星的天线 / 模型 / 轨迹周期。
+// 模型取法同 refreshSelModel：绑定 / 自动匹配 → 库条目（参数化模板补包围盒与质量）
+function videoModelOf(e) {
+  const mo = modelOf(e)
+  if (!mo.id) return null
+  const m0 = modelLib.value.byId.get(mo.id) || null
+  const pi = m0 && !m0.geometry ? paramInfoOf(mo.id) : null
+  const m = pi ? { ...m0, ...pi } : m0
+  const mp = m && m.massProps
+  return { name: m ? modelNameOf(m) : mo.id, dims: m ? bodyDimsOf(m, mo.frame) : '', mass: mp && Number(mp.massKg) > 0 ? Math.round(mp.massKg).toLocaleString('en-US') : '' }
+}
+function videoSatCard(e, tMs, f, n) {
+  const c = cardFor(e, tMs)
+  if (!c) return null
+  const grpLit = !!c.group && (Object.values(GROUP_LABEL).includes(c.group) || c.group === TREE_GEO_LABEL)   // 内置分组名要翻、用户星座名是数据不翻（同 rdkGroupLit）
+  const out = {
+    name: c.name || '', nameEn: displaySatName(c.name || ''),
+    norad: c.noradId ? String(c.noradId) : '', kind: c.kind || '', slot: c.slot || '',
+    group: c.group || '', groupEn: grpLit ? i18nT(c.group) : (c.group || ''),
+    lat: +c.lat, lon: +c.lon, alt: c.alt, vg: c.speedRel, vi: c.speedAbs,
+    a: c.aKm, e: c.ecc, i: c.incl, raan: c.raan, argp: c.argp, ma: c.ma,
+    n: c.meanMotion, T: c.period, hp: c.perigee, ha: c.apogee,
+    epochMs: c.epochMs, age: c.epochAgeD
+  }
+  // 轨迹周期：同信息栏 trkSpan（按聚焦颗数的采样预算夹断，与图上实际画的一致）；没开星下点轨迹不出
+  if (f.trk && focusStyle.trkOn && c.periodMinRaw > 0) {
+    const per = focusTrackPeriods(n, focusLod(n).samples, c.periodMinRaw), min = per * c.periodMinRaw
+    const v = min < 180 ? [min.toFixed(1), 'min'] : min < 72 * 60 ? [(min / 60).toFixed(2), 'h'] : [(min / 1440).toFixed(2), 'd']
+    out.trk = { rev: +per.toFixed(2), v: v[0], u: v[1] }
+  }
+  // 天线：同信息栏「天线」节（该星关联的全部树节点下的天线，读数 = 峰值增益）
+  if (f.ant && grdApiOk) {
+    const id = linkIdOf(e)
+    const nodes = id ? linkedNodesOf(grdSats.value, id, treeGeoIdMap.value) : []
+    const multi = nodes.length > 1
+    out.ants = nodes.flatMap((nd) => (nd.antennas || []).map((a) => ({ name: a.name, sat: multi ? nd.satName : '', peak: Number.isFinite(+a.peakDb) ? +a.peakDb : NaN })))
+  }
+  if (f.mName || f.mDims || f.mMass) out.model = videoModelOf(e)
+  return out
+}
+// 本帧叠加数据：只算开着的项。场强走性能指标表同一个取值器（perf.computeRows，口径 = 该天线的覆盖设置），逐点取各波束最大值
+function videoHudData(tMs, items) {
+  const out = {}
+  if (items.sat && items.sat.on) {
+    // 聚焦集的前 max 颗（顺序同信息栏聚焦集表）；主选排在 max 之外时顶替最后一颗 —— 主选星总在片子里
+    const max = Math.max(1, items.sat.max || 3)
+    let pick = selEntries.slice(0, max)
+    if (selEntry && !pick.includes(selEntry)) pick = [...selEntries.slice(0, max - 1), selEntry]
+    const f = items.sat.f || {}, n = Math.max(1, selEntries.length)
+    out.sats = pick.map((e) => videoSatCard(e, tMs, f, n)).filter(Boolean)
+  }
+  const needPts = (items.aer && items.aer.on) || (items.field && items.field.on)
+  const pm = needPts ? videoPoints() : null
+  if (items.aer && items.aer.on && selEntry) {
+    const s = videoSatState(selEntry, tMs)
+    if (s) {
+      const ids = items.aer.ids && items.aer.ids.length ? items.aer.ids : [...pm.keys()].filter((k) => k.startsWith('s:'))
+      out.aer = {
+        sat: displaySatName(selEntry.name || ''),
+        rows: ids.map((id) => pm.get(id)).filter(Boolean).slice(0, 10).map((q) => {
+          const hKm = (q.altM || 0) / 1000
+          const g = groundLookAngles(s.lon, s.lat, s.altKm, q.lon, q.lat, hKm)
+          // 斜距：站（含站高）ECEF → 卫星 ECEF 的直线距离，与方位 / 仰角同一对端点（groundLookAngles 同口径）。
+          // 原来取 satLookAt 的 range（站按地面点算），高山站 / 空中航点差出整个站高
+          const G = W.geodeticToEcef(q.lon, q.lat, hKm), S = W.geodeticToEcef(s.lon, s.lat || 0, s.altKm)
+          return { name: q.name, az: g.az, el: g.el, rangeKm: Math.hypot(S[0] - G[0], S[1] - G[1], S[2] - G[2]) }
+        })
+      }
+    }
+  }
+  if (items.field && items.field.on) {
+    const key = items.field.key || grd.active.value
+    const ctx = key ? grd.getPerfContext(key) : null
+    if (ctx && !ctx.noEph) {
+      const ids = items.field.ids && items.field.ids.length ? items.field.ids : [...pm.keys()]
+      const list = ids.map((id) => pm.get(id)).filter(Boolean).slice(0, 12)
+      const r = perf.computeRows(ctx, { cols: { param: true }, sameAsAnt: true, filterOn: false, beamSel: null }, list.map((q) => ({ id: q.id, lon: q.lon, lat: q.lat, altM: q.altM || null })))
+      const best = new Map()
+      for (const row of r.rows) {
+        const sid = String(row.id).split('#')[0]
+        if (Number.isFinite(row.param) && (!best.has(sid) || row.param > best.get(sid))) best.set(sid, row.param)
+      }
+      const st = ctx.settings || {}
+      out.field = {
+        title: ctx.satName + ' · ' + ctx.antName,
+        unit: (items.field.unit || '').trim() || (st.pathLoss === 'absolute' ? 'dBW/m²' : 'dB'),
+        rows: list.map((q) => ({ name: q.name, value: best.has(q.id) ? best.get(q.id) : NaN }))
+      }
+    }
+  }
+  if (items.legend && items.legend.on) {
+    const key = items.legend.key || grd.active.value
+    const ctx = key ? grd.getPerfContext(key) : null
+    const st = ctx && ctx.settings
+    if (st && Array.isArray(st.levels) && st.levels.length) {
+      const unit = st.ctype === 'abs' ? (st.pathLoss === 'absolute' ? 'dBW/m²' : 'dB') : 'dB'
+      const lv = st.levels.filter((L) => Number.isFinite(Number(L.v))).slice().sort((a, b) => Number(b.v) - Number(a.v))
+      out.legend = {
+        title: ctx.satName + ' · ' + ctx.antName + ' (' + unit + ')',
+        levels: lv.map((L) => ({ color: L.color || '#888', label: (L.name ? L.name + '  ' : '') + Number(L.v) }))
+      }
+    }
+  }
+  return out
+}
+const vexp = useVideoExport({
+  api: (typeof window !== 'undefined' && window.api) || null,
+  stageEl: () => stageWrapEl.value,
+  isFlat: () => flatView.value,
+  setFlat: (v) => { view.flat = !!v },
+  scene: () => scene,
+  flat: () => flat,
+  // 2D 出帧走 exportRender 的 compat 回放：填充要换成分带多边形（同 PNG / PDF 导出的那道闸），收尾再换回 GPU 网格
+  prepare2D: async () => { if (!ensureFlat()) throw new Error('2D 平面图未就绪'); flat.setExporting(true); await feedFlat() },
+  finish2D: () => { if (flat) { flat.setExporting(false); grd.recompute(); if (sideCtx() === 'satcov') satcov.recompute() } },
+  tzMode: () => tzMode.value,
+  timeline: () => ({ fixed: tlFixed.value, startMs: tlStart.value, stopMs: tlStop.value, viewLo: viewLoMs.value, viewHi: viewHiMs.value }),
+  sources: videoSources,
+  hudData: videoHudData,
+  geoView: () => (flatView.value && flat ? flat.geoView() : null),
+  uiFont: () => { try { return getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim() } catch { return '' } },
+  log: (m) => logMsg(m)
+})
+watch(vexpPvEl, (el) => vexp.attachPreview(el))
+// 视频取景期间挂起平面图自己的经纬图框（不动视角）：取景框里看到的就是成片，成片的图框归视频那一档
+watch(() => vexp.open.value, (o) => { if (flat) flat.setFrameHold(o) })
+
 // ---- 批次 / 卫星 增删改 ----
 function newBatch() {
   const color = hexToCss(DEF_COLORS[covColorCursor++ % DEF_COLORS.length])
@@ -5922,7 +6570,8 @@ function onItemBand(it, e) {
 function addBatch(it) { it.batches.push(newBatch()); redraw() }
 function removeBatch(it, ba) { const i = it.batches.indexOf(ba); if (i >= 0) it.batches.splice(i, 1); redraw() }
 function setBatchName(it, ba, e) { ba.name = e.target.value }
-function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) scene.faceLonLat(idx.lon, 0) }
+// 「定位」＝显式摆位：跟随卫星中先退回球面再正对（跟随中 scene 不接 faceLonLat，同树上「聚焦」）
+function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) { stopFollow(); scene.faceLonLat(idx.lon, 0) } }
 
 // 批次内设置统一作用于全部波束。增删波束时【保留已选增益档】（新增的波束并入其档，删除的仅去掉失效档）
 function toggleBatchBeam(it, ba, id) {
@@ -6118,18 +6767,25 @@ function setFocusVal(k, v) { focusStyle[k] = v; applyFocusStyle() }
 function openFocusSettings() { shellUi.side = 'focus' }
 // 宇宙空间 → 3D 与平面图。时刻取【时间轴当前值】calcAt()，不是系统时钟：拖时间轴看某历史 / 未来时刻时太阳、星空、晨昏必须跟着走，
 // 否则「那颗星当时在不在阳照区」就读错了。每次 refreshPositions（实时每秒 / 时间轴每次落点）调一次；总开关关着时逐件清层。
-// 六项各走各的通道（setSpace / setNightShade / setTerminator），互不牵连。
+// 七项各走各的通道（setSpace / setNightShade / setTerminator / applyImagery），互不牵连。
 // 颜色：three.js 要数值，Canvas 要 CSS 串 —— 同一份 space 样式各自转换，避免两处配色漂移。
 const hexNum = (s) => parseInt(String(s || '#000000').replace('#', ''), 16) || 0
+// 月球读数：与 3D 月球同一套星历（viz/lunar.js），太阳方向取同一个日下点
+function moonReadout(now, sub) {
+  const p = moonPosition(now), la = sub.lat * Math.PI / 180, lo = sub.lon * Math.PI / 180
+  const ph = moonPhase(p.ecef, [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)], sunDistanceKm(now))
+  return { sub: p.sub, illum: ph.illum }
+}
 function applySpace() {
   const on = spaceOn.value
   const now = calcAt()
   spaceSub.value = on ? solarGeometry(now).sub : null
+  spaceMoon.value = on && space.moon ? moonReadout(now, spaceSub.value) : null
   const night = on && space.night, line = on && space.line
   // 晨昏线自带的夜区阴影（硬边）只在晨昏效果不勾时画：勾着时夜区归晨昏效果（柔和过渡带），不叠两层（2026-09-24 用户定）
   const shade = line && !night ? space.shadeOpacity : 0
   if (scene) {
-    scene.setSpace(on ? { date: now, stars: space.stars ? { gain: space.starGain } : null, atmo: space.atmo ? { gain: space.atmoGain } : null, sun: space.sun ? { glare: space.sunGlare } : null } : null)
+    scene.setSpace(on ? { date: now, stars: space.stars ? { gain: space.starGain } : null, atmo: space.atmo ? { gain: space.atmoGain } : null, sun: space.sun ? { glare: space.sunGlare } : null, moon: space.moon ? { scale: space.moonScale } : null, planets: space.planets ? { gain: space.starGain } : null } : null)
     scene.setNightShade(night ? now : null, { color: hexNum(space.nightColor), opacity: space.nightOpacity })
     scene.setTerminator(line ? now : null, { lineColor: hexNum(space.lineColor), lineWidth: space.lineWidth, lineOpacity: space.lineOpacity, shadeColor: hexNum(space.shadeColor), shadeOpacity: shade })
   }
@@ -6142,14 +6798,14 @@ function applySpace() {
   if (modelLayer) modelLayer.setSunLit(night)
   if (entityLayer) entityLayer.setSunLit(night)   // 标记实体模型同一口径（关 = 全亮；开 = 按当地太阳高度角打光 + 相机侧补光）
 }
-// 开关类改动（总开关 / 六项勾选 / 恢复默认）：重画之外，还要按「地球影像」那一项给 / 撤两个视图的影像
+// 开关类改动（总开关 / 七项勾选 / 恢复默认）：重画之外，还要按「地球影像」那一项给 / 撤两个视图的影像
 function applySpaceStyle() { applySpace(); applyImagery() }
 // 标题栏搜索里点子项（fromCmd）：用户要的只是【这一项】。
 //   总开关关着时去开某一项 → 开总开关、只勾这一项，其余几项的勾选先记下、暂时去勾（搜「晨昏线」只想看分界线，
 //   不该连星空 / 大气 / 太阳 / 16K 影像一起上屏 —— 16K 解码几秒、~700 MB 显存）；
 //   之后又从搜索里把它关掉、且已没有别的项勾着 → 总开关跟着关、记下的勾选原样还回去（回到点之前的样子）。
 //   侧栏里亲手动总开关 / 勾选 / 恢复默认 = 用户接手，记下的那份作废（此后搜索关掉最后一项也不替他关总开关）。
-const SPACE_ITEMS = ['stars', 'atmo', 'sun', 'img', 'night', 'line']
+const SPACE_ITEMS = ['stars', 'planets', 'atmo', 'sun', 'moon', 'img', 'night', 'line']
 let spaceCmdSnap = null
 function toggleSpace() { spaceCmdSnap = null; spaceOn.value = !spaceOn.value; applySpaceStyle() }
 function setSpaceItem(k, v, fromCmd) {
@@ -6665,7 +7321,7 @@ function loadPolys() {
     }
   } catch { /* ignore */ }
 }
-function polyRefresh() { redrawSats(); syncEdit(); persistPolys() }
+function polyRefresh() { redrawSats(); syncEdit(); persistPolys(); pushLinks() }   // pushLinks：链路里的 Polygon 节点（代表点 / 已删除）跟着变
 // 赋形面板就地改 Polygon「数值」= 该区覆盖值/目标电平（与协调区 Polygon 同一字段，改后持久化 + 重绘标签）
 function setPolyVal(pg, v) { if (!pg) return; pg.value = (v == null ? '' : String(v)).trim(); polyRefresh() }
 // 改线色：填充色若未单独设置（仍与线色一致）则跟着走，设置过就各改各的
@@ -6673,14 +7329,17 @@ function polySetColor(pg, v) {
   if (!pg.fillColor || pg.fillColor === pg.color) pg.fillColor = v
   pg.color = v; polyRefresh()
 }
+// 进入 Polygon / 航迹描绘态（右键「绘制 Polygon」「添加航行 / 飞行轨迹」、面板新建 / 继续 / 编辑）：先把建链收尾（同「完成」），
+// 与 lnkEnterDraw 那头的互斥对称 —— 否则两种态并存：横幅叠在一起，单击地球站同时落点又加节点
+function endLinkDraw() { if (lnk.draw.value) lnkFinish() }
 function polyStartDraw() {
-  mkEditStop(); polyEditStop(); polyMoveStop(); stopSynthPlacement(); if (activeTraj.value) endTraj()   // 与标记「调整点位置」/调整/拖动/波束合成/航迹描绘态互斥
+  endLinkDraw(); mkEditStop(); polyEditStop(); polyMoveStop(); stopSynthPlacement(); if (activeTraj.value) endTraj()   // 与建链 / 标记「调整点位置」/调整/拖动/波束合成/航迹描绘态互斥
   const n = polys.value.length + 1
   const c = POLY_COLORS[(n - 1) % POLY_COLORS.length]
   const pg = { id: 'pg' + Date.now().toString(36) + n, name: 'Polygon ' + n, value: '', satName: '', satLon: '', color: c, fillOn: true, fillColor: c, fillOp: 0.18, width: 2, labelSize: 16, show: true, pts: [] }
   polys.value.push(pg); polyDrawId.value = pg.id
 }
-function polyContinue(pg) { mkEditStop(); polyEditStop(); polyMoveStop(); stopSynthPlacement(); if (activeTraj.value) endTraj(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
+function polyContinue(pg) { endLinkDraw(); mkEditStop(); polyEditStop(); polyMoveStop(); stopSynthPlacement(); if (activeTraj.value) endTraj(); pg.show = true; polyDrawId.value = pg.id; polyRefresh() }
 function polyUndo() { const pg = curPoly(); if (pg && pg.pts.length) { pg.pts.pop(); polyRefresh() } }
 function polyDone() {
   const pg = curPoly(); if (!pg) { polyDrawId.value = ''; return }
@@ -7412,9 +8071,45 @@ function satPosInput(k, e) {
 // 回车 / 失焦＝提交，当场生效。只在真打过字（有草稿）时提交：否则光是把焦点扫过经度框，
 // 「添加卫星」那条就会凭空把星建出来。
 function satPosDone() { const typed = !!satPosEdit.value; satPosEdit.value = null; if (typed) applySatLive() }
-watch(satModal, () => { satPosEdit.value = null })   // 换一颗星/开关弹窗：草稿作废，免得串到下一格
 
-const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0 })
+// 轨道根数星的历元（elements.epoch，存 ISO UTC 带 Z）：框里按时间轴读数的时区档显示与解释（fmtGotoVal / parseGotoVal，
+// 与「跳到指定时刻」同一套，换档不改所指的瞬间）。草稿同位置三格：本组件每秒重渲染，键到一半的值不能被回写冲掉；
+// datetime-local 没填全时 value 是空串，草稿也是空串 → 回写同值不动框。只在回车 / 失焦提交（同「跳到指定时刻」），解析不出就回落到已存值。
+// ★ 不接 change：Chromium 的 datetime-local 每敲一键就发一次 change，年份段键到一半是 0002 / 0020 / 0202 ——
+//   逐键提交会把 19xx（Date.UTC 把 0–99 年当 1900+）落进节点，再按已存值回写进正在键入的框。年份不足四位（首位 0）同样不收。
+const satEpochEdit = ref(null)        // 正在键入的原文；null = 没在改
+watch(satModal, () => { satPosEdit.value = null; satEpochEdit.value = null })   // 换一颗星/开关弹窗：草稿作废，免得串到下一格
+// 时间轴此刻取整到秒（新建星的历元 / 「此刻」键）：datetime-local 只到秒，存带毫秒的历元框里显示不全
+const clockEpochISO = () => new Date(Math.floor(clock.tMs / 1000) * 1000).toISOString()
+function satEpochVal() {
+  if (satEpochEdit.value != null) return satEpochEdit.value
+  const ep = satModal.value && satModal.value.elements ? normEpoch(satModal.value.elements.epoch) : null
+  return ep ? fmtGotoVal(Date.parse(ep)) : ''
+}
+// 框后的时区角标按历元那一刻取（本机档跨夏令时的历元，偏移与时间轴此刻不同；与 fmtGotoVal 用的同一个偏移）
+function satEpochTz() {
+  const ep = satModal.value && satModal.value.elements ? normEpoch(satModal.value.elements.epoch) : null
+  return tzTag(tzMode.value, ep ? Date.parse(ep) : clock.tMs)
+}
+function satEpochDone() {
+  const typed = satEpochEdit.value; satEpochEdit.value = null
+  const m = satModal.value
+  if (typed == null || !m || !m.elements || /^0/.test(typed)) return
+  const t = parseGotoVal(typed)
+  if (t == null) return
+  const ep = new Date(t).toISOString()
+  if (ep === normEpoch(m.elements.epoch)) return
+  m.elements.epoch = ep
+  applySatLive()
+}
+function satEpochNow() {
+  const m = satModal.value; if (!m || !m.elements) return
+  satEpochEdit.value = null
+  m.elements.epoch = clockEpochISO()
+  applySatLive()
+}
+
+const defaultElements = () => ({ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0, epoch: clockEpochISO() })   // 历元 = 时间轴当前时刻
 function defaultSatDraft() {
   return { folder: null, name: '', lon: 0, lat: 0, altKm: GEO_ALT, color: '#ffffff', els: '5,10', noradId: null, posMode: 'fixed', elements: defaultElements(), elevWidth: 1.3, elevLabelSize: 18, iconSize: 10, labelSize: 4, iconShow: true, labelShow: true, labelBold: false, elevLabelBold: false }
 }
@@ -7457,7 +8152,12 @@ function satPatchFrom(m, alert) {
     const el = m.elements || {}
     const alt = Number(el.altKm), ecc = Number(el.ecc), incl = Number(el.incl)
     if (!(alt > 0) || !(ecc >= 0 && ecc < 1) || !(incl >= 0 && incl <= 180)) { if (alert) appAlert('轨道根数非法：需 轨道高度>0、0≤偏心率<1、0≤倾角≤180'); return null }
-    elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 }
+    // 历元跟着根数走（规范成带 Z 的串）。草稿没有（边角：旧草稿）→ 盖一次时间轴此刻并写回草稿：
+    // 不写回的话播放中每次实时提交都按新的此刻再盖一次，相位跟着漂
+    let epoch
+    if (el.epoch == null || el.epoch === '') { epoch = clockEpochISO(); m.elements.epoch = epoch }
+    else if (!(epoch = normEpoch(el.epoch))) { if (alert) appAlert('历元无效'); return null }
+    elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, epoch }
     let rec; try { rec = elementsToSatrec(elements) } catch { rec = null }
     if (!rec || rec.error) { if (alert) appAlert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return null }
     const now = calcAt(); const pv = posAt(rec, now)
@@ -7513,8 +8213,8 @@ function removeSat(node) { grd.removeSatellite(node.folder); redrawSats() }
 // 树 → 星座：聚焦一颗树节点卫星。
 //   关联星 → 按号解析条目（在场优先，同一批点云对象）→ 选中 + 瞬时正对 + 弹信息卡；池没就绪且没解到 → 等全量目录建好再试一次。
 //     已在选中集里（按号）→ 只设为主选并正对，不冲掉用户的多选。
-//   天线树定点同步星 → 同上，号是它的合成号（satEntryById 直接取到 treeGeo 条目，不用等池）。
-//   其余（非同步定点星 / 轨道根数星）→ 星座里没有它，只把地球转到它此刻的星下点。
+//   天线树虚拟星（定点星 / 轨道根数星）→ 同上，号是它的合成号（satEntryById 直接取到 treeGeo 条目，不用等池）。
+//   其余（根数解不出、星座里没有条目的星）→ 只把地球转到它此刻的星下点。
 //   force=false（天线行点击顺带的）时看小眼睛：眼睛灭着＝这颗星不接到视图上，不动；双击星名 / 显式动作传 force。
 // tick / fseq：调用方自己先等过一段（createGaussFor 等星历源 + 建天线）时，在它开始等之前捕获的 _userSelTick / _focusSeq ——
 //   等的那几秒里用户另选了星 / 树上又点了别的 → 这次聚焦作废（判据见 treeLink.focusStale）。即时调用不传。
@@ -7525,7 +8225,7 @@ async function focusTreeSat(node, { force = false, tick = null, fseq = null, add
   if (!force && !satVisible(node)) return
   if (focusStale({ tick, fseq }, _userSelTick, _focusSeq)) return
   const seq = ++_focusSeq
-  const id = nodeLinkId(node, treeGeoIdMap.value)   // 关联星的号 / 定点同步星的合成号；'' = 星座里没有它
+  const id = nodeLinkId(node, treeGeoIdMap.value)   // 关联星的号 / 虚拟星的合成号；'' = 星座里没有它
   if (id) {
     const find = () => satEntryById('n:' + id) || liveEntryOf(id)
     let e = find()
@@ -7558,7 +8258,7 @@ async function onTreeAntClick(sat, a) {
   await grd.setActive(sat, a, { face: false })
   focusTreeSat(sat)
 }
-// 树 → 星座：跟随一颗关联星 / 定点同步星（卫星行「跟随」钮）。startFollow 是追加式：并入聚焦集、设为主选，不冲掉用户的多选；
+// 树 → 星座：跟随一颗关联星 / 虚拟星（卫星行「跟随」钮）。startFollow 是追加式：并入聚焦集、设为主选，不冲掉用户的多选；
 // 已在选中集里按号认那一份（别再并进一份同号对象）。正在跟随它 → 退出。星座里没有它的星 / 平面图不进来（钮置灰）。
 async function followTreeSat(node) {
   const id = nodeLinkId(node, treeGeoIdMap.value)
@@ -7652,27 +8352,42 @@ function dropFreshLinked(folder) {
   return true
 }
 
-// ---- 天线树定点同步星 → 星座条目（viz/grd/treeGeo.js）----
-// 树一变（增删星 / 改经纬度·高度·名字 / 关联上星座 / 小眼睛）就按树重建条目表，渲染集跟着重建（显隐跟小眼睛）。
-// 条目对象跨重建复用（就地换 name / rec）：选中集、跟随、聚焦几何 Worker 手里那一份不用重绑。
-// 掉了的条目（节点删了 / 改成非同步高度 / 关联上了真星）若还在选中集里 → 移出（正跟随它 → 先退出跟随）；
+// ---- 天线树虚拟星（定点星 / 轨道根数星）→ 星座条目（viz/grd/treeGeo.js）----
+// 树一变（增删星 / 改经纬度·高度·名字·根数 / 关联上星座 / 小眼睛）就按树重建条目表，渲染集跟着重建（显隐跟「卫星天线树」这一集 + 小眼睛）。
+// 条目对象跨重建复用（就地换 name / rec）：选中集、跟随手里那一份不用重绑。
+// 掉了的条目（节点删了 / 关联上了真星 / 根数解不出）若还在选中集里 → 移出（正跟随它 → 先退出跟随）；
 // 仍在集里的某颗换了合成号（号段撞号顺延，极少）→ 补发一次联动信号，树上高亮 / 信息卡天线节跟上。
+// rec 就地换了的条目（changed）：模型自动匹配按 rec 的区制 / 名字算过、按 satKey 缓存着 → 作废那一条；
+//   在选中集里的 → 聚焦几何 Worker 手里是结构化克隆的旧 satrec，作废池子那一份（下一次出几何重发）。
 const _sameIds = (a, b) => { if (a.size !== b.size) return false; for (const [k, v] of a) if (b.get(k) !== v) return false; return true }
 function syncTreeGeo() {
   const idsBefore = selEntries.filter((e) => e._grdFolder).map((e) => String(e.noradId)).join()
-  const { list, byId, ids, gone } = syncTreeGeoEntries(grdSats.value, treeGeoCache)
+  const { list, byId, ids, gone, changed } = syncTreeGeoEntries(grdSats.value, treeGeoCache, orbitSatrec)
   treeGeoList = list; treeGeoById = byId
   if (!_sameIds(treeGeoIdMap.value, ids)) treeGeoIdMap.value = ids
+  treeGeoTick.value++
+  for (const e of changed) modelMatchCache.delete(satKeyOf(e))
+  if (changed.length && selEntries.some((e) => changed.includes(e))) { poolEntries = null; refreshSelModel() }
   const lost = new Set(gone)
   if (lost.size && selEntries.some((e) => lost.has(e))) {
     if (followEntry && lost.has(followEntry)) stopFollow()
     selEntries = selEntries.filter((e) => !lost.has(e))
     if (selEntry && lost.has(selEntry)) selEntry = selEntries[selEntries.length - 1] || null
-    if (!selEntry) closeCard(); else { refreshSelection(); saveSelection() }
+    if (!selEntry) { closeCard(); _selSysVer = selVer.value } else { refreshSelection(); saveSelection() }
   } else if (idsBefore !== selEntries.filter((e) => e._grdFolder).map((e) => String(e.noradId)).join()) bumpSelSignal()
   rebuildRenderSet()
 }
-watch(() => grdSats.value.map((n) => (n && n.kind !== 'elevline' && !n.noradId && !n.elements ? `${n.folder}|${n.satName}|${n.lon}|${n.lat}|${n.altKm}|${satVisible(n) ? 1 : 0}` : '')).join('\n'), syncTreeGeo, { immediate: true })
+watch(() => grdSats.value.map((n) => (n && n.kind !== 'elevline' && !n.noradId ? `${n.folder}|${n.satName}|${n.lon}|${n.lat}|${n.altKm}|${_elSig(n.elements)}|${satVisible(n) ? 1 : 0}` : '')).join('\n'), syncTreeGeo, { immediate: true })
+// 「卫星天线树」一集里的关联星（有号）：rebuildRenderSet 按 liveEntryOf 现解（在场 → 全量池 → 点序列 → 自定义星座）。
+// 关联关系 / 小眼睛一变，或星历源换了（换池 / 隐藏点序列组的表载入，见 onPoolSwapped / ensureLinkedEphTables）→ 这一集开着就重建渲染集
+const isTreeLinkedNode = (n) => !!(n && n.kind !== 'elevline' && n.noradId != null && n.noradId !== '')
+function treeLinkedRebuild() {
+  if (!scene || !satSets.isVisible(TREE_SET) || !grdSats.value.some(isTreeLinkedNode)) return
+  rebuildRenderSet(); redrawSats()
+}
+watch(() => grdSats.value.map((n) => (isTreeLinkedNode(n) ? `${n.folder}|${n.noradId}|${satVisible(n) ? 1 : 0}` : '')).join('\n'), () => {
+  if (scene && satSets.isVisible(TREE_SET)) { rebuildRenderSet(); redrawSats() }
+})
 
 // ---- 星座 → 树：派生显示 ----
 // 渲染集版本：rebuildRenderSet 换了 entries（导入组显隐 / 自定义星座增删）时自增，「关联星缺失」据此重判
@@ -7694,7 +8409,7 @@ let _linkEphP = null
 function ensureLinkedEphTables() {
   const ids = ephGroupsToLoad(importGroups.value, grdSats.value, (id) => ephTables.has(id) || satSets.isVisible('i:' + id))
   if (!ids.length) return _linkEphP || Promise.resolve()
-  const p = Promise.all(ids.map((id) => ephemEntriesOf(id))).then(() => { entSetVer.value++; relinkTick() })
+  const p = Promise.all(ids.map((id) => ephemEntriesOf(id))).then(() => { entSetVer.value++; treeLinkedRebuild(); relinkTick() })
     .catch(() => {}).finally(() => { if (_linkEphP === p) _linkEphP = null })
   _linkEphP = p
   return p
@@ -7717,6 +8432,13 @@ function revealTreeFolder(folder, tries = 3) {
     if (row) row.scrollIntoView({ block: 'nearest' })
     else if (tries > 1) requestAnimationFrame(() => revealTreeFolder(folder, tries - 1))   // 视图刚切过来、树还没渲染出来
   })
+}
+// 「在天线树中显示」（星座侧栏「卫星天线树」一集）：切到对地覆盖分析视图、展开「卫星 / 天线」节；给了 folder 就把那颗星的行展开并滚进视野。
+// 视图第一次打开要先载树（watch(shellUi.side) → toggleGrd），多给几帧去找那一行
+function revealInTree(folder) {
+  if (shellUi.side !== 'antenna') shellUi.side = 'antenna'
+  setSecOpen('grd-tree', true)
+  if (folder) revealTreeFolder(folder, 12)
 }
 let _treeSelVer = -1   // 由树上动作（focusTreeSat）产生的那一版 selVer
 const bsFollowGate = createFollowGate()   // 波束合成跟随的放行闸：每一版 selVer 都喂（含别的视图），见 treeLink.createFollowGate
@@ -7810,9 +8532,9 @@ function openBeamsWith(fn) {
     shellUi.side = 'beams'
   })
 }
-// 「方向图」节「在波束合成中编辑」：切到波束合成并选中产出这根天线的那个组
+// 「方向图」节「在电磁波束仿真中编辑」：切到电磁波束仿真并选中产出这根天线的那个组
 function openSynthGroup(groupId) {
-  if (!groupId || !bs.groups.value.some((g) => g.id === groupId)) { status.value = '该天线所属的波束合成组已不存在'; return }
+  if (!groupId || !bs.groups.value.some((g) => g.id === groupId)) { status.value = '该天线所属的波束组已不存在'; return }
   openBeamsWith(() => bs.selectGroup(groupId))
 }
 // 覆盖分析「方向图」节的只读判据（GrdSetSections 经 inject 取；两处挂载 —— 对地直挂、对星在 SatCovPanel 里 —— 共用这一份）：
@@ -7834,7 +8556,8 @@ const cardAntRows = computed(() => {
 const fmtPeakDb = (v) => (Number.isFinite(+v) ? (+v).toFixed(2) : '—')
 
 // ===================== 右侧「卫星信息栏」（.rdk-*）=====================
-// 地图右侧、时间轴之上（时间轴仍通栏）。显隐只听 shellUi.satInfo，选中只换栏里的内容 —— 选星 / 取消时地图视口一个像素不动；
+// 地图右侧、时间轴之上（时间轴仍通栏）。显隐只听 shellUi.satInfo：用户改聚焦时收着的栏弹出、清空聚焦时收起（见 _rdkHadSel）；
+// 栏开着时换星只换栏里的内容，地图视口一个像素不动；
 // 栏开合不改场景（聚焦几何 / 跟随 / 图例都不动，判据同「收起侧栏≠离开视图」）。
 const RDK_SECS = ['rdk-live', 'rdk-el', 'rdk-ant', 'rdk-mdl']
 function rdkSec(key, e) {   // 点节头 = 折叠 / 展开；Ctrl+点 = 只展开这一节、折叠其余（Blender 口径；聚焦集不参与）
@@ -7845,7 +8568,7 @@ const rdkPriNo = computed(() => selList.value.findIndex((r) => r.active) + 1)
 // 同族星只在尾段编号不同（ZHONGXING-26 / -10R、STARLINK-31402）：省略号只吃头段，含数字的尾段钉住
 const RDK_TAIL = /^(.+?)([-_ ](?=[^-_ ]*\d)[^-_ ]{1,7})$/
 const rdkName = (n) => { const m = RDK_TAIL.exec(n || ''); return m ? [m[1], m[2]] : [n || '', ''] }
-const rdkRowTitle = (s) => `${s.name}${s.syn ? '' : ' · NORAD ' + s.noradId}${s.slot ? ' · ' + s.slot : ''}${s.alt ? ' · ' + s.alt + ' km' : ''}${s.incl ? ' · ' + s.incl + '°' : ''}`   // syn：天线树定点星（合成号不是 NORAD）
+const rdkRowTitle = (s) => `${s.name}${s.syn ? '' : ' · NORAD ' + s.noradId}${s.slot ? ' · ' + s.slot : ''}${s.alt ? ' · ' + s.alt + ' km' : ''}${s.incl ? ' · ' + s.incl + '°' : ''}`   // syn：天线树虚拟星（合成号不是 NORAD）
 const rdkAbs = (v) => { const f = +v; return Number.isFinite(f) ? Math.abs(f).toFixed(2) : v }
 const rdkNS = (v) => (+v < 0 ? '°S' : '°N')
 const rdkEW = (v) => (+v < 0 ? '°W' : '°E')
@@ -7868,7 +8591,7 @@ function rdkCopyNorad() {
   clearTimeout(_rdkCopyT); _rdkCopyT = setTimeout(() => { rdkCopied.value = false }, 1200)
 }
 function rdkAntAdd(ev) { setSecOpen('rdk-ant', true); openAntAddMenu(ev, 'card', { norad: selPrimNorad.value }) }   // 折叠态点「＋」先展开：新建的天线别落在看不见的地方
-function rdkModelEdit() { revealSection('model', 'mdl-cur') }   // 先落到「卫星模型」侧栏的「当前卫星」节（侧栏收着就展开）；工作台从那一节再开
+function rdkModelEdit() { revealSection('model', 'mdl-cur') }   // 先落到「仿真对象模型」侧栏的「当前卫星」节（侧栏收着就展开）；工作台从那一节再开
 const rdkListEl = ref(null)
 function rdkListKey(e) {   // ↑↓ / Home / End 换主选，Delete 移出；元素级 preventDefault 挡住 window 上的 onNavKeyDown（否则地球跟着转）
   const L = selList.value, i = L.findIndex((r) => r.active)
@@ -7932,8 +8655,23 @@ function ctxPrevFocus() { closeCtx(); swapPrevFocus() }     // 右键「上一�
 let _pickArmed = false, _winFocusAt = 0
 function onWinFocus() { _winFocusAt = performance.now() }
 function onPickArmDown(e) {
-  _pickArmed = e.button === 0 && !!el.value && el.value.contains(e.target) && document.hasFocus() &&
+  // 落点认 3D 舞台或 2D 平面图画布（两者是兄弟节点，2D 点选同样过这道闸）
+  const onMap = (!!el.value && el.value.contains(e.target)) || (!!flatCanvas.value && flatCanvas.value.contains(e.target))
+  _pickArmed = e.button === 0 && onMap && document.hasFocus() &&
     performance.now() - _winFocusAt > 250 && !document.querySelector('.ms-pop')
+}
+// 地图点选（3D scene.setOnPick 与 2D flat.setOnPick 共用）：en＝点中的卫星条目（点空白为 null）
+function onMapPick(en, additive) {
+  const armed = _pickArmed; _pickArmed = false
+  if (!armed) return   // 这一下不是落在画布上的完整点击（浮层遮罩 / 窗口刚激活 / 收起搜索下拉），见 onPickArmDown
+  if (lnk.draw.value) return   // 建链态：点选交给 onLinkPickUp 追加节点，不改聚焦
+  // 从星座点选模式：命中的星填入卫星编辑弹窗，不改变当前选中星
+  if (satPick.value && satModal.value) { if (en) pickEntryIntoModal(en); return }
+  // 点空白不改聚焦（原为清空，是「鼠标误操作失焦」的根因）。清空只走显式入口：信息栏「取消聚焦 / 全部取消」、
+  // 右键菜单、移出最后一颗；误清 / 误换星可从右键「上一聚焦」找回
+  if (!en) return
+  if (!additive && !(selEntries.length === 1 && selEntries[0] === en)) notePrevFocus()   // 裸点换星：旧聚焦集进「上一聚焦」
+  selectSat(en, false, additive)   // 裸点=替换聚焦；Ctrl/Cmd/Shift 点=加入/移出多选
 }
 
 // ---- 宽度：分隔条 / 窄档 / 横幅让位 / 2D 保中心 ----
@@ -7950,6 +8688,18 @@ function rdkKeepViewOnce() {   // 2D：本次开合前后保住地理中心（ro
   requestAnimationFrame(() => requestAnimationFrame(() => { if (!rdkDrag.value) _rdkKeepView = null }))
 }
 watch(() => shellUi.satInfo, rdkKeepViewOnce, { flush: 'pre' })   // pre：DOM 变宽之前取视图
+// 用户每改一次聚焦（选星 / 换星 / 增减 / 换主选 / 上一聚焦…）→ 栏收着就弹出；用户清空聚焦 → 收起；没聚焦时手动打开的不去关。
+// 「用户改的」＝这一版之前 _userSelTick 动过，或是树上点出来的那一版（focusTreeSat 对已在集里的星只换主选，不动 _userSelTick），
+// 且不是程序性的那一版（启动恢复选中 / 自定义星座重绑 / 向导预览 / 树节点掉星，含它们连带的清空，见 _selSysVer）——
+// 向导里参数改到一半预览星没了，不该把栏收掉、地图跟着跳；syncTreeGeo 掉星 / 换合成号那几次刷新不动 _userSelTick，同样不算。
+// 同一 tick 内多次改选合并成一次回调，按最终那一版判
+let _rdkHadSel = false, _rdkTick = _userSelTick
+watch(selVer, (v) => {
+  const has = selEntries.length > 0
+  const user = (_userSelTick !== _rdkTick || v === _treeSelVer) && v !== _selSysVer
+  if (user && (has || _rdkHadSel)) shellUi.satInfo = has
+  _rdkHadSel = has; _rdkTick = _userSelTick
+})
 function rdkSplitDown(e) {
   if (!rdkEl.value) return
   const [lo, hi] = SAT_INFO_W_LIM
@@ -7985,13 +8735,13 @@ async function cardEditAnt(row) {
 // ---- 3D 右键压在一颗星上 ----
 const ctxHasAnts = computed(() => {
   const m = ctxMenu.value
-  if (!m || m.en < 0 || m.enRef == null) return false
+  if (!m || !m.sid || m.enRef == null) return false
   return linkedNodesOf(grdSats.value, m.enRef, treeGeoIdMap.value).some((n) => n.antennas.length)
 })
+// 右键压着的那颗星：按身份串现解（菜单开着期间渲染集可能换过，存下标会指错星）
 function ctxSatEntry() {
   const m = ctxMenu.value
-  const e = m && m.en >= 0 ? renderEntries[m.en] : null
-  return e && e.noradId === m.enRef ? e : null          // 菜单开着期间渲染集可能换过：号对不上就不动（同 ctxFollow）
+  return m && m.sid ? satEntryById(m.sid) : null
 }
 async function ctxNewGauss() {
   const e = ctxSatEntry(); closeCtx()
@@ -8027,35 +8777,8 @@ function saveElevModal() {
   closeElevModal(); redrawSats()
 }
 
-// ===== 轨道根数模拟星：用经典根数自建 satrec，复用 SGP4 引擎自行解算（不并入真实星座 entries）=====
-const MU = 398600.4418   // 地球引力常数 km^3/s^2
-// 星座共享历元：整个会话固定一个历元锚点，所有轨道根数模拟星都用它（不再逐星取 new Date()）。
-//   SGP4 里平近点角/RAAN 从各星自身历元起算；逐星历元差 Δt 会给相对相位注入 n·Δt（550km 处约 0.06°/s，
-//   1 分钟差≈3.8°、1 小时差≈228°，Walker 相对相位即被破坏）。全星共享同一历元 → 相对相位/相对 RAAN 精确保持，
-//   绝对值取什么无所谓（整座星座只是刚性同步旋转）。刻意独立于 baseTime（后者进出实时会被重置）。
-const SIM_EPOCH = new Date().toISOString()
-// 经典轨道根数 → satrec（复用 omm2satrec；历元取共享锚点 SIM_EPOCH）。elements 角度单位 °，altKm 视作近地点高度（圆轨道 e=0 即轨道高度）。
-function elementsToSatrec(el) {
-  const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
-  const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)   // 半长轴：a=(RE+hp)/(1-e)
-  const n = Math.sqrt(MU / (a * a * a))                  // 平均运动 rad/s
-  const meanMotion = 86400 * n / (2 * Math.PI)           // rev/day（omm2satrec 所需）
-  return sat.omm2satrec({
-    noradId: 'SIM', epoch: SIM_EPOCH,
-    meanMotion, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
-    argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, bstar: 0, mdot: 0, mddot: 0
-  })
-}
-// 模拟星 satrec 缓存：根数签名不变则复用（改根数触发重建，但历元仍取共享 SIM_EPOCH，相位不跳变）
-const customSatrecs = new Map()   // folder -> { sig, rec }
-function orbitSatrec(node) {
-  const sig = JSON.stringify(node.elements)
-  const hit = customSatrecs.get(node.folder)
-  if (hit && hit.sig === sig) return hit.rec
-  const rec = elementsToSatrec(node.elements)
-  customSatrecs.set(node.folder, { sig, rec })
-  return rec
-}
+// （轨道根数模拟星的 satrec：elementsToSatrec / orbitSatrec 挪到了「天线树虚拟星 → 星座条目」那节之前 ——
+//   syncTreeGeo 的立即 watch 在 setup 期就要用 orbitSatrec，留在这里会撞 TDZ）
 // 当前生效位置：星座关联星按 calcAt() 实时解算；轨道根数模拟星按自建 satrec 解算；否则取节点存储值
 // ★ 关联星（node.noradId）解不出（星历里没有 / 已陨落 / SGP4 报错 / 点序列越出采样时段）→ 如实返回 null，
 //   不再退回节点里存的 lon/lat/altKm —— 那是上次弹窗提交时的位置，不是上一拍的活位置，覆盖会一声不吭跳过去。
@@ -8083,22 +8806,32 @@ function satLivePos(node) {
 // 把实时关联星(linked/orbit)的【当前】星下点写入轻量缓存 globe3d/grdLive，供独立的链路预算窗口
 // 在选星/导入时取到新位置（与覆盖分析同源 satLivePos）。固定星不写（其 lon 本就是真值）。节流 3s。
 // 节流闸见 treeLink.createLiveThrottle：星历源换了（relinkTick 里 due()）的那一拍不受节流，池到齐前写下的 noEph 不许留住。
+// ★ 被闸挡下的那一拍补一次尾写：暂停 / 拖游标 / 暂停中改根数或历元之后再没有时钟拍，不补的话 grdLive 停在
+//   最多 3 s 墙钟之前的场景时刻，链路预算 / C/I 窗口取的星位与时间轴（globe3d/clock）对不上。只挂一个，真写了就撤。
 const _grdLiveGate = createLiveThrottle(3000)
+let _grdLiveLast = -Infinity, _grdLiveTrail = 0
 function persistGrdLive() {
   const sats = (grd.sats && grd.sats.value) || []
   if (!sats.some((s) => s.noradId || s.elements)) return
   const nowMs = Date.now()
-  if (!_grdLiveGate.pass(nowMs)) return
+  if (!_grdLiveGate.pass(nowMs)) {
+    if (!_grdLiveTrail) _grdLiveTrail = setTimeout(() => { _grdLiveTrail = 0; persistGrdLive() }, Math.max(0, _grdLiveLast + 3000 - nowMs) + 20)
+    return
+  }
+  if (_grdLiveTrail) { clearTimeout(_grdLiveTrail); _grdLiveTrail = 0 }
+  _grdLiveLast = nowMs
   // 关联星此刻解不出 → 进 noEph 一段（不写 pos）：链路预算窗口据此仍当它是实时星（回填指纹不翻、不按存盘旧星位取值），见 grdLivePayload
   const { pos, noEph } = grdLivePayload(sats, satLivePos)
-  try { localStorage.setItem('globe3d/grdLive', JSON.stringify({ t: nowMs, pos, noEph })) } catch { /* ignore */ }
+  // t：写入的墙钟（节流用）；tMs：这批星位所在的场景时刻（时间轴此刻，satLivePos 按 calcAt 解算）
+  try { localStorage.setItem('globe3d/grdLive', JSON.stringify({ t: nowMs, tMs: clock.tMs, pos, noEph })) } catch { /* ignore */ }
   fileBridge.liveTick++   // 驱动文件管理器 GRD 树行经度跟随实时
 }
 
 // 从星座点选：进入点选模式后，地图 onPick 命中的星填入弹窗（见 onMounted）
 function toggleSatPick() { satPick.value = !satPick.value }
+// ★ 天线树虚拟星的条目（_grdFolder，合成号）不收：把树节点关联到它自己 / 别的树星的合成号＝一颗永远「缺失」的关联星
 function pickEntryIntoModal(en) {
-  if (!satModal.value || !en) return
+  if (!satModal.value || !en || en._grdFolder) return
   const p = satLivePos({ noradId: en.noradId })   // 借助同一解算路径取该星当前星下点/高度（解不出 → null）
   if (p && Number.isFinite(p.lon)) { satModal.value.lon = +p.lon.toFixed(3); satModal.value.lat = +p.lat.toFixed(3); satModal.value.altKm = +p.altKm.toFixed(1) }
   if (!satModal.value.name) satModal.value.name = en.name
@@ -8114,6 +8847,7 @@ function onSatSearch(e) {
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 30; i++) {
     const en = src[i]
+    if (en._grdFolder) continue   // 天线树虚拟星（合成号）不能拿来关联（见 pickEntryIntoModal）
     if (en.name.toLowerCase().includes(kw) || String(en.noradId).includes(kw) || (en.groupLabel && en.groupLabel.toLowerCase().includes(kw))) out.push({ en, name: en.name, noradId: en.noradId, groupLabel: en.groupLabel || GROUP_LABEL[en.group] || '', slot: geoSlotOfSatrec(en.rec) })
   }
   satSearchRes.value = out
@@ -8122,12 +8856,20 @@ function pickSatSearch(r) { pickEntryIntoModal(r.en); satSearchKw.value = ''; sa
 
 // 平面图期间挂起的 3D 卫星层 spec：2D 下 redrawSats 不再同步重建 3D 组（见函数尾注释），切回 3D 补喂
 let satSpec3dPending = null, satSpec3dDirty = false
+// 天线树节点 → 卫星身份串（satIdOf 口径，卫星标记归并用）：关联星按号；虚拟星按它在星座里的条目（合成号）；都没有就按 folder
+// （与 computeSatcovFocusGeometry 里 add() 的身份同一套认法）
+function grdNodeSatId(node) {
+  if (node.noradId) return 'n:' + node.noradId
+  const tge = treeGeoCache.get(String(node.folder))
+  return tge ? satIdOf(tge) : 'f:' + node.folder
+}
 // 重绘仰角线独立图层（3D + 平面图共用同一 spec）；遍历卫星树每个点亮的卫星
 function redrawSats() {
   if (!scene) return
   const lines = [], labels = [], sats = [], dots = [], fills = []
   for (const node of grdSats.value) {
     // 三项相互独立：卫星名由 labelShow 控、图标由 iconShow 控（2D 专用，3D 不画图标）；等仰角线由 elevShow 控且需填仰角值。
+    // 同一颗星另被聚焦 / 对星特效 / 可见性画着图标时，这枚让位、名字照留（卫星标记归并，见函数尾 mergeLayerSats）。
     const showLabel = node.labelShow !== false
     const showIcon = node.iconShow !== false
     const els = parseNums(node.els)
@@ -8157,7 +8899,7 @@ function redrawSats() {
       }
     }
     // 卫星名/图标：不依赖仰角值，名/图标各自独立开关（3D 只画名，2D 画图标+名，各自随 labelShow/iconShow 显隐）
-    if (showLabel || showIcon) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 30, labelSize: node.labelSize || 9, labelBold: !!node.labelBold, labelShow: showLabel, iconShow: showIcon })
+    if (showLabel || showIcon) sats.push({ lon: p.lon, lat: p.lat, altKm: p.altKm, name: node.satName, color: colNum, nameColor: color, iconSize: node.iconSize || 30, labelSize: node.labelSize || 9, labelBold: !!node.labelBold, labelShow: showLabel, iconShow: showIcon, key: grdNodeSatId(node), rank: MARK_RANK.grd })
   }
   // Polygon（协调区多边形）：挂同一独立图层，3D/2D 同步显示，不受覆盖图「清除绘制」影响。
   // 闭合环在此手动补首点并传 closed:false（2D 按折线画、不自动闭合；3D 亦无需重复闭合）。
@@ -8186,12 +8928,17 @@ function redrawSats() {
   if (sk) { if (sk.lines) lines.push(...sk.lines); if (sk.dots) dots.push(...sk.dots); if (sk.labels) labels.push(...sk.labels); if (sk.fills) fills.push(...sk.fills) }
   // 可见性分析叠加层：目标点高亮 + 可见星图标 + 目标→卫星连线（随时间轴实时）
   const vsk = vis.overlaySpec()
-  if (vsk) { if (vsk.lines) lines.push(...vsk.lines); if (vsk.dots) dots.push(...vsk.dots); if (vsk.labels) labels.push(...vsk.labels); if (vsk.sats) sats.push(...vsk.sats) }
+  if (vsk) { if (vsk.lines) lines.push(...vsk.lines); if (vsk.dots) dots.push(...vsk.dots); if (vsk.labels) labels.push(...vsk.labels); if (vsk.sats) for (const s of vsk.sats) { s.rank = MARK_RANK.vis; sats.push(s) } }
   // 波束合成「调整中心」/「删除波束」：在各波束中心叠可点击手柄圆环（与标记/Polygon 调点同款，平面图交互；调整=轮廓色，删除=警示红）
   if ((bs.adjusting.value || bs.deleting.value) && bs.open.value) for (const b of bs.beams.value) { if (Number.isFinite(b.lat) && Number.isFinite(b.lon)) dots.push({ lon: b.lon, lat: b.lat, color: bs.deleting.value ? 0xe05252 : (cssToHex(bs.p.skColor) || 0x5ad1ff), px: MK_HANDLE_PX, r: MK_HANDLE_PX * 0.0018 }) }
   // 「调整位置」不再在标记正中叠手柄圆环：拖拽抓的是符号本体（命中区下限 11px，比 5px 手柄还大），
   // 那一圈只剩遮挡 —— 正好压在符号中心，图钉针尖、序号徽标一类全被它盖住。
-  const spec = (lines.length || sats.length || dots.length || fills.length) ? { lines, dots, labels, sats, fills } : null
+  // 卫星标记归并（viz/constellation/satMarkMerge.js）：聚焦图标层认领的那几颗撤图标（名字让到聚焦图标上方）；
+  // 天线树卫星与可见星是同一颗时合成一条（图标归可见星、名字归排在前面且有名字的那份）。认领集由 pushGeom 交来（setSubClaim2D）
+  const satsM = mergeLayerSats(sats, _subClaim2D)
+  _layerSubKeys = [...new Set(sats.map((s) => s.key).filter(Boolean))]
+  _layerClaimSig = claimSig(_layerSubKeys, _subClaim2D)
+  const spec = (lines.length || satsM.length || dots.length || fills.length) ? { lines, dots, labels, sats: satsM, fills } : null
   // 2D 平面图激活时不同步重建 3D 卫星层：scene 已 pause，但 setSatLayer 的组重建（每个标签新建
   // canvas+texture）是同步开销，大波束群下拖拽每帧数百次分配 → 卡手。挂起到切回 3D 时一次性补建。
   if (flatView.value) { satSpec3dPending = spec; satSpec3dDirty = true }
@@ -8204,6 +8951,7 @@ const MK_KEY = 'globe3d/markers'
 const points = ref([])             // [{id,lat,lon,name?}]（名称可空）
 const stations = ref([])           // [{id,lat,lon,name}]
 const trajectories = ref([])       // [{id,name,kind,pts:[{lat,lon}]}]
+const links = ref([])              // 图上链路 [{id,name,nameAuto,color,show?,nodes:[…]}]（形状见 core/models/mapLinks.mjs；随标记存档）
 const activeTraj = ref('')         // 当前编辑的轨迹 id
 // 绘制态开关同步到两个渲染器：Polygon 或航迹描绘中 → 左键按住可沿路径连续加点（hold-to-draw）；退出→恢复平移/旋转（须在 activeTraj 声明后注册，否则 setup 期触发 TDZ）
 watch([polyDrawId, activeTraj], ([pid, tid]) => { const on = !!(pid || tid); if (flat) flat.setPolyDrawMode(on); if (scene) scene.setPolyDrawMode(on) })
@@ -8256,40 +9004,70 @@ const fmtLL = (lat, lon) => (lat == null || lon == null || !Number.isFinite(lat)
 const validLat = (v) => Number.isFinite(v) && v >= -90 && v <= 90
 const validLon = (v) => Number.isFinite(v) && v >= -180 && v <= 180
 
-// 聚焦卫星相对地面点(lat,lon)的仰角；多选时取全部聚焦星中的最大仰角（即最「可见」/最高那颗）。未聚焦或全部不可解算时返回 null
-function satElevAt(lat, lon) {
-  if (!selEntries.length) return null
-  const now = calcAt(), gmst = sat.gstime(now)
-  const ccNow = ccTimeAt(now), ccGmst = sat.gstime(ccNow)   // 合成星按场景历元解算
-  const gs = { longitude: lon * DEG, latitude: lat * DEG, height: 0 }
-  let best = null
-  for (const e of selEntries) {
-    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccGmst : gmst
-    const pv = posAt(e, t)
-    if (!pv || !pv.position) continue
-    const el = sat.ecfToLookAngles(gs, sat.eciToEcf(pv.position, g)).elevation / DEG
-    if (best == null || el > best) best = el
+// ===================== 站 / 点标记上的聚焦卫星仰角标注（口径、读数串、跟踪星规则见 viz/markers/markElev.js）=====================
+// 聚焦集此刻的地固系位置快照（km）：标记仰角标注与站天线跟踪（feedEntities）共用，同一时刻、同一份聚焦集只解算一遍。
+// 原来每个标记都把聚焦集整个重推一遍 SGP4：聚焦整个 Starlink（11107 颗）、图上 30 个站 / 点 → 一拍 33 万次 SGP4、183 ms
+// （100 个 602 ms），跟踪「主选星」的站在 feedEntities 里还要再推一遍。
+// 复用判据：时刻相同 + 聚焦集逐颗相同（条目与它的星历对象都比 —— 树上的星改根数是就地换 e.rec，条目还是那一个）。
+// 本拍主循环已推过的聚焦星（_icPv，时刻对得上才认）直接拿那份 pv。合成星走场景历元轴（ccTimeAt），与画面同口径。
+// cands[i] = { key, ecef:[3] }（pickTrackTarget 的候选形状）；xyz = 同序紧排（逐标记扫最高仰角用）；n = 有效颗数（解不出的不进）
+const _fsnap = { tMs: NaN, src: [], prop: [], n: 0, xyz: new Float64Array(48), cands: [] }
+const propOfEntry = (e) => (e && (e.eph || e.rec)) || null
+function focusSnapAt(now) {
+  const S = _fsnap, tMs = now.getTime(), L = selEntries.length
+  if (S.tMs === tMs && S.src.length === L) {
+    let i = 0
+    while (i < L && S.src[i] === selEntries[i] && S.prop[i] === propOfEntry(selEntries[i])) i++
+    if (i === L) return S
   }
-  return best
+  S.tMs = NaN   // 建到一半抛了也不留半份快照
+  const gmst = sat.gstime(now), ccNow = ccTimeAt(now), ccG = sat.gstime(ccNow)
+  const pvHit = tMs === _icPvT
+  if (S.xyz.length < 3 * L) S.xyz = new Float64Array(3 * L)
+  S.src.length = L; S.prop.length = L
+  let n = 0
+  for (let i = 0; i < L; i++) {
+    const e = selEntries[i]
+    S.src[i] = e; S.prop[i] = propOfEntry(e)
+    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccG : gmst
+    let pv = pvHit && t === now ? _icPv.get(e) : undefined
+    if (pv === undefined) { try { pv = posAt(e, t) } catch { pv = null } }
+    if (!pv || !pv.position) continue
+    const r = sat.eciToEcf(pv.position, g)
+    if (!(Number.isFinite(r.x) && Number.isFinite(r.y) && Number.isFinite(r.z))) continue
+    const k = 3 * n
+    S.xyz[k] = r.x; S.xyz[k + 1] = r.y; S.xyz[k + 2] = r.z
+    let c = S.cands[n]
+    if (!c) { c = { key: '', ecef: [0, 0, 0] }; S.cands[n] = c }
+    c.key = satKeyOf(e) || ('name:' + e.name); c.ecef[0] = r.x; c.ecef[1] = r.y; c.ecef[2] = r.z
+    n++
+  }
+  S.n = n; S.tMs = tMs
+  return S
 }
-// 标签用仰角文本：未聚焦返回空串（地平线以下显示负值即标识不可见）
-const fmtElev = (lat, lon) => { const e = satElevAt(lat, lon); return e == null ? '' : `仰角 ${e.toFixed(1)}°` }
-// 地球站标签方位 / 仰角：跟踪了具体卫星且勾了「方位角」/「仰角」→ 改读这颗星（仰角替换聚焦集最高仰角那份，一站只出一个数）；
-// 都没勾仍走 fmtElev；只勾方位角时仰角照旧读聚焦集最高仰角
-function stElevLabel(s) {
-  const t = s.track, k = t && t.satKey
-  const wantAz = !!(k && t.az), wantEl = !!(k && t.el)
-  if (!wantAz && !wantEl) return fmtElev(s.lat, s.lon)
-  const ecef = bodyTargetEcef(k, calcAt().getTime())
-  const la = ecef ? sat.ecfToLookAngles({ longitude: s.lon * DEG, latitude: s.lat * DEG, height: 0 }, { x: ecef[0], y: ecef[1], z: ecef[2] }) : null
-  const az = la ? la.azimuth / DEG : NaN, el = la ? la.elevation / DEG : NaN
-  const out = []
-  if (wantAz && Number.isFinite(az)) out.push(`方位 ${(((az % 360) + 360) % 360).toFixed(1)}°`)
-  if (wantEl) { if (Number.isFinite(el)) out.push(`仰角 ${el.toFixed(1)}°`) }
-  else { const e = fmtElev(s.lat, s.lon); if (e) out.push(e) }
-  return out.join(' ')
+const _mkLla = { lat: 0, lon: 0, altM: 0 }, _mkLook = makeStationLook()
+// 聚焦集里此刻对 (lat, lon) 仰角最高那颗的读数串；未聚焦 / 全部解不出 → 空串（地平线以下照出负值 = 不可见）
+function focusElevText(lat, lon, fs) {
+  if (!fs.n) return ''
+  _mkLla.lat = lat; _mkLla.lon = lon
+  return markLabelText(null, null, bestLook(_mkLla, fs.xyz, fs.n, _mkLook) >= 0 ? _mkLook : null)
 }
-const stElevTracked = () => stations.value.some((s) => s.track && (s.track.el || s.track.az))
+// 地球站标签：挂了模型、「跟踪」指定了某颗星且勾了「仰角」/「方位角」→ 读那颗星（勾方位角时方位 / 仰角成对读它）；否则同点标记。
+// trkEcef：本次推送里跟踪星的 ECEF（几个站跟同一颗星只解算一遍）
+function stElevLabel(s, fs, tMs, trkEcef) {
+  const t = labelTrackOf(s)
+  if (!t) return focusElevText(s.lat, s.lon, fs)
+  let ecef = trkEcef.get(t.satKey)
+  if (ecef === undefined) { ecef = bodyTargetEcef(t.satKey, tMs); trkEcef.set(t.satKey, ecef) }
+  _mkLla.lat = s.lat; _mkLla.lon = s.lon
+  return markLabelText(t, ecef ? lookAt(_mkLla, ecef, _mkLook) : null, null)
+}
+// 仰角标注此刻要不要随时钟刷新：有聚焦且图上有显示着的站 / 点，或有站的标签读跟踪星（没有聚焦也随时间变）
+const mkLiveAny = (list) => list.some((o) => mkShown(o) && finLL(o))
+function markElevLive() {
+  if (selEntries.length && ((showPtLayer.value && mkLiveAny(points.value)) || (showStLayer.value && mkLiveAny(stations.value)))) return true
+  return showStLayer.value && stations.value.some((s) => mkShown(s) && finLL(s) && labelTrackOf(s))
+}
 
 // 聚焦星下点列表已并入 computeSelectedGeometry（与在轨点同一次 SGP4）—— 原先这里是整批星的第二趟推演；
 // 推送则并在 commitGeometry（与可见性叠加层合到共用 replace-all 通道，避免相互覆盖）。
@@ -8303,22 +9081,170 @@ function onMapRightClick(ll, pos, satIdx, entHit) {
   if (pg) { if (ll) { pg.pts.push([ll.lon, ll.lat]); polyRefresh() } return }   // Polygon 绘制中：连续加顶点，不弹菜单
   const t = curTraj()
   if (t) { if (ll) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() } return }   // 描绘中：连续加点，不弹菜单
-  // ★ 存下标不存条目：ctxMenu 是深响应 ref，条目放进去读出来就是 Proxy —— 进了 selEntries 喂聚焦几何 Worker 会 DataCloneError
-  const en = (!flatView.value && Number.isInteger(satIdx) && satIdx >= 0 && renderEntries[satIdx]) ? satIdx : -1
+  // 压着的卫星：3D 先点云（scene 传下标）、再「别的功能画出来的星」（pickExtraAt：聚焦集 / 天线树星 / 对星目标…）；
+  // 2D 走 flat.satAtScreen（同一份候选，见 pickExtraSats 的 flat 档）。跟随中 3D 不拾取（同左键）。
+  // ★ 只存身份串不存条目：ctxMenu 是深响应 ref，条目放进去读出来就是 Proxy —— 进了 selEntries 喂聚焦几何 Worker 会 DataCloneError
+  let se = null
+  if (flatView.value) { const h = pos && flat && flat.satAtScreen ? flat.satAtScreen(pos.x, pos.y) : null; se = h ? h.ref : null }
+  else {
+    if (Number.isInteger(satIdx) && satIdx >= 0) se = renderEntries[satIdx] || null
+    if (!se && pos && !following.value && scene && scene.pickExtraAt) { const h = scene.pickExtraAt(pos.x, pos.y); se = h ? h.ref : null }
+  }
   // 压着地球站 / 点标记 / 载具头：菜单首项给「模型…」（有模型再给「卸下模型」）。3D 由 scene 传第 4 参（跟随中为 null），2D / 旧版 scene 这里自己测
   const eh = entHit !== undefined ? entHit : (pos ? entHitAt(pos.x, pos.y, ['station', 'point', 'vehicle']) : null)
   const eo = eh ? entObjOf(eh.kind, eh.id) : null
   const ent = eo ? { kind: eh.kind === 'vehicle' ? 'traj' : eh.kind, id: eh.id, has: !!eo.model } : null
+  // 压着的航迹（载具 / 线 / 航点）或 Polygon（区内）：「从此航迹 / Polygon 新建链路」「追加到链路」用；压着站 / 点时不另认（站优先）
+  const area = pos && !(ent && (ent.kind === 'station' || ent.kind === 'point')) ? lnkAreaAt(pos.x, pos.y) : null
   // enPv：压着的是向导预览星（号段提交后换号，没有联动身份）→ 不给「新建高斯天线」
-  ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null, en, enRef: en >= 0 ? renderEntries[en].noradId : null, enPv: en >= 0 && renderEntries[en].group === PREVIEW_GROUP, ent }
+  ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null, sid: se ? satIdOf(se) : '', enRef: se && se.noradId != null ? se.noradId : null, enPv: !!(se && se.group === PREVIEW_GROUP), ent, area }
   nextTick(clampCtxMenu)   // 按菜单实际渲染尺寸夹紧到视口内：靠右/靠下边缘右键时不再被裁掉一截
 }
 function ctxFollow() {
-  const m = ctxMenu.value; closeCtx()
-  const e = m && m.en >= 0 ? renderEntries[m.en] : null
-  if (e && e.noradId === m.enRef) startFollow(e)   // 菜单开着期间渲染集可能换过：号对不上就不动
+  const e = ctxSatEntry(); closeCtx()   // 按身份串现解（菜单开着期间渲染集可能换过）
+  if (!e) return
+  if (flatView.value) startFlatFollow(e); else startFollow(e)
 }
-function ctxStopFollow() { closeCtx(); stopFollow() }
+function ctxStopFollow() { closeCtx(); if (flatView.value) stopFlatFollow(); else stopFollow() }
+
+// ---- 右键「分析 ▸」：带上下文打开计算窗（主进程 tool:open，各窗 onContext 接收）----
+// 压着卫星：按轨道区制给出 GSO 链路预算 / 日凌 / C/I（GSO）或 NGSO 链路预算，外加雨衰（几何随星）。
+// 压着地球站 / 点标记：站址进计算窗——链路预算分发 / 收 / 收发同站三种落法，卫星取当前主选星（GSO 星进 GSO 窗、
+// 其余进 NGSO 窗；没聚焦则沿用计算窗当前配置的星），另给雨衰 / 日凌（主选为 GSO 星时）/ C/I。
+// 载荷只送身份、定点经度与站址（satrec 不过 IPC；接收端按各自口径解析），各窗只追加、不改动现有配置。
+// 几何取不到（星历太短、区制判不出）就不送：altKm / inclDeg 为 null、geo 为 false —— 不让接收端拿出厂 550 km / 53° 冒充
+//
+// 星历点序列星（导入的 OEM / SP3 / .e：只有 e.eph，没有 e.rec）→ { geo, slot, altKm, inclDeg } | null：
+//   ① 先走「查找卫星」筛选器同一份口径（shared/satFilter.metricsOf → satrecMetrics.metricsFromEphem）：周期取表内两次升交点、
+//      近远地点取整圈地心距极值、区制按 orbitClass 严判 —— 与筛选器认的是同一个区制；
+//   ② 表太短估不出周期（凑不够两次升交点：只有一天的 GEO 星历；近零倾角的 GEO 压根没有升交点）时，退到表首那一拍的密切根数
+//      （活力公式求半长轴、偏心率矢量、角动量求倾角）—— 足以把 GEO 与其余区制分开、给出近圆高度；
+//   两路都取不到 → null。GEO 定点经度取表首那一拍的星下点经度（同 geoLonAtEpoch 的「历元值」口径：静态，不随时钟漂）
+const MU_KM3S2 = 398600.4418
+function oscElements(r, v) {
+  const rn = Math.hypot(r.x, r.y, r.z), v2 = v.x * v.x + v.y * v.y + v.z * v.z
+  const inv = 2 / rn - v2 / MU_KM3S2                       // 1/a（活力公式）；≤ 0 = 不是绕地闭合轨道
+  if (!(rn > 0) || !(inv > 0)) return null
+  const hx = r.y * v.z - r.z * v.y, hy = r.z * v.x - r.x * v.z, hz = r.x * v.y - r.y * v.x, h = Math.hypot(hx, hy, hz)
+  if (!(h > 0)) return null
+  const rv = r.x * v.x + r.y * v.y + r.z * v.z, k = v2 - MU_KM3S2 / rn
+  const ex = (k * r.x - rv * v.x) / MU_KM3S2, ey = (k * r.y - rv * v.y) / MU_KM3S2, ez = (k * r.z - rv * v.z) / MU_KM3S2
+  return { aKm: 1 / inv, e: Math.hypot(ex, ey, ez), inclDeg: Math.acos(Math.max(-1, Math.min(1, hz / h))) / DEG }
+}
+function ephemCtxGeom(e) {
+  const tab = e && e.eph
+  if (!tab || !tab.__ephem) return null
+  const pv = posAt(tab, tab.t0)                              // 表首那一拍（TEME km / km·s⁻¹）
+  const osc = () => (pv && pv.position && pv.velocity ? oscElements(pv.position, pv.velocity) : null)
+  const m = metricsOf(e)
+  let kind = m.orbit || '', altKm = NaN, inclDeg = m.incl != null ? m.incl : NaN
+  if (m.apogeeKm != null && m.perigeeKm != null) altKm = (m.apogeeKm + m.perigeeKm) / 2
+  else if (m.periodMin > 0) altKm = Math.cbrt(MU_KM3S2 * Math.pow(m.periodMin * 60 / (2 * Math.PI), 2)) - RE
+  if (!kind || !Number.isFinite(altKm)) {
+    const o = osc()
+    if (!o) return null
+    kind = classifyOrbit({ aKm: o.aKm, e: o.e, inclDeg: o.inclDeg })
+    altKm = o.aKm - RE
+    if (!Number.isFinite(inclDeg)) inclDeg = o.inclDeg
+  } else if (!Number.isFinite(inclDeg)) { const o = osc(); if (o) inclDeg = o.inclDeg }
+  const geo = kind === 'GEO'
+  let slot = NaN
+  if (geo && pv && pv.position) {
+    try { slot = sat.degreesLong(sat.eciToGeodetic(pv.position, sat.gstime(new Date(tab.t0))).longitude) } catch { slot = NaN }
+  }
+  return { geo, slot, altKm, inclDeg }
+}
+function satCtxPayload(e) {
+  if (!e) return null
+  const rec = e.rec || null
+  let geo = false, slot = NaN, altKm = NaN, inclDeg = NaN
+  if (rec) {
+    geo = isGeoSatrec(rec)
+    slot = geo ? geoLonAtEpoch(rec) : NaN
+    if (rec.no > 0) {   // 平均运动 rad/min → 半长轴 → 平均高度（近圆近似，雨衰 NGSO 几何 / 离线退路用）
+      const n = rec.no / 60
+      altKm = Math.cbrt(398600.4418 / (n * n)) - 6378.137
+      inclDeg = rec.inclo / DEG
+    }
+  } else if (e.eph) {
+    const g = ephemCtxGeom(e)
+    if (g) { geo = g.geo; slot = g.slot; altKm = g.altKm; inclDeg = g.inclDeg }
+  }
+  if (!Number.isFinite(altKm) || !Number.isFinite(inclDeg)) { altKm = NaN; inclDeg = NaN }   // 半份几何（只有倾角）同样不送
+  const node = e._grdFolder ? null : (e.noradId ? linkedNodesOf(grdSats.value, e.noradId, treeGeoIdMap.value)[0] : null)
+  const folder = e._grdFolder || (node && node.folder) || ''
+  return {
+    id: satIdOf(e), name: String(e.name || ''), noradId: e.noradId != null ? String(e.noradId) : '', geo,
+    slotLon: Number.isFinite(slot) ? Math.round(slot * 1000) / 1000 : null, folder: String(folder),
+    altKm: Number.isFinite(altKm) ? Math.round(altKm * 10) / 10 : null, inclDeg: Number.isFinite(inclDeg) ? Math.round(inclDeg * 1000) / 1000 : null
+  }
+}
+const ctxAna = computed(() => {
+  const m = ctxMenu.value
+  const out = { items: [], satName: '' }
+  if (!m) return out
+  void selected.value   // 主选换了要重出（selEntry 本身不是响应式）
+  const eo = m.ent && (m.ent.kind === 'station' || m.ent.kind === 'point') ? entObjOf(m.ent.kind, m.ent.id) : null
+  // 无名标记（点标记缺省就没名字）补「点标记N / 地球站N」（N = 标记表格行号，与各窗「导入站址」同一叫法）——
+  // 否则日凌 / 雨衰那一行站名留空、显示并导出成列缺省值「北京」，C/I 则沿用上一个站名
+  const eoName = !eo ? '' : String(eo.name || '').trim() ||
+    (m.ent.kind === 'point' ? pointFallbackName(points.value.indexOf(eo)) : stationFallbackName(stations.value.indexOf(eo)))
+  const site = eo && Number.isFinite(Number(eo.lat)) && Number.isFinite(Number(eo.lon)) ? { name: eoName, lat: Number(eo.lat), lon: Number(eo.lon) } : null
+  const under = m.sid ? satEntryById(m.sid) : null
+  if (!under && !site) return out
+  const s = satCtxPayload(under || selEntry)
+  out.satName = s ? s.name : ''
+  const add = (kind, zh, en, ctx) => out.items.push({ kind, label: byLang(zh, en), ctx })
+  if (site) {
+    // 站进链路预算改走「链路」视图（图上建好链路再导入，STK Chain 范式）；这里只留单站分析
+    if (s && s.geo) add('suntool', '日凌预报', 'Sun outage forecast', { sat: s, sites: [site] })
+    add('rain', '雨衰计算', 'Rain attenuation', { sat: s, sites: [site] })
+    add('ci', '干扰分析（C/I）', 'Interference (C/I)', { sat: s && s.geo ? s : null, sites: [site] })
+  } else if (s.geo) {
+    add('linkbudget', 'GSO 链路预算', 'GSO link budget', { sat: s })
+    add('suntool', '日凌预报', 'Sun outage forecast', { sat: s })
+    add('rain', '雨衰计算', 'Rain attenuation', { sat: s })
+    add('ci', '干扰分析（C/I）', 'Interference (C/I)', { sat: s })
+  } else {
+    add('ngso', 'NGSO 链路预算', 'NGSO link budget', { sat: s })
+    add('rain', '雨衰计算', 'Rain attenuation', { sat: s })
+  }
+  return out
+})
+// 二级菜单：悬停 / 单击「分析」展开在其右侧（右侧放不下翻到左侧），悬停到别的项上收起
+const ctxSub = ref(null)        // { x, y, left }
+const ctxSubEl = ref(null)
+function openCtxSub(e) {
+  const r = e.currentTarget.getBoundingClientRect()
+  ctxSub.value = { x: r.right + 2, y: r.top - 4, left: r.left }
+  nextTick(() => {
+    const el = ctxSubEl.value, m = ctxSub.value
+    if (!el || !m) return
+    const b = el.getBoundingClientRect(), pad = 4
+    const x = m.x + b.width > window.innerWidth - pad ? Math.max(pad, m.left - b.width - 2) : m.x
+    const y = Math.max(pad, Math.min(m.y, window.innerHeight - b.height - pad))
+    if (x !== m.x || y !== m.y) ctxSub.value = { ...m, x, y }
+  })
+}
+function onCtxOver(e) { const it = e.target && e.target.closest ? e.target.closest('.ctx-item') : null; if (it && !it.classList.contains('ctx-subp')) ctxSub.value = null }
+// 卫星信息栏标题「分析」钮：同一张菜单，只列分析项（主选星），落在按钮正下方
+function rdkAnalyze(ev) {
+  const e = selEntry
+  if (!e) return
+  const r = ev.currentTarget.getBoundingClientRect()
+  ctxSub.value = null
+  ctxMenu.value = { x: r.left, y: r.bottom + 2, ll: null, sid: satIdOf(e), enRef: e.noradId != null ? e.noradId : null, enPv: e.group === PREVIEW_GROUP, ent: null, anaOnly: true }
+  nextTick(clampCtxMenu)
+}
+function runCtxAna(a) {
+  closeCtx()
+  const tools = window.api && window.api.tools
+  if (!tools || !a || !a.kind) return
+  try {
+    const r = tools.open(a.kind, JSON.parse(JSON.stringify(a.ctx || {})))   // 出 IPC 前现造纯数据
+    if (r && r.catch) r.catch(() => {})   // 未激活：主进程回 {locked:true}（全局遮罩另行提示），这里静默
+  } catch { /* ignore */ }
+}
 // 右键压着实体：「模型…」在点击处开模型选择弹层；「卸下模型」直接删字段
 function ctxEntModel() {
   const m = ctxMenu.value; closeCtx()
@@ -8335,27 +9261,902 @@ function clampCtxMenu() {
   const y = Math.max(pad, Math.min(m.y, window.innerHeight - r.height - pad))
   if (x !== m.x || y !== m.y) ctxMenu.value = { ...m, x, y }
 }
-function closeCtx() { ctxMenu.value = null }
+function closeCtx() { ctxMenu.value = null; ctxSub.value = null }
 const ctxLL = () => ctxMenu.value && ctxMenu.value.ll
 // —— 菜单动作（均在当前右键经纬度处执行）——
 function ctxAddPoint() { const ll = ctxLL(); if (ll) addPoint(ll.lat, ll.lon); closeCtx() }
 // 加地球站：弹出命名对话框（位置取右键处），确认后入库
-const stPrompt = ref(null)       // { lat, lon } 待命名地球站；null=关闭
+// 添加 / 编辑地球站对话框（右键「添加地球站」位置取右键处；右键已有站「地球站属性…」编辑该站）：
+// 名称 / 模型 / 天线口径 / 天线罩。口径留空 = 模型标称口径（灰显）；天线罩 null = 跟模型（含天线罩组件即有罩）。
+// 口径与天线罩是站的属性（同一模型可配不同口径），导入链路预算时按它们对号地球站库（shared/lbStationType.js）。
+// 模型 / 口径 / 天线罩记住上次添加时所选，连续添加同型站不必重选。
+const stPrompt = ref(null)       // { lat, lon, id? }：id = 编辑中的站；null=关闭
 const stPromptName = ref('')
-// 应用内提示弹窗（替代 Electron 原生 alert）：alertMsg/appAlert/closeAlert 见 stores/alert.js（GRD 等组合式同源）。
-function ctxAddStation() { const ll = ctxLL(); if (ll) { stPrompt.value = { lat: ll.lat, lon: ll.lon }; stPromptName.value = '' } closeCtx() }
+const stPromptModel = ref('')    // 模型 id（'' = 不配置模型）
+const stPromptDia = ref('')      // 手填口径（m，文本；空 = 跟模型标称）
+const stPromptRadome = ref(null) // true / false = 手动；null = 跟模型
+const stPromptPwr = ref('')      // 功放功率（W，文本；空 = 不指定，导入时取链路预算库缺省）
+const stPick = ref(null)         // 对话框里模型选择弹层的锚点
+let _stLast = { model: '', dia: '', radome: null, pwr: '' }
+// 地球站模型的标称参数：内置模板取 dims.apertureM；装配件取主反射面（es.refl.*）最大 diameterM；含天线罩组件 = 带罩
+function stModelInfo(id) {
+  if (!id) return { diaM: null, radome: false }
+  const t = getEntityTemplate(id)
+  const comps = t ? ((t.doc && t.doc.comps) || []) : ((((modelLib.value.byId.get(id) || {}).spec) || {}).comps || [])
+  const dTpl = t && t.dims && t.dims.apertureM ? Number(t.dims.apertureM.value) : NaN
+  let dAsm = 0, radome = false
+  for (const c of comps) {
+    const ty = String((c && c.type) || '')
+    if (ty === 'es.radome' || ty === 'sea.vsat.radome') radome = true
+    if (ty.startsWith('es.refl.') && c.params && Number(c.params.diameterM) > 0) dAsm = Math.max(dAsm, Number(c.params.diameterM))
+  }
+  const d = dTpl > 0 ? dTpl : dAsm
+  return { diaM: d > 0 ? d : null, radome }
+}
+const stNominal = computed(() => stModelInfo(stPromptModel.value))
+const stRadomeEff = computed(() => (stPromptRadome.value == null ? stNominal.value.radome : stPromptRadome.value))
+function openStationDlg(o) {
+  stPrompt.value = o
+  if (o.id) {
+    const s = stations.value.find((x) => x.id === o.id)
+    const m = s && s.model ? s.model.id : ''
+    const nm = stModelInfo(m)
+    stPromptName.value = s ? (s.name || '') : ''
+    stPromptModel.value = m
+    stPromptDia.value = s && Number.isFinite(s.diaM) && !(nm.diaM != null && Math.abs(s.diaM - nm.diaM) < 1e-9) ? String(s.diaM) : ''
+    stPromptRadome.value = s && (s.radome === true) !== nm.radome ? (s.radome === true) : null
+    stPromptPwr.value = s && okPwrW(s.pwrW) ? String(s.pwrW) : ''
+  } else {
+    stPromptName.value = ''
+    stPromptModel.value = _stLast.model; stPromptDia.value = _stLast.dia; stPromptRadome.value = _stLast.radome; stPromptPwr.value = _stLast.pwr
+  }
+}
+function ctxAddStation() { const ll = ctxLL(); if (ll) openStationDlg({ lat: ll.lat, lon: ll.lon }); closeCtx() }
+function ctxStationProps() {
+  const m = ctxMenu.value; closeCtx()
+  const s = m && m.ent && m.ent.kind === 'station' ? stations.value.find((x) => x.id === m.ent.id) : null
+  if (s) openStationDlg({ id: s.id, lat: s.lat, lon: s.lon })
+}
+function openStModelPick(ev) { const r = ev.currentTarget.getBoundingClientRect(); stPick.value = { x: r.left, y: r.top, w: r.width, h: r.height } }
 function confirmStation() {
   const p = stPrompt.value; if (!p) return
-  stations.value.push({ id: newId(), lat: p.lat, lon: p.lon, name: (stPromptName.value || '').trim() || '地球站' })
-  syncMarkers(); stPrompt.value = null; stPromptName.value = ''
+  const typed = parseFloat(String(stPromptDia.value).trim())
+  const dia = okDiaM(typed) ? typed : stNominal.value.diaM
+  const mid = stPromptModel.value
+  let s = p.id ? stations.value.find((x) => x.id === p.id) : null
+  if (!s) { stations.value.push({ id: newId(), lat: p.lat, lon: p.lon, name: '' }); s = stations.value[stations.value.length - 1] }
+  s.name = (stPromptName.value || '').trim() || '地球站'
+  const m = mid ? normEntityModel({ id: mid }) : null
+  if (m) s.model = m; else delete s.model
+  if (dia != null) s.diaM = dia; else delete s.diaM
+  if (stRadomeEff.value) s.radome = true; else delete s.radome
+  const pw = parseFloat(String(stPromptPwr.value).trim())
+  if (okPwrW(pw)) s.pwrW = pw; else delete s.pwrW
+  if (!p.id) _stLast = { model: mid, dia: stPromptDia.value, radome: stPromptRadome.value, pwr: stPromptPwr.value }
+  syncMarkers(); cancelStation()
 }
-function cancelStation() { stPrompt.value = null; stPromptName.value = '' }
+function cancelStation() { stPrompt.value = null; stPromptName.value = ''; stPick.value = null }
+// 换模型时口径 / 天线罩跟着走：站上的值仍等于旧模型的标称（没手改过）才跟到新模型；卸下模型不动（setEntityModel 调）
+function stFollowModel(s, oldId, newId) {
+  const a = stModelInfo(oldId), b = stModelInfo(newId)
+  if (b.diaM != null && (!Number.isFinite(s.diaM) || (a.diaM != null && Math.abs(s.diaM - a.diaM) < 1e-9))) s.diaM = b.diaM
+  if ((s.radome === true) === a.radome) { if (b.radome) s.radome = true; else delete s.radome }
+}
+
+// ===================== 图上链路（STK Chain 范式：「链路」视图建链 → 导入链路预算；设计稿 docs/图上链路与地球站参数设计_2026-10-07.md）=====================
+// 逻辑在 viz/links/useMapLinks.js；这里只接宿主：卫星解析 / 取位、图上点选建链、每拍推图、右键入口、推送导入。
+// 链路随标记存档（globe3d/markers.links），四个链路预算窗口的「导入链路」对话框读同一份。
+// 聚焦集：身份键 → 条目（按选中集版本 / 数组身份 / 长度缓存）。图上链路的星端点先认它 —— 与模型图标、跟随主星是【同一个条目】
+// （同一份星历）：全量池两段式更新（本机缓存一版、联网一版）之后选中集仍指着上一版池的条目，satEntryById 却已解到新池，
+// 两版根数推出来的位置差十几公里 —— 跟随视角里链路就从主星旁十几公里处出发（2026-10-08 验证台实测 14.5 km，沿迹差 2 s）
+let _selByKey = null, _selByKeyVer = -1, _selByKeyArr = null, _selByKeyLen = -1
+function selEntryByKey(key) {
+  if (_selByKeyVer !== selVer.value || _selByKeyArr !== selEntries || _selByKeyLen !== selEntries.length || !_selByKey) {
+    _selByKeyVer = selVer.value; _selByKeyArr = selEntries; _selByKeyLen = selEntries.length; _selByKey = new Map()
+    for (const x of selEntries) { const k = satKeyOf(x); if (k && !_selByKey.has(k)) _selByKey.set(k, x) }
+  }
+  return key ? (_selByKey.get(key) || null) : null
+}
+// 链路里的卫星：satKey → 条目。聚焦集里的取聚焦集那一个（见上）；其余按渲染集换代 / 全量池换版作废（解析不到的不缓存——星历池可能稍后才到）
+let _lnkSatSrc = null, _lnkSatPool = -1, _lnkSatCache = new Map()
+function linkSatEntry(key) {
+  if (!key) return null
+  const se = selEntryByKey(key)
+  if (se) return se
+  if (_lnkSatSrc !== renderEntries || _lnkSatPool !== poolTick.value) { _lnkSatSrc = renderEntries; _lnkSatPool = poolTick.value; _lnkSatCache = new Map() }
+  const c = _lnkSatCache.get(key)
+  if (c) return c
+  let e = null
+  if (key.startsWith('grdsat:')) { const f = key.slice(7); e = treeGeoList.find((x) => x && x._grdFolder === f) || null }
+  else {
+    const m = /^norad:(\d+)$/.exec(key)
+    e = m ? satEntryById('n:' + m[1]) : (renderEntries.find((x) => satKeyOf(x) === key) || bodyKeyFallback(key))
+    if (!e && key.startsWith('name:')) e = satEntryById('m:' + key.slice(5))   // 无号星（name: 键）：渲染集里没有就按名到全量目录 / 自定义星座里找
+  }
+  if (e) _lnkSatCache.set(key, e)
+  return e
+}
+// 此刻 ECEF（km）：合成星走场景历元轴（与画面同口径）；天线树虚拟星解析不到条目时退回 bodyTargetEcef
+function linkSatEcef(key, tMs) {
+  const e = linkSatEntry(key)
+  if (!e) return key && key.startsWith('grdsat:') ? bodyTargetEcef(key, tMs) : null
+  return entryEcefAt(e, tMs)
+}
+function entryEcefAt(e, tMs) {
+  try {
+    const d = new Date(tMs), dp = isCustomEntry(e) ? ccTimeAt(d) : d
+    const pv = posAt(e, dp)
+    if (!pv || !pv.position) return null
+    const ecf = sat.eciToEcf(pv.position, sat.gstime(dp))
+    return [ecf.x, ecf.y, ecf.z]
+  } catch { return null }
+}
+// 导入用身份快照（同「分析 ▸」的 satCtxPayload：NORAD / 是否 GEO / 定点经度 / 天线树文件夹 / 平均高度 / 倾角）
+function linkSatInfo(key) {
+  const e = linkSatEntry(key)
+  const p = e ? satCtxPayload(e) : null
+  if (!p) return null
+  const o = {}
+  if (p.noradId) o.noradId = p.noradId
+  if (p.geo) o.geo = true
+  if (Number.isFinite(p.slotLon)) o.slotLon = p.slotLon
+  if (p.folder) o.folder = p.folder
+  if (Number.isFinite(p.altKm)) o.altKm = p.altKm
+  if (Number.isFinite(p.inclDeg)) o.inclDeg = p.inclDeg
+  return o
+}
+function linkSatNode(e) {
+  const key = e ? satKeyOf(e) : null
+  if (!key) return null
+  _lnkSatCache.set(key, e)
+  const n = { k: 'sat', key, name: displaySatName(e.name || '') }
+  const inf = linkSatInfo(key)
+  if (inf) n.info = inf
+  return n
+}
+const lnkMsg = ref('')   // 建链横幅上的一句话（不追加的原因），2.5 s 后收
+let _lnkMsgT = 0
+function lnkSay(m) { lnkMsg.value = m; clearTimeout(_lnkMsgT); _lnkMsgT = setTimeout(() => { lnkMsg.value = '' }, 2500) }
+const lnk = useMapLinks({
+  links, stations, points, newId,
+  polygons: polys, trajectories,
+  // 载具代表点有载具图标标着（航迹图层与该条都开着、载具图标或模型在画）就不另画圆点
+  trajShown: (id) => { if (!showTrajLayer.value) return false; const t = trajectories.value.find((x) => x.id === id); return !!t && t.show !== false && (markStyle.tjIconOn !== false || !!t.model) },
+  nowMs: () => calcAt().getTime(),
+  commit: () => { persistMarkers(); pushLinks() },
+  satEcefAt: linkSatEcef,
+  satInfo: linkSatInfo,
+  status: (m) => logMsg(m)
+})
+const lnkStyle = lnk.style
+// 每拍 / 每次改动推一份到两个渲染器；没有链路时只在「从有到无」那一拍清一次
+let _lnkHad = false
+function pushLinks(force) {
+  if (!scene) return
+  const r = lnk.compute(calcAt().getTime())
+  const has = r.scene.length > 0 || r.flat.length > 0
+  if (!has && !_lnkHad && !force) return
+  _lnkHad = has
+  scene.setLinks(r.scene)
+  if (flat && flat.setLinks) flat.setLinks(r.flat)
+}
+function pushLinksNow() { pushLinks(true) }
+// 图上链路的卫星终点此刻画着模型图标吗（scene.linkEndTip：画着就让图标 —— 逐帧让图标的轮廓（linkIconEdge），图标没在画时让包围圆）→ 图标像素 | 0。
+// 条件与 feedModels 画图标的同：3D、模型图标开着、在聚焦集、有模型；跟随中的主星不算（它在局部那一趟，箭头让本体，见 scene followA 那段）。
+// 聚焦集按身份键查（selEntryByKey，按选中集版本缓存：链路每拍要问几次，几千颗聚焦星别逐次重算）
+function linkIconPx(key) {
+  if (!key || !iconFeedOn()) return 0
+  const e = selEntryByKey(key)
+  if (!e || (following.value && e === followEntry)) return 0
+  return modelOf(e).id ? focusStyle.modelPx : 0
+}
+// 图上链路的卫星端点画着模型图标时，箭头尖停在图标此刻屏上轮廓沿线的外沿（scene.syncLinkIcons 逐帧问）：other = 链路另一端（场景坐标）→
+// 轮廓外沿离图标中心多少 px；不画图标 / 图标没在画 → −1（scene 回包围圆兜底）。图标键与 feedModels 同（mo.key || e.name）
+function linkIconEdge(key, other) {
+  if (!modelLayer || !linkIconPx(key)) return -1
+  const e = selEntryByKey(key)
+  const mo = e ? modelOf(e) : null
+  return mo && mo.id ? modelLayer.iconEdgePx(mo.key || e.name, other) : -1
+}
+// 聚焦集一变，链路终点「画没画模型图标」跟着变：停表时等不到下一拍，当场重推（没有链路时 pushLinks 自己早退）
+watch(selVer, () => pushLinks())
+// 链路里引用的点序列导入星（ephem:<组 id>:<键>）：该组采样表不论图层显隐都载入（进 ephAll，linkSatEntry 经 bodyKeyFallback 解得到）——
+// 选择器能从没显示的导入组里挑星，重启后那一组若仍隐藏，不载表链路就解不出这颗星。载完补推一拍（暂停档没有下一拍）
+watch(() => {
+  const ids = new Set()
+  for (const l of links.value) for (const n of l.nodes) {
+    if (n.k !== 'sat' || typeof n.key !== 'string' || !n.key.startsWith('ephem:')) continue
+    const j = n.key.indexOf(':', 6)
+    if (j > 6) ids.add(n.key.slice(6, j))
+  }
+  return [...ids].filter((g) => importGroups.value.some((x) => x.id === g && x.kind === 'ephem')).sort().join(',')
+}, (s) => {
+  const todo = s ? s.split(',').filter((g) => !ephTables.has(g)) : []
+  if (todo.length) Promise.all(todo.map((g) => ephemEntriesOf(g))).then(() => pushLinksNow()).catch(() => {})
+}, { immediate: true })
+// ---- 建链态：图上依次单击地球站 / 卫星 / 航迹 / Polygon 追加节点（按下与松开相距 ≤ 5 px 才算点选，拖动照常转地球 / 平移）----
+// 命中次序：地球站 / 点标记 → 卫星 → 载具 → 航迹线（含航点）→ Polygon 区内（嵌套的取面积最小的）；航迹 / Polygon 带缺省取点放进去
+function linkNodeAt(x, y) {
+  const h = entHitAt(x, y, ['station', 'point'])
+  if (h && h.kind === 'station') return { k: 'st', id: h.id }
+  if (h && h.kind === 'point') return { k: 'pt', id: h.id }
+  let e = null
+  if (flatView.value) { const r = flat && flat.satAtScreen ? flat.satAtScreen(x, y) : null; e = r ? r.ref : null }
+  else if (scene) {
+    const i = scene.pickSatAt ? scene.pickSatAt(x, y) : -1
+    if (i >= 0) e = renderEntries[i] || null
+    if (!e && scene.pickExtraAt) { const r = scene.pickExtraAt(x, y); e = r ? r.ref : null }
+  }
+  if (e) return linkSatNode(e)
+  const a = lnkAreaAt(x, y)
+  return a ? lnk.areaNode(a.k, a.id) : null
+}
+// 当前视图的渲染器（拾取辅助 screenOfLL / lonLatAt 两边同名）
+const lnkView = () => (flatView.value ? flat : scene)
+// 压着的航迹 / Polygon：{ k:'tj'|'pg', id } | null（右键菜单与建链点选共用）
+function lnkAreaAt(x, y) {
+  const v = entHitAt(x, y, ['vehicle'])
+  if (v && v.kind === 'vehicle') return { k: 'tj', id: v.id }
+  return lnkTrajLineAt(x, y) || lnkPolyAt(x, y)
+}
+const LNK_LINE_PX = 6
+// 航迹线命中（屏幕上 6 px 内；航点就在线上）：运动档 / 3D 按大圆加密（与画法同一条线），2D 静止档按航点直连。只认显示着的航迹
+function lnkTrajLineAt(x, y) {
+  const R = lnkView()
+  if (!showTrajLayer.value || !R || !R.screenOfLL) return null
+  const half = (flatView.value && flatCanvas.value ? flatCanvas.value.clientWidth : window.innerWidth) / 2
+  let best = null, bd = LNK_LINE_PX
+  const ts = trajectories.value
+  for (let k = ts.length - 1; k >= 0; k--) {
+    const t = ts[k]
+    if (!t || t.show === false || !Array.isArray(t.pts)) continue
+    const raw = t.pts.filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon))
+    if (!raw.length) continue
+    const line = (!flatView.value || trajMoving(t)) && raw.length > 1 ? densifyGreatCircle(raw, 1) : raw
+    let prev = null
+    for (const p of line) {
+      const s = R.screenOfLL(p.lat, p.lon, 0)
+      if (s) {
+        let d = Math.hypot(s.x - x, s.y - y)
+        if (prev && Math.abs(s.x - prev.x) < half) {
+          const dx = s.x - prev.x, dy = s.y - prev.y, l2 = dx * dx + dy * dy
+          const f = l2 > 0 ? Math.max(0, Math.min(1, ((x - prev.x) * dx + (y - prev.y) * dy) / l2)) : 0
+          d = Math.min(d, Math.hypot(prev.x + dx * f - x, prev.y + dy * f - y))
+        }
+        if (d < bd) { bd = d; best = t.id }
+      }
+      prev = s
+    }
+  }
+  return best != null ? { k: 'tj', id: best } : null
+}
+// Polygon 区内命中（经纬度线性的边，与画法一致）：嵌套的取面积最小的那个；隐藏的、正在画的不认
+function lnkPolyAt(x, y) {
+  const R = lnkView()
+  const ll = R && R.lonLatAt ? R.lonLatAt(x, y) : null
+  if (!ll) return null
+  let best = null, ba = Infinity
+  for (const pg of polys.value) {
+    if (!pg || pg.show === false || pg.id === polyDrawId.value) continue
+    const ring = pgRing(pg.pts)
+    if (ring.length < 3 || !pgContains(ring, ll.lat, ll.lon)) continue
+    const a = pgAreaKm2(ring)
+    if (a < ba) { ba = a; best = pg.id }
+  }
+  return best != null ? { k: 'pg', id: best } : null
+}
+// 取点编辑器开着：屏幕点压着的候选点键（9 px 内取最近）| ''
+function lnkCandAt(x, y) {
+  const R = lnkView(), pc = lnk.pickCands(calcAt().getTime())
+  if (!pc || !R || !R.screenOfLL) return ''
+  let best = '', bd = 9
+  for (const c of pc.list) {
+    const s = R.screenOfLL(c.lat, c.lon, c.altM / 1000)
+    if (!s) continue
+    const d = Math.hypot(s.x - x, s.y - y)
+    if (d <= bd) { bd = d; best = c.key }
+  }
+  return best
+}
+// 地图上另有占用左键的编辑态（画 / 调 / 拖 Polygon、描航迹、标记调整位置、波束合成放置）：候选点不抢点击
+// （候选点常与 Polygon 顶点 / 航点重合：调顶点时点一下顶点不该顺手把它取舍掉）
+const lnkMapBusy = () => !!(polyDrawId.value || polyEditId.value || polyMoveId.value || activeTraj.value || mkEditId.value || bs.placing.value)
+let _lnkDown = null
+function onLinkPickDown(e) {
+  if (!(lnk.draw.value || lnk.pickEd.value) || e.button !== 0) { _lnkDown = null; return }
+  const onMap = (!!el.value && el.value.contains(e.target)) || (!!flatCanvas.value && flatCanvas.value.contains(e.target))
+  _lnkDown = onMap ? { x: e.clientX, y: e.clientY, t: performance.now() } : null
+}
+function onLinkPickUp(e) {
+  const d = _lnkDown; _lnkDown = null
+  if (!d || e.button !== 0) return
+  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5 || performance.now() - d.t > 800) return
+  // 取点编辑器开着：压在候选点上 = 取 / 舍它（先于插入光标与选星：这一下不再交给 onMapPick）
+  if (lnk.pickEd.value && !lnkMapBusy()) {
+    const k = lnkCandAt(e.clientX, e.clientY)
+    if (k) { _pickArmed = false; lnk.pickKey(k); return }
+  }
+  if (!lnk.draw.value) return
+  const node = linkNodeAt(e.clientX, e.clientY)
+  if (!node) return
+  const why = lnk.addNode(node)
+  if (why) lnkSay(why)
+}
+// 取点编辑器开着时图上悬停候选点：光标变手形、编辑器那一行与图上那一点一起亮（每帧至多测一次）
+const lnkCandHov = ref(false)
+let _lnkHovRaf = 0, _lnkHovXY = null
+function onLinkHoverMove(e) {
+  if (!lnk.pickEd.value) { if (lnkCandHov.value) lnkCandHov.value = false; return }
+  const onMap = (!!el.value && el.value.contains(e.target)) || (!!flatCanvas.value && flatCanvas.value.contains(e.target))
+  _lnkHovXY = onMap && !e.buttons ? [e.clientX, e.clientY] : null
+  if (_lnkHovRaf) return
+  _lnkHovRaf = requestAnimationFrame(() => {
+    _lnkHovRaf = 0
+    const p = _lnkHovXY
+    const k = p && !lnkMapBusy() ? lnkCandAt(p[0], p[1]) : ''
+    lnkCandHov.value = !!k
+    if (p && k !== lnk.pickHi.value) { lnk.pickHi.value = k; pushLinks() }
+  })
+}
+// 建链态键盘：Enter 完成 · Esc 取消 · Backspace 撤销本次插的上一个节点。挂 window 捕获阶段（先于退出跟随等外层的 Esc），
+// 但只在「建链就是最上面那一层」时接管：
+//   · 有浮层开着 —— 对话框（设置 / 关于 / 文件管理 / 地球站属性…）、菜单栏下拉、地图右键菜单与各处下拉菜单、时间轴设置、
+//     时刻读数面板、视频导出进度卡 —— 三个键都归浮层（各自的 Esc 关自己，对话框里的 Enter 归对话框的按钮），建链原样不动；
+//     ★ 这些浮层的键盘监听多是开着时才挂、挂在本监听之后（同为 window 捕获阶段时后挂的后跑），所以要在这里先让出来；
+//   · 输入框里打字不拦；焦点在按钮 / 链接 / 下拉等自带 Enter 动作的控件上，Enter 归控件；
+//   · 已被别处消费（defaultPrevented）不接。接管时只 preventDefault 作「已消费」标记 —— 外层 Esc（退出跟随等）认这个标记让位，
+//     不再无条件 stopPropagation 截停别人的键。
+// 按住 Backspace 的自动连发不算（一次只撤一个，同节点选择器）
+const LNK_KEY_BLOCKERS = '[role="dialog"], [aria-modal="true"], .ctx-menu, .lmenu, .lp-menu, .mdl-menu, .tzp-menu, .tls-mask, .sat-mask, .ms-mask, .about-mask, .vxc-mask, .menubar .mpanel'
+const LNK_ENTER_OWNERS = 'button, a[href], select, summary, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="tab"], [role="checkbox"], [role="switch"], [role="radio"], [role="combobox"]'
+function onLinkKey(e) {
+  if (e.isComposing || e.defaultPrevented) return
+  const k = e.key
+  if (k !== 'Enter' && k !== 'Escape' && k !== 'Backspace') return
+  const t = e.target, typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+  if (typing || document.querySelector(LNK_KEY_BLOCKERS)) return
+  // 取点编辑器开着：Esc 先收它（插入态照旧留着，再按一次 Esc 才取消建链）
+  if (k === 'Escape' && lnk.pickEd.value) { e.preventDefault(); lnkPickClose(); return }
+  if (!lnk.draw.value) return
+  if (t && t.closest && t.closest('.lpe')) return   // 焦点在取点编辑器里：Enter / Backspace 归编辑器（取舍点），不完成 / 撤销建链
+  if (k === 'Enter') {
+    if (e.repeat || (t && t.closest && t.closest(LNK_ENTER_OWNERS))) return
+    e.preventDefault(); lnkFinish()
+  } else if (k === 'Escape') { e.preventDefault(); lnkCancel() }
+  else { e.preventDefault(); if (!e.repeat) lnk.undoNode() }
+}
+function lnkEnterDraw() {   // 与 Polygon 绘制 / 航迹描绘 / 标记调整 / 波束合成放置互斥（同 newTraj）
+  mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel(); stopSynthPlacement(); if (activeTraj.value) endTraj()
+  shellUi.side = 'links'
+}
+// fromPanel：视图里点的（「新建」/「添加节点」/ 跳行的「＋」）→ 插入光标那一位的检索框接着拿焦点，直接打字挑节点；
+// 图上右键发起的不抢焦点（人还在图上点）
+function lnkNew(first, fromPanel) { lnkEnterDraw(); lnkRep.value = -1; lnk.startNew(first || null); if (fromPanel) lnkFocusSlot() }
+function lnkAddAt(id, at) { lnkEnterDraw(); lnkRep.value = -1; lnk.startAt(id, at); lnkFocusSlot() }
+function lnkFinish() { lnk.finish(); lnk.preview.value = null }
+function lnkCancel() { lnk.cancel(); lnk.preview.value = null }
+const lnkDrawN = computed(() => { const d = lnk.draw.value; const l = d ? lnk.linkOf(d.id) : null; return l ? l.nodes.length : 0 })
+// 有没有本次插进去、可撤销的节点（横幅「撤销」/ 右键「撤销上一节点」没有就置灰；进入插入态前就有的节点不撤）
+const lnkCanUndo = computed(() => lnk.canUndo())
+// 右键：压着站「从此站新建链路」/ 压着星「从此卫星新建链路」/ 压着航迹「从此航迹新建链路」/ 压在 Polygon 里「从此 Polygon 新建链路」；
+// 建链中压着其中任一 =「追加到链路」
+// kind：'st' 取压着的地球站、'sat' 取压着的卫星、'area' 取压着的航迹 / Polygon、缺省按 站 → 星 → 航迹 / Polygon
+function ctxLinkNode(kind) {
+  const m = ctxMenu.value
+  if (!m) return null
+  if (!kind || kind === 'st') {
+    if (m.ent && m.ent.kind === 'station') return { k: 'st', id: m.ent.id }
+    if (m.ent && m.ent.kind === 'point') return { k: 'pt', id: m.ent.id }
+  }
+  if (!kind || kind === 'sat') {
+    const e = m.sid ? ctxSatEntry() : null
+    if (e) return linkSatNode(e)
+  }
+  if ((!kind || kind === 'area') && m.area) return lnk.areaNode(m.area.k, m.area.id)
+  return null
+}
+function ctxLinkFrom(kind) { const n = ctxLinkNode(kind); closeCtx(); if (n) lnkNew(n) }
+function ctxLinkAppend() { const n = ctxLinkNode(); closeCtx(); if (!n) return; const why = lnk.addNode(n); if (why) lnkSay(why) }
+function ctxLinkFinish() { closeCtx(); lnkFinish() }
+function ctxLinkUndo() { closeCtx(); lnk.undoNode() }
+function ctxLinkCancel() { closeCtx(); lnkCancel() }
+// ---- 列表 / 检查器 ----
+const lnkName = (l) => lnk.nameOf(l)
+const lnkSel = computed(() => { void links.value; const id = lnk.selId.value; return id ? (links.value.find((l) => l.id === id) || null) : null })
+// 换选别的链路（或收起检查器）：正在插入的那条先收尾（同「完成」）
+function lnkSelect(id) {
+  const next = lnk.selId.value === id ? '' : id
+  if (lnk.draw.value && lnk.draw.value.id !== next) lnkFinish()
+  lnkRep.value = -1
+  if (lnk.pickEd.value && lnk.pickEd.value.id !== next) lnk.closePick()
+  lnk.selId.value = next
+  pushLinks()
+}
+
+// ---- 节点选择器：链路详情竖链里的插入光标（图上单击同往这一位插）与节点就地替换 ----
+// 候选来源 viz/links/linkPickSource.js（地球站 / 点标记 / 城市库 / 常用卫星 / 卫星集，按该位的几何排序出读数），界面 components/LinkNodePicker.vue。
+// 卫星集 = 选择器的检索范围：'*' 全部卫星（全量目录 ∪ 天线树 ∪ 自定义星座 ∪ 导入星历）· '@' 当前显示 · 星座侧栏「卫星集」那张表的每一行（同序）
+// 场景星此刻 ECEF：在本拍渲染集里的直接取 _lnkTick 星位（几千颗排仰角不再逐颗 SGP4），其余现算
+function lnkEntryEcef(e) {
+  const tk = _lnkTick
+  if (tk && tk.src === renderEntries) {
+    if (!tk.idx) { tk.idx = new Map(); tk.src.forEach((x, k) => tk.idx.set(x, k)) }
+    const k = tk.idx.get(e)
+    if (k != null) { const p = tk.pos[k]; return p && p.altKm > -RE + 1 ? W.geodeticToEcef(p.lon, p.lat, p.altKm) : null }
+  }
+  return entryEcefAt(e, calcAt().getTime())
+}
+// 常用卫星（根视图空检索词）：链路里已有的 → 聚焦集 → 天线树虚拟星；按身份键去重（向导预览星不列）。其余的星从「卫星集」进
+function lnkSatPool() {
+  const out = [], seen = new Set()
+  const add = (e, tier) => {
+    const k = e && e.group !== PREVIEW_GROUP ? satKeyOf(e) : null
+    if (!k || seen.has(k)) return
+    seen.add(k); out.push({ entry: e, key: k, tier })
+  }
+  for (const l of links.value) for (const n of l.nodes) if (n.k === 'sat') add(linkSatEntry(n.key), 0)
+  for (const e of selEntries) add(e, 0)
+  for (const e of treeGeoList) add(e, 0)
+  return out
+}
+// 显示名 / 来源标签 / NORAD（天线树虚拟星的合成号不当 NORAD 显示，同目标星检索）/ GEO 定点标注 / 天线树虚拟星没有定点时的轨道读数
+function lnkSatMeta(e) {
+  if (!e) return null
+  const tree = !!e._grdFolder
+  const slot = e.rec ? geoSlotOfSatrec(e.rec) : ''
+  const g = String(e.group || '')
+  const imp = g.startsWith('ci:') ? importGroups.value.find((x) => 'ci:' + x.id === g) : null
+  return {
+    name: displaySatName(e.name || ''),
+    tag: tree ? TREE_GEO_LABEL : (e.groupLabel || (imp && imp.name) || GROUP_LABEL[e.group] || ''),
+    norad: !tree && e.noradId != null && e.noradId !== '' ? String(e.noradId) : '',
+    slot,
+    orb: tree && !slot ? treeVirtSub(e, grdNodeOf(e._grdFolder)) : ''
+  }
+}
+// ---- 选择器的卫星集（检索范围）----
+// 每一集的成员按「依赖没变就回同一个对象」记一份：选择器按这个对象缓存条目表，几万颗的「全部卫星」不必每次检索都重建。
+// res = { entries, keys?, missing:[{ id, name }], natural }（keys 与 entries 等长时选择器不再逐颗求身份键）
+const _lnkSetMemo = new Map()   // 集 id → { deps, res }
+function lnkMemo(id, deps, build) {
+  const c = _lnkSetMemo.get(id)
+  if (c && c.deps.length === deps.length && c.deps.every((d, i) => d === deps[i])) return c.res
+  const res = build()
+  _lnkSetMemo.set(id, { deps, res })
+  return res
+}
+// 当前显示 = 本拍渲染集（向导预览星不列）
+function lnkSceneSet() {
+  return lnkMemo('@', [renderEntries], () => ({ entries: renderEntries.filter((e) => e && e.group !== PREVIEW_GROUP), missing: [], natural: false }))
+}
+// 全部卫星：渲染集（与图上同一批对象，星位直接取本拍）→ 天线树虚拟星 → 自定义星座合成星（含隐藏）→ 全量目录 → 已载入的点序列导入星；按身份键去重
+function lnkAllSet() {
+  const cc = customConst.list.value.map((c) => customConst.satsOf(c.id))
+  return lnkMemo('*', [renderEntries, treeGeoList, searchPool, ephAll, ...cc], () => {
+    const entries = [], keys = [], seen = new Set()
+    const add = (list) => {
+      for (const e of list) {
+        if (!e || e.group === PREVIEW_GROUP) continue
+        const k = satKeyOf(e)
+        if (!k || seen.has(k)) continue
+        seen.add(k); entries.push(e); keys.push(k)
+      }
+    }
+    add(renderEntries); add(treeGeoList); for (const l of cc) add(l); add(searchPool); add(ephAll)
+    return { entries, keys, missing: [], natural: false }
+  })
+}
+// 卫星天线树：虚拟星（合成号）+ 关联星（与树联动同一条解析路：在场 → 全量池 → 点序列 → 自定义星座），按树序；解不出的关联星留着灰显
+function lnkTreeSet() {
+  const ms = treeSetMembers(grdSats.value, treeGeoIdMap.value)
+  const sig = ms.map((m) => m.id + '|' + m.name).join('\n')
+  return lnkMemo(TREE_SET, [sig, treeGeoList, resolverVer.value], () => {
+    const entries = [], missing = []
+    for (const m of ms) {
+      const e = m.virtual ? (treeGeoById.get(m.id) || null) : liveEntryOf(m.id)
+      if (e) entries.push(e)
+      else if (!m.virtual) missing.push({ id: m.id, name: m.name })
+    }
+    return { entries, missing, natural: true }
+  })
+}
+// 内置星座：加载过（图上开着 / 开过）的用该组条目；没加载过的按名录（会话缓存）到全量池按号取条目 —— 不为它另建一份 satrec、不往渲染集里加。剔除的成员不列
+async function lnkBuiltinSet(id) {
+  const key = id.slice(2), hid = satSets.hiddenOf(id), hs = [...hid].sort().join(',')
+  const loaded = groupEntries.get(key)
+  if (loaded) return lnkMemo(id, [loaded, hs], () => ({ entries: hid.size ? loaded.filter((e) => !hid.has(String(e.noradId))) : loaded, missing: [], natural: false }))
+  const roster = await grpSatList(key)
+  if (apiOk) await ensureSearchPool()
+  return lnkMemo(id, [roster, searchPool, hs], () => {
+    const entries = [], missing = []
+    for (const it of roster) {
+      if (hid.has(String(it.id))) continue
+      const e = liveEntryOf(it.id)
+      if (e) entries.push(e); else missing.push({ id: it.id, name: it.name })
+    }
+    return { entries, missing, natural: false }
+  })
+}
+// 卫星组：成员按 NORAD 解（天线树虚拟星按合成号认树上的活条目），组内次序；解不出的留着灰显（已离轨 / 不在当前星历）
+async function lnkGroupSet(id) {
+  const g = satGroups.find(id.slice(2))
+  if (!g) return null
+  if (apiOk && g.sats.some((s) => !isTreeGeoId(String(s.id)))) await ensureSearchPool()
+  return lnkMemo(id, [g.sats, g.sats.length, searchPool, treeGeoList, resolverVer.value], () => {
+    const entries = [], missing = []
+    for (const s of g.sats) {
+      const nid = String(s.id)
+      const e = isTreeGeoId(nid) ? (treeGeoById.get(nid) || null) : liveEntryOf(nid)
+      if (e) entries.push(e)
+      else if (!isTreeGeoId(nid)) missing.push({ id: nid, name: s.name })
+    }
+    return { entries, missing, natural: true }
+  })
+}
+// 导入星历：gp 组按该组记录建的条目、点序列组按采样表（ensureImportEntries 自带缓存）；剔除的成员不列
+async function lnkImportSet(id) {
+  const list = await ensureImportEntries(id.slice(2))
+  const hid = satSets.hiddenOf(id), hs = [...hid].sort().join(',')
+  return lnkMemo(id, [list, hs], () => ({
+    entries: hid.size ? list.filter((e) => !hid.has(String(e.noradId)) && !(e.key != null && hid.has(String(e.key)))) : list,
+    missing: [], natural: false
+  }))
+}
+// 自定义星座：合成星（含隐藏的座），按轨道面次序
+function lnkCustomSet(id) {
+  const c = customConst.list.value.find((x) => x.id === id.slice(2))
+  if (!c) return null
+  const list = customConst.satsOf(c.id)
+  return lnkMemo(id, [list], () => ({ entries: list, missing: [], natural: true }))
+}
+async function lnkSetEntries(id) {
+  if (id === '*') {
+    if (apiOk) await ensureSearchPool()
+    // 点序列导入组不进全量目录：没载过表的都载上（ephemEntriesOf 自带缓存；载完 ephAll 换代 → 本集重建）
+    const eg = importGroups.value.filter((g) => g.kind === 'ephem' && !ephTables.has(g.id))
+    if (eg.length) await Promise.all(eg.map((g) => ephemEntriesOf(g.id)))
+    return lnkAllSet()
+  }
+  if (id === '@') return lnkSceneSet()
+  if (id === TREE_SET) {
+    if (grdSats.value.some(isTreeLinkedNode)) await awaitLinkEph()   // 关联星要全量池 / 点序列表就绪才解得全
+    return lnkTreeSet()
+  }
+  const k = id[0]
+  if (k === 'g') return lnkBuiltinSet(id)
+  if (k === 's') return lnkGroupSet(id)
+  if (k === 'i') return lnkImportSet(id)
+  if (k === 'c') return lnkCustomSet(id)
+  return null
+}
+// 卫星集清单：全部卫星 · 当前显示，其后与星座侧栏「卫星集」同一张表、同一个次序（内置「全部卫星」由第一行涵盖，不重复列）。
+// lit = 名字是界面词（跟界面语言走）；用户改过名的内置星座、卫星组 / 导入 / 自定义星座的名字不翻。tip = 悬停说明（集的类别）
+const LNK_SET_TIP = { tree: '卫星天线树', builtin: '内置星座', group: '卫星组', import: '导入星历', custom: '自定义星座' }
+function lnkSetList() {
+  const out = [
+    { id: '*', kind: 'all', name: '全部卫星', lit: true, count: poolReady ? lnkAllSet().entries.length : '', icon: 'globe', tip: '全量目录、天线树、自定义星座与导入星历中的全部卫星' },
+    { id: '@', kind: 'scene', name: '当前显示', lit: true, count: lnkSceneSet().entries.length, icon: 'eye', tip: '地图上当前显示的卫星' }
+  ]
+  for (const r of setRows.value) {
+    if (r.id === 'g:all') continue
+    out.push({ id: r.id, kind: r.kind, name: r.name, lit: r.kind === 'tree' || (r.kind === 'builtin' && !satSets.nameOf(r.id)), count: r.count, icon: r.icon, tip: LNK_SET_TIP[r.kind] || '' })
+  }
+  return out
+}
+// 身份键 → 节点（选择器的条目表换代后按键补查；解不出也照样给节点，星历到了就解得出）
+function lnkSatKeyNode(key, name) {
+  const e = key ? linkSatEntry(key) : null
+  if (e) return linkSatNode(e)
+  return key ? { k: 'sat', key, name: displaySatName(name || '') || key } : null
+}
+async function lnkCities(q) {
+  const api = window.api && window.api.linkBudget
+  if (!api || !api.searchCities) return []
+  const r = await api.searchCities(q)
+  return Array.isArray(r) ? r : []
+}
+// 航迹行的副标题：类型 · 航点数（· 出发—到达，排得出时刻才有）
+function lnkTrajSub(t) {
+  const n = Array.isArray(t.pts) ? t.pts.filter((p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon)).length : 0
+  const s = byLang(t.kind === 'flight' ? '飞行' : '航行', t.kind === 'flight' ? 'Flight' : 'Sea') + ' · ' + byLang(`${n} 个航点`, `${n} WP`)
+  const tm = tmOf(t)
+  if (!tm || !tm.moving) return s
+  const a = tzParts(Math.round(tm.depMs), tzMode.value), hm = (p) => pad2(p.h) + ':' + pad2(p.mi)
+  return s + ' · ' + hm(a) + '→' + hm(tzParts(Math.round(tm.arrMs), tzMode.value))
+}
+const lnkSrc = createLinkPickSource({
+  stations: () => stations.value,
+  points: () => points.value,
+  trajectories: () => trajectories.value,
+  polygons: () => polys.value,
+  areaNode: (k, id) => lnk.areaNode(k, id),
+  nodeEnds: (n) => lnk.nodeEnds(n, calcAt().getTime()),
+  trajSub: lnkTrajSub,
+  nodePos: (n) => lnk.nodePos(n, calcAt().getTime()),
+  satPool: lnkSatPool,
+  setList: lnkSetList,
+  setEntries: lnkSetEntries,
+  satKeyOf: (e) => satKeyOf(e),
+  satMeta: lnkSatMeta,
+  satNode: linkSatNode,
+  satKeyNode: lnkSatKeyNode,
+  satEcef: lnkEntryEcef,
+  nowMs: () => calcAt().getTime(),
+  cities: lnkCities,
+  minEl: () => Number(lnkStyle.minEl) || 0,
+  fmtLL
+})
+const lnkRep = ref(-1)        // 正在就地替换的节点下标（-1 = 没有）
+let _lnkSlotPk = null         // 插入光标那一位的选择器实例（视图里发起的动作把焦点交给它）
+function lnkSlotRef(c) { _lnkSlotPk = c || null }
+function lnkFocusSlot() { setSecOpen('lk-insp', true); nextTick(() => { if (_lnkSlotPk) _lnkSlotPk.focus() }) }
+const lnkCurSel = computed(() => (lnkSel.value ? lnk.cursorOf(lnkSel.value.id) : -1))
+function lnkRepToggle(i) { lnkRep.value = lnkRep.value === i ? -1 : i; if (lnkRep.value >= 0) lnk.closePick() }
+// 取点编辑器（Polygon / 航迹节点行下就地展开）：与「更换节点」互斥；开 / 关 / 改都要重推一拍（图上候选点层跟着变）
+function lnkPickToggle(i) {
+  const l = lnkSel.value
+  if (!l) return
+  lnkRep.value = -1
+  lnk.togglePick(l.id, i)
+  pushLinks()
+}
+function lnkPickClose() { if (lnk.pickEd.value) { lnk.closePick(); lnkCandHov.value = false; pushLinks() } }
+// 编辑器开着的那个节点没了（节点删了 / 「取消」换了一批节点）或它的 Polygon / 航迹删了：编辑器随之收起
+watch(() => !!lnk.pickEd.value && !lnk.pickCur(), (gone) => { if (gone) lnkPickClose() })
+const lnkPickOpenAt = (i) => !!lnk.pickEd.value && !!lnkSel.value && lnk.pickEd.value.id === lnkSel.value.id && lnk.pickIdx() === i
+// 编辑链路（插入态 / 就地替换）属于「链路分析」这个视图：真切到别的视图就收尾，同「完成」—— 已插的节点留着，新建不足两个节点的整条丢掉。
+// 盯 sideCtx 不盯 shellUi.side：收起侧栏只是把面板藏起来，不算离开（同波束合成站点栅编辑态的口径）。
+// 右键「从此站 / 此卫星新建链路」会先把视图切到这里（lnkEnterDraw），不会被这条收掉
+watch(() => sideCtx(), (cur, prev) => {
+  if (prev !== 'links' || cur === 'links') return
+  lnkRep.value = -1
+  lnkPickClose()
+  if (lnk.draw.value) lnkFinish()
+})
+// 离开本页（整页切到链路预算 / 设置等）：同样收尾，免得新建到一半的链路（节点不足两个）留在存档里。
+// 早于页面主卸载钩子登记 → 场景还在；commit 先同步落盘（localStorage）再推图，推图出错也不丢数据
+onBeforeUnmount(() => { if (lnk.draw.value) { try { lnkFinish() } catch { /* ignore */ } } })
+// 插入位 / 替换位的两侧（替换时 cur = 被换的那个）与签名（两侧节点 · 门限 · 站点数：变了选择器才重算候选）
+const lnkNodeSig = (n) => (n ? n.k + ':' + (n.k === 'sat' ? n.key : n.id) : '-')
+function lnkSlotOf(l, at, rep) {
+  const ns = l.nodes, prev = ns[at - 1] || null, next = (rep ? ns[at + 1] : ns[at]) || null, cur = rep ? (ns[at] || null) : null
+  return {
+    nbrs: { prev, next, cur },
+    sig: [l.id, (rep ? 'r' : 'i') + at, lnkNodeSig(prev), lnkNodeSig(next), lnkNodeSig(cur), lnkStyle.minEl, stations.value.length, points.value.length, trajectories.value.length, polys.value.length,
+      JSON.stringify((prev && prev.pick) || null), JSON.stringify((next && next.pick) || null)].join('|')   // 邻居是 Polygon / 航迹时它的取点变了，候选星的读数（对全部代表点的最差）跟着变
+  }
+}
+// 竖链的行：节点 / 跳 / 插入光标 / 替换，各有稳定的 key。光标行的 key 恒为 'slot'：选中后光标后移，
+// 新节点行插在它前面、它自己不挪窝 —— 检索框的焦点与已打的字都不丢（挪位置会让浏览器先失焦）
+const lnkRows = computed(() => {
+  const l = lnkSel.value
+  if (!l) return []
+  const ns = l.nodes, at = lnk.cursorOf(l.id), rep = lnkRep.value
+  const pk = lnk.pickEd.value && lnk.pickEd.value.id === l.id ? lnk.pickIdx() : -1
+  const cnt = new Map()
+  const keys = ns.map((n) => { const b = lnkNodeSig(n), c = (cnt.get(b) || 0) + 1; cnt.set(b, c); return b + '#' + c })
+  const rows = []
+  for (let i = 0; i <= ns.length; i++) {
+    if (i === at) rows.push({ t: 'slot', key: 'slot', at: i, ...lnkSlotOf(l, i, false) })
+    if (i === ns.length) break
+    rows.push({ t: 'node', key: 'n:' + keys[i], i })
+    if (i === rep) rows.push({ t: 'rep', key: 'rep:' + keys[i], at: i, ...lnkSlotOf(l, i, true) })
+    if (i === pk) rows.push({ t: 'pick', key: 'pk:' + keys[i], i })
+    if (i < ns.length - 1 && at !== i + 1) rows.push({ t: 'hop', key: 'h:' + keys[i] + '>' + keys[i + 1], i })
+  }
+  return rows
+})
+// 取点编辑器的内容（族统计 + 全部候选点）：节点的取点 / 对象几何变了才重算；载具行的此刻位置走逐拍读数（lnkCandRead），不在这里
+const lnkPickView = computed(() => {
+  void lnk.pickEd.value; void links.value
+  const c = lnk.pickCur()
+  if (!c) return null
+  const { n, o } = c, k = n.k
+  const pc = lnk.pickCands(calcAt().getTime())
+  const st = (fam) => pickFamStat(k, o, n.pick, fam)
+  return {
+    kind: k, flight: k === 'tj' && o.kind === 'flight',
+    cands: pc ? pc.list : [],
+    stats: { one: st(k === 'pg' ? 'c' : 'veh'), many: st(k === 'pg' ? 'v' : 'w'), d: st('d') }
+  }
+})
+// 编辑器点表的逐拍读数（只在编辑器这个小组件里读 lnk.read：每拍只重画它，不带整页）
+function lnkCandRead(key) {
+  const l = lnkSel.value, r = l ? lnk.read.value.get(l.id) : null
+  return (r && r.cand && r.cand.map.get(key)) || null
+}
+function lnkPickHov(key) { if (lnk.pickHi.value !== key) { lnk.pickHi.value = key; pushLinks() } }
+function lnkPickKey(key) { lnk.pickKey(key); pushLinks() }
+function lnkPickFam(fam, on) { lnk.pickFam(fam, on); pushLinks() }
+function lnkPickDiv(n) { lnk.pickDiv(n); pushLinks() }
+// 航点 / 等分点的时刻：时间轴跳过去（同「跳到时刻」：落锚点与时刻）
+function lnkPickSeek(ms) { if (Number.isFinite(ms)) reanchorAt(ms) }
+const lnkFmtAlt = (m) => Math.round(Number(m) || 0).toLocaleString('en-US') + ' m'
+const lnkFmtTime = (ms) => { const p = tzParts(Math.round(ms), tzMode.value); return pad2(p.mo) + '-' + pad2(p.d) + ' ' + pad2(p.h) + ':' + pad2(p.mi) }
+// 条目 → 节点：城市库条目先在该处新建一座地球站（名 = 城市名，同标记栏「添加」），再引用它
+function lnkItemNode(it) {
+  if (!it) return null
+  if (it.kind !== 'city') return lnkSrc.nodeOf(it)
+  const ll = it.ll
+  if (!ll || !validLat(ll.lat) || !validLon(ll.lon)) return null
+  const s = { id: newId(), lat: ll.lat, lon: ll.lon, name: String(it.name || '').trim() || '地球站' }
+  stations.value.push(s)
+  syncMarkers()
+  return { k: 'st', id: s.id }
+}
+function lnkPickIns(it) {
+  const d = lnk.draw.value, l = d ? lnk.linkOf(d.id) : null
+  if (!l || !it) return
+  if (l.nodes.length >= LINK_NODES_MAX) { lnkSay('节点数已达上限'); return }   // 城市条目会先建站：满了就别建
+  const node = lnkItemNode(it)
+  if (!node) return
+  const why = lnk.addNode(node)
+  if (why) lnkSay(why)
+}
+function lnkPickRep(i, it) {
+  const l = lnkSel.value
+  lnkRep.value = -1
+  if (!l || !it || it.cur) return
+  const node = lnkItemNode(it)
+  if (!node) return
+  const why = lnk.replaceNode(l.id, i, node)
+  if (why) lnkSay(why)
+}
+// 悬停 / 键盘停留的候选：图上预览它放进去之后的两跳（虚线），地球站 / 点标记再套一枚高亮环（同拖放落点那一枚）
+function lnkPickHover(it, at, rep) {
+  const l = lnkSel.value
+  let pv = null
+  if (it && l) pv = it.kind === 'city' ? { id: l.id, at, rep, ll: it.ll } : { id: l.id, at, rep, node: lnkSrc.nodeOf(it) }
+  lnk.preview.value = pv && (pv.node || pv.ll) ? pv : null
+  // 高亮环：地球站 / 点标记套在符号上，航迹套在载具上（Polygon 没有符号，靠虚线预览认）
+  const hl = !it || !it.node ? null : it.kind === 'st' ? { kind: 'station', id: it.node.id } : it.kind === 'pt' ? { kind: 'point', id: it.node.id } : it.kind === 'tj' ? { kind: 'vehicle', id: it.node.id } : null
+  mdlHighlight(hl)
+  pushLinks()
+}
+function lnkNodeName(n) {
+  if (n.k === 'st') { const s = stations.value.find((x) => x.id === n.id); return s ? (s.name || '') : byLang('（地球站已删除）', '(station deleted)') }
+  if (n.k === 'pt') { const p = lnk.nodeName(n); return p || byLang('（点标记已删除）', '(point deleted)') }
+  if (n.k === 'pg') { const o = polys.value.find((x) => x.id === n.id); return o ? (String(o.name || '').trim() || 'Polygon') : byLang('（Polygon 已删除）', '(polygon deleted)') }
+  if (n.k === 'tj') { const o = trajectories.value.find((x) => x.id === n.id); return o ? (String(o.name || '').trim() || byLang('航迹', 'Track')) : byLang('（航迹已删除）', '(track deleted)') }
+  return n.name || n.key
+}
+const lnkNodeObj = (n) => (n.k === 'pg' ? polys.value.find((x) => x.id === n.id) : n.k === 'tj' ? trajectories.value.find((x) => x.id === n.id) : null) || null
+const lnkNodeBad = (n) => (n.k === 'st' && !stations.value.some((s) => s.id === n.id)) || (n.k === 'pt' && !points.value.some((p) => p.id === n.id)) ||
+  (isAreaNode(n) && !lnkNodeObj(n))
+function lnkNodeIcon(n) {
+  if (n.k === 'st') return 'satellite-dish'
+  if (n.k === 'pt') return 'map-pin'
+  if (n.k === 'pg') return 'hexagon'
+  if (n.k === 'tj') { const o = lnkNodeObj(n); return o && o.kind === 'flight' ? 'plane' : 'ship' }
+  return 'satellite'
+}
+// 取点钮上的摘要：质心 · 顶点 3/6 · 边界 8 / 载具 · 航点 12 · 沿迹 8；一个点都没取 =「未选点」
+function lnkPickSummary(n) {
+  const o = lnkNodeObj(n)
+  if (!o) return '—'
+  const pg = n.k === 'pg', out = []
+  const one = pickFamStat(n.k, o, n.pick, pg ? 'c' : 'veh'), many = pickFamStat(n.k, o, n.pick, pg ? 'v' : 'w'), d = pickFamStat(n.k, o, n.pick, 'd')
+  const kn = (s) => (s.k < s.n ? s.k + '/' + s.n : String(s.n))
+  if (one.on) out.push(pg ? byLang('质心', 'Centroid') : byLang('载具', 'Vehicle'))
+  if (many.on) out.push((pg ? byLang('顶点 ', 'Vertices ') : byLang('航点 ', 'WP ')) + kn(many))
+  if (d.on) out.push((pg ? byLang('边界 ', 'Edge ') : byLang('沿迹 ', 'Track ')) + kn(d))
+  return out.length ? out.join(' · ') : byLang('未选点', 'No points')
+}
+const lnkPickN = (n) => { const o = lnkNodeObj(n); return o ? linkPickCount(n.k, o, n.pick) : 0 }
+// 转发方式锁定：链端卫星、激光跳两端恒按再生
+const lnkRegenLock = (l, i) => lnkEnd(l, i) || satLaserAt(l, i)
+// 站节点的属性读数：口径 · 天线罩（没带的不出）
+function lnkStAttr(n) {
+  const s = n.k === 'st' ? stations.value.find((x) => x.id === n.id) : null
+  if (!s) return ''
+  const out = []
+  if (Number.isFinite(s.diaM)) out.push(s.diaM + ' m')
+  if (s.radome === true) out.push(byLang('天线罩', 'Radome'))
+  if (okPwrW(s.pwrW)) out.push(s.pwrW + ' W')
+  return out.join(' · ')
+}
+// 点站节点的属性读数 = 打开「地球站属性」（口径 / 天线罩 / 功放功率随链路导入，在这里就地改）
+function lnkStProps(n) {
+  const s = n && n.k === 'st' ? stations.value.find((x) => x.id === n.id) : null
+  if (s) openStationDlg({ id: s.id, lat: s.lat, lon: s.lon })
+}
+const lnkEnd = (l, i) => i === 0 || i === l.nodes.length - 1
+const lnkIsl = (l, i) => { const a = l.nodes[i], b = l.nodes[i + 1]; return !!a && !!b && a.k === 'sat' && b.k === 'sat' }
+const lnkHopText = (l, i) => { const k = hopKind(l.nodes[i], l.nodes[i + 1]); return k ? HOP_TEXT[k] : byLang('无效', 'Invalid') }
+const lnkCheckedN = computed(() => lnk.checked.value.size)
+const lnkAllChecked = computed(() => links.value.length > 0 && links.value.every((l) => lnk.checked.value.has(l.id)))
+// 可导入模块读数（选中那条）
+const LNK_TARGET_NAMES = { linkbudget: 'GSO', ngso: 'NGSO', regen: '再生式', e2e: '端到端' }
+// 支路数（导入时这条链路展开成几行 / 几条链）= 各 Polygon / 航迹节点取到的点数之积
+function lnkStrands(l) { let n = 1; for (const x of (l ? l.nodes : [])) if (isAreaNode(x)) n *= lnkPickN(x); return n }
+function lnkTargetsText(l) {
+  const t = linkTargets(l, { hasStation: (id) => stations.value.some((s) => s.id === id), hasPoint: (id) => points.value.some((p) => p.id === id), satOk: (n) => !!n.key, area: lnkNodeObj })
+  const out = Object.keys(LNK_TARGET_NAMES).filter((k) => t[k]).map((k) => byLang(LNK_TARGET_NAMES[k], k === 'regen' ? 'Regen' : k === 'e2e' ? 'E2E' : LNK_TARGET_NAMES[k]))
+  return out.length ? out.join(' · ') : '—'
+}
+function lnkReverse() { const l = lnkSel.value; if (l) lnk.reverse(l.id) }
+function lnkResetStyle() { for (const k of Object.keys(LINK_STYLE_DEF)) lnkStyle[k] = LINK_STYLE_DEF[k]; pushLinks() }
+// 读数小组件：每拍的仰角 / 斜距与状态色点只在这里读 lnk.read，不让整页跟着每拍重渲染（同 VehReadTxt）；距离读数 fmtKm 与选择器同一份（linkGeom）
+// 多点束（Polygon / 航迹节点那一跳）：「最低–最高仰角 · 可见数/总数」，title 报最差点与斜距范围
+const LinkHopTxt = defineComponent({
+  props: { id: { type: String, required: true }, i: { type: Number, required: true } },
+  setup: (p) => () => {
+    const r = lnk.read.value.get(p.id), h = r && r.hops[p.i]
+    if (!h || h.miss || !Number.isFinite(h.rangeKm)) return hVnode('span', { class: 'lk-rd' }, '—')
+    if (h.n > 1) {
+      const el = Number.isFinite(h.el) ? (Number.isFinite(h.elMax) && h.elMax - h.el >= 0.05 ? h.el.toFixed(1) + '–' + h.elMax.toFixed(1) : h.el.toFixed(1)) + '° · ' : ''
+      const l = lnkSel.value && lnkSel.value.id === p.id ? lnkSel.value : lnk.linkOf(p.id)
+      const wn = h.worst && l ? lnkWorstLabel(l, p.i, h.worst) : ''
+      const title = [
+        wn ? byLang('最低仰角 ', 'Lowest elevation ') + (Number.isFinite(h.el) ? h.el.toFixed(2) + '°' : '—') + byLang('（' + wn + '）', ' (' + wn + ')') : '',
+        byLang('斜距 ', 'Slant range ') + fmtKm(h.rMin) + ' – ' + fmtKm(h.rMax),
+        byLang(`${h.visN}/${h.n} 条此刻可见`, `${h.visN}/${h.n} visible now`)
+      ].filter(Boolean).join(' · ')
+      return hVnode('span', { class: ['lk-rd', h.vis ? '' : 'off'], title, 'data-i18n-skip': '' }, el + h.visN + '/' + h.n)
+    }
+    const txt = (Number.isFinite(h.el) ? h.el.toFixed(1) + '° · ' : '') + fmtKm(h.rangeKm)
+    return hVnode('span', { class: ['lk-rd', h.vis ? '' : 'off'], title: h.vis ? '' : byLang('此刻不可见', 'Not visible now') }, txt)
+  }
+})
+// 一束子跳里最差那个代表点的名字（跳 i 的哪一端是多点节点就按那一端的类型叫）
+function lnkWorstLabel(l, i, c) {
+  const a = l.nodes[i], b = l.nodes[i + 1]
+  const k = a && isAreaNode(a) ? a.k : (b && isAreaNode(b) ? b.k : '')
+  return k ? linkPointLabel(k, c) : ''
+}
+const LinkStateDot = defineComponent({
+  props: { id: { type: String, required: true } },
+  setup: (p) => () => {
+    const r = lnk.read.value.get(p.id)
+    const st = r ? r.state : 'bad'
+    const why = r && r.issues && r.issues.length ? (ISSUE_TEXT[r.issues[0].code] || '') : ''
+    const title = st === 'ok' ? byLang('各跳此刻可见', 'All hops visible now') : st === 'part' ? byLang('有跳此刻不可见', 'Some hops not visible now') : why
+    return hVnode('span', { class: ['lk-dot', st], title })
+  }
+})
+// ---- 推送导入：勾选的链路 → 所选链路预算窗口（tool:open，接收端 importChains 只追加）----
+const lnkImpMenu = ref(null)   // { x, y }：「导入链路预算」下拉
+const lnkImpCounts = computed(() => { void links.value; void lnk.checked.value; void polys.value; void trajectories.value; return lnk.targetCounts() })
+// 菜单行尾计数：链路条数；有 Polygon / 航迹节点展开成多条支路时报「条数 / 支路数」（导入的行数按支路算）
+const lnkImpTxt = (k) => { const c = lnkImpCounts.value, n = c[k], m = c.rows ? c.rows[k] : n; return m > n ? n + ' / ' + m : String(n) }
+const lnkImpTitle = computed(() => { const c = lnkImpCounts.value; return Object.keys(c.rows || {}).some((k) => c.rows[k] > c[k]) ? byLang('链路条数 / 支路数', 'Links / strands') : '' })
+function openLnkImpMenu(ev) {
+  if (!lnkCheckedN.value) return
+  const r = ev.currentTarget.getBoundingClientRect()
+  lnkImpMenu.value = { x: r.left, y: r.bottom + 2 }
+}
+// Esc 关地图右键菜单（连同「分析 ▸」二级）/「导入链路预算」下拉（同 onExpEsc）：捕获阶段截住 —— 一次 Esc 只关最上一层，
+// 不顺带取消建链 / 退出跟随（建链键位见到菜单开着本就不接，onLinkKey）；输入法组字中的 Esc 归输入法
+function onCtxEsc(e) {
+  if (e.key !== 'Escape' || e.isComposing) return
+  e.preventDefault(); e.stopPropagation()
+  if (ctxMenu.value) closeCtx()
+  lnkImpMenu.value = null
+}
+watch(() => !!(ctxMenu.value || lnkImpMenu.value), (open) => {
+  if (open) window.addEventListener('keydown', onCtxEsc, true)
+  else window.removeEventListener('keydown', onCtxEsc, true)
+})
+onBeforeUnmount(() => window.removeEventListener('keydown', onCtxEsc, true))
+function lnkImport(kind) {
+  lnkImpMenu.value = null
+  const { list } = lnk.payloads(kind)
+  if (!list.length) return
+  const tools = window.api && window.api.tools
+  if (!tools) return
+  try {
+    const r = tools.open(kind, JSON.parse(JSON.stringify({ links: list })))
+    if (r && r.catch) r.catch(() => {})
+  } catch { /* ignore */ }
+}
 // 新建一条轨迹并进入描绘态（之后连续右键加点，由顶部横幅「结束」收尾）
 function ctxStartTraj(kind) { newTraj(kind); const ll = ctxLL(); if (ll) { const t = curTraj(); if (t) { t.pts.push({ lat: ll.lat, lon: ll.lon }); syncMarkers() } } closeCtx() }
-// 结束描绘：与 polyDone/polyCancel 同口径——空航迹（0 点）直接丢弃，不留空卡片
+// 结束描绘：与 polyDone/polyCancel 同口径——空航迹（0 点）直接丢弃，不留空卡片；
+// 画成了线却还没定时间 → 卡片的「时间」随之展开（画完下一步就是定时间）
 function endTraj() {
   const t = curTraj()
   if (t && (!t.pts || !t.pts.length)) removeTraj(t.id)
+  else if (t) { const tm = trajTiming(t); if (tm.L > 0 && !tm.moving) openMot(t.id) }
   activeTraj.value = ''
 }
 // 右键处开始绘制 Polygon：新建多边形并落第一个顶点（与 ctxStartTraj 同款，之后右键/左键拖动连续加点，横幅「完成」闭合）
@@ -8390,6 +10191,13 @@ function ctxClearPolys() {
   for (const pg of polys.value) pg.show = false
   polyRefresh(); closeCtx()
 }
+// 隐藏所有链路（不删除）：同上口径，可在「链路分析」列表逐条重新打开。正在插入 / 替换节点的先收尾（同离开该视图：
+// 已插的节点留着，新建不足两个节点的整条丢）
+function ctxHideLinks() {
+  lnkRep.value = -1
+  if (lnk.draw.value) lnkFinish()
+  lnk.hideAll(); closeCtx()
+}
 function clearAllCoverage() { if (covApiOk) clearCoverage(); if (grdApiOk) grd.clearDrawing(); closeCtx() }
 // 清除壳层覆盖：与对星面板「清除绘图」同口径 —— 只取消勾选的天线（壳层上的填充/等值线/波束射线随之
 // 消失），壳层库、参照网与各天线设置一概保留。参照网不随之撤（它由壳层的 show 决定），要撤走下一条。
@@ -8405,6 +10213,8 @@ function ctxSetLandColor() {
   shellUi.side = 'geo'
   pickLandCountry(c)
 }
+// 直达侧栏视图（地图综合设置 / 卫星聚焦特效设置）：与活动栏同一个 side；已停在该视图不收起，侧栏收着则随之展开
+function ctxOpenSide(view) { closeCtx(); shellUi.side = view }
 // 推给两个渲染器的整层样式（渲染器只认屏幕 px 与 CSS 色串；逐条覆盖在载荷里逐条带）
 const markSizes = () => ({
   ptShape: markStyle.ptShape, ptColor: markStyle.ptColor, ptOpacity: markStyle.ptOpacity, ptDot: markStyle.ptDot,
@@ -8440,9 +10250,9 @@ const mkShown = (o) => !!o && o.show !== false
 const ptLabelText = (p) => [markStyle.ptNameOn ? String(p.name || '').trim() : '', markStyle.ptLabelOn ? fmtLL(p.lat, p.lon) : ''].filter(Boolean).join('  ')
 const markerPts = () => {
   if (!showPtLayer.value) return []
-  const eo = entIconsOn(), m2 = !!focusStyle.modelOn, px = entIconPxOf('point')
+  const eo = entIconsOn(), m2 = !!focusStyle.modelOn, px = entIconPxOf('point'), fs = focusSnapAt(calcAt())
   return points.value.map((p, i) => ({ p, i })).filter(({ p }) => mkShown(p) && finLL(p)).map(({ p, i }) => {
-    const o = { id: p.id, lat: p.lat, lon: p.lon, idx: markStyle.ptIdxOn ? String(i + 1) : '', label: ptLabelText(p), el: fmtElev(p.lat, p.lon), color: p.color || '' }
+    const o = { id: p.id, lat: p.lat, lon: p.lon, idx: markStyle.ptIdxOn ? String(i + 1) : '', label: ptLabelText(p), el: focusElevText(p.lat, p.lon, fs), color: p.color || '' }
     if (eo && p.model) o.iconPx = px
     if (m2 && p.model) o.m2d = { id: p.model.id, px }
     return o
@@ -8451,8 +10261,9 @@ const markerPts = () => {
 const markerSts = () => {
   if (!showStLayer.value) return []
   const eo = entIconsOn(), m2 = !!focusStyle.modelOn, px = entIconPxOf('station')
+  const now = calcAt(), fs = focusSnapAt(now), tMs = now.getTime(), trkEcef = new Map()
   return stations.value.filter((s) => mkShown(s) && finLL(s)).map((s) => {
-    const o = { id: s.id, lat: s.lat, lon: s.lon, name: markStyle.stLabelOn ? s.name : '', el: stElevLabel(s) }
+    const o = { id: s.id, lat: s.lat, lon: s.lon, name: markStyle.stLabelOn ? s.name : '', el: stElevLabel(s, fs, tMs, trkEcef) }
     if (eo && s.model) o.iconPx = px
     if (m2 && s.model) o.m2d = { id: s.model.id, px }
     return o
@@ -8473,28 +10284,46 @@ const markerTrs = () => {
       dotColor: own != null ? own : hexNum(fl ? markStyle.tjDotFlight : markStyle.tjDotSea),
       iconColor: own != null ? own : hexNum(fl ? markStyle.tjIconFlight : markStyle.tjIconSea)
     }
-    const line = trajLineOf(t)
+    const sig = trajSig(t)
+    const line = trajLineOf(t, sig)
     if (line) { o.moving = true; o.line = line }
     // 飞行航迹带实际高度（只有 3D 用：scene.setTrajectories 按它抬线 / 航点 / 航迹头；平面图不认这三个键）
-    if (fl) { const h = traj3Of(t); if (h) { o.line3 = h.line3; o.ptAlts = h.ptAlts; o.headAltM = h.headAltM } }
+    if (fl) { const h = traj3Of(t, sig); if (h) { o.line3 = h.line3; o.ptAlts = h.ptAlts; o.headAltM = h.headAltM } }
     if (eo && t.model) o.iconPx = px
     if (m2 && t.model) o.m2d = { id: t.model.id, px }   // 平面图：航迹头画这件模型的俯视图（航迹图标开关关着就不画）
     return o
   })
 }
-// 飞行航迹的 3D 高度载荷（按编辑版本缓存：pushMarkers 清空、markerTrs 懒算 —— markerTrs 每拍都跑，剖面不重复算）：
+// 航迹内容签名：大圆加密线、实际高度载荷只取决于这些字段（trajKinematics / trajLinePts 读到的全部）。
+// 两个缓存按它判新旧 —— pushMarkers 在选星、拖样式滑块、拖标记时都会整份重推，内容没变就直接复用
+//（原来每次推都清空重算，几千航点的飞行航迹每次都要重跑剖面）
+function trajSig(t) {
+  const r = toRaw(t), m = r.model
+  let s = `${r.kind}|${r.t0Ms}|${r.speedKmh}|${r.cruiseAltM}|${r.climbRateMs}|${r.glideDeg}|${m && typeof m === 'object' ? m.id : ''}`
+  for (const p of r.pts || []) s += p ? `;${p.lat},${p.lon},${p.altM},${p.tMs}` : ';'
+  return s
+}
+// 航迹删了：缓存里它那一项跟着清（推标记时顺带做）
+function pruneTrajCaches() {
+  if (!trajLineCache.size && !traj3Cache.size) return
+  const ids = new Set(trajectories.value.map((t) => t.id))
+  for (const k of [...trajLineCache.keys()]) if (!ids.has(k)) trajLineCache.delete(k)
+  for (const k of [...traj3Cache.keys()]) if (!ids.has(k)) traj3Cache.delete(k)
+}
+// 飞行航迹的 3D 高度载荷（按内容签名缓存，markerTrs 懒算）：
 //   line3 = 带实际高度的线（trajLine3：大圆加密 + 爬升顶点 / 下降起点等拐点），ptAlts = 各有效航点实际高度（与 finLL 过滤后的 pts 对齐），
 //   headAltM = 航迹头（末航点）高度 —— 静止档载具停在那里；运动档由 feedEntities 每拍按时刻给
-const traj3Cache = new Map()
-function traj3Of(t) {
-  if (traj3Cache.has(t.id)) return traj3Cache.get(t.id)
+const traj3Cache = new Map()         // 航迹 id → { sig, h }
+function traj3Of(t, sig = trajSig(t)) {
+  const c = traj3Cache.get(t.id)
+  if (c && c.sig === sig) return c.h
   let h = null
   try {
     const raw = toRaw(t), info = trajWaypointInfo(raw), line3 = trajLine3(raw)
     const ptAlts = info.filter(Boolean).map((e) => e.altM)
     if (line3.length > 1 && ptAlts.length) h = { line3, ptAlts, headAltM: ptAlts[ptAlts.length - 1] }
   } catch { h = null }
-  traj3Cache.set(t.id, h)
+  traj3Cache.set(t.id, { sig, h })
   return h
 }
 // #rrggbb → 数值；空/非法 → null（逐条覆盖「没设」与「设成黑色」要分得开）
@@ -8511,13 +10340,15 @@ function markDragKinds() {
     waypoint: (showTrajLayer.value && tid) ? tid : false
   }
 }
+// 两个渲染器手里那一份点 / 站载荷的签名：pushMarkers 每次整份推都记下，pushMarkerLabels 据此跳过一字未变的那几拍
+let _mkSig = ''
 // 仅把标记推送到两个视图（含聚焦卫星仰角），不写入持久化；编辑 / 选星 / 改样式时整份重推（航迹组整组重建）。
 // 每拍刷新仰角走 pushMarkerLabels（不重建航迹组）；运动档载具与实体模型在末尾 feedEntitiesNow 按当前时刻补一拍
 function pushMarkers() {
   if (!scene) return
-  trajLineCache.clear()   // 航迹可能改过：大圆加密线按这一版重算（markerTrs 里懒算，每条一次）
-  traj3Cache.clear()      // 飞行航迹的实际高度载荷同理
+  pruneTrajCaches()       // 航迹改过没改由内容签名判（markerTrs 里 trajSig），这里只清掉已删航迹的项
   const pts = markerPts(), sts = markerSts(), trs = markerTrs()
+  _mkSig = JSON.stringify([pts, sts])
   const st = markSizes()
   scene.setMarkStyle(st); scene.setMarkers(pts, sts); scene.setTrajectories(trs)
   const dk = markDragKinds()
@@ -8527,11 +10358,16 @@ function pushMarkers() {
     flat.setMarkerDrag(dk)
   }
   feedEntitiesNow()
+  pushLinks()   // 站挪了 / 删了：链路几何与状态跟着变
 }
-// 每拍：只重推点 / 站两层（仰角标签随星动）。平面图的 setMarkers 一份载荷含三层，航迹那份照给（线走缓存）
+// 每拍：只重推点 / 站两层（仰角标签随星动）。平面图的 setMarkers 一份载荷含三层，航迹那份照给（线走缓存）。
+// 载荷与上一次推出去的一字不差（聚焦 GEO 星时站上的仰角恒定）就不推：3D 每次 setMarkers 整组重建精灵，平面图把整层注记重排一遍
 function pushMarkerLabels() {
   if (!scene) return
   const pts = markerPts(), sts = markerSts()
+  const sig = JSON.stringify([pts, sts])
+  if (sig === _mkSig) return
+  _mkSig = sig
   scene.setMarkers(pts, sts)
   if (flat) flat.setMarkers(pts, sts, markerTrs())
 }
@@ -8565,9 +10401,8 @@ const vehStates = new Map()          // 航迹 id → makeTrajState()（每拍�
 const stTracks = new Map()           // 站 id → makeTrackState()（滞回 / 目标 / 关节连续性按站保留）
 const entItems = new Map()           // 实体键 st:/pt:/tr: → 推给实体层的项（复用对象，层只拷值）
 const entList = []
-const _focusCands = []               // [{key, ecef:[3]}]：聚焦集各星本拍 ECEF（km），复用
 const _trkCands = new Map()          // satKey → [{key, ecef}]（显式跟踪某颗星：本拍缓存）
-const trajLineCache = new Map()      // 航迹 id → 大圆加密线（null = 静止档）；pushMarkers 清空，markerTrs 懒算
+const trajLineCache = new Map()      // 航迹 id → { sig, line }（line：大圆加密线，null = 静止档）；按内容签名判新旧，markerTrs 懒算
 const _movList = []                  // 运动档载具本拍状态 [{id, lat, lon, headingDeg, tan}]（updateVehicles / setVehicleStates 共用）
 const _movItems = new Map()          // 航迹 id → _movList 的复用项
 let _movWas = false
@@ -8603,28 +10438,12 @@ function hasEntityModels() {
 watch(entOnC, () => { if (hasEntityModels()) pushMarkers(); else feedEntitiesNow() })
 // 切到标记侧栏：读数当场补一拍（停表时等不到下一拍）
 watch(() => shellUi.side, (s) => { if (s === 'markers') feedEntitiesNow() })
-function trajLineOf(t) {
-  if (trajLineCache.has(t.id)) return trajLineCache.get(t.id)
+function trajLineOf(t, sig = trajSig(t)) {
+  const c = trajLineCache.get(t.id)
+  if (c && c.sig === sig) return c.line
   const line = trajLinePts(toRaw(t))
-  trajLineCache.set(t.id, line)
+  trajLineCache.set(t.id, { sig, line })
   return line
-}
-// 聚焦集各星本拍 ECEF（合成星走场景历元轴，与画面 / satElevAt 同口径）；返回有效个数
-function focusCandsAt(now) {
-  const gmst = sat.gstime(now), ccNow = ccTimeAt(now), ccG = sat.gstime(ccNow)
-  let n = 0
-  for (const e of selEntries) {
-    const cc = isCustomEntry(e), t = cc ? ccNow : now, g = cc ? ccG : gmst
-    let pv = null
-    try { pv = posAt(e, t) } catch { pv = null }
-    if (!pv || !pv.position) continue
-    const r = sat.eciToEcf(pv.position, g)
-    let c = _focusCands[n]
-    if (!c) { c = { key: '', ecef: [0, 0, 0] }; _focusCands[n] = c }
-    c.key = satKeyOf(e) || ('name:' + e.name); c.ecef[0] = r.x; c.ecef[1] = r.y; c.ecef[2] = r.z
-    n++
-  }
-  return n
 }
 function feedEntitiesNow() { if (scene) feedEntities(calcAt(), null) }
 /**
@@ -8676,9 +10495,10 @@ function feedEntities(now, sn) {
     for (const [id, r] of vr) if (r.moving) { n++; if (!on.has(id)) { same = false; break } }
     if (!same || n !== on.size) { const s = new Set(); for (const [id, r] of vr) if (r.moving) s.add(id); vehOn.value = s }
   }
-  // ③ 地球站天线跟踪（挂了模型的站）：目标 = 显式那颗星，或聚焦集里仰角最高的一颗；读数 WGS-84，画面按场景锚点
+  // ③ 地球站天线跟踪（挂了模型的站）：目标 = 显式那颗星，或聚焦集里仰角最高的一颗；读数 WGS-84，画面按场景锚点。
+  //    聚焦集的位置取 focusSnapAt（与站 / 点上的仰角标注同一份快照：同一时刻已经建过就不再推一遍）
   const er = wantRead ? new Map() : null
-  let nFocus = -1
+  let fsn = null
   _trkCands.clear()
   _seenIds.clear()
   if (showStLayer.value) {
@@ -8692,8 +10512,8 @@ function feedEntities(now, sn) {
         if (!cands) { const ecef = bodyTargetEcef(s.track.satKey, tMs); cands = ecef ? [{ key: s.track.satKey, ecef }] : []; _trkCands.set(s.track.satKey, cands) }
         n = cands.length
       } else {
-        if (nFocus < 0) nFocus = focusCandsAt(now)
-        cands = _focusCands; n = nFocus
+        if (!fsn) fsn = focusSnapAt(now)
+        cands = fsn.cands; n = fsn.n
       }
       let tr = stTracks.get(s.id)
       if (!tr) { tr = makeTrackState(); stTracks.set(s.id, tr) }
@@ -8782,6 +10602,7 @@ function setEntityModel(kind, id, modelId) {
     const m = normEntityModel({ id: modelId })
     if (!m) return false
     if (o.model && o.model.id === m.id && !('px' in o.model)) return true
+    if (kind === 'station') stFollowModel(o, o.model ? o.model.id : '', m.id)
     o.model = m
   }
   syncMarkers()
@@ -8847,7 +10668,7 @@ function onMarkerDragged(target, ll, phase) {
   pushMarkers(); redrawSats()   // redrawSats：可见性叠加层等以标记为目标的图元跟着走
 }
 function persistMarkers() {
-  try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value })) } catch { /* ignore */ }
+  try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value, links: links.value })) } catch { /* ignore */ }
 }
 function loadMarkers() {
   try {
@@ -8857,6 +10678,7 @@ function loadMarkers() {
       try { sanitizeMarkers(d) } catch { /* 规范化失败不挡加载 */ }
       for (const k of ['points', 'stations', 'trajectories']) if (Array.isArray(d[k])) for (const o of d[k]) dropModelPx(o)   // 逐个实体的模型像素已不生效
       points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || []
+      links.value = Array.isArray(d.links) ? d.links : []   // sanitizeMarkers 已规范化（mapLinks.sanitizeLinks）
       mkTable.ensureWaypointIds()   // 老存档的航点没有 id；直接拖拽按 id 定位，进场先补齐
     }
   } catch { /* ignore */ }
@@ -8892,14 +10714,14 @@ function trajAutoName(kind) {
   return base + i
 }
 function newTraj(kind) {
-  mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel(); stopSynthPlacement()   // 与 Polygon 各态 / 标记调整 / 波束合成互斥（同 polyStartDraw）
+  endLinkDraw(); mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel(); stopSynthPlacement()   // 与建链 / Polygon 各态 / 标记调整 / 波束合成互斥（同 polyStartDraw）
   const t = { id: newId(), name: trajAutoName(kind), kind, pts: [] }
   trajectories.value.push(t); activeTraj.value = t.id
   return t
 }
 function curTraj() { return trajectories.value.find((t) => t.id === activeTraj.value) }
 // 面板「编辑」：进描绘态，隐藏着的航迹随之显示（同 polyContinue）
-function editTraj(t) { activeTraj.value = t.id; if (t.show === false) { t.show = true; syncMarkers() } }
+function editTraj(t) { endLinkDraw(); activeTraj.value = t.id; if (t.show === false) { t.show = true; syncMarkers() } }
 function trajUndo() { const t = curTraj(); if (t && t.pts.length) { t.pts.pop(); syncMarkers() } }   // 撤销最后一个航点（与 polyUndo 一致）
 function addWaypoint() {
   const t = curTraj(); if (!t) return
@@ -8915,7 +10737,8 @@ function clearAllMarkers() { mkEditId.value = ''; points.value = []; stations.va
 
 // ===================== 标记批量表格（Excel 模块，仿链路预算性能表：独立浮窗 + Excel 网格 + 批量粘贴/导入）=====================
 // 航迹表格「时间」列按显示时区读写（本机 / UTC / UTC±N）；只敲时分时日期沿用该航点原来那天
-const mkTable = useMarkerTable({ points, stations, trajectories, newId, sync: syncMarkers, parseTime: (s, ref) => parseTzText(s, tzMode.value, ref) })
+// nowMs：只敲时分、航点又排不出时刻时取时间轴那一天（不是系统当天）。传函数：表格写格时现读，页面模板不因此读 clock
+const mkTable = useMarkerTable({ points, stations, trajectories, newId, sync: syncMarkers, parseTime: (s, ref) => parseTzText(s, tzMode.value, ref), nowMs: () => clock.tMs })
 const mkTableOpen = ref(false)                 // 浮窗开关
 const mkTab = ref('points')                    // 当前分页：points | stations | traj
 const mkTrajId = ref('')                       // 航迹分页当前编辑的航迹 id
@@ -8923,8 +10746,9 @@ const mkWin = ref({ x: 0, y: 0, w: 620, h: 460, init: false })
 const mkCurTraj = () => trajectories.value.find((t) => t.id === mkTrajId.value)
 // 三张网格列定义（末两列恒为 经度、纬度，供批量粘贴按「末两列=坐标」约定解析）
 const mkPtCols = [{ key: 'name', label: '名称' }, { key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
-const mkStCols = [{ key: 'name', label: '名称' }, { key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
-const mkCellText = (r, c) => { const v = r[c.key]; return v == null ? '' : String(v) }
+const mkStCols = [{ key: 'name', label: '名称' }, { key: 'diaM', label: '天线口径', unit: 'm', num: true, alias: ['口径'] }, { key: 'radome', label: '天线罩' }, { key: 'pwrW', label: '功放功率', unit: 'W', num: true, alias: ['功率', '发射功率'] }, { key: 'lon', label: '经度', num: true }, { key: 'lat', label: '纬度', num: true }]
+// 天线罩只存 true：表格 / 复制 / 导出都写「有」，没有罩留空
+const mkCellText = (r, c) => { const v = r[c.key]; if (c.key === 'radome') return v === true ? '有' : ''; return v == null ? '' : String(v) }
 // 航迹网格（导航日志口径：一行 = 到达该航点的那一段）：经度 / 纬度 / 高度（仅飞行）/ 时间 可编辑，
 // 航段 / 累计 / 航向 / 地速为推算读数（只读）。高度、时间默认显示推算值（灰字），手填即钉住该航点，清空回推算；首行时间 = 航迹起始
 const WP_COL_DEF = {
@@ -8965,7 +10789,7 @@ function wpCellVal(r, key, e) {
 function mkWpText(r, c) {
   const v = wpCellVal(r, c.key, mkWpInfo.value.get(r.id))
   if (v == null) return ''
-  if (c.key === 'tMs') return fmtTzTime(v, tzMode.value)
+  if (c.key === 'tMs') return fmtTzTime(Math.round(v), tzMode.value)   // 推算时刻带浮点零头（到达 = 起始 + 全程 ÷ 地速）：先落整毫秒，免得 10:30:00 读成 10:29:59
   return c.fix != null && Number.isFinite(v) ? v.toFixed(c.fix) : String(v)
 }
 // 推算值灰字、钉住的值正常色、时刻不合时序（早于前一个定时航点，排程没用它）标红；只读推算列灰字
@@ -8989,30 +10813,26 @@ const WP_HEAD_TIP = {
   gs: ['到达本航点这一段的地速', 'Ground speed of the leg arriving at this waypoint']
 }
 function mkWpHeadTip(c) { const t = WP_HEAD_TIP[c.key]; return t ? byLang(t[0], t[1]) : c.label }
-// 表格参数栏改运动参数：进表格自己的撤销栈（没改动就把刚压的快照丢掉）
+// 表格参数栏改运动参数：进表格自己的撤销栈（没改动就把刚压的快照丢掉）。
+// 签名带上各航点的时刻钉点：改出发 = 钉点整体平移、改到达 / 历时 / 速度 = 钉点按比例伸缩，起始与地速未必变
 function mkMotEdit(t, fn) {
   if (!t) return
-  const sig = () => [t.t0Ms, t.speedKmh, t.cruiseAltM].join('|')
+  const sig = () => [t.t0Ms, t.speedKmh, t.cruiseAltM, ...(t.pts || []).map((p) => (p ? p.tMs : ''))].join('|')
   const s0 = sig()
   mkTable.pushUndo(); fn()
   if (sig() === s0) mkTable.dropUndo()
 }
-// 参数栏读数：全程 / 历时 / 到达（经响应式代理读，改航点 / 钉点 / 起始 / 速度跟着刷）
-function fmtDur(ms) {
-  const m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60
-  if (d) return `${d} d ${h} h ${mi} min`
-  return h ? `${h} h ${mi} min` : (m ? `${mi} min` : `${Math.round(ms / 1000)} s`)
+// 参数栏的时间四项联动：同侧栏卡片（applyTrajRetime），外套表格撤销栈
+function mkMotApply(t, edit) {
+  let r = { ok: false, err: 'bad' }
+  mkMotEdit(t, () => { r = applyTrajRetime(t.id, edit) })
+  return r
 }
+// 参数栏读数：全程（出发 / 到达 / 历时在左边的时间框里；经响应式代理读，改航点跟着刷）
 const mkTrajRead = computed(() => {
   const t = mkCurTraj(); if (!t) return ''
-  void mkWpInfo.value
-  const L = trajLengthM(t), t0 = trajStartMs(t), t1 = trajEndMs(t), out = []
-  if (L > 0) out.push(byLang('全程 ', 'Total ') + (L >= 100000 ? (L / 1000).toFixed(0) : (L / 1000).toFixed(1)) + ' km')
-  if (Number.isFinite(t0) && Number.isFinite(t1)) {
-    out.push(byLang('历时 ', 'Duration ') + fmtDur(t1 - t0))
-    out.push(byLang('到达 ', 'Arrival ') + fmtTzTime(t1, tzMode.value))
-  }
-  return out.join(' · ')
+  const L = trajTiming(t).L
+  return L > 0 ? byLang('全程 ', 'Total ') + (L >= 100000 ? (L / 1000).toFixed(0) : (L / 1000).toFixed(1)) + ' km' : ''
 })
 // 点标记网格（可编辑：单格改 / 区域粘贴 / 清除，均落到 points，syncMarkers 实时推图+落盘）
 // 逐层的「删若干行」：按 id 集合过滤，返回真正删掉的条数（撤销快照由内核统一压）
@@ -9141,7 +10961,7 @@ async function mkExportXlsx() {
   if (mkTab.value === 'traj') return mkExportTrajXlsx()
   const p = mkPane()
   if (!p || !p.rows.length) { appAlert('当前分页没有数据'); return }
-  const sheets = [sheetModel({ name: mkPaneName(), cols: p.cols, rows: p.rows, value: (r, c) => r[c.key] })]
+  const sheets = [sheetModel({ name: mkPaneName(), cols: p.cols, rows: p.rows, value: (r, c) => (c.key === 'radome' ? (r.radome === true ? '有' : '') : r[c.key]) })]
   const r = await exportSheets({ defaultName: safeFileName(mkPaneName(), '标记') + '.xlsx', title: '导出标记表格', sheets })
   if (r && r.error) appAlert('导出失败：' + r.error)
 }
@@ -9198,7 +11018,8 @@ async function mkImportTrajXlsx() {
   if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
   const made = trajsFromSheets(res.sheets, {
     newId, taken: trajectories.value.map((t) => String(t.name || '')), fallbackName: byLang('航迹', 'Track'),
-    parseTime: (s, ref) => parseTzText(s, tzMode.value, ref)
+    // 首个只写时分的时刻格没有上一行可沿用：日期取时间轴那一天（同表格「时间」列），不取系统当天
+    parseTime: (s, ref) => parseTzText(s, tzMode.value, Number.isFinite(ref) ? ref : clock.tMs)
   })
   if (!made.length) { appAlert('没有读到航点（表头需含「经度 / 纬度」，或把经纬度放在最后两列）'); return }
   mkTable.pushUndo()
@@ -9289,7 +11110,7 @@ const timeParts = computed(() => {
   const p = (n) => String(n).padStart(2, '0')
   const tag = tzLabel.value
   const d = new Date(clock.tMs)
-  const md = `${p(tMon(d) + 1)}-${p(tDay(d))}`
+  const md = `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))}`   // 带年份：时段可跨年 / 跨世纪
   const hms = `${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}`
   const off = live.value ? '实时' : (atNow.value ? '此刻' : fmtOffset(relNowMs.value))   // fmtOffset 各档串长 ≤ 10 字符，装得进定宽的 11ch 一格
   const offA = live.value ? byLang('实时', 'Live') : atNow.value ? byLang('此刻', 'Now') : off   // aria-valuetext 不经呈现层翻译，按语言直接出字
@@ -9327,7 +11148,7 @@ function measureRoC2() {
 watch([() => uiFont.stack, roEl], measureRoC2, { flush: 'post' })   // 挂上 / 换界面字体后量（--font-ui 已由 uiFont 同步写到根上）
 // 读数块 role=button 的 aria-expanded：跟 TzPicker 的 open / close 事件走（打开时顺带预填跳到时刻的框，见 onRoOpen）
 const roOpen = ref(false)
-const roStyle = computed(() => ({ '--ro-c1': String(roC1Em(uiFont.stack)), '--ro-c2': String(roC2.value) }))
+const roStyle = computed(() => ({ '--ro-c1': String(roC1Em(uiFont.stack)), '--ro-c2': String(roC2.value), '--ro-d1': String(roD1Em(uiFont.stack)) }))
 const fwdPlaying = computed(() => clock.mode === 'play' && clock.dir > 0)
 const revPlaying = computed(() => clock.mode === 'play' && clock.dir < 0)
 // 倍速被步长顶住（拍率上限 240/s）时只在悬停提示里给出实际值 —— 界面不加字
@@ -9383,9 +11204,10 @@ function snapshot() {
     nameMode: nameMode.value, countryName: countryNameSize.value, provName: provNameSize.value, cityName: cityNameSize.value,
     oceanMode: oceanNameMode.value, seaMode: seaNameMode.value, oceanName: oceanNameSize.value, seaName: seaNameSize.value, waterOff: { ...waterOff },
     chain: { on: chainOn.value, off: { ...chainOff }, style: { ...chainStyle } },
-    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, spaceOn: spaceOn.value, space: { ...space }, tzMode: tzMode.value, crs: { ...mapCrs }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, viewRev: VIEW_PREFS_REV, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value,
+    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, spaceOn: spaceOn.value, space: { ...space }, tzMode: tzMode.value, crs: { ...mapCrs, rev: MAP_CRS_REV }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, viewRev: VIEW_PREFS_REV, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value, tl: { mode: tlMode.value, startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value },
     markStyle: { ...markStyle },
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
+    lnkStyle: { ...lnkStyle },
     covOpen: covOpen.value, polyOpen: polyOpen.value,
     grdOpen: grdOpen.value, grd: grd.getState(), perf: perf.getState(),
     satcov: satcov.getState(), satPerf: satPerf.getState(),
@@ -9516,6 +11338,24 @@ async function restoreSettings() {
   if (typeof s.mkPtLayer === 'boolean') showPtLayer.value = s.mkPtLayer
   if (typeof s.mkStLayer === 'boolean') showStLayer.value = s.mkStLayer
   if (typeof s.mkTrajLayer === 'boolean') showTrajLayer.value = s.mkTrajLayer
+  if (s.lnkStyle && typeof s.lnkStyle === 'object') {   // 链路层样式：只认出厂表里有的键、类型对得上的值
+    const o = s.lnkStyle
+    for (const [k, v] of Object.entries(o)) {
+      const d = LINK_STYLE_DEF[k]
+      if (d === undefined) continue
+      if (typeof d === 'boolean') { if (typeof v === 'boolean') lnkStyle[k] = v }
+      else if (typeof d === 'number') { if (Number.isFinite(v)) lnkStyle[k] = v }
+      else if (typeof v === 'string' && v) lnkStyle[k] = v
+    }
+    if (!['flow', 'static', 'off'].includes(lnkStyle.dir)) lnkStyle.dir = LINK_STYLE_DEF.dir
+    // ★ 出厂值改版（2026-10-08，LINK_STYLE_REV）旧存档迁移一次：线宽仍是旧出厂值 1.8 的跟新出厂值（1.2）走，用户改过的不动；
+    //   「方向箭头」开关改成方向标记三档 —— 关过箭头的 = 关，其余按新出厂（静止；流动是可选动效）。存过一次（带 rev）之后就跟用户的选择走
+    if (!(Number(o.rev) >= LINK_STYLE_REV)) {
+      if (o.width === 1.8) lnkStyle.width = LINK_STYLE_DEF.width
+      lnkStyle.dir = o.arrows === false ? 'off' : LINK_STYLE_DEF.dir
+      lnkStyle.rev = LINK_STYLE_REV
+    }
+  }
   syncMarkers()   // 以恢复后的尺寸重建标记（含坐标/名称显隐、各图层显隐）
   // 基础视图偏好：参考系只认两个枚举串，三个数各自钳到范围。老存档里残留的 autoRotate / autoRotateSpeed
   // 一律忽略 —— 那是【展示性】匀速旋转的开关，"开着" ≠ "想看惯性视角"，不迁移、不映射。
@@ -9547,7 +11387,9 @@ async function restoreSettings() {
   if (s.fpMode === 'elev') fpMode.value = 'elev'
   if (typeof s.beam === 'string') beam.value = s.beam
   if (typeof s.elevMin === 'string') elevMin.value = s.elevMin
-  if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(Math.round(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -PAST_FRAC * windowMin.value }
+  if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(roundSecMin(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -PAST_FRAC * windowMin.value }
+  // 时段：固定档的起止 / 终止处理（没有或坏了就是滚动档；end 照留，下次切固定沿用）
+  { const p = normPeriod(s.tl); tlEnd.value = p.end; if (p.mode === 'fixed') { tlMode.value = 'fixed'; tlStart.value = p.startMs; tlStop.value = p.stopMs } }
   if (typeof s.polyOpen === 'boolean') polyOpen.value = s.polyOpen
   // 省界/市界开关：默认开，存档里的显式 false 也要恢复；数据加载统一走挂载尾部的 ensureProvinces/ensureCities
   if (typeof s.showProvinces === 'boolean') showProvinces.value = s.showProvinces
@@ -9555,12 +11397,20 @@ async function restoreSettings() {
   if (Array.isArray(s.admSel1)) admSel1.value = s.admSel1.filter((x) => typeof x === 'string')
   for (const [k, r] of [['admName1', admName1], ['admName2', admName2]]) if (s[k] === 'local' || s[k] === 'en' || s[k] === 'off') r.value = s[k]
   if (s.tzMode != null) tzMode.value = normTzMode(s.tzMode, tzMode.value)   // 时间轴读数时区档位（仅显示；可为固定偏移分钟数）
-  if (s.crs && typeof s.crs === 'object') { setMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0) }   // 坐标系四档（只改呈现，见 stores/mapCrs）
+  if (s.crs && typeof s.crs === 'object') { forgetFlatFollow(); restoreMapCrs(s.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0); if (flat) flat.setMapFrame(mapFrameCfg()) }   // 坐标系四档 + 经纬图框（只改呈现，见 stores/mapCrs；版本落后的存档按 MAP_CRS_REV 迁）；读回存档 = 跟随借走的那份作废
   // 宇宙空间：新存档 spaceOn + space；老存档只有晨昏线那四个字段 → 迁移（旧 termOn=true 只开晨昏效果 / 晨昏线、
   // 星空 / 大气 / 太阳 / 地球影像不勾，别让老用户画面突变；旧 termOn=false 总开关关、子项按新出厂值）。口径见 spaceFromSaved
   { const sp = spaceFromSaved(s); if (sp) { spaceOn.value = sp.on; Object.assign(space, sp.space) } }
   clockRestore(s.clock)   // 步长/速率（播放态刻意不恢复：一开软件就自己跑起来会冲掉「上次看到哪」）
   if (s.live) goLive()
+  else if (tlFixed.value) {
+    // 固定时段：时间窗对准时段，时刻回到上次停的地方（在时段内的话，否则取起始时刻）—— STK 打开场景回到上次的动画时刻同理。
+    // ★ 先落锚点与时间窗、再设时刻：clockSetTime 同步 emit → followCursor，窗口还是旧的就会把时刻当成「跑出窗口」平移
+    const t = bootSceneMs != null && bootSceneMs >= tlStart.value && bootSceneMs <= tlStop.value ? bootSceneMs : tlStart.value
+    baseTime.value = t
+    setViewMs(tlStart.value, tlStop.value)
+    clockSetTime(t)
+  }
   const c = s.cov
   if (c && Array.isArray(c.items) && c.items.length) {
     covOpen.value = !!s.covOpen
@@ -9848,7 +11698,7 @@ function mdlName(id) { const m = id ? modelLib.value.byId.get(id) : null; return
 function mdlThumb(id) { if (!id) return ''; const u = mdlThumbs.value.get(id); if (!u) mdlRequestThumb(id); return u || '' }
 function chipIcon(o) { const m = o && o.model ? modelLib.value.byId.get(o.model.id) : null; return (m && CHIP_ICON[m.kind]) || 'box' }
 function chipTitle(o) {
-  if (!o || !o.model) return byLang('挂模型（也可从「卫星模型」侧栏拖一张卡片到图上的实体）', 'Attach a model (or drag a card from the Satellite Models panel onto the map)')
+  if (!o || !o.model) return byLang('配置模型（也可从「仿真对象模型」侧栏将模型卡片拖到图上的实体）', 'Attach a model (or drag a card from the Simulation Object Models panel onto the map)')
   return mdlName(o.model.id) + '\n' + byLang('点击更换；右键清除', 'Click to change; right-click to clear')
 }
 const pickDomainOf = (kind, o) => (kind === 'station' ? 'ground' : kind === 'traj' ? (o && o.kind === 'flight' ? 'aircraft' : 'ship') : '')
@@ -9917,7 +11767,7 @@ function setTrackAzOn(s, on) { if (s.track && s.track.satKey) setStationTrack(s.
 function stReadTxt(id) {
   const r = entRead.value.get(id)
   if (!r || r.park || !Number.isFinite(r.az) || !Number.isFinite(r.el)) return '—'
-  return r.az.toFixed(1) + '° · ' + r.el.toFixed(1) + '°'
+  return fmtAz1(r.az) + '° · ' + fmtDeg1(r.el) + '°'   // 与站标签同一把舍入（方位 359.96° 出 0.0° 而不是 360.0°）
 }
 function stReadTitle(id) {
   const r = entRead.value.get(id), nm = r && r.key ? satNameOfKey(r.key) : ''
@@ -9925,25 +11775,71 @@ function stReadTitle(id) {
 }
 // 跟踪读数逐拍变：单独成组件（组件根节点继承本页 scoped 属性，.u 样式照旧），页面模板不读 entRead
 const StReadTxt = defineComponent({ props: { id: { type: [String, Number], required: true } }, setup: (p) => () => hVnode('span', { class: 'u', title: stReadTitle(p.id) }, stReadTxt(p.id)) })
-// 航迹运动行：折叠态摘要（FL350 · 850 km/h · 08:00；静止档 —）+ 展开三行（巡航高度 / 速度 / 起始）+ 运动档读数
+// 航迹卡片「时间」：标题行摘要（10-07 08:00 → 10:31 · 2h31m；未排程「未设定」；航点不足「—」）+ 定位钮；
+// 展开区 = 出发 / 到达 / 历时 / 速度 四项联动（TrajTimeFields，口径在 core/models/trajTiming.mjs）+ 飞行的巡航高度 + 运动档读数
 const motOpen = ref(new Set())   // 展开着的航迹 id（界面状态，不持久化）
 function toggleMot(id) { const s = new Set(motOpen.value); if (s.has(id)) s.delete(id); else s.add(id); motOpen.value = s }
+function openMot(id) { if (!motOpen.value.has(id)) toggleMot(id) }
 const pad2 = (n) => String(n).padStart(2, '0')
-function fmtFL(m) { const fl = m / 0.3048 / 100; return Math.abs(fl - Math.round(fl)) < 0.05 ? 'FL' + String(Math.round(fl)).padStart(3, '0') : Math.round(m) + ' m' }
 // 巡航高度框的悬停：留空时实际取的值（挂了直升机 / 多旋翼等模型 = 模型缺省，否则出厂 FL350）
 function cruiseTip(t) { const d = trajDefaultCruiseAltM(t); return d === CRUISE_ALT_M_DEFAULT ? '飞行剖面的平飞高度；留空 = 10668 m（FL350）' : `飞行剖面的平飞高度；留空 = ${d} m（模型缺省）` }
+// 各航迹的时间读数：经响应式代理读（改出发 / 速度 / 航点 / 钉点才重算，页面别的重渲染只取缓存）
+const trajTimings = computed(() => { const m = new Map(); for (const t of trajectories.value) m.set(t.id, trajTiming(t)); return m })
+const tmOf = (t) => trajTimings.value.get(t.id) || trajTiming(t)
+// 摘要：时刻按显示时区，到达跨日才写日期；历时与时间条「跨度」钮同一种紧凑读数；尾部标时区（同时间轴设置 / 卫星历元框的角标）
 function motSummary(t) {
-  const raw = toRaw(t)
-  if (!trajMoving(raw)) return '—'
-  // 出发时刻取排程（航点定了时刻时首航点可由外推得出，t0Ms 未必有）；航点定了时刻 = 逐段变速，报全程均速
-  const t0 = trajStartMs(raw), p = tzParts(t0, tzMode.value), out = []
-  const pinned = (t.pts || []).some((q) => q && Number.isFinite(q.tMs))
-  if (t.kind === 'flight') out.push(fmtFL(trajCruiseAltM(t)))
-  if (!pinned && Number.isFinite(t.speedKmh)) out.push(String(Number(t.speedKmh.toPrecision(6))) + ' km/h')
-  else { const dt = trajEndMs(raw) - t0; if (dt > 0) out.push(byLang('均速 ', 'avg ') + String(Number((trajLengthM(raw) / dt * 3600).toPrecision(4))) + ' km/h') }
-  out.push(pad2(p.h) + ':' + pad2(p.mi))
-  return out.join(' · ')
+  const tm = tmOf(t)
+  if (!(tm.L > 0)) return '—'
+  if (!tm.moving) return '未设定'
+  const a = tzParts(Math.round(tm.depMs), tzMode.value), b = tzParts(Math.round(tm.arrMs), tzMode.value)
+  const md = (p) => pad2(p.mo) + '-' + pad2(p.d), hm = (p) => pad2(p.h) + ':' + pad2(p.mi)
+  const sameDay = a.y === b.y && a.mo === b.mo && a.d === b.d
+  return md(a) + ' ' + hm(a) + ' → ' + (sameDay ? '' : md(b) + ' ') + hm(b) + ' · ' + fmtSpanSec(tm.durMs / 1000) + ' · ' + tzTag(tzMode.value, Math.round(tm.depMs))
 }
+// 缺省地速（速度框占位、静止档补齐）：挂的模型模板有出处的巡航 / 服务速度优先，否则按类型（trajTiming.defaultSpeedKmh）
+function trajDefSpeedKmh(t) {
+  const tp = t && t.model && typeof t.model.id === 'string' ? getEntityTemplate(t.model.id) : null
+  return defaultSpeedKmh(t && t.kind, tp && tp.ops)
+}
+// 时间四项联动的落地（侧栏卡片 / 表格参数栏共用）：缺出发取时间轴游标、缺地速取缺省地速；成功即推图落盘
+function applyTrajRetime(id, edit) {
+  const t = trajectories.value.find((x) => x.id === id)
+  if (!t) return { ok: false, err: 'bad' }
+  const r = retimeTraj(t, edit, { nowMs: clock.tMs, defSpeedKmh: trajDefSpeedKmh(t) })
+  if (r.ok) { normTrajMotion(t); syncMarkers() }
+  return r
+}
+// 「定位」：时间轴落到该航迹 —— 游标到出发时刻，时间窗框住全程（两头各留 5%）。先落窗口与锚点再设时刻（次序同 reanchorAt）。
+// 固定时段没盖住这一趟时把时段扩到盖住（并集）：否则按播放会从时段起点放起（playStartMs），载具一步也走不到
+function trajLocate(t) {
+  const tm = t ? trajTiming(toRaw(t)) : null
+  if (!tm || !tm.moving) return
+  const dep = Math.round(tm.depMs), arr = Math.ceil(tm.arrMs), span = tm.arrMs - tm.depMs, pad = Math.max(span * 0.05, 1000)
+  if (tlFixed.value && (dep < tlStart.value || arr > tlStop.value)) {
+    tlStart.value = Math.min(tlStart.value, dep); tlStop.value = Math.max(tlStop.value, arr)
+  }
+  windowMin.value = clamp(roundSecMin((span + 2 * pad) / 60000), WIN_MIN, WIN_MAX)
+  winExact = null
+  winStartMin.value = -pad / 60000
+  baseTime.value = dep
+  clockSetTime(dep)
+  saveSettings()
+}
+// 地图右键压着载具「航迹时间…」：切到标记侧栏、展开这条航迹的「时间」、滚到卡片并把焦点交给「出发」
+function revealTrajTime(id) {
+  if (!trajectories.value.some((t) => t.id === id)) return
+  openMot(id)
+  shellUi.side = 'markers'
+  setSecOpen('mk-traj', true)
+  nextTick(() => {
+    const card = [...document.querySelectorAll('#side-view .tcard[data-tid]')].find((e) => e.dataset.tid === String(id))
+    if (!card) return
+    card.scrollIntoView({ block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    const inp = card.querySelector('.ttf input')
+    if (inp) inp.focus({ preventScroll: true })
+  })
+}
+function ctxTrajTime() { const m = ctxMenu.value; closeCtx(); if (m && m.ent && m.ent.kind === 'traj') revealTrajTime(m.ent.id) }
 function vehReadTxt(t) {
   const r = vehRead.value.get(t.id)
   if (!r || !r.moving) return ''
@@ -9953,33 +11849,6 @@ function vehReadTxt(t) {
 }
 // 只渲染一段文本：逐拍重渲染的只是它自己
 const VehReadTxt = defineComponent({ props: { t: { type: Object, required: true } }, setup: (p) => () => vehReadTxt(p.t) })
-// 起始时刻文本框：草稿串 + 失焦 / 回车落值 + Esc 撤回（页面每秒重渲染，:value 直绑对象会吞输入 —— 聚焦期间显示草稿）。
-// 显示按显示时区；输入不带时区按显示时区读，带 Z / ±hh:mm 按所写时区；清空 = 删字段；非法 = 回到原值
-const t0Edit = ref({ id: '', text: '' })
-function fmtT0(ms) {
-  if (!Number.isFinite(ms)) return ''
-  const p = tzParts(ms, tzMode.value)
-  return `${p.y}-${pad2(p.mo)}-${pad2(p.d)} ${pad2(p.h)}:${pad2(p.mi)}:${pad2(p.s)}`
-}
-function t0Begin(t) { if (t0Edit.value.id !== t.id) t0Edit.value = { id: t.id, text: fmtT0(t.t0Ms) } }
-function t0Input(t, v) { t0Edit.value = { id: t.id, text: v } }
-function t0Commit(t) {
-  const ed = t0Edit.value
-  if (ed.id !== t.id) return
-  t0Edit.value = { id: '', text: '' }
-  const s = String(ed.text || '').trim()
-  if (s === fmtT0(t.t0Ms)) return
-  if (!s) { setTrajMotion(t.id, { t0Ms: null }); return }
-  const d = parseDateTimeText(s)
-  if (!d) return
-  // 写了时区按所写；没写：本机档走 tzToMs（夏令时切换那两天同一墙钟偏移不同），UTC / 固定偏移档按档位偏移
-  const ms = d.offMin != null ? partsToUtcMs(d, 0)
-    : (tzMode.value === 'local' ? tzToMs('local', d.Y, d.Mo, d.D, d.h, d.mi, d.s) + (d.ms || 0) : partsToUtcMs(d, tzOffMin(tzMode.value, Date.now())))
-  if (Number.isFinite(ms)) setTrajMotion(t.id, { t0Ms: ms })
-}
-function t0Enter(e, t) { t0Commit(t); t0Begin(t); if (e && e.target && e.target.select) nextTick(() => e.target.select()) }
-function t0Esc(e) { t0Edit.value = { id: '', text: '' }; if (e && e.target) e.target.blur() }
-
 // 验证台钩子（.modelharness/p4，真 Electron 整页）：只在 DEV 且地址带 ?harness=p4|w11 时挂到 __g3dHarness.p4（见 onMounted 尾）
 function p4Harness() {
   const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s) }
@@ -10081,7 +11950,7 @@ let offCmds = null
 function pageCommands() {
   const sw = (id, view, key, label, on, fn, group, icon, keywords) => ({ id, label, icon, group, keywords, lock: true, check: on, run: () => { fn(); revealSection(view, key) } })
   return [
-    { id: 'const.wizard', label: '生成星座…', icon: 'satellite', group: '星座', keywords: kwId('const.wizard'), lock: true, run: () => { shellUi.side = 'constellation'; openConstWizard() } },
+    { id: 'const.wizard', label: '生成卫星或星座…', icon: 'satellite', group: '星座', keywords: kwId('const.wizard'), lock: true, run: () => { shellUi.side = 'constellation'; openConstWizard() } },
     { id: 'const.frame', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.frame'), lock: true, check: viewPrefs.frame === 'inertial', run: toggleFrame },
     { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
     { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
@@ -10091,32 +11960,32 @@ function pageCommands() {
     { id: 'poly.import', label: '导入多边形…', icon: 'import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
     { id: 'grd.addSat', label: '添加卫星…', icon: 'plus', group: '对地覆盖分析', keywords: kwId('grd.addSat'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddSat() } },
     { id: 'grd.addElev', label: '添加仰角线…', icon: 'angle', group: '对地覆盖分析', keywords: kwId('grd.addElev'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddElevLine() } },
-    { id: 'mk.pointsTable', label: '点标记表格', icon: 'table', group: '标记', keywords: kwId('mk.pointsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('points') } },
-    { id: 'mk.stationsTable', label: '地球站表格', icon: 'table', group: '标记', keywords: kwId('mk.stationsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('stations') } },
-    sw('mk.points', 'markers', 'mk-points', '点标记', showPtLayer.value, togglePtLayer, '标记', 'map-pin', kwId('mk.points')),
-    sw('mk.stations', 'markers', 'mk-stations', '地球站', showStLayer.value, toggleStLayer, '标记', 'map-pin', kwId('mk.stations')),
-    sw('mk.traj', 'markers', 'mk-traj', '轨迹', showTrajLayer.value, toggleTrajLayer, '标记', 'move', kwId('mk.traj')),
-    sw('geo.adm', 'geo', 'geo-adm', '行政区', showProvinces.value, toggleProvinces, '地图设置', 'map', kwId('geo.adm')),
-    sw('geo.chain', 'geo', 'geo-chain', '岛链', chainOn.value, toggleChains, '地图设置', 'map', kwId('geo.chain')),
-    sw('geo.space', 'geo', 'geo-space', '宇宙空间', spaceOn.value, toggleSpace, '地图设置', 'globe', kwId('geo.space')),
-    // 六个子项同一写法；勾 = 此刻真的在画（总开关开着且本项勾着），点它 = 反过来；总开关关着时去开 = 开总开关且只开这一项（见 setSpaceItem）
-    ...[['stars', '星空', 'star'], ['atmo', '大气辉光', 'globe'], ['sun', '太阳', 'sun'], ['img', '地球影像', 'image'], ['night', '晨昏效果', 'moon'], ['line', '晨昏线', 'sun']]
-      .map(([k, label, icon]) => sw('geo.space.' + k, 'geo', 'geo-space', label, spaceOn.value && space[k], () => setSpaceItem(k, !(spaceOn.value && space[k]), true), '地图设置', icon, kwId('geo.space.' + k))),
-    { id: 'geo.proj', label: '2D 投影', icon: 'map', group: '地图设置', keywords: kwId('geo.proj'), lock: true,
+    { id: 'mk.pointsTable', label: '点标记表格', icon: 'table', group: '地图标记设置', keywords: kwId('mk.pointsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('points') } },
+    { id: 'mk.stationsTable', label: '地球站表格', icon: 'table', group: '地图标记设置', keywords: kwId('mk.stationsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('stations') } },
+    sw('mk.points', 'markers', 'mk-points', '点标记', showPtLayer.value, togglePtLayer, '地图标记设置', 'map-pin', kwId('mk.points')),
+    sw('mk.stations', 'markers', 'mk-stations', '地球站', showStLayer.value, toggleStLayer, '地图标记设置', 'map-pin', kwId('mk.stations')),
+    sw('mk.traj', 'markers', 'mk-traj', '轨迹', showTrajLayer.value, toggleTrajLayer, '地图标记设置', 'move', kwId('mk.traj')),
+    sw('geo.adm', 'geo', 'geo-adm', '行政区', showProvinces.value, toggleProvinces, '地图综合设置', 'map', kwId('geo.adm')),
+    sw('geo.chain', 'geo', 'geo-chain', '岛链', chainOn.value, toggleChains, '地图综合设置', 'map', kwId('geo.chain')),
+    sw('geo.space', 'geo', 'geo-space', '宇宙空间', spaceOn.value, toggleSpace, '地图综合设置', 'globe', kwId('geo.space')),
+    // 八个子项同一写法；勾 = 此刻真的在画（总开关开着且本项勾着），点它 = 反过来；总开关关着时去开 = 开总开关且只开这一项（见 setSpaceItem）
+    ...[['stars', '星空', 'star'], ['planets', '行星', 'orbit'], ['atmo', '大气辉光', 'globe'], ['sun', '太阳', 'sun'], ['moon', '月球', 'moon'], ['img', '地球影像', 'image'], ['night', '晨昏效果', 'moon'], ['line', '晨昏线', 'sun']]
+      .map(([k, label, icon]) => sw('geo.space.' + k, 'geo', 'geo-space', label, spaceOn.value && space[k], () => setSpaceItem(k, !(spaceOn.value && space[k]), true), '地图综合设置', icon, kwId('geo.space.' + k))),
+    { id: 'geo.proj', label: '2D 投影', icon: 'map', group: '地图综合设置', keywords: kwId('geo.proj'), lock: true,
       children: PROJECTIONS.map((pj) => ({ id: 'geo.proj.' + pj.k, label: byLang(pj.zh, pj.en), keywords: [pj.en, pj.zh], check: mapCrs.proj === pj.k, run: () => { setMapProj(pj.k); revealSection('geo', 'geo-proj') } })) },
-    sw('foc.orb', 'focus', 'foc-orb', '轨道线', focusStyle.orbOn, () => toggleFocus('orbOn'), '聚焦卫星', 'orbit', kwId('foc.orb')),
-    sw('foc.trk', 'focus', 'foc-trk', '星下点轨迹', focusStyle.trkOn, () => toggleFocus('trkOn'), '聚焦卫星', 'crosshair', kwId('foc.trk')),
-    sw('foc.fp', 'focus', 'foc-fp', '覆盖圈', focusStyle.fpOn, () => toggleFocus('fpOn'), '聚焦卫星', 'crosshair', kwId('foc.fp')),
-    sw('foc.cone', 'focus', 'foc-cone', '覆盖锥', focusStyle.coneOn, () => toggleFocus('coneOn'), '聚焦卫星', 'crosshair', kwId('foc.cone')),
-    // 卫星模型（侧栏 side='model'）：跟随卫星只在 3D 球体、且有主选星时可用
-    { id: 'model.follow', label: '跟随当前卫星', icon: 'locate-fixed', group: '卫星模型', keywords: kwId('model.follow'), lock: true,
-      disabled: flatView.value || !selected.value || !!following.value, run: () => startFollow(selEntry) },
-    { id: 'model.unfollow', label: '退出跟随', icon: 'locate-fixed', group: '卫星模型', keywords: kwId('model.unfollow'), lock: true,
-      disabled: !following.value, run: stopFollow },
-    sw('model.show', 'model', 'mdl-disp', '显示卫星模型', focusStyle.modelOn, () => setModelStyle('modelOn', !focusStyle.modelOn), '卫星模型', 'box', kwId('model.show')),
+    sw('foc.orb', 'focus', 'foc-orb', '轨道线', focusStyle.orbOn, () => toggleFocus('orbOn'), '卫星聚焦特效设置', 'orbit', kwId('foc.orb')),
+    sw('foc.trk', 'focus', 'foc-trk', '星下点轨迹', focusStyle.trkOn, () => toggleFocus('trkOn'), '卫星聚焦特效设置', 'crosshair', kwId('foc.trk')),
+    sw('foc.fp', 'focus', 'foc-fp', '覆盖圈', focusStyle.fpOn, () => toggleFocus('fpOn'), '卫星聚焦特效设置', 'crosshair', kwId('foc.fp')),
+    sw('foc.cone', 'focus', 'foc-cone', '覆盖锥', focusStyle.coneOn, () => toggleFocus('coneOn'), '卫星聚焦特效设置', 'crosshair', kwId('foc.cone')),
+    // 仿真对象模型（侧栏 side='model'）：跟随卫星只在 3D 球体、且有主选星时可用
+    { id: 'model.follow', label: '跟随当前卫星', icon: 'locate-fixed', group: '仿真对象模型', keywords: kwId('model.follow'), lock: true,
+      disabled: !selected.value || (flatView.value ? flatFollowing.value : !!following.value), run: () => (flatView.value ? startFlatFollow(selEntry) : startFollow(selEntry)) },
+    { id: 'model.unfollow', label: '退出跟随', icon: 'locate-fixed', group: '仿真对象模型', keywords: kwId('model.unfollow'), lock: true,
+      disabled: !(flatView.value ? flatFollowing.value : following.value), run: () => (flatView.value ? stopFlatFollow() : stopFollow()) },
+    sw('model.show', 'model', 'mdl-disp', '显示卫星模型', focusStyle.modelOn, () => setModelStyle('modelOn', !focusStyle.modelOn), '仿真对象模型', 'box', kwId('model.show')),
     // 侧栏分区在 ModelSidePanel 组件里（cmd-index 只扫本页模板，抽不到），这里手工登记两条定位
-    { id: 'sec.mdl-cur', label: '当前卫星', icon: 'box', group: '卫星模型', keywords: kwId('sec.mdl-cur'), lock: true, run: () => revealSection('model', 'mdl-cur') },
-    { id: 'sec.mdl-lib', label: '模型库', icon: 'box', group: '卫星模型', keywords: kwId('sec.mdl-lib'), lock: true, run: () => revealSection('model', 'mdl-lib') }
+    { id: 'sec.mdl-cur', label: '当前卫星', icon: 'box', group: '仿真对象模型', keywords: kwId('sec.mdl-cur'), lock: true, run: () => revealSection('model', 'mdl-cur') },
+    { id: 'sec.mdl-lib', label: '模型库', icon: 'box', group: '仿真对象模型', keywords: kwId('sec.mdl-lib'), lock: true, run: () => revealSection('model', 'mdl-lib') }
   ]
 }
 
@@ -10136,11 +12005,12 @@ onMounted(async () => {
   covNav.toggleGrd = toggleGrd; covNav.toggleCov = toggleCoverage
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
+  covNav.exportVideo = () => vexp.toggle()                   // 「导出视频…」：开 / 关视频导出面板
   covNav.sendMiniapp = sendToMiniapp   // 顶栏「导出」菜单「发送到小程序」入口（覆盖层 + 多边形一份快照）
   covNav.sendTrajMiniapp = sendTrajsToMiniapp   // 同一菜单「发送航迹到小程序」（标记层航迹，一条一件）
   covNav.importTle = importTleToLibrary   // 「文件」菜单「导入星历文件」入口 → 落库自定义卫星（贯通文件管理/搜索池）
   // 顶部搜索框：星座搜索桥（「在星座中搜索“…”」）+ 只有本页够得着的命令（图层开关 / 绘制 / 投影档…）
-  covNav.searchSats = (q) => onSearch({ target: { value: q } })
+  covNav.searchSats = (q) => { onSearch({ target: { value: q } }); searchOpenTick.value++ }
   ensureSatcatIndex()   // 取一次卫星编目索引（只读本机缓存）：筛选条的前四项靠它
   offCmds = registerCommands('globe3d', pageCommands)
   watch(status, (v) => { if (v) logMsg(v) })   // 加载进度/失败信息落日志窗格
@@ -10184,19 +12054,8 @@ onMounted(async () => {
   if (imageryOn.value) applyImagery()
   scene.setFocusStyle(focusStyle3D())
   scene.setSatPointsVisible(focusStyle.cloudOn)
-  scene.setOnPick((index, point, additive, extra) => {
-    const armed = _pickArmed; _pickArmed = false
-    if (!armed) return   // 这一下不是落在画布上的完整点击（浮层遮罩 / 窗口刚激活 / 收起搜索下拉），见 onPickArmDown
-    // extra＝点中的是渲染集之外、被别的功能画出来的星（见 pickExtraSats），直接是条目本身
-    const en = extra || (index >= 0 ? renderEntries[index] : null)
-    // 从星座点选模式：命中的星填入卫星编辑弹窗，不改变当前选中星
-    if (satPick.value && satModal.value) { if (en) pickEntryIntoModal(en); return }
-    // 点空白不改聚焦（原为清空，是「鼠标误操作失焦」的根因）。清空只走显式入口：信息栏「取消聚焦 / 全部取消」、
-    // 右键菜单、移出最后一颗；误清 / 误换星可从右键「上一聚焦」找回
-    if (!en) return
-    if (!additive && !(selEntries.length === 1 && selEntries[0] === en)) notePrevFocus()   // 裸点换星：旧聚焦集进「上一聚焦」
-    selectSat(en, false, additive)   // 裸点=替换聚焦；Ctrl/Cmd/Shift 点=加入/移出多选
-  })
+  // extra＝点中的是渲染集之外、被别的功能画出来的星（见 pickExtraSats），直接是条目本身
+  scene.setOnPick((index, point, additive, extra) => onMapPick(extra || (index >= 0 ? renderEntries[index] : null), additive))
   scene.setPickExtras(pickExtraSats)
   // 鼠标实时经纬度（底部状态栏显示）+ 右键标点/加航点
   scene.setOnHover(onHoverLL)
@@ -10219,6 +12078,8 @@ onMounted(async () => {
     onMaskChange: (on) => { if (scene) scene.setDotMask(on) }
   })
   scene.setOverlay(modelLayer.overlay)
+  scene.setLinkIconPx(linkIconPx)   // 图上链路：终点星画着模型图标时箭头让图标（见 linkIconPx）
+  scene.setLinkIconEdge(linkIconEdge)   // …… 且停在图标此刻的轮廓外沿上，不停在包围圆上（见 linkIconEdge）
   // 标记实体模型层（地球站 / 点标记 / 航迹载具挂的模型）：与卫星图标共用一份模型缓存 / 元数据 / 就绪通知（modelLayer.source），
   // 出帧插槽在宇宙空间主趟之后、卫星图标之前；标记精灵按实体键交叉淡化（spriteWeight）、拖放命中先问它（hitTest）
   try {
@@ -10267,6 +12128,9 @@ onMounted(async () => {
   ro = new ResizeObserver(() => { if (scene) scene.resize(); if (flat && flatView.value) { flat.resize(); if (_rdkKeepView) flat.setView(_rdkKeepView) } }); ro.observe(el.value)
   if (rdkEl.value) { rdkMeasure(); rdkRo = new ResizeObserver(rdkMeasure); rdkRo.observe(rdkEl.value) }   // 右栏显示宽 → 窄档 / 横幅让位
   window.addEventListener('pointerdown', onPickArmDown, true)   // 画布点击落点闸（捕获阶段，每次按下重判）
+  window.addEventListener('pointerdown', onLinkPickDown, true); window.addEventListener('pointerup', onLinkPickUp, true)   // 建链态点选 / 取点编辑器图上点选
+  window.addEventListener('pointermove', onLinkHoverMove, { passive: true })   // 取点编辑器：图上悬停候选点
+  window.addEventListener('keydown', onLinkKey, true)
   window.addEventListener('focus', onWinFocus)
   if (track.value) { measureTrack(); trackRo = new ResizeObserver(measureTrack); trackRo.observe(track.value) }   // 轨道宽 / 位置 / dpr → 刻度自适应
   window.addEventListener('resize', onHairDpr)   // 换显示器 / 改缩放：dpr 变了轨道宽不一定变，单靠 trackRo 接不住
@@ -10285,6 +12149,7 @@ onMounted(async () => {
   await restoreSettings()   // 恢复全部选项/设置（无感）
   await ensureProvinces(); await ensureCities()   // 按恢复后的省/市界开关加载数据并套用可见性（restoreSettings 只回填开关）
   customConst.load()   // 恢复自定义星座（按参数重建合成星，随后由 rebuildRenderSet 按可见集拼进渲染集）
+  dayEpochBeat = setInterval(checkDayEpoch, 60000); window.addEventListener('focus', checkDayEpoch)
   satGroups.load()     // 恢复已存卫星组
   await refreshCustomImportCount()   // 导入组清单（注册表登记要用）
   initSatSets(legacySel)   // 卫星集注册表：顺序 / 可见集合 / 覆盖层；没有存档就按旧存档迁移，然后按可见集逐集加载
@@ -10306,6 +12171,9 @@ onMounted(async () => {
   if (view.flat) await applyFlat(true)   // 恢复上次退出时的 2D 平面图（watch 不触发初始值，故挂载时主动套用一次）
   revealStage()
   watch(snapshot, saveSettings, { deep: true })   // 此后任意改动自动本地缓存
+  // 恢复时给旧轨道根数星补了历元（useGrdCoverage 的迁移）：自动落盘是刚装上的，那次改动它没看见 —— 补存一次，
+  // 别的窗口（链路预算 / 模型工作台读 globe3d/settings）立刻读到节点自己的历元
+  if (grd.takeEpochMigrated()) saveSettings()
   watch(displayQuality, applyDisplayQuality, { deep: true })   // 画质档位变化 → 实时套用（msaa 除外，由重挂载处理）
   // 参考系换档（设置弹窗 / 侧栏小标 / 命令面板写的都是同一个 viewPrefs.frame）
   watch(() => viewPrefs.frame, (v) => { if (scene) scene.setFrameMode(v) })
@@ -10331,6 +12199,9 @@ onMounted(async () => {
         return pv && pv.position ? { key, basis: bodyRt.attitudeBasisAt(key, { pv, gmstRad: sat.gstime(d), tMs: ms }), sun: bodyRt.sunEcefLast() } : null
       },
       select: (norad) => { const e = satEntryById('n:' + norad); if (e) selectSat(e, true); return !!e },
+      selectAdd: (norad) => { const e = satEntryById('n:' + norad); if (e) selectSat(e, false, true); return !!e },
+      links: () => JSON.parse(JSON.stringify(lnk.compute(calcAt().getTime()).scene)),
+      modelLayer: () => modelLayer,
       follow: () => { startFollow(selEntry); return !!following.value },
       unfollow: () => stopFollow(),
       seek: (ms) => satcovSeekClock(ms),
@@ -10356,9 +12227,9 @@ onMounted(async () => {
       },
       pauseClock: () => { if (clock.mode === 'play') togglePlay() },
       satGroups,
-      // 天线树定点同步星（星座条目）：条目表 / 是否在渲染集 / 此刻星下点 / 本体身份与自动匹配的模型 / 绑模型
+      // 天线树虚拟星（星座条目）：条目表（kind：'orbit' 轨道根数 | 'fixed' 定点）/ 是否在渲染集 / 此刻星下点 / 本体身份与自动匹配的模型 / 绑模型
       tg: {
-        list: () => treeGeoList.map((e) => ({ folder: e._grdFolder, id: String(e.noradId), name: e.name })),
+        list: () => treeGeoList.map((e) => ({ folder: e._grdFolder, id: String(e.noradId), name: e.name, kind: e._treeKind })),
         inRender: (id) => renderEntries.some((e) => String(e.noradId) === String(id)),
         sel: () => selEntries.map((e) => String(e.noradId)),
         pos: (id, ms) => { const e = treeGeoById.get(String(id)); if (!e) return null; const d = new Date(ms == null ? calcAt().getTime() : ms), pv = posAt(e, d); if (!pv) return null; const gd = sat.eciToGeodetic(pv.position, sat.gstime(d)); return { lon: sat.degreesLong(gd.longitude), lat: sat.degreesLat(gd.latitude), altKm: gd.height } },
@@ -10378,6 +12249,7 @@ onBeforeUnmount(() => {
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.polyAvail = false; covNav.togglePoly = null
   covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null; covNav.sendMiniapp = null; covNav.sendTrajMiniapp = null
+  covNav.exportVideo = null; vexp.dispose()
   covNav.searchSats = null; if (offCmds) { offCmds(); offCmds = null }
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
@@ -10386,7 +12258,12 @@ onBeforeUnmount(() => {
   if (_attEqTrail) { clearTimeout(_attEqTrail); _attEqTrail = 0 }
   if (_attKickT) { clearTimeout(_attKickT); _attKickT = 0 }
   if (_attEqSaveTimer) attEqFlushSave()
+  // grdLive 排着的尾写同理立刻落（暂停后马上离开本页，再没人补）
+  if (_grdLiveTrail) { clearTimeout(_grdLiveTrail); _grdLiveTrail = 0; _grdLiveGate.due(); persistGrdLive() }
   window.removeEventListener('beforeunload', attEqUnload)
+  // 2D 跟随卫星中离开本页（整页切走 / 重挂）：借走的投影中心 / 星下点参考 / 视图还回去并落盘（关软件走 beforeunload 同一支）
+  window.removeEventListener('beforeunload', flatFollowLeave)
+  flatFollowLeave()
   if (_viewSaveTimer) { clearTimeout(_viewSaveTimer); _viewSaveTimer = null }
   if (el.value) el.value.removeEventListener('pointerup', saveView)
   if (flatCanvas.value) flatCanvas.value.removeEventListener('pointerup', saveView)
@@ -10402,6 +12279,8 @@ onBeforeUnmount(() => {
   // 离开本页：退订并停表。时刻本身保留在 store 里 —— 回来接着这个时刻，不弹回「此刻」。
   if (unsubClock) { unsubClock(); unsubClock = null }
   if (nowBeat) { clearInterval(nowBeat); nowBeat = null }
+  if (dayEpochBeat) { clearInterval(dayEpochBeat); dayEpochBeat = null }
+  window.removeEventListener('focus', checkDayEpoch)
   if (scrubEnd) scrubEnd(false)   // 拖着游标离开本页：只摘监听，不续播（下面紧接着就停表）
   releaseClock()
   offPovTick(); offMapPov()   // 退订主权解算层与视角状态源
@@ -10427,6 +12306,8 @@ onBeforeUnmount(() => {
   // 右栏：拖分隔条途中卸载 → _rdkUp 摘监听并撤 html.ui-col-resize（别把整窗光标锁死）
   if (rdkRo) { rdkRo.disconnect(); rdkRo = null }; if (_rdkUp) _rdkUp(); clearTimeout(_rdkCopyT)
   window.removeEventListener('pointerdown', onPickArmDown, true); window.removeEventListener('focus', onWinFocus)
+  window.removeEventListener('pointerdown', onLinkPickDown, true); window.removeEventListener('pointerup', onLinkPickUp, true); window.removeEventListener('keydown', onLinkKey, true)
+  window.removeEventListener('pointermove', onLinkHoverMove); if (_lnkHovRaf) cancelAnimationFrame(_lnkHovRaf)
   cursor.ll = null; cursor.env = null; if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (geomPool) { geomPool.dispose(); geomPool = null }; if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
@@ -10435,25 +12316,27 @@ onBeforeUnmount(() => {
   <div class="g3" :class="{ 'rdk-drag': rdkDrag }" ref="g3el">
     <div class="body">
       <div
-        class="stage-wrap" :class="{ dragon: impDragOver, shown: stageShown }"
+        ref="stageWrapEl" class="stage-wrap" :class="{ dragon: impDragOver, shown: stageShown, 'lnk-hov': lnkCandHov }"
         @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
       >
         <div ref="el" class="stage"></div>
         <canvas v-show="flatView" ref="flatCanvas" class="flat" :class="{ rdy: flatPainted }"></canvas>
+        <!-- 视频导出的取景预览：框外压暗 + 叠加信息按成片比例画（面板开着才有，不吃指针） -->
+        <canvas v-show="vexp.open.value" ref="vexpPvEl" class="vexp-pv"></canvas>
 
-        <!-- 聚焦卫星图例：色条＝地图上实际那两根线（颜色/线型随「显示设置 · 聚焦卫星」走），3D / 2D 同步显示 -->
-        <div v-if="selected && (focusStyle.fpOn || focusStyle.trkOn)" class="focus-legend">
+        <!-- 聚焦卫星图例：色条＝地图上实际那两根线（颜色/线型随「卫星聚焦特效设置」走），只在 3D 显示（2D 不出图例） -->
+        <div v-if="!flatView && selected && (focusStyle.fpOn || focusStyle.trkOn)" class="focus-legend">
           <div v-if="focusStyle.fpOn" class="fl-row"><span class="fl-sw" :style="fpSwStyle"></span>{{ fpLegend }}</div>
           <div v-if="focusStyle.trkOn" class="fl-row"><span class="fl-sw" :class="{ band: focusStyle.trkMode === 'swath' }" :style="trkSwStyle"></span>{{ trkLegend }}</div>
         </div>
 
-        <!-- 信息栏「天线」节的「＋」：与侧栏卫星行「＋」同一套条目，外加「波束合成」。菜单 position:fixed、取视口坐标，留在这里与所在容器无关 -->
+        <!-- 信息栏「天线」节的「＋」：与侧栏卫星行「＋」同一套条目，外加「电磁波束仿真」。菜单 position:fixed、取视口坐标，留在这里与所在容器无关 -->
         <template v-if="antAddMenu && antAddMenu.src === 'card'">
           <div class="lmenu-bd" @mousedown="antAddMenu = null" @contextmenu.prevent="antAddMenu = null"></div>
           <div ref="antMenuEl" class="lmenu antm" :style="{ left: antAddMenu.x + 'px', top: antAddMenu.y + 'px' }">
             <div class="lmi" @click="antAddPick('gauss')"><Icon name="waves" :size="12" /><span>高斯天线</span></div>
             <div class="lmi" @click="antAddPick('grd')"><Icon name="import" :size="12" /><span>导入 GRD…</span></div>
-            <div class="lmi" @click="antAddPick('synth')"><Icon name="satellite-dish" :size="12" /><span>波束合成</span></div>
+            <div class="lmi" @click="antAddPick('synth')"><Icon name="satellite-dish" :size="12" /><span>电磁波束仿真</span></div>
           </div>
         </template>
       </div>
@@ -10467,7 +12350,7 @@ onBeforeUnmount(() => {
           <div v-if="constModal" class="cedit">
             <div class="cehd">
               <span class="ceback" @click="closeConstWizard"><Icon name="chevron-left" :size="12" /> 返回</span>
-              <span class="cetitle">{{ constModal.id ? '编辑星座' : '生成星座' }}</span>
+              <span class="cetitle">{{ constModal.id ? '编辑星座' : '生成卫星或星座' }}</span>
               <span class="cesolo" :title="constModal.pvSolo !== false ? '地图上只显示正在生成的星座；关掉则叠加在当前显示的卫星上' : '叠加在当前显示的卫星上；打开则只显示正在生成的星座'"><button type="button" class="layersw" :class="{ on: constModal.pvSolo !== false }" role="switch" :aria-checked="constModal.pvSolo !== false ? 'true' : 'false'" @click="constModal.pvSolo = constModal.pvSolo === false"><i></i></button><span>仅预览</span></span>
               <span class="celive" title="改动实时预览到地球">● 实时</span>
             </div>
@@ -10620,7 +12503,7 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="focusStyle.trkSpanMode !== 'time'" class="cefv"><label>轨迹圈数</label><div class="ceinp"><input class="ci" :value="trkVal('rev')" placeholder="1" @input="e => trkInput('rev', e)" @change="trkCommit('rev')" @blur="trkCommit('rev')" @keyup.enter="trkCommit('rev')" /><span class="u">圈</span></div></div>
               <div v-else class="cefv"><label>轨迹周期</label><div class="ceinp"><input class="ci" :value="trkVal('time')" placeholder="0" @input="e => trkInput('time', e)" @change="trkCommit('time')" @blur="trkCommit('time')" @keyup.enter="trkCommit('time')" /><span class="u">min</span></div></div>
-              <div class="cef ceset"><span class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与聚焦卫星同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 聚焦卫星显示设置…</span></div>
+              <div class="cef ceset"><span class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与卫星聚焦特效设置同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 卫星聚焦特效设置…</span></div>
 
               <div v-if="constDerived" class="ceread" title="场景历元 t0">
                 <div class="crcode">{{ constDerived.code }}</div>
@@ -11503,6 +13386,7 @@ onBeforeUnmount(() => {
             <div class="srow vis-satset"><label>卫星集</label>
               <select class="vis-satsel" :value="vis.satSrc.value" :title="visSatTitle" @change="e => vis.satSrc.value = e.target.value">
                 <option value="">当前显示</option>
+                <option :value="TREE_SET">卫星天线树</option>
                 <optgroup label="默认卫星组">
                   <option v-for="g in VIS_SAT_GROUPS" :key="g.key" :value="'g:' + g.key">{{ g.label }}</option>
                 </optgroup>
@@ -11713,6 +13597,123 @@ onBeforeUnmount(() => {
           </div>
 
         </div>
+        </div>
+
+        <!-- 链路（STK Chain 范式）：图上依次点选地球站 / 卫星建立单向链路 → 导入链路预算 -->
+        <div v-show="shellUi.side === 'links'" class="sview lnkv">
+          <div class="sec">
+            <div class="sect acc" data-sec="lk-list" :class="{ open: isSecOpen('lk-list') }" @click="toggleSec('lk-list')">
+              <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-list') }" :size="12" /><span>链路</span>
+              <span class="lnk" :class="{ on: !!lnk.draw.value }" title="新建链路：在链路详情中检索添加，或在 3D / 平面图上依次单击地球站 / 卫星（Enter 完成 · Esc 取消 · Backspace 撤销）" @click.stop="lnk.draw.value ? lnkFinish() : lnkNew(null, true)"><Icon name="plus" :size="12" />{{ lnk.draw.value ? '完成' : '新建' }}</span>
+              <span class="lnk" :class="{ dis: !lnkCheckedN }" title="把勾选的链路导入链路预算" @click.stop="openLnkImpMenu($event)">导入链路预算<Icon name="chevron-down" :size="12" /></span>
+            </div>
+            <template v-if="isSecOpen('lk-list')">
+              <div v-if="!links.length" class="lk-empty">暂无链路。</div>
+              <template v-else>
+                <label class="chk2 lk-all"><input type="checkbox" :checked="lnkAllChecked" :indeterminate.prop="lnkCheckedN > 0 && !lnkAllChecked" @change="lnk.setAllChecked($event.target.checked)" /><span>全选</span><span class="lk-cnt">{{ lnkCheckedN }}/{{ links.length }}</span></label>
+                <div class="mlist tall lk-list">
+                  <div v-for="l in links" :key="l.id" class="mrow lk-row" :class="{ hid: l.show === false, active: lnk.selId.value === l.id }" @click="lnkSelect(l.id)">
+                    <input type="checkbox" class="lk-ck" :checked="lnk.checked.value.has(l.id)" title="勾选（批量导入链路预算）" @click.stop @change="lnk.toggleCheck(l.id)" />
+                    <button type="button" class="layersw" :class="{ on: l.show !== false }" role="switch" :aria-checked="l.show !== false ? 'true' : 'false'" :title="l.show !== false ? '隐藏该链路（数据保留）' : '显示该链路'" @click.stop="lnk.toggleShow(l.id)"><i></i></button>
+                    <input class="clr mkc" type="color" :value="l.color || '#3d8bff'" title="链路颜色" @click.stop @input="e => lnk.setColor(l.id, e.target.value)" />
+                    <span class="lk-nm" :title="lnkName(l)" data-i18n-skip>{{ lnkName(l) }}</span>
+                    <LinkStateDot :id="l.id" />
+                    <span class="del" title="删除该链路" @click.stop="lnk.remove(l.id)"><Icon name="x" :size="12" /></span>
+                  </div>
+                </div>
+              </template>
+            </template>
+          </div>
+
+          <div v-if="lnkSel" class="sec">
+            <div class="sect acc" data-sec="lk-insp" :class="{ open: isSecOpen('lk-insp') }" @click="toggleSec('lk-insp')">
+              <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-insp') }" :size="12" /><span>链路详情</span>
+              <span class="lnk" title="按相反信号流向复制一条独立链路" @click.stop="lnkReverse">生成反向链路</span>
+            </div>
+            <template v-if="isSecOpen('lk-insp')">
+              <div class="srow"><label>名称</label><input class="ci" :value="lnkSel.nameAuto === false ? lnkSel.name : ''" :placeholder="lnkName(lnkSel)" title="留空 = 按节点自动命名" @change="e => lnk.rename(lnkSel.id, e.target.value)" /></div>
+              <!-- 节点竖链：节点 / 跳 / 插入光标（图上单击与检索都往这一位插）/ 就地替换，一行一个稳定 key（见 lnkRows） -->
+              <div class="lk-chain">
+                <template v-for="r in lnkRows" :key="r.key">
+                  <div v-if="r.t === 'node'" class="lk-node" :class="{ bad: lnkNodeBad(lnkSel.nodes[r.i]), rep: lnkRep === r.i, pko: lnkPickOpenAt(r.i) }">
+                    <span class="lk-no">{{ r.i + 1 }}</span>
+                    <Icon :name="lnkNodeIcon(lnkSel.nodes[r.i])" :size="12" class="lk-ty" />
+                    <span class="lk-nn pk" :title="lnkNodeName(lnkSel.nodes[r.i]) + ' · ' + byLang('更换节点…', 'Change node…')" data-i18n-skip @mousedown.prevent @click="lnkRepToggle(r.i)">{{ lnkNodeName(lnkSel.nodes[r.i]) }}</span>
+                    <span v-if="lnkSel.nodes[r.i].k === 'st'" class="lk-at pk" title="地球站属性…" @click="lnkStProps(lnkSel.nodes[r.i])">{{ lnkStAttr(lnkSel.nodes[r.i]) || '—' }}</span>
+                    <span v-else-if="lnkSel.nodes[r.i].k === 'pt'" class="lk-at"></span>
+                    <!-- Polygon / 航迹：取点钮（摘要 = 取了哪些点），点开 = 节点行下展开取点编辑器 -->
+                    <button
+                      v-else-if="lnkSel.nodes[r.i].k === 'pg' || lnkSel.nodes[r.i].k === 'tj'" type="button" class="lk-pkb"
+                      :class="{ on: lnkPickOpenAt(r.i), none: !lnkNodeBad(lnkSel.nodes[r.i]) && !lnkPickN(lnkSel.nodes[r.i]) }"
+                      :aria-expanded="lnkPickOpenAt(r.i) ? 'true' : 'false'" :title="byLang('取点…', 'Points…')" data-i18n-skip @click="lnkPickToggle(r.i)"
+                    ><span class="lk-pkt">{{ lnkPickSummary(lnkSel.nodes[r.i]) }}</span><Icon name="chevron-down" :size="11" class="lk-pkc" /></button>
+                    <span v-else class="seg nseg lk-seg" role="group" aria-label="转发方式" :title="lnkEnd(lnkSel, r.i) ? '链端卫星按再生（星上发起 / 终结）' : satLaserAt(lnkSel, r.i) ? '激光星间跳两端卫星按再生' : '透明 = 弯管转发；再生 = 星上解调再调制'">
+                      <span class="sg" :class="{ on: !satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, false)">透明</span>
+                      <span class="sg" :class="{ on: satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, true)">再生</span>
+                    </span>
+                    <span class="lk-ic" :class="{ dis: r.i === 0 }" title="上移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, -1)"><Icon name="chevron-up" :size="12" /></span>
+                    <span class="lk-ic" :class="{ dis: r.i === lnkSel.nodes.length - 1 }" title="下移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, 1)"><Icon name="chevron-down" :size="12" /></span>
+                    <span class="del" title="删除该节点" @click="lnkRep = -1; lnk.removeNode(lnkSel.id, r.i)"><Icon name="x" :size="12" /></span>
+                  </div>
+                  <div v-else-if="r.t === 'hop'" class="lk-hop">
+                    <span class="lk-ins" title="在此插入节点" @click="lnkAddAt(lnkSel.id, r.i + 1)"><Icon name="plus" :size="11" /></span>
+                    <span class="lk-hk">{{ lnkHopText(lnkSel, r.i) }}</span>
+                    <span v-if="lnkIsl(lnkSel, r.i)" class="seg nseg lk-seg" role="group" aria-label="星间链路">
+                      <span class="sg" :class="{ on: !lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, false)">微波</span>
+                      <span class="sg" :class="{ on: !!lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, true)">激光</span>
+                    </span>
+                    <LinkHopTxt :id="lnkSel.id" :i="r.i" />
+                  </div>
+                  <div v-else-if="r.t === 'pick'" class="lk-pick">
+                    <LinkPickEditor
+                      v-if="lnkPickView"
+                      :kind="lnkPickView.kind" :cands="lnkPickView.cands" :stats="lnkPickView.stats" :flight="lnkPickView.flight"
+                      :hi="lnk.pickHi.value" :readOf="lnkCandRead" :fmtLL="fmtLL" :fmtTime="lnkFmtTime" :fmtAlt="lnkFmtAlt"
+                      @toggle="lnkPickKey" @fam="lnkPickFam" @div="lnkPickDiv" @hover="lnkPickHov" @seek="lnkPickSeek" @close="lnkPickClose"
+                    />
+                  </div>
+                  <div v-else class="lk-slot" :class="{ rep: r.t === 'rep' }">
+                    <LinkNodePicker
+                      :ref="r.t === 'slot' ? lnkSlotRef : undefined"
+                      :source="lnkSrc" :nbrs="r.nbrs" :sig="r.sig" :mode="r.t === 'rep' ? 'rep' : 'ins'"
+                      :autofocus="r.t === 'rep'" :drawing="r.t === 'slot'"
+                      :placeholder="r.t === 'rep' ? lnkNodeName(lnkSel.nodes[r.at]) : '添加节点'"
+                      @pick="(it) => (r.t === 'rep' ? lnkPickRep(r.at, it) : lnkPickIns(it))"
+                      @hover="(it) => lnkPickHover(it, r.at, r.t === 'rep')"
+                      @close="lnkRep = -1" @undo="lnk.undoNode()" @finish="lnkFinish"
+                    />
+                  </div>
+                </template>
+                <div v-if="lnkCurSel < 0" class="lk-add" @click="lnkAddAt(lnkSel.id)"><Icon name="plus" :size="12" /><span>添加节点</span></div>
+              </div>
+              <div class="srow lk-tg"><label>可导入</label><span class="u">{{ lnkTargetsText(lnkSel) }}</span></div>
+              <div v-if="lnkStrands(lnkSel) > 1" class="srow lk-tg2" title="Polygon / 航迹节点的代表点逐一组合成的具体路径条数；导入链路预算时一条支路成一行（一条链）"><label>支路</label><span class="u" data-i18n-skip>{{ lnkStrands(lnkSel) }}</span></div>
+            </template>
+          </div>
+
+          <div class="sec">
+            <div class="sect acc" data-sec="lk-style" :class="{ open: isSecOpen('lk-style') }" @click="toggleSec('lk-style')">
+              <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-style') }" :size="12" /><span>显示</span>
+              <span class="lnk" title="本节恢复出厂样式" @click.stop="lnkResetStyle">默认</span>
+            </div>
+            <template v-if="isSecOpen('lk-style')">
+              <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="6" step="0.1" v-model.number="lnkStyle.width" @input="pushLinks" /><span class="u">{{ Number(lnkStyle.width).toFixed(1) }}</span></div>
+              <div class="srow" title="地球站 ↔ 卫星的跳：仰角不低于此值才算可见"><label>仰角门限</label><input class="ci" v-model.number="lnkStyle.minEl" @change="pushLinks" /><span class="u">°</span></div>
+              <div class="srow"><label>不可见跳</label>
+                <span class="seg nseg" role="group" aria-label="不可见跳">
+                  <span class="sg" :class="{ on: lnkStyle.blocked === 'dash' }" @click="lnkStyle.blocked = 'dash'; pushLinks()">虚线</span>
+                  <span class="sg" :class="{ on: lnkStyle.blocked === 'hide' }" @click="lnkStyle.blocked = 'hide'; pushLinks()">隐藏</span>
+                </span>
+              </div>
+              <div class="srow"><label>方向</label>
+                <span class="seg nseg" role="group" aria-label="方向标记">
+                  <span class="sg" :class="{ on: lnkStyle.dir === 'static' }" title="每跳一枚末端箭头" @click="lnkStyle.dir = 'static'; pushLinks()">静止</span>
+                  <span class="sg" :class="{ on: lnkStyle.dir === 'flow' }" title="末端箭头 + 沿信号方向流动的虚线" @click="lnkStyle.dir = 'flow'; pushLinks()">流动</span>
+                  <span class="sg" :class="{ on: lnkStyle.dir === 'off' }" @click="lnkStyle.dir = 'off'; pushLinks()">关</span>
+                </span>
+              </div>
+            </template>
+          </div>
         </div>
 
         <!-- 环境场：ITU 气象 / 地形数据场（等经纬栅格 + 等值线），画在所有叠加层最底 -->
@@ -11927,7 +13928,7 @@ onBeforeUnmount(() => {
                     <div class="sres-list">
                       <div v-for="e in lvSatCand" :key="e.noradId || e.name" class="sitem" @click="lvPickSat(e)">
                         <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
-                        <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
+                        <div class="sub">{{ e.tag }}<template v-if="e.noradId && !e.syn"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
                       </div>
                     </div>
                     <div class="sres-n">{{ lvSatTotal > lvSatCand.length ? ('命中 ' + lvSatTotal + ' 颗 · 列出前 ' + lvSatCand.length) : (lvSatTotal + ' 颗') }}</div>
@@ -12044,7 +14045,7 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
-        <!-- 聚焦卫星：轨道线 / 星下点轨迹 / 覆盖圈 / 覆盖锥 / 卫星标记 的显示样式 -->
+        <!-- 卫星聚焦特效设置：轨道线 / 星下点轨迹 / 覆盖圈 / 覆盖锥 / 卫星标记 的显示样式 -->
         <div v-show="shellUi.side === 'focus'" class="sview">
         <div class="cov-side focus-side docked">
 
@@ -12157,7 +14158,7 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
-        <!-- 卫星模型：当前卫星的模型绑定 / 显示 / 模型库（独立组件，见 ModelSidePanel.vue） -->
+        <!-- 仿真对象模型：当前卫星的模型绑定 / 显示 / 模型库（独立组件，见 ModelSidePanel.vue） -->
         <div v-show="shellUi.side === 'model'" class="sview">
           <ModelSidePanel
             :sat="selSat" :model="selModel" :lib="modelLib.list" :following="!!following" :can-follow="!flatView" :st="focusStyle"
@@ -12165,7 +14166,7 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- 地图设置：海陆配色 / 国界省界市界 / 名称标注 -->
+        <!-- 地图综合设置：海陆配色 / 国界省界市界 / 名称标注 -->
         <div v-show="shellUi.side === 'geo'" class="sview">
         <div class="cov-side geo-side docked">
         <div class="sec">
@@ -12236,17 +14237,43 @@ onBeforeUnmount(() => {
             </span>
           </div>
           </template>
+          <!-- 经纬图框（SATSOFT 式，与视频导出同一支 geo/geoFrame.js）：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格 -->
+          <div class="swrow" title="图框外留白、四边刻度、度数标注与轴标题；仅 2D 平面图，PNG / PDF 导出一并带上"><span>经纬图框</span><button type="button" class="layersw" :class="{ on: mapCrs.frame.on }" role="switch" :aria-checked="mapCrs.frame.on ? 'true' : 'false'" @click="setMapFrame({ on: !mapCrs.frame.on })"><i></i></button></div>
+          <template v-if="mapCrs.frame.on">
+            <div class="srow sub"><label>间隔</label>
+              <select :value="mapCrs.frame.step" @change="setMapFrame({ step: Number($event.target.value) })">
+                <option :value="0">{{ byLang('自动', 'Auto') }}</option>
+                <option v-for="s in GEO_STEPS" :key="s" :value="s">{{ s }}°</option>
+              </select>
+            </div>
+            <div class="srow sub"><label>标注</label>
+              <span class="seg nseg" role="group" aria-label="标注">
+                <span class="sg" :class="{ on: mapCrs.frame.fmt !== 'hemi' }" @click="setMapFrame({ fmt: 'num' })">−50.00</span>
+                <span class="sg" :class="{ on: mapCrs.frame.fmt === 'hemi' }" @click="setMapFrame({ fmt: 'hemi' })">50°W</span>
+              </span>
+            </div>
+            <div class="srow sub"><label>底色</label>
+              <span class="seg nseg" role="group" aria-label="底色">
+                <span class="sg" :class="{ on: mapCrs.frame.theme !== 'dark' }" @click="setMapFrame({ theme: 'light' })">浅色</span>
+                <span class="sg" :class="{ on: mapCrs.frame.theme === 'dark' }" @click="setMapFrame({ theme: 'dark' })">深色</span>
+              </span>
+            </div>
+            <label class="chk2 sub"><input type="checkbox" :checked="mapCrs.frame.lines" @change="setMapFrame({ lines: $event.target.checked })" /><span>网格线</span></label>
+          </template>
           </template>
         </div>
         <div class="sec" :class="{ hid: !spaceOn }">
           <div class="sect acc" data-sec="geo-space" :class="{ open: isSecOpen('geo-space', false) }" @click="toggleSec('geo-space', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-space', false) }" :size="12" /><span>宇宙空间</span><span class="lnk" title="本节恢复出厂样式（不动总开关）" @click.stop="resetSpace">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: spaceOn }" role="switch" :aria-checked="spaceOn ? 'true' : 'false'" :title="spaceOn ? '关闭宇宙空间' : '开启宇宙空间'" @click.stop="toggleSpace"><i></i></button></div>
           <template v-if="isSecOpen('geo-space', false)">
-          <label class="chk2" title="约 110 颗亮星按真实赤经赤纬与视星等、其余按星等计数律补足，另有银河带；静态不闪，随恒星时转动；仅 3D 球体"><input type="checkbox" :checked="space.stars" @change="setSpaceItem('stars', $event.target.checked)" /><span>星空</span></label>
+          <label class="chk2" title="耶鲁亮星表 9096 颗亮星（真实位置、星等、颜色）+ NASA 星图的银河（Gaia 等 17 亿颗星汇成的光）；画面里受光的地球越大星空越暗（人眼适应）；随恒星时转动，计入岁差章动；仅 3D 球体"><input type="checkbox" :checked="space.stars" @change="setSpaceItem('stars', $event.target.checked)" /><span>星空</span></label>
           <div v-if="space.stars" class="srow sub"><label>星空亮度</label><input class="rng" type="range" min="0.2" max="2" step="0.05" v-model.number="space.starGain" @input="applySpace" /><span class="u">{{ space.starGain.toFixed(2) }}</span></div>
           <label class="chk2" title="地球临边的大气散射：昼侧亮蓝、夜侧几乎不见、晨昏线附近偏暖，与晨昏效果同一个太阳方向；仅 3D 球体"><input type="checkbox" :checked="space.atmo" @change="setSpaceItem('atmo', $event.target.checked)" /><span>大气辉光</span></label>
           <div v-if="space.atmo" class="srow sub"><label>辉光强度</label><input class="rng" type="range" min="0.2" max="2" step="0.05" v-model.number="space.atmoGain" @input="applySpace" /><span class="u">{{ space.atmoGain.toFixed(2) }}</span></div>
           <label class="chk2" title="日面 + 柔和眩光，沉到地球背后时淡出；仅 3D 球体"><input type="checkbox" :checked="space.sun" @change="setSpaceItem('sun', $event.target.checked)" /><span>太阳</span></label>
           <div v-if="space.sun" class="srow sub"><label>眩光强度</label><input class="rng" type="range" min="0" max="2" step="0.05" v-model.number="space.sunGlare" @input="applySpace" /><span class="u">{{ space.sunGlare.toFixed(2) }}</span></div>
+          <label class="chk2" title="NASA LRO 月面贴图（LROC 彩色镶嵌 + LOLA 地形），按真实地心位置、月相与天平动绘制，含地照与月食地影；仅 3D 球体"><input type="checkbox" :checked="space.moon" @change="setSpaceItem('moon', $event.target.checked)" /><span>月球</span></label>
+          <div v-if="space.moon" class="srow sub" title="显示半径的放大倍数，1× 为真实大小；仅放大显示，位置、月相与食象仍按真实几何计算"><label>大小</label><input class="rng" type="range" min="1" max="10" step="0.1" v-model.number="space.moonScale" @input="applySpace" /><span class="u">{{ space.moonScale.toFixed(1) }}×</span></div>
+          <label class="chk2" title="水星、金星、火星、木星、土星、天王星：VSOP87 行星理论算真实地心位置（对 JPL 星历误差 < 2″），视星等含相位与土星环倾角，亮度跟随星空亮度；仅 3D 球体"><input type="checkbox" :checked="space.planets" @change="setSpaceItem('planets', $event.target.checked)" /><span>行星</span></label>
           <label class="chk2" title="真彩卫星影像，3D 球体与平面图同一份；「高精」档平面图用瓦片金字塔、3D 球体用 16K 整幅（显卡纹理上限不足 16384 时自动落到 8K）"><input type="checkbox" :checked="space.img" @change="setSpaceItem('img', $event.target.checked)" /><span>地球影像</span></label>
           <div v-if="space.img" class="srow sub"><label>分辨率</label>
             <span class="seg nseg" role="group" aria-label="影像分辨率">
@@ -12254,7 +14281,7 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div v-if="space.img" class="srow sub"><label>亮度</label><input class="rng" type="range" min="0.3" max="1.2" step="0.05" :value="imageryBright" title="压暗影像，让边界线与覆盖场看得清；100% 为原图" @input="setImageryBright" /><span class="u">{{ Math.round(imageryBright * 100) }}%</span></div>
-          <label class="chk2" title="夜半球按太阳高度角从 0° 到 −18° 平滑压暗（民用 −6° / 航海 −12° / 天文 −18° 曙暮光），卫星模型按太阳方向受光、进地影变暗；不勾时地球与卫星全亮。3D 球体与平面图"><input type="checkbox" :checked="space.night" @change="setSpaceItem('night', $event.target.checked)" /><span>晨昏效果</span></label>
+          <label class="chk2" title="夜半球按太阳高度角从 0° 到 −18° 平滑压暗（民用 −6° / 航海 −12° / 天文 −18° 曙暮光），卫星模型按太阳方向受光、进入地影时变暗；不勾选时地球与卫星均为全亮。适用于 3D 球体与平面图"><input type="checkbox" :checked="space.night" @change="setSpaceItem('night', $event.target.checked)" /><span>晨昏效果</span></label>
           <div v-if="space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.nightColor" @input="applySpace" /><span class="u">{{ space.nightColor }}</span></div>
           <div class="srow sub" v-if="space.night" title="太阳高度角 −18° 以下（全黑夜）的不透明度"><label>夜区强度</label><input class="rng" type="range" min="0" max="0.95" step="0.01" v-model.number="space.nightOpacity" @input="applySpace" /><span class="u">{{ space.nightOpacity.toFixed(2) }}</span></div>
           <label class="chk2" title="太阳中心高度角 0° 的昼夜分界线；晨昏效果不勾时自带一层夜区阴影（勾着时夜区归晨昏效果）。3D 球体与平面图"><input type="checkbox" :checked="space.line" @change="setSpaceItem('line', $event.target.checked)" /><span>晨昏线</span></label>
@@ -12264,6 +14291,8 @@ onBeforeUnmount(() => {
           <div v-if="space.line && !space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.shadeColor" @input="applySpace" /><span class="u">{{ space.shadeColor }}</span></div>
           <div v-if="space.line && !space.night" class="srow sub" title="整个夜半球的不透明度；0 = 只画线"><label>夜区强度</label><input class="rng" type="range" min="0" max="0.95" step="0.01" v-model.number="space.shadeOpacity" @input="applySpace" /><span class="u">{{ space.shadeOpacity.toFixed(2) }}</span></div>
           <div class="srow" v-if="spaceSub" title="太阳直射点（时间轴当前时刻）"><label>日下点</label><span class="u">{{ fmtSlot(spaceSub.lon) + ' · ' + Math.abs(spaceSub.lat).toFixed(2) + '°' + (spaceSub.lat >= 0 ? 'N' : 'S') }}</span></div>
+          <div class="srow" v-if="spaceMoon" title="月球位于天顶的地面点（时间轴当前时刻）"><label>月下点</label><span class="u">{{ fmtSlot(spaceMoon.sub.lon) + ' · ' + Math.abs(spaceMoon.sub.lat).toFixed(2) + '°' + (spaceMoon.sub.lat >= 0 ? 'N' : 'S') }}</span></div>
+          <div class="srow" v-if="spaceMoon" title="月面被照亮部分占月盘的比例（地心视角，时间轴当前时刻）"><label>月相</label><span class="u">{{ (spaceMoon.illum * 100).toFixed(1) }}%</span></div>
           </template>
         </div>
         <div class="sec">
@@ -12461,7 +14490,7 @@ onBeforeUnmount(() => {
         </div>
         </div>
 
-        <!-- 标记：点标记 / 地球站 / 轨迹（每节＝一层，样式整层可调 + 逐条可覆盖） -->
+        <!-- 地图标记设置：点标记 / 地球站 / 轨迹（每节＝一层，样式整层可调 + 逐条可覆盖） -->
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec" :class="{ hid: !showPtLayer }">
@@ -12471,7 +14500,7 @@ onBeforeUnmount(() => {
           <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
           <label class="chk2" title="点标记画成带序号的圈（圈 1、圈 2）；序号即下方列表与点标记表格的行号"><input type="checkbox" v-model="markStyle.ptIdxOn" @change="applyMarkStyle" /><span>显示序号</span></label>
           <template v-if="markStyle.ptIdxOn">
-            <div class="srow sub" :title="byLang('序号圈直径（默认视角下的像素）；挂了模型的点标记，模型按同一大小画', 'Badge diameter at the default view; attached models use the same size')"><label>圈大小</label><input class="rng" type="range" min="1" max="40" step="1" v-model.number="markStyle.ptIdx" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptIdx }}</span></div>
+            <div class="srow sub" :title="byLang('序号圈直径（默认视角下的像素）；已配置模型的点标记，模型按相同大小显示', 'Badge diameter at the default view; attached models use the same size')"><label>圈大小</label><input class="rng" type="range" min="1" max="40" step="1" v-model.number="markStyle.ptIdx" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptIdx }}</span></div>
             <div class="srow sub"><label>盘颜色</label><input class="clr" type="color" v-model="markStyle.idxFill" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFill }}</span></div>
             <div class="srow sub"><label>盘透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.02" v-model.number="markStyle.idxFillOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFillOpacity.toFixed(2) }}</span></div>
             <div class="srow sub"><label>圈颜色</label><input class="clr" type="color" v-model="markStyle.idxRing" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxRing }}</span></div>
@@ -12484,7 +14513,7 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptColor }}</span></div>
-            <div class="srow" :title="byLang('符号大小；挂了模型的点标记，模型按同一大小画', 'Symbol size; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="20" step="0.5" v-model.number="markStyle.ptDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptDot }}</span></div>
+            <div class="srow" :title="byLang('符号大小；已配置模型的点标记，模型按相同大小显示', 'Symbol size; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="20" step="0.5" v-model.number="markStyle.ptDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptDot }}</span></div>
             <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.ptOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptOpacity.toFixed(2) }}</span></div>
             <div class="srow" title="描边宽 ÷ 符号直径，0＝不描边"><label>描边</label><input class="rng" type="range" min="0" max="0.4" step="0.02" v-model.number="markStyle.ptEdge" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdge.toFixed(2) }}</span></div>
             <div v-if="markStyle.ptEdge > 0" class="srow"><label>描边颜色</label><input class="clr" type="color" v-model="markStyle.ptEdgeColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdgeColor }}</span></div>
@@ -12514,7 +14543,7 @@ onBeforeUnmount(() => {
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
           <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
-          <div class="srow" :title="byLang('地球站图标大小（默认视角下的像素）；挂了模型的站，模型按同一大小画', 'Station icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="5" max="60" step="1" v-model.number="markStyle.stIcon" @input="applyMarkStyle" /><span class="u">{{ markStyle.stIcon }}</span></div>
+          <div class="srow" :title="byLang('地球站图标大小（默认视角下的像素）；已配置模型的地球站，模型按相同大小显示', 'Station icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="5" max="60" step="1" v-model.number="markStyle.stIcon" @input="applyMarkStyle" /><span class="u">{{ markStyle.stIcon }}</span></div>
           <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.stOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stOpacity.toFixed(2) }}</span></div>
           <label class="chk2"><input type="checkbox" v-model="markStyle.stLabelOn" @change="applyMarkStyle" /><span>显示名称</span></label>
           <template v-if="markStyle.stLabelOn">
@@ -12533,7 +14562,7 @@ onBeforeUnmount(() => {
               <div class="mrow" :class="{ hid: s.show === false }">
                 <button type="button" class="layersw" :class="{ on: s.show !== false }" role="switch" :aria-checked="s.show !== false ? 'true' : 'false'" :title="s.show !== false ? '隐藏该地球站（数据保留）' : '显示该地球站'" @click="toggleMkItem(s)"><i></i></button>
                 <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
-                <span class="mc2">{{ fmtLL(s.lat, s.lon) }}</span>
+                <span class="mc2 stll" :title="[lnkStAttr({ k: 'st', id: s.id }), '地球站属性…'].filter(Boolean).join(' · ')" @click="openStationDlg({ id: s.id, lat: s.lat, lon: s.lon })">{{ fmtLL(s.lat, s.lon) }}</span>
                 <span class="mchip" :class="{ on: !!s.model }" :title="chipTitle(s)" @click.stop="openPickPop($event, 'station', s)" @contextmenu.prevent.stop="setEntityModel('station', s.id, null)"><img v-if="s.model && mdlThumb(s.model.id)" :src="mdlThumb(s.model.id)" alt="" draggable="false" /><Icon v-else :name="s.model ? chipIcon(s) : 'box'" :size="12" /></span>
                 <span class="del" @click="removeStation(s.id)"><Icon name="x" :size="12" /></span>
               </div>
@@ -12541,7 +14570,7 @@ onBeforeUnmount(() => {
               <div v-if="s.model" class="srow sub mtrk">
                 <label>跟踪</label>
                 <span class="trksel" :class="{ open: trkOpenId === s.id }" title="天线指向的卫星；主选星＝聚焦集里此刻仰角最高的一颗（仰角低于 0° 时停放）" @click="trkToggle(s)"><span class="nm" :data-i18n-skip="s.track && s.track.satKey ? '' : null">{{ trkName(s) }}</span><Icon name="chevron-down" :size="12" /></span>
-                <label v-if="s.track && s.track.satKey" class="chk2 trkel" title="站标签的仰角改为对该星的仰角（不勾＝聚焦集最高仰角）"><input type="checkbox" :checked="!!s.track.el" @change="setTrackElOn(s, $event.target.checked)" /><span>仰角</span></label>
+                <label v-if="s.track && s.track.satKey" class="chk2 trkel" title="站标签的仰角改为对该星的仰角（不勾＝聚焦集最高仰角）"><input type="checkbox" :checked="!!(s.track.el || s.track.az)" :disabled="!!s.track.az" @change="setTrackElOn(s, $event.target.checked)" /><span>仰角</span></label>
                 <label v-if="s.track && s.track.satKey" class="chk2 trkel" title="站标签加对该星的方位角（WGS-84，正北起顺时针）"><input type="checkbox" :checked="!!s.track.az" @change="setTrackAzOn(s, $event.target.checked)" /><span>方位角</span></label>
                 <StReadTxt :id="s.id" />
               </div>
@@ -12560,7 +14589,7 @@ onBeforeUnmount(() => {
                     <div class="sres-list">
                       <div v-for="e in trkCand" :key="e.noradId || e.name" class="sitem" @click="trkPickItem(s, e)">
                         <div class="nm" :title="e.name" data-i18n-skip>{{ e.name }}</div>
-                        <div class="sub">{{ e.tag }}<template v-if="e.noradId"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
+                        <div class="sub">{{ e.tag }}<template v-if="e.noradId && !e.syn"><template v-if="e.tag"> · </template>NORAD {{ e.noradId }}</template></div>
                       </div>
                     </div>
                     <div class="sres-n">{{ trkTotal > trkCand.length ? ('命中 ' + trkTotal + ' 颗 · 列出前 ' + trkCand.length) : (trkTotal + ' 颗') }}</div>
@@ -12600,7 +14629,7 @@ onBeforeUnmount(() => {
           </template>
           <label class="chk2" title="航迹头（末航点）上画一枚俯视矢量图标：航行＝船舶、飞行＝飞机，朝向取末段走向"><input type="checkbox" v-model="markStyle.tjIconOn" @change="applyMarkStyle" /><span>显示图标</span></label>
           <template v-if="markStyle.tjIconOn">
-            <div class="srow sub" :title="byLang('载具图标大小（默认视角下的像素）；挂了模型的航迹，模型按同一大小画', 'Vehicle icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="60" step="1" v-model.number="markStyle.tjIconPx" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconPx }}</span></div>
+            <div class="srow sub" :title="byLang('载具图标大小（默认视角下的像素）；已配置模型的航迹，模型按相同大小显示', 'Vehicle icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="60" step="1" v-model.number="markStyle.tjIconPx" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconPx }}</span></div>
             <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjIconSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconSea }}</span></div>
             <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjIconFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconFlight }}</span></div>
           </template>
@@ -12610,7 +14639,7 @@ onBeforeUnmount(() => {
             <label class="chk2 sub"><input type="checkbox" v-model="markStyle.tjNameBold" @change="applyMarkStyle" /><span>粗体</span></label>
             <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.tjNameColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameColor }}</span></div>
           </template>
-          <div v-for="t in trajectories" :key="t.id" class="tcard" :class="{ act: activeTraj === t.id, hid: t.show === false }">
+          <div v-for="t in trajectories" :key="t.id" class="tcard" :data-tid="t.id" :class="{ act: activeTraj === t.id, hid: t.show === false }">
             <div class="trow">
               <button type="button" class="layersw" :class="{ on: t.show !== false }" role="switch" :aria-checked="t.show !== false ? 'true' : 'false'" :title="t.show !== false ? '隐藏该航迹（数据保留）' : '显示该航迹'" @click="toggleMkItem(t)"><i></i></button>
               <span class="tk" :class="t.kind" :style="t.color ? { background: t.color } : null"></span>
@@ -12621,13 +14650,13 @@ onBeforeUnmount(() => {
               <span v-if="t.pts.length" class="tsel" :class="{ on: mkEditId === t.id }" :title="mkEditId === t.id ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖航点改坐标'" @click="mkEditToggle(t.id)">{{ mkEditId === t.id ? '完成' : '调点' }}</span>
               <span class="del" @click="removeTraj(t.id)"><Icon name="x" :size="12" /></span>
             </div>
-            <!-- 运动：有起始时刻 + 速度 = 载具随时钟沿大圆走（飞行按巡航高度剖面）；没给 = 钉在航迹头 -->
+            <!-- 时间：标题行 = 摘要（出发 → 到达 · 历时；未排程「未设定」）+ 定位钮；展开区 = 出发 / 到达 / 历时 / 速度 四项联动
+                 （TrajTimeFields，口径见 core/models/trajTiming.mjs）+ 飞行的巡航高度 + 运动档读数。没排程 = 载具钉在航迹头 -->
             <div class="tmot" :class="{ open: motOpen.has(t.id) }">
-              <div class="tmh" :title="motOpen.has(t.id) ? '收起' : '运动：巡航高度 / 速度 / 起始时刻'" @click="toggleMot(t.id)"><Icon name="chevron-down" class="disc" :class="{ shut: !motOpen.has(t.id) }" :size="12" /><span class="tms" :class="{ on: vehOn.has(t.id) }">{{ motSummary(t) }}</span></div>
+              <div class="tmh" :title="motOpen.has(t.id) ? '收起' : '时间：出发 / 到达 / 历时 / 速度'" @click="toggleMot(t.id)"><Icon name="chevron-down" class="disc" :class="{ shut: !motOpen.has(t.id) }" :size="12" /><span class="tml">时间</span><span class="tms" :class="{ on: vehOn.has(t.id), nil: !tmOf(t).moving }">{{ motSummary(t) }}</span><span v-if="tmOf(t).moving" class="tloc" title="时间轴定位到该航迹：游标落在出发时刻，时间窗框住全程" @click.stop="trajLocate(t)"><Icon name="locate-fixed" :size="12" /></span></div>
               <template v-if="motOpen.has(t.id)">
+                <TrajTimeFields :t="t" :tz="tzMode" :def-speed="trajDefSpeedKmh(t)" :apply="(e) => applyTrajRetime(t.id, e)" />
                 <div v-if="t.kind === 'flight'" class="srow sub"><label>巡航高度</label><NumIn :model-value="Number.isFinite(t.cruiseAltM) ? t.cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(t))" :title="cruiseTip(t)" @commit="(v) => setTrajMotion(t.id, { cruiseAltM: v })" /><span class="u">m</span></div>
-                <div class="srow sub"><label>速度</label><NumIn :model-value="Number.isFinite(t.speedKmh) ? t.speedKmh : null" allow-empty :min="1" :max="5000" title="地速（WGS-84 测地线里程）；与起始时刻都给了载具才随时钟移动" @commit="(v) => setTrajMotion(t.id, { speedKmh: v })" /><span class="u">km/h</span></div>
-                <div class="srow sub"><label>起始</label><input class="ci t0i" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DD HH:mm:ss" title="载具离开首航点的时刻（按显示时区；可带 Z 或 ±hh:mm）" :value="t0Edit.id === t.id ? t0Edit.text : fmtT0(t.t0Ms)" @focus="t0Begin(t)" @input="t0Input(t, $event.target.value)" @blur="t0Commit(t)" @keydown.enter.prevent="t0Enter($event, t)" @keydown.esc.prevent="t0Esc($event)" /><span class="lnk" title="设为当前仿真时刻" @click="setTrajMotion(t.id, { t0Ms: clock.tMs })">此刻</span></div>
                 <div v-if="vehOn.has(t.id)" class="srow sub tmr"><span class="rdv" :title="t.kind === 'flight' ? '高度 · 已飞 / 全程' : '已航行 / 全程'"><VehReadTxt :t="t" /></span></div>
               </template>
             </div>
@@ -12651,7 +14680,7 @@ onBeforeUnmount(() => {
         </div>
       </Teleport>
 
-      <!-- 右侧「卫星信息栏」：地图右侧、时间轴之上（时间轴仍通栏）。显隐只听 shellUi.satInfo，选中只换内容，地图视口不跳。
+      <!-- 右侧「卫星信息栏」：地图右侧、时间轴之上（时间轴仍通栏）。显隐只听 shellUi.satInfo（用户改聚焦时弹出、清空聚焦时收起），栏开着时换星只换内容。
            放在侧栏 Teleport 区间之外、不打 data-sec、不写 shellUi.side === 形态（标题栏搜索索引的规则）；
            栏及其祖先禁 transform / filter / contain / container-type / will-change（「＋」菜单与右键菜单是 position:fixed） -->
       <div v-show="shellUi.satInfo" class="rdk-split" :class="{ on: rdkDrag }" title="拖动调整宽度（双击恢复）" @mousedown.prevent="rdkSplitDown" @dblclick="rdkSplitReset"></div>
@@ -12662,10 +14691,10 @@ onBeforeUnmount(() => {
       >
         <div class="rdk-hd">
           <span class="rdk-tt">卫星信息</span>
-          <span v-if="flatView" class="rdk-ib dis" data-rdk="follow" title="跟随卫星（仅 3D 球体）"><Icon name="locate-fixed" :size="12" /></span>
-          <span v-else-if="following" class="rdk-ib on" data-rdk="follow" title="退出跟随（Esc）" @click="toggleFollow"><Icon name="locate-fixed" :size="12" /></span>
+          <span class="rdk-ib" :class="{ dis: !selected }" data-rdk="analyze" :title="byLang('分析：带主选星打开计算窗', 'Analyze: open a calculation window with the primary satellite')" @click="selected && rdkAnalyze($event)"><Icon name="calculator" :size="12" /></span>
+          <span v-if="following || flatFollowing" class="rdk-ib on" data-rdk="follow" title="退出跟随（Esc）" @click="toggleFollow"><Icon name="locate-fixed" :size="12" /></span>
           <span v-else class="rdk-ib" :class="{ dis: !selected }" data-rdk="follow" title="跟随卫星" @click="selected && toggleFollow()"><Icon name="locate-fixed" :size="12" /></span>
-          <span class="rdk-ib" title="显示设置：轨道线 / 星下点轨迹 / 覆盖圈 / 卫星标记" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /></span>
+          <span class="rdk-ib" title="卫星聚焦特效设置：轨道线 / 星下点轨迹 / 覆盖圈 / 卫星标记" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /></span>
           <span class="rdk-vr"></span>
           <span class="rdk-ib" title="收起信息栏（Ctrl+Alt+B）" @click="shellUi.satInfo = false"><Icon name="x" :size="12" /></span>
         </div>
@@ -12778,7 +14807,7 @@ onBeforeUnmount(() => {
                   <span class="rdk-ok" :class="{ ok: selModel.sizeVerified }" :title="selModel.sizeVerified ? '尺寸已核定（有出处）' : '尺寸未核定'"><Icon name="ruler" :size="12" /></span>
                   <span class="rdk-ok" :class="{ ok: selModel.frameVerified }" :title="selModel.frameVerified ? '本体轴已核定' : '本体轴未核定'"><Icon name="axis-3d" :size="12" /></span>
                 </template>
-                <span class="rdk-sa"><span class="rdk-lnk" title="在卫星模型中编辑" @click.stop="rdkModelEdit">编辑…</span></span>
+                <span class="rdk-sa"><span class="rdk-lnk" title="在仿真对象模型中编辑" @click.stop="rdkModelEdit">编辑…</span></span>
               </div>
               <div v-if="isSecOpen('rdk-mdl')" class="rdk-kv nosym">
                 <div class="rdk-r"><span class="rdk-k">名称</span><span v-if="selModel.id" class="rdk-v txt" data-rdk="model-name" :title="selModel.title || selModel.name" data-i18n-skip>{{ selModel.name }}</span><span v-else class="rdk-v txt" data-rdk="model-name">无</span></div>
@@ -12789,6 +14818,8 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </aside>
+      <!-- 视频导出面板：地图右侧停靠（与卫星信息栏同一种右侧栏，开着时地图让出宽度、取景框落在可见区内） -->
+      <VideoExportPanel v-if="vexp.open.value" :vx="vexp" />
     </div>
 
     <!-- 时间控制条：地图时间轴 + 实时徽标 + 覆盖圈定义（归属地图，置于地图正下方） -->
@@ -12799,7 +14830,12 @@ onBeforeUnmount(() => {
         <div class="tb-track" :class="{ kbf: trackKb }" :style="trackStyle" ref="track" tabindex="0" role="slider" aria-label="仿真时间游标"
              :aria-valuemin="Math.round(winStartMin)" :aria-valuemax="Math.round(winEndMin)" :aria-valuenow="Math.round(offMin)" :aria-valuetext="timeParts.a"
              @pointerdown="trackDown" @wheel.prevent="onWheel" @keydown="onTrackKey" @pointermove="onHover" @pointerleave="onLeave"
-             @focus="onTrackFocus" @blur="onTrackBlur">
+             @focus="onTrackFocus" @blur="onTrackBlur" @dblclick="fitPeriod">
+          <!-- 固定时段：时段外的刻度区画斜纹（在刻度之下）；起止两道括线（在刻度之上、标签之下） -->
+          <template v-if="perMark">
+            <div v-if="perMark.l > 0" class="tb-out" :style="{ left: '0px', width: perMark.l + 'px' }"></div>
+            <div v-if="perMark.r < trackWidthPx" class="tb-out" :style="{ left: perMark.r + 'px', right: '0px' }"></div>
+          </template>
           <!-- 刻度层：ruler 按签名记忆，同签名返回同一对象 → v-memo 整段跳过 diff（暂停时一拍都不重渲） -->
           <div class="tb-scale" v-memo="[ruler, tipHideKey]">
             <div class="tb-base"></div>
@@ -12809,6 +14845,8 @@ onBeforeUnmount(() => {
             <div v-for="(p, i) in ruler.poles" :key="'p' + i" class="tb-t pole" :class="{ day: p.day }" :style="{ left: p.x + 'px' }"></div>
             <div v-for="(l, i) in ruler.labels" :key="'l' + i" class="tb-lab" :class="{ day: l.day, ko: tipHide.has(String(i)) }" :style="l.st" data-i18n-skip>{{ l.label }}</div>
           </div>
+          <div v-if="perMark && perMark.xa != null" class="tb-pb l" :style="{ left: perMark.xa + 'px' }"></div>
+          <div v-if="perMark && perMark.xb != null" class="tb-pb r" :style="{ left: perMark.xb + 'px' }"></div>
           <div v-if="showSpan" class="tb-span"></div>
           <div v-if="nowInWin" class="tb-now" :class="{ flip: ruler.tag === 'l' }"><span v-if="ruler.tag" class="tag" :class="{ ko: tipHide.has('t') }">此刻</span></div>
           <div v-show="hoverShow && !scrubbing" class="tb-ghost" :style="{ left: hoverX + 'px' }"></div>
@@ -12820,13 +14858,16 @@ onBeforeUnmount(() => {
       <div class="tl-row">
         <div class="tl-grp l">
           <button type="button" class="live-btn" :class="{ on: live }" :aria-pressed="live ? 'true' : 'false'" :title="live ? '实时中（跟随系统时间）· 点击停在当前时刻' : '回到实时（跟随系统时间）'" @click="toggleLive"><span class="ldot"></span>实时</button>
-          <!-- 跨度：与右侧「步长 / 倍速」同一种带栏名的旋钮。下拉宽度恒定（滚轮挂上的自定义档也不撑宽），六档装在一格里。 -->
-          <span class="clkg wspan" role="group" aria-label="时间窗跨度">
-            <span class="ckl">跨度</span>
-            <select class="cksel wsel" v-memo="[windowMin]" :value="windowMin" title="可见时间窗跨度（可回看过去 · 滚轮缩放）" @change="setWindow(Number($event.target.value))">
-              <option v-for="w in WINDOW_PRESETS" :key="w.v" :value="w.v">{{ w.l }}</option>
-              <option v-if="isCustomWindow" :value="windowMin">{{ customWinLabel }}</option>
-            </select>
+          <!-- 跨度 / 时段：与右侧「步长 / 倍速」同一种带栏名的旋钮，点开是时间轴设置浮层（时段模式 · 起止时刻 · 时长 · 终止处理 · 步长 · 倍速）。
+               钮定宽：读数随时段变，宽度不变，不推尺子。栏名随模式：滚动档写「跨度」、固定档写「时长」（「时段」在词典里已译作 Access，不单独作栏名） -->
+          <span class="clkg wspan" role="group" :aria-label="tlFixed ? '仿真时段' : '时间窗跨度'">
+            <span class="ckl">{{ tlFixed ? '时长' : '跨度' }}</span>
+            <TimelineSettings ref="tlsEl" class="cksel wsel tlsbtn" :class="{ fx: tlFixed }" tabindex="0" role="button" aria-haspopup="dialog"
+                              :title="tlFixed ? '仿真时段 · 时间轴设置' : '时间窗跨度 · 时间轴设置'"
+                              :mode="tlFixed ? 'fixed' : 'roll'" :start-ms="tlFixed ? tlStart : viewLoMs" :stop-ms="tlFixed ? tlStop : viewHiMs"
+                              :end="tlEnd" :step-sec="clock.stepSec" :speed="clock.speed" :tz="tzMode" :now="tlNowMs"
+                              @period="onTlPeriod" @span="(v) => setWindow(v / 60)" @step="setStepSec" @speed="setSpeedVal" @fit="fitPeriod"
+                              @keydown.enter.prevent="$event.currentTarget.click()" @keydown.space.prevent="$event.currentTarget.click()"><span class="tlsv" data-i18n-skip>{{ tlBtnLabel }}</span></TimelineSettings>
           </span>
         </div>
         <div class="tl-grp c">
@@ -12847,20 +14888,23 @@ onBeforeUnmount(() => {
             <button type="button" class="st tic play" :class="{ act: fwdPlaying }" :aria-pressed="fwdPlaying ? 'true' : 'false'" :title="fwdPlaying ? '暂停' : '播放（空格）'" @click="togglePlay(1)"><Icon :name="fwdPlaying ? 'pause' : 'play'" :size="12" /></button>
             <button type="button" class="st tic" title="前进一个步长" @click="clockStepBy(1)"><Icon name="step-forward" :size="12" /></button>
             <button type="button" class="st now" :class="{ dis: !live && atNow }" :disabled="!live && atNow" title="回到当前时刻" @click="resetTime">此刻</button>
+            <button type="button" class="st tic" :class="{ act: vexp.open.value }" :aria-pressed="vexp.open.value ? 'true' : 'false'" title="导出视频" @click="vexp.toggle()"><Icon name="video" :size="12" /></button>
           </span>
         </div>
         <div class="tl-grp r">
           <!-- 步长 + 倍速。两个旋钮各带栏名 —— 光一个「1s」和一个「×10」摆在那里看不出是什么。 -->
           <span class="clkg" role="group" aria-label="仿真步长与倍速">
             <span class="ckl">步长</span>
-            <select class="cksel ssel" v-memo="[clock.stepSec]" :value="clock.stepSec" title="每拍推进的仿真时间" @change="setStepSec(Number($event.target.value))">
+            <select class="cksel ssel" v-memo="[clock.stepSec]" :value="clock.stepSec" title="每拍推进的仿真时间" @change="onStepSel">
               <option v-for="s in STEP_PRESETS" :key="s" :value="s">{{ fmtStepShort(s) }}</option>
               <option v-if="!STEP_PRESETS.includes(clock.stepSec)" :value="clock.stepSec">{{ fmtStepShort(clock.stepSec) }}</option>
+              <option value="custom">自定义…</option>
             </select>
             <span class="ckl">倍速</span>
-            <select class="cksel xsel" v-memo="[clock.speed, speedTitle]" :value="clock.speed" :title="speedTitle" @change="setSpeedVal(Number($event.target.value))">
+            <select class="cksel xsel" v-memo="[clock.speed, speedTitle]" :value="clock.speed" :title="speedTitle" @change="onSpeedSel">
               <option v-for="x in SPEED_PRESETS" :key="x" :value="x">×{{ fmtRate(x) }}</option>
               <option v-if="!SPEED_PRESETS.includes(clock.speed)" :value="clock.speed">{{ speedText }}</option>
+              <option value="custom">自定义…</option>
             </select>
           </span>
         </div>
@@ -12886,6 +14930,7 @@ onBeforeUnmount(() => {
             <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satPosVal('altKm')" @input="satPosInput('altKm', $event)" @change="satPosDone" @blur="satPosDone" @keyup.enter="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
           </template>
           <template v-else>
+            <div class="srow stack"><label>历元</label><input class="ci" type="datetime-local" step="1" :value="satEpochVal()" @input="satEpochEdit = $event.target.value" @blur="satEpochDone" @keyup.enter="satEpochDone" /><span class="u">{{ satEpochTz() }}</span><span class="geobtn" title="设为时间轴当前时刻" @click="satEpochNow">此刻</span></div>
             <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="50" v-model.number="satModal.elements.altKm" @change="applySatLive" @keyup.enter="applySatLive" /><span class="u">km</span></div>
             <div class="srow"><label>偏心率</label><input class="ci" type="number" step="0.001" min="0" max="0.999" v-model.number="satModal.elements.ecc" @change="applySatLive" @keyup.enter="applySatLive" /></div>
             <div class="srow"><label>倾角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.incl" @change="applySatLive" @keyup.enter="applySatLive" /><span class="u">°</span></div>
@@ -12950,16 +14995,21 @@ onBeforeUnmount(() => {
       <span class="lnk" @click="satPick = false">完成 / 取消</span>
     </div>
 
-    <!-- 添加地球站命名对话框（右键菜单触发，位置取右键处） -->
+    <!-- 添加 / 编辑地球站对话框（右键「添加地球站」位置取右键处；右键已有站「地球站属性…」） -->
     <div v-if="stPrompt" class="sat-mask">
       <div class="sat-dlg st-dlg">
-        <div class="sdh"><span>添加地球站</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
+        <div class="sdh"><span>{{ stPrompt.id ? '地球站属性' : '添加地球站' }}</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="stPromptName" placeholder="如 北京站" autofocus @keyup.enter="confirmStation" /></div>
+          <div class="srow"><label>模型</label><span class="stmdl" :class="{ on: !!stPromptModel }" @click="openStModelPick($event)"><img v-if="stPromptModel && mdlThumb(stPromptModel)" :src="mdlThumb(stPromptModel)" alt="" draggable="false" /><Icon v-else name="satellite-dish" :size="12" /><span class="nm" data-i18n-skip>{{ stPromptModel ? mdlName(stPromptModel) : byLang('无', 'None') }}</span><Icon name="chevron-down" :size="12" /></span></div>
+          <div class="srow" title="天线口径；留空 = 模型标称口径"><label>天线口径</label><input class="ci" v-model="stPromptDia" :placeholder="stNominal.diaM != null ? String(stNominal.diaM) : ''" @keyup.enter="confirmStation" /><span class="u">m</span></div>
+          <label class="chk2" title="导入链路预算时，罩损计入地球站其他损耗"><input type="checkbox" :checked="stRadomeEff" @change="stPromptRadome = $event.target.checked" /><span>天线罩</span></label>
+          <div class="srow" title="发射链功放输出功率；导入链路预算时写入发端地球站的功放功率预设，留空 = 沿用库条目"><label>功放功率</label><input class="ci" v-model="stPromptPwr" @keyup.enter="confirmStation" /><span class="u">W</span></div>
           <div class="srow"><label>位置</label><span class="u">{{ fmtLL(stPrompt.lat, stPrompt.lon) }}</span></div>
         </div>
-        <div class="sdfoot"><span class="cancel" @click="cancelStation">取消</span><span class="save" @click="confirmStation">添加</span></div>
+        <div class="sdfoot"><span class="cancel" @click="cancelStation">取消</span><span class="save" @click="confirmStation">{{ stPrompt.id ? '确定' : '添加' }}</span></div>
       </div>
+      <ModelPickPop v-if="stPick" :anchor="stPick" :lib="modelLib.list" domain="ground" :value="stPromptModel" @pick="(id) => { stPromptModel = id }" @clear="stPromptModel = ''" @close="stPick = null" />
     </div>
 
     <!-- 卫星组管理器：左＝组列表（新建/复制/删除），右＝当前组（改名 + 搜索添加 + 成员表移出）。
@@ -13111,6 +15161,25 @@ onBeforeUnmount(() => {
       @toast="(m) => logMsg(m)"
     />
 
+    <!-- 建链横幅：图上依次单击地球站 / 卫星追加节点；不追加的原因在这里报一句 -->
+    <div v-if="lnk.draw.value" class="traj-banner" title="依次单击地球站 / 卫星追加节点 · Enter 完成 · Esc 取消 · Backspace 撤销">
+      <template v-if="lnkMsg"><span class="lk-bmsg">{{ lnkMsg }}</span></template>
+      <template v-else><span>{{ lnk.draw.value.isNew ? '新建链路' : '编辑链路' }}</span> · {{ lnkDrawN }} <span>个节点</span></template>
+      <span class="lnk" :class="{ dis: !lnkCanUndo }" @click="lnkCanUndo && lnk.undoNode()">撤销</span>
+      <span class="lnk" @click="lnkFinish">完成</span>
+      <span class="lnk" @click="lnkCancel">取消</span>
+    </div>
+    <!-- 「导入链路预算」下拉：四个目标，行尾为勾选里能导入该模块的条数 -->
+    <template v-if="lnkImpMenu">
+      <div class="ctx-mask" @click="lnkImpMenu = null" @contextmenu.prevent="lnkImpMenu = null"></div>
+      <div class="ctx-menu" :style="{ left: lnkImpMenu.x + 'px', top: lnkImpMenu.y + 'px' }">
+        <div class="ctx-item" :class="{ dis: !lnkImpCounts.linkbudget }" @click="lnkImpCounts.linkbudget && lnkImport('linkbudget')">GSO 链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('linkbudget') }}</span></div>
+        <div class="ctx-item" :class="{ dis: !lnkImpCounts.ngso }" @click="lnkImpCounts.ngso && lnkImport('ngso')">NGSO 链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('ngso') }}</span></div>
+        <div class="ctx-item" :class="{ dis: !lnkImpCounts.regen }" @click="lnkImpCounts.regen && lnkImport('regen')">再生式链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('regen') }}</span></div>
+        <div class="ctx-item" :class="{ dis: !lnkImpCounts.e2e }" @click="lnkImpCounts.e2e && lnkImport('e2e')">端到端链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('e2e') }}</span></div>
+      </div>
+    </template>
+
     <!-- 轨迹描绘横幅：有正在编辑的轨迹时显示；与 Polygon 同款：右键逐点 / 左键沿路径拖动连续加点 -->
     <div v-if="activeTraj" class="traj-banner" title="右键地图连续加点，或按住左键沿路径拖动连续加点">
       正在描绘{{ curTraj() && curTraj().kind === 'flight' ? '飞行' : '航行' }}轨迹
@@ -13157,20 +15226,49 @@ onBeforeUnmount(() => {
     <!-- 地图右键上下文菜单（3D / 平面图共用）；点击空白处或再次右键关闭 -->
     <template v-if="ctxMenu">
       <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
-      <div ref="ctxMenuEl" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }">
-        <!-- 跟随卫星（仅 3D）：跟随中首项是退出；否则右键压在一颗星上时首项是跟随它 -->
-        <div v-if="!flatView && following" class="ctx-item" @click="ctxStopFollow">退出跟随<span class="ctx-kb">Esc</span></div>
-        <div v-else-if="!flatView && ctxMenu.en >= 0" class="ctx-item" @click="ctxFollow">跟随卫星</div>
+      <div ref="ctxMenuEl" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @mouseover="onCtxOver">
+        <!-- 卫星信息栏「分析」按钮：同一张菜单只列分析项（不套二级） -->
+        <template v-if="ctxMenu.anaOnly">
+          <template v-for="(a, i) in ctxAna.items" :key="i">
+            <div v-if="a.sep" class="ctx-sep"></div>
+            <div v-else class="ctx-item" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</div>
+          </template>
+        </template>
+        <template v-else>
+        <!-- 建链中：压着站 / 星可直接追加；完成 / 撤销 / 取消 -->
+        <template v-if="lnk.draw.value">
+          <div v-if="(ctxMenu.ent && (ctxMenu.ent.kind === 'station' || ctxMenu.ent.kind === 'point')) || ctxMenu.sid || ctxMenu.area" class="ctx-item" @click="ctxLinkAppend">追加到链路</div>
+          <div class="ctx-item" @click="ctxLinkFinish">完成链路<span class="ctx-kb">Enter</span></div>
+          <div class="ctx-item" :class="{ dis: !lnkCanUndo }" @click="ctxLinkUndo">撤销上一节点<span class="ctx-kb">Backspace</span></div>
+          <div class="ctx-item" @click="ctxLinkCancel">取消建链<span class="ctx-kb">Esc</span></div>
+          <div class="ctx-sep"></div>
+        </template>
+        <!-- 跟随卫星（3D 相机跟随 / 2D 星下点跟随）：跟随中首项是退出；否则右键压在一颗星上时首项是跟随它 -->
+        <div v-if="following || flatFollowing" class="ctx-item" @click="ctxStopFollow">退出跟随<span class="ctx-kb">Esc</span></div>
+        <div v-else-if="ctxMenu.sid" class="ctx-item" @click="ctxFollow">跟随卫星</div>
         <!-- 压在一颗星上：为它新建高斯天线（没有关联树节点就先建一颗关联星）/ 把它已有天线的覆盖显示出来 -->
-        <template v-if="!flatView && ctxMenu.en >= 0 && grdApiOk">
+        <template v-if="ctxMenu.sid && grdApiOk">
           <div v-if="!ctxMenu.enPv" class="ctx-item" @click="ctxNewGauss">新建高斯天线</div>
           <div v-if="ctxHasAnts" class="ctx-item" @click="ctxShowAntCov">显示天线覆盖</div>
         </template>
-        <div v-if="!flatView && (following || ctxMenu.en >= 0)" class="ctx-sep"></div>
+        <div v-if="ctxMenu.sid && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('sat')">从此卫星新建链路</div>
+        <template v-if="ctxMenu.area && !ctxMenu.sid && !lnk.draw.value">
+          <div v-if="ctxMenu.area.k === 'pg'" class="ctx-item" @click="ctxLinkFrom('area')">从此 Polygon 新建链路</div>
+          <div v-else class="ctx-item" @click="ctxLinkFrom('area')">从此航迹新建链路</div>
+        </template>
+        <!-- 压着卫星 / 地球站 / 点标记：带上下文打开计算窗（二级菜单）；行尾是将带进去的那颗星 -->
+        <div v-if="ctxAna.items.length" class="ctx-item ctx-subp" :class="{ on: !!ctxSub }" @mouseenter="openCtxSub" @click="openCtxSub">
+          <span>{{ byLang('分析', 'Analyze') }}</span><span class="ctx-kb"><span class="ctx-subn" data-i18n-skip>{{ ctxAna.satName }}</span>▸</span>
+        </div>
+        <div v-if="following || flatFollowing || ctxMenu.sid || ctxAna.items.length || (ctxMenu.area && !lnk.draw.value)" class="ctx-sep"></div>
         <!-- 压着地球站 / 点标记 / 载具头：挂 / 换 / 卸模型 -->
         <template v-if="ctxMenu.ent">
+          <div v-if="ctxMenu.ent.kind === 'station'" class="ctx-item" @click="ctxStationProps">地球站属性…</div>
+          <div v-if="ctxMenu.ent.kind === 'station' && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('st')">从此站新建链路</div>
+          <div v-if="ctxMenu.ent.kind === 'point' && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('st')">从此点新建链路</div>
+          <div v-if="ctxMenu.ent.kind === 'traj'" class="ctx-item" @click="ctxTrajTime">航迹时间…</div>
           <div class="ctx-item" @click="ctxEntModel">模型…</div>
-          <div v-if="ctxMenu.ent.has" class="ctx-item" @click="ctxEntUnmount">卸下模型</div>
+          <div v-if="ctxMenu.ent.has" class="ctx-item" @click="ctxEntUnmount">移除模型</div>
           <div class="ctx-sep"></div>
         </template>
         <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddPoint">添加点标记（当前经纬度）</div>
@@ -13183,17 +15281,29 @@ onBeforeUnmount(() => {
         <div class="ctx-item" @click="ctxHidePoints">隐藏所有点标记</div>
         <div class="ctx-item" @click="ctxHideStations">隐藏所有地球站</div>
         <div class="ctx-item" @click="ctxHideTrajs">隐藏所有航迹</div>
-        <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
         <div class="ctx-item" @click="ctxHideAllMk">隐藏所有标记</div>
+        <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
+        <div class="ctx-item" @click="ctxHideLinks">隐藏所有链路</div>
         <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="clearAllCoverage">清除所有覆盖图</div>
         <div v-if="grdApiOk" class="ctx-item" @click="ctxClearShellCov">清除壳层覆盖</div>
         <div v-if="grdApiOk" class="ctx-item" @click="ctxHideShellGuides">隐藏壳层参照网</div>
+        <div class="ctx-sep"></div>
+        <div class="ctx-item" @click="ctxOpenSide('geo')">地图综合设置</div>
+        <div class="ctx-item" @click="ctxOpenSide('focus')">卫星聚焦特效设置</div>
         <!-- 聚焦组放在菜单最末：破坏性项离弹出点（指针）最远，与首项「跟随卫星」隔开整张菜单 -->
         <template v-if="selected || prevFocusTag">
           <div class="ctx-sep"></div>
           <div v-if="prevFocusTag" class="ctx-item" @click="ctxPrevFocus">上一聚焦<span class="ctx-kb rdk-pf" data-i18n-skip>{{ prevFocusTag }}</span></div>
           <div v-if="selected && selList.length > 1" class="ctx-item" @click="ctxClearFocus">全部取消聚焦</div>
           <div v-else-if="selected" class="ctx-item" @click="ctxClearFocus">取消聚焦</div>
+        </template>
+        </template>
+      </div>
+      <!-- 「分析 ▸」二级菜单：fixed 定位挂在主菜单外（主菜单 overflow:auto 会裁掉内嵌的浮层） -->
+      <div v-if="ctxSub && ctxAna.items.length" ref="ctxSubEl" class="ctx-menu ctx-sub" :style="{ left: ctxSub.x + 'px', top: ctxSub.y + 'px' }">
+        <template v-for="(a, i) in ctxAna.items" :key="i">
+          <div v-if="a.sep" class="ctx-sep"></div>
+          <div v-else class="ctx-item" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</div>
         </template>
       </div>
     </template>
@@ -13263,13 +15373,12 @@ onBeforeUnmount(() => {
         </aside>
 
         <div class="mk-col">
-          <!-- 航迹页：当前航迹的运动参数（与侧栏「运动」栏改的是同一组字段）+ 全程 / 历时 / 到达读数 -->
+          <!-- 航迹页：当前航迹的巡航高度 + 时间四项联动（与侧栏卡片「时间」同一个件，改动进表格的撤销栈）+ 全程读数 -->
           <div v-if="mkTab === 'traj' && mkCurTraj()" class="mk-tjbar">
             <template v-if="mkCurTraj().kind === 'flight'">
               <label>巡航高度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().cruiseAltM) ? mkCurTraj().cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(mkCurTraj()))" :title="cruiseTip(mkCurTraj())" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { cruiseAltM: v }))" /><span class="u">m</span>
             </template>
-            <label>速度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().speedKmh) ? mkCurTraj().speedKmh : null" allow-empty :min="1" :max="5000" title="地速（WGS-84 测地线里程）；航点定了时刻的段按时差反推，其余段按它推算" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { speedKmh: v }))" /><span class="u">km/h</span>
-            <label>起始</label><input class="ci t0i mkp-t" type="text" spellcheck="false" autocomplete="off" placeholder="YYYY-MM-DD HH:mm:ss" title="载具离开首航点的时刻（按显示时区；可带 Z 或 ±hh:mm）；与表格首行的时间是同一个数" :value="t0Edit.id === mkTrajId ? t0Edit.text : fmtT0(mkCurTraj().t0Ms)" @focus="t0Begin(mkCurTraj())" @input="t0Input(mkCurTraj(), $event.target.value)" @blur="mkMotEdit(mkCurTraj(), () => t0Commit(mkCurTraj()))" @keydown.enter.prevent="mkMotEdit(mkCurTraj(), () => t0Enter($event, mkCurTraj()))" @keydown.esc.prevent="t0Esc($event)" /><span class="lnk" title="设为当前仿真时刻" @click="mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { t0Ms: clock.tMs }))">此刻</span>
+            <TrajTimeFields layout="bar" :t="mkCurTraj()" :tz="tzMode" :def-speed="trajDefSpeedKmh(mkCurTraj())" :apply="(e) => mkMotApply(mkCurTraj(), e)" :locate="() => trajLocate(mkCurTraj())" />
             <span class="mkp-r" data-i18n-skip>{{ mkTrajRead }}</span>
           </div>
           <!-- Excel 网格（见 src/components/ExcelGrid.vue）：三分页各一张，v-show 切换（实例常驻，选区/编辑态各自保留） -->
@@ -13363,6 +15472,8 @@ onBeforeUnmount(() => {
   --y-cap: 6px;     /* 长刻线 / 此刻线的顶（握柄 y 0→6 之下） */
   --y-zone: 15px;   /* 标签行之下 = 刻度区的顶 */
   --y-base: 26px;   /* 基线：10px 主刻 16→26，与标签底（基线 13.5）留 2.5px */
+  --tl-out: color-mix(in srgb, var(--text) 16%, transparent);       /* 固定时段之外：刻度区斜纹 */
+  --tl-per: var(--accent-ui);                                        /* 时段起止括线 */
 }
 /* 上层：刻度尺整条通栏，左右与控件层同一 12px 边距（尺子两端 = 实时键左缘 / 倍速右缘）。
    纵向节奏（CSS px，全为偶数 → 150% 下每条边落整设备像素）：边框 1 | 4 | 尺 28（基线 26）| 4 | 控件 22 | 4 = 63。
@@ -13388,7 +15499,13 @@ onBeforeUnmount(() => {
 .tl .cksel + .ckl { margin-left: 6px; }
 .tl .cksel { background-color: var(--surface); color: var(--text-muted); border: 1px solid var(--field-border); border-radius: var(--r-ctl); font-size: var(--fs-2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; padding: 0 21px 0 5px; cursor: pointer; outline: none; }
 .tl .cksel:hover { color: var(--text); border-color: var(--field-border-hover); }
-.tl .cksel.wsel { width: 68px; }        /* 定宽：滚轮会往里挂自定义档（最长「23h59m」11px Arial 39.8 + 5 + 21 + 2） */
+.tl .cksel.wsel { width: 74px; }        /* 定宽：读数随时段 / 跨度变（最长「999d23h」11px Arial 约 44 + 5 + 21 + 2），宽度不变、不推尺子 */
+/* 「跨度 / 时段」钮：时间轴设置浮层的触发器，与下拉同一画法（cksel），箭头照 controls.css 的 select 自绘 */
+.tl .tlsbtn { display: inline-flex; align-items: center; height: var(--h-ctl); box-sizing: border-box; white-space: nowrap; overflow: hidden; user-select: none;
+  background-image: var(--ctl-caret); background-repeat: no-repeat; background-position: right 6px center; background-size: 10px; }
+.tl .tlsbtn.open { color: var(--text); border-color: var(--field-border-hover); }
+.tl .tlsbtn.fx { color: var(--text); }   /* 固定时段：读数用正文色（滚动档是次级灰，与步长 / 倍速同档） */
+.tl .tlsbtn:focus-visible { outline: 2px solid var(--accent-ui) !important; outline-offset: -1px; }
 .tl .cksel.ssel { min-width: 50px; }    /* 下限：预设档永不推尺子；只有存档里的非预设值（装载时一次）才可能更宽 */
 .tl .cksel.xsel { min-width: 70px; }
 
@@ -13423,6 +15540,13 @@ onBeforeUnmount(() => {
 .tb-now.flip .tag { left: auto; right: calc(var(--hp) + 3px); }
 
 /* 偏移带：此刻 → 游标，压在基线上的 2 设备像素机位色 —— 读数偏移量的图形孪生。位置全由 CSS 变量算，逐帧只写 --ph-x */
+/* 固定时段：时段外的刻度区斜纹（刻度之下，标签行不压）；起止括线 = 长刻线 + 顶端朝时段内的 5px 短脚（刻度之上、标签之下） */
+.tb-out { position: absolute; top: var(--y-zone); height: calc(var(--y-base) - var(--y-zone)); pointer-events: none;
+  background: repeating-linear-gradient(135deg, var(--tl-out) 0 1px, transparent 1px 4px); }
+.tb-pb { position: absolute; z-index: 1; top: var(--y-cap); height: calc(var(--y-base) - var(--y-cap) + var(--hp)); width: var(--hp); background: var(--tl-per); pointer-events: none; }
+.tb-pb::before { content: ''; position: absolute; top: 0; width: 5px; height: var(--hp); background: var(--tl-per); }
+.tb-pb.l::before { left: 0; }
+.tb-pb.r::before { right: 0; }
 .tb-span { position: absolute; z-index: 1; top: calc(var(--y-base) + var(--hp) - var(--php)); height: var(--php); left: min(var(--now-x), var(--ph-x)); width: calc(max(var(--now-x), var(--ph-x)) - min(var(--now-x), var(--ph-x))); background: var(--accent-ui); pointer-events: none; }
 
 /* 游标：2 设备像素针 + 控件带上方的五边形握柄（整设备像素几何）。针在刻度标签之下穿过（见 .tb-lab） */
@@ -13448,7 +15572,7 @@ onBeforeUnmount(() => {
    内容盒 = 22px 控件带：时刻大写顶 = 控件上缘，第二行基线 = 控件下缘。
    两列都定宽：列 1 = JS 按当前界面字体量出的「HH:MM:SS 最宽可能」（--ro-c1，单位 em），列 2 = max(11ch, 偏移 / 时区最宽可能 --ro-c2)；
    任何读数、任何字体下块宽恒定 → 尺子永不被推。DOM 仍是 .t1 + .t2(.d .o .z)，.t2 用 display: contents 让三格直接进网格 */
-.tlab2 { --ro-fs: var(--fs-5); display: grid; grid-template-columns: calc(var(--ro-c1, 3.98) * var(--ro-fs)) max(11ch, calc(var(--ro-c2, 0) * 1em)); grid-template-rows: 12px 10px; column-gap: 7px; align-items: baseline; flex: none; height: 22px; padding: 2px 6px; margin: -2px -6px; box-sizing: content-box; border-radius: var(--r-box); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-1); line-height: 13px; color: var(--text-faint); white-space: nowrap; cursor: pointer; user-select: none; contain: layout; transition: background-color var(--dur-1) linear; }
+.tlab2 { --ro-fs: var(--fs-5); display: grid; grid-template-columns: max(calc(var(--ro-c1, 3.98) * var(--ro-fs)), calc(var(--ro-d1, 0) * 1em)) max(11ch, calc(var(--ro-c2, 0) * 1em)); grid-template-rows: 12px 10px; column-gap: 7px; align-items: baseline; flex: none; height: 22px; padding: 2px 6px; margin: -2px -6px; box-sizing: content-box; border-radius: var(--r-box); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-1); line-height: 13px; color: var(--text-faint); white-space: nowrap; cursor: pointer; user-select: none; contain: layout; transition: background-color var(--dur-1) linear; }
 .tlab2 .t2 { display: contents; }
 .tlab2 .t1 { grid-area: 1 / 1; font-size: var(--ro-fs); line-height: 12px; letter-spacing: var(--ls-tight); color: var(--text); }
 .tlab2 .z { grid-area: 1 / 2; color: var(--text-muted); transition: color var(--dur-1) linear; }
@@ -13498,7 +15622,7 @@ onBeforeUnmount(() => {
   .tl .ckl { font-size: var(--fs-1); }
   .tl .cksel + .ckl { margin-left: 4px; }
   .tl .cksel { padding-left: 4px; }
-  .tl .cksel.wsel { width: 64px; }
+  .tl .cksel.wsel { width: 70px; }
   .tl .cksel.ssel { min-width: 46px; }
   .tl .cksel.xsel { min-width: 66px; }
   .tlab2 { --ro-fs: var(--fs-4); column-gap: 6px; padding: 2px 4px; margin: -2px -4px; }   /* 罩 4 + 环 1 < 组距 8 */
@@ -13527,6 +15651,7 @@ onBeforeUnmount(() => {
 .mini.on { color: var(--text); border-color: var(--accent); }
 .body { flex: 1; min-height: 0; display: flex; }
 .stage-wrap { flex: 1; min-width: 0; position: relative; }
+.vexp-pv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
 .stage { width: 100%; height: 100%; background: #070b12; }
 /* 3D canvas 尺寸完全交给 CSS（renderer.setSize 已传 updateStyle=false 不写内联 px），
    渲染分辨率与布局解耦，避免内联像素值参与布局形成 resize 振荡 */
@@ -13917,6 +16042,8 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* 标记三节的标题行链子最多（表格 / 默认 / 调整位置 / ＋航行 / ＋飞行 + 拨杆）：侧栏拖窄时换行，
    不许把哪一个挤出视野（同 .srow 那条「整行可换行」的处置，见 sidebar-no-truncation） */
 .mk-side .sect { flex-wrap: wrap; row-gap: 3px; }
+/* 标记三节的节名（点标记 / 地球站 / 轨迹）：一节＝一层，节名比行尾动作大一档、加粗，三节在侧栏里一眼分得开 */
+.mk-side .sect.acc > .disc + span { font-size: var(--fs-5); font-weight: 600; }
 /* 拨杆 .layersw 的画法在 styles/controls.css（设置窗也用同一件，只是大一号）；这里只放主窗的就位规则 */
 /* 分区标题里的那颗：钉在行尾右对齐（与环境场开关条的拨杆落在同一条竖线上）。
    不能跟在分区名后面——「点标记/地球站/轨迹」名字不等长，拨杆会逐行左右错开。 */
@@ -14392,7 +16519,6 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .mk-tjbar > label ~ label { margin-left: 6px; }
 .mk-tjbar .u { color: var(--text-faint); }
 .mk-tjbar .mkp-n { width: 72px; }
-.mk-tjbar .mkp-t { width: 148px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .mk-tjbar .lnk { color: var(--text-muted); cursor: pointer; }
 .mk-tjbar .lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .mk-tjbar .mkp-r { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -14775,6 +16901,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .mlist > .mtrk .trksel .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mlist > .mtrk .trksel .icon, .mlist > .mtrk .trksel svg { flex: none; color: var(--text-faint); }
 .mlist > .mtrk .trkel { flex: none; margin: 0; gap: 4px; white-space: nowrap; }
+.mlist > .mtrk .trkel:has(> input:disabled) { cursor: default; }   /* 勾了方位角：仰角随之读该星（勾选锁定） */
 .mlist > .mtrkpop { padding: 0 8px 7px 42px; }
 .mlist > .mtrkpop .ci { width: 100%; margin-bottom: 4px; }
 .mlist > .mtrkpop .sres { margin-bottom: 0; }
@@ -14785,12 +16912,16 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .tmot { margin-top: 5px; }
 .tmh { display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; color: var(--text-faint); margin-inline: -2px; padding: 1px 2px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
 .tmh:hover { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text-muted); }
-.tmh .tms { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+/* 标题行：栏名「时间」+ 摘要（定了时间 = 次级字色、正在走 = 机位色、未设定 = 最淡）+ 定位钮 */
+.tmh .tml { flex: none; font-size: var(--fs-2); color: var(--text-muted); }
+.tmh .tms { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tmh .tms.nil { color: var(--text-faint); }
 .tmh .tms.on { color: var(--accent-ui); }
+.tmh .tloc { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 16px; border-radius: var(--r-ctl); color: var(--text-faint); }
+.tmh .tloc:hover { color: var(--accent-ui); background: color-mix(in srgb, var(--text) 7%, transparent); }
 .tmot.open > .tmh { margin-bottom: 6px; }
 .tmot .srow.sub { --srow-lab: 56px; padding-left: 17px; margin-bottom: 6px; }
 .tmot .srow.sub .u { min-width: 30px; }
-.tmot .t0i { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .tmot .tmr { margin-bottom: 2px; }
 .tmot .tmr .rdv { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
@@ -14817,6 +16948,77 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
 .sdbody { padding: 12px 14px; }
 .sdbody .srow { --srow-lab: 64px; }
+/* 地球站对话框的模型选择钮：缩略图 + 模型名 + 下拉箭头，外观同输入框 */
+.st-dlg .stmdl { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: var(--h-ctl); padding: 0 6px 0 7px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text-faint); font-size: var(--fs-3); cursor: pointer; }
+.st-dlg .stmdl:hover { border-color: var(--field-border-hover); }
+.st-dlg .stmdl.on { color: var(--text); }
+.st-dlg .stmdl img { width: 16px; height: 16px; object-fit: contain; flex: none; }
+.st-dlg .stmdl .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* —— 链路视图（.lnkv）：列表行 / 检查器节点竖链 / 跳行读数 —— */
+.mrow .mc2.stll { cursor: pointer; }
+.mrow .mc2.stll:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.lnkv .lk-empty { padding: 8px 2px; color: var(--text-faint); font-size: var(--fs-3); }
+.lnkv .lk-all { margin: 6px 0 0; }
+.lnkv .lk-all .lk-cnt { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
+.lnkv .lk-row .lk-ck { flex: none; margin: 0; }
+.lnkv .lk-row .lk-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-3); color: var(--text); }
+.lk-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.lk-dot.ok { background: var(--ok, #3fb950); }
+.lk-dot.part { background: var(--warn, #d29922); }
+.lk-dot.bad { background: var(--danger, #f85149); }
+.lnkv .lk-chain { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lnkv .lk-node { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-size: var(--fs-3); }
+.lnkv .lk-chain > * + * { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.lnkv .lk-node.bad .lk-nn { color: var(--danger, #f85149); }
+.lnkv .lk-node.rep { background: var(--accent-ui-weak); }
+/* 节点名 = 「更换节点」的触发处：悬停下划线；站的属性读数 = 「地球站属性」 */
+.lnkv .lk-nn.pk, .lnkv .lk-at.pk { cursor: pointer; }
+.lnkv .lk-nn.pk:hover { text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--text-faint); }
+.lnkv .lk-at.pk:hover { color: var(--text); }
+/* 插入光标（检索框）/ 就地替换：淡机位色底，一眼看出「下一个节点放这里」 */
+.lnkv .lk-slot { padding: 5px 8px; background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
+.lnkv .lk-slot.rep { padding-left: 26px; }
+.lnkv .lk-add { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
+.lnkv .lk-add:hover { color: var(--accent-ui); background: var(--accent-ui-weak); }
+/* 跳行左侧的「＋」：悬停该跳才露出，点了光标落到这一跳中间 */
+.lnkv .lk-hop { position: relative; }
+.lnkv .lk-ins { position: absolute; left: 6px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: var(--r-ctl); color: var(--text-faint); cursor: pointer; opacity: 0; }
+.lnkv .lk-hop:hover .lk-ins { opacity: 1; }
+.lnkv .lk-ins:hover { color: var(--accent-ui); background: var(--accent-ui-weak); }
+.lnkv .lk-no { flex: none; min-width: 12px; text-align: right; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); }
+.lnkv .lk-ty { flex: none; color: var(--text-muted); }
+.lnkv .lk-nn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.lnkv .lk-at { flex: none; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; }
+.lnkv .lk-seg { flex: none; }
+.lnkv .lk-seg .sg { padding: 0 6px; }
+.lnkv .lk-seg .sg.dis { cursor: default; }
+.lnkv .lk-ic { flex: none; display: inline-flex; cursor: pointer; color: var(--text-faint); }
+.lnkv .lk-ic:hover { color: var(--text); }
+.lnkv .lk-ic.dis { opacity: .35; pointer-events: none; }
+.lnkv .lk-hop { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 26px; background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+.lnkv .lk-hk { flex: none; font-size: var(--fs-2); color: var(--text-muted); }
+.lnkv .lk-rd { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.lnkv .lk-rd.off { color: var(--warn, #d29922); }
+.lnkv .lk-tg { margin-top: 8px; }
+/* Polygon / 航迹节点的取点钮（摘要 + ▾）：开着 = 机位色；一个点都没取 = 告警色 */
+.lnkv .lk-pkb {
+  flex: 0 1 auto; min-width: 0; max-width: 58%; display: inline-flex; align-items: center; gap: 2px; height: 18px; padding: 0 3px 0 6px; margin: 0;
+  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted);
+  font: inherit; font-size: var(--fs-2); cursor: pointer;
+}
+.lnkv .lk-pkb:hover { color: var(--text); }
+.lnkv .lk-pkb.on { background: var(--accent-ui-weak); border-color: color-mix(in srgb, var(--accent-ui) 55%, transparent); color: var(--accent-ui); }
+.lnkv .lk-pkb.none { color: var(--warn, #d29922); border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
+.lnkv .lk-pkt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lnkv .lk-pkc { flex: none; transition: transform var(--dur-2, .12s); }
+.lnkv .lk-pkb.on .lk-pkc { transform: rotate(180deg); }
+.lnkv .lk-node.pko { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
+/* 取点编辑器：节点行下就地展开，缩进与跳行对齐 */
+.lnkv .lk-pick { padding: 5px 8px 6px 26px; background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
+.lnkv .lk-tg2 { margin-top: 2px; }
+/* 取点编辑器开着时图上悬停候选点：手形（压过渲染器自己设的光标） */
+.stage-wrap.lnk-hov :deep(canvas) { cursor: pointer !important; }
+.traj-banner .lk-bmsg { color: var(--warn, #d29922); }
 .geobtn { flex: none; border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; cursor: pointer; font-size: var(--fs-2); }
 .geobtn:hover { background: var(--primary-fill); border-color: var(--primary-fill); color: var(--primary-on); }
 .sdiv { margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-3); }
@@ -14930,6 +17132,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sat-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
 .traj-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: var(--fs-3); color: var(--text); box-shadow: var(--shadow-2); }
 .traj-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
+.traj-banner .lnk.dis, .traj-banner .lnk.dis:hover { color: var(--text-faint); cursor: default; text-decoration: none; }
 /* 入场走独立的 translate 属性，不会冲掉横幅自身 transform: translateX(-50%) 的居中 */
 .sat-banner, .traj-banner { animation: ui-float-in var(--dur-2) var(--ease-out); }
 .sat-banner .lnk:hover, .traj-banner .lnk:hover { text-decoration: underline; }
@@ -14948,6 +17151,11 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .ctx-kb { color: var(--text-faint); font-size: var(--fs-2); }
 .ctx-item:hover .ctx-kb { color: inherit; opacity: .75; }
 .ctx-kb.rdk-pf { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* 右键「上一聚焦」行尾：主选名是数据，可省略 */
+/* 「分析 ▸」：行尾星名是数据（可省略），展开时保持与悬停同一高亮；二级菜单压在主菜单之上 */
+.ctx-subn { display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; margin-right: 6px; }
+.ctx-item.ctx-subp.on { background: var(--accent-ui); color: var(--bg); }
+.ctx-item.ctx-subp.on .ctx-kb { color: inherit; opacity: .75; }
+.ctx-menu.ctx-sub { z-index: 62; min-width: 170px; }
 
 
 </style>

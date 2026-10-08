@@ -35,7 +35,7 @@ export const categoryOf = (e) => (e && (e.group || e.kind)) || 'other'
 export const SEGMENTS = [
   { key: 'all', label: '全部', tip: '全部模型' },
   { key: 'builtin', label: '内置', tip: '随安装包分发、离线可用' },
-  { key: 'cached', label: '已下载', tip: '云端模型中已在本机缓存的' },
+  { key: 'cached', label: '已下载', tip: '已缓存至本机的云端模型' },
   { key: 'cloud', label: '云端', tip: '云端模型库的全部条目（含已下载）' },
   { key: 'local', label: '本机', tip: '本机导入的模型' },
   { key: 'stk', label: 'STK', tip: '从本机 STK 目录导入的模型（不可导出、不可分发）' },
@@ -99,6 +99,7 @@ export function displayName(e, lang = 'zh') {
 
 /**
  * 库页筛选 + 排序。排序：参数化模板按目录顺序排在参数化段前面；其余按显示名（中文按拼音序）。
+ * 「装配」分段（2026-10-06）：用户自己的装配件（asm:）排在实体模板之前、按修改时间倒序（updatedAt；缺的排在有的之后，再按显示名）。
  * @param {object[]} list
  * @param {{seg?:string, cat?:string, q?:string, lang?:string}} o
  */
@@ -113,8 +114,20 @@ export function filterEntries(list, o = {}) {
   }
   const lang = o.lang || 'zh'
   const coll = new Intl.Collator(lang === 'en' ? 'en' : 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+  const byName = (a, b) => coll.compare(displayName(a, lang), displayName(b, lang)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  if (o.seg === 'asm') {
+    const mine = (e) => typeof e.id === 'string' && e.id.startsWith('asm:')
+    const at = (e) => { const t = typeof e.updatedAt === 'string' ? Date.parse(e.updatedAt) : NaN; return Number.isFinite(t) ? t : -Infinity }
+    const tplRank = (e) => (Number.isInteger(e.tplOrder) ? e.tplOrder : 1e6)
+    return out.sort((a, b) => {
+      const ma = mine(a), mb = mine(b)
+      if (ma !== mb) return ma ? -1 : 1
+      if (ma) return (at(b) - at(a)) || byName(a, b)
+      return (tplRank(a) - tplRank(b)) || byName(a, b)
+    })
+  }
   const rank = (e) => (Number.isInteger(e.tplOrder) ? e.tplOrder : 1e6)
-  return out.sort((a, b) => (rank(a) - rank(b)) || coll.compare(displayName(a, lang), displayName(b, lang)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  return out.sort((a, b) => (rank(a) - rank(b)) || byName(a, b))
 }
 
 // ───────────────────────────── 读数格式化（结果区只出数字） ─────────────────────────────
@@ -131,6 +144,19 @@ export function fmtNum(v, sig = 4) {
   if (a >= 1e6 || a < 1e-4) return v.toExponential(Math.max(0, sig - 1)).replace(/\.?0+e/, 'e')
   const d = Math.max(0, sig - 1 - Math.floor(Math.log10(a)))
   return String(Number(v.toFixed(Math.min(12, d))))
+}
+/**
+ * 库页预览取哪一档（2026-10-08）：原先恒取 lod2 —— 那是给球面图标抽稀的一档（三角形上限 2.5 万），点开看到的是简化过的样子
+ * （用户：「不如 NASA 官网」）。改为取体积不超过 PREVIEW_MAX_BYTES 的最细一档（lod0 → lod1 → lod2）。
+ * 没下载的档由主进程 ensure 先递回本机已有的一档（随包 / 缓存）顶着显示，下载完自动换上（wbStore.select 的 upgradeWhenReady）。
+ * 没有档位信息（参数化 / 装配件 / 实体模板）回 'lod2'（它们不走文件，档位不起作用）。
+ */
+export const PREVIEW_MAX_BYTES = 6 * 1024 * 1024
+export function previewLod(e) {
+  const f = e && e.files
+  if (!f) return 'lod2'
+  for (const l of ['lod0', 'lod1']) if (f[l] && isNum(f[l].bytes) && f[l].bytes > 0 && f[l].bytes <= PREVIEW_MAX_BYTES) return l
+  return 'lod2'
 }
 export function fmtBytes(n) {
   if (!isNum(n) || n < 0) return '—'
@@ -303,11 +329,11 @@ export function partAtHit(parts, hit) {
 }
 
 /** 部件角色 → 界面名 */
-export const ROLE_LABEL = { bus: '平台体', solarArray: '太阳翼', reflector: '反射面', feed: '馈源', boom: '伸展臂', radiator: '散热面', thruster: '推力器', sensor: '敏感器', other: '其他' }
+export const ROLE_LABEL = { bus: '星体', solarArray: '太阳翼', reflector: '反射面', feed: '馈源', boom: '支撑结构', radiator: '散热面', thruster: '推力器', sensor: '敏感器', other: '其他' }
 /** AGI stage 类型 → 界面名（单位：转角 °、平移为模型单位、缩放无量纲） */
 export const STAGE_LABEL = {
-  xRotate: 'X 旋转', yRotate: 'Y 旋转', zRotate: 'Z 旋转', xTranslate: 'X 平移', yTranslate: 'Y 平移', zTranslate: 'Z 平移',
-  xScale: 'X 缩放', yScale: 'Y 缩放', zScale: 'Z 缩放', uniformScale: '等比缩放'
+  xRotate: '绕 X 轴旋转', yRotate: '绕 Y 轴旋转', zRotate: '绕 Z 轴旋转', xTranslate: '沿 X 轴平移', yTranslate: '沿 Y 轴平移', zTranslate: '沿 Z 轴平移',
+  xScale: 'X 向缩放', yScale: 'Y 向缩放', zScale: 'Z 向缩放', uniformScale: '等比缩放'
 }
 export const stageUnit = (type) => (/Rotate$/.test(type) ? '°' : /Translate$/.test(type) ? '' : '×')
 
@@ -429,13 +455,21 @@ export function uniqueName(base, taken) {
   return `${b}_${k}`
 }
 
-/** 部件的组件质量表（combineComponents 的入参）：只收质量为正的；质心取 comBody（手填）> centroidBody（分割给的） */
-export function partsAsComponents(parts) {
+/**
+ * 部件的组件质量表（combineComponents 的入参）：只收质量为正的；质心取 comBody（手动输入）> centroidBody（分割给的）。
+ * inertiaPerKg（可选，id → 3×3）：各部件单位质量的自身惯量（分析 Worker 的 partInertia，按部件几何与类型算）——给了就乘质量作为
+ * 自身惯量 inertiaCom 一并合成（2026-10 审查 P0-2：不给时退回质点，俯仰惯量会只剩真值的几个百分点）。
+ */
+export function partsAsComponents(parts, inertiaPerKg = null) {
   const out = []
   for (const p of Array.isArray(parts) ? parts : []) {
     if (!isObj(p) || !(isNum(p.massKg) && p.massKg > 0)) continue
     const c = isVec3(p.comBody) ? p.comBody : isVec3(p.centroidBody) ? p.centroidBody : null
-    if (c) out.push({ massKg: p.massKg, comBody: c.slice(), name: p.name || p.id })
+    if (!c) continue
+    const J = inertiaPerKg && (inertiaPerKg instanceof Map ? inertiaPerKg.get(p.id) : inertiaPerKg[p.id])
+    const o = { massKg: p.massKg, comBody: c.slice(), name: p.name || p.id }
+    if (Array.isArray(J) && J.length === 3 && J.every((r) => Array.isArray(r) && r.length === 3 && r.every(isNum))) o.inertiaCom = J.map((r) => r.map((v) => v * p.massKg))
+    out.push(o)
   }
   return out
 }
@@ -554,19 +588,19 @@ export const JSON_FIELDS = ['title', 'titleZh', 'kind', 'group', 'fidelity', 'un
 export function applyJsonImport(meta, json) {
   const m = plain(meta || {})
   if (Array.isArray(json)) {
-    if (!json.every((a) => isObj(a) && typeof a.name === 'string' && isVec3(a.posBody))) return { ok: false, error: '挂点数组格式不对。' }
+    if (!json.every((a) => isObj(a) && typeof a.name === 'string' && isVec3(a.posBody))) return { ok: false, error: '挂点数组格式错误。' }
     m.attachPoints = plain(json)
     return { ok: true, meta: m, what: 'attach', fields: ['attachPoints'] }
   }
-  if (!isObj(json)) return { ok: false, error: '不是 JSON 对象。' }
+  if (!isObj(json)) return { ok: false, error: '非 JSON 对象。' }
   const keys = Object.keys(json)
   if (keys.length && keys.every((k) => k === 'attachPoints')) {
-    if (!Array.isArray(json.attachPoints)) return { ok: false, error: '挂点数组格式不对。' }
+    if (!Array.isArray(json.attachPoints)) return { ok: false, error: '挂点数组格式错误。' }
     m.attachPoints = plain(json.attachPoints)
     return { ok: true, meta: m, what: 'attach', fields: ['attachPoints'] }
   }
   const fields = JSON_FIELDS.filter((k) => json[k] !== undefined)
-  if (!fields.length) return { ok: false, error: '没有可用的元数据字段。' }
+  if (!fields.length) return { ok: false, error: '无可用的元数据字段。' }
   for (const k of fields) m[k] = plain(json[k])
   return { ok: true, meta: m, what: 'meta', fields }
 }
@@ -740,4 +774,88 @@ export function retypeStage(s, type) {
 export function newArticulation(taken, nodes = []) {
   const t = taken instanceof Set ? taken : new Set(taken || [])
   return { name: uniqueName('Articulation', t), nodes: Array.isArray(nodes) ? nodes.slice() : [], stages: [newStage([], 'zRotate')] }
+}
+
+// ───────────────────────────── 设计页文档标签条（2026-10-06，任务书 §3.1）─────────────────────────────
+
+/**
+ * 签键（「已打开 = 激活」的判据）：模型签 = (库 id, 'model')；模板签 = 模板条目 id + '|tpl'；其余装配文档 = (自己的 id, 'asm')。
+ * @param {{kind:string, id:string, libId?:string, templateKey?:string}} d DocState
+ */
+export function docKeyOf(d) {
+  if (!d) return ''
+  if (d.kind === 'model') return (d.libId || '') + '|model'
+  return d.templateKey || d.id + '|asm'
+}
+/** 签对应的库条目 id（进库页时选中跟随）：模型签 → 那一件；模板签 → 模板条目；已入库装配件 → 它自己；其余 ''。 */
+export function libIdOfDoc(d) {
+  if (!d) return ''
+  if (d.kind === 'model') return d.libId || ''
+  if (d.templateKey) return String(d.templateKey).replace(/\|tpl$/, '')
+  return d.inLib ? d.id : ''
+}
+/**
+ * 草稿索引淘汰：list = [{id, at}]（任意序）；超过 max 份时按时间从旧到新淘汰，打开着的签（openIds）不参与淘汰。
+ * @returns {{keep:{id:string, at:number}[], drop:string[]}} keep 按时间从旧到新
+ */
+export function evictDrafts(list, openIds, max) {
+  const open = openIds instanceof Set ? openIds : new Set(openIds || [])
+  const keep = (Array.isArray(list) ? list : []).filter((x) => x && typeof x.id === 'string' && isNum(x.at)).slice().sort((a, b) => a.at - b.at)
+  const drop = []
+  for (let i = 0; keep.length > max && i < keep.length;) {
+    if (open.has(keep[i].id)) { i++; continue }
+    drop.push(keep[i].id)
+    keep.splice(i, 1)
+  }
+  return { keep, drop }
+}
+/**
+ * 换下的装配签只留最近 max 步撤销：先丢最旧的撤销步（不越过指针），还超就丢最远的重做步。返回新对象（hist 浅拷），不改入参。
+ * @param {{hist:object[], hptr:number}|null} s 编辑器 getState() 的结果
+ */
+export function trimHistory(s, max) {
+  if (!s || !Array.isArray(s.hist) || !(max >= 0) || s.hist.length <= max) return s
+  const ptr = Math.max(0, Math.min(s.hist.length, Math.trunc(Number(s.hptr)) || 0))
+  const k = Math.min(s.hist.length - max, ptr)
+  const hist = s.hist.slice(k, k + max)
+  return { ...s, hist, hptr: Math.min(ptr - k, hist.length) }
+}
+/** Ctrl+Tab / Ctrl+Shift+Tab：n 个签、当前下标 i（-1 = 没有激活签）→ 下一个下标（循环；n = 0 → -1） */
+export function cycleIndex(n, i, dir) {
+  if (!(n > 0)) return -1
+  if (!(i >= 0 && i < n)) return 0
+  return (i + (dir < 0 ? -1 : 1) + n) % n
+}
+/** 关掉下标 i 的签之后激活哪个（关之前共 n 个）：右邻，没有取左邻；关完没有签 → -1。返回的是关完之后数组里的下标 */
+export function neighborAfterClose(n, i) {
+  if (!(n > 1) || !(i >= 0 && i < n)) return -1
+  return i < n - 1 ? i : i - 1
+}
+
+// ───────────────────────────── 副本口径（2026-10-06，任务书 §3.2）─────────────────────────────
+
+// 中文名以全角收尾标点结尾时，「副本」直接接上不加空格（「SSL-1300（Maxar 1300）副本」）
+const CJK_CLOSE_RE = /[）】」』》〉］｝]$/
+/**
+ * 副本名：中文「<名称> 副本」、英文「<name> Copy」；与 taken 里的名字重名时递增「副本 2」/「Copy 2」…
+ * 名称本身已带副本后缀（「X 副本」「X 副本 3」/「X Copy 2」）时去掉后缀接着编号，不叠成「X 副本 副本」。
+ * 重名判据：去首尾空白后逐字相同（英文不分大小写）。taken = 库内条目名（中英两份）+ 已打开未入库签的名字，由调用方给。
+ * @param {string} base 原名（当前界面语言下的显示名）
+ * @param {Iterable<string>|Set<string>} taken
+ * @param {'zh'|'en'} [lang]
+ */
+export function copyNameOf(base, taken, lang = 'zh') {
+  const en = lang === 'en'
+  const word = en ? 'Copy' : '副本'
+  const seen = new Set()
+  for (const t of taken || []) if (typeof t === 'string' && t.trim()) seen.add(en ? t.trim().toLowerCase() : t.trim())
+  const has = (s) => seen.has(en ? s.toLowerCase() : s)
+  let stem = String(base == null ? '' : base).trim()
+  stem = stem.replace(en ? /\s+copy(?:\s+\d+)?$/i : /\s*副本(?:\s+\d+)?$/, '').trim()
+  if (!stem) stem = en ? 'Untitled' : '未命名'
+  const sep = !en && CJK_CLOSE_RE.test(stem) ? '' : ' '
+  const first = stem + sep + word
+  if (!has(first)) return first
+  for (let k = 2; k < 10000; k++) { const s = `${first} ${k}`; if (!has(s)) return s }
+  return `${first} ${Date.now()}`
 }
