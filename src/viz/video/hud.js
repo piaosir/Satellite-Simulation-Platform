@@ -29,11 +29,20 @@ const PAL_BARE = { ink: '#FFFFFF', k: '#DCE1E6', f: '#C3CAD2', dim: '#97A0AA', h
 const CASING = 'rgb(8,12,18)'   // 套边色：同平面图影像档（labelHalo.js IMAGERY_HALO），深浅底图上都站得住
 const p2 = (n) => String(n).padStart(2, '0')
 
-/** 成片里的基准字号（px）：高度的 2%，乘用户的「字号」系数（0.6～2） */
-export const hudFontPx = (H, size = 1) => Math.max(8, H * 0.02 * Math.min(2, Math.max(0.6, Number(size) || 1)))
+/**
+ * 叠加信息的基准高度：min(H, W × 9/16)。16:9 及更宽的画面就是 H（与改前一位不差）；方形 / 竖屏按宽折算 ——
+ * 字号与画面宽之比同 16:9，字不会比画面还宽（原来竖屏 1080×1920 的字是 16:9 的 1.8 倍高、画面却窄了一半）
+ */
+export const hudBaseH = (H, W) => (Number(W) > 0 ? Math.min(H, W * 0.5625) : H)
+/** 成片里的基准字号（px）：基准高度的 2%，乘用户的「字号」系数（0.6～2）。W 不给 = 按高度（旧口径） */
+export const hudFontPx = (H, size = 1, W) => Math.max(8, hudBaseH(H, W) * 0.02 * Math.min(2, Math.max(0.6, Number(size) || 1)))
+/** 版块放不下时缩字号的下限（相对设定字号）：再小就宁可截断 */
+export const HUD_FIT_MIN = 0.5
 
 // —— 聚焦卫星：字段目录（与右侧「卫星信息栏」同名、同序、同符号）。面板的勾选项与成片版块共用这一份 ——
-//   s = 符号（衬线斜体）；g = 节内分组（组间画点线，同信息栏 .rdk-hr）
+//   s = 符号（衬线斜体；「e_x」写法 = e 带下标 x，同信息栏 <sub>）；g = 节内分组（组间画点线，同信息栏 .rdk-hr）
+//   「位置 / 速度 / 偏心率矢量 / 倾角矢量」一项出三行（x y z、ẋ ẏ ż、e eₓ e_y、i iₓ i_y），面板上的符号列照写三个
+//   相对状态是一对星之间的量，不进单星卡片
 export const SAT_SECS = [
   { k: 'id', zh: '标识', en: 'Identity', f: [
     { k: 'norad', zh: 'NORAD', en: 'NORAD' }, { k: 'kind', zh: '区制', en: 'Regime' },
@@ -43,13 +52,27 @@ export const SAT_SECS = [
     { k: 'alt', zh: '轨道高度', en: 'Orbital Altitude', s: 'h' },
     { k: 'vg', zh: '对地速度', en: 'Ground Speed' }, { k: 'vi', zh: '惯性速度', en: 'Inertial Speed' },
     { k: 'trk', zh: '轨迹周期', en: 'Track Span' }] },
-  { k: 'el', zh: '轨道根数（开普勒）', en: 'Orbital Elements (Keplerian)', f: [
-    { k: 'a', zh: '半长轴', en: 'Semi-major Axis', s: 'a' }, { k: 'e', zh: '偏心率', en: 'Eccentricity', s: 'e' },
-    { k: 'i', zh: '轨道倾角', en: 'Inclination', s: 'i' }, { k: 'raan', zh: '升交点赤经', en: 'RAAN', s: 'Ω' },
-    { k: 'argp', zh: '近地点幅角', en: 'Argument of Perigee', s: 'ω' }, { k: 'ma', zh: '平近点角', en: 'Mean Anomaly', s: 'M' },
-    { k: 'n', zh: '平均运动', en: 'Mean Motion', s: 'n', g: 2 }, { k: 'T', zh: '轨道周期', en: 'Orbital Period', s: 'T', g: 2 },
-    { k: 'hp', zh: '近地点高度', en: 'Perigee Altitude', g: 2 }, { k: 'ha', zh: '远地点高度', en: 'Apogee Altitude', g: 2 },
-    { k: 'ep', zh: '历元', en: 'Epoch', g: 3 }, { k: 'age', zh: '历元龄', en: 'Epoch Age', g: 3 }] },
+  { k: 'sv', zh: '状态矢量', en: 'State Vector', f: [
+    { k: 'svPos', zh: '位置矢量', en: 'Position', s: 'x y z' }, { k: 'svVel', zh: '速度矢量', en: 'Velocity', s: 'ẋ ẏ ż' },
+    { k: 'svR', zh: '地心距', en: 'Geocentric Distance', s: 'r', g: 2 }] },
+  { k: 'osc', zh: '密切根数', en: 'Osculating Elements', f: [
+    { k: 'oa', zh: '半长轴', en: 'Semi-major Axis', s: 'a' }, { k: 'oe', zh: '偏心率', en: 'Eccentricity', s: 'e' },
+    { k: 'oi', zh: '轨道倾角', en: 'Inclination', s: 'i' }, { k: 'oraan', zh: '升交点赤经', en: 'RAAN', s: 'Ω' },
+    { k: 'oargp', zh: '近地点幅角', en: 'Argument of Perigee', s: 'ω' }, { k: 'onu', zh: '真近点角', en: 'True Anomaly', s: 'ν' },
+    { k: 'ou', zh: '纬度幅角', en: 'Argument of Latitude', s: 'u', g: 2 }, { k: 'oM', zh: '平近点角', en: 'Mean Anomaly', s: 'M', g: 2 }] },
+  { k: 'geo', zh: '同步轨道', en: 'Geosynchronous Orbit', f: [
+    { k: 'gLon', zh: '平经度', en: 'Mean Longitude', s: 'λ̄' }, { k: 'gDlon', zh: '经度偏差', en: 'Longitude Offset', s: 'Δλ' },
+    { k: 'gD', zh: '漂移率', en: 'Drift Rate', s: 'D' },
+    { k: 'gEv', zh: '偏心率矢量', en: 'Eccentricity Vector', s: 'e e_x e_y', g: 2 }, { k: 'gIv', zh: '倾角矢量', en: 'Inclination Vector', s: 'i i_x i_y', g: 3 }] },
+  { k: 'el', zh: '星历', en: 'Ephemeris', f: [
+    { k: 'prop', zh: '传播模型', en: 'Propagator' },
+    { k: 'ep', zh: '历元', en: 'Epoch', g: 2 }, { k: 'age', zh: '历元龄', en: 'Epoch Age', g: 2 },
+    { k: 'n', zh: '平均运动', en: 'Mean Motion', s: 'n', g: 3 }, { k: 'e', zh: '偏心率', en: 'Eccentricity', s: 'e', g: 3 },
+    { k: 'i', zh: '轨道倾角', en: 'Inclination', s: 'i', g: 3 }, { k: 'raan', zh: '升交点赤经', en: 'RAAN', s: 'Ω', g: 3 },
+    { k: 'argp', zh: '近地点幅角', en: 'Argument of Perigee', s: 'ω', g: 3 }, { k: 'ma', zh: '平近点角', en: 'Mean Anomaly', s: 'M', g: 3 },
+    { k: 'bstar', zh: '阻力项', en: 'Drag Term', s: 'B*', g: 3 },
+    { k: 'a', zh: '半长轴', en: 'Semi-major Axis', s: 'a', g: 4 }, { k: 'T', zh: '轨道周期', en: 'Orbital Period', s: 'T', g: 4 },
+    { k: 'hp', zh: '近地点高度', en: 'Perigee Altitude', g: 4 }, { k: 'ha', zh: '远地点高度', en: 'Apogee Altitude', g: 4 }] },
   { k: 'ant', zh: '天线', en: 'Antenna', f: [{ k: 'ant', zh: '天线', en: 'Antenna' }] },
   { k: 'mdl', zh: '模型', en: 'Model', f: [
     { k: 'mName', zh: '名称', en: 'Name' }, { k: 'mDims', zh: '尺寸', en: 'Size' }, { k: 'mMass', zh: '质量', en: 'Mass' }] }
@@ -107,26 +130,71 @@ function satCard(s, F, heads, tz, T) {
   if (on('vi') && s.vi) live.push(row('vi', s.vi, { u: 'km/s', tv: '00.000' }))
   if (on('trk') && s.trk) live.push(row('trk', [{ t: String(s.trk.rev) }, { t: T('圈', 'rev'), f: 1 }, { t: '· ' + s.trk.v }], { u: s.trk.u }))
   if (live.length) secs.push({ title: T('实时状态', 'Live Status'), rows: live })
-  // 轨道根数：经典六根数 ┆ 派生量 ┆ 历元
-  const g1 = [], g2 = [], g3 = []
-  if (on('a') && s.a) g1.push(row('a', s.a, { u: 'km' }))
-  if (on('e') && s.e) g1.push(row('e', s.e))
-  if (on('i') && s.i) g1.push(row('i', s.i, { u: '°' }))
-  if (on('raan') && s.raan) g1.push(row('raan', s.raan, { u: '°' }))
-  if (on('argp') && s.argp) g1.push(row('argp', s.argp, { u: '°' }))
-  if (on('ma') && s.ma) g1.push(row('ma', s.ma, { u: '°' }))
-  if (on('n') && s.n) g2.push(row('n', s.n, { u: T('圈/日', 'rev/day') }))
-  if (on('T') && s.T) g2.push(row('T', s.T, { u: 'min' }))
-  if (on('hp') && s.hp) g2.push(row('hp', s.hp, { u: 'km' }))
-  if (on('ha') && s.ha) g2.push(row('ha', s.ha, { u: 'km' }))
+  const groups = (gs) => { const out = []; for (const g of gs) { if (!g.length) continue; if (out.length) out.push({ hr: true }); out.push(...g) } return out }
+  // 状态矢量 / 密切根数：参考系同信息栏（satReadout），写进节名；节名关着时挂在首行标签的角标上
+  const frameSec = (rows, zh, en, fl) => {
+    if (!rows.length) return
+    const first = rows.find((r) => !r.hr)
+    if (heads === false && first && fl) first.kt = fl
+    secs.push({ title: T(zh, en) + (fl ? ' · ' + fl : ''), rows })
+  }
+  const sv = s.sv
+  if (sv) {
+    const g1 = [], g2 = []
+    const tri = (k, vs, syms, u, tv) => vs.forEach((v, j) => g1.push(j ? { k: '', s: syms[j], v, u, tv } : row(k, v, { s: syms[0], u, tv })))
+    if (on('svPos')) tri('svPos', [sv.x, sv.y, sv.z], ['x', 'y', 'z'], 'km', '-00000.000')
+    if (on('svVel')) tri('svVel', [sv.vx, sv.vy, sv.vz], ['ẋ', 'ẏ', 'ż'], 'km/s', '-0.000000')
+    if (on('svR') && sv.r) g2.push(row('svR', sv.r, { u: 'km', tv: '00000.000' }))
+    frameSec(groups([g1, g2]), '状态矢量', 'State Vector', sv.frameLabel)
+  }
+  const osc = s.osc
+  if (osc) {
+    const g1 = [], g2 = []
+    const A = { u: '°', tv: '000.0000' }
+    if (on('oa') && osc.a) g1.push(row('oa', osc.a, { u: 'km', tv: '00000.000' }))
+    if (on('oe') && osc.e) g1.push(row('oe', osc.e, { tv: '0.0000000' }))
+    if (on('oi') && osc.i) g1.push(row('oi', osc.i, A))
+    if (on('oraan') && osc.raan) g1.push(row('oraan', osc.raan, A))
+    if (on('oargp') && osc.argp) g1.push(row('oargp', osc.argp, A))
+    if (on('onu') && osc.nu) g1.push(row('onu', osc.nu, A))
+    // 近赤道没有纬度幅角：同信息栏改出真经度 l
+    if (on('ou')) { if (osc.u) g2.push(row('ou', osc.u, A)); else if (osc.L) g2.push({ k: T('真经度', 'True Longitude'), s: 'l', v: osc.L, ...A }) }
+    if (on('oM') && osc.M) g2.push(row('oM', osc.M, A))
+    frameSec(groups([g1, g2]), '密切根数', 'Osculating Elements', osc.frameLabel)
+  }
+  // 同步轨道（GEO / IGSO）：平经度 Δλ D ┆ e eₓ e_y ┆ i iₓ i_y；越出保持范围的值着警示色（同信息栏 .rdk-v.out）
+  const geo = s.geo
+  if (geo) {
+    const g1 = [], g2 = [], g3 = []
+    if (on('gLon') && geo.lon) g1.push(row('gLon', geo.lon, { u: geo.lonH, tv: '000.0000', tu: ['°E', '°W'] }))
+    if (on('gDlon') && geo.dlon) g1.push(row('gDlon', geo.dlon, { u: '°', tv: '-0.0000', tone: geo.ewOut ? 'warn' : '' }))
+    if (on('gD') && geo.drift) g1.push(row('gD', geo.drift, { u: '°/d', tv: '-0.0000' }))
+    if (on('gEv') && geo.e) g2.push({ k: T('偏心率', 'Eccentricity'), s: 'e', v: geo.e, tv: '0.0000000' }, { k: '', s: 'e_x', v: geo.ex, tv: '-0.0000000' }, { k: '', s: 'e_y', v: geo.ey, tv: '-0.0000000' })
+    if (on('gIv') && geo.i) g3.push({ k: T('轨道倾角', 'Inclination'), s: 'i', v: geo.i, u: '°', tv: '00.0000', tone: geo.nsOut ? 'warn' : '' }, { k: '', s: 'i_x', v: geo.ix, u: '°', tv: '-00.0000' }, { k: '', s: 'i_y', v: geo.iy, u: '°', tv: '-00.0000' })
+    const rows = groups([g1, g2, g3])
+    if (rows.length) secs.push({ title: T('同步轨道', 'Geosynchronous Orbit'), rows })
+  }
+  // 星历：传播模型 ┆ 历元 历元龄 ┆ 平根数（n e i Ω ω M B*）┆ 派生量（a T 近 远）—— 同信息栏「星历」节
+  const g0 = [], g1 = [], g2 = [], g3 = []
+  if (on('prop') && s.prop) g0.push({ k: L('prop'), v: s.prop, span: true })
   if (on('ep') && Number.isFinite(s.epochMs)) {
     const q = tzParts(s.epochMs, tz)
-    g3.push({ k: L('ep'), kt: tzTag(tz, s.epochMs), v: `${q.y}-${p2(q.mo)}-${p2(q.d)} ${p2(q.h)}:${p2(q.mi)}:${p2(q.s)}`, span: true })
+    g1.push({ k: L('ep'), kt: tzTag(tz, s.epochMs), v: `${q.y}-${p2(q.mo)}-${p2(q.d)} ${p2(q.h)}:${p2(q.mi)}:${p2(q.s)}`, span: true })
   }
-  if (on('age') && s.age) g3.push(row('age', s.age, { u: 'd', tv: '000.00' }))
-  const el = []
-  for (const g of [g1, g2, g3]) { if (!g.length) continue; if (el.length) el.push({ hr: true }); el.push(...g) }
-  if (el.length) secs.push({ title: T('轨道根数（开普勒）', 'Orbital Elements (Keplerian)'), rows: el })
+  if (on('age') && s.age) g1.push(row('age', s.age, { u: 'd', tv: '000.00' }))
+  if (on('n') && s.n) g2.push(row('n', s.n, { u: T('圈/日', 'rev/day') }))
+  if (on('e') && s.e) g2.push(row('e', s.e))
+  if (on('i') && s.i) g2.push(row('i', s.i, { u: '°' }))
+  if (on('raan') && s.raan) g2.push(row('raan', s.raan, { u: '°' }))
+  if (on('argp') && s.argp) g2.push(row('argp', s.argp, { u: '°' }))
+  if (on('ma') && s.ma) g2.push(row('ma', s.ma, { u: '°' }))
+  if (on('bstar') && s.bstar) g2.push(row('bstar', s.bstar, { u: '1/R⊕' }))
+  if (on('a') && s.a) g3.push(row('a', s.a, { u: 'km' }))
+  if (on('T') && s.T) g3.push(row('T', s.T, { u: 'min' }))
+  if (on('hp') && s.hp) g3.push(row('hp', s.hp, { u: 'km' }))
+  if (on('ha') && s.ha) g3.push(row('ha', s.ha, { u: 'km' }))
+  const el = groups([g0, g1, g2, g3])
+  if (el.length) secs.push({ title: T('星历', 'Ephemeris'), rows: el })
   // 天线：名称（多节点时带所属星名）｜峰值增益
   if (on('ant') && s.ants && s.ants.length) {
     const rows = s.ants.slice(0, ANT_MAX).map((a) => ({ k: a.sat ? [{ t: a.name }, { t: a.sat, f: 1 }] : a.name, v: fx(a.peak, 2), u: 'dBi' }))
@@ -181,13 +249,13 @@ export function buildHudBlocks(spec, data, T) {
     const rows = [[{ t: '', role: 'n' }, { t: T('方位', 'Az'), role: 'h' }, { t: T('仰角', 'El'), role: 'h' }, { t: T('斜距', 'Range'), role: 'h' }]]
     for (const r of data.aer.rows) {
       const dim = Number.isFinite(r.el) && r.el < 0
-      rows.push([{ t: r.name, role: 'n', dim }, { t: fx(r.az, 1) + '°', role: 'v', dim }, { t: fx(r.el, 1) + '°', role: 'v', dim }, { t: fx(r.rangeKm, 0) + ' km', role: 'v', dim }])
+      rows.push([{ t: r.name, role: 'n', dim }, { t: fx(r.az, 1) + '°', role: 'v', dim, tv: '000.0°' }, { t: fx(r.el, 1) + '°', role: 'v', dim, tv: '-00.0°' }, { t: fx(r.rangeKm, 0) + ' km', role: 'v', dim, tv: '00000 km' }])
     }
     out.push({ pos: pos('aer', 'bl'), kind: 'aer', title: (data.aer.sat ? T('地球站 → ', 'Stations → ') + data.aer.sat : T('地球站', 'Stations')), rows })
   }
   if (on('field') && data.field && data.field.rows && data.field.rows.length) {
     const u = data.field.unit || ''
-    const rows = data.field.rows.map((r) => [{ t: r.name, role: 'n' }, { t: fx(r.value, 2), role: 'v', dim: !Number.isFinite(r.value) }, { t: u, role: 'u' }])
+    const rows = data.field.rows.map((r) => [{ t: r.name, role: 'n' }, { t: fx(r.value, 2), role: 'v', dim: !Number.isFinite(r.value), tv: '-000.00' }, { t: u, role: 'u' }])
     out.push({ pos: pos('field', 'bl'), kind: 'field', title: data.field.title || T('场强', 'Field strength'), rows })
   }
   if (on('legend') && data.legend && data.legend.levels && data.legend.levels.length) {
@@ -205,9 +273,11 @@ function rrect(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath()
 }
 function ellipsize(ctx, s, maxW) {
-  if (ctx.measureText(s).width <= maxW) return s
+  // 留半个像素：列宽恰好量到最宽那条时，「x + colK − kx」这类加减会比实测字宽少 1 ULP，最宽那条就被截成「轨道…」
+  const lim = maxW + 0.5
+  if (ctx.measureText(s).width <= lim) return s
   let lo = 0, hi = s.length
-  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ctx.measureText(s.slice(0, m) + '…').width <= maxW) lo = m; else hi = m - 1 }
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ctx.measureText(s.slice(0, m) + '…').width <= lim) lo = m; else hi = m - 1 }
   return s.slice(0, lo) + '…'
 }
 
@@ -246,7 +316,7 @@ function makePen(ctx, fs, st) {
   return { fam, font, text, hline, lw, pal }
 }
 
-// 量一个版块：返回 { w, h, draw(x, y) }。fs = 基准字号
+// 量一个版块：返回 { w, h, need, draw(x, y) }。fs = 基准字号；need = 一个字都不截所需的宽（与 maxW 比，大于它 drawHud 就缩字号）
 function layoutBlock(ctx, b, fs, st, maxW, pen) {
   const pad = st.panel ? fs * 0.6 : fs * 0.15, padX = st.panel ? fs * 0.75 : fs * 0.15
   const lh = fs * 1.34
@@ -262,7 +332,7 @@ function layoutBlock(ctx, b, fs, st, maxW, pen) {
     const h = (b.titleText ? fs * 1.95 : 0) + (b.subText ? lh : 0)
     const w = Math.min(maxW, Math.max(w1, w2)) + padX * 2
     return {
-      w, h: h + pad * 2,
+      w, h: h + pad * 2, need: Math.max(w1, w2),   // 标题字面可用满 maxW（见下面 ellipsize）
       draw(x, y) {
         let yy = y + pad
         if (b.titleText) { setF(1.55, true); pen.text(ellipsize(ctx, b.titleText, maxW), x + padX, yy + fs * 1.55 * 0.92, pen.pal.ink, 'left', fs * 1.55); yy += fs * 1.95 }
@@ -273,25 +343,33 @@ function layoutBlock(ctx, b, fs, st, maxW, pen) {
   // 表格类（时间 / 站星几何 / 场强 / 图例）
   const rows = b.rows || []
   const ncol = rows.reduce((m, r) => Math.max(m, r.length), 0)
-  const colW = new Array(ncol).fill(0)
+  // 列宽三套：colN 实测最宽（放得下就用它，一个字都不截）；colC 旧口径（单列封顶 0.6·maxW —— 缩到下限仍放不下时兜底）；
+  // colT 含定宽模板（逐帧在变的读数按最宽可能算 need，缩不缩字号不随数字跳）
+  const colN = new Array(ncol).fill(0), colC = new Array(ncol).fill(0), colT = new Array(ncol).fill(0)
   const big = (c) => c.big ? 1.3 : 1
   for (const r of rows) {
     r.forEach((c, i) => {
-      if (c.role === 'sw') { colW[i] = Math.max(colW[i], fs * 1.6); return }
+      if (c.role === 'sw') { const sw = fs * 1.6; colN[i] = Math.max(colN[i], sw); colC[i] = Math.max(colC[i], sw); colT[i] = Math.max(colT[i], sw); return }
       setF(big(c), c.big)
-      colW[i] = Math.max(colW[i], Math.min(maxW * 0.6, ctx.measureText(c.t || '').width))
+      const cw = ctx.measureText(c.t || '').width
+      colN[i] = Math.max(colN[i], cw)
+      colC[i] = Math.max(colC[i], Math.min(maxW * 0.6, cw))
+      colT[i] = Math.max(colT[i], cw, c.tv ? ctx.measureText(c.tv).width : 0)
     })
   }
   const cgap = fs * 0.7
   let tw = 0
   if (b.title) { setF(0.92, true); tw = ctx.measureText(b.title).width }
-  const bodyW = colW.reduce((a, v, i) => a + v + (i && v ? cgap : 0), 0)
+  const sumW = (cw) => cw.reduce((a, v, i) => a + v + (i && v ? cgap : 0), 0)
+  const need = Math.max(sumW(colT), tw) + padX * 2
+  const colW = need <= maxW ? colN : colC
+  const bodyW = sumW(colW)
   const innerW = Math.min(maxW - padX * 2, Math.max(bodyW, tw))
   const rowH = rows.map((r) => (r.some((c) => c.big) ? fs * 1.62 : lh))
   const th = b.title ? fs * 1.36 : 0
   const h = pad * 2 + th + rowH.reduce((a, v) => a + v, 0)
   return {
-    w: innerW + padX * 2, h,
+    w: innerW + padX * 2, h, need,
     draw(x, y) {
       let yy = y + pad
       if (b.title) { setF(0.92, true); pen.text(ellipsize(ctx, b.title, innerW), x + padX, yy + fs * 0.95, pen.pal.k, 'left', fs * 0.92); yy += th }
@@ -329,6 +407,10 @@ function layoutCard(ctx, card, fs, st, maxW, pen) {
     k: pen.font(C.body), sym: pen.font(C.sym, { italic: true, fam: SYM_FONT }), v: pen.font(C.body), u: pen.font(C.unit)
   }
   const W = (font, s) => { ctx.font = font; return ctx.measureText(s).width }
+  // 符号「e_x」= e 带下标 x（同信息栏 <sub>）：下标 0.68 号、基线下沉 0.24 em
+  F.symSub = pen.font(C.sym * 0.68, { italic: true, fam: SYM_FONT })
+  const symParts = (s) => { const i = s.indexOf('_'); return i > 0 ? [s.slice(0, i), s.slice(i + 1)] : [s, ''] }
+  const symW = (s) => { const [b, sb] = symParts(s); return W(F.sym, b) + (sb ? fs * 0.04 + W(F.symSub, sb) : 0) }
   const runGap = fs * 0.22
   const runsOf = (x) => (Array.isArray(x) ? x : [{ t: x == null ? '' : String(x) }])
   const runsW = (x, main) => runsOf(x).reduce((a, r, i) => a + W(r.f ? F.u : main, r.t) + (i ? runGap : 0), 0)
@@ -340,23 +422,27 @@ function layoutCard(ctx, card, fs, st, maxW, pen) {
   for (const r of rows) {
     if (r.hr) continue
     colK = Math.max(colK, runsW(r.k, F.k) + (r.kt ? fs * 0.35 + W(F.u, r.kt) : 0))
-    if (r.s) colS = Math.max(colS, W(F.sym, r.s))
+    if (r.s) colS = Math.max(colS, symW(r.s))
     if (!r.span) colV = Math.max(colV, runsW(r.v, F.v), tplW(r.tv, F.v))
     if (r.u) colU = Math.max(colU, W(F.u, r.u), tplW(r.tu, F.u))
   }
-  colK = Math.min(colK, cap * 0.55)
   const gKS = colS ? fs * 0.6 : 0, gSV = fs * 0.9, gVU = colU ? fs * 0.32 : 0
-  // 跨列数值（历元、模型名）：占符号列 + 数值列，不够再把数值列撑宽（撑到卡片上限为止，再长的模型名截断）
+  // 跨列数值（历元、模型名）：占符号列 + 数值列，不够再把数值列撑宽
   let spanNeed = 0
   for (const r of rows) if (!r.hr && r.span) spanNeed = Math.max(spanNeed, runsW(r.v, F.v) + fs * 0.6 - (gKS + colS + gSV + colV))
-  if (spanNeed > 0) colV += Math.min(spanNeed, Math.max(0, cap - (colK + gKS + colS + gSV + colV + gVU + colU)))
-  const tableW = rows.length ? colK + gKS + colS + gSV + colV + gVU + colU : 0
   // 标识区：星名 + 徽标（徽标超宽就折行）
   const bdgPadX = fs * C.bdg * 0.45, bdgGap = fs * C.bdg * 0.42, bdgH = fs * C.bdg * 1.5, bdgKG = fs * C.bdg * 0.38
   const bw = card.badges.map((b) => (b.k ? W(F.bdgK, b.k) + bdgKG : 0) + W(F.bdg, b.v) + bdgPadX * 2)
   const nameW = card.name ? W(F.name, card.name) : 0
   const headW = card.heads ? card.secs.reduce((m, s) => Math.max(m, W(F.head, s.title)), 0) : 0
   const bdgW1 = bw.reduce((a, v, i) => a + v + (i ? bdgGap : 0), 0)
+  // need = 一个字都不截所需的卡片宽：标签列不封顶、跨列数值整条放下；星名、节名、最宽的一枚徽标（徽标会折行，不按一行算）
+  const need = Math.max(rows.length ? colK + gKS + colS + gSV + colV + Math.max(0, spanNeed) + gVU + colU : 0, nameW, headW, bw.length ? Math.max(...bw) : 0) + padX * 2
+  const fits = need <= maxW
+  // 放得下：标签列按实测、跨列数值整条放下；缩到下限仍放不下：旧口径（标签列封顶 0.55、跨列撑到卡片上限为止，其余截断）
+  if (!fits) colK = Math.min(colK, cap * 0.55)
+  if (spanNeed > 0) colV += fits ? spanNeed : Math.min(spanNeed, Math.max(0, cap - (colK + gKS + colS + gSV + colV + gVU + colU)))
+  const tableW = rows.length ? colK + gKS + colS + gSV + colV + gVU + colU : 0
   const innerW = Math.min(cap, Math.max(tableW, nameW, bdgW1, headW, fs * 4))
   if (tableW && innerW > tableW) colV += innerW - tableW           // 数值列吃掉多余宽度：右沿贴卡片右缘（同信息栏 1fr）
   const lines = []                                                // 徽标按行
@@ -381,7 +467,7 @@ function layoutCard(ctx, card, fs, st, maxW, pen) {
   })
   const h = pad * 2 + idH + bodyH
   return {
-    w: innerW + padX * 2, h,
+    w: innerW + padX * 2, h, need,
     draw(x0, y0) {
       const x = x0 + padX, xR = x + innerW
       let y = y0 + pad
@@ -432,26 +518,31 @@ function layoutCard(ctx, card, fs, st, maxW, pen) {
           const kRuns = runsOf(r.k)
           kRuns.forEach((q, i) => {
             ctx.font = q.f ? F.u : F.k
-            const s = ellipsize(ctx, q.t, Math.max(fs, x + colK - kx))
+            const s = ellipsize(ctx, q.t, Math.max(fs, colK - (kx - x)))   // 先减后加：首段恰为 colK，不吃浮点短缺
             pen.text(s, kx, base, q.f ? pen.pal.f : pen.pal.k, 'left', fs * (q.f ? C.unit : C.body))
             kx += ctx.measureText(s).width + runGap
           })
           if (r.kt) { ctx.font = F.u; pen.text(r.kt, kx - runGap + fs * 0.35, base, pen.pal.f, 'left', fs * C.unit) }
-          // 符号
-          if (r.s) { ctx.font = F.sym; pen.text(r.s, xS, base, pen.pal.ink, 'left', fs * C.sym) }
-          // 数值：右齐到数值列右沿；分段从右往左排
+          // 符号（含下标）
+          if (r.s) {
+            const [sb0, sb1] = symParts(r.s)
+            ctx.font = F.sym; pen.text(sb0, xS, base, pen.pal.ink, 'left', fs * C.sym)
+            if (sb1) { const bw = ctx.measureText(sb0).width; ctx.font = F.symSub; pen.text(sb1, xS + bw + fs * 0.04, base + fs * 0.24, pen.pal.ink, 'left', fs * C.sym * 0.68) }
+          }
+          // 数值：右齐到数值列右沿；分段从右往左排。tone 'warn' = 越出位置保持范围（着色，不出文字）
+          const vInk = r.tone === 'warn' ? WARN : pen.pal.ink
           const vr = runsOf(r.v)
           const vMax = r.span ? xV - (x + colK + fs * 0.6) : colV
           let total = runsW(vr, F.v)
           if (vr.length === 1 && total > vMax) {
             ctx.font = F.v
             const s = ellipsize(ctx, vr[0].t, vMax)
-            pen.text(s, xV, base, pen.pal.ink, 'right', fs)
+            pen.text(s, xV, base, vInk, 'right', fs)
           } else {
             let vx = xV - total
             vr.forEach((q) => {
               ctx.font = q.f ? F.u : F.v
-              pen.text(q.t, vx, base, q.f ? pen.pal.f : pen.pal.ink, 'left', fs * (q.f ? C.unit : C.body))
+              pen.text(q.t, vx, base, q.f ? pen.pal.f : vInk, 'left', fs * (q.f ? C.unit : C.body))
               vx += ctx.measureText(q.t).width + runGap
             })
           }
@@ -467,12 +558,22 @@ function layoutCard(ctx, card, fs, st, maxW, pen) {
  * 把版块画进 ctx（坐标系 = 成片像素 W × H，调用方已置好变换）。
  * st = { size, panel, opacity, font, fontStack }；area = 版块可用的矩形（缺省整幅；开了经纬图框时是图框内区）。
  * 返回各锚位占用的矩形（单测 / 预览命中用）
+ *
+ * 放不下时的统筹（字号调大、方形 / 竖屏、叠加项开得多时）—— 放得下的版式一笔不动：
+ *   ① 单个版块高于可用高度、或宽于 maxW（need = 一个字都不截所需的宽）：按两个比例里小的那个缩字号重排；
+ *   ② 一组（一个锚位）分列后总宽超出画面可用宽：降这一组的版块宽度上限与字号再排；
+ *   ③ 两组互相压：一上一下（同侧或斜对）分可用高度；同一行（左 / 中 / 右有几组算几组）一起分可用宽度，降 maxW 再排，
+ *      居中组整组平移到左右两组之间。分法：各自先给够缩到下限时的长度，余量按「自然长度 − 下限长度」的比例分 ——
+ *      小版块（时间读数）不会被大的一组（几张卡片）挤到截断。逐对处理到不再相压为止。
+ *   下限 HUD_FIT_MIN（相对设定字号）：按宽度缩、按统筹分到的高度缩都不低于它；只是单块高过整幅可用高度时同原来，按比例缩到放下为止。
+ *   缩到下限仍放不下的（叠加项开得太多），宁可截断 / 出界，也不把字缩到看不清
  */
 export function drawHud(ctx, W, H, blocks, st, area) {
   const style = { size: 1, panel: false, opacity: 0.62, font: 'ui', ...(st || {}) }
   const A = area && area.w > 0 && area.h > 0 ? area : { x: 0, y: 0, w: W, h: H }
-  const fs = hudFontPx(H, style.size)
-  const m = area ? Math.round(fs * 0.7) : Math.round(H * 0.028), gap = fs * 0.55, maxW = A.w * 0.46
+  const baseH = hudBaseH(H, W)
+  const fs = hudFontPx(H, style.size, W)
+  const m = area ? Math.round(fs * 0.7) : Math.round(baseH * 0.028), gap = fs * 0.55, maxW = A.w * 0.46
   const boxes = []
   ctx.save()
   // 名目已按界面语言出好；站名 / 星名是用户数据，不许被 DOM 呈现层的 canvas 补丁「翻译」。
@@ -482,35 +583,135 @@ export function drawHud(ctx, W, H, blocks, st, area) {
   const pen = makePen(ctx, fs, style)
   const groups = {}
   for (const b of blocks) (groups[b.pos] = groups[b.pos] || []).push(b)
-  const avail = A.h - m * 2
-  for (const p of HUD_POS) {
-    const list = groups[p]; if (!list || !list.length) continue
-    const L = list.map((b) => layoutBlock(ctx, b, fs, style, maxW, pen))
-    // 分列：自上而下（列表顺序）塞进一列，放不下另起一列
+  const avail = A.h - m * 2, availW = A.w - m * 2
+  const fsMin = fs * HUD_FIT_MIN
+  // 同一版块、同一字号与宽度上限的排版结果在这一趟里复用（统筹时会反复试排）
+  const memo = new Map()
+  const layoutM = (b, f, mw) => {
+    let mb = memo.get(b)
+    if (!mb) memo.set(b, (mb = new Map()))
+    const key = f + '|' + mw
+    let lb = mb.get(key)
+    if (!lb) { lb = layoutBlock(ctx, b, f, style, mw, f === fs ? pen : makePen(ctx, f, style)); mb.set(key, lb) }
+    return lb
+  }
+  // ① 一个版块：按字号 f 排；高于 hh / 宽于 mw 就按两个比例里小的那个缩字号重排（版式全按字号成比例，一两轮即放得下）。
+  //    只超出整幅可用高度时与原来逐位相同（f · hh / h · 0.995、不设下限）
+  const fitBlock = (b, f, mw, hh) => {
+    let lb = layoutM(b, f, mw)
+    if (lb.logo) return lb
+    for (let i = 0; i < 4; i++) {
+      const overH = hh > 0 && lb.h > hh, overW = lb.need > mw
+      if (!overH && !overW) break
+      const byW = overW && (!overH || mw / lb.need < hh / lb.h)
+      const fl = byW || hh < avail ? fsMin : 0
+      if (f <= fl) break
+      f = Math.max(fl, byW ? f * mw / lb.need * 0.995 : f * hh / lb.h * 0.995)
+      lb = layoutM(b, f, mw)
+    }
+    return lb
+  }
+  // 一组（一个锚位）：版块自上而下（列表顺序）塞进一列，放不下另起一列
+  const pack = (L, hh) => {
     const cols = []
     let col = null
     for (const lb of L) {
-      if (!col || (col.items.length && col.h + gap + lb.h > avail)) { col = { items: [], w: 0, h: 0 }; cols.push(col) }
+      if (!col || (col.items.length && col.h + gap + lb.h > hh)) { col = { items: [], w: 0, h: 0 }; cols.push(col) }
       col.h += (col.items.length ? gap : 0) + lb.h; col.w = Math.max(col.w, lb.w); col.items.push(lb)
     }
-    const totalW = cols.reduce((a, c, i) => a + c.w + (i ? gap : 0), 0)
-    const bottom = p[0] === 'b', hz = p[1]
-    let cx = hz === 'l' ? A.x + m : hz === 'r' ? A.x + A.w - m : A.x + (A.w - totalW) / 2
-    for (const c of cols) {
+    return { cols, totalW: cols.reduce((a, c, i) => a + c.w + (i ? gap : 0), 0), colH: cols.reduce((a, c) => Math.max(a, c.h), 0) }
+  }
+  // 组的状态：k 整组字号系数、mw 版块宽度上限、hh 可用高度；lay 按它们重排，trial 试排不落定
+  const lay = (s) => { s.g = pack(s.list.map((b) => fitBlock(b, s.k === 1 ? fs : fs * s.k, s.mw, s.hh)), s.hh); return s }
+  const trial = (s, k, mw, hh) => lay({ list: s.list, k, mw, hh }).g
+  // 摆位：左侧锚位往右排列、右侧往左、居中整组居中；底部锚位贴底。
+  // 居中组避让同一行的左右两组：放得下就整组平移到两组之间（不缩字号），放不下照旧居中（交给下面的统筹缩）
+  const place = (p, g) => {
+    const out = [], bottom = p[0] === 'b', hz = p[1]
+    let cx = hz === 'l' ? A.x + m : hz === 'r' ? A.x + A.w - m : A.x + (A.w - g.totalW) / 2
+    if (hz === 'c') {
+      const L = S[p[0] + 'l'], R = S[p[0] + 'r']
+      const lo = L ? A.x + m + L.g.totalW + gap : A.x + m, hi = R ? A.x + A.w - m - R.g.totalW - gap : A.x + A.w - m
+      if (g.totalW <= hi - lo + 0.5) cx = Math.min(Math.max(cx, lo), hi - g.totalW)
+    }
+    for (const c of g.cols) {
       const colX = hz === 'r' ? cx - c.w : cx
       let y = bottom ? A.y + A.h - m - c.h : A.y + m
       for (const lb of c.items) {
-        const bx = hz === 'l' ? colX : hz === 'r' ? colX + c.w - lb.w : colX + (c.w - lb.w) / 2
-        if (style.panel && !lb.logo) {
-          ctx.fillStyle = `rgba(12,16,22,${Math.max(0, Math.min(1, style.opacity))})`
-          rrect(ctx, bx, y, lb.w, lb.h, fs * 0.38); ctx.fill()
-          ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = Math.max(1, H / 1080); ctx.stroke()
-        }
-        lb.draw(bx, y)
-        boxes.push({ pos: p, x: bx, y, w: lb.w, h: lb.h })
+        out.push({ lb, x: hz === 'l' ? colX : hz === 'r' ? colX + c.w - lb.w : colX + (c.w - lb.w) / 2, y })
         y += lb.h + gap
       }
       cx = hz === 'r' ? colX - gap : colX + c.w + gap
+    }
+    return out
+  }
+  const S = {}
+  for (const p of HUD_POS) if (groups[p] && groups[p].length) S[p] = lay({ list: groups[p], k: 1, mw: maxW, hh: avail })
+  // ② 一组的总宽压进 wb：先把版块宽度上限降到 wb，还宽（多列）就逐轮按比例降整组字号
+  const fitW = (s, wb) => {
+    s.mw = Math.min(s.mw, Math.max(1, wb))
+    lay(s)
+    for (let i = 0; i < 6 && s.g.totalW > wb + 0.5 && s.k > HUD_FIT_MIN; i++) { s.k = Math.max(HUD_FIT_MIN, s.k * wb / s.g.totalW * 0.995); lay(s) }
+  }
+  // 几组分一段长度 T：各自先给够缩到下限时的长度 ms，余量按「自然长度 ns − 下限长度」的比例分 —— 小版块（时间读数）不会被
+  // 大的一组（几张卡片）挤到截断；下限都给不够时按下限的比例分（都缩到下限，仍放不下的只能截断 / 出界）
+  const shareN = (T, ms, ns) => {
+    const lo = ms.reduce((a, v) => a + v, 0)
+    if (!(lo < T)) { const k = T / Math.max(1e-9, lo); return ms.map((v) => v * k) }
+    const ds = ns.map((v, i) => Math.max(0, v - ms[i])), dd = ds.reduce((a, v) => a + v, 0), E = T - lo
+    return ms.map((v, i) => v + (dd > 0 ? E * ds[i] / dd : E / ms.length))
+  }
+  // 一组能让出的最小高度：缩到下限、又不至于因为另起太多列而宽过画面的那个可用高度（二分；最低 = 缩到下限时最高的那一块）
+  const minH = (s) => {
+    let lo = trial(s, HUD_FIT_MIN, s.mw, 1).colH, hi = avail
+    if (lo >= hi || trial(s, HUD_FIT_MIN, s.mw, lo).totalW <= availW + 0.5) return Math.min(lo, hi)
+    if (trial(s, HUD_FIT_MIN, s.mw, hi).totalW > availW + 0.5) return hi
+    for (let i = 0; i < 10; i++) { const mid = (lo + hi) / 2; if (trial(s, HUD_FIT_MIN, s.mw, mid).totalW <= availW + 0.5) hi = mid; else lo = mid }
+    return hi
+  }
+  const hit = (a, b) => Math.min(a.x + a.lb.w, b.x + b.lb.w) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y + a.lb.h, b.y + b.lb.h) - Math.max(a.y, b.y) > 0.5
+  const stuck = new Set()   // 缩到下限仍压着的那几对：不再折腾
+  for (let it = 0; it < 16; it++) {
+    const P = HUD_POS.filter((p) => S[p])
+    const wide = P.find((p) => S[p].g.totalW > availW + 0.5 && S[p].k > HUD_FIT_MIN)
+    if (wide) { fitW(S[wide], availW); continue }
+    // ③ 两组互相压（逐对找第一对）
+    const B = {}
+    for (const p of P) B[p] = place(p, S[p].g)
+    let pair = null
+    find: for (let i = 0; i < P.length; i++) {
+      for (let j = i + 1; j < P.length; j++) {
+        if (stuck.has(P[i] + P[j])) continue
+        for (const a of B[P[i]]) for (const b of B[P[j]]) if (hit(a, b)) { pair = [P[i], P[j]]; break find }
+      }
+    }
+    if (!pair) break
+    const [p, q] = pair, a = S[p], b = S[q]
+    const was = [a.g.totalW, a.g.colH, b.g.totalW, b.g.colH].join()
+    if (p[0] !== q[0]) {
+      // 一上一下（同侧或斜对）：分可用高度（中间留一个间距）。下限长度见 minH
+      const t = p[0] === 't' ? a : b, d = p[0] === 't' ? b : a
+      const [hT, hB] = shareN(avail - gap, [minH(t), minH(d)], [trial(t, t.k, t.mw, avail).colH, trial(d, d.k, d.mw, avail).colH])
+      t.hh = Math.min(t.hh, hT); d.hh = Math.min(d.hh, hB)
+      lay(t); lay(d)
+    } else {
+      // 同一行：这一行里的组（左 / 中 / 右，有几个算几个）一起分可用宽度（降 maxW 再排）；居中组会平移到两侧之间（见 place）
+      const R = ['l', 'c', 'r'].map((h) => S[p[0] + h]).filter(Boolean)
+      const Ws = shareN(availW - gap * (R.length - 1), R.map((s) => trial(s, HUD_FIT_MIN, maxW, s.hh).totalW), R.map((s) => trial(s, s.k, maxW, s.hh).totalW))
+      R.forEach((s, i) => fitW(s, Ws[i]))
+    }
+    if ([a.g.totalW, a.g.colH, b.g.totalW, b.g.colH].join() === was) stuck.add(p + q)
+  }
+  for (const p of HUD_POS) {
+    if (!S[p]) continue
+    for (const { lb, x: bx, y } of place(p, S[p].g)) {
+      if (style.panel && !lb.logo) {
+        ctx.fillStyle = `rgba(12,16,22,${Math.max(0, Math.min(1, style.opacity))})`
+        rrect(ctx, bx, y, lb.w, lb.h, fs * 0.38); ctx.fill()
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = Math.max(1, baseH / 1080); ctx.stroke()
+      }
+      lb.draw(bx, y)
+      boxes.push({ pos: p, x: bx, y, w: lb.w, h: lb.h })
     }
   }
   ctx.__i18nSkip = skip0

@@ -7,6 +7,7 @@
 // ★ 时钟那条铁律（一次回调 = 一个时刻的完整画面）由调用方守：compute() 返回 Promise，
 //   调用方必须 await 完再出帧，绝不能让「星在 t、轨道在 t−Δ」同框。
 import { createShard, syncShard, computeTick, transfersOf } from './focusGeomTick.js'
+import { stampOverlays } from './satPos.js'
 
 const hash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) } return (h >>> 0) }
 
@@ -77,8 +78,11 @@ export function createFocusGeomPool(want) {
       const i = nShard === 1 ? 0 : hash(e.key) % nShard
       per[i].keys.push(e.key)
       const had = shards[i].seen.get(e.key)
-      if (!had || had.rec !== e.rec || had.cc !== !!e.cc || had.color !== e.color) {
-        shards[i].seen.set(e.key, { rec: e.rec, cc: !!e.cc, color: e.color })
+      // 叠加星历（导入星历「对应已有卫星」）：Worker 里没有注册表，发之前把叠加表戳在传播体上随克隆过去；
+      // 对应关系变了（戳换了）即便 satrec 是同一个对象也得重传
+      const ovl = stampOverlays(e.rec)
+      if (!had || had.rec !== e.rec || had.ovl !== ovl || had.cc !== !!e.cc || had.color !== e.color) {
+        shards[i].seen.set(e.key, { rec: e.rec, ovl, cc: !!e.cc, color: e.color })
         per[i].add.push({ key: e.key, rec: e.rec, cc: e.cc, color: e.color })
       }
     }

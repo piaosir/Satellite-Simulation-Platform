@@ -25,7 +25,7 @@ const props = defineProps({
   geoIds: { type: Object, default: () => new Map() }        // 天线树定点同步星 folder → 合成号（宿主 treeGeoIdMap；它们在星座里有条目）
 })
 // focus-sat(sat, force, additive)：树 → 星座聚焦（天线行点击 force=false 看小眼睛；双击星名 / 「聚焦」钮 force=true；
-//   「聚焦」钮 Ctrl / Cmd / Shift 点 additive=true：加入 / 移出聚焦集）
+//   「聚焦」钮恒 additive=true：单击加入 / 移出聚焦集）
 // follow-sat(sat)：「跟随」钮（宿主 followTreeSat：跟随该星 / 正跟随它则退出）
 // add-ant(sat, 'gauss')：「＋」菜单里的「高斯天线」（导入 GRD 本面板自己走 sc.importGrd）
 // open-synth(groupId)：「方向图」节「在波束合成中编辑」，转给宿主
@@ -41,7 +41,7 @@ const navMap = computed(() => {
   return m
 })
 const navOf = (sat) => navMap.value.get(sat.folder) || treeNavState(sat)
-function onFocusBtn(sat, ev) { if (!navOf(sat).focusDis) emit('focus-sat', sat, true, !!(ev.ctrlKey || ev.metaKey || ev.shiftKey)) }
+function onFocusBtn(sat) { if (!navOf(sat).focusDis) emit('focus-sat', sat, true, true) }   // 单击＝加入 / 移出聚焦集
 function onFollowBtn(sat) { if (!navOf(sat).followDis) emit('follow-sat', sat) }
 
 // 天线名内联重命名（与对地树同一套：editAnt 存正在改的天线 key，editVal 为输入框值）。
@@ -168,7 +168,7 @@ function shellWhy(sh) {
                    小眼睛：与对地视图同一个开关（图标 + 卫星名）；本视图另附「聚焦特效」——
                    画出波束的星连同它对星跟踪的目标星一起点亮轨道圈/星下点轨迹/覆盖足迹（不弹信息卡） -->
               <span class="sdisp">
-                <span class="ic" :class="{ on: navOf(sat).focusOn, dis: navOf(sat).focusDis }" :title="navOf(sat).focusTip" @click.stop="onFocusBtn(sat, $event)"><Icon name="crosshair" :size="12" /></span>
+                <span class="ic" :class="{ on: navOf(sat).focusOn, dis: navOf(sat).focusDis }" :title="navOf(sat).focusTip" @click.stop="onFocusBtn(sat)"><Icon name="crosshair" :size="12" /></span>
                 <span class="ic" :class="{ on: navOf(sat).followOn, dis: navOf(sat).followDis }" :title="navOf(sat).followTip" @click.stop="onFollowBtn(sat)"><Icon name="locate-fixed" :size="12" /></span>
                 <span class="ic" :class="{ on: satVis(sat) }" title="显示 / 隐藏该卫星（图标 + 名称）；点亮时，已画波束的星连同其对星跟踪的目标星一并显示轨道圈 / 星下点轨迹 / 覆盖足迹" @click.stop="emit('toggle-eye', sat)"><Icon :name="satVis(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
               </span>
@@ -418,8 +418,8 @@ function shellWhy(sh) {
 .shrow + .shrow { border-top: 1px solid var(--border); }
 .shrow .lvclr { width: 20px; height: 18px; }
 .shrow .u { color: var(--text-faint); font-size: var(--fs-2); }
-/* 50px：等宽字体下「36000」满格 5 位 + 内距 —— 轨道高度不会有第 6 位 */
-.shalt { width: 50px; flex: none; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-3); padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
+/* 76px：带小数的高度（「35786.5」「1002.1」）+ 内距 + 微调箭头都装得下 */
+.shalt { width: 76px; flex: none; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-3); padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
 .shnm { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-2); }
 /* 宽度交给内容（select 自己按最长选项撑开）：写死 56px 时中文「近+远」与英文「Near+Far」
    都超出内容盒，被 select 自己裁掉，而 select 的裁切在 DOM 上量不出来 */
@@ -427,7 +427,7 @@ function shellWhy(sh) {
 .shbr.one { color: var(--text-faint); text-align: center; border-color: transparent; }
 .shwhy { padding: 0 8px 4px 32px; font-size: var(--fs-2); color: var(--warn); }
 .shadd { gap: 6px; }
-.shadd .shalt { flex: none; }
+.shadd .shalt { flex: none; padding: 2px 4px; }   /* 盖掉 .srow .ci 的 0 7px 内距，与壳层行同宽同排 */
 /* min-width：预置名（「MEO 20200」这类）是固定词表，缩到装不下就被 select 自己裁掉；
    给个下限，宽度不够时整行换行（.srow 可换行），而不是把选项名切一半 */
 .shadd .shpre { flex: 1; min-width: 92px; font-size: var(--fs-2); }

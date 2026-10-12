@@ -17,6 +17,11 @@ import { logMsg } from '../stores/log'
 import Icon from './Icon.vue'
 import ExcelGrid from './ExcelGrid.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
+import EphemImportDialog from './EphemImportDialog.vue'
+import EphemExportDialog from './EphemExportDialog.vue'
+import { ensureSearchPool } from '../ngso/satSearchPool.js'
+import { clock } from '../stores/simClock'
+import { byLang } from '../shared/i18n/lang.js'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { exportSheets, importWorkbook } from '../shared/gridXlsx.js'
@@ -74,8 +79,11 @@ const OMM_LABELS = {
   glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星 Iridium', globalstar: 'Globalstar',
   stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部活跃卫星'
 }
-// 六种官方格式的显示名（解析/序列化在主进程 core/utils/ommFormats.js，这里只要标签）
-const EPH_FMT = { 'omm-csv': 'OMM CSV', 'omm-json': 'OMM JSON', 'omm-kvn': 'OMM KVN', 'omm-xml': 'OMM XML', tle: 'TLE', '3le': '3LE' }
+// 格式显示名（解析/序列化在主进程 core/utils/ommFormats.js 与 ephemFormats.js，这里只要标签）
+const EPH_FMT = {
+  'omm-csv': 'OMM CSV', 'omm-json': 'OMM JSON', 'omm-kvn': 'OMM KVN', 'omm-xml': 'OMM XML', tle: 'TLE', '3le': '3LE',
+  'stk-e': 'STK .e', 'ccsds-oem-kvn': 'CCSDS OEM', 'ccsds-oem-xml': 'CCSDS OEM', sp3: 'SP3', 'cs-eph': '中国卫通 .eph', yuma: 'GPS 年历', sem: 'GPS 年历'
+}
 const ommRows = ref([])
 const ommBusy = ref('')
 // omm:list 回的是两类：17 个星座组（无 kind）与卫星编目 SATCAT（kind:'satcat'）——后者不是星座组，
@@ -141,43 +149,126 @@ function summarizeImport(r) {
   if (errs.length) msg += `；${errs.length} 条失败：${errs[0]}${errs.length > 1 ? ' …' : ''}`
   return msg
 }
+// 导入：先预览（主进程按字节读、认编码、解析、逐星找「已有卫星」候选）；有点序列星（要选新建 / 对应已有卫星）或
+// 有报错告警时弹导入对话框，纯平均根数且干净的文件一步落库（与星座 3D 页同一套口径）
+const fmImport = ref(null)   // { previews, mode }
 async function importCustom() {
-  if (!api?.omm?.customImport) return
+  if (!api?.omm?.importPick) return
   customBusy.value = true
   try {
-    const r = await api.omm.customImport()
-    if (r && r.canceled) return
-    if (r && r.ok) { flash('导入星历：' + summarizeImport(r)); await loadCustomGroups(); bumpCustomSats() }
-    else flash('导入失败：' + ((r && r.error) || '未知错误'))
+    const r = await api.omm.importPick()
+    if (!r || r.canceled) return
+    const list = (r.previews || []).filter(Boolean)
+    if (!list.length) return
+    if (list.some((p) => !p.ok || p.kind === 'ephem' || (p.warnings && p.warnings.length) || (p.errors && p.errors.length))) { fmImport.value = { previews: list, mode: 'import' }; return }
+    await commitImport(list.map((p) => ({ token: p.token, name: p.name, label: p.fileName, binds: [] })))
   } finally { customBusy.value = false }
+}
+async function commitImport(list) {
+  fmImport.value = null
+  let r
+  try { r = await api.omm.importCommit(list) } catch (e) { flash('导入失败：' + ((e && e.message) || e)); return }
+  if (r && r.groups) { flash('导入星历：' + summarizeImport(r)); await loadCustomGroups(); bumpCustomSats() }
+  else flash('导入失败：' + ((r && r.errors && r.errors[0]) || '未知错误'))
+}
+function cancelImport() {
+  const p = fmImport.value
+  fmImport.value = null
+  const tokens = p ? p.previews.map((x) => x.token).filter((t) => t && t[0] === 'p') : []
+  if (tokens.length && api?.omm?.importCancel) api.omm.importCancel(tokens)
+}
+// 改「对应已有卫星」（已导入的点序列组）
+async function rebindGroup(g) {
+  if (!api?.omm?.rebindPreview) return
+  const pv = await api.omm.rebindPreview(g.id)
+  if (!pv || !pv.ok) { flash((pv && pv.error) || '读取失败'); return }
+  fmImport.value = { previews: [pv], mode: 'rebind' }
+}
+async function commitRebind(list) {
+  const p = fmImport.value
+  fmImport.value = null
+  let n = 0
+  for (const c of (list || [])) {
+    const pv = p && p.previews.find((x) => x.token === c.token)
+    if (!pv) continue
+    for (let i = 0; i < pv.sats.length; i++) {
+      const want = (c.binds && c.binds[i]) || null, cur = pv.sats[i].bind || null
+      if ((want ? String(want.noradId) : '') === (cur ? String(cur.noradId) : '')) continue
+      const r = await api.omm.ephemRebind(pv.groupId, pv.sats[i].key, want)
+      if (r && r.ok) n++
+      else flash(byLang('对应失败：', 'Mapping failed: ') + ((r && r.error) || byLang('未知错误', 'Unknown error')))
+    }
+  }
+  if (n) { flash(`已更新 ${n} 颗的对应关系`); await loadCustomGroups(); bumpCustomSats() }
+}
+// 导入对话框「其它卫星…」：共享候选池（编目 + 自定义库 + 导入点序列星；不含自定义星座合成星）
+async function searchSats(q) {
+  const kw = String(q || '').trim().toLowerCase()
+  if (!kw) return []
+  let pool = null
+  try { pool = await ensureSearchPool() } catch { pool = null }
+  const out = [], seen = new Set()
+  for (const r of ((pool && pool.all) || [])) {
+    if (r.orbitType === 'elements') continue
+    const id = String(r.noradId)
+    if (seen.has(id)) continue
+    if (!(String(r.name || '').toLowerCase().includes(kw) || id.startsWith(kw))) continue
+    seen.add(id); out.push({ noradId: id, name: r.name, groupLabel: r.groupLabel || '' })
+    if (out.length >= 30) break
+  }
+  return out
 }
 async function removeCustomGroup(g) {
   if (!(await ask(`删除导入组「${g.name}」（${g.count} 颗）？`))) return
   await api.omm.customRemove(g.id); await loadCustomGroups(); bumpCustomSats()
   flash(`已删除导入组「${g.name}」`)
 }
-// 逐组导出（导入组：文件历元）
-async function exportGroup(g) {
-  if (!api?.omm?.customExportGroup) return
-  // SP3 只解析不写出：导出一律按 STK .e 走（与 3D 页星座栏 impExport 同一口径）
-  const fmt = g.format === 'sp3' ? 'stk-e' : (g.format || 'omm-csv')
-  const r = await api.omm.customExportGroup(g.id, g.name, fmt)
-  if (r && r.canceled) return
-  if (r && r.ok) flash('已导出：' + r.filePath)
-  else flash('导出失败：' + ((r && r.error) || '未知错误'))
+// 导出：与星座 3D 页同一个对话框（任一格式；整组同格式、原始采样、全时段时逐字节吐导入原文）
+const fmExport = ref(null)   // EphemExportDialog 的入参
+const OMM_FIELDS = ['name', 'noradId', 'objectId', 'epoch', 'meanMotion', 'ecc', 'incl', 'raan', 'argp', 'ma', 'bstar', 'mdot', 'mddot']
+function plainOmm(o) {
+  const r = {}
+  for (const k of OMM_FIELDS) if (o[k] != null) r[k] = typeof o[k] === 'number' ? o[k] : String(o[k])
+  if (o.f && typeof o.f === 'object') r.f = { ...o.f }
+  return r
 }
-// 逐座导出（自建星座：场景历元，展开为 OMM 记录传给主进程序列化保存）
-async function exportConstellation(c) {
-  if (!api?.omm?.exportRecords) return
+function exportDefaults(nativeFrame) {
+  const rg = clock.range
+  const now = Math.floor(Number(clock.tMs || Date.now()) / 60000) * 60000
+  const tl = rg && rg.stopMs > rg.startMs ? { timelineFromMs: rg.startMs, timelineToMs: rg.stopMs } : {}
+  return Object.assign({ fromMs: tl.timelineFromMs != null ? tl.timelineFromMs : now, toMs: tl.timelineToMs != null ? tl.timelineToMs : now + 86400000, stepS: 60, nativeFrame: nativeFrame || '' }, tl)
+}
+// 逐组导出（导入组：文件历元；点序列按原始采样）
+async function exportGroup(g) {
+  let items = []
+  if (g.kind === 'ephem') items = (g.sats || []).map((s) => ({ t: 'ephem', groupId: g.id, key: String(s.key), name: s.name, noradId: String(s.noradId) }))
+  else {
+    let recs = []
+    try { recs = (await api.omm.customGroupRecords(g.id)) || [] } catch { recs = [] }
+    items = recs.map((x) => ({ t: 'gp', rec: plainOmm(x), src: 'ci:' + g.id, name: x.name, noradId: String(x.noradId) }))
+  }
+  if (!items.length) { flash('该组无可导出的卫星'); return }
+  const fr = g.kind === 'ephem' && g.sats && g.sats.length && g.sats.every((s) => s.frame === g.sats[0].frame) ? g.sats[0].frame : ''
+  fmExport.value = { title: g.name, items, group: { kind: 'import', id: g.id, hidden: [] }, sourceFormat: g.format === 'sp3' ? '' : g.format, defaults: exportDefaults(fr) }
+}
+// 逐座导出（自建星座：场景历元，展开为 OMM 记录）
+function exportConstellation(c) {
   let recs = []
   try { recs = customConstellationsToOmmRecords(c.id) } catch { recs = [] }
   if (!recs.length) { flash('该星座无可导出的卫星'); return }
-  const r = await api.omm.exportRecords(recs, c.name, 'omm-csv')
-  if (r && r.canceled) return
-  if (r && r.ok) flash('已导出：' + r.filePath)
-  else flash('导出失败：' + ((r && r.error) || '未知错误'))
+  fmExport.value = { title: c.name, items: recs.map((x) => ({ t: 'gp', rec: plainOmm(x), src: 'cc_' + c.id, name: x.name, noradId: String(x.noradId) })), group: null, sourceFormat: '', defaults: exportDefaults('') }
 }
-const fmtGroupMeta = (g) => `${g.count} 颗 · ${EPH_FMT[g.format] || 'OMM'} · ${fmtTime(g.importedAt)}`
+function onExportDone(r) {
+  if (!r) return
+  if (r.ok) flash(`已导出 ${r.written} 颗：` + (r.files || []).map((f) => f.path).join('；'))
+  else flash('导出失败：' + (r.error || '未知错误'))
+}
+// 导入组读数：颗数 · 格式 · 导入时间；点序列组另报对应到了哪颗已有卫星
+const fmtGroupMeta = (g) => {
+  const b = g.kind === 'ephem' ? (g.sats || []).filter((s) => s.bind) : []
+  const tail = !b.length ? '' : (b.length === 1 ? ` · → ${b[0].bind.name || b[0].bind.noradId}` : ` · → ${b.length}`)
+  return `${g.count} 颗 · ${EPH_FMT[g.format] || g.formatLabel || 'OMM'} · ${fmtTime(g.importedAt)}${tail}`
+}
 
 // —— 逐条改名（自建星座 + 导入组，点名称/「改名」进入编辑，✓/回车提交，Esc 取消）——
 const custEdit = ref('')   // 正在改名的行键：'k'+星座id / 'g'+组id
@@ -1025,6 +1116,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                   <span class="cnm rn" title="点击改名" @click="startRenameCust('g' + g.id, g.name)" data-i18n-skip>{{ g.name }}</span>
                   <span class="cmeta">{{ fmtGroupMeta(g) }}</span>
                   <span class="cops">
+                    <button v-if="g.kind === 'ephem'" class="mini ghost" title="把组里的星对应到已有卫星（编目 / 自定义 / 别的导入星），或取消对应" @click="rebindGroup(g)">对应…</button>
                     <button class="mini ghost" @click="exportGroup(g)">导出</button>
                     <button class="mini del" @click="removeCustomGroup(g)">删除</button>
                   </span>
@@ -1304,6 +1396,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
         <button class="ok" @click="emit('close')">完成</button>
       </footer>
     </div>
+    <EphemImportDialog v-if="fmImport" :previews="fmImport.previews" :mode="fmImport.mode" :search-sats="searchSats" :z="2200"
+      @commit="(list) => (fmImport && fmImport.mode === 'rebind' ? commitRebind(list) : commitImport(list))" @close="cancelImport" />
+    <EphemExportDialog v-if="fmExport" :title="fmExport.title" :items="fmExport.items" :group="fmExport.group" :source-format="fmExport.sourceFormat"
+      :defaults="fmExport.defaults" :z="2200" @done="onExportDone" @close="fmExport = null" />
     <MiniSendDialog v-model:open="fpMiniOpen" :build="() => fpMiniPack || { name: '', items: [] }"
       :device-id="fpMiniDeviceId" :configured="fpMiniConfigured" @toast="flash" />
     <template v-if="expMenu.key">

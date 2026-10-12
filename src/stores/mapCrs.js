@@ -119,18 +119,21 @@ function normSubPt(v) {
 // 投影参数打包（喂给 makeProjection / flatCoverage）
 export const projOpts = () => ({ lat0: mapCrs.lat0, par1: mapCrs.par1, par2: mapCrs.par2 })
 
-// 内部 WGS-84 十进制度 → 显示串（先换基准、再换格式）
-export function fmtLL(lon, lat, digits = 2) {
+// 内部 WGS-84 十进制度 → 显示串（先换基准、再换格式）。hKm 只有 ECEF 档用得上（地图上的点在椭球面上，缺省 0）。
+// ★ ECEF 档不套 GCJ-02：那是只对经纬度读数做的非线性加偏，套进三维直角坐标就成了一个不存在的点
+export function fmtLL(lon, lat, digits = 2, hKm = 0) {
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return ''
+  if (mapCrs.fmt === 'ecef') return formatLonLat(lon, lat, 'ecef', digits, hKm)
   const [x, y] = toDisplay(lon, lat, mapCrs.datum)
   return formatLonLat(x, y, mapCrs.fmt, digits)
 }
-// 用户输入串 → 内部 WGS-84 十进制度（先按格式解析、再把基准换回来）
+// 用户输入串 → 内部 WGS-84 十进制度（先按格式解析、再把基准换回来）。ECEF 档多带一个 h（km），且不过 GCJ-02（见 fmtLL）
 export function parseLL(str) {
   const r = parseLonLat(str, mapCrs.fmt)
   if (!r) return null
+  if (mapCrs.fmt === 'ecef') return { lon: r[0], lat: r[1], h: r[2] }
   const [x, y] = fromDisplay(r[0], r[1], mapCrs.datum)
   return { lon: x, lat: y }
 }
-// 读数行里的基准标注：非 WGS-84 时才出（含运行时档位，不是说明文字）
-export const datumTag = () => (mapCrs.datum === 'wgs84' ? '' : datumZh(mapCrs.datum))
+// 读数行里的基准标注：非 WGS-84 时才出（含运行时档位，不是说明文字）；ECEF 档不套 GCJ-02，也就不标它
+export const datumTag = () => (mapCrs.datum === 'wgs84' || (mapCrs.fmt === 'ecef' && mapCrs.datum === 'gcj02') ? '' : datumZh(mapCrs.datum))

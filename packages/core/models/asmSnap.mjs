@@ -54,7 +54,7 @@
 //   ④ 都没有 = 未吸附（松手不装）。按住 Shift：不吸附，贴在指针处的表面上（原样贴）。
 //   候选按 BAND 分档记代价（档 × 1000 + 屏幕距离），配合滞回：档内按距离、跨档按优先级。
 
-import { getComponent, fillParams, socketAccepts, faceAccepts, passThroughOf } from './components/index.mjs'
+import { getComponent, fillParams, socketAccepts, faceAccepts, passThroughOf, acceptsType } from './components/index.mjs'
 import { normalizeAssembly, solvePose, componentBox, componentMounts, componentMount, mkAttach, COMP_ID_RE, RESERVED_COMP_IDS, SYM_OPS, SYM_AXES, ATTACH_MODES } from './assembly.mjs'
 import { MATERIALS, canon } from './paramBus.mjs'
 
@@ -207,12 +207,13 @@ export function mountFor(def, params, parentSocket) {
 }
 
 /**
- * 插座是不是「专用」给 type 的：accepts 里有 type 匹配上的前缀、且不是通用基本体前缀 'prim.'（各专用插座都顺带收基本体当占位，
- * 那不算专用）。拖入 / 拾起时指针下的件若有给本件的专用空闲插座，优先它（机翼进翼根、馈源进焦点、反射面上俯仰轴），不按命中处贴面。
+ * 插座是不是「专用」给 type 的：accepts 里有收它的一项（type 前缀或 '@<族>'，见 components/index.mjs acceptsType）、且不是通用基本体前缀
+ * 'prim.'（各专用插座都顺带收基本体当占位，那不算专用）。拖入 / 拾起时指针下的件若有给本件的专用空闲插座，优先它（机翼进翼根、
+ * 馈源进焦点、反射面上俯仰轴、相控阵上车顶），不按命中处贴面。
  */
 export function socketDedicated(s, type) {
   if (!s || s.accepts == null || typeof type !== 'string') return false
-  for (const p of s.accepts) if (p !== 'prim.' && type.startsWith(p)) return true
+  for (const p of s.accepts) if (p !== 'prim.' && acceptsType(p, type)) return true
   return false
 }
 
@@ -1877,7 +1878,6 @@ export function addComp(doc, spec) {
   const d = normalizeAssembly(doc)
   const def = getComponent(spec && spec.type)
   if (!def) return fail('未知组件。')
-  if (!def.domain.includes(d.domain)) return fail('该组件不能用于此领域。')
   const parent = spec.parent == null ? null : String(spec.parent)
   if (parent === null && d.comps.length) return fail('已有根件。')
   if (parent !== null && !compById(d, parent)) return fail('未找到组件。')

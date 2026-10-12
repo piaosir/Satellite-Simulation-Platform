@@ -215,26 +215,26 @@ ok('拆分对称判据：径向恒可；镜像要钩子或对称面，烘焙件�
 })
 
 // ─────────────────────────── 组件库 ───────────────────────────
-ok('libGroups：当前领域组在前、通用（prim.*）在后；只列该领域可用组件（组件本身 + 常用型号）；搜索（中英文 / type / 参数名）', () => {
-  const g = L.libGroups('spacecraft')
-  assert.equal(g[0].key, 'spacecraft'); assert.equal(g[g.length - 1].key, 'common')
-  const all = g.flatMap((x) => x.items.filter((d) => !d.preset).map((d) => d.type))
-  assert.deepEqual(all.slice().sort(), C.listComponents('spacecraft').map((d) => d.type).sort())
-  assert.ok(g.find((x) => x.key === 'common').items.every((d) => d.type.startsWith('prim.')))
-  for (const dom of ['ground', 'aircraft', 'ship', 'vehicle']) {
+ok('libGroups（2026-10-12 组件不限领域）：每个领域都列全部组件（组件本身 + 常用型号），按功能分组排、通用（prim.*）在后；搜索（中英文 / type / 参数名 / 分组名）', () => {
+  const allTypes = C.listComponents().map((d) => d.type).sort()
+  for (const dom of ['spacecraft', 'ground', 'aircraft', 'ship', 'vehicle', null]) {
     const gg = L.libGroups(dom)
     const types = gg.flatMap((x) => x.items.filter((d) => !d.preset).map((d) => d.type))
-    assert.deepEqual(types.slice().sort(), C.listComponents(dom).map((d) => d.type).sort(), dom)
-    if (gg.length > 1 && C.listComponents(dom).some((d) => d.domain[0] === dom && !d.type.startsWith('prim.'))) assert.equal(gg[0].key, dom)
-    assert.equal(gg[gg.length - 1].key, 'common')
+    assert.deepEqual(types.slice().sort(), allTypes, String(dom))
+    assert.equal(gg[gg.length - 1].key, 'common', String(dom))
+    assert.ok(gg.find((x) => x.key === 'common').items.every((d) => d.type.startsWith('prim.')))
+    // 组序 = COMPONENT_CATEGORIES（不随领域变）
+    const cats = gg.map((x) => x.key).filter((k) => k !== 'common')
+    assert.deepEqual(cats, C.COMPONENT_CATEGORIES.filter((k) => cats.includes(k)), String(dom))
   }
   const wing = C.getComponent('sat.wing')
   for (const q of ['太阳翼', 'SAT.WING', 'ｗｉｎｇ', wing.params[wing.keys[0]].label]) assert.ok(L.libGroups('spacecraft', q).some((x) => x.items.some((d) => d.type === 'sat.wing')), q)
+  assert.ok(L.libGroups('ship', '太阳翼').some((x) => x.items.some((d) => d.type === 'sat.wing')), '船舶文档也搜得到太阳翼')
   assert.deepEqual(L.libGroups('spacecraft', 'zzzz-无此组件'), [])
-  // 注入定义表：未知首领域的组也不丢
+  // 注入定义表：没给 category 的组件归「其他」（排在通用之前），不丢
   const fake = [{ type: 'x.a', domain: ['mars'], titleZh: '甲', keys: [], params: {} }, { type: 'prim.q', domain: ['mars'], titleZh: '乙', keys: [], params: {} }]
   const gf = L.libGroups('spacecraft', '', fake)
-  assert.deepEqual(gf.map((x) => x.key), ['common', 'mars'])
+  assert.deepEqual(gf.map((x) => x.key), ['other', 'common'])
   assert.equal(L.compTip(wing).split('\n').pop(), 'sat.wing')
 })
 

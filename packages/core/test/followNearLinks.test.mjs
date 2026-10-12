@@ -42,7 +42,8 @@ if (!globalThis.document) {
 let n = 0
 const t = async (name, fn) => { try { await fn() } catch (e) { console.error('FAIL ' + name); throw e } n++ }
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}：${a} ≠ ${b}`)
-const src = (p) => readFileSync(path.resolve(HERE, '../../../src', p), 'utf8')
+// 源码钉按 LF 写正则：core.autocrlf=true 的检出（3D 页、scene.js 在工作树里就是 CRLF）先统一成 LF 再比
+const src = (p) => readFileSync(path.resolve(HERE, '../../../src', p), 'utf8').replace(/\r\n/g, '\n')
 const RE_M = 6371000
 
 await t('① zoomScale 跟随档：距离 3 / 0.55、点层 0.55、图标 1；scene.zoomDist 取自 zoomScale', () => {

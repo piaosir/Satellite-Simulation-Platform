@@ -207,7 +207,8 @@ const menus = computed(() => [
     // 频率计划是「文件」不是「计算」：它与天线方向图平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
     { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
-    { label: '导入星历文件…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地文件导入卫星星历：OMM 的 CSV / JSON / KVN / XML 与 TLE / 3LE，按内容自动识别；离线或无法连接 CelesTrak 时使用', run: () => covNav.importTle?.() },
+    { label: '导入星历文件…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地文件导入卫星星历：OMM（CSV / JSON / KVN / XML）、TLE / 3LE、GPS 年历，以及 STK .e、CCSDS OEM、SP3、中国卫通 .eph 等时间标签星历，按内容自动识别；时间标签星历可新建卫星或对应已有卫星', run: () => covNav.importTle?.() },
+    { label: '导出星历…', icon: 'download', lock: true, disabled: !covNav.exportEphem, hint: '导出聚焦卫星的星历（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）', run: () => covNav.exportEphem?.() },
     { sep: true },
     { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
   ] },
@@ -641,7 +642,7 @@ onBeforeUnmount(() => {
         </span>
         <span class="cell coord">
           <Icon class="cur" name="cursor-arrow" :size="12" />
-          <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : '——°  ——°' }}</span>
+          <span class="cval">{{ cursor.ll ? fmtCoord(cursor.ll) : mapCrs.fmt === 'ecef' ? 'X —  Y —  Z —' : '——°  ——°' }}</span>
           <span v-if="cursor.ll && datumTag()" class="eunit">{{ datumTag() }}</span>
         </span>
       </span>

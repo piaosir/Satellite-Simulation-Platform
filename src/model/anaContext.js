@@ -33,8 +33,9 @@ export function createAnaContext({ wb, sat }) {
     const b = sat.st.binding
     const att = b ? b.attitude : null
     // 轨道版本：3D 页改了解出本星轨道的树节点（根数 / 历元）→ orbitRev 翻；target 律的目标星每次现解，树一变也要重算（treeRev）
+    // 叠加星历版本 ovlRev：主窗口导入星历「对应已有卫星」/ 改对应 / 删组后本窗口注册表换了（本星与目标星的取位都可能换了叠加）
     const tgt = att && att.law === 'target' && att.params && att.params.target
-    return JSON.stringify([sat.st.satKey, att, win.t0, win.hours, win.stepS, sat.st.orbitRev, tgt && tgt.kind === 'sat' ? sat.st.treeRev : 0])
+    return JSON.stringify([sat.st.satKey, att, win.t0, win.hours, win.stepS, sat.st.orbitRev, tgt && tgt.kind === 'sat' ? sat.st.treeRev : 0, sat.st.ovlRev || 0])
   }
   /** target 律的目标（逐拍 ECEF km）；目标星另解一次轨道 */
   async function targetFn(att, tMs, o) {

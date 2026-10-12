@@ -34,6 +34,8 @@ export function evalTable(tab, ms) {
   // 分段星历：落在段与段之间的缝里 -> null；窗口也不跨段
   let lo = 0, hi = n - 1
   if (tab.sg) {
+    // 恰好落在下一段的首点上（同刻两状态的段界，后一段首点只顺延 1 ms）：归下一段，取它自己的状态
+    if (i + 1 < n && q >= t[i + 1] && tab.sg[i + 1] !== tab.sg[i]) i++
     const s = tab.sg[i]
     lo = tab.sgA[s]; hi = tab.sgB[s]
     if (!(ms >= t[lo] - EDGE_TOL_MS) || !(ms <= t[hi] + EDGE_TOL_MS)) return null

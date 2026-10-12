@@ -3,9 +3,9 @@
 // 无 three / vue / DOM —— node 单测直接 import（packages/core/test/modelAsmUi.test.mjs）。
 //
 // ★ 引 packages/core 一律走相对路径（不用 @core 别名）：单测是裸 node 跑的；渲染端 vite 对相对路径照样解析。
-// ★ 组件清单一律 listComponents(domain) 现取（A3 并行登记新领域组件，这里不写死任何 type）。
+// ★ 组件清单一律 listComponents() 现取（A3 并行登记新领域组件，这里不写死任何 type）。
 // ★ 界面零说明文字：口径 / 出处 / 范围一律进 title；这里拼的 title 串就是给悬停用的。
-import { getComponent, getPreset, listComponents, fillParams, checkParams, socketAccepts, ASM_DOMAINS, COMPONENT_CATEGORIES } from '../../packages/core/models/components/index.mjs'
+import { getComponent, getPreset, listComponents, fillParams, checkParams, socketAccepts, ASM_DOMAINS, COMPONENT_CATEGORIES, COMPONENT_FAMILIES } from '../../packages/core/models/components/index.mjs'
 import { MATERIALS, DENSITY } from '../../packages/core/models/paramBus.mjs'
 import { quatToMat, matToQuat, quatToEulerZYX, fineRotate } from '../../packages/core/models/bodyFrame.mjs'
 import { MOVE_STEPS, MOVE_STEP_OPTS, ROT_STEPS, socketLabel, faceLabel, resolveMoveStep } from '../../packages/core/models/asmSnap.mjs'
@@ -21,11 +21,22 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 export const NEW_DOMAINS = Object.freeze([...ASM_DOMAINS])
 export const DOMAIN_LABELS = Object.freeze({ spacecraft: '卫星', ground: '地球站', aircraft: '飞机', ship: '船舶', vehicle: '车辆' })
 export const DOMAIN_ICONS = Object.freeze({ spacecraft: 'satellite', ground: 'satellite-dish', aircraft: 'plane', ship: 'ship', vehicle: 'car' })
-/** 组件库分组：领域组 + 「通用」（prim.* 基本体）；通用恒排最后 */
-export const LIB_GROUP_LABELS = Object.freeze({ ...DOMAIN_LABELS, common: '通用' })
-/** 领域组里的功能分组（ComponentDef.category；顺序 = core COMPONENT_CATEGORIES）：显示名与小标题图标 */
+/** 组件库的功能分组（ComponentDef.category；顺序 = core COMPONENT_CATEGORIES）：显示名与组标题图标 */
 export const CATEGORY_LABELS = Object.freeze({ structure: '结构与机构', power: '电源', antenna: '天线', payload: '有效载荷', propulsion: '推进', aocs: '姿轨控', thermal: '热控' })
 export const CATEGORY_ICONS = Object.freeze({ structure: 'box', power: 'sun', antenna: 'satellite-dish', payload: 'scan-eye', propulsion: 'arrow-down', aocs: 'crosshair', thermal: 'grid-3x3' })
+/** 组件库分组：功能分组 + 「其他」（没给 category 的）+ 「通用」（prim.* 基本体）；通用恒排最后 */
+export const LIB_GROUP_LABELS = Object.freeze({ ...CATEGORY_LABELS, other: '其他', common: '通用' })
+/** 功能分组下的组件族（ComponentDef.family；键与顺序 = core COMPONENT_FAMILIES）：显示名与小标题图标 */
+export const FAMILY_LABELS = Object.freeze({
+  body: '主体结构', aero: '机翼与尾翼', truss: '塔架与杆件', facility: '舱室与设施', dock: '对接与分离',
+  reflector: '反射面天线', array: '阵列天线', horn: '喇叭与馈源', wire: '线天线', mount: '天线座', radome: '天线罩',
+  thruster: '推力器与贮箱', powerplant: '动力装置'
+})
+export const FAMILY_ICONS = Object.freeze({
+  body: 'box', aero: 'plane', truss: 'ruler', facility: 'package', dock: 'link-2',
+  reflector: 'satellite-dish', array: 'grid-3x3', horn: 'radio-tower', wire: 'waves', mount: 'rotate-3d', radome: 'hexagon',
+  thruster: 'arrow-down', powerplant: 'rotate-cw'
+})
 
 /** 部件角色 → 图标（结构树行首、组件卡片占位） */
 export const ROLE_ICONS = Object.freeze({
@@ -232,15 +243,33 @@ export function sanitizeUi(raw) {
 }
 
 // ───────────────────────────── 组件库 ─────────────────────────────
+//
+// 2026-10-12 组件不限领域（components/index.mjs：def.domain 只是常用领域）：组件库按功能分组 → 组件族排，列全部组件——
+// 地球站 / 飞机 / 船 / 车的文档里也看得到并能装卫星相控阵、螺旋天线、太阳翼，卫星文档里也有地面站馈源、天线罩。
+// 当前领域（装配文档的领域）只决定两件事：族内常用于当前领域的件排前面；别的领域的件在卡片角上标它的设计领域（domainBadge）。
+// 库页「组件」档（浏览，不带当前领域）：不分常用与否、不标角标，可按领域筛（libGroups 的 o.only）。
 
-/** 组件的库分组键：prim.* 归「通用」，其余按首领域 */
-export const libGroupOf = (def) => (def && typeof def.type === 'string' && def.type.startsWith('prim.') ? 'common' : (def && def.domain && def.domain[0]) || 'common')
+/** 组件的库分组键：prim.* 归「通用」，其余按功能分组（没给 category 的归「其他」） */
+export const libGroupOf = (def) => (def && typeof def.type === 'string' && def.type.startsWith('prim.') ? 'common' : (def && def.category) || 'other')
+/** 组件常用于领域 domain（def.domain 含它；基本体五个领域都含）。domain 空 = 不分（库页浏览）→ 真 */
+export const nativeTo = (def, domain) => !!def && (!domain || (Array.isArray(def.domain) && def.domain.includes(domain)))
+/** 组件常用领域的显示名（「地球站 / 船舶 / 车辆」：悬停与角标用） */
+export const domainsText = (def) => (def && Array.isArray(def.domain) ? def.domain.map((d) => DOMAIN_LABELS[d] || d).join(' / ') : '')
+/**
+ * 卡片角标（组件不常用于当前领域时，标它的设计领域 = domain 首项）：{domain, icon, tip}；常用于当前领域 / 没有当前领域 / 基本体 → null。
+ * tip 是悬停「常用于：卫星」。
+ */
+export function domainBadge(def, domain) {
+  if (!def || !domain || nativeTo(def, domain) || !Array.isArray(def.domain) || !def.domain.length) return null
+  const home = def.domain[0]
+  return { domain: home, icon: DOMAIN_ICONS[home] || 'hexagon', tip: '常用于：' + domainsText(def) }
+}
 
-/** 组件是否匹配搜索词（中英文名、type、参数标签；大小写 / 全角半角 / 连字符不计） */
+/** 组件是否匹配搜索词（中英文名、type、别名、功能分组 / 组件族名、参数标签；大小写 / 全角半角 / 连字符不计） */
 export function compMatches(def, q) {
   const nq = normText(q)
   if (!nq) return true
-  const hay = [def.titleZh, def.title, def.type, ...(Array.isArray(def.aliases) ? def.aliases : [])]
+  const hay = [def.titleZh, def.title, def.type, ...(Array.isArray(def.aliases) ? def.aliases : []), CATEGORY_LABELS[def.category], FAMILY_LABELS[def.family]]
   for (const k of def.keys || []) { const s = def.params[k]; if (s) hay.push(s.label, s.labelEn) }
   return hay.some((s) => s && normText(s).includes(nq))
 }
@@ -248,12 +277,18 @@ export function compMatches(def, q) {
 /**
  * 组件库条目：组件本身（缺省参数）+ 它的各个常用型号（ComponentDef.presets，各占一张卡片、拖入即带这组参数）。
  * 条目 = {key（卡片键 / 缩略图缓存键：type 或 `${type}#${型号 id}`）, type, preset（型号 id | null）, def, titleZh, title, role,
- *        category（型号可另给，如体装电池片归电源）, params（型号参数 | null）, aliases}
+ *        category / family（型号可另给，如体装电池片归电源、机械消旋归反射面；只改分组没给族时族空）, params（型号参数 | null）, aliases,
+ *        native（常用于 domain；domain 空 = 真）, badge（domainBadge(def, domain)）}
+ * @param {object} def
+ * @param {string|null} [domain] 当前装配文档领域（null = 库页浏览：不分常用、不标角标）
  */
-export function libEntries(def) {
-  const out = [{ key: def.type, type: def.type, preset: null, def, titleZh: def.titleZh, title: def.title, role: def.role, category: def.category, params: null, aliases: Array.isArray(def.aliases) ? def.aliases : [] }]
+export function libEntries(def, domain = null) {
+  const native = nativeTo(def, domain), badge = domainBadge(def, domain)
+  const out = [{ key: def.type, type: def.type, preset: null, def, titleZh: def.titleZh, title: def.title, role: def.role, category: def.category, family: def.family, params: null, aliases: Array.isArray(def.aliases) ? def.aliases : [], native, badge }]
   for (const p of Array.isArray(def.presets) ? def.presets : []) {
-    out.push({ key: `${def.type}#${p.id}`, type: def.type, preset: p.id, def, titleZh: p.titleZh, title: p.title, role: def.role, category: p.category || def.category, params: p.params, aliases: Array.isArray(p.aliases) ? p.aliases : [] })
+    const cat = p.category || def.category
+    const fam = p.family || (cat === def.category ? def.family : undefined)
+    out.push({ key: `${def.type}#${p.id}`, type: def.type, preset: p.id, def, titleZh: p.titleZh, title: p.title, role: def.role, category: cat, family: fam, params: p.params, aliases: Array.isArray(p.aliases) ? p.aliases : [], native, badge })
   }
   return out
 }
@@ -264,58 +299,74 @@ export function libKeyParams(key) {
   const type = s.slice(0, i), p = getPreset(type, s.slice(i + 1))
   return { type, params: p ? { ...p.params } : {} }
 }
-/** 库条目是否匹配搜索词：组件本身同 compMatches；型号按型号名 / 别名 / id，外加所属组件名（搜「螺旋天线」列出全部螺旋型号） */
+/** 库条目是否匹配搜索词：组件本身同 compMatches；型号按型号名 / 别名 / id，外加所属组件名、分组 / 族名（搜「螺旋天线」列出全部螺旋型号） */
 export function entryMatches(e, q) {
   if (!e.preset) return compMatches(e.def, q)
   const nq = normText(q)
   if (!nq) return true
-  const hay = [e.titleZh, e.title, e.type, e.preset, e.def.titleZh, e.def.title, ...e.aliases]
+  const hay = [e.titleZh, e.title, e.type, e.preset, e.def.titleZh, e.def.title, ...e.aliases, CATEGORY_LABELS[e.category], FAMILY_LABELS[e.family]]
   return hay.some((s) => s && normText(s).includes(nq))
 }
 
+const FAMILY_ORDER = Object.freeze(Object.keys(COMPONENT_FAMILIES))
+/** 族内排序：常用于当前领域的条目在前、其余在后，各自保持登记顺序（稳定划分；型号紧跟组件本身不变） */
+const nativeFirst = (items) => { const a = [], b = []; for (const e of items) (e.native ? a : b).push(e); return b.length && a.length ? a.concat(b) : items }
+
 /**
- * 组件库分组（装配文档领域 domain 下可用的组件；登记顺序，组件后紧跟它的常用型号）：当前领域组排最前、通用排最后，其余按 ASM_DOMAINS 顺序。
- * 组内有条目带 category（卫星件）时另给 subs：按 COMPONENT_CATEGORIES 顺序的功能小组（结构与机构 / 电源 / 天线 / 有效载荷 / 推进 /
- * 姿轨控 / 热控），没带 category 的归「其他」排最后；items 仍是全组扁平表（计数 / 懒取缩略图照旧用它）。条目形状见 libEntries。
- * @param {string} domain
+ * 组件库分组（全部组件——2026-10-12 起任何组件都能装进任何领域的装配件；登记顺序，组件后紧跟它的常用型号）：
+ *   组 = 功能分组（COMPONENT_CATEGORIES 顺序），没给 category 的归「其他」、基本体归「通用」，两者排在最后（通用恒为末组）；
+ *   组内有条目带 family 时另给 subs：按 COMPONENT_FAMILIES 顺序的组件族（反射面天线 / 阵列天线 / …），没带族的归「其他」小组排最后；
+ *   族内（没分族的组内）常用于 domain 的条目在前（nativeFirst）。items 是全组扁平表、与 subs 拼起来同序（计数 / 懒取缩略图照旧用它）。
+ * 条目形状见 libEntries（带 native / badge）。
+ * @param {string|null} domain 当前装配文档领域（null = 库页浏览：不分常用、不标角标）
  * @param {string} [q] 搜索词
- * @param {object[]} [defs] 组件定义表（缺省 listComponents(domain)；单测注入）
+ * @param {object[]} [defs] 组件定义表（缺省 listComponents()；单测注入）
+ * @param {{only?:string}} [o] only = 只列常用于该领域的组件（库页「领域」筛选；基本体恒在）
  * @returns {{key:string, label:string, icon:string, items:object[], subs?:{key:string, label:string, icon:string, items:object[]}[]}[]}
  */
-export function libGroups(domain, q = '', defs) {
-  const list = Array.isArray(defs) ? defs : listComponents(domain)
+export function libGroups(domain, q = '', defs, o = {}) {
+  const list = Array.isArray(defs) ? defs : listComponents()
+  const only = o && typeof o.only === 'string' && o.only ? o.only : null
   const by = new Map()
   for (const d of list) {
-    const k = libGroupOf(d)
-    for (const e of libEntries(d)) {
+    if (only && !nativeTo(d, only)) continue
+    const common = libGroupOf(d) === 'common'
+    for (const e of libEntries(d, domain || null)) {
       if (!entryMatches(e, q)) continue
+      const k = common ? 'common' : (e.category || 'other')   // 型号可另归分组（体装电池片 → 电源）
       if (!by.has(k)) by.set(k, [])
       by.get(k).push(e)
     }
   }
-  const order = [domain, ...ASM_DOMAINS.filter((x) => x !== domain), 'common']
-  const out = []
-  const mk = (k, icon, items) => {
-    const g = { key: k, label: LIB_GROUP_LABELS[k] || k, icon, items }
-    if (items.some((d) => d.category)) {
-      const cats = new Map()
-      for (const d of items) { const c = d.category || 'other'; if (!cats.has(c)) cats.set(c, []); cats.get(c).push(d) }
-      g.subs = [...COMPONENT_CATEGORIES, 'other'].filter((c) => cats.has(c)).map((c) => ({ key: k + '-' + c, label: CATEGORY_LABELS[c] || '其他', icon: CATEGORY_ICONS[c] || 'hexagon', items: cats.get(c) }))
-    }
+  const order = [...COMPONENT_CATEGORIES, 'other', 'common']
+  const keys = [...order.filter((k) => by.has(k)), ...[...by.keys()].filter((k) => !order.includes(k))]
+  return keys.map((k) => {
+    const all = by.get(k)
+    const g = { key: k, label: LIB_GROUP_LABELS[k] || k, icon: k === 'common' ? 'boxes' : (CATEGORY_ICONS[k] || 'hexagon'), items: all }
+    if (k !== 'common' && all.some((e) => e.family)) {
+      const fams = new Map()
+      for (const e of all) { const f = e.family && Object.hasOwn(FAMILY_LABELS, e.family) ? e.family : 'other'; if (!fams.has(f)) fams.set(f, []); fams.get(f).push(e) }
+      g.subs = [...FAMILY_ORDER, 'other'].filter((f) => fams.has(f)).map((f) => ({ key: k + '-' + f, label: FAMILY_LABELS[f] || '其他', icon: FAMILY_ICONS[f] || 'hexagon', items: nativeFirst(fams.get(f)) }))
+      g.items = g.subs.flatMap((s) => s.items)
+    } else g.items = nativeFirst(all)
     return g
-  }
-  for (const k of order) if (by.has(k)) out.push(mk(k, k === 'common' ? 'boxes' : (DOMAIN_ICONS[k] || 'hexagon'), by.get(k)))
-  for (const [k, items] of by) if (!order.includes(k)) out.push(mk(k, 'hexagon', items))
-  return out
+  })
 }
 
-// 库卡片悬停：名称 / 英文名 /（型号卡片）所属组件 / 操作要点 / type（末行恒为 type；型号卡片为「type · 型号 id」）。操作要点只放悬停，不占界面
+// 库卡片悬停：名称 / 英文名 /（型号卡片）所属组件 / 常用领域 / 操作要点 / type（末行恒为 type；型号卡片为「type · 型号 id」）。操作要点只放悬停，不占界面
 // 放置中（库拖入 / 重新放置 / 复制后放置）的键位：功能区「吸附」「重新放置」与组件卡片悬停同一份
 export const PLACE_KEYS_TIP = '放置中：Q / E 滚转，Tab 切换落点候选，B 切换安装接口，按住 Alt 移动指针旋转视角，按住 Shift 不吸附，右键或 Esc 取消'
 const LIB_DRAG_TIP = '拖入视口安装：以指针所指的件为安装目标，优先匹配专用接口；拖至结构树某一行 = 安装到该件\n' +
   '拖动中：Q / E 旋转朝向，Tab 切换落点候选，B 切换安装接口，按住 Alt 移动指针旋转视角，滚轮缩放，按住 Shift 不吸附，Esc 或右键取消\n' +
   '双击：安装到选中件'
-export const compTip = (e) => [e.titleZh, e.title && e.title !== e.titleZh ? e.title : '', e.preset && e.def ? '组件：' + e.def.titleZh : '', LIB_DRAG_TIP,
+// 库页「组件」档（浏览）：没有视口编辑器可拖，双击 = 以这一件为根件新建装配件
+const LIB_BROWSE_TIP = '双击：以此为根件新建装配件\n右键：添加到当前设计'
+/**
+ * 组件卡片悬停串。o.browse = 库页浏览（操作要点换成浏览档的）。常用领域一行只给不是基本体的件（基本体五个领域都常用）。
+ */
+export const compTip = (e, o = {}) => [e.titleZh, e.title && e.title !== e.titleZh ? e.title : '', e.preset && e.def ? '组件：' + e.def.titleZh : '',
+  e.def && !String(e.type).startsWith('prim.') && domainsText(e.def) ? '常用于：' + domainsText(e.def) : '',
+  o && o.browse ? LIB_BROWSE_TIP : LIB_DRAG_TIP,
   e.preset ? `${e.type} · ${e.preset}` : e.type].filter(Boolean).join('\n')
 
 /** 平移吸附步长下拉的显示：'auto' → 「自动」，数值 → 「0.05 m」 */

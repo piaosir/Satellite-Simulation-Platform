@@ -37,7 +37,7 @@ const DEG = Math.PI / 180
 /** 安装接口（局部 −Z 贴父面，原点） */
 const ROOT = (size, roll = 15) => sock('root', [0, 0, 0], [0, 0, -1], [1, 0, 0], size, roll)
 /** 馈源阵口面接口只收馈源链与基本体占位（同 sat.mjs FEED_CHAIN_ACCEPTS） */
-const FEED_CHAIN_ACCEPTS = Object.freeze(['sat.feed.', 'prim.'])
+const FEED_CHAIN_ACCEPTS = Object.freeze(['sat.feed.', 'es.feed', 'prim.'])
 /** 圆盘的等效方板边长（plateComp 的 w = h = √3 R 时惯量恰为圆盘：I⊥ = mR²/4、I∥ = mR²/2） */
 const discPlate = (R) => Math.sqrt(3) * R
 
@@ -160,7 +160,7 @@ const FRONT_MAT = Object.freeze({ white: 'reflector', black: 'black_paint', suns
 const REAR_MAT = Object.freeze({ cfrp: 'carbon', mli_gold: 'mli_gold', white: 'white_paint' })
 
 const gimbalDish = {
-  type: 'sat.antenna.gimbal', domain: SAT, title: 'Steerable dish antenna', titleZh: '双轴指向天线', role: 'reflector', category: 'antenna',
+  type: 'sat.antenna.gimbal', domain: SAT, title: 'Steerable dish antenna', titleZh: '双轴指向天线', role: 'reflector', category: 'antenna', family: 'reflector',
   aliases: ['万向', '可动点波束', '点波束', '馈电链路', '关口站', '星间链路', 'ISL', 'gimbal', 'APM', '指向机构', '抛物面', '碟形'],
   presets: [
     { id: 'xy', titleZh: 'X-Y 指向天线', title: 'X-Y steerable antenna', aliases: ['X-Y 座'], params: { gimbal: 'xy' } },
@@ -251,7 +251,7 @@ function helixLayout(p) {
 }
 
 const helixAntenna = {
-  type: 'sat.antenna.helix', domain: SAT, title: 'Helix antenna / array', titleZh: '螺旋天线', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.helix', domain: SAT, title: 'Helix antenna / array', titleZh: '螺旋天线', role: 'feed', category: 'antenna', family: 'wire',
   aliases: ['螺旋', '轴向模', '导航天线', 'GNSS', 'L 频段', 'helix', '螺旋阵'],
   presets: [
     { id: 'single-uhf', titleZh: 'UHF 螺旋天线', title: 'UHF helix antenna', aliases: ['单个', '单螺旋', 'UHF', '立方星'], params: { layout: 'single', freqGHz: 0.4, turns: 10 } },
@@ -331,7 +331,7 @@ function omniDims(p) {
 }
 
 const omniAntenna = {
-  type: 'sat.antenna.omni', domain: SAT, title: 'Omni / low-gain antenna', titleZh: '全向天线', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.omni', domain: SAT, title: 'Omni / low-gain antenna', titleZh: '全向天线', role: 'feed', category: 'antenna', family: 'wire',
   aliases: ['低增益', '单极子', '偶极子', '十字振子', '绕杆式', '四臂螺旋', 'QHA', '贴片', '扼流圈', 'GNSS', '测控', 'UHF', 'VHF', '鞭状', 'whip', 'monopole', 'dipole', 'turnstile', 'patch'],
   presets: [
     { id: 'monopole', titleZh: '单极子天线', title: 'Monopole antenna', aliases: ['鞭状', 'whip'], params: { kind: 'monopole' } },
@@ -392,7 +392,7 @@ function clusterDims(p) {
 }
 
 const feedCluster = {
-  type: 'sat.feed.cluster', domain: SAT, title: 'Multibeam feed array', titleZh: '多波束馈源阵', role: 'feed', category: 'antenna',
+  type: 'sat.feed.cluster', domain: SAT, title: 'Multibeam feed array', titleZh: '多波束馈源阵', role: 'feed', category: 'antenna', family: 'horn',
   aliases: ['馈源阵', '馈源簇', '喇叭阵', '多波束', 'HTS', '点波束', 'SFB', '焦面阵', 'feed array', 'feed cluster'],
   presets: [
     { id: 'ge61', titleZh: '61 元馈源阵', title: '61-horn feed array', aliases: ['61', '锗膜'], params: { rings: 4, style: 'terraced', cap: 'ge' } }
@@ -502,7 +502,7 @@ const LPDA_FIN = Object.freeze({ black_paint: '黑色', aluminum: '本色铝', g
 const lpdaRods = (p) => { const lam = lambdaOf(p.fLowGHz); return { mr: isNum(p.mastDM) ? p.mastDM / 2 : Math.max(0.006, 0.006 * lam), er: isNum(p.elementDM) ? p.elementDM / 2 : Math.max(0.003, 0.0035 * lam) } }
 
 const lpda = {
-  type: 'sat.antenna.lpda', domain: SAT, title: 'Log-periodic dipole antenna', titleZh: '对数周期天线', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.lpda', domain: SAT, title: 'Log-periodic dipole antenna', titleZh: '对数周期天线', role: 'feed', category: 'antenna', family: 'wire',
   aliases: ['对数周期', 'LPDA', '圣诞树', '宽带', 'VHF', 'UHF', 'W 传感器', '核爆探测', 'log-periodic'],
   params: {
     fLowGHz: num(0.15, 'GHz', '最低频率', { gt: 0, title: '最长振子全长 = λ(最低频率)/2' }),
@@ -538,7 +538,7 @@ const lpda = {
 
 const SHROUD_FIN = Object.freeze({ mli_black: '黑色 MLI', mli_silver: '银色 MLI', mli_gold: '金色 MLI', radome: '白色介质罩', kapton_black: '黑色聚酰亚胺' })
 const antennaShroud = {
-  type: 'sat.antenna.shroud', domain: SAT, title: 'Antenna shroud / radome', titleZh: '天线罩', role: 'other', category: 'antenna',
+  type: 'sat.antenna.shroud', domain: SAT, title: 'Antenna shroud / radome', titleZh: '天线罩', role: 'other', category: 'antenna', family: 'radome',
   aliases: ['天线罩', '隔热罩', '多面体', '透波', '导航天线罩', 'radome', 'shroud'],
   presets: [
     { id: 'dome', titleZh: '圆顶天线罩', title: 'Dome radome', aliases: ['圆顶', '介质罩'], params: { style: 'dome', finish: 'radome', baseDM: 0.6, heightM: 0.5 } }
@@ -569,7 +569,7 @@ const antennaShroud = {
 // ───────────────────────────── 缝隙波导阵 ─────────────────────────────
 
 const slotArray = {
-  type: 'sat.antenna.slot', domain: SAT, title: 'Slotted waveguide array', titleZh: '缝隙波导阵', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.slot', domain: SAT, title: 'Slotted waveguide array', titleZh: '缝隙波导阵', role: 'feed', category: 'antenna', family: 'array',
   aliases: ['缝隙', '波导', '棒条', '一网', 'Ku 用户天线', '扇形波束', 'slot', 'waveguide'],
   params: {
     bars: int(8, '棒条数', { min: 1, max: 32 }),
@@ -624,10 +624,10 @@ const horizDir = (phiDeg, eDeg) => { const p = phiDeg * DEG, e = eDeg * DEG; ret
 function horizSym(phiDeg) { const m = ((phiDeg % 180) + 180) % 180; return m === 0 ? ['xz'] : m === 90 ? ['yz'] : [] }
 
 const despunAntenna = {
-  type: 'sat.antenna.despun', domain: SAT, title: 'Despun antenna', titleZh: '消旋天线', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.despun', domain: SAT, title: 'Despun antenna', titleZh: '消旋天线', role: 'feed', category: 'antenna', family: 'array',
   aliases: ['消旋', '电子消旋', '机械消旋', '自旋稳定', '双自旋', '太阳鼓', 'EDA', 'BAPTA', 'despun', 'spinner', 'Meteosat', '风云二号'],
   presets: [
-    { id: 'mech', titleZh: '机械消旋天线', title: 'Mechanically despun antenna', aliases: ['BAPTA', 'HS-376', '双自旋'], params: { kind: 'mech', diameterM: 1.8 } }
+    { id: 'mech', titleZh: '机械消旋天线', title: 'Mechanically despun antenna', family: 'reflector', aliases: ['BAPTA', 'HS-376', '双自旋'], params: { kind: 'mech', diameterM: 1.8 } }
   ],
   params: {
     kind: enm('eda', ['eda', 'mech'], '消旋方式', { optionLabels: { eda: '电子消旋阵', mech: '机械消旋' }, title: '电子消旋：圆柱面上一圈辐射单元列，星体自旋时逐列切换馈电、波束始终对地（Meteosat 第二代、风云二号）；机械消旋：轴承与功率传输组件（BAPTA）带天线反向转动、抵消星体自旋（休斯 HS-376、国际通信卫星 6 号）' }),

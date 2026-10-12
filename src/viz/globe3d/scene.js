@@ -41,6 +41,7 @@ import { ZOOM_REF_DIST, FOLLOW_ZOOM_DIST, FOLLOW_ICON_K, pointZoomK } from './zo
 import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 import { emitSwath3D } from '../constellation/focusSwath.js'
+import { createAxesLayer } from './refAxes.js'   // 参考系轴（ECEF / J2000 / 赤道面）+ 聚焦卫星 RIC 三轴
 
 
 // 画布文字（地名/大洋/波束标签）：无衬线，独立一档，【不跟】界面字体走
@@ -546,6 +547,8 @@ export function createGlobeScene(container, quality = {}) {
     applyCovLineStyle(ln, grp.width, grp.dash)
     return ln
   }
+  // 坐标轴图层（参考系轴 + 聚焦卫星 RIC 三轴）：线借本场景的粗线（线宽 / 分辨率随 lineMats 一起维护），字标逐帧定尺见 loop
+  const axesLayer = createAxesLayer({ scene, fatSegments, lineMats, occluded: (P) => occludedByGlobe(P) })
   function fatStrip(vecs, color, width, opacity, order) {
     const flat = []; for (const v of vecs) { flat.push(v.x, v.y, v.z) }
     const g = new LineGeometry(); g.setPositions(flat)
@@ -4255,10 +4258,11 @@ export function createGlobeScene(container, quality = {}) {
     // 高亮环：贴图点层本身就是固定屏幕像素 + 深度测试遮挡，逐帧无事可做（原来是每颗一次反缩放 + 遮挡射线）
     rescalePointLayers()
     // 实体模型层先于标记精灵更新：精灵的交叉淡化权重（entProvider.weight）要本帧新的；落点高亮环跟着它本帧的屏幕缓存摆
-    if (entOverlay) entOverlay.update(dtSec, camera, curW, curH)
+    if (entOverlay) entOverlay.update(dtSec, camera, curW, curH, zoomDist())
     if (dropHl) placeDropRing()
     syncLinkMats(now || performance.now())   // 图上链路：箭头让位的缩放档 + 流动虚线的相位
     rescaleMarkers()
+    axesLayer.update(camera, curH, !!followDriver)   // 坐标轴字标定尺 / 遮挡、RIC 三轴屏幕定长
     updateLabels()
     refreshDashScale()   // 虚线周期按屏幕像素恒定：缩放跨过一档就重切
     applyFade()          // 一/二级行政区随缩放淡入淡出
@@ -4545,7 +4549,8 @@ export function createGlobeScene(container, quality = {}) {
     camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh, false)   // false：不写内联样式，见构造处注释
     for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
     if (overlay) overlay.update(0, camera, curW, curH)   // 局部相机的 aspect / 叠加层线宽分辨率跟着换
-    if (entOverlay) entOverlay.update(0, camera, curW, curH)   // 实体图标按像素定尺：画布高变了跟着重算
+    if (entOverlay) entOverlay.update(0, camera, curW, curH, zoomDist())   // 实体图标按像素定尺：画布高变了跟着重算
+    axesLayer.update(camera, curH, !!followDriver)   // 坐标轴同理（箭头像素尺度 / 字标排位按新的 curH）
     renderFrame()   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
   // 出图：把渲染分辨率临时抬到 factor 倍取一帧，返回 PNG 字节。机位/图层/主题一概不动 → 所见即所得。
@@ -4601,9 +4606,9 @@ export function createGlobeScene(container, quality = {}) {
       }
       // 精灵/标签的世界尺寸由 rescaleMarkers 按当前机位算：出图前补一次，免得恰好一帧都没画过
       // （窗口在后台被 rAF 节流）时精灵还停在上一次的尺寸上。实体层先于精灵（交叉淡化权重要新的）。
-      if (entOverlay) entOverlay.update(0, camera, curW, curH)
+      if (entOverlay) entOverlay.update(0, camera, curW, curH, zoomDist())
       parkLinkFlow()   // 链路的流动虚线停下、线身实画出图（下一帧 loop 接着流）
-      rescaleMarkers(); updateLabels()
+      rescaleMarkers(); updateLabels(); axesLayer.update(camera, curH, !!followDriver)
       // 模型图标的抽稀档按【出图像素】当场重选：选档量的是屏上 CSS px 的误差（≤ 1 px），沿用屏上那一档放大 s 倍出图，
       // 折面、被裁掉的小部件跟着放大 s 倍。finally 里调回 1（下一帧按屏上重选）
       if (overlay && overlay.setLodScale) overlay.setLodScale(s)
@@ -4630,19 +4635,38 @@ export function createGlobeScene(container, quality = {}) {
   //   缩放缓动没走完就直接落到目标）；影像瓦片等到位（封顶 waitMs）；出一帧并在【同一个任务里】把画布交给 draw 回调
   //   （preserveDrawingBuffer=false，过了这个任务缓冲就可能被清掉）。
   // endCapture：倍率与尺寸复位到容器（期间被挡下的 resize 一并补上），恢复 rAF 出帧。
+  // o.view = { x, y, w, h }（渲染 CSS 坐标、y 向下）：只出取景框那一块 —— 画布缩成取景框，视口仍按整舞台（cssW × cssH）铺开、
+  //   平移到取景框原点（WebGL 视口可越出画布，界外的片元自然被裁掉）。投影矩阵、curW/curH、线宽分辨率、精灵 / 图标的像素口径
+  //   与整舞台出图逐一相同，各层（宇宙空间 / 实体 / 模型 / 坐标轴）不必知道「只出了一块」；帧缓冲只有取景框 × 倍率那么大。
+  //   默认帧缓冲上的剪裁框（实体描边合成按整舞台给）同样要平移 —— 出帧期间给 renderer.setScissor 套一层平移，endCapture 摘掉。
+  //   视口超过 MAX_VIEWPORT_DIMS 时 GL 会悄悄夹小（投影就错了）：判为 ok=false，调用方降超采样或报错。
   let capture = null
   function beginCapture(o) {
     if (capture) endCapture()
     const cssW = Math.max(1, Number(o.cssW) || curW), cssH = Math.max(1, Number(o.cssH) || curH), pr = Math.max(0.25, Number(o.pixelRatio) || 1)
-    capture = { prevPR: renderer.getPixelRatio() }
+    const v = o.view && o.view.w > 0 && o.view.h > 0 ? o.view : null
+    capture = { prevPR: renderer.getPixelRatio(), scissor0: null }
     frameHold++
     curW = cssW; curH = cssH
     camera.aspect = cssW / cssH; camera.updateProjectionMatrix()
+    // 先按目标尺寸、再换像素比：setPixelRatio 会按「当时的」尺寸立即重分配画布 —— 反过来就先按整舞台 × pr 临时开一张大画布
+    // （取景框缩到 20–30% 时 pr 到 6–12，请求可上亿像素，与「显存只取决于成片分辨率」相反）
+    renderer.setSize(v ? v.w : cssW, v ? v.h : cssH, false)
     renderer.setPixelRatio(pr)
-    renderer.setSize(cssW, cssH, false)
     for (const m of lineMats) m.resolution.set(cssW, cssH)
+    let vpOk = true
     const gl = renderer.getContext(), cv = renderer.domElement
-    return { w: cv.width, h: cv.height, bufW: gl.drawingBufferWidth, bufH: gl.drawingBufferHeight, ok: gl.drawingBufferWidth === cv.width && gl.drawingBufferHeight === cv.height }
+    if (v) {
+      const ox = -v.x, oy = -(cssH - v.y - v.h)          // 整舞台左下角相对画布左下角（three 的视口 / 剪裁原点在左下）
+      renderer.setViewport(ox, oy, cssW, cssH)
+      const orig = renderer.setScissor
+      capture.scissor0 = orig
+      // 数字参数 = 按整舞台给的框 → 平移；Vector4 = getScissor 读回的现值（已平移过）→ 原样还回去
+      renderer.setScissor = function (x, y, w, h) { return typeof x === 'number' ? orig.call(this, x + ox, y + oy, w, h) : orig.call(this, x, y, w, h) }
+      const mv = gl.getParameter(gl.MAX_VIEWPORT_DIMS)
+      vpOk = !mv || (Math.round(cssW * pr) <= mv[0] && Math.round(cssH * pr) <= mv[1])
+    }
+    return { w: cv.width, h: cv.height, bufW: gl.drawingBufferWidth, bufH: gl.drawingBufferHeight, ok: vpOk && gl.drawingBufferWidth === cv.width && gl.drawingBufferHeight === cv.height }
   }
   async function captureFrame(o = {}) {
     if (!capture) throw new Error('不在出帧状态')
@@ -4658,8 +4682,9 @@ export function createGlobeScene(container, quality = {}) {
     }
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / zoomDist()))
     rescalePointLayers()
-    if (entOverlay) entOverlay.update(0, camera, curW, curH)
+    if (entOverlay) entOverlay.update(0, camera, curW, curH, zoomDist())
     rescaleMarkers()
+    axesLayer.update(camera, curH, !!followDriver)
     updateLabels()
     refreshDashScale()
     applyFade()
@@ -4681,6 +4706,7 @@ export function createGlobeScene(container, quality = {}) {
     if (!capture) return
     const c = capture
     capture = null
+    if (c.scissor0) renderer.setScissor = c.scissor0
     renderer.setPixelRatio(c.prevPR)
     if (overlay && overlay.setLodScale) overlay.setLodScale(1)
     frameHold = Math.max(0, frameHold - 1)
@@ -4698,6 +4724,7 @@ export function createGlobeScene(container, quality = {}) {
     nearLineSrc.clear()
     disposeOrbRings(); disposeLanes()   // 轨道圈与预制顶点各自成组：几何/线材质不随 renderer.dispose 走
     clearNightShade()
+    axesLayer.dispose()   // 坐标轴图层：字标贴图与线材质不随 renderer.dispose 走
     if (spaceFx) { spaceFx.dispose(); spaceFx = null }   // 宇宙空间：星空底图贴图 / 星表 / 大气与日面的几何材质都不随 renderer.dispose 走
     // 叠加层（模型层）归页面所有、由页面先 dispose；这里只断开引用，驱动的指针监听一并摘掉
     if (followDriver) { const d = followDriver; followDriver = null; if (d.detach) d.detach() }
@@ -4716,6 +4743,7 @@ export function createGlobeScene(container, quality = {}) {
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays: () => setShellRays(null),
     setLinks, clearLinks: () => setLinks(null), setLinkIconPx, setLinkIconEdge, lonLatAt, screenOfLL,
     setTerminator, clearTerminator,
+    setRefAxes: axesLayer.setRefAxes, setRefAxesJ2000: axesLayer.setJ2000Axes, setSatTriad: axesLayer.setSatTriad,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setWaterMode, setWaterOff, setChains, setOceanColor, setLandColors, setImagery,
     // 影像瓦片诊断：当前选了哪一级、细节层挂了几片、底层几片。瓦片 LOD 出问题时（糊、露洞、
@@ -4748,6 +4776,8 @@ export function createGlobeScene(container, quality = {}) {
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
     beginCapture, captureFrame, endCapture, isCapturing: () => !!capture,
+    // 显卡上限（视频取景框「只出一块」时视口按整舞台铺开，不能超过 MAX_VIEWPORT_DIMS）
+    glLimits: () => { const gl = renderer.getContext(), v = gl.getParameter(gl.MAX_VIEWPORT_DIMS); return { maxViewport: v ? [v[0], v[1]] : [16384, 16384] } },
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => distToT(zoomTarget),
     setZoom: (t) => { if (followDriver) return; zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t))); syncNear(zoomTarget) },

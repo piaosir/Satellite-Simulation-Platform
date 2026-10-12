@@ -145,6 +145,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 地图取星的两条：customRawVisible 顶替 customCsv 供「自定义卫星」分组取可见组的并集，
     // ephemTable 供点序列星取位。不放行主窗口的星座图就空了一半（与 customCsv 同一条理由）。
     'omm:customRawVisible', 'omm:ephemTable',
+    // 叠加星历的对应关系：地图取位要它（导入星历「对应已有卫星」后，那颗星在星历时段内改由导入的表供位）
+    'omm:ephemBindings',
     'coverage:index', 'coverage:get',
     'coverageGrd:index', 'coverageGrd:get', 'coverageGrd:raw',
     'coverageGxt:index', 'coverageGxt:get', 'coverageGxt:raw',
@@ -173,6 +175,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   }
   const omm = createOmm(core)
   const customSats = createCustomSats(core)
+  // 星历导入编排（预览 + 候选匹配）与导出引擎：都只读写 customSats / omm 的数据，不碰窗口
+  const ephemImport = require('../services/ephemImport')({ customSats, omm, getCore: core })
+  const ephemExport = require('../services/ephemExport')({ customSats, omm, getCore: core })
+  const TC = require('../../packages/core/utils/textCodec.js')
   const modcod = createModcod()
   // grd 传进去是给 NGSO 时变的「卫星发射方向图取 GRD 实测图」用的（见 resolveSatPattern）
   const interference = createInterference(omm, customSats, core, grd)
@@ -201,7 +207,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 点序列那一侧的同名表：.xml 在两套体系里都合法（OMM/XML 与 OEM/XML），
   // 故按「本次导出想要的是哪一类」分表查，不靠扩展名单独断。
   const ephF = require('../../packages/core/utils/ephemFormats.js')
-  const EXT2FMT_EPH = { e: 'stk-e', oem: 'ccsds-oem-kvn', xml: 'ccsds-oem-xml', kvn: 'ccsds-oem-kvn', sp3: 'sp3' }
+  const EXT2FMT_EPH = { e: 'stk-e', oem: 'ccsds-oem-kvn', xml: 'ccsds-oem-xml', kvn: 'ccsds-oem-kvn', sp3: 'sp3', eph: 'cs-eph' }
   const isEphemFmt = (f) => ephF.FORMATS.includes(f)
   // gp 记录按 SGP4 采样导出成点序列时的实际口径：渲染端没给 opts 就是 customSats 的缺省
   // （每颗星历元 ±1 天 / 60 s / TEME = 2881 点），随保存结果一并回去，省得两边各写一份缺省值。
@@ -246,13 +252,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const all = [
       { name: 'STK 星历（.e）', extensions: ['e'] },
       { name: 'CCSDS OEM（KVN）', extensions: ['oem'] },
-      { name: 'CCSDS OEM（XML）', extensions: ['xml'] }
+      { name: 'CCSDS OEM（XML）', extensions: ['xml'] },
+      { name: '中国卫通星历（.eph）', extensions: ['eph'] }
     ]
     const i = all.findIndex((f) => f.extensions[0] === preferred)
     return i > 0 ? [all[i]].concat(all.slice(0, i), all.slice(i + 1)) : all
   }
   const openFilters = () => [
-    { name: '星历文件 (OMM · TLE · STK .e · CCSDS OEM · SP3 · GPS 年历)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt', 'e', 'oem', 'sp3', 'sp3c', 'sp3d', 'alm', 'al3'] },
+    { name: '星历文件 (OMM · TLE · STK .e · CCSDS OEM · SP3 · 中国卫通 .eph · GPS 年历)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt', 'e', 'oem', 'sp3', 'sp3c', 'sp3d', 'eph', 'alm', 'al3'] },
     { name: '所有文件', extensions: ['*'] }
   ]
 
@@ -275,7 +282,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     try {
-      const text = fs.readFileSync(filePaths[0], 'utf8')
+      // 按字节读再认编码（UTF-8 / UTF-16 / GBK）：国内软件导出的 ANSI 文件按 UTF-8 读会把中文字段读坏
+      const text = TC.decodeText(fs.readFileSync(filePaths[0])).text
       if (cat) {
         // writeCsvRaw 自带判据（首行列名 + 行数下限 + 末行 17 列防截断），不合格它会抛
         return omm.writeCsvRaw(key, text)
@@ -354,7 +362,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, ephem: 0, errors: [], warnings: [], formats: [], kinds: {} }
     for (const f of list) {
       const base = String((f && f.name) || '星历').replace(/\.[^.]+$/, '')
-      const r = customSats.importFile(base, String((f && f.text) || ''))
+      const bytes = f && f.bytes ? Buffer.from(f.bytes) : null
+      const dec = bytes ? TC.decodeText(bytes) : { text: String((f && f.text) || ''), encoding: '' }
+      const r = customSats.importFile(base, dec.text, { bytes, encoding: dec.encoding })
       accImport(acc, base, r)
     }
     return acc
@@ -380,10 +390,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const path = require('path')
     const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, ephem: 0, errors: [], warnings: [], formats: [], kinds: {} }
     for (const fp of filePaths) {
-      const base = path.basename(fp).replace(/\.(csv|json|kvn|xml|tle|3le|txt|e|oem|sp3|sp3c|sp3d|alm|al3)$/i, '')
-      let text
-      try { text = fs.readFileSync(fp, 'utf8') } catch (err) { acc.errors.push(path.basename(fp) + '：读取失败 ' + (err.message || err)); continue }
-      accImport(acc, path.basename(fp), customSats.importFile(base, text))
+      const base = path.basename(fp).replace(/\.(csv|json|kvn|xml|tle|3le|txt|e|oem|sp3|sp3c|sp3d|eph|alm|al3)$/i, '')
+      let bytes
+      try { bytes = fs.readFileSync(fp) } catch (err) { acc.errors.push(path.basename(fp) + '：读取失败 ' + (err.message || err)); continue }
+      const dec = TC.decodeText(bytes)
+      accImport(acc, path.basename(fp), customSats.importFile(base, dec.text, { bytes, encoding: dec.encoding }))
     }
     return acc
   })
@@ -407,6 +418,71 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (r.ok && isEphemFmt(r.format)) r.sample = ephemSampleMeta(opts)
     return r
   })
+  // ---- 星历导入：预览（解析 + 逐星「已有卫星」候选）→ 用户选对应关系 → 提交 ----
+  ipcMain.handle('omm:importPick', async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: '导入星历（可多选，每文件一组）', properties: ['openFile', 'multiSelections'], filters: openFilters()
+    })
+    if (canceled || !filePaths || !filePaths.length) return { canceled: true }
+    const files = [], failed = []
+    for (const fp of filePaths) {
+      try { files.push({ name: path.basename(fp), bytes: fs.readFileSync(fp) }) }
+      catch (err) { failed.push({ fileName: path.basename(fp), ok: false, error: '读取失败：' + (err.message || err) }) }
+    }
+    return { previews: ephemImport.preview(files).concat(failed) }
+  })
+  // 拖放：渲染端读成字节（ArrayBuffer / Uint8Array）传来，编码仍在主进程认
+  ipcMain.handle('omm:importPreview', (_e, files) => {
+    const list = (Array.isArray(files) ? files : []).map((f) => ({ name: String((f && f.name) || '星历'), bytes: f && f.bytes ? Buffer.from(f.bytes) : null, text: f && f.text }))
+    return { previews: ephemImport.preview(list) }
+  })
+  // list: [{ token, name（组名）, binds:[{ noradId, name }|null], label（日志里的文件名）}]
+  ipcMain.handle('omm:importCommit', (_e, list) => {
+    const acc = { ok: true, groups: 0, sats: 0, replaced: 0, invalid: 0, ephem: 0, bound: 0, errors: [], warnings: [], formats: [], kinds: {}, groupIds: [] }
+    for (const c of (Array.isArray(list) ? list : [])) {
+      let r
+      try { r = ephemImport.commit(c.token, { name: c.name, binds: c.binds || [] }) } catch (err) { r = { ok: false, error: err.message || String(err) } }
+      accImport(acc, c.label || c.name || '星历', r)
+      if (r && r.ok && r.group) { acc.groupIds.push(r.group.id); acc.bound += r.group.bound || 0 }
+    }
+    return acc
+  })
+  ipcMain.handle('omm:importCancel', (_e, tokens) => { ephemImport.cancel(tokens); return true })
+  ipcMain.handle('omm:ephemBindings', () => customSats.bindings())
+  ipcMain.handle('omm:ephemRebind', (_e, groupId, key, target) => customSats.rebind(groupId, key, target))
+  // 已导入的点序列组改对应关系：读数 + 候选（与导入预览同形，导入对话框的「对应已有卫星」模式用）
+  ipcMain.handle('omm:rebindPreview', (_e, groupId) => ephemImport.rebindPreview(groupId))
+
+  // ---- 星历导出：任意一批卫星 → 任一格式（引擎见 services/ephemExport.js）----
+  ipcMain.handle('omm:exportPlan', (_e, req) => ephemExport.plan(req || {}))
+  const exportJobs = new Map()
+  ipcMain.handle('omm:exportEphem', async (e, req) => {
+    const r = req || {}
+    const op = ephemExport.outputPlan(r)
+    const win = BrowserWindow.fromWebContents(e.sender)
+    let target
+    if (op.perFile) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: '选择导出文件夹（每颗卫星一个文件）', properties: ['openDirectory', 'createDirectory'] })
+      if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true }
+      target = { dir: filePaths[0] }
+    } else {
+      const ext = op.ext.replace(/^\./, '')
+      const label = (eph.FORMAT_LABEL[op.format] || ephF.FORMAT_LABEL[op.format] || op.format)
+      const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: safeSaveName(op.defaultName, 'ephemeris') + op.ext, filters: [{ name: label, extensions: [ext] }] })
+      if (canceled || !filePath) return { ok: false, canceled: true }
+      target = { file: /\.[^./\\]+$/.test(path.basename(filePath)) ? filePath : filePath + op.ext }
+    }
+    const id = String(r.jobId || Date.now())
+    const job = { cancelled: false }
+    exportJobs.set(id, job)
+    try {
+      return await ephemExport.run(r, target, (p) => { try { if (!e.sender.isDestroyed()) e.sender.send('omm:exportProgress', Object.assign({ id }, p)) } catch { /* 窗口没了 */ } }, () => job.cancelled)
+    } catch (err) { return { ok: false, error: writeErrText ? writeErrText(err) : (err.message || String(err)) } }
+    finally { exportJobs.delete(id) }
+  })
+  ipcMain.handle('omm:exportCancel', (_e, id) => { const j = exportJobs.get(String(id)); if (j) j.cancelled = true; return !!j })
+
   // 保存对话框 → 按最终扩展名定格式 → 交给 build(fmt) 出文本。
   // SP3 只解析不写出（ephF.WRITABLE 只有三种），故入口先归一成 stk-e：扩展名、默认文件名、
   // 类型下拉与返回值里的 format 全部以归一后的为准；出口再归一一次，接住用户手打 .sp3 的情况。
@@ -424,7 +500,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     let text
     try { text = build(fmt) } catch (err) { return { ok: false, error: err.message || String(err) } }
     if (!text) return { ok: false, error: emptyMsg }
-    try { fs.writeFileSync(filePath, text); return { ok: true, filePath, format: fmt } }
+    // 写出编码跟格式走：中国卫通 .eph 是 GBK（源软件是简体中文 ANSI 程序），其余 UTF-8
+    const enc = ephF.FORMAT_ENCODING[fmt]
+    try { fs.writeFileSync(filePath, enc === 'gbk' ? Buffer.from(TC.encodeText(text, 'gbk')) : text); return { ok: true, filePath, format: fmt } }
     catch (err) { return { ok: false, error: err.message || String(err) } }
   }
 

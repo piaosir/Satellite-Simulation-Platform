@@ -83,30 +83,62 @@ export function frameTime(t0, t1, N, k) {
 export const frameTsUs = (k, fps) => Math.round(k * 1e6 / fps)
 
 /**
- * 取景框：在舞台（屏上地图区，CSS px）里按出片宽高比取最大的居中矩形（contain）——取景永远落在看得见的地方，
- * 预览即成片。返回 { x, y, w, h }（CSS px，浮点）
+ * 取景框的摆位：frame = { x, y, s } —— 框心在舞台里的相对位置（0…1）、大小相对「最大可容框」的比例（FRAME_SMIN…1）。
+ * 出厂 { 0.5, 0.5, 1 } = 最大居中框。按比例记：舞台尺寸变了（拉窗口、开关侧栏）框跟着等比走，不会掉出舞台
  */
-export function cropRect(stageW, stageH, W, H) {
+export const FRAME_SMIN = 0.2
+export const FRAME_DEFAULT = Object.freeze({ x: 0.5, y: 0.5, s: 1 })
+export function normFrame(f) {
+  const o = f && typeof f === 'object' ? f : {}
+  const n = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
+  return { x: clamp(n(o.x, 0.5), 0, 1), y: clamp(n(o.y, 0.5), 0, 1), s: clamp(n(o.s, 1), FRAME_SMIN, 1) }
+}
+/** 舞台里按出片宽高比能放下的最大矩形（contain）的宽高 */
+export function fitSize(stageW, stageH, W, H) {
   const sw = Math.max(1, Number(stageW) || 1), sh = Math.max(1, Number(stageH) || 1)
   const A = W / H
   let w = sw, h = sw / A
   if (h > sh) { h = sh; w = sh * A }
-  return { x: (sw - w) / 2, y: (sh - h) / 2, w, h }
+  return { w, h }
+}
+/**
+ * 取景框：在舞台（屏上地图区，CSS px）里按出片宽高比取矩形 —— 大小 = 最大可容框 × frame.s，框心落在 frame.x / y，
+ * 整个框夹在舞台里（取景永远落在看得见的地方，预览即成片）。不给 frame = 最大居中框。返回 { x, y, w, h }（CSS px，浮点）
+ */
+export function cropRect(stageW, stageH, W, H, frame) {
+  const sw = Math.max(1, Number(stageW) || 1), sh = Math.max(1, Number(stageH) || 1)
+  const f = normFrame(frame)
+  const m = fitSize(sw, sh, W, H)
+  const w = m.w * f.s, h = m.h * f.s
+  const cx = clamp(f.x * sw, w / 2, sw - w / 2), cy = clamp(f.y * sh, h / 2, sh - h / 2)
+  return { x: cx - w / 2, y: cy - h / 2, w, h }
+}
+/** 屏上框（CSS px）→ 摆位 frame（cropRect 的逆）：拖动 / 缩放取景框时由框反推 */
+export function frameOfRect(stageW, stageH, W, H, r) {
+  const sw = Math.max(1, Number(stageW) || 1), sh = Math.max(1, Number(stageH) || 1)
+  const m = fitSize(sw, sh, W, H)
+  return normFrame({ x: (r.x + r.w / 2) / sw, y: (r.y + r.h / 2) / sh, s: r.w / m.w })
 }
 
 /**
  * 出帧的渲染几何。u = 标注缩放（1 = 与屏上同比例；>1 = 标注 / 线宽相对画面放大）。
- * 渲染按【整个舞台】出（3D 不动相机视锥、2D 不动地图变换，与屏上同一个取景），再从中裁出取景框：
- *   渲染 CSS 尺寸 = 舞台 / u，像素倍率 pr = W · u / crop.w，裁切源矩形 = crop / u · pr（设备像素）。
- * ss = 超采样倍数（3D 用：渲染按 pr·ss 出、合成时缩回）
+ * 取景按【整个舞台】算（3D 相机视锥、2D 地图变换都与屏上同一个），但只出取景框那一块：
+ *   渲染 CSS 尺寸（整舞台）= 舞台 / u，像素倍率 pr = W · u / crop.w；
+ *   3D：画布 = 取景框 / u（像素恰为 W·ss × H·ss），视口按整舞台铺开、平移到取景框原点（view，WebGL 视口可越出画布，界外裁掉）——
+ *       框再小、出片再大，帧缓冲也只是成片那么大；投影、线宽、图标像素口径与整舞台出图逐一相同。
+ *   2D：exportRender 的 viewport 档本来就只画取景框。
+ * ss = 超采样倍数（3D 用：渲染按 pr·ss 出、合成时缩回）。src = 画布上要取的那块（设备像素，= 整张画布）
  */
 export function renderGeom(stageW, stageH, crop, W, H, u = 1, ss = 1) {
   const uu = clamp(Number(u) || 1, 0.25, 4)
   const pr = W * uu / crop.w
   const k = pr * ss
+  const cssW = stageW / uu, cssH = stageH / uu
+  // view：取景框在渲染 CSS 坐标里的位置（y 向下，同屏幕）；w / h 带一点余量，免得 floor(w·pr) 因浮点落成 W·ss − 1
+  const view = { x: crop.x / uu, y: crop.y / uu, w: crop.w / uu + 1e-6, h: crop.h / uu + 1e-6 }
   return {
-    cssW: stageW / uu, cssH: stageH / uu, pr, ss, renderPr: k,
-    src: { x: crop.x / uu * k, y: crop.y / uu * k, w: crop.w / uu * k, h: crop.h / uu * k }
+    cssW, cssH, pr, ss, renderPr: k, view,
+    src: { x: 0, y: 0, w: crop.w / uu * k, h: crop.h / uu * k }
   }
 }
 

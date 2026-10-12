@@ -17,6 +17,7 @@
  */
 
 var sat = require('../vendor/satellite.js');
+var orbitPos = require('./orbitPos.js');
 
 var DEG = 180 / Math.PI;
 var JD_UNIX = 2440587.5;          // 1970-01-01T00:00Z 的儒略日
@@ -44,9 +45,10 @@ function sgp4Source(spec) {
       epochIso: epochIso
     },
     span: null,                    // SGP4 可外推到任意时刻（精度另说），无覆盖区间
+    // 取位走 orbitPos（单一入口）：与直接 propagate 逐位相同，另认「对应到这颗星」的叠加星历
     posEcefKm: function (ms) {
       var d = new Date(ms);
-      var pv = sat.propagate(rec, d);
+      var pv = orbitPos.positionAt(rec, d);
       if (!pv || !pv.position) return null;
       var p = sat.eciToEcf(pv.position, sat.gstime(d));
       if (!(isFinite(p.x) && isFinite(p.y) && isFinite(p.z))) return null;
@@ -54,7 +56,7 @@ function sgp4Source(spec) {
     },
     lonAt: function (ms) {
       var d = new Date(ms);
-      var pv = sat.propagate(rec, d);
+      var pv = orbitPos.positionAt(rec, d);
       if (!pv || !pv.position) return NaN;
       var gd = sat.eciToGeodetic(pv.position, sat.gstime(d));
       return sat.degreesLong(gd.longitude);

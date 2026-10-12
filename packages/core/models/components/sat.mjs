@@ -249,7 +249,7 @@ const busHalf = (p) => [p.xM / 2 - p.insetXYM, p.yM / 2 - p.insetXYM, (p.zM - 2 
 const ENV_NOTE = '外包络；质量按包络体积估算，结构盒按内缩量缩进'
 
 const busBox = {
-  type: 'sat.bus.box', domain: SAT, title: 'Bus (box)', titleZh: '星体（箱形）', role: 'bus', category: 'structure',
+  type: 'sat.bus.box', domain: SAT, title: 'Bus (box)', titleZh: '星体（箱形）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '卫星平台', '立方星', 'bus'],
   presets: [
     { id: 'small', titleZh: '小卫星平台', title: 'Small satellite bus', aliases: ['小卫星', '微小卫星', '小平台'], params: { xM: 0.8, yM: 0.8, zM: 1.0, mli: 'mli_silver' } }
@@ -313,7 +313,7 @@ const busBox = {
 }
 
 const busCyl = {
-  type: 'sat.bus.cyl', domain: SAT, title: 'Bus (cylinder)', titleZh: '星体（圆柱形）', role: 'bus', category: 'structure',
+  type: 'sat.bus.cyl', domain: SAT, title: 'Bus (cylinder)', titleZh: '星体（圆柱形）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '自旋', 'bus'],
   presets: [
     { id: 'drum', titleZh: '自旋稳定太阳鼓', title: 'Spin-stabilized solar drum', aliases: ['自旋', '太阳鼓', 'MSG', '风云二号'], params: { drumCells: true, dM: 3.2, hM: 2.4, mli: 'none' } }
@@ -391,7 +391,7 @@ function hexGeom(p) {
 }
 
 const busHex = {
-  type: 'sat.bus.hex', domain: SAT, title: 'Bus (hexagonal)', titleZh: '星体（六棱柱形）', role: 'bus', category: 'structure',
+  type: 'sat.bus.hex', domain: SAT, title: 'Bus (hexagonal)', titleZh: '星体（六棱柱形）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '六边形', 'bus'],
   params: {
     acrossFlatsM: num(2.0, 'm', '对边距', { gt: 0 }),
@@ -465,7 +465,7 @@ function trapFaces(p) {
 }
 
 const busTrap = {
-  type: 'sat.bus.trap', domain: SAT, title: 'Bus (trapezoidal prism)', titleZh: '星体（梯形截面）', role: 'bus', category: 'structure',
+  type: 'sat.bus.trap', domain: SAT, title: 'Bus (trapezoidal prism)', titleZh: '星体（梯形截面）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '梯形', '棱柱', '一网', '全球星', 'bus'],
   params: {
     lengthM: num(1.3, 'm', '长', { gt: 0, title: '沿局部 X（飞行方向）的长度' }),
@@ -517,7 +517,7 @@ function flatFaces(p) {
 }
 
 const busFlat = {
-  type: 'sat.bus.flat', domain: SAT, title: 'Bus (flat panel)', titleZh: '星体（扁平板式）', role: 'bus', category: 'structure',
+  type: 'sat.bus.flat', domain: SAT, title: 'Bus (flat panel)', titleZh: '星体（扁平板式）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '扁平', '平板', '星链', '堆叠', 'bus'],
   params: {
     xM: num(1.3, 'm', 'X 边长', { gt: 0 }), yM: num(2.8, 'm', 'Y 边长', { gt: 0 }), zM: num(0.2, 'm', '厚', { gt: 0, title: '沿 Z（对地面到背地面）' }),
@@ -656,20 +656,21 @@ export function reflectorFrame(p) {
   return { Dm, f, dc, k, mesh, s, c, B, F: toL([0, 0, f]), a: dirL([0, 0, 1]), u: dirL([1, 0, 0]), Pc: toL([dc, 0, dc * dc / (4 * f)]) }
 }
 
-const FEED_ACCEPTS = Object.freeze(['sat.feed.', 'sat.array.', 'prim.'])
-/** 馈源喇叭口面：馈源链（星上没有副反射面组件）+ 基本体占位。 */
-const FEED_CHAIN_ACCEPTS = Object.freeze(['sat.feed.', 'prim.'])
+const FEED_ACCEPTS = Object.freeze(['sat.feed.', 'sat.array.', 'es.feed', 'prim.'])
+/** 馈源喇叭口面：馈源链（星载馈源 + 地面站馈源 es.feed；星上没有副反射面组件）+ 基本体占位。 */
+const FEED_CHAIN_ACCEPTS = Object.freeze(['sat.feed.', 'es.feed', 'prim.'])
 /**
  * 杆件端部：天线（反射面、馈源、相控阵、全向 / 螺旋 / 测控 / 双轴指向天线）+ 磁强计 + 基本体（杆端载荷占位）。星敏 / 太敏不收：两者都是体装件（星敏要装在
  * 刚性光学基座上），而模板里的杆件多是馈源支架 / 展开臂这类两端都接着结构的撑杆，杆端收敏感器会让拖星敏时候选里冒出一串
  * 埋在反射面 / 星体里的杆尖（任务书 §5-9 验收；§3.3.1「杆 tip 只收敏感器 / 天线 / 小件」按组件核对后的落地清单）。
+ * 2026-10-12 组件不限领域：另收地面站反射面 / 馈源与阵列族（平板动中通一类，'@array'）。
  */
-const TIP_ACCEPTS = Object.freeze(['sat.reflector', 'sat.feed.', 'sat.array.', 'sat.antenna.', 'sat.sensor.mag', 'prim.'])
+const TIP_ACCEPTS = Object.freeze(['sat.reflector', 'sat.feed.', 'sat.array.', 'sat.antenna.', 'sat.sensor.mag', 'es.refl.', 'es.feed', '@array', 'prim.'])
 /** 相控阵辐射面：只收基本体占位（罩 / 遮光板）。 */
 const ARRAY_FRONT_ACCEPTS = Object.freeze(['prim.'])
 
 const reflector = {
-  type: 'sat.reflector', domain: SAT, title: 'Reflector antenna', titleZh: '反射面天线', role: 'reflector', category: 'antenna',
+  type: 'sat.reflector', domain: SAT, title: 'Reflector antenna', titleZh: '反射面天线', role: 'reflector', category: 'antenna', family: 'reflector',
   aliases: ['反射面', '抛物面', '偏置', '赋形', '网状', '可展开', '格里高利', '多波束', 'reflector', '碟形'],
   presets: [
     { id: 'mesh-perimeter', titleZh: '周边桁架网状反射面', title: 'Perimeter-truss mesh reflector', aliases: ['AstroMesh', '大型可展开', '网状'], params: { surface: 'mesh', diameterM: 9 } },
@@ -745,7 +746,7 @@ const feedLen = (p) => (p.kind === 'patch' ? 0.005 : isNum(p.lengthM) ? p.length
 const pyrB = (p) => (isNum(p.apertureBM) ? p.apertureBM : 0.74 * p.apertureM)
 
 const feedHorn = {
-  type: 'sat.feed.horn', domain: SAT, title: 'Horn antenna', titleZh: '喇叭天线', role: 'feed', category: 'antenna',
+  type: 'sat.feed.horn', domain: SAT, title: 'Horn antenna', titleZh: '喇叭天线', role: 'feed', category: 'antenna', family: 'horn',
   aliases: ['馈源', '喇叭', '波纹喇叭', '角锥喇叭', '标准增益', '地球覆盖', '全球波束', '信标', 'horn', 'feed'],
   presets: [
     { id: 'pyramid', titleZh: '角锥喇叭天线', title: 'Pyramidal horn antenna', aliases: ['角锥', '标准增益'], params: { kind: 'pyramid', apertureM: 0.12 } }
@@ -815,7 +816,7 @@ const ARRAY_SHAPES = { rect: '矩形', chamfer: '切角矩形', hex: '六边形'
 const ARRAY_FACES = { patch: '方形贴片', disc: '圆形贴片', horn: '喇叭单元', dipole: '交叉偶极子', radome: '天线罩（白）', sunshield: '锗膜遮阳罩' }
 
 const arrayPhased = {
-  type: 'sat.array.phased', domain: SAT, title: 'Phased array antenna', titleZh: '相控阵天线', role: 'feed', category: 'antenna',
+  type: 'sat.array.phased', domain: SAT, title: 'Phased array antenna', titleZh: '相控阵天线', role: 'feed', category: 'antenna', family: 'array',
   aliases: ['相控阵', '有源相控阵', '平面阵', '直接辐射阵', 'DRA', 'SAR', '阵面', '数字波束成形', 'phased array'],
   presets: [
     { id: 'disc-oct', titleZh: '圆贴片相控阵', title: 'Circular-patch phased array', aliases: ['圆贴片', '八边形'], params: { face: 'disc', shape: 'oct' } },
@@ -878,7 +879,7 @@ const arrayPhased = {
 }
 
 const tower = {
-  type: 'sat.tower', domain: SAT, title: 'Antenna tower', titleZh: '天线塔', role: 'boom', category: 'structure',
+  type: 'sat.tower', domain: SAT, title: 'Antenna tower', titleZh: '天线塔', role: 'boom', category: 'structure', family: 'truss',
   aliases: ['塔', '支架', '天线塔', 'tower'],
   params: {
     wM: num(G.towerWM, 'm', '截面边长', { gt: 0 }), hM: num(1.0, 'm', '高', { gt: 0 }),
@@ -899,7 +900,7 @@ const tower = {
 }
 
 const boom = {
-  type: 'sat.boom', domain: SAT, title: 'Boom / mast', titleZh: '杆件', role: 'boom', category: 'structure',
+  type: 'sat.boom', domain: SAT, title: 'Boom / mast', titleZh: '杆件', role: 'boom', category: 'structure', family: 'truss',
   aliases: ['杆', '撑杆', '伸展臂', '展开臂', '桁架', '支杆', 'boom', 'mast'],
   presets: [
     { id: 'lattice', titleZh: '三角桁架伸展臂', title: 'Coilable lattice boom', aliases: ['盘绕式', '桁架', '磁强计杆'], params: { style: 'lattice', dM: 0.3, lengthM: 3, canister: true } }
@@ -945,7 +946,7 @@ const thrOf = (p) => {
 }
 
 const thruster = {
-  type: 'sat.thruster', domain: SAT, title: 'Thruster', titleZh: '推力器', role: 'thruster', category: 'propulsion',
+  type: 'sat.thruster', domain: SAT, title: 'Thruster', titleZh: '推力器', role: 'thruster', category: 'propulsion', family: 'thruster',
   aliases: ['发动机', '喷管', '姿控', '远地点', '霍尔', '电推', 'thruster', 'LAE', 'RCS'],
   presets: [
     { id: 'lae', titleZh: '远地点发动机', title: 'Apogee engine', aliases: ['LAE', '490 N', '主发动机'], params: { kind: 'lae' } },
@@ -1106,7 +1107,7 @@ const sensorEarth = {
 }
 
 const antennaTtc = {
-  type: 'sat.antenna.ttc', domain: SAT, title: 'TT&C antenna', titleZh: '测控天线', role: 'feed', category: 'antenna',
+  type: 'sat.antenna.ttc', domain: SAT, title: 'TT&C antenna', titleZh: '测控天线', role: 'feed', category: 'antenna', family: 'wire',
   aliases: ['测控', '遥测遥控', 'TT&C', '双锥', '全向', '宽波束'],
   presets: [
     { id: 'bicone', titleZh: '双锥测控天线', title: 'Biconical TT&C antenna', aliases: ['双锥'], params: { kind: 'bicone' } }

@@ -354,11 +354,14 @@ t('插座贴面：非安装、非轴心的水平插座（n = ±Z）落在网格�
   assert.deepStrictEqual(getComponent('sea.mast').sockets(fillParams(getComponent('sea.mast'), { yard: false })).map((x) => x.id), ['root', 'platform'], '没有横桁就没有横桁插座')
 })
 
-t('accepts 推荐组合：父插座推荐的每一类子件，滚转 0° 装上去与父件同向（旋转为单位阵）；只有有意的横装 / 倒装 / 焦点件除外', () => {
+t('accepts 推荐组合：父插座按 type 前缀推荐的每一类子件，滚转 0° 装上去与父件同向（旋转为单位阵）；只有有意的横装 / 倒装 / 焦点件除外；按组件族（@array 一类）收的跨约定件视轴沿插座法向', () => {
   // X-Y 座 Y 轴插座朝天（碟面装上去视轴指天顶）；焦点插座接馈源 / 副面（口面朝碟）；机腹腹鳍倒装；尾吊短舱横装；
   // 机头牵引螺旋桨反装（桨在机头前方）；背负短舱倒扣；直升机尾桨横装（桨轴沿 ±Y）
   const WL = new Set(['es.pedestal.xy#y', 'air.fuselage#ventral', 'air.fuselage#aftEng', 'air.fuselage#nose', 'air.fuselage#dorsal', 'air.heli#trotor'])
-  let cnt = 0
+  // 2026-10-12 组件不限领域：只靠组件族记号收进来的件（平板动中通上座架俯仰轴）不是为这个插座造的，装上去不必与父件同向，
+  // 但视轴必须沿插座法向（俯仰轴插座 = 视轴零位，顶面 / 车顶 = 朝天）；没有视轴挂点的照旧按同向核
+  const byPrefix = (s, ty) => s.accepts.some((x) => x[0] !== '@' && ty.startsWith(x))
+  let cnt = 0, viaFamily = 0
   for (const pdef of DEFS) {
     for (const s of pdef.sockets(fillParams(pdef, {}))) {
       if (s.id === pdef.mountSocket || s.accepts == null || s.id === 'focus' || WL.has(`${pdef.type}#${s.id}`)) continue
@@ -367,13 +370,18 @@ t('accepts 推荐组合：父插座推荐的每一类子件，滚转 0° 装上�
         const dom = pdef.domain.find((d) => cdef.domain.includes(d))
         if (!dom) continue
         const doc = { kind: 'assembly', schema: 1, domain: dom, name: 't', comps: [{ id: 'p', type: pdef.type, parent: null }, { id: 'c', type: cdef.type, parent: 'p', attach: { mode: 'socket', socket: s.id } }] }
-        const M = A.solvePose(doc).get('c').m, R = [M[0], M[1], M[2], M[4], M[5], M[6], M[8], M[9], M[10]]
-        R.forEach((v, k) => near(v, k % 4 === 0 ? 1 : 0, 1e-9, `${pdef.type}#${s.id} ← ${cdef.type} 旋转[${k}]`))
+        const tag = `${pdef.type}#${s.id} ← ${cdef.type}`
+        const bore = byPrefix(s, cdef.type) ? null : A.buildAssembly(doc).attachPoints.find((a) => a.name === 'c_boresight')
+        if (bore) { for (let k = 0; k < 3; k++) near(bore.dirBody[k], s.n[k], 1e-9, `${tag} 视轴[${k}]`); viaFamily++ } else {
+          const M = A.solvePose(doc).get('c').m, R = [M[0], M[1], M[2], M[4], M[5], M[6], M[8], M[9], M[10]]
+          R.forEach((v, k) => near(v, k % 4 === 0 ? 1 : 0, 1e-9, `${tag} 旋转[${k}]`))
+        }
         cnt++
       }
     }
   }
   assert.ok(cnt >= 40, `核验了 ${cnt} 组`)
+  assert.ok(viaFamily >= 1, `按族收件核了 ${viaFamily} 组`)
 })
 
 // ───────────────────────── ④ 对称面声明核验 ─────────────────────────

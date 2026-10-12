@@ -5,7 +5,8 @@
 // paramBus.buildParamModel 完全相同，导出 / 缩略图 / 工作台 / 3D 球原样复用。
 //
 // ★ 文档（AssemblySpec，E1）：
-//   { kind:'assembly', schema:1|2, domain:'spacecraft'|'ground'|'aircraft'|'ship'|'vehicle', name,
+//   { kind:'assembly', schema:1|2, domain:'spacecraft'|'ground'|'aircraft'|'ship'|'vehicle'（本体系约定：卫星 +X 速度 +Z 天底、其余 FRD / NED；
+//     与组件无关——任何组件都能装进任何领域，组件的 domain 只是常用领域）, name,
 //     comps:[{ id, type, params, parent, attach:{mode, socket, face, uv, roll, mount, off, tilt}, t?, q?, sym?, name, massKg, material, hidden, locked }],
 //     density:{DENSITY 覆盖}, massTargetKg }
 //   · schema：文档里出现非缺省 off / tilt 时为 2（旧版本 validateAssembly 明确拒收，好过按旧式子摆错位姿），否则 1。
@@ -347,7 +348,7 @@ export function validateAssembly(doc) {
     if (c.material !== null && !Object.hasOwn(MATERIALS, c.material)) errors.push(`${p}.material：未知材质 ${JSON.stringify(c.material)}`)
     const def = getComponent(c.type)
     if (!def) { errors.push(`${p}.type：未知组件 ${JSON.stringify(c.type)}`); return }
-    if (!def.domain.includes(d.domain)) errors.push(`${p}.type：${c.type} 不能用于 ${d.domain}`)
+    // 组件不限领域（2026-10-12：def.domain 只是常用领域，相控阵上船 / 太阳翼进地面站都合法，见 components/index.mjs）
     if (rc.params !== undefined && !isObj(rc.params)) errors.push(`${p}.params：须为对象`)
     else if (isObj(rc.params)) for (const k of Object.keys(rc.params)) if (!Object.hasOwn(def.params, k)) errors.push(`${p}.params.${k}：未知参数`)
     errors.push(...checkParams(def, c.params, `${p}.params`))

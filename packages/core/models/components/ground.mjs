@@ -27,6 +27,8 @@
 // ★ 安装基面 / 接口收件清单（2026-10 设计页交互重构 §3.3.1「accepts 收紧」核对结论）：座架 el / y、底座 / 立柱 mast 只收反射面；
 //   主焦 / 偏馈 focus 只收馈源（主焦另收副面）；es.feed aperture 只收馈源链与副反射面（本轮收紧，原先不限）；方舱 / 铁塔顶面与
 //   天线罩内 floor 照旧（大件 / 罩内底板）；副反射面、卡氏反射面只有自身安装接口。各件面全可装（只有方舱、铁塔有面）。
+//   2026-10-12 组件不限领域：座架 el / y、底座 / 立柱 mast 另收星载反射面与阵列 / 喇叭 / 线天线族（'@array' 一类族记号：相控阵上座架、
+//   螺旋天线上方位俯仰转台；这些件的视轴都沿安装端法向，装上去与 es.refl.* 同朝插座法向）；焦点 / 馈源口面另收星载馈源（sat.feed.*）。
 //
 // ★ 缺省参数一律示意值（source:'illustrative'），不取任何具体型号；ISO 668 集装箱尺寸是标准值（source = 标准页）。
 //   尺寸类缺省尽量写成「留空 = 按口径 / 基准量推算」（比例是示意值），模板只填有出处的量，其余靠推算——不同口径的天线都像样。
@@ -158,9 +160,9 @@ function struts(mb, L, pts, target, r) { for (const p of pts) tubeAlong(mb, p, t
 
 // ───────────────────────────── 地球站：座架 ─────────────────────────────
 
-const REFL_ACCEPTS = Object.freeze(['es.refl.', 'prim.'])
+const REFL_ACCEPTS = Object.freeze(['es.refl.', 'sat.reflector', '@array', '@horn', '@wire', 'prim.'])
 /** 馈源口面：馈源链 + 副反射面 + 基本体占位。 */
-const FEED_CHAIN_ACCEPTS = Object.freeze(['es.feed', 'es.subrefl', 'prim.'])
+const FEED_CHAIN_ACCEPTS = Object.freeze(['es.feed', 'es.subrefl', 'sat.feed.', 'prim.'])
 const STEEL_AREAL = 90        // 座架钢壳等效面密度（kg/m²，示意：约 11 mm 钢板）
 const STEEL_SOLID = 1200      // 臂 / 支架等效体密度（kg/m³，示意：箱形焊接件按外包络折算）
 
@@ -174,7 +176,8 @@ function azelGeom(p) {
 }
 
 const pedestalAzel = {
-  type: 'es.pedestal.azel', domain: ['ground', 'ship', 'vehicle'], title: 'Az-El pedestal', titleZh: '方位俯仰座', role: 'boom',
+  type: 'es.pedestal.azel', domain: ['ground', 'ship', 'vehicle'], title: 'Az-El pedestal', titleZh: '方位俯仰座', role: 'boom', category: 'antenna', family: 'mount',
+  aliases: ['天线座', '座架', '方位俯仰', '转台', 'Az-El', 'AZ/EL', 'pedestal', 'positioner'],
   params: {
     dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     elAxisHM: num(null, 'm', '俯仰轴高', { nullable: true, gt: 0, title: '安装面到俯仰轴；留空 = 0.52 × 配套口径 + 0.3 m' }),
@@ -261,7 +264,8 @@ function xyGeom(p) {
 }
 
 const pedestalXY = {
-  type: 'es.pedestal.xy', domain: ['ground', 'ship', 'vehicle'], title: 'X-Y pedestal', titleZh: 'X-Y 座', role: 'boom',
+  type: 'es.pedestal.xy', domain: ['ground', 'ship', 'vehicle'], title: 'X-Y pedestal', titleZh: 'X-Y 座', role: 'boom', category: 'antenna', family: 'mount',
+  aliases: ['天线座', '座架', 'XY 座', '过顶跟踪', '低轨跟踪', 'X-Y', 'pedestal', 'positioner'],
   params: {
     dishDM: num(4.0, 'm', '配套口径', { gt: 0, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     xAxisHM: num(null, 'm', 'X 轴高', { nullable: true, gt: 0, title: '安装面到下轴（X 轴，东西向）；留空 = 0.55 × 配套口径 + 0.5 m' }),
@@ -441,7 +445,8 @@ function reachValidate(p, reach0) {
 const REACH_PARAM = () => num(null, 'm', '最前点距离', { nullable: true, gt: 0, title: '俯仰轴至最前点的距离（沿视轴）；仰角 90° 时 = 总高 − 俯仰轴高；指定后据此反推顶点前伸' })
 
 const reflPrime = {
-  type: 'es.refl.prime', domain: ['ground', 'ship', 'vehicle'], title: 'Prime-focus reflector', titleZh: '主焦反射面', role: 'reflector',
+  type: 'es.refl.prime', domain: ['ground', 'ship', 'vehicle'], title: 'Prime-focus reflector', titleZh: '主焦反射面', role: 'reflector', category: 'antenna', family: 'reflector',
+  aliases: ['反射面', '抛物面', '主焦', '前馈', '碟形', '天线', 'prime focus', 'dish', 'reflector'],
   params: {
     diameterM: num(3.7, 'm', '口径', { gt: 0 }),
     fD: num(0.38, '', '焦径比', { gt: 0.2, max: 2 }),
@@ -456,7 +461,7 @@ const reflPrime = {
   },
   validate: (p) => [...gimbalValidate(p), ...(auto(p.hubDM, 0.2 * p.diameterM) < 0.8 * p.diameterM ? [] : ['中心筒直径过大']), ...reachValidate(p, primeReach0)],
   mountSocket: 'root',
-  sockets: (p) => { const g = axiLayout(p, primeReach0); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.2, 0.26 * g.D), 90), sock('focus', [g.vo + g.f, 0, 0], [1, 0, 0], [0, 0, -1], auto(p.feedDM, 0.035 * g.D + 0.05), 15, Object.freeze(['es.feed', 'es.subrefl', 'prim.']))] },
+  sockets: (p) => { const g = axiLayout(p, primeReach0); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.2, 0.26 * g.D), 90), sock('focus', [g.vo + g.f, 0, 0], [1, 0, 0], [0, 0, -1], auto(p.feedDM, 0.035 * g.D + 0.05), 15, Object.freeze(['es.feed', 'es.subrefl', 'sat.feed.', 'prim.']))] },
   // 带自带馈源时焦点已经有馈源：焦点接口算占用（装配时不再往上叠第二个馈源）
   busySockets: (p) => (p.feed ? ['focus'] : []),
   // 三根撑杆（φ = 0、±120°）只关于 xz 面对称；不带馈源时没有撑杆
@@ -524,7 +529,8 @@ export function cassLayout(D, f, Ds, subH) {
 }
 
 const reflCass = {
-  type: 'es.refl.cass', domain: ['ground', 'ship'], title: 'Cassegrain reflector', titleZh: '卡塞格伦反射面', role: 'reflector',
+  type: 'es.refl.cass', domain: ['ground', 'ship'], title: 'Cassegrain reflector', titleZh: '卡塞格伦反射面', role: 'reflector', category: 'antenna', family: 'reflector',
+  aliases: ['反射面', '抛物面', '卡塞格伦', '卡氏', '双反射面', '关口站', '信关站', '天线', 'Cassegrain', 'gateway', 'dish', 'reflector'],
   params: {
     diameterM: num(7.3, 'm', '口径', { gt: 0 }),
     fD: num(0.35, '', '焦径比', { gt: 0.2, max: 1.5 }),
@@ -636,7 +642,8 @@ function offsetLayout(p) {
 const perpUp = (n, pref, alt) => { const r = reject(pref, n); return len(r) > 1e-6 ? nrm(r) : nrm(reject(alt, n)) }
 
 const reflOffset = {
-  type: 'es.refl.offset', domain: ['ground', 'ship', 'vehicle'], title: 'Offset-fed reflector (VSAT)', titleZh: '偏馈反射面', role: 'reflector',
+  type: 'es.refl.offset', domain: ['ground', 'ship', 'vehicle'], title: 'Offset-fed reflector (VSAT)', titleZh: '偏馈反射面', role: 'reflector', category: 'antenna', family: 'reflector',
+  aliases: ['反射面', '偏馈', '偏置', 'VSAT', '小站', '卫星锅', '天线', 'offset', 'dish', 'reflector'],
   params: {
     diameterM: num(1.2, 'm', '口径', { gt: 0, title: '口面在射频轴法平面上的投影直径（有效口径）' }),
     offsetDeg: num(20, '°', '偏置角', { gt: 0, max: 60, title: '口面竖直时波束仰起的角度（口沿平面法向与射频轴的夹角）' }),
@@ -652,7 +659,7 @@ const reflOffset = {
   },
   validate: (p) => [...gimbalValidate(p), ...(p.pivotDropM <= 0.6 * p.diameterM ? [] : ['转轴下移过大'])],
   mountSocket: 'root',
-  sockets: (p) => { const g = offsetLayout(p); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.1, 2 * p.mastDM), 90), sock('focus', g.F, nrm(sub(g.F, g.Pc)), perpUp(nrm(sub(g.F, g.Pc)), [1, 0, 0], [0, 0, -1]), auto(p.feedDM, 0.06 * g.D + 0.03), 15, Object.freeze(['es.feed', 'prim.']))] },
+  sockets: (p) => { const g = offsetLayout(p); return [sock('root', [0, 0, 0], [-1, 0, 0], [0, 0, -1], Math.max(0.1, 2 * p.mastDM), 90), sock('focus', g.F, nrm(sub(g.F, g.Pc)), perpUp(nrm(sub(g.F, g.Pc)), [1, 0, 0], [0, 0, -1]), auto(p.feedDM, 0.06 * g.D + 0.03), 15, Object.freeze(['es.feed', 'sat.feed.', 'prim.']))] },
   // 偏馈反射面恒带馈源（馈源臂 / 三杆随碟面转）：焦点接口算占用
   busySockets: () => ['focus'],
   symmetricPlanes: ['xz'],
@@ -717,7 +724,8 @@ const reflOffset = {
 // ───────────────────────────── 地球站：副面 / 馈源（固定天线手搭用） ─────────────────────────────
 
 const subrefl = {
-  type: 'es.subrefl', domain: ['ground', 'ship', 'vehicle'], title: 'Subreflector', titleZh: '副反射面', role: 'reflector',
+  type: 'es.subrefl', domain: ['ground', 'ship', 'vehicle'], title: 'Subreflector', titleZh: '副反射面', role: 'reflector', category: 'antenna', family: 'reflector',
+  aliases: ['副面', '副反射面', '双反射面', 'subreflector'],
   params: {
     diameterM: num(0.7, 'm', '直径', { gt: 0 }),
     sagM: num(null, 'm', '凸起高', { nullable: true, min: 0, title: '凸面顶点到口沿平面；留空 = 0.12 × 直径' }),
@@ -749,7 +757,8 @@ const subrefl = {
 
 const feedLenOf = (p) => auto(p.lengthM, p.kind === 'lnb' ? 1.4 * p.apertureDM : 2.5 * p.apertureDM)
 const feed = {
-  type: 'es.feed', domain: ['ground', 'ship', 'vehicle'], title: 'Feed', titleZh: '馈源', role: 'feed',
+  type: 'es.feed', domain: ['ground', 'ship', 'vehicle'], title: 'Feed', titleZh: '馈源', role: 'feed', category: 'antenna', family: 'horn',
+  aliases: ['馈源', '喇叭', '波纹喇叭', 'LNB', 'BUC', 'OMT', 'feed', 'horn'],
   params: {
     kind: enm('corrugated', ['corrugated', 'horn', 'lnb'], '形式', { title: 'corrugated = 波纹喇叭；horn = 光壁锥喇叭；lnb = 小口径喇叭 + LNB' }),
     apertureDM: num(0.3, 'm', '口径', { gt: 0 }),
@@ -785,7 +794,8 @@ const feed = {
 const RADOME_AREAL = 12   // 玻璃钢夹层天线罩等效面密度（kg/m²，示意）
 
 const radome = {
-  type: 'es.radome', domain: ['ground', 'ship'], title: 'Radome', titleZh: '天线罩', role: 'other',
+  type: 'es.radome', domain: ['ground', 'ship'], title: 'Spherical radome', titleZh: '球形天线罩', role: 'other', category: 'antenna', family: 'radome',
+  aliases: ['天线罩', '球形罩', '透波罩', '雷达罩', 'radome'],
   params: {
     diameterM: num(10, 'm', '球径', { gt: 0 }),
     heightM: num(null, 'm', '总高', { nullable: true, gt: 0, title: '截球高（含底座环）；留空 = 0.85 × 球径' }),
@@ -826,7 +836,8 @@ const radome = {
 const shelterDims = (p) => (p.size === 'custom' ? { L: p.lengthM, W: p.widthM, H: p.heightM } : ISO_BOX[p.size])
 
 const shelter = {
-  type: 'es.shelter', domain: ['ground', 'ship', 'vehicle'], title: 'Equipment shelter', titleZh: '机房方舱', role: 'other',
+  type: 'es.shelter', domain: ['ground', 'ship', 'vehicle'], title: 'Equipment shelter', titleZh: '机房方舱', role: 'other', category: 'structure', family: 'facility',
+  aliases: ['方舱', '机房', '设备间', '集装箱机房', 'shelter'],
   params: {
     size: enm('20ft', ['10ft', '20ft', '40ft', 'custom'], '规格', { source: ISO668, title: 'ISO 668 系列 1：10 ft 2.991 m、20 ft 6.058 m、40 ft 12.192 m；宽 2.438 m、高 2.591 m' }),
     form: enm('shelter', ['shelter', 'container'], '外观', { title: 'shelter = 平壁方舱 + 侧门 + 空调；container = 瓦楞箱 + 货门' }),
@@ -859,7 +870,8 @@ function towerGeom(p) {
   return { n, leg }
 }
 const tower = {
-  type: 'es.tower', domain: ['ground', 'ship'], title: 'Lattice tower', titleZh: '铁塔', role: 'boom',
+  type: 'es.tower', domain: ['ground', 'ship'], title: 'Lattice tower', titleZh: '铁塔', role: 'boom', category: 'structure', family: 'truss',
+  aliases: ['铁塔', '桁架塔', '通信塔', '塔', 'lattice tower', 'tower'],
   params: {
     heightM: num(12, 'm', '高', { gt: 0 }),
     baseWM: num(3.0, 'm', '底宽', { gt: 0 }),
@@ -900,7 +912,8 @@ const tower = {
 }
 
 const vsatMount = {
-  type: 'es.vsat.mount', domain: ['ground', 'ship', 'vehicle'], title: 'Non-penetrating mount', titleZh: '非穿透式底座', role: 'boom',
+  type: 'es.vsat.mount', domain: ['ground', 'ship', 'vehicle'], title: 'Non-penetrating mount', titleZh: '非穿透式底座', role: 'boom', category: 'antenna', family: 'mount',
+  aliases: ['底座', '屋顶底座', '非穿透', '配重', 'VSAT', 'NPRM', 'mount'],
   params: {
     frameM: num(1.8, 'm', '框架边长', { gt: 0 }),
     mastHM: num(1.2, 'm', '立柱高', { gt: 0, title: '框架顶面到立柱顶（方位抱箍 / 俯仰转轴）' }),
@@ -952,7 +965,8 @@ function wheeltrackGeom(p) {
 }
 
 const pedestalWheeltrack = {
-  type: 'es.pedestal.wheeltrack', domain: ['ground'], title: 'Wheel-and-track pedestal', titleZh: '轮轨座', role: 'boom',
+  type: 'es.pedestal.wheeltrack', domain: ['ground'], title: 'Wheel-and-track pedestal', titleZh: '轮轨座', role: 'boom', category: 'antenna', family: 'mount',
+  aliases: ['天线座', '座架', '轮轨', '深空站', '大口径', 'wheel and track', 'pedestal'],
   params: {
     dishDM: num(34, 'm', '配套口径', { gt: 5, max: 100, title: '座架按此推算缺省尺寸（比例为示意值）' }),
     elAxisHM: num(null, 'm', '俯仰轴高', { nullable: true, gt: 0, title: '地面到俯仰轴；留空 = 0.62 × 配套口径' }),
@@ -1039,7 +1053,8 @@ const pedestalWheeltrack = {
 const mastSteelKg = (Dm, L) => 7850 * Math.PI * ((Dm / 2) ** 2 - (Dm / 2 - 0.06 * Dm) ** 2) * L
 
 const mast = {
-  type: 'es.mast', domain: ['ground', 'ship', 'vehicle'], title: 'Pipe mast', titleZh: '立柱', role: 'boom',
+  type: 'es.mast', domain: ['ground', 'ship', 'vehicle'], title: 'Pipe mast', titleZh: '立柱', role: 'boom', category: 'structure', family: 'truss',
+  aliases: ['立柱', '抱杆', '杆', '桅杆', 'mast', 'pole'],
   params: {
     mastDM: num(0.114, 'm', '立柱直径', { gt: 0.02, max: 1 }),
     heightM: num(1.5, 'm', '立柱高', { gt: 0.2, max: 8, title: '安装面至立柱顶（方位抱箍 / 俯仰转轴）；厂家未规定，取决于用户立柱' }),

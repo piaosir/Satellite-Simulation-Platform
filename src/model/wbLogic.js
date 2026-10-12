@@ -845,16 +845,28 @@ const CJK_CLOSE_RE = /[）】」』》〉］｝]$/
  * @param {'zh'|'en'} [lang]
  */
 export function copyNameOf(base, taken, lang = 'zh') {
+  return copyOrNumbered(base, taken, lang, true)
+}
+/**
+ * 编号名（库页组件档「新建装配件」的文档名）：base 没被占就用它，否则「base 2」「base 3」…（重名判据同 copyNameOf）。
+ * @param {string} base 卡片名（当前界面语言）
+ * @param {Iterable<string>|Set<string>} taken
+ * @param {'zh'|'en'} [lang]
+ */
+export function numberedNameOf(base, taken, lang = 'zh') {
+  return copyOrNumbered(base, taken, lang, false)
+}
+function copyOrNumbered(base, taken, lang, copy) {
   const en = lang === 'en'
   const word = en ? 'Copy' : '副本'
   const seen = new Set()
   for (const t of taken || []) if (typeof t === 'string' && t.trim()) seen.add(en ? t.trim().toLowerCase() : t.trim())
   const has = (s) => seen.has(en ? s.toLowerCase() : s)
   let stem = String(base == null ? '' : base).trim()
-  stem = stem.replace(en ? /\s+copy(?:\s+\d+)?$/i : /\s*副本(?:\s+\d+)?$/, '').trim()
+  if (copy) stem = stem.replace(en ? /\s+copy(?:\s+\d+)?$/i : /\s*副本(?:\s+\d+)?$/, '').trim()
   if (!stem) stem = en ? 'Untitled' : '未命名'
   const sep = !en && CJK_CLOSE_RE.test(stem) ? '' : ' '
-  const first = stem + sep + word
+  const first = copy ? stem + sep + word : stem
   if (!has(first)) return first
   for (let k = 2; k < 10000; k++) { const s = `${first} ${k}`; if (!has(s)) return s }
   return `${first} ${Date.now()}`

@@ -6,7 +6,8 @@
 //   ③ 有出处的外形尺寸对得上（翼展 / 本体）：GPS IIR 11.42 m、IIF 17.5 m、III 15 m、伽利略 FOC 14.67 m、IOV 14.5 m、铱星 9.4 m、
 //      O3b 7.72 m、格洛纳斯-K1 9.205 m、星链 v1.x 翼长 8.1 m、V2 Mini 翼展落在 FCC 下限 28.3 m 与图像估计 ≈33 m 之间
 //   ④ 导航星按官方质心偏置落位的型号（北斗 / 伽利略 / 格洛纳斯）整星质心在原点
-//   ⑤ 随包星历快照里各星座组的每一颗星都匹配到精模（不落到默认卫星 / 平板 LEO），分型颗数与研究结论一致
+//   ⑤ 随包星历快照里各星座组的每一颗星都匹配到精模（不落到默认卫星 / 平板 LEO），分型与研究结论逐颗一致
+//      （研究结论按每颗星的永久身份写、期望集合从快照现取，不写死颗数——快照每次 omm:snapshot 都在变）
 //   ⑥ GEO 快照里国内具体星（中星 / 亚太 / 天链 / 天通 / 风云……）一颗都不配精模（北斗星座除外）——用户口径：GEO 精模不涉及国内
 
 import assert from 'node:assert/strict'
@@ -88,24 +89,47 @@ t('④ 按官方质心偏置落位的导航星：整星质心在原点', () => {
   }
 })
 
-t('⑤ 随包星历快照：各星座组每颗星都配到精模，分型颗数对得上', () => {
+t('⑤ 随包星历快照：各星座组每颗星都配到精模，分型与研究结论逐颗对得上', () => {
   const dir = fileURLToPath(new URL('../../../resources/omm/', import.meta.url))
   const tally = {}
+  const sats = []
   for (const grp of ['starlink', 'oneweb', 'kuiper', 'gps', 'beidou', 'galileo', 'glonass', 'iridium', 'globalstar', 'o3b']) {
     let rows
-    try { rows = gunzipSync(readFileSync(dir + `csv_${grp}.csv.gz`)).toString('utf8').split(/\r?\n/).slice(1).filter(Boolean) } catch { console.log(`  （无快照 csv_${grp}，跳过）`); continue }
+    try { rows = gunzipSync(readFileSync(dir + `csv_${grp}.csv.gz`)).toString('utf8').split(/\r?\n/).filter(Boolean) } catch { console.log(`  （无快照 csv_${grp}，跳过）`); continue }
+    const col = Object.fromEntries((rows.shift() || '').split(',').map((h, i) => [h, i]))
+    assert.ok(['OBJECT_NAME', 'OBJECT_ID', 'NORAD_CAT_ID'].every((h) => h in col), `csv_${grp} 表头缺列`)
     for (const line of rows) {
       const c = line.split(',')
-      const r = match({ name: c[0], noradId: Number(c[11]), orbitKind: '', group: grp })
-      assert.ok(r.id && isFleetId(r.id), `${grp} ${c[0]} → ${r.id}（${r.rule}）`)
+      const s = { grp, name: c[col.OBJECT_NAME], cospar: c[col.OBJECT_ID], norad: Number(c[col.NORAD_CAT_ID]) }
+      const r = match({ name: s.name, noradId: s.norad, orbitKind: '', group: grp })
+      assert.ok(r.id && isFleetId(r.id), `${grp} ${s.name} → ${r.id}（${r.rule}）`)
       tally[r.id] = (tally[r.id] || 0) + 1
+      sats.push({ ...s, id: r.id })
     }
   }
-  // 研究结论：v1.0 无遮阳板批次（NORAD < 45720）128 颗；北斗三号五院 MEO 带搜救载荷 4 颗、微小卫星院 B 型 4 颗；格洛纳斯-K2 2 颗
-  if (tally['param:starlink-v1']) assert.equal(tally['param:starlink-v1'], 128)
-  if (tally['param:beidou3-meo-cast-sar']) assert.equal(tally['param:beidou3-meo-cast-sar'], 4)
-  if (tally['param:beidou3-meo-secm-b']) assert.equal(tally['param:beidou3-meo-secm-b'], 4)
-  if (tally['param:glonass-k2']) assert.equal(tally['param:glonass-k2'], 2)
+  // 研究结论（星座精模调研稿 2026-09，出处见 match.mjs）按每颗星【永久不变的身份】写，期望集合从本版快照现取、与匹配结果逐颗比对。
+  // ★ 不写死颗数：在轨颗数随离轨 / 退役 / 新发射逐版在变（星链 v1.0 无遮阳板 09-10 版 131 → 09-22 版 128 → 10-08 版 120），
+  //   写死就是拟合某一版快照。身份尽量取与匹配规则不同的字段，逐颗比对才是交叉核验：
+  //   星链 v1.0 无遮阳板 = OBJECT_ID 发射号 2019-074 … 2020-035（VisorSat 自 2020-038 即 v1.0 L8 起；匹配规则拿 NORAD < 45720 作代理）；
+  //     该段里的 VisorSat 原型 STARLINK-1436 已于 2024-06 再入，不会再出现
+  //   北斗三号 MEO 五院带搜救载荷 = M13 / M14 / M23 / M24、微小卫星院 B 型 = M21 / M22 / M25 / M27（按名称里的 M 序号；匹配规则 NORAD 表优先）
+  //   格洛纳斯-K2 = 703K / 704K（IAC 2026-09-24 星座表）
+  const launch = (s) => (s.cospar || '').slice(0, 8)   // '2019-074B' → '2019-074'
+  const bdM = (s) => Number((/^BEIDOU-3 M(\d+)\b/.exec(s.name) || [])[1])
+  const RESEARCH = {
+    'starlink-v1': (s) => s.grp === 'starlink' && /^\d{4}-\d{3}$/.test(launch(s)) && launch(s) >= '2019-074' && launch(s) <= '2020-035',
+    'beidou3-meo-cast-sar': (s) => s.grp === 'beidou' && [13, 14, 23, 24].includes(bdM(s)),
+    'beidou3-meo-secm-b': (s) => s.grp === 'beidou' && [21, 22, 25, 27].includes(bdM(s)),
+    'glonass-k2': (s) => s.grp === 'glonass' && /\((703|704)K\)$/.test(s.name)
+  }
+  const key = (s) => `${s.name}（${s.norad}）`
+  for (const [model, isIt] of Object.entries(RESEARCH)) {
+    const want = new Set(sats.filter(isIt).map(key))
+    const got = new Set(sats.filter((s) => s.id === `param:${model}`).map(key))
+    const miss = [...want].filter((k) => !got.has(k)), extra = [...got].filter((k) => !want.has(k))
+    assert.ok(!miss.length && !extra.length,
+      `${model}：研究结论 ${want.size} 颗、匹配 ${got.size} 颗；漏配 ${miss.length}【${miss.slice(0, 6).join('、')}】、多配 ${extra.length}【${extra.slice(0, 6).join('、')}】`)
+  }
   console.log('  ' + Object.entries(tally).map(([k, v]) => `${k.slice(6)}×${v}`).join('  '))
 })
 

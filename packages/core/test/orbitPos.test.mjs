@@ -84,5 +84,41 @@ for (const [label, pv] of [['satrec', OP.positionAt(satrec, EPOCH)], ['ephem', m
   ok(pv && pv.velocity && ['x', 'y', 'z'].every((k) => Number.isFinite(pv.velocity[k])), label + '：velocity 三分量有限')
 }
 
+/* ===== ③ 叠加版本号与按 spec 缓存取位的地方（ngsoGeometry 粗扫会话） ===== */
+section('叠加版本号 / NGSO 粗扫会话缓存')
+{
+  const NG = require('../utils/ngsoGeometry.js')
+  const v0 = OP.overlayVersion()
+  OP.bumpOverlays()
+  ok(OP.overlayVersion() === v0 + 1, 'bumpOverlays 让版本号 +1')
+  // 中星 6C（GEO）：先按 SGP4 算一次几何，再挂一张整体挪 60 km 的叠加表，同参数立刻重算
+  const G1 = '1 44067U 19012A   26280.97985421 -.00000351  00000+0  00000+0 0  9995'
+  const G2 = '2 44067   0.0554 298.8093 0012858 125.1382  75.8829  1.00270086 27879'
+  const g6c = sat.twoline2satrec(G1, G2)
+  const ep = Math.round((g6c.jdsatepoch - 2440587.5) * 86400000 / 60000) * 60000
+  const opts = {
+    orbit: { type: 'tle', line1: G1, line2: G2 },
+    tx: { lonDeg: 116.4, latDeg: 39.9, altKm: 0, minElevDeg: 5, freqGHz: 14 }, rx: { lonDeg: 121.5, latDeg: 31.2, altKm: 0, minElevDeg: 5, freqGHz: 12 },
+    t0ISO: new Date(ep).toISOString(), horizonHours: 6
+  }
+  const slant = (r) => (r && r.worst && r.worst.up ? r.worst.up.slantKm : NaN)
+  const r1 = NG.solveMutualWorstCase(opts)
+  const nn = 8 * 60 + 1, tt = new Float64Array(nn), pp = new Float64Array(3 * nn), vv = new Float64Array(3 * nn)
+  for (let i = 0; i < nn; i++) {
+    const ms = ep - 3600000 + i * 60000, pv = sat.propagate(g6c, new Date(ms))
+    tt[i] = ms; pp.set([pv.position.x + 60, pv.position.y, pv.position.z], 3 * i); vv.set([pv.velocity.x, pv.velocity.y, pv.velocity.z], 3 * i)
+  }
+  const ovl = EI.buildTable({ t: tt, p: pp, v: vv, frame: 'TEME', interp: { method: 'hermite', samples: 2 } })
+  OP.setOverlayResolver((id) => (id === '44067' ? [ovl] : null))
+  const r2 = NG.solveMutualWorstCase(opts)
+  NG.solveMutualWorstCase(Object.assign({}, opts, { horizonHours: 5 }))   // 换键：会话缓存整体丢弃
+  const r3 = NG.solveMutualWorstCase(opts)
+  ok(Number.isFinite(slant(r1)) && Math.abs(slant(r3) - slant(r1)) > 1, '叠加表确实改了几何（挪 60 km，斜距变化 > 1 km）', slant(r1) + ' → ' + slant(r3))
+  ok(slant(r2) === slant(r3) && r2.worst.up.elevDeg === r3.worst.up.elevDeg, '刚挂上叠加就同参数重算：不沿用旧 SGP4 粗扫样本（与缓存失效后逐位相同）', slant(r2) + ' vs ' + slant(r3))
+  OP.setOverlayResolver(null)
+  const r4 = NG.solveMutualWorstCase(opts)
+  ok(slant(r4) === slant(r1), '取消叠加后同参数重算：回到 SGP4 结果', slant(r4) + ' vs ' + slant(r1))
+}
+
 console.log('\norbitPos: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

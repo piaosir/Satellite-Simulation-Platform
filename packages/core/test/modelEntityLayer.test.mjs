@@ -6,6 +6,7 @@
 //      机腹最低点在地面（≤ 1e-9）；地球站（无 datum）盒底 · 方位轴 x / y
 //   ④ 随缩放联动：相机距离 D = 2 / 3 / 4 / 8 时包围球投影直径 = px × ZOOM_REF_DIST / D（±1 %；D = 3 即 px）；逐实体 px 覆盖；
 //      反证：直径与 D 成反比（原「屏幕恒定」口径下 D = 2 与 D = 8 一样大，这里必须差 4 倍）
+//   ④b 跟随卫星：相机贴着主星时按 scene.zoomDist 的跟随档定尺（= px × FOLLOW_ZOOM_K，与载具精灵同一把尺）；scene 每处都传、页面不因跟随关层
 //   ⑤ 姿态：载具航向 90° 时本体 +X（机头）= 当地正东（≥ 0.999999）；无关节模型整体转方位、目标一跳 > 2° 时一阶逼近、连续跟踪贴合
 //   ⑥ spriteWeight = 1 − alpha；setEnabled(false) 即刻恒 1、再开即满 alpha（不做交叉淡化）；换模型先淡出旧的；移除后淡出回收
 //   ⑦ 船 aClip：平面过锚点、法向 = 当地天顶；其余类别不裁
@@ -14,6 +15,7 @@
 // 画面（逐像素零漂移、光照两档截图、帧时）归真 Electron 验证台（契约 §6），这里不重复。
 // 渲染端源码用 @core/… 别名：先注册解析钩子再动态导入（写法同 modelGlobeLayer.test.mjs）。
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { register } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Session } from 'node:inspector/promises'
@@ -27,7 +29,7 @@ register('data:text/javascript,' + encodeURIComponent(
 
 const THREE = await import('three')
 const { createEntityLayer } = await import(SRC + 'globe3d/entityLayer.js')
-const { ZOOM_REF_DIST, markerZoomK } = await import(SRC + 'globe3d/zoomScale.js')
+const { ZOOM_REF_DIST, markerZoomK, FOLLOW_ZOOM_DIST, FOLLOW_ZOOM_K } = await import(SRC + 'globe3d/zoomScale.js')
 const { irToThree } = await import(SRC + 'models/irToThree.js')
 const { applyRestPose, poseArticulations } = await import(SRC + 'models/thumbs.js')
 const { modelToBodyMatrix } = await import(SRC + 'models/view.js')
@@ -270,6 +272,41 @@ await t('④ 随缩放联动：相机距离 D 时包围球投影直径 = px × 3
     assert.ok(Math.abs(diam[2] / diam[8] - 4) < 0.04, `D=2 / D=8 直径比 ${(diam[2] / diam[8]).toFixed(3)} ≠ 4`)
     assert.ok(Math.abs(diam[2] - px) > 0.2 * px, 'D = 2 时不应仍是设定像素（那是旧的屏幕恒定口径）')
   }
+})
+await t('④b 跟随卫星：相机贴着主星（D = 1.08），update 第五参给 scene.zoomDist 的跟随档 → 直径 = px × FOLLOW_ZOOM_K（与载具精灵同一把尺）；不给则退回 |相机位置|', async () => {
+  const lat = 31.2, lon = 121.5, px = 40
+  L.setEntities([item({ key: 'fw', kind: 'aircraft', modelId: 'ent:a320neo', lat, lon, altM: 10668, px })])
+  await settle()
+  const cm = cam(1.08, lat, lon)
+  const diamOf = () => {
+    const e = L._debug.entity('fw')
+    const I = L._debug.internals('ent:a320neo')
+    const C = new THREE.Vector3(...applyE(e.E, I.center))
+    const right = new THREE.Vector3().setFromMatrixColumn(cm.matrixWorld, 0).normalize()
+    const r = e.k * I.radius
+    const a = C.clone().addScaledVector(right, r).project(cm), b = C.clone().addScaledVector(right, -r).project(cm)
+    return { e, dpx: Math.abs(a.x - b.x) * 0.5 * 1600 }
+  }
+  L.overlay.update(0.5, cm, 1600, 900, FOLLOW_ZOOM_DIST)
+  const f = diamOf()
+  assert.ok(f.e.fade > 0.99, `跟随机位下应在画（fade ${f.e.fade}）`)
+  const want = px * markerZoomK(FOLLOW_ZOOM_DIST)
+  assert.ok(Math.abs(want / px - FOLLOW_ZOOM_K) < 1e-12, '跟随档系数 = FOLLOW_ZOOM_K')
+  assert.ok(Math.abs(f.dpx / want - 1) < 0.01, `跟随档直径 ${f.dpx.toFixed(2)} px ≠ ${want.toFixed(2)}`)
+  // 相机没动、只换了联动距离：签名里有它，必须重写实例（否则停在上一档的尺寸）
+  L.overlay.update(0, cm, 1600, 900)
+  const g = diamOf()
+  assert.ok(Math.abs(g.e.pxE - px * markerZoomK(1.08)) <= 1e-9 * px, `不给第五参按 |相机位置|：pxE ${g.e.pxE}`)
+  assert.ok(g.dpx > 4 * f.dpx, `反证：按贴星距离算是跟随档的 ${(g.dpx / f.dpx).toFixed(2)} 倍（应 ≈ 5）`)
+  // scene 每处出帧前都把 zoomDist() 交给实体层；页面的实体开关不再因跟随关掉
+  const sceneSrc = readFileSync(path.resolve(HERE, '../../../src/viz/globe3d/scene.js'), 'utf8')
+  const calls = sceneSrc.match(/entOverlay\.update\([^\n]*/g) || []
+  assert.ok(calls.length >= 4, `scene 里 entOverlay.update 调用 ${calls.length} 处`)
+  for (const c of calls) assert.match(c, /^entOverlay\.update\([^()]*, zoomDist\(\)\)/, `漏传缩放联动距离：${c}`)
+  const page = readFileSync(path.resolve(HERE, '../../../src/pages/ConstellationMap3D.vue'), 'utf8')
+  const gate = page.match(/const entOnC = computed\(\(\) => ([^\n]*)\)/)
+  assert.ok(gate, '找不到 entOnC')
+  assert.doesNotMatch(gate[1], /following/, '跟随卫星期间实体模型须照画')
 })
 
 // ─────────────────────────────── ⑤ 姿态 ───────────────────────────────

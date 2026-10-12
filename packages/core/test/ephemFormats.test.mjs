@@ -253,8 +253,100 @@ ok(fThrew, '未知格式导出抛可读错误')
 
 /* ===== ⑩ 格式清单 ===== */
 section('格式清单')
-ok(E.FORMATS.length === 4 && E.FORMATS.includes('sp3'), '四种格式 id')
+ok(E.FORMATS.length === 5 && E.FORMATS.includes('sp3') && E.FORMATS.includes('cs-eph'), '五种格式 id（含中国卫通 .eph）')
 for (const f of E.FORMATS) { ok(!!E.FORMAT_LABEL[f], f + ' 有中文名'); ok(!!E.FORMAT_EXT[f], f + ' 有扩展名') }
+ok(E.WRITABLE.includes('cs-eph') && E.FORMAT_ENCODING['cs-eph'] === 'gbk' && E.SINGLE_OBJECT.includes('cs-eph') && E.SINGLE_OBJECT.includes('stk-e'), '.eph 写得出、GBK、单目标')
+
+/* ===== ⑩ 段界：STK SegmentBoundaryTimes / OEM 相邻两段同历元（机动星历的常见写法） ===== */
+section('段界')
+{
+  // STK：第 10 点处一个速度跳变（同刻两行），SegmentBoundaryTimes 列出该刻
+  const L = ['stk.v.12.0', 'BEGIN Ephemeris', 'ScenarioEpoch ' + T.formatUtcg(T0), 'CentralBody Earth', 'CoordinateSystem J2000', 'DistanceUnit Kilometers',
+    'BEGIN SegmentBoundaryTimes', '    ' + (10 * STEP).toFixed(6), 'END SegmentBoundaryTimes', 'EphemerisTimePosVel']
+  for (let i = 0; i <= 20; i++) {
+    const s = i * STEP, q = truth(s)
+    L.push([s.toFixed(6), f9(q.x), f9(q.y), f9(q.z), f9(q.vx), f9(q.vy), f9(q.vz)].join(' '))
+    if (i === 10) { L.push(''); L.push([s.toFixed(6), f9(q.x), f9(q.y), f9(q.z), f9(q.vx + 0.01), f9(q.vy), f9(q.vz)].join(' ')) }
+  }
+  L.push('END Ephemeris')
+  const r = E.parseEphemeris(L.join('\n'))
+  const s0 = r.sats[0]
+  ok(!r.errors.length && s0.t.length === 22 && s0.spans && s0.spans.length === 2, 'STK 段界：两段、同刻两状态都留', JSON.stringify({ n: s0 && s0.t.length, sp: s0 && s0.spans }))
+  ok(Math.abs(s0.v[3 * 11] - s0.v[3 * 10] - 0.01) < 1e-12 && s0.t[11] - s0.t[10] === 1, '段界后状态顺延 1 ms、速度跳变 0.01 km/s')
+  const out = E.serializeEphemeris([s0], 'stk-e', {})
+  ok(/BEGIN SegmentBoundaryTimes\n\s+\d/.test(out) && out.split('\n').filter((l) => l.startsWith((10 * STEP).toFixed(6) + ' ')).length === 2, 'STK 写出：SegmentBoundaryTimes + 同刻两行')
+  const back = E.parseEphemeris(out).sats[0]
+  ok(back.spans && back.spans.length === 2 && back.t.length === 22 && Math.abs(back.v[33] - s0.v[33]) < 1e-12, 'STK 段界往返')
+  const tab = EI.buildTable(back)
+  const pre = EI.evalTable(tab, s0.t[10]), post = EI.evalTable(tab, s0.t[11])
+  ok(Math.abs(post.vx - pre.vx - 0.01) < 1e-5, '取位：段界两侧各取各段的状态（不插值跨缝；1 ms 内的自然变化 ~2e-7 km/s）', post.vx - pre.vx)
+  // OEM：两段，第二段 START_TIME = 第一段 STOP_TIME，状态不同
+  const seg = (a, b, dv) => {
+    const rows = []
+    for (let i = a; i <= b; i++) { const q = truth(i * STEP); rows.push([T.formatCcsds(T0 + i * STEP * 1000), f9(q.x), f9(q.y), f9(q.z), f9(q.vx + dv), f9(q.vy), f9(q.vz)].join(' ')) }
+    return ['META_START', 'OBJECT_NAME = SEG', 'OBJECT_ID = 2026-001A', 'CENTER_NAME = EARTH', 'REF_FRAME = EME2000', 'TIME_SYSTEM = UTC',
+      'START_TIME = ' + T.formatCcsds(T0 + a * STEP * 1000), 'STOP_TIME = ' + T.formatCcsds(T0 + b * STEP * 1000), 'META_STOP', ''].concat(rows).join('\n')
+  }
+  const oem = ['CCSDS_OEM_VERS = 2.0', 'CREATION_DATE = ' + T.formatCcsds(T0), 'ORIGINATOR = TEST', '', seg(0, 10, 0), '', seg(10, 20, 0.02)].join('\n') + '\n'
+  const o = E.parseEphemeris(oem).sats[0]
+  ok(o && o.t.length === 22 && o.spans && o.spans.length === 2, 'OEM 两段同历元：机动后的状态不再被当重复点剔掉', JSON.stringify({ n: o && o.t.length, sp: o && o.spans }))
+  const tab2 = EI.buildTable(o)
+  let hole = false
+  for (let ms = T0 + 10 * STEP * 1000; ms < T0 + 11 * STEP * 1000; ms += 5000) if (!EI.evalTable(tab2, ms)) hole = true
+  ok(!hole, '段缝之后整整一个步长都取得到位置（旧实现这里有一个步长的空洞）')
+  const ok2 = E.serializeEphemeris([o], 'ccsds-oem-kvn', { createdMs: T0 })
+  const st = ok2.split('\n').filter((l) => /^(START|STOP)_TIME/.test(l)).map((l) => l.split('= ')[1])
+  ok(st.length === 4 && st[1] === st[2], 'OEM 写出：第二段 START_TIME = 第一段 STOP_TIME', JSON.stringify(st))
+  ok(/ORIGINATOR = SATSIM/.test(ok2), 'ORIGINATOR 为 ASCII（KVN 字符集）')
+  const back2 = E.parseEphemeris(ok2).sats[0]
+  ok(back2.t.length === 22 && back2.spans.length === 2, 'OEM 段界往返')
+}
+{
+  // 跨格式：J2000 的 .e → 卫通 .eph（地固）→ 再读回，同一时刻取位差 ≤ 1 m
+  const s0 = E.parseEphemeris(makeE({})).sats[0]
+  const txt = E.serializeEphemeris([s0], 'cs-eph', { createdMs: T0 })
+  const back = E.parseEphemeris(txt)
+  ok(back.format === 'cs-eph' && back.sats[0].frame === 'FIXED' && !back.errors.length, '.e → .eph：地固系、可回读', JSON.stringify(back.errors))
+  const ta = EI.buildTable(s0), tb = EI.buildTable(back.sats[0])
+  let worst = 0
+  for (let s = 0; s < (COUNT - 1) * STEP; s += 7.3) { const a = EI.evalTable(ta, T0 + s * 1000), c = EI.evalTable(tb, T0 + s * 1000); worst = Math.max(worst, Math.hypot(a.x - c.x, a.y - c.y, a.z - c.z)) }
+  ok(worst < 1e-3, '.e → .eph → 回读：取位差 < 1 m', worst)
+  ok(/^_{49}Ephemeris_+\r\n {40}\r\n_{49}地固坐标系瞬根_{41}\d{4}\//.test(txt), '.eph 表头版式（标题 = 星名）', JSON.stringify(txt.slice(0, 120)))
+}
+
+/* ===== ⑪ 多星同文件：没有国际编号的星（OBJECT_ID 不能共用 UNKNOWN） ===== */
+section('多星 OEM：无国际编号')
+{
+  // 三颗星：同一时刻表、轨道各挪一点（好认），objectId 都空；一组不带编号（只靠星名），一组带编号（自建星座 900000 段）
+  const s0 = E.parseEphemeris(makeE({})).sats[0]
+  const shifted = (k, extra) => Object.assign({}, s0, { name: 'WALKER-' + (k + 1), objectId: '', p: s0.p.map((x, i) => (i % 3 === 2 ? x + 100 * (k + 1) : x)) }, extra || {})
+  for (const [label, sats] of [['无编号', [0, 1, 2].map((k) => shifted(k))], ['带编号', [0, 1, 2].map((k) => shifted(k, { noradId: String(900001 + k) }))]]) {
+    for (const fmt of ['ccsds-oem-kvn', 'ccsds-oem-xml']) {
+      const txt = E.serializeEphemeris(sats, fmt, { createdMs: T0 })
+      const ids = fmt === 'ccsds-oem-kvn' ? txt.split('\n').filter((l) => /^OBJECT_ID = /.test(l)).map((l) => l.slice(12)) : [...txt.matchAll(/<OBJECT_ID>([^<]*)<\/OBJECT_ID>/g)].map((m) => m[1])
+      ok(ids.length === 3 && new Set(ids).size === 3 && !ids.includes('UNKNOWN'), label + ' / ' + fmt + '：每颗星一个唯一 OBJECT_ID', JSON.stringify(ids))
+      if (label === '带编号') ok(ids[0] === 'SATSIM-900001', label + ' / ' + fmt + '：OBJECT_ID 取编号', ids[0])
+      const back = E.parseEphemeris(txt)
+      ok(!back.errors.length && back.sats.length === 3, label + ' / ' + fmt + '：读回 3 颗', JSON.stringify({ n: back.sats.length, w: back.warnings.slice(0, 2) }))
+      ok(back.sats.every((b) => b.t.length === COUNT) && !back.warnings.length, label + ' / ' + fmt + '：各自 ' + COUNT + ' 点、不出交错告警', JSON.stringify(back.sats.map((b) => b.t.length)))
+      ok(back.sats.every((b, k) => b.name === 'WALKER-' + (k + 1) && Math.abs(b.p[2] - sats[k].p[2]) < 1e-9), label + ' / ' + fmt + '：星名与位置各归各星', JSON.stringify(back.sats.map((b) => b.name)))
+    }
+  }
+  // 别家（与本平台旧版）写的多星文件：OBJECT_ID 全是 UNKNOWN、星名不同 → 按星名分开；读回的 objectId 不留 UNKNOWN
+  const seg = (nm, dz, id, i0) => {
+    const a = i0 || 0, rows = []
+    for (let i = a; i < a + COUNT; i++) { const q = truth(i * STEP); rows.push([T.formatCcsds(T0 + i * STEP * 1000), f9(q.x), f9(q.y), f9(q.z + dz), f9(q.vx), f9(q.vy), f9(q.vz)].join(' ')) }
+    return ['META_START', 'OBJECT_NAME = ' + nm, 'OBJECT_ID = ' + (id || 'UNKNOWN'), 'CENTER_NAME = EARTH', 'REF_FRAME = EME2000', 'TIME_SYSTEM = UTC',
+      'START_TIME = ' + T.formatCcsds(T0 + a * STEP * 1000), 'STOP_TIME = ' + T.formatCcsds(T0 + (a + COUNT - 1) * STEP * 1000), 'META_STOP', ''].concat(rows).join('\n')
+  }
+  const unk = ['CCSDS_OEM_VERS = 2.0', 'CREATION_DATE = ' + T.formatCcsds(T0), 'ORIGINATOR = OTHER', '', seg('A-1', 0), '', seg('A-2', 50), '', seg('A-3', 100)].join('\n') + '\n'
+  const u = E.parseEphemeris(unk)
+  ok(u.sats.length === 3 && u.sats.every((b) => b.t.length === COUNT && b.objectId === ''), 'OBJECT_ID 全是 UNKNOWN 的多星文件：按 OBJECT_NAME 分成 3 颗', JSON.stringify(u.sats.map((b) => [b.name, b.t.length, b.objectId])))
+  // 同一颗星的两段（真编号，第二段接在第一段之后）照旧归并，星名写法不同也不拆
+  const two = ['CCSDS_OEM_VERS = 2.0', 'CREATION_DATE = ' + T.formatCcsds(T0), 'ORIGINATOR = OTHER', '', seg('B', 0, '2026-001A'), '', seg('B (2)', 0, '2026-001A', COUNT)].join('\n') + '\n'
+  const tw = E.parseEphemeris(two)
+  ok(tw.sats.length === 1 && tw.sats[0].t.length === 2 * COUNT && tw.sats[0].objectId === '2026-001A', '真编号相同的两段：仍按 OBJECT_ID 归并成一颗', JSON.stringify(tw.sats.map((b) => [b.name, b.t.length])))
+}
 
 console.log('\nephemFormats: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

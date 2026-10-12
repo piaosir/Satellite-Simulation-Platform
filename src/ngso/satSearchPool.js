@@ -77,6 +77,8 @@ async function loadEphemSats() {
     for (const g of ((r && r.groups) || [])) {
       if (g.kind !== 'ephem') continue
       for (const s of (g.sats || [])) {
+        // 「对应已有卫星」的星不是一颗独立的星：它是目标星的叠加星历，主进程各引擎按目标星编号自动取用
+        if (s.bind) continue
         out.push({
           name: s.name, noradId: String(s.noradId), orbitType: 'ephem',
           incl: null, meanMotion: null, ecc: null,

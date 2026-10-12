@@ -9,7 +9,7 @@
 // 撤销：绑定快照栈（换星清空），Ctrl+Z / Ctrl+Y 在卫星页生效。
 import { reactive, computed, watch } from 'vue'
 import { normalizeBinding, emptyBinding, isEmptyBinding, coneHalfOf, articulationStateOf, maskSigFor } from './mountLogic.js'
-import { resolveOrbit, catalogPool, catalogPoolReady, grdTreeSats, lbLibrarySats } from './satSources.js'
+import { resolveOrbit, catalogPool, catalogPoolReady, grdTreeSats, lbLibrarySats, onOverlaysChange } from './satSources.js'
 import { treeRows, lbRows, metaForKey, mergeHint, keyNeedsPool, treeSigMap, changedFolders } from './satPickLogic.js'
 import { match as autoMatch } from '@core/models/autoMatch.mjs'
 import { decodeMask, maskRayOrigin } from '@core/models/mask.mjs'
@@ -42,6 +42,7 @@ export function createSatStore(wb) {
     undoN: 0, redoN: 0,
     orbit: null, orbitKey: '', orbitErr: '', orbitBusy: false,
     orbitRev: 0, treeRev: 0,                // 当前星的轨道因天线树节点改动作废 +1 / 天线树任一节点的轨道相关字段变了 +1（分析页星位缓存的键带上）
+    ovlRev: 0,                              // 叠加星历（主窗口导入星历「对应已有卫星」）注册表换了 +1（分析页星位缓存的键带上，见 syncOverlays）
     maskRev: 0                              // 掩模缓存变了 +1（预览红色球面片、分析页读数跟着刷新）
   })
   // 掩模缓存（不进响应式：每张 65160 格 × 5 B）：挂点 id → {sig, mask:{blocked, clearance, hitNode?, nodeNames?}, originBody, stats?, ms?, sun?}
@@ -301,6 +302,16 @@ export function createSatStore(wb) {
     st.orbit = null; st.orbitKey = ''; st.orbitErr = ''; st.orbitRev++
     if (again) ensureOrbit().catch(() => {})
   }
+  // 叠加星历（主窗口导入星历「对应已有卫星」/ 改对应 / 删组）：satSources 在焦点回来时按对应关系签名重核，本窗口注册表真换了才通知。
+  // 当前星的轨道作废重解（orbitRev +1）、ovlRev +1 —— 分析页缓存键带着两者，按新叠加重算（target 律的目标星每次计算现解，同样换了叠加）
+  function syncOverlays() {
+    st.ovlRev++
+    if (!st.satKey) return
+    const again = !!(st.orbit || st.orbitErr)
+    st.orbit = null; st.orbitKey = ''; st.orbitErr = ''; st.orbitRev++
+    if (again) ensureOrbit().catch(() => {})
+  }
+  const offOverlays = onOverlaysChange(syncOverlays)
   let treeT = 0, custT = 0
   const onTreeStorage = (e) => {
     if (e && e.key === 'globe3d/settings') { clearTimeout(treeT); treeT = setTimeout(syncTree, 200) }
@@ -360,6 +371,7 @@ export function createSatStore(wb) {
   function dispose() {
     if (pend) flushSave()
     if (offChanged) try { offChanged() } catch { /* ignore */ }
+    offOverlays()
     clearTimeout(treeT); clearTimeout(custT)
     if (hasWin) { window.removeEventListener('storage', onTreeStorage); window.removeEventListener('focus', onTreeFocus) }
   }

@@ -38,16 +38,17 @@ import { buildParamModel } from '@core/models/paramBus.mjs'
 import { templateCatalog, templateSpec, templateModelId, TEMPLATE_IDS, TEMPLATES } from '@core/models/paramTemplates.mjs'
 import { fleetCatalog, buildFleetModel, fleetSig } from '@core/models/fleet/index.mjs'
 import { normalizeMeta } from '@core/models/schema.mjs'
-import { defaultImportQ } from '@core/models/bodyFrame.mjs'
-import { getComponent, getPreset } from '@core/models/components/index.mjs'
+import { defaultImportQ, quatToMat, matToQuat } from '@core/models/bodyFrame.mjs'
+import { getComponent, getPreset, fillParams, homeDomain } from '@core/models/components/index.mjs'
+import { addComp } from '@core/models/asmSnap.mjs'
 import { ASM_DOMAINS, newAsmId, normalizeAssembly, buildAssembly, buildComponent, asmHash } from '@core/models/assembly.mjs'
 import { assemblyModelMeta, defaultAsmName } from '@core/models/asmMeta.mjs'
 import { newDrivenDoc, isDriven } from '@core/models/drive.mjs'
 import { canon, fnv1a64Hex } from '@core/models/paramBus.mjs'
 import { guessUnits } from '@core/models/units.mjs'
 import { byLang } from '../shared/i18n/lang.js'
-import { mergeSegment, importRoute, extOf, entryFacts, restoreJob, canCancelJob, meshUnitTieBreak, mergeParamMeta, bodyBoxToModelBox, docKeyOf, libIdOfDoc, evictDrafts, cycleIndex, neighborAfterClose, copyNameOf, displayName } from './wbLogic.js'
-import { DRAFT_KEY, LAST_KEY, provKey, draftOk, pickDraft, sanitizeProv, templateSources } from './asmLogic.js'
+import { mergeSegment, importRoute, extOf, entryFacts, restoreJob, canCancelJob, meshUnitTieBreak, mergeParamMeta, bodyBoxToModelBox, docKeyOf, libIdOfDoc, evictDrafts, cycleIndex, neighborAfterClose, copyNameOf, numberedNameOf, displayName, reframeMeta, previewLod } from './wbLogic.js'
+import { DRAFT_KEY, LAST_KEY, provKey, draftOk, pickDraft, sanitizeProv, templateSources, libKeyParams } from './asmLogic.js'
 
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
 const errText = (e) => (e && e.message) || String(e)
@@ -77,6 +78,9 @@ const entReady = (async () => {
 const lsJson = (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null } catch { return null } }
 const lsPut = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)) } catch { /* 便利数据：配额满 / 被禁都不挡 */ } }
 const lsRaw = (k) => { try { return localStorage.getItem(k) } catch { return null } }
+const LIB_PANE_KEY = 'model/lib/pane'
+// 绕本体 X 轴 180°（行主序 3×3）：组件预览把「朝 +Z 长」的件立起来摆（同组件卡片缩略图的口径）
+const RX180 = [[1, 0, 0], [0, -1, 0], [0, 0, -1]]
 
 /** 实体模板 → 库条目（「装配」段；排在参数化模板之后，tplOrder 100+） */
 function entityEntries() {
@@ -135,6 +139,9 @@ export function createWorkbench(ui) {
     lastExport: null,            // {path, bytes, ms, nodes, warnings}
     vpOwner: '',                 // '' | 'asm'：视口借给了谁（装配页借走期间本模块不喂视口）
     compThumbs: {},              // 组件库卡片键（type 或 `${type}#${型号 id}`）→ 缩略图 dataURL（装配页组件库）
+    // 库页左栏的档（2026-10-12）：'model' 模型库 | 'comp' 组件库（全部组件与常用型号）；selComp = 组件档里正在视口预览的卡片键（'' = 没有；与 selId 互斥）
+    libPane: lsRaw(LIB_PANE_KEY) === 'comp' ? 'comp' : 'model',
+    selComp: '',
     // 导出页的导出对象（任务书 §3.1「其它页签对象」）：'doc:<签 id>' | 'lib:<库 id>' | ''。进导出页时按来处定缺省（设计页 → 激活签、库页 → 库选中项）
     exportTarget: ''
   })
@@ -575,6 +582,7 @@ export function createWorkbench(ui) {
   async function select(id, o = {}) {
     const e = byId(id)
     st.selId = id
+    st.selComp = ''   // 视口换成库条目：库页组件档的预览不再挂着（previewComp 反过来清 selId）
     if (!e) return
     const want = o.lod || 'lod2'
     if (!o.force && cur.id === id && !cur.error && (cur.kind !== 'glb' || lodRank(cur.lod) >= lodRank(want) || cur.loading && lodRank(cur.wantLod) >= lodRank(want))) return
@@ -1300,7 +1308,8 @@ export function createWorkbench(ui) {
       // 内容代次（「还原原件」整份换掉内容时 +1：编辑器里载着的旧版本作废，asmSession 按代次判断要不要重载、暂存）/
       // 出自哪个模板签（模板条目 id + '|tpl'；分叉后照留：分叉又撤回模板原样、未入库无草稿的副本，开窗按它重建）/
       // 下次编辑器载入时把基线换成编辑器归一过的 JSON（按模板重建的副本用）
-      _rt: markRaw({ doc: null, json: '', saveT: 0, draftIdle: 0, draftRev: -1, draftErr: '', discardRev: -Infinity, jobs: 0, closed: false, removed: false, baseJson: '', epoch: 0, fromTpl: '', rebase: false })
+      // 出自哪张组件卡片（库页组件档「新建装配件」；没动过、未入库的签开窗时按它重建）
+      _rt: markRaw({ doc: null, json: '', saveT: 0, draftIdle: 0, draftRev: -1, draftErr: '', discardRev: -Infinity, jobs: 0, closed: false, removed: false, baseJson: '', epoch: 0, fromTpl: '', rebase: false, fromComp: '' })
     })
   }
   const defaultPane = (doc) => (isDriven(doc) ? 'quick' : doc && Array.isArray(doc.comps) && doc.comps.length ? 'quick' : 'lib')
@@ -1510,6 +1519,95 @@ export function createWorkbench(ui) {
     if (base && base.title) meta.title = base.title
     adoptRoot(irToThree(r.ir), null, meta, 'tpl', 'lod0', o)
     paramRes = r
+  }
+
+  // ── 组件（库页「组件」档，2026-10-12）──
+  /** 卡片键 → {type, params, def, preset, titleZh, title, domain}（组件不存在 null）；domain = 组件的设计领域（单独新建 / 预览按它） */
+  function compCard(ckey) {
+    const { type, params } = libKeyParams(ckey)
+    const def = getComponent(type)
+    if (!def) return null
+    const i = String(ckey).indexOf('#'), pr = i < 0 ? null : getPreset(type, String(ckey).slice(i + 1))
+    return { type, params, def, preset: pr, titleZh: pr ? pr.titleZh : def.titleZh, title: pr ? pr.title : def.title, domain: homeDomain(def) }
+  }
+  /** 单件装配文档（根件 = 这一件；组件 id 同编辑器加件的口径 asmSnap.compIdFor） */
+  function compDoc(c, name) {
+    const r = addComp(normalizeAssembly({ kind: 'assembly', domain: c.domain, name, comps: [] }), { type: c.type, params: c.params, parent: null })
+    if (!r.ok) throw new Error(r.error || byLang('无法生成该组件。', 'Cannot build this component.'))
+    return r.doc
+  }
+  /** 同 compDoc，但保证能入库：缺省不计质量的小件（测控天线 / 敏感器）单件文档总质量为 0、buildAssembly 拒收 ——
+   *  根件给 1 kg（与预览同口径；属性面板里可改） */
+  function compDocBuildable(c, name) {
+    const doc = compDoc(c, name)
+    try { buildAssembly(doc) } catch (e) {
+      if (!(e && e.code === 'SPEC_INVALID' && /总质量为 0/.test(e.message || ''))) throw e
+      doc.comps = doc.comps.map((x) => (x.parent == null ? { ...x, massKg: 1 } : x))
+    }
+    return doc
+  }
+  /**
+   * 库页组件档选中一张卡片：视口里只读预览这一件（单件装配文档按组件的设计领域现生成，与入库件同一套元数据口径）。
+   * 朝 +Z 长的件（卫星件局部 −Z 贴父面；FRD 领域的吊挂件）与卡片缩略图同样立起来摆：本体系绕 X 转 180°，挂点 / 质心 / 惯量随之转
+   * （wbLogic.reframeMeta）。cur.id = 'cmp:<卡片键>'；与库页选模型互斥：这里清 st.selId，select 清 st.selComp。
+   */
+  function previewComp(ckey) {
+    const c = compCard(ckey)
+    if (!c) return false
+    libPicked = ''
+    st.selComp = ckey
+    st.selId = ''
+    const id = 'cmp:' + ckey
+    if (cur.id === id && cur.meta && !cur.error && !cur.loading) return true
+    ++loadTok
+    cur.id = id; cur.error = ''; cur.loading = false; cur.stage = ''; cur.editable = false
+    try {
+      const lg = lang()
+      const doc = compDoc(c, lg === 'en' ? c.title : c.titleZh)
+      // 缺省不计质量的小件（测控天线 / 敏感器）单件文档总质量为 0、buildAssembly 拒收：按 1 kg 生成，预览不给质量读数
+      let r, massless = false
+      try { r = buildAssembly(doc) } catch (e) {
+        if (!(e && e.code === 'SPEC_INVALID')) throw e
+        r = buildAssembly({ ...doc, comps: doc.comps.map((x) => ({ ...x, massKg: 1 })) })
+        massless = true
+      }
+      let meta = assemblyModelMeta(r, { id, name: c.titleZh, source: { kind: 'param', url: '', credit: '', license: '', redistributable: true } })
+      meta.title = c.title
+      if (massless) meta.massProps = null
+      let ms = null
+      try { ms = c.def.sockets(fillParams(c.def, c.params)).find((s) => s.id === c.def.mountSocket) || null } catch { ms = null }
+      const q0 = meta.frame && meta.frame.q_model2body
+      if (ms && ms.n[2] < -0.5 && Array.isArray(q0)) {
+        const R = quatToMat(q0)
+        if (R) meta = reframeMeta(meta, q0, matToQuat(RX180.map((row) => [0, 1, 2].map((j) => row[0] * R[0][j] + row[1] * R[1][j] + row[2] * R[2][j]))))
+      }
+      adoptRoot(irToThree(r.ir), null, meta, 'tpl', 'lod0', {})
+      paramRes = r
+      return true
+    } catch (err) {
+      cur.error = errText(err)
+      return false
+    }
+  }
+  /**
+   * 以组件为根件新建装配件（库页组件档双击 / Enter / 右键「新建装配件」）：领域 = 组件的设计领域（相控阵 → 卫星文档、主焦反射面 → 地球站文档），
+   * 文档名 = 卡片名（当前界面语言；与库内及已打开签重名时编号）。与空白新建同口径：原样不入库，第一次修改后自动入库，「保存」可原样入库；
+   * 同一张卡片新建、还没动过的签已开着 → 激活它（连点两下不开出两份）。签记下出自哪张卡片（_rt.fromComp），没动过的开窗时按它重建。
+   */
+  function newAssemblyFromComp(ckey) {
+    const c = compCard(ckey)
+    if (!c) return null
+    libPicked = ''
+    const ex = st.docs.find((d) => d.kind === 'asm' && !d.inLib && !d.dirty && d._rt.fromComp === ckey)
+    if (ex) { activateDoc(ex.id); st.tab = 'design'; return ex }
+    let doc
+    const lg = lang()
+    try { doc = compDocBuildable(c, numberedNameOf(lg === 'en' ? c.title : c.titleZh, takenNames(), lg)) } catch (e) { ui.hint(errText(e)); return null }
+    const d = initAsm(mkDoc({ id: newAsmId(), kind: 'asm', origin: 'new', pane: 'quick' }), doc)
+    d._rt.fromComp = ckey
+    addDoc(d); activateDoc(d.id)
+    st.tab = 'design'
+    return d
   }
 
   // ── 编辑器提交 → 文档状态（asmSession 转来；d 缺省 = 激活装配签）──
@@ -2139,7 +2237,7 @@ export function createWorkbench(ui) {
   function writeTabs() {
     clearTimeout(persistT); persistT = 0
     if (!tabsRestored) return   // 恢复完成之前不写：否则开窗时一份空表把上次的签覆盖掉
-    const list = st.docs.map((d) => ({ id: d.id, kind: d.kind, libId: d.libId, templateKey: d.templateKey, templateId: d.templateId, fromTpl: d.kind === 'asm' && !d.inLib ? d._rt.fromTpl || '' : '', origin: d.origin, inLib: d.inLib, name: d.name, domain: d.domain, pane: d.pane }))
+    const list = st.docs.map((d) => ({ id: d.id, kind: d.kind, libId: d.libId, templateKey: d.templateKey, templateId: d.templateId, fromTpl: d.kind === 'asm' && !d.inLib ? d._rt.fromTpl || '' : '', fromComp: d.kind === 'asm' && !d.inLib ? d._rt.fromComp || '' : '', origin: d.origin, inLib: d.inLib, name: d.name, domain: d.domain, pane: d.pane }))
     lsPut(DOC_TABS_KEY, { v: 1, list, active: st.activeDoc })
   }
   const tplKeyOk = (k) => typeof k === 'string' && /\|tpl$/.test(k)
@@ -2180,6 +2278,16 @@ export function createWorkbench(ui) {
         d = mkDoc({ id: it.id, kind: 'asm', origin: 'copy', templateId: t.templateId, prov: sanitizeProv(lsJson(provKey(it.id))) || (t.prov ? plain(t.prov) : null), pane: defaultPane(doc) })
         initAsm(d, doc)
         d._rt.baseJson = d._rt.json; d._rt.rebase = true; d._rt.fromTpl = it.fromTpl
+      }
+    } else if (!d && !byId(it.id) && typeof it.fromComp === 'string' && it.fromComp) {
+      // 库页组件档「新建装配件」开出、还没动过的签：按那张卡片重建（沿用原 id 与文档名）
+      const c = compCard(it.fromComp)
+      if (c) {
+        try {
+          const doc = compDocBuildable(c, typeof it.name === 'string' && it.name ? it.name : c.titleZh)
+          d = initAsm(mkDoc({ id: it.id, kind: 'asm', origin: 'new', pane: 'quick' }), doc)
+          d._rt.fromComp = it.fromComp
+        } catch { d = null }
       }
     }
     if (d && (it.pane === 'lib' || it.pane === 'quick')) d.pane = it.pane
@@ -2266,8 +2374,33 @@ export function createWorkbench(ui) {
   let libPicked = ''
   function notePick(id) { libPicked = typeof id === 'string' ? id : '' }
   function followActiveInLib() {
+    // 库页停在组件档：视口接着预览组件档里选中的那张卡片（离开期间设计页 / 卫星页换过 cur），不跟激活签
+    if (st.libPane === 'comp') { if (libCompLast) previewComp(libCompLast); return }
     const lid = libIdOf(activeDocState())
     if (lid && byId(lid) && st.selId !== lid) select(lid, { lod: 'lod2' })
+  }
+  // 组件档最近选中的卡片（selComp 会被别处的 select 清掉；回到组件档时按它重新预览）
+  let libCompLast = ''
+  watch(() => st.selComp, (k) => { if (k) libCompLast = k })
+  watch(() => st.libPane, (v) => { try { localStorage.setItem(LIB_PANE_KEY, v === 'comp' ? 'comp' : 'model') } catch { /* 便利数据 */ } })
+  /**
+   * 库页左栏换档：组件档 = 接着预览上次选中的卡片；模型档 = 接着预览上次选中的模型（组件档期间 st.selId 被清过）。
+   * 两档各记各的选中项，视口显示当前档的那一件。
+   */
+  let libModelLast = ''
+  watch(() => st.selId, (id) => { if (id) libModelLast = id })
+  function setLibPane(p) {
+    const v = p === 'comp' ? 'comp' : 'model'
+    if (st.libPane === v) return
+    st.libPane = v
+    if (v === 'comp') { if (libCompLast && compCard(libCompLast)) previewComp(libCompLast) } else if (libModelLast && byId(libModelLast)) {
+      const e = byId(libModelLast)
+      select(libModelLast, { lod: previewLod(e) })
+    } else if (String(cur.id).startsWith('cmp:')) {
+      // 模型档还没选过：不让组件预览挂在模型档的视口里
+      st.selComp = ''
+      showBlank('')
+    }
   }
   // 外部跳转直接进导出页（goTarget {tab:'export', modelId}）钉的导出对象：进导出页的缺省规则不覆盖它（一次性，下一次切页签即清）
   let exportPin = ''
@@ -2406,6 +2539,8 @@ export function createWorkbench(ui) {
     openInDesign, designAsm, designModel,
     showAssembly, asmAdopt, asmCommit, asmSetInvalid, asmSetDragging, asmTouch, saveAssembly, flushAssemblySave, discardAssembly, requestAssembly,
     componentThumb, entityApi, entReady,
+    // 库页组件档（2026-10-12）：预览 / 以组件新建装配件 / 左栏换档
+    compCard, previewComp, newAssemblyFromComp, setLibPane,
     // 设计页文档标签条（2026-10-06）：DocState 表在 st.docs / st.activeDoc
     activeDocState, activeAsmDoc, activeKind, isDocOpen, docKeyOf, findDoc, libIdOf,
     activateDoc, cycleDoc, closeDoc, closeOtherDocs, discardDoc, flushDocSave, flushAllDocs, flushForClose,

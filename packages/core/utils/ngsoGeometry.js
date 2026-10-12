@@ -656,7 +656,7 @@ function solveMutualWorstCase(opts) {
   // 近圆真实星不再走历元无关闭式（那是两站各自最低仰角、非同一瞬间）——用户口径为单一共同时刻。
   // 未显式传 scanCache（即非批量入口）时挂上会话缓存：连续同星同时窗的请求共享粗扫采样。
   if (!(opts.scanCache instanceof Map)) {
-    const key = JSON.stringify([o, opts.t0ISO || null, opts.horizonHours || null]);
+    const key = JSON.stringify([o, opts.t0ISO || null, opts.horizonHours || null, orbitPos.overlayVersion()]);   // 叠加星历变了 = 同一 spec 取位已变，旧样本作废
     opts = Object.assign({}, opts, { scanCache: scanSessionCache(key) });
   }
   return coupledTypicalMoment(satrec, tx, rx, opts);

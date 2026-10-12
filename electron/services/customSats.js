@@ -20,6 +20,10 @@ const eph = require('../../packages/core/utils/ommFormats.js')
 const ephF = require('../../packages/core/utils/ephemFormats.js')
 const gpsAlm = require('../../packages/core/utils/gpsAlmanac.js')
 const ephI = require('../../packages/core/utils/ephemInterp.js')
+const FR = require('../../packages/core/utils/frames.js')
+// 取位单一入口：「对应已有卫星」的叠加星历由这里把查找函数注入进去（与 core 各引擎是同一个模块实例——
+// 服务与引擎都按磁盘路径 require，见 electron/main.js 的 core()）
+const OP = require('../../packages/core/utils/orbitPos.js')
 const ephemStore = require('./ephemStore')
 
 // 【两种组】kind:'gp' = 平均根数（OMM/TLE，含 GPS 年历换算来的），走 SGP4，与本文件原有通路完全一致；
@@ -268,6 +272,9 @@ module.exports = function createCustomSats(getCore) {
       count: (g.sats || []).length,
       t0: g.kind === 'ephem' ? ephemSpan(g).t0 : null,
       t1: g.kind === 'ephem' ? ephemSpan(g).t1 : null,
+      encoding: g.encoding || '',
+      hasSource: g.kind === 'ephem' ? ephemStore.hasSource(g.id) : !!g.rawText,
+      bound: g.kind === 'ephem' ? (g.sats || []).filter((s) => s.bind).length : 0,
       sats: (g.sats || []).map((s) => (g.kind === 'ephem' ? ephemSatView(s) : satView(s)))
     }))
     const out = { groups, count: groups.reduce((s, g) => s + g.count, 0), mtime: mtimeOf() }
@@ -317,14 +324,16 @@ module.exports = function createCustomSats(getCore) {
   const ephemSatView = (s) => ({
     key: s.key, name: s.name, noradId: s.noradId, objectId: s.objectId || '',
     frame: s.frame, timeSystem: s.timeSystem, t0: s.t0, t1: s.t1, n: s.n,
-    interp: s.interp, stepS: s.n > 1 ? Math.round((s.t1 - s.t0) / (s.n - 1) / 1000) : null
+    interp: s.interp, stepS: s.stepS != null ? s.stepS : (s.n > 1 ? Math.round((s.t1 - s.t0) / (s.n - 1) / 1000) : null),
+    bind: s.bind || null
   })
   // 导入一个文件 → 建/替换一个命名组（同名替换）。
   // 分派顺序：① 时间标签位置序列（.e / OEM / SP3）②【预留】GPS 年历 ③ 六种平均根数格式。
   // 三条路都按内容嗅探，扩展名不作判据。
-  function importFile(name, text) {
+  // opts（可选）：{ binds:[…], bytes, encoding }，见 importEphem
+  function importFile(name, text, opts) {
     const efmt = ephF.detectFormat(text)
-    if (efmt) return importEphem(name, text, efmt)
+    if (efmt) return importEphem(name, text, efmt, opts)
     const alm = almanacToRecords(text, getCore)
     if (alm) return importGp(name, text, alm.records, alm.format, alm.errors, alm.warnings)
     const p = parseAny(text)
@@ -332,8 +341,11 @@ module.exports = function createCustomSats(getCore) {
   }
 
   // 【ephem】解析 -> 逐星建表校验 -> 组里只留元数据、采样另存 ephemStore。
-  function importEphem(name, text, efmt) {
-    const r = ephF.parseEphemeris(text, efmt, { name: (name && String(name).trim()) || '星历' })
+  // opts：{ parsed（预览阶段已解析好的结果，免二次解析）, binds:[{ noradId, name }|null]（逐星「对应已有卫星」，
+  //         与解析结果的星同序）, bytes（原始字节：另存原文，整组同格式导出时原样吐回）, encoding（读文件时识别的编码）}
+  function importEphem(name, text, efmt, opts) {
+    const o = opts || {}
+    const r = o.parsed || ephF.parseEphemeris(text, efmt, { name: (name && String(name).trim()) || '星历' })
     if (r.errors.length) return { ok: false, error: r.errors[0], errors: r.errors, warnings: r.warnings }
     if (!r.sats.length) return { ok: false, error: '文件里没有可用的星历点' }
     const store = readStore()
@@ -346,18 +358,29 @@ module.exports = function createCustomSats(getCore) {
     const meta = [], tables = [], errs = []
     const warnHits = new Map()   // 建表告警原句 -> { n: 出这句的颗数, name: 第一颗的星名 }
     let invalid = 0, dropped = 0
+    const usedKeys = new Set()
     r.sats.forEach((s, i) => {
       // buildTable 就是校验：至少 2 点、时刻严格递增、|r| 在 (Re+80 km, 2e6 km) 之间，坏样本剔除并计数
-      const tab = ephI.buildTable(Object.assign({}, s, { interp: s.interp }))
+      const tab = (o.tables && o.tables[i]) || ephI.buildTable(Object.assign({}, s, { interp: s.interp }))
       if (!tab) { invalid++; if (errs.length < 30) errs.push((s.name || ('#' + (i + 1))) + '：无有效采样点，已丢弃'); return }
       dropped += (s.t.length - tab.n)
-      const key = String(s.objectId || s.name || ('s' + (i + 1)))
-      meta.push({
-        key, name: s.name || key, noradId: String(base + meta.length), objectId: s.objectId || '',
+      // 组内 key 必须唯一（同名两颗星时后一颗加序号）——采样文件按 key 对账
+      let key = String(s.objectId || s.name || ('s' + (i + 1)))
+      if (usedKeys.has(key)) { let k = 2; while (usedKeys.has(key + '#' + k)) k++; key = key + '#' + k }
+      usedKeys.add(key)
+      let bind = normBind(o.binds && o.binds[i])
+      const noradId = String(base + meta.length)
+      // 不许对应到自身（与 rebind 同口径）：同名重导入时旧组被替换、新星沿用旧星号，「对应到旧副本」就是对应到自己
+      if (bind && bind.noradId === OP.normId(noradId)) { bind = null; r.warnings.push((s.name || key) + '：对应目标是它自己，已按新建卫星导入') }
+      const m = {
+        key, name: s.name || key, noradId, objectId: s.objectId || '',
         frame: tab.srcFrame, timeSystem: s.timeSystem || 'UTC',
-        t0: tab.t0, t1: tab.t1, n: tab.n, interp: { method: tab.method, samples: tab.samples }
-      })
-      tables.push({ key, t: tab.t, p: tab.p, v: tab.v, spans: spansOf(tab) })
+        t0: tab.t0, t1: tab.t1, n: tab.n, interp: { method: tab.method, samples: tab.samples },
+        stepS: s.meta && Number.isFinite(s.meta.stepS) ? s.meta.stepS : (tab.n > 1 ? Math.round(tab.stepMs / 1000) : null)
+      }
+      if (bind) m.bind = bind
+      meta.push(m)
+      tables.push({ key, t: tab.t, p: tab.p, v: tab.v, spans: spansOf(tab), src: srcAligned(s, tab), fmt: fmtMetaOf(efmt, s) })
       if (tab.warnings && tab.warnings.length) for (const w of tab.warnings) {
         const hit = warnHits.get(w)
         if (hit) hit.n++
@@ -369,21 +392,188 @@ module.exports = function createCustomSats(getCore) {
     for (const [w, hit] of warnHits) r.warnings.push((hit.n > 1 ? hit.n + ' 颗' : hit.name) + '：' + w)
     if (!meta.length) return { ok: false, error: '无有效卫星（' + (errs[0] || '全部采样无效') + '）', invalid }
     ephemStore.save(id, tables)
+    // 原文：整组都在（没有星被剔）才留——组里少了星，原文就不再是这个组的内容
+    let srcKept = false
+    if (o.bytes && meta.length === r.sats.length) { try { srcKept = ephemStore.saveSource(id, o.bytes) } catch { srcKept = false } }
+    else { try { ephemStore.saveSource(id, null) } catch { /* 无旧原文 */ } }
     const group = {
       id, name: gname, importedAt: new Date().toISOString(), format: efmt,
       kind: 'ephem', visible: existing ? existing.visible !== false : true, color: existing ? (existing.color || '') : '',
       noradBase: base, sats: meta
     }
+    if (o.encoding) group.encoding = String(o.encoding)
     if (existing) { for (const k of Object.keys(existing)) if (!(k in group)) delete existing[k]; Object.assign(existing, group) }
     else store.groups.push(group)
     writeStore(store)
+    ovlChanged()
     return {
       ok: true, kind: 'ephem',
-      group: { id, name: gname, count: meta.length, format: efmt, kind: 'ephem' },
-      replaced: !!existing, invalid, dropped,
+      group: { id, name: gname, count: meta.length, format: efmt, kind: 'ephem', bound: meta.filter((x) => x.bind).length },
+      replaced: !!existing, invalid, dropped, source: srcKept,
       errors: errs.concat(r.errors || []), warnings: r.warnings || []
     }
   }
+  // 「对应已有卫星」的目标：NORAD 归一（TLE 前导零 / Alpha-5 与十进制串同号）+ 目标名（显示用）
+  function normBind(b) {
+    if (!b || b.noradId == null) return null
+    const id = OP.normId(b.noradId)
+    if (!id) return null
+    return { noradId: id, name: String(b.name || '').trim() }
+  }
+  // 原帧原值（与建好的 TEME 表逐点对齐）：同帧导出要逐位还原，TEME 来回会动末位。TEME 源本就是原值，不存第二份。
+  function srcAligned(s, tab) {
+    if (!s || !s.p || FR.normFrame(s.frame) === 'TEME' || !FR.normFrame(s.frame)) return null
+    const n = tab.n, p = new Array(3 * n), v = s.v && tab.v ? new Array(3 * n) : null
+    let i = 0
+    for (let k = 0; k < n; k++) {
+      while (i < s.t.length && s.t[i] < tab.t[k]) i++
+      if (i >= s.t.length || s.t[i] !== tab.t[k]) return null   // 对不齐（建表剔过点又恰好重排）：宁可不存
+      p[3 * k] = s.p[3 * i]; p[3 * k + 1] = s.p[3 * i + 1]; p[3 * k + 2] = s.p[3 * i + 2]
+      if (v) { v[3 * k] = s.v[3 * i]; v[3 * k + 1] = s.v[3 * i + 1]; v[3 * k + 2] = s.v[3 * i + 2] }
+      i++
+    }
+    return { frame: FR.normFrame(s.frame), p, v }
+  }
+  // 格式私有的版式信息（同格式导出逐字节还原用）：.eph 的原表头、原文里同刻重印的行；
+  // 另记原表头的口径（时标 / 单位 / 列布局）——写出器的数据行恒为 UTC、m、m/s、六列，口径不同的原表头不能复用
+  function fmtMetaOf(efmt, s) {
+    if (efmt !== 'cs-eph' || !s || !s.meta) return null
+    const m = s.meta
+    return {
+      header: m.header || null, dupTimes: m.dupTimes || [], title: m.title || '', created: m.created || '',
+      timeScale: m.timeScale || '', unitPos: m.unitPos || '', unitVel: m.unitVel || '', colsStd: !!m.colsStd
+    }
+  }
+
+  /* ===================== 导入预览（导入对话框：先解析给人看、选好对应关系再落库） ===================== */
+  // token -> { name, text, bytes, encoding, kind, format, parsed|records, tables, at }；15 分钟不提交即作废
+  const _previews = new Map()
+  const PREVIEW_TTL = 15 * 60 * 1000
+  function sweepPreviews() { const now = Date.now(); for (const [k, v] of _previews) if (now - v.at > PREVIEW_TTL) _previews.delete(k) }
+  function previewFile(name, text, info) {
+    sweepPreviews()
+    const i = info || {}
+    const base = (name && String(name).trim()) || '星历'
+    const token = 'p' + Date.now().toString(36) + (_seq++).toString(36)
+    const efmt = ephF.detectFormat(text)
+    if (efmt) {
+      const r = ephF.parseEphemeris(text, efmt, { name: base })
+      const tables = r.sats.map((s) => ephI.buildTable(Object.assign({}, s, { interp: s.interp })))
+      _previews.set(token, { name: base, text, bytes: i.bytes || null, encoding: i.encoding || '', kind: 'ephem', format: efmt, parsed: r, tables, at: Date.now() })
+      return {
+        token, name: base, kind: 'ephem', format: efmt, formatLabel: FORMAT_LABEL[efmt] || efmt, encoding: i.encoding || '',
+        errors: r.errors || [], warnings: r.warnings || [],
+        sats: r.sats.map((s, k) => ephemPreviewSat(s, tables[k], k))
+      }
+    }
+    const alm = almanacToRecords(text, getCore)
+    const pr = alm || parseAny(text)
+    _previews.set(token, { name: base, text, kind: 'gp', format: pr.format, records: pr.records, errors: pr.errors || [], warnings: pr.warnings || [], at: Date.now() })
+    return {
+      token, name: base, kind: 'gp', format: pr.format, formatLabel: FORMAT_LABEL[normFormat(pr.format)] || pr.format || '',
+      encoding: i.encoding || '', count: pr.records.length,
+      errors: pr.records.length ? (pr.errors || []) : (pr.errors && pr.errors.length ? pr.errors : ['无法识别的星历格式']), warnings: pr.warnings || [],
+      sats: pr.records.slice(0, 200).map((rec) => satView(rec))
+    }
+  }
+  // 预览里一颗点序列星的读数：点数 / 时段 / 步长 / 帧 / 是否带速度 / 机动与缺口 / GEO 星下点经度
+  function ephemPreviewSat(s, tab, idx) {
+    const m = s.meta || {}
+    const out = {
+      idx, name: s.name, objectId: s.objectId || '', frame: FR.normFrame(s.frame) || s.frame,
+      n: tab ? tab.n : s.t.length, t0: tab ? tab.t0 : s.t[0], t1: tab ? tab.t1 : s.t[s.t.length - 1],
+      stepS: Number.isFinite(m.stepS) ? m.stepS : (tab && tab.n > 1 ? Math.round(tab.stepMs / 1000) : null),
+      hasVel: !!s.v, interp: tab ? { method: tab.method, samples: tab.samples } : s.interp,
+      gaps: (m.gaps || []).map((g) => ({ t0: g.t0, t1: g.t1, dtS: g.dtS, split: !!g.split })),
+      jumps: (m.jumps || []).length, valid: !!tab,
+      unitPos: m.unitPos || '', unitVel: m.unitVel || '', timeScale: m.timeScale || s.timeSystem || 'UTC',
+      warnings: tab ? (tab.warnings || []) : []
+    }
+    if (tab) {
+      const sat = getCore && getCore() && getCore().sgp4
+      const mid = tab.t0
+      const r = ephI.evalTable(tab, mid)
+      if (r && sat && sat.gstime) {
+        const rr = Math.hypot(r.x, r.y, r.z)
+        const g = sat.gstime(new Date(mid))
+        const gd = sat.eciToGeodetic({ x: r.x, y: r.y, z: r.z }, g)
+        out.altKm = gd.height
+        out.lonDeg = sat.degreesLong(gd.longitude)
+        out.latDeg = sat.degreesLat(gd.latitude)
+        out.rKm = rr
+      }
+    }
+    return out
+  }
+  // 预览阶段建好的 TEME 表（候选匹配用）
+  const previewTables = (token) => { const p = _previews.get(token); return p && p.kind === 'ephem' ? p.tables : null }
+  const previewInfo = (token) => _previews.get(token) || null
+  const dropPreview = (token) => _previews.delete(token)
+  // 提交预览：choices = { name（组名）, binds:[target|null]（与预览 sats 同序）}
+  function commitPreview(token, choices) {
+    const pv = _previews.get(token)
+    if (!pv) return { ok: false, error: '导入预览已过期，请重新选择文件' }
+    const c = choices || {}
+    const gname = (c.name && String(c.name).trim()) || pv.name
+    let r
+    if (pv.kind === 'ephem') r = importEphem(gname, pv.text, pv.format, { parsed: pv.parsed, tables: pv.tables, binds: c.binds || [], bytes: pv.bytes, encoding: pv.encoding })
+    else r = importGp(gname, pv.text, pv.records, pv.format, pv.errors, pv.warnings)
+    _previews.delete(token)
+    return r
+  }
+
+  /* ===================== 叠加星历（「对应已有卫星」） ===================== */
+  // 全部绑定，新导入的在前：[{ noradId（目标）, name（目标名）, groupId, key, satName, t0, t1, importedAt, format }]
+  function bindings() {
+    const out = []
+    for (const g of readStore().groups) {
+      if (g.kind !== 'ephem') continue
+      for (const s of (g.sats || [])) {
+        if (!s.bind) continue
+        out.push({ noradId: s.bind.noradId, name: s.bind.name || '', groupId: g.id, groupName: g.name, key: s.key, satName: s.name,
+          t0: s.t0, t1: s.t1, importedAt: g.importedAt || '', format: normFormat(g.format) })
+      }
+    }
+    out.sort((a, b) => (a.importedAt < b.importedAt ? 1 : (a.importedAt > b.importedAt ? -1 : 0)))
+    return out
+  }
+  // 改对应关系（导入后在星座栏 / 文件管理里改）：target = { noradId, name } | null（取消对应、还原成独立的星）
+  function rebind(groupId, key, target) {
+    const store = readStore()
+    if (store.corrupt) return { ok: false, error: CORRUPT }
+    const g = store.groups.find((x) => x.id === groupId)
+    if (!g || g.kind !== 'ephem') return { ok: false, error: '星历组不存在' }
+    const s = (g.sats || []).find((x) => String(x.key) === String(key))
+    if (!s) return { ok: false, error: '星历组里没有这颗星' }
+    const b = normBind(target)
+    if (target && !b) return { ok: false, error: '目标卫星编号无效' }
+    if (b && b.noradId === OP.normId(s.noradId)) return { ok: false, error: '不能对应到自身' }
+    if (b) s.bind = b; else delete s.bind
+    writeStore(store)
+    ovlChanged()
+    return { ok: true, bind: s.bind || null }
+  }
+  // 「NORAD → 叠加表（新导入的在前）」索引：任何组变更都整份作废、下次查询时重建（绑定通常只有几条）。
+  let _ovlIndex = null
+  function ovlChanged() { _ovlIndex = null; OP.bumpOverlays() }
+  function overlayTables(noradId) {
+    if (!_ovlIndex) {
+      const idx = new Map()
+      try {
+        for (const b of bindings()) {
+          const tab = ephemLookup(b.groupId, b.key)
+          if (!tab) continue
+          tab.satnum = b.noradId
+          tab.ovlSrc = { groupId: b.groupId, key: b.key, name: b.satName, groupName: b.groupName, format: b.format }
+          if (!idx.has(b.noradId)) idx.set(b.noradId, [])
+          idx.get(b.noradId).push(tab)
+        }
+      } catch { /* 库读不出来：当没有叠加 */ }
+      _ovlIndex = idx
+    }
+    return _ovlIndex.get(OP.normId(noradId)) || null
+  }
+  OP.setOverlayResolver((id) => overlayTables(id))
   // 表内分段（OEM 多段）还原成 [[t0,t1],…]，存进采样文件，取回时再交给 buildTable
   function spansOf(tab) {
     if (!tab.sg || !tab.sgA) return null
@@ -414,7 +604,7 @@ module.exports = function createCustomSats(getCore) {
     const gname = (name && String(name).trim()) || '导入组'
     const existing = store.groups.find((g) => g.name === gname)
     // 同名替换时若原来是 ephem 组，它的采样文件得跟着走，否则留一地孤儿
-    if (existing && existing.kind === 'ephem') { ephemStore.remove(existing.id); delete existing.noradBase; delete existing.sats }
+    if (existing && existing.kind === 'ephem') { ephemStore.remove(existing.id); delete existing.noradBase; delete existing.sats; ovlChanged() }
     const group = {
       id: existing ? existing.id : genId(), name: gname, importedAt: new Date().toISOString(), format, sats,
       kind: 'gp', visible: existing ? existing.visible !== false : true, color: existing ? (existing.color || '') : ''
@@ -442,7 +632,7 @@ module.exports = function createCustomSats(getCore) {
     store.groups = store.groups.filter((x) => x.id !== id)
     writeStore(store)
     // 采样文件跟着组一起删（ephem 组的大头在那边，留着就是孤儿）
-    if (g && g.kind === 'ephem') ephemStore.remove(id)
+    if (g && g.kind === 'ephem') { ephemStore.remove(id); ovlChanged() }
     return { ok: true, groups: store.groups.length }
   }
   // 显隐 / 配色落库（星座栏「导入星历」区块用）。只改这两项，别的一个字不碰。
@@ -474,7 +664,7 @@ module.exports = function createCustomSats(getCore) {
       const t = Float64Array.from(s.t)
       const seg = ephI.segmentTables(t, s.spans || null)
       sats.push({
-        key: m.key, name: m.name, noradId: m.noradId, objectId: m.objectId,
+        key: m.key, name: m.name, noradId: m.noradId, objectId: m.objectId, bind: m.bind || null,
         frame: 'TEME', srcFrame: m.frame, timeSystem: m.timeSystem,
         method: m.interp && m.interp.method, samples: m.interp && m.interp.samples,
         t, p: Float64Array.from(s.p), v: s.v ? Float64Array.from(s.v) : null,
@@ -534,25 +724,40 @@ module.exports = function createCustomSats(getCore) {
     return out
   }
 
-  // ephem 组重建成可序列化的星记录（导出用）：采样按 TEME 存，这里换回组的原帧。
-  function ephemSats(groupId) {
+  // ephem 组重建成可序列化的星记录（导出用）：缺省按组的原帧给。存了原帧原值（src）的直接用它——逐位等于导入时
+  // 的数值；没存（老库 / TEME 源）的由 TEME 换回原帧。opts.frame 指定别的帧时一律由 TEME 换过去。
+  // opts.keys：只要其中几颗（按 key）。每颗星另带 key / noradId / bind / fmt（格式私有版式，同格式导出逐字节还原用）。
+  function ephemSats(groupId, opts) {
+    const o = opts || {}
     const g = readStore().groups.find((x) => x.id === groupId)
     if (!g || g.kind !== 'ephem') return null
     const raw = ephemStore.load(groupId)
     if (!raw) return null
     const byKey = new Map(raw.sats.map((s) => [String(s.key), s]))
+    const want = o.keys ? new Set(o.keys.map(String)) : null
     const out = []
     for (const m of (g.sats || [])) {
+      if (want && !want.has(String(m.key))) continue
       const s = byKey.get(String(m.key))
       if (!s) continue
-      const teme = {
-        name: m.name, objectId: m.objectId, frame: 'TEME', timeSystem: 'UTC', interp: m.interp,
-        t: Float64Array.from(s.t), p: Float64Array.from(s.p), v: s.v ? Float64Array.from(s.v) : null,
-        spans: s.spans || null, meta: {}
+      const frame = FR.normFrame(o.frame) || FR.normFrame(m.frame) || 'TEME'
+      const base = { name: m.name, objectId: m.objectId, key: m.key, noradId: m.noradId, bind: m.bind || null, timeSystem: 'UTC', interp: m.interp, spans: s.spans || null, fmt: s.fmt || null, meta: {} }
+      const t = Float64Array.from(s.t)
+      if (s.src && FR.normFrame(s.src.frame) === frame && s.src.p && s.src.p.length === s.p.length) {
+        out.push(Object.assign(base, { frame, t, p: Float64Array.from(s.src.p), v: s.src.v ? Float64Array.from(s.src.v) : null, exact: true }))
+        continue
       }
-      out.push(m.frame && m.frame !== 'TEME' ? ephF.convertSat(teme, m.frame) : teme)
+      const teme = Object.assign({}, base, { frame: 'TEME', t, p: Float64Array.from(s.p), v: s.v ? Float64Array.from(s.v) : null })
+      out.push(frame !== 'TEME' ? ephF.convertSat(teme, frame) : teme)
     }
     return out.length ? out : null
+  }
+  // 整组原文（导入时的原始字节）+ 格式；没留返回 null
+  function ephemSource(groupId) {
+    const g = readStore().groups.find((x) => x.id === groupId)
+    if (!g || g.kind !== 'ephem') return null
+    const bytes = ephemStore.loadSource(groupId)
+    return bytes ? { bytes, format: normFormat(g.format), encoding: g.encoding || '', count: (g.sats || []).length } : null
   }
   function renameGroup(id, name) {
     const nm = (name && String(name).trim())
@@ -649,7 +854,7 @@ module.exports = function createCustomSats(getCore) {
       }
       if (k < 2) continue
       const s = {
-        name: rec.name || ('NORAD ' + rec.noradId), objectId: rec.objectId || '', frame: 'TEME', timeSystem: 'UTC',
+        name: rec.name || ('NORAD ' + rec.noradId), objectId: rec.objectId || '', noradId: String(rec.noradId), frame: 'TEME', timeSystem: 'UTC',
         interp: { method: 'lagrange', samples: 6 },
         t: t.slice(0, k), p: p.slice(0, 3 * k), v: v.slice(0, 3 * k), spans: null, meta: {}
       }
@@ -665,10 +870,25 @@ module.exports = function createCustomSats(getCore) {
     return ephF.serializeEphemeris(sampleGpToEphem(arr, opts), ephF.writableFormat(format), opts || {})
   }
 
+  // gp 组里按 NORAD 取完整记录（含官方字段字典 f）：导出时还原全部官方字段。给了 groupId 只在该组里找；
+  // 多组同号时后组覆盖（与 flatGp / 搜索池「后导入为准」同一口径）。返回 Map<归一 NORAD, 记录>
+  function gpRecordsByNorad(ids, groupId) {
+    const want = new Set((ids || []).map((x) => OP.normId(x)))
+    const out = new Map()
+    for (const g of readStore().groups) {
+      if (g.kind === 'ephem') continue
+      if (groupId && g.id !== groupId) continue
+      for (const r of (g.sats || [])) { const id = OP.normId(r.noradId); if (want.has(id)) out.set(id, r) }
+    }
+    return out
+  }
+
   return {
     list, raw, rawVisible, importFile, removeGroup, renameGroup, updateGroup,
     groupRecords, recordsCsv, recordsText, recordsEphemText, groupText, checkRecords,
-    ephemTable, ephemLookup, ephemSats, sampleGpToEphem, resolveOrbitSpec, resolveEphemDeep,
+    ephemTable, ephemLookup, ephemSats, ephemSource, sampleGpToEphem, resolveOrbitSpec, resolveEphemDeep,
+    previewFile, previewTables, previewInfo, commitPreview, dropPreview,
+    bindings, rebind, overlayTables, gpRecordsByNorad,
     _parseOMMCsv: parseOMMCsv
   }
 }

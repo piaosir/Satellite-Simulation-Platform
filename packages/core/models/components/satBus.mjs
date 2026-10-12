@@ -61,7 +61,7 @@ function prismFaces(p) {
 }
 
 const busPrism = {
-  type: 'sat.bus.prism', domain: SAT, title: 'Bus (polygonal prism)', titleZh: '星体（多棱柱形）', role: 'bus', category: 'structure',
+  type: 'sat.bus.prism', domain: SAT, title: 'Bus (polygonal prism)', titleZh: '星体（多棱柱形）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['平台', '本体', '棱柱', '三棱柱', '八棱柱', '多边形', '铱星', 'bus', 'prism'],
   presets: [
     { id: 'tri', titleZh: '三棱柱星体', title: 'Triangular prism bus', aliases: ['三棱柱', '铱星', 'Iridium'], params: { sides: 3, diameterM: 1.2, hM: 4.0 } },
@@ -118,7 +118,7 @@ function cubeFaces(p) {
 const CUBE_SKIN = Object.freeze({ cells: '体装电池片', black: '黑色阳极化', aluminum: '本色铝', gold: '阿洛丁（金色）' })
 
 const busCubesat = {
-  type: 'sat.bus.cubesat', domain: SAT, title: 'CubeSat bus', titleZh: '立方星星体', role: 'bus', category: 'structure',
+  type: 'sat.bus.cubesat', domain: SAT, title: 'CubeSat bus', titleZh: '立方星星体', role: 'bus', category: 'structure', family: 'body',
   aliases: ['立方星', 'CubeSat', '纳星', '微纳卫星', '1U', '3U', '6U', '12U', '导轨', 'bus'],
   presets: [
     { id: '1u', titleZh: '1U 立方星', title: '1U CubeSat', aliases: ['1U'], params: { zM: 0.1135 } },
@@ -225,7 +225,7 @@ function sphereSurface(p, d) {
 const AXES = [['+X', [1, 0, 0], [0, 0, 1]], ['-X', [-1, 0, 0], [0, 0, 1]], ['+Y', [0, 1, 0], [0, 0, 1]], ['-Y', [0, -1, 0], [0, 0, 1]], ['+Z', [0, 0, 1], [1, 0, 0]], ['-Z', [0, 0, -1], [1, 0, 0]]]
 
 const busSphere = {
-  type: 'sat.bus.sphere', domain: SAT, title: 'Bus (sphere / polyhedron)', titleZh: '星体（球形）', role: 'bus', category: 'structure',
+  type: 'sat.bus.sphere', domain: SAT, title: 'Bus (sphere / polyhedron)', titleZh: '星体（球形）', role: 'bus', category: 'structure', family: 'body',
   aliases: ['球形', '多面体', '东方红一号', '测地', 'LAGEOS', '角反射器球', '斯普特尼克', 'sphere', 'bus'],
   presets: [
     { id: 'dfh1', titleZh: '72 面体星体（东方红一号式）', title: '72-facet polyhedral bus (DFH-1 style)', aliases: ['东方红一号', '72 面体', '多面体'], params: { form: 'polyhedron', diameterM: 1.0, lonSeg: 12, latSeg: 6 } },
@@ -314,7 +314,7 @@ function moduleFaces(p) {
 }
 
 const busModule = {
-  type: 'sat.bus.module', domain: SAT, title: 'Bus (pressurized module)', titleZh: '舱段式星体', role: 'bus', category: 'structure',
+  type: 'sat.bus.module', domain: SAT, title: 'Bus (pressurized module)', titleZh: '舱段式星体', role: 'bus', category: 'structure', family: 'body',
   aliases: ['舱段', '舱体', '空间站', '天宫', '核心舱', '货运飞船', '天舟', '天鹅座', 'module', 'station', 'bus'],
   presets: [
     { id: 'core', titleZh: '空间站核心舱式', title: 'Space station core module', aliases: ['核心舱', '天和', '空间站'], params: { dLargeM: 4.2, lLargeM: 7.5, coneLenM: 1.2, dSmallM: 2.8, lSmallM: 4.5, front: 'dock', aft: 'dock' } },

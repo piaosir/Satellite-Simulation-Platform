@@ -65,7 +65,8 @@ const BASE = { lat: 39.9042, lon: 116.4074, diameter: 2.4, band: 'Ku', customFre
   //   峰值处时角对齐，夹角 θ = |δ☉ − δ星|，故星历档与定轨档的恶化差全由【站心南北偏差 Δδ】决定（星历星 vs 定轨星的
   //   站心赤纬差：倾角项 + 偏心率半径项，东西漂移只占千分之一度），日凌边缘斜率 ~20 dB/°；171 颗受控 GEO 这个差 0~2.8 dB，
   //   中星 6C 每换一版 omm 快照数值就变——判据不能拟合某一版的数值。改成两条容差由式子算出的不变式（Δδ 由 SGP4 直取，与引擎无关）：
-  //   ① 夹角差 = ±Δδ：| |θe − θs| − |Δδ| | ≤ |Δδ☉|（两个峰值时刻之间太阳赤纬的变化）+ 0.001（两次 θ 取 3 位小数）+ 0.001（求根 / 日内插值）；
+  //   ① 夹角差 = ±Δδ：夹角无符号，先按太阳与星的站心赤纬定号，σe·θe − σs·θs = Δδ☉ − Δδ（Δδ☉ = 两个峰值时刻之间太阳赤纬的变化，带号），
+  //      容差 0.001（两次 θ 取 3 位小数）+ 0.001（求根 / 日内插值）；
   //   ② 恶化差 ≤ max|D′|·(|Δδ| + |Δδ☉| + 0.002) + 0.01（两次恶化取 2 位小数）。D(θ) 按引擎同一口径逐日重建（70λ/D 波束、
   //      当日正午太阳视直径 sunDiamDegAt、该日亮温 solarTempAt、couplingAt），max|D′| 在两夹角之间（各外扩 0.002°）取；
   //      重建得对不对另用 ③ 核：引擎给的恶化与 D(引擎给的夹角) 只差舍入。
@@ -90,13 +91,16 @@ const BASE = { lat: 39.9042, lon: 116.4074, diameter: 2.4, band: 'Ku', customFre
     // 卫星比定轨轨位偏西 Δlon → 太阳要多转 Δlon 才对上，峰值时刻晚 Δlon/360×恒星日
     const expect = (SLOT - r.satLon) / 360 * SIDEREAL_SEC
     worstResid = Math.max(worstResid, Math.abs(dt - expect))
-    // ① 夹角差 = ±Δδ
+    // ① 夹角差 = ±Δδ。夹角是无符号的 |δ☉ − δ星|：太阳恰在当天穿过卫星赤纬时，两档峰值夹角落在零点两侧（折叠），
+    //   此时 |θe − θs| ≠ |Δδ|、θe + θs = |Δδ|（10-08 版快照中星 6C 的 10-09：0.019° 与 0.028°，Δδ = −0.047°）。
+    //   所以按太阳与星的站心赤纬给两档夹角定号，再比带号式。
     const te = msOf(r.date, r.peakTimeUTC), ts = msOf(q.date, q.peakTimeUTC)
     const pe = sat.eciToEcf(sat.propagate(recEp, new Date(te)).position, sat.gstime(new Date(te)))
     const dDec = topoDec(pe.x, pe.y, pe.z) - decSlot
-    const dSun = Math.abs(sunDec(te) - sunDec(ts))
-    const geoResid = Math.abs(Math.abs(r.peakSeparation - q.peakSeparation) - Math.abs(dDec))
-    worstGeo = Math.max(worstGeo, geoResid - (dSun + 0.002)); worstGeoResid = Math.max(worstGeoResid, geoResid)
+    const dSunS = sunDec(te) - sunDec(ts), dSun = Math.abs(dSunS)
+    const se = Math.sign(sunDec(te) - (decSlot + dDec)) || 1, ss = Math.sign(sunDec(ts) - decSlot) || 1
+    const geoResid = Math.abs((se * r.peakSeparation - ss * q.peakSeparation) - (dSunS - dDec))
+    worstGeo = Math.max(worstGeo, geoResid - 0.002); worstGeoResid = Math.max(worstGeoResid, geoResid)
     maxDdec = Math.max(maxDdec, Math.abs(dDec))
     // ② 恶化差 ≤ max|D′|·(|Δδ| + |Δδ☉| + 0.002) + 0.01
     const thD = sunDiamDegAt(Date.parse(r.date + 'T00:00:00Z'))

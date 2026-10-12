@@ -414,6 +414,7 @@ export function createEntityLayer(o = {}) {
   const perfF = new Float64Array(4)   // [update EMA, render EMA, 本次起点, 暂存]（ms）：double 存进定型数组，不装箱
   const camSig = new Float64Array(20)
   let camSigOk = false
+  let zoomD = 0   // 缩放联动用的相机距离（scene.zoomDist，update 第五参）；0 = 没给，按 |相机位置|
   const _hl = new THREE.Vector3()
   const _dirB = [0, 0, 0]
   const _E2 = new Float64Array(16), _acc = new Float64Array(16), _tmp = new Float64Array(16)
@@ -936,16 +937,19 @@ export function createEntityLayer(o = {}) {
   // ───────────── 每帧 ─────────────
   function camChanged(camera, h) {
     const p = camera.position, q = camera.quaternion
-    const v0 = p.x, v1 = p.y, v2 = p.z, v3 = q.x, v4 = q.y, v5 = q.z, v6 = q.w, v7 = camera.fov, v8 = camera.aspect, v9 = h
+    const v0 = p.x, v1 = p.y, v2 = p.z, v3 = q.x, v4 = q.y, v5 = q.z, v6 = q.w, v7 = camera.fov, v8 = camera.aspect, v9 = h, v10 = zoomD
     const S = camSig
-    const same = camSigOk && S[0] === v0 && S[1] === v1 && S[2] === v2 && S[3] === v3 && S[4] === v4 && S[5] === v5 && S[6] === v6 && S[7] === v7 && S[8] === v8 && S[9] === v9
-    S[0] = v0; S[1] = v1; S[2] = v2; S[3] = v3; S[4] = v4; S[5] = v5; S[6] = v6; S[7] = v7; S[8] = v8; S[9] = v9
+    const same = camSigOk && S[0] === v0 && S[1] === v1 && S[2] === v2 && S[3] === v3 && S[4] === v4 && S[5] === v5 && S[6] === v6 && S[7] === v7 && S[8] === v8 && S[9] === v9 && S[10] === v10
+    S[0] = v0; S[1] = v1; S[2] = v2; S[3] = v3; S[4] = v4; S[5] = v5; S[6] = v6; S[7] = v7; S[8] = v8; S[9] = v9; S[10] = v10
     camSigOk = true
     return !same
   }
 
-  function update(dt, camera, w, h) {
+  // zd（可选）：缩放联动用的相机距离 = scene.zoomDist()。跟随卫星时相机贴着主星（离地心 1.0x 个地球半径），按 |相机位置| 算
+  //   等于把图标放大约 3 倍；scene 那时给 FOLLOW_ZOOM_DIST —— 与它顶替的载具 / 站 / 点精灵、让位的标记文字同一把尺
+  function update(dt, camera, w, h, zd) {
     if (disposed || !camera) return
+    zoomD = zd > 0 && Number.isFinite(zd) ? zd : 0
     perfF[2] = nowMs()
     let busy = false
     const st = dt > 0 ? dt / FADE_S : 0
@@ -1015,8 +1019,8 @@ export function createEntityLayer(o = {}) {
     const cl = Math.sqrt(C.x * C.x + C.y * C.y + C.z * C.z) || 1
     const cdx = C.x / cl, cdy = C.y / cl, cdz = C.z / cl
     const hh = Math.max(1, h), ww = Math.max(1, w)
-    // 随缩放联动：与标记精灵 / 标记文字同一系数（靶心恒为地心，cl 就是 scene 的 zoomDist；跟随卫星时本层关着）
-    const zk = markerZoomK(cl)
+    // 随缩放联动：与标记精灵 / 标记文字同一系数（scene.zoomDist：地球视图靶心恒为地心，就是 cl；跟随卫星时是 FOLLOW_ZOOM_DIST）
+    const zk = markerZoomK(zoomD > 0 ? zoomD : cl)
     // 1) 计数（容量不够先扩）
     for (let i = 0; i < modelArr.length; i++) { const M = modelArr[i]; if (M.full) M.full.n = 0; if (M.icon) M.icon.n = 0 }
     for (let i = 0; i < slotArr.length; i++) {

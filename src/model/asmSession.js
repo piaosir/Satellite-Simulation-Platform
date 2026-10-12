@@ -246,6 +246,7 @@ export function createAsmSession({ wb, getVp }) {
     pushPrefs(ed)
     ui.ready = true
     syncDoc()
+    flushQueuedAdd()
   }
   /**
    * 离开装配视图（切到模型签 / 关掉最后一个装配签 / 离开设计页）：detach 编辑器（文档留在里面休眠，换回同一签不重载）、还视口。
@@ -283,6 +284,7 @@ export function createAsmSession({ wb, getVp }) {
     if (src) loadDoc(src, { fit: false, state: s.state })
     else loadDoc(base, { fit: true })
     switchMs = performance.now() - t0
+    flushQueuedAdd()
   }
   /** 编辑器里载着的那份 → 暂存（撤销栈截到最近 STASH_HIST_MAX 步；文档 JSON 由 wb 取它最近一次提交） */
   function stashLoaded() {
@@ -355,6 +357,28 @@ export function createAsmSession({ wb, getVp }) {
   const mirror = () => call('mirror')
   /** 双击库卡片：params = 常用型号的型号参数（组件本身传 null） */
   const quickAdd = (type, params) => call('quickAdd', type, params ? { params } : {})
+  /**
+   * 库页组件档右键「添加到当前设计」：与双击卡片同一口径（quickAdd），但要等编辑器载上目标签——切到设计页要先借视口、等编辑器模块、
+   * 载入文档。已载上就当场加；目标签换成了别的签 / 关掉了，这次添加作废。d 缺省 = 激活装配签。
+   */
+  let queuedAdd = null
+  function queueAdd(type, params, d) {
+    const doc = d || wb.activeAsmDoc()
+    if (!doc || typeof type !== 'string') return false
+    queuedAdd = { type, params: params && typeof params === 'object' && Object.keys(params).length ? plain(params) : null, doc }
+    flushQueuedAdd()
+    return true
+  }
+  function flushQueuedAdd() {
+    const p = queuedAdd
+    if (!p) return
+    if (!wb.isDocOpen(p.doc) || (wb.activeAsmDoc() && wb.activeAsmDoc() !== p.doc)) { queuedAdd = null; return }
+    if (!editor || !ui.active || !attached || loaded !== p.doc || !fresh()) return
+    queuedAdd = null
+    // 设计签停在「初值」姿态：编辑器拒收（quickAdd 静默 false）——把原因说出来，不让这次添加无声无息地丢掉
+    if (ui.posePreview) { setStatus('warn', '初值姿态下不可编辑', 4000); return }
+    quickAdd(p.type, p.params)
+  }
   const beginDragFromLib = (type, x, y, o) => !!call('beginDragFromLib', type, x, y, o || {})
   /** 库卡片按下（还没过拖动门槛）：编辑器先把这件建进缓存、边线 / BVH 插队、ghost 材质异步编译 */
   const prewarm = (type, o) => { if (editor && ui.active && typeof editor.prewarmGhost === 'function') call('prewarmGhost', type, o || {}) }
@@ -505,7 +529,7 @@ export function createAsmSession({ wb, getVp }) {
     loadedDoc: () => loaded, switchMs: () => switchMs,
     start, activate, deactivate, onKey, dispose,
     cmd, select, frameSelection, setTool, setSpace, setSnap, setSym, setPosePreview, setShowCom, setShowSockets, setShowAxes, poseOf,
-    undo, redo, duplicate, remove, pickup, mirror, quickAdd, beginDragFromLib, prewarm, save, saveAs, setStatus,
+    undo, redo, duplicate, remove, pickup, mirror, quickAdd, queueAdd, beginDragFromLib, prewarm, save, saveAs, setStatus,
     replaceDoc, driveSet, setParams, resetBase, resetAll, restoreDeleted, detach
   }
 }

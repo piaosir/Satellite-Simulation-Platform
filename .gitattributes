@@ -1,0 +1,11 @@
+# 只给「按字节比对」的文件钉换行，不对全仓库下规则（主工作树里本来就有 CRLF 文件，全仓库规则会冒出整文件换行改动）。
+# 起因：core.autocrlf=true 时新检出的 worktree 里文本全是 CRLF，主工作树里多为 LF，按字节比的单测只在一边绿。
+
+# 单测夹具：原样入库、原样检出（金标准 sha256 / 逐字节比对）。
+# 不写 eol=lf：eol 会强制按文本转换，而 models/*.glb 是二进制、里面有 CRLF 字节序列。
+packages/core/test/fixtures/** -text
+
+# occt-import-js 许可原文的逐字节副本（modelPipeline 单测与 node_modules/occt-import-js/dist 比对）。
+# 上游原文是 CRLF：索引里存 LF，检出一律还原成 CRLF，与 core.autocrlf 无关。
+resources/licenses/license.occt-import-js.txt eol=crlf
+resources/licenses/license.occt.txt eol=crlf

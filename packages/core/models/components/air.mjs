@@ -266,7 +266,8 @@ function fusDoors(g, p) {
 }
 
 const fuselage = {
-  type: 'air.fuselage', domain: ['aircraft'], title: 'Fuselage', titleZh: '机身', role: 'bus', massSink: 'fuselage',
+  type: 'air.fuselage', domain: ['aircraft'], title: 'Fuselage', titleZh: '机身', role: 'bus', category: 'structure', family: 'body', massSink: 'fuselage',
+  aliases: ['机身', '机体', '客机', '运输机', '无人机', 'fuselage'],
   params: {
     lengthM: num(38, 'm', '机身长', { gt: 2, max: 100, title: '机头尖到尾锥端；模板取全机长' }),
     widthM: num(3.9, 'm', '机身宽', { gt: 0.3, max: 10, title: '等直段外廓宽' }),
@@ -305,7 +306,7 @@ const fuselage = {
       sock('ventral', [xv, 0, g.bellyZ(xv)], [0, 0, 1], [1, 0, 0], sz, 90, ACC('air.vtail')),
       latSocket('aftEng', [xe, ye, ze], sz, ACC('air.nacelle')),
       sock('tail', [-L / 2, 0, g.sec(-L / 2).zc], [-1, 0, 0], [0, 0, -1], Math.max(0.1, 0.1 * g.W), 90, ACC('air.prop')),
-      sock('crown', [xc, 0, g.topZ(xc)], [0, 0, -1], [1, 0, 0], sz, 90, ACC('air.radome', 'veh.cotm')),
+      sock('crown', [xc, 0, g.topZ(xc)], [0, 0, -1], [1, 0, 0], sz, 90, ACC('air.radome', '@array', '@wire')),
       sock('chin', [xk, 0, g.bellyZ(xk)], [0, 0, 1], [1, 0, 0], sz, 90, ACC('air.turret')),
       sock('nose', [L / 2, 0, g.sec(L / 2).zc], [1, 0, 0], [0, 0, -1], Math.max(0.05, g.tip ? 2 * g.tip * g.a0 : 0.1 * g.W), 90, ACC('air.prop')),
       sock('dorsal', [xe, 0, g.topZ(xe)], [0, 0, -1], [1, 0, 0], sz, 90, ACC('air.nacelle'))
@@ -455,7 +456,8 @@ function wingArea(g) {
 }
 
 const wing = {
-  type: 'air.wing', domain: ['aircraft'], title: 'Wing', titleZh: '机翼', role: 'other',
+  type: 'air.wing', domain: ['aircraft'], title: 'Wing', titleZh: '机翼', role: 'other', category: 'structure', family: 'aero',
+  aliases: ['机翼', '翼', '主翼', 'wing'],
   params: {
     side: enm('right', ['right', 'left'], '侧别', { title: '左翼由镜像生成' }),
     spanM: num(36, 'm', '翼展', { gt: 1, max: 100, title: '两翼尖间距（含翼梢小翼）；本组件生成单侧机翼' }),
@@ -537,7 +539,8 @@ function tailStations(p, cR) {
 }
 
 const htail = {
-  type: 'air.htail', domain: ['aircraft'], title: 'Horizontal tail', titleZh: '平尾', role: 'other',
+  type: 'air.htail', domain: ['aircraft'], title: 'Horizontal tail', titleZh: '平尾', role: 'other', category: 'structure', family: 'aero',
+  aliases: ['平尾', '水平尾翼', '尾翼', 'horizontal stabilizer', 'tail'],
   params: {
     spanM: num(12.5, 'm', '展长', { gt: 0.3, max: 40, title: '两尖间距' }),
     rootChordM: num(null, 'm', '根弦长', { nullable: true, gt: 0, title: '中线处；留空 = 0.28 × 展长' }),
@@ -573,7 +576,8 @@ function vtailGeom(p) {
 }
 
 const vtail = {
-  type: 'air.vtail', domain: ['aircraft'], title: 'Vertical tail', titleZh: '垂尾', role: 'other',
+  type: 'air.vtail', domain: ['aircraft'], title: 'Vertical tail', titleZh: '垂尾', role: 'other', category: 'structure', family: 'aero',
+  aliases: ['垂尾', '垂直尾翼', '尾翼', 'vertical stabilizer', 'fin', 'tail'],
   params: {
     heightM: num(6, 'm', '高', { gt: 0.2, max: 25, title: '根部安装面到顶' }),
     rootChordM: num(null, 'm', '根弦长', { nullable: true, gt: 0, title: '留空 = 1.0 × 高' }),
@@ -590,7 +594,7 @@ const vtail = {
     return [
       standSocket(Math.max(0.05, 0.3 * g.cR), 90),
       latSocket('tip', [g.xLE(g.H) - 0.3 * g.cT, 0, -0.97 * g.H], Math.max(0.05, 0.3 * g.cT), ACC('air.htail')),
-      sock('top', [g.xLE(g.H) - 0.5 * g.cT, 0, -g.H], [0, 0, -1], [1, 0, 0], Math.max(0.05, 0.6 * g.cT), 90, ACC('air.radome'))
+      sock('top', [g.xLE(g.H) - 0.5 * g.cT, 0, -g.H], [0, 0, -1], [1, 0, 0], Math.max(0.05, 0.6 * g.cT), 90, ACC('air.radome', '@wire'))
     ]
   },
   symmetricPlanes: ['xz'],
@@ -655,7 +659,8 @@ function fanBlades(mb, fan, xF, zA, nb, hand) {
 }
 
 const nacelle = {
-  type: 'air.nacelle', domain: ['aircraft'], title: 'Engine nacelle', titleZh: '发动机短舱', role: 'thruster',
+  type: 'air.nacelle', domain: ['aircraft'], title: 'Engine nacelle', titleZh: '发动机短舱', role: 'thruster', category: 'propulsion', family: 'powerplant',
+  aliases: ['发动机', '短舱', '涡扇', '涡桨', 'engine', 'nacelle'],
   params: {
     diameterM: num(2.2, 'm', '短舱最大径', { gt: 0.2, max: 6 }),
     lengthM: num(null, 'm', '短舱长', { nullable: true, gt: 0, title: '唇口到尾锥尖；留空 = 1.9 × 最大径' }),
@@ -782,7 +787,8 @@ function buildProp(p, ctx) {
 }
 
 const prop = {
-  type: 'air.prop', domain: ['aircraft', 'ship'], title: 'Propeller', titleZh: '螺旋桨', role: 'thruster',
+  type: 'air.prop', domain: ['aircraft', 'ship'], title: 'Propeller', titleZh: '螺旋桨', role: 'thruster', category: 'propulsion', family: 'powerplant',
+  aliases: ['螺旋桨', '桨', '推进器', 'propeller'],
   params: {
     diameterM: num(2.7, 'm', '直径', { gt: 0.2, max: 8 }),
     blades: int(3, '桨叶数', { min: 2, max: 8 }),
@@ -825,7 +831,8 @@ function rdmDims(p) {
 }
 
 const radome = {
-  type: 'air.radome', domain: ['aircraft'], title: 'Satcom radome', titleZh: '机载卫通罩', role: 'other',
+  type: 'air.radome', domain: ['aircraft'], title: 'Satcom radome', titleZh: '机载卫通罩', role: 'other', category: 'antenna', family: 'radome',
+  aliases: ['卫通罩', '天线罩', '机载卫通', '机背罩', '雷达罩', 'radome', 'satcom'],
   params: {
     model: enm('gat5530', ['gat5530', 'custom'], '型号', { source: GAT5530_URL, title: 'gat5530 = Viasat GAT-5530（罩 235 × 107 × 32 cm，扫掠体积 Ø99.7 × 28.7 cm）；custom = 按以下尺寸' }),
     lengthM: num(2.35, 'm', '长', { gt: 0, max: 10, source: GAT5530_URL, title: '型号 custom 时生效' }),
@@ -895,7 +902,8 @@ const radome = {
 // ───────────────────────────── air.turret 光电球 ─────────────────────────────
 
 const turret = {
-  type: 'air.turret', domain: ['aircraft'], title: 'EO/IR turret', titleZh: '光电球', role: 'sensor',
+  type: 'air.turret', domain: ['aircraft'], title: 'EO/IR turret', titleZh: '光电球', role: 'sensor', category: 'payload',
+  aliases: ['光电球', '光电吊舱', '转塔', '吊舱', 'EO/IR', 'turret', 'gimbal'],
   params: {
     diameterM: num(0.55, 'm', '球径', { gt: 0.1, max: 2 }),
     yokeHM: num(null, 'm', '叉臂高', { nullable: true, gt: 0, title: '安装面到球顶；留空 = 0.35 × 球径' }),

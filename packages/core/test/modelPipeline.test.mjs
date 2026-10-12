@@ -11,6 +11,7 @@ import https from 'node:https'
 import util from 'node:util'
 import { Writable, Readable } from 'node:stream'
 import { spawnSync, execFile } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -874,8 +875,10 @@ let N = 0
     ok(pkg.build.files.includes('!resources/licenses/**') && pkg.build.extraResources.some((x) => x.from === 'resources/licenses' && x.to === 'licenses'), '仓库 package.json：licenses 走 extraResources（安装目录里看得见）')
     ok(pkg.build.files.includes('!packages/core/test/**'), '仓库 package.json：单测不进安装包')
     ok(/check-imagery\.mjs && node scripts\/check-models\.mjs --online/.test(pkg.scripts.dist), '仓库 package.json：dist 链 check-imagery 之后接 check-models --online')
+    // 包目录按 node 的模块解析找：worktree 根下没有 node_modules，按仓库根拼路径会 ENOENT（裸模块解析会往上找到主仓库那份）
+    const occtDist = path.join(path.dirname(createRequire(import.meta.url).resolve('occt-import-js/package.json')), 'dist')
     for (const f of ['license.occt-import-js.txt', 'license.occt.txt']) {
-      const a = fs.readFileSync(path.join(REPO, 'resources', 'licenses', f)), b0 = fs.readFileSync(path.join(REPO, 'node_modules', 'occt-import-js', 'dist', f))
+      const a = fs.readFileSync(path.join(REPO, 'resources', 'licenses', f)), b0 = fs.readFileSync(path.join(occtDist, f))
       ok(a.equals(b0) && /LESSER GENERAL PUBLIC LICENSE/.test(a.toString('utf8')), `resources/licenses/${f} 与 node_modules/occt-import-js/dist 里的原文逐字节相同`)
     }
   }

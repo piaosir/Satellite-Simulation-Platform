@@ -10,19 +10,25 @@
 // ★ ComponentDef（登记时校验并冻结）：
 //   {
 //     type        'sat.wing' 一类的点分小写键（注册表主键，存进装配文档，终身不改名）
-//     domain      允许出现在哪些领域的装配件里（ASM_DOMAINS 的子集）
+//     domain      常用领域（ASM_DOMAINS 的子集，首项 = 本件的设计领域：局部系约定、单独新建 / 预览时的文档领域按它）。
+//                 ★ 2026-10-12 起不再是白名单：任何组件都能装进任何领域的装配件（相控阵上船 / 上飞机 / 上车、太阳翼进地面站…），
+//                 domain 只决定组件库里的排序（当前领域的常用件在前）与「来自其他领域」的角标
 //     title / titleZh  组件名（英 / 中；组件库卡片与结构树的缺省显示名）
 //     role        部件角色（ir.PART_ROLES；组件库分组、缺省高亮用）
-//     category?   组件库里的功能分组（COMPONENT_CATEGORIES 之一：结构与机构 / 电源 / 天线 / 有效载荷 / 推进 / 姿轨控 / 热控；卫星件都带）
+//     category?   组件库里的功能分组（COMPONENT_CATEGORIES 之一：结构与机构 / 电源 / 天线 / 有效载荷 / 推进 / 姿轨控 / 热控；除基本体外都带）
+//     family?     功能分组下的组件族（COMPONENT_FAMILIES 的键，须属于本件的 category：天线 ▸ 反射面 / 阵列 / 喇叭与馈源 / 线天线 /
+//                 天线座 / 天线罩…）。跨领域同族（卫星相控阵、平板动中通）排在同一族里；插座 accepts 可按族收件（'@<族>'，见下）
 //     aliases?    组件库搜索的别名（字符串数组：「全向」「QHA」「SAR」…）
-//     presets?    常用型号（组件库里各占一张卡片，拖入即带这组参数）：[{id, titleZh, title, params, aliases?, category?}]
+//     presets?    常用型号（组件库里各占一张卡片，拖入即带这组参数）：[{id, titleZh, title, params, aliases?, category?, family?}]
 //                 id 为小写连字符键（库卡片键 `${type}#${id}`、缩略图缓存键用；终身不改名）；params 只写与缺省不同的键，
-//                 登记时补缺省后过 checkParams；category 缺省同组件（体装电池片这类按用途归到别的小组时才给）
+//                 登记时补缺省后过 checkParams；category / family 缺省同组件（体装电池片归电源、机械消旋归反射面这类按用途归到
+//                 别的分组时才给；只改 category 不给 family 时族为空）
 //     params      { key: ParamSpec }（见下）；键的顺序即属性面板顺序
 //     mountSocket 本件拿哪个插座去贴父件（缺省 'root'）
 //     sockets(p)  → [{id, pos, n, up, size, accepts, roll}]：插座（局部系；字段名同 assembly-ux §3.2）。
 //                   n = 朝外单位法向（背离本件），up = 滚转零位（⟂ n）；size = 名义接口尺寸（米，> 0：吸附标记的绘制尺寸，不参与解算）；
 //                   accepts = 可接的组件 type 前缀数组（null = 不限；只作吸附筛选，validateAssembly 不拦，见 socketAccepts）；
+//                   一项以 '@' 开头 = 按组件族收件（'@array' 收全部阵列天线：卫星相控阵、缝隙阵、平板动中通…；判据 acceptsType）；
 //                   roll = 滚转档（度，≥ 0：吸附时取该档的最近整数倍；0 = 不许滚转，恒 0°）。登记时按缺省参数查一遍形状
 //     faces(p)    → [{id, kind:'plane', origin, n, u, v, halfU, halfV}
 //                    | {id, kind:'cyl', origin, axis, ref, radius, halfU, halfV}]：可贴面（局部系）。
@@ -59,10 +65,13 @@
 //   label 是属性面板上的短标签；title 是悬停说明（界面零说明文字：口径只放悬停）。
 //
 // 导出：
-//   ASM_DOMAINS, PARAM_KINDS, PLANES
+//   ASM_DOMAINS, PARAM_KINDS, PLANES, COMPONENT_CATEGORIES, COMPONENT_FAMILIES（族键 → 所属 category；键序即组件库里的族顺序）
 //   registerComponent(def, {replace?}) → 冻结后的 def；getComponent(type) → def | null；getPreset(type, id) → 型号 | null
-//   listComponents(domain?) → def[]（登记顺序）；componentTypes() → string[]
+//   listComponents(domain?) → def[]（登记顺序；给 domain = 该领域的常用件，即 def.domain 含它的）；componentTypes() → string[]
+//   homeDomain(def) → 本件的设计领域（domain 首项）；frameConvention(def) → 'spacecraft' | 'frd' | null（局部系按哪套约定建的：
+//     卫星件局部 −Z 贴父面、几何朝 +Z 长、面 u 侧面 +Z / ±Z 面 +X；飞机 / 船 / 车 / 地面件 FRD / NED；基本体 null = 不分）
 //   fillParams(def, raw) → 补缺省后的参数（只留定义里的键）；checkParams(def, params, prefix) → string[]
+//   acceptsType(p, type) → accepts 的一项是否收该 type（'@<族>' 按族，其余按前缀）；
 //   socketAccepts(socket, type) → 插座能否接该 type 的组件；makeValuesEq(keys) → 按值比对器（解算缓存用）
 //   faceAccepts(def, params, face, type?) → 面可否作安装基面（组件 mountableFaces + 面级 accepts；type 缺省不查面级 accepts）
 //   passThroughOf(def, params) → 该件是不是贴在面上的薄件（passThrough ‖ passThroughWhen(params)；params 须补过缺省）
@@ -86,6 +95,16 @@ export const PARAM_KINDS = Object.freeze(['num', 'int', 'bool', 'enum'])
 export const PLANES = Object.freeze(['yz', 'xz', 'xy'])
 /** 组件库功能分组键（顺序即组件库里的分组顺序；显示名在渲染端 asmLogic.CATEGORY_LABELS） */
 export const COMPONENT_CATEGORIES = Object.freeze(['structure', 'power', 'antenna', 'payload', 'propulsion', 'aocs', 'thermal'])
+/**
+ * 组件族（功能分组下的二级分组；键 → 所属 category，键序即组件库里的族顺序；显示名在渲染端 asmLogic.FAMILY_LABELS）。
+ * 按功能分、不按领域分：反射面族里既有星载反射面也有地面站主焦 / 卡氏 / 偏馈面，阵列族里既有卫星相控阵也有车载平板动中通。
+ * 只给件数多的分组分族（结构与机构 / 天线 / 推进）；电源 / 有效载荷 / 姿轨控 / 热控一整块。
+ */
+export const COMPONENT_FAMILIES = Object.freeze({
+  body: 'structure', aero: 'structure', truss: 'structure', facility: 'structure', dock: 'structure',
+  reflector: 'antenna', array: 'antenna', horn: 'antenna', wire: 'antenna', mount: 'antenna', radome: 'antenna',
+  thruster: 'propulsion', powerplant: 'propulsion'
+})
 /** 卫星组件的登记顺序（= 组件库卡片顺序；表外的卫星件排在表内各件之后，按原顺序） */
 export const SAT_ORDER = Object.freeze([
   'sat.bus.box', 'sat.bus.cyl', 'sat.bus.hex', 'sat.bus.prism', 'sat.bus.trap', 'sat.bus.flat', 'sat.bus.cubesat', 'sat.bus.sphere', 'sat.bus.module', 'sat.tower', 'sat.boom', 'sat.dock',
@@ -105,8 +124,28 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
 const isV3 = (v) => Array.isArray(v) && v.length === 3 && v.every(isNum)
 const SOCKET_ID_RE = /^[A-Za-z0-9_+-]+$/
 
-/** 插座 s 能否接 type 组件：accepts 为 null 不限，否则 type 以其中某个前缀开头。 */
-export const socketAccepts = (s, type) => !s || s.accepts == null || (typeof type === 'string' && s.accepts.some((p) => type.startsWith(p)))
+/**
+ * accepts 的一项 p 是否收 type 组件：'@<族>' = 该族的组件（ComponentDef.family；未登记的 type 不收），其余 = type 前缀。
+ * 热路径（拖动中逐插座判）：不分配——族记号在登记时预先拼好（def.familyTok），这里只比字符串。
+ */
+export function acceptsType(p, type) {
+  if (typeof p !== 'string' || typeof type !== 'string') return false
+  if (p.charCodeAt(0) === 64) { const d = REG.get(type); return d !== undefined && d.familyTok === p }
+  return type.startsWith(p)
+}
+/** 插座 s 能否接 type 组件：accepts 为 null 不限，否则其中某一项收它（acceptsType：type 前缀或 '@<族>'）。 */
+export const socketAccepts = (s, type) => !s || s.accepts == null || (typeof type === 'string' && s.accepts.some((p) => acceptsType(p, type)))
+/** 组件的设计领域（domain 首项）：单独新建 / 预览这一件时的文档领域、库里「来自其他领域」角标按它 */
+export const homeDomain = (def) => (def && Array.isArray(def.domain) && def.domain.length ? def.domain[0] : 'spacecraft')
+/**
+ * 组件局部系按哪套约定建的：'spacecraft'（卫星件：局部 −Z 贴父面、几何朝 +Z 长；面 u 侧面取 +Z、±Z 面取 +X，sat.mjs FACE_FRAMES）|
+ * 'frd'（飞机 / 船 / 车 / 地面件：局部系与 FRD / NED 本体同向，立件朝 −Z 长、吊挂件朝 +Z 长；面 u 取 +X，shapeKit.FRD_FACES）|
+ * null（基本体：哪个领域都一样）。跨领域装配时编辑器的「吊挂件挂翼下」、自由贴面的滚转零位按件自己的约定走，不按文档领域。
+ */
+export function frameConvention(def) {
+  if (!def || typeof def.type !== 'string' || def.type.startsWith('prim.')) return null
+  return homeDomain(def) === 'spacecraft' ? 'spacecraft' : 'frd'
+}
 
 /**
  * 面 face 可否作安装基面：组件 mountableFaces 为 false / 函数返回假 → 否；面带 accepts 时 type 须匹配其中某个前缀（type 不给不查）。
@@ -117,7 +156,7 @@ export function faceAccepts(def, params, face, type) {
   const mf = def.mountableFaces
   if (mf === false) return false
   if (typeof mf === 'function') { try { if (!mf(params)) return false } catch { return false } }
-  return face.accepts == null || typeof type !== 'string' || (Array.isArray(face.accepts) && face.accepts.some((p) => type.startsWith(p)))
+  return face.accepts == null || typeof type !== 'string' || (Array.isArray(face.accepts) && face.accepts.some((p) => acceptsType(p, type)))
 }
 
 /**
@@ -145,6 +184,7 @@ function checkSockets(list) {
     if (!(isNum(s.size) && s.size > 0)) out.push(`插座 ${id}：size 须为正数`)
     if (!(isNum(s.roll) && s.roll >= 0)) out.push(`插座 ${id}：roll 须为非负数`)
     if (!(s.accepts === null || (Array.isArray(s.accepts) && s.accepts.every((x) => typeof x === 'string' && x)))) out.push(`插座 ${id}：accepts 须为 null 或前缀数组`)
+    else if (s.accepts) for (const x of s.accepts) if (x[0] === '@' && !Object.hasOwn(COMPONENT_FAMILIES, x.slice(1))) out.push(`插座 ${id}：accepts 里的组件族 ${x} 未定义`)
   }
   return out
 }
@@ -215,6 +255,10 @@ export function registerComponent(def, opts = {}) {
   if (!Array.isArray(def.domain) || !def.domain.length || !def.domain.every((d) => ASM_DOMAINS.includes(d))) throw new Error(`组件 ${type}：domain 非法`)
   if (!PART_ROLES.includes(def.role)) throw new Error(`组件 ${type}：role 非法（${def.role}）`)
   if (def.category !== undefined && !COMPONENT_CATEGORIES.includes(def.category)) throw new Error(`组件 ${type}：category 非法（${def.category}）`)
+  if (def.family !== undefined) {
+    if (!Object.hasOwn(COMPONENT_FAMILIES, def.family)) throw new Error(`组件 ${type}：family 非法（${def.family}）`)
+    if (COMPONENT_FAMILIES[def.family] !== def.category) throw new Error(`组件 ${type}：family ${def.family} 不属于 category ${def.category}`)
+  }
   if (def.aliases !== undefined && !(Array.isArray(def.aliases) && def.aliases.every((x) => typeof x === 'string' && x))) throw new Error(`组件 ${type}：aliases 须为字符串数组`)
   if (typeof def.build !== 'function') throw new Error(`组件 ${type}：缺 build`)
   if (!isObj(def.params)) throw new Error(`组件 ${type}：params 须为对象`)
@@ -230,7 +274,7 @@ export function registerComponent(def, opts = {}) {
   if (sp !== undefined && typeof sp !== 'function' && !(Array.isArray(sp) && sp.every((p) => PLANES.includes(p)))) throw new Error(`组件 ${type}：symmetricPlanes 非法`)
   const params = {}
   for (const [k, s] of Object.entries(def.params)) params[k] = Object.freeze({ ...s, options: s.options ? Object.freeze(s.options.slice()) : undefined, optionLabels: s.optionLabels ? Object.freeze({ ...s.optionLabels }) : undefined })
-  const presets = checkPresets(type, def.presets, { keys: Object.keys(params), params, validate: def.validate })
+  const presets = checkPresets(type, def.presets, { keys: Object.keys(params), params, validate: def.validate, category: def.category, family: def.family })
   if (def.sockets) {
     const dflt = {}
     for (const [k, s] of Object.entries(params)) dflt[k] = s.def
@@ -249,15 +293,17 @@ export function registerComponent(def, opts = {}) {
     symmetricPlanes: Array.isArray(sp) ? Object.freeze(sp.slice()) : sp,
     singleSockets: Array.isArray(ssk) ? Object.freeze(ssk.slice()) : ssk,
     aliases: Array.isArray(def.aliases) ? Object.freeze(def.aliases.slice()) : undefined,
-    presets
+    presets,
+    // accepts 里按族收件的记号（acceptsType 只比字符串，热路径不拼串）
+    familyTok: def.family ? '@' + def.family : null
   })
   REG.set(type, out)
   return out
 }
 
 /**
- * 常用型号表的校验与冻结（d = 冻结中的 {keys, params, validate}）：id 小写连字符且不重复、中英文名非空、别名为字符串数组、
- * 分组合法、参数键都在定义里且补缺省后过 checkParams（含组件自己的约束）。
+ * 常用型号表的校验与冻结（d = 冻结中的 {keys, params, validate, category, family}）：id 小写连字符且不重复、中英文名非空、别名为字符串数组、
+ * 分组合法、族属于型号的分组（型号自己的 category ‖ 组件的）、参数键都在定义里且补缺省后过 checkParams（含组件自己的约束）。
  */
 function checkPresets(type, list, d) {
   if (list === undefined) return undefined
@@ -271,13 +317,18 @@ function checkPresets(type, list, d) {
     if (typeof p.titleZh !== 'string' || !p.titleZh || typeof p.title !== 'string' || !p.title) bad('缺 titleZh / title')
     if (p.aliases !== undefined && !(Array.isArray(p.aliases) && p.aliases.every((x) => typeof x === 'string' && x))) bad('aliases 须为字符串数组')
     if (p.category !== undefined && !COMPONENT_CATEGORIES.includes(p.category)) bad(`category 非法（${p.category}）`)
+    if (p.family !== undefined) {
+      if (!Object.hasOwn(COMPONENT_FAMILIES, p.family)) bad(`family 非法（${p.family}）`)
+      if (COMPONENT_FAMILIES[p.family] !== (p.category || d.category)) bad(`family ${p.family} 不属于 category ${p.category || d.category}`)
+    }
     if (!isObj(p.params)) bad('params 须为对象')
     for (const k of Object.keys(p.params)) if (!d.keys.includes(k)) bad(`参数 ${k} 不在组件定义里`)
     const errs = checkParams(d, fillParams(d, p.params), 'params')
     if (errs.length) bad(errs.join('；'))
     return Object.freeze({
       id: p.id, titleZh: p.titleZh, title: p.title, params: Object.freeze({ ...p.params }),
-      ...(p.aliases ? { aliases: Object.freeze(p.aliases.slice()) } : {}), ...(p.category ? { category: p.category } : {})
+      ...(p.aliases ? { aliases: Object.freeze(p.aliases.slice()) } : {}), ...(p.category ? { category: p.category } : {}),
+      ...(p.family ? { family: p.family } : {})
     })
   }))
 }

@@ -359,7 +359,8 @@ function propellerMesh(Dp, nBlades = 5) {
 }
 
 const hull = {
-  type: 'sea.hull', domain: ['ship'], title: 'Hull', titleZh: '船体', role: 'bus', massSink: 'hull',
+  type: 'sea.hull', domain: ['ship'], title: 'Hull', titleZh: '船体', role: 'bus', category: 'structure', family: 'body', massSink: 'hull',
+  aliases: ['船体', '船', '船舶', 'hull', 'ship'],
   params: {
     loaM: num(300, 'm', '总长', { gt: 5, max: 500 }),
     beamM: num(48, 'm', '型宽', { gt: 1, max: 80 }),
@@ -543,11 +544,13 @@ function ssGeom(p) {
 /**
  * 上层建筑顶面 / 翼桥插座推荐的件：只列「立在水平顶面上、滚转 0° 与父件同向」的立件。反射面（es.refl.*，mount 贴座架的
  * 俯仰轴插座）、副面 / 馈源（贴焦点插座）直接装到顶面上会被转成视轴朝天、方位关节轴水平，所以不列——要先放座架 / 立柱。
+ * 2026-10-12 组件不限领域：另收阵列 / 线天线 / 天线罩族（卫星相控阵、GNSS / 螺旋天线、星载罩：都朝安装端法向长，立在顶面上即朝天）。
  */
-const SS_ACCEPTS = Object.freeze(['sea.mast', 'sea.vsat', 'veh.cotm', 'es.pedestal.', 'es.mast', 'es.vsat.mount', 'es.radome', 'es.shelter', 'es.tower', 'prim.'])
+const SS_ACCEPTS = Object.freeze(['sea.mast', 'sea.vsat', 'veh.cotm', 'es.pedestal.', 'es.mast', 'es.vsat.mount', 'es.radome', 'es.shelter', 'es.tower', '@array', '@wire', '@radome', 'prim.'])
 
 const superstructure = {
-  type: 'sea.superstructure', domain: ['ship'], title: 'Superstructure', titleZh: '上层建筑', role: 'other',
+  type: 'sea.superstructure', domain: ['ship'], title: 'Superstructure', titleZh: '上层建筑', role: 'other', category: 'structure', family: 'facility',
+  aliases: ['上层建筑', '驾驶室', '舰桥', '甲板室', 'bridge', 'superstructure'],
   params: {
     lengthM: num(16, 'm', '长', { gt: 1, max: 80, title: '底层前后长' }),
     widthM: num(30, 'm', '宽', { gt: 1, max: 80 }),
@@ -663,7 +666,8 @@ function funGeom(p) {
 }
 
 const funnel = {
-  type: 'sea.funnel', domain: ['ship'], title: 'Funnel', titleZh: '烟囱', role: 'other',
+  type: 'sea.funnel', domain: ['ship'], title: 'Funnel', titleZh: '烟囱', role: 'other', category: 'structure', family: 'facility',
+  aliases: ['烟囱', '排烟', 'funnel', 'stack'],
   params: {
     lengthM: num(10, 'm', '长', { gt: 0.3, max: 60 }),
     widthM: num(7, 'm', '宽', { gt: 0.3, max: 60 }),
@@ -677,7 +681,7 @@ const funnel = {
   // top = 顶面前半中心（排气管都在后半）
   sockets: (p) => {
     const g = funGeom(p), hxT = g.hx * g.k, hyT = g.hy * g.k
-    return [standSocket(Math.min(p.lengthM, p.widthM), 15), sock('top', [g.dxT + 0.5 * hxT, 0, -g.H], [0, 0, -1], [1, 0, 0], Math.max(0.2, Math.min(0.9 * hxT, 1.8 * hyT)), 15, Object.freeze(['sea.mast', 'sea.vsat', 'prim.']))]
+    return [standSocket(Math.min(p.lengthM, p.widthM), 15), sock('top', [g.dxT + 0.5 * hxT, 0, -g.H], [0, 0, -1], [1, 0, 0], Math.max(0.2, Math.min(0.9 * hxT, 1.8 * hyT)), 15, Object.freeze(['sea.mast', 'sea.vsat', '@array', '@wire', 'prim.']))]
   },
   symmetricPlanes: ['xz'],
   build(p, kit) {
@@ -716,7 +720,8 @@ const RADARS = Object.freeze([Object.freeze({ L: 3.9, f: 0.5, sg: 1 }), Object.f
 const mastGeom = (p) => ({ H: p.heightM, d: p.dM, tP: p.platform ? Math.min(0.15, 0.05 * p.heightM) : 0, zY: -0.86 * p.heightM })
 
 const mast = {
-  type: 'sea.mast', domain: ['ship'], title: 'Mast', titleZh: '桅杆', role: 'boom',
+  type: 'sea.mast', domain: ['ship'], title: 'Mast', titleZh: '桅杆', role: 'boom', category: 'structure', family: 'truss',
+  aliases: ['桅杆', '雷达桅', '主桅', 'mast'],
   params: {
     heightM: num(8, 'm', '高', { gt: 0.5, max: 40, title: '安装面到桅顶平台顶面' }),
     dM: num(0.45, 'm', '主杆直径', { gt: 0.05, max: 3, title: '根部直径，向上收缩至 0.7 倍' }),
@@ -730,10 +735,10 @@ const mast = {
   },
   // 横桁两端插座只在有横桁时给（已挂上去的子件在关掉横桁后由 validateAssembly 报「父件没有插座」，与 veh.body 的 bed 同口径）
   sockets: (p) => {
-    const g = mastGeom(p), acc = Object.freeze(['sea.vsat', 'veh.cotm', 'prim.'])
+    const g = mastGeom(p), acc = Object.freeze(['sea.vsat', 'veh.cotm', '@array', '@wire', 'prim.'])
     const out = [
       standSocket(Math.max(2 * p.dM, 0.4), 15),
-      sock('platform', [0, 0, -g.H], [0, 0, -1], [1, 0, 0], p.platform ? 0.8 * p.platformWM : p.dM, 15, Object.freeze(['sea.vsat', 'es.radome', 'veh.cotm', 'prim.']))
+      sock('platform', [0, 0, -g.H], [0, 0, -1], [1, 0, 0], p.platform ? 0.8 * p.platformWM : p.dM, 15, Object.freeze(['sea.vsat', 'es.radome', 'veh.cotm', '@array', '@wire', '@radome', 'prim.']))
     ]
     if (p.yard) {
       const yy = Math.max(0.05, p.yardWM / 2 - 0.4)
@@ -856,7 +861,8 @@ function contGeom(p) {
 }
 
 const containers = {
-  type: 'sea.containers', domain: ['ship', 'ground', 'vehicle'], title: 'Container stack', titleZh: '集装箱', role: 'other',
+  type: 'sea.containers', domain: ['ship', 'ground', 'vehicle'], title: 'Container stack', titleZh: '集装箱', role: 'other', category: 'structure', family: 'facility',
+  aliases: ['集装箱', '货柜', '货物', 'container'],
   params: {
     size: enm('40ft', ['40ft', '20ft'], '箱型', { source: ISO668, title: 'ISO 668 系列 1：40 ft 长 12.192 m、20 ft 长 6.058 m；宽 2.438 m' }),
     highCube: bool(true, '高箱', { source: ISO668, title: '高箱 2.896 m；否 = 2.591 m（ISO 668）' }),
@@ -966,7 +972,8 @@ function vsatGeom(p) {
 const RADOME_AREAL = 25, SHIP_DISH_AREAL = 15   // 罩壳 / 反射面等效面密度（kg/m²，示意）
 
 const vsatRadome = {
-  type: 'sea.vsat.radome', domain: ['ship', 'vehicle', 'ground'], title: 'Maritime VSAT radome', titleZh: '船载卫通罩', role: 'other',
+  type: 'sea.vsat.radome', domain: ['ship', 'vehicle', 'ground'], title: 'Maritime VSAT radome', titleZh: '船载卫通罩', role: 'other', category: 'antenna', family: 'radome',
+  aliases: ['船载卫通', '天线罩', '卫通罩', '雷达罩', 'VSAT', 'radome', 'maritime'],
   params: {
     model: enm('v130nx', ['v100nx', 'v130nx', 'v240m', 'custom'], '型号', {
       source: V130NX_URL,

@@ -66,7 +66,7 @@ provide('sat', sat)
 // 2026-10 统一设计：原「模型」「生成」「装配」三页合并成「设计」——打开什么文档就在同一个工作区里编辑它：
 // 左栏快速设置（驱动参数 / 主要参数）+ 组件库，中间视口，右栏结构树 + 属性（选根节点 = 模型级属性：质量特性、挂点、关节、太阳翼组…）。
 const TABS = [
-  { key: 'lib', order: 10, label: '库', icon: 'package', tip: '模型库：内置 / 云端 / 本机 / STK / 参数化 / 装配；双击在设计页打开（模板打开为模板签，编辑时自动创建副本）', comp: defineAsyncComponent(() => import('./LibTab.vue')) },
+  { key: 'lib', order: 10, label: '库', icon: 'package', tip: '库：模型（内置 / 云端 / 本机 / STK / 参数化 / 装配）与组件（全部组件与常用型号）；双击在设计页打开（模板打开为模板签，编辑时自动创建副本；组件以此为根件新建装配件）', comp: defineAsyncComponent(() => import('./LibTab.vue')) },
   { key: 'import', order: 20, label: '导入', icon: 'import', tip: '导入 glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP，或从本机 STK 目录导入', comp: defineAsyncComponent(() => import('./ImportTab.vue')) },
   { key: 'design', order: 30, label: '设计', icon: 'boxes', tip: '设计：快速设置驱动参数，或在结构树与属性面板中逐件编辑；选中根节点查看模型级属性', comp: defineAsyncComponent(() => import('./design/DesignSide.vue')) },
   { key: 'sat', order: 50, label: '卫星', icon: 'satellite', tip: '为卫星绑定模型、姿态律与挂点（天线安装位置：位置 / 视轴 / 视场 / 万向节 / 天线引用）', comp: defineAsyncComponent(() => import('./SatTab.vue')) },
@@ -86,6 +86,8 @@ st.tab = tabFrom(q0.get('tab')) || tabFrom(lsGet('model/tab', 'lib')) || 'lib'
 watch(() => st.tab, (v) => lsSet('model/tab', v))
 const curTab = computed(() => TABS.find((t) => t.key === st.tab) || TABS[0])
 const designOn = computed(() => st.tab === 'design')
+// 左栏自己画页眉的页签（设计页「快速设置 | 组件」、库页「模型 | 组件」）：不套通用栏头、栏体不加内边距
+const ownHd = computed(() => designOn.value || st.tab === 'lib')
 // 设计页显示什么由激活签决定：装配签 = 装配视图；模型签 = 模型视图（cur）；没有签 = 空态（视口空、左右栏空、功能区只留「新建」「文件」）
 const docKind = computed(() => wb.activeKind())
 const modelOn = computed(() => designOn.value && docKind.value === 'model')
@@ -265,8 +267,8 @@ function openNew(ev) {
   newMenu.value = { x: Math.min(r.left, window.innerWidth - 176), y: r.bottom + 2 }
 }
 function openExport() { st.tab = 'export' }
-// 「导出…」：设计页有签（导出对象 = 激活签）或当前有模型时可用
-const canOpenExport = computed(() => (designOn.value ? !!wb.activeDocState() : !!cur.meta))
+// 「导出…」：设计页有签（导出对象 = 激活签）或当前有模型时可用；库页组件档的只读预览（cur.id = 'cmp:…'）不是导出候选
+const canOpenExport = computed(() => (designOn.value ? !!wb.activeDocState() : !!cur.meta && !String(cur.id || '').startsWith('cmp:')))
 
 // ============ 整窗拖放导入 ============
 const dropOn = ref(false)
@@ -579,8 +581,8 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
 
     <div class="lb-body">
       <aside class="lb-col lb-side md-side" :class="{ resizing: sideResizing }" :style="{ width: sideWEff + 'px' }">
-        <div v-if="!designOn" class="lb-col-hd"><span class="lb-cfg-hd-t">{{ curTab.label }}</span></div>
-        <div class="lb-col-bd md-side-bd" :class="{ dsg: designOn }">
+        <div v-if="!ownHd" class="lb-col-hd"><span class="lb-cfg-hd-t">{{ curTab.label }}</span></div>
+        <div class="lb-col-bd md-side-bd" :class="{ dsg: ownHd }">
           <KeepAlive>
             <component :is="curTab.comp" :key="curTab.key" />
           </KeepAlive>
@@ -720,7 +722,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 
 /* —— 本窗口专有 —— */
 .md-side-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; min-height: 0; }
-/* 设计页左栏：页眉（快速设置 / 组件）与滚动区由 DesignSide 自己排 */
+/* 设计页 / 库页左栏：页眉（快速设置 | 组件、模型 | 组件）与滚动区由 DesignSide / LibTab 自己排 */
 .md-side-bd.dsg { padding: 0; overflow: hidden; }
 .md-stage { position: relative; overflow: hidden; }
 .md-view { position: absolute; inset: 0; overflow: hidden; }

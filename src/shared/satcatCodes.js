@@ -171,6 +171,7 @@ export const LAUNCH_SITE = {
   SNMLP: { en: 'San Marco Launch Platform, Indian Ocean (Kenya)', zh: '圣马科发射平台（印度洋，肯尼亚）' },
   SPKII: { en: 'Space Port Kii, Japan', zh: '纪伊航天港（日本）' },
   SRILR: { en: 'Satish Dhawan Space Centre, India (Formerly Sriharikota Launching Range)', zh: '萨迪什·达万航天中心（印度）' },
+  STARB: { en: 'Starbase, Texas, USA', zh: '星舰基地（得克萨斯，美国）' },
   SUBL: { en: 'Submarine Launch Platform (mobile)', zh: '潜艇发射平台（移动）' },
   SVOBO: { en: 'Svobodnyy Launch Complex, Russia', zh: '斯沃博德内发射场（俄罗斯）' },
   TAISC: { en: 'Taiyuan Satellite Launch Center, PRC', zh: '太原卫星发射中心（中国）' },

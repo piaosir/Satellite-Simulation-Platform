@@ -449,6 +449,21 @@ contextBridge.exposeInMainWorld('api', {
     ephemTable: (groupId) => ipcRenderer.invoke('omm:ephemTable', groupId),
     customExportGroup: (groupId, defaultName, format, opts) => ipcRenderer.invoke('omm:customExportGroup', groupId, defaultName, format, opts),
     exportRecords: (records, defaultName, format, opts) => ipcRenderer.invoke('omm:exportRecords', records, defaultName, format, opts),
+    // 星历导入（预览 → 逐星选「新建 / 对应已有卫星」→ 提交）。importPick 原生多选框（字节在主进程读、编码在主进程认）；
+    // importPreview 拖放（[{ name, bytes:Uint8Array }]）；importCommit([{ token, name, binds }])；importCancel(tokens)
+    importPick: () => ipcRenderer.invoke('omm:importPick'),
+    importPreview: (files) => ipcRenderer.invoke('omm:importPreview', files),
+    importCommit: (list) => ipcRenderer.invoke('omm:importCommit', list),
+    importCancel: (tokens) => ipcRenderer.invoke('omm:importCancel', tokens),
+    // 叠加星历（导入时「对应已有卫星」）：全部对应关系 / 改对应
+    ephemBindings: () => ipcRenderer.invoke('omm:ephemBindings'),
+    ephemRebind: (groupId, key, target) => ipcRenderer.invoke('omm:ephemRebind', groupId, key, target),
+    rebindPreview: (groupId) => ipcRenderer.invoke('omm:rebindPreview', groupId),
+    // 星历导出：plan 给对话框读数；exportEphem 弹保存框 / 选文件夹后执行；进度经 onExportProgress 推回（返回退订函数）
+    exportPlan: (req) => ipcRenderer.invoke('omm:exportPlan', req),
+    exportEphem: (req) => ipcRenderer.invoke('omm:exportEphem', req),
+    exportCancel: (jobId) => ipcRenderer.invoke('omm:exportCancel', jobId),
+    onExportProgress: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('omm:exportProgress', h); return () => ipcRenderer.removeListener('omm:exportProgress', h) },
     // 星历取数链路的操作明细（主进程广播）→ 底部「日志」窗格；{ text, level }
     onLog: (cb) => ipcRenderer.on('omm:log', (_e, p) => cb(p))
   },

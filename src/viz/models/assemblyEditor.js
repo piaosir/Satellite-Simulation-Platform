@@ -65,7 +65,7 @@
 import * as THREE from 'three'
 import { TransformControls } from 'three/addons/controls/TransformControls.js'
 import { normalizeAssembly, solvePose, combineMass, expandSymmetry, clearBuildCache } from '@core/models/assembly.mjs'
-import { getComponent, fillParams, checkParams, socketAccepts } from '@core/models/components/index.mjs'
+import { getComponent, fillParams, checkParams, socketAccepts, frameConvention } from '@core/models/components/index.mjs'
 import * as S from '@core/models/asmSnap.mjs'
 import { poseArticulations, restoreFilePose } from './thumbs.js'
 import { createGeomCache, fillEntry, prefixedArts, palette, createFxLayer, createGhostPool, FX, writeRenderMatrix } from './asmLive.js'
@@ -632,7 +632,7 @@ export function createAssemblyEditor(vp, opts = {}) {
   function prewarmGhost(type, o = {}) {
     if (!attached || dr.active) return false
     const def = getComponent(type)
-    if (!def || !def.domain.includes(doc.domain)) return false
+    if (!def) return false
     const params = o && o.params && typeof o.params === 'object' ? JSON.parse(JSON.stringify(o.params)) : {}
     let item
     try { item = cache.get({ type, params, material: null }) } catch { return false }
@@ -1945,11 +1945,12 @@ export function createAssemblyEditor(vp, opts = {}) {
     if (exitThrough(he, pe, dist)) dr.rawUnder = true
   }
   /**
-   * 拖动件是吊挂件：非卫星领域（本体 +Z 向下）、不是基本体、表面安装要用的安装端（mountEff：B 选过的 / 拾起件原来的 / 缺省）
+   * 拖动件是吊挂件：非卫星领域（本体 +Z 向下）、按 FRD 约定建的件（frameConvention：卫星件局部 −Z 贴父面是「立在面上」、不是吊挂，
+   * 跨领域装上飞机 / 船时照样立在命中面上；基本体不分）、表面安装要用的安装端（mountEff：B 选过的 / 拾起件原来的 / 缺省）
    * 法向 = 局部 −Z（shapeKit.hangSocket：短舱 / 光电球）。零分配。
    */
   function hangOf() {
-    if (doc.domain === 'spacecraft' || !dr.type || dr.type.startsWith('prim.')) return false
+    if (doc.domain === 'spacecraft' || !dr.type || frameConvention(dr.def || getComponent(dr.type)) !== 'frd') return false
     const ms = mountSockById(mountEff(-1) || (dr.def ? dr.def.mountSocket : 'root'), dr.comp)
     return !!ms && ms.n[2] < -0.99
   }
@@ -1959,11 +1960,14 @@ export function createAssemblyEditor(vp, opts = {}) {
    *   |n·X| > √½）时取父件 −Z（上），同 shapeKit.FRD_FACES 的 ±X 面 u = −Z；
    *   卫星：法向几乎沿 ±Z（|n·Z| ≥ √½）取父件 +X，侧面取 +Z，同 sat.mjs FACE_FRAMES。
    * 旧口径「投影最长的那根轴」在翼型这类缓曲面上会在 X / Y 之间来回跳（翼下发动机机头转向翼展方向），2026-10-07 改。零分配。
+   * 跟的是父件自己的面坐标约定（frameConvention；2026-10-12 组件不限领域后，船上的卫星件、卫星上的地面站件各按各的），
+   * 基本体（不分约定）沿用文档领域。
    */
-  function rawRefAxis(M, n, out) {
+  function rawRefAxis(M, n, out, ptype) {
     const nx = M[0] * n[0] + M[1] * n[1] + M[2] * n[2], nz = M[8] * n[0] + M[9] * n[1] + M[10] * n[2]
+    const fc = frameConvention(getComponent(ptype))
     let k = 0, sg = 1
-    if (doc.domain === 'spacecraft') { if (!(Math.abs(nz) >= Math.SQRT1_2)) k = 2 } else if (Math.abs(nx) > Math.SQRT1_2) { k = 2; sg = -1 }
+    if (fc === null ? doc.domain === 'spacecraft' : fc === 'spacecraft') { if (!(Math.abs(nz) >= Math.SQRT1_2)) k = 2 } else if (Math.abs(nx) > Math.SQRT1_2) { k = 2; sg = -1 }
     out[0] = sg * M[4 * k]; out[1] = sg * M[4 * k + 1]; out[2] = sg * M[4 * k + 2]
   }
   const _ro = new THREE.Vector3(), _rd = new THREE.Vector3()
@@ -2188,7 +2192,7 @@ export function createAssemblyEditor(vp, opts = {}) {
         }
       }
       const M = pe.poseM
-      rawRefAxis(M, HN, AX3)
+      rawRefAxis(M, HN, AX3, pe.comp ? pe.comp.type : null)
       a.mode = 'free'; a.socket = null; a.face = null; a.uv = null; a.roll = 0; a.mount = mountEff(-1); zeroExt(a)
       S.frameZX(T0, HP, HN, AX3, 1)
       S.m4RotZ(T1, dr.roll)
@@ -2467,8 +2471,9 @@ export function createAssemblyEditor(vp, opts = {}) {
 
   function beginDragFromLib(type, clientX, clientY, o = {}) {
     if (!attached || busy() || posePreview) return false
+    // 组件不限领域（2026-10-12）：卫星相控阵拖上船、地面站馈源拖上卫星都行
     const def = getComponent(type)
-    if (!def || !def.domain.includes(doc.domain)) return false
+    if (!def) return false
     const params = o && o.params && typeof o.params === 'object' ? JSON.parse(JSON.stringify(o.params)) : {}
     let item
     try { item = cache.get({ type, params, material: null }) } catch { return false }
@@ -2702,7 +2707,7 @@ export function createAssemblyEditor(vp, opts = {}) {
   function quickAdd(type, o = {}) {
     if (busy() || posePreview) return false
     const def = getComponent(type)
-    if (!def || !def.domain.includes(doc.domain)) return false
+    if (!def) return false
     const params = o && o.params && typeof o.params === 'object' ? JSON.parse(JSON.stringify(o.params)) : {}
     let spec
     const wasEmpty = !doc.comps.length

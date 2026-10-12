@@ -1,7 +1,7 @@
 // 视频导出的纯计算（src/shared/video/videoPlan.js）：节奏三角、首尾帧落点、取景框、渲染几何、H.264 Level 选择、码率与体积；
 // 仿真秒读数（亚秒步长）、导出入口单飞闸。
 // 运行：npm test -- videoPlan
-import { computePace, frameTime, frameTsUs, cropRect, renderGeom, h264Codec, bitrateOf, gopFrames, estimateBytes, evenDims, fmtClock, fmtSpeed, fmtSimSec, singleFlight, MAX_FRAMES } from '../../../src/shared/video/videoPlan.js'
+import { computePace, frameTime, frameTsUs, cropRect, renderGeom, normFrame, frameOfRect, fitSize, FRAME_SMIN, h264Codec, bitrateOf, gopFrames, estimateBytes, evenDims, fmtClock, fmtSpeed, fmtSimSec, singleFlight, MAX_FRAMES } from '../../../src/shared/video/videoPlan.js'
 import { parseDur } from '../../../src/shared/tlPeriod.js'
 
 let pass = 0, fail = 0
@@ -52,8 +52,23 @@ const near = (a, b, e = 1e-9) => Math.abs(a - b) <= e
   ok('③ 宽舞台：取满宽、上下居中', near(a.w, 1500) && near(a.h, 843.75) && near(a.y, 28.125) && a.x === 0)
   const b = cropRect(1000, 900, 1080, 1920)        // 竖屏 → 左右留边
   ok('③ 竖屏：取满高、左右居中', near(b.h, 900) && near(b.w, 506.25) && near(b.x, 246.875))
+  // 摆位：出厂 = 最大居中（与不给摆位逐位相同）；缩放 + 平移；夹进舞台；屏上框 ⇄ 摆位回环
+  const d = cropRect(1500, 900, 1920, 1080, { x: 0.5, y: 0.5, s: 1 })
+  ok('③ 出厂摆位 = 最大居中框', d.x === a.x && d.y === a.y && d.w === a.w && d.h === a.h)
+  const e = cropRect(1500, 900, 1920, 1080, { x: 0.25, y: 0.3, s: 0.5 })
+  ok('③ 半大、框心在 (25%, 30%)', near(e.w, 750) && near(e.h, 421.875) && near(e.x + e.w / 2, 375) && near(e.y + e.h / 2, 270))
+  const f = cropRect(1500, 900, 1920, 1080, { x: 0, y: 1, s: 0.5 })
+  ok('③ 拖出界：贴着舞台边停住', near(f.x, 0) && near(f.y + f.h, 900))
+  const g0 = cropRect(1500, 900, 1920, 1080, { x: 0.9, y: 0.1, s: 1 })
+  ok('③ 最大框只能沿有余量的那一轴挪（宽舞台：横向贴满、纵向贴顶）', near(g0.x, 0) && near(g0.w, 1500) && near(g0.y, 0))
+  const fr = frameOfRect(1500, 900, 1920, 1080, e)
+  ok('③ 屏上框 → 摆位回环', near(fr.x, 0.25) && near(fr.y, 0.3) && near(fr.s, 0.5))
+  const nf = normFrame({ x: -3, y: 'a', s: 0.01 })
+  ok('③ 坏摆位规整：夹到 0…1、大小下限 FRAME_SMIN', nf.x === 0 && nf.y === 0.5 && nf.s === FRAME_SMIN && normFrame(null).s === 1)
+  const fs = fitSize(1500, 900, 1920, 1080)
+  ok('③ 最大可容框尺寸', near(fs.w, 1500) && near(fs.h, 843.75))
 }
-// ④ 渲染几何：裁切源矩形 = 成片尺寸 × 超采样；标注缩放只改 CSS 尺寸
+// ④ 渲染几何：整舞台定取景（CSS 尺寸 = 舞台 / u），只出取景框一块（画布 = 框 / u，像素恰 = 成片 × 超采样）；标注缩放只改 CSS 尺寸
 {
   const c = cropRect(1500, 900, 1920, 1080)
   const g = renderGeom(1500, 900, c, 1920, 1080, 1, 2)
@@ -61,6 +76,17 @@ const near = (a, b, e = 1e-9) => Math.abs(a - b) <= e
   ok('④ u=1：CSS 尺寸 = 舞台', g.cssW === 1500 && g.cssH === 900)
   const g2 = renderGeom(1500, 900, c, 1920, 1080, 1.5, 1)
   ok('④ u=1.5：CSS 尺寸缩 1.5 倍、源矩形仍 = 成片', near(g2.cssW, 1000) && near(g2.src.w, 1920, 1e-6) && near(g2.src.h, 1080, 1e-6))
+  // 画布 = 取景框：floor(框宽 × 倍率) 恰为成片像素（不因浮点少 1 px）；视口原点 = 框在整舞台里的位置
+  const e = cropRect(1500, 900, 3840, 2160, { x: 0.3, y: 0.62, s: 0.37 })
+  let allExact = true
+  for (const u of [0.5, 1, 1.25, 2]) for (const ss of [1, 2]) {
+    const q = renderGeom(1500, 900, e, 3840, 2160, u, ss)
+    if (Math.floor(q.view.w * q.renderPr) !== 3840 * ss || Math.floor(q.view.h * q.renderPr) !== 2160 * ss) allExact = false
+  }
+  ok('④ 画布像素恰 = 成片 × 超采样（任意框、任意标注缩放）', allExact)
+  const q = renderGeom(1500, 900, e, 3840, 2160, 1.25, 1)
+  ok('④ 视口：框在渲染 CSS 坐标里的原点与大小', near(q.view.x, e.x / 1.25) && near(q.view.y, e.y / 1.25) && near(q.view.w, e.w / 1.25, 1e-5) && near(q.cssW, 1200))
+  ok('④ 整舞台视口像素 = 舞台 × 成片宽 / 框宽（框越小越大，按它判显卡视口上限）', near(q.cssW * q.renderPr, 1500 * 3840 / e.w, 1e-6))
 }
 // ⑤ H.264 Level：最低可行档
 {

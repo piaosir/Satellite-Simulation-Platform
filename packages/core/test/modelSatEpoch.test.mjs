@@ -176,5 +176,24 @@ ok('分析页：「当前时刻」= 场景时刻；星位缓存键带轨道版�
   assert.ok(!/Date\.now\(\)/.test(AT), 'AnalysisTab 不再取系统钟')
   assert.match(AT, /function nowT0\(\) \{ W\.t0 = minuteNow\(\); ana\.invalidate\(\) \}/)
 })
+// ⑤ 叠加星历（主窗口导入星历「对应已有卫星」/ 改对应 / 删组）：工作台开着时也要跟上
+ok('叠加星历：焦点回来当场重核，按对应关系签名比；注册表真换了才通知（本窗口首灌不通知）', () => {
+  assert.ok(S.includes("window.addEventListener('focus', () => { _ovlP = null; ensureOverlays() })"), '焦点回来立即重核，不等下一次解析轨道')
+  const eo = fnBody(S, 'function ensureOverlays() {')
+  assert.match(eo, /if \(sig === _ovlSig\) return/, '对应关系没变：不重取采样表')
+  assert.match(eo, /if \(reg === _regSig\) return/, '注册表没变：不通知')
+  assert.match(eo, /const first = _regSig === null/)
+  assert.match(eo, /if \(!first\) for \(const fn of _ovlSubs\)/, '首灌不通知')
+  assert.match(S, /export function onOverlaysChange\(fn\)/)
+  assert.match(fnBody(S, 'export async function resolveOrbit('), /await ensureOverlays\(\)/, '解析轨道前注册表先就位')
+})
+ok('叠加星历：satStore 订阅换版 → 当前星轨道作废（orbitRev+1）、ovlRev+1；dispose 退订；分析页缓存键带 ovlRev', () => {
+  assert.ok(ST.includes('const offOverlays = onOverlaysChange(syncOverlays)'))
+  const so = fnBody(ST, 'function syncOverlays() {')
+  assert.match(so, /st\.ovlRev\+\+/)
+  assert.match(so, /st\.orbit = null; st\.orbitKey = ''; st\.orbitErr = ''; st\.orbitRev\+\+/)
+  assert.match(fnBody(ST, 'function dispose() {'), /offOverlays\(\)/)
+  assert.match(fnBody(AC, 'function keyOf() {'), /sat\.st\.ovlRev/)
+})
 
 console.log(`modelSatEpoch: ${n} 项通过`)

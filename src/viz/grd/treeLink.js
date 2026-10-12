@@ -154,7 +154,7 @@ export function linkMissing(node, poolReady, resolve) {
 }
 
 // 树卫星行「聚焦 / 跟随」两钮的状态（对地 / 对星两棵树共用）：点亮 / 置灰 / 悬停说明。
-//   有星座身份的星（关联星 / 天线树虚拟星）：聚焦＝选中并正对（亮＝在聚焦集里）；跟随＝并入聚焦集、设为主选后跟随（亮＝正跟随它）。
+//   有星座身份的星（关联星 / 天线树虚拟星）：聚焦钮单击＝加入 / 移出聚焦集（加入时设主选并正对；亮＝在聚焦集里）；跟随＝并入聚焦集、设为主选后跟随（亮＝正跟随它）。
 //   没有星座身份的星（根数解不出的轨道根数星 / 宿主没给映射）星座里没有条目：聚焦只把地球转到它此刻的星下点（恒不亮），跟随置灰。
 //   关联星不在当前星历（miss）→ 两钮置灰；平面图（flat）里跟随置灰。正跟随着的那颗不灰（留着退出的口）。
 // ctx：{ cur 该行在聚焦集里, miss 关联星缺失, followId 正在跟随的星的 NORAD（'' = 没在跟随）, flat 平面图,
@@ -167,7 +167,7 @@ export function treeNavState(node, { cur = false, miss = false, followId = '', f
   return {
     focusOn: !!id && !!cur,
     focusDis: lost,
-    focusTip: !id ? '转到该卫星（该星不在星座中）' : lost ? missTip : '聚焦卫星（Ctrl 点＝加入 / 移出聚焦集）',
+    focusTip: !id ? '转到该卫星（该星不在星座中）' : lost ? missTip : cur ? '取消聚焦' : '聚焦该卫星',
     followOn: following,
     followDis: !following && (!id || lost || !!flat),
     followTip: following ? '退出跟随（Esc）' : !id ? '跟随卫星（该星不在星座中）' : lost ? missTip : flat ? '跟随卫星（仅 3D 球体）' : '跟随卫星'

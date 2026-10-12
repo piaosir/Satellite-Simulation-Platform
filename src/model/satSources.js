@@ -16,8 +16,9 @@
 // 六根数的历元：树节点存在 node.elements.epoch（shared/treeOrbitEpoch.js，全软件同一口径）；没有的旧数据按固定常量，不取「此刻」——
 //   取此刻就成了每个窗口 / 每次解析各一个历元，同一时刻工作台与 3D 页的星不在轨道同一处。
 import sat from '../viz/constellation/satellite.js'
-import { posAt } from '../viz/constellation/satPos.js'
+import { posAt, stampOverlays, normId } from '../viz/constellation/satPos.js'
 import { tableFrom } from '../viz/constellation/ephemTable.js'
+import { applyEphemOverlays } from '../viz/constellation/ephemOverlays.js'
 import { ensureSearchPool, loadCustomSats } from '../ngso/satSearchPool.js'
 import { generateConstellation } from '../viz/constellation/walker.js'
 import { customConstellationsToOmmRecords } from '../viz/constellation/useCustomConstellations.js'
@@ -184,8 +185,9 @@ export function searchPool(pool, q, max = 200) {
 
 // ───────────────────────────── 轨道解析 ─────────────────────────────
 
+// 建出来的传播体当场打叠加戳：分析页的重活跑在 Worker 里（anaHeavy），那边没有注册表、只认戳
 function satrecFromOmm(rec) {
-  try { const r = sat.omm2satrec(rec); return r && !r.error ? r : null } catch { return null }
+  try { const r = sat.omm2satrec(rec); if (r && !r.error) { stampOverlays(r); return r } return null } catch { return null }
 }
 // 六根数 → satrec：与 3D 页、主进程 buildSatrec 同一份换算（elementsOmm）；历元取 el.epoch（规范化），没有按旧数据常量
 function satrecFromElements(el, noradId) {
@@ -196,7 +198,9 @@ async function ephemProp(groupId, key) {
   let t = null
   try { t = await api.omm.ephemTable(groupId) } catch { t = null }
   const s = ((t && t.sats) || []).find((x) => x && (x.key === key || x.name === key))
-  return s ? tableFrom(s) : null
+  const tab = s ? tableFrom(s) : null
+  if (tab) { tab.satnum = String(s.noradId); stampOverlays(tab) }
+  return tab
 }
 /** 轨道 spec（satSearchPool.orbitSpecOf / 库条目 ngsoSat.orbit 的形状）→ 传播体 */
 async function propOfSpec(spec) {
@@ -235,12 +239,58 @@ async function treeNodeOrbitRaw(node) {
   return fixedAt(node.lon, node.lat, node.altKm)
 }
 
+// 叠加星历（主窗口导入星历时「对应已有卫星」）：本窗口也灌一份 satPos 注册表，目标星在导入星历的时段内与主窗口同样取位。
+// 窗口重新获得焦点时当场重核（主窗口那边可能刚导入 / 改了对应 / 删了组）：先只拉对应关系（几条元数据）按签名比，
+// 变了才重取采样表重灌；注册表真变了 overlaysRev +1 并通知订阅方（satStore 据此作废当前星的轨道，分析页缓存键带着它）。
+// 本窗口第一次灌不通知：那之前解出的传播体都是 resolveOrbit 等它灌完才建的。
+let _ovlP = null, _ovlSig = null, _regSig = null, _ovlRev = 0
+const _ovlSubs = new Set()
+// 对应关系签名：目标号 + 来源（组 / key）+ 时段 + 导入时刻（同名重导入换了表，importedAt 跟着变）
+const bindingsSig = (b) => b.map((x) => (x ? [x.noradId, x.groupId, x.key, x.t0, x.t1, x.importedAt].join('|') : '')).join('\n')
+// 注册表签名：实际灌进去的「目标 → 表（组 / key / 点数 / 时段）」——对应关系读到了、表没取到时与上一份比，没变就不通知
+const registrySig = (map) => [...map].map(([id, tabs]) => id + '=' + tabs.map((t) => { const o = t.ovlInfo || {}; return [o.groupId, o.key, t.n, t.t0, t.t1].join(':') }).join(',')).join(';')
+function ensureOverlays() {
+  if (_ovlP) return _ovlP
+  _ovlP = (async () => {
+    if (!api || !api.omm || !api.omm.ephemBindings) return
+    let b
+    try { b = await api.omm.ephemBindings() } catch { return }   // 读不到：沿用上一份，下次焦点回来再核
+    if (!Array.isArray(b)) return
+    const sig = bindingsSig(b)
+    if (sig === _ovlSig) return
+    const groups = new Map()
+    const r = await applyEphemOverlays(b, async (gid, key) => {
+      if (!groups.has(gid)) groups.set(gid, api.omm.ephemTable(gid).catch(() => null))
+      const t = await groups.get(gid)
+      const s = ((t && t.sats) || []).find((x) => String(x.key) === String(key))
+      const tab = s ? tableFrom(s) : null
+      if (tab) tab.satnum = String(s.noradId)
+      return tab
+    })
+    // 有表没取到（IPC 失败等）：不记对应关系签名，下次焦点回来按同一份再灌
+    _ovlSig = r && r.count >= b.filter((x) => x && normId(x.noradId)).length ? sig : null
+    const reg = registrySig((r && r.map) || new Map())
+    if (reg === _regSig) return
+    const first = _regSig === null
+    _regSig = reg
+    _ovlRev++
+    if (!first) for (const fn of _ovlSubs) { try { fn(_ovlRev) } catch { /* 订阅方自己的错不连累别人 */ } }
+  })().catch(() => {})
+  return _ovlP
+}
+/** 叠加星历版本：本窗口的注册表真换了一次 +1 */
+export const overlaysRev = () => _ovlRev
+/** 订阅「注册表换了」（不含本窗口首灌）：fn(rev)；返回退订函数 */
+export function onOverlaysChange(fn) { if (typeof fn === 'function') _ovlSubs.add(fn); return () => { _ovlSubs.delete(fn) } }
+if (typeof window !== 'undefined') window.addEventListener('focus', () => { _ovlP = null; ensureOverlays() })
+
 /**
  * 绑定键 → 轨道。hint（可选）：{poolRec, lbEntry, treeNode}——选星时手里已有的记录，免得再查一遍。
  * 从天线树节点解出的带 treeFolder（该节点的 folder）。
  * @returns {Promise<{kind:'prop', prop, treeFolder?:string}|{kind:'fixed', rEcef:number[], treeFolder?:string}|null>}
  */
 export async function resolveOrbit(satKey, hint = {}) {
+  await ensureOverlays()   // 传播体一建出来就打叠加戳（satrecFromOmm / ephemProp），注册表得先就位
   const k = String(satKey || '')
   try {
     if (hint.poolRec) { const p = await propOfPoolRec(hint.poolRec); if (p) return { kind: 'prop', prop: p } }

@@ -268,11 +268,11 @@ t('多波束馈源阵装到反射面焦点：口面接口对接，口面中心�
 
 // ───────────────────────── ⑥ 组件库 ─────────────────────────
 
-t('组件库：卫星组按功能小组排（结构与机构 → 电源 → 天线 → 有效载荷 → 推进 → 姿轨控 → 热控），别名可搜，枚举显示名取 optionLabels', () => {
+t('组件库：按功能分组排（结构与机构 → 电源 → 天线 → 有效载荷 → 推进 → 姿轨控 → 热控 → 通用），天线组按组件族分小组，别名可搜，枚举显示名取 optionLabels', () => {
   const g = L.libGroups('spacecraft')
-  const sat = g.find((x) => x.key === 'spacecraft')
-  assert.deepEqual(sat.subs.map((s) => s.label), ['结构与机构', '电源', '天线', '有效载荷', '推进', '姿轨控', '热控'])
-  assert.equal(sat.subs.reduce((k, s) => k + s.items.length, 0), sat.items.length)
+  assert.deepEqual(g.map((x) => x.label), ['结构与机构', '电源', '天线', '有效载荷', '推进', '姿轨控', '热控', '通用'])
+  assert.deepEqual(g.find((x) => x.key === 'antenna').subs.map((s) => s.label), ['反射面天线', '阵列天线', '喇叭与馈源', '线天线', '天线座', '天线罩'])
+  for (const x of g) if (x.subs) assert.equal(x.subs.reduce((k, s) => k + s.items.length, 0), x.items.length, x.key)
   assert.ok(!g.find((x) => x.key === 'common').subs, '通用组没有小组')
   const hit = (q) => L.libGroups('spacecraft', q).flatMap((x) => x.items.map((d) => d.type))
   assert.ok(hit('QHA').includes('sat.antenna.omni'))
@@ -358,7 +358,8 @@ t('常用型号：补缺省后合法、组件库一型一卡（键 type#id）、
     }
   }
   assert.ok(n >= 50, `型号数 ${n}`)
-  const sat = L.libGroups('spacecraft').find((x) => x.key === 'spacecraft')
+  const lib = L.libGroups('spacecraft')
+  const sat = { items: lib.flatMap((x) => x.items) }
   const keys = sat.items.map((e) => e.key)
   assert.equal(new Set(keys).size, keys.length, '卡片键不重复')
   const uhf = sat.items.find((e) => e.key === 'sat.antenna.helix#single-uhf')
@@ -366,7 +367,7 @@ t('常用型号：补缺省后合法、组件库一型一卡（键 type#id）、
   assert.equal(keys.indexOf('sat.antenna.helix#single-uhf'), keys.indexOf('sat.antenna.helix') + 1, '型号紧跟组件本身')
   const tip = L.compTip(uhf).split('\n')
   assert.ok(tip.includes('组件：螺旋天线')); assert.equal(tip[tip.length - 1], 'sat.antenna.helix · single-uhf')
-  assert.equal(sat.subs.find((s) => s.key === 'spacecraft-power').items.some((e) => e.key === 'sat.radiator#cells'), true, '体装电池片在电源小组')
+  assert.equal(lib.find((x) => x.key === 'power').items.some((e) => e.key === 'sat.radiator#cells'), true, '体装电池片在电源组')
   const hit = (q) => L.libGroups('spacecraft', q).flatMap((x) => x.items.map((e) => e.key))
   assert.ok(hit('UHF').includes('sat.antenna.helix#single-uhf'))
   assert.ok(hit('四臂').includes('sat.antenna.omni#qha') && hit('四臂').includes('sat.antenna.omni#qha-bare'))
@@ -582,8 +583,8 @@ t('星体四种：接口落在表面上（多面体按块面求交）、可贴�
   const md = getComponent('sat.bus.module'), mf = md.faces(fillParams(md, {}))
   assert.deepEqual(mf.map((f) => [f.id, f.kind]), [['large', 'cyl'], ['small', 'cyl'], ['-Z', 'plane']])
   assert.deepEqual(md.symmetricPlanes(fillParams(md, {})), ['yz'], '对接口三片导向瓣只关于 yz 对称')
-  // 组件库：结构小组里九种星体都在（含型号卡片）
-  const st = L.libGroups('spacecraft').find((x) => x.key === 'spacecraft').subs.find((s) => s.key === 'spacecraft-structure')
+  // 组件库：结构与机构组「主体结构」族里九种星体都在（含型号卡片）
+  const st = L.libGroups('spacecraft').find((x) => x.key === 'structure').subs.find((s) => s.key === 'structure-body')
   for (const k of ['sat.bus.prism#tri', 'sat.bus.cubesat#6u', 'sat.bus.sphere#dfh1', 'sat.bus.sphere#lageos', 'sat.bus.module#core', 'sat.bus.box#small']) assert.ok(st.items.some((e) => e.key === k), k)
 })
 

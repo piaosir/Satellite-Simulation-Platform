@@ -189,7 +189,8 @@ t('validateAssembly：结构 / 参数 / 安装 / 对称的非法情形逐条报�
   assert.match(errs(docOf([{ ...BUS(), id: 'satellite' }])), /保留名/)
   assert.match(errs(docOf([{ ...BUS(), id: 'my_bus' }])), /comps\[0\]\.id/, 'id 不含下划线')
   assert.match(errs(docOf([BUS(), { id: 'x', type: 'sat.nope', parent: 'bus' }])), /未知组件/)
-  assert.match(errs({ ...docOf([{ id: 'c1', type: 'sat.wing', parent: null }]), domain: 'ship' }), /不能用于 ship/)
+  // 2026-10-12 组件不限领域：卫星件进船舶文档合法（def.domain 只是常用领域）
+  assert.ok(V({ ...docOf([{ id: 'c1', type: 'sat.wing', parent: null }]), domain: 'ship' }).ok, '卫星件可用于 ship')
   assert.match(errs(docOf([BUS({}, { xM: -1 })])), /bus\.params\.xM：须 > 0/)
   assert.match(errs(docOf([BUS({}, { bogus: 1 })])), /bus\.params\.bogus：未知参数/)
   assert.match(errs(docOf([BUS({}, { mli: 'gold' })])), /bus\.params\.mli/)

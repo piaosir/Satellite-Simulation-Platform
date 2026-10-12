@@ -185,7 +185,8 @@ function bladeStations(g, psi) {
 }
 
 const rotor = {
-  type: 'air.rotor', domain: ['aircraft'], title: 'Rotor', titleZh: '旋翼', role: 'thruster',
+  type: 'air.rotor', domain: ['aircraft'], title: 'Rotor', titleZh: '旋翼', role: 'thruster', category: 'propulsion', family: 'powerplant',
+  aliases: ['旋翼', '桨叶', '尾桨', 'rotor'],
   params: {
     diameterM: num(11, 'm', '旋翼直径', { gt: 0.1, max: 30, title: '桨尖轨迹圆直径' }),
     blades: int(4, '桨叶数', { min: 2, max: 8 }),
@@ -354,7 +355,8 @@ function stabStations(x0, z, span, c, taper) {
 }
 
 const heli = {
-  type: 'air.heli', domain: ['aircraft'], title: 'Helicopter fuselage', titleZh: '直升机机身', role: 'bus', massSink: 'heli',
+  type: 'air.heli', domain: ['aircraft'], title: 'Helicopter fuselage', titleZh: '直升机机身', role: 'bus', category: 'structure', family: 'body', massSink: 'heli',
+  aliases: ['直升机', '机身', '旋翼机', 'helicopter'],
   params: {
     lengthM: num(13, 'm', '机身长', { gt: 3, max: 40, title: '机头到尾端（含垂尾），不含旋翼' }),
     widthM: num(2.2, 'm', '机身宽', { gt: 0.5, max: 6, title: '座舱段外廓宽' }),
@@ -406,7 +408,7 @@ const heli = {
       sock('rotor', [g.xR, 0, g.deckTop(g.xR)], [0, 0, -1], [1, 0, 0], sz, 15, ACC('air.rotor')),
       sock('trotor', [g.xTR, g.sgT * g.yTR, g.zT], [0, g.sgT, 0], [1, 0, 0], Math.max(0.05, 0.25 * g.cAt(g.hT)), 15, ACC('air.rotor')),
       sock('chin', [xk, 0, g.bellyZ(xk)], [0, 0, 1], [1, 0, 0], Math.max(0.08, 0.18 * g.W), 90, ACC('air.turret')),
-      sock('crown', [xc, 0, g.topZ(xc)], [0, 0, -1], [1, 0, 0], Math.max(0.05, 0.8 * g.rb0), 90, ACC('air.radome', 'veh.cotm'))
+      sock('crown', [xc, 0, g.topZ(xc)], [0, 0, -1], [1, 0, 0], Math.max(0.05, 0.8 * g.rb0), 90, ACC('air.radome', '@array', '@wire'))
     ]
   },
   faces: (p) => {
@@ -575,7 +577,8 @@ function mrGeom(p) {
   return { wb, R, bL, bW, bH, hl, a0, up0, dn0, sec, armR, mD, mH, n, arms, r0, armZ, zMb, zMt, zBat, gH, puck, xG, zG0, zTop, zGround }
 }
 const mrbody = {
-  type: 'air.mrbody', domain: ['aircraft'], title: 'Multirotor airframe', titleZh: '多旋翼机体', role: 'bus', massSink: 'body',
+  type: 'air.mrbody', domain: ['aircraft'], title: 'Multirotor airframe', titleZh: '多旋翼机体', role: 'bus', category: 'structure', family: 'body', massSink: 'body',
+  aliases: ['多旋翼', '四旋翼', '无人机', '机体', 'drone', 'multirotor', 'UAV'],
   params: {
     arms: int(4, '旋臂数', { options: [4, 6, 8] }),
     layout: enm('x', ['x', 'plus'], '布局', { title: 'x = 机头朝向两臂之间；plus = 机头沿一根旋臂' }),
@@ -604,7 +607,7 @@ const mrbody = {
     for (const a of g.arms) out.push(sock(`m${a.i + 1}`, [a.xy[0], a.xy[1], g.zMt], [0, 0, -1], [1, 0, 0], Math.max(0.02, 0.5 * g.mD), 15, ACC('air.rotor')))
     const xk = 0.36 * g.hl, xt = 0.78 * g.hl
     out.push(sock('gimbal', [xk, 0, g.sec(xk).bDown], [0, 0, 1], [1, 0, 0], Math.max(0.02, 0.3 * g.bW), 90, ACC('air.turret')))
-    out.push(sock('top', [xt, 0, -g.sec(xt).bUp], [0, 0, -1], [1, 0, 0], Math.max(0.02, 0.2 * g.bW), 90, ACC()))
+    out.push(sock('top', [xt, 0, -g.sec(xt).bUp], [0, 0, -1], [1, 0, 0], Math.max(0.02, 0.2 * g.bW), 90, ACC('@wire', '@array')))
     return out
   },
   symmetricPlanes: ['xz'],
@@ -671,7 +674,8 @@ function boomGeom(p) {
 }
 
 const boom = {
-  type: 'air.boom', domain: ['aircraft'], title: 'Rotor boom', titleZh: '旋翼撑杆', role: 'boom',
+  type: 'air.boom', domain: ['aircraft'], title: 'Rotor boom', titleZh: '旋翼撑杆', role: 'boom', category: 'structure', family: 'truss',
+  aliases: ['撑杆', '旋翼撑杆', '机臂', '尾撑', 'boom', 'arm'],
   params: {
     lengthM: num(2.4, 'm', '撑杆长', { gt: 0.2, max: 20 }),
     diameterM: num(0.08, 'm', '撑杆直径', { gt: 0.01, max: 1 }),

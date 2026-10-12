@@ -21,7 +21,7 @@ import { createFollowGate, synthGroupDrives, synthOwned } from '../../../src/viz
 //   ⑫ focusStale：树聚焦的过期判据（createGaussFor 等星历源 / 建天线那几秒里用户另选了星 → 不再拽回）；页面接线按源码钉。
 import { createLiveThrottle, focusStale } from '../../../src/viz/grd/treeLink.js'
 //   ⑬ treeNavState：两棵树卫星行「聚焦 / 跟随」两钮的点亮 / 置灰 / 悬停说明（关联 / 非关联 / 缺失 / 平面图 / 正跟随）；
-//      说明文字都在 UI 词典里；两棵树与页面接线（Ctrl 点加减、非关联星与正跟随的星显式聚焦先退出跟随）按源码钉。
+//      说明文字都在 UI 词典里；两棵树与页面接线（聚焦钮单击加减、非关联星与正跟随的星显式聚焦先退出跟随）按源码钉。
 import { treeNavState, nodeLinkId } from '../../../src/viz/grd/treeLink.js'
 //   ⑭ treeSetMembers：卫星集「卫星天线树」的成员 —— 树序、仰角线 / 无身份不收、同号去重（先到先得）、虚拟星（合成号）与关联星（真号）分开标。
 import { treeSetMembers } from '../../../src/viz/grd/treeLink.js'
@@ -425,7 +425,7 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   const E = { folder: 'EL', kind: 'elevline', noradId: '41194' }     // 仰角线：号也不认
 
   let s = treeNavState(L, { cur: true })
-  ok(s.focusOn && !s.focusDis && s.focusTip === '聚焦卫星（Ctrl 点＝加入 / 移出聚焦集）', '关联星在聚焦集里：聚焦钮亮、可点')
+  ok(s.focusOn && !s.focusDis && s.focusTip === '取消聚焦', '关联星在聚焦集里：聚焦钮亮、可点')
   ok(!s.followOn && !s.followDis && s.followTip === '跟随卫星', '关联星、3D、没在跟随：跟随钮可点')
   s = treeNavState(L, { cur: false })
   ok(!s.focusOn && !s.focusDis, '关联星不在聚焦集：聚焦钮不亮、可点')
@@ -450,7 +450,7 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   const geoIds = new Map([['MY-GEO', '1712966']])
   ok(nodeLinkId(G, geoIds) === '1712966' && nodeLinkId(G) === '' && nodeLinkId(L, geoIds) === '41194' && nodeLinkId(E, new Map([['EL', '1']])) === '', 'nodeLinkId：关联星给号、定点同步星给合成号、没映射 / 仰角线给空')
   s = treeNavState(G, { cur: true, linkId: nodeLinkId(G, geoIds) })
-  ok(s.focusOn && !s.focusDis && s.focusTip === '聚焦卫星（Ctrl 点＝加入 / 移出聚焦集）' && !s.followDis && s.followTip === '跟随卫星', '定点同步星（给了 linkId）：聚焦亮、跟随可点')
+  ok(s.focusOn && !s.focusDis && s.focusTip === '取消聚焦' && !s.followDis && s.followTip === '跟随卫星', '定点同步星（给了 linkId）：聚焦亮、跟随可点')
   ok(treeNavState(G, { followId: '1712966', linkId: '1712966' }).followOn, '正跟随它（按合成号）→ 亮')
   ok(treeNavState(G, { linkId: '' }).followDis, 'linkId 显式给空（星座里没有它的条目）→ 跟随置灰')
   const tree = [L, G, { folder: 'LEO-FIX', kind: 'custom', altKm: 550, noradId: null }]
@@ -463,7 +463,7 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   const tips = new Set()
   for (const n of [L, F]) for (const ctx of [{}, { cur: true }, { followId: '41194' }, { flat: true }, { miss: true }]) { const t = treeNavState(n, ctx); tips.add(t.focusTip); tips.add(t.followTip) }
   const lost = [...tips].filter((t) => !UI_EXACT[t] && !patHit(t))
-  ok(tips.size === 7 && !lost.length, '七条说明全在 UI 词典里', lost.join(' | '))
+  ok(tips.size === 8 && !lost.length, '八条说明全在 UI 词典里', lost.join(' | '))
 
   // 页面接线（按源码钉）
   const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -471,13 +471,13 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   const body = (src, sig) => { const i = src.indexOf(sig), j = src.indexOf('\n}\n', i); return i >= 0 && j > i ? src.slice(i, j) : '' }
   const ft = body(page, 'async function focusTreeSat(node, {')
   const iAdd = ft.indexOf('if (additive) { selectSat(had || e, !had, true)'), iHad = ft.indexOf('if (had) {')
-  ok(/additive = false/.test(ft) && iAdd > 0 && iHad > iAdd, 'focusTreeSat：Ctrl 点按号认已选那份，先于「已选中＝设主选」分支')
+  ok(/additive = false/.test(ft) && iAdd > 0 && iHad > iAdd, 'focusTreeSat：加减聚焦集按号认已选那份，先于「已选中＝设主选」分支')
   ok((ft.match(/if \(force\) stopFollow\(\)/g) || []).length === 2, 'focusTreeSat：显式聚焦（已选中的那颗 / 非关联星）先退出跟随')
   const fl = body(page, 'async function followTreeSat(node) {')
   ok(fl.includes('if (followLinkId.value === id) { stopFollow(); return }') && fl.includes('startFollow(e)') && fl.indexOf('selEntries.find(') > 0, 'followTreeSat：正跟随它＝退出；否则按号认已选那份再 startFollow（追加式）')
-  ok(page.includes('@click.stop="onTreeFocusBtn(sat, $event)"') && page.includes('@click.stop="onTreeFollowBtn(sat)"'), '对地树卫星行：两钮接上')
+  ok(page.includes('@click.stop="onTreeFocusBtn(sat)"') && page.includes('focusTreeSat(n, { force: true, additive: true })') && page.includes('@click.stop="onTreeFollowBtn(sat)"'), '对地树卫星行：两钮接上')
   ok(page.includes(':follow-id="followLinkId" :flat="flatView"') && page.includes('@focus-sat="(n, f, add) => focusTreeSat(n, { force: f, additive: !!add })" @follow-sat="followTreeSat"'), '对星树：宿主传跟随状态与平面图、接两路事件')
-  ok(panel.includes('@click.stop="onFocusBtn(sat, $event)"') && panel.includes('@click.stop="onFollowBtn(sat)"') && panel.includes("'follow-sat'"), '对星树卫星行：两钮接上')
+  ok(panel.includes('@click.stop="onFocusBtn(sat)"') && panel.includes("emit('focus-sat', sat, true, true)") && panel.includes('@click.stop="onFollowBtn(sat)"') && panel.includes("'follow-sat'"), '对星树卫星行：两钮接上')
 }
 
 // ---------- ⑭ 卫星集「卫星天线树」的成员（treeSetMembers）----------

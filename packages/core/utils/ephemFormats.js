@@ -6,6 +6,7 @@
 //   ccsds-oem-kvn    CCSDS 502.0-B OEM 关键字=值报文（多段 = 同一星多段）
 //   ccsds-oem-xml    CCSDS 505.0-B NDM/XML 的 <oem>
 //   sp3              SP3-c/d 精密星历（解析在 sp3.js，本文件只负责嗅探与分派）
+//   cs-eph           中国卫通测控星历报文（.eph，「地固坐标系瞬根」；解析与写出在 csEph.js，GBK 由 textCodec 管）
 //
 // 【星记录形状】{ name, objectId, frame, timeSystem, interp:{method,samples},
 //   t:Float64Array（UTC 毫秒）, p:Float64Array（3n，km，frame 所指的帧）, v:Float64Array|null（3n，km/s）,
@@ -24,20 +25,29 @@ const T = require('./timeSystems.js')
 const FR = require('./frames.js')
 // SP3 单独一个文件：它的定长栏位与哨兵值自成一套，与 .e / OEM 没有共用逻辑（见 sp3.js 头注）
 const { parseSp3, SP3_SYS } = require('./sp3.js')
+// 中国卫通 .eph 同理单独一个文件：版式全部来自实物逐字节分析（见 csEph.js 头注）
+const CS = require('./csEph.js')
+// 重复时刻 / 段界 / 缺口的整理（.e 的 SegmentBoundaryTimes 与 .eph 的机动断点共用）
+const NZ = require('./ephemNormalize.js')
 
-const FORMATS = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml', 'sp3']
+const FORMATS = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml', 'sp3', 'cs-eph']
 const FORMAT_LABEL = {
   'stk-e': 'STK 星历（.e）',
   'ccsds-oem-kvn': 'CCSDS OEM（KVN）',
   'ccsds-oem-xml': 'CCSDS OEM（XML）',
-  sp3: 'SP3 精密星历'
+  sp3: 'SP3 精密星历',
+  'cs-eph': CS.LABEL
 }
-const FORMAT_EXT = { 'stk-e': '.e', 'ccsds-oem-kvn': '.oem', 'ccsds-oem-xml': '.xml', sp3: '.sp3' }
+const FORMAT_EXT = { 'stk-e': '.e', 'ccsds-oem-kvn': '.oem', 'ccsds-oem-xml': '.xml', sp3: '.sp3', 'cs-eph': CS.EXT }
+// 一个文件只装一颗星的格式：多星导出须一星一个文件（STK .e 没有星名字段；.eph 表头只有一个标题）
+const SINGLE_OBJECT = ['stk-e', 'cs-eph']
+// 写出时的字符编码：.eph 是 GBK（源软件是 Windows 简体中文 ANSI 程序），其余一律 UTF-8 无 BOM
+const FORMAT_ENCODING = { 'cs-eph': CS.ENCODING }
 // 【写得出的格式】SP3 只解析不写出（定长栏位 + 钟差哨兵那一套，本平台没有写出器），
 // 故 FORMATS 四种里只有下面三种进得了 serializeEphemeris。凡「导出成 sp3」的请求一律归一成
 // stk-e —— 扩展名、默认文件名、返回值的 format 都要跟着归一后的走，否则会落盘一个
 // 「扩展名 .sp3、正文却是 STK .e」的文件。
-const WRITABLE = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml']
+const WRITABLE = ['stk-e', 'ccsds-oem-kvn', 'ccsds-oem-xml', 'cs-eph']
 const writableFormat = (f) => (f === 'sp3' ? 'stk-e' : f)
 
 const stripBom = (s) => String(s == null ? '' : s).replace(/^﻿/, '')
@@ -66,6 +76,7 @@ function detectFormat(text) {
   if (/CCSDS_OEM_VERS/i.test(head)) return /^\s*</.test(s.trimStart()) || /<\s*(?:[A-Za-z_][\w.-]*:)?oem\b/i.test(head) ? 'ccsds-oem-xml' : 'ccsds-oem-kvn'
   if (/<\s*(?:[A-Za-z_][\w.-]*:)?oem\b/i.test(head)) return 'ccsds-oem-xml'
   if (/^#[cd]/.test(s)) return 'sp3'
+  if (CS.detectCsEph(s)) return 'cs-eph'
   return ''
 }
 
@@ -97,6 +108,9 @@ function parseStkE(text, name) {
   const rows = []       // { ms, x,y,z, vx,vy,vz }
   let block = null, blockKind = null, skipping = false
   const sampled = []
+  // SegmentBoundaryTimes：STK 规定数据点只有在这些时刻才允许重复（段界两侧各一个状态），插值不许跨过
+  let inSbt = false
+  const sbtRaw = []
 
   for (let li = 0; li < lines.length; li++) {
     let line = lines[li]
@@ -108,8 +122,11 @@ function parseStkE(text, name) {
     const k0 = tok[0].toLowerCase()
 
     if (/^stk\.v\./i.test(tok[0])) { continue }
-    if (E_BLOCKS[k0] && tok.length === 1) { block = E_BLOCKS[k0]; blockKind = k0; skipping = false; continue }
-    if (k0 === 'end' && /ephemeris/i.test(tok[1] || '')) { block = null; skipping = false; continue }
+    if (E_BLOCKS[k0] && tok.length === 1) { block = E_BLOCKS[k0]; blockKind = k0; skipping = false; inSbt = false; continue }
+    if (k0 === 'end' && /ephemeris/i.test(tok[1] || '')) { block = null; skipping = false; inSbt = false; continue }
+    if (k0 === 'begin' && /^segmentboundarytimes$/i.test(tok[1] || '')) { inSbt = true; block = null; continue }
+    if (k0 === 'end' && /^segmentboundarytimes$/i.test(tok[1] || '')) { inSbt = false; continue }
+    if (inSbt) { sbtRaw.push(tok.join(' ')); continue }
     if (k0 === 'begin') { continue }
     if (k0 === 'end') { block = null; skipping = false; continue }
 
@@ -180,11 +197,25 @@ function parseStkE(text, name) {
   // LLA / LLR 块按定义就在地固系，与 CoordinateSystem 无关
   if (llFrame) frame = 'FIXED'
 
+  // 段界：SegmentBoundaryTimes 列出的时刻（按 TimeFormat 读，读不出再按 EpSec），连同数据里的重复时刻一起拆段
+  const bounds = []
+  for (const raw of sbtRaw) {
+    let ms = T.parseTimeToken(raw, timeFormat, epochMs)
+    if (!Number.isFinite(ms) && /^[-+]?[\d.]+(?:e[-+]?\d+)?$/i.test(raw)) ms = epochMs + parseFloat(raw) * 1000
+    if (Number.isFinite(ms)) bounds.push(ms)
+    else warnings.push('SegmentBoundaryTimes 中的时刻无法解析：' + raw)
+  }
+  const nrows = new Array(n)
+  for (let i = 0; i < n; i++) nrows[i] = { ms: t[i], p: [p[3 * i], p[3 * i + 1], p[3 * i + 2]], v: v ? [v[3 * i], v[3 * i + 1], v[3 * i + 2]] : null }
+  const nz = NZ.normalizeRows(nrows, { dupIsBoundary: true, boundaries: bounds })
+  for (const w of nz.warnings) warnings.push(w)
+
   return {
     sats: [{
       name: name || 'Ephemeris', objectId: '', frame, timeSystem: 'UTC',
       interp: { method, samples: samplesM1 + 1 },
-      t, p, v, spans: null, meta: { scenarioEpochMs: epochMs, distanceUnit: unit, timeFormat }
+      t: nz.t, p: nz.p, v: nz.v, spans: nz.spans,
+      meta: { scenarioEpochMs: epochMs, distanceUnit: unit, timeFormat, boundaries: nz.report.boundaries, jumps: nz.report.jumps, gaps: nz.report.gaps }
     }],
     errors, warnings
   }
@@ -233,11 +264,17 @@ function oemSegment(meta, dataRows, errors, warnings) {
   }
 }
 
-// 多段 -> 星（按 OBJECT_ID 归并；无 ID 按名字；都没有就单星）
+// OBJECT_ID 是不是一个真编号：空串与 UNKNOWN（没有国际编号时的占位写法）都不算
+const realObjectId = (x) => { const v = String(x == null ? '' : x).trim(); return v && v.toUpperCase() !== 'UNKNOWN' ? v : '' }
+
+// 多段 -> 星（按 OBJECT_ID 归并；OBJECT_ID 为空或 UNKNOWN 时连同 OBJECT_NAME 一起认；都没有就单星）
+// ★ 不能只按 OBJECT_ID：多颗没有国际编号的星（自建星座 / 导入点序列…）同在一个文件里时 OBJECT_ID 常常都是
+//   UNKNOWN，只按它归并会把几颗星的段并成一颗、时刻交错出一条假轨迹
 function oemSatsFromSegments(segs, errors, warnings) {
   const byKey = new Map()
   for (const s of segs) {
-    const key = (s.objectId || s.objectName || '#1').toUpperCase()
+    const oid = String(s.objectId || '').trim()
+    const key = (realObjectId(oid) ? oid : oid + '|' + (s.objectName || '#1')).toUpperCase()
     if (!byKey.has(key)) byKey.set(key, [])
     byKey.get(key).push(s)
   }
@@ -247,26 +284,19 @@ function oemSatsFromSegments(segs, errors, warnings) {
     const frame = list[0].frame
     if (list.some((s) => s.frame !== frame)) { errors.push('同一星的多段参考系不一致，已拒收'); continue }
     const hasV = list.every((s) => s.hasV)
-    let n = 0
-    for (const s of list) n += s.rows.length
-    const t = new Float64Array(n), p = new Float64Array(3 * n)
-    const v = hasV ? new Float64Array(3 * n) : null
-    const spans = []
-    let k = 0
+    // 段与段拼接交给 normalizeRows：每段首行标 cut。机动星历常见「下一段 START_TIME = 上一段 STOP_TIME」，
+    // 两段在同一历元各有一个状态 —— 原来直接拼数组，建表时把后一个（机动后的状态）当重复时刻剔掉，
+    // 段缝后面整整一个步长取不到位置。现在机动前后两个状态都留下（后者顺延 1 ms），段间照旧不插值。
+    const rows = []
     for (const s of list) {
-      const a = k
-      for (const r of s.rows) {
-        t[k] = r.ms
-        p[3 * k] = r.nums[0]; p[3 * k + 1] = r.nums[1]; p[3 * k + 2] = r.nums[2]
-        if (v) { v[3 * k] = r.nums[3]; v[3 * k + 1] = r.nums[4]; v[3 * k + 2] = r.nums[5] }
-        k++
-      }
-      spans.push([t[a], t[k - 1]])
+      s.rows.forEach((r, i) => rows.push({ ms: r.ms, p: [r.nums[0], r.nums[1], r.nums[2]], v: hasV ? [r.nums[3], r.nums[4], r.nums[5]] : null, cut: i === 0 && rows.length > 0 }))
     }
+    const nz = NZ.normalizeRows(rows, {})
+    for (const w of nz.warnings) warnings.push(w)
     sats.push({
-      name: list[0].objectName || list[0].objectId || 'OEM', objectId: list[0].objectId || '',
+      name: list[0].objectName || list[0].objectId || 'OEM', objectId: realObjectId(list[0].objectId),
       frame, timeSystem: list[0].tsys, interp: { method: list[0].method, samples: list[0].samples },
-      t, p, v, spans: spans.length > 1 ? spans : null, meta: { segments: list.length }
+      t: nz.t, p: nz.p, v: nz.v, spans: nz.spans, meta: { segments: list.length, jumps: nz.report.jumps, gaps: nz.report.gaps }
     })
   }
   return sats
@@ -371,7 +401,8 @@ function parseEphemeris(text, fmt, opts) {
     case 'ccsds-oem-kvn': r = parseOemKvn(src); break
     case 'ccsds-oem-xml': r = parseOemXml(src); break
     case 'sp3': r = parseSp3(src); break
-    default: return { format: '', sats: [], errors: ['无法识别的星历格式（支持 STK .e / CCSDS OEM 的 KVN 与 XML / SP3）'], warnings: [] }
+    case 'cs-eph': r = CS.parseCsEph(src, { name }); break
+    default: return { format: '', sats: [], errors: ['无法识别的星历格式（支持 STK .e / CCSDS OEM 的 KVN 与 XML / SP3 / 中国卫通 .eph）'], warnings: [] }
   }
   return { format: f, sats: r.sats || [], errors: r.errors || [], warnings: r.warnings || [] }
 }
@@ -416,12 +447,56 @@ const sig9 = (x) => {
   return Number.isFinite(v) ? v.toFixed(9) : '0.000000000'
 }
 const fix6 = (x) => Number(x).toFixed(6)
+// CCSDS KVN 只许可打印 ASCII（502.0-B-3 的 KVN 字符集）：星名带中文的退到 OBJECT_ID / 编号
+const isAscii = (s) => /^[\x20-\x7E]*$/.test(String(s == null ? '' : s))
+const asciiName = (name, fallback) => (name && isAscii(name) ? String(name) : (fallback && isAscii(fallback) ? String(fallback) : 'SATELLITE'))
+const ORIGINATOR = 'SATSIM'
+// OEM 的 OBJECT_ID：有国际编号用它；没有的（自建星座 / 导入点序列 / 天线树 / 定点星）给每颗星一个唯一的 ASCII 标识。
+// 多星同文件时读入方（本平台、Orekit 一类按 OBJECT_ID 分对象的读者）靠它区分星，共用 UNKNOWN 会把几颗星并成一颗。
+// 优先取编号（同一批里唯一），没有编号再取星名；两样都写不成 ASCII 才退回 UNKNOWN（读端会再连同 OBJECT_NAME 认）
+const tokenAscii = (x) => { const v = String(x == null ? '' : x).trim().replace(/\s+/g, '_'); return /^[\x21-\x7E]+$/.test(v) ? v : '' }
+function oemObjectId(s) {
+  const real = realObjectId(s.objectId)
+  if (real && isAscii(real)) return real
+  const nid = tokenAscii(s.noradId)
+  if (nid) return 'SATSIM-' + nid
+  const nm = tokenAscii(s.name)
+  return nm ? 'SATSIM-' + nm : 'UNKNOWN'
+}
+
+// 一颗星按 spans 切成下标段 [{ a, b }]（含两端）；没有 spans 就是整段
+function segRanges(s) {
+  const n = s.t.length
+  if (!s.spans || s.spans.length < 2) return [{ a: 0, b: n - 1 }]
+  const out = []
+  let k = 0
+  for (const sp of s.spans) {
+    while (k < n && s.t[k] < sp[0]) k++
+    const a = k
+    while (k < n && s.t[k] <= sp[1]) k++
+    if (k - 1 >= a) out.push({ a, b: k - 1 })
+  }
+  return out.length ? out : [{ a: 0, b: n - 1 }]
+}
+// 段首点若是解析时顺延 1 ms 的「段界后状态」，写出时还原到段界时刻（STK 靠 SegmentBoundaryTimes、
+// OEM 靠相邻两段同历元表达同刻两状态）；真缺口照原样
+const outTime = (s, k, isSegHead) => (isSegHead && k > 0 && s.t[k] - s.t[k - 1] <= NZ.NUDGE_MS && s.t[k] > s.t[k - 1] ? s.t[k - 1] : s.t[k])
+// 插值口径：调用方给了 opts.interp（导出对话框的选择）就用它，否则沿用星自己的
+function interpOut(s, o) {
+  const ip = (o && o.interp) || s.interp || {}
+  const method = String(ip.method || 'lagrange').toLowerCase() === 'hermite' && s.v ? 'hermite' : 'lagrange'
+  let samples = Math.round(Number(ip.samples) || 0)
+  if (!(samples >= 2)) samples = method === 'hermite' ? 2 : 6
+  return { method, samples }
+}
 
 function serializeStkE(sats, opts) {
   const o = opts || {}
   const s = convertSat(sats[0], o.frame)
   const n = s.t.length
   const epoch = s.t[0]
+  const ip = interpOut(s, o)
+  const R = segRanges(s)
   const L = []
   L.push('stk.v.12.0')
   L.push('')
@@ -429,18 +504,30 @@ function serializeStkE(sats, opts) {
   L.push('')
   L.push('NumberOfEphemerisPoints ' + n)
   L.push('ScenarioEpoch            ' + T.formatUtcg(epoch))
-  L.push('InterpolationMethod      ' + (s.interp && s.interp.method === 'hermite' ? 'Hermite' : 'Lagrange'))
-  L.push('InterpolationSamplesM1   ' + Math.max(1, ((s.interp && s.interp.samples) || 6) - 1))
+  L.push('InterpolationMethod      ' + (ip.method === 'hermite' ? 'Hermite' : 'Lagrange'))
+  // Hermite 的阶 = 2 × SamplesM1 + 1（STK 规范原文），两点三次 Hermite 即 SamplesM1 = 1
+  L.push('InterpolationSamplesM1   ' + Math.max(1, ip.samples - 1))
   L.push('CentralBody              Earth')
   L.push('CoordinateSystem         ' + (E_FRAME_OUT[FR.normFrame(s.frame)] || 'TEMEOfDate'))
   L.push('DistanceUnit             Kilometers')
   L.push('')
+  if (R.length > 1) {
+    // 段界时刻（相对 ScenarioEpoch 的秒，升序）：STK 只在这些时刻允许同刻两点，且不跨段插值
+    L.push('BEGIN SegmentBoundaryTimes')
+    for (let r = 0; r < R.length - 1; r++) L.push('    ' + fix6((s.t[R[r].b] - epoch) / 1000))
+    L.push('END SegmentBoundaryTimes')
+    L.push('')
+  }
   L.push(s.v ? 'EphemerisTimePosVel' : 'EphemerisTimePos')
   L.push('')
-  for (let i = 0; i < n; i++) {
-    const cols = [fix6((s.t[i] - epoch) / 1000), sig9(s.p[3 * i]), sig9(s.p[3 * i + 1]), sig9(s.p[3 * i + 2])]
-    if (s.v) cols.push(sig9(s.v[3 * i]), sig9(s.v[3 * i + 1]), sig9(s.v[3 * i + 2]))
-    L.push(cols.join(' '))
+  for (let r = 0; r < R.length; r++) {
+    if (r > 0) L.push('')   // 规范惯例：段界两侧的同刻两点之间空一行
+    for (let k = R[r].a; k <= R[r].b; k++) {
+      const tm = outTime(s, k, r > 0 && k === R[r].a)
+      const cols = [fix6((tm - epoch) / 1000), sig9(s.p[3 * k]), sig9(s.p[3 * k + 1]), sig9(s.p[3 * k + 2])]
+      if (s.v) cols.push(sig9(s.v[3 * k]), sig9(s.v[3 * k + 1]), sig9(s.v[3 * k + 2]))
+      L.push(cols.join(' '))
+    }
   }
   L.push('')
   L.push('END Ephemeris')
@@ -453,94 +540,120 @@ function oemHeaderLines(opts) {
   return {
     vers: '3.0',
     created: T.formatCcsds(Number.isFinite(o.createdMs) ? o.createdMs : Date.now()),
-    originator: o.originator || '卫星仿真平台'
+    originator: o.originator && isAscii(o.originator) ? o.originator : ORIGINATOR
   }
 }
+// 一颗星的 OEM 段（各段的元数据值 + 数据下标）：KVN 与 XML 共用
+function oemSegments(raw, opts, ascii) {
+  const s = convertSat(raw, opts && opts.frame)
+  const ip = interpOut(s, opts)
+  // INTERPOLATION_DEGREE = 插值多项式的次数：Lagrange 为点数 − 1，Hermite（位置 + 速度）为 2 × 点数 − 1
+  const degree = ip.method === 'hermite' ? 2 * ip.samples - 1 : ip.samples - 1
+  const id = oemObjectId(s)
+  const name = ascii ? asciiName(s.name, realObjectId(s.objectId) || (s.noradId ? 'NORAD ' + s.noradId : '')) : (s.name || 'SATELLITE')
+  return segRanges(s).map((rg, r) => ({
+    s, rg, head: r > 0,
+    meta: {
+      OBJECT_NAME: name, OBJECT_ID: id, CENTER_NAME: 'EARTH',
+      REF_FRAME: OEM_FRAME_OUT[FR.normFrame(s.frame)] || 'TEME', TIME_SYSTEM: 'UTC',
+      START_TIME: T.formatCcsds(outTime(s, rg.a, r > 0)), STOP_TIME: T.formatCcsds(s.t[rg.b]),
+      INTERPOLATION: ip.method === 'hermite' ? 'HERMITE' : 'LAGRANGE', INTERPOLATION_DEGREE: String(Math.max(1, degree))
+    }
+  }))
+}
+const OEM_META_ORDER = ['OBJECT_NAME', 'OBJECT_ID', 'CENTER_NAME', 'REF_FRAME', 'TIME_SYSTEM', 'START_TIME', 'STOP_TIME', 'INTERPOLATION', 'INTERPOLATION_DEGREE']
+// OEM 拆成「头 / 每星一块 / 尾」三段：整份一次写出（serializeOem*）与导出引擎的边算边写盘走同一份代码，
+// 两条路的字节天然一致。每段都是「换行 + 行」的拼接，头不带换行收尾，尾补最后那个换行。
+function oemKvnHead(opts) {
+  const h = oemHeaderLines(opts)
+  return 'CCSDS_OEM_VERS = ' + h.vers + '\nCREATION_DATE = ' + h.created + '\nORIGINATOR = ' + h.originator
+}
+function oemKvnBody(raw, opts) {
+  const L = []
+  for (const seg of oemSegments(raw, opts, true)) {
+    const { s, rg } = seg
+    L.push('')
+    L.push('META_START')
+    for (const k of OEM_META_ORDER) L.push(k + ' = ' + seg.meta[k])
+    L.push('META_STOP')
+    L.push('')
+    for (let k = rg.a; k <= rg.b; k++) {
+      const cols = [T.formatCcsds(outTime(s, k, seg.head && k === rg.a)), sig9(s.p[3 * k]), sig9(s.p[3 * k + 1]), sig9(s.p[3 * k + 2])]
+      if (s.v) cols.push(sig9(s.v[3 * k]), sig9(s.v[3 * k + 1]), sig9(s.v[3 * k + 2]))
+      L.push(cols.join(' '))
+    }
+  }
+  return L.length ? '\n' + L.join('\n') : ''
+}
+const oemKvnTail = () => '\n'
 function serializeOemKvn(sats, opts) {
-  const h = oemHeaderLines(opts)
-  const L = []
-  L.push('CCSDS_OEM_VERS = ' + h.vers)
-  L.push('CREATION_DATE = ' + h.created)
-  L.push('ORIGINATOR = ' + h.originator)
-  for (const raw of sats) {
-    const s = convertSat(raw, opts && opts.frame)
-    const n = s.t.length
-    const spans = s.spans && s.spans.length ? s.spans : [[s.t[0], s.t[n - 1]]]
-    let k = 0
-    for (const sp of spans) {
-      L.push('')
-      L.push('META_START')
-      L.push('OBJECT_NAME = ' + (s.name || 'SATELLITE'))
-      L.push('OBJECT_ID = ' + (s.objectId || 'UNKNOWN'))
-      L.push('CENTER_NAME = EARTH')
-      L.push('REF_FRAME = ' + (OEM_FRAME_OUT[FR.normFrame(s.frame)] || 'TEME'))
-      L.push('TIME_SYSTEM = UTC')
-      L.push('START_TIME = ' + T.formatCcsds(sp[0]))
-      L.push('STOP_TIME = ' + T.formatCcsds(sp[1]))
-      L.push('INTERPOLATION = ' + ((s.interp && s.interp.method === 'hermite') ? 'HERMITE' : 'LAGRANGE'))
-      L.push('INTERPOLATION_DEGREE = ' + Math.max(1, ((s.interp && s.interp.samples) || 6) - 1))
-      L.push('META_STOP')
-      L.push('')
-      for (; k < n && s.t[k] <= sp[1]; k++) {
-        const cols = [T.formatCcsds(s.t[k]), sig9(s.p[3 * k]), sig9(s.p[3 * k + 1]), sig9(s.p[3 * k + 2])]
-        if (s.v) cols.push(sig9(s.v[3 * k]), sig9(s.v[3 * k + 1]), sig9(s.v[3 * k + 2]))
-        L.push(cols.join(' '))
-      }
-    }
-  }
-  L.push('')
-  return L.join('\n')
+  let out = oemKvnHead(opts)
+  for (const raw of sats) out += oemKvnBody(raw, opts)
+  return out + oemKvnTail()
 }
-function serializeOemXml(sats, opts) {
+function oemXmlHead(opts) {
   const h = oemHeaderLines(opts)
+  return ['<?xml version="1.0" encoding="UTF-8"?>', '<oem id="CCSDS_OEM_VERS" version="' + h.vers + '">', '  <header>',
+    '    <CREATION_DATE>' + h.created + '</CREATION_DATE>', '    <ORIGINATOR>' + xmlEsc(h.originator) + '</ORIGINATOR>',
+    '  </header>', '  <body>'].join('\n')
+}
+function oemXmlBody(raw, opts) {
   const L = []
-  L.push('<?xml version="1.0" encoding="UTF-8"?>')
-  L.push('<oem id="CCSDS_OEM_VERS" version="' + h.vers + '">')
-  L.push('  <header>')
-  L.push('    <CREATION_DATE>' + h.created + '</CREATION_DATE>')
-  L.push('    <ORIGINATOR>' + xmlEsc(h.originator) + '</ORIGINATOR>')
-  L.push('  </header>')
-  L.push('  <body>')
-  for (const raw of sats) {
-    const s = convertSat(raw, opts && opts.frame)
-    const n = s.t.length
-    const spans = s.spans && s.spans.length ? s.spans : [[s.t[0], s.t[n - 1]]]
-    let k = 0
-    for (const sp of spans) {
-      L.push('    <segment>')
-      L.push('      <metadata>')
-      L.push('        <OBJECT_NAME>' + xmlEsc(s.name || 'SATELLITE') + '</OBJECT_NAME>')
-      L.push('        <OBJECT_ID>' + xmlEsc(s.objectId || 'UNKNOWN') + '</OBJECT_ID>')
-      L.push('        <CENTER_NAME>EARTH</CENTER_NAME>')
-      L.push('        <REF_FRAME>' + (OEM_FRAME_OUT[FR.normFrame(s.frame)] || 'TEME') + '</REF_FRAME>')
-      L.push('        <TIME_SYSTEM>UTC</TIME_SYSTEM>')
-      L.push('        <START_TIME>' + T.formatCcsds(sp[0]) + '</START_TIME>')
-      L.push('        <STOP_TIME>' + T.formatCcsds(sp[1]) + '</STOP_TIME>')
-      L.push('        <INTERPOLATION>' + ((s.interp && s.interp.method === 'hermite') ? 'HERMITE' : 'LAGRANGE') + '</INTERPOLATION>')
-      L.push('        <INTERPOLATION_DEGREE>' + Math.max(1, ((s.interp && s.interp.samples) || 6) - 1) + '</INTERPOLATION_DEGREE>')
-      L.push('      </metadata>')
-      L.push('      <data>')
-      for (; k < n && s.t[k] <= sp[1]; k++) {
-        L.push('        <stateVector>')
-        L.push('          <EPOCH>' + T.formatCcsds(s.t[k]) + '</EPOCH>')
-        L.push('          <X>' + sig9(s.p[3 * k]) + '</X>')
-        L.push('          <Y>' + sig9(s.p[3 * k + 1]) + '</Y>')
-        L.push('          <Z>' + sig9(s.p[3 * k + 2]) + '</Z>')
-        if (s.v) {
-          L.push('          <X_DOT>' + sig9(s.v[3 * k]) + '</X_DOT>')
-          L.push('          <Y_DOT>' + sig9(s.v[3 * k + 1]) + '</Y_DOT>')
-          L.push('          <Z_DOT>' + sig9(s.v[3 * k + 2]) + '</Z_DOT>')
-        }
-        L.push('        </stateVector>')
+  for (const seg of oemSegments(raw, opts, false)) {
+    const { s, rg } = seg
+    L.push('    <segment>')
+    L.push('      <metadata>')
+    for (const k of OEM_META_ORDER) L.push('        <' + k + '>' + xmlEsc(seg.meta[k]) + '</' + k + '>')
+    L.push('      </metadata>')
+    L.push('      <data>')
+    for (let k = rg.a; k <= rg.b; k++) {
+      L.push('        <stateVector>')
+      L.push('          <EPOCH>' + T.formatCcsds(outTime(s, k, seg.head && k === rg.a)) + '</EPOCH>')
+      L.push('          <X>' + sig9(s.p[3 * k]) + '</X>')
+      L.push('          <Y>' + sig9(s.p[3 * k + 1]) + '</Y>')
+      L.push('          <Z>' + sig9(s.p[3 * k + 2]) + '</Z>')
+      if (s.v) {
+        L.push('          <X_DOT>' + sig9(s.v[3 * k]) + '</X_DOT>')
+        L.push('          <Y_DOT>' + sig9(s.v[3 * k + 1]) + '</Y_DOT>')
+        L.push('          <Z_DOT>' + sig9(s.v[3 * k + 2]) + '</Z_DOT>')
       }
-      L.push('      </data>')
-      L.push('    </segment>')
+      L.push('        </stateVector>')
     }
+    L.push('      </data>')
+    L.push('    </segment>')
   }
-  L.push('  </body>')
-  L.push('</oem>')
-  L.push('')
-  return L.join('\n')
+  return L.length ? '\n' + L.join('\n') : ''
+}
+const oemXmlTail = () => '\n  </body>\n</oem>\n'
+function serializeOemXml(sats, opts) {
+  let out = oemXmlHead(opts)
+  for (const raw of sats) out += oemXmlBody(raw, opts)
+  return out + oemXmlTail()
+}
+// 流式写出用的三段（只有能多星同文件的格式才有：OEM 两种）
+const STREAM_PARTS = {
+  'ccsds-oem-kvn': { head: oemKvnHead, body: oemKvnBody, tail: oemKvnTail },
+  'ccsds-oem-xml': { head: oemXmlHead, body: oemXmlBody, tail: oemXmlTail }
+}
+// 没有速度的星（SP3、只给位置的 .e）补速度：按它自己的插值口径建表，在每个采样时刻取插值多项式的导数。
+// .eph 的六列是版式的一部分，缺速度列的文件它的读者读不了。
+function ensureVelocity(s) {
+  if (s.v) return s
+  const EI = require('./ephemInterp.js')
+  const tab = EI.buildTable(s)
+  if (!tab) throw new Error('星历点不足，补不出速度')
+  const v = new Float64Array(3 * tab.n)
+  for (let k = 0; k < tab.n; k++) {
+    const r = EI.evalTable(tab, tab.t[k])
+    v[3 * k] = r ? r.vx : 0; v[3 * k + 1] = r ? r.vy : 0; v[3 * k + 2] = r ? r.vz : 0
+  }
+  return Object.assign({}, s, { frame: 'TEME', t: tab.t, p: tab.p, v })
+}
+// 中国卫通 .eph：恒为地固系；opts.header / opts.dupTimes 来自同格式导入时留下的原表头与原重复行
+function serializeCsEphSat(sats, opts) {
+  const o = opts || {}
+  const s = convertSat(ensureVelocity(sats[0]), 'FIXED')
+  return CS.serializeCsEph(s, { title: o.title != null ? o.title : s.name, createdMs: o.createdMs, header: o.header || null, dupTimes: o.dupTimes || null })
 }
 
 function serializeEphemeris(sats, format, opts) {
@@ -550,12 +663,13 @@ function serializeEphemeris(sats, format, opts) {
     case 'stk-e': return serializeStkE(arr, opts)
     case 'ccsds-oem-kvn': return serializeOemKvn(arr, opts)
     case 'ccsds-oem-xml': return serializeOemXml(arr, opts)
+    case 'cs-eph': return serializeCsEphSat(arr, opts)
     default: throw new Error('未知导出格式：' + format)
   }
 }
 
 module.exports = {
-  FORMATS, FORMAT_LABEL, FORMAT_EXT, WRITABLE, writableFormat,
+  FORMATS, FORMAT_LABEL, FORMAT_EXT, FORMAT_ENCODING, SINGLE_OBJECT, WRITABLE, STREAM_PARTS, writableFormat, segRanges, isAscii, ensureVelocity,
   stripBom, detectFormat, parseEphemeris, serializeEphemeris, convertSat, parseSp3, SP3_SYS,
   geodeticToEcef, sphericalToEcef, oemFrame
 }

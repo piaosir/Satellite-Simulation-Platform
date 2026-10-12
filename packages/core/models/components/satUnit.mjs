@@ -107,7 +107,7 @@ function tankGeom(p) {
 }
 
 const tank = {
-  type: 'sat.tank', domain: SAT, title: 'Propellant tank', titleZh: '推进剂贮箱', role: 'other', category: 'propulsion',
+  type: 'sat.tank', domain: SAT, title: 'Propellant tank', titleZh: '推进剂贮箱', role: 'other', category: 'propulsion', family: 'thruster',
   aliases: ['贮箱', '储箱', '燃料箱', '气瓶', '氙气瓶', '推进剂', 'tank'],
   presets: [
     { id: 'capsule', titleZh: '柱形贮箱', title: 'Cylindrical propellant tank', aliases: ['柱形', '胶囊'], params: { shape: 'capsule', diameterM: 1.1 } },
@@ -234,7 +234,7 @@ const instrument = {
 const DOCK_SIZE = Object.freeze({ lvring: [1.194, 0.1], probe: [0.9, 1.1], grapple: [0.1, 0.04] })
 const dockDims = (p) => { const d = DOCK_SIZE[p.type] || DOCK_SIZE.lvring; return { D: isNum(p.sizeM) ? p.sizeM : d[0], L: isNum(p.lengthM) ? p.lengthM : d[1] } }
 const dock = {
-  type: 'sat.dock', domain: SAT, title: 'Docking / separation interface', titleZh: '对接与分离机构', role: 'other', category: 'structure',
+  type: 'sat.dock', domain: SAT, title: 'Docking / separation interface', titleZh: '对接与分离机构', role: 'other', category: 'structure', family: 'dock',
   aliases: ['对接环', '星箭对接', '分离环', '包带', '探杆', '对接机构', '抓捕', '靶标', '在轨服务', 'docking', 'adapter'],
   presets: [
     { id: 'probe', titleZh: '探杆式对接机构', title: 'Probe docking mechanism', aliases: ['MEV', '在轨服务'], params: { type: 'probe' } },
@@ -308,7 +308,7 @@ function epArmGeo(p) {
 }
 
 const epArm = {
-  type: 'sat.ep.arm', domain: SAT, title: 'Electric propulsion pointing arm', titleZh: '电推力器指向臂', role: 'thruster', category: 'propulsion',
+  type: 'sat.ep.arm', domain: SAT, title: 'Electric propulsion pointing arm', titleZh: '电推力器指向臂', role: 'thruster', category: 'propulsion', family: 'thruster',
   aliases: ['电推', '电推进', '全电推', '霍尔', '指向机构', '展开臂', '推力器臂', '电推臂', 'EPPM', 'SPT', 'PPS', 'XIPS', 'Hall', 'EP arm', 'thruster arm'],
   presets: [
     { id: 'one', titleZh: '单节电推臂', title: 'Single-segment EP arm', aliases: ['MEV', '单节'], params: { arm: 'one', seg1M: 1.0, rootDeg: 35, thrusters: 1, tiltDeg: 20 } },

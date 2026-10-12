@@ -124,6 +124,10 @@ export const ID_KW = {
   'mk.traj': ['trajectory', 'track', 'route', '航迹', '船', '飞机'],
   'geo.adm': ['province', 'admin', 'state', '省界', '省', '行政区划'],
   'geo.chain': ['island chain', '第一岛链', '第二岛链'],
+  // 参考系轴（地图综合设置 → 坐标系 → 参考系，仅 3D）
+  'geo.ref.ecef': ['ECEF', 'ECF', 'ITRF', 'earth fixed', 'axes', 'coordinate axes', 'reference frame', '地固系', '地心地固', '坐标轴', '参考系'],
+  'geo.ref.j2000': ['J2000', 'ECI', 'EME2000', 'inertial', 'vernal equinox', 'axes', 'reference frame', '惯性系', '地心惯性', '春分点', '坐标轴', '参考系'],
+  'geo.ref.equator': ['equator', 'equatorial plane', 'reference frame', '赤道', '赤道平面', '参考系'],
   // 宇宙空间（地图综合设置）：总开关 + 七个子项（星空 / 大气辉光 / 太阳 / 月球 / 地球影像 / 晨昏效果 / 晨昏线）；地球影像 = 原「影像底图」并进来，老叫法照样搜得到
   'geo.space': ['space', 'cosmos', 'starfield', 'sun', 'moon', 'atmosphere', 'terminator', 'day night', 'STK', 'NASA Eyes',
     '宇宙', '太空', '星空', '太阳', '月球', '月亮', '大气', '昼夜', '夜区', '晨昏', '晨昏线'],

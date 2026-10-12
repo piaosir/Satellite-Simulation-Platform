@@ -72,6 +72,19 @@ function commitPace() {
   const sec = parseDur(v, 1); if (sec > 0) S.stepSec = sec
 }
 const paceUnit = computed(() => (S.paceMode === 'speed' ? '×' : S.paceMode === 'duration' ? 'm:ss' : T('/帧', '/frame')))
+// 倍速读数：变速时出最慢–最快（×43.2–864、×60–6,000，三位有效数字），否则平均倍速
+const sp3 = (v) => (v >= 100 ? Math.round(v).toLocaleString('en-US') : String(Number(v.toPrecision(3))))
+const speedTxt = computed(() => (pace.value.ramped ? '×' + sp3(pace.value.speedMin) + '–' + sp3(pace.value.speedMax) : fmtSpeed(pace.value.speed)))
+
+// —— 变速 ——
+const RAMP_OPTS = computed(() => [
+  { k: 'none', name: T('匀速', 'Constant') }, { k: 'in', name: T('渐快', 'Speed up') },
+  { k: 'out', name: T('渐慢', 'Slow down') }, { k: 'inout', name: T('缓入缓出', 'Ease in-out') }
+])
+// 变速比走对数滑块（1 … 1000）：读数到整数或一位小数
+const ratioLog = computed({ get: () => Math.log10(Math.max(1, Number(S.ramp.ratio) || 1)), set: (v) => { const x = Math.pow(10, Number(v) || 0); S.ramp.ratio = x >= 10 ? Math.round(x) : Math.round(x * 10) / 10 } })
+const ratioTxt = computed(() => { const r = Number(S.ramp.ratio) || 1; return (r >= 10 ? Math.round(r).toLocaleString('en-US') : r.toFixed(1)) + '×' })
+
 
 // —— 画面 ——
 const flat = computed(() => !!vx.isFlatView())   // 宿主读的是 flatView 这个 ref：computed 里调用即被追踪，切视图当场跟上
@@ -93,6 +106,8 @@ const satF = it.sat.f
 const secAll = (sec) => sec.f.every((f) => satF[f.k])
 const secSome = (sec) => sec.f.some((f) => satF[f.k])
 function setSec(sec, v) { for (const f of sec.f) satF[f.k] = v }
+// 字段符号：空格分隔多个，「e_x」= e 带下标 x（同 hud.js 的卡片画法）
+const symParts = (s) => String(s).split(' ').map((t) => { const i = t.indexOf('_'); return i > 0 ? [t.slice(0, i), t.slice(i + 1)] : [t, ''] })
 const logoFile = ref(null)
 function pickLogo(e) {
   const f = e.target.files && e.target.files[0]
@@ -215,9 +230,30 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
           <span class="u">{{ paceUnit }}</span>
           <span v-if="S.paceMode === 'speed'" class="vxp-ib" :title="T('取时间轴当前倍速', 'Use the timeline speed')" @click="vx.useTimelineSpeed(); paceDraft = null"><Icon name="refresh-cw" :size="11" /></span>
         </div>
+        <!-- 变速（时间重映射）：平均倍速仍是上面那一档，剖面只决定怎么分配；停留 = 片头 / 片尾时间静止 -->
+        <div class="vr" :title="T('倍速随成片时间的变化；平均倍速不变，片长不变', 'How the playback speed varies over the video; average speed and length unchanged')">
+          <label>{{ T('变速', 'Speed ramp') }}</label>
+          <select class="ci" v-model="S.ramp.shape"><option v-for="o in RAMP_OPTS" :key="o.k" :value="o.k">{{ o.name }}</option></select>
+        </div>
+        <template v-if="S.ramp.shape !== 'none'">
+          <div class="vr ind" :title="T('最快与最慢倍速之比', 'Fastest ÷ slowest speed')">
+            <label>{{ T('变速比', 'Ratio') }}</label>
+            <input class="rg" type="range" min="0" max="3" step="0.01" v-model.number="ratioLog" /><span class="rv">{{ ratioTxt }}</span>
+          </div>
+          <div class="vr ind" :title="T('升速 / 降速段占运动部分的比例', 'Share of the motion spent speeding up / slowing down')">
+            <label>{{ T('过渡', 'Transition') }}</label>
+            <input class="rg" type="range" min="0.05" max="1" step="0.01" v-model.number="S.ramp.trans" /><span class="rv">{{ Math.round(S.ramp.trans * 100) }}%</span>
+          </div>
+        </template>
+        <div class="vr" :title="T('片头 / 片尾仿真时间静止的时长', 'Seconds at the start / end with simulation time held')">
+          <label>{{ T('停留', 'Hold') }}</label>
+          <input class="ci num sm" type="number" min="0" max="600" step="0.5" v-model.number="S.ramp.hold0" :title="T('片头', 'Start')" /><span class="u">s</span>
+          <span class="x">/</span>
+          <input class="ci num sm" type="number" min="0" max="600" step="0.5" v-model.number="S.ramp.hold1" :title="T('片尾', 'End')" /><span class="u">s</span>
+        </div>
         <div class="ro" :class="{ bad: !pace.ok }">
           <template v-if="pace.ok && pace.frames === 1"><b>1</b> {{ T('帧', 'frame') }}</template>
-          <template v-else-if="pace.ok"><b>{{ pace.frames.toLocaleString('en-US') }}</b> {{ T('帧', 'frames') }}<span class="ro-sep">·</span>{{ fmtClock(pace.durationSec) }}<span class="ro-sep">·</span>{{ fmtSpeed(pace.speed) }}<span class="ro-sep">·</span>{{ fmtSimSec(pace.stepSec) }}{{ T('/帧', '/frame') }}</template>
+          <template v-else-if="pace.ok"><b>{{ pace.frames.toLocaleString('en-US') }}</b> {{ T('帧', 'frames') }}<span class="ro-sep">·</span>{{ fmtClock(pace.durationSec) }}<template v-if="pace.speed > 0"><span class="ro-sep">·</span>{{ speedTxt }}<span class="ro-sep">·</span>{{ fmtSimSec(pace.stepSec) }}{{ T('/帧', '/frame') }}</template></template>
           <template v-else>—</template>
         </div>
       </section>
@@ -247,9 +283,11 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
           <label>{{ T('超采样', 'Supersampling') }}</label>
           <span class="layersw" :class="{ on: ssOn, dis: !ssApplies }" role="switch" :aria-checked="ssOn ? 'true' : 'false'" @click="ssOn = !ssOn"><i></i></span><span class="rv">{{ ssOn && ssApplies ? '2×' : '1×' }}</span>
         </div>
-        <div class="vr"><label>{{ T('取景框', 'Framing') }}</label>
+        <div class="vr" :title="T('屏上拖框边移动、拖四角缩放（Alt：以框心缩放），双击框边复位', 'On the map: drag an edge to move, a corner to resize (Alt: about the center); double-click an edge to reset')">
+          <label>{{ T('取景框', 'Framing') }}</label>
           <span class="layersw" :class="{ on: S.framing }" role="switch" :aria-checked="S.framing ? 'true' : 'false'" @click="S.framing = !S.framing"><i></i></span>
-          <span class="rv">{{ dims.w }} × {{ dims.h }}</span>
+          <span class="rv">{{ dims.w }} × {{ dims.h }}<template v-if="!vx.frameIsDefault.value"> · {{ Math.round(S.frame.s * 100) }}%</template></span>
+          <span v-if="!vx.frameIsDefault.value" class="vxp-ib" :title="T('复位：最大、居中', 'Reset: largest, centered')" @click="vx.resetFrame()"><Icon name="rotate-ccw" :size="12" /></span>
         </div>
         <!-- 2D 经纬图框（SATSOFT 式）：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格。
              子项叫法与地图设置 → 2D 投影那一份一致（间隔 / 标注 / 底色 / 网格线；英文同词典） -->
@@ -320,7 +358,7 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
               <div v-for="sec in SAT_SECS" :key="sec.k" class="fsec">
                 <label class="fsec-h"><input type="checkbox" :checked="secAll(sec)" :indeterminate.prop="secSome(sec) && !secAll(sec)" @change="setSec(sec, !secAll(sec))" /><span>{{ T(sec.zh, sec.en) }}</span></label>
                 <div v-if="sec.f.length > 1" class="fsec-g">
-                  <label v-for="f in sec.f" :key="f.k" class="ck" :title="T(f.zh, f.en)"><input type="checkbox" v-model="satF[f.k]" /><span class="fn">{{ T(f.zh, f.en) }}</span><i v-if="f.s" class="sym">{{ f.s }}</i></label>
+                  <label v-for="f in sec.f" :key="f.k" class="ck" :title="T(f.zh, f.en)"><input type="checkbox" v-model="satF[f.k]" /><span class="fn">{{ T(f.zh, f.en) }}</span><i v-if="f.s" class="sym"><template v-for="(p, j) in symParts(f.s)" :key="j"><template v-if="j">{{ ' ' }}</template>{{ p[0] }}<sub v-if="p[1]">{{ p[1] }}</sub></template></i></label>
                 </div>
               </div>
             </template>
@@ -501,6 +539,8 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 .seg3 > button.on { background: var(--accent-ui); color: var(--bg); }
 .vr .seg3.in { flex: 1; min-width: 0; margin: 0; }
 .vr.ind > label { padding-left: 12px; }   /* 从属于上一行开关的子项：只缩标签，控件列照旧对齐 */
+.vr .ci.num.sm { flex: 0 1 58px; }
+
 
 .hi { border: 1px solid var(--border); border-radius: var(--r-box); margin: 5px 0; background: var(--bg); }
 .hi:not(.on) .hi-n { color: var(--text-muted); }
@@ -519,6 +559,7 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 .hi-bd .fsec-g .ck { display: flex; min-width: 0; margin: 5px 0 0; }
 .fsec-g .fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .fsec-g .sym { flex: none; font-family: var(--font-serif); font-style: italic; font-size: var(--fs-4); line-height: 1; color: var(--text); margin-left: 3px; }
+.fsec-g .sym sub { font-size: .7em; line-height: 0; vertical-align: -.28em; margin-left: 1px; }
 .plist { max-height: 150px; overflow-y: auto; margin-top: 4px; display: flex; flex-direction: column; }
 .plist .ck { margin: 4px 0 0; }
 .plist .pn { overflow: hidden; text-overflow: ellipsis; }

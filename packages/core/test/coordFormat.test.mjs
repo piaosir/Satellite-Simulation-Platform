@@ -120,6 +120,25 @@ ok('⑤c 解析认半球字母且不管次序', (() => { const r = parseLonLat('
 ok('⑤d 解析认负号与 S/W', (() => { const r = parseLonLat('-33.8688 151.2093', 'deg'); return r && Math.abs(r[1] + 33.8688) < 1e-9 })() &&
   (() => { const r = parseLonLat('33.8688°S 151.2093°E', 'deg'); return r && Math.abs(r[1] + 33.8688) < 1e-9 })())
 ok('⑤e 空串与乱码返回 null', parseLonLat('', 'deg') === null && parseLonLat('乱码', 'utm') === null)
+// ECEF：三个特征点、带高度、千米 / 米两种写法、与 viz/wgs84.js 同一算式
+{
+  const near3 = (s, x, y, z, tol) => { const v = (s.match(/-?\d+(?:\.\d+)?/g) || []).map(Number); return v.length === 3 && Math.abs(v[0] - x) < tol && Math.abs(v[1] - y) < tol && Math.abs(v[2] - z) < tol }
+  ok('⑤f ECEF：本初子午线与赤道交点 = (a, 0, 0)', near3(formatLonLat(0, 0, 'ecef', 4), 6378.137, 0, 0, 1e-9), formatLonLat(0, 0, 'ecef', 4))
+  ok('⑤f ECEF：东经 90° 赤道 = (0, a, 0)；北极 = (0, 0, b)', near3(formatLonLat(90, 0, 'ecef', 4), 0, 6378.137, 0, 1e-9) && near3(formatLonLat(0, 90, 'ecef', 4), 0, 0, 6356.752, 1e-3))
+  ok('⑤f ECEF：不出「-0.000」', !/-0\.000(?!\d)/.test(formatLonLat(90, 0, 'ecef', 4)))
+  ok('⑤f ECEF：digits 2 → 0.1 km、带单位', /^X -?\d+\.\d  Y -?\d+\.\d  Z -?\d+\.\d km$/.test(formatLonLat(116.39, 39.9, 'ecef', 2)), formatLonLat(116.39, 39.9, 'ecef', 2))
+  const s = formatLonLat(116.3912, 39.9073, 'ecef', 10, 35786)   // 9 位小数（μm），往返误差只剩迭代本身
+  const r = parseLonLat(s, 'ecef')
+  ok('⑤f ECEF：带高度往返（经纬 1e-9°、高度 1e-6 km）', r && Math.abs(r[0] - 116.3912) < 1e-9 && Math.abs(r[1] - 39.9073) < 1e-9 && Math.abs(r[2] - 35786) < 1e-6, JSON.stringify(r))
+  const m = parseLonLat('-2187110.5, 4386000.0, 4074000.0', 'ecef'), k = parseLonLat('X -2187.1105 Y 4386.0 Z 4074.0 km', 'ecef')
+  ok('⑤f ECEF：米与千米两种写法解析到同一点', m && k && Math.abs(m[0] - k[0]) < 1e-9 && Math.abs(m[1] - k[1]) < 1e-9 && Math.abs(m[2] - k[2]) < 1e-6)
+  ok('⑤f ECEF：不是三个数返回 null', parseLonLat('1 2', 'ecef') === null && parseLonLat('0 0 0', 'ecef') === null)
+  const { geodeticToEcef } = await import('../../../src/viz/wgs84.js')
+  let w = 0
+  for (const [lon, lat] of PTS) { const a = geodeticToEcef(lon, lat, 500), b = (formatLonLat(lon, lat, 'ecef', 10, 500).match(/-?\d+(?:\.\d+)?/g) || []).map(Number); w = Math.max(w, ...a.map((v, i) => Math.abs(v - b[i]))) }
+  // wgs84.js 的扁率由取整到 0.1 mm 的短半轴反推，与 1/298.257223563 差在 1e-10 量级 → 坐标差 < 0.1 mm
+  ok('⑤f ECEF：与 viz/wgs84.js geodeticToEcef 同一椭球（< 1e-6 km）', w < 1e-6, w.toExponential(2))
+}
 
 // ---------- ⑥ 大地基准 ----------
 ok('⑥ 三档齐备', DATUMS.length === 3 && DATUMS.map((d) => d.k).join(',') === 'wgs84,cgcs2000,gcj02')

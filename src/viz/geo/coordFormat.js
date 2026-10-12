@@ -1,4 +1,4 @@
-// 坐标的显示格式与解析（双向）。五档：十进制度 / 度分秒 / UTM / MGRS / 高斯-克吕格（3°带、6°带）。
+// 坐标的显示格式与解析（双向）。七档：十进制度 / 度分秒 / UTM / MGRS / 高斯-克吕格（3°带、6°带）/ 地心直角 ECEF。
 //
 // ★ 铁律：平台内部一律 WGS-84 十进制度。本模块只在「读数往外出」与「用户往里填」这两端生效，
 //   不碰任何存储、计算与导出。换格式不改变任何一个存下来的数。
@@ -156,9 +156,33 @@ export const FORMATS = [
   { k: 'utm', zh: 'UTM', en: 'UTM' },
   { k: 'mgrs', zh: 'MGRS', en: 'MGRS' },
   { k: 'gk3', zh: '高斯-克吕格 3°带', en: 'Gauss–Krüger 3°' },
-  { k: 'gk6', zh: '高斯-克吕格 6°带', en: 'Gauss–Krüger 6°' }
+  { k: 'gk6', zh: '高斯-克吕格 6°带', en: 'Gauss–Krüger 6°' },
+  { k: 'ecef', zh: '地心直角 ECEF', en: 'ECEF (X, Y, Z)' }
 ]
 export const isFormat = (k) => FORMATS.some((f) => f.k === k)
+
+// ---------- 地心地固直角坐标（ECEF，km）----------
+// 与 viz/wgs84.js 的 geodeticToEcef / ecefToGeodetic 同一椭球同一算式（本模块自带常量、保持零依赖；wgs84.js 的扁率由取整的短半轴反推，两边差 < 0.1 mm）。
+// 三维坐标要高度：地图上的点（光标落在椭球面上）取 h = 0，带高度的对象由调用方给 hKm。
+const D2R = Math.PI / 180
+export function lonLatToEcef(lon, lat, hKm = 0) {
+  const p = lat * D2R, l = lon * D2R, s = Math.sin(p), c = Math.cos(p)
+  const Nn = A / Math.sqrt(1 - E2 * s * s), h = (Number(hKm) || 0) * 1000
+  return [(Nn + h) * c * Math.cos(l) / 1000, (Nn + h) * c * Math.sin(l) / 1000, (Nn * (1 - E2) + h) * s / 1000]
+}
+export function ecefToLonLat(xKm, yKm, zKm) {
+  const x = xKm * 1000, y = yKm * 1000, z = zKm * 1000
+  const R = Math.hypot(x, y)
+  let lat = Math.atan2(z, R * (1 - E2)), Nn = A
+  for (let k = 0; k < 8; k++) {
+    const s = Math.sin(lat)
+    Nn = A / Math.sqrt(1 - E2 * s * s)
+    lat = Math.atan2(z + E2 * Nn * s, R)
+  }
+  const h = Math.abs(lat) < Math.PI / 4 ? R / Math.cos(lat) - Nn : z / Math.sin(lat) - Nn * (1 - E2)
+  return [Math.atan2(y, x) / D2R, lat / D2R, h / 1000]
+}
+const ecefNum = (v, d) => { const s = v.toFixed(d); return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s }
 
 function dmsOne(v, posC, negC, secDigits) {
   const s = v < 0 ? negC : posC
@@ -172,10 +196,15 @@ function dmsOne(v, posC, negC, secDigits) {
   return d + '°' + String(m).padStart(2, '0') + '′' + sec.toFixed(secDigits).padStart(secDigits ? 3 + secDigits : 2, '0') + '″' + s
 }
 
-// 经纬度（WGS-84 十进制度）→ 显示串。digits 只对十进制度与度分秒的末位有意义。
-export function formatLonLat(lon, lat, fmt, digits = 4) {
+// 经纬度（WGS-84 十进制度）→ 显示串。digits 对十进制度与度分秒是末位；对 ECEF 是 digits − 1 位小数（km，digits 4 → 1 m）。
+// hKm：只有 ECEF 用得上（高度不同直角坐标就不同）
+export function formatLonLat(lon, lat, fmt, digits = 4, hKm = 0) {
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return ''
   switch (fmt) {
+    case 'ecef': {
+      const d = Math.max(0, digits - 1), [x, y, z] = lonLatToEcef(lon, lat, hKm)
+      return `X ${ecefNum(x, d)}  Y ${ecefNum(y, d)}  Z ${ecefNum(z, d)} km`
+    }
     case 'dms':
       return dmsOne(lat, 'N', 'S', Math.max(0, digits - 2)) + ' ' + dmsOne(lon, 'E', 'W', Math.max(0, digits - 2))
     case 'utm': {
@@ -200,6 +229,15 @@ export function parseLonLat(str, fmt) {
   const s = String(str || '').trim()
   if (!s) return null
   if (fmt === 'mgrs') return fromMgrs(s)
+  if (fmt === 'ecef') {
+    // 三个数（X Y Z，可带字母前缀 / 逗号 / 单位）；整体量级超过 1e5 按米读，否则按千米。返回 [lon, lat, hKm]
+    const v = (s.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) || []).map(Number)
+    if (v.length !== 3 || !v.every(Number.isFinite)) return null
+    const k = Math.hypot(v[0], v[1], v[2]) > 1e5 ? 1e-3 : 1
+    if (!(Math.hypot(v[0], v[1], v[2]) * k > 0)) return null
+    const [lo, la, h] = ecefToLonLat(v[0] * k, v[1] * k, v[2] * k)
+    return [wrapLon(lo), la, h]
+  }
   if (fmt === 'utm') {
     const m = /^\s*(\d{1,2})\s*([C-HJ-NP-X])?\s+(-?[\d.]+)\s*E?\s+(-?[\d.]+)\s*N?\s*$/i.exec(s)
     if (!m) return null

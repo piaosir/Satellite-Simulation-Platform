@@ -40,6 +40,8 @@ import { createGlRaster, GL_TEX_MAX } from './glRaster.js'
 import { createGlField, GL_MAX_LEVELS, meshLattice } from './glField.js'
 // 线的 GPU 后端（同一上下文上的第二个程序）：线段打包器 + 颜色解析；程序本身由 glField().lines() 持有
 import { createLinePacker, parseColor } from './glLines.js'
+// 底图线的 GPU 路：按视口挑块（纯函数）；分类合成 + 缓存由 glField().baseLines() 持有
+import { buildChunks, visibleRanges, shiftStrips } from './glBaseLines.js'
 // 等值线拼链（每链一个子路径烘 Path2D）：与几何层的数值标签 / 导出用的是同一个 stitchLoops
 import { stitchLoops } from '../grd/coverage.js'
 // 静态快照的调度口径（重不重建 / 何时补建 / 盖不住时垫哪张）：纯函数拆在这里，见其文件头
@@ -189,7 +191,7 @@ export function createFlatCoverage(canvas) {
   const DL_KEY = 'data'          // 数据线集合（波束线 + 仰角线 + 聚焦几何）在线程序里的 id
   let dlMeta = null, dlDirty = true   // 数据线集合：上传后的元数据（趟区间 / 跨度）；内容或平面变了就重打包
   // 上下文丢失 / 恢复：显存里的线集合全没了，等值线层按当前状态重传、数据线下一帧重打包
-  function resetGlLines() { dlMeta = null; dlDirty = true; for (const L of fieldLayers) { L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null } syncFieldLines() }
+  function resetGlLines() { dlMeta = null; dlDirty = true; for (const L of fieldLayers) { L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null } syncFieldLines(); resetBaseLines() }
   // nLevels：本次要画多少档（几何层传入）。uniform 数组是定长的 → 超上限退回 CPU 路。
   function fieldBackend(nLevels) {
     // 导出恒走 CPU 路：exportRender 的 compat 分支只认 fillBands，PNG/PDF 逐字节一致是硬约束。
@@ -577,7 +579,7 @@ export function createFlatCoverage(canvas) {
 
   // 视角/用户覆写改动由解算器广播回来：底图面/线/国名整份重建 + 静态层快照作废
   const offPov = onPovChange(() => {
-    borderPaths = null; admPaths = null; geoCache.clear()
+    borderPaths = null; admPaths = null; geoCache.clear(); basePovVer++
     buildBaseGeo(resolvedFeatures(curDetail()), curThin())
     invalidateStatic(); requestDraw()
   })
@@ -695,7 +697,8 @@ export function createFlatCoverage(canvas) {
   // 换到没量过的类一律当作贵（走缩位图，静止后量到再说）。迟滞与判据见 rebuildPolicy.js。
   const costTab = makeCostTable()
   const noteCost = (cls, cost) => costTab.note(cls, cost)
-  const viewCls = () => clsOf(curDetail(), imgOn, PJ.kind, k() * dpr)
+  // ★ 底图线走 GPU 时快照里没有线（重建只剩填充与文字），代价与「线在快照里」那时不是一回事 → 分开记
+  const viewCls = () => clsOf(curDetail(), imgOn, PJ.kind, k() * dpr) + (baseOn() ? '|gl' : '')
   const clsCheap = (cls) => costTab.cheap(cls)
   const clsCost = (cls) => costTab.cost(cls)
   // ---- 「内容作废」与「视图补建」分家（§4.5）--------------------------------------------
@@ -705,7 +708,7 @@ export function createFlatCoverage(canvas) {
   function invalidateStatic() { staticValid = false; textValid = false; staticGen++; dropFallbacks() }
   function rebuildAtRest() { staticValid = false }
   // 只有文字 / 标记 / 卫星层变了：面与线那两张不动、内容代不动、回退快照留着（它们 above 里合进去的旧文字
-  // 只在盖不住那一圈露一下，≤ 350 ms 就被补建盖掉）。下一帧只重画 textCanvas（见 renderTextLayer）。
+  // 只在盖不住那一圈露一下，≤ 350 ms 就被补建盖掉）。下一帧只重画 textCanvas（见 renderTextAt）。
   function invalidateText() { textValid = false }
   // 手势热度：按着指针拖 / 刚滚过轮不足一个 idle。热着就不补建 —— 补建的光栅会顶住下一格。
   // ★ 慢速滚轮（手滚一格 100～300 ms）必须整串算作【一次手势】：按 idleMs() 判热，两格之间
@@ -2243,6 +2246,222 @@ export function createFlatCoverage(canvas) {
       if (e) { L._glExt = e; L._glPlaneKey = planeKey() } else { L._glKey = null; L._glExt = null }
     }
   }
+
+  // ---- 底图线的 GPU 路（经纬网 / 图廓 / 二级·一级行政区界 / 五类边界线 / 岛链；见 glBaseLines.js 文件头）----
+  // 开着时这几层【不进】静态快照（renderStaticLayers / 增量条带 / 全图背板都跳过 drawLinesContent），
+  // 每帧在原来贴 above 快照的那一格由 GPU 按当前视角现画 —— 缩放手势里也是当前缩放的真线，不再跟着缩位图一起糊；
+  // 视角与内容都没变的帧（时间轴播放等）只贴缓存。几何与 drawLinesContent 同源同序（同一份折线 / 同一个 d3 平面路径），
+  // 线宽 / 虚线周期同为屏幕像素，透明度按类合成（每像素只混合一次）。
+  // 闸门同数据线（lnOk：屏上 + WebGL2；导出恒走 Canvas2D 描边，PNG / PDF 逐字节不变），另加两条：
+  //   · 投影档「拖着转」（rotLive）平面逐帧在变，预投的平面坐标对不上 → 退回快照老路（与 drawDataLines 同口径）；
+  //   · 运行中 GPU 合成失败过（baseFail）→ 退回老路，上下文恢复时复位。
+  // glBaseOn 是开发 / 验证台的总开关（A/B 逐像素对拍与计时用）。
+  let glBaseOn = true, baseFail = false
+  const baseOn = () => glBaseOn && !baseFail && (PJ.identity || !rotLive) && lnOk()
+  // 当前静态快照是不是按 GPU 路烘的（线不在里面）：null = 还没烘过。与 baseOn() 不一致就整份作废重烘（见 draw）
+  let snapBaseGl = null
+  // 各类的线集合：集合 id → { key, n, chunks }。key（几何 + 样式指纹）变了才重打包上传；透明度不进 key，合成时现乘。
+  const baseSets = new Map()
+  // 数据代号：行政区数据 / 岛链表 / 主权视角换了就递增，进对应几类的 key
+  let baseAdmVer = 0, baseChainVer = 0, basePovVer = 0
+  // 缓存纹理里那张画的指纹：缩放 / 切口 / 画布 / 平面 / 各类内容与透明度（不含平移量）+ 当时的平移量。
+  // 指纹同、只是平移了整数个设备像素 → 挪位 + 只补露出来的条带（拖动每帧与搬快照一样便宜）；指纹变了才整张重画。
+  let baseCacheKey = '', baseTx = 0, baseTy = 0
+  function resetBaseLines() { baseSets.clear(); baseCacheKey = ''; baseFail = false }
+  // [op, x, y] 三元组流（admPaths / sphereOps 的录制格式：0=moveTo 1=lineTo 2=closePath）喂进打包器
+  function packOps(pk, o) {
+    for (let i = 0; i < o.length; i += 3) {
+      const c = o[i]
+      if (c === 0) pk.moveTo(o[i + 1], o[i + 2])
+      else if (c === 1) pk.lineTo(o[i + 1], o[i + 2])
+      else pk.closePath()
+    }
+    pk.end()
+  }
+  // 投影档一条经纬折线：与 drawPolylineProj 同一个 PJ.path（日界线切分 + 自适应加密），出来的平面折线逐点相同
+  const packRingProj = (pk, p) => packGeoInto(pk, { type: 'LineString', coordinates: p.map((a) => (Array.isArray(a) ? [a[0], a[1]] : [a.lon, a.lat])) })
+  // 本帧要画的底图线类（与 drawLinesContent 同序、同显隐条件）：[{ id, key, alpha, proj, w, style, feed }]
+  //   proj：true = 平面坐标（uProj 1），false = 经纬（等距圆柱，着色器现算 x = (lon − LON0) mod 360，切口变了不重打包）；
+  //   w：线宽（CSS px，视口裁剪留余量用）；feed(pk)：只在 key 变了要重打包时才调（取数据的开销不进每帧）。
+  function baseClassList() {
+    const out = []
+    const eq = PJ.identity, plane = eq ? 'eq' : planeKey(), bs = borderStyle
+    // 经纬网（drawGrid）：等距圆柱下是屏幕坐标里的两族直线 —— 这里换成同一组直线的世界平面坐标；投影档 = gridPath 那份 graticule
+    if (bs.gridOn !== false) {
+      const step = bs.gridStep > 0 ? bs.gridStep : 15
+      out.push({
+        id: 'base:grid', key: 'grid|' + (eq ? 'eq|' + LON0 : plane) + '|' + step + '|' + bs.gridColor + '|' + bs.gridWidth + '|' + (bs.gridDash || 'solid'),
+        alpha: bs.gridOpacity, proj: true, w: bs.gridWidth,
+        style: { color: bs.gridColor, width: bs.gridWidth, dash: DASH_PX[bs.gridDash || 'solid'] || null },
+        feed(pk) {
+          if (!eq) { packGeoInto(pk, PJ.graticule(step)()); return }
+          for (let lon = -180; lon <= 180; lon += step) {
+            const wx = WXN(lon)
+            pk.moveTo(wx, 0); pk.lineTo(wx, 180); pk.end()
+            if (wx < 1e-9) { pk.moveTo(360, 0); pk.lineTo(360, 180); pk.end() }   // 接缝那条经线右边缘补一条（同 drawGrid）
+          }
+          for (let lat = -90 + step; lat <= 90 - step + 1e-9; lat += step) { pk.moveTo(0, 90 - lat); pk.lineTo(360, 90 - lat); pk.end() }
+        }
+      })
+    }
+    // 图廓（drawSphereOutline，只有投影档）：同一份 spherePath 录制
+    if (!eq && bs.gridOn !== false) {
+      out.push({
+        id: 'base:sph', key: 'sph|' + plane + '|' + bs.gridColor + '|' + bs.gridWidth,
+        alpha: Math.min(1, (bs.gridOpacity || 0.5) * 1.6), proj: true, w: bs.gridWidth,
+        style: { color: bs.gridColor, width: bs.gridWidth, dash: null },
+        feed(pk) {
+          const ops = sphereOps()
+          if (ops) { packOps(pk, ops); return }
+          PJ.spherePath({ moveTo: (x, y) => pk.moveTo(x, y), lineTo: (x, y) => pk.lineTo(x, y), closePath: () => pk.closePath(), arc() {} }); pk.end()
+        }
+      })
+    }
+    // 二级 / 一级行政区界（缩放淡出与 drawLinesContent 同一档）
+    const admF = admFade(bs.fade ? fadeFactor(1 / k()) : 1)
+    const adm = (which, data, color, width, alpha) => ({
+      id: 'base:' + which, key: which + '|' + baseAdmVer + '|' + plane + '|' + color + '|' + width,
+      alpha, proj: !eq, w: width, style: { color, width, dash: null },
+      feed(pk) {
+        if (eq) { for (const ring of data.borders) pk.polyline(ring, false); return }
+        const list = (admPaths || bakeAdm())[which]
+        if (list) { for (const sh of list) packOps(pk, sh.ops); return }
+        admPaths = null
+        for (const ring of data.borders) packRingProj(pk, ring)   // 烘不出来：与 drawLinesContent 的回退同一条（逐环 PJ.path）
+      }
+    })
+    if (cityVisible && city && admF.adm2 > 0.01) out.push(adm('city', city, bs.cityColor, bs.cityWidth, bs.cityOpacity * admF.adm2))
+    if (provVisible && prov) out.push(adm('prov', prov, bs.provColor, bs.provWidth, bs.provOpacity * admF.adm1))
+    // 五类边界线（drawBorders 的次序：海岸 → 主张 → 停火 → 未定 → 国界）。集合按底图档分开存：
+    // 等距圆柱「拖着转」期间临时降 110m，松手回 10m 时不必再把 48 万点重打包一遍。
+    const det = curDetail()
+    // 五类共用同一份解算结果：resolvedLines 不缓存（10m 一次约 60 ms），只在某类真要重打包（feed 被调）时才解算、且本帧只解一次
+    let rl = null
+    const linesOf = () => rl || (rl = resolvedLines(det))
+    for (const cls of BORDER_DRAW) {
+      const ck = CFG_KEY[cls], dashK = bs[ck + 'Dash'] || 'solid'
+      out.push({
+        id: 'base:' + cls + '@' + det, key: 'b|' + cls + '|' + det + '|' + basePovVer + '|' + plane + '|' + bs[ck + 'Color'] + '|' + bs[ck + 'Width'] + '|' + dashK,
+        alpha: bs[ck + 'Opacity'], proj: !eq, w: bs[ck + 'Width'],
+        style: { color: bs[ck + 'Color'], width: bs[ck + 'Width'], dash: DASH_PX[dashK] || null, dashScale: DASH_SCALE[cls] || 1 },
+        feed(pk) {
+          if (eq) { for (const poly of (linesOf()[cls] || [])) if (poly && poly.length >= 2) pk.polyline(poly, false); return }
+          for (const sh of ((borderPaths || bakeBorders())[cls] || [])) {
+            const p = sh.pts
+            pk.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) pk.lineTo(p[i], p[i + 1]); pk.end()
+          }
+        }
+      })
+    }
+    // 岛链（drawChains）
+    if (chainCfg.on && chains.length) {
+      const dashK = chainCfg.dash || 'solid'
+      out.push({
+        id: 'base:chains', key: 'ch|' + baseChainVer + '|' + plane + '|' + chainCfg.color + '|' + chainCfg.width + '|' + dashK,
+        alpha: chainCfg.opacity != null ? chainCfg.opacity : 1, proj: !eq, w: chainCfg.width,
+        style: { color: chainCfg.color, width: chainCfg.width, dash: DASH_PX[dashK] || null },
+        feed(pk) { for (const c of chains) { if (eq) pk.polyline(c.pts, false); else packRingProj(pk, c.pts) } }
+      })
+    }
+    return out
+  }
+  // 打包 + 上传一类（key 没变、显存里也还在就沿用那份）。返回集合记录，GPU 当场不可用时返回 null。
+  function ensureBaseSet(g, c) {
+    const e0 = baseSets.get(c.id)
+    if (e0 && e0.key === c.key && g.has(c.id)) return e0
+    const pk = createLinePacker({ period: c.proj ? 0 : 360 })
+    pk.style({ color: c.style.color, alpha: 1, width: c.style.width, dash: c.style.dash, dashScale: c.style.dashScale || 1 })
+    c.feed(pk)
+    const packed = pk.finish()
+    const meta = g.upload(c.id, packed)
+    if (!meta) return null
+    const e = { key: c.key, n: packed.n, chunks: packed.n ? buildChunks(new Float32Array(packed.buf, 0, packed.n * 10), packed.n, c.proj ? 0 : 360) : [] }
+    baseSets.set(c.id, e)
+    return e
+  }
+  // 世界平面里的一块（视口裁剪后的可见并集）→ 设备像素剪裁框（左上原点，含线宽余量 m），全在画布外返回 null
+  function baseDevRect(b, m) {
+    if (!b) return null
+    const kk = k()
+    const x0 = Math.max(0, Math.floor(((b.x0 - m) * kk + tx) * dpr) - 1), x1 = Math.min(canvas.width, Math.ceil(((b.x1 + m) * kk + tx) * dpr) + 1)
+    const y0 = Math.max(0, Math.floor(((b.y0 - m) * kk + ty) * dpr) - 1), y1 = Math.min(canvas.height, Math.ceil(((b.y1 + m) * kk + ty) * dpr) + 1)
+    return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null
+  }
+  // 各类在若干区域里要画的块 → 合成层（按类序，每类再按区域）。regions = null：整个视口；
+  // 否则是平移后露出来的、互不重叠的设备像素矩形（shiftStrips）—— 每块按它自己的世界范围挑块，剪裁框也钉在块内。
+  function baseLayersFor(cls, g, kk, regions) {
+    const layers = []
+    let inst = 0
+    for (const c of cls) {
+      if (!(c.alpha > 0)) continue
+      const e = ensureBaseSet(g, c)
+      if (!e) return null
+      if (!e.n) continue
+      const m = (Math.max(1, c.w) * 0.5 + 2) / kk   // 半个线宽 + 圆帽 / 抗锯齿余量（CSS px → 世界单位）
+      for (const Rg of (regions || [null])) {
+        const x0 = Rg ? Rg.x / dpr : 0, x1 = Rg ? (Rg.x + Rg.w) / dpr : cw, y0 = Rg ? Rg.y / dpr : 0, y1 = Rg ? (Rg.y + Rg.h) / dpr : ch
+        const vr = visibleRanges(e.chunks, { period: c.proj ? 0 : 360, lon0: LON0, x0: (x0 - tx) / kk - m, x1: (x1 - tx) / kk + m, y0: (y0 - ty) / kk - m, y1: (y1 - ty) / kk + m })
+        if (!vr.ranges.length) continue
+        let rect = baseDevRect(vr.box, m)
+        if (rect && Rg) {
+          const a = Math.max(rect.x, Rg.x), b = Math.min(rect.x + rect.w, Rg.x + Rg.w), p = Math.max(rect.y, Rg.y), q = Math.min(rect.y + rect.h, Rg.y + Rg.h)
+          rect = b > a && q > p ? { x: a, y: p, w: b - a, h: q - p } : null
+        }
+        if (!rect) continue
+        for (const r of vr.ranges) inst += r.n
+        layers.push({ alpha: c.alpha, proj: c.proj, rect, draws: [{ id: c.id, ranges: vr.ranges }] })
+      }
+    }
+    return { layers, inst }
+  }
+  // 每帧在 above 那一格调（draw 里）：三条路 ——
+  //   内容 / 缩放 / 切口 / 画布 / 透明度变了 → 可见块整张重渲进缓存纹理（缩放的每一格都走这条：线是当前缩放的真线）；
+  //   只是同缩放下平移了整数个设备像素 → 缓存挪位、只补露出来的条带（拖动每帧与搬快照一样便宜）；
+  //   什么都没变（时间轴播放等别的层在动）→ 原样贴缓存。
+  // 合成裁到世界矩形（与 drawLinesContent 开头那道 clip 同一个矩形）。返回 false = GPU 当场不可用，调用方退回 Canvas2D 现画。
+  function drawBaseLines() {
+    const g = glLines(), R = glf ? glf.baseLines() : null
+    if (!g || !R) return false
+    const W = canvas.width, H = canvas.height, kk = k()
+    const cls = baseClassList()
+    let fp = kk + '|' + LON0 + '|' + W + 'x' + H + '|' + dpr + '|' + planeKey()
+    for (const c of cls) fp += '|' + c.key + '@' + c.alpha
+    const u = { w: W, h: H, dpr, k: kk, tx, ty, lon0: LON0 }
+    const _t0 = performance.now()
+    let how = 'cache', inst = 0
+    const full = () => {
+      const L = baseLayersFor(cls, g, kk, null)
+      if (!L || !R.render(u, L.layers)) return false
+      baseCacheKey = fp; baseTx = tx; baseTy = ty; how = 'full'; inst = L.inst
+      return true
+    }
+    if (fp !== baseCacheKey || !R.ready(W, H)) { if (!full()) { baseCacheKey = ''; return false } }
+    else if (tx !== baseTx || ty !== baseTy) {
+      const sx = (tx - baseTx) * dpr, sy = (ty - baseTy) * dpr, ix = Math.round(sx), iy = Math.round(sy)
+      const strips = (Math.abs(sx - ix) < 1e-6 && Math.abs(sy - iy) < 1e-6) ? shiftStrips(ix, iy, W, H) : null
+      if (strips && R.shift(ix, iy)) {
+        const L = baseLayersFor(cls, g, kk, strips)
+        if (!L || !R.render(u, L.layers, { keep: true })) { baseCacheKey = ''; return false }
+        baseTx = tx; baseTy = ty; how = 'strip'; inst = L.inst
+      } else if (!full()) { baseCacheKey = ''; return false }
+    }
+    if (!R.present(W, H)) { baseCacheKey = ''; return false }
+    const _wr = worldRect()
+    const sx = Math.max(0, Math.floor(_wr.x * dpr)), sy = Math.max(0, Math.floor(_wr.y * dpr))
+    const ex = Math.min(W, Math.ceil((_wr.x + _wr.w) * dpr)), ey = Math.min(H, Math.ceil((_wr.y + _wr.h) * dpr))
+    if (ex > sx && ey > sy) {
+      ctx.save()
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.beginPath(); ctx.rect(_wr.x, _wr.y, _wr.w, _wr.h); ctx.clip()
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1
+      ctx.drawImage(glf.canvas(), sx, sy, ex - sx, ey - sy, sx, sy, ex - sx, ey - sy)
+      ctx.restore()
+    }
+    glf.clear()   // 填充路（drawFieldGL）不自己清画布：留一张干净的给后来者
+    // 开发期读数（验证台 / 控制台）：how = full 整张重画 / strip 挪位补条带 / cache 原样贴缓存
+    globalThis.__baseStat = { how, rendered: how !== 'cache', classes: cls.length, instances: inst, ms: +(performance.now() - _t0).toFixed(2), texMB: +R.texMB().toFixed(1) }
+    return true
+  }
   // 扁平缓冲(verts/counts) → GeoJSON MultiPolygon（投影档把分带填充交给 d3 切割）
   function bandsToGeo(fb) {
     const verts = fb.verts, counts = fb.counts, polys = []
@@ -3010,8 +3229,9 @@ export function createFlatCoverage(canvas) {
   function keepFallback() {
     const rec = curRec()
     const c = coverOf(rec, dpr)
-    // 文字那一张合进 above：回退快照只留两张（below / above），当回退垫底时文字也在
-    if (textCanvas && textCanvas.width === aboveCanvas.width && textCanvas.height === aboveCanvas.height) {
+    // 文字那一张合进 above：回退快照只留两张（below / above），当回退垫底时文字也在。
+    // ★ 只合【与这张快照同一视图】的文字：缩放手势里文字层按当前视角现画（见 draw 的 textDirect），那时它对不上这张快照
+    if (textCanvas && textCanvas.width === aboveCanvas.width && textCanvas.height === aboveCanvas.height && sameRec(textRec, rec)) {
       aboveCtx.save(); aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.drawImage(textCanvas, 0, 0); aboveCtx.restore()
     }
     fallbacks.unshift({ ...rec, below: belowCanvas, above: aboveCanvas, cw: belowCanvas.width, ch: belowCanvas.height, area: Math.abs((c.x1 - c.x0) * (c.y1 - c.y0)) })
@@ -3047,6 +3267,8 @@ export function createFlatCoverage(canvas) {
     //   逐要素 Path2D 被 Skia 按 clip 剔）。判据见 stripPlan；必须在 snapTx 被改写之前算。
     const sp = stripPlan(bw, bh, mxDev, myDev)
     lastStrip = !!sp
+    // 底图线进不进这张快照：GPU 路开着就不进（每帧由 drawBaseLines 现画），above 那张留空
+    const linesIn = !baseOn()
     if (belowCanvas.width !== bw || belowCanvas.height !== bh) {
       belowCanvas.width = bw; belowCanvas.height = bh
       aboveCanvas.width = bw; aboveCanvas.height = bh
@@ -3060,7 +3282,7 @@ export function createFlatCoverage(canvas) {
       const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
       if (sp) {
         shiftCanvas(belowCanvas, belowCtx, sp.sx, sp.sy)
-        shiftCanvas(aboveCanvas, aboveCtx, sp.sx, sp.sy)
+        if (linesIn) shiftCanvas(aboveCanvas, aboveCtx, sp.sx, sp.sy)
         // below：只在露出来的那一圈铺底色 + 画海陆
         ctx = belowCtx
         ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); clipRectsDev(sp.rects)
@@ -3068,13 +3290,15 @@ export function createFlatCoverage(canvas) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
         drawBelowContent(rx, ry, rw, rh)
         ctx.restore()
-        // 线：同一圈
-        ctx = aboveCtx
-        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); clipRectsDev(sp.rects)
-        for (const r of sp.rects) ctx.clearRect(r[0], r[1], r[2], r[3])
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-        drawLinesContent(rx, ry, rw, rh)
-        ctx.restore()
+        // 线：同一圈（GPU 路开着时 above 恒空，不必动）
+        if (linesIn) {
+          ctx = aboveCtx
+          ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.save(); clipRectsDev(sp.rects)
+          for (const r of sp.rects) ctx.clearRect(r[0], r[1], r[2], r[3])
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          drawLinesContent(rx, ry, rw, rh)
+          ctx.restore()
+        }
         // 文字：整张重画（地名避让按整幅算，条带里画不了半个字；本来就便宜）
         ctx = textCtx
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
@@ -3085,10 +3309,10 @@ export function createFlatCoverage(canvas) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
         ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = BG; ctx.fillRect(0, 0, cw, ch)
         drawBelowContent(rx, ry, rw, rh)
-        // above：经纬网/行政区界/五类边界线（透明）
+        // above：经纬网/行政区界/五类边界线（透明；GPU 路开着时留空）
         ctx = aboveCtx
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
-        drawLinesContent(rx, ry, rw, rh)
+        if (linesIn) drawLinesContent(rx, ry, rw, rh)
         // text：标记/国家名/卫星层（透明）
         ctx = textCtx
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
@@ -3099,8 +3323,8 @@ export function createFlatCoverage(canvas) {
         drawBelowContent(rx, ry, rw, rh)
         belowCtx.setTransform(1, 0, 0, 1, 0, 0); belowCtx.clearRect(0, 0, bw, bh); belowCtx.drawImage(canvas, 0, 0)
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
-        drawLinesContent(rx, ry, rw, rh)
-        aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.clearRect(0, 0, bw, bh); aboveCtx.drawImage(canvas, 0, 0)
+        if (linesIn) drawLinesContent(rx, ry, rw, rh)
+        aboveCtx.setTransform(1, 0, 0, 1, 0, 0); aboveCtx.clearRect(0, 0, bw, bh); if (linesIn) aboveCtx.drawImage(canvas, 0, 0)
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
         drawTextContent(rx, ry, rw, rh)
         textCtx.setTransform(1, 0, 0, 1, 0, 0); textCtx.clearRect(0, 0, bw, bh); textCtx.drawImage(canvas, 0, 0)
@@ -3109,6 +3333,8 @@ export function createFlatCoverage(canvas) {
       ctx = SV.ctx; cw = SV.cw; ch = SV.ch; tx = SV.tx; ty = SV.ty; realView = null
     }
     textValid = true
+    textRec = { k: snapK, tx: snapTx, ty: snapTy, mx: snapMxDev, my: snapMyDev, w: bw, h: bh }   // 文字层与这张快照同一视图
+    snapBaseGl = !linesIn
     tilesDirty = false          // 这一趟本来就把瓦片重画了
     lastRebuildMs = +(performance.now() - _t0).toFixed(2)
   }
@@ -3150,16 +3376,21 @@ export function createFlatCoverage(canvas) {
     t.setTransform(1, 0, 0, 1, 0, 0); t.globalCompositeOperation = 'copy'; t.drawImage(cv, 0, 0); t.globalCompositeOperation = 'source-over'
     c.setTransform(1, 0, 0, 1, 0, 0); c.globalCompositeOperation = 'copy'; c.drawImage(shiftTmp, sx, sy); c.globalCompositeOperation = 'source-over'
   }
-  // 只重画文字 / 标记 / 卫星层那一张（invalidateText 之后）。★ 按【快照的视图】画，不按当前视图 ——
-  // 手势中两者可以不同，而这张必须与 below / above 逐像素对齐。
-  function renderTextLayer() {
-    if (!belowCanvas || belowCanvas.width < 2 || !textCanvas) return
-    const bw = belowCanvas.width, bh = belowCanvas.height
-    if (textCanvas.width !== bw || textCanvas.height !== bh) { textCanvas.width = bw; textCanvas.height = bh }
+  // 文字 / 标记 / 卫星层那一张按某个视图记录重画：rec = { k, tx, ty, mx, my, w, h }（与快照记录同形，w/h 是设备像素）。
+  // 平常按【快照的视图】画（curRec）—— 手势中当前视图可以不同，而这张必须与 below 逐像素对齐；
+  // 缩放手势里底图线走 GPU 时改按【当前视图】画（viewRec，见 draw 的 textDirect），字号与避让都是这一档的真值。
+  // textRec 记这张现在是按哪个视图画的；renderStaticLayers 整份重建时一并改写。
+  let textRec = null
+  const sameRec = (a, b) => !!a && !!b && a.k === b.k && a.tx === b.tx && a.ty === b.ty && a.mx === b.mx && a.my === b.my && a.w === b.w && a.h === b.h
+  // 当前视图的记录：余量与 renderStaticLayers 同一口径（snapMargins），于是静止补建按同一视图重排出来的就是同一张
+  function viewRec() { const { mx, my } = snapMargins(); return { k: k(), tx, ty, mx, my, w: canvas.width + 2 * mx, h: canvas.height + 2 * my } }
+  function renderTextAt(rec) {
+    if (!textCanvas || !rec || rec.w < 2 || rec.h < 2) return
+    if (textCanvas.width !== rec.w || textCanvas.height !== rec.h) { textCanvas.width = rec.w; textCanvas.height = rec.h }
     const SV = { ctx, cw, ch, tx, ty, scale }
     try {
-      scale = snapK / base
-      cw = bw / dpr; ch = bh / dpr; tx = snapTx + snapMxDev / dpr; ty = snapTy + snapMyDev / dpr
+      scale = rec.k / base
+      cw = rec.w / dpr; ch = rec.h / dpr; tx = rec.tx + rec.mx / dpr; ty = rec.ty + rec.my / dpr
       const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h
       ctx = textCtx
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
@@ -3167,19 +3398,21 @@ export function createFlatCoverage(canvas) {
     } finally {
       ctx = SV.ctx; cw = SV.cw; ch = SV.ch; tx = SV.tx; ty = SV.ty; scale = SV.scale
     }
-    textValid = true
+    textRec = rec; textValid = true
   }
   // ── 全图背板（《2D 手势期重建治理》§11.3 的根治）──────────────────────────
   // 110m 骨架烘一张【全图】（下：海陆，开实时影像时图廓内透明；上：只有线，不带文字 —— 缩放去用时
   // 文字会跟着位图放大成大字）。谁都盖不住时垫它：拖动 / 缩小期间画面永远有海陆线，再也不同步整份重建。
   // 按需烘、按键复用：内容代 / 画布尺寸 / 平面 / 影像模式任一变了才重烘，一次 ≈ 5 ms。
   let bpBelow = null, bpAbove = null, bpKey = '', bpRec = null
-  const backplateKey = () => planeKey() + '/' + canvas.width + 'x' + canvas.height + '/' + staticGen + '/' + (imgLiveNow() ? 'L' : 'V') + '/' + mapDetail0
+  // ★ 底图线走 GPU 时背板只烘下层（线每帧现画在整个视口上，背板里再烘一份 110m 的线就是两套线叠在一起）
+  const backplateKey = () => planeKey() + '/' + canvas.width + 'x' + canvas.height + '/' + staticGen + '/' + (imgLiveNow() ? 'L' : 'V') + '/' + mapDetail0 + (baseOn() ? '/gl' : '')
   function ensureBackplate() {
     if (!hasDetail('110m')) { ensureDetail('110m').catch(() => {}); return null }
     if (rotLive || liteBake) return null
     const key = backplateKey()
     if (!(bpBelow && bpKey === key)) {
+      const linesIn = !baseOn()
       if (!bpBelow) { bpBelow = document.createElement('canvas'); bpAbove = document.createElement('canvas') }
       const bw = canvas.width, bh = canvas.height
       if (bpBelow.width !== bw || bpBelow.height !== bh) { bpBelow.width = bw; bpBelow.height = bh; bpAbove.width = bw; bpAbove.height = bh }
@@ -3194,7 +3427,7 @@ export function createFlatCoverage(canvas) {
           drawBelowContent(rx, ry, rw, rh)
           ctx = bpAbove.getContext('2d')
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cw, ch)
-          drawLinesContent(rx, ry, rw, rh)
+          if (linesIn) drawLinesContent(rx, ry, rw, rh)
         })
       } catch (e) {
         bpKey = ''; console.warn('全图背板烘制失败', e); return null
@@ -3990,6 +4223,9 @@ export function createFlatCoverage(canvas) {
     //   盖不住              → 有回退快照就垫一张；没有且便宜才同步重建；没有且贵就海色垫底（§4.4）
     // ★ 缩小一律不同步重建：缩小是降采样，缩位图不糊；放大才有清晰度收益。
     // ★ 判据是 costEst 不是 lastRebuildMs —— 后者只是「记录绘制指令」的时间，所有档都读到 1.5～6 ms。
+    // 底图线走不走 GPU 变了（导出前后 / 上下文丢失恢复 / 投影档拖着转）：快照里该不该有线跟着变 → 整份重烘
+    const bOn = baseOn()
+    if (snapBaseGl !== null && snapBaseGl !== bOn) invalidateStatic()
     const cls = viewCls(), kk = k()
     let pl = staticValid ? snapPlace() : null
     let mode = 'blit', reason = '', fb = null
@@ -4004,7 +4240,12 @@ export function createFlatCoverage(canvas) {
         armProbe()
       }
     }
+    // 缩放完接着拖（按下在最后一格滚轮之后）：缩放手势已经结束，缩放后那次补建本来就欠着 —— 底图线走 GPU 时
+    // 它只剩填充与文字（十几到三十几毫秒），提到拖动的第一帧做掉，之后整段拖动都是 1:1 搬位图、地名不跳；
+    // 不提前的话整段拖动快照都在按比例缩着贴，文字只能逐帧按当前视图现排（见 textDirect）。线在快照里的老路照旧不提前（那一次 65～144 ms）。
+    const dragAfterZoom = bOn && dragging && dragAt > lastZoomAt && !!pl && pl.scaled
     if (!pl) doRebuild('invalid')
+    else if (dragAfterZoom) doRebuild('drag')
     else if (pl.covers) {
       if (!pl.scaled) mode = 'blit'
       else if (clsCheap(cls) && kk > snapK) doRebuild('fast')
@@ -4027,11 +4268,21 @@ export function createFlatCoverage(canvas) {
     //   缩放后的快照就一直停在缩位图那张（影像实时画是清晰的，线却糊着）。手势的「热」由 gestureHot 判，
     //   定时器到期时自己再等一拍，不需要靠重新计时来延后。
     if (mode !== 'rebuild' && !idleTimer && needsRestRebuild(pl, tilesDirty)) scheduleRebuild()
-    // 只有文字 / 标记 / 卫星层变了（invalidateText）：重画那一张就够，面与线不动
-    if (mode !== 'rebuild' && !textValid) renderTextLayer()
+    // 文字 / 标记 / 卫星层：
+    // ★ 缩放手势里（快照在按比例缩着贴）且底图线走 GPU 时，按【当前视图】现排现画 —— 线已是当前缩放的真线，
+    //   字也得是当前字号、当前避让的真字，不能跟着缩位图一起糊。静止补建之后回到与快照同一视图的那一张。
+    //   只在缩放时这么做：平移时快照是 1:1 搬位图、本来就清楚，逐帧重排地名反而会让视口边上的名字跳来跳去。
+    // 其余时候只有文字层自己变了（invalidateText）才重画那一张，面与线不动。
+    const textDirect = bOn && !!pl && pl.scaled
+    let plText = pl
+    if (textDirect) {
+      const vr = viewRec()
+      if (!textValid || !sameRec(textRec, vr)) renderTextAt(vr)
+      plText = placeOf(textRec)
+    } else if (mode !== 'rebuild' && (!textValid || !sameRec(textRec, curRec()))) renderTextAt(curRec())
     drawSeq++; if (mode === 'rebuild') rebuildSeq++
     const live = imgLiveNow()
-    globalThis.__staticStat = { mode, reason, drawSeq, rebuildSeq, rebuildMs: lastRebuildMs, strip: lastStrip, live, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, backplate: !!(fb && fb.f.below === bpBelow), gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height }
+    globalThis.__staticStat = { mode, reason, drawSeq, rebuildSeq, rebuildMs: lastRebuildMs, strip: lastStrip, live, rasterGapMs, costEst, nominal: +rasterNominal.toFixed(2), cls, cheap: clsCheap(cls), cost: clsCost(cls), unknown: UNKNOWN_COST, fallbacks: fallbacks.length, backplate: !!(fb && fb.f.below === bpBelow), gen: staticGen, detail: curDetail(), mx: snapMxDev, my: snapMyDev, w: belowCanvas.width, h: belowCanvas.height, baseGl: bOn, textDirect }
     const _wr = worldRect(), rx = _wr.x, ry = _wr.y, rw = _wr.w, rh = _wr.h   // 裁到世界矩形：整幅图只此一张
     // 复合：blit below（不透明）→ Polygon 填充 + 覆盖填充/线（夹在中间）→ blit above（透明）→ 覆盖标注 → 聚焦星
     // ★ 先铺背景色再贴：位移之后快照盖不满整块画布，露出来的那一条本就该是背景
@@ -4062,17 +4313,25 @@ export function createFlatCoverage(canvas) {
     drawDataLines()      // 波束线/仰角线/聚焦卫星线（同上：覆盖之上、国界省界之下，与边界共存；航迹另见 drawTrajLayer）
     ctx.restore()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
+    // ★ 底图线（GPU 路）：每帧按当前视角现画（视角与内容没变就贴缓存），在回退快照的文字之前 —— 文字压线。
+    //   GPU 当场画不出来（上下文刚丢等）：这一帧照 Canvas2D 老路现画一遍，之后整份重烘回快照路，不留一帧没线。
+    if (bOn && !drawBaseLines()) {
+      baseFail = true; invalidateStatic(); requestDraw()
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0); drawLinesContent(rx, ry, rw, rh); ctx.setTransform(1, 0, 0, 1, 0, 0)
+    }
     // ★ 回退快照的 above 层必须 evenodd 裁到当前快照【之外】那一圈：不裁的话地名 / 边界线
     //   会在重叠区叠成两层、还略有错位。below 层不裁也行（当前快照直接盖住）。
-    if (fb) {
+    //   文字按当前视图现画时（textDirect）整个视口都有字了，回退快照合进去的那份旧字不能再贴；
+    //   GPU 路下全图背板的 above 是空的，也不必贴。
+    if (fb && !textDirect && !(bOn && fb.f.below === bpBelow)) {
       ctx.save()
       ctx.beginPath(); for (const r of clipRects(pl, canvas.width, canvas.height)) ctx.rect(r[0], r[1], r[2], r[3])
       ctx.clip('evenodd')
       blitSnap(fb.f.above, fb.pl)
       ctx.restore()
     }
-    blitSnap(aboveCanvas, pl)
-    blitSnap(textCanvas, pl)
+    if (!bOn) blitSnap(aboveCanvas, pl)
+    blitSnap(textCanvas, plText)
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.save(); ctx.beginPath(); ctx.rect(rx, ry, rw, rh); ctx.clip()
     drawFieldOverlays()   // GRD 波束名/峰值点/数值标签（覆盖层之上）
@@ -4117,6 +4376,7 @@ export function createFlatCoverage(canvas) {
   // 图上还有点选 / 框选 / 放点 / 拖顶点一堆模态，各自的光标才是提示。按下之后仍给 grabbing（那是动作反馈）。
   const CUR_IDLE = 'default'
   let dragging = false, lx = 0, ly = 0
+  let dragAt = -1e9            // 这一次平移拖动按下的时刻（判「缩放之后才开始拖」，见 draw 的 dragAfterZoom）
   let beamDragMode = false, onBeamDrag = null, beamDragging = false   // 拖拽波束（不平移地图）
   // 「拖着转」：左键拖动改的是【投影中心】而不是画面平移 —— 横向改中央经线（各档都有），
   // 纵向改中心纬度（只有方位等距认，见 PROJ_PARAMS）。必须是一个显式模式，否则和平移抢同一个手势。
@@ -4327,7 +4587,7 @@ export function createFlatCoverage(canvas) {
     // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑：这两种都不选星
     if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
     panSX = e.clientX; panSY = e.clientY
-    dragging = true; lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+    dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
   function onMove(e) {
     if (boxDragging) {
@@ -4486,14 +4746,14 @@ export function createFlatCoverage(canvas) {
   // 一级行政区数据（与 3D setProvinces 同款格式）。★ 可反复调用：多选国家时上层并成一份重新喂进来。
   function setProvinces(data) {
     prov = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 15, pri: l.pri, rk: l.rk, keep: l.keep, dx: l.dx, dy: l.dy })) } : null
-    admPaths = null
+    admPaths = null; baseAdmVer++
     invalidateStatic(); requestDraw()
   }
 
   // 二级行政区数据（同上）。地名密集 → 基准 px 偏小（小空间）
   function setCities(data) {
     city = data ? { borders: data.borders || [], labels: (data.labels || []).map((l) => ({ name: l.name, lon: l.lon, lat: l.lat, px: l.px2d != null ? l.px2d : 11, pri: l.pri, rk: l.rk, keep: l.keep, dx: l.dx, dy: l.dy })) } : null
-    admPaths = null
+    admPaths = null; baseAdmVer++
     invalidateStatic(); requestDraw()
   }
 
@@ -4506,7 +4766,8 @@ export function createFlatCoverage(canvas) {
       fieldLayers = src.map((L, i) => makeFieldEntry(L, i))
       // 消失的层收回显存（GPU 路），并记下「几何层是不是自己拒绝了 GL」
       if (glf) glf.keepOnly(fieldLayers.filter((L) => L.fieldMesh).map((L) => L._glKey))
-      { const g = glf ? glf.lines() : null; if (g) g.keepOnly([DL_KEY, ...fieldLayers.map((L) => L._lnKey).filter((x) => x != null)]) }
+      // 底图线的分类集合与数据线 / 等值线同挂一张 glLines 集合表：保留名单里必须带上，否则显存里的底图线被删、下一次整张重画一笔不画
+      { const g = glf ? glf.lines() : null; if (g) g.keepOnly([DL_KEY, ...baseSets.keys(), ...fieldLayers.map((L) => L._lnKey).filter((x) => x != null)]) }
       glDenied = !!(src.length && fieldBackend() === 'gl' && !src.some((L) => L.fieldMesh))
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
@@ -4547,6 +4808,9 @@ export function createFlatCoverage(canvas) {
     // 开发 / 验证台：关掉线的 GPU 路（整条 Canvas2D 老路），用来 A/B 对拍与计时。运行时不用。
     setGlLines(v) { glLinesOn = v !== false; dlDirty = true; syncFieldLines(); requestDraw() },
     glLinesActive: () => lnOk(),
+    // 开发 / 验证台：关掉底图线的 GPU 路（线回到静态快照里的 Canvas2D 描边），用来 A/B 对拍与计时。运行时不用。
+    setGlBaseLines(v) { glBaseOn = v !== false; baseFail = false; baseCacheKey = ''; requestDraw() },
+    glBaseLinesActive: () => baseOn(),
     // ---- 分带填充的后端（见文件头 glField 那段）----
     // 几何层每次组装图层前问一次：'gl' → 只出等值线 + fieldMesh；'paths' → 出老的 fillBands。不缓存。
     // nLevels 是本次的档数（超过 GL_MAX_LEVELS 退回 CPU 路）。
@@ -4617,7 +4881,7 @@ export function createFlatCoverage(canvas) {
     // 岛链：{ on, off, color, width, opacity, dash, name, nameSize, nameBold } 一次给，只改给到的那几项
     setChains(o) {
       if (!o) return
-      if (o.off) { chainOff = { ...o.off }; chains = chainList(chainOff); chainLbl = chainLbls() }
+      if (o.off) { chainOff = { ...o.off }; chains = chainList(chainOff); chainLbl = chainLbls(); baseChainVer++ }
       for (const k of ['on', 'color', 'width', 'opacity', 'dash', 'name', 'nameSize', 'nameBold']) if (o[k] != null) chainCfg[k] = o[k]
       invalidateStatic(); requestDraw()
     },

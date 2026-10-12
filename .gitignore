@@ -383,3 +383,5 @@ build/review/
 # 跟随视角一致性验证台（node .fsvharness/seed.mjs && npx electron .fsvharness/app）：真 Electron + vite dev 渲染端，
 # userData 指到 .fsvharness/ud（运行时 Chromium 缓存约 85 MB），本地开发用，不进仓库。
 .fsvharness/
+# .refaxharness/ 是参考系轴（ECEF / J2000 / 赤道面）+ RIC 三轴的渲染验证台：只挂真 createGlobeScene（npx vite --config .refaxharness/vite.config.mjs）。
+.refaxharness/

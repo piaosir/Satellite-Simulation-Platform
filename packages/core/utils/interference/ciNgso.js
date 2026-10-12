@@ -39,6 +39,7 @@
 // 调用方务必先用 estimateWork 拦一道，别让用户点下去就卡死。
 
 const satlib = require('../../vendor/satellite.js');
+const orbitPos = require('../orbitPos.js');
 const G = require('./geometry.js');
 const P = require('./patterns.js');
 const PS = require('./patternsSat.js');
@@ -218,8 +219,9 @@ function requiredStepSec(satrecs, guardDeg, minSamples) {
 let _propCount = 0;
 function ecefAt(rec, date, gmst) {
   _propCount++;
-  const pv = satlib.propagate(rec, date);
-  if (!pv || !pv.position || (rec.error && rec.error !== 0)) return null;
+  // 取位走 orbitPos（单一入口）：与直接 propagate 逐位相同，另认「对应到这颗星」的叠加星历
+  const pv = orbitPos.positionAt(rec, date);
+  if (!pv || !pv.position) return null;
   const e = satlib.eciToEcf(pv.position, gmst);
   return [e.x, e.y, e.z];
 }

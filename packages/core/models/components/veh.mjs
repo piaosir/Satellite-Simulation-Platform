@@ -73,8 +73,9 @@ export const VEH_STYLES = Object.freeze({
 /**
  * 车顶 / 货箱插座推荐的件：只列立在水平面上、滚转 0° 与车体同向的立件（动中通平板、展开座、座架 / 立柱 / 非穿透底座 /
  * 方舱、船载罩）。车体本身、反射面（贴俯仰轴插座）、副面 / 馈源（贴焦点插座）装上来会被转竖或视轴朝天，不列。
+ * 2026-10-12 组件不限领域：另收阵列 / 线天线 / 天线罩族（卫星相控阵当动中通、GNSS / 螺旋天线、罩：都朝安装端法向长，立在车顶即朝天）。
  */
-const VEH_ACCEPTS = Object.freeze(['veh.cotm', 'veh.driveaway', 'es.pedestal.', 'es.mast', 'es.vsat.mount', 'es.shelter', 'sea.vsat', 'prim.'])
+const VEH_ACCEPTS = Object.freeze(['veh.cotm', 'veh.driveaway', 'es.pedestal.', 'es.mast', 'es.vsat.mount', 'es.shelter', 'sea.vsat', '@array', '@wire', '@radome', 'prim.'])
 const RACK_RAIL_H = 0.035
 
 /**
@@ -240,7 +241,8 @@ function sideYAt(g, x, h) {
 }
 
 const vehBody = {
-  type: 'veh.body', domain: ['vehicle'], title: 'Vehicle body', titleZh: '车体', role: 'bus',
+  type: 'veh.body', domain: ['vehicle'], title: 'Vehicle body', titleZh: '车体', role: 'bus', category: 'structure', family: 'body',
+  aliases: ['车体', '车辆', '汽车', '越野车', '皮卡', '厢式车', 'vehicle', 'truck'],
   params: {
     style: enm('suv', ['suv', 'pickup', 'van'], '车型', { title: 'suv = 越野车；pickup = 双排座皮卡（敞口货箱）；van = 高顶厢式车' }),
     lengthM: num(4.9, 'm', '车长', { gt: 2, max: 14 }),
@@ -436,7 +438,8 @@ export const FLAT_PANELS = Object.freeze({
 const panelDims = (p) => (p.model === 'custom' ? { L: p.lengthM, W: p.widthM, H: p.heightM } : FLAT_PANELS[p.model])
 
 const cotmFlat = {
-  type: 'veh.cotm.flat', domain: ['vehicle', 'ship', 'ground', 'aircraft'], title: 'Flat-panel COTM terminal', titleZh: '平板动中通', role: 'feed',
+  type: 'veh.cotm.flat', domain: ['vehicle', 'ship', 'ground', 'aircraft'], title: 'Flat-panel COTM terminal', titleZh: '平板动中通', role: 'feed', category: 'antenna', family: 'array',
+  aliases: ['动中通', '平板天线', '平板阵', '相控阵', '低轮廓', 'COTM', 'flat panel', 'phased array'],
   params: {
     model: enm('kymeta-u8', ['kymeta-u8', 'custom'], '型号', { source: KYMETA_U8_URL, title: 'kymeta-u8 = Kymeta Hawk u8（89.5 × 89.5 × 14 cm）；custom = 按以下三项' }),
     lengthM: num(0.895, 'm', '长', { gt: 0.05, max: 3, source: KYMETA_U8_URL, title: '型号 custom 时生效' }),
@@ -487,7 +490,7 @@ const INETVU_URL = 'https://www.c-comsat.com/wp-content/uploads/2022/02/iNetVuDa
 export const DRIVEAWAYS = Object.freeze({
   'inetvu-1202': Object.freeze({ L: 2.03, W: 1.24, H: 0.35, azTravel: 400, source: INETVU_URL })
 })
-const REFL_ACCEPTS = Object.freeze(['es.refl.', 'prim.'])
+const REFL_ACCEPTS = Object.freeze(['es.refl.', 'sat.reflector', '@array', 'prim.'])
 /** 展开座尺寸推算：底板占地 = 收拢外形 L × W；方位转台在底板后部（x = −0.25 L），俯仰铰点在方位轴上。 */
 function dwGeom(p) {
   const d = p.model === 'custom' ? { L: p.lengthM, W: p.widthM, H: p.heightM } : DRIVEAWAYS[p.model]
@@ -496,7 +499,8 @@ function dwGeom(p) {
 }
 
 const driveaway = {
-  type: 'veh.driveaway', domain: ['vehicle'], title: 'Drive-away antenna mount', titleZh: '车顶展开座', role: 'boom',
+  type: 'veh.driveaway', domain: ['vehicle'], title: 'Drive-away antenna mount', titleZh: '车顶展开座', role: 'boom', category: 'antenna', family: 'mount',
+  aliases: ['车载展开', '静中通', '便携站', '车顶座', 'drive-away', 'flyaway', 'mount'],
   params: {
     model: enm('inetvu-1202', ['inetvu-1202', 'custom'], '型号', { source: INETVU_URL, title: 'inetvu-1202 = C-COM iNetVu 1202（收拢 203 × 124 × 35 cm）；custom = 按以下三项' }),
     lengthM: num(2.03, 'm', '长', { gt: 0.5, max: 5, source: INETVU_URL, title: '收拢外形长 = 底板占地长；型号 custom 时生效' }),
