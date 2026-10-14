@@ -27,6 +27,7 @@
   --lb-lv3: #9a6a00;   /* ≤75%  琥珀 */
   --lb-lv4: #a32d2d;   /* >75%  砖红 */
 }
+
 html[data-theme='dark'] {
   --lb-bar: #82a9c6;
   --lb-lv1: #82a9c6; --lb-lv2: #5cbf94; --lb-lv3: #d8a73a; --lb-lv4: #e26a6a;
@@ -40,7 +41,9 @@ html[data-theme='dark'] {
 .lbr-big.lbx-savefail, .lbr-big.lbx-savefail:hover:not(:disabled) { color: var(--danger); }
 
 /* —— 功能区（MATLAB App 工具条式）：分组大按钮 + 组内小表单 + 组名注脚，组间竖分隔线 —— */
-.lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; }
+.lbr { display: flex; align-items: stretch; flex: none; padding: 2px 6px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+/* 放不下时不出横向滚动条：链路预算四窗先把「单位」「字号」收成「显示」下拉（LbDispCtl），状态位在窗底 WinStatusBar */
+.lbr::-webkit-scrollbar { display: none; }
 /* 组间竖线：不再是通高的 border-right，改成上下各让 5px 的伪元素——通高线与功能区底线相接成「┤」，
    把组名注脚一格格框死；让开两端后读作「分组」而不是「表格」（Office / MATLAB 功能区同此）。
    ★ 原 1px 边框换成透明边框占位、细线落在它原来的位置（right:-1px 越过内边距盒）：
@@ -55,7 +58,7 @@ html[data-theme='dark'] {
   min-width: 46px; height: 44px; padding: 3px 8px; cursor: pointer; font: inherit; font-size: var(--fs-2); line-height: 1;
   color: var(--text); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
 }
-.lbr-big:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
+.lbr-big:hover:not(:disabled) { color: var(--text); background: var(--wash-hover); border-color: var(--border); }
 .lbr-big:disabled { opacity: .45; cursor: not-allowed; }
 .lbr-big.on { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); }
 .lbr-big.primary { color: var(--accent-ui); font-weight: 600; }
@@ -84,7 +87,7 @@ html[data-theme='dark'] {
 .lbr-form input.lbr-dt { width: auto; }
 .lbr-form .lbr-tz { display: inline-flex; align-items: center; height: var(--h-ctl); padding: 0 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); background-color: var(--field-bg); color: var(--text-muted); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
 .lbr-form .lbr-tz:hover, .lbr-form .lbr-tz.open { color: var(--text); border-color: var(--field-border-hover); }
-/* 功能区右缘状态位（达标徽章 / 输入已变） */
+/* 功能区右缘状态位（空间态势 / 模型工作台仍用；链路预算四窗已移到窗底 WinStatusBar） */
 .lbr-status { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 6px; }
 /* 资源库子导航按钮（段选式方角，用于左侧栏 .lb-lib-tabs） */
 .lbx-subtab {
@@ -139,7 +142,7 @@ html[data-theme='dark'] {
 .lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i) {
   width: 104px; font-size: var(--fs-3); padding: 2px 4px; background-color: transparent; border-color: transparent;
 }
-.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):hover { background-color: var(--bg); border-color: var(--border); }
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):hover { background-color: var(--wash-hover); border-color: var(--border); }
 .lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i):focus { background-color: var(--bg); border-color: var(--accent-ui); }
 .lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { width: 118px; }
 .lb-shell .lb-libpane .bb-rt .bb-i { background: transparent; color: var(--text-muted); }        /* 速率链非锚点＝算出来的：退一档 */
@@ -232,7 +235,7 @@ html[data-theme='dark'] {
   display: flex; flex-direction: column;
 }
 .lbx-colpick-i { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: var(--fs-3); color: var(--text); cursor: pointer; white-space: nowrap; }
-.lbx-colpick-i:hover { background: var(--surface-2); }
+.lbx-colpick-i:hover { background: var(--wash-hover); }
 .lbx-colpick-i i { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
 /* 结果列条目左侧的拖动把手：拖着换位＝改列序。常态半透明、悬停显形；拖动中整面板转抓手光标、禁文字选择 */
 .lbx-colpick-grip { display: inline-flex; align-items: center; margin: 0 -2px 0 -3px; color: var(--text-faint); opacity: .45; cursor: grab; }
@@ -246,11 +249,11 @@ html[data-theme='dark'] {
 .lbx-ccf-btn { border: 0; background: transparent; color: var(--accent, var(--text)); font-size: var(--fs-2); cursor: pointer; padding: 1px 2px; white-space: nowrap; }
 .lbx-ccf-btn:hover { text-decoration: underline; }
 /* 链路表结果单元格着色（StationGrid 单元格附加 class，全局规则穿透 scoped） */
-.sg-cell.st-ok .sg-v { color: var(--ok, #4a7a62); font-weight: 600; }
-.sg-cell.st-bad .sg-v { color: var(--danger, #9c5751); font-weight: 600; }
+.sg-cell.st-ok .sg-v { color: var(--ok); font-weight: 600; }
+.sg-cell.st-bad .sg-v { color: var(--danger); font-weight: 600; }
 /* 警示档（介于 ok 与 bad 之间）：如可用度反解被钳到 P.618-14 式(8) 的定义域端点——
    数还是有效的，只是要提醒一眼，故用暖色而不是红色 */
-.sg-cell.st-warn .sg-v { color: var(--warn, #8a7038); font-weight: 600; }
+.sg-cell.st-warn .sg-v { color: var(--warn); font-weight: 600; }
 .sg-cell.st-err .sg-v { color: var(--text-faint); }
 /* 占用类结果列（功率/带宽占用）的比例填充条——单色半透明色块：
    不描边、不圆角、不渐变、无格底衬色（旧版「水位」双层渐变 + 满量程水槽底色＝整格被染，读数格变色块，已弃）。
@@ -273,10 +276,6 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #82a9c6)) 26%, transparent);
 }
 .sg-cell .sg-fillbar ~ .sg-v { position: relative; }
-/* 减弱动效：功能区刷新转圈停住并压淡（各 App scoped 里的 lb-spin 是无限动画，全局守卫只归零过渡、管不到它） */
-@media (prefers-reduced-motion: reduce) {
-  .lb-shell .lbr .lbr-big.spin .lbr-svg { animation: none; opacity: .5; }
-}
 /* 容量汇总作为链路表分区脚注 */
 .lbx-capfoot { margin-top: 6px; }
 /* —— 详细预算文档区：上排「级联主表 ‖ 图表区」，下排参考段整幅段带 ——
@@ -428,8 +427,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
 .lbx-sla-in:focus { outline: none; border-color: var(--accent-ui); }
-.lbx-sla-tbl .c-a.st-bad .lbx-sla-in { color: var(--danger, #9c5751); font-weight: 600; }
-.lbx-sla-tbl .c-b .st-bad { color: var(--danger, #9c5751); font-weight: 600; }
+.lbx-sla-tbl .c-a.st-bad .lbx-sla-in { color: var(--danger); font-weight: 600; }
+.lbx-sla-tbl .c-b .st-bad { color: var(--danger); font-weight: 600; }
 /* 参数轨：竖排定值列。三列同轨（名 / 值 / 单位）—— 早先那版是 inline-flex 自由流，八项换行后
    每行各按自己的宽度落位，值列参差不齐。 */
 .lbx-sla-pars { display: flex; flex-direction: column; gap: 3px; }
@@ -467,7 +466,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 }
 .lbx-sla-scan tbody tr.top > td { font-weight: 700; color: var(--text); }
 .lbx-sla-scan tbody tr:hover > td { background: var(--surface); }
-.lbx-sla-scan .st-bad { color: var(--danger, #9c5751); font-weight: 600; }
+.lbx-sla-scan .st-bad { color: var(--danger); font-weight: 600; }
 
 /* —— 详细预算 · 端到端专属排版（.e2-doc，第四窗 + 其 PDF 打印页）——
    本窗级联是【单列】瀑布，而上面那套是按三窗「上行/下行/合计」多列定的：.wf-row.cols1 的
@@ -537,46 +536,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    ★ 这几条【刻意不加 .lb-shell 前缀】：本表末尾那批带前缀的规则是为「压过各 App 的 scoped」，
    这里要的正相反——它是兜底，组件自己的 scoped 补丁（如 ConfigTreeMenu 的快捷键列，特异度高一级）必须照旧生效。
    （前三窗各自那份 .lb-ctx-i 副本如今已删净，这里就是唯一一份外观。） */
-.lb-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-/* 2026-09 精修：命令菜单统一口径（spec P3）——浮层圆角、光标处淡入、悬停机位色实底（与菜单栏同）；
-   外框内距 4px → 项圆角 --r-ctl 与外框同心。 */
-.lb-ctx {
-  position: fixed; min-width: 150px; padding: 4px; display: flex; flex-direction: column;
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2);
-  animation: ui-fade-in var(--dur-2) var(--ease-out);
-}
-.lb-ctx-i {
-  font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; white-space: nowrap;
-  background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl);
-}
-.lb-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
-.lb-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
-.lb-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
-.lb-ctx-sep { height: 1px; margin: 3px 6px; background: var(--border); }
+/* 2026-10 外观并入 controls.css 的菜单基线（.menu / .menu-item / .menu-sep / .menu-mask）：
+   这里只留定位。各处模板同时挂基线类，.lb-ctx* 名字留作局部钩子。 */
+.lb-ctx { position: fixed; }
 
 /* 计算栏提示（功放取站型）：纯文本 */
 .lbx-run-hint { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
-
-/* —— 模块导航条（scrollspy）：点击滚动定位，不再互斥切换 —— */
-.lbx-nav { display: flex; align-items: center; gap: 2px; flex: none; padding: 6px 10px; background: var(--surface); border-bottom: 1px solid var(--border); overflow-x: auto; }
-.lbx-nav-i {
-  display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; font: inherit;
-  background: transparent; color: var(--text-muted); border: 1px solid transparent; border-radius: var(--r-ctl, 2px); white-space: nowrap;
-}
-.lbx-nav-i:hover { color: var(--text); border-color: var(--border); }
-.lbx-nav-i.on { background: var(--surface-2); color: var(--text); border-color: var(--border); box-shadow: inset 0 -2px 0 var(--accent-ui); }
-.lbx-nav-t { font-size: var(--fs-3); font-weight: 600; }
-.lbx-nav-n {
-  font-family: var(--font-mono); font-size: var(--fs-2); line-height: 1; min-width: 16px; text-align: center; padding: 2px 4px;
-  border-radius: var(--r-ctl, 2px); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
-}
-.lbx-nav-i.on .lbx-nav-n { background: var(--bg); color: var(--text); }
-.lbx-nav-wire { color: var(--text-faint); display: inline-flex; align-items: center; padding: 0 1px; }
-.lbx-nav-sep { width: 1px; height: 20px; flex: none; background: var(--border-strong); margin: 0 8px; }
-.lbx-nav-ico { width: 17px; height: 17px; display: flex; align-items: center; justify-content: center; color: var(--text-faint); }
-.lbx-nav-i.on .lbx-nav-ico { color: var(--text); }
-.lbx-nav-ico .mic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
-.lbx-nav-ico .mic-sat { width: 17px; height: 17px; fill: currentColor; }
 
 /* —— 链路定义滚动面（分节堆叠） —— */
 .lbx-flow { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; background: var(--bg); }
@@ -590,9 +555,13 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 
 /* （旧底部计算栏已并入功能区「计算」组，样式随之退役） */
 
-/* 「结果已过期」提示（功能区右缘状态位） */
+/* 「结果已过期」提示（空间态势功能区仍用；链路预算四窗在 WinStatusBar） */
 .lbx-stale { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--warn); white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .lbx-stale::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+/* 过期结果退一档：结果对应修改前的输入时（.lbx-flow 挂 .lbx-stale-res），结果列 / 本行读数 / 容量汇总 / 详细预算 /
+   E2E 链路表结果列与汇总卡一律退到 muted 墨色（含危险色——过期的数不该再报状态），图表区降不透明度。只表状态，不加句子。 */
+.lbx-stale-res :is(.sg-cell.ro-field .sg-v, .sg-cell.ro-field .sg-sub, .lbx-capfoot, .lbx-capfoot *, .lbx-doc-main *, .lbx-doc-ref *, .e2-tbl td.c-res, .cs-sum *, .cs-b-m) { color: var(--text-muted) !important; }
+.lbx-stale-res :is(.sg-cell.ro-field .sg-fillbar, .lbx-doc-side) { opacity: .5; }
 
 /* 链路表脚注（三线式：外框上下双线、行间细线、无底色，数值加粗衬线）
    ——上行「容量汇总」本批次总账，下行「本行读数」当前聚焦行的全量结果指标 */
@@ -619,7 +588,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    见 StationGrid 的 tr.cur > td.sg-sel）——读数与表格靠这枚同形的小标对上号。
    底色只能罩在行号自己的元素上：站对名在 <em> 里，连着罩就成了一整条蓝带。 */
 .lbx-rr-id { font-size: var(--lb-fs); color: var(--text-muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.lbx-rr-no { display: inline-block; padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-ui); color: var(--bg); font-weight: 700; }
+.lbx-rr-no { display: inline-block; padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-fill); color: var(--accent-on); font-weight: 700; }
 .lbx-rr-id em { font-style: normal; margin-left: 5px; font-size: calc(var(--lb-fs) - 1px); font-weight: 600; color: var(--text-muted); }
 /* 列宽下限 --lbx-rr-w 由 LbCapFoot 量最宽的一格挂上来（标签 + 数值 + 引导线），没量到前先按 168px；
    min(…, 100%) 防极窄时一格撑破网格。标签 flex:none 不裁不缩——格宽本来就是按它量的 */
@@ -629,8 +598,8 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-rr-ld { flex: 1 0 8px; height: .6em; border-bottom: 1px dotted var(--lb-rule-soft); }
 .lbx-rr-v { flex: none; font-size: var(--lb-fs); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lbx-rr-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
-.lbx-rr-v.bad { color: var(--danger, #9c5751); }
-.lbx-rr-err { font-size: var(--lb-fs); color: var(--danger, #9c5751); padding-top: 2px; }
+.lbx-rr-v.bad { color: var(--danger); }
+.lbx-rr-err { font-size: var(--lb-fs); color: var(--danger); padding-top: 2px; }
 .lbx-rr-none { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); padding-top: 2px; }
 
 /* 文档区折叠小节（卫星几何等）：细头退为带下缘线的题注行，与三线表题注同语言 */
@@ -641,7 +610,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   background: transparent; border: 0; border-bottom: 1px solid var(--lb-rule-soft);
 }
 .lbx-fold-hd:hover { color: var(--text); }
-.lbx-fold-hd .chev { display: inline-flex; transition: transform .12s ease; color: var(--text-faint); }
+.lbx-fold-hd .chev { display: inline-flex; transition: transform var(--dur-2) ease; color: var(--text-faint); }
 .lbx-fold-hd.closed .chev { transform: rotate(-90deg); }
 .lbx-fold-sum { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-left: auto; }
 .lbx-fold-bd { margin-top: 6px; }
@@ -656,7 +625,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbf-val { min-width: 24px; text-align: center; font-size: var(--fs-3); font-weight: 600; color: var(--text); cursor: default; user-select: none; font-variant-numeric: tabular-nums; }
 
 /* —— 功能区「单位」组（LbUnitCtl）：结果显示单位的档位（锁定 / 自适应）——
-   分段控件（两档互斥、当前档自明），选中态与 .lbr-big.on 同一套语言：底色抬一档 + 底缘机位色条。
+   分段控件（两档互斥、当前档自明）。选中态与 controls.css 的分段本体同一种画法：--sel-fill 实底（全平台「选中」只此一种）。
    两枚按钮共边（margin-left:-1px），故不能吃 .lbr-items 的 gap，自己包一层 flex。 */
 .lbu-seg { display: inline-flex; }
 .lbu-seg > button {
@@ -668,7 +637,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbu-seg > button:hover:not(.on) { color: var(--text); border-color: var(--border-strong); }
 .lbu-seg > button.on {
   position: relative; z-index: 1;
-  color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui);
+  color: var(--sel-on); background: var(--sel-fill); border-color: var(--sel-fill); transition-duration: 0s;
 }
 /* 功能区里的小控件（字号步进 / 单位档位）定高到 --h-ctl，与同组小表单的下拉齐平（原靠内距撑出 23px） */
 .lbr :is(.lbf-btn, .lbu-seg > button) { height: var(--h-ctl); padding-block: 0; }
@@ -678,6 +647,9 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 .lbx-segwrap { display: inline-flex; align-items: center; margin-right: 6px; }
 .lbx-segl { font-size: var(--fs-2); color: var(--text-muted); margin-right: 5px; white-space: nowrap; }
 .lbx-sec-acts .lbu-seg > button { padding: 3px 8px; }
+/* 链路表工具条并进节头（StationGrid 的 barTo 挂到这里）：与节头动作同一行，前面一道竖线分组 */
+.lbx-gridbar { display: inline-flex; align-items: center; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--border); }
+.lbx-gridbar:empty { display: none; }
 
 /* 分享码 / 设备ID 等代码型内容：2026-08-29 重新回钉真等宽（--font-code，Consolas）。
    撤销那次的理由是「全软件统一 Times New Roman 后不再破例」——界面换成无衬线后这条已不成立，
@@ -698,3 +670,84 @@ html[lang="en"] .lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i,
 html[lang="en"] .lb-shell :is(.lbx-flow, .lb-libpane) .bb-f.bb-f-tg .bb-i { width: 68px; }
 /* 卫星分区栏名轴：按中文 3 字算死的（--lb-fs × 3），英文 Configurations / Transponder 放不下 */
 html[lang="en"] .lbx-satband { --lbx-gut: calc(var(--lb-fs) * 6 + 12px); }
+
+/* —— 工作台窗口骨架（.lb-*）——
+   链路预算四窗、雨衰、日凌、空间态势、模型工作台八扇窗共用：窗口根 .lb-shell、主体 .lb-body、分栏 .lb-col（栏头 .lb-col-hd / 栏体 .lb-col-bd）、
+   左侧栏 .lb-side + 拖宽把手 .lb-cfg-resizer、小按钮 .lb-mini（.primary 主操作）、旧式小对话框 .lb-mask / .lb-dlg*。
+   原先每窗一份 scoped 手抄（日凌抄雨衰、空间态势抄端到端、模型抄空间态势），.lb-mini 九份里 15 个属性有 11 个漂移；
+   2026-10-15 以 LinkBudgetApp 那份为准收到这里。不加 .lb-shell 前缀：各窗自己的 scoped 变体（特异度高一级）照旧生效。 */
+.lb-shell {
+  display: flex; flex-direction: column; height: 100vh;
+  background: var(--bg); color: var(--text); font-family: var(--font-ui);
+}
+/* 功能区右缘状态位文案：操作回执（绿）/ 无引擎警示（黄） */
+.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
+.lb-body { flex: 1; display: flex; min-height: 0; }
+.lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+.lb-col:last-child { border-right: none; }
+/* 左侧栏（配置列表 / 资源库 二选一）：宽度由 sideWidth 内联给出，两视图各记各的 */
+/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
+.lb-side { flex: none; position: relative; }
+.lb-side.resizing { user-select: none; }
+/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
+.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
+.lb-cfg-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
+  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
+}
+.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: var(--dur-3); }
+.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
+/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
+.lb-configs .lb-col-bd { padding: 10px 8px; }
+.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-build { flex: 1; min-width: 460px; }
+/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
+.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
+.lb-lang-sel { font: inherit; font-size: var(--fs-2); text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
+.lb-lang-sel:focus { outline: none; border-color: var(--accent-ui); }
+.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.lb-mini:disabled { opacity: var(--dis-opacity); cursor: not-allowed; }
+.lb-cfg-acts { display: flex; gap: 3px; }
+.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
+.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
+.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
+.lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
+.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
+.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
+/* 弹窗（命名 / 分享） */
+.lb-mask { position: fixed; inset: 0; z-index: var(--z-dialog); display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+/* 保留的三个小弹窗：保存为新配置 / 配置已修改 / 确认。
+   分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
+   原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
+.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
+.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
+.lb-input:focus { outline: none; border-color: var(--accent-ui); }
+.lb-mini.primary { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
+/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
+.lb-mini.primary:hover:not(:disabled) { color: var(--primary-on); background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
+/* 结果 */
+.lb-err { color: var(--danger); font-size: var(--fs-3); padding: 8px; }
+/* 专业外观：小按钮抬起一层（与 controls.css 的 .btn 同口径）。:where() 把外壳前缀的特异度归零，栏头透明图标钮这类变体照旧压得住 */
+:where(:root[data-skin="studio"]) .lb-mini { background: var(--raised); }
+:where(:root[data-skin="studio"]) .lb-mini:hover:not(:disabled) { background: var(--raised-hover); }
+
+/* —— 窗口页签（干扰分析 / PFD Mask / 频率计划共用一种画法）——
+   经典连体页签：一条底线上排一行页签，选中页与下面的内容面同底（底线在它脚下断开）、顶缘 2 px 机位色；
+   未选中页无框、悬停浮底。原三种（框 + 底条 / 下划线 + 代码副标 / 顶条连体）收成这一种。
+   <nav class="lbx-tabs" role="tablist"><button class="lbx-tab" role="tab" :aria-selected :class="{ on }">名<span class="lbx-tab-sub">副标</span></button></nav> */
+.lbx-tabs { display: flex; align-items: flex-end; gap: 2px; flex: none; padding: 4px 8px 0; background: var(--surface); border-bottom: 1px solid var(--border-strong); overflow-x: auto; scrollbar-width: none; }
+.lbx-tab {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none; height: 28px; padding: 0 12px; margin: 0 0 -1px;
+  font: inherit; font-size: var(--fs-3); white-space: nowrap; color: var(--text-muted); cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: var(--r-box) var(--r-box) 0 0;
+}
+.lbx-tab:hover:not(.on) { color: var(--text); background: var(--wash-hover); }
+.lbx-tab.on { height: 29px; color: var(--text); background: var(--bg); border-color: var(--border-strong); box-shadow: inset 0 2px 0 var(--accent-ui); transition-duration: 0s; }
+.lbx-tab:focus-visible { outline-offset: -2px; }
+.lbx-tab-sub { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }

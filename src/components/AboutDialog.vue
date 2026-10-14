@@ -16,8 +16,9 @@
 //   附带许可文本而非界面出字。出处记录在 docs/地图数据来源台账.md 与各消费处的代码注释里
 //   （Icon.vue / stationSymbol.js / vehicleSymbol.js）。别国 ADM2 若真从 geoBoundaries 生成（CC BY / ODbL
 //   逐国给），届时署名义务才出现，再把 ATTRIBUTION.json 接回来。
-import { ref, computed, onMounted, onBeforeUnmount, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import logoUrl from '../assets/logo.png'
 import { activation } from '../stores/activation'
 import { byLang } from '../shared/i18n/lang.js'
@@ -74,24 +75,12 @@ async function copyId() {
   emit('tap')
 }
 
-// Esc 关窗（捕获阶段先收；输入法组字中不关），打开即聚焦「确定」
-const okBtn = ref(null)
-function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
-onMounted(() => {
-  window.addEventListener('keydown', onKey, true)
-  okBtn.value?.focus({ preventScroll: true })
-})
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc / 关闭钮关、打开即聚焦「关闭」、点遮罩不关）
 </script>
 
 <template>
-  <div class="mask" @click.self="emit('close')">
-    <div class="dlg" role="dialog" aria-modal="true">
-      <header class="dhd">
-        <span class="dt">关于</span>
-        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </header>
-
+  <!-- 512px：模块清单两栏里最长的那条英文（Link Budget · End-to-End Multi-Hop）刚好不折行 -->
+  <AppDialog title="关于" :width="512" flush initial-focus=".about-ok" @close="emit('close')">
       <div class="body">
         <!-- 身份牌：标识 + 名称 + 版本 -->
         <div class="idcard">
@@ -132,30 +121,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
       </div>
 
-      <footer class="dft">
-        <button class="gh" :disabled="activation.busy" @click="emit('refresh')">{{ activation.busy ? '刷新中…' : '刷新激活状态' }}</button>
-        <button ref="okBtn" class="ok" @click="emit('close')">确定</button>
-      </footer>
-    </div>
-  </div>
+      <template #footer>
+        <button class="btn" :disabled="activation.busy" @click="emit('refresh')">{{ activation.busy ? '刷新中…' : '刷新激活状态' }}</button>
+        <button class="btn primary about-ok" @click="emit('close')">关闭</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
 /* 与 MiniAboutDialog / MiniBindDialog / SettingsModal 同一套视觉语言 */
-/* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
-.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-/* 512px：模块清单两栏里最长的那条英文（Link Budget · End-to-End Multi-Hop）刚好不折行 */
-.dlg { width: 512px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3);
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-/* 标题栏内距挪进 .dt，关闭键才能占满整条标题栏高度（总高不变） */
-.dhd { display: flex; align-items: stretch; justify-content: space-between; padding: 0; border-bottom: 1px solid var(--border); }
-.dt { font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
-/* 关闭键与「设置」「文件管理」同一枚：Windows 风矩形热区，悬停红底白字；右上内圆角 = 框体圆角 − 1px */
-.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
-  border-top-right-radius: calc(var(--r-card) - 1px); }
-.winx:hover { background: #c42b1c; color: #fff; }
-.body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 15px; }
+/* 外壳（遮罩 / 框体 / 题条 / 页脚）归 AppDialog；正文 flush，内距在 .body 自己管（身份牌要顶满通栏） */
+.body { padding: 16px; display: flex; flex-direction: column; gap: 15px; }
 
 /* 身份牌：贴着标题栏做成通栏报头（负外边距顶掉 .body 的内边距），不是浮在里面的一个方框；
    标识墨稿在深色主题下反相（与标题栏 .brand 同一口径） */
@@ -190,15 +166,4 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .mods { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 5px; }
 .mods li { position: relative; padding-left: 11px; font-size: var(--fs-3); color: var(--text-muted); }
 .mods li::before { content: ''; position: absolute; left: 0; top: .62em; width: 6px; height: 1px; background: var(--border-strong); }
-
-.dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
-/* 次要钮：纸底 + 结构描边 + 正文字；主钮：墨色实底（走 token，深色压一档）。按下由全局按下罩提供 */
-.gh, .ghost { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
-.gh:hover:not(:disabled), .ghost:hover:not(:disabled) { border-color: var(--line-hover); }
-.gh:disabled { opacity: 1; color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: default; }
-/* 实底控件的字色一律跟 token（--primary-on = --bg）：深色主题下底色是浅色，写死 #fff 会白底白字 */
-.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
-.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 </style>

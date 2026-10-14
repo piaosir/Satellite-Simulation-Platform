@@ -11,6 +11,8 @@ import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { usePerfTable, PERF_COL_DEFS, PERF_COL_GROUPS, perfVisibleColumns, fillOpts } from '../viz/grd/usePerfTable.js'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, sheetToTsv, pickSheet, safeFileName } from '../shared/gridXlsx.js'
 import { appAlert } from '../stores/alert.js'
+import NoticeLine from '../components/NoticeLine.vue'
+import { useNotice } from '../shared/useNotice.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
@@ -137,7 +139,7 @@ const mkOpen = ref(false)
 const markers = computed(() => st.markers || { pts: [], sts: [], trajs: [] })
 const importItems = computed(() => [
   { key: 'mk', label: '从标记 / 航迹导入…', icon: 'map-pin', title: '勾选地图上的点标记 / 地球站 / 航迹导入为城市（航迹每个航点一行）' },
-  { key: 'xlsx', label: '从 Excel 导入…', icon: 'import', title: '按表头匹配列；无表头时末两列作经纬度' },
+  { key: 'xlsx', label: '从 Excel 导入…', icon: 'file-import', title: '按表头匹配列；无表头时末两列作经纬度' },
   { key: 'clip', label: '粘贴剪贴板', icon: 'clipboard', title: '每行一站，末两列 = 经度、纬度，可含 国家/城市/代号' }
 ])
 async function onImport(k) {
@@ -168,7 +170,7 @@ async function confirmMk(sel) {
 }
 async function pasteClip() {
   let text = ''
-  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请在表格内按 Ctrl+V'); return }
+  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板。'); return }
   pl.pushUndo()
   const n = pl.addStationsBulk(text)
   if (!n) { pl.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
@@ -179,7 +181,7 @@ async function importXlsx() {
   if (!res || res.canceled) return
   if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
   const sheet = pickSheet(res.sheets, inCols)
-  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  if (!sheet) { appAlert('该工作簿中没有数据'); return }
   const { records } = sheetToRecords(sheet, inCols)
   pl.pushUndo()
   let n = 0
@@ -199,12 +201,20 @@ const xlsxVal = (r, c) => {
   if (c.key === 'tMs') return Number.isFinite(r.tMs) ? fmtTzTimeOff(r.tMs, tzMode.value) : null
   const v = r[c.key]; if (v == null || v === '') return null; return (c.num && typeof v === 'number') ? v : String(v)
 }
+// 导出回执（「已导出 · 打开 · 在文件夹中显示」，shared/useNotice + NoticeLine）。结果栏那一条兼本窗失败出口；城市栏那一条只管城市列表的导出。
+const N = useNotice()
+const Nin = useNotice({ errorSink: false })
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+function exportDone(n, r) {
+  if (r && r.ok) { const fp = outPath(r); n.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
+  else if (r && r.error) appAlert('导出失败：' + r.error)
+}
 const ctxName = () => (ctx.value ? ctx.value.satName + '_' + ctx.value.antName : '性能指标表')
 const citySheet = () => sheetModel({ name: '城市输入', cols: inCols, rows: pl.stations.value, value: xlsxVal })
 async function exportCities() {
   if (!pl.stations.value.length) { appAlert('城市列表为空'); return }
   const r = await exportSheets({ defaultName: safeFileName('城市列表_' + ctxName(), '城市列表') + '.xlsx', title: '导出城市列表', sheets: [citySheet()] })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  exportDone(Nin, r)
 }
 
 // —— 城市组 ▾：载入 / 管理 ——
@@ -296,7 +306,7 @@ function copyResult() {
   if (!rs.length) { appAlert('结果表为空'); return }
   const head = cs.map((c) => { const u = colUnit(c); return c.label + (u ? '(' + u + ')' : '') }).join('\t')
   const body = rs.map((r) => cs.map((c) => { const v = r[c.key]; if (c.time) return tText(v); if (c.num && c.fix != null) return v == null ? '' : Number(v).toFixed(c.fix); return v == null ? '' : String(v) }).join('\t')).join('\n')
-  if (!writeClipboard(head + '\n' + body)) appAlert('复制失败，请检查剪贴板权限')
+  if (!writeClipboard(head + '\n' + body)) appAlert('复制失败。')
 }
 async function exportResult() {
   if (!cols.value.length) { appAlert('当前没有显示任何列'); return }
@@ -307,7 +317,7 @@ async function exportResult() {
     citySheet()
   ]
   const r = await exportSheets({ defaultName: safeFileName('性能指标表_' + ctxName(), '性能指标表') + '.xlsx', title: '导出性能指标表', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  exportDone(N, r)
 }
 function resetOpts() { pl.resetOpts(key) }
 
@@ -331,25 +341,26 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
     <section class="pw-in" :style="{ height: inH + 'px' }">
       <div class="pw-bar">
         <span class="pw-t">城市</span>
-        <span class="ptb sq" :class="{ dis: !pl.canUndo.value }" title="撤销 (Ctrl+Z)" @click="undo"><Icon name="undo-2" :size="12" /></span>
-        <span class="ptb sq" :class="{ dis: !pl.canRedo.value }" title="重做 (Ctrl+Y)" @click="redo"><Icon name="redo-2" :size="12" /></span>
+        <button type="button" :disabled="!pl.canUndo.value" class="ptb btn icon" :class="{ dis: !pl.canUndo.value }" title="撤销 (Ctrl+Z)" @click="undo"><Icon name="undo-2" :size="12" /></button>
+        <button type="button" :disabled="!pl.canRedo.value" class="ptb btn icon" :class="{ dis: !pl.canRedo.value }" title="重做 (Ctrl+Y)" @click="redo"><Icon name="redo-2" :size="12" /></button>
         <span class="pw-sep"></span>
-        <span class="ptb" title="在选中行下方增加一行（直接在表格里键入或粘贴）" @click="addRow"><Icon name="plus" :size="12" /> 增加</span>
-        <span class="ptb" title="从城市库选点：城市名 / 省份 / 拼音首字母检索，点一座加一座" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</span>
+        <button type="button" class="ptb btn" title="在选中行下方增加一行（直接在表格中键入或粘贴）" @click="addRow"><Icon name="plus" :size="12" /> 增加</button>
+        <button type="button" class="ptb btn" title="从城市库选点：城市名 / 省份 / 拼音首字母检索，点一座加一座" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</button>
         <PwMenu label="导入" icon="import" :items="importItems" title="从标记 / 航迹 / Excel / 剪贴板导入城市" @pick="onImport" />
-        <span class="ptb" :class="{ dis: !pl.stations.value.length }" title="把城市列表导出为 Excel" @click="exportCities"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span class="ptb" :class="{ dis: !inGrid.selRowCount.value }" title="删除选中的城市（可撤销；表内 Ctrl+- 同）" @click="inGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="inGrid.selRowCount.value" class="ptb-n">{{ inGrid.selRowCount.value }}</em></span>
-        <span class="ptb" :class="{ dis: !pl.stations.value.length }" title="清空城市列表（可撤销）" @click="clearStations"><Icon name="trash" :size="12" /> 清空</span>
+        <button type="button" :disabled="!pl.stations.value.length" class="ptb btn" :class="{ dis: !pl.stations.value.length }" title="把城市列表导出为 Excel" @click="exportCities"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" :disabled="!inGrid.selRowCount.value" class="ptb btn" :class="{ dis: !inGrid.selRowCount.value }" title="删除选中的城市（可撤销；表内 Ctrl+- 同）" @click="inGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="inGrid.selRowCount.value" class="ptb-n">{{ inGrid.selRowCount.value }}</em></button>
+        <button type="button" :disabled="!pl.stations.value.length" class="ptb btn" :class="{ dis: !pl.stations.value.length }" title="清空城市列表（可撤销）" @click="clearStations"><Icon name="trash" :size="12" /> 清空</button>
         <span class="pw-sep"></span>
         <PwMenu label="城市组" icon="layers" :items="groupItems" title="载入已存的城市组，或管理城市组（存为新组 / 追加 / 覆盖 / 重命名 / 删除）" @pick="onGroupPick" />
-        <span class="ptb" :class="{ on: setOpen }" title="城市设置：标签 / 标记 / 指向误差（指向误差同时决定 Min/Max Pointing 列与地图上的误差框）" @click="setOpen = true"><Icon name="settings" :size="12" /> 城市设置…</span>
+        <button type="button" :aria-pressed="(setOpen) ? 'true' : 'false'" class="ptb btn" :class="{ on: setOpen }" title="城市设置：标签 / 标记 / 指向误差（指向误差同时决定 Min/Max Pointing 列与地图上的误差框）" @click="setOpen = true"><Icon name="settings" :size="12" /> 城市设置…</button>
+        <NoticeLine :n="Nin" />
         <span class="pw-cnt">{{ pl.stations.value.length }} 城市</span>
       </div>
       <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="inText"
-                 :head-tip="(c) => (c.key === 'tMs' ? '经过该点的时刻（显示时区）；只敲时分沿用该行原来那一天，留空按当前仿真时刻取值' : c.key === 'altM' ? '点的大地高；留空为地面' : c.label)"
+                 :head-tip="(c) => (c.key === 'tMs' ? '经过该点的时刻（显示时区）；仅输入时分则沿用该行原日期，留空按当前仿真时刻取值' : c.key === 'altM' ? '点的大地高；留空为地面' : c.label)"
                  :actions-width="26" empty-text="暂无城市。" add-label="增加一行" @add="addRowEnd">
         <template #actions="{ row }">
-          <span class="del" title="删除该城市" @click="delStation(row.id)"><Icon name="x" :size="12" /></span>
+          <button type="button" class="del ibtn sm danger" title="删除该城市" @click="delStation(row.id)"><Icon name="x" :size="12" /></button>
         </template>
       </ExcelGrid>
     </section>
@@ -363,17 +374,18 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
         <label class="pw-chk"><input type="checkbox" v-model="opts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
         <!-- 数字框 .lazy：每敲一个字符就整表重算一次，且中途拿的是半截数字；失焦或回车才生效 -->
         <label class="pw-chk" :class="{ dis: !opts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="opts.minDir" :disabled="!opts.filterOn" /><span class="u">dB</span></label>
-        <input class="pw-q" v-model="query" placeholder="查询：国家 / 城市 / 代号" />
-        <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyResult"><Icon name="copy" :size="12" /> 复制全表</span>
-        <span class="ptb" title="导出为 Excel（性能结果 + 城市输入两张工作表；数字列存真数字）" @click="exportResult"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span class="ptb" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 过滤 / 参数计算" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 选项…</span>
+        <input class="pw-q search-field" v-model="query" placeholder="查询：国家 / 城市 / 代号" />
+        <button type="button" class="ptb btn" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyResult"><Icon name="copy" :size="12" /> 复制全表</button>
+        <button type="button" class="ptb btn" title="导出为 Excel（性能结果 + 城市输入两张工作表；数字列存真数字）" @click="exportResult"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" :aria-pressed="(optsOpen) ? 'true' : 'false'" class="ptb btn" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 过滤 / 参数计算" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 选项…</button>
+        <NoticeLine :n="N" />
         <span class="pw-cnt">{{ filteredRows.length }} 行</span>
       </div>
       <ExcelGrid class="pw-grid eg-host" :grid="resGrid" :cols="cols" :text="resText"
                  :serial="!cols.some((c) => c.key === 'no')" :head-unit="colUnit"
-                 :head-tip="(c) => (c.na ? '本数据仅含功率（无相位），AR 暂不可算' : (c.tip || c.label))"
+                 :head-tip="(c) => (c.na ? '本数据仅含功率（无相位），AR 暂无法计算' : (c.tip || c.label))"
                  :row-class="(r) => (r.inPattern ? null : 'out')"
-                 :empty-text="pl.stations.value.length ? '没有波束覆盖这些城市。' : '暂无城市。'" />
+                 :empty-text="pl.stations.value.length ? '没有波束覆盖所选城市。' : '暂无城市。'" />
     </section>
 
     <!-- 状态栏：上下文 + 指向误差 + 取值时刻 -->
@@ -406,11 +418,11 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
           <div class="po-sub">指向误差</div>
           <div class="po-row"><label>方位</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="opts.pointAz" title="东西向总指向误差（全幅，°）；对静止轨道即俯仰 pitch" /><span class="u">°</span></div>
           <div class="po-row"><label>俯仰</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="opts.pointEl" title="南北向总指向误差（全幅，°）；对静止轨道即滚动 roll" /><span class="u">°</span></div>
-          <div class="po-row"><label>偏航</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="opts.pointYaw" title="绕偏航轴的总误差（°）：只放大框，离星下点越远放得越大" /><span class="u">°</span></div>
+          <div class="po-row"><label>偏航</label><input class="ci" type="number" step="any" min="0" v-model.lazy.number="opts.pointYaw" title="绕偏航轴的总误差（°）：仅放大框，离星下点越远放得越大" /><span class="u">°</span></div>
         </section>
       </div>
       <template #foot>
-        <span class="save" @click="setOpen = false">完成</span>
+        <button type="button" class="save btn primary" @click="setOpen = false">完成</button>
       </template>
     </PwDialog>
 
@@ -418,28 +430,28 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
     <PwDialog v-if="grpOpen" title="城市组" :width="480" @close="grpOpen = false">
       <div class="grp-save">
         <input class="grp-name" v-model="newGrpName" :placeholder="'新组名称（默认：城市组 ' + (pl.cityGroups.value.length + 1) + '）'" @keydown.enter="createGroup" />
-        <span class="save" :class="{ dis: !pl.stations.value.length }" @click="createGroup">存当前 {{ pl.stations.value.length }} 城市为新组</span>
+        <button type="button" :disabled="!pl.stations.value.length" class="btn primary" :class="{ dis: !pl.stations.value.length }" @click="createGroup">存当前 {{ pl.stations.value.length }} 城市为新组</button>
       </div>
       <div class="grp-list">
         <div v-for="g in pl.cityGroups.value" :key="g.id" class="grp-row" :class="{ cur: grpSel === g.id }">
           <template v-if="renameId === g.id">
             <input class="grp-name f1" v-model="renameVal" @keydown.enter="commitRename(g)" @keydown.esc="renameId = ''" />
-            <span class="gic ok" title="确认重命名" @click="commitRename(g)"><Icon name="check" :size="12" /></span>
-            <span class="gic" title="取消" @click="renameId = ''"><Icon name="x" :size="12" /></span>
+            <button type="button" class="ok ibtn sm" title="确认重命名" @click="commitRename(g)"><Icon name="check" :size="12" /></button>
+            <button type="button" class="ibtn sm" title="取消" @click="renameId = ''"><Icon name="x" :size="12" /></button>
           </template>
           <template v-else>
             <span class="grp-nm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
             <span class="grp-cnt">{{ g.cities.length }} 城市</span>
-            <span class="gbtn" title="载入：用此组城市替换当前列表（可撤销）" @click="loadGroup(g)">载入</span>
-            <span class="gbtn" title="追加此组城市到当前列表（按坐标去重）" @click="appendGroup(g)">追加</span>
-            <span class="gbtn" title="用当前城市列表覆盖此组" @click="overwriteGroup(g)">覆盖</span>
-            <span class="gic" title="重命名" @click="startRename(g)"><Icon name="pencil" :size="12" /></span>
-            <span class="gic del" :class="{ warn: delId === g.id }" :title="delId === g.id ? '再次点击确认删除' : '删除此组'" @click="deleteGroup(g)"><Icon name="trash" :size="12" /></span>
+            <button type="button" class="btn sm" title="载入：用此组城市替换当前列表（可撤销）" @click="loadGroup(g)">载入</button>
+            <button type="button" class="btn sm" title="追加此组城市到当前列表（按坐标去重）" @click="appendGroup(g)">追加</button>
+            <button type="button" class="btn sm" title="用当前城市列表覆盖此组" @click="overwriteGroup(g)">覆盖</button>
+            <button type="button" class="ibtn sm" title="重命名" @click="startRename(g)"><Icon name="pencil" :size="12" /></button>
+            <button type="button" class="del ibtn sm danger" :class="{ warn: delId === g.id }" :title="delId === g.id ? '再次点击确认删除' : '删除此组'" @click="deleteGroup(g)"><Icon name="trash" :size="12" /></button>
           </template>
         </div>
-        <div v-if="!pl.cityGroups.value.length" class="grp-empty">还没有城市组。</div>
+        <div v-if="!pl.cityGroups.value.length" class="grp-empty">暂无城市组。</div>
       </div>
-      <template #foot><span class="save" @click="grpOpen = false">完成</span></template>
+      <template #foot><button type="button" class="save btn primary" @click="grpOpen = false">完成</button></template>
     </PwDialog>
   </div>
 </template>

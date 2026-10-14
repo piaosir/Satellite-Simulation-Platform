@@ -208,12 +208,12 @@ export async function sendPack(api, pack) {
   // v1.3.10 覆盖快照从直发改走共用弹窗后即是如此：绑定投递照常，密钥这一路恒返回「包里没有内容」、
   // 连 putSnapshot 都走不到，表现为「密钥不显示」。判空须分形态各判各的。
   const isRaw = !!(pack && pack.kind && !Array.isArray(pack.items))
-  if (!isRaw && !asArr(pack && pack.items).length) return { ok: false, bytes, error: '包里没有内容' }
+  if (!isRaw && !asArr(pack && pack.items).length) return { ok: false, bytes, error: '包中没有内容' }
   if (bytes > SIZE_MAX) {
     return {
       ok: false,
       bytes,
-      error: `内容 ${fmtBytes(bytes)}，超过微信云函数 1 MB 的返回上限（本平台留出余量后为 ${fmtBytes(SIZE_MAX)}）。请分几次发送。`
+      error: `内容 ${fmtBytes(bytes)}，超过微信云函数 1 MB 的返回上限（本平台留出余量后为 ${fmtBytes(SIZE_MAX)}）。`
     }
   }
   const put = api && api.share && (api.share.putPack || api.share.gxtSnapshot)

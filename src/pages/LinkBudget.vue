@@ -245,7 +245,7 @@ onMounted(compute)
 .pv-state.bad { color: var(--danger); border-color: var(--danger); }
 .pv-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .pv-actions button { border: 1px solid var(--border-strong); background: var(--bg); height: var(--h-ctl-lg); white-space: nowrap; padding: 0 10px; cursor: pointer; font-size: var(--fs-3); }
-.pv-actions button:hover:not(:disabled) { background: var(--bg); border-color: var(--accent); }
+.pv-actions button:hover:not(:disabled) { background: var(--wash-hover); border-color: var(--accent); }
 .pv-actions button:disabled { color: var(--text-faint); cursor: default; }
 .pv-toast { margin-top: 10px; font-size: var(--fs-2); color: var(--ok); word-break: break-all; }
 </style>

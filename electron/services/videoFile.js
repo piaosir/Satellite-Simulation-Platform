@@ -12,11 +12,13 @@
 //                                                                   单帧（frames = 1）就是保存框选的那个文件本身，不带帧号
 //   video:end    (token, keep)                                    → 关文件；keep=false 时 MP4 删掉（取消 / 出错），图片序列保留已写的帧
 //   video:reveal (path) / video:openPath (path)                  → 只认本进程导出过的路径（不让渲染端借它打开任意文件）
+//                                                                   白名单 2026-10-14 并进 services/exportedPaths.js（全平台一份，files:reveal / files:open 同认）
 //
 // 覆盖确认只管图片序列：MP4 与单帧落盘就是保存框选的那个文件，保存框自己会问覆盖；序列写的是 <名>_0001… 这一串，
 // 保存框问不到 —— 重导同一时段帧数变少时，旧尾帧留在文件夹里，剪辑软件按序列导入会接在新帧后面。
 const fs = require('fs')
 const path = require('path')
+const { markExported, isExported } = require('./exportedPaths')
 
 // 写盘失败的文案（视频自己的一份）：目标被其他程序占着（播放器 / 看图软件开着）→ EBUSY / EPERM / EACCES。
 // 不用 register 的通用 writeErrText：那份举的例子是 PDF 查看器，对视频与帧图片不对
@@ -45,7 +47,6 @@ async function oldFrames(dir, stem, ext, digits) {
 
 function registerVideoIpc(ipcMain, { dialog, BrowserWindow, shell, safeSaveName }) {
   const sessions = new Map()      // token → { kind, sender, fd?, path, dir?, stem?, ext?, digits?, pending?, count, bytes }
-  const exported = new Set()      // 导出成功过的文件 / 首帧路径（reveal / openPath 的白名单）
   let seq = 0
 
   function closeSession(token, keep) {
@@ -159,19 +160,19 @@ function registerVideoIpc(ipcMain, { dialog, BrowserWindow, shell, safeSaveName 
     if (!s) return { ok: false, error: '导出会话已结束' }
     let bytes = s.bytes
     if (s.kind === 'mp4' && keep) { try { bytes = fs.statSync(s.path).size } catch { /* 读不到大小不碍事 */ } }
-    if (keep && !s.pending) exported.add(path.normalize(s.path))   // 挂起中收掉的会话（确认框点了取消）一帧没写，不进白名单
+    if (keep && !s.pending) markExported(s.path)   // 导出成功过的文件 / 首帧路径进回执白名单；挂起中收掉的会话（确认框点了取消）一帧没写，不进
     return { ok: true, path: s.path, bytes, frames: s.kind === 'mp4' ? undefined : s.count }
   })
 
   ipcMain.handle('video:reveal', (_e, p) => {
     const q = path.normalize(String(p || ''))
-    if (!exported.has(q)) return { ok: false }
+    if (!isExported(q)) return { ok: false }
     shell.showItemInFolder(q)
     return { ok: true }
   })
   ipcMain.handle('video:openPath', async (_e, p) => {
     const q = path.normalize(String(p || ''))
-    if (!exported.has(q)) return { ok: false }
+    if (!isExported(q)) return { ok: false }
     const err = await shell.openPath(q)
     return err ? { ok: false, error: err } : { ok: true }
   })

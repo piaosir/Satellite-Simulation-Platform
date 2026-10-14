@@ -192,8 +192,8 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
     <div class="libw-bd">
       <div v-show="pane === 'model'" class="lib">
         <div class="lib-bar">
-          <label class="lib-search">
-            <Icon name="search" :size="13" />
+          <label class="lib-search search-field">
+            <Icon name="search" :size="12" />
             <input v-model="q" class="lib-q" type="text" spellcheck="false" placeholder="搜索" title="按中英文名称、编号、标签、别名搜索；不区分大小写、全角半角与连字符" />
             <button v-if="q" type="button" class="lib-x" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
           </label>
@@ -201,10 +201,10 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
             <option value="all">全部类别</option>
             <option v-for="c in cats" :key="c.key" :value="c.key">{{ c.label }}</option>
           </select>
-          <button class="lb-mini lb-mini-ico" :disabled="!wb.api || !!st.busy" title="刷新云端模型清单" @click="wb.refreshRemote()"><Icon name="refresh-cw" :size="13" /></button>
+          <button class="lb-mini lb-mini-ico" :disabled="!wb.api || !!st.busy" title="刷新云端模型清单" @click="wb.refreshRemote()"><Icon name="refresh-cw" :size="12" /></button>
         </div>
         <div class="lbu-seg lib-seg">
-          <button v-for="s in SEGMENTS" :key="s.key" :class="{ on: seg === s.key }" :title="s.tip + ' · ' + segCount[s.key]" @click="seg = s.key">{{ s.label }}</button>
+          <button v-for="s in SEGMENTS" :key="s.key" :class="{ on: seg === s.key }" :aria-pressed="(seg === s.key) ? 'true' : 'false'" :title="s.tip + ' · ' + segCount[s.key]" @click="seg = s.key">{{ s.label }}</button>
         </div>
 
         <div ref="gridEl" class="lib-grid" tabindex="0" @keydown="navKey">
@@ -215,13 +215,13 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
               <img v-if="st.thumbs[e.id]" :src="st.thumbs[e.id]" crossorigin="anonymous" decoding="async" draggable="false" alt="" />
               <Icon v-else class="card-ph" :name="phIcon(e)" :size="30" :stroke-width="1.2" />
               <div class="card-bd">
-                <span v-if="FID[e.fidelity]" class="card-b" :title="FID[e.fidelity].tip"><Icon :name="FID[e.fidelity].icon" :size="11" /></span>
-                <span v-if="e.units && e.units.sizeVerified === false && e.fidelity !== 'parametric' && e.origin !== 'template'" class="card-b dim" title="尺寸未核定：比例按包围盒量级推断，可在设计页快速设置「尺寸」中按已知尺寸反算"><Icon name="ruler" :size="11" /></span>
-                <span v-if="entryFacts(e).stk" class="card-b" title="STK 本机模型：不可导出、不可分发（AGI SLA）"><Icon name="lock" :size="11" /></span>
-                <span v-if="isAsm(e)" class="card-b" title="装配件"><Icon name="package" :size="11" /></span>
-                <span v-else-if="isEnt(e)" class="card-b" title="实体模板"><Icon name="layers" :size="11" /></span>
-                <span v-if="entryFacts(e).cloud && !entryFacts(e).ready && !dlOf(e)" class="card-b" title="云端模型：选中时下载预览精度文件"><Icon name="cloud-download" :size="11" /></span>
-                <span v-if="isGeoDefault(e)" class="card-b acc" title="GEO 通信卫星默认模型"><Icon name="star" :size="11" /></span>
+                <span v-if="FID[e.fidelity]" class="card-b" :title="FID[e.fidelity].tip"><Icon :name="FID[e.fidelity].icon" :size="12" /></span>
+                <span v-if="e.units && e.units.sizeVerified === false && e.fidelity !== 'parametric' && e.origin !== 'template'" class="card-b dim" title="尺寸未核定：比例按包围盒量级推断，可在设计页快速设置「尺寸」中按已知尺寸反算"><Icon name="ruler" :size="12" /></span>
+                <span v-if="entryFacts(e).stk" class="card-b" title="STK 本机模型：不可导出、不可分发（AGI SLA）"><Icon name="lock" :size="12" /></span>
+                <span v-if="isAsm(e)" class="card-b" title="装配件"><Icon name="package" :size="12" /></span>
+                <span v-else-if="isEnt(e)" class="card-b" title="实体模板"><Icon name="layers" :size="12" /></span>
+                <span v-if="entryFacts(e).cloud && !entryFacts(e).ready && !dlOf(e)" class="card-b" title="云端模型：选中时下载预览精度文件"><Icon name="cloud-download" :size="12" /></span>
+                <span v-if="isGeoDefault(e)" class="card-b acc" title="GEO 通信卫星默认模型"><Icon name="star" :size="12" /></span>
               </div>
               <div v-if="dlOf(e)" class="card-prog" :title="dlOf(e).lod + ' ' + pctOf(e) + '%'"><i :style="{ width: pctOf(e) + '%' }"></i></div>
             </div>
@@ -236,19 +236,19 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
         </div>
 
         <Teleport to="body">
-          <div v-if="ctx" class="lb-ctx-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
-            <div class="lb-ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
-              <button class="lb-ctx-i" data-act="lib-open" :title="openTip(ctx.e)" @click="ctxDo(openModel)">打开</button>
-              <button v-if="canDup(ctx.e)" class="lb-ctx-i" data-act="lib-dup" title="复制为新的装配件并在设计页打开" @click="ctxDo(dupAssembly)">新建副本</button>
-              <button v-if="canCopy(ctx.e)" class="lb-ctx-i" data-act="lib-copy" title="以本模型的整星参数新建驱动装配件（快速设置与逐件编辑均可用，原件不变）" @click="ctxDo(copyAssembly)">新建可编辑副本</button>
-              <button class="lb-ctx-i" data-act="lib-props" title="在设计页模型视图中查看质量特性、挂点、关节等模型级属性" @click="ctxDo(openModelPage)">查看模型属性</button>
-              <div class="lb-ctx-sep"></div>
-              <button v-if="!dlOf(ctx.e)" class="lb-ctx-i" :disabled="!canDownload(ctx.e)" @click="ctxDo((e) => wb.download(e.id, 'lod0'))">下载完整模型</button>
-              <button v-else class="lb-ctx-i" @click="ctxDo((e) => wb.cancel(e.id))">取消下载</button>
-              <button v-if="!ctxFacts.local && !ctxFacts.stk" class="lb-ctx-i" :disabled="!canRemoveCache(ctx.e)" @click="ctxDo((e) => wb.remove(e.id))">移除缓存</button>
-              <button v-if="canDelete(ctx.e)" class="lb-ctx-i danger" @click="ctxDo((e) => wb.remove(e.id))">删除</button>
-              <div class="lb-ctx-sep"></div>
-              <button class="lb-ctx-i" :disabled="!wb.api || isGeoDefault(ctx.e) || ctxFacts.stk || !canGeoDefault(ctx.e)" :title="canGeoDefault(ctx.e) ? '3D 页中未匹配到具体型号的 GEO 通信卫星采用此模型' : '仅卫星类模型可设为 GEO 默认模型'" @click="ctxDo((e) => wb.setGeoDefault(e.id))">设为 GEO 默认模型</button>
+          <div v-if="ctx" class="lb-ctx-mask menu-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
+            <div class="lb-ctx menu" role="menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
+              <button class="lb-ctx-i menu-item" role="menuitem" data-act="lib-open" :title="openTip(ctx.e)" @click="ctxDo(openModel)">打开</button>
+              <button v-if="canDup(ctx.e)" class="lb-ctx-i menu-item" role="menuitem" data-act="lib-dup" title="复制为新的装配件并在设计页打开" @click="ctxDo(dupAssembly)">新建副本</button>
+              <button v-if="canCopy(ctx.e)" class="lb-ctx-i menu-item" role="menuitem" data-act="lib-copy" title="以本模型的整星参数新建驱动装配件（快速设置与逐件编辑均可用，原件不变）" @click="ctxDo(copyAssembly)">新建可编辑副本</button>
+              <button class="lb-ctx-i menu-item" role="menuitem" data-act="lib-props" title="在设计页模型视图中查看质量特性、挂点、关节等模型级属性" @click="ctxDo(openModelPage)">查看模型属性</button>
+              <div class="lb-ctx-sep menu-sep" role="separator"></div>
+              <button v-if="!dlOf(ctx.e)" class="lb-ctx-i menu-item" role="menuitem" :disabled="!canDownload(ctx.e)" @click="ctxDo((e) => wb.download(e.id, 'lod0'))">下载完整模型</button>
+              <button v-else class="lb-ctx-i menu-item" role="menuitem" @click="ctxDo((e) => wb.cancel(e.id))">取消下载</button>
+              <button v-if="!ctxFacts.local && !ctxFacts.stk" class="lb-ctx-i menu-item" role="menuitem" :disabled="!canRemoveCache(ctx.e)" @click="ctxDo((e) => wb.remove(e.id))">移除缓存</button>
+              <button v-if="canDelete(ctx.e)" class="lb-ctx-i menu-item danger" role="menuitem" @click="ctxDo((e) => wb.remove(e.id))">删除</button>
+              <div class="lb-ctx-sep menu-sep" role="separator"></div>
+              <button class="lb-ctx-i menu-item" role="menuitem" :disabled="!wb.api || isGeoDefault(ctx.e) || ctxFacts.stk || !canGeoDefault(ctx.e)" :title="canGeoDefault(ctx.e) ? '3D 页中未匹配到具体型号的 GEO 通信卫星采用此模型' : '仅卫星类模型可设为 GEO 默认模型'" @click="ctxDo((e) => wb.setGeoDefault(e.id))">设为 GEO 默认模型</button>
             </div>
           </div>
         </Teleport>
@@ -276,7 +276,6 @@ const cacheText = computed(() => `${fmtBytes(st.cache.bytes || 0)} / ${fmtBytes(
 .lib-bar { display: flex; align-items: center; gap: 6px; }
 .lib-search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 6px; color: var(--text-faint);
   background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.lib-search:focus-within { border-color: var(--accent-ui); }
 .lib-q { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; font-size: var(--fs-3); color: var(--text); box-shadow: none !important; }
 .lib-x { display: inline-flex; padding: 0; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; }
 .lib-x:hover { color: var(--text); }

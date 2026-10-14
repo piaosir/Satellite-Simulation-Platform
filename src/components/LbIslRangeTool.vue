@@ -10,9 +10,12 @@
 // 互视判据同样是「LOS 最近地心距 ≥ 地球半径 + 大气余量」。
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { pf } from '../shared/num.js'
 import { sceneNowMs } from '../shared/sceneClock.js'   // 「此刻」＝主窗口时间轴上的当前时刻（全软件一条时间线）
 import { inputText, parseInput, endFromHours, hoursFromEnd } from '../shared/timeWindowInput.js'
+import { reportError } from '../shared/reportError.js'
+import { parseDateTimeText } from '../shared/ui/rangeFieldCore.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -123,6 +126,13 @@ function argExtreme(samples, cmp) {
 }
 const argMax = (samples) => argExtreme(samples, (a, b) => a > b)
 const argMin = (samples) => argExtreme(samples, (a, b) => a < b)
+// 「在主窗口定位」：把主窗口时间轴拨到光标所在那一拍（C3，经主进程 scene:cmd 中继；主窗被提到前台）
+const sceneApi = (typeof window !== 'undefined' && window.api && window.api.scene && window.api.scene.cmd) ? window.api.scene : null
+function seekMain() {
+  const c = cur.value
+  if (!sceneApi || !c || !Number.isFinite(c.tMs)) return
+  Promise.resolve(sceneApi.cmd('seekClock', { tMs: c.tMs })).catch((e) => reportError('在主窗口定位', e))
+}
 function jump(which) {
   const s = res.value && res.value.samples
   if (!s || !s.length) return
@@ -135,6 +145,20 @@ watch([() => A.src, () => A.altKm, () => A.inclDeg, () => A.raanDeg, () => A.maD
 
 const samples = computed(() => (res.value && res.value.samples) || [])
 const cur = computed(() => samples.value[Math.min(idx.value, samples.value.length - 1)] || null)
+// 游标时刻读数即输入框：打一个时刻（本机时区，与读数同口径；只打「HH:MM」沿用当前日期），落到最近的采样点
+const idxRnum = {
+  fromText: (s) => {
+    const c = cur.value
+    const d = c && c.tMs ? new Date(c.tMs) : null
+    const p = parseDateTimeText(s, d && { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate() })
+    const arr = samples.value
+    if (!p || !arr.length) return NaN
+    const t = new Date(p.y, p.mo - 1, p.d, p.h, p.mi, p.s).getTime()
+    let best = 0
+    for (let i = 1; i < arr.length; i++) if (Math.abs(arr[i].tMs - t) < Math.abs(arr[best].tMs - t)) best = i
+    return best
+  }
+}
 const stats = computed(() => (res.value && res.value.stats) || null)
 // 读数里的最大/最小与「跳到最大/最小」同口径：优先互视样本，一拍都不互视才退回全体
 // 两端都取「手动轨道」的卫星群条目时，两星只有高度/倾角、相位缺省相同 → 几何重合，曲线贴着 0。
@@ -194,13 +218,9 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 </script>
 
 <template>
-  <div v-if="open" class="irt-mask">
-    <div class="irt" role="dialog" aria-modal="true">
-      <div class="irt-hd">
-        星间链路距离<span v-if="sideLabel" class="irt-sub">· {{ sideLabel }}</span>
-        <span class="irt-sp"></span>
-        <button class="irt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <!-- 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关） -->
+  <AppDialog :open="open" :width="468" flush @close="emit('close')">
+      <template #title>星间链路距离<span v-if="sideLabel" class="irt-sub">· {{ sideLabel }}</span></template>
 
       <div class="irt-bd">
         <div class="irt-ends">
@@ -258,11 +278,11 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
             <line v-if="plot.cursorX != null" :x1="plot.cursorX" :y1="PADT" :x2="plot.cursorX" :y2="H - PADB" class="irt-cur" />
             <circle v-if="plot.cursorX != null" :cx="plot.cursorX" :cy="plot.cursorY" r="2.6" class="irt-dot" />
           </svg>
-          <input v-model.number="idx" type="range" class="irt-slider" min="0" :max="samples.length - 1" step="1" />
+          <input v-model.number="idx" type="range" class="irt-slider" min="0" :max="samples.length - 1" step="1" :rnumMap.prop="idxRnum" />
 
           <div class="irt-out">
             <span class="irt-big mono">{{ fmt(cur && cur.rangeKm, 1) }}</span><i>km</i>
-            <span class="irt-aux mono">{{ fmtTime(cur && cur.tMs) }}</span>
+            <span class="irt-aux mono" data-rnum>{{ fmtTime(cur && cur.tMs) }}</span>
             <span class="irt-aux mono" title="LOS 掠地高度：视线最近点高出地表多少">掠地 {{ fmt(cur && cur.grazAltKm, 0) }} km</span>
             <span class="irt-aux mono" :class="{ bad: cur && !cur.visible }">{{ cur && cur.visible ? '互视' : '被遮挡' }}</span>
           </div>
@@ -273,33 +293,27 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
             <span class="irt-aux">{{ res.method }}</span>
             <button class="irt-btn" title="光标跳到时窗内星间距离最大的一拍" @click="jump('max')">跳到最大</button>
             <button class="irt-btn" title="光标跳到时窗内星间距离最小的一拍" @click="jump('min')">跳到最小</button>
+            <button v-if="sceneApi" class="irt-btn irt-loc" title="主窗口时间轴拨到光标所在时刻" :disabled="!cur" @click="seekMain"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
           </div>
         </template>
       </div>
 
-      <div class="irt-ft">
-        <button class="irt-btn" :disabled="!canFill || !hasRow"
-                title="把光标所在时刻的星间距离填入当前行" @click="fill('row')">填入当前行</button>
-        <button class="irt-btn" :disabled="!canFill"
-                :title="`把光标所在时刻的星间距离填入全部 ${rowCount} 行`" @click="fill('all')">填入全部行</button>
-        <span class="irt-sp"></span>
-        <button class="irt-btn" @click="emit('close')">关闭</button>
-      </div>
-    </div>
-  </div>
+      <template #footer>
+        <span class="adlg-ft-l">
+          <button class="btn" :disabled="!canFill || !hasRow"
+                  title="把光标所在时刻的星间距离填入当前行" @click="fill('row')">填入当前行</button>
+          <button class="btn" :disabled="!canFill"
+                  :title="`把光标所在时刻的星间距离填入全部 ${rowCount} 行`" @click="fill('all')">填入全部行</button>
+        </span>
+        <button class="btn" @click="emit('close')">关闭</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.irt-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.irt { width: 468px; max-height: 90vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3);
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.irt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); color: var(--text); border-bottom: 1px solid var(--border); }
-.irt-sub { color: var(--text-faint); font-size: var(--fs-3); }
-.irt-sp { flex: 1; }
-.irt-x { display: inline-flex; align-items: center; padding: 2px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
-.irt-x:hover { color: var(--text); }
-.irt-bd { padding: 10px; overflow-y: auto; }
+/* 外壳归 AppDialog */
+.irt-sub { margin-left: 6px; color: var(--text-faint); font-size: var(--fs-3); font-weight: 400; }
+.irt-bd { padding: 10px; }
 .irt-sep { height: 1px; background: var(--border); margin: 9px 0; }
 .irt-ends { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .irt-end { min-width: 0; }
@@ -314,7 +328,7 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-u { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
 .irt-orb { margin-top: 4px; font-size: var(--fs-2); color: var(--text-faint); }
 .mono { font-family: var(--font-mono); }
-.irt-err { margin-top: 8px; font-size: var(--fs-3); color: var(--danger, #c0392b); }
+.irt-err { margin-top: 8px; font-size: var(--fs-3); color: var(--danger); }
 .irt-chart { width: 100%; height: auto; display: block; touch-action: none; cursor: crosshair; }
 .irt-ax { stroke: var(--border); stroke-width: 1; }
 .irt-tk { font-size: 9px; fill: var(--text-faint); font-family: var(--font-mono); }
@@ -327,15 +341,15 @@ function fill(scope) { if (canFill.value) emit('fill', { rangeKm: cur.value.rang
 .irt-big { font-size: var(--fs-5); color: var(--accent); }
 .irt-out i { font-size: var(--fs-2); color: var(--text-faint); font-style: normal; }
 .irt-aux { font-size: var(--fs-2); color: var(--text-muted); }
-.irt-aux.bad { color: var(--danger, #c0392b); }
+.irt-aux.bad { color: var(--danger); }
 /* 读数可框选复制（口径同斜距工具）：只放开读数，标签/按钮仍不可选 */
 .irt-out { user-select: text; -webkit-user-select: text; }
-.irt-ft { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
 .irt-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 9px; white-space: nowrap; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .irt-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .irt-btn:disabled { opacity: .45; cursor: not-allowed; }
+.irt-loc { display: inline-flex; align-items: center; gap: 4px; }
 .irt-ghost { visibility: hidden; }   /* 占住「此刻」那一格：结束时刻输入框与起始时刻的同宽对齐 */
-.irt-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
+.irt-btn.primary { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
 /* 主钮悬停压深一档（原规则只保住字色，描边却被通用悬停染成灰框） */
-.irt-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.irt-btn.primary:hover:not(:disabled) { color: var(--primary-on); background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
 </style>

@@ -13,6 +13,7 @@
 //   ⑤ 读数：GEO 平根数（倾角 = |纬度|、近圆、周期≈恒星日）、区制 GEO / IGSO、定点标注按节点经度、传播器「定点」。
 //   ⑥ 本体身份 grdsat:<folder>（与树上 GRD 天线同一份）；页面接线按源码钉（卫星集「卫星天线树」't:tree'、TDZ 顺序、信息栏口径、
 //      各成员表不出合成号、卫星集标签不并空树、搜索下拉重新展开）。
+//   ⑥b 卫星集「卫星天线树」点亮后全部成员进点云，不看树上卫星行的小眼睛（回归 2026-10-14：小眼睛关着的星点亮这一集也不出点）。
 import { readFileSync } from 'node:fs'
 import sat from '../../../src/viz/constellation/satellite.js'
 import { posAt, posAtMs, periodMinOf, propagatorLabel, validSpan, keepInRenderSet, SIDEREAL_MIN } from '../../../src/viz/constellation/satPos.js'
@@ -285,14 +286,20 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   const body = (sig) => { const i = page.indexOf(sig), j = page.indexOf('\n}\n', i); return i >= 0 && j > i ? page.slice(i, j) : '' }
   ok(page.includes("function satKeyOf(e) { return e && e._grdFolder ? grdSatKey(e._grdFolder) : coreSatKeyOf(e) }"), '页面 satKeyOf：定点星条目认 grdsat:<folder>（模型 / 姿态 / 挂点与天线同一份）')
   const rb = body('function rebuildRenderSet() {')
-  ok(rb.includes('const treeOn = vis.has(TREE_SET)') && rb.includes('if (treeOn) add(treeGeoList.filter((e) => { const n = grdNodeOf(e._grdFolder); return !!n && satVisible(n) }))'), '渲染集收虚拟星：跟卫星集「卫星天线树」的眼睛，再逐颗跟树上的小眼睛')
-  const iG = rb.indexOf("for (const id of vis) if (id[0] === 'g')"), iReal = rb.indexOf('entries = real'), iLnk = rb.indexOf('const e = liveEntryOf(n.noradId); if (e) linked.push(e)')
-  ok(iG > 0 && iReal > iG && iLnk > iReal && rb.indexOf('add(linked)') > iLnk && /if \(!isTreeLinkedNode\(n\) \|\| !satVisible\(n\)\) continue/.test(rb), '「卫星天线树」里的关联星最后加（别的可见集同号对象先到先得）、不进 real')
+  ok(rb.includes('const treeOn = vis.has(TREE_SET)') && rb.includes("if (treeOn) add(treeSetEntries(grdSats.value, treeGeoIdMap.value, (m) => treeGeoById.get(m.id) || null, 'virtual'))"), '渲染集收虚拟星：只跟卫星集「卫星天线树」的眼睛（成员一律进点云）')
+  // 回归（2026-10-14「点亮卫星天线树的眼睛，没有可以点击的点云」）：树上卫星行的小眼睛只管覆盖分析里的图标 + 名称，
+  // 不许再拿它逐颗过滤这一集 —— 覆盖分析里关掉名字 / 「清除绘图」一键全关之后，这一集点亮了一颗点也不出
+  ok(!rb.includes('satVisible'), '渲染集不看树上卫星行的小眼睛（虚拟星 / 关联星都不按它过滤）')
+  const iG = rb.indexOf("for (const id of vis) if (id[0] === 'g')"), iReal = rb.indexOf('entries = real'), iLnk = rb.indexOf("if (treeOn) add(treeSetEntries(grdSats.value, treeGeoIdMap.value, (m) => liveEntryOf(m.id), 'linked'))")
+  ok(iG > 0 && iReal > iG && iLnk > iReal && !rb.includes('real.push(liveEntryOf'), '「卫星天线树」里的关联星最后加（别的可见集同号对象先到先得）、不进 real')
   ok(body('function satEntryById(id) {').includes('treeGeoById.get(key)'), 'satEntryById 能按合成号取到（小眼睛关着、那一集关着也在）')
   const sy = body('function syncTreeGeo() {')
   ok(sy.includes('syncTreeGeoEntries(grdSats.value, treeGeoCache, orbitSatrec)') && sy.includes('stopFollow()') && sy.includes('closeCard()') && sy.includes('rebuildRenderSet()'), 'syncTreeGeo：根数星按 orbitSatrec 注入；掉出的条目移出聚焦集（先退出跟随），再重建渲染集')
   ok(sy.includes('for (const e of changed) modelMatchCache.delete(satKeyOf(e))') && sy.includes('poolEntries = null'), 'syncTreeGeo：rec 换了的条目作废模型自动匹配缓存；在选中集里的作废聚焦几何池那一份')
-  ok(/watch\(\(\) => grdSats\.value\.map\(\(n\) => \(n && n\.kind !== 'elevline' && !n\.noradId \? `\$\{n\.folder\}\|\$\{n\.satName\}\|\$\{n\.lon\}\|\$\{n\.lat\}\|\$\{n\.altKm\}\|\$\{_elSig\(n\.elements\)\}\|\$\{satVisible\(n\) \? 1 : 0\}` : ''\)\)\.join\('\\n'\), syncTreeGeo, \{ immediate: true \}\)/.test(page), '树的增删改（含根数）/ 小眼睛 → syncTreeGeo')
+  ok(/watch\(\(\) => grdSats\.value\.map\(\(n\) => \(n && n\.kind !== 'elevline' && !n\.noradId \? `\$\{n\.folder\}\|\$\{n\.satName\}\|\$\{n\.lon\}\|\$\{n\.lat\}\|\$\{n\.altKm\}\|\$\{_elSig\(n\.elements\)\}` : ''\)\)\.join\('\\n'\), syncTreeGeo, \{ immediate: true \}\)/.test(page), '树的增删改（含根数）→ syncTreeGeo；小眼睛不进签名（它不决定这一集上不上图）')
+  ok(page.includes("watch(() => grdSats.value.map((n) => (isTreeLinkedNode(n) ? `${n.folder}|${n.noradId}` : '')).join('\\n'), () => {"), '关联星：关联关系一变才重建渲染集（小眼睛不进签名）')
+  const px = body('function pickExtraSats(opts) {')
+  ok(px.includes('const drawn = flat2d ? satVisible(node) : node.labelShow !== false') && px.includes('if (te && drawn) push(te)') && px.includes('if (drawn || cov) push(liveEntryOf(node.noradId))'), '点选候选：天线树卫星自己的标记画着就点得中（3D 只画名；2D 图标或名任一开着）')
   // TDZ：syncTreeGeo 的立即 watch 在 setup 期就调 orbitSatrec —— 那一块必须声明在它之前（也在条目表状态之前）
   const iOrb = page.indexOf('const customSatrecs = new Map()'), iFn = page.indexOf('function orbitSatrec(node) {'), iEl = page.indexOf("function elementsToSatrec(el) { return sat.omm2satrec(elementsOmm(el, 'SIM')) }")
   const iCache = page.indexOf('const treeGeoCache = new Map()'), iWatch = page.indexOf('syncTreeGeo, { immediate: true })')
@@ -303,7 +310,7 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   ok(page.includes('const clockEpochISO = () => new Date(Math.floor(clock.tMs / 1000) * 1000).toISOString()') && /const defaultElements = \(\) => \(\{ altKm: 500, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0, epoch: clockEpochISO\(\) \}\)/.test(page), '新建星的根数草稿带历元 = 时间轴当前时刻（取整到秒）')
   const pf = body('function satPatchFrom(m, alert) {')
   ok(pf.includes("if (el.epoch == null || el.epoch === '') { epoch = clockEpochISO(); m.elements.epoch = epoch }") && pf.includes("else if (!(epoch = normEpoch(el.epoch))) { if (alert) appAlert('历元无效'); return null }") && pf.includes('ma: Number(el.ma) || 0, epoch }') && pf.indexOf('ma: Number(el.ma) || 0, epoch }') < pf.indexOf('elementsToSatrec(elements)'), 'satPatchFrom：重建根数时带上历元（规范化）；草稿没有就盖一次并写回草稿（播放中不反复盖）；解不出 → 拒收')
-  ok(page.includes('<div class="srow stack"><label>历元</label><input class="ci" type="datetime-local" step="1" :value="satEpochVal()" @input="satEpochEdit = $event.target.value" @blur="satEpochDone" @keyup.enter="satEpochDone" /><span class="u">{{ satEpochTz() }}</span><span class="geobtn" title="设为时间轴当前时刻" @click="satEpochNow">此刻</span></div>') && page.indexOf('<label>历元</label><input class="ci" type="datetime-local"') < page.indexOf('v-model.number="satModal.elements.altKm"'), '弹窗根数块首行：历元（datetime-local 到秒 + 显示时区 + 「此刻」）')
+  ok(page.includes('<div class="srow stack"><label>历元</label><input class="ci" type="datetime-local" step="1" :value="satEpochVal()" @input="satEpochEdit = $event.target.value" @blur="satEpochDone" @keyup.enter="satEpochDone" /><span class="u">{{ satEpochTz() }}</span><button type="button" class="btn sm" title="设为时间轴当前时刻" @click="satEpochNow">此刻</button></div>') && page.indexOf('<label>历元</label><input class="ci" type="datetime-local"') < page.indexOf('v-model.number="satModal.elements.altKm"'), '弹窗根数块首行：历元（datetime-local 到秒 + 显示时区 + 「此刻」）')
   ok(!page.includes('@change="satEpochDone"'), '历元框只在回车 / 失焦提交：不接 change（Chromium 的 datetime-local 每键发 change，年份键到一半 0002 → 19xx 落库）')
   const sed = body('function satEpochDone() {')
   ok(body('function satEpochVal() {').includes('fmtGotoVal(Date.parse(ep))') && body('function satEpochTz() {').includes('return tzTag(tzMode.value, ep ? Date.parse(ep) : clock.tMs)') && sed.includes('const t = parseGotoVal(typed)') && body('function satEpochNow() {').includes('m.elements.epoch = clockEpochISO()') && page.includes('watch(satModal, () => { satPosEdit.value = null; satEpochEdit.value = null })'), '历元框按时间轴读数的时区档显示 / 解释（与跳到指定时刻同一套）；草稿随弹窗换星作废')
@@ -351,11 +358,40 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   ok(page.includes('(e._grdFolder ? expTreeItem(e.noradId, e.name, \'\') : expMkItem(') && page.includes('(isTreeGeoId(s.id) ? expTreeItem(s.id, s.name,') && page.includes('(en._grdFolder ? expTreeItem(en.noradId, en.name, \'\')'), '搜索结果 / 卫星组（含死号）/ 查找对话框：虚拟星成员行不出合成号')
   // 可见性分析「当前显示」标签：天线树一颗星都没往图上加时不算一集
   const sl = page.slice(page.indexOf('const satSetLabel = computed(() => {'), page.indexOf('// 【必须等在建的那一次】'))
-  ok(sl.includes("(id !== TREE_SET || treeAdds())") && sl.includes('some((m) => satVisible(m.node))') && sl.includes('name: setName(ids[0])'), '卫星集标签：空的「卫星天线树」不并进「混合 · …」，名字与种类取自同一份 id 表')
+  ok(sl.includes("(id !== TREE_SET || treeAdds())") && sl.includes('const treeAdds = () => treeSetMembers(grdSats.value, treeGeoIdMap.value).length > 0') && !sl.includes('satVisible') && sl.includes('name: setName(ids[0])'), '卫星集标签：空的「卫星天线树」不并进「混合 · …」（按成员算、不看小眼睛，与渲染集同口径），名字与种类取自同一份 id 表')
+  ok(body('const setSummary = computed(() => {').includes('const treeIdle = vis.has(TREE_SET) && !treeSetMembers(grdSats.value, treeGeoIdMap.value).length'), '侧栏读数「N 集」：「卫星天线树」没有成员才不算一集（同上）')
   // 标题栏「在星座中搜索」：同一个词再搜一次也要重新展开下拉
   ok(page.includes('covNav.searchSats = (q) => { onSearch({ target: { value: q } }); searchOpenTick.value++ }') && page.includes('openTick: searchOpenTick.value,'), '标题栏搜索桥每调一次递增 openTick')
   const lp = readFileSync(new URL('../../../src/components/SatLayersPanel.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   ok(lp.includes('(k) => setDrop(!!k), { immediate: true })') && lp.includes('watch(() => props.search && props.search.openTick, () => {'), '搜索下拉：面板重挂时有词就展开；openTick 一变重新展开并聚焦')
+}
+
+// ---------- ⑥b 卫星集「卫星天线树」的点云成员：常规的树（覆盖分析里多数星的名字 / 图标关着）点亮这一集，全部成员都进点云 ----------
+// 回归 2026-10-14：用户的树 = 4 颗定点 GEO + 2 颗关联星，覆盖分析里 5 颗的小眼睛关着；点亮「卫星天线树」后点云里只剩 1 颗（甚至 0 颗）。
+{
+  const { treeSetEntries, treeSetMembers } = await import('../../../src/viz/grd/treeLink.js')
+  const off = { iconShow: false, labelShow: false }
+  const nodes = [
+    geo('CS26', 125, 0, 35786, off),
+    { folder: 'CS6E', satName: 'CS6E', kind: 'linked', lon: 115.5, lat: 0, altKm: 35786, noradId: '58253', elements: null, ...off },
+    geo('ZX6C', 130.5, 0, 35786, off),
+    geo('CS6D', 125, 0, 35786, off),
+    geo('CS10R', 110.5, 0, 35786, { iconShow: true, labelShow: false }),
+    { ...orb('LEO', { altKm: 550, ecc: 0, incl: 53, raan: 0, argp: 0, ma: 0, epoch: '2026-10-01T00:00:00.000Z' }), ...off },
+    { folder: 'ZX26', satName: 'ZX26', kind: 'linked', lon: 125, lat: 0, altKm: 35786, noradId: '55686', elements: null, iconShow: true, labelShow: true },
+    { folder: 'EL', satName: '仰角线', kind: 'elevline', lon: 100, lat: 30, altKm: 35786, noradId: null, ...off }
+  ]
+  const cache = new Map()
+  const { byId, ids } = syncTreeGeoEntries(nodes, cache, (n) => recOfElements(n.elements))
+  const live = new Map([['58253', { noradId: '58253', name: 'CS6E', rec: {} }], ['55686', { noradId: '55686', name: 'ZX26', rec: {} }]])
+  const virt = treeSetEntries(nodes, ids, (m) => byId.get(m.id) || null, 'virtual')
+  const lnk = treeSetEntries(nodes, ids, (m) => live.get(m.id) || null, 'linked')
+  ok(virt.length === 5 && virt.map((e) => e._grdFolder).join() === 'CS26,ZX6C,CS6D,CS10R,LEO', '虚拟星：小眼睛关着的也全部进点云（按树序）', virt.map((e) => e._grdFolder).join())
+  ok(lnk.length === 2 && lnk[0] === live.get('58253') && lnk[1] === live.get('55686'), '关联星：小眼睛关着的也进（按号现解的那一份对象）')
+  ok(treeSetEntries(nodes, ids, (m) => byId.get(m.id) || live.get(m.id) || null).length === treeSetMembers(nodes, ids).length, '不分段：成员几颗、进点云几颗（仰角线不收）')
+  const t = new Date('2026-10-14T08:00:00Z')
+  ok(virt.every((e) => keepInRenderSet(e, t)) && virt.every((e) => { const pv = posAt(e, t); return pv && Number.isFinite(pv.position.x) }), '虚拟星条目过得了渲染集的去留判据、此刻有星位（点云里有点、点得中）')
+  ok(treeSetEntries(nodes, ids, () => null).length === 0 && treeSetEntries(nodes, ids, null).length === 0, '解不出的不收；没给取条目函数 → 空')
 }
 
 // ---------- ⑦ 别的窗口读树（NGSO / 再生式 / 端到端 / 模型工作台）：satTree.loadSatTree 把历元规范一次 ----------

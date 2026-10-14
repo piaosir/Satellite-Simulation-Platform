@@ -1,5 +1,5 @@
 import { reactive, watch, nextTick } from 'vue'
-import { shellUi } from './shellUi'
+import { shellUi, requestSide } from './shellUi'
 
 // 侧栏各视图「内部分区」的展开/收起状态（本地记忆）。
 // key = 分区唯一标识（如 'geo-ocean'）；value = true 展开 / false 收起。
@@ -35,13 +35,30 @@ export function setSecOpen(key, open = true) {
 // 返回标题元素（找不到返回 null，但视图已切、展开态已置）。
 export async function revealSection(view, keys) {
   const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean)
-  if (view) shellUi.side = view
+  if (view && !requestSide(view)) return null   // 未激活：受锁视图不切（requestSide 已请出锁窗）
   for (const k of list) setSecOpen(k, true)
   await settle()
   const el = findHeading(list)
   if (!el) return null
-  // 减弱动效下直接跳到位（controls.css 的 scroll-behavior: auto 管不到 JS 显式传的 smooth）
-  el.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  // 动效只认应用内开关（--dur-* 置 0 = 关动效），不跟系统 prefers-reduced-motion（用户机 Windows 动画关 → 恒报 reduce）
+  el.scrollIntoView({ block: 'start', behavior: scrollBehavior() })
+  flash(el)
+  return el
+}
+
+// 应用内动效开关：--dur-2 为 0 → 瞬跳；否则平滑滚动
+export function scrollBehavior() {
+  try { const v = getComputedStyle(document.documentElement).getPropertyValue('--dur-2').trim(); return /^0(?:\.0+)?(?:ms|s)?$/.test(v) ? 'auto' : 'smooth' } catch { return 'smooth' }
+}
+
+// 定位到侧栏里的某个具体元素（地图上点中的站 / 点 / Polygon / 航迹 → 列表里那一行）：
+// 先切视图 + 展开分区（同 revealSection），再在 #side-view 里按选择器找到它滚到中间闪一下。找不到就停在分区。
+export async function revealEl(view, keys, selector) {
+  const head = await revealSection(view, keys)
+  if (view && shellUi.side !== view) return null
+  const el = selector ? document.querySelector('#side-view ' + selector) : null
+  if (!el) return head
+  el.scrollIntoView({ block: 'center', behavior: scrollBehavior() })
   flash(el)
   return el
 }
@@ -52,6 +69,7 @@ export async function revealSection(view, keys) {
 export async function revealRow(view, keys, label) {
   const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean)
   const head = await revealSection(view, list)
+  if (view && shellUi.side !== view) return false
   let scope = []
   if (head) { for (let e = head.nextElementSibling; e && !isHeading(e); e = e.nextElementSibling) scope.push(e) }
   else {

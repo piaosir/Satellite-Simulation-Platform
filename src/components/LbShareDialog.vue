@@ -23,9 +23,11 @@
 //     flushLib() → Promise                 // 冲刷全局库的防抖写盘（并库后、写配置前必须等它）
 //     onImported({ last, plan })           // 落盘后：刷新列表 / 载入末条 / 展开新建的文件夹
 //   }
-import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
+import { reportError } from '../shared/reportError.js'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 import {
   SHARE_PREFIX, LIB_KINDS, KIND_LABEL, MOD_LABEL,
@@ -164,22 +166,23 @@ const label = computed(() => {
 async function copyCode() {
   if (!code.value) return
   try { await navigator.clipboard.writeText(code.value); toast('分享码已复制，可发给对方') }
-  catch (e) { toast('复制失败，请手动选择文本复制') }
+  catch (e) { toast('复制失败。') }
 }
 async function exportFile() {
   if (!api || !bundle.value) return
   const base = (label.value || '链路预算分享').replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
   const r = await api.exportFile({ defaultName: base + '.lbcfg', data: bundleFileText(bundle.value), filters: [{ name: '链路预算分享包', extensions: ['lbcfg', 'json'] }] })
-  if (r && r.ok) toast('已导出：' + r.filePath)
-  else if (r && !r.canceled) toast('导出失败：' + (r.error || ''))
+  // 回执带上实际写入的路径（主进程回传 path，旧版 filePath）：宿主通知条据此给出「打开 · 在文件夹中显示」
+  if (r && r.ok) { const fp = r.path || r.filePath || ''; emit('toast', '已导出：' + fp, fp) }
+  else if (r && !r.canceled) reportError('导出失败', r.error || '')   // 写盘失败（文件被占用等）常驻宿主通知条
 }
 const recip = ref('')
 const sending = ref(false)
 async function sendOnline() {
   if (!api || !props.configured) { toast('在线分享未配置'); return }
   const rid = (recip.value || '').trim()
-  if (!rid) { toast('请输入对方用户 ID'); return }
-  if (!bundle.value) { toast('请先勾选要分享的内容'); return }
+  if (!rid) { toast('对方用户 ID 为空。'); return }
+  if (!bundle.value) { toast('未选择分享内容。'); return }
   sending.value = true
   try {
     // items：给还没升级的老客户端留的兼容字段（它读 it.lib，因此这份对它是完整可用的）
@@ -198,16 +201,7 @@ async function sendOnline() {
 // 没有这个钩子的窗口（再生式暂未接）不显示这个页签。
 const canMini = computed(() => typeof props.ctx.toMiniItems === 'function')
 const miniOpen = ref(false)
-// 捕获阶段收 Esc（与 LbReportDialog 同一套）：对话框在最上层，不漏给下面的表格去取消单元格编辑。
-// 组字中的 Esc 是取消组字；「发送到小程序」叠在上面时这一下归它（它自己收 Esc）
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
-  if (miniOpen.value) return
-  e.stopPropagation()
-  close()
-}
-watch(() => props.open, (v) => (v ? window.addEventListener('keydown', onKey, true) : window.removeEventListener('keydown', onKey, true)), { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关）。「发送到小程序」叠在上面时它是最上层的 AppDialog，Esc 归它
 // id 一并给出去（草稿为 '__draft__'）：父组件据此判「这一份是不是工作台上正算着的那一份」，
 // 是才把平台的计算结果随配置带过去（见 §结果一并带走）。别的配置没有对应的结果，不能张冠李戴。
 function buildMini() {
@@ -231,8 +225,11 @@ function makePlan(input, src, msgId) {
   } catch (e) { imp.plan = null; imp.err = String((e && e.message) || e) }
 }
 function parseText() { if (imp.text.trim()) makePlan(imp.text, '粘贴的分享码') }
+// 整窗拖入 .lbcfg（宿主窗口的 drop）：与「导入 › 文件」同一条流水线，只是文本来自拖进来的文件
+function importText(text, src) { imp.text = ''; makePlan(String(text || ''), src || '文件'); tab.value = 'import' }   // 解析失败也落到「导入」页，错误在那儿
+defineExpose({ importText })
 async function parseClipboard() {
-  try { imp.text = await navigator.clipboard.readText() } catch (e) { toast('读剪贴板失败，请手动粘贴'); return }
+  try { imp.text = await navigator.clipboard.readText() } catch (e) { toast('无法读取剪贴板。'); return }
   parseText()
 }
 async function parseFile() {
@@ -314,7 +311,7 @@ function inboxLabel(it) {
   try { return describeBundle(bundleOfMsg(it)).text } catch (e) { return it.name || '分享内容' }
 }
 // 来源只写「收件箱」——发件人由清单抬头统一按 plan.from 显示，此处再写一遍会重复成「来自 X · 来自 X」
-function acceptInbox(it) { try { makePlan(bundleOfMsg(it), '收件箱', it.id) } catch (e) { imp.err = '这条内容解析失败：' + ((e && e.message) || e); tab.value = 'import' } }
+function acceptInbox(it) { try { makePlan(bundleOfMsg(it), '收件箱', it.id) } catch (e) { imp.err = '该条内容解析失败：' + ((e && e.message) || e); tab.value = 'import' } }
 async function dismissInbox(it) {
   try { await api.share.remove(props.deviceId, it.id) } catch (e) { /* 忽略 */ }
   inbox.value = inbox.value.filter((x) => x.id !== it.id)
@@ -323,18 +320,13 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 </script>
 
 <template>
-  <div v-if="open" class="lbs-mask" @click="close">
-    <div class="lbs-dlg" @click.stop>
-      <div class="lbs-hd">
-        <span class="lbs-hd-t">分享 / 导入</span>
-        <span class="lbs-mod" :title="'本窗口体制：' + (MOD_LABEL[ctx.mod] || ctx.mod)">{{ ctx.mod }}</span>
-        <span class="lbs-sp"></span>
-        <span v-if="deviceId" class="lbs-id">本机标识：<b>{{ deviceId }}</b></span>
-      </div>
+  <AppDialog :open="open" :width="720" flush @close="close">
+      <template #title><span class="lbs-hd-t">分享 / 导入<span class="lbs-mod" :title="'本窗口体制：' + (MOD_LABEL[ctx.mod] || ctx.mod)">{{ ctx.mod }}</span></span></template>
+      <template #head><span v-if="deviceId" class="lbs-id">本机标识：<b>{{ deviceId }}</b></span></template>
       <nav class="lbs-tabs">
-        <button class="lbs-tab" :class="{ on: tab === 'share' }" @click="tab = 'share'">分享</button>
-        <button v-if="canMini" class="lbs-tab" :class="{ on: tab === 'mini' }" @click="tab = 'mini'">发送到小程序</button>
-        <button class="lbs-tab" :class="{ on: tab === 'import' }" @click="tab = 'import'">导入</button>
+        <button class="lbs-tab" :class="{ on: tab === 'share' }" :aria-pressed="(tab === 'share') ? 'true' : 'false'" @click="tab = 'share'">分享</button>
+        <button v-if="canMini" class="lbs-tab" :class="{ on: tab === 'mini' }" :aria-pressed="(tab === 'mini') ? 'true' : 'false'" @click="tab = 'mini'">发送到小程序</button>
+        <button class="lbs-tab" :class="{ on: tab === 'import' }" :aria-pressed="(tab === 'import') ? 'true' : 'false'" @click="tab = 'import'">导入</button>
       </nav>
 
       <!-- ============ 分享 / 发到小程序（共用同一份勾选结果） ============ -->
@@ -366,7 +358,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
                   <span class="lbs-nm" data-i18n-skip>{{ r.item.name }}</span>
                 </label>
               </template>
-              <div v-if="!rows.length && !draft" class="lbs-empty">还没有保存过的配置</div>
+              <div v-if="!rows.length && !draft" class="lbs-empty">暂无已保存的配置。</div>
             </div>
           </div>
 
@@ -414,13 +406,13 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
         <template v-else>
           <div class="lbs-sec">分享方式</div>
           <div class="lbs-ways">
-            <button class="lbs-way" :class="{ on: way === 'online' }" @click="way = 'online'"><Icon name="external-link" :size="12" />发给用户 ID</button>
-            <button class="lbs-way" :class="{ on: way === 'code' }" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
-            <button class="lbs-way" :class="{ on: way === 'file' }" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
+            <button class="lbs-way" :class="{ on: way === 'online' }" :aria-pressed="(way === 'online') ? 'true' : 'false'" @click="way = 'online'"><Icon name="send-horizontal" :size="12" />发给用户 ID</button>
+            <button class="lbs-way" :class="{ on: way === 'code' }" :aria-pressed="(way === 'code') ? 'true' : 'false'" @click="way = 'code'"><Icon name="clipboard" :size="12" />分享码</button>
+            <button class="lbs-way" :class="{ on: way === 'file' }" :aria-pressed="(way === 'file') ? 'true' : 'false'" @click="way = 'file'"><Icon name="file-text" :size="12" />文件 .lbcfg</button>
           </div>
 
           <template v-if="way === 'code'">
-            <textarea class="lbs-area" :value="code" readonly rows="3" :placeholder="'勾选内容后这里会出现 ' + SHARE_PREFIX + '… 分享码'" @focus="$event.target.select()"></textarea>
+            <textarea class="lbs-area" :value="code" readonly rows="3" :placeholder="'勾选内容后此处将出现 ' + SHARE_PREFIX + '… 分享码'" @focus="$event.target.select()"></textarea>
             <div class="lbs-acts">
               <button class="lbs-btn primary" :disabled="!code" @click="copyCode">复制分享码</button>
             </div>
@@ -465,7 +457,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
             <button class="lbs-btn" @click="parseFile">从文件导入（.lbcfg）</button>
           </div>
           <div v-if="imp.err" class="lbs-warnbox">{{ imp.err }}</div>
-          <div v-if="configured && inbox.length" class="lbs-inbox-hd"><span>收件箱里还有 {{ inbox.length }} 条</span><button class="lbs-lnk" @click="tab = 'share'; way = 'online'">去查看</button></div>
+          <div v-if="configured && inbox.length" class="lbs-inbox-hd"><span>收件箱中还有 {{ inbox.length }} 条</span><button class="lbs-lnk" @click="tab = 'share'; way = 'online'">去查看</button></div>
         </template>
 
         <!-- 包内清单：先看清楚要往本机塞什么，再落盘 -->
@@ -490,7 +482,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
                     <td class="lbs-nmc" :title="c.srcName">{{ c.srcName }}</td>
                     <td class="lbs-act">存入 {{ c.pathText }}<template v-if="c.folderNew">（文件夹将新建）</template><template v-if="c.renamed"> · 重名 → 「{{ c.finalName }}」</template></td>
                   </tr>
-                  <tr v-if="!imp.plan.lib.length && !imp.plan.configs.length"><td colspan="3" class="lbs-empty">包里没有内容</td></tr>
+                  <tr v-if="!imp.plan.lib.length && !imp.plan.configs.length"><td colspan="3" class="lbs-empty">包中没有内容</td></tr>
                 </tbody>
               </table>
             </div>
@@ -504,33 +496,26 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
         </template>
       </div>
 
-      <div class="lbs-ft"><button class="lbs-btn" @click="close">关闭</button></div>
-    </div>
-  </div>
-  <!-- 同级而不是嵌在 .lbs-mask 里：那一层的 @click 是「点遮罩即关闭」，嵌进去的话点小程序弹窗的
-       遮罩会把两个窗一起关掉（本组件的关闭要由用户自己按） -->
+      <template #footer><button class="btn" @click="close">关闭</button></template>
+  </AppDialog>
+  <!-- 与外壳同级（两个都是 AppDialog，各自 Teleport 到 body；后开的在上，Esc 归最上层） -->
   <MiniSendDialog v-if="open && canMini" v-model:open="miniOpen" :build="buildMini" :device-id="deviceId" :configured="configured" @toast="(m) => emit('toast', m)" />
 </template>
 
 <style scoped>
 /* 视觉语言与各 App 的 .lb-dlg 一致（同一套 CSS 变量），此处自带一份是因为 App 的样式是 scoped 的，
    子组件除根元素外吃不到。类名统一 lbs- 前缀，不与任何 App 内的类冲突。 */
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.lbs-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lbs-dlg { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lbs-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lbs-hd-t { font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
-.lbs-mod { font-family: var(--font-mono); font-size: var(--fs-1); line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); cursor: help; }
+/* 外壳归 AppDialog；题条：标题 + 体制角标，关闭钮前是本机标识 */
+.lbs-hd-t { display: inline-flex; align-items: center; gap: 8px; }
+.lbs-mod { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 400; line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); cursor: help; }
 .lbs-sp { flex: 1; }
-.lbs-id { font-size: var(--fs-2); color: var(--text-muted); }
+.lbs-id { flex: none; align-self: center; padding: 0 10px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .lbs-id b { font-family: var(--font-code); color: var(--text); }
 .lbs-tabs { display: flex; gap: 4px; padding: 8px 12px 0; }
 .lbs-tab { flex: 1; font: inherit; font-size: var(--fs-3); padding: 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbs-tab:hover { color: var(--text); border-color: var(--border-strong); }
 .lbs-tab.on { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ui); }
-.lbs-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
-.lbs-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.lbs-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; }
 
 /* 分节小标题 */
 .lbs-sec { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); padding-top: 2px; }
@@ -544,7 +529,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-n { font-family: var(--font-mono); font-size: var(--fs-1); padding: 0 5px; line-height: 15px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lbs-hint { font-size: var(--fs-2); color: var(--text-faint); cursor: help; }
 .lbs-lnk { font: inherit; font-size: var(--fs-2); height: var(--h-ctl-sm); white-space: nowrap; padding: 0 4px; cursor: pointer; color: var(--text-faint); background: transparent; border: 0; border-radius: var(--r-ctl); }
-.lbs-lnk:hover:not(:disabled) { color: var(--text); background: var(--bg); }
+.lbs-lnk:hover:not(:disabled) { color: var(--text); background: var(--wash-hover); }
 .lbs-lnk:disabled { opacity: .5; cursor: not-allowed; }
 .lbs-list { flex: 1; min-height: 128px; max-height: 210px; overflow-y: auto; background: var(--bg); }
 .lbs-row { display: flex; align-items: center; gap: 6px; padding: 3px 7px; font-size: var(--fs-3); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
@@ -582,8 +567,8 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
 .lbs-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl); font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbs-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lbs-btn:disabled { opacity: .45; cursor: not-allowed; }
-.lbs-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lbs-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.lbs-btn.primary { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
+.lbs-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--primary-on); background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
 .lbs-note { font-size: var(--fs-2); color: var(--text-faint); }
 .lbs-warnbox { font-size: var(--fs-3); line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: var(--r-ctl, 2px); padding: 6px 8px; }
 

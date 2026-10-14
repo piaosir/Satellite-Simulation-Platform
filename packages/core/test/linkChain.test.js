@@ -560,7 +560,7 @@ console.log('\n=== 6 地球站 EIRP / G·T：算式行留级联、设备参数�
   const sum = pick('功放输出功率') - pick('功放回退') - pick('馈线损耗') + pick('发射天线增益');
   ok('★ 功放输出 − 回退 − 馈线 + 天线增益 = 发信站 EIRP', near(sum, eirp, 0.011), `${sum.toFixed(3)} vs ${eirp}`);
   ok('★ 收信站段只剩两行算式：G/T 与它的降雨劣化（级联列逐行可手算）',
-    (led.find((x) => x.label === '接收站 G/T') || {}).kind === 'gain' &&
+    (led.find((x) => x.label === '收信站 G/T') || {}).kind === 'gain' &&
     (led.find((x) => x.label === 'G/T 劣化（降雨）') || {}).kind === 'loss');
   // —— 方案二：参考行移入右侧收发链参数段 ——
   const gone = ['天线口径', '天线效率', '功放输出功率(W)', 'UPC 补偿', '接收天线增益', '接收馈线损耗',
@@ -573,8 +573,8 @@ console.log('\n=== 6 地球站 EIRP / G·T：算式行留级联、设备参数�
     N(up.paWResult) > 0 && up.upcMarginResult !== '',
     `${up.txDiameterResult} / ${up.txEffResult} / ${up.paWResult} / ${up.upcMarginResult}`);
   const gt = N(dn.rxAntennaGainResult) - N(dn.rxFeederLossResult) - N(dn.sysNoiseTempDbResult);
-  ok('★ 接收天线增益 − 接收馈线损耗 − 系统噪声温度(dB) = 接收站 G/T（方案二：参考行移入右侧收发链参数段）',
-    near(gt, pick('接收站 G/T'), 0.011), `${gt.toFixed(2)} vs ${pick('接收站 G/T')}`);
+  ok('★ 接收天线增益 − 接收馈线损耗 − 系统噪声温度(dB) = 收信站 G/T（方案二：参考行移入右侧收发链参数段）',
+    near(gt, pick('收信站 G/T'), 0.011), `${gt.toFixed(2)} vs ${pick('收信站 G/T')}`);
   ok('噪温分项齐全（天线 / 接收机 / 雨 / 云 / 系统 K）（方案二：参考行移入右侧收发链参数段）',
     ['antennaNoiseTempResult', 'receiverNoiseTempResult', 'rainNoiseTempResult', 'cloudNoiseTempResult',
       'sysNoiseTempKResult'].every((k) => dn[k] !== '' && N(dn[k]) !== null),

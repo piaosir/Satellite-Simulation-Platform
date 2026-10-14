@@ -197,11 +197,11 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
       </select>
     </div>
     <div class="md-acts">
-      <button class="lb-mini primary" :disabled="!mnt || busy || !can || ana.tooMany.value" :title="can ? '' : '需在桌面客户端中运行'" @click="compute"><Icon name="calculator" :size="13" />计算</button>
-      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
+      <button class="lb-mini primary" :disabled="!mnt || busy || !can || ana.tooMany.value" :title="can ? '' : '需在桌面客户端中运行'" @click="compute"><Icon name="calculator" :size="12" />计算</button>
+      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="12" />取消</button>
       <span v-if="busy" class="md-state"><span class="as-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
       <span class="sp"></span>
-      <button class="lb-mini" :disabled="!res || !Number.isFinite(res.worst.gtLossDb)" title="将最坏 ΔG/T（dB，3 位小数）复制到剪贴板" @click="copyWorst"><Icon name="clipboard" :size="13" />复制最坏 ΔG/T</button>
+      <button class="lb-mini" :disabled="!res || !Number.isFinite(res.worst.gtLossDb)" title="将最坏 ΔG/T（dB，3 位小数）复制到剪贴板" @click="copyWorst"><Icon name="copy" :size="12" />复制最坏 ΔG/T</button>
     </div>
     <div v-if="copied" class="md-state ok">已复制</div>
     <div v-if="err" class="md-state bad">{{ err }}</div>
@@ -222,7 +222,6 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
 <style scoped>
 .as-mdl { flex: 0 1 80px; min-width: 0 !important; }
 .as-t { grid-column: span 2; }
-.as-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: as-spin .7s linear infinite; }
-@keyframes as-spin { to { transform: rotate(360deg); } }
+.as-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 .srow :deep(.md-num) { flex: 1 1 60px; }
 </style>

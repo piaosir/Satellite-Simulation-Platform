@@ -211,7 +211,7 @@ function derivedS1528_12(p) {
     warnings.push(
       `z = ${z} 使 (2a) 段的 ${nearSidelobeGain.toFixed(3)} dBi 高于主瓣段末端的 ` +
       `${mainlobeEndGain.toFixed(3)} dBi（+20·lg z = ${(20 * LOG10(z)).toFixed(3)} dB 抬升过大），` +
-      `方向图在 ψ = a·ψb 处向上跳 ${(-stepAtA).toFixed(3)} dB。请核对 z 的取值。`
+      `方向图在 ψ = a·ψb 处向上跳 ${(-stepAtA).toFixed(3)} dB。`
     );
   }
   if (!(seg1End < seg2aEnd)) {

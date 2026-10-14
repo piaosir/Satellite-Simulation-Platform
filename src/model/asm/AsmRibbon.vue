@@ -119,18 +119,18 @@ const can = computed(() => ({
       </button>
       <div class="asm-rb-col">
         <button class="asm-tg" data-act="save" :disabled="!canSave" :title="saveTip" @click="asm.save()">
-          <Icon name="save" :size="13" /><span>保存</span><i v-if="unsaved && !A.empty" class="asm-dirty"></i>
+          <Icon name="save" :size="12" /><span>保存</span><i v-if="unsaved && !A.empty" class="asm-dirty"></i>
         </button>
         <span class="asm-rb-split">
           <button class="asm-tg" data-act="saveAs" :disabled="!canSaveAs" :title="saveAsTip" @click="saveAsDo(false)">
-            <Icon name="folder-plus" :size="13" /><span>另存副本</span>
+            <Icon name="folder-plus" :size="12" /><span>另存副本</span>
           </button>
-          <button class="asm-tg ico asm-rb-caret" data-act="saveAs-more" :class="{ on: !!saveAsMenu }" :disabled="!canSaveAs" title="另存副本选项" @click="openSaveAs"><Icon name="chevron-down" :size="12" /></button>
+          <button class="asm-tg ico asm-rb-caret" data-act="saveAs-more" :class="{ on: !!saveAsMenu }" :aria-pressed="(!!saveAsMenu) ? 'true' : 'false'" :disabled="!canSaveAs" title="另存副本选项" @click="openSaveAs"><Icon name="chevron-down" :size="12" /></button>
         </span>
       </div>
       <div class="asm-rb-col">
-        <button class="asm-tg ico" data-act="undo" :disabled="!can.undo" title="撤销（Ctrl+Z）" @click="asm.undo()"><Icon name="undo-2" :size="14" /></button>
-        <button class="asm-tg ico" data-act="redo" :disabled="!can.redo" title="重做（Ctrl+Y）" @click="asm.redo()"><Icon name="redo-2" :size="14" /></button>
+        <button class="asm-tg ico" data-act="undo" :disabled="!can.undo" title="撤销（Ctrl+Z）" @click="asm.undo()"><Icon name="undo-2" :size="16" /></button>
+        <button class="asm-tg ico" data-act="redo" :disabled="!can.redo" title="重做（Ctrl+Y）" @click="asm.redo()"><Icon name="redo-2" :size="16" /></button>
       </div>
     </div>
     <div class="lbr-cap">文档</div>
@@ -139,18 +139,18 @@ const can = computed(() => ({
   <div class="lbr-g asm-rb">
     <div class="lbr-items">
       <div class="asm-rb-col">
-        <button class="asm-tg" data-act="move" :class="{ on: effTool === 'move' }" :disabled="lock"
+        <button class="asm-tg" data-act="move" :class="{ on: effTool === 'move' }" :aria-pressed="(effTool === 'move') ? 'true' : 'false'" :disabled="lock"
                 :title="moveTip" @click="asm.setTool('move')">
-          <Icon name="move" :size="13" /><span>移动</span>
+          <Icon name="move" :size="12" /><span>移动</span>
         </button>
-        <button class="asm-tg" data-act="rotate" :class="{ on: effTool === 'rotate' }" :disabled="lock" :title="rotTip" @click="asm.setTool('rotate')">
-          <Icon name="rotate-3d" :size="13" /><span>旋转</span>
+        <button class="asm-tg" data-act="rotate" :class="{ on: effTool === 'rotate' }" :aria-pressed="(effTool === 'rotate') ? 'true' : 'false'" :disabled="lock" :title="rotTip" @click="asm.setTool('rotate')">
+          <Icon name="rotate-3d" :size="12" /><span>旋转</span>
         </button>
       </div>
       <div class="lbr-form">
-        <label><span class="asm-rb-ic" title="坐标系（Q 循环）"><Icon name="axis-3d" :size="14" /></span>
+        <label><span class="asm-rb-ic" title="坐标系（Q 循环）"><Icon name="axis-3d" :size="16" /></span>
           <span class="lbu-seg">
-            <button v-for="s in SPACE_UI" :key="s.key" :data-act="'space-' + s.key" :class="{ on: effSpace === s.key }" :disabled="mountOnly && s.key !== 'mount'" :title="spaceTip(s)" @click="asm.setSpace(s.key)">{{ s.label }}</button>
+            <button v-for="s in SPACE_UI" :key="s.key" :data-act="'space-' + s.key" :class="{ on: effSpace === s.key }" :aria-pressed="(effSpace === s.key) ? 'true' : 'false'" :disabled="mountOnly && s.key !== 'mount'" :title="spaceTip(s)" @click="asm.setSpace(s.key)">{{ s.label }}</button>
           </span>
         </label>
       </div>
@@ -162,8 +162,8 @@ const can = computed(() => ({
     <div class="lbr-items">
       <div class="lbr-form">
         <label>
-          <button class="asm-tg asm-rb-lead" data-act="snap" :class="{ on: ui.snap.on }" :title="snapTip" @click="asm.setSnap({ on: !ui.snap.on })">
-            <Icon name="magnet" :size="13" /><span>吸附</span>
+          <button class="asm-tg asm-rb-lead" data-act="snap" :class="{ on: ui.snap.on }" :aria-pressed="ui.snap.on ? 'true' : 'false'" :title="snapTip" @click="asm.setSnap({ on: !ui.snap.on })">
+            <Icon name="magnet" :size="12" /><span>吸附</span>
           </button>
           <select data-act="snap-move" class="asm-rb-sm" :value="String(ui.snap.move)" title="平移吸附步长（面安装件以面心为原点的绝对网格；自动 = 锚面短边 / 20，取 1-2-5 档）" @change="setMoveStep($event.target.value)">
             <option v-for="v in MOVE_STEP_OPTS" :key="v" :value="String(v)">{{ moveStepLabel(v) }}</option>
@@ -175,7 +175,7 @@ const can = computed(() => ({
         </label>
         <label><span class="asm-rb-lead-l" :title="symTip">对称</span>
           <span class="lbu-seg">
-            <button v-for="s in SYM_UI" :key="s.key" :data-act="'sym-' + s.key" :class="{ on: ui.sym.op === s.key }" :title="s.tip" @click="asm.setSym({ op: s.key })">{{ s.short }}</button>
+            <button v-for="s in SYM_UI" :key="s.key" :data-act="'sym-' + s.key" :class="{ on: ui.sym.op === s.key }" :aria-pressed="(ui.sym.op === s.key) ? 'true' : 'false'" :title="s.tip" @click="asm.setSym({ op: s.key })">{{ s.short }}</button>
           </span>
           <select data-act="sym-n" class="asm-rb-n" :value="String(ui.sym.n)" :disabled="ui.sym.op !== 'radial'" title="径向对称的件数（含主件）" @change="asm.setSym({ n: Number($event.target.value) })">
             <option v-for="n in 7" :key="n" :value="String(n + 1)">{{ n + 1 }}</option>
@@ -189,10 +189,10 @@ const can = computed(() => ({
   <div class="lbr-g asm-rb">
     <div class="lbr-items">
       <div class="asm-rb-grid two">
-        <button class="asm-tg ico" data-act="duplicate" :disabled="!can.dup" :title="lock ? LOCK_TIP : '复制（Ctrl+D）：复制选中子树并进入放置'" @click="asm.duplicate()"><Icon name="copy" :size="14" /></button>
-        <button class="asm-tg ico" data-act="pickup" :disabled="!can.pick" :title="lock ? LOCK_TIP : '重新放置（G）：连同子树重新吸附放置\n' + PLACE_KEYS_TIP" @click="asm.pickup()"><Icon name="grab" :size="14" /></button>
-        <button class="asm-tg ico" data-act="mirror" :disabled="!can.mirror" title="镜像（M）：切换选中件的镜像对称" @click="asm.mirror()"><Icon name="flip-horizontal-2" :size="14" /></button>
-        <button class="asm-tg ico" data-act="remove" :disabled="!can.del" title="删除（Delete）：连同子件与对称件" @click="asm.remove()"><Icon name="trash" :size="14" /></button>
+        <button class="asm-tg ico" data-act="duplicate" :disabled="!can.dup" :title="lock ? LOCK_TIP : '复制（Ctrl+D）：复制选中子树并进入放置'" @click="asm.duplicate()"><Icon name="copy" :size="16" /></button>
+        <button class="asm-tg ico" data-act="pickup" :disabled="!can.pick" :title="lock ? LOCK_TIP : '重新放置（G）：连同子树重新吸附放置\n' + PLACE_KEYS_TIP" @click="asm.pickup()"><Icon name="grab" :size="16" /></button>
+        <button class="asm-tg ico" data-act="mirror" :disabled="!can.mirror" title="镜像（M）：切换选中件的镜像对称" @click="asm.mirror()"><Icon name="flip-horizontal-2" :size="16" /></button>
+        <button class="asm-tg ico" data-act="remove" :disabled="!can.del" title="删除（Delete）：连同子件与对称件" @click="asm.remove()"><Icon name="trash" :size="16" /></button>
       </div>
     </div>
     <div class="lbr-cap">编辑</div>
@@ -200,10 +200,10 @@ const can = computed(() => ({
 
   <NewMenu v-if="newMenu" :x="newMenu.x" :y="newMenu.y" @close="newMenu = null" />
   <Teleport to="body">
-    <div v-if="saveAsMenu" class="lb-ctx-mask" @mousedown="saveAsMenu = null" @contextmenu.prevent="saveAsMenu = null">
-      <div class="lb-ctx" :style="{ left: saveAsMenu.x + 'px', top: saveAsMenu.y + 'px' }" @mousedown.stop>
-        <button class="lb-ctx-i" data-act="saveAs-copy" :disabled="!canSaveAs" @click="saveAsDo(false)">另存副本</button>
-        <button class="lb-ctx-i" data-act="saveAs-restore" :disabled="!canRestore" title="副本保留当前内容，原件恢复为打开时的状态" @click="saveAsDo(true)">另存副本并还原原件</button>
+    <div v-if="saveAsMenu" class="lb-ctx-mask menu-mask" @mousedown="saveAsMenu = null" @contextmenu.prevent="saveAsMenu = null">
+      <div class="lb-ctx menu" role="menu" :style="{ left: saveAsMenu.x + 'px', top: saveAsMenu.y + 'px' }" @mousedown.stop>
+        <button class="lb-ctx-i menu-item" role="menuitem" data-act="saveAs-copy" :disabled="!canSaveAs" @click="saveAsDo(false)">另存副本</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" data-act="saveAs-restore" :disabled="!canRestore" title="副本保留当前内容，原件恢复为打开时的状态" @click="saveAsDo(true)">另存副本并还原原件</button>
       </div>
     </div>
   </Teleport>

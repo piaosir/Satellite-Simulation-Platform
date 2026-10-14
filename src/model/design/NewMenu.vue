@@ -45,21 +45,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
 <template>
   <Teleport to="body">
-    <div class="lb-ctx-mask" @mousedown="emit('close')" @contextmenu.prevent="emit('close')">
-      <div ref="menuEl" class="lb-ctx nm" :style="{ left: props.x + 'px', top: props.y + 'px' }" @mousedown.stop>
-        <div class="nm-cap">空白</div>
-        <button v-for="d in NEW_DOMAINS" :key="'b' + d" class="lb-ctx-i" :data-act="'new-' + d" @mouseenter="sub = null" @click="pickBlank(d)">
-          <Icon :name="DOMAIN_ICONS[d]" :size="14" />{{ DOMAIN_LABELS[d] }}
+    <div class="lb-ctx-mask menu-mask" @mousedown="emit('close')" @contextmenu.prevent="emit('close')">
+      <div ref="menuEl" class="lb-ctx nm menu" role="menu" :style="{ left: props.x + 'px', top: props.y + 'px' }" @mousedown.stop>
+        <div class="nm-cap menu-hd">空白</div>
+        <button v-for="d in NEW_DOMAINS" :key="'b' + d" class="lb-ctx-i menu-item" role="menuitem" :data-act="'new-' + d" @mouseenter="sub = null" @click="pickBlank(d)">
+          <Icon :name="DOMAIN_ICONS[d]" :size="12" />{{ DOMAIN_LABELS[d] }}
         </button>
-        <div class="lb-ctx-sep"></div>
-        <div class="nm-cap">从模板新建</div>
-        <button v-for="d in NEW_DOMAINS.filter((x) => tpls[x].length)" :key="'t' + d" class="lb-ctx-i nm-has" :class="{ on: sub && sub.domain === d }" :data-act="'newtpl-' + d"
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
+        <div class="nm-cap menu-hd">从模板新建</div>
+        <button v-for="d in NEW_DOMAINS.filter((x) => tpls[x].length)" :key="'t' + d" class="lb-ctx-i menu-item nm-has" role="menuitem" :class="{ on: sub && sub.domain === d, hi: sub && sub.domain === d }" :aria-pressed="(sub && sub.domain === d) ? 'true' : 'false'" :data-act="'newtpl-' + d"
                 @mouseenter="openSub(d, $event)" @click="openSub(d, $event)">
-          <Icon :name="DOMAIN_ICONS[d]" :size="14" />{{ DOMAIN_LABELS[d] }}<span class="nm-n" data-i18n-skip>{{ tpls[d].length }}</span><Icon name="chevron-right" :size="12" class="nm-chev" />
+          <Icon :name="DOMAIN_ICONS[d]" :size="12" />{{ DOMAIN_LABELS[d] }}<span class="nm-n menu-kbd" data-i18n-skip>{{ tpls[d].length }}</span><Icon name="chevron-right" :size="12" class="nm-chev" />
         </button>
       </div>
-      <div v-if="sub" class="lb-ctx nm nm-sub" :style="{ left: sub.x + 'px', top: sub.y + 'px' }" @mousedown.stop>
-        <button v-for="e in tpls[sub.domain]" :key="e.id" class="lb-ctx-i" :data-tpl="e.id" :title="[e.titleZh, e.title !== e.titleZh ? e.title : '', e.source && e.source.credit].filter(Boolean).join('\n')" @click="pickTpl(e)">
+      <div v-if="sub" class="lb-ctx nm nm-sub menu" role="menu" :style="{ left: sub.x + 'px', top: sub.y + 'px' }" @mousedown.stop>
+        <button v-for="e in tpls[sub.domain]" :key="e.id" class="lb-ctx-i menu-item" role="menuitem" :data-tpl="e.id" :title="[e.titleZh, e.title !== e.titleZh ? e.title : '', e.source && e.source.credit].filter(Boolean).join('\n')" @click="pickTpl(e)">
           <span data-i18n-skip>{{ displayName(e, 'zh') }}</span>
         </button>
       </div>
@@ -70,9 +70,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 <style scoped>
 .nm { min-width: 168px; }
 .nm-sub { width: 220px; max-height: 70vh; overflow-y: auto; }
-.nm-cap { padding: 4px 10px 2px; font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-faint); }
-.nm-has { display: flex; align-items: center; }
-.nm-has.on { background: var(--wash-hover); }
-.nm-n { margin-left: auto; padding-left: 10px; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.nm-chev { flex: none; margin-left: 4px; color: var(--text-faint); }
+.nm-n { padding-left: 10px; font-variant-numeric: tabular-nums; }
+.nm-chev { flex: none; margin-left: -4px; color: var(--text-faint); }
+.nm-has:is(:hover, .hi) .nm-chev { color: inherit; }
 </style>

@@ -25,7 +25,7 @@
 // 向心 Catmull-Rom 转三次贝塞尔——见 shared/lbContour.js。
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { niceScale, fmtTick, fmtVal, linScale, isFlatSpan } from '../shared/lbPlotScale.js'
-import { isDark } from '../shared/lbPlotTheme.js'
+import { isDark as screenDark } from '../shared/lbPlotTheme.js'
 import { buildColorScale } from '../shared/lbColorScale.js'
 import { contourSegments, stitchSegments, contourLevels, bilinear, fieldExtent, refineField, dequantize, buildBlocks, smoothPathD, labelAnchors } from '../shared/lbContour.js'
 import { loadBasemap, onBasemapChange, basemapPaths, OCEAN, LAND, MAP_COAST, MAP_BORDER, MAP_LW, WASH, scaleInk } from '../shared/lbBasemap.js'
@@ -91,6 +91,10 @@ const maskId = 'sf-mask-' + _uid
 // —— 字号/字体：跟随功能区「字号」组（--lb-fs 写在 <html> 行内样式上，只能自己盯） ——
 const fs = ref(11)
 const themeTick = ref(0)
+// 出图走纸色（shared/paperTheme.js）：exportSvgString 期间置真，色板 / 底图 / 标注墨色一律按浅色重算，
+// 整段在同一个宏任务里完成（改 → nextTick 重渲 → 序列化 → 改回），屏幕不会画出浅色那一帧。
+const paperMode = ref(false)
+const isDark = () => !paperMode.value && screenDark()
 function readCssVars() {
   try {
     const cs = getComputedStyle(document.documentElement)
@@ -102,7 +106,7 @@ onMounted(() => {
   readCssVars()
   if (window.MutationObserver) {
     _mo = new MutationObserver(() => { readCssVars(); themeTick.value++ })
-    _mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme'] })
+    _mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'data-theme', 'data-skin'] })
   }
   const el = wrap.value
   if (el) {
@@ -401,6 +405,7 @@ const zClipped = computed(() => {
 // 色标条随之按值画出这条非线性关系，读数仍一一对得上。见 shared/lbColorScale.js。
 const scale = computed(() => {
   themeTick.value                                   // 主题切换要重取色板
+  paperMode.value                                   // 出图那一下按纸色重取
   const dm = zDomain.value || [0, 1]
   return buildColorScale({
     min: dm[0], max: dm[1],
@@ -957,7 +962,15 @@ function composeField(ss) {
 // 等值线带 vector-effect="non-scaling-stroke"（屏上是为了让线宽不随场层的搬运变换缩放），
 // 一旦给 SVG 加上 viewBox 把坐标系放大 4 倍，这条属性就把线宽钉死在 4 倍前的那个像素数上，
 // 出来的图里等值线细成一根发丝。位图那一层没有这层保护，只能在这里按 scale 重画。
-function exportSvgString(cssVars, scale) {
+async function exportSvgString(cssVars, scale) {
+  if (!svgEl.value) return ''
+  paperMode.value = true
+  try {
+    await nextTick()
+    return buildSvgString(cssVars, scale)
+  } finally { paperMode.value = false }
+}
+function buildSvgString(cssVars, scale) {
   const svg = svgEl.value
   if (!svg) return ''
   const s = Math.max(1, scale || 1)
@@ -1253,7 +1266,7 @@ defineExpose({ exportSvgString, svgSize, toCSV, svg: svgEl })
 .sf-barthumb { pointer-events: none; }
 .sf-barthumb line {
   stroke: var(--text); stroke-width: 2; stroke-linecap: round; stroke-opacity: 0.32;
-  transition: stroke-opacity .12s;
+  transition: stroke-opacity var(--dur-2);
 }
 /* 手动钉住了色标域：两端一起加深，读者一眼知道这把尺子不再是自动的那把 */
 .sf-barui.on .sf-barthumb line { stroke-opacity: 0.72; }

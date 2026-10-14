@@ -23,13 +23,13 @@ export const FIELD_GROUPS = [
   {
     key: 'carrier', title: '载波与调制', icon: 'wave',
     fields: [
-      { key: 'infoRate', label: '信息速率', unit: 'kbps', type: 'num', def: '2048', target: 'link' },
+      { key: 'infoRate', label: '信息速率', unit: 'kbps', type: 'num', min: 0, minEx: true, def: '2048', target: 'link' },
       { key: 'modulation', label: '调制方式', type: 'select', options: ['BPSK', 'QPSK', '8PSK', '16APSK', '32APSK'], def: 'QPSK', target: 'link' },
       { key: 'fec', label: 'FEC 码率', type: 'text', def: '3/4', target: 'link' },
       { key: 'ebno', label: '门限', unit: 'dB', type: 'num', def: '5.50', target: 'link' },
-      { key: 'ber', label: '误码率 10⁻ⁿ', unit: 'n', type: 'num', def: '7', target: 'link' },
-      { key: 'm', label: '扩频增益', type: 'num', def: '1.00', target: 'link' },
-      { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20', target: 'link' },
+      { key: 'ber', label: '误码率 10⁻ⁿ', unit: 'n', type: 'num', min: 1, max: 20, def: '7', target: 'link' },
+      { key: 'm', label: '扩频增益', type: 'num', min: 1, def: '1.00', target: 'link' },
+      { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', min: 1, max: 2, def: '1.20', target: 'link' },
       { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204', target: 'link' },
       { key: 'noiseRatioMode', label: '门限模式', def: 'ebno', target: 'link' },
       // 3GPP NTN 的物理层描述子（对象，不是表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
@@ -53,13 +53,13 @@ export const FIELD_GROUPS = [
     fields: [
       { key: 'satelliteName', label: '卫星名称', type: 'text', def: 'Satellite', target: 'sat' },
       { key: 'frequencyBand', label: '工作频段', type: 'select', options: ['L', 'S', 'X', 'ExtC', 'C', 'ExtKu', 'Ku', 'Ku-BSS', 'Ka', 'Q', 'V'], def: 'Ku', target: 'sat' },
-      { key: 'centerFrequency', label: '上行频率', tip: '上行中心频率', unit: 'GHz', type: 'num', def: '14.25', target: 'link', pair: 'up' },
+      { key: 'centerFrequency', label: '上行频率', tip: '上行中心频率', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '14.25', target: 'link', pair: 'up' },
       { key: 'uplinkPolarization', label: '上行极化', tip: '上行极化方式', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'V', target: 'link', pair: 'up' },
       // 下行频率/极化：再生式下行模式用（上行模式忽略）。一颗星天然有上/下行两套频率极化，故并入卫星群。
-      { key: 'rxCenterFrequency', label: '下行频率', tip: '下行中心频率（再生式下行用）', unit: 'GHz', type: 'num', def: '12.5', target: 'link', pair: 'dn' },
+      { key: 'rxCenterFrequency', label: '下行频率', tip: '下行中心频率（再生式下行用）', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '12.5', target: 'link', pair: 'dn' },
       { key: 'downlinkPolarization', label: '下行极化', tip: '下行极化方式（再生式下行用）', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'H', target: 'link', pair: 'dn' },
-      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（卫星/天线树选择、从星历搜索）后由所选卫星轨道自动确定。手动几何下改它即重算各行斜距', unit: 'km', type: 'num', def: '8000', target: 'link', pair: 'orbit' },
-      { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角；选星后由所选卫星轨道根数自动确定', unit: '°', type: 'num', def: '45', target: 'sat', pair: 'orbit' },
+      { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度；选星（卫星/天线树选择、从星历搜索）后由所选卫星轨道自动确定。手动几何下改它即重算各行斜距', unit: 'km', type: 'num', min: 0, minEx: true, def: '8000', target: 'link', pair: 'orbit' },
+      { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角；选星后由所选卫星轨道根数自动确定', unit: '°', type: 'num', min: 0, max: 180, def: '45', target: 'sat', pair: 'orbit' },
       // 干扰系数（上行四项 + 下行四项）——随卫星逐星配置（与 GSO/NGSO 同）。target:'sat' → satParams。
       { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', unit: 'dB', type: 'num', def: '30', target: 'sat', br: true },
       { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', unit: 'dB', type: 'num', def: '25', target: 'sat' },
@@ -78,25 +78,25 @@ export const FIELD_GROUPS = [
     // 站表（发/收信站群）只留站址信息 + 「地球站配置」选择列。
     key: 'station', title: '地球站', icon: 'dish',
     fields: [
-      { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）。MEO 预设 2.4 m：用户/物联站典型口径（关口站另配 4.5~7.3 m 并相应上调工作点）', side: 'common', unit: 'm', type: 'num', def: '2.4', target: 'link' },
-      { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', def: '65', target: 'link' },
-      { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大型关口站长波导为 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', def: '0.5', target: 'link' },
+      { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）。MEO 预设 2.4 m：用户/物联站典型口径（关口站另配 4.5~7.3 m 并相应上调工作点）', side: 'common', unit: 'm', type: 'num', min: 0.1, max: 50, def: '2.4', target: 'link' },
+      { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', min: 0, minEx: true, max: 100, def: '65', target: 'link' },
+      { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', min: 0, def: '0', target: 'link' },
+      { key: 'feederLoss', label: '馈线损耗', tip: 'MEO 预设 0.5 dB：2.4 m 用户站短馈线（大型关口站长波导为 3 dB 量级）', side: 'tx', unit: 'dB', type: 'num', min: 0, def: '0.5', target: 'link' },
       { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否', target: 'link' },
       { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0', target: 'link' },
-      { key: 'uplinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', def: '0.3', target: 'link' },
+      { key: 'uplinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'tx', unit: 'dB', type: 'num', min: 0, def: '0.3', target: 'link' },
       // —— 工作点（再生上行的功放，随站型入库；target:'op' 不进 linkParams，由 App 换成引擎 power 模式）——
       //   载波「计算方式」=设置工作点(power) 时按此值走引擎 power 模式算上行余量；=设置余量(margin) 时它不参与，
       //   功放由目标余量反解（见 CARRIER_FIELDS 的 calcMode；v1.3.6 曾删过反解档，v1.3.8 随载波入库加回）。
       // hero:true 仅指渲染位置——与口径并列排在配置面板顶部主参数条（功放是站型的另一个定性指标），side 仍为 'tx'。
-      { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率预设值（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量；各站算出的功放功率显示在发信站表「地球站配置」格内配置名之后。', side: 'tx', hero: true, unit: 'W', type: 'num', def: '0.2', target: 'op' },
+      { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率预设值（W）；MEO 预设 0.2 W ≈ 2.4 m 站工作点 EIRP 42 dBW（馈线 0.5 dB）。按给定功放功率计算上行余量；各站计算得到的功放功率显示在发信站表「地球站配置」格内配置名之后。', side: 'tx', hero: true, unit: 'W', type: 'num', min: 0, minEx: true, def: '0.2', target: 'op' },
       // —— 接收链（工作点 G/T 的构成量）：天线（口径共用公共字段）+ 噪温 + 馈线 → 引擎按 gOverTe = 天线增益 − 系统噪温dB − 馈线损耗 算 G/T（含精确雨致 G/T 劣化）——
-      { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '65', target: 'link' },
+      { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', min: 0, minEx: true, max: 100, def: '65', target: 'link' },
       { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数；NGSO §8 口径下随等效仰角变化），忽略「天线噪温」手填值；自定义 = 用「天线噪温」数值。', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动', target: 'link' },
-      { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35', target: 'link' },
-      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75', target: 'link' },
-      { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2', target: 'link' },
-      { key: 'downlinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', def: '0.3', target: 'link' }
+      { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', min: 0, def: '35', target: 'link' },
+      { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', min: 0, def: '75', target: 'link' },
+      { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', min: 0, def: '0.2', target: 'link' },
+      { key: 'downlinkOtherLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合', side: 'rx', unit: 'dB', type: 'num', min: 0, def: '0.3', target: 'link' }
     ]
   },
   {
@@ -108,24 +108,24 @@ export const FIELD_GROUPS = [
       //   载波（载波信号配置）｜卫星（卫星 + 该星对本站的 G/T）｜地球站（站型配置 + 站址 + 几何）｜链路（雨强/可用度）
       // 「地球站配置」不再与载波/卫星并列成「配置」组——它就是这座站的站型（口径/功放/馈线），与站址同属这座站。
       // frozen 标记保留但链路表已按 freezeKeys=false 取消冻结（全列随横滚）。
-      { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
+      { key: 'basebandId', label: '载波配置', alias: ['载波信号配置'], type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       // 卫星 G/T（再生式逐发信站取值）：同一颗星服务不同站因波束位置不同而 G/T 各异——「卫星×发信站」
       // 配对量，故留在站表逐站手填（不入地球站库）；列位紧跟「卫星」，与它同属卫星列组。
       { key: 'G_Ts', label: '卫星G/T', tip: '卫星接收品质因数 G/T（dB/K），按本站对该卫星的波束位置手动输入。MEO 预设 10 dB/K（MEO Ku 点波束量级）。', unit: 'dB/K', type: 'num', def: '10', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta', frozen: true },
       { key: 'earthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'tx', frozen: true },
-      { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
-      { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
+      { key: 'longitude', label: '经度', unit: '°E', type: 'num', min: -180, max: 360, def: '116.4074', target: 'link' },
+      { key: 'latitude', label: '纬度', unit: '°N', type: 'num', min: -90, max: 90, def: '39.9042', target: 'link' },
       // 仰角：几何=自动最差 时它是【门限】（决定最差几何，斜距最大）；几何=手动 时它就是【本条链路的仰角】，
       // 与同组的「斜距」一起直接送进引擎，不解算任何轨道关系。故标签/口径随几何模式切换（见 _geoCols）。
-      { key: 'minElevation', label: '最低仰角', manualLabel: '仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '发信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', def: '10', target: 'link' },
+      { key: 'minElevation', label: '最低仰角', manualLabel: '仰角', tip: '发信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '发信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', min: 0, max: 90, def: '10', target: 'link' },
       // 斜距（手动几何专用列）：几何=自动最差 时由几何求解器覆盖，故只在手动模式下显示与生效。
-      { key: 'slantRange', label: '斜距', tip: '发信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
+      { key: 'slantRange', label: '斜距', tip: '发信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动计算（WGS-84，取绕站一圈的最大值），也可直接改；上述四项变化时重新计算。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'link', manualOnly: true },
       { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
       // 工作点（功放功率）已随站型移入「地球站配置」发射参数（opPowerW，见 station 组）
-      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
+      { key: 'rainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', min: 0, def: '0', target: 'link', auto: 'rain' },
+      { key: 'uplinkAvailability', label: '可用度', unit: '%', type: 'num', min: 0, max: 100, def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   },
   {
@@ -136,20 +136,20 @@ export const FIELD_GROUPS = [
     // 组归属见 RegenLinkBudgetApp 的 _STN_GROUP。
     key: 'downlink', title: '收信站群', icon: 'down',
     fields: [
-      { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
+      { key: 'basebandId', label: '载波配置', alias: ['载波信号配置'], type: 'select', options: [], def: '', target: 'meta' },
       { key: 'satelliteId', label: '卫星', type: 'select', options: [], def: '', target: 'meta' },
       // 卫星下行 EIRP（再生式逐收信站取值）：同一颗星服务不同站因波束位置不同而 EIRP 各异——
       // 「卫星×收信站」配对量，故留在站表逐站手填；列位紧跟「卫星」，与它同属卫星列组。
       { key: 'rxEIRP', label: '再生下行 EIRP', tip: '该载波的卫星下行 EIRP（dBW，再生直发口径），按本站对该卫星的波束位置手动输入。MEO 预设 25 dBW（2 Mbps 级载波量级；此处填入整波束饱和值将使 C/N 达到 50 dB 以上的非物理区间）。', unit: 'dBW', type: 'num', def: '25', target: 'link' },
       { key: 'stationId', label: '地球站配置', type: 'select', options: [], def: '', target: 'meta' },
       { key: 'rxEarthStationLocation', label: '地球站位置', type: 'text', def: '北京', target: 'link', city: 'rx' },
-      { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', target: 'link' },
-      { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', target: 'link' },
-      { key: 'rxMinElevation', label: '最低仰角', manualLabel: '仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '收信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', def: '10', target: 'link' },
-      { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动算出（WGS-84，取绕站一圈的最大值），也可直接改；这四项再变即重算。', unit: 'km', type: 'num', def: '', target: 'link', manualOnly: true },
+      { key: 'rxLongitude', label: '经度', unit: '°E', type: 'num', min: -180, max: 360, def: '116.4074', target: 'link' },
+      { key: 'rxLatitude', label: '纬度', unit: '°N', type: 'num', min: -90, max: 90, def: '39.9042', target: 'link' },
+      { key: 'rxMinElevation', label: '最低仰角', manualLabel: '仰角', tip: '收信站对卫星的最低工作仰角，决定最差几何（斜距最大）', manualTip: '收信站对卫星的仰角（手动几何：直接送进引擎，不解算轨道）', unit: '°', type: 'num', min: 0, max: 90, def: '10', target: 'link' },
+      { key: 'rxSlantRange', label: '斜距', tip: '收信站到卫星的星地斜距。随仰角 / 纬度 / 海拔 / 轨道高度自动计算（WGS-84，取绕站一圈的最大值），也可直接改；上述四项变化时重新计算。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'link', manualOnly: true },
       { key: 'rxAltitude', label: '海拔', unit: 'm', type: 'num', def: '0', target: 'link', auto: 'elev' },
-      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', def: '0', target: 'link', auto: 'rain' },
-      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
+      { key: 'rxRainRate', label: 'R0.01%', unit: 'mm/h', type: 'num', min: 0, def: '0', target: 'link', auto: 'rain' },
+      { key: 'rxDownlinkAvailability', label: '可用度', unit: '%', type: 'num', min: 0, max: 100, def: '100', target: 'link' }   // 出厂 100%＝晴天（p=0：雨衰 / 云衰 / XPD 全不计入，2026-09-16 用户拍板）
     ]
   },
   {
@@ -162,7 +162,7 @@ export const FIELD_GROUPS = [
     //   · 无地面/大气/雨衰；四项 target:'sat' → satParams；target:'geom' 三项只喂几何/距离，不进链路引擎。
     key: 'isl', title: '星间链路群', icon: 'isl',
     fields: [
-      { key: 'basebandId', label: '载波信号配置', type: 'select', options: [], def: '', target: 'meta' },
+      { key: 'basebandId', label: '载波配置', alias: ['载波信号配置'], type: 'select', options: [], def: '', target: 'meta' },
       { key: 'txSatelliteId', label: '发射卫星', type: 'select', options: [], def: '', target: 'meta', autoOnly: true },
       { key: 'rxSatelliteId', label: '接收卫星', type: 'select', options: [], def: '', target: 'meta', autoOnly: true },
       { key: 'islEirp', label: '发射EIRP', tip: '发射卫星星间发射 EIRP（dBW）', unit: 'dBW', type: 'num', def: '45', target: 'sat' },
@@ -170,14 +170,14 @@ export const FIELD_GROUPS = [
       // 星间干扰：与星地那八项不是同一个物理域（真空段无雨致去极化、无地面 ASI 路径），且随这条
       // 链路的几何与频率复用而变，故聚合成一项挂在这条星间链路上（与 islEirp/islGT 同构），不挂卫星。
       { key: 'islCI', label: '星间C/I', tip: '本跳星间干扰合计载噪比（dB）：星座内邻 ISL 同频、邻道、极化泄漏等之合计，经工程分析后手填；留空＝不计入。发射端为透明星时其转发器互调另按该星工作点折算入账，与本项不重复', unit: 'dB', type: 'num', def: '', target: 'sat' },
-      { key: 'islFreq', label: '星间频率', tip: '星间链路频率（GHz，典型 Ka/V 频段星间）', unit: 'GHz', type: 'num', def: '23', target: 'sat' },
-      { key: 'islMiscLoss', label: '其他损耗', tip: '指向/极化/馈线等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '1', target: 'sat' },
-      { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：微波须清过大气；0=纯几何视线（仅避开固体地球）', unit: 'km', type: 'num', def: '100', target: 'geom', autoOnly: true },
+      { key: 'islFreq', label: '星间频率', tip: '星间链路频率（GHz，典型 Ka/V 频段星间）', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '23', target: 'sat' },
+      { key: 'islMiscLoss', label: '其他损耗', tip: '指向/极化/馈线等未单列损耗之综合（dB）', unit: 'dB', type: 'num', min: 0, def: '1', target: 'sat' },
+      { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：微波须清过大气；0=纯几何视线（仅避开固体地球）', unit: 'km', type: 'num', min: 0, def: '100', target: 'geom', autoOnly: true },
       // 最大工作距离：把「几何上互视」收窄成「工程上会用这条链路」。留空＝不限，最差工况就落在
       // 擦着地球临边那一瞬（几何可达极限，真系统到那之前早已切换链路）。见 ngsoGeometry.solveIslWorstCase。
-      { key: 'islMaxRange', label: '最大工作距离', tip: '这条星间链路实际会用到的最大星间距离（km）。留空 = 不限，最差工况取几何可达的最大互视距离（必然是擦着地球临边的那一瞬，偏保守）。给定后：最差 = 「互视且距离 ≤ 该值」的样本里距离最大者，可用度与访问窗口按同一条件重算。', unit: 'km', type: 'num', def: '', target: 'geom', autoOnly: true },
+      { key: 'islMaxRange', label: '最大工作距离', tip: '该星间链路实际会用到的最大星间距离（km）。留空 = 不限，最差工况取几何可达的最大互视距离（必然是擦着地球临边的那一瞬，偏保守）。给定后：最差 = 「互视且距离 ≤ 该值」的样本中距离最大者，可用度与访问窗口按同一条件重算。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'geom', autoOnly: true },
       // 星间链路距离（手动几何专用列）：这条链路的星间距离，直接送进引擎算 FSL，不解算轨道。
-      { key: 'islRangeKm', label: '星间链路距离', tip: '这条星间链路的星间距离（km），直接送进引擎算自由空间损耗。可用「星间链路距离」工具按两颗卫星的轨道在时间轴上算出后填入。', unit: 'km', type: 'num', def: '', target: 'geom', manualOnly: true }
+      { key: 'islRangeKm', label: '星间链路距离', tip: '该星间链路的星间距离（km），直接送入引擎计算自由空间损耗。可用「星间链路距离」工具按两颗卫星的轨道在时间轴上计算后填入。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'geom', manualOnly: true }
     ]
   },
   {
@@ -196,19 +196,19 @@ export const FIELD_GROUPS = [
       { key: 'rxSatelliteId', label: '接收卫星', type: 'select', options: [], def: '', target: 'meta', frozen: true, autoOnly: true },
       // —— MathWorks 功率链输入项（软件只套公式，值由用户给定）——
       { key: 'txPowerDbm', label: '发射光功率 P_tx', tip: '发射光功率 P_tx（dBm；30=1W、33=2W、36=4W）', unit: 'dBm', type: 'num', def: '30', target: 'laser' },
-      { key: 'wavelengthNm', label: '波长 λ', tip: '工作波长 λ（nm）；决定望远镜增益与自由空间损耗', unit: 'nm', type: 'num', def: '1550', target: 'laser' },
-      { key: 'txApertureMm', label: '发射口径 D_tx', tip: '发射望远镜口径 D_tx（mm）；增益 G_tx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', def: '80', target: 'laser' },
-      { key: 'rxApertureMm', label: '接收口径 D_rx', tip: '接收望远镜口径 D_rx（mm）；增益 G_rx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', def: '80', target: 'laser' },
-      { key: 'txOpticsEff', label: '发射光学效率 η_tx', tip: '发射光学效率 η_tx ∈ (0,1]；OE_tx = 10·lg(η)。MathWorks 缺省 0.8（=−0.97dB）', unit: '', type: 'num', def: '0.8', target: 'laser' },
-      { key: 'rxOpticsEff', label: '接收光学效率 η_rx', tip: '接收光学效率 η_rx ∈ (0,1]；OE_rx = 10·lg(η)。MathWorks 缺省 0.8', unit: '', type: 'num', def: '0.8', target: 'laser' },
-      { key: 'txPointingErrUrad', label: '发射指向误差', tip: '发射静态指向误差 θ（µrad）；指向损耗 LP_tx = 4.3429·(π·D/λ)²·θ²。MathWorks 缺省 1µrad', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
-      { key: 'rxPointingErrUrad', label: '接收指向误差', tip: '接收静态指向误差 θ（µrad）；指向损耗 LP_rx = 4.3429·(π·D/λ)²·θ²', unit: 'µrad', type: 'num', def: '1', target: 'laser' },
+      { key: 'wavelengthNm', label: '波长 λ', tip: '工作波长 λ（nm）；决定望远镜增益与自由空间损耗', unit: 'nm', type: 'num', min: 0, minEx: true, def: '1550', target: 'laser' },
+      { key: 'txApertureMm', label: '发射口径 D_tx', tip: '发射望远镜口径 D_tx（mm）；增益 G_tx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', min: 0, minEx: true, def: '80', target: 'laser' },
+      { key: 'rxApertureMm', label: '接收口径 D_rx', tip: '接收望远镜口径 D_rx（mm）；增益 G_rx = 10·lg((π·D/λ)²)', unit: 'mm', type: 'num', min: 0, minEx: true, def: '80', target: 'laser' },
+      { key: 'txOpticsEff', label: '发射光学效率 η_tx', tip: '发射光学效率 η_tx ∈ (0,1]；OE_tx = 10·lg(η)。MathWorks 缺省 0.8（=−0.97dB）', unit: '', type: 'num', min: 0, minEx: true, max: 1, def: '0.8', target: 'laser' },
+      { key: 'rxOpticsEff', label: '接收光学效率 η_rx', tip: '接收光学效率 η_rx ∈ (0,1]；OE_rx = 10·lg(η)。MathWorks 缺省 0.8', unit: '', type: 'num', min: 0, minEx: true, max: 1, def: '0.8', target: 'laser' },
+      { key: 'txPointingErrUrad', label: '发射指向误差', tip: '发射静态指向误差 θ（µrad）；指向损耗 LP_tx = 4.3429·(π·D/λ)²·θ²。MathWorks 缺省 1µrad', unit: 'µrad', type: 'num', min: 0, def: '1', target: 'laser' },
+      { key: 'rxPointingErrUrad', label: '接收指向误差', tip: '接收静态指向误差 θ（µrad）；指向损耗 LP_rx = 4.3429·(π·D/λ)²·θ²', unit: 'µrad', type: 'num', min: 0, def: '1', target: 'laser' },
       { key: 'rxSensitivityDbm', label: '接收机灵敏度 P_req', tip: '所需接收功率 P_req（dBm）；链路余量 = P_rx − P_req。MathWorks 示例：−35.5dBm@10Gbps OOK BER 1e-12', unit: 'dBm', type: 'num', def: '-35.5', target: 'laser' },
-      { key: 'otherLossDb', label: '其他损耗 L', tip: '附加/未细分损耗 L（dB，正值，可选；公式末的 −L 项）', unit: 'dB', type: 'num', def: '0', target: 'laser' },
+      { key: 'otherLossDb', label: '其他损耗 L', tip: '附加/未细分损耗 L（dB，正值，可选；公式末的 −L 项）', unit: 'dB', type: 'num', min: 0, def: '0', target: 'laser' },
       // —— 几何（仅喂几何求解，不进功率链）：几何=自动最差 才有；手动几何下只留 islRangeKm ——
-      { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：激光光路须清过大气（湍流/吸收）；0=纯几何视线（仅避开固体地球）。仅喂几何求解，判两星互视遮挡', unit: 'km', type: 'num', def: '100', target: 'geom', autoOnly: true },
-      { key: 'islMaxRange', label: '最大工作距离', tip: '这条激光链路实际会用到的最大星间距离（km）。留空 = 不限，最差工况取几何可达的最大互视距离（必然是擦着地球临边的那一瞬，偏保守）。给定后：最差 = 「互视且距离 ≤ 该值」的样本里距离最大者，可用度与访问窗口按同一条件重算。', unit: 'km', type: 'num', def: '', target: 'geom', autoOnly: true },
-      { key: 'islRangeKm', label: '星间链路距离', tip: '这条激光链路的星间距离（km），直接送进光学功率链算自由空间损耗。可用「星间链路距离」工具按两颗卫星的轨道在时间轴上算出后填入。', unit: 'km', type: 'num', def: '', target: 'geom', manualOnly: true }
+      { key: 'islAtmMargin', label: '大气余量', tip: 'LOS 视线须高出地表的余量（km）：激光光路须清过大气（湍流/吸收）；0=纯几何视线（仅避开固体地球）。仅喂几何求解，判两星互视遮挡', unit: 'km', type: 'num', min: 0, def: '100', target: 'geom', autoOnly: true },
+      { key: 'islMaxRange', label: '最大工作距离', tip: '该激光链路实际会用到的最大星间距离（km）。留空 = 不限，最差工况取几何可达的最大互视距离（必然是擦着地球临边的那一瞬，偏保守）。给定后：最差 = 「互视且距离 ≤ 该值」的样本中距离最大者，可用度与访问窗口按同一条件重算。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'geom', autoOnly: true },
+      { key: 'islRangeKm', label: '星间链路距离', tip: '该激光链路的星间距离（km），直接送入光学功率链计算自由空间损耗。可用「星间链路距离」工具按两颗卫星的轨道在时间轴上计算后填入。', unit: 'km', type: 'num', min: 0, minEx: true, def: '', target: 'geom', manualOnly: true }
     ]
   }
 ]
@@ -435,7 +435,7 @@ export function buildRegenIslParams(txSatForm, carrierForm, islLink) {
   return { satParams: JSON.parse(JSON.stringify(satParams)), linkParams: JSON.parse(JSON.stringify(linkParams)) }
 }
 
-// ==================== 再生式星间激光链路（相干 DP-QPSK）====================
+// ==================== 再生式星间激光链路（MathWorks 简化光学功率链）====================
 // 组装单条激光星间链路的扁平入参 laserParams（交自研光学引擎 computeRegenLaserIslMode）。
 // 与微波 ISL 不同：不复用 NGSO RF 引擎，无 satParams/linkParams 之分——所有光学/调制/指向字段扁平入参。
 // 星间激光无速率/带宽概念，灵敏度直接由接收机灵敏度 P_req(dBm) 给定（不挂 RF 载波信号库）。

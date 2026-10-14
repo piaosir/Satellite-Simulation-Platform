@@ -35,19 +35,20 @@ export const mapCrs = reactive({
   lookMode: 'off',
   // 2D 经纬图框（SATSOFT 式，与视频导出同一支 drawGeoFrame）：图框外留白 + 四边内向刻度 + 度数标注 + 轴标题 + 框内点线网格。
   // 与 proj 同族：只改平面图怎么画（PNG / PDF 所见即所得一并带上），不进任何计算。
-  //   on 出厂开（2026-10-08 起，见 MAP_CRS_REV）；step 0 = 自动；fmt 'num' −50.00 / 'hemi' 50°W；theme 留白底色 'light' | 'dark'；lines 框内点线网格
-  frame: { on: true, step: 0, fmt: 'num', theme: 'light', lines: true }
+  //   on 出厂开（2026-10-08 起，见 MAP_CRS_REV）；step 0 = 自动；fmt 'num' −50.00 / 'hemi' 50°W；theme 留白底色 'auto' 跟随外观（出厂，2026-10-15 起） | 'light' | 'dark'；lines 框内点线网格
+  frame: { on: true, step: 0, fmt: 'num', theme: 'auto', lines: true }
 })
 export const MAP_CRS_DEF = {
   datum: 'wgs84', fmt: 'deg', lon0: -30, proj: DEFAULT_PROJECTION,
   lat0: 0, par1: ALBERS_PARALLELS[0], par2: ALBERS_PARALLELS[1],
   subPt: null, subFollow: true, lookMode: 'off',
-  frame: { on: true, step: 0, fmt: 'num', theme: 'light', lines: true }
+  frame: { on: true, step: 0, fmt: 'num', theme: 'auto', lines: true }
 }
 // 存档版本：出厂值改过一次就 +1（同 viewPrefs 的 VIEW_PREFS_REV）。视图快照存 crs 时带上 rev；版本落后的存档里，
 // 改过出厂值的那几项不认（是旧出厂值顺手存下来的，不是用户挑的），按新出厂值入场；存过一次之后版本齐平，照旧跟着存档走。
 //   1：经纬图框出厂改开（frame.on）
-export const MAP_CRS_REV = 1
+//   2：图框底色出厂改「跟随外观」（frame.theme）—— 专业深色下整块白纸是全屏最亮的东西
+export const MAP_CRS_REV = 2
 export const LOOK_MODES = [
   { k: 'off', zh: '关', en: 'Off' },
   { k: 'azel', zh: 'az/el', en: 'az/el' },
@@ -84,14 +85,18 @@ export function setMapCrs(patch) {
 // 读回视图快照里的 crs：版本落后的先剔掉改过出厂值的项（见 MAP_CRS_REV），其余照 setMapCrs 逐项收
 export function restoreMapCrs(saved) {
   if (!saved || typeof saved !== 'object') return
-  if (!(saved.rev >= 1) && saved.frame && typeof saved.frame === 'object') {
+  if (!(saved.rev >= 2) && saved.frame && typeof saved.frame === 'object') {
     const frame = { ...saved.frame }
-    delete frame.on
+    if (!(saved.rev >= 1)) delete frame.on
+    delete frame.theme
     setMapCrs({ ...saved, frame })
     return
   }
   setMapCrs(saved)
 }
+const FRAME_THEMES = ['auto', 'light', 'dark']
+// 'auto' 按当前外观解析成 light / dark（geoFrame.js 只认这两档）
+export const frameThemeOf = (t, resolved) => (t === 'light' || t === 'dark' ? t : resolved === 'dark' ? 'dark' : 'light')
 function normFrame(v, cur) {
   const c = cur || {}
   const step = Number(v.step)
@@ -99,7 +104,7 @@ function normFrame(v, cur) {
     on: typeof v.on === 'boolean' ? v.on : !!c.on,
     step: Number.isFinite(step) && step >= 0 && step <= 90 ? step : (Number(c.step) || 0),
     fmt: v.fmt === 'num' || v.fmt === 'hemi' ? v.fmt : (c.fmt === 'hemi' ? 'hemi' : 'num'),
-    theme: v.theme === 'light' || v.theme === 'dark' ? v.theme : (c.theme === 'dark' ? 'dark' : 'light'),
+    theme: FRAME_THEMES.includes(v.theme) ? v.theme : (FRAME_THEMES.includes(c.theme) ? c.theme : 'auto'),
     lines: typeof v.lines === 'boolean' ? v.lines : c.lines !== false
   }
 }

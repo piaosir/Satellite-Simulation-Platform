@@ -190,7 +190,7 @@ function tokenize(src) {
       const j = s.indexOf(']', i + 1)
       if (j < 0) throw new Error('缺少配对的 ]')
       const name = s.slice(i + 1, j).trim()
-      if (!name) throw new Error('[] 里没有字段名')
+      if (!name) throw new Error('[] 中缺少字段名')
       ts.push({ t: 'ref', v: name }); i = j + 1; continue
     }
     let m = /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(s.slice(i))
@@ -328,7 +328,7 @@ function evalQty(node, getQ, srcUnits) {
   const ev = (n) => evalQty(n, getQ, srcUnits)
   const fin = (v, u) => (Number.isFinite(v) ? { v, u } : null)
   const needDimless = (q, what) => {
-    if (q.u.log || !isDimless(q.u)) throw UnitError(what + ' 只吃无量纲量（现为 ' + uLabel(q.u) + '）')
+    if (q.u.log || !isDimless(q.u)) throw UnitError(what + ' 仅接受无量纲量（现为 ' + uLabel(q.u) + '）')
     return q.v * q.u.k
   }
   switch (node.t) {
@@ -355,7 +355,7 @@ function evalQty(node, getQ, srcUnits) {
             // 对数量只许乘/除无量纲标量（XPD/2 这类），dB×dB 无定义
             const logQ = a.u.log ? a : b
             const linQ = a.u.log ? b : a
-            if (linQ.u.log || !isDimless(linQ.u)) throw UnitError('对数量只能与无量纲标量相乘除')
+            if (linQ.u.log || !isDimless(linQ.u)) throw UnitError('对数量仅能与无量纲标量相乘除')
             const s = linQ.v * linQ.u.k
             const v = node.op === '*' ? logQ.v * s : (a.u.log ? a.v / s : (() => { throw UnitError('标量除以对数量无定义') })())
             return fin(v, logQ.u)
@@ -414,7 +414,7 @@ function evalQty(node, getQ, srcUnits) {
         }
         case 'db': {
           const q = qs[0]
-          if (q.u.log) throw UnitError('db() 只吃线性量')
+          if (q.u.log) throw UnitError('db() 仅接受线性量')
           return fin(10 * Math.log10(q.v), { log: true, k: q.u.k, d: q.u.d, f: fOf(q.u) })
         }
         case 'lin': {
@@ -424,20 +424,20 @@ function evalQty(node, getQ, srcUnits) {
         }
         case 'par': {
           const u0 = qs[0].u.log ? qs[0].u : (isDimless(qs[0].u) ? { log: true, k: 1, d: {} } : null)
-          if (!u0) throw UnitError('par 只吃 dB 量')
+          if (!u0) throw UnitError('par 仅接受 dB 量')
           const vs = []
           for (const q of qs) {
             if (q.u.log) {
               if (!dimsEq(q.u.d, u0.d)) throw UnitError('par 各支必须同一 dB 单位')
               vs.push(convTo(q.v, q.u, u0))
             } else if (isDimless(q.u)) vs.push(q.v * q.u.k)
-            else throw UnitError('par 只吃 dB 量')
+            else throw UnitError('par 仅接受 dB 量')
           }
           return fin(-10 * Math.log10(vs.reduce((s, x) => s + Math.pow(10, -x / 10), 0)), u0)
         }
         case 'sin': case 'cos': case 'tan': {
           const q = qs[0]
-          if (q.u.log || (!isDimless(q.u) && !dimsEq(q.u.d, { deg: 1 }))) throw UnitError('三角函数只吃角度（°）或无量纲量')
+          if (q.u.log || (!isDimless(q.u) && !dimsEq(q.u.d, { deg: 1 }))) throw UnitError('三角函数仅接受角度（°）或无量纲量')
           const deg = isDimless(q.u) ? q.v * q.u.k : q.v * q.u.k   // 角度基元即度
           return fin(Math[name](deg * Math.PI / 180), DIMLESS)
         }
@@ -505,7 +505,7 @@ export function makeResolver(pool) {
     const list = cands.get(name)
     if (list && list.length > 1) {
       const forms = list.map((c) => (c.unit ? `[${name}(${c.unit})]` : `${c.key}`)).join(' 或 ')
-      return `字段名有歧义：${name} 有 ${list.length} 个同名量，请写 ${forms}`
+      return `字段名有歧义：${name} 有 ${list.length} 个同名量，可写作 ${forms}`
     }
     return `未知字段：${name}`
   }

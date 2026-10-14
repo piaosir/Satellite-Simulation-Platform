@@ -115,7 +115,7 @@ const grid = (stGrid, polys = [POLY], theta3 = TH) => shapedStations({ ...SAT, p
   try {
     buildShapedGrd({ ...SAT, polysPts: [POLY], mode: 'physical', effPct: 55, theta3: TH, apDm: 1.5, fSimGHz: 12, stGrid: { dens: 4000 } })
   } catch (e) { threw = e }
-  ok('超兜底当场抛错（生成路）', !!threw && /超出可算范围/.test(threw.message), threw ? threw.message.slice(0, 44) : '未抛')
+  ok('超兜底当场抛错（生成路）', !!threw && /超出可计算范围/.test(threw.message), threw ? threw.message.slice(0, 44) : '未抛')
   ok('抛错带出实际数目 err.stCount', !!threw && threw.stCount > 500000, threw ? `stCount=${threw.stCount}` : '—')
   // 预览路不许因此炸帧：吞掉抛错、把数目回给面板读数（黄方块清空、角标显示「约 N 站·超上限」）
   const pv = grid({ dens: 4000 })

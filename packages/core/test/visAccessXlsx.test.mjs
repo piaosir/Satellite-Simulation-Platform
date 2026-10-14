@@ -130,5 +130,24 @@ ok('工作表：摘要/过境明细/逐星汇总', wb.worksheets.map((w) => w.na
   ok('peakMs/startMs 与相对分钟同轴且 AOS≤峰值≤LOS', coherent)
 }
 
+// ---- 英文档（payload.lang='en'，跟界面语言）：表名 / 表题 / 表头 / 表注英文，用户数据原样 ----
+{
+  const bufEn = await buildVisAccessExcel({ ...payload, lang: 'en' })
+  const wbEn = new ExcelJS.Workbook()
+  await wbEn.xlsx.load(bufEn)
+  ok('英文档表名', wbEn.worksheets.map((w) => w.name).join('|') === 'Summary|Pass Details|Per-satellite Summary', wbEn.worksheets.map((w) => w.name).join('|'))
+  const han = /[一-龥]/
+  const names = new Set([payload.target.name, payload.satSet])   // 渲染端带来的名字是数据，不归这里翻
+  let leak = ''
+  wbEn.eachSheet((ws) => ws.eachRow((row) => row.eachCell((c) => {
+    if (c.value instanceof Date) return
+    let v = rt(c.value)
+    for (const n of names) v = v.split(n).join('')
+    if (han.test(v) && !leak) leak = ws.name + '!' + c.address + ' ' + v
+  })))
+  ok('英文档无中文字面量（目标名 / 卫星集名除外）', !leak, leak)
+  ok('英文档表题用 Table N', /^Table 2  /.test(rt(wbEn.getWorksheet('Pass Details').getCell(1, 1).value)))
+}
+
 console.log(`\n${pass} 通过，${fail} 失败`)
 if (fail) process.exit(1)

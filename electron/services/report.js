@@ -1852,10 +1852,17 @@ const SO_F107_SRC = {
   daily: '观测', forecast45: '45 天预报', monthly: '观测月均',
   predicted: '预测', 'predicted-tail': '预测末值', default: '缺省'
 }
-function soSunTempText(st, f) {
+const SO_F107_SRC_EN = {
+  daily: 'observed', forecast45: '45-day forecast', monthly: 'observed monthly mean',
+  predicted: 'predicted', 'predicted-tail': 'last predicted value', default: 'default'
+}
+// 日凌三件导出（Word / Excel / ICS）的语言：payload.lang（渲染端 curLang()，主进程兜底读发起窗口）
+const soEn = (p) => !!(p && p.lang === 'en')
+function soSunTempText(st, f, en) {
   const t = f(st.solarTemp, 0, 'K')
   if (!(st.f107 > 0)) return t
-  const src = SO_F107_SRC[st.f107Source] || ''
+  const src = (en ? SO_F107_SRC_EN : SO_F107_SRC)[st.f107Source] || ''
+  if (en) return `${t} (F10.7 ${Number(st.f107).toFixed(1)}${src ? ' · ' + src : ''}${st.f107At ? ' ' + st.f107At : ''})`
   return `${t}（F10.7 ${Number(st.f107).toFixed(1)}${src ? ' · ' + src : ''}${st.f107At ? ' ' + st.f107At : ''}）`
 }
 function soTd(text, opts) {
@@ -1877,47 +1884,52 @@ async function buildSunOutageWord(payload) {
   const stations = Array.isArray(p.stations) ? p.stations : []
   const tzLabel = p.tzLabel || 'UTC'
   const crit = p.criterion || {}
+  const en = soEn(p)
+  const L = (zh, e) => (en ? e : zh)
   const critTxt = crit.mode === 'geometric'
-    ? '纯几何：门限角 θ_th ≡ θ_3dB = 70λ/D'
-    : `C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
+    ? L('纯几何：门限角 θ_th ≡ θ_3dB = 70λ/D', 'Geometric only: threshold angle θ_th ≡ θ_3dB = 70λ/D')
+    : `${L('C/N 恶化', 'C/N degradation')} ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
   const f = (v, d, u) => (v == null || !Number.isFinite(+v)) ? '—' : ((+v).toFixed(d) + (u ? ' ' + u : ''))
   const fmtLL = (lat, lon) => `${Math.abs(Number(lat) || 0).toFixed(4)}°${(Number(lat) || 0) >= 0 ? 'N' : 'S'}, ${Math.abs(Number(lon) || 0).toFixed(4)}°${(Number(lon) || 0) >= 0 ? 'E' : 'W'}`
+  const par = (s) => (en ? ` (${s})` : `（${s}）`)
   // 取星来源三档（第三档留给将来的外部星历文件，见 src/suntool/sunParams.js SAT_SOURCE_LABEL）
   const srcTxt = (() => {
-    if (sat.source !== 'ephemeris') return `定轨 · 轨位 ${sat.slotText || '—'}`
-    if (sat.spanText) return `星历文件 · 覆盖 ${sat.spanText}`
-    return `星历 · 历元 ${sat.epoch ? String(sat.epoch).replace('T', ' ').slice(0, 16) : '—'}` +
+    if (sat.source !== 'ephemeris') return `${L('定轨 · 轨位', 'Orbital slot ·')} ${sat.slotText || '—'}`
+    if (sat.spanText) return `${L('星历文件 · 覆盖', 'Ephemeris file · span')} ${sat.spanText}`
+    return `${L('星历 · 历元', 'Ephemeris · epoch')} ${sat.epoch ? String(sat.epoch).replace('T', ' ').slice(0, 16) : '—'}` +
       (sat.noradId ? ` · NORAD ${sat.noradId}` : '') +
-      (sat.inclDeg != null ? ` · 倾角 ${Number(sat.inclDeg).toFixed(2)}°` : '')
+      (sat.inclDeg != null ? ` · ${L('倾角', 'inclination')} ${Number(sat.inclDeg).toFixed(2)}°` : '')
   })()
 
   const header = new TableRow({ children: [
-    soTd('序号', { bold: true, align: 'center' }), soTd('日期', { bold: true }),
-    soTd('开始', { bold: true, align: 'right' }), soTd('峰值', { bold: true, align: 'right' }),
-    soTd('结束', { bold: true, align: 'right' }), soTd('时长', { bold: true, align: 'right' }),
-    soTd('峰值恶化 (dB)', { bold: true, align: 'right' })
+    soTd(L('序号', 'No.'), { bold: true, align: 'center' }), soTd(L('日期', 'Date'), { bold: true }),
+    soTd(L('开始', 'Start'), { bold: true, align: 'right' }), soTd(L('峰值', 'Peak'), { bold: true, align: 'right' }),
+    soTd(L('结束', 'End'), { bold: true, align: 'right' }), soTd(L('时长', 'Duration'), { bold: true, align: 'right' }),
+    soTd(L('峰值恶化 (dB)', 'Peak degradation (dB)'), { bold: true, align: 'right' })
   ] })
 
   const kids = [
-    new Paragraph({ text: '日凌预报报告', heading: HeadingLevel.HEADING_1 }),
+    new Paragraph({ text: L('日凌预报报告', 'Sun Outage Forecast Report'), heading: HeadingLevel.HEADING_1 }),
     new Paragraph({ children: [new TextRun({
-      text: `${sat.name || '—'}（${sat.slotText || '—'}）· ${p.year != null ? p.year : ''}`,
+      text: en
+        ? `${sat.name || '—'} (${sat.slotText || '—'}) · ${p.year != null ? p.year : ''}`
+        : `${sat.name || '—'}（${sat.slotText || '—'}）· ${p.year != null ? p.year : ''}`,
       size: 20, color: '444444'
     })] }),
     new Paragraph({ text: '' })
   ]
 
   for (const st of stations) {
-    kids.push(new Paragraph({ text: st.name || '地球站', heading: HeadingLevel.HEADING_2 }))
+    kids.push(new Paragraph({ text: st.name || L('地球站', 'Earth station'), heading: HeadingLevel.HEADING_2 }))
     kids.push(new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [
-      soKV('地球站', `${st.name || '—'}（${fmtLL(st.lat, st.lon)}）`),
-      soKV('卫星', `${sat.name || '—'} · ${srcTxt}`),
-      soKV('指向', `方位 ${f(st.satAz, 2, '°')} · 仰角 ${f(st.satEl, 2, '°')}`),
-      soKV('频率 / 口径', `${st.band || '—'} ${f(st.freq, 2, 'GHz')} · ${f(st.diameter, 2, 'm')}（3dB 波束宽 ${f(st.beamWidth, 3, '°')}）`),
-      soKV('判据', `${critTxt}（门限角 ${f(st.thresholdAngle, 3, '°')}）`),
-      soKV('接收系统噪声温度', f(st.sysTemp, 0, 'K')),
-      soKV('太阳亮温', soSunTempText(st, f)),
-      soKV('时标', tzLabel)
+      soKV(L('地球站', 'Earth station'), `${st.name || '—'}${par(fmtLL(st.lat, st.lon))}`),
+      soKV(L('卫星', 'Satellite'), `${sat.name || '—'} · ${srcTxt}`),
+      soKV(L('指向', 'Pointing'), `${L('方位', 'Azimuth')} ${f(st.satAz, 2, '°')} · ${L('仰角', 'Elevation')} ${f(st.satEl, 2, '°')}`),
+      soKV(L('频率 / 口径', 'Frequency / diameter'), `${st.band || '—'} ${f(st.freq, 2, 'GHz')} · ${f(st.diameter, 2, 'm')}${par(`${L('3dB 波束宽', '3 dB beamwidth')} ${f(st.beamWidth, 3, '°')}`)}`),
+      soKV(L('判据', 'Criterion'), `${critTxt}${par(`${L('门限角', 'threshold angle')} ${f(st.thresholdAngle, 3, '°')}`)}`),
+      soKV(L('接收系统噪声温度', 'Receive system noise temperature'), f(st.sysTemp, 0, 'K')),
+      soKV(L('太阳亮温', 'Solar brightness temperature'), soSunTempText(st, f, en)),
+      soKV(L('时标', 'Time scale'), tzLabel)
     ] }))
     if (st.error) {
       kids.push(new Paragraph({ children: [new TextRun({ text: String(st.error), size: 18, color: '9c5751' })] }))
@@ -1927,9 +1939,11 @@ async function buildSunOutageWord(payload) {
     for (const sn of seasons) {
       const sea = st[sn]
       if (!sea) continue
-      const cn = sn === 'vernal' ? '春分' : '秋分'
+      const cn = sn === 'vernal' ? L('春分', 'Vernal equinox') : L('秋分', 'Autumnal equinox')
       kids.push(new Paragraph({ children: [new TextRun({
-        text: `${cn} ${sea.equinoxDate || ''} · ${sea.days} 天` + (sea.days ? ` · 单日最长 ${f(sea.maxMin, 1, 'min')}` : ''),
+        text: en
+          ? `${cn} ${sea.equinoxDate || ''} · ${sea.days} days` + (sea.days ? ` · longest daily ${f(sea.maxMin, 1, 'min')}` : '')
+          : `${cn} ${sea.equinoxDate || ''} · ${sea.days} 天` + (sea.days ? ` · 单日最长 ${f(sea.maxMin, 1, 'min')}` : ''),
         bold: true, size: 20
       })] }))
       const rows = Array.isArray(sea.rows) ? sea.rows : []
@@ -1948,7 +1962,7 @@ async function buildSunOutageWord(payload) {
   }
 
   kids.push(new Paragraph({ children: [new TextRun({
-    text: `方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口（纯几何档改以 θ_th ≡ θ_3dB 定窗，峰值恶化 dB 仍按同一物理模型算出）。太阳亮温：野边山射电偏振计 1–17 GHz 逐日总流量对 DRAO F10.7 的线性回归谱（2004–2026），锚点间按对数插值，17 GHz 以上按 NoRP 35 / 80 GHz 标定值锚定；F10.7 取 NOAA SWPC 目标日期的观测值 / 45 天预报 / 观测月均 / 太阳周预测${soF107Note(stations)}。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±0.2dB；起止时刻对噪温仅对数敏感（±数十秒）。星历档按该星 GP 根数逐时刻 SGP4/SDP4 推算，含倾角、偏心率与漂移，不含轨道保持机动 —— 历元离分点越远越偏。`,
+    text: en ? `Method: apparent solar position from VSOP87 + IAU 1980 nutation (ecliptic longitude accuracy ≈1″). The window criterion is the C/N degradation threshold: the uniform solar disc (apparent diameter of the day) is convolved exactly with the antenna's Gaussian main lobe (3 dB beamwidth 70λ/D) to give ΔT(θ), and a time enters the window when D(θ) = 10lg(1 + ΔT/T_sys) ≥ threshold (the geometric-only option uses θ_th ≡ θ_3dB instead; the peak degradation in dB is still computed with the same physical model). Solar brightness temperature: linear regression spectrum of Nobeyama Radio Polarimeters 1–17 GHz daily total flux against DRAO F10.7 (2004–2026), interpolated logarithmically between anchors and anchored above 17 GHz to the NoRP 35 / 80 GHz calibrated values; F10.7 is the NOAA SWPC observed value / 45-day forecast / observed monthly mean / solar-cycle prediction for the target date${soF107Note(stations, true)}. With the measured F10.7 of the day and the measured station T_sys the peak degradation uncertainty is about ±0.2 dB; start and end times depend only logarithmically on the noise temperature (±tens of seconds). The ephemeris option propagates the satellite's GP elements with SGP4/SDP4 at every instant, including inclination, eccentricity and drift but not station-keeping manoeuvres — the farther the epoch is from the equinox, the larger the error.` : `方法：太阳视位置 VSOP87+IAU1980 章动（黄经精度 ≈1″）；窗口判据为 C/N 恶化门限——太阳均匀盘（当日视直径）与天线高斯主瓣（3dB 波束宽 70λ/D）作精确卷积得 ΔT(θ)，D(θ)=10lg(1+ΔT/T_sys)≥门限即计入窗口（纯几何档改以 θ_th ≡ θ_3dB 定窗，峰值恶化 dB 仍按同一物理模型算出）。太阳亮温：野边山射电偏振计 1–17 GHz 逐日总流量对 DRAO F10.7 的线性回归谱（2004–2026），锚点间按对数插值，17 GHz 以上按 NoRP 35 / 80 GHz 标定值锚定；F10.7 取 NOAA SWPC 目标日期的观测值 / 45 天预报 / 观测月均 / 太阳周预测${soF107Note(stations)}。采用当日实测 F10.7 与本站实测 T_sys 时峰值恶化不确定度约 ±0.2dB；起止时刻对噪温仅对数敏感（±数十秒）。星历档按该星 GP 根数逐时刻 SGP4/SDP4 推算，含倾角、偏心率与漂移，不含轨道保持机动 —— 历元离分点越远越偏。`,
     size: 16, color: '999999'
   })] }))
 
@@ -1957,11 +1971,12 @@ async function buildSunOutageWord(payload) {
 }
 
 // 方法段里「本报告采用 …」那一句：多站同一份 F10.7 时写一次，不同就不写（各站参数表里已逐站写明）
-function soF107Note(stations) {
+function soF107Note(stations, en) {
   const set = new Set()
   for (const st of stations) if (st && st.f107 > 0) set.add(`${Number(st.f107).toFixed(1)}|${st.f107Source || ''}|${st.f107At || ''}`)
   if (set.size !== 1) return ''
   const [v, src, at] = [...set][0].split('|')
+  if (en) return ` (this report uses ${v}${src ? ', ' + (SO_F107_SRC_EN[src] || src) : ''}${at ? ' ' + at : ''})`
   return `（本报告采用 ${v}${src ? '，' + (SO_F107_SRC[src] || src) : ''}${at ? ' ' + at : ''}）`
 }
 
@@ -1969,63 +1984,68 @@ function soF107Note(stations) {
 // payload：{ direction:'down'|'up', rainModel:'auto'|'manual', rows:[算例输入行], results:[core 结果] }。
 // Sheet1「雨衰批量结果」= 每行一个算例（输入 + 计算结果就地并排）；每算例再出一张 SatMaster 版详情表。
 const POL_CN = { V: '垂直 (V)', H: '水平 (H)', C: '圆极化 (C)', RHCP: '右旋圆极化 (RHCP)', LHCP: '左旋圆极化 (LHCP)' }
-function rainDetailRows(r, row, down) {
+const POL_EN = { V: 'Vertical (V)', H: 'Horizontal (H)', C: 'Circular (C)', RHCP: 'Right-hand circular (RHCP)', LHCP: 'Left-hand circular (LHCP)' }
+function rainDetailRows(r, row, down, en) {
+  const L = (zh, e) => (en ? e : zh)
+  const POL = en ? POL_EN : POL_CN
   const f = (v, d = 2) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
   const s = r.s8 || null   // NGSO 统计口径（ITU-R P.618-14 §8）
   // 卫星视角段：NGSO 展开 §8 的分箱/加权诊断，GEO 保持原样
   const lookRows = s ? [
-    ['卫星视角（ITU-R P.618-14 §8）', null, null],
-    ['最低工作仰角', f(s.minElevDeg, 2), '°'],
-    ['可达最高仰角', f(s.maxElevDeg, 2), '°'],
-    ['卫星可见时间占比', f(s.visFrac * 100, 3), '%'],
-    ['仰角增量宽度', f(s.binDeg, 1), '°'],
-    ['仰角增量个数', s.binCount, ''],
-    ['§8 等效仰角', f(r.elevation, 2), '°'],
-    ['雨衰 @ 最低仰角', f(s.attenAtMinElev, 2), 'dB'],
-    ['§8 加权后修正', s.degenerate ? '—' : ('−' + f(s.overestimateAtMinElev, 2)), s.degenerate ? '' : 'dB'],
-    ['降雨高度 hR', f(r.rainHeight, 3), 'km']
+    [L('卫星视角（ITU-R P.618-14 §8）', 'Satellite view (ITU-R P.618-14 §8)'), null, null],
+    [L('最低工作仰角', 'Minimum operating elevation'), f(s.minElevDeg, 2), '°'],
+    [L('可达最高仰角', 'Maximum reachable elevation'), f(s.maxElevDeg, 2), '°'],
+    [L('卫星可见时间占比', 'Satellite visible time fraction'), f(s.visFrac * 100, 3), '%'],
+    [L('仰角增量宽度', 'Elevation increment width'), f(s.binDeg, 1), '°'],
+    [L('仰角增量个数', 'Number of elevation increments'), s.binCount, ''],
+    [L('§8 等效仰角', '§8 equivalent elevation'), f(r.elevation, 2), '°'],
+    [L('雨衰 @ 最低仰角', 'Rain attenuation @ minimum elevation'), f(s.attenAtMinElev, 2), 'dB'],
+    [L('§8 加权后修正', '§8 weighting correction'), s.degenerate ? '—' : ('−' + f(s.overestimateAtMinElev, 2)), s.degenerate ? '' : 'dB'],
+    [L('降雨高度 hR', 'Rain height hR'), f(r.rainHeight, 3), 'km']
   ] : [
-    ['卫星视角', null, null],
-    ['仰角', f(r.elevation, 2), '°'],
-    ['方位角', r.azimuth != null ? f(r.azimuth, 2) : '—', r.azimuth != null ? '°' : ''],
-    ['星地斜距', r.slantRange != null ? f(r.slantRange, 2) : '—', r.slantRange != null ? 'km' : ''],
-    ['降雨高度 hR', f(r.rainHeight, 3), 'km']
+    [L('卫星视角', 'Satellite view'), null, null],
+    [L('仰角', 'Elevation'), f(r.elevation, 2), '°'],
+    [L('方位角', 'Azimuth'), r.azimuth != null ? f(r.azimuth, 2) : '—', r.azimuth != null ? '°' : ''],
+    [L('星地斜距', 'Slant range'), r.slantRange != null ? f(r.slantRange, 2) : '—', r.slantRange != null ? 'km' : ''],
+    [L('降雨高度 hR', 'Rain height hR'), f(r.rainHeight, 3), 'km']
   ]
   return [
-    ['输入参数', null, null],
-    ['地球站', row.stationName || '—', ''],
-    ['纬度', f(r.lat, 4), '°'],
-    ['经度', f(r.lon, 4), '°'],
-    ['海拔', (row.altitude === '' || row.altitude == null) ? 0 : row.altitude, 'm'],
+    [L('输入参数', 'Inputs'), null, null],
+    [L('地球站', 'Earth station'), row.stationName || '—', ''],
+    [L('纬度', 'Latitude'), f(r.lat, 4), '°'],
+    [L('经度', 'Longitude'), f(r.lon, 4), '°'],
+    [L('海拔', 'Altitude'), (row.altitude === '' || row.altitude == null) ? 0 : row.altitude, 'm'],
     ...(s
-      ? [['轨道高度（近圆）', f(s.orbitAltKm, 0), 'km'], ['轨道倾角', f(s.inclDeg, 2), '°']]
-      : [['GEO 轨位', r.satLon != null ? f(r.satLon, 2) : '—', r.satLon != null ? '°E' : '']]),
-    ['频率', f(r.freq, 3), 'GHz'],
-    ['极化', POL_CN[r.polDisplay] || POL_CN[r.pol] || r.polDisplay || r.pol || '—', ''],
-    ['R0.01% 降雨率', f(r.rainRate, 3), 'mm/h'],
-    ['年可用度', f(r.availability, 3), '%'],
-    ['系统噪温（晴空）', down ? f(r.systemNoiseTemp, 0) : '—', down ? 'K' : ''],
-    ['馈线损耗', down ? f(r.feederLoss, 2) : '—', down ? 'dB' : ''],
-    ['链路方向', down ? '下行' : '上行', ''],
+      ? [[L('轨道高度（近圆）', 'Orbit altitude (near-circular)'), f(s.orbitAltKm, 0), 'km'], [L('轨道倾角', 'Orbit inclination'), f(s.inclDeg, 2), '°']]
+      : [[L('GEO 轨位', 'GEO orbital slot'), r.satLon != null ? f(r.satLon, 2) : '—', r.satLon != null ? '°E' : '']]),
+    [L('频率', 'Frequency'), f(r.freq, 3), 'GHz'],
+    [L('极化', 'Polarization'), POL[r.polDisplay] || POL[r.pol] || r.polDisplay || r.pol || '—', ''],
+    [L('R0.01% 降雨率', 'R0.01% rain rate'), f(r.rainRate, 3), 'mm/h'],
+    [L('年可用度', 'Annual availability'), f(r.availability, 3), '%'],
+    [L('系统噪温（晴空）', 'System noise temperature (clear sky)'), down ? f(r.systemNoiseTemp, 0) : '—', down ? 'K' : ''],
+    [L('馈线损耗', 'Feeder loss'), down ? f(r.feederLoss, 2) : '—', down ? 'dB' : ''],
+    [L('链路方向', 'Link direction'), down ? L('下行', 'Downlink') : L('上行', 'Uplink'), ''],
     ...lookRows,
-    ['传播结果', null, null],
-    ['气体吸收 (P.676)', f(r.gasAtten, 2), 'dB'],
-    ['对流层闪烁', f(r.scintillation, 2), 'dB'],
-    ['云衰减 (P.840-9)', f(r.cloudAtten, 2), 'dB'],
-    ['雨衰 (P.618-14)', f(r.rainAtten, 2), 'dB'],
-    ['合计衰减（气体+云+雨）', f(r.totalAtten, 2), 'dB'],
-    ['降雨噪声致 G/T 衰减', down ? f(r.gtDegradation, 2) : '—', down ? 'dB' : ''],
-    ['下行链路劣化 DND', down ? f(r.dnd, 2) : '—', down ? 'dB' : ''],
-    ['雨致去极化 XPD', f(r.rainXPD, 2), 'dB'],
-    ['年不可用时长', f(r.downtimeYear, 2), 'h'],
-    ['最坏月可用度', f(r.worstMonthAvail, 3), '%'],
-    ['最坏月不可用时长', f(r.downtimeWorstMonth, 2), 'h']
+    [L('传播结果', 'Propagation results'), null, null],
+    [L('气体吸收 (P.676)', 'Gaseous absorption (P.676)'), f(r.gasAtten, 2), 'dB'],
+    [L('对流层闪烁', 'Tropospheric scintillation'), f(r.scintillation, 2), 'dB'],
+    [L('云衰减 (P.840-9)', 'Cloud attenuation (P.840-9)'), f(r.cloudAtten, 2), 'dB'],
+    [L('雨衰 (P.618-14)', 'Rain attenuation (P.618-14)'), f(r.rainAtten, 2), 'dB'],
+    [L('合计衰减（气体+云+雨）', 'Total attenuation (gas + cloud + rain)'), f(r.totalAtten, 2), 'dB'],
+    [L('降雨噪声致 G/T 衰减', 'G/T degradation from rain noise'), down ? f(r.gtDegradation, 2) : '—', down ? 'dB' : ''],
+    [L('下行链路劣化 DND', 'Downlink degradation DND'), down ? f(r.dnd, 2) : '—', down ? 'dB' : ''],
+    [L('雨致去极化 XPD', 'Rain-induced depolarization XPD'), f(r.rainXPD, 2), 'dB'],
+    [L('年不可用时长', 'Annual outage time'), f(r.downtimeYear, 2), 'h'],
+    [L('最坏月可用度', 'Worst-month availability'), f(r.worstMonthAvail, 3), '%'],
+    [L('最坏月不可用时长', 'Worst-month outage time'), f(r.downtimeWorstMonth, 2), 'h']
   ]
 }
 // 《三线表模板_TimesNewRoman_11pt.xlsx》（用户 Excel 文档模板）口径的表格工厂 —— 雨衰导出全簿统一用这一套：
 // 全表 11 磅；表题在表上方居中加粗（表 N  标题，表号逐 sheet 自增）；顶线/底线 medium、表头下栏目线 thin；
 // 无竖线、无表体内部横线、无底纹；表注在底线下方以「注：」起首；首列左对齐缩进 1，其余列居中；同列小数位一致。
-function tplSheet(ws, startNo) {
+// lang：'en' 时表题写「Table N」、表注以「Note: 」起首（雨衰 / 过境导出跟界面语言；缺省中文，版式不变）
+function tplSheet(ws, startNo, lang) {
+  const en = lang === 'en'
   let rn = 1
   let tableNo = startNo || 0   // 起始表号（跨 sheet 连号的调用方传上一张的号；缺省从表 1 起）
   return {
@@ -2040,7 +2060,7 @@ function tplSheet(ws, startNo) {
       ws.mergeCells(rn, 1, rn, span)
       tableNo++
       const c = ws.getCell(rn, 1)
-      c.value = `表 ${tableNo}  ${text}`
+      c.value = en ? `Table ${tableNo}  ${text}` : `表 ${tableNo}  ${text}`
       c.font = { name: CJK, size: 11, bold: true }
       c.alignment = { horizontal: 'center', vertical: 'middle' }
       ws.getRow(rn).height = 25.5
@@ -2078,12 +2098,12 @@ function tplSheet(ws, startNo) {
     note(text, span) {
       ws.mergeCells(rn, 1, rn, span)
       const c = ws.getCell(rn, 1)
-      c.value = '注：' + text
+      c.value = (en ? 'Note: ' : '注：') + text
       c.font = { name: CJK, size: 11 }
       c.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
       // 行高按折行数估：合并区可容纳字符数 ≈ 跨列宽度之和 ÷ 2（中文全角）
       const wSum = Array.from({ length: span }, (_, i) => ws.getColumn(i + 1).width || 10).reduce((a, b) => a + b, 0)
-      ws.getRow(rn).height = Math.max(19.5, Math.ceil((text.length + 2) / Math.max(10, wSum / 2.1)) * 16 + 4)
+      ws.getRow(rn).height = Math.max(19.5, Math.ceil((text.length + 2) / Math.max(10, wSum / (en ? 1.1 : 2.1))) * 16 + 4)
       rn++
     },
     skip(n) { rn += (n == null ? 1 : n) }
@@ -2095,45 +2115,48 @@ async function buildRainAttenuationExcel(payload) {
   const down = direction !== 'up'
   const dv = payload && payload.div
   const hasDiv = !!(dv && !dv.error && dv.activeCount && dv.system)
+  const lang = payload && payload.lang === 'en' ? 'en' : 'zh'
+  const en = lang === 'en'
+  const L = (zh, e) => (en ? e : zh)
   const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星仿真平台'; wb.created = new Date()
+  wb.creator = L('卫星仿真平台', 'Satellite Simulation Platform'); wb.created = new Date()
 
   // —— Sheet 1：批量结果（每行一个算例，三线表模板版式）。多站汇总打开时不出（其数据已被「多站汇总」页覆盖）——
   if (!hasDiv) {
     // 冻结线钉在表头行（页首标题 1 + 空行 2 + 表题 3 + 表头 4）
-    const ws = wb.addWorksheet('雨衰批量结果', { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
+    const ws = wb.addWorksheet(L('雨衰批量结果', 'Rain Batch Results'), { views: [{ showGridLines: false, state: 'frozen', ySplit: 4, xSplit: 1 }] })
     const round2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 100) / 100 : v
     const isNgso = orbitMode === 'ngso'
     // 几何输入已上提为全局（工具栏）→ 写进表注；表内只留每站的仰角结果列
-    const geomCols = [isNgso ? { k: '_elev', h: '§8等效仰角 (°)', w: 14, fmt: '0.00' } : { k: '_elev', h: '仰角 (°)', w: 10, fmt: '0.00' }]
+    const geomCols = [isNgso ? { k: '_elev', h: L('§8等效仰角 (°)', '§8 equiv. elevation (°)'), w: 14, fmt: '0.00' } : { k: '_elev', h: L('仰角 (°)', 'Elevation (°)'), w: 10, fmt: '0.00' }]
     const cols = [
-      { k: 'stationName', h: '地球站', w: 14, text: true },
-      { k: 'latitude', h: '纬度 (°)', w: 10 },
-      { k: 'longitude', h: '经度 (°)', w: 10 },
-      { k: 'altitude', h: '海拔 (m)', w: 10 },
+      { k: 'stationName', h: L('地球站', 'Earth station'), w: 14, text: true },
+      { k: 'latitude', h: L('纬度 (°)', 'Latitude (°)'), w: 10 },
+      { k: 'longitude', h: L('经度 (°)', 'Longitude (°)'), w: 10 },
+      { k: 'altitude', h: L('海拔 (m)', 'Altitude (m)'), w: 10 },
       ...geomCols,
-      { k: 'frequency', h: '频率 (GHz)', w: 10 },
-      { k: 'polarization', h: '极化', w: 8, text: true },
+      { k: 'frequency', h: L('频率 (GHz)', 'Frequency (GHz)'), w: 10 },
+      { k: 'polarization', h: L('极化', 'Polarization'), w: 8, text: true },
       { k: '_rain', h: 'R0.01 (mm/h)', w: 12, fmt: '0.000' },
-      { k: 'availability', h: '可用度 (%)', w: 10 },
-      { k: 'systemNoiseTemp', h: '系统噪温 (K)', w: 12 },
-      { k: 'gasAtten', h: '气体 (dB)', w: 10, res: true, fmt: '0.00' },
-      { k: 'cloudAtten', h: '云衰 (dB)', w: 10, res: true, fmt: '0.00' },
-      { k: 'rainAtten', h: '雨衰 (dB)', w: 10, res: true, fmt: '0.00' },
-      { k: 'totalAtten', h: '合计 (dB)', w: 10, res: true, fmt: '0.00' },
-      { k: 'gtDegradation', h: 'G/T衰减 (dB)', w: 12, res: true, dl: true, fmt: '0.00' },
-      { k: 'rainXPD', h: '雨致XPD (dB)', w: 12, res: true, fmt: '0.00' },
+      { k: 'availability', h: L('可用度 (%)', 'Availability (%)'), w: 10 },
+      { k: 'systemNoiseTemp', h: L('系统噪温 (K)', 'System noise temp. (K)'), w: 12 },
+      { k: 'gasAtten', h: L('气体 (dB)', 'Gas (dB)'), w: 10, res: true, fmt: '0.00' },
+      { k: 'cloudAtten', h: L('云衰 (dB)', 'Cloud (dB)'), w: 10, res: true, fmt: '0.00' },
+      { k: 'rainAtten', h: L('雨衰 (dB)', 'Rain (dB)'), w: 10, res: true, fmt: '0.00' },
+      { k: 'totalAtten', h: L('合计 (dB)', 'Total (dB)'), w: 10, res: true, fmt: '0.00' },
+      { k: 'gtDegradation', h: L('G/T衰减 (dB)', 'G/T degradation (dB)'), w: 12, res: true, dl: true, fmt: '0.00' },
+      { k: 'rainXPD', h: L('雨致XPD (dB)', 'Rain XPD (dB)'), w: 12, res: true, fmt: '0.00' },
       // 停时不进 round2、格式留尾随可选位：可用度上到 5 个 9 以后年停时是 0.0009 h 量级，
       // 「0.00」等于把这一列抹平（同列小数位一致的模板口径在这里让位于「别显示成 0」）
-      { k: 'downtimeYear', h: '年停时 (h)', w: 10, res: true, raw: true, fmt: '0.00####' },
-      { k: 'downtimeWorstMonth', h: '最坏月停时 (h)', w: 14, res: true, raw: true, fmt: '0.00####' }
+      { k: 'downtimeYear', h: L('年停时 (h)', 'Annual outage (h)'), w: 10, res: true, raw: true, fmt: '0.00####' },
+      { k: 'downtimeWorstMonth', h: L('最坏月停时 (h)', 'Worst-month outage (h)'), w: 14, res: true, raw: true, fmt: '0.00####' }
     ]
     const ncol = cols.length
     cols.forEach((c, i) => { ws.getColumn(i + 1).width = c.w })
     const fmts = cols.map((c) => c.fmt || '')
-    const T = tplSheet(ws)
-    T.heading('雨衰计算结果')
-    T.caption('雨衰批量计算结果', ncol)
+    const T = tplSheet(ws, 0, lang)
+    T.heading(L('雨衰计算结果', 'Rain Attenuation Results'))
+    T.caption(L('雨衰批量计算结果', 'Batch rain attenuation results'), ncol)
     T.headRow(cols.map((c) => c.h))
     rows.forEach((row, ri) => {
       const r = results[ri] || {}
@@ -2153,10 +2176,15 @@ async function buildRainAttenuationExcel(payload) {
     const firstOk = results.find((x) => x && !x.error) || {}
     const s8i = firstOk.s8 || {}
     const gv = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
-    const geomTxt = isNgso
+    const geomTxt = en
+      ? (isNgso
+        ? `NGSO near-circular ${gv(gm.orbitAltKm != null ? gm.orbitAltKm : s8i.orbitAltKm, 0)} km, inclination ${gv(gm.inclDeg != null ? gm.inclDeg : s8i.inclDeg, 1)}°, minimum elevation ${gv(gm.minElevDeg != null ? gm.minElevDeg : s8i.minElevDeg, 1)}° (ITU-R P.618-14 §8 elevation weighting → equivalent elevation)`
+        : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E (elevation from orbital slot)`)
+      : isNgso
       ? `NGSO 近圆 ${gv(gm.orbitAltKm != null ? gm.orbitAltKm : s8i.orbitAltKm, 0)} km、倾角 ${gv(gm.inclDeg != null ? gm.inclDeg : s8i.inclDeg, 1)}°、最低仰角 ${gv(gm.minElevDeg != null ? gm.minElevDeg : s8i.minElevDeg, 1)}°（ITU-R P.618-14 §8 仰角加权 → 等效仰角）`
-      : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E（轨位算仰角）`
-    T.note(`轨道：${geomTxt}；链路方向：${down ? '下行' : '上行'}；降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}；共 ${rows.length} 个算例。`, ncol)
+      : `GEO ${gv(gm.satLon != null ? gm.satLon : firstOk.satLon, 1)}°E（按轨位计算仰角）`
+    if (en) T.note(`Orbit: ${geomTxt}; link direction: ${down ? 'downlink' : 'uplink'}; rain model: ${rainModel === 'auto' ? 'ITU-R P.837 automatic' : 'manual'}; ${rows.length} cases.`, ncol)
+    else T.note(`轨道：${geomTxt}；链路方向：${down ? '下行' : '上行'}；降雨模型：${rainModel === 'auto' ? 'ITU-R P.837 自动' : '手动'}；共 ${rows.length} 个算例。`, ncol)
   }
 
   // —— 多站汇总 sheet（「多站汇总」打开并算出时才有 payload.div）——
@@ -2170,7 +2198,9 @@ async function buildRainAttenuationExcel(payload) {
     const sw = dv.switch || null
     const byAvail = dv.inputMode === 'avail'
     const dsites = Array.isArray(dv.sites) ? dv.sites : []
-    const TGT = { rainAtten: '单独雨衰', totalAtten: '气体吸收 + 云衰 + 雨衰', dnd: '雨衰 + 云衰 + 噪声抬升' }
+    const TGT = en
+      ? { rainAtten: 'rain attenuation only', totalAtten: 'gaseous absorption + cloud + rain', dnd: 'rain + cloud + noise rise' }
+      : { rainAtten: '单独雨衰', totalAtten: '气体吸收 + 云衰 + 雨衰', dnd: '雨衰 + 云衰 + 噪声抬升' }
     const HOURS = 8766
     const pctS = (v) => {
       if (v == null || !Number.isFinite(v)) return '—'
@@ -2181,9 +2211,10 @@ async function buildRainAttenuationExcel(payload) {
     const yearlyS = (v) => {
       if (v == null || !Number.isFinite(v) || v <= 0) return '0'
       const h = v * HOURS
-      if (h >= 1) return h.toFixed(2) + ' h/年'
+      const yr = L('/年', '/yr')
+      if (h >= 1) return h.toFixed(2) + ' h' + yr
       const m = h * 60
-      return m >= 1 ? m.toFixed(2) + ' min/年' : (m * 60).toFixed(2) + ' s/年'
+      return m >= 1 ? m.toFixed(2) + ' min' + yr : (m * 60).toFixed(2) + ' s' + yr
     }
     const pmfS = (v) => {
       if (v == null || !Number.isFinite(v) || v <= 0) return '0'
@@ -2196,18 +2227,18 @@ async function buildRainAttenuationExcel(payload) {
     const fx2 = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
     const nOrDash = (v) => (v == null || !Number.isFinite(+v)) ? '—' : +v
     const mcols = Math.max(byAvail ? 6 : 7, (Array.isArray(sys.pmf) ? sys.pmf.length : 0) + 1, 5)
-    const mws = wb.addWorksheet('多站汇总', { views: [{ showGridLines: false }] })
+    const mws = wb.addWorksheet(L('多站汇总', 'Multi-site Summary'), { views: [{ showGridLines: false }] })
     mws.getColumn(1).width = 18
     mws.getColumn(2).width = 24
     for (let ci = 3; ci <= mcols; ci++) mws.getColumn(ci).width = 14
-    const T = tplSheet(mws)
-    T.heading('多站总可用度')
+    const T = tplSheet(mws, 0, lang)
+    T.heading(L('多站总可用度', 'Multi-site total availability'))
 
     // —— 表 1  逐站可用度 ——
-    const siteHead = ['站']
-    if (!byAvail) siteHead.push('可承受 (dB)')
-    siteHead.push('可用度 (%)', '年停时 (h)', '雨衰 (dB)', '合计 (dB)', '下行总劣化 (dB)')
-    T.caption('逐站可用度', siteHead.length)
+    const siteHead = [L('站', 'Site')]
+    if (!byAvail) siteHead.push(L('可承受 (dB)', 'Margin (dB)'))
+    siteHead.push(L('可用度 (%)', 'Availability (%)'), L('年停时 (h)', 'Annual outage (h)'), L('雨衰 (dB)', 'Rain (dB)'), L('合计 (dB)', 'Total (dB)'), L('下行总劣化 (dB)', 'Downlink total degradation (dB)'))
+    T.caption(L('逐站可用度', 'Per-site availability'), siteHead.length)
     T.headRow(siteHead)
     // 小数位与结果页逐列同口径（可用度 5 位——2 位会把 99.99 与 99.999 显示成同一个数）
     const siteFmts = ['']
@@ -2227,12 +2258,12 @@ async function buildRainAttenuationExcel(payload) {
       T.dataRow(vals, siteFmts)
     })
     T.endTable(siteHead.length)
-    if (!byAvail) T.note(`可承受衰减对标 ${TGT[dv.target] || dv.target}，可用度由 ITU-R P.618-14 反解。`, siteHead.length)
+    if (!byAvail) T.note(en ? `Attenuation margin referred to ${TGT[dv.target] || dv.target}; availability solved inversely from ITU-R P.618-14.` : `可承受衰减对标 ${TGT[dv.target] || dv.target}，可用度由 ITU-R P.618-14 反解。`, siteHead.length)
     T.skip()
 
     // —— 表 2  系统可用度（级联：P(S≥L) 逐项 → Σ → 切换 → 合计；闭账规则与结果页一致）——
-    T.caption(`系统可用度（参与 ${sys.M} 站 · 最少可用 ${sys.nMin}）`, 5)
-    T.headRow(['项', '算式', '不可用度 (%)', '可用度 (%)', '年停时'])
+    T.caption(en ? `System availability (${sys.M} sites · at least ${sys.nMin} available)` : `系统可用度（参与 ${sys.M} 站 · 最少可用 ${sys.nMin}）`, 5)
+    T.headRow([L('项', 'Item'), L('算式', 'Formula'), L('不可用度 (%)', 'Unavailability (%)'), L('可用度 (%)', 'Availability (%)'), L('年停时', 'Annual outage')])
     const casRow = (label, formula, v) => {
       const num = v != null && Number.isFinite(v)
       // 不可用度：≥1e-4 % 定点 6 位（同 pctS），更小走 Excel 科学计数（页面 e 记法的等价形态）
@@ -2247,26 +2278,28 @@ async function buildRainAttenuationExcel(payload) {
       for (let j = Math.max(0, sys.L); j < sys.pmf.length; j++) {
         const v = sys.pmf[j]
         if (!(v >= sys.unavail * 1e-4) || nTail >= 6) break
-        casRow(`恰好中断 ${j} 站`, `P(S=${j})`, v)
+        casRow(en ? `Exactly ${j} sites out` : `恰好中断 ${j} 站`, `P(S=${j})`, v)
         shown += v; lastJ = j; nTail++
       }
       const rest = sys.unavail - shown
-      if (rest >= sys.unavail * 1e-4) casRow(`其余 j ≥ ${lastJ + 1}`, `ΣP(S≥${lastJ + 1})`, rest)
+      if (rest >= sys.unavail * 1e-4) casRow(en ? `Remaining j ≥ ${lastJ + 1}` : `其余 j ≥ ${lastJ + 1}`, `ΣP(S≥${lastJ + 1})`, rest)
     }
-    casRow('站点中断', `P(S≥${sys.L}) = Σ`, sys.unavail)
-    if (sw && sw.unavail != null) casRow('切换', `${fx2(sw.nSwPerYear, 0)} × ${fx2(sw.tSwMin, 0)} min ÷ 525960`, sw.unavail)
-    if (sw && sw.total != null) casRow('合计', '站点中断 + 切换', sw.total)
+    casRow(L('站点中断', 'Site outage'), `P(S≥${sys.L}) = Σ`, sys.unavail)
+    if (sw && sw.unavail != null) casRow(L('切换', 'Switchover'), `${fx2(sw.nSwPerYear, 0)} × ${fx2(sw.tSwMin, 0)} min ÷ 525960`, sw.unavail)
+    if (sw && sw.total != null) casRow(L('合计', 'Total'), L('站点中断 + 切换', 'site outage + switchover'), sw.total)
     T.endTable(5)
-    T.note('系统不可用度 = P(同时中断的站数 ≥ L)，L = 参与站数 − 最少可用站数 + 1，各站中断按相互独立计（Poisson–binomial 尾概率）。'
+    if (en) T.note('System unavailability = P(number of simultaneously failed sites ≥ L), L = participating sites − minimum available sites + 1; site outages are treated as independent (Poisson–binomial tail probability).'
+      + (sw ? ' Switchover U_sw = count × duration per switchover ÷ 525960 min, added to site outage as an independent term to give the total.' : ''), 5)
+    else T.note('系统不可用度 = P(同时中断的站数 ≥ L)，L = 参与站数 − 最少可用站数 + 1，各站中断按相互独立计（Poisson–binomial 尾概率）。'
       + (sw ? '切换 U_sw = 次数 × 单次时长 ÷ 525960 min，作独立可加项与站点中断相加为合计。' : ''), 5)
     T.skip()
 
     // —— 表 3  中断站数分布 ——
     if (Array.isArray(sys.pmf)) {
-      T.caption('中断站数分布', sys.pmf.length + 1)
-      T.headRow(['同时中断站数 j'].concat(sys.pmf.map((_, j) => j)))
+      T.caption(L('中断站数分布', 'Distribution of failed sites'), sys.pmf.length + 1)
+      T.headRow([L('同时中断站数 j', 'Simultaneously failed sites j')].concat(sys.pmf.map((_, j) => j)))
       const distFmts = ['']
-      const distVals = ['占比 (%)']
+      const distVals = [L('占比 (%)', 'Share (%)')]
       sys.pmf.forEach((v) => {
         // 值存真数、显示按 pmfS 的定点位数（禁科学计数，与结果页一致）
         const s = pmfS(v)
@@ -2276,18 +2309,18 @@ async function buildRainAttenuationExcel(payload) {
       })
       T.dataRow(distVals, distFmts)
       T.endTable(sys.pmf.length + 1)
-      T.note(`j ≥ ${sys.L} 各列之和 = 站点中断。`, sys.pmf.length + 1)
+      T.note(en ? `Sum of columns j ≥ ${sys.L} = site outage.` : `j ≥ ${sys.L} 各列之和 = 站点中断。`, sys.pmf.length + 1)
       T.skip()
     }
 
     // —— 表 4  切换预算 ——
     if (sw) {
-      T.caption('切换预算', 3)
-      T.headRow(['项', '数值', '单位'])
-      T.dataRow(['切换时间', nOrDash(sw.tSwMin), 'min'], ['', '0.00', ''])
-      T.dataRow(['切换次数', nOrDash(sw.nSwPerYear), '次/年'], ['', '0', ''])
-      T.dataRow(['切换不可用度', sw.unavail == null ? '—' : pctS(sw.unavail), '%'])
-      T.dataRow(['切换年停时', sw.unavail == null ? '—' : yearlyS(sw.unavail), ''])
+      T.caption(L('切换预算', 'Switchover budget'), 3)
+      T.headRow([L('项', 'Item'), L('数值', 'Value'), L('单位', 'Unit')])
+      T.dataRow([L('切换时间', 'Switchover time'), nOrDash(sw.tSwMin), 'min'], ['', '0.00', ''])
+      T.dataRow([L('切换次数', 'Switchovers'), nOrDash(sw.nSwPerYear), L('次/年', '/yr')], ['', '0', ''])
+      T.dataRow([L('切换不可用度', 'Switchover unavailability'), sw.unavail == null ? '—' : pctS(sw.unavail), '%'])
+      T.dataRow([L('切换年停时', 'Switchover annual outage'), sw.unavail == null ? '—' : yearlyS(sw.unavail), ''])
       T.endTable(3)
     }
   }
@@ -2296,20 +2329,20 @@ async function buildRainAttenuationExcel(payload) {
   const used = {}
   rows.forEach((row, ri) => {
     const r = results[ri]; if (!r || r.error) return
-    const base = String(row.stationName || ('算例' + (ri + 1))).replace(/[\\/?*[\]:]/g, ' ').slice(0, 24)
+    const base = String(row.stationName || (L('算例', 'Case ') + (ri + 1))).replace(/[\\/?*[\]:]/g, ' ').slice(0, 24)
     let name = ((ri + 1) + ' ' + base).slice(0, 31); let k = 2
     while (used[name]) { name = ((ri + 1) + ' ' + base).slice(0, 28) + '~' + k; k++ }
     used[name] = true
     const ds = wb.addWorksheet(name, { views: [{ showGridLines: false }] })
     ds.getColumn(1).width = 26; ds.getColumn(2).width = 20; ds.getColumn(3).width = 10
-    const T = tplSheet(ds)
-    T.heading('雨衰详细计算结果 · ' + (row.stationName || ('算例' + (ri + 1))))
+    const T = tplSheet(ds, 0, lang)
+    T.heading(L('雨衰详细计算结果 · ', 'Rain attenuation details · ') + (row.stationName || (L('算例', 'Case ') + (ri + 1))))
     let open = false
-    for (const [label, value, unit] of rainDetailRows(r, row, down)) {
+    for (const [label, value, unit] of rainDetailRows(r, row, down, en)) {
       if (value === null && unit === null) {          // 分段标记 → 上一张表收底线，起新表
         if (open) { T.endTable(3); T.skip() }
         T.caption(label, 3)
-        T.headRow(['项', '数值', '单位'])
+        T.headRow([L('项', 'Item'), L('数值', 'Value'), L('单位', 'Unit')])
         open = true
         continue
       }
@@ -2317,10 +2350,16 @@ async function buildRainAttenuationExcel(payload) {
     }
     if (open) T.endTable(3)
     // 口径注（避免读者把 DND 和合计衰减混起来；NGSO 的等效仰角不是「某一时刻的仰角」）
-    const dndNote = down
+    const dndNote = en
+      ? (down
+        ? 'DND = (rain + cloud) + G/T degradation from rain noise. Rain noise uses rain + cloud, T_mr = 275 K, referred through the feeder; gases are excluded (already in clear sky, not a degradation) and scintillation is excluded (refraction, no radiated noise).'
+        : 'No rain noise on the uplink: G/T degradation and DND apply to the downlink only.')
+      : down
       ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声按 雨+云、T_mr=275 K、经馈线折算；气体不计入（晴空已含、不构成劣化），闪烁不计入（折射，不辐射噪声）。'
       : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
-    const s8Note = r.s8
+    const s8Note = r.s8 && en
+      ? 'NGSO method (ITU-R P.618-14 §8): the elevation range is binned in increments; for each increment the visible time fraction × the exceedance time fraction at that elevation is summed; the equivalent elevation is the elevation at which the single-elevation method gives the same rain attenuation, not any instantaneous geometry. Statistics refer to the satellite service period. Gas/cloud/scintillation/XPD/rain noise temperature are evaluated at that equivalent elevation (rain-equivalent, an engineering approximation). The elevation distribution is the analytic one for near-circular orbits and does not apply to highly eccentric orbits. '
+      : r.s8
       ? 'NGSO 口径（ITU-R P.618-14 §8）：仰角范围按增量分箱，各增量的可见时间占比 × 该仰角下的超越时间占比再求和；等效仰角 = 使单仰角法给出同一雨衰的仰角，非任何瞬时几何。统计口径为卫星可服务期间。气体/云/闪烁/XPD/降雨噪温按该等效仰角求值（雨衰等效，属工程近似）。仰角分布为近圆轨道解析式，不适用于大偏心率轨道。'
       : ''
     T.note(s8Note + dndNote, 3)
@@ -2340,33 +2379,58 @@ function sunOutageIcsEvents(payload) {
   const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
     .filter((x) => x === 'vernal' || x === 'autumnal')
   const stations = Array.isArray(p.stations) ? p.stations : []
-  const satName = sat.name || sat.slotText || '卫星'
+  const en = soEn(p)
+  const satName = sat.name || sat.slotText || (en ? 'Satellite' : '卫星')
   const satKey = sat.noradId || sat.slotText || 'sat'
   const tzLbl = p.tzLabel || 'UTC'
   const crit = p.criterion || {}
   const critTxt = crit.mode === 'geometric'
-    ? '纯几何，θ_th = θ_3dB'
-    : `C/N 恶化 ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
+    ? (en ? 'geometric only, θ_th = θ_3dB' : '纯几何，θ_th = θ_3dB')
+    : `${en ? 'C/N degradation' : 'C/N 恶化'} ≥ ${crit.degDb != null && crit.degDb !== '' ? crit.degDb : 1} dB`
   const f4 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(4) : '—')
   const f2 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—')
   const out = []
   for (const st of stations) {
-    const stnName = st.name || '地球站'
+    const stnName = st.name || (en ? 'Earth station' : '地球站')
     for (const sn of seasons) {
       const sea = st[sn]
       if (!sea || !Array.isArray(sea.rows)) continue
       for (const d of sea.rows) {
+        if (en) {
+          out.push({
+            uid: `so-${satKey}-${f4(st.lat)}-${f4(st.lon)}-${d.dateUTC}@satsim-platform`,
+            date: d.dateUTC, start: d.startUtc, end: d.endUtc,
+            summary: `Sun outage ${satName} @ ${stnName} · peak ${d.peakDisp} (${tzLbl}) · −${d.peakDb} dB`,
+            description: [
+              `Satellite: ${satName} (${sat.slotText || '—'})`,
+              `Earth station: ${stnName} (${f4(st.lat)}, ${f4(st.lon)}) · azimuth ${f2(st.satAz)}° elevation ${f2(st.satEl)}°`,
+              `Window (UTC): ${d.startUtc} ~ ${d.endUtc} (peak ${d.peakUtc})`,
+              `Window (${tzLbl}): ${d.startDisp} ~ ${d.endDisp} (peak ${d.peakDisp})`,
+              `Duration: ${d.durStr || (d.durMin + ' min')} · peak C/N degradation: ${d.peakDb} dB`,
+              `Criterion: ${critTxt} · frequency ${f2(st.freq)} GHz · diameter ${f2(st.diameter)} m` +
+                (st.solarTemp > 0 ? ` · solar brightness temperature ${Math.round(st.solarTemp)} K${st.f107 > 0 ? ` (F10.7 ${Number(st.f107).toFixed(1)})` : ''}` : ''),
+              'Generated by Satellite Simulation Platform'
+            ].join('\n'),
+            location: stnName,
+            categories: ['SUN OUTAGE'],
+            alarms: [
+              { minutesBefore: 1440, description: `Sun outage tomorrow: ${satName} @ ${stnName}` },
+              { minutesBefore: 30, description: `Sun outage starts in 30 minutes: ${satName} @ ${stnName}` }
+            ]
+          })
+          continue
+        }
         out.push({
           uid: `so-${satKey}-${f4(st.lat)}-${f4(st.lon)}-${d.dateUTC}@satsim-platform`,
           date: d.dateUTC, start: d.startUtc, end: d.endUtc,
           summary: `日凌 ${satName} @ ${stnName} · 峰值 ${d.peakDisp} (${tzLbl}) · −${d.peakDb} dB`,
           description: [
-            `卫星: ${satName}（${sat.slotText || '—'}）`,
-            `地球站: ${stnName}（${f4(st.lat)}, ${f4(st.lon)}）· 方位 ${f2(st.satAz)}° 仰角 ${f2(st.satEl)}°`,
-            `窗口(UTC): ${d.startUtc} ~ ${d.endUtc}（峰值 ${d.peakUtc}）`,
-            `窗口(${tzLbl}): ${d.startDisp} ~ ${d.endDisp}（峰值 ${d.peakDisp}）`,
-            `时长: ${d.durStr || (d.durMin + ' min')} · 峰值 C/N 恶化: ${d.peakDb} dB`,
-            `判据: ${critTxt} · 频率 ${f2(st.freq)} GHz · 口径 ${f2(st.diameter)} m` +
+            `卫星：${satName}（${sat.slotText || '—'}）`,
+            `地球站：${stnName}（${f4(st.lat)}, ${f4(st.lon)}）· 方位 ${f2(st.satAz)}° 仰角 ${f2(st.satEl)}°`,
+            `窗口(UTC)：${d.startUtc} ~ ${d.endUtc}（峰值 ${d.peakUtc}）`,
+            `窗口(${tzLbl})：${d.startDisp} ~ ${d.endDisp}（峰值 ${d.peakDisp}）`,
+            `时长：${d.durStr || (d.durMin + ' min')} · 峰值 C/N 恶化：${d.peakDb} dB`,
+            `判据：${critTxt} · 频率 ${f2(st.freq)} GHz · 口径 ${f2(st.diameter)} m` +
               (st.solarTemp > 0 ? ` · 太阳亮温 ${Math.round(st.solarTemp)} K${st.f107 > 0 ? `（F10.7 ${Number(st.f107).toFixed(1)}）` : ''}` : ''),
             '由 卫星仿真平台 生成'
           ].join('\n'),
@@ -2405,15 +2469,19 @@ const SO_SEASON_TABLE = { vernal: '春季', autumnal: '秋季' }
 const SO_FONT_TITLE = '华文楷体'
 const SO_FONT_BODY = '等线'
 const SO_COL_W = [8.45, 8.45, 8.45, 8.45, 10, 12, 9, 9, 10]
+const SO_COL_W_EN = [6, 10, 11, 10, 13, 12, 9, 9, 15]     // 英文表头更长：只放宽装得下表头的那几列
 const SO_HEAD = ['序号', '地点', '经度', '纬度', '天线尺寸（米）', '日期', '开始时间', '结束时间', '持续时间（分）']
+const SO_HEAD_EN = ['No.', 'Site', 'Longitude', 'Latitude', 'Antenna (m)', 'Date', 'Start', 'End', 'Duration (min)']
+const SO_SEASON_TABLE_EN = { vernal: 'Spring', autumnal: 'Autumn' }
 const SO_NCOL = 9
 
-// 轨位 → 「东经87.5度」/「西经61度」（原件副标题的写法；尾随零去掉）
-function soLonText(lon) {
+// 轨位 → 「东经87.5度」/「西经61度」（原件副标题的写法；尾随零去掉）；英文 → 「87.5°E」
+function soLonText(lon, en) {
   const v = Number(lon)
   if (!Number.isFinite(v)) return ''
   const n = ((v % 360) + 540) % 360 - 180
   const a = Math.round(Math.abs(n) * 100) / 100
+  if (en) return String(a) + '°' + (n >= 0 ? 'E' : 'W')
   return (n >= 0 ? '东经' : '西经') + String(a) + '度'
 }
 // 'yyyy-mm-dd' → 真日期值（UTC 分量入格；已在渲染端按显示时区平移好，此处不再动）
@@ -2440,24 +2508,26 @@ const SO_MID = { horizontal: 'center', vertical: 'middle' }
 function soSeasonSheet(wb, payload, season) {
   const sat = payload.sat || {}
   const year = payload.year != null ? payload.year : ''
-  const seasonCn = SO_SEASON_TABLE[season] || ''
-  const satName = sat.name || sat.slotText || '卫星'
+  const en = soEn(payload)
+  const seasonCn = (en ? SO_SEASON_TABLE_EN : SO_SEASON_TABLE)[season] || ''
+  const satName = sat.name || sat.slotText || (en ? 'Satellite' : '卫星')
   // ★ views 必须显式给：exceljs 不写 <sheetViews> 时，Excel 打开会把【整表行高按 2/3 缩掉】
   //   （34.5 → 23、22.5 → 15、14 → 9.4；用 Excel 重存一遍，ht 真就被改写成 23）。
   //   本仓库别的 Excel 出口都顺手带了 views（多是 showGridLines:false），所以从没撞上这一条。
   //   原件的网格线是开着的，故这里给 true —— 要的只是让 <sheetViews> 这个元素存在。
-  const ws = wb.addWorksheet(`${year}年${seasonCn}`, { views: [{ showGridLines: true }] })
+  const ws = wb.addWorksheet(en ? `${seasonCn} ${year}`.trim() : `${year}年${seasonCn}`, { views: [{ showGridLines: true }] })
   // ★ 必须显式写 defaultColWidth：exceljs 把宽度 9 当成默认值，等于 9 的列它【不写 <col>】，
   //   而 Excel 自己的默认列宽是 8.43 —— 于是原件里宽度 9 的「开始时间 / 结束时间」两列打开后
   //   渲染成 8.43，与原件差 0.57 字符。写进 <sheetFormatPr defaultColWidth="9"> 后，这两列
   //   不写 <col> 也照 9 渲染。列宽数组照旧（其余列的宽度都不是 9，各自照写 <col>）。
   ws.properties.defaultColWidth = 9
-  SO_COL_W.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+  const colW = en ? SO_COL_W_EN : SO_COL_W
+  colW.forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   // R1 页首标题
   ws.mergeCells(1, 1, 1, SO_NCOL)
   const t = ws.getCell(1, 1)
-  t.value = `${satName}  ${year}年${seasonCn}日凌时间表`
+  t.value = en ? `${satName}  ${seasonCn} ${year} Sun Outage Schedule` : `${satName}  ${year}年${seasonCn}日凌时间表`
   t.font = { name: SO_FONT_TITLE, size: 24, bold: true }
   t.alignment = SO_MID
   ws.getRow(1).height = 34.5
@@ -2465,13 +2535,15 @@ function soSeasonSheet(wb, payload, season) {
   // R2 副标题
   ws.mergeCells(2, 1, 2, SO_NCOL)
   const st = ws.getCell(2, 1)
-  st.value = `卫星名称:${satName}    ${soLonText(sat.slotLon != null ? sat.slotLon : NaN)}`.trimEnd()
+  st.value = (en
+    ? `Satellite: ${satName}    ${soLonText(sat.slotLon != null ? sat.slotLon : NaN, true)}`
+    : `卫星名称：${satName}    ${soLonText(sat.slotLon != null ? sat.slotLon : NaN)}`).trimEnd()
   st.font = { name: SO_FONT_TITLE, size: 16, bold: true }
   st.alignment = SO_MID
   ws.getRow(2).height = 22.5
 
   // R3 表头
-  SO_HEAD.forEach((h, i) => {
+  ;(en ? SO_HEAD_EN : SO_HEAD).forEach((h, i) => {
     const c = ws.getCell(3, i + 1)
     c.value = h
     c.font = { name: SO_FONT_TITLE, size: 12, bold: true }
@@ -2480,7 +2552,7 @@ function soSeasonSheet(wb, payload, season) {
   ws.getRow(3).height = 16.5
 
   // R4+ 逐站一块
-  let rn = 4, no = 0, wideB = SO_COL_W[1]
+  let rn = 4, no = 0, wideB = colW[1]
   for (const s of (payload.stations || [])) {
     const sea = s[season]
     const rows = (sea && Array.isArray(sea.rows)) ? sea.rows : []
@@ -2519,7 +2591,7 @@ function buildSunOutageExcel(payload) {
   const seasons = (Array.isArray(p.seasons) && p.seasons.length ? p.seasons : ['vernal', 'autumnal'])
     .filter((x) => x === 'vernal' || x === 'autumnal')
   const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星仿真平台'; wb.created = new Date()
+  wb.creator = soEn(p) ? 'Satellite Simulation Platform' : '卫星仿真平台'; wb.created = new Date()
   for (const s of seasons) soSeasonSheet(wb, p, s)
   if (!wb.worksheets.length) soSeasonSheet(wb, p, 'vernal')   // 一季都没选：出个空表，别给个零张表的工作簿
   return wb.xlsx.writeBuffer()
@@ -2534,10 +2606,13 @@ function buildSunOutageExcel(payload) {
 const DT_FMT = 'yyyy-mm-dd hh:mm:ss'
 function buildVisAccessExcel(payload) {
   const p = payload || {}
+  const lang = p.lang === 'en' ? 'en' : 'zh'
+  const en = lang === 'en'
+  const L = (zh, e) => (en ? e : zh)
   const base = Number(p.baseMs) || 0
-  if (!base) throw new Error('缺少时窗起点（请先计算过境）')
+  if (!base) throw new Error('缺少时窗起点。')
   const offMs = (Number(p.tzOffsetMin) || 0) * 60000
-  const tzTag = String(p.tzTag || '本地')
+  const tzTag = String(p.tzTag || L('本地', 'Local'))
   const utcAt = (min) => new Date(base + min * 60000)
   const locAt = (min) => new Date(base + min * 60000 + offMs)
   const sats = Array.isArray(p.sats) ? p.sats : []
@@ -2546,7 +2621,7 @@ function buildVisAccessExcel(payload) {
   const anySlot = sats.some((s) => s && s.slot)
   const anyTrunc = sats.some((s) => ((s && s.windows) || []).some((w) => w.truncated))
   const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星仿真平台'; wb.created = new Date()
+  wb.creator = L('卫星仿真平台', 'Satellite Simulation Platform'); wb.created = new Date()
 
   // 明细行序＝全星按 AOS 混排（时间线视角）；逐星视角在「逐星汇总」表，两个视角各占一张
   const flat = []
@@ -2559,44 +2634,45 @@ function buildVisAccessExcel(payload) {
 
   // —— Sheet 1 摘要（项目 / 数值 / 单位）——
   {
-    const ws = wb.addWorksheet('摘要', { views: [{ showGridLines: false }] })
+    const ws = wb.addWorksheet(L('摘要', 'Summary'), { views: [{ showGridLines: false }] })
     ws.getColumn(1).width = 26; ws.getColumn(2).width = 24; ws.getColumn(3).width = 8
     ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
-    const T = tplSheet(ws)
-    T.heading('时段过境分析')
-    T.caption('过境分析摘要', 3)
-    T.headRow(['项目', '数值', '单位'])
+    const T = tplSheet(ws, 0, lang)
+    T.heading(L('时段过境分析', 'Pass Analysis'))
+    T.caption(L('过境分析摘要', 'Pass analysis summary'), 3)
+    T.headRow([L('项目', 'Item'), L('数值', 'Value'), L('单位', 'Unit')])
     const rowsA = [
-      ['分析目标', String(tgt.name || '—'), ''],
-      ['目标坐标', llTxt(tgt.lat, tgt.lon), ''],
-      ['卫星集', String(p.satSet || '—'), ''],
-      ['扫描卫星数', Number(p.scanned) || 0, '颗', '0'],
-      ['仰角门限', Number(p.minElevDeg) || 0, '°', '0'],
-      ['时窗起点 (UTC)', utcAt(0), '', DT_FMT],
-      ['时窗终点 (UTC)', utcAt(H), '', DT_FMT],
-      ['时窗起点 (' + tzTag + ')', locAt(0), '', DT_FMT],
-      ['时窗终点 (' + tzTag + ')', locAt(H), '', DT_FMT],
-      ['时窗长度', H / 60, 'h', '0.0'],
-      ['有过境的卫星', Number(kpi.sats) || 0, '颗', '0'],
-      ['过境次数', Number(kpi.passes) || 0, '次', '0'],
-      ['时间覆盖', Number(kpi.pct) || 0, '%', '0.00'],
-      ['合计可视时长', Number(kpi.coveredMin) || 0, 'min', '0.0'],
-      ['最长中断', Number(kpi.maxGapMin) || 0, 'min', '0.0'],
-      ['中断段数', Number(kpi.gapCount) || 0, '段', '0']
+      [L('分析目标', 'Target'), String(tgt.name || '—'), ''],
+      [L('目标坐标', 'Target coordinates'), llTxt(tgt.lat, tgt.lon), ''],
+      [L('卫星集', 'Satellite set'), String(p.satSet || '—'), ''],
+      [L('扫描卫星数', 'Satellites scanned'), Number(p.scanned) || 0, L('颗', ''), '0'],
+      [L('最低仰角', 'Minimum elevation'), Number(p.minElevDeg) || 0, '°', '0'],
+      [L('时窗起点 (UTC)', 'Window start (UTC)'), utcAt(0), '', DT_FMT],
+      [L('时窗终点 (UTC)', 'Window end (UTC)'), utcAt(H), '', DT_FMT],
+      [L('时窗起点 (', 'Window start (') + tzTag + ')', locAt(0), '', DT_FMT],
+      [L('时窗终点 (', 'Window end (') + tzTag + ')', locAt(H), '', DT_FMT],
+      [L('时窗长度', 'Window length'), H / 60, 'h', '0.0'],
+      [L('有过境的卫星', 'Satellites with passes'), Number(kpi.sats) || 0, L('颗', ''), '0'],
+      [L('过境次数', 'Passes'), Number(kpi.passes) || 0, L('次', ''), '0'],
+      [L('时间覆盖', 'Time coverage'), Number(kpi.pct) || 0, '%', '0.00'],
+      [L('合计可视时长', 'Total visible time'), Number(kpi.coveredMin) || 0, 'min', '0.0'],
+      [L('最长中断', 'Longest gap'), Number(kpi.maxGapMin) || 0, 'min', '0.0'],
+      [L('中断段数', 'Gaps'), Number(kpi.gapCount) || 0, L('段', ''), '0']
     ]
     for (const r of rowsA) T.dataRow([r[0], r[1], r[2]], ['', r[3] || '', ''])
     T.endTable(3)
-    T.note('时间覆盖＝全部过境窗口在时间轴上合并重叠后的可视时长 ÷ 时窗（多星同时可见只计一次）；最长中断含时窗首尾；被时窗截断的过境只计窗内一段。本地时间＝' + tzTag + '（导出时所选的显示时区档位）。', 3)
+    if (en) T.note('Time coverage = visible time of all pass windows merged on the timeline ÷ window (simultaneous visibility counted once); the longest gap includes the window start and end; passes truncated by the window count only the part inside it. Local time = ' + tzTag + ' (display time zone selected at export).', 3)
+    else T.note('时间覆盖＝全部过境窗口在时间轴上合并重叠后的可视时长 ÷ 时窗（多星同时可见只计一次）；最长中断含时窗首尾；被时窗截断的过境只计窗内一段。本地时间＝' + tzTag + '（导出时所选的显示时区档位）。', 3)
   }
 
   // —— Sheet 2 过境明细（两级表头，模板「三线表-含辅助线」版式）——
   {
-    const ws = wb.addWorksheet('过境明细', { views: [{ showGridLines: false, state: 'frozen', ySplit: 3 }] })
+    const ws = wb.addWorksheet(L('过境明细', 'Pass Details'), { views: [{ showGridLines: false, state: 'frozen', ySplit: 3 }] })
     ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'landscape' }
-    const single1 = [{ h: '序号', w: 6, fmt: '0' }, { h: '卫星', w: 16 }, { h: 'NORAD', w: 9 }]
-    if (anySlot) single1.push({ h: '轨道位置', w: 10 })
-    const single2 = [{ h: '时长 (min)', w: 10, fmt: '0.0' }, { h: '最高仰角 (°)', w: 12, fmt: '0.0' }]
-    if (anyTrunc) single2.push({ h: '备注', w: 12 })
+    const single1 = [{ h: L('序号', 'No.'), w: 6, fmt: '0' }, { h: L('卫星', 'Satellite'), w: 16, left: true }, { h: 'NORAD', w: 9 }]
+    if (anySlot) single1.push({ h: L('轨道位置', 'Orbital slot'), w: 10 })
+    const single2 = [{ h: L('时长 (min)', 'Duration (min)'), w: 10, fmt: '0.0' }, { h: L('最高仰角 (°)', 'Max elevation (°)'), w: 12, fmt: '0.0' }]
+    if (anyTrunc) single2.push({ h: L('备注', 'Note'), w: 12 })
     const nCol = single1.length + 6 + single2.length
     const fmts = [...single1.map((s) => s.fmt || ''), ...Array(6).fill(DT_FMT), ...single2.map((s) => s.fmt || '')]
     let cc = 1
@@ -2606,7 +2682,7 @@ function buildVisAccessExcel(payload) {
     // 表题（全簿连号：摘要=表 1，此表=表 2）
     ws.mergeCells(1, 1, 1, nCol)
     const cap = ws.getCell(1, 1)
-    cap.value = '表 2  ' + (tgt.name ? tgt.name + ' ' : '') + '过境窗口明细'
+    cap.value = en ? 'Table 2  ' + (tgt.name ? tgt.name + ' ' : '') + 'pass window details' : '表 2  ' + (tgt.name ? tgt.name + ' ' : '') + '过境窗口明细'
     cap.font = { name: CJK, size: 11, bold: true }
     cap.alignment = { horizontal: 'center', vertical: 'middle' }
     ws.getRow(1).height = 25.5
@@ -2617,10 +2693,10 @@ function buildVisAccessExcel(payload) {
       cell.font = { name: CJK, size: 11 }
       cell.alignment = left ? { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true } : { horizontal: 'center', vertical: 'middle', wrapText: true }
     }
-    const GH = ['开始时间', '结束时间', '峰值时刻']
+    const GH = en ? ['Start', 'End', 'Peak'] : ['开始时间', '结束时间', '峰值时刻']
     cc = 1
-    for (const s of single1) { ws.mergeCells(2, cc, 3, cc); headCell(2, cc, s.h, s.h === '卫星'); cc++ }
-    for (const gh of ['UTC', '本地时间 (' + tzTag + ')']) {
+    for (const s of single1) { ws.mergeCells(2, cc, 3, cc); headCell(2, cc, s.h, !!s.left); cc++ }
+    for (const gh of ['UTC', L('本地时间 (', 'Local time (') + tzTag + ')']) {
       ws.mergeCells(2, cc, 2, cc + 2); headCell(2, cc, gh)
       for (let i = 0; i < 3; i++) headCell(3, cc + i, GH[i])
       cc += 3
@@ -2637,7 +2713,7 @@ function buildVisAccessExcel(payload) {
       if (anySlot) vals.push(s.slot || '')
       vals.push(utcAt(w.startMin), utcAt(w.endMin), utcAt(w.peakMin), locAt(w.startMin), locAt(w.endMin), locAt(w.peakMin))
       vals.push(Number(w.durMin) || 0, Number(w.peakEl) || 0)
-      if (anyTrunc) vals.push(w.truncated ? '截至时窗末' : '')
+      if (anyTrunc) vals.push(w.truncated ? L('截至时窗末', 'Cut at window end') : '')
       vals.forEach((v, i) => {
         const cell = ws.getCell(rn, i + 1)
         cell.value = (v === '' || v == null) ? null : v
@@ -2652,7 +2728,9 @@ function buildVisAccessExcel(payload) {
     // 表注（模板：底线下方、「注：」起首、左对齐缩进 1）
     ws.mergeCells(rn, 1, rn, nCol)
     const nt = ws.getCell(rn, 1)
-    nt.value = '注：AOS（开始）/ LOS（结束）＝仰角穿越门限 ' + (Number(p.minElevDeg) || 0) + '° 的时刻；峰值时刻＝该窗内最高仰角时刻；本地时间＝' + tzTag + '；「截至时窗末」＝过境延伸到时窗外、按时窗截断。'
+    nt.value = en
+      ? 'Note: AOS (start) / LOS (end) = times the elevation crosses the ' + (Number(p.minElevDeg) || 0) + '° threshold; peak = time of maximum elevation within the window; local time = ' + tzTag + '; “Cut at window end” = the pass extends beyond the window and is truncated.'
+      : '注：AOS（开始）/ LOS（结束）＝仰角穿越门限 ' + (Number(p.minElevDeg) || 0) + '° 的时刻；峰值时刻＝该窗内最高仰角时刻；本地时间＝' + tzTag + '；「截至时窗末」＝过境延伸到时窗外、按时窗截断。'
     nt.font = { name: CJK, size: 11 }
     nt.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 }
     ws.getRow(rn).height = 33.75
@@ -2660,18 +2738,18 @@ function buildVisAccessExcel(payload) {
 
   // —— Sheet 3 逐星汇总 ——
   {
-    const ws = wb.addWorksheet('逐星汇总', { views: [{ showGridLines: false, state: 'frozen', ySplit: 2 }] })
+    const ws = wb.addWorksheet(L('逐星汇总', 'Per-satellite Summary'), { views: [{ showGridLines: false, state: 'frozen', ySplit: 2 }] })
     ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
     const cols = [
-      { h: '序号', w: 6, fmt: '0' }, { h: '卫星', w: 16 }, { h: 'NORAD', w: 9 },
-      ...(anySlot ? [{ h: '轨道位置', w: 10 }] : []),
-      { h: '过境次数', w: 9, fmt: '0' }, { h: '合计可视 (min)', w: 13, fmt: '0.0' }, { h: '最长单次 (min)', w: 13, fmt: '0.0' },
-      { h: '最高仰角 (°)', w: 12, fmt: '0.0' }, { h: '首次 AOS (UTC)', w: 19, fmt: DT_FMT }, { h: '末次 LOS (UTC)', w: 19, fmt: DT_FMT }
+      { h: L('序号', 'No.'), w: 6, fmt: '0' }, { h: L('卫星', 'Satellite'), w: 16 }, { h: 'NORAD', w: 9 },
+      ...(anySlot ? [{ h: L('轨道位置', 'Orbital slot'), w: 10 }] : []),
+      { h: L('过境次数', 'Passes'), w: 9, fmt: '0' }, { h: L('合计可视 (min)', 'Total visible (min)'), w: 13, fmt: '0.0' }, { h: L('最长单次 (min)', 'Longest pass (min)'), w: 13, fmt: '0.0' },
+      { h: L('最高仰角 (°)', 'Max elevation (°)'), w: 12, fmt: '0.0' }, { h: L('首次 AOS (UTC)', 'First AOS (UTC)'), w: 19, fmt: DT_FMT }, { h: L('末次 LOS (UTC)', 'Last LOS (UTC)'), w: 19, fmt: DT_FMT }
     ]
     cols.forEach((c0, i) => { ws.getColumn(i + 1).width = c0.w })
     const rowFmts = cols.map((c0) => c0.fmt || '')
-    const T = tplSheet(ws, 2)   // 接着明细连号：表 3
-    T.caption('逐星过境汇总', cols.length)
+    const T = tplSheet(ws, 2, lang)   // 接着明细连号：表 3
+    T.caption(L('逐星过境汇总', 'Per-satellite pass summary'), cols.length)
     T.headRow(cols.map((c0) => c0.h))
     sats.forEach((s, i) => {
       const wl = s.windows || []
@@ -2689,7 +2767,8 @@ function buildVisAccessExcel(payload) {
       T.dataRow(vals, rowFmts)
     })
     T.endTable(cols.length)
-    T.note('行序＝各星首次过境先后；合计可视＝该星各窗时长之和（同星窗口不重叠）；首次 AOS / 末次 LOS 为该星在时窗内的首末边界，UTC。', cols.length)
+    if (en) T.note('Rows ordered by each satellite’s first pass; total visible = sum of that satellite’s window durations (windows of one satellite do not overlap); first AOS / last LOS are the satellite’s first and last boundaries within the window, in UTC.', cols.length)
+    else T.note('行序＝各星首次过境先后；合计可视＝该星各窗时长之和（同星窗口不重叠）；首次 AOS / 末次 LOS 为该星在时窗内的首末边界，UTC。', cols.length)
   }
 
   return applyBookFont(wb).xlsx.writeBuffer()

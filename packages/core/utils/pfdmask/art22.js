@@ -64,7 +64,7 @@ function loadLimitTables(tables, meta) {
       if (!pts.length) { problems.push(`${t.tableId}: 某 entry 无有效数据点`); continue; }
       for (let i = 1; i < pts.length; i++) {
         if (pts[i].percentTime < pts[i - 1].percentTime) {
-          problems.push(`${t.tableId}: percentTime 非升序（index ${i}），已按原序保留但请核对`);
+          problems.push(`${t.tableId}: percentTime 非升序（index ${i}），已按原序保留`);
           break;
         }
       }

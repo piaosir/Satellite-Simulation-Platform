@@ -7,9 +7,9 @@
 // 搜索框走 core.searchCities（城市名 / 省份 / 拼音首字母 / 英文名 / 国家名），结果跨组列出并标出所属组；
 // 宿主附加分区的条目在本地按名字过滤，与城市命中并列。
 // 勾选交互与「导入标记」同一份口径（shared/ui/useCheckList.js）：点行翻勾、按住拖刷、Shift 连选、Ctrl+A。
-// 对话框壳自带（遮罩 + 标题条 + 页脚），不依赖任何窗口的 CSS：性能表窗口与链路预算窗口的样式链不同。
-import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import Icon from './Icon.vue'
+// 外壳是 AppDialog（layer=pop）；正文样式 cpk- 前缀自带，不依赖任何窗口的 CSS：性能表窗口与链路预算窗口的样式链不同。
+import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import AppDialog from './AppDialog.vue'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import { cityName, citySubtitle } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
@@ -52,7 +52,6 @@ onMounted(async () => {
     }
   } catch { cityGroups.value = [] } finally { loading.value = false }
   if (!cur.value && allGroups.value.length) cur.value = allGroups.value[0].id
-  nextTick(() => { if (inputEl.value) inputEl.value.focus({ preventScroll: true }) })
 })
 // 宿主附加分区 → 组（空组不列；坐标不全的条目丢掉）
 const extraGroups = computed(() => {
@@ -195,23 +194,15 @@ function onSearchKey(e) {
   if (sel.value.size) { addSelected(); return }
   if (searching.value) { const r = rows.value.find((x) => !x.had || props.dup); if (r) addOne(r) }
 }
-// 输入法组字中的 Esc 是「取消组字」，不关对话框（搜索框常打拼音）
-function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
-onMounted(() => document.addEventListener('keydown', onKey, true))
-onBeforeUnmount(() => document.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc 关且判输入法组字、点遮罩不关、打开聚焦搜索框）；常压在别的对话框之上开，z 取 pop 档
 const fx = (v) => Number(v).toFixed(2)
 </script>
 
 <template>
-  <div class="cpk-mask">
-    <div class="cpk-dlg" :style="{ width: width + 'px' }">
-      <div class="cpk-hd">
-        <span>{{ title }}</span>
-        <slot name="head" />
-        <button type="button" class="cpk-x" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <AppDialog :title="title" :width="width" flush layer="pop" initial-focus=".cpk-q" @close="emit('close')">
+      <template v-if="$slots.head" #head><span class="cpk-head"><slot name="head" /></span></template>
       <div class="cpk-body">
-        <input ref="inputEl" class="cpk-q" v-model="q" placeholder="搜索：城市名 / 省份 / 拼音首字母 / 英文名 / 国家" @keydown="onSearchKey" />
+        <input ref="inputEl" class="cpk-q search-field" v-model="q" placeholder="搜索：城市名 / 省份 / 拼音首字母 / 英文名 / 国家" @keydown="onSearchKey" />
         <slot name="bar" />
         <div class="cpk-panes">
           <!-- 左：分区 → 国家 / 省份 / 宿主组 -->
@@ -234,7 +225,7 @@ const fx = (v) => Number(v).toFixed(2)
               <span class="cpk-cnt">{{ rows.length }} 座</span>
             </div>
             <div ref="listEl" class="cpk-list" :class="{ painting: L.painting.value, single }" tabindex="0"
-                 :title="single ? '点一行即选定 · ↑↓ 移动 · Enter 选定' : '点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选 · 双击＝直接加入这一座'" @keydown="onListKey">
+                 :title="single ? '点一行即选定 · ↑↓ 移动 · Enter 选定' : '点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选 · 双击＝直接加入该城市'" @keydown="onListKey">
               <div v-if="!single" class="cpk-row cpk-all" @mousedown="L.onHeadDown">
                 <input type="checkbox" :checked="L.allOn()" :indeterminate.prop="L.anyOn() && !L.allOn()" />
                 <span class="cpk-alln">{{ searching ? '(全选搜索结果)' : '(全选本组)' }}</span>
@@ -248,48 +239,32 @@ const fx = (v) => Number(v).toFixed(2)
                 <span v-if="r.grp" class="cpk-tag" data-i18n-skip>{{ r.grp }}</span>
                 <span class="cpk-ll" data-i18n-skip>{{ fx(r.lon) }}, {{ fx(r.lat) }}</span>
                 <slot name="row" :item="r.src" :row="r" />
-                <span v-if="r.had" class="cpk-had">已加</span>
+                <span v-if="r.had" class="cpk-had">已添加</span>
               </div>
-              <div v-if="!rows.length" class="cpk-empty">{{ searching ? (busy ? '搜索中…' : '没有匹配的城市。') : (loading ? '载入中…' : '该组没有城市。') }}</div>
+              <div v-if="!rows.length" class="cpk-empty">{{ searching ? (busy ? '搜索中…' : '无匹配城市。') : (loading ? '加载中…' : '该组暂无城市。') }}</div>
             </div>
           </div>
         </div>
       </div>
-      <div class="cpk-ft">
-        <span class="cpk-cnt">{{ single ? `${total} 座` : `${total} 座 · 已选 ${selCount} 座` }}</span>
-        <span v-if="note" class="cpk-cnt cpk-note">{{ note }}</span>
-        <button v-if="!single" type="button" class="cpk-btn ghost" :disabled="!selCount" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></button>
-        <button type="button" class="cpk-btn" @click="emit('close')">{{ single ? '关闭' : '完成' }}</button>
-      </div>
-    </div>
-  </div>
+      <template #footer>
+        <span class="adlg-ft-l">
+          <span class="cpk-cnt">{{ single ? `${total} 座` : `${total} 座 · 已选 ${selCount} 座` }}</span>
+          <span v-if="note" class="cpk-cnt cpk-note">{{ note }}</span>
+        </span>
+        <button v-if="!single" type="button" class="btn" :disabled="!selCount" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></button>
+        <button type="button" class="btn primary" @click="emit('close')">{{ single ? '关闭' : '完成' }}</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style>
-/* 壳：与性能指标表窗口的 PwDialog 同一套几何（遮罩 / 标题条 / 页脚），自带一份，两条样式链都能落 */
-/* 遮罩全软件一档 --scrim（原冷蓝黑），瞬时出现；框体上浮入场。改这里须同步 perf/perfwin.css 的 PwDialog（孪生） */
-.cpk-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.cpk-dlg { max-width: calc(100% - 32px); max-height: 92%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.cpk-hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
-/* 关闭键是真 <button>（Tab 可达）：去掉按钮默认描边 / 底色，悬停给中性罩 */
-.cpk-hd .cpk-x { margin-left: auto; cursor: pointer; display: inline-flex; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: var(--text-faint); }
-.cpk-hd .cpk-x:hover { color: var(--text); background: var(--wash-hover); }
-.cpk-body { padding: 12px 14px; overflow: auto; min-height: 0; display: flex; flex-direction: column; }
-.cpk-ft { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
+/* 外壳归 AppDialog（layer=pop）；正文 flush，内距在 .cpk-body。cpk- 前缀不 scoped，性能表窗口与链路预算窗口两条样式链都能落 */
+/* 宿主插在题条里（关闭钮前）的东西：竖向居中，不被 36px 题条拉高 */
+.cpk-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: var(--fs-3); font-weight: 400; }
+.cpk-body { padding: 12px 14px; min-height: 0; display: flex; flex-direction: column; }
 .cpk-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
-.cpk-ft .cpk-cnt + .cpk-btn { margin-left: auto; }
-/* 页脚两钮是真 <button>：同为 --h-ctl-lg 定高（原 ghost 多 1px 描边比主钮高 2px）；主钮墨色实底走 primary token */
-.cpk-btn { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl-lg); padding: 0 18px;
-           font-size: var(--fs-3); white-space: nowrap; cursor: pointer; user-select: none; color: var(--primary-on);
-           background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); }
-.cpk-btn:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.cpk-btn.ghost { color: var(--text); background: var(--bg); border-color: var(--border-strong); }
-/* 上一条主钮悬停特异度更高，ghost 悬停须把底色显式压回 --bg */
-.cpk-btn.ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--line-hover); }
-.cpk-btn:disabled { opacity: .45; cursor: not-allowed; }
 /* 搜索框（自绘，不靠窗口的 .ci / .sg-search） */
 .cpk-q { width: 100%; box-sizing: border-box; flex: none; margin: 0 0 8px; padding: 5px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
-.cpk-q:focus { outline: none; border-color: var(--accent-ui); }
 /* 双栏 */
 .cpk-panes { display: flex; gap: 10px; height: min(60vh, 520px); min-height: 260px; }
 .cpk-left { flex: 0 0 176px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--bg); }
@@ -301,7 +276,7 @@ const fx = (v) => Number(v).toFixed(2)
 .cpk-grp.on { background: color-mix(in srgb, var(--accent-ui) 14%, transparent); color: var(--text); font-weight: 600; }
 .cpk-grp .cpk-gn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cpk-grp .cpk-gc { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); }
-.cpk-grp .cpk-gs { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--bg); background: var(--accent-ui); border-radius: var(--r-ctl); padding: 0 5px; }
+.cpk-grp .cpk-gs { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--accent-on); background: var(--accent-fill); border-radius: var(--r-ctl); padding: 0 5px; }
 .cpk-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .cpk-rh { display: flex; align-items: center; gap: 8px; padding: 0 2px 5px; flex: none; }
 .cpk-rh .cpk-cnt { margin-left: auto; }

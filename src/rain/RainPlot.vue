@@ -11,12 +11,15 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { halfStr } from '../shared/num.js'
 import { uiFontStack, DOC_FONT_STACK } from '../shared/lbFont.js'
+import { seriesColor } from '../shared/lbPlotTheme.js'
+import { PAPER } from '../shared/paperTheme.js'
 
 const props = defineProps({
   params: { type: Object, default: null },   // buildRainCase 输出（当前算例）
   result: { type: Object, default: null },   // 当前算例结果（取 rainAtten 作标记）
   station: { type: String, default: '' }
 })
+const emit = defineEmits(['exported'])   // 导出成功 → 宿主出回执（toastFile：带「打开 · 在文件夹中显示」）
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.rainAttenuation : null
 const exportFile = (typeof window !== 'undefined' && window.api) ? window.api.exportFile : null
@@ -109,14 +112,17 @@ watch(() => props.params, scheduleSweep, { deep: true })
 watch([axis, () => range.min, () => range.max, () => range.steps], scheduleSweep)
 
 // —— 绘制 ——
+// 当前算例标记（点 + 竖线 + 读数）：token --rp-mark（见样式 .rp），lbPlotTheme 分类第二槽（赭）同色相——
+// 对图底 --surface 图形 ≥ 3:1、文字 ≥ 4.5:1（浅 #b05318 对 #f8f8f8 4.83:1、深 #d2792f 对 #1b1b1b 5.34:1）。
+// 不借状态色：这个标记只是「在这里」，不是好坏。导出走纸色板的赭（白纸上 4.76:1）
 function palette(forExport) {
-  if (forExport) return { bg: '#ffffff', axis: '#333', grid: '#e6e6e6', text: '#222', sub: '#666', curve: '#2563eb', marker: '#c2410c' }
+  if (forExport) return { bg: PAPER.bg, axis: '#333', grid: '#e6e6e6', text: '#222', sub: '#666', curve: '#2563eb', marker: PAPER.series[1] }
   const cs = getComputedStyle(canvas.value || document.documentElement)
   const v = (n, f) => (cs.getPropertyValue(n) || '').trim() || f
   return {
     bg: 'transparent', axis: v('--text-muted', '#555'), grid: v('--border', '#ddd'),
     text: v('--text', '#222'), sub: v('--text-faint', '#888'),
-    curve: v('--accent', '#2563eb'), marker: '#c2410c'
+    curve: v('--accent', '#2563eb'), marker: v('--rp-mark', seriesColor(1))
   }
 }
 function niceYMax(m) {
@@ -339,6 +345,7 @@ async function exportPng() {
     const nm = '雨衰曲线_' + (AXES[axis.value].label) + (props.station ? ('_' + props.station) : '') + '.png'
     const r = await exportFile({ defaultName: nm, data: bytes, filters: [{ name: 'PNG 图片', extensions: ['png'] }] })
     if (r && !r.ok && !r.canceled) expErr.value = '导出失败：' + (r.error || '')
+    else if (r && r.ok) emit('exported', r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath || '')
   } catch (e) { expErr.value = '导出失败：' + ((e && e.message) || e) }
 }
 
@@ -386,7 +393,8 @@ const hoverText = computed(() => hover.value
 </template>
 
 <style scoped>
-.rp { border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; background: var(--surface); }
+.rp { --rp-mark: #b05318; border: 1px solid var(--border); border-radius: var(--r-box, 3px); overflow: hidden; background: var(--surface); }
+:global(html[data-theme='dark']) .rp { --rp-mark: #d2792f; }
 .rp-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
 .rp-lb { font-size: var(--fs-3); color: var(--text-muted); }
 .rp-sel { font: inherit; font-size: var(--fs-3); padding: 2px 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); background-color: var(--surface); color: var(--text); }

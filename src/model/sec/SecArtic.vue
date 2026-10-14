@@ -11,6 +11,7 @@ import NumIn from '../NumIn.vue'
 import { irLayout } from '../../viz/models/irToThree.js'
 import { STAGE_LABEL, STAGE_TYPE_LIST, stageUnit, fmtNum, uniqueName, newArticulation, newStage, retypeStage } from '../wbLogic.js'
 import { UNIT_SCALE, UNIT_LIST } from '@core/models/units.mjs'
+import { fineStep } from '../../shared/ui/rangeFieldCore.js'
 
 const wb = inject('wb')
 const getVp = inject('viewport')
@@ -48,11 +49,8 @@ function onSlide(a, s, v) {
 }
 function reset(a) { delete live[a.name]; drive(a.name) }
 function resetAll() { for (const k of Object.keys(live)) delete live[k]; const vp = getVp(); if (vp) vp.resetArticulations() }
-function stepOf(s) {
-  const span = Math.abs(s.maximumValue - s.minimumValue)
-  if (/Rotate$/.test(s.type)) return span > 20 ? 0.5 : 0.05
-  return span > 0 ? span / 400 : 0.01
-}
+// 拖动纯线性：台阶 = 10 的整数次幂、全程 ≥ 1000 档（转角 360° → 0.1°），读数四位有效数字的每一位都拖得到
+const stepOf = (s) => fineStep(s.minimumValue, s.maximumValue, 1000)
 
 // ============ 编辑（落盘）============
 const findA = (x, name) => (Array.isArray(x.articulations) ? x.articulations.find((q) => q.name === name) : null)
@@ -228,16 +226,16 @@ function newArt() {
           <div class="ar-nodes">
             <span v-for="n in a.nodes || []" :key="n" class="ar-chip" :title="n">
               <span class="ar-chip-t" data-i18n-skip>{{ n }}</span>
-              <button v-if="!ro" class="ar-chip-x" title="从该关节移除" @click="removeNode(a, n)"><Icon name="x" :size="10" /></button>
+              <button v-if="!ro" class="ar-chip-x" title="从该关节移除" @click="removeNode(a, n)"><Icon name="x" :size="12" /></button>
             </span>
             <span v-if="!(a.nodes || []).length" class="ar-empty">无节点。</span>
           </div>
           <div v-if="!ro" class="ar-row">
-            <select class="ci ar-add" value="" :disabled="!nodeList.length" title="添加节点（IR 节点名；缩进表示层级）" @change="addNode(a, $event.target.value); $event.target.value = ''">
+            <select class="ci ar-add cmd-sel" value="" :disabled="!nodeList.length" title="添加节点（IR 节点名；缩进表示层级）" @change="addNode(a, $event.target.value); $event.target.value = ''">
               <option value="">添加节点…</option>
               <option v-for="r in nodeList" :key="r.name" :value="r.name" :disabled="(a.nodes || []).includes(r.name)" data-i18n-skip>{{ indent(r.depth) + r.name }}</option>
             </select>
-            <button class="lb-mini" :class="{ on: pickingFor === a.name }" :disabled="!nodeList.length" title="在预览中点选模型，将选中节点加入该关节" @click="togglePick(a)">
+            <button class="lb-mini" :class="{ on: pickingFor === a.name }" :aria-pressed="pickingFor === a.name ? 'true' : 'false'" :disabled="!nodeList.length" title="在预览中点选模型，将选中节点加入该关节" @click="togglePick(a)">
               <Icon name="square-dashed-mouse-pointer" :size="12" />点选
             </button>
           </div>

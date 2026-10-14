@@ -14,7 +14,7 @@
 // 功带平衡、超发/欠发、转发器资源占用……与链路表结果列、载波配置面板同名同义，别在这儿另起一套。
 import { ref, reactive, computed, watch } from 'vue'
 import NumBox from './NumBox.vue'
-import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { ADV_BASES, solveAdv } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 
@@ -165,17 +165,13 @@ function apply() {
 </script>
 
 <template>
-  <div v-if="open" class="ab-mask">
-    <div class="ab" role="dialog" aria-modal="true">
-      <div class="ab-hd">
-        <!-- 图标与工具栏「计算 / 高级计算」两个按钮同一枚实心三角：同一件事的两档，不该长成两个族 -->
-        <svg viewBox="0 0 16 16" class="ab-ic" aria-hidden="true"><path d="M4 2.5 13 8 4 13.5z" /></svg>高级计算 · 多载波组功带平衡
-        <span class="ab-sp"></span>
-        <button class="ab-x" :disabled="busy" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <!-- 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关；计算中 closable=false） -->
+  <AppDialog :open="open" :width="760" flush :closable="!busy" @close="emit('close')">
+      <!-- 图标与工具栏「计算 / 高级计算」两个按钮同一枚实心三角：同一件事的两档，不该长成两个族 -->
+      <template #title><span class="ab-hd"><svg viewBox="0 0 16 16" class="ab-ic" aria-hidden="true"><path d="M4 2.5 13 8 4 13.5z" /></svg>高级计算 · 多载波组功带平衡</span></template>
 
       <div class="ab-bd">
-        <div v-if="stale" class="ab-warn">链路表输入已在上次计算之后变更，下列参考数据取自该次计算结果。</div>
+        <div v-if="stale" class="ab-warn">输入已变</div>
 
         <!-- ① 参与链路 -->
         <div class="ab-sec">参与链路</div>
@@ -189,7 +185,7 @@ function apply() {
                 <th title="该链路引用的载波配置：系统余量即存于此，是本次配平的未知数">载波配置</th>
                 <th class="n" title="载波占用的频谱带宽，由信息速率、调制方式与滚降系数决定，与系统余量无关">载波带宽<i>{{ bwU }}</i></th>
                 <th class="n" title="功率占用 × 转发器带宽，即该载波所占转发器功率折合的等效带宽。与载波带宽比较即单条链路的功带平衡状况：大于为超发（受功率限），小于为欠发（受带宽限）">功率带宽<i>{{ bwU }}</i></th>
-                <th class="n" title="发端功放功率：此刻实算值 → 配平后（闭式，余量抬 x dB 即功放功率 ×10^(x/10)）。解后超过发端站型的功放功率预设时着色">功放<i>W</i></th>
+                <th class="n" title="发端功放功率：此刻实际计算值 → 配平后（闭式，余量抬 x dB 即功放功率 ×10^(x/10)）。解后超过发端站型的功放功率预设时着色">功放<i>W</i></th>
                 <th class="n" title="当前系统余量 → 配平余量。系统余量存于载波配置，引用同一份载波的各条链路共用一个取值">系统余量<i>dB</i></th>
               </tr>
             </thead>
@@ -272,7 +268,7 @@ function apply() {
           <div class="ab-kv" title="各载波在各自基准余量上同抬同降的量，由配平方程解出"><span>统一平移量 Δ</span><b class="st">{{ sign(res.deltaDb) }}</b><i>dB</i></div>
           <div v-if="isFinite(res.bwUsePct)" class="ab-kv" title="配平后本组载波对转发器资源的占用：带宽按组占用带宽计，功率按 Σ功率带宽计"><span>转发器资源占用</span>
             <b :class="{ bad: res.pwUsePct > 100 || res.bwUsePct > 100 }">带宽 {{ d2(res.bwUsePct) }}% · 功率 {{ d2(res.pwUsePct) }}%</b></div>
-          <div v-if="isFinite(res.bwUseAllPct)" class="ab-kv" title="全表占用：链路表里所有算出结果的行，参与本组配平的按解后值、其余按其此刻的值。与上一行并列着看，才知道这只转发器还剩多少"><span>全表占用</span>
+          <div v-if="isFinite(res.bwUseAllPct)" class="ab-kv" title="全表占用：链路表中所有已计算出结果的行，参与本组配平的按解后值、其余按其此刻的值。与上一行对照，即得该转发器的剩余容量"><span>全表占用</span>
             <b :class="{ bad: res.pwUseAllPct > 100 || res.bwUseAllPct > 100 }">带宽 {{ d2(res.bwUseAllPct) }}% · 功率 {{ d2(res.pwUseAllPct) }}%</b>
             <em>{{ res.allRowsN }} 条链路</em></div>
         </div>
@@ -280,41 +276,21 @@ function apply() {
         <div v-for="(w, i) in (res.warnings || [])" :key="i" class="ab-warn">{{ w }}</div>
       </div>
 
-      <div class="ab-ft">
-        <button class="ab-btn" :disabled="busy" @click="emit('close')">关闭</button>
-        <button class="ab-btn primary" :disabled="!canApply"
+      <template #footer>
+        <button class="btn" :disabled="busy" @click="emit('close')">关闭</button>
+        <button class="btn primary" :disabled="!canApply"
           title="将配平余量写入各载波配置（VSAT 派生专用副本，原配置不改动），随后重新计算全表"
           @click="apply">{{ busy ? '计算中…' : '应用并重新计算' }}</button>
-      </div>
-    </div>
-  </div>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 与其它对话框同一套控件语言（方角、细边），宽一档——里面是两张表。
+/* 外壳归 AppDialog；宽一档——里面是两张表。
    字体走外壳档：功带平衡是求解过程，两张表不进交付文档，衬线只留给会进报告的东西。 */
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.ab-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.ab {
-  width: 760px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;
-  font-family: var(--font-ui);
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
-  box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out);
-}
-.ab-hd {
-  display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted);
-  background: var(--surface-2); border-bottom: 1px solid var(--border);
-}
+.ab-hd { display: inline-flex; align-items: center; gap: 6px; }
 .ab-ic { flex: none; width: 13px; height: 13px; fill: currentColor; stroke: none; vertical-align: -0.125em; }
-.ab-sp { flex: 1; }
-.ab-x {
-  display: inline-flex; align-items: center; justify-content: center; margin: -4px -4px -4px 4px; padding: 3px;
-  font: inherit; color: var(--text-faint); cursor: pointer; background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
-}
-.ab-x:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
-.ab-bd { padding: 12px; overflow: auto; }
+.ab-bd { padding: 12px; }
 
 .ab-sec {
   display: flex; align-items: baseline; gap: 8px; margin: 12px 0 5px; padding-bottom: 3px;
@@ -340,13 +316,13 @@ function apply() {
 .ab-t .nm { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ab-t .dim { color: var(--text-faint); }
 .ab-t .st { font-weight: 700; }
-.ab-t .over { color: var(--warn, #b06a2c); }
+.ab-t .over { color: var(--warn); }
 .ab-t .under { color: var(--text-muted); }
-.ab-t .bad { color: var(--danger, #b3403a); }
+.ab-t .bad { color: var(--danger); }
 .ab-sh { font-style: normal; margin-left: 5px; font-weight: 400; font-size: var(--fs-1); color: var(--text-faint); }
 /* 「此刻 → 解后」：解后那半是本对话框的结论，比现值重一档 */
 .ab-to { font-style: normal; margin-left: 3px; font-weight: 600; color: var(--text); }
-.ab-to.bad { color: var(--danger, #b3403a); }
+.ab-to.bad { color: var(--danger); }
 .ab-empty { text-align: center; color: var(--text-faint); padding: 10px; cursor: default; }
 .ab-in {
   width: 62px; font: inherit; font-size: var(--fs-2); padding: 2px 4px; text-align: right;
@@ -367,21 +343,10 @@ function apply() {
 .ab-kv > span { color: var(--text-muted); }
 .ab-kv > b { font-variant-numeric: tabular-nums; color: var(--text); }
 .ab-kv > b.st { font-size: var(--fs-4); }
-.ab-kv > b.bad { color: var(--danger, #b3403a); }
+.ab-kv > b.bad { color: var(--danger); }
 .ab-kv > i { font-style: normal; color: var(--text-faint); }
 .ab-kv > em { font-style: normal; color: var(--text-faint); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.ab-err { margin-top: 8px; padding: 6px 8px; font-size: var(--fs-2); line-height: 1.5; color: var(--danger, #b3403a); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.ab-warn { margin-top: 6px; font-size: var(--fs-1); line-height: 1.5; color: var(--warn, #b06a2c); }
-
-.ab-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.ab-btn {
-  font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 12px; cursor: pointer;
-  background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px);
-}
-.ab-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.ab-btn:disabled { opacity: .45; cursor: not-allowed; }
-.ab-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-/* 主钮悬停压深一档（不再靠半透明），字色显式 --bg：通用悬停会把字染成 --text */
-.ab-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.ab-err { margin-top: 8px; padding: 6px 8px; font-size: var(--fs-2); line-height: 1.5; color: var(--danger); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
+.ab-warn { margin-top: 6px; font-size: var(--fs-1); line-height: 1.5; color: var(--warn); }
 </style>

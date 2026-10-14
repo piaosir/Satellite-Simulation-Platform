@@ -27,6 +27,7 @@ const linkSweep = require('./utils/linkSweep.js');
 const lbOutputDefs = require('./utils/lbOutputDefs.js');
 const modcodTables = require('./utils/modcodTables.js');
 const ntnPhy = require('./utils/ntnPhy.js');
+const { DEFAULT_SITE } = require('./utils/defaultSite.js');
 
 // 载波信号选项（调制 / FEC / DVB 标准 / 各 MODCOD 预设表），供载波信号面板的下拉与快选用。
 // store = 用户的 MODCOD 改写层（文件管理里编辑的那份，见 utils/modcodTables.js）；不传即纯内置表。
@@ -72,6 +73,12 @@ function geoAutoFill(lat, lon) {
   try { out.rainRate = rainRate.queryRainRate(lat, lon).rainRate; } catch (e) { out.rainRate = null; }
   try { const el = elevation.queryElevation(lat, lon); out.altitude = (el && el.success) ? el.altitude : null; } catch (e) { out.altitude = null; }
   return out;
+}
+
+// 默认站址（站址经纬度留空时引擎所用的那一组，见 utils/defaultSite.js）的降雨率 / 海拔：
+// 与 geoAutoFill 同一条查询，查询点就是引擎的回退值本身 —— 渲染端据此给留空站址的行补 R0.01% / 海拔并作灰字占位。
+function defaultSiteGeo() {
+  return Object.assign({ lat: DEFAULT_SITE.lat, lon: DEFAULT_SITE.lon }, geoAutoFill(DEFAULT_SITE.lat, DEFAULT_SITE.lon));
 }
 
 // NGSO 引擎独立加载并容错：即使其依赖（如 tleStore 的 wx.* 兜底）在某些
@@ -139,7 +146,7 @@ module.exports = {
   computeRegenDownlinkMode: regen && regen.computeRegenDownlinkMode,
   // 再生式星间计算（发射卫星 EIRP / 接收卫星 G/T；合计 C/N = 星间单跳 C/N；几何最差距离注入）
   computeRegenIslMode: regen && regen.computeRegenIslMode,
-  // 再生式星间激光计算（第一性原理光学预算：发射光功率/望远镜增益/光学FSL/指向 → P_rx；光子/bit 灵敏度 → 余量）
+  // 再生式星间激光计算（光学功率链：发射光功率/光学效率/望远镜增益/光学FSL/指向 → P_rx；P_rx − 接收机灵敏度 P_req → 余量）
   computeRegenLaserIslMode: regen && regen.computeRegenLaserIslMode,
   // 端到端链路（多跳 / 混合转发）：节点链 → 分段 → 段内级联 → 逐段结算 → 端到端汇总（只有正向计算）
   computeLinkChain: linkChain && linkChain.computeLinkChain,
@@ -156,6 +163,9 @@ module.exports = {
   solveAccessWindows: ngsoGeometry.solveAccessWindows,
   // 经纬度 → 降雨率 / 海拔自动填值（与小程序口径一致）
   geoAutoFill,
+  // 默认站址（经纬度留空时引擎所用的那一组）及其降雨率 / 海拔：留空站址行的 R0.01% / 海拔按此补
+  DEFAULT_SITE,
+  defaultSiteGeo,
   loadFullPrecisionData,
   // 城市列表（选址 → 自动填经纬度，进而联动降雨率/海拔）
   listCities: cities.getAllCities,

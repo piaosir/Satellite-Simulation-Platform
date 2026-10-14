@@ -122,6 +122,42 @@ function tableWire(o) {
   return out
 }
 
+// ── 关窗守卫的回执（交互调研 C2；主进程侧见 electron/services/windowGuard.js）──
+// 主进程拦下 close 后发 *:closeRequested。这里先回 guard:ack（「渲染端活着、收到了」——3 s 内收不到，主进程按卡死处理，
+// 弹「窗口无响应」），再交给应用回调；回调走完却没调 confirmClose（用户在应用的确认框里点了取消 / 回调抛错）→ guard:cancel
+// （主进程据此中止「退出」）。注册即报 guard:ready：主进程在此之前收到关窗请求（页面没加载完 / 加载失败 / 监听还没挂上）直接放行；
+// 全部退订后报 { on:false }。顺带报界面语言（ui-lang，同 src/shared/i18n/lang.js），主进程的原生兜底框按它出字。
+// 同一窗口回调可能重入（模型工作台再点一次 X 时前一轮还在落草稿）：只在没有在跑的回调时清「已确认」，最后一个走完的回调才判取消。
+const uiLangNow = () => { try { return (typeof localStorage !== 'undefined' && localStorage.getItem('ui-lang') === 'en') ? 'en' : 'zh' } catch { return 'zh' } }
+let guardLive = 0, guardRunning = 0, guardConfirmed = false
+function onGuard(channel, cb) {
+  if (typeof cb !== 'function') return () => {}
+  const h = async () => {
+    if (!guardRunning) guardConfirmed = false
+    guardRunning++
+    ipcRenderer.send('guard:ack', { lang: uiLangNow() })
+    try { await cb() } catch (e) { console.error('[关窗守卫] ' + channel, e) }
+    guardRunning--
+    if (!guardConfirmed && !guardRunning) ipcRenderer.send('guard:cancel')
+  }
+  ipcRenderer.on(channel, h)
+  guardLive++
+  ipcRenderer.send('guard:ready', { on: true, lang: uiLangNow() })
+  let off = false
+  return () => {
+    if (off) return
+    off = true
+    ipcRenderer.removeListener(channel, h)
+    guardLive = Math.max(0, guardLive - 1)
+    if (!guardLive) ipcRenderer.send('guard:ready', { on: false })
+  }
+}
+const confirmGuard = (channel) => { guardConfirmed = true; return ipcRenderer.invoke(channel) }
+// 出 IPC 前现造纯数据（Vue Proxy 过不了结构化克隆，invoke 会抛）；造不出来给 undefined
+const plainData = (x) => { if (x == null || typeof x !== 'object') return x; try { return JSON.parse(JSON.stringify(x)) } catch { return undefined } }
+// 订阅一律返回退订函数
+const subscribe = (channel, fn) => { ipcRenderer.on(channel, fn); return () => ipcRenderer.removeListener(channel, fn) }
+
 // 安全桥：渲染进程通过 window.api.* 调用主进程能力，不直接暴露 Node。
 contextBridge.exposeInMainWorld('api', {
   computeLink: (s, l) => ipcRenderer.invoke('link:compute', s, l),
@@ -155,7 +191,7 @@ contextBridge.exposeInMainWorld('api', {
     computeRegenDownlink: (s, l, opt) => ipcRenderer.invoke('link:computeRegenDownlink', s, l, opt),
     // 再生式星间：计算（合计 C/N = 星间单跳 C/N；发射卫星 EIRP + 接收卫星 G/T）+ 两星几何求解
     computeRegenIsl: (s, l, opt) => ipcRenderer.invoke('link:computeRegenIsl', s, l, opt),
-    // 再生式星间激光：第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；几何复用 islGeometry（传光频算相干多普勒）
+    // 再生式星间激光：光学功率链（P_rx 链；余量 = P_rx − 接收机灵敏度 P_req）；几何复用 islGeometry（传光频算相干多普勒）
     computeRegenLaser: (p, opt) => ipcRenderer.invoke('link:computeRegenLaser', p, opt),
     // 端到端链路（多跳 / 混合转发）：整条链一次算完（分段 + 段内级联 + 端到端汇总）
     chainCompute: (chain) => ipcRenderer.invoke('link:chainCompute', chain),
@@ -166,6 +202,8 @@ contextBridge.exposeInMainWorld('api', {
     ngsoGeometryBatch: (opt) => ipcRenderer.invoke('link:ngsoGeometryBatch', opt),
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
+    // 默认站址（经纬度留空时引擎所用的那一组）的 { lat, lon, rainRate, altitude }
+    defaultSiteGeo: () => ipcRenderer.invoke('link:defaultSiteGeo'),
     grdSample: (req) => ipcRenderer.invoke('link:grdSample', req),
     // 干扰分析用：逐波束值（少量站点）/ C/CCI 合成（整张场图，主进程内折成标量）
     grdSampleBeams: (req) => ipcRenderer.invoke('link:grdSampleBeams', req),
@@ -180,9 +218,9 @@ contextBridge.exposeInMainWorld('api', {
     baseband: () => ipcRenderer.invoke('link:baseband'),
     waterfall: (ctx) => ipcRenderer.invoke('link:waterfall', ctx),
     openConfig: () => ipcRenderer.invoke('linkbudget:openConfig'),
-    // 关窗守卫：主进程拦截原生关闭动作后转发此事件；渲染进程问完用户再调 confirmClose() 才真正关闭
-    onCloseRequested: (cb) => ipcRenderer.on('linkbudget:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('linkbudget:confirmClose')
+    // 关窗守卫：主进程拦截原生关闭动作后转发此事件；渲染进程问完用户再调 confirmClose() 才真正关闭（返回退订函数，回执见 onGuard）
+    onCloseRequested: (cb) => onGuard('linkbudget:closeRequested', cb),
+    confirmClose: () => confirmGuard('linkbudget:confirmClose')
   },
   // 带上下文打开计算窗（主窗口右键 / 卫星信息栏「分析」/ 链路视图「导入链路预算」）：kind ∈ linkbudget | ngso | regen | e2e | suntool | rain | ci；
   // ctx = { sat?, sites?, links? }（主进程清洗成纯数据）。接收端用 onContext 订阅，返回退订函数。
@@ -193,20 +231,20 @@ contextBridge.exposeInMainWorld('api', {
   // NGSO 链路预算独立窗口的开窗/关窗守卫（计算/几何/导出/城市等能力复用上面的 linkBudget.*）
   ngso: {
     open: () => ipcRenderer.invoke('ngso:open'),
-    onCloseRequested: (cb) => ipcRenderer.on('ngso:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('ngso:confirmClose')
+    onCloseRequested: (cb) => onGuard('ngso:closeRequested', cb),
+    confirmClose: () => confirmGuard('ngso:confirmClose')
   },
   // 再生式链路预算独立窗口的开窗/关窗守卫（计算复用 linkBudget.computeRegenUplink / 几何复用 ngsoGeometry）
   regen: {
     open: () => ipcRenderer.invoke('regen:open'),
-    onCloseRequested: (cb) => ipcRenderer.on('regen:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('regen:confirmClose')
+    onCloseRequested: (cb) => onGuard('regen:closeRequested', cb),
+    confirmClose: () => confirmGuard('regen:confirmClose')
   },
   // 端到端链路预算独立窗口的开窗/关窗守卫（计算走 linkBudget.chainCompute，几何全部手填）
   e2e: {
     open: () => ipcRenderer.invoke('e2e:open'),
-    onCloseRequested: (cb) => ipcRenderer.on('e2e:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('e2e:confirmClose')
+    onCloseRequested: (cb) => onGuard('e2e:closeRequested', cb),
+    confirmClose: () => confirmGuard('e2e:confirmClose')
   },
   sunOutage: {
     open: () => ipcRenderer.invoke('suntool:open'),
@@ -238,8 +276,8 @@ contextBridge.exposeInMainWorld('api', {
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
     cityGroups: () => ipcRenderer.invoke('link:cityGroups'),
-    onCloseRequested: (cb) => ipcRenderer.on('suntool:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('suntool:confirmClose')
+    onCloseRequested: (cb) => onGuard('suntool:closeRequested', cb),
+    confirmClose: () => confirmGuard('suntool:confirmClose')
   },
   // 干扰分析（C/I）独立窗口：C/ASI 邻星 · C/XPI 交叉极化 · C/CCI 同频复用 · NGSO 时变 CDF。
   // 纯只读——读三库（store.getLibrary）与 GRD（linkBudget.grd*），不写回任何库。
@@ -275,8 +313,8 @@ contextBridge.exposeInMainWorld('api', {
     geoFill: (lat, lon) => ipcRenderer.invoke('link:geoFill', lat, lon),
     cities: () => ipcRenderer.invoke('link:cities'),
     searchCities: (kw) => ipcRenderer.invoke('link:searchCities', kw),
-    onCloseRequested: (cb) => ipcRenderer.on('rain:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('rain:confirmClose')
+    onCloseRequested: (cb) => onGuard('rain:closeRequested', cb),
+    confirmClose: () => confirmGuard('rain:confirmClose')
   },
   // 性能指标表窗口（对地 / 对星 / 气象）：一根天线一窗、可多开。主进程只中继：
   //   主窗口侧 open / push / close / setTitle / list + onAct / onClosed；弹窗侧 self / act + onMsg。
@@ -318,7 +356,22 @@ contextBridge.exposeInMainWorld('api', {
   },
   app: {
     deviceId: () => ipcRenderer.invoke('app:deviceId'),
-    version: () => ipcRenderer.invoke('app:version')
+    version: () => ipcRenderer.invoke('app:version'),
+    // 退出程序（主窗菜单「退出」）：主进程逐个关计算窗（各走各的关窗守卫），全部关完再退出；任一窗取消则中止。立即返回
+    quit: () => ipcRenderer.invoke('app:quit').then(() => undefined)
+  },
+  // 导出回执：在资源管理器中显示 / 用系统默认程序打开。只认主进程本会话写过的文件（各保存处理器写成功后登记），
+  // 别的路径一律 false。→ Promise<boolean>
+  files: {
+    reveal: (p) => ipcRenderer.invoke('files:reveal', typeof p === 'string' ? p : ''),
+    open: (p) => ipcRenderer.invoke('files:open', typeof p === 'string' ? p : '')
+  },
+  // 计算窗 → 主窗口的反向通道（交互调研 C3）：cmd ∈ seekClock | focusSat | faceLonLat | markTime（参数口径见
+  // electron/services/sceneCmd.js），主进程清洗后转给主窗口并把它提到前面。→ Promise<boolean>（主窗口不在 / 参数不合法 → false）
+  // onCmd 只给主窗口订阅：cb(cmd, payload)，返回退订函数
+  scene: {
+    cmd: (cmd, payload) => ipcRenderer.invoke('scene:cmd', typeof cmd === 'string' ? cmd : '', plainData(payload)),
+    onCmd: (cb) => subscribe('scene:cmd', (_e, m) => { if (m && typeof cb === 'function') cb(m.cmd, m.payload) })
   },
   // 自动更新（帮助 → 检查更新）：state 读主进程快照；check 立即检查（返回检查结束后的快照，
   // 下载进度经 onChanged 推送）；install 立即重启安装（仅已下载时有效）
@@ -337,7 +390,9 @@ contextBridge.exposeInMainWorld('api', {
   },
   // 主窗口自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色更新为当前主题色
   win: {
-    setOverlay: (opt) => ipcRenderer.invoke('window:setOverlay', opt)
+    setOverlay: (opt) => ipcRenderer.invoke('window:setOverlay', opt),
+    // 当前外观 light / dark / studio → 主进程记住，之后开的窗口底色按它取（深色外观不白闪）
+    setTheme: (kind, source) => ipcRenderer.invoke('window:setTheme', kind, source)
   },
   share: {
     configured: () => ipcRenderer.invoke('share:configured'),
@@ -475,8 +530,8 @@ contextBridge.exposeInMainWorld('api', {
   // 空间态势报告（独立窗口）：开窗 + 关窗守卫（与 rainAttenuation 同套）
   ssa: {
     open: () => ipcRenderer.invoke('ssa:open'),
-    onCloseRequested: (cb) => ipcRenderer.on('ssa:closeRequested', cb),
-    confirmClose: () => ipcRenderer.invoke('ssa:confirmClose')
+    onCloseRequested: (cb) => onGuard('ssa:closeRequested', cb),
+    confirmClose: () => confirmGuard('ssa:confirmClose')
   },
   // 转发器频率计划：挂在卫星下、与 GRD 天线平级的一类「文件」。
   // 主进程只负责存取与原生对话框，模型/校验/容量/出图全在渲染端 src/shared/freqPlan*.js。
@@ -494,7 +549,10 @@ contextBridge.exposeInMainWorld('api', {
     onOpenPlan: (cb) => ipcRenderer.on('freqPlan:openPlan', (_e, id) => cb(id)),
     // 文件区删/改名的广播（编辑窗手里那份可能就是它）
     onPlanRemoved: (cb) => ipcRenderer.on('freqPlan:planRemoved', (_e, id) => cb(id)),
-    onPlanRenamed: (cb) => ipcRenderer.on('freqPlan:planRenamed', (_e, id, name) => cb(id, name))
+    onPlanRenamed: (cb) => ipcRenderer.on('freqPlan:planRenamed', (_e, id, name) => cb(id, name)),
+    // 任一窗口改了频率计划（存 / 删 / 改名 / 导入 / 随卫星改挂）后主进程广播给【其余】窗口：cb({ ids, kind })，
+    // kind ∈ save | remove | rename | import | reassign。返回退订函数
+    onChanged: (cb) => subscribe('freqPlan:changed', (_e, m) => { if (typeof cb === 'function') cb(m || { ids: [], kind: '' }) })
   },
   coverage: {
     index: () => ipcRenderer.invoke('coverage:index'),
@@ -542,8 +600,8 @@ contextBridge.exposeInMainWorld('api', {
     open: (o) => ipcRenderer.invoke('modelwb:open', o ? JSON.parse(JSON.stringify(o)) : undefined),
     onTarget: (cb) => { const h = (_e, p) => cb(p); ipcRenderer.on('modelwb:target', h); return () => ipcRenderer.removeListener('modelwb:target', h) },
     // 关窗守卫（模型工作台，2026-10-06）：主进程拦下 close 转来此事件；渲染端把草稿 / 待存改动落定后调 confirmClose() 才真关（主进程 3 s 兜底）
-    onCloseRequested: (cb) => { const h = () => cb(); ipcRenderer.on('modelwb:closeRequested', h); return () => ipcRenderer.removeListener('modelwb:closeRequested', h) },
-    confirmClose: () => ipcRenderer.invoke('modelwb:confirmClose'),
+    onCloseRequested: (cb) => onGuard('modelwb:closeRequested', cb),
+    confirmClose: () => confirmGuard('modelwb:confirmClose'),
     manifest: () => ipcRenderer.invoke('models:manifest'),
     ensure: (o) => ipcRenderer.invoke('models:ensure', o ? { id: o.id, lod: o.lod } : o),
     thumbnail: (id) => ipcRenderer.invoke('models:thumbnail', id),

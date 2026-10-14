@@ -7,8 +7,9 @@
 //
 // 报告语言不在这里选：它跟随平台语言（设置▸语言），屏幕上的详细预算与导出的文件一起切换。
 // 在这儿再放一个开关就会出现「屏幕是中文、导出是英文」。
-import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
 import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
@@ -50,6 +51,12 @@ const scheme = computed(() => schemeOf(props.orbitType, props.regenMode))
 const schemeText = computed(() => schemeName(scheme.value, props.lang) + (schemeSub(scheme.value, props.lang) ? '　·　' + schemeSub(scheme.value, props.lang) : ''))
 
 const isSla = computed(() => props.variant === 'sla')
+// Excel 选项的悬停口径按实际出的工作簿写：NGSO / 再生式总报告后跟几何关系（再生式分节时每模块一张），SLA 版是另一套表
+const xlsxHint = computed(() => t.value(isSla.value
+  ? '服务等级指标总表 · 指标定义 · 每条链路一张 · 引用标准'
+  : (scheme.value.orbitType === 'NGSO' || scheme.value.orbitType === 'REGEN')
+    ? '第一张表为总报告，其后为几何关系表与逐链路详情表'
+    : '第一张表为总报告，其后每条链路一张详情表'))
 const KEY = computed(() => props.storeKey + '/report/doc')
 const OPT_KEY = computed(() => props.storeKey + (isSla.value ? '/sla/opt' : '/report/opt'))
 // 标题的自动命名两份各存一份：全报告叫「…链路预算报告」、这一份叫「…服务等级指标（SLA）」
@@ -151,25 +158,14 @@ function persist() {
   } catch (e) { /* 存不下不影响导出 */ }
 }
 
-// 关闭只走这一条路：右上角 ✕ / 取消 / Esc。点遮罩不关——在输入框里选中文字拖到框外松手、
-// 或拽「备注」右下角的缩放把手拖出边界，都会让 click 落在遮罩上，一关就是十栏白填。
+// 关闭只走这一条路：右上角 ✕ / 取消 / Esc（外壳 AppDialog，生成中 closable=false）。点遮罩不关——在输入框里
+// 选中文字拖到框外松手、或拽「备注」右下角的缩放把手拖出边界，都会让 click 落在遮罩上，一关就是十栏白填。
 function close() {
   if (props.busy) return
   persist()
   emit('close')
 }
-// 捕获阶段收 Esc：对话框在最上层，这一下就该是它的，不该再漏给下面的表格去取消单元格编辑
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing || props.busy) return   // 组字中的 Esc 是取消组字，不是关窗
-  e.stopPropagation()
-  close()
-}
-const KEY_OPT = { capture: true }
-watch(() => props.open, (v) => {
-  if (v) { loadSaved(); window.addEventListener('keydown', onKey, KEY_OPT) }
-  else window.removeEventListener('keydown', onKey, KEY_OPT)
-}, { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, KEY_OPT))
+watch(() => props.open, (v) => { if (v) loadSaved() }, { immediate: true })
 
 const canSubmit = computed(() => (opt.xlsx || opt.docx || (!isSla.value && opt.pdf))
   && props.linkCount > 0 && !props.busy && (!isSla.value || props.slaCount > 0))
@@ -201,16 +197,9 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 </script>
 
 <template>
-  <div v-if="open" class="rd-mask">
-    <div class="rd" role="dialog" aria-modal="true">
-      <div class="rd-hd">
-        <Icon name="file-down" :size="12" />{{ t(isSla ? '导出 SLA 报告' : '导出报告') }}
-        <span class="rd-sp"></span>
-        <span class="rd-scheme">{{ schemeText }}</span>
-        <button class="rd-x" :disabled="busy" :title="t('关闭')" :aria-label="t('关闭')" @click="close">
-          <Icon name="x" :size="12" />
-        </button>
-      </div>
+  <AppDialog :open="open" :width="560" flush :closable="!busy" @close="close">
+      <template #title><span class="rd-t"><Icon name="file-export" :size="12" />{{ t(isSla ? '导出 SLA 报告' : '导出报告') }}</span></template>
+      <template #head><span class="rd-scheme">{{ schemeText }}</span></template>
 
       <div class="rd-bd">
         <!-- 元信息：封面与页眉页脚照此写 -->
@@ -241,7 +230,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         <div v-if="logoErr" class="rd-err">{{ logoErr }}</div>
 
         <!-- 报告字体：三档各选一款，按窗口记住（GSO / NGSO / 再生式 / 端到端互相独立） -->
-        <div class="rd-sec" :title="t('Excel 与 Word 只写字体名；PDF 用本机字体')">{{ t('字体') }}</div>
+        <div class="rd-sec" :title="t('Excel 与 Word 仅写入字体名；PDF 用本机字体')">{{ t('字体') }}</div>
         <div class="rd-fonts">
           <label class="rd-f">
             <span class="rd-l">{{ t('西文') }}</span>
@@ -265,10 +254,10 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 
         <div class="rd-sec">{{ t('输出') }}</div>
         <div class="rd-opts">
-          <label class="rd-ck" :title="t('第一张表为总报告，其后每条链路一张详情表')">
+          <label class="rd-ck" :title="xlsxHint">
             <input v-model="opt.xlsx" type="checkbox" :disabled="busy" />Excel（.xlsx）
           </label>
-          <label class="rd-ck" :title="t('公文格式：封面 · 文档控制 · 目录 · 五级标题正文（可在 Word 里继续编辑）')">
+          <label class="rd-ck" :title="t('公文格式：封面 · 目录 · 正文（可在 Word 中继续编辑）')">
             <input v-model="opt.docx" type="checkbox" :disabled="busy" />Word（.docx）
           </label>
           <label v-if="!isSla" class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
@@ -294,42 +283,22 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         </div>
       </div>
 
-      <div class="rd-ft">
-        <button class="rd-btn" :disabled="busy" @click="close">{{ t('取消') }}</button>
-        <button class="rd-btn primary" :disabled="!canSubmit" @click="submit">
+      <template #footer>
+        <button class="btn" :disabled="busy" @click="close">{{ t('取消') }}</button>
+        <button class="btn primary" :disabled="!canSubmit" @click="submit">
           {{ busy ? t('生成中…') : t('生成报告') }}
         </button>
-      </div>
-    </div>
-  </div>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 与工作台其它对话框同一套控件语言（方角、细边、衬线数字），只是宽一档——元信息有十栏要填 */
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.rd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.rd {
-  width: 560px; max-height: 88vh; display: flex; flex-direction: column;
-  font-family: var(--lb-serif, var(--font-serif));
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
-  box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out);
-}
-.rd-hd {
-  display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted);
-  background: var(--surface-2); border-bottom: 1px solid var(--border);
-}
-.rd-sp { flex: 1; }
-.rd-scheme { letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: var(--fs-2); }
-.rd-x {
-  display: inline-flex; align-items: center; justify-content: center; margin: -4px -4px -4px 4px;
-  padding: 3px; font: inherit; color: var(--text-faint); cursor: pointer;
-  background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
-}
-.rd-x:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
-.rd-x:disabled { opacity: .35; cursor: not-allowed; }
-.rd-bd { padding: 12px; overflow: auto; }
+/* 外壳归 AppDialog，宽一档——元信息有十栏要填。
+   字体走界面字体（--font-ui，AppDialog 给定）：这是填表界面，不会原样进入交付文档，衬线只留给交付文档本身 */
+.rd-t { display: inline-flex; align-items: center; gap: 6px; }
+/* 题条里关闭钮前的体制读数 */
+.rd-scheme { flex: 0 1 auto; min-width: 0; align-self: center; padding: 0 10px; color: var(--text-faint); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rd-bd { padding: 12px; }
 .rd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
 .rd-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .rd-f.wide { grid-column: 1 / -1; }
@@ -356,7 +325,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 .rd-logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .rd-logo-name { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .rd-file { display: none; }
-.rd-err { margin-top: 5px; font-size: var(--fs-2); color: var(--danger, #b00000); }
+.rd-err { margin-top: 5px; font-size: var(--fs-2); color: var(--danger); }
 .rd-opts { display: flex; gap: 16px; flex-wrap: wrap; }
 .rd-ck { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-3); color: var(--text); cursor: pointer; }
 .rd-ck.off { color: var(--text-faint); cursor: not-allowed; }
@@ -369,8 +338,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 .rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }
 .rd-ptext { margin-top: 4px; font-size: var(--fs-2); color: var(--text-muted); }
-.rd-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-/* 定高 --h-ctl（原靠内距撑出 21px）；主钮机位色，悬停压深一档、字色显式 --bg（通用悬停会把字染成 --text） */
+/* 正文里的小钮（台标选择 / 平台标志 / 移除）：定高 --h-ctl */
 .rd-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl);
   font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 12px; cursor: pointer;
@@ -378,6 +346,4 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 }
 .rd-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rd-btn:disabled { opacity: .45; cursor: not-allowed; }
-.rd-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.rd-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

@@ -121,7 +121,7 @@ export function useConfigTree(opts) {
   const errText = (e) => (e && e.message) || String(e)
   async function confirmCfgDlg() {
     const name = (cfgDlg.name || '').trim()
-    if (!name) { toast('请输入配置名称'); return }
+    if (!name) { toast('配置名称为空。'); return }
     let item = null
     try { item = await api.store.saveConfig(ns, { name, state: serializeState() }) }
     catch (e) { toast('保存失败：' + errText(e)); return }   // 对话框留着，用户可改名重试
@@ -314,7 +314,7 @@ export function useConfigTree(opts) {
   // 于是「把一个文件夹归到另一个文件夹下」只剩拖拽一条路，列表一长就等于做不到。
   function copyItem(c) {
     if (!c) return
-    if (c.type === 'folder') { toast('文件夹只能剪切，不能复制'); return }
+    if (c.type === 'folder') { toast('文件夹仅能剪切，不能复制'); return }
     // 自动保存模式下复制当前配置取工作区现值：列表里那份可能还差最后不到 1 s 的改动
     const st = (autosave && c.id === activeId.value) ? serializeState() : c.state
     cfgClip.value = { mode: 'copy', id: c.id, name: c.name, isFolder: false, nameAuto: !!(autosave && c.nameAuto), state: JSON.parse(JSON.stringify(st)) }

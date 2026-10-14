@@ -322,7 +322,7 @@ export function createPerfWinHost(D) {
     switch (m.type) {
       case 'ready': w.ready = true; bindShell(w); pushShellFull(w); refreshShell(key); break
       case 'picks:add': D.satPerf.addTarget(p, key); refreshShell(key); break
-      case 'picks:addMany': { const n = D.satPerf.addTargets(p || [], key); if (!n) push(w.id, { note: '这些卫星都已在目标星列表里' }); refreshShell(key); break }
+      case 'picks:addMany': { const n = D.satPerf.addTargets(p || [], key); if (!n) push(w.id, { note: '这些卫星都已在目标卫星列表里' }); refreshShell(key); break }
       case 'picks:remove': D.satPerf.removeTarget(p && p.id, key); refreshShell(key); break
       case 'picks:removeMany': D.satPerf.removeTargets(p, key); refreshShell(key); break   // { ids } 来自名单表、{ keys } 来自结果表
       case 'picks:clear': D.satPerf.clearTargets(key); refreshShell(key); break

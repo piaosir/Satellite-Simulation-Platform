@@ -56,7 +56,7 @@ function signJwt(cfg, nowMs) {
     throw new Error('私钥无法解析（需 PKCS#8 PEM 的 Ed25519 私钥）：' + e.message);
   }
   if (key.asymmetricKeyType !== 'ed25519') {
-    throw new Error('私钥不是 Ed25519（拿到的是 ' + key.asymmetricKeyType + '），和风 JWT 只接受 EdDSA');
+    throw new Error('私钥不是 Ed25519（实际为 ' + key.asymmetricKeyType + '），和风 JWT 仅接受 EdDSA');
   }
   const sig = sign(null, Buffer.from(data), key);
   return { token: data + '.' + b64u(sig), expSec: exp };

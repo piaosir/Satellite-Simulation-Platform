@@ -115,5 +115,24 @@ async function load(saved) {
   ok('⑤ 盯的是 sideCtx() 不是 shellUi.side', w && !/COV_SIDES\.includes/.test(page.replace(/watch\(\(\) => sideCtx\(\)[\s\S]*?\n/g, '')))
 }
 
+// ===== ⑥ 激活锁：未激活时侧栏视图打不开（地图综合设置除外），兜底闸不改写 sideLast =====
+// 漏口曾经是 3D 页 / 菜单直接写 shellUi.side（右键「地图综合设置」、信息栏滑杆图标、「视图 › 侧栏」）。
+{
+  const { activation, lockAsk } = await import('../../../src/stores/activation.js')
+  const { shellUi, sideCtx, requestSide, sideLocked } = await load({ side: '', sideLast: 'satcov' })
+  activation.ready = true; activation.active = false          // 未激活
+  const ask0 = lockAsk.value
+  ok('⑥ requestSide 受锁视图返回 false', requestSide('vis') === false && shellUi.side === '')
+  ok('⑥ 并请出「未激活」窗', lockAsk.value === ask0 + 1)
+  shellUi.side = 'focus'                                     // 漏网的直接赋值
+  ok('⑥ 兜底闸收回直接赋值', shellUi.side === '' && lockAsk.value === ask0 + 2)
+  ok('⑥ 兜底不改写上下文视图', shellUi.sideLast === 'satcov' && sideCtx() === 'satcov', shellUi.sideLast)
+  ok('⑥ 地图综合设置不受锁', !sideLocked('geo') && requestSide('geo') === true && shellUi.side === 'geo')
+  ok('⑥ 收起侧栏不受锁', requestSide('') === true && shellUi.side === '')
+  activation.active = true                                   // 激活后照常
+  ok('⑥ 激活后 requestSide 放行', requestSide('vis') === true && shellUi.side === 'vis' && lockAsk.value === ask0 + 2)
+  activation.ready = false
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

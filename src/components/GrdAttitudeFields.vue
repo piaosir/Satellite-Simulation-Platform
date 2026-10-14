@@ -167,18 +167,18 @@ function pickTgtSat(e) {
 
     <!-- 偏航导引 -->
     <div v-else-if="law === 'yawSteer'" class="srow"><label title="偏航导引后太阳所在的本体半平面（太阳翼轴 ±Y 始终垂直于太阳方向）">太阳侧</label>
-      <div class="seg">
-        <span class="sg" :class="{ on: P.sunSide !== '-X' }" @click="put(AE.withParam(att, 'sunSide', null))">+X</span>
-        <span class="sg" :class="{ on: P.sunSide === '-X' }" @click="put(AE.withParam(att, 'sunSide', '-X'))">−X</span>
+      <div role="radiogroup" class="seg">
+        <button type="button" role="radio" :aria-checked="!!(P.sunSide !== '-X')" class="sg" :class="{ on: P.sunSide !== '-X' }" @click="put(AE.withParam(att, 'sunSide', null))">+X</button>
+        <button type="button" role="radio" :aria-checked="!!(P.sunSide === '-X')" class="sg" :class="{ on: P.sunSide === '-X' }" @click="put(AE.withParam(att, 'sunSide', '-X'))">−X</button>
       </div>
     </div>
 
     <!-- 惯性定向：欧拉角 / 四元数（本体 → TEME） -->
     <template v-else-if="law === 'inertial'">
       <div class="srow"><label title="本体 → TEME 惯性系的固定旋转（TEME 与 J2000 相差岁差与章动，2026 年约 0.36°）">定义方式</label>
-        <div class="seg">
-          <span class="sg" :class="{ on: inMode === 'euler' }" @click="inMode === 'euler' || put(AE.withInertialMode(att, 'euler'))">欧拉角</span>
-          <span class="sg" :class="{ on: inMode === 'q' }" @click="inMode === 'q' || put(AE.withInertialMode(att, 'q'))">四元数</span>
+        <div role="radiogroup" class="seg">
+          <button type="button" role="radio" :aria-checked="!!(inMode === 'euler')" class="sg" :class="{ on: inMode === 'euler' }" @click="inMode === 'euler' || put(AE.withInertialMode(att, 'euler'))">欧拉角</button>
+          <button type="button" role="radio" :aria-checked="!!(inMode === 'q')" class="sg" :class="{ on: inMode === 'q' }" @click="inMode === 'q' || put(AE.withInertialMode(att, 'q'))">四元数</button>
         </div>
       </div>
       <template v-if="inMode === 'euler'">
@@ -203,29 +203,29 @@ function pickTgtSat(e) {
     <!-- 对目标定向：目标 -->
     <template v-else-if="law === 'target'">
       <div class="srow"><label>目标</label>
-        <div class="seg">
-          <span class="sg" :class="{ on: kindShown === 'station' }" title="WGS-84 大地坐标" @click="setTgtKind('station')">地球站</span>
-          <span class="sg" :class="{ on: kindShown === 'sat' }" @click="setTgtKind('sat')">卫星</span>
-          <span class="sg" :class="{ on: kindShown === 'ecef' }" title="地心经纬度 + 高度（与手动「空间点」指向同一口径）" @click="setTgtKind('ecef')">空间点</span>
+        <div role="radiogroup" class="seg">
+          <button type="button" role="radio" :aria-checked="!!(kindShown === 'station')" class="sg" :class="{ on: kindShown === 'station' }" title="WGS-84 大地坐标" @click="setTgtKind('station')">地球站</button>
+          <button type="button" role="radio" :aria-checked="!!(kindShown === 'sat')" class="sg" :class="{ on: kindShown === 'sat' }" @click="setTgtKind('sat')">卫星</button>
+          <button type="button" role="radio" :aria-checked="!!(kindShown === 'ecef')" class="sg" :class="{ on: kindShown === 'ecef' }" title="地心经纬度 + 高度（与手动「空间点」指向同一口径）" @click="setTgtKind('ecef')">空间点</button>
         </div>
       </div>
       <template v-if="kindShown === 'station'">
         <div class="srow"><label>地球站</label>
           <span class="tgtnm" data-i18n-skip>{{ tv.kind === 'station' && tv.name ? tv.name : '—' }}</span>
-          <span class="ic" title="从城市库 / 标记中选择" @click="openCity"><Icon name="map-pin" :size="12" /></span>
+          <button type="button" class="ibtn sm" title="从城市库 / 标记中选择" @click="openCity"><Icon name="map-pin" :size="12" /></button>
         </div>
         <div class="srow"><label>纬度</label><NumBox class="ci" :model-value="tv.kind === 'station' ? r6(tv.lat) : null" :min="-90" :max="90" :step="0.1" @commit="(v) => setStation({ lat: v })" /><span class="u">°N</span></div>
         <div class="srow"><label>经度</label><NumBox class="ci" :model-value="tv.kind === 'station' ? r6(tv.lon) : null" :min="-180" :max="180" :step="0.1" @commit="(v) => setStation({ lon: v })" /><span class="u">°E</span></div>
         <div class="srow"><label>高度</label><NumBox class="ci" :model-value="tv.kind === 'station' ? r6(tv.altM) : null" :min="-12000" :max="100000000" :step="10" @commit="(v) => setStation({ altM: v })" /><span class="u">m</span></div>
       </template>
       <template v-else-if="kindShown === 'sat'">
-        <div class="srow"><label>目标星</label>
+        <div class="srow"><label>目标卫星</label>
           <span class="tgtnm" data-i18n-skip>{{ tgtLabel || '—' }}</span>
         </div>
-        <div class="srow"><input class="ci" v-model="bq" placeholder="搜索目标星：卫星名 / NORAD / 星座 / 卫星组" /></div>
+        <div class="srow"><input class="ci search-field" v-model="bq" placeholder="搜索目标卫星：卫星名 / NORAD / 星座 / 卫星组" /></div>
         <div v-if="bq.trim()" class="sres">
           <div v-if="bBusy" class="sres-e">搜索中…</div>
-          <div v-else-if="!bcand.length" class="sres-e">没有匹配的卫星。</div>
+          <div v-else-if="!bcand.length" class="sres-e">无匹配卫星。</div>
           <template v-else>
             <div class="sres-list">
               <div v-for="e in bcand" :key="e.noradId || e.name" class="sitem" @click="pickTgtSat(e)">
@@ -283,17 +283,6 @@ function pickTgtSat(e) {
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 /* 偏置标签尾的读数标注（Az / El / ψ）：标签列 70 px 之内放得下，不把这三行的输入框挤出列 */
 .axt { margin-left: 5px; color: var(--accent-ui); font-size: var(--fs-2); }
-.seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
-.srow > .seg { flex: 1 1 auto; }
-.srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
-.ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
-.ic:hover { color: var(--text); }
 .tgtnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .aerr { font-size: var(--fs-2); color: var(--warn); }
 .sres { border: 1px solid var(--border); background: var(--bg); }

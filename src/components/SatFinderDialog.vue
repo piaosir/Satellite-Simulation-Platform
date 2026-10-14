@@ -4,6 +4,7 @@
 // 条件的判定逻辑不在这里（shared/satFilter.js），本组件只铺格子、收结果、发动作。
 import { ref, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import SatList from './SatList.vue'
 import SatFilterBar from './SatFilterBar.vue'
 
@@ -23,7 +24,7 @@ const emit = defineEmits(['update:keyword', 'update:filters', 'close', 'show', '
 const ACTIONS = [
   { key: 'show', label: '显示为图层', icon: 'eye', title: '把全部命中（或选中的那些）作为「搜索结果」图层显示到地图上', always: true },
   { key: 'save', label: '存为卫星组', icon: 'folder-plus', title: '把全部命中（或选中的那些）存成一个卫星组', always: true },
-  { key: 'addto', label: '加入组', icon: 'layers', title: '把选中的卫星加入某个卫星组' }
+  { key: 'addto', label: '加入组', icon: 'folder-input', title: '把选中的卫星加入某个卫星组' }
 ]
 const addMenu = ref(null)   // { sats, x, y }
 // SatList 的 action 载荷：{ items:[已选行], x, y, right }；items 为空 = 「全部命中」（always 型动作才会在无选中时触发）
@@ -35,37 +36,38 @@ function onAction(key, p) {
 }
 function addTo(g) { const m = addMenu.value; addMenu.value = null; if (m) emit('add-to-group', g, m.sats) }
 
-// Esc：先关「加入组」菜单，再关对话框。捕获相挂在 window 上并截停 —— 宿主页的 Esc（清选择 / 退聚焦）
-// 不再跟着触发；输入法组字中的 Esc 是撤销组字，不关。
-// 对话框里自己用 Esc 的控件先让它处理（捕获相截停会让它们收不到）：
-// 结果筛选框有字 = 清字；结果表有选中 = 清选择；数字框 = 丢草稿并失焦（下一下 Esc 再关对话框）。
-const fdEl = ref(null)
-function onEsc(e) {
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关；z 与其它模态同档）。
+// Esc 由内到外：「加入组」菜单开着先关菜单（window 捕获相截停，AppDialog 收不到）；
+// 对话框里自己用 Esc 的控件先让它处理、这一下不关框：结果筛选框有字 = 清字；结果表有选中 = 清选择；
+// 数字框 = 丢草稿并失焦（下一下 Esc 再关对话框）。判定要在控件处理之前（处理完字已清空），
+// 故在正文捕获相记一笔，AppDialog 冒泡段发来的 close 见这笔就不关（整个派发结束后清掉）。
+let keepOpen = false
+function onBodyEsc(e) {
   if (e.key !== 'Escape' || e.isComposing) return
-  if (addMenu.value) { e.stopPropagation(); addMenu.value = null; return }
   const t = e.target
-  if (t instanceof Element && fdEl.value && fdEl.value.contains(t) &&
-      ((t.matches('.slf input') && t.value) || (t.matches('.slvp') && t.closest('.sl.hassel')) || t.matches('.satfb input'))) return
-  e.stopPropagation()
-  emit('close')
+  if (t instanceof Element && ((t.matches('.slf input') && t.value) || (t.matches('.slvp') && t.closest('.sl.hassel')) || t.matches('.satfb input'))) {
+    keepOpen = true
+    setTimeout(() => { keepOpen = false }, 0)
+  }
 }
-watch(() => props.open, (o) => (o ? window.addEventListener('keydown', onEsc, true) : window.removeEventListener('keydown', onEsc, true)), { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
+function onClose() { if (!keepOpen) emit('close') }
+function onMenuEsc(e) {
+  if (e.key !== 'Escape' || e.isComposing || !addMenu.value) return
+  e.stopPropagation(); addMenu.value = null
+}
+watch(addMenu, (m) => (m ? window.addEventListener('keydown', onMenuEsc, true) : window.removeEventListener('keydown', onMenuEsc, true)))
+watch(() => props.open, (o) => { if (!o) addMenu.value = null })
+onBeforeUnmount(() => window.removeEventListener('keydown', onMenuEsc, true))
 </script>
 
 <template>
-  <div v-if="open" class="fd-mask" @mousedown.self="emit('close')">
-    <div ref="fdEl" class="fd" role="dialog" aria-modal="true">
-      <header class="fd-hd">
-        <span class="fd-t">查找卫星</span>
-        <span class="fd-n" data-i18n-skip>命中 {{ matched }} 颗</span>
-        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </header>
-      <div class="fd-body">
+  <AppDialog :open="open" title="查找卫星" width="min(760px, 94vw)" flush dialog-class="fd-dlg" @close="onClose">
+      <template #head><span class="fd-n">命中 {{ matched }} 颗</span></template>
+      <div class="fd-body" @keydown.capture="onBodyEsc">
         <div class="fd-crit">
           <div class="fd-kw">
             <span class="fd-si"><Icon name="search" :size="12" /></span>
-            <input :value="keyword" placeholder="名称 / 编号 / 星座" spellcheck="false" @input="emit('update:keyword', $event.target.value)" />
+            <input class="search-field" :value="keyword" placeholder="名称 / 编号 / 星座" spellcheck="false" @input="emit('update:keyword', $event.target.value)" />
             <span v-if="keyword" class="fd-x" title="清除关键词" @click="emit('update:keyword', '')"><Icon name="x" :size="12" /></span>
           </div>
           <SatFilterBar expanded :model-value="filters" :satcat="satcat" :pool="pool" :matched="-1" @update:model-value="(f) => emit('update:filters', f)" />
@@ -74,33 +76,34 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
         <div class="fd-res">
           <SatList
             :items="results" :reset-key="resetKey" :actions="ACTIONS" :rows="18"
-            placeholder="在结果里筛选" empty="没有命中的卫星。"
+            placeholder="在结果中筛选" empty="无匹配卫星。"
             @action="onAction" @activate="(it) => emit('activate', it)"
           />
         </div>
       </div>
-    </div>
-    <template v-if="addMenu">
-      <div class="fd-mbd" @mousedown="addMenu = null"></div>
-      <div class="fd-menu" :style="{ left: addMenu.x + 'px', top: addMenu.y + 'px' }">
-        <div class="fd-mh" data-i18n-skip>加入 {{ addMenu.sats.length }} 颗</div>
-        <div class="fd-mi new" @click="addTo(null)"><Icon name="folder-plus" :size="12" /><span>新建组</span></div>
-        <div v-for="g in groups" :key="g.id" class="fd-mi" @click="addTo(g)"><Icon name="layers" :size="12" /><span data-i18n-skip>{{ g.name }}</span><em data-i18n-skip>{{ g.count }}</em></div>
+  </AppDialog>
+  <!-- 「加入组」菜单挂到 body（z 走 --z-menu，压在对话框之上；不进框体，免得被正文滚动区裁掉） -->
+  <Teleport to="body">
+    <template v-if="open && addMenu">
+      <div class="fd-mbd menu-mask" @mousedown="addMenu = null"></div>
+      <div class="fd-menu menu" role="menu" :style="{ left: addMenu.x + 'px', top: addMenu.y + 'px' }">
+        <div class="fd-mh menu-hd" data-i18n-skip>加入 {{ addMenu.sats.length }} 颗</div>
+        <button type="button" class="fd-mi menu-item new" role="menuitem" @click="addTo(null)"><span class="menu-ico"><Icon name="folder-plus" :size="12" /></span><span>新建组</span></button>
+        <button type="button" v-for="g in groups" :key="g.id" class="fd-mi menu-item" role="menuitem" @click="addTo(g)"><span class="menu-ico"><Icon name="layers" :size="12" /></span><span data-i18n-skip>{{ g.name }}</span><em class="menu-kbd" data-i18n-skip>{{ g.count }}</em></button>
       </div>
     </template>
-  </div>
+  </Teleport>
 </template>
 
+<style>
+/* 框体定高（结果表要撑满）：dialogClass 落在 AppDialog 内部元素上，scoped 够不着，故不 scoped */
+.adlg.fd-dlg { height: min(560px, calc(100vh - 48px)); }
+</style>
+
 <style scoped>
-/* 遮罩走全软件同一档暗罩 --scrim（原乳白罩是全软件唯一的浅罩），瞬时出现不动画 */
-.fd-mask { position: fixed; inset: 0; z-index: 1200; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-.fd { width: min(760px, 94%); height: min(560px, 92%); display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-3); border-radius: var(--r-card); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.fd-hd { display: flex; align-items: center; gap: 10px; padding: 0 0 0 12px; height: 36px; border-bottom: 1px solid var(--border); }
-.fd-t { font-weight: 600; font-size: var(--fs-4); color: var(--text); }
-.fd-n { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.winx { margin-left: auto; width: 44px; height: 36px; border: 0; background: transparent; color: var(--text-muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-.winx:hover { background: #c42b1c; color: #fff; }
-.fd-body { flex: 1; min-height: 0; display: flex; }
+/* 外壳归 AppDialog；题条里关闭钮前的命中数 */
+.fd-n { flex: none; align-self: center; padding: 0 10px; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fd-body { height: 100%; min-height: 0; display: flex; }
 .fd-crit { flex: 0 0 300px; border-right: 1px solid var(--border); overflow-y: auto; padding: 10px 0 8px; display: flex; flex-direction: column; }
 .fd-kw { position: relative; padding: 0 12px 6px; }
 .fd-kw input { width: 100%; box-sizing: border-box; height: var(--h-ctl); padding: 0 24px 0 24px; }
@@ -113,16 +116,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEsc, true))
 .fd-res { flex: 1; min-width: 0; padding: 4px 8px 6px; display: flex; flex-direction: column; }
 /* 对话框里没有「上面那一行」可挂，结果表自成一个四边框的块 */
 .fd-res :deep(.sl) { flex: 1; border: 1px solid var(--border); }
-.fd-mbd { position: fixed; inset: 0; z-index: 2190; }
-/* 命令菜单（spec P3）：同星座侧栏 .lp-menu —— 四周 3px 内距、项圆角同心、项左右内距各减 3px 字不动 */
-.fd-menu { position: fixed; z-index: 2200; width: 200px; max-height: 280px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-float); padding: 3px; animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.fd-mh { margin: 0 -3px 3px; padding: 3px 10px 5px; font-size: var(--fs-1); color: var(--text-faint); border-bottom: 1px solid var(--border); }
-.fd-mi { display: flex; align-items: center; gap: 7px; padding: 4px 7px; font-size: var(--fs-3); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
-.fd-mi > svg { flex: none; color: var(--text-muted); }
-.fd-mi:hover { background: var(--accent-ui); color: var(--bg); }
-.fd-mi:hover > svg, .fd-mi:hover em { color: inherit; }
-.fd-mi:hover em { opacity: .7; }
+/* 「加入组」菜单：外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-hd / .menu-ico / .menu-kbd / .menu-mask）；
+   这里只留定位与宽高、组标题的通栏底线、「新建组」机位色字（悬停让给基线蓝块） */
+.fd-menu { position: fixed; width: 200px; min-width: 0; max-height: 280px; }
+.fd-mh { margin: 0 -4px 4px; padding: 3px 14px 5px; border-bottom: 1px solid var(--border); }
 .fd-mi.new { color: var(--accent); }
-.fd-mi.new:hover { color: var(--bg); }
-.fd-mi em { margin-left: auto; font-style: normal; color: var(--text-faint); font-size: var(--fs-1); font-variant-numeric: tabular-nums; }
+.fd-mi em { font-style: normal; font-variant-numeric: tabular-nums; }
 </style>

@@ -83,7 +83,7 @@ function assertWritable(key) {
   }
   const allow = [prefixOf() + '/', 'omm/', GXT_PREFIX + '/']
   if (!allow.some((p) => k.startsWith(p))) {
-    throw new Error(`拒绝写入越权路径「${k}」：本客户端只允许写 ${allow.join(' / ')}`)
+    throw new Error(`拒绝写入越权路径「${k}」：本客户端仅允许写入 ${allow.join(' / ')}`)
   }
   return k
 }

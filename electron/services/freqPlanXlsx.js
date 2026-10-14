@@ -71,6 +71,9 @@ function span(ws, r, c0, c1, value, o = {}) {
 const box = (o = {}) => ({ top: o.t || THIN, left: o.l || THIN, bottom: o.b || THIN, right: o.r || THIN })
 
 // Excel 的表名限制：≤31 字符、不含 : \ / ? * [ ]、不重名、不为空
+// 本文件自己写的字（表名 / 标题 / 表头 / 空态）跟模型语言：model.lang === 'en' 出英文，缺省中文（与改造前逐字一致）
+const L = (model, zh, en) => (model && model.lang === 'en' ? en : zh)
+
 function sheetName(raw, used) {
   let n = txt(raw).replace(/[:\\/?*[\]]/g, '·').trim() || '表'
   if (n.length > 31) n = n.slice(0, 30) + '…'
@@ -101,7 +104,7 @@ const PAGE = {
 }
 
 function writeOverview(wb, model, used) {
-  const ws = wb.addWorksheet(sheetName('总表', used), {
+  const ws = wb.addWorksheet(sheetName(L(model, '总表', 'Overview'), used), {
     views: [{ showGridLines: false }],
     pageSetup: { ...PAGE }
   })
@@ -118,7 +121,7 @@ function writeOverview(wb, model, used) {
 
   let r = 1
   const title = [model.meta.satName, model.meta.planName].filter(Boolean).join(' · ')
-  span(ws, r, 1, last, `${title} —— 转发器频率计划`, { size: 15, bold: true, align: 'center' })
+  span(ws, r, 1, last, `${title} —— ${L(model, '转发器频率计划', 'Transponder Frequency Plan')}`, { size: 15, bold: true, align: 'center' })
   ws.getRow(r).height = 26
   r++
   span(ws, r, 1, last, model.meta.summary, { size: 9, ink: DIM, align: 'center' })
@@ -156,7 +159,7 @@ function writeOverview(wb, model, used) {
       // ② 波束行：按波束占段切格、刷【原色】（与屏上、出图同一个色）。同频叠放的各占一层，
       //    故一排可能不止一行（同软件那张图的分层，见模型 laneRows）
       for (const [k, lane] of (row.lanes || []).entries()) {
-        if (!k) put(ws, r, 1, '波束', { size: 8, ink: DIM, align: 'center' })
+        if (!k) put(ws, r, 1, L(model, '波束', 'Beam'), { size: 8, ink: DIM, align: 'center' })
         for (const c of lane) {
           span(ws, r, C0 + c.c0 - 1, C0 + c.c1 - 1, c.label,
             { size: 8, align: 'center', fill: c.fill, ink: c.ink, border: box(), shrink: true })
@@ -169,7 +172,7 @@ function writeOverview(wb, model, used) {
 
     // 信标 / 遥控 / 遥测：一根箭头，不是色块（只有频率与极化，见模型 CHANNEL_KINDS）
     if (band.marks.length) {
-      put(ws, r, 1, '信标/TM/TC', { size: 8, ink: DIM, align: 'center' })
+      put(ws, r, 1, L(model, '信标/TM/TC', 'Beacon/TM/TC'), { size: 8, ink: DIM, align: 'center' })
       for (const m of band.marks) {
         put(ws, r, C0 + m.c - 1, m.arrow, { size: 9, bold: true, align: 'center', ink: RULE })
       }
@@ -189,7 +192,7 @@ function writeOverview(wb, model, used) {
     const c1 = C0, c2 = c1 + cw(30) - 1          // 名称 + 带宽
     const c3 = c2 + 1, c4 = c3 + cw(34) - 1      // 占的频段
     const c5 = c4 + 1, c6 = Math.min(last, c5 + cw(40) - 1)
-    span(ws, r, 1, Math.min(last, c6), '图例', { size: 11, bold: true, border: { bottom: MED } })
+    span(ws, r, 1, Math.min(last, c6), L(model, '图例', 'Legend'), { size: 11, bold: true, border: { bottom: MED } })
     r++
     for (const g of O.legend) {
       put(ws, r, 1, null, { fill: g.color, border: box() })
@@ -252,7 +255,7 @@ function writeAllocSheet(wb, sheet, model, used) {
       r++
       // ② 波束占段带：这条频带被哪几个波束分了（示例里色带那一行的位置）。原色，同频叠放的分层
       for (const [k, lane] of (b.beamLanes || []).entries()) {
-        if (!k) put(ws, r, 1, '波束', { size: 8, ink: DIM, align: 'right' })
+        if (!k) put(ws, r, 1, L(model, '波束', 'Beam'), { size: 8, ink: DIM, align: 'right' })
         for (const c of lane) {
           span(ws, r, S0 + c.c0 - 1, S0 + c.c1 - 1, c.label,
             { size: 8, align: 'center', fill: c.fill, ink: c.ink, border: box(), shrink: true })
@@ -261,7 +264,7 @@ function writeAllocSheet(wb, sheet, model, used) {
         r++
       }
       // ③ 带宽行
-      put(ws, r, 1, `带宽 ${u.label}`, { size: 8, ink: DIM, align: 'right' })
+      put(ws, r, 1, `${L(model, '带宽', 'BW')} ${u.label}`, { size: 8, ink: DIM, align: 'right' })
       for (const g of b.segs) {
         span(ws, r, S0 + g.c0 - 1, S0 + g.c1 - 1, g.bw, { size: 9, align: 'center', fmt: GEN, border: box(), shrink: true })
       }
@@ -289,14 +292,14 @@ function writeAllocSheet(wb, sheet, model, used) {
     } else {
       // 没有载波的转发器仍有一个「空」段（整条频带），故段表为空只可能是【没有下行频带】——
       // 未挂 LO 又没显式填下行的那种，排不出条
-      span(ws, r, 1, SEnd, '该转发器没有下行频带。', { size: 9, ink: DIM })
+      span(ws, r, 1, SEnd, L(model, '该转发器没有下行频带。', 'No downlink band.'), { size: 9, ink: DIM })
       r++
     }
     r++
 
     // 使用情况总结 ‖ 冲突与越界明细（并排两栏，同示例）
     const r0 = r
-    span(ws, r, LB0, PB1, '使用情况总结', { size: 10, bold: true, border: { bottom: THIN } })
+    span(ws, r, LB0, PB1, L(model, '使用情况总结', 'Usage summary'), { size: 10, bold: true, border: { bottom: THIN } })
     for (const [i, row] of b.summary.entries()) {
       const rr = r + 1 + i
       span(ws, rr, LB0, LB1, row[0], { size: 9, border: { bottom: HAIR } })
@@ -305,8 +308,8 @@ function writeAllocSheet(wb, sheet, model, used) {
         { size: 9, align: 'right', fmt: '0.0%', ink: DIM, border: { bottom: HAIR } })
     }
 
-    span(ws, r, IC, IC + 3, '冲突与越界明细', { size: 10, bold: true, border: { bottom: THIN } })
-    const ih = ['载波', '频率范围', `占用带宽 (${u.label})`, '说明']
+    span(ws, r, IC, IC + 3, L(model, '冲突与越界明细', 'Conflicts and out-of-band'), { size: 10, bold: true, border: { bottom: THIN } })
+    const ih = [L(model, '载波', 'Carrier'), L(model, '频率范围', 'Frequency range'), `${L(model, '占用带宽', 'Occupied bandwidth')} (${u.label})`, L(model, '说明', 'Description')]
     ih.forEach((h, i) => put(ws, r + 1, IC + i, h, { size: 9, bold: true, align: 'center', fill: HEAD_FILL, border: box({ t: THIN, b: THIN }) }))
     if (b.issues.length) {
       b.issues.forEach((is, i) => {
@@ -317,7 +320,7 @@ function writeAllocSheet(wb, sheet, model, used) {
         put(ws, rr, IC + 3, is.msg, { size: 9, wrap: true, border: { bottom: HAIR } })
       })
     } else {
-      span(ws, r + 2, IC, IC + 3, '无。', { size: 9, ink: DIM, border: { bottom: HAIR } })
+      span(ws, r + 2, IC, IC + 3, L(model, '无。', 'None.'), { size: 9, ink: DIM, border: { bottom: HAIR } })
     }
 
     r = r0 + Math.max(b.summary.length, b.issues.length + 1) + 2
@@ -328,13 +331,15 @@ function writeAllocSheet(wb, sheet, model, used) {
 
 function writeOrphan(wb, model, used) {
   const u = model.unit
-  const ws = wb.addWorksheet(sheetName('未归属载波', used), {
+  const ws = wb.addWorksheet(sheetName(L(model, '未归属载波', 'Unassigned Carriers'), used), {
     views: [{ showGridLines: false }], pageSetup: { ...PAGE }
   })
-  const cols = ['载波', `中心频率 (${u.label})`, `占用带宽 (${u.label})`, `功率带宽 (${u.label})`, '调制 · 编码', '信息速率 (kbps)', '备注']
+  const cols = model.lang === 'en'
+    ? ['Carrier', `Center frequency (${u.label})`, `Occupied bandwidth (${u.label})`, `Power-equivalent bandwidth (${u.label})`, 'Modulation · coding', 'Information rate (kbps)', 'Note']
+    : ['载波', `中心频率 (${u.label})`, `占用带宽 (${u.label})`, `功率带宽 (${u.label})`, '调制 · 编码', '信息速率 (kbps)', '备注']
   const w = [22, 16, 16, 16, 16, 16, 30]
   w.forEach((x, i) => { ws.getColumn(i + 1).width = x })
-  span(ws, 1, 1, cols.length, '未归属转发器的载波（上行域）', { size: 12, bold: true })
+  span(ws, 1, 1, cols.length, L(model, '未归属转发器的载波（上行域）', 'Carriers not assigned to a transponder (uplink)'), { size: 12, bold: true })
   // 表头随数据列对齐（数值列靠右、文字列靠左），与下面各行同一份
   const al = ['left', 'right', 'right', 'right', 'left', 'right', 'left']
   cols.forEach((h, i) => put(ws, 3, i + 1, h, { size: 10, bold: true, align: al[i], border: { top: MED, bottom: THIN } }))
@@ -356,23 +361,25 @@ function writeOrphan(wb, model, used) {
 // 那恰是这份计划里波束的全部事实，故单成一张（同示例末尾那几张分色说明的位置）
 function writeBeams(wb, model, used) {
   const u = model.unit
-  const ws = wb.addWorksheet(sheetName('波束', used), {
+  const ws = wb.addWorksheet(sheetName(L(model, '波束', 'Beams'), used), {
     views: [{ showGridLines: false }], pageSetup: { ...PAGE }
   })
   const beams = model.beams || []
-  const cols = ['', '#', '波束', '色值', `标称带宽 (${u.label})`, '转发器数', `占用带宽 (${u.label})`, '转发器', '来源']
+  const cols = model.lang === 'en'
+    ? ['', '#', 'Beam', 'Color', `Nominal bandwidth (${u.label})`, 'Transponders', `Occupied bandwidth (${u.label})`, 'Transponder list', 'Source']
+    : ['', '#', '波束', '色值', `标称带宽 (${u.label})`, '转发器数', `占用带宽 (${u.label})`, '转发器', '来源']
   const w = [3.2, 5, 24, 11, 15, 10, 15, 44, 34]
   w.forEach((x, i) => { ws.getColumn(i + 1).width = x })
-  span(ws, 1, 1, cols.length, '波束 / 带宽组', { size: 13, bold: true })
+  span(ws, 1, 1, cols.length, L(model, '波束 / 带宽组', 'Beams / bandwidth groups'), { size: 13, bold: true })
   ws.getRow(1).height = 22
-  span(ws, 2, 1, cols.length, `${model.meta.satName ? model.meta.satName + ' · ' : ''}${model.meta.planName} · 占用带宽按【下行】占段合计`,
+  span(ws, 2, 1, cols.length, `${model.meta.satName ? model.meta.satName + ' · ' : ''}${model.meta.planName} · ${L(model, '占用带宽按【下行】占段合计', 'occupied bandwidth summed over downlink segments')}`,
     { size: 9, ink: DIM })
   cols.forEach((h, i) => put(ws, 4, i + 1, h, {
     size: 9, bold: true, align: 'center', wrap: true, fill: HEAD_FILL, border: { top: MED, bottom: THIN }
   }))
   ws.getRow(4).height = 24
   if (!beams.length) {
-    span(ws, 5, 1, cols.length, '这份计划还没有波束。', { size: 10, ink: DIM, align: 'center', border: { bottom: MED } })
+    span(ws, 5, 1, cols.length, L(model, '该计划暂无波束。', 'No beams.'), { size: 10, ink: DIM, align: 'center', border: { bottom: MED } })
     return ws
   }
   beams.forEach((b, i) => {
@@ -420,7 +427,7 @@ function writeDataSheet(wb, sh, model, used) {
 
   span(ws, 1, 1, cols.length, sh.title, { size: 13, bold: true })
   ws.getRow(1).height = 22
-  span(ws, 2, 1, cols.length, `${model.meta.satName ? model.meta.satName + ' · ' : ''}${model.meta.planName} · 刻度 ${model.unit.label}`,
+  span(ws, 2, 1, cols.length, `${model.meta.satName ? model.meta.satName + ' · ' : ''}${model.meta.planName} · ${L(model, '刻度', 'unit')} ${model.unit.label}`,
     { size: 9, ink: DIM })
 
   if (sh.kv) {
@@ -459,7 +466,7 @@ function writeDataSheet(wb, sh, model, used) {
   ws.getRow(4).height = 26
 
   if (!sh.rows.length) {
-    span(ws, 5, 1, cols.length, '无记录。', { size: 10, ink: DIM, align: 'center', border: { bottom: MED } })
+    span(ws, 5, 1, cols.length, L(model, '无记录。', 'No records.'), { size: 10, ink: DIM, align: 'center', border: { bottom: MED } })
     return ws
   }
   sh.rows.forEach((row, ri) => {
@@ -506,7 +513,7 @@ function applyBookFont(wb) {
 async function buildFreqPlanWorkbook(model) {
   if (!model || typeof model !== 'object') throw new Error('导出数据为空')
   const wb = new ExcelJS.Workbook()
-  wb.creator = '卫星仿真平台'
+  wb.creator = L(model, '卫星仿真平台', 'Satellite Simulation Platform')
   wb.created = new Date()
   if (model.kind === 'data') buildData(wb, model)
   else buildStyled(wb, model)

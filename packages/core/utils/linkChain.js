@@ -104,8 +104,11 @@ function setOutputPrecisionBoost(n) {
 }
 
 // ============ 小工具 ============
-function num(v) { const n = parseFloat(v); return isFinite(n) ? n : null; }
-function numOr(v, d) { const n = parseFloat(v); return isFinite(n) ? n : d; }
+// 取数走严格口径（strictNum.js，与 GEO / NGSO 引擎同一份）：节点 / 跳上的「40 W」「12,5」不按前缀读成 40 / 12，
+// 当作没填（null / 缺省）；合法串取值与 parseFloat 逐位相同。
+const { strictNum } = require('./strictNum.js');
+function num(v) { const n = strictNum(v); return isFinite(n) ? n : null; }
+function numOr(v, d) { const n = strictNum(v); return isFinite(n) ? n : d; }
 function fx(v, n) { return (v === null || v === undefined || !isFinite(v)) ? '' : v.toFixed(n + FX); }
 // 噪声并联：C/N = −10·lg( Σ 10^(−C/Nᵢ/10) )。空集返回 null。
 function cascadeCN(list) {
@@ -603,7 +606,7 @@ function computeLinkChain(chain) {
           // 而「逐行可手算」是本表的硬要求（见 waterfallBuilder 的 _cascadeSingleSeg）。
           // 十项分解移到右侧「收发链参数」段（hops[].rxAntennaGainResult 一族），一个数不丢。
           ledger.push({ kind: 'eshd', seg: s, tag: '收信站', name: rec.toName || '' });
-          ledger.push({ kind: 'gain', seg: s, label: '接收站 G/T', value: rec.gt, unit: 'dB/K' });
+          ledger.push({ kind: 'gain', seg: s, label: '收信站 G/T', value: rec.gt, unit: 'dB/K' });
           ledger.push({ kind: 'loss', seg: s, label: 'G/T 劣化（降雨）', value: rec.gtDeg, unit: 'dB' });
         }
         // −k 与 −10·lgB 合成一行：两者都是把 C/T 换算成 C/N 的常量项，中间那个 C/N₀ 检查点本表

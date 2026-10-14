@@ -10,7 +10,8 @@ defineProps({
   no: { type: Number, default: 0 },            // 本节讲的是链路表第几行（0 = 不显示）；与表脚「本行读数」同一枚编号
   count: { type: Number, default: -1 },        // -1 = 不显示计数
   summary: { type: String, default: '' },      // 节头一行摘要（mono）
-  flow: { type: String, default: '' }          // 'chain' = 链路构成节（节头左缘画信号流标记）
+  flow: { type: String, default: '' },         // 'chain' = 链路构成节（节头左缘画信号流标记）
+  stale: { type: Boolean, default: false }     // 本节结果对应修改前的输入：节名后挂一枚琥珀点（与窗底状态栏同一枚）
 })
 </script>
 
@@ -20,6 +21,8 @@ defineProps({
       <span class="lbx-sec-tt">
         <span class="lbx-sec-t">{{ title }}</span>
         <span v-if="no" class="lbx-sec-no">#{{ no }}</span>
+        <span v-if="stale" class="lbx-sec-stale" title="计算输入已被修改，结果对应修改前的参数"></span>
+        <span v-if="$slots.nav" class="lbx-sec-nav"><slot name="nav" /></span>
         <span v-if="count >= 0" class="lbx-sec-n">{{ count }}</span>
         <span v-if="summary" class="lbx-sec-sum" :title="summary">{{ summary }}</span>
       </span>
@@ -53,12 +56,15 @@ defineProps({
 /* 行号小标：与链路表里被点亮那一行的序号格、与表脚「本行读数」的 .lbx-rr-no 三处严格同形
    （实底 accent-ui + var(--bg) 的字）。字号取数据区基准而不是节标题的 +2px —— 实底块跟着标题
    放大就成了一大块蓝，压过节名本身。 */
-.lbx-sec-no { padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-ui); color: var(--bg); font-size: var(--lb-fs, 11px); font-weight: 700; letter-spacing: var(--ls-tight); font-variant-numeric: tabular-nums; }
+.lbx-sec-no { padding: 0 5px; border-radius: var(--r-ctl, 2px); background: var(--accent-fill); color: var(--accent-on); font-size: var(--lb-fs, 11px); font-weight: 700; letter-spacing: var(--ls-tight); font-variant-numeric: tabular-nums; }
+/* 行号旁的上一条 / 下一条（详细预算） */
+.lbx-sec-nav { display: inline-flex; align-self: center; gap: 2px; }
+.lbx-sec-stale { flex: none; align-self: center; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
 .lbx-sec-n { font-size: calc(var(--lb-fs, 11px) - 1px); line-height: 1; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .lbx-sec-n::before { content: '('; }
 .lbx-sec-n::after { content: ')'; }
 .lbx-sec-sum { font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lbx-sec-sp { flex: 1; }
-.lbx-sec-acts { display: inline-flex; align-items: center; gap: 4px; }
+.lbx-sec-acts { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .lbx-sec-bd { padding: 8px 1px 2px; }
 </style>

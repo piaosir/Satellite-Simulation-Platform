@@ -15,6 +15,20 @@ const DEFAULT_W = 96          // 未给 col.w 且量不出来时的列宽兜底�
 const MIN_W = 40              // 拖拽列宽下限
 const MEASURE_ROWS = 400      // 自动列宽的取样行数上限（超大表只量前 N 行，够用且不卡）
 
+// 根元素 lang 属性翻转 = 运行时翻译已落完（i18n/runtime.js 在 walkApply 之后才写 lang='en'，还原后写 'zh-CN'）。
+// 全窗口共用一个观察器，按需挂、空了就摘。
+const rootLangSubs = new Set()
+let rootLangMO = null
+function onRootLangChange(fn) {
+  if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return () => {}
+  rootLangSubs.add(fn)
+  if (!rootLangMO) {
+    rootLangMO = new MutationObserver(() => { for (const f of rootLangSubs) { try { f() } catch (e) { /* 单个订阅者出错不连累其余 */ } } })
+    rootLangMO.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] })
+  }
+  return () => { rootLangSubs.delete(fn); if (!rootLangSubs.size && rootLangMO) { rootLangMO.disconnect(); rootLangMO = null } }
+}
+
 export function useGridSelect(cfg) {
   // cfg:
   //   rows:      () => Row[]            每行需有稳定 id（编辑/粘贴定位用）
@@ -275,8 +289,41 @@ export function useGridSelect(cfg) {
   // 列宽拖拽本体在 ExcelGrid.vue（整条列边界线可拖，表头与数据行上都行）：命中判定要量 DOM，归渲染层；
   // 本内核只出宽度的读写、自动列宽与持久化，外加这面「正在拖列宽」的旗（ensureVisible 据它让开，见那里）。
   const resizing = ref(false)
-  watch(() => colList().map((c) => c.key).join('\u0001'), () => { nextTick(fitMissing) })
-  onMounted(() => nextTick(fitMissing))
+  // 表头让位（只加宽不收窄）：列定义的 col.w 按中文表头定，英文译文普遍长一截（Total Attenuation dB ≈ 125px
+  // 而列宽 88）。界面翻译是运行时改 DOM 文本，故不按列定义猜，直接量翻译后 .eg-ht 的实际 scrollWidth。
+  // 用户拖过 / 自动列宽过的列（userW）一律不动；加出来的宽度不落盘——切回中文、下次启动仍以设计宽度为底。
+  // 未上屏（父级 display:none 时量出 0）先挂起，等容器有了尺寸再量一次。
+  let headRO = null
+  function fitHeads() {
+    const el = bodyEl.value
+    if (!el) return
+    if (!el.clientWidth) {
+      if (!headRO && typeof ResizeObserver !== 'undefined') {
+        headRO = new ResizeObserver(() => { const e = bodyEl.value; if (e && e.clientWidth) { headRO.disconnect(); headRO = null; fitHeads() } })
+        headRO.observe(el)
+      }
+      return
+    }
+    let next = null
+    for (const c of colList()) {
+      if (!c || userW[c.key] != null) continue
+      const th = el.querySelector('thead th[data-k="' + cssEsc(c.key) + '"]')
+      const ht = th && th.querySelector('.eg-ht')
+      if (!ht) continue
+      const cs = getComputedStyle(th)
+      const icon = sortable && !ht.querySelector('.eg-sort') ? 14 : 0   // 未排序时给排序箭头留位，点了排序不至于再截
+      const need = Math.min(360, Math.ceil(ht.scrollWidth + (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) + 2 + icon))
+      if (need > widthOf(c)) { if (!next) next = { ...widths.value }; next[c.key] = need }
+    }
+    if (next) widths.value = next
+  }
+  // 等运行时翻译落完再量：挂载时 nextTick 之后再隔一帧（翻译走 MutationObserver 微任务）；
+  // 切语言则以根元素 lang 属性翻转为准（英文词典是异步载入的，onLangChange 触发时 DOM 还没翻）。
+  const fitHeadsSoon = () => nextTick(() => requestAnimationFrame(fitHeads))
+  const offLang = onRootLangChange(fitHeadsSoon)
+  onBeforeUnmount(() => { offLang(); if (headRO) { headRO.disconnect(); headRO = null } })
+  watch(() => colList().map((c) => c.key).join('\u0001'), () => { nextTick(fitMissing); fitHeadsSoon() })
+  onMounted(() => { nextTick(fitMissing); fitHeadsSoon() })
 
   // 活动格那个常驻捕获输入框的【真实】句柄。
   // ★ 不能只信模板 :ref —— 活动格从第 5 行移到第 2 行时，Vue 先挂新行的 input（ref→元素）、再卸旧行的
@@ -632,7 +679,7 @@ export function useGridSelect(cfg) {
   async function doPaste() {
     if (cfg.readOnly) return
     let text = ''
-    try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请用「粘贴」按钮'); return }
+    try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板。'); return }
     if (!text || !text.trim()) return
     cfg.pushUndo && cfg.pushUndo()
     const rc = rect.value, list = rowList(), c = colList()[rc.c0]

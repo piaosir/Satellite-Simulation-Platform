@@ -133,8 +133,8 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
           <span class="u">kg</span>
         </div>
         <div v-if="layout === 'geo'" class="srow"><label title="平台本体多层隔热组件（MLI）外表面">热控多层</label>
-          <div class="seg">
-            <span v-for="m in MLI_CHOICES" :key="m.key" class="sg" :class="{ on: mli === m.key, off: ro }" @click="!ro && mli !== m.key && apply(setMli(spec, m.key), 'mli')">{{ m.label }}</span>
+          <div role="radiogroup" class="seg">
+            <button type="button" v-for="m in MLI_CHOICES" :key="m.key" role="radio" :aria-checked="!!(mli === m.key)" :aria-disabled="!!(ro)" class="sg" :class="{ on: mli === m.key, off: ro }" @click="!ro && mli !== m.key && apply(setMli(spec, m.key), 'mli')">{{ m.label }}</button>
           </div>
         </div>
       </template>
@@ -148,8 +148,8 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
       </div>
       <template v-if="isOpen('wing')">
         <div class="srow"><label title="太阳翼安装在 ±Y 面（GEO 下为南 / 北）">构型</label>
-          <div class="seg">
-            <span v-for="c in WING_CONFIGS" :key="c.key" class="sg" :class="{ on: wcfg === c.key, off: ro }" @click="!ro && setCfg(c.key)">{{ c.label }}</span>
+          <div role="radiogroup" class="seg">
+            <button type="button" v-for="c in WING_CONFIGS" :key="c.key" role="radio" :aria-checked="!!(wcfg === c.key)" :aria-disabled="!!(ro)" class="sg" :class="{ on: wcfg === c.key, off: ro }" @click="!ro && setCfg(c.key)">{{ c.label }}</button>
           </div>
         </div>
         <template v-if="hasWings">
@@ -193,8 +193,8 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
       <template v-if="isOpen('cells')">
         <label class="md-chkrow"><input type="checkbox" :checked="!!cube.bodyCells" :disabled="ro" @change="setPath('cubesat.bodyCells', $event.target.checked)" />体装电池片</label>
         <div class="srow"><label title="背地端展开太阳板">展开板</label>
-          <div class="seg">
-            <span v-for="n in [0, 2]" :key="n" class="sg" :class="{ on: cube.deployPanels === n, off: ro }" data-i18n-skip @click="!ro && setPath('cubesat.deployPanels', n)">{{ n }}</span>
+          <div role="radiogroup" class="seg">
+            <button type="button" v-for="n in [0, 2]" :key="n" role="radio" :aria-checked="!!(cube.deployPanels === n)" :aria-disabled="!!(ro)" class="sg" :class="{ on: cube.deployPanels === n, off: ro }" data-i18n-skip @click="!ro && setPath('cubesat.deployPanels', n)">{{ n }}</button>
           </div>
           <span class="u">块</span>
         </div>
@@ -209,8 +209,8 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
       </div>
       <template v-if="isOpen('array')">
         <div class="srow"><label :class="{ 'md-red': bad('phasedArray.tiles') }" :title="tip('phasedArray.tiles', '对地面相控阵块数')">阵面块数</label>
-          <div class="seg">
-            <span v-for="n in [0, 1, 2, 4]" :key="n" class="sg" :class="{ on: tiles === n, off: ro }" data-i18n-skip @click="!ro && setPath('phasedArray.tiles', n)">{{ n }}</span>
+          <div role="radiogroup" class="seg">
+            <button type="button" v-for="n in [0, 1, 2, 4]" :key="n" role="radio" :aria-checked="!!(tiles === n)" :aria-disabled="!!(ro)" class="sg" :class="{ on: tiles === n, off: ro }" data-i18n-skip @click="!ro && setPath('phasedArray.tiles', n)">{{ n }}</button>
           </div>
         </div>
         <label class="md-chkrow" title="背速度面电推力器"><input type="checkbox" :checked="!!(norm.detail && norm.detail.thrusters)" :disabled="ro" @change="setPath('detail.thrusters', $event.target.checked)" />电推力器</label>
@@ -283,8 +283,8 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
             <span class="u">m</span>
           </div>
           <div class="srow"><label title="主列某一块基板两侧垂直展开的侧板（十字形翼：SSL-1300、Spacebus 4000 类）">侧板</label>
-            <div class="seg">
-              <span v-for="n in [0, 2]" :key="n" class="sg" :class="{ on: wv('sidePanels').value === n, off: ro }" data-i18n-skip @click="!ro && setWing('sidePanels', n)">{{ n }}</span>
+            <div role="radiogroup" class="seg">
+              <button type="button" v-for="n in [0, 2]" :key="n" role="radio" :aria-checked="!!(wv('sidePanels').value === n)" :aria-disabled="!!(ro)" class="sg" :class="{ on: wv('sidePanels').value === n, off: ro }" data-i18n-skip @click="!ro && setWing('sidePanels', n)">{{ n }}</button>
             </div>
             <span class="u">块</span>
           </div>
@@ -305,9 +305,9 @@ const towerPh = (k) => { const c = tower.value; return c && Number.isFinite(c.pa
               <span class="u">m</span>
             </div>
             <div class="srow"><label>馈电</label>
-              <div class="seg">
-                <span class="sg" :class="{ on: r.feedType !== 'array', off: ro }" @click="!ro && r.feedType === 'array' && setRefl(r.i, 'feedType', 'horn')">喇叭</span>
-                <span class="sg" :class="{ on: r.feedType === 'array', off: ro }" @click="!ro && r.feedType !== 'array' && setRefl(r.i, 'feedType', 'array')">阵列</span>
+              <div role="radiogroup" class="seg">
+                <button type="button" role="radio" :aria-checked="!!(r.feedType !== 'array')" :aria-disabled="!!(ro)" class="sg" :class="{ on: r.feedType !== 'array', off: ro }" @click="!ro && r.feedType === 'array' && setRefl(r.i, 'feedType', 'horn')">喇叭</button>
+                <button type="button" role="radio" :aria-checked="!!(r.feedType === 'array')" :aria-disabled="!!(ro)" class="sg" :class="{ on: r.feedType === 'array', off: ro }" @click="!ro && r.feedType !== 'array' && setRefl(r.i, 'feedType', 'array')">阵列</button>
               </div>
             </div>
             <label class="md-chkrow" title="赋形反射面（记为属性，不改变几何）"><input type="checkbox" :checked="r.shaped" :disabled="ro" @change="setRefl(r.i, 'shaped', $event.target.checked)" />赋形</label>

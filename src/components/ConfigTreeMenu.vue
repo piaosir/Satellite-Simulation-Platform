@@ -41,64 +41,59 @@ const done = (ev, ...args) => { emit('close'); emit(ev, ...args) }
 </script>
 
 <template>
-  <div v-if="menu.open" class="lb-ctx-mask" @click="emit('close')" @contextmenu.prevent="emit('close')">
-    <div ref="boxEl" class="lb-ctx" :style="{ left: pos.x + 'px', top: pos.y + 'px' }" @click.stop>
+  <div v-if="menu.open" class="lb-ctx-mask menu-mask" @click="emit('close')" @contextmenu.prevent="emit('close')">
+    <div ref="boxEl" class="lb-ctx menu" role="menu" :style="{ left: pos.x + 'px', top: pos.y + 'px' }" @click.stop>
       <!-- ① 新建 -->
       <template v-if="isFolder">
-        <button class="lb-ctx-i" @click="done('new-config', menu.id)">在此新建配置</button>
-        <button class="lb-ctx-i" @click="done('new-folder', menu.id)">新建子文件夹</button>
-        <div class="lb-ctx-sep"></div>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('new-config', menu.id)">在此新建配置</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('new-folder', menu.id)">新建子文件夹</button>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
       </template>
       <template v-else-if="!item">
-        <button class="lb-ctx-i" @click="done('new-config', null)">添加空白配置</button>
-        <button class="lb-ctx-i" @click="done('new-folder', null)">新建文件夹</button>
-        <button v-if="!autosave" class="lb-ctx-i" :disabled="!hasApi" @click="done('save-new')">保存当前为新配置</button>
-        <div class="lb-ctx-sep"></div>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('new-config', null)">添加空白配置</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('new-folder', null)">新建文件夹</button>
+        <button v-if="!autosave" class="lb-ctx-i menu-item" role="menuitem" :disabled="!hasApi" @click="done('save-new')">保存当前为新配置</button>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
       </template>
 
       <!-- ② 剪贴板：条目恒定，不可用时灰掉（隐藏会让菜单跳位） -->
       <template v-if="item">
-        <button class="lb-ctx-i" @click="done('cut', item)">剪切<span class="lb-ctx-k">Ctrl+X</span></button>
-        <button class="lb-ctx-i" :disabled="isFolder" :title="isFolder ? '文件夹只能剪切' : ''" @click="done('copy', item)">复制<span class="lb-ctx-k">Ctrl+C</span></button>
-        <button class="lb-ctx-i" :disabled="!clip" @click="done('paste', menu.id, isFolder)">
-          {{ isFolder ? '粘贴到此文件夹' : '粘贴到此后' }}<span class="lb-ctx-k">Ctrl+V</span>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('cut', item)">剪切<span class="lb-ctx-k menu-kbd">Ctrl+X</span></button>
+        <button class="lb-ctx-i menu-item" role="menuitem" :disabled="isFolder" :title="isFolder ? '文件夹只能剪切' : ''" @click="done('copy', item)">复制<span class="lb-ctx-k menu-kbd">Ctrl+C</span></button>
+        <button class="lb-ctx-i menu-item" role="menuitem" :disabled="!clip" @click="done('paste', menu.id, isFolder)">
+          {{ isFolder ? '粘贴到此文件夹' : '粘贴到此后' }}<span class="lb-ctx-k menu-kbd">Ctrl+V</span>
         </button>
-        <button v-if="autosave" class="lb-ctx-i" :disabled="isFolder || !hasApi" @click="done('duplicate', item)">创建副本</button>
-        <button class="lb-ctx-i" :disabled="item.parentId == null" @click="done('move-root', item)">移到根目录</button>
-        <div class="lb-ctx-sep"></div>
+        <button v-if="autosave" class="lb-ctx-i menu-item" role="menuitem" :disabled="isFolder || !hasApi" @click="done('duplicate', item)">创建副本</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" :disabled="item.parentId == null" @click="done('move-root', item)">移到根目录</button>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
       </template>
       <template v-else>
-        <button class="lb-ctx-i" :disabled="!clip" @click="done('paste', null, false)">
-          粘贴{{ clip && clip.mode === 'cut' ? '（移动到末尾）' : '' }}<span class="lb-ctx-k">Ctrl+V</span>
+        <button class="lb-ctx-i menu-item" role="menuitem" :disabled="!clip" @click="done('paste', null, false)">
+          粘贴{{ clip && clip.mode === 'cut' ? '（移动到末尾）' : '' }}<span class="lb-ctx-k menu-kbd">Ctrl+V</span>
         </button>
-        <div class="lb-ctx-sep"></div>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
       </template>
 
       <!-- ③ 改名 / 删除 -->
       <template v-if="item">
-        <button v-if="autosave" class="lb-ctx-i" :disabled="isFolder || !hasApi" @click="done('versions', item)">历史版本…</button>
-        <button class="lb-ctx-i" @click="done('rename', item)">重命名<span class="lb-ctx-k">F2</span></button>
-        <button class="lb-ctx-i danger" @click="done('delete', item)">
-          {{ isFolder ? '删除文件夹（含子项）' : '删除' }}<span class="lb-ctx-k">Del</span>
+        <button v-if="autosave" class="lb-ctx-i menu-item" role="menuitem" :disabled="isFolder || !hasApi" @click="done('versions', item)">历史版本…</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="done('rename', item)">重命名<span class="lb-ctx-k menu-kbd">F2</span></button>
+        <button class="lb-ctx-i menu-item danger" role="menuitem" @click="done('delete', item)">
+          {{ isFolder ? '删除文件夹（含子项）' : '删除' }}<span class="lb-ctx-k menu-kbd">Del</span>
         </button>
-        <div class="lb-ctx-sep"></div>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
       </template>
 
       <!-- ④ 视图 -->
-      <button class="lb-ctx-i" @click="done('expand-all')">展开全部</button>
-      <button class="lb-ctx-i" @click="done('collapse-all')">折叠全部</button>
-      <button class="lb-ctx-i" @click="done('hide')">隐藏配置列表</button>
+      <button class="lb-ctx-i menu-item" role="menuitem" @click="done('expand-all')">展开全部</button>
+      <button class="lb-ctx-i menu-item" role="menuitem" @click="done('collapse-all')">折叠全部</button>
+      <button class="lb-ctx-i menu-item" role="menuitem" @click="done('hide')">隐藏配置列表</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 基础外观吃 lbworkbench.css 里的公共 .lb-ctx*（那份刻意不带 .lb-shell 前缀，任何组件都够得到）。
-   这里只补菜单挪进组件后新增的两件事：带快捷键标签的两栏行、以及组件自身的最小宽度。 */
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-kbd）；这里只留组件自身的最小宽度与快捷键等宽字。 */
 .lb-ctx { min-width: 172px; }
-.lb-ctx-i { display: flex; align-items: center; gap: 18px; }
-.lb-ctx-k { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
-.lb-ctx-i:disabled .lb-ctx-k { color: inherit; }
-/* 悬停项是机位色实底：快捷键跟随字色退半档，不再是实底上一行看不清的淡灰 */
-.lb-ctx-i:hover:not(:disabled) .lb-ctx-k { color: inherit; opacity: .7; }
+.lb-ctx-k { font-family: var(--font-mono); }
 </style>

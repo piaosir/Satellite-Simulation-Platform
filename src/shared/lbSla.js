@@ -92,7 +92,7 @@ export const SLA_GROUPS = [
 //   cmp   采用值比建议更激进的方向：'gt' = 采用 > 参照即着色；'lt' = 采用 < 参照即着色
 //   tip   悬停口径说明（界面上唯一允许的说明文字去处）
 export const SLA_ITEMS = [
-  { key: 'propAvail', group: 'avail', label: '传播可用度', labelEn: 'Propagation availability', unit: '%', kind: 'ro', dec: 3, cmp: null, tip: '引擎算的那一份：上下行设计可用度之积，只管雨衰不管设备；同站回环时取两侧较小者' },
+  { key: 'propAvail', group: 'avail', label: '传播可用度', labelEn: 'Propagation availability', unit: '%', kind: 'ro', dec: 3, cmp: null, tip: '引擎计算的部分：上下行设计可用度之积，仅计入雨衰、不计设备；同站回环时取两侧较小者' },
   { key: 'visAvail', group: 'avail', label: '互视可用度', labelEn: 'Visibility availability', unit: '%', kind: 'ro', dec: 3, cmp: null, tip: '星间链路的几何互视时间占比（微波与激光同口径），不是雨衰统计' },
   { key: 'sysAvail', group: 'avail', label: '系统可用度', labelEn: 'System availability', labelMonthly: '系统可用度（月）', labelMonthlyEn: 'System availability (monthly)', unit: '%', kind: 'num', dec: 3, cmp: 'gt', tip: '传播可用度 × 发信射频 × 收信射频 × 卫星与载荷（× 基带/骨干网），不是单侧输入列；建议值向下取标准档' },
   { key: 'outageMin', group: 'avail', label: '年中断时长上限', labelEn: 'Annual outage (max)', labelMonthly: '月中断时长上限', labelMonthlyEn: 'Monthly outage (max)', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '(100 − 采用可用度)/100 × 一个考核周期的分钟数（年 525960 / 月 43830）；随采用可用度变' },
@@ -102,16 +102,16 @@ export const SLA_ITEMS = [
   { key: 'owd', group: 'delay', label: '单程时延', labelEn: 'One-way delay', unit: 'ms', kind: 'num', dec: 1, cmp: null, tip: '引擎单程链路时延；不含地面段与排队' },
   { key: 'rtt', group: 'delay', label: '往返时延上限', labelEn: 'Round-trip delay (max)', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '⌈2 × (单程 + 处理时延预留) / 10⌉ × 10；处理时延预留是单程口径（发端调制 + 收端解调）' },
   { key: 'jitter', group: 'delay', label: '时延抖动', labelEn: 'Delay jitter', unit: 'ms', kind: 'num', dec: 0, cmp: 'lt', tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
-  { key: 'berTarget', group: 'delay', label: '设计误码率', labelEn: 'Design BER', unit: '', kind: 'text', ro: true, cmp: null, tip: '载波配置里的设计误码率，原样带出；不是算出来的量' },
+  { key: 'berTarget', group: 'delay', label: '设计误码率', labelEn: 'Design BER', unit: '', kind: 'text', ro: true, cmp: null, tip: '载波配置中的设计误码率，原样带出；不是计算得出的量' },
   // 3GPP 那一侧与 berTarget 对应的只读读数：MCS 表门限按【首传 BLER 目标】定义（缺省 10 %），引擎经 phyBlerResult 回显
-  { key: 'blerTarget', group: 'delay', label: '目标 BLER（首传）', labelEn: 'Target BLER (first transmission)', unit: '%', kind: 'text', ro: true, cmp: null, tip: '3GPP 载波配置里的目标块差错率，MCS 表的解调门限按它定义（TS 38.214，首传、不含 HARQ 重传）；原样带出，不是算出来的量' },
+  { key: 'blerTarget', group: 'delay', label: '目标 BLER（首传）', labelEn: 'Target BLER (first transmission)', unit: '%', kind: 'text', ro: true, cmp: null, tip: '3GPP 载波配置中的目标块差错率，MCS 表的解调门限按它定义（TS 38.214，首传、不含 HARQ 重传）；原样带出，不是计算得出的量' },
   { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: 'DVB 家族按帧差错：1 − (1 − 10⁻ⁿ)^N_f，n 取帧差错率、N_f = ⌈8L / K⌉；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)；3GPP NTN 载波不出本项（门限是首传 BLER 目标，未建 HARQ 重传模型）。只在可用时间内考核，中断时段不计入丢包统计' },
   { key: 'respond', group: 'ops', label: '故障响应时间', labelEn: 'Response time', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'restore', group: 'ops', label: '故障恢复时间', labelEn: 'Restoration time', unit: 'h', kind: 'num', dec: 1, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'txFreq', group: 'tx', label: '上行中心频率', labelEn: 'Uplink centre frequency', unit: 'MHz', kind: 'num', dec: 4, cmp: null, tip: '引擎上行中心频率；依据列给 fc ± B/2，引用了频率计划时再附该转发器的频带' },
-  { key: 'txBw', group: 'tx', label: '载波占用带宽', labelEn: 'Occupied bandwidth', unit: 'kHz', kind: 'num', qty: true, cmp: null, tip: '引擎载波分配带宽 = 符号率 × 带宽系数；3GPP NTN 报的是标准栅格上的信道带宽，依据列只给它至少要装下的占用带宽' },
+  { key: 'txBw', group: 'tx', label: '载波占用带宽', labelEn: 'Occupied bandwidth', unit: 'kHz', kind: 'num', qty: true, cmp: null, tip: '引擎载波分配带宽 = 符号率 × 带宽系数；3GPP NTN 报的是标准栅格上的信道带宽，依据列仅给出其至少须容纳的占用带宽' },
   { key: 'txEirp', group: 'tx', label: '最大 EIRP', labelEn: 'Maximum EIRP', unit: 'dBW', kind: 'num', dec: 2, cmp: 'gt', tip: '发信站晴空 EIRP + UPC 余量 + 容差；容差按运营商入网要求填' },
-  { key: 'txPsd', group: 'tx', label: '最大功率谱密度', labelEn: 'Maximum PSD', unit: 'dBW/4kHz', kind: 'num', dec: 2, cmp: 'gt', tip: '发信站晴空 PSD + UPC 余量 + 容差，参考带宽 4 kHz；PSD 按分配带宽算；容差按运营商入网要求填' },
+  { key: 'txPsd', group: 'tx', label: '最大功率谱密度', labelEn: 'Maximum PSD', unit: 'dBW/4kHz', kind: 'num', dec: 2, cmp: 'gt', tip: '发信站晴空 PSD + UPC 余量 + 容差，参考带宽 4 kHz；PSD 按分配带宽计算；容差按运营商入网要求填' },
   { key: 'txPol', group: 'tx', label: '上行极化', labelEn: 'Uplink polarisation', unit: '', kind: 'text', cmp: null, tip: '引擎上行极化；与所引频率计划不一致时依据列给计划极化' },
   { key: 'txXpd', group: 'tx', label: '极化隔离度下限', labelEn: 'Polarisation isolation (min)', unit: 'dB', kind: 'num', dec: 1, cmp: null, tip: '按运营商入网要求填' },
   { key: 'sunOutage', group: 'excl', label: '日凌预计中断', labelEn: 'Sun outage (predicted)', unit: 'min', kind: 'ro', dec: 1, cmp: null, tip: '春秋分两季合计，判据为收信站 C/N 恶化 ≥ 1 dB（收信站口径与下行频率定窗口）；不参与可用度连乘、不进中断预算' }
@@ -177,7 +177,8 @@ export function snapUp(tiers, v) {
  *   解 (1 − a·k)(1 − b·k) = s 的小根：k = [(a+b) − √((a+b)² − 4ab(1−s))] / (2ab)
  *   ab = 0 时退化为 k = (1 − s)/(a + b)
  * 这样保住工程师配的上下行分配（关口站带 UPC 给高、远端给低）。
- * @returns { up, dn, k } | null（两侧都已 100% 而 S < 100，或入参不成立）
+ * 两侧都是 100%（四窗出厂即此，晴天）时没有分配比例可保，按等分拆：两侧各取 √S（k = null）。
+ * @returns { up, dn, k } | null（入参不成立）
  */
 export function splitUnavailability(up, dn, S) {
   const u = num(up), d = num(dn), s0 = num(S)
@@ -186,7 +187,12 @@ export function splitUnavailability(up, dn, S) {
   if (!(a >= 0) || !(b >= 0)) return null
   const ab = a * b, sum = a + b
   let k
-  if (sum <= 0) return s >= 1 ? { up: 100, dn: 100, k: 0 } : null   // 两侧都 100%：缩放不出 S<100
+  if (sum <= 0) {                                                   // 两侧都 100%：缩放不出 S<100 → 等分
+    if (s >= 1) return { up: 100, dn: 100, k: 0 }
+    if (!(s > 0)) return null
+    const even = 100 * Math.sqrt(s)
+    return { up: even, dn: even, k: null }
+  }
   if (ab <= 0) k = (1 - s) / sum
   else {
     const disc = sum * sum - 4 * ab * (1 - s)
@@ -244,10 +250,17 @@ export function slaSamplesFor(o) {
   return out
 }
 
-/** 端到端的档位扫描样本：逐档给一个缩放系数 k（对链上全部地球站节点同用一个） */
+/**
+ * 端到端的档位扫描样本：逐档给一个缩放系数 k（对链上全部地球站节点同用一个）。
+ * 全部节点都是 100%（出厂晴天）时缩放不出来，按等分拆：每跳取 S^(1/n)，样本带 avail（各地球站节点直接取这个值）。
+ */
 export function slaChainSamplesFor(avails) {
   const out = []
+  const a = []
+  for (const v of (avails || [])) { const n = num(v); if (n !== null && n <= 100) a.push(n) }
+  const allClear = a.length > 0 && a.every((v) => v >= 100)
   for (const S of AVAIL_TIERS) {
+    if (allClear) { if (S < 100) out.push({ tag: String(S), tier: S, avail: 100 * Math.pow(S / 100, 1 / a.length) }); continue }
     const k = solveChainK(avails, S)
     if (k !== null) out.push({ tag: String(S), tier: S, k })
   }

@@ -93,6 +93,7 @@ const L = require('./modelsLogic')
 const imp = require('./modelsImport')
 const { createFileLogger } = require('./fileLog')
 const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
+const { dt, dtFilters, winLang } = require('./dialogText')   // 系统对话框按界面语言出字
 
 // 与 manifest.mjs 的 CDN_BASE 同值；ESM 还没加载完（或加载失败）时的兜底。单测对账两者一致。
 const CDN_BASE_PINNED = 'https://update-1385987144.cos.ap-beijing.myqcloud.com/updates/models/'
@@ -1721,7 +1722,8 @@ function createModels(opts = {}) {
     if (cat.stkShas.has(h) || (await stkVerdict({ json: p.json, sha: h, size: glb.length }))) return { ok: false, code: 'not-redistributable' }
     if (!E.dialog) return { ok: false, code: 'canceled' }
     const suggested = String((o && o.suggestedName) || meta.title || 'model').replace(/[\\/:*?"<>|]+/g, '_').replace(/\.glb$/i, '') + '.glb'
-    const dlgOpts = { title: '导出模型', defaultPath: suggested, filters: [{ name: 'glTF 二进制 (*.glb)', extensions: ['glb'] }] }
+    const lang = await winLang(win, o && o.lang)
+    const dlgOpts = { title: dt('导出模型', lang), defaultPath: suggested, filters: dtFilters([{ name: 'glTF 二进制 (*.glb)', extensions: ['glb'] }], lang) }
     const r = win ? await E.dialog.showSaveDialog(win, dlgOpts) : await E.dialog.showSaveDialog(dlgOpts)
     if (!r || r.canceled || !r.filePath) return { ok: false, code: 'canceled' }
     try {
@@ -1886,10 +1888,11 @@ function createModels(opts = {}) {
     if (!E.dialog) return { ok: false, canceled: true }
     const ext = csv ? 'csv' : 'xlsx'
     const stem = String(p.defaultName || '表格').replace(/[\\/:*?"<>|]+/g, '_').replace(/\.(xlsx|csv)$/i, '').trim() || '表格'
+    const lang = await winLang(win, p.lang)
     const dlgOpts = {
-      title: typeof p.title === 'string' && p.title ? p.title : '导出',
+      title: typeof p.title === 'string' && p.title ? p.title : dt('导出', lang),
       defaultPath: `${stem}.${ext}`,
-      filters: [csv ? { name: 'CSV 文本', extensions: ['csv'] } : { name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      filters: dtFilters([csv ? { name: 'CSV 文本', extensions: ['csv'] } : { name: 'Excel 工作簿', extensions: ['xlsx'] }], lang)
     }
     const r = win ? await E.dialog.showSaveDialog(win, dlgOpts) : await E.dialog.showSaveDialog(dlgOpts)
     if (!r || r.canceled || !r.filePath) return { ok: false, canceled: true }
@@ -1908,9 +1911,10 @@ function createModels(opts = {}) {
   /* ─────────────── 原生对话框 / 读文件 / 打开目录 ─────────────── */
   async function pickFiles(win) {
     if (!E.dialog) return []
+    const lang = await winLang(win)
     const opt = {
-      title: '导入 3D 模型', properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '3D 模型', extensions: MODEL_EXTS }, { name: '所有文件', extensions: ['*'] }]
+      title: dt('导入 3D 模型', lang), properties: ['openFile', 'multiSelections'],
+      filters: dtFilters([{ name: '3D 模型', extensions: MODEL_EXTS }, { name: '所有文件', extensions: ['*'] }], lang)
     }
     const r = win ? await E.dialog.showOpenDialog(win, opt) : await E.dialog.showOpenDialog(opt)
     if (!r || r.canceled || !Array.isArray(r.filePaths)) return []
@@ -1919,7 +1923,7 @@ function createModels(opts = {}) {
   async function pickStkDir(win) {
     if (!E.dialog) return { canceled: true }
     const d = await stkDefaultDir()
-    const opt = { title: '选择 STK 模型目录', properties: ['openDirectory'], defaultPath: isDir(d) ? d : undefined }
+    const opt = { title: dt('选择 STK 模型目录', await winLang(win)), properties: ['openDirectory'], defaultPath: isDir(d) ? d : undefined }
     const r = win ? await E.dialog.showOpenDialog(win, opt) : await E.dialog.showOpenDialog(opt)
     if (!r || r.canceled || !r.filePaths || !r.filePaths[0]) return { canceled: true }
     return { dir: r.filePaths[0] }

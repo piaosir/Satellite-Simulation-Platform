@@ -132,8 +132,8 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
       <div v-else-if="law === 'yawSteer'" class="srow">
         <label title="偏航导引后太阳所在的本体半平面（+X 侧或 −X 侧；太阳翼轴 ±Y 始终垂直于太阳方向）">太阳侧</label>
         <div class="lbu-seg sa-seg">
-          <button :class="{ on: (P.sunSide || '+X') === '+X' }" @click="setParam('sunSide', '+X')">+X</button>
-          <button :class="{ on: P.sunSide === '-X' }" @click="setParam('sunSide', '-X')">−X</button>
+          <button :class="{ on: (P.sunSide || '+X') === '+X' }" :aria-pressed="((P.sunSide || '+X') === '+X') ? 'true' : 'false'" @click="setParam('sunSide', '+X')">+X</button>
+          <button :class="{ on: P.sunSide === '-X' }" :aria-pressed="(P.sunSide === '-X') ? 'true' : 'false'" @click="setParam('sunSide', '-X')">−X</button>
         </div>
       </div>
       <!-- sun / target 的主轴与次约束 -->
@@ -161,9 +161,9 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
           <div class="srow">
             <label>目标</label>
             <div class="lbu-seg sa-seg">
-              <button :class="{ on: kindShown === 'station' }" @click="setTgtKind('station')">地球站</button>
-              <button :class="{ on: kindShown === 'sat' }" @click="setTgtKind('sat')">卫星</button>
-              <button :class="{ on: kindShown === 'ecef' }" title="地心经纬度 + 高度（与覆盖分析手动「空间点」指向同一口径）" @click="setTgtKind('ecef')">空间点</button>
+              <button :class="{ on: kindShown === 'station' }" :aria-pressed="(kindShown === 'station') ? 'true' : 'false'" @click="setTgtKind('station')">地球站</button>
+              <button :class="{ on: kindShown === 'sat' }" :aria-pressed="(kindShown === 'sat') ? 'true' : 'false'" @click="setTgtKind('sat')">卫星</button>
+              <button :class="{ on: kindShown === 'ecef' }" :aria-pressed="(kindShown === 'ecef') ? 'true' : 'false'" title="地心经纬度 + 高度（与覆盖分析手动「空间点」指向同一口径）" @click="setTgtKind('ecef')">空间点</button>
             </div>
           </div>
           <template v-if="kindShown === 'station'">
@@ -172,7 +172,7 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
               <label title="WGS-84 大地经度（东经为正）">经度</label>
               <NumIn :model-value="tgt && tgt.kind === 'station' ? tgt.lonDeg : null" :min="-360" :max="360" :sig="8" @commit="(v) => setStation('lonDeg', v)" />
               <span class="u">°E</span>
-              <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
+              <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="12" /></button>
             </div>
             <div class="srow">
               <label title="WGS-84 大地纬度（北纬为正）">纬度</label>
@@ -214,8 +214,8 @@ const summary = computed(() => LAW_LABEL[law.value] || law.value)
         <div class="srow">
           <label title="本体 → TEME 惯性系的固定旋转（TEME 与 J2000 相差岁差与章动，2026 年约 0.36°）">定义方式</label>
           <div class="lbu-seg sa-seg">
-            <button :class="{ on: inMode === 'euler' }" @click="setInMode('euler')">欧拉角</button>
-            <button :class="{ on: inMode === 'q' }" @click="setInMode('q')">四元数</button>
+            <button :class="{ on: inMode === 'euler' }" :aria-pressed="(inMode === 'euler') ? 'true' : 'false'" @click="setInMode('euler')">欧拉角</button>
+            <button :class="{ on: inMode === 'q' }" :aria-pressed="(inMode === 'q') ? 'true' : 'false'" @click="setInMode('q')">四元数</button>
           </div>
         </div>
         <div v-if="inMode === 'euler'" class="srow">

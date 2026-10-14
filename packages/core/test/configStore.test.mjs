@@ -121,7 +121,7 @@ const LEGACY = [
 {
   const { dir, storage } = freshStore(LEGACY)
   const all = storage.listAllConfigs()
-  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun'], '总览按固定顺序给出七个命名空间')
+  eq(all.map((g) => g.ns), ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun', 'ci', 'pfd'], '总览按固定顺序给出九个命名空间（ci / pfd 2026-10-15 起有配置列表）')
   // ssa / sun 都是拆库之后才有的工作台：旧 configs.json 里不可能有它们的条目，迁移必然拆出空表
   eq(all.find((g) => g.ns === 'ssa').items.length, 0, '空间态势库从旧库迁不出任何条目')
   eq(all.find((g) => g.ns === 'sun').items.length, 0, '日凌库从旧库迁不出任何条目')

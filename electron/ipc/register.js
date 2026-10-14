@@ -14,6 +14,39 @@ const admBoundaries = require('../services/admBoundaries')
 const solarFlux = require('../services/solarFlux')
 // 卫星模型：modelwb:open 的目标参数清洗（纯函数；服务本体由 main 构造后传进来）
 const { sanitizeTarget: sanitizeModelTarget } = require('../services/modelsLogic')
+// 导出回执白名单（files:reveal / files:open 只认本会话写过的路径）+ 多文件落盘前的覆盖核对（交互调研 E3 / D5）
+const exportedPaths = require('../services/exportedPaths')
+// 系统对话框的标题 / 文件类型名按发起窗口的界面语言出字（中文原文 → dt 查表，查不到原样）
+const { dt, dtFilters, dtFile, senderLang } = require('../services/dialogText')
+// 计算窗 → 主窗口反向通道的参数清洗（交互调研 C3）
+const { sanitizeSceneCmd } = require('../services/sceneCmd')
+
+// 写成功的文件登记进回执白名单，并在返回值里补 path（单文件）/ paths（多文件）—— 原有字段一个不动。
+// r 不是 ok 的原样返回；p 缺省取 r.filePath
+function receipt(r, p) {
+  if (!r || r.ok !== true) return r
+  const one = p != null ? p : r.filePath
+  if (Array.isArray(one)) {
+    const list = one.filter((x) => typeof x === 'string' && x)
+    exportedPaths.markAll(list)
+    if (!('paths' in r)) r.paths = list
+    if (!('path' in r) && list.length) r.path = list[0]
+  } else if (typeof one === 'string' && one) {
+    exportedPaths.markExported(one)
+    if (!('path' in r)) r.path = one
+  }
+  return r
+}
+
+// 删用户导入的文件：先进系统回收站（shell.trashItem），进不去（网络盘 / 回收站关了 / 测试里没有 shell）再直接删；文件本就不在算成功。
+async function trashOrUnlink(fp) {
+  let shell = null
+  try { shell = require('electron').shell } catch { shell = null }
+  if (shell && typeof shell.trashItem === 'function') {
+    try { await shell.trashItem(fp); return true } catch { /* 落到直接删 */ }
+  }
+  try { fs.unlinkSync(fp); return true } catch (e) { return !!(e && e.code === 'ENOENT') }
+}
 
 // tool:open 的上下文载荷清洗：只认身份与站址，现造纯数据并限长（渲染端 Proxy / 超长串 / 非法坐标一律挡在这里）。
 //   sat   = { id, name, noradId, geo, slotLon, folder, altKm, inclDeg }（身份与定点经度；不送 satrec）
@@ -101,7 +134,7 @@ const writeErrText = (err) => (err && (err.code === 'EBUSY' || err.code === 'EPE
 const safeSaveName = (s, dflt) => String(s || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/\s+/g, ' ').trim() || dflt
 
 // 注册所有 IPC 处理器。core 为返回引擎实例的函数（延迟解析）。
-function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin, models, openModel, confirmCloseModel }) {
+function register({ core, storage, report, coverage, coverageGrd, coverageGxt, share, openLinkBudget, openSunOutage, confirmCloseSunOutage, grd, confirmCloseLinkBudget, openNgso, confirmCloseNgso, openRegen, confirmCloseRegen, openE2e, confirmCloseE2e, openRain, confirmCloseRain, openCi, openPfd, openSsa, confirmCloseSsa, freqPlan, openFreqPlan, notifyFreqPlan, activation, weather, gfs, updater, perfWin, models, openModel, confirmCloseModel, quitApp, sceneRelay }) {
   // 未激活拦截（主进程硬防线；渲染端菜单/工具栏的拦截只是第一道观感）：
   // 各功能窗口的 open 一律先过这里——渲染端被绕过（devtools 直调 IPC）也开不出窗。
   // （下方九处 *:open 仍显式写着 gate(...)，在新的默认全拦之下已是冗余的第二层，无副作用，
@@ -130,7 +163,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   const UNGATED = new Set([
     // ① 授权与外壳
     'activation:status', 'activation:refresh', 'app:version', 'app:deviceId',
-    'window:setOverlay', 'font:pdf',
+    'window:setOverlay', 'window:setTheme', 'font:pdf',
     'store:settings:get', 'store:settings:set',
     // 检查更新：拿不到激活的老版本也得能升到修好的版本
     'updater:state', 'updater:check', 'updater:install',
@@ -139,6 +172,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     'modelwb:confirmClose',
     // 性能指标表窗口的中继（开窗 perfwin:open 仍在锁内；这几条只搬运两窗之间的消息，不产出交付物）
     'perfwin:push', 'perfwin:act', 'perfwin:close', 'perfwin:setTitle', 'perfwin:list', 'perfwin:self',
+    // 退出程序（锁定期间也得退得掉）；计算窗 → 主窗口的场景命令中继（同 perfwin:act，只搬运消息）；
+    // 导出回执的打开 / 定位（只认本会话已写出的文件，写出那一步本身在锁内）
+    'app:quit', 'scene:cmd', 'files:reveal', 'files:open',
     // ② 浏览面（只读查询，不产出交付物）
     'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
     'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
@@ -189,6 +225,33 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const win = BrowserWindow.fromWebContents(e.sender)
     if (!win || typeof win.setTitleBarOverlay !== 'function') return false
     try { win.setTitleBarOverlay(opt); return true } catch { return false }
+  })
+  // 当前外观（light / dark / studio）：之后新开窗口的底色与主窗三键区初值按它取，见 services/winTheme.js
+  ipcMain.handle('window:setTheme', (_e, kind, source) => require('../services/winTheme').setKind(kind, source))
+  // ---- 退出 / 场景命令 / 导出回执（交互调研 C1 / C3 / E3）----
+  // 退出：主进程逐个关计算窗（各走各的关窗守卫）、全部关完再退出（main.js requestQuit）；立即返回，不等退出走完
+  ipcMain.handle('app:quit', () => { if (quitApp) quitApp() })
+  // 计算窗 → 主窗口：白名单清洗（未知 cmd / 非法参数 → false），转给主窗口并提到前面；主窗口不在 → false
+  ipcMain.handle('scene:cmd', (_e, cmd, payload) => {
+    const c = sanitizeSceneCmd(cmd, payload)
+    return !!(c && sceneRelay && sceneRelay(c))
+  })
+  // 在资源管理器中显示 / 用系统默认程序打开：只认本会话写过的文件（exportedPaths），文件已不在 → false
+  const exportedTarget = (p) => {
+    if (typeof p !== 'string' || !p || !exportedPaths.isExported(p)) return ''
+    const q = path.resolve(p)
+    try { fs.statSync(q) } catch { return '' }
+    return q
+  }
+  ipcMain.handle('files:reveal', (_e, p) => {
+    const q = exportedTarget(p)
+    if (!q) return false
+    try { require('electron').shell.showItemInFolder(q); return true } catch { return false }
+  })
+  ipcMain.handle('files:open', async (_e, p) => {
+    const q = exportedTarget(p)
+    if (!q) return false
+    try { return !(await require('electron').shell.openPath(q)) } catch { return false }
   })
   ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
@@ -258,10 +321,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const i = all.findIndex((f) => f.extensions[0] === preferred)
     return i > 0 ? [all[i]].concat(all.slice(0, i), all.slice(i + 1)) : all
   }
-  const openFilters = () => [
+  const openFilters = (lang) => dtFilters([
     { name: '星历文件 (OMM · TLE · STK .e · CCSDS OEM · SP3 · 中国卫通 .eph · GPS 年历)', extensions: ['csv', 'json', 'kvn', 'xml', 'tle', '3le', 'txt', 'e', 'oem', 'sp3', 'sp3c', 'sp3d', 'eph', 'alm', 'al3'] },
     { name: '所有文件', extensions: ['*'] }
-  ]
+  ], lang)
 
   // ---- 文件管理：OMM 星座组缓存的列举 / 导入替换 / 导出 ----
   ipcMain.handle('omm:list', () => omm.listCsv())
@@ -275,10 +338,14 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('omm:import', async (e, key) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const cat = isCatalog(key)
+    const lang = await senderLang(e)
+    const en = lang === 'en'
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: cat ? `导入编目（替换「${CATALOG_LABEL}」）` : `导入星历（替换「${key}」）`,
+      title: cat
+        ? (en ? 'Import Catalog (replace “CelesTrak Satellite Catalog (SATCAT)”)' : `导入编目（替换「${CATALOG_LABEL}」）`)
+        : (en ? `Import Ephemeris (replace “${key}”)` : `导入星历（替换「${key}」）`),
       properties: ['openFile'],
-      filters: cat ? [{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }] : openFilters()
+      filters: cat ? dtFilters([{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }, { name: '所有文件', extensions: ['*'] }], lang) : openFilters(lang)
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     try {
@@ -289,7 +356,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         return omm.writeCsvRaw(key, text)
       }
       const r = eph.parseEphemeris(text)
-      if (!r.records.length) return { ok: false, error: '文件里没有可用的星历记录：' + (r.errors[0] || '格式不符') }
+      if (!r.records.length) return { ok: false, error: '文件中没有可用的星历记录：' + (r.errors[0] || '格式不符') }
       // 逐条 SGP4 校验，与自定义库同一把尺。这一路以前只查表头有没有 MEAN_MOTION 那个词，
       // 于是历元体例不受支持（如 CCSDS 允许的年内天 2026-230T…）或缺平均运动的 OMM 会被原样
       // 写进星座缓存，此后该组传播全是 NaN、地图上什么都不画，还一声不吭。
@@ -306,25 +373,25 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 导出某组缓存 OMM 到用户选定路径
   ipcMain.handle('omm:export', async (e, key, format) => {
     const r = omm.readCsvRaw(key)
-    if (!r) return { ok: false, error: '该组暂无本地缓存，请先联网刷新或导入' }
+    if (!r) return { ok: false, error: '该组暂无本地缓存。' }
     const cat = isCatalog(key)
     // 编目只出原文 CSV：那六种是星历格式，对一份没有根数的编目一个都不适用，
     // 给出下拉只会让用户选中 .tle 之后拿到一句「缓存解析失败」
     if (cat) {
       const win2 = BrowserWindow.fromWebContents(e.sender)
       const { canceled: c2, filePath: fp2 } = await dialog.showSaveDialog(win2, {
-        defaultPath: 'satcat.csv', filters: [{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }]
+        defaultPath: 'satcat.csv', filters: dtFilters([{ name: '卫星编目 CSV（CelesTrak satcat.csv）', extensions: ['csv'] }], await senderLang(e))
       })
       if (c2 || !fp2) return { ok: false, canceled: true }
       try {
         fs.writeFileSync(fp2, r.text)
-        return { ok: true, filePath: fp2, format: 'satcat-csv' }
+        return receipt({ ok: true, filePath: fp2, format: 'satcat-csv' })
       } catch (err) { return { ok: false, error: writeErrText(err) } }
     }
     const pref = eph.FORMAT_EXT[format] || 'csv'
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: `${key}_OMM.${pref}`, filters: saveFilters(pref)
+      defaultPath: `${key}_OMM.${pref}`, filters: dtFilters(saveFilters(pref), await senderLang(e))
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     const fmt = fmtOfPath(filePath, format)
@@ -337,7 +404,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         text = eph.serializeEphemeris(p.records, fmt)
       }
       fs.writeFileSync(filePath, text)
-      return { ok: true, filePath, format: fmt }
+      return receipt({ ok: true, filePath, format: fmt })
     } catch (err) { return { ok: false, error: err.message || String(err) } }
   })
 
@@ -383,8 +450,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 导入星历（可多选）：每个文件 = 一个命名组（同名替换），六种官方格式按内容自动识别。
   ipcMain.handle('omm:customImport', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: '导入星历（可多选，每文件一组）', properties: ['openFile', 'multiSelections'], filters: openFilters()
+      title: dt('导入星历（可多选，每文件一组）', lang), properties: ['openFile', 'multiSelections'], filters: openFilters(lang)
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     const path = require('path')
@@ -421,8 +489,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // ---- 星历导入：预览（解析 + 逐星「已有卫星」候选）→ 用户选对应关系 → 提交 ----
   ipcMain.handle('omm:importPick', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: '导入星历（可多选，每文件一组）', properties: ['openFile', 'multiSelections'], filters: openFilters()
+      title: dt('导入星历（可多选，每文件一组）', lang), properties: ['openFile', 'multiSelections'], filters: openFilters(lang)
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     const files = [], failed = []
@@ -463,13 +532,13 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const win = BrowserWindow.fromWebContents(e.sender)
     let target
     if (op.perFile) {
-      const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: '选择导出文件夹（每颗卫星一个文件）', properties: ['openDirectory', 'createDirectory'] })
+      const { canceled, filePaths } = await dialog.showOpenDialog(win, { title: dt('选择导出文件夹（每颗卫星一个文件）', await senderLang(e, r.lang)), properties: ['openDirectory', 'createDirectory'] })
       if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true }
       target = { dir: filePaths[0] }
     } else {
       const ext = op.ext.replace(/^\./, '')
       const label = (eph.FORMAT_LABEL[op.format] || ephF.FORMAT_LABEL[op.format] || op.format)
-      const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: safeSaveName(op.defaultName, 'ephemeris') + op.ext, filters: [{ name: label, extensions: [ext] }] })
+      const { canceled, filePath } = await dialog.showSaveDialog(win, { defaultPath: safeSaveName(op.defaultName, 'ephemeris') + op.ext, filters: [{ name: dt(label, await senderLang(e, r.lang)), extensions: [ext] }] })
       if (canceled || !filePath) return { ok: false, canceled: true }
       target = { file: /\.[^./\\]+$/.test(path.basename(filePath)) ? filePath : filePath + op.ext }
     }
@@ -477,7 +546,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const job = { cancelled: false }
     exportJobs.set(id, job)
     try {
-      return await ephemExport.run(r, target, (p) => { try { if (!e.sender.isDestroyed()) e.sender.send('omm:exportProgress', Object.assign({ id }, p)) } catch { /* 窗口没了 */ } }, () => job.cancelled)
+      const res = await ephemExport.run(r, target, (p) => { try { if (!e.sender.isDestroyed()) e.sender.send('omm:exportProgress', Object.assign({ id }, p)) } catch { /* 窗口没了 */ } }, () => job.cancelled)
+      // 回执：files[].path 逐个登记 → paths；单文件档 path = 选的那个文件，逐星分文件档另带 dir（也登记，可「打开」文件夹）
+      if (res && res.ok === true) {
+        const list = (Array.isArray(res.files) ? res.files : []).map((f) => f && f.path).filter((p) => typeof p === 'string' && p)
+        if (target.dir) { exportedPaths.markExported(target.dir); if (!('dir' in res)) res.dir = target.dir }
+        receipt(res, list)
+        if (target.file && list.length) res.path = target.file
+      }
+      return res
     } catch (err) { return { ok: false, error: writeErrText ? writeErrText(err) : (err.message || String(err)) } }
     finally { exportJobs.delete(id) }
   })
@@ -491,9 +568,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const pref = (ephemOnly ? ephF.FORMAT_EXT[want] : (eph.FORMAT_EXT[want] || ephF.FORMAT_EXT[want]))
     const ext = String(pref || (ephemOnly ? '.e' : 'csv')).replace(/^\./, '')
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: `${baseName}_${ephemOnly ? '星历' : 'OMM'}.${ext}`,
-      filters: ephemOnly ? saveFiltersEphem(ext) : saveFilters(ext)
+      defaultPath: `${dt(baseName, lang)}_${ephemOnly ? dt('星历', lang) : 'OMM'}.${ext}`,
+      filters: dtFilters(ephemOnly ? saveFiltersEphem(ext) : saveFilters(ext), lang)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     const fmt = ephF.writableFormat(fmtOfPath(filePath, want))
@@ -502,7 +580,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (!text) return { ok: false, error: emptyMsg }
     // 写出编码跟格式走：中国卫通 .eph 是 GBK（源软件是简体中文 ANSI 程序），其余 UTF-8
     const enc = ephF.FORMAT_ENCODING[fmt]
-    try { fs.writeFileSync(filePath, enc === 'gbk' ? Buffer.from(TC.encodeText(text, 'gbk')) : text); return { ok: true, filePath, format: fmt } }
+    try { fs.writeFileSync(filePath, enc === 'gbk' ? Buffer.from(TC.encodeText(text, 'gbk')) : text); return receipt({ ok: true, filePath, format: fmt }) }
     catch (err) { return { ok: false, error: err.message || String(err) } }
   }
 
@@ -526,14 +604,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // KML 是 UTF-8 XML，GXT 是 latin1 定长文本，编码按扩展名分派（读错编码 → 中文名乱码）。
     ipcMain.handle('coverageGxt:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
+      const lang = await senderLang(e)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入覆盖等值线（GXT / KML，可多选）', properties: ['openFile', 'multiSelections'],
-        filters: [
+        title: dt('导入覆盖等值线（GXT / KML，可多选）', lang), properties: ['openFile', 'multiSelections'],
+        filters: dtFilters([
           { name: '覆盖等值线 (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
           { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
           { name: 'KML (*.kml)', extensions: ['kml'] },
           { name: '所有文件', extensions: ['*'] }
-        ]
+        ], lang)
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
@@ -560,7 +639,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 解析天线记录（*.gauss.json）改参数后就地回存（文件名不变）；与 save 同在激活门禁内
     ipcMain.handle('coverageGrd:overwrite', (_e, file, text) => coverageGrd.overwrite(file, text))
     ipcMain.handle('coverageGrd:raw', (_e, file) => coverageGrd.raw(file))
-    ipcMain.handle('coverageGrd:remove', (_e, file) => coverageGrd.remove(file))
+    // 删除（交互调研 A1）：导入的 GRD 原件先进系统回收站（误删能从回收站捞回再导入；合成 / 解析天线的原件只此一份），
+    // 进不去再直接删；旁边的 .grdbin 是取值缓存，直接删。返回 { ok }（形状不变）
+    ipcMain.handle('coverageGrd:remove', async (_e, file) => {
+      if (!file || typeof coverageGrd.savedPath !== 'function') return coverageGrd.remove(file)
+      const fp = coverageGrd.savedPath(file)          // 非法路径照旧抛错，不吞
+      try { fs.unlinkSync(fp + '.grdbin') } catch { /* 尚未生成 / 已不在 */ }
+      if (fs.existsSync(fp)) await trashOrUnlink(fp)
+      return { ok: true }
+    })
     // 方向图原样导出：保存框 + 主进程按字节拷贝，原文一个字节都不进渲染进程（实测件 243 MB）。
     // 合成件（表头有 SYNTHMETA）要先重打包到公共网格，转换器在渲染端（ESM），故只回 { synth:true }
     // 让调用方走文本那条；此时尚未弹保存框，不会出现两次框。
@@ -572,18 +659,19 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
         defaultPath: safeSaveName(defaultName, 'pattern.grd'),
-        filters: [{ name: 'GRASP 网格', extensions: ['grd'] }, { name: '所有文件', extensions: ['*'] }]
+        filters: dtFilters([{ name: 'GRASP 网格', extensions: ['grd'] }, { name: '所有文件', extensions: ['*'] }], await senderLang(e))
       })
       if (canceled || !filePath) return { ok: false, canceled: true }
-      try { fs.copyFileSync(src.path, filePath); return { ok: true, filePath } }
+      try { fs.copyFileSync(src.path, filePath); return receipt({ ok: true, filePath }) }
       catch (err) { return { ok: false, error: writeErrText(err) } }
     })
     // 用户导入：原生文件框选 .grd/.pat（支持多选，一次导入多个天线）→ 逐个读文本返回渲染进程解析
     ipcMain.handle('coverageGrd:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
+      const lang = await senderLang(e)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入方向图文件（GRASP GRD / ACP4 / Eutelsat，可多选）', properties: ['openFile', 'multiSelections'],
-        filters: [{ name: '方向图 (*.grd, *.pat, *.txt, *.ant, *.pattern)', extensions: ['grd', 'pat', 'txt', 'ant', 'pattern'] }, { name: '所有文件', extensions: ['*'] }]
+        title: dt('导入方向图文件（GRASP GRD / ACP4 / Eutelsat，可多选）', lang), properties: ['openFile', 'multiSelections'],
+        filters: dtFilters([{ name: '方向图 (*.grd, *.pat, *.txt, *.ant, *.pattern)', extensions: ['grd', 'pat', 'txt', 'ant', 'pattern'] }, { name: '所有文件', extensions: ['*'] }], lang)
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
@@ -597,9 +685,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // （链路预算只需主进程按文件采样，不解析原文；避免把上百 MB 文本搬过一趟 IPC）
     ipcMain.handle('coverageGrd:import', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
+      const lang = await senderLang(e)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入 GRD / PAT 方向图（可多选）', properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }]
+        title: dt('导入 GRD / PAT 方向图（可多选）', lang), properties: ['openFile', 'multiSelections'],
+        filters: dtFilters([{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }], lang)
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
@@ -610,7 +699,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         try {
           const head = coverageGrd.sniffHead(fp)
           if (head && head !== 'grasp') {
-            return { base, error: `此处仅支持 GRASP 网格；${head} 请在「文件管理 · 天线方向图」导入` }
+            return { base, error: `此处仅支持 GRASP 网格，当前文件为 ${head}。` }
           }
           return { base, file: coverageGrd.copyIn(fp).file }
         } catch (err) { return { base, error: err.message } }
@@ -788,6 +877,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       : { feasible: false, reason: '访问窗口求解器未加载', windows: [] })
   // 经纬度 → 降雨率/海拔自动填值（与小程序口径一致）
   ipcMain.handle('link:geoFill', (_e, lat, lon) => core().geoAutoFill(parseFloat(lat), parseFloat(lon)))
+  // 默认站址（站址经纬度留空时引擎所用的那一组）的降雨率 / 海拔：留空站址行据此补 R0.01% / 海拔并作灰字占位
+  ipcMain.handle('link:defaultSiteGeo', () => (core().defaultSiteGeo ? core().defaultSiteGeo() : null))
   // GRD 天线逐站取值（多波束最大 Parameter）：解析+采样在主进程，渲染端只收发 dB 数字
   ipcMain.handle('link:grdSample', (_e, req) => (grd ? grd.sample(req || {}) : ((req && req.points) || []).map(() => null)))
   // GRD 天线概要（波束数/网格）：链路预算导入方向图后填「N 波束」，顺带预编译 .grdbin
@@ -875,21 +966,46 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     return true
   }))
   if (freqPlan) {
+    // 变更广播（交互调研 C4）：存 / 删 / 改名 / 导入 / 随卫星改挂成功后，告诉【发起者以外】的所有窗口哪几份计划变了
+    // —— 链路预算按它重新套用频率 / 极化 / 带宽（否则一直沿用打开时读到的那一份）。定向给编辑窗的 planRemoved / planRenamed 照旧。
+    const fpChanged = (e, ids, kind) => {
+      const list = [...new Set((ids || []).map((x) => String(x == null ? '' : x)).filter(Boolean))]
+      if (!list.length) return
+      const from = e && e.sender
+      for (const w of BrowserWindow.getAllWindows()) {
+        try { if (!w.isDestroyed() && w.webContents !== from) w.webContents.send('freqPlan:changed', { ids: list, kind }) } catch { /* 窗口正在关 */ }
+      }
+    }
+    const fpIds = () => { try { return (freqPlan.list() || []).map((x) => x && x.id).filter(Boolean) } catch { return [] } }
     ipcMain.handle('freqPlan:list', () => freqPlan.list())
     ipcMain.handle('freqPlan:get', (_e, id) => freqPlan.get(id))
-    ipcMain.handle('freqPlan:save', (_e, plan, opts) => freqPlan.save(plan, opts))
-    // 删/改名后告诉编辑窗（它可能正开着这一份）：不通知它就会被它的自动存盘整份写回来
-    ipcMain.handle('freqPlan:remove', (_e, id) => {
-      const r = freqPlan.remove(id)
-      if (r && r.ok && notifyFreqPlan) notifyFreqPlan('freqPlan:planRemoved', String(id || ''))
+    ipcMain.handle('freqPlan:save', (e, plan, opts) => {
+      const r = freqPlan.save(plan, opts)
+      if (r && r.ok) fpChanged(e, [r.id], 'save')
       return r
     })
-    ipcMain.handle('freqPlan:rename', (_e, id, name) => {
+    // 删/改名后告诉编辑窗（它可能正开着这一份）：不通知它就会被它的自动存盘整份写回来。
+    // 删除时计划文件先进系统回收站（services/freqPlan.js remove；交互调研 A1）
+    ipcMain.handle('freqPlan:remove', async (e, id) => {
+      const r = await freqPlan.remove(id)
+      if (r && r.ok) { try { storage.dropVersions('freqplan', [String(id || '')]) } catch { /* 历史版本删不掉不拦删计划 */ } }   // 计划删了，它的历史一并删
+      if (r && r.ok && notifyFreqPlan) notifyFreqPlan('freqPlan:planRemoved', String(id || ''))
+      if (r && r.ok) fpChanged(e, [id], 'remove')
+      return r
+    })
+    ipcMain.handle('freqPlan:rename', (e, id, name) => {
       const r = freqPlan.rename(id, name)
       if (r && r.ok && notifyFreqPlan) notifyFreqPlan('freqPlan:planRenamed', String(id || ''), r.entry ? r.entry.name : String(name || ''))
+      if (r && r.ok) fpChanged(e, [r.id || id], 'rename')
       return r
     })
-    ipcMain.handle('freqPlan:reassignSat', (_e, folder, patch) => freqPlan.reassignSat(folder, patch))
+    ipcMain.handle('freqPlan:reassignSat', (e, folder, patch) => {
+      let ids = []
+      try { ids = (freqPlan.list() || []).filter((x) => x && x.satFolder === folder).map((x) => x.id) } catch { ids = [] }
+      const r = freqPlan.reassignSat(folder, patch)
+      if (r && r.ok && r.count) fpChanged(e, ids, 'reassign')
+      return r
+    })
 
     // 导出：PNG / PDF / SVG / JSON / XLSX，统一走原生保存框
     ipcMain.handle('freqPlan:export', async (e, kind, payload, defaultName) => {
@@ -897,10 +1013,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const ext = kind === 'pdf' ? 'pdf' : kind === 'json' ? 'json' : kind === 'svg' ? 'svg'
         : kind === 'xlsx' ? 'xlsx' : 'png'
       const nameMap = { pdf: 'PDF 文档', json: 'JSON 数据', svg: 'SVG 矢量图', png: 'PNG 图片', xlsx: 'Excel 工作簿' }
+      const lang = await senderLang(e, kind === 'xlsx' && payload && typeof payload === 'object' ? payload.lang : undefined)
       const { canceled, filePath } = await dialog.showSaveDialog(win, {
-        title: '导出频率计划',
-        defaultPath: safeSaveName(defaultName, '频率计划') + '.' + ext,
-        filters: [{ name: nameMap[ext], extensions: [ext] }]
+        title: dt('导出频率计划', lang),
+        defaultPath: safeSaveName(defaultName, dt('频率计划', lang)) + '.' + ext,
+        filters: [{ name: dt(nameMap[ext], lang), extensions: [ext] }]
       })
       if (canceled || !filePath) return { canceled: true }
       try {
@@ -918,7 +1035,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
           if (!m) throw new Error('导出数据格式不正确')
           fs.writeFileSync(filePath, Buffer.from(m[1], 'base64'))
         }
-        return { ok: true, filePath }
+        return receipt({ ok: true, filePath })
       } catch (err) { return { ok: false, error: err.message } }
     })
 
@@ -926,7 +1043,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('freqPlan:importJson', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: '导入频率计划（JSON）', properties: ['openFile', 'multiSelections'],
+        title: dt('导入频率计划（JSON）', await senderLang(e)), properties: ['openFile', 'multiSelections'],
         filters: [{ name: 'JSON (*.json)', extensions: ['json'] }]
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
@@ -939,7 +1056,9 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
           else if (j && typeof j === 'object') plans.push(j)
         } catch (err) { errors.push(`${path.basename(fp)}：${err.message}`) }
       }
+      const before = new Set(fpIds())
       const r = freqPlan.importMany(plans, { mode: 'merge' })
+      if (r && r.ok) fpChanged(e, fpIds().filter((id) => !before.has(id)), 'import')
       return { canceled: false, ...r, errors }
     })
   }
@@ -1010,14 +1129,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('models:importStk', safe((_e, o) => models.importStk(o)))
     ipcMain.handle('models:saveMeta', safe((_e, o) => models.saveMeta(o)))
     ipcMain.handle('models:getMeta', safe((_e, id) => models.getMeta(id)))
-    ipcMain.handle('models:export', safe((e, o) => models.exportModel(o, winOf(e))))
+    // 导出 glb：服务回 { ok, path }（已有 path 字段）；登记回执白名单
+    ipcMain.handle('models:export', safe(async (e, o) => { const r = await models.exportModel(o, winOf(e)); return receipt(r, r && r.path) }))
     ipcMain.handle('models:saveThumb', safe((_e, o) => models.saveThumb(o)))
     ipcMain.handle('models:bindings:get', safe(() => models.bindingsGet()))
     ipcMain.handle('models:bindings:set', safe((_e, o) => models.bindingsSet(o)))
     // 二期：本体遮挡掩模存取（D18，userData/models/masks/<sig>.bin）与分析页表格导出（xlsx 三线表 / csv）。三条都在锁内
     ipcMain.handle('models:saveMask', safe((_e, o) => models.saveMask(o)))
     ipcMain.handle('models:getMask', safe((_e, sig) => models.getMask(sig)))
-    ipcMain.handle('models:exportTable', safe((e, o) => models.exportTable(o, winOf(e))))
+    ipcMain.handle('models:exportTable', safe(async (e, o) => receipt(await models.exportTable(o, winOf(e)))))
   }
   ipcMain.handle('ci:asi', (_e, req) => interference.asi(req))
   ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
@@ -1055,15 +1175,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 批量结果 Excel 导出（批量结果 sheet + 每算例详情 sheet）
   ipcMain.handle('rain:exportExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload && payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: safeSaveName(payload && payload.defaultName, '雨衰计算结果.xlsx'),
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      defaultPath: safeSaveName(payload && payload.defaultName, dtFile('雨衰计算结果.xlsx', lang)),
+      filters: [{ name: dt('Excel 工作簿', lang), extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
-      const buf = await report.buildRainAttenuationExcel(payload || {})
+      const buf = await report.buildRainAttenuationExcel(Object.assign({}, payload || {}, { lang }))
       fs.writeFileSync(filePath, Buffer.from(buf))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
@@ -1074,15 +1195,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 模型在渲染端 ConstellationMap3D.vue exportAccessExcel 组装（相对分钟 + 时窗起点），版式见 report.buildVisAccessExcel
   ipcMain.handle('vis:exportAccessExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload && payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: safeSaveName(payload && payload.defaultName, '过境窗口') + '.xlsx',
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      defaultPath: safeSaveName(payload && payload.defaultName, dt('过境窗口', lang)) + '.xlsx',
+      filters: [{ name: dt('Excel 工作簿', lang), extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
-      const buf = await report.buildVisAccessExcel(payload || {})
+      const buf = await report.buildVisAccessExcel(Object.assign({}, payload || {}, { lang }))
       fs.writeFileSync(filePath, Buffer.from(buf))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
@@ -1093,16 +1215,17 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 主进程只做「模型 → 工作簿」与「工作簿 → 格子值」，列匹配与业务口径在渲染端 src/shared/gridXlsx.js。
   ipcMain.handle('grid:exportXlsx', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload && payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: (payload && payload.title) || '导出 Excel',
-      defaultPath: safeSaveName(payload && payload.defaultName, '表格.xlsx'),
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      title: dt((payload && payload.title) || '导出 Excel', lang),
+      defaultPath: safeSaveName(payload && payload.defaultName, dtFile('表格.xlsx', lang)),
+      filters: [{ name: dt('Excel 工作簿', lang), extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
       const { buildGridWorkbook } = require('../services/gridXlsx')
       fs.writeFileSync(filePath, Buffer.from(await buildGridWorkbook(payload || {})))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
@@ -1110,10 +1233,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   })
   ipcMain.handle('grid:importXlsx', async (e, opt) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, opt && opt.lang)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: (opt && opt.title) || '导入 Excel',
+      title: dt((opt && opt.title) || '导入 Excel', lang),
       properties: ['openFile'],
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx', 'xlsm'] }]
+      filters: [{ name: dt('Excel 工作簿', lang), extensions: ['xlsx', 'xlsm'] }]
     })
     if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true }
     try {
@@ -1408,13 +1532,13 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (!grd || typeof grd.precompile !== 'function' || !coverageGrd || typeof coverageGrd.exportSrc !== 'function') throw codeErr('grd-bad', 'GRD 服务未加载')
     let src
     try { src = coverageGrd.exportSrc(file) } catch (e) {
-      throw codeErr(e && e.code === 'ENOENT' ? 'grd-missing' : 'grd-bad', e && e.code === 'ENOENT' ? `方向图文件 ${file} 不在了。` : `方向图读不出：${(e && e.message) || e}`)
+      throw codeErr(e && e.code === 'ENOENT' ? 'grd-missing' : 'grd-bad', e && e.code === 'ENOENT' ? `方向图文件 ${file} 不在了。` : `无法读取方向图：${(e && e.message) || e}`)
     }
     const pc = grd.precompile(file)
-    if (!pc || !pc.ok) throw codeErr('grd-bad', `方向图读不出：${(pc && pc.error) || '解析失败'}`)
+    if (!pc || !pc.ok) throw codeErr('grd-bad', `无法读取方向图：${(pc && pc.error) || '解析失败'}`)
     const bin = src.path + '.grdbin'
     let st
-    try { st = fs.statSync(bin) } catch (e) { throw codeErr('grd-bad', `方向图读不出：${(e && e.message) || e}`) }
+    try { st = fs.statSync(bin) } catch (e) { throw codeErr('grd-bad', `无法读取方向图：${(e && e.message) || e}`) }
     if (!(grdHeld && grdHeld.bin === bin && grdHeld.mtimeMs === st.mtimeMs)) {
       grdHeld = null                         // 先放掉旧的再读新的（大件别两份同时占着）
       const buf = fs.readFileSync(bin)
@@ -1477,7 +1601,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const ant = p0.ant && typeof p0.ant === 'object' ? p0.ant : null
     let file = '', c0 = {}
     if (ant) {
-      if (!ant.found) throw codeErr('grd-unresolved', `GRD 天线 ${key || '（空）'} 不在卫星树里。`)
+      if (!ant.found) throw codeErr('grd-unresolved', `GRD 天线 ${key || '（空）'} 不在卫星树中。`)
       if (!ant.file) throw codeErr('grd-unresolved', `GRD 天线 ${key} 没有方向图文件。`)
       file = String(ant.file); c0 = ant.cfg && typeof ant.cfg === 'object' ? ant.cfg : {}
     } else if (typeof p0.file === 'string' && p0.file) {
@@ -1493,11 +1617,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (Array.isArray(c0.keptSets)) cfg.keptSets = c0.keptSets.filter(Number.isInteger)
     const bi = Number.isInteger(p0.beamIndex) ? p0.beamIndex : null
     if (bi !== null) {
-      if (bi < 0 || bi >= L.beams.length) throw codeErr('grd-bad', `方向图只有 ${L.beams.length} 个波束，波束序号 ${bi + 1} 越界。`)
+      if (bi < 0 || bi >= L.beams.length) throw codeErr('grd-bad', `方向图仅有 ${L.beams.length} 个波束，波束序号 ${bi + 1} 越界。`)
       cfg.keptSets = [bi]
     }
     const peak = grdSampler.peakDb(L, cfg)
-    if (!Number.isFinite(peak)) throw codeErr('grd-bad', '方向图里取不到峰值。')
+    if (!Number.isFinite(peak)) throw codeErr('grd-bad', '方向图中无法取得峰值。')
     const ctx = grdSampler.makeSampleCtx(L, { lon: 0, lat: 0, alt: -GRD_A }, cfg)
     if (!ctx || !ctx.beams.length) throw codeErr('grd-bad', '方向图没有可用的波束。')
     // 电平：显式 peakDbi > 功率核对 > 文件原值
@@ -1663,15 +1787,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 模板版 Excel：整本只有两张表（地球站参数 / 逐日日凌窗口），版式见 report.buildSunOutageExcel
   ipcMain.handle('sunoutage:exportExcel', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload && payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: safeSaveName(payload && payload.defaultName, '日凌预报.xlsx'),
-      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+      defaultPath: safeSaveName(payload && payload.defaultName, dtFile('日凌预报.xlsx', lang)),
+      filters: [{ name: dt('Excel 工作簿', lang), extensions: ['xlsx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
-      const buf = await report.buildSunOutageExcel(payload || {})
+      const buf = await report.buildSunOutageExcel(Object.assign({}, payload || {}, { lang }))
       fs.writeFileSync(filePath, Buffer.from(buf))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel）' : (err.message || String(err)) }
@@ -1680,15 +1805,16 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // Word 报告：payload = { result, station:{name,lat,lon}, satellite:{name,lon}, tz:'bjt'|'utc' }
   ipcMain.handle('sunoutage:exportWord', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload && payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: safeSaveName(payload && payload.defaultName, '日凌预报报告.docx'),
-      filters: [{ name: 'Word 文档', extensions: ['docx'] }]
+      defaultPath: safeSaveName(payload && payload.defaultName, dtFile('日凌预报报告.docx', lang)),
+      filters: [{ name: dt('Word 文档', lang), extensions: ['docx'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
-      const buf = await report.buildSunOutageWord(payload || {})
+      const buf = await report.buildSunOutageWord(Object.assign({}, payload || {}, { lang }))
       fs.writeFileSync(filePath, Buffer.from(buf))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word）' : (err.message || String(err)) }
@@ -1697,20 +1823,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // ICS 日历（多站 × 多季一份）：事件时刻恒用 UTC（导入方自动换算本地时区）；
   // SUMMARY 里的峰值用渲染端按显示时区平移好的串 —— 主进程不再按经度推时区。
   ipcMain.handle('sunoutage:exportIcs', async (e, payload) => {
-    const p = payload || {}
-    const satName = (p.sat && (p.sat.name || p.sat.slotText)) || '卫星'
+    const lang = await senderLang(e, payload && payload.lang)
+    const en = lang === 'en'
+    const p = Object.assign({}, payload || {}, { lang })
+    const satName = (p.sat && (p.sat.name || p.sat.slotText)) || (en ? 'Satellite' : '卫星')
     const events = report.sunOutageIcsEvents(p)
     if (!events.length) return { ok: false, error: '无日凌事件可导出' }
-    const ics = core().buildIcs({ name: `日凌预报 ${satName} ${p.year != null ? p.year : ''}`.trim(), events })
+    const ics = core().buildIcs({ name: `${en ? 'Sun Outage Forecast' : '日凌预报'} ${satName} ${p.year != null ? p.year : ''}`.trim(), events })
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: safeSaveName(p.defaultName || `日凌预报_${satName}_${p.year != null ? p.year : ''}.ics`, '日凌预报.ics'),
-      filters: [{ name: 'iCalendar 日历', extensions: ['ics'] }]
+      defaultPath: safeSaveName(p.defaultName || `${en ? 'Sun Outage Forecast' : '日凌预报'}_${satName}_${p.year != null ? p.year : ''}.ics`, dtFile('日凌预报.ics', lang)),
+      filters: [{ name: dt('iCalendar 日历', lang), extensions: ['ics'] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
       fs.writeFileSync(filePath, ics, 'utf8')
-      return { ok: true, filePath, count: events.length }
+      return receipt({ ok: true, filePath, count: events.length })
     } catch (err) {
       return { ok: false, error: writeErrText(err) }
     }
@@ -1777,7 +1905,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       defaultPath: safeSaveName(payload.defaultName, 'export.bin'),
-      filters: payload.filters || [{ name: '所有文件', extensions: ['*'] }]
+      filters: dtFilters(payload.filters || [{ name: '所有文件', extensions: ['*'] }], await senderLang(e, payload.lang))
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     try {
@@ -1800,7 +1928,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       } else {
         fs.writeFileSync(filePath, chunk(payload.data))
       }
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       return { ok: false, error: writeErrText(err) }   // 占用/权限 → 友好错误，不抛出
     }
@@ -1919,13 +2047,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('file:saveMany', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: payload.dirLabel || '选择输出目录',
+      title: dt(payload.dirLabel || '选择输出目录', await senderLang(e, payload.lang)),
       properties: ['openDirectory', 'createDirectory']
     })
     if (canceled || !filePaths || !filePaths[0]) return { ok: false, canceled: true }
     const dir = filePaths[0]
     const written = []
     try {
+      // 先把全部目标路径定下来（非法路径在一个字节都没写之前就报）
+      const jobs = []
       for (const f of (payload.files || [])) {
         // 放行【一层】子目录（出包要 Masks/ 这一层），其余非法字符照旧替换。
         // 白名单式而非黑名单式：分段清洗 + 段数上限 + 显式拒绝 ..，避免路径穿越。
@@ -1934,13 +2064,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         if (!rel.length || rel.length > 2 || rel.some((s) => s === '..' || s === '.')) {
           throw new RangeError(`非法输出路径：${f.filename}`)
         }
-        const p = path.join(dir, ...rel)
-        fs.mkdirSync(path.dirname(p), { recursive: true })
-        fs.writeFileSync(p, f.text, 'utf8')
-        written.push(p)
+        jobs.push({ p: path.join(dir, ...rel), text: f.text })
       }
-      return { ok: true, dir, written }
+      // 覆盖核对（交互调研 D5）：选目录不像保存框会问覆盖 —— 已有同名文件就先列出来问一次，取消则一个都不写
+      const clash = exportedPaths.pendingOverwrites(jobs.map((j) => j.p), null)
+      if (clash.length && !(await exportedPaths.confirmOverwrites(dialog, win, clash, payload.lang))) return { ok: false, canceled: true }
+      for (const j of jobs) {
+        fs.mkdirSync(path.dirname(j.p), { recursive: true })
+        fs.writeFileSync(j.p, j.text, 'utf8')
+        written.push(j.p)
+      }
+      exportedPaths.markExported(dir)
+      return receipt({ ok: true, dir, written }, written)
     } catch (err) {
+      exportedPaths.markAll(written)
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return {
         ok: false, dir, written,
@@ -1953,14 +2090,15 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // KML 含中文名/描述按 UTF-8 读；GXT 为 ASCII/latin1（sat_name 可能含 latin1 高位字符）按 latin1 读。
   ipcMain.handle('poly:open', async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-      title: '导入协调区多边形（GXT / KML，可多选）', properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: '多边形 (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
+      title: dt('导入 Polygon（GXT / KML，可多选）', lang), properties: ['openFile', 'multiSelections'],
+      filters: dtFilters([
+        { name: 'Polygon (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
         { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
         { name: 'KML (*.kml)', extensions: ['kml'] },
         { name: '所有文件', extensions: ['*'] }
-      ]
+      ], lang)
     })
     if (canceled || !filePaths || !filePaths.length) return { canceled: true }
     const path = require('path')
@@ -1998,9 +2136,10 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const fmt = payload.format === 'excel' ? 'excel' : 'word'
     const ext = fmt === 'excel' ? 'xlsx' : 'docx'
     const win = BrowserWindow.fromWebContents(e.sender)
+    const lang = await senderLang(e, payload.lang)
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      defaultPath: `链路预算报告.${ext}`,
-      filters: [{ name: fmt === 'excel' ? 'Excel 工作簿' : 'Word 文档', extensions: [ext] }]
+      defaultPath: `${dt('链路预算报告', lang)}.${ext}`,
+      filters: [{ name: dt(fmt === 'excel' ? 'Excel 工作簿' : 'Word 文档', lang), extensions: [ext] }]
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     // 与本文件其余导出口同一口径：目标文件被 Word/Excel 打开时 writeFileSync 抛 EBUSY/EPERM，
@@ -2008,7 +2147,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     try {
       const buf = fmt === 'excel' ? await report.buildExcel(payload) : await report.buildWord(payload)
       fs.writeFileSync(filePath, Buffer.from(buf))
-      return { ok: true, filePath }
+      return receipt({ ok: true, filePath })
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Word / Excel）' : (err.message || String(err)) }
@@ -2035,20 +2174,29 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (isSla && !model.hasSla) return { ok: false, error: '没有任何链路勾选了 SLA 条款' }
     if (isSsa && (formats.length !== 1 || formats[0] !== 'docx')) return { ok: false, error: '空间态势报告只出 Word' }
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
+    // 报告语言 = 平台语言（model.lang）；对话框跟它走，模型没带再读发起窗口
+    const dlgLang = await senderLang(e, model.lang)
+    const dlgEn = dlgLang === 'en'
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: (isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : '保存报告') + (formats.length > 1 ? '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）' : ''),
-      defaultPath: safeSaveName(payload && payload.defaultName, isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告') + '.' + formats[0],
-      filters: formats.map((f) => EXT[f])
+      title: dt(isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : '保存报告', dlgLang) + (formats.length > 1
+        ? (dlgEn ? ' (also writes ' + formats.map((f) => '.' + f).join(' / ') + ' with the same name)' : '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）')
+        : ''),
+      defaultPath: safeSaveName(payload && payload.defaultName, dt(isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告', dlgLang)) + '.' + formats[0],
+      filters: dtFilters(formats.map((f) => EXT[f]), dlgLang)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
     const stem = filePath.replace(/\.(xlsx|docx|pdf)$/i, '')
+    // 覆盖核对（交互调研 D5）：保存框只替它确认过的那一个文件问过覆盖，同 stem 的另几种格式它问不到 ——
+    // 已存在的先列出来问一次（报告语言 = 平台语言），取消则一个都不写
+    const clash = exportedPaths.pendingOverwrites(formats.map((f) => stem + '.' + f), filePath)
+    if (clash.length && !(await exportedPaths.confirmOverwrites(dialog, win, clash, model.lang === 'en' ? 'en' : 'zh'))) return { ok: false, canceled: true }
     try {
       const lang = model.lang === 'en' ? 'en' : 'zh'
       const orbitType = (model.scheme && model.scheme.orbitType) || 'GEO'
       if (isSsa) {
         const buf = await require('../services/reportSsaDocx').buildSsaDocx(model)
         fs.writeFileSync(stem + '.docx', Buffer.from(buf))
-        return { ok: true, files: [stem + '.docx'], filePath: stem + '.docx' }
+        return receipt({ ok: true, files: [stem + '.docx'], filePath: stem + '.docx' }, [stem + '.docx'])
       }
       if (isSla) {
         const files = []
@@ -2062,7 +2210,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
           fs.writeFileSync(stem + '.docx', Buffer.from(buf))
           files.push(stem + '.docx')
         }
-        return { ok: true, files, filePath: files[0] }
+        return receipt({ ok: true, files, filePath: files[0] }, files)
       }
       for (const l of (model.links || [])) {
         if (l && l.data && !(l.segments && l.segments.length)) {
@@ -2088,7 +2236,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         fs.writeFileSync(stem + '.pdf', Buffer.from(buf))
         files.push(stem + '.pdf')
       }
-      return { ok: true, files, filePath: files[0] }
+      return receipt({ ok: true, files, filePath: files[0] }, files)
     } catch (err) {
       const busy = err && (err.code === 'EBUSY' || err.code === 'EPERM' || err.code === 'EACCES')
       return { ok: false, error: busy ? '文件可能正被其他程序打开（如 Excel / PDF 阅读器）' : (err.message || String(err)) }
@@ -2123,7 +2271,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
-      filters: [{ name: '链路预算配置', extensions: ['lbcfg', 'json'] }]
+      filters: dtFilters([{ name: '链路预算配置', extensions: ['lbcfg', 'json'] }], await senderLang(e))
     })
     if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true }
     try { return { ok: true, text: fs.readFileSync(filePaths[0], 'utf8') } }

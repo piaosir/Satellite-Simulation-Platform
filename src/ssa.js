@@ -10,6 +10,9 @@ import './stores/uiFont'
 import './shared/i18n/runtime'
 // 报告文档区字号与链路预算各窗共享（localStorage + storage 事件跨窗同步）
 import { initLbFontSize } from './shared/lbFont.js'
+import { installGlobalErrors } from './shared/reportError.js'
 
 initLbFontSize()
-createApp(SsaApp).use(createPinia()).mount('#app')
+const app = createApp(SsaApp).use(createPinia())
+installGlobalErrors(app)
+app.mount('#app')

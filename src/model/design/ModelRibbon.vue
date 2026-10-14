@@ -57,12 +57,12 @@ function copy() {
       </button>
       <div class="asm-rb-col">
         <button class="asm-tg" data-act="copy" :data-copy="kind" :disabled="!can" :title="tip" @click="copy">
-          <Icon :name="isEdit ? 'copy' : 'folder-plus'" :size="13" /><span>{{ isEdit ? '编辑副本' : '另存副本' }}</span>
+          <Icon :name="isEdit ? 'copy' : 'folder-plus'" :size="12" /><span>{{ isEdit ? '编辑副本' : '另存副本' }}</span>
         </button>
       </div>
       <div class="asm-rb-col">
-        <button class="asm-tg ico" data-act="undo" :disabled="!cur.undoN" title="撤销（Ctrl+Z）" @click="wb.undo()"><Icon name="undo-2" :size="14" /></button>
-        <button class="asm-tg ico" data-act="redo" :disabled="!cur.redoN" title="重做（Ctrl+Y）" @click="wb.redo()"><Icon name="redo-2" :size="14" /></button>
+        <button class="asm-tg ico" data-act="undo" :disabled="!cur.undoN" title="撤销（Ctrl+Z）" @click="wb.undo()"><Icon name="undo-2" :size="16" /></button>
+        <button class="asm-tg ico" data-act="redo" :disabled="!cur.redoN" title="重做（Ctrl+Y）" @click="wb.redo()"><Icon name="redo-2" :size="16" /></button>
       </div>
     </div>
     <div class="lbr-cap">文档</div>

@@ -512,7 +512,7 @@ module.exports = function createCustomSats(getCore) {
   // 提交预览：choices = { name（组名）, binds:[target|null]（与预览 sats 同序）}
   function commitPreview(token, choices) {
     const pv = _previews.get(token)
-    if (!pv) return { ok: false, error: '导入预览已过期，请重新选择文件' }
+    if (!pv) return { ok: false, error: '导入预览已过期。' }
     const c = choices || {}
     const gname = (c.name && String(c.name).trim()) || pv.name
     let r
@@ -544,7 +544,7 @@ module.exports = function createCustomSats(getCore) {
     const g = store.groups.find((x) => x.id === groupId)
     if (!g || g.kind !== 'ephem') return { ok: false, error: '星历组不存在' }
     const s = (g.sats || []).find((x) => String(x.key) === String(key))
-    if (!s) return { ok: false, error: '星历组里没有这颗星' }
+    if (!s) return { ok: false, error: '星历组中没有该卫星' }
     const b = normBind(target)
     if (target && !b) return { ok: false, error: '目标卫星编号无效' }
     if (b && b.noradId === OP.normId(s.noradId)) return { ok: false, error: '不能对应到自身' }
@@ -807,7 +807,7 @@ module.exports = function createCustomSats(getCore) {
     const wantEphem = ephF.FORMATS.includes(want)
     if (g.kind === 'ephem') {
       // 点序列组只能导出成点序列格式 —— 它没有平均根数，出不了 OMM/TLE
-      if (!wantEphem) throw new Error('星历点序列只能导出成 STK .e 或 CCSDS OEM')
+      if (!wantEphem) throw new Error('星历点序列仅可导出为 STK .e 或 CCSDS OEM')
       const es = ephemSats(id)
       if (!es) return null
       return ephF.serializeEphemeris(es, want, opts || {})
@@ -824,7 +824,7 @@ module.exports = function createCustomSats(getCore) {
     // 每颗星 = 时窗 ÷ 步长 + 1 次 SGP4，全程同步跑在主进程：不设上限时万颗组会把主进程冻住甚至 OOM
     const count = (records && records.length) || 0
     if (count > EPHEM_SAMPLE.maxSats) {
-      throw new Error('按 SGP4 采样导出最多 ' + EPHEM_SAMPLE.maxSats + ' 颗（本次 ' + count + ' 颗），请拆成小组后导出')
+      throw new Error('按 SGP4 采样导出最多 ' + EPHEM_SAMPLE.maxSats + ' 颗（本次 ' + count + ' 颗）')
     }
     const stepS = Math.max(1, Number(o.stepS) || EPHEM_SAMPLE.stepS)
     const frame = o.frame || 'TEME'

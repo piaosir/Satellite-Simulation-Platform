@@ -121,40 +121,63 @@ input[type="checkbox"]:disabled,
 input[type="radio"]:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ==== 滑块 ====
-   不画「已走过」的填充：Chromium 没有 ::-webkit-slider-progress，只能把归一化值经 JS 写成 CSS 变量，
-   而 Vue 的 :value 是改 DOM 属性不派发 input 事件，监听不到 → 外部改值时填充会停在旧位置。
-   与其留个时对时错的填充，不如细轨 + 实心钮：本库每个滑块旁边本来就跟着数值读数。
-   钮取机位色 —— 它是「当前值在哪」，属于选中态。 */
+   Blender / Unreal 式「融合数值条」（2026-10-14 用户在四版对比台里选定，另三版是 Spectrum 2 / Resolve / macOS）：
+   滑杆本身就是一根数值条 —— 条内已走过的部分染淡机位色，末端一道 2px 机位色刻线标出当前值；
+   紧随其后的数值读数由 shared/ui/rangeField.js 叠进条内右端，读数本身即输入框（见后文「滑杆配数值框」）。
+   已走过的填充靠 --p（0~1）：rangeField.js 包了 HTMLInputElement 的 value / min / max setter 并监听 input，
+   Vue 的 :value / v-model 改值也跟得上（旧版不画填充正是因为这一点做不到）。
+   条高 --rbar-h，不在滑杆上定义而是向外层继承：出厂 = 标准控件高 22px，与同面板的数字框齐平；
+   状态栏这类贴身处在容器上设小值，条与条内读数一起变。 */
 input[type="range"] {
+  --rbar-bg: var(--field-bg);
+  --rbar-fill: color-mix(in srgb, var(--accent-ui) 30%, var(--field-bg));
+  --rbar-edge: color-mix(in srgb, var(--field-border) 60%, transparent);
   appearance: none;
   -webkit-appearance: none;
-  height: 14px;
+  height: var(--rbar-h, var(--h-ctl));
   margin: 0;
+  vertical-align: middle;
   background: transparent;
   cursor: pointer;
+  /* 插入 / 重新显示时触发一次 animationstart，rangeField.js 借它同步填充、把读数叠进条内 */
+  animation: rnum-seen 1ms;
 }
+@keyframes rnum-seen { from { --rnum-seen: 0; } to { --rnum-seen: 1; } }
 input[type="range"]::-webkit-slider-runnable-track {
-  height: var(--ctl-track);
-  border-radius: calc(var(--ctl-track) / 2);
-  background: var(--border-strong);
+  height: var(--rbar-h, var(--h-ctl));
+  border-radius: var(--r-box);
+  /* 填充止于刻线中心：钮宽 2px，中心在 1px + p × (宽 − 2px) */
+  background: linear-gradient(90deg, var(--rbar-fill) 0 calc(1px + var(--p, 0) * (100% - 2px)), var(--rbar-bg) 0);
+  box-shadow: inset 0 0 0 1px var(--rbar-edge);
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: var(--ctl-knob);
-  height: var(--ctl-knob);
-  margin-top: calc((var(--ctl-track) - var(--ctl-knob)) / 2);
+  width: 2px;
+  height: var(--rbar-h, var(--h-ctl));
+  margin: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--accent-ui);
-  /* 钮与轨之间一圈纸色细缝：实心钮压在同为深色的轨上不再糊成一团 */
-  box-shadow: 0 0 0 1px var(--bg);
-  transition: transform var(--dur-1) var(--ease-std);
 }
-input[type="range"]:hover::-webkit-slider-thumb,
-input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.18); }
-input[type="range"]:disabled { cursor: not-allowed; }
-input[type="range"]:disabled::-webkit-slider-thumb { background: var(--text-faint); transform: none; }
-input[type="range"]:disabled::-webkit-slider-runnable-track { background: var(--border); }
+/* 悬停：指针在条上、或在叠进条内的读数上（读数盖住了条的右端，条自己收不到 :hover） */
+input[type="range"]:not(:disabled):hover,
+input[type="range"]:not(:disabled):has(+ :is(span, b, output):hover) {
+  --rbar-bg: color-mix(in srgb, var(--field-bg) 94%, var(--text));
+  --rbar-fill: color-mix(in srgb, var(--accent-ui) 38%, var(--field-bg));
+  --rbar-edge: var(--field-border-hover);
+}
+input[type="range"]:not(:disabled):active { --rbar-fill: color-mix(in srgb, var(--accent-ui) 46%, var(--field-bg)); }
+/* 底色钉透明：下文「input:disabled」那条给输入框铺禁用底色，会把整条滑杆垫成一块灰带 */
+input[type="range"]:disabled {
+  cursor: not-allowed;
+  background-color: transparent;
+  --rbar-bg: transparent;
+  --rbar-fill: color-mix(in srgb, var(--text) 10%, var(--field-bg));
+  --rbar-edge: var(--border);
+}
+input[type="range"]:disabled::-webkit-slider-thumb { background: transparent; }
+/* 刻线走进叠放读数的框里（rangeField.js 打 data-rnum-under）：刻线让开，填充边界仍标出当前值 */
+input[type="range"][data-rnum-under]::-webkit-slider-thumb { background: transparent; }
 
 /* ==== 数字框 ====
    原生上下箭头一律去掉：一是丑，二是它挨着输入区，工程数值改错了不容易发现。
@@ -193,8 +216,11 @@ input[type="color"] {
   cursor: pointer;
 }
 input[type="color"]:hover:where(:not(:disabled)) { border-color: var(--field-border-hover); }
+/* 色块要和空输入框一眼分得开：白色块（专业浅色）/ 近黑块（专业深色）原先与 --field-bg 同色，读作一个空框。
+   色块与外框之间垫一圈面板底色（不是 --field-bg），色块本身再压一道半透明墨色内描边 —— 白 / 黑 / 中间色都有边。 */
+input[type="color"] { background: var(--surface-2); }
 input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
-input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 1px; }
+input[type="color"]::-webkit-color-swatch { border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); border-radius: 1px; }
 
 /* ==== 下拉框 ====
    箭头自绘：原生箭头在深色主题下由 UA 画、跟不上主题。留出 21px 右内距给它，
@@ -226,6 +252,14 @@ select:disabled { color: var(--text-faint); background-color: var(--field-disabl
    注意：这不会把控件撑宽 —— 原生 select 的箭头本来就在自己的内容盒里占着同样一块地方，
    appearance: none 把那块地方释放了，这里只是原样还回去。 */
 select { padding-right: 21px !important; }
+/* 命令下拉（下拉菜单钮）：选一项＝执行一次命令、随即弹回首项（「添加卫星」「插入字段」「从模板应用…」「预置…」……）。
+   它是一颗带菜单的按钮，不是存值的字段 —— 长成输入框就读作「这里该填个值、还没填」。外观改走按钮档
+   （按钮底 / --border-strong 描边 / 专业档抬起一层），箭头照旧；行为仍是原生 select，键盘、系统列表、optgroup 都不丢。
+   占位项（value=""）就是按钮文字。
+   ★ 三处 !important：调用处的组件规则（.srow select、.ci、.ccd-in、.ci-mini …）特异度都更高、且都写死了字段档的底与描边；
+     底色只写 background-color（箭头是 background-image，见上）。 */
+select.cmd-sel { background-color: var(--bg) !important; border-color: var(--border-strong) !important; color: var(--text) !important; }
+select.cmd-sel:hover:where(:not(:disabled)) { border-color: var(--line-hover) !important; }
 
 /* ==== 文本 / 数字 / 多行输入 ====
    描边走 --field-border 而不是 --border：可输入域必须与装饰性分隔线分开一档，
@@ -315,11 +349,103 @@ textarea { font-family: inherit; padding: 4px 7px; }
 .btn.danger:hover:not(:disabled) { color: var(--bg); background: var(--danger); border-color: var(--danger); }
 /* 次要动作：无框，悬停才现形 */
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
-.btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--surface-2); border-color: transparent; }
+.btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--wash-hover); border-color: transparent; }
 .btn.sm { height: var(--h-ctl-sm); padding: 0 8px; font-size: var(--fs-2); }
 /* 图标钮：正方形，尺寸跟着高度走 */
 .btn.icon { width: var(--h-ctl); padding: 0; }
 .btn.icon.sm { width: var(--h-ctl-sm); }
+/* 切换钮（toggle button）：「开着 / 关着」的工具态与行为开关（拖动调整、跟随……），.on 与 aria-pressed 同写。
+   ★ 不用分段控件做切换：连成一条的分段读作「几项里必选其一」，而工具态可以一项都不开、几项之间也未必互斥；
+   切换钮各自成钮、彼此留缝。按下态与分段选中段同一种实底（--sel-fill / --sel-on），「选中 / 开着」全软件一种写法。 */
+.btn.on { color: var(--sel-on); background: var(--sel-fill); border-color: var(--sel-fill); }
+.btn.on:hover:not(:disabled) { border-color: var(--sel-fill); }
+/* 参数行里并排的几颗切换钮 / 动作钮：等分铺满控件列，右沿与同节的下拉、数字框齐平 */
+.srow > .btn.fill { flex: 1 1 0; min-width: 0; }
+
+/* ==== 图标钮 ====
+   只有一枚图标的小动作钮：行尾「＋ ✎ ×」、上移 / 下移、对话框关闭、缩放 ±、面板关闭键……
+   命中框 22（.sm 20）、图标 12 / 16 居中；静止无底无框，悬停给一层底色。
+   ★ 命中框与图标尺寸分开：图标照旧 12，扩的是能点中的那块（原 .sacts .ic 只有 12×12、间距 8）。
+   与 .btn.icon 的分工：.btn.icon 是带框的方钮（与输入框齐平、放在参数行里），.ibtn 是无框的行尾 / 标题栏小钮。 */
+.ibtn {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 22px; height: 22px; padding: 0; margin: 0;
+  font: inherit; line-height: 1; color: var(--text-muted);
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl);
+  cursor: pointer; transition: var(--t-state);
+}
+.ibtn.sm { width: 20px; height: 20px; }
+.ibtn:hover:not(:disabled):not(.dis) { color: var(--text); background: var(--wash-hover); }
+.ibtn.danger:hover:not(:disabled):not(.dis) { color: var(--danger); }
+.ibtn.on, .ibtn.on:hover:not(:disabled):not(.dis) { color: var(--sel-on); background: var(--sel-fill); }
+.ibtn:disabled, .ibtn.dis { opacity: var(--dis-opacity); cursor: not-allowed; }
+.ibtn:focus-visible { outline-offset: -2px; }
+
+/* ==== 分段控件（几项里必选其一）====
+   <div class="seg" role="radiogroup"><button type="button" class="sg" role="radio" :aria-checked="…" :class="{ on: … }">…</button>…</div>
+   样板是时间轴设置（TimelineSettings）：真 <button>，键盘可达，英文下段宽随字撑开。
+   ★ 只用于「必选其一」。可以一项都不开的工具态 / 开关用切换钮 .btn.on + aria-pressed；一次性动作用 .btn。
+   ★ 选择器写成 .seg > .sg：.sg 在链路表里是表格根、.seg 在频率条（FpAlloc）里是频段条，都不在 .seg > 之下。
+   .nseg 字号小一档；.sm 小一号字、段内距收窄；.ro 只读（显示当前值，不能点）。 */
+.seg { display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
+.seg > .sg {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin: 0; padding: 2px 12px; line-height: 16px; font: inherit; color: var(--text-muted);
+  background: transparent; border: 0; border-radius: 0;
+  cursor: pointer; user-select: none; white-space: nowrap; transition: var(--t-state);
+}
+.seg > .sg + .sg { border-left: 1px solid var(--border); }
+.seg > .sg:hover:not(.on):not(.dis):not(.off):not(:disabled) { background: var(--wash-hover); color: var(--text); }
+.seg > .sg:active:not(.on):not(.dis):not(.off):not(:disabled) { box-shadow: var(--press); transition-duration: 0s; }
+.seg > .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
+.seg > .sg.on, .seg > .sg.on + .sg { border-left-color: transparent; }
+.seg > .sg:is(.dis, .off, :disabled) { color: var(--text-faint); opacity: var(--dis-opacity); cursor: not-allowed; background: none; }
+/* 条件不成立的那一格（如没选中卫星时的「星下点」）停掉点击，但留在版面上 —— 忽隐忽现按钮会跳位 */
+.seg > .sg.dis { pointer-events: none; }
+.seg > .sg:focus-visible { outline-offset: -2px; }
+.seg.nseg { font-size: var(--fs-3); }
+.seg.nseg > .sg { padding: 2px 8px; }
+.seg.sm > .sg { padding: 2px 7px; font-size: var(--fs-2); }
+.seg.ro > .sg { cursor: default; }
+.seg.ro > .sg:hover:not(.on) { background: none; color: var(--text-muted); }
+
+/* ==== 可折叠分区头（.sect.acc，role=button tabindex=0）：键盘落点要看得见 ====
+   焦点环选择器刻意不收 [tabindex]（那些多是代接键盘的容器）；分区头是真正的落点，单独点名。 */
+.sect.acc[tabindex]:focus-visible { outline: 2px solid var(--focus-ring) !important; outline-offset: 2px; border-radius: var(--r-box); }
+
+/* ==== 菜单（右键菜单 / 下拉菜单 / 「⋯」更多）====
+   <div class="menu-mask" @mousedown.self="close" @contextmenu.prevent="close"></div>
+   <div class="menu" role="menu" :style="{ left, top }">
+     <button class="menu-item" role="menuitem"><span class="menu-ico"><Icon …/></span>文字<span class="menu-kbd">Ctrl+S</span></button>
+     <div class="menu-sep" role="separator"></div>
+   </div>
+   底 --float-bg（浮层一档，比面板亮），行高 26，悬停 / 键盘高亮（.hi）走蓝块；右侧快捷键列靠 margin-left: auto 顶到右缘。
+   位置由各处自己给（fixed 跟光标 / absolute 挂在按钮下）。 */
+.menu {
+  z-index: var(--z-menu); min-width: 150px; max-height: calc(100vh - 16px); overflow-y: auto;
+  padding: 4px; display: flex; flex-direction: column;
+  font-size: var(--fs-3); color: var(--text);
+  background: var(--float-bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2);
+  animation: ui-fade-in var(--dur-2) var(--ease-out);
+}
+.menu-mask { position: fixed; inset: 0; z-index: calc(var(--z-menu) - 1); }
+.menu-item {
+  display: flex; align-items: center; gap: 8px; flex: none; width: 100%; height: 26px; padding: 0 10px; margin: 0;
+  font: inherit; text-align: left; white-space: nowrap; color: var(--text);
+  background: transparent; border: 0; border-radius: var(--r-ctl); cursor: default;
+}
+.menu-item:hover:not(:disabled):not(.dis), .menu-item.hi:not(:disabled):not(.dis) { background: var(--accent-fill); color: var(--accent-on); }
+.menu-item:disabled, .menu-item.dis { color: var(--text-faint); background: transparent; }
+.menu-item.danger:not(:hover):not(.hi) { color: var(--danger); }
+.menu-item:focus-visible { outline-offset: -2px; }
+.menu-ico, .menu-ck { flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); }
+.menu-ico { width: 16px; }
+.menu-ck { width: 14px; color: inherit; }
+.menu-item:is(:hover, .hi):not(:disabled):not(.dis) .menu-ico { color: inherit; }
+.menu-kbd { margin-left: auto; padding-left: 24px; font-size: var(--fs-2); color: var(--text-faint); }
+.menu-item:is(:hover, .hi):not(:disabled):not(.dis) .menu-kbd { color: inherit; }
+.menu-sep { flex: none; height: 0; margin: 4px 6px; border-top: 1px solid var(--border); }
+.menu-hd { flex: none; padding: 5px 10px 3px; font-size: var(--fs-2); color: var(--text-faint); letter-spacing: var(--ls-caps); }
 
 /* ==== 参数行 ====
    面板里「标签 + 控件 + 单位」的标准行。全库有 230 处 .srow，原先在三个文件里各存了一份副本
@@ -403,9 +529,22 @@ input.ci, select.ci, textarea.ci { flex: 1; min-width: 0; font-size: var(--fs-3)
 :where(input[type="text"], input[type="number"], input[type="search"], input[type="password"],
        input[type="datetime-local"], input[type="date"], input[type="time"],
        input:not([type]):not(.eg-cap):not(.sg-cap), textarea):focus-visible { outline-offset: -1px; }
-/* 滑块：描钮不描整条 14px 高的盒子 */
+/* 滑块（数值条）：环画在条上，与文本框同口径 —— 1px 压在描边上、1px 在外 */
 input[type="range"]:focus-visible { outline: none !important; }
-input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-ui); }
+input[type="range"]:focus-visible::-webkit-slider-runnable-track { box-shadow: inset 0 0 0 1px var(--accent-ui), 0 0 0 1px var(--accent-ui); }
+
+/* ==== 搜索框聚焦（Claude 同款）====
+   .search-field 挂在「画框的那个元素」上：输入框自己带框就挂输入框，图标 + 输入框包在一个带框容器里
+   就挂容器。:focus-within 两种都命中（元素自己聚焦也算）。
+   描边换成蓝环 + 外晕，不叠 2px 外框；环落在原描边位上，不改几何，挨着的行与裁切容器都不受影响。
+   !important：组件里各自写过 :focus 描边 / outline，特异度参差，统一在这里压住。 */
+:where(.search-field) { transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out); }
+.search-field:focus-within {
+  outline: none !important;
+  border-color: var(--focus-ring) !important;
+  box-shadow: var(--focus-halo) !important;
+}
+.search-field input:focus-visible { outline: none !important; }
 
 /* ==== 显隐拨杆 ====
    全软件唯一一件开关：环境场总开关条、标记三分区标题、每个 Polygon 卡片、设置窗的两行开关。
@@ -444,6 +583,10 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px 
 /* 深色关态：关 = 亮钮压暗轨、开 = 机位色轨上暗钮（Windows 11 深色开关惯例）。
    原来关态是 --bg 近黑钮压在 --border-strong 暗轨上，钮与轨几乎同明度，一眼读不出是关着。浅色不变。 */
 :root[data-theme="dark"] .layersw:not(.on) > i { background: var(--text-muted); }
+/* 专业浅色关态：轨道走可输入域描边（#8f8f8f 对面板 3.05:1，白钮对轨道 3.25:1；悬停 #717171 → 白钮 4.9:1）。
+   原 --border-strong #c6c6c6 对面板 1.61、白钮对轨道 1.71 —— 关态只剩一条淡灰胶囊。 */
+:root[data-theme="light"][data-skin="studio"] .layersw:not(.on) { background: var(--field-border); }
+:root[data-theme="light"][data-skin="studio"] .layersw:not(.on):hover { background: var(--field-border-hover); }
 
 /* ==== 英文版式让位（根元素 lang="en" 由 i18n 运行时打上）====
    同一个参数名，英文普遍比中文长一截（透明度 4 字 ≈ 48px，Opacity ≈ 58px；母线线型 ≈ 60px，
@@ -459,17 +602,16 @@ html[lang="en"] .srow.sub { --srow-lab: 73px; }
 :where(button:not(:disabled):not(.dis):active) { box-shadow: var(--press); transition-duration: 0s; }
 /* 选中切换瞬时：进入选中态不淡入（选中是结论，不是过程） */
 :where(button.on, button.active, button[aria-pressed="true"]) { transition-duration: 0s; }
-/* 菜单 / 下拉里的项不过渡：扫过一串菜单项时拖出的淡尾读起来像卡顿（VS Code / Win32 菜单均瞬时） */
-:where(.mpanel, .ms-pop, .ms-sub, .ctx-menu, .lmenu, .lp-menu, .lp-drop, .fd-menu, .expmenu,
-       .lb-ctx, .sg-ctx, .sg-dd, .eg-ctx, .pwm, .cmenu, .ddm, .rlmode-menu, .tzp-menu, .so-drop,
-       .e2-city-pop, .spk-pop) :where(button, [class]) { transition: none; }
+/* 菜单 / 下拉里的项不过渡：扫过一串菜单项时拖出的淡尾读起来像卡顿（VS Code / Win32 菜单均瞬时）。
+   菜单一律挂基线 .menu；其余是不属于菜单的选择浮层（搜索下拉 / 列表下拉 / 选城市 / 选星 / 时区） */
+:where(.menu, .ms-pop, .ms-sub, .sg-dd, .so-drop, .e2-city-pop, .spk-pop, .tzp-menu) :where(button, [class]) { transition: none; }
 /* 同上，列表 / 目录行：只收行所在的列表容器，弹层里的动作键（ExcelGrid 的 pick-foot 插槽、波束弹层的清空 / 应用）照旧过渡 */
 :where(.eg-pick-l, .addpop, .spop, .bp-list, .ssa-toc) :where(button, [class]) { transition: none; }
 /* 墨色实底主按钮：按下罩换 --press-ink（原罩在墨底上看不出，见 global.css）。
-   .mini.imp 在文件管理里是纸底、悬停才转墨，故只在悬停时换 */
-:where(button.ok, .ci-run, .lb-calc, .lb-mini.pri, .pb.main, .lp-add, .cpk-btn:not(.ghost),
-       .sdfoot .save:not(.ghost), .cefoot .save, .bs-gen, .grp-save .save, .sgm-pickbar .save,
-       .fp .mini.imp, .cbtns .mini.imp, .mini.imp:hover) { --press: var(--press-ink); }
+   只认主按钮类：.primary（含 .btn.primary / .lb-mini.primary / 各对话框 *-btn.primary）、.save（非 .ghost 即实底），
+   以及几处自带名字的实底键。.mini.imp 在频率计划窗（.fp）里恒为实底；在文件管理里是纸底、悬停才转墨，故只在悬停时换 */
+:where(.btn.primary, .primary, button.ok, .ci-run, .lb-calc, .pb.main, .lp-add, .bs-gen,
+       .cpk-btn:not(.ghost), .save:not(.ghost), .fp .mini.imp, .mini.imp:hover) { --press: var(--press-ink); }
 
 /* ==== 展开箭头：同一枚 chevron-down，收起时转 -90°（与 chevron-right 逐像素重合）==== */
 .app-icon.disc { transition: transform var(--dur-2) var(--ease-std); }
@@ -482,26 +624,137 @@ html.ui-col-resize, html.ui-col-resize * { cursor: col-resize !important; user-s
 .theme-swap, .theme-swap *, .theme-swap *::before, .theme-swap *::after { transition: none !important; }
 
 /* ==== 共享入场关键帧（见 spec §1.2）====
-   只在 no-preference 下存在：减弱动效时名字解析不到，动画自然不发生。
+   ★ 不跟系统 prefers-reduced-motion：用户机 Windows「动画效果」关着，Chromium 恒报 reduce（记忆 no-reduced-motion-gate）。
+     动效只认应用内 --dur-*（置 0 即关）。
    用独立的 translate 属性而不是 transform —— 永不覆盖元素自己用 transform 做的定位（如 translate(-50%) 居中）；
    不写 animation-fill-mode：结束后不在元素上留任何位移（侧栏里的 fixed 菜单靠这一点定位）。 */
-@media (prefers-reduced-motion: no-preference) {
-  @keyframes ui-float-in { from { opacity: 0; translate: 0 -2px; } }  /* 挂在触发器下方的下拉 / 菜单 */
-  @keyframes ui-float-up { from { opacity: 0; translate: 0 2px; } }   /* 挂在触发器上方的弹出层 */
-  @keyframes ui-fade-in  { from { opacity: 0; } }                     /* 光标处右键菜单 / 翻转位置不定的弹层 */
-  @keyframes ui-dlg-in   { from { opacity: 0; translate: 0 4px; } }   /* 模态对话框的框体（不是遮罩） */
-}
+@keyframes ui-float-in { from { opacity: 0; translate: 0 -2px; } }  /* 挂在触发器下方的下拉 / 菜单 */
+@keyframes ui-float-up { from { opacity: 0; translate: 0 2px; } }   /* 挂在触发器上方的弹出层 */
+@keyframes ui-fade-in  { from { opacity: 0; } }                     /* 光标处右键菜单 / 翻转位置不定的弹层 */
+@keyframes ui-dlg-in   { from { opacity: 0; translate: 0 4px; } }   /* 模态对话框的框体（不是遮罩） */
+/* 忙碌转圈（全库唯一一份；状态指示不是装饰，恒转，不受 --dur-* 管） */
+@keyframes ui-spin { to { transform: rotate(360deg); } }
 
-/* ==== 减弱动效（Windows 设置 › 辅助功能 › 视觉效果 › 动画效果）====
-   过渡归零（必须是 0s：.01ms 会给每个元素都挂上一条真过渡（transition-property 初值是 all），
-   样式一律晚一帧才画、同步读回的还是旧值——虚拟滚动列表每跨一行跳 22px；src 里没有 transitionend 的消费者）；
-   新增入场关键帧在 reduce 下本来就不存在；既有的无限动画（转圈、实时脉冲）由各自组件就地处理。必须是本文件最后一段。 */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    transition-duration: 0s !important;
-    transition-delay: 0s !important;
-    scroll-behavior: auto !important;
-  }
-  /* 滑块钮在输入框的内置影子树里，* 选不到，单独写 */
-  input[type="range"]::-webkit-slider-thumb { transition-duration: 0s !important; }
+/* ==== 数值拖拽（hot text，行为在 shared/ui/controls.js）====
+   参数行的标签按住横拖改同一行的数字框：标签上给横向光标作提示（After Effects / Premiere / Resolve 同口径），
+   数值本身不染色 —— 密排表单里那会把整片数值染蓝。条件与 JS 一致：行内恰好一个可编辑的数字框、且框里有值
+   （留空 = 走默认 / 跟全局，不从空格子起拖，免得把「默认」变成手填值）。拖动中全窗锁横向光标。 */
+.srow:has(> input[type="number"]:not(:disabled):not([readonly]):not(:placeholder-shown)):not(:has(> input[type="number"] ~ input[type="number"])) > label:not(:has(input)) { cursor: ew-resize; }
+html.ui-scrub, html.ui-scrub * { cursor: ew-resize !important; user-select: none !important; }
+
+/* ==== 滑杆配数值框（行为在 shared/ui/rangeField.js）====
+   数值条右侧的读数叠进条内右端（Blender / Unreal），它本身就是输入框：单击就地键入、按住横拖改值、
+   焦点在滑杆上直接打数字。认法与 JS 同口径：紧随滑杆、有字、不含控件 / 图标的 span / b / output。
+   叠放用的负 margin 由 JS 按「读数实宽 + 与条的实际间距」量好写在行内（各容器间距不一：.srow 8、视频导出 6…），
+   绘制前写完，不闪。不紧挨滑杆的读数（时间游标、状态栏缩放）打 data-rnum，不叠，单独一枚小数值框。
+   全部 :where() 零特异度，组件照旧覆盖得动；字色 / 最小宽度带 important —— 各组件 scoped 的 .u 规则
+   （muted / 34px）特异度更高，而这里已是条内的值：字色回正文，各行同宽（读数宽一格、条就短一格）。要改宽设 --rnum-w。 */
+:where(input[type="range"] + :is(span, b, output):not(:empty):not(:has(svg, input, button, select, textarea))) {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  vertical-align: middle;
+  min-width: var(--rnum-w, 52px) !important;
+  height: var(--rbar-h, var(--h-ctl));
+  line-height: var(--rbar-h, var(--h-ctl));
+  padding: 0 8px;
+  border-radius: 0 var(--r-box) var(--r-box) 0;
+  color: var(--text) !important;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+  transition: color var(--dur-1) var(--ease-std);
 }
+:where(input[type="range"]:not(:disabled) + :is(span, b, output):not(:empty):not(:has(svg, input, button, select, textarea))) { cursor: ew-resize; }
+/* 悬停读数 / 拖条时，数值转机位色：「这个数正跟着手走」 */
+:where(input[type="range"]:not(:disabled) + :is(span, b, output):not(:empty):not(:has(svg, input, button, select, textarea))):hover,
+:where(input[type="range"]:not(:disabled):active + :is(span, b, output):not(:empty):not(:has(svg, input, button, select, textarea))) { color: var(--accent-ui) !important; }
+:where(input[type="range"]:disabled + :is(span, b, output):not(:empty):not(:has(svg, input, button, select, textarea))) { color: var(--text-faint) !important; font-weight: 400; }
+:where([data-rnum]) {
+  display: inline-block;
+  vertical-align: middle;
+  min-width: var(--rnum-w, 40px) !important;
+  padding: 0 5px;
+  border-radius: var(--r-ctl);
+  background: var(--field-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--field-border) 60%, transparent);
+  color: var(--text) !important;
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: ew-resize;
+  user-select: none;
+  transition: box-shadow var(--dur-1) var(--ease-std);
+}
+:where([data-rnum]):hover { box-shadow: inset 0 0 0 1px var(--field-border-hover); }
+/* 编辑态：读数藏起，原位插入同宽同 margin 的 .rnum-ed（字体 / 宽 / 高 / 叠放 margin 由 JS 从读数抄过来），机位色双线框 */
+[data-rnum-on] { display: none !important; }
+.rnum-ed {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  vertical-align: middle;
+  height: var(--rbar-h, var(--h-ctl));
+  padding: 0 8px;
+  border-radius: var(--r-box);
+  background: var(--field-bg);
+  box-shadow: inset 0 0 0 1px var(--accent-ui), 0 0 0 1px var(--accent-ui);
+  color: var(--text);
+  white-space: nowrap;
+  cursor: text;
+}
+.rnum-ed > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  outline: none !important;
+}
+.rnum-ed > i { flex: none; margin-left: 1px; font-style: normal; color: var(--text-faint); }
+.rnum-ed[data-bad] { box-shadow: inset 0 0 0 1px var(--danger), 0 0 0 1px var(--danger); }
+/* 越界被夹到端点 / 微调已到头：底色闪一下 warn。是状态反馈不是装饰动效 */
+[data-rnum-flash] { animation: rnum-flash .6s ease-out; }
+@keyframes rnum-flash { from { background-color: color-mix(in srgb, var(--warn) 30%, transparent); } }
+
+/* ==== 专业浅色 / 专业深色：实底件换 Spectrum 蓝（--primary-fill + 白）====
+   --accent-ui 仍管线、字、焦点环与滑块钮；
+   成片的「开 / 选」实底统一到 --primary-fill，与选中段、主按钮、菜单高亮同一种蓝。 */
+:root[data-skin="studio"] input[type="checkbox"]:checked,
+:root[data-skin="studio"] input[type="checkbox"]:indeterminate { background: var(--primary-fill); border-color: var(--primary-fill); }
+:root[data-skin="studio"] input[type="checkbox"]:checked:hover:where(:not(:disabled)) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+:root[data-skin="studio"] input[type="checkbox"]:checked::after,
+:root[data-skin="studio"] input[type="checkbox"]:indeterminate::after { background: var(--primary-on); }
+:root[data-skin="studio"] input[type="radio"]:checked { border-color: var(--primary-fill); }
+:root[data-skin="studio"] input[type="radio"]:checked::after { background: var(--primary-fill); }
+:root[data-skin="studio"] .layersw.on { background: var(--primary-fill); }
+:root[data-skin="studio"] .layersw.on:hover { background: var(--primary-fill-hover); }
+:root[data-skin="studio"] .layersw.on > i { background: var(--primary-on); }
+/* 按钮抬起一层（--raised：深色 gray-100 #2c2c2c / 浅色白）：原「纸底」按钮在深底上是凹下去的洞 */
+:root[data-skin="studio"] .btn { background: var(--raised); border-color: var(--border-strong); }
+:root[data-skin="studio"] .btn:hover:not(:disabled) { background: var(--raised-hover); border-color: var(--line-hover); }
+:root[data-skin="studio"] .btn.ghost { background: transparent; border-color: transparent; }
+:root[data-skin="studio"] .btn.ghost:hover:not(:disabled) { background: var(--wash-hover); border-color: transparent; }
+:root[data-skin="studio"] .btn.primary { color: var(--primary-on); background: var(--primary-fill); border-color: var(--primary-fill); }
+:root[data-skin="studio"] .btn.primary:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
+:root[data-skin="studio"] .btn.primary:disabled { color: color-mix(in srgb, var(--primary-on) 55%, transparent); background: var(--primary-fill-disabled); border-color: transparent; }
+/* 命令下拉与按钮同档抬起（见「下拉框」一节的 select.cmd-sel） */
+:root[data-skin="studio"] select.cmd-sel { background-color: var(--raised) !important; }
+:root[data-skin="studio"] select.cmd-sel:hover:where(:not(:disabled)) { background-color: var(--raised-hover) !important; }
+/* 切换钮按下态：上面抬起的 --raised / 悬停 --raised-hover 特异度更高，不在这里再压一道就看不出按下 */
+:root[data-skin="studio"] .btn.on,
+:root[data-skin="studio"] .btn.on:hover:not(:disabled) { color: var(--sel-on); background: var(--sel-fill); border-color: var(--sel-fill); }

@@ -24,7 +24,8 @@ import { createLiveThrottle, focusStale } from '../../../src/viz/grd/treeLink.js
 //      说明文字都在 UI 词典里；两棵树与页面接线（聚焦钮单击加减、非关联星与正跟随的星显式聚焦先退出跟随）按源码钉。
 import { treeNavState, nodeLinkId } from '../../../src/viz/grd/treeLink.js'
 //   ⑭ treeSetMembers：卫星集「卫星天线树」的成员 —— 树序、仰角线 / 无身份不收、同号去重（先到先得）、虚拟星（合成号）与关联星（真号）分开标。
-import { treeSetMembers } from '../../../src/viz/grd/treeLink.js'
+//   ⑮ treeSetEntries：这一集进点云的条目 —— 成员一律收、不看树上卫星行的小眼睛（回归：小眼睛关着时点亮这一集一个点也不出）；分段 / 解不出不收。
+import { treeSetMembers, treeSetEntries } from '../../../src/viz/grd/treeLink.js'
 import { EXACT as UI_EXACT, PAT as UI_PAT } from '../../../src/shared/i18n/uiDict.data.js'
 import { readFileSync } from 'node:fs'
 
@@ -433,8 +434,7 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(s.followOn && !s.followDis && s.followTip === '退出跟随（Esc）', '正跟随它（号字符串 / 数字混存同一身份）：跟随钮亮，点＝退出')
   ok(!treeNavState(L, { followId: '25544' }).followOn, '跟随的是别的星：不亮')
   s = treeNavState(L, { flat: true })
-  ok(s.followDis && s.followTip === '跟随卫星（仅 3D 球体）' && !s.focusDis, '平面图：跟随置灰（聚焦照常）')
-  ok(!treeNavState(L, { flat: true, followId: '41194' }).followDis, '正跟随着的不灰（留退出的口）')
+  ok(!s.followDis && s.followTip === '跟随卫星' && !s.focusDis, '平面图：跟随照常可点（2D 也有跟随：星下点跟随），不认 flat')
   s = treeNavState(L, { miss: true, cur: false })
   ok(s.focusDis && s.followDis && s.focusTip === '关联卫星 NORAD 41194 不在当前星历中' && s.followTip === s.focusTip, '关联星不在当前星历：两钮置灰，说明同告警')
   for (const [n, what] of [[F, '固定星'], [O, '轨道根数星']]) {
@@ -461,9 +461,9 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   // 说明文字都进了 UI 词典（英文界面不漏翻）：EXACT 整串 / PAT 槽位模板
   const patHit = (str) => UI_PAT.some(([zh]) => new RegExp('^' + zh.split(/\$\{[^}]*\}/).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[\\s\\S]*?') + '$').test(str))
   const tips = new Set()
-  for (const n of [L, F]) for (const ctx of [{}, { cur: true }, { followId: '41194' }, { flat: true }, { miss: true }]) { const t = treeNavState(n, ctx); tips.add(t.focusTip); tips.add(t.followTip) }
+  for (const n of [L, F]) for (const ctx of [{}, { cur: true }, { followId: '41194' }, { miss: true }]) { const t = treeNavState(n, ctx); tips.add(t.focusTip); tips.add(t.followTip) }
   const lost = [...tips].filter((t) => !UI_EXACT[t] && !patHit(t))
-  ok(tips.size === 8 && !lost.length, '八条说明全在 UI 词典里', lost.join(' | '))
+  ok(tips.size === 7 && !lost.length, '七条说明全在 UI 词典里', lost.join(' | '))
 
   // 页面接线（按源码钉）
   const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -474,10 +474,23 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(/additive = false/.test(ft) && iAdd > 0 && iHad > iAdd, 'focusTreeSat：加减聚焦集按号认已选那份，先于「已选中＝设主选」分支')
   ok((ft.match(/if \(force\) stopFollow\(\)/g) || []).length === 2, 'focusTreeSat：显式聚焦（已选中的那颗 / 非关联星）先退出跟随')
   const fl = body(page, 'async function followTreeSat(node) {')
-  ok(fl.includes('if (followLinkId.value === id) { stopFollow(); return }') && fl.includes('startFollow(e)') && fl.indexOf('selEntries.find(') > 0, 'followTreeSat：正跟随它＝退出；否则按号认已选那份再 startFollow（追加式）')
+  ok(fl.includes('if (followLinkId.value === id) { if (flatView.value) stopFlatFollow(); else stopFollow(); return }') && fl.includes('if (flatView.value) startFlatFollow(e); else startFollow(e)') && fl.indexOf('selEntries.find(') > 0 && !/if \(!id \|\| flatView\.value\) return/.test(fl), 'followTreeSat：正跟随它＝退出；否则按号认已选那份再跟随（追加式），按当前视图分 3D / 2D，平面图不再挡')
+  const fid = body(page, 'const followLinkId = computed(() => {')
+  ok(fid.includes('if (following.value) return linkIdOf(followEntry)') && fid.includes('flatFollowing.value ? mapCrs.subPt.id'), 'followLinkId：3D 认相机跟随那颗、2D 认星下点跟随那颗（两棵树跟随钮在 2D 也点亮）')
   ok(page.includes('@click.stop="onTreeFocusBtn(sat)"') && page.includes('focusTreeSat(n, { force: true, additive: true })') && page.includes('@click.stop="onTreeFollowBtn(sat)"'), '对地树卫星行：两钮接上')
-  ok(page.includes(':follow-id="followLinkId" :flat="flatView"') && page.includes('@focus-sat="(n, f, add) => focusTreeSat(n, { force: f, additive: !!add })" @follow-sat="followTreeSat"'), '对星树：宿主传跟随状态与平面图、接两路事件')
+  ok(page.includes(':follow-id="followLinkId" :geo-ids="treeGeoIdMap"') && !page.includes(':flat="flatView" :geo-ids') && page.includes('@focus-sat="(n, f, add) => focusTreeSat(n, { force: f, additive: !!add })" @follow-sat="followTreeSat"'), '对星树：宿主传跟随状态（不再传平面图）、接两路事件')
   ok(panel.includes('@click.stop="onFocusBtn(sat)"') && panel.includes("emit('focus-sat', sat, true, true)") && panel.includes('@click.stop="onFollowBtn(sat)"') && panel.includes("'follow-sat'"), '对星树卫星行：两钮接上')
+  // 切视图不退跟随：3D 相机跟随 ↔ 2D 星下点跟随交接同一颗星（2026-10-14 用户：切换视图时不影响跟随状态）
+  const af = body(page, 'async function applyFlat(v) {')
+  const i3 = af.indexOf('if (!v) {'), iCarry = af.indexOf('const carry = flatFollowEntry() || _followCarry'), iStop2 = af.indexOf('stopFlatFollow()', i3)
+  const iResume = af.indexOf('scene && scene.resume()'), iStart3 = af.indexOf('if (carry) startFollow(carry)')
+  const iRestore = af.indexOf('if (!viewRestoredFlat)'), iStart2 = af.indexOf('if (carry && flatView.value) startFlatFollow(carry)')
+  ok(af.includes('if (v) { const fe = following.value ? followEntry : null; stopFollow(); if (fe) _followCarry = fe }'), 'applyFlat 切 2D：先记下 3D 跟随的星再退相机跟随')
+  ok(i3 > 0 && iCarry > i3 && iStop2 > iCarry && iResume > iStop2 && iStart3 > iResume, 'applyFlat 切 3D：先认 2D 跟随的星（stopFlatFollow 会清标志）→ 退 2D 跟随 → 场景恢复后 startFollow')
+  ok(iRestore > 0 && iStart2 > iRestore && af.indexOf('_followCarry = null', iRestore) > iRestore, 'applyFlat 切 2D：平面图视图恢复之后才接 2D 跟随，取走即清')
+  const ffe = body(page, 'function flatFollowEntry() {')
+  ok(ffe.includes('!_flatFollowSat') && ffe.includes('!subOpen.value') && ffe.includes('!mapCrs.subFollow') && ffe.includes("sp.src !== 'sat'"), 'flatFollowEntry：只认「跟随卫星」发起的星下点跟随（投影设置里手开的不带进 3D）')
+  ok(page.includes(':following="!!following || flatFollowing" :st="focusStyle"') && !page.includes(':can-follow='), '模型面板跟随钮：2D 跟随也点亮，不再按视图置灰')
 }
 
 // ---------- ⑭ 卫星集「卫星天线树」的成员（treeSetMembers）----------
@@ -502,6 +515,29 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(treeSetMembers(null).length === 0 && treeSetMembers([], geoIds).length === 0, '空树 → 空表')
   // 与「号 ↔ folder」一律同口径：每个成员的 id 都能经 linkedNodesOf 认回它自己那个节点
   ok(m.every((x) => linkedNodesOf(nodes.filter(Boolean), x.id, geoIds)[0] === x.node), '成员 id 经 linkedNodesOf 认回树序第一个节点')
+}
+
+// ---------- ⑮ 卫星集「卫星天线树」进点云的条目（treeSetEntries）：不看树上卫星行的小眼睛 ----------
+{
+  const off = { iconShow: false, labelShow: false }
+  const nodes = [
+    { folder: 'ZX6E', satName: '中星6E', noradId: '41194', ...off },
+    { folder: 'MY-GEO', satName: '自定义 GEO', kind: 'custom', lon: 125, lat: 0, altKm: 35786, noradId: null, ...off },
+    { folder: 'ZX6E·2', satName: '中星6E 副本', noradId: 41194 },
+    { folder: 'SIM', satName: 'LEO 模拟', kind: 'orbit', elements: { altKm: 550 }, iconShow: true, labelShow: false },
+    { folder: 'EL', satName: '仰角线', kind: 'elevline', noradId: '25544' },
+    { folder: 'ISS', satName: 'ISS', noradId: '25544', labelShow: false }
+  ]
+  const geoIds = new Map([['MY-GEO', '1712966'], ['SIM', '1755501']])
+  const ent = (id) => ({ noradId: id })
+  const pool = new Map([['41194', ent('41194')], ['1712966', ent('1712966')], ['1755501', ent('1755501')], ['25544', ent('25544')]])
+  const asked = []
+  const all = treeSetEntries(nodes, geoIds, (m) => { asked.push(m.id); return pool.get(m.id) || null })
+  ok(all.map((e) => e.noradId).join() === '41194,1712966,1755501,25544', '小眼睛关着（图标 + 名都关 / 只关名）的成员照样进；按树序、同号只取一份、仰角线不收', all.map((e) => e.noradId).join())
+  ok(asked.join() === '41194,1712966,1755501,25544', '每个成员只问一次取条目函数')
+  ok(treeSetEntries(nodes, geoIds, (m) => pool.get(m.id), 'virtual').map((e) => e.noradId).join() === '1712966,1755501' && treeSetEntries(nodes, geoIds, (m) => pool.get(m.id), 'linked').map((e) => e.noradId).join() === '41194,25544', "kind 'virtual' / 'linked' 分两段取（宿主先加虚拟星、关联星等在场集定下来再解）")
+  ok(treeSetEntries(nodes, geoIds, (m) => (m.virtual ? null : pool.get(m.id))).map((e) => e.noradId).join() === '41194,25544', '取不到条目的成员不收（根数解不出 / 关联星此刻不在星历）')
+  ok(treeSetEntries(nodes, null, (m) => pool.get(m.id)).map((e) => e.noradId).join() === '41194,25544' && treeSetEntries(null, geoIds, () => ent('x')).length === 0 && treeSetEntries(nodes, geoIds).length === 0, '没给合成号映射只剩关联星；空树 / 没给取条目函数 → 空')
 }
 
 console.log(`\n${pass} pass, ${fail} fail`)

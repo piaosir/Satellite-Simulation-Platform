@@ -52,12 +52,12 @@ function addToDesign(k) {
 <template>
   <div class="asm libc">
     <div class="libc-bar">
-      <label class="asm-search">
-        <Icon name="search" :size="13" />
+      <label class="asm-search search-field">
+        <Icon name="search" :size="12" />
         <input v-model="q" type="text" spellcheck="false" placeholder="搜索组件" title="按中英文名称、别名、功能分组、组件类型、参数名搜索；不区分大小写、全角半角与连字符" />
         <button v-if="q" type="button" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
       </label>
-      <select v-model="only" class="ci libc-dom" title="只列常用于该领域的组件（任何组件都能装进任何领域的装配件）">
+      <select v-model="only" class="ci libc-dom" title="仅列出常用于该领域的组件（任何组件都能装进任何领域的装配件）">
         <option value="">全部领域</option>
         <option v-for="d in NEW_DOMAINS" :key="d" :value="d">{{ DOMAIN_LABELS[d] }}</option>
       </select>
@@ -71,11 +71,11 @@ function addToDesign(k) {
     </div>
 
     <Teleport to="body">
-      <div v-if="ctx" class="lb-ctx-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
-        <div class="lb-ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
-          <button class="lb-ctx-i" data-act="comp-new" title="以此为根件新建装配件（领域按组件的设计领域；原样不入库，编辑后自动入库）" @click="ctxDo(open)">新建装配件</button>
-          <button class="lb-ctx-i" data-act="comp-add" :disabled="!target" :title="target ? '在设计页添加到选中件的兼容空闲接口（空文档作根件）' : '设计页未打开装配件'" @click="ctxDo(addToDesign)">
-            <span>添加到当前设计</span><span v-if="targetName" class="libc-doc" data-i18n-skip>{{ targetName }}</span>
+      <div v-if="ctx" class="lb-ctx-mask menu-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
+        <div class="lb-ctx menu" role="menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="comp-new" title="以此为根件新建装配件（领域按组件的设计领域；原样不入库，编辑后自动入库）" @click="ctxDo(open)">新建装配件</button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="comp-add" :disabled="!target" :title="target ? '在设计页添加到选中件的兼容空闲接口（空文档作根件）' : '设计页未打开装配件'" @click="ctxDo(addToDesign)">
+            <span>添加到当前设计</span><span v-if="targetName" class="libc-doc menu-kbd" data-i18n-skip>{{ targetName }}</span>
           </button>
         </div>
       </div>
@@ -92,6 +92,5 @@ function addToDesign(k) {
 .libc-foot b { font-weight: 600; color: var(--text); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .libc-foot .sep { color: var(--text-faint); padding: 0 2px; }
 /* 右键菜单「添加到当前设计」后缀目标签名（弱一档；长名截断） */
-.libc-doc { display: inline-block; max-width: 120px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: var(--text-faint); }
-.lb-ctx-i:hover:not(:disabled) .libc-doc { color: color-mix(in srgb, var(--bg) 78%, transparent); }
+.libc-doc { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

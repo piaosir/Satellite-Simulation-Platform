@@ -1,4 +1,5 @@
 import { reactive, watch } from 'vue'
+import { activationLocked, requireActivation } from './activation.js'
 
 // 壳层 UI 状态（本地记忆）：
 //  - side：侧栏当前视图（VS Code 活动栏范式，同屏只显示一个视图；'' = 侧栏收起）
@@ -21,7 +22,7 @@ const KEY = 'shell-ui-v2'
 const SIDES = ['constellation', 'antenna', 'satcov', 'beams', 'vis', 'poly', 'gxt', 'markers', 'links', 'env', 'envLive', 'model', 'focus', 'geo']
 // 出厂宽度 340（原 300）：参数行是「标签列 + 控件 + 读数列」三段，300px 下控件那段只剩一百出头，
 // 英文标签列还要再宽一档 —— 拖过一次的用户读的是自己存的值，这里只管第一次打开时的观感。
-export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400, satInfo: true, satInfoW: 300 })
+export const shellUi = reactive({ toolbar: true, log: false, side: 'constellation', sideLast: 'constellation', exw: 340, exwVis: 400, satInfo: false, satInfoW: 300 })   // 信息栏出厂收起：聚焦卫星即弹出、清空即收起（2026-10-15，首启不再空占 300 px）
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
   if (saved && typeof saved === 'object') {
@@ -34,10 +35,19 @@ try {
     if (Number.isFinite(saved.satInfoW)) shellUi.satInfoW = Math.max(240, Math.min(420, saved.satInfoW))
   }
 } catch { /* ignore */ }
+// 不受激活锁的侧栏视图：地图综合设置（底图配色 / 边界 / 地名等纯显示偏好）未激活也可用
+const UNLOCKED_SIDES = ['geo']
+export const sideLocked = (k) => !!k && !UNLOCKED_SIDES.includes(k)
+
 if (shellUi.side) shellUi.sideLast = shellUi.side   // 老快照没有 sideLast 字段：由当前 side 补一个
 // flush:'sync' 是必须的：活动栏「再点一次收起」走的是 side='satcov' → '' 这一步赋值，
 // 默认的 pre-flush 会让 sideLast 慢一拍 —— 中间那一瞬 sideCtx() 读到的是【上上个】视图。
-watch(() => shellUi.side, (v) => { if (v) shellUi.sideLast = v }, { flush: 'sync' })
+// 未激活时侧栏视图在锁定范围（「地图综合设置」除外，见 sideLocked）：入口统一走 requestSide；这里再兜一道底 ——
+// 任何漏网的赋值都收回成 ''，且发生在 sideLast 记账之前（否则收起态的 sideCtx() 会被这次没打开的视图改写）。
+watch(() => shellUi.side, (v) => {
+  if (v && sideLocked(v) && activationLocked.value) { shellUi.side = ''; requireActivation(); return }
+  if (v) shellUi.sideLast = v
+}, { flush: 'sync' })
 watch(shellUi, () => { try { localStorage.setItem(KEY, JSON.stringify(shellUi)) } catch { /* ignore */ } }, { deep: true })
 
 // 【上下文视图】：收起侧栏（side=''）只是把面板藏起来，不该动画面上任何东西 —— 场景内容、图层归属、
@@ -51,3 +61,12 @@ export const SIDE_W_LIM = { exw: [240, 420], exwVis: [240, 560] }
 export const SAT_INFO_W_LIM = [240, 420]   // 右侧「卫星信息栏」宽度拖拽范围（3D 页分隔条用）
 
 export function toggleUi(k) { shellUi[k] = !shellUi[k] }
+
+// 用户触发的切侧栏（活动栏 / 菜单 / 右键 / 信息栏 / 面板间跳转）一律走这里：锁定时弹「未激活」、返回 false，
+// 调用方据此中止后续动作（进绘制态之类）。k 为空 = 收起侧栏，不受锁。
+export function requestSide(k) {
+  if (!k) { shellUi.side = ''; return true }
+  if (sideLocked(k) && !requireActivation()) return false
+  shellUi.side = k
+  return true
+}

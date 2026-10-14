@@ -3,14 +3,14 @@
 //   · 眼睛        显 / 隐（可多开，地图 = 所有可见集的并集）
 //   · Alt + 眼睛  仅显示这一集（其余暂隐；顶部出现「仅显示：X」，点它还原）
 //   · 点行        展开 / 收起成员表（同一时刻只开一处）
-//   · 双击行      聚焦（转到它那一面并选中）
+//   · 聚焦        只走菜单「聚焦」（双击行聚焦已取消：点行展开时连点两下极易误触，一下把地球转走）
 //   · 拖行首把手  调顺序（松手落位）；键盘党用菜单的 上移 / 下移 / 置顶
-//   · 双击名字    改名（行给了 renamable 才行：卫星天线树的名字不归这里管）；行尾「⋯」与右键 = 同一份菜单，条目由宿主按种类给（menuItems(row)）
+//   · 改名        F2 / 菜单「重命名」（行给了 renamable 才行：卫星天线树的名字不归这里管）；行尾「⋯」与右键 = 同一份菜单，条目由宿主按种类给（menuItems(row)）
 // 新建统一走顶部「＋」菜单（宿主给 addItems）。本组件只管呈现与本地 UI 态（改名 / 菜单 / 两步删除 / 拖拽 / 搜索下拉开合），
 // 数据与动作全在宿主（emit 出去）。
 // 搜索下拉可关：Esc（焦点在搜索框里）/ 在搜索行外按下鼠标 / 点选一条结果 → 收起；再输入、点回搜索框（有关键词时）、关键词被
 // 宿主改了，或宿主递增 search.openTick（标题栏搜索桥，同一个词再搜也算）→ 重新展开。结果行的「＋」（加入 / 移出选中集）不收起，可以连着攒一批。
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import SatList from './SatList.vue'
 
@@ -35,7 +35,7 @@ const props = defineProps({
   defaultColor: { type: String, default: '#4dabf7' }
 })
 const emit = defineEmits([
-  'toggle', 'solo', 'restore', 'expand', 'activate', 'action', 'add', 'reorder',
+  'toggle', 'solo', 'restore', 'expand', 'action', 'add', 'reorder',
   'color', 'color-reset', 'rename',
   'search-input', 'search-clear', 'search-pick', 'search-toggle-pick', 'open-finder',
   'epoch', 'epoch-now', 'list-action', 'list-activate'
@@ -51,13 +51,21 @@ function startRename(row) {
   renameId.value = row.id; renameVal.value = row.name
   nextTick(() => { try { if (rnEl) { rnEl.focus(); rnEl.select() } } catch { /* ignore */ } })
 }
-// 双击名字：能改名的行才截住双击进改名；不能改名的（卫星天线树）放它冒泡到行上 = 聚焦，同双击行的其余位置
-// （原来一律 .stop：天线树那一行双击名字什么也不发生）
-function onNameDbl(ev, row) {
+// 改名走 F2 或菜单「重命名」（双击名字不改名：名字占满整行，误触面太大）。
+// F2 改的是指针下那一行，指针不在行上则改展开着的那一行；焦点在文本框里的 F2 归文本框
+function onRenameKey(e) {
+  if (e.key !== 'F2' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.repeat) return
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+  if (!bodyEl.value || !bodyEl.value.getClientRects().length) return   // 星座视图没在显示
+  const hov = bodyEl.value.querySelector('.lp-row[data-idx]:hover')
+  const row = hov ? props.rows[Number(hov.dataset.idx)] : props.rows.find((r) => r.id === props.expanded)
   if (!row || !row.renamable) return
-  ev.stopPropagation()
+  e.preventDefault()
   startRename(row)
 }
+onMounted(() => window.addEventListener('keydown', onRenameKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onRenameKey))
 function commitRename(row) {
   if (renameId.value !== row.id) return
   const v = renameVal.value.trim()
@@ -144,7 +152,7 @@ watch(() => props.search && props.search.openTick, () => {
 
 /* —— 眼睛：普通点 = 显隐；Alt + 点 = 仅显示 —— */
 function onEye(ev, row) { if (ev.altKey) emit('solo', row); else emit('toggle', row) }
-const eyeTitle = (row) => (row.visible ? '隐藏（Alt + 点击：仅显示这一集）' : '显示（Alt + 点击：仅显示这一集）')
+const eyeTitle = (row) => (row.visible ? '隐藏（Alt + 点击：仅显示该集）' : '显示（Alt + 点击：仅显示该集）')
 
 /* —— 拖拽排序：按住行首把手拖，松手落位 —— */
 const bodyEl = ref(null)
@@ -217,24 +225,24 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
     <div ref="topEl" class="lp-top">
       <div ref="searchEl" class="lp-search">
         <span class="lp-si"><Icon name="search" :size="12" /></span>
-        <input :value="search.keyword" placeholder="搜索名 / 编号" spellcheck="false" @input="onSearchInput" @focus="onSearchReopen" @click="onSearchReopen" @keydown="onSearchKey" />
-        <span v-if="search.keyword" class="lp-x" title="清除" @click="emit('search-clear')"><Icon name="x" :size="12" /></span>
-        <button type="button" class="lp-ib" :class="{ on: search.finderActive }" title="查找卫星：按所有者 / 对象类型 / 状态 / 发射年 / 轨道区制 / 近远地点 / 倾角 / 周期" @click="emit('open-finder')"><Icon name="filter" :size="12" /></button>
-        <button type="button" class="lp-ib lp-add" title="添加：新建卫星组 / 生成卫星或星座 / 导入星历 / 从目录查找 / 找回删掉的内置星座" @click="openAdd"><Icon name="plus" :size="13" /></button>
-        <div v-if="dropOpen && search.results && search.results.length" class="lp-drop">
+        <input class="search-field" :value="search.keyword" placeholder="搜索名 / 编号" spellcheck="false" @input="onSearchInput" @focus="onSearchReopen" @click="onSearchReopen" @keydown="onSearchKey" />
+        <button type="button" v-if="search.keyword" class="lp-x ibtn sm" title="清除" @click="emit('search-clear')"><Icon name="x" :size="12" /></button>
+        <button type="button" class="lp-ib" :class="{ on: search.finderActive }" :aria-pressed="search.finderActive ? 'true' : 'false'" title="查找卫星：按所有者 / 对象类型 / 状态 / 发射年 / 轨道区制 / 近远地点 / 倾角 / 周期" @click="emit('open-finder')"><Icon name="filter" :size="12" /></button>
+        <button type="button" class="lp-ib lp-add" title="添加：新建卫星组 / 生成卫星或星座 / 导入星历 / 从目录查找 / 找回删掉的内置星座" @click="openAdd"><Icon name="plus" :size="12" /></button>
+        <div v-if="dropOpen && search.results && search.results.length" class="lp-drop menu">
           <div v-for="it in search.results" :key="it.noradId" class="lp-di" :class="{ picked: it.picked }" @click="onResultPick(it)">
             <div class="lp-dt">
               <div class="lp-dn" data-i18n-skip>{{ it.name }}</div>
               <div class="lp-ds" data-i18n-skip>{{ it.groupLabel }}<template v-if="!it.syn"> · NORAD {{ it.noradId }}</template><span v-if="it.slot"> · {{ it.slot }}</span></div>
             </div>
-            <span class="lp-dp" :title="it.picked ? '已在选中集中，点击移出' : '加入选中集'" @click.stop="emit('search-toggle-pick', it)"><Icon :name="it.picked ? 'check' : 'plus'" :size="12" /></span>
+            <button type="button" :aria-pressed="it.picked ? 'true' : 'false'" class="lp-dp ibtn sm" :title="it.picked ? '已在选中集中，点击移出' : '加入选中集'" @click.stop="emit('search-toggle-pick', it)"><Icon :name="it.picked ? 'check' : 'plus'" :size="12" /></button>
           </div>
         </div>
       </div>
       <!-- 读数行是界面语汇 + 数字，跟界面语言走（不整行 skip）；只有「仅显示：」后面那个用户起的集名不翻（lit = 界面词才翻） -->
       <div class="lp-sum">
         <span class="lp-sn">显示 {{ summary.shown ?? 0 }} 颗 · {{ summary.layers ?? 0 }} 集<template v-if="summary.dataTime"> · OMM {{ summary.dataTime }}</template><template v-if="summary.status"> · {{ summary.status }}</template></span>
-        <span v-if="solo" class="lp-solo" title="点击还原之前的显示" @click="emit('restore')"><span><span>仅显示：</span><span :data-i18n-skip="solo.lit ? null : ''">{{ solo.name }}</span></span><Icon name="x" :size="11" /></span>
+        <button type="button" v-if="solo" class="lp-solo" title="点击还原之前的显示" @click="emit('restore')"><span><span>仅显示：</span><span :data-i18n-skip="solo.lit ? null : ''">{{ solo.name }}</span></span><Icon name="x" :size="12" /></button>
       </div>
     </div>
 
@@ -244,36 +252,36 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
         <div
           class="lp-row pinned"
           :class="{ off: !searchRow.visible, exp: expanded === searchRow.id, solo: solo && solo.id === searchRow.id, ctx: !!(menu && menu.kind === 'row' && menu.row && menu.row.id === searchRow.id) }"
-          @click="emit('expand', searchRow)" @dblclick="emit('activate', searchRow)" @contextmenu.prevent.stop="openMenu($event, searchRow)"
+          @click="emit('expand', searchRow)" @contextmenu.prevent.stop="openMenu($event, searchRow)"
         >
           <span class="lp-grip none"></span>
-          <span class="lp-eye" :title="eyeTitle(searchRow)" @click.stop="onEye($event, searchRow)"><Icon :name="searchRow.visible ? 'eye' : 'eye-off'" :size="13" /></span>
+          <button type="button" :aria-pressed="searchRow.visible ? 'true' : 'false'" class="lp-eye" :title="eyeTitle(searchRow)" @click.stop="onEye($event, searchRow)"><Icon :name="searchRow.visible ? 'eye' : 'eye-off'" :size="12" /></button>
           <span class="lp-sw fixed"><span class="lp-swi" :style="{ background: searchRow.color || defaultColor }"></span></span>
           <span class="lp-ki" title="搜索结果"><Icon name="search" :size="12" /></span>
           <span class="lp-nm" :title="searchRow.name" :data-i18n-skip="searchRow.lit ? null : ''">{{ searchRow.name }}</span>
           <span class="lp-cnt" data-i18n-skip>{{ searchRow.count }}</span>
-          <span class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, searchRow)"><Icon name="ellipsis" :size="13" /></span>
+          <button type="button" aria-haspopup="menu" class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, searchRow)"><Icon name="ellipsis" :size="12" /></button>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== searchRow.id }" :size="12" /></span>
         </div>
         <SatList
           v-if="expanded === searchRow.id"
           :items="expItems" :reset-key="searchRow.id" :loading="expLoading" :error="expError" :actions="expActions" :rows="14"
-          :placeholder="'在「' + searchRow.name + '」里筛选'" empty="没有命中的卫星。"
+          :placeholder="'在「' + searchRow.name + '」里筛选'" empty="无匹配卫星。"
           @action="(k, p) => emit('list-action', k, p, searchRow)" @activate="(it) => emit('list-activate', it, searchRow)"
         />
       </template>
-      <div v-if="!rows.length" class="lp-empty">还没有卫星集。</div>
+      <div v-if="!rows.length" class="lp-empty">暂无卫星集。</div>
       <template v-for="(row, idx) in rows" :key="row.id">
         <div v-if="dropBefore(idx)" class="lp-dropline"></div>
         <div
           class="lp-row" :data-idx="idx"
           :class="{ off: !row.visible, exp: expanded === row.id, solo: solo && solo.id === row.id, arm: delArm === row.id, dragsrc: drag && drag.id === row.id, ctx: !!(menu && menu.kind === 'row' && menu.row && menu.row.id === row.id) }"
-          @click="emit('expand', row)" @dblclick="emit('activate', row)"
+          @click="emit('expand', row)"
           @contextmenu.prevent.stop="openMenu($event, row)"
         >
-          <span class="lp-grip" title="拖动调整顺序" @pointerdown="onGripDown($event, row, idx)" @click.stop @dblclick.stop><Icon name="grip-vertical" :size="12" /></span>
-          <span class="lp-eye" :title="eyeTitle(row)" @click.stop="onEye($event, row)"><Icon :name="row.visible ? 'eye' : 'eye-off'" :size="13" /></span>
-          <label v-if="row.colorable" class="lp-sw" :title="'星点颜色（' + (row.color || '未设置') + '）'" @click.stop @dblclick.stop>
+          <span class="lp-grip" title="拖动调整顺序" @pointerdown="onGripDown($event, row, idx)" @click.stop><Icon name="grip-vertical" :size="12" /></span>
+          <button type="button" :aria-pressed="row.visible ? 'true' : 'false'" class="lp-eye" :title="eyeTitle(row)" @click.stop="onEye($event, row)"><Icon :name="row.visible ? 'eye' : 'eye-off'" :size="12" /></button>
+          <label v-if="row.colorable" class="lp-sw" :title="'星点颜色（' + (row.color || '未设置') + '）'" @click.stop>
             <span class="lp-swi" :class="{ unset: !row.color }" :style="row.color ? { background: row.color } : null"></span>
             <input type="color" :value="row.color || defaultColor" @input="emit('color', row, $event.target.value)" />
           </label>
@@ -281,20 +289,20 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
           <span v-if="row.icon" class="lp-ki" :title="row.iconTitle || ''"><Icon :name="row.icon" :size="12" /></span>
           <input
             v-if="renameId === row.id" :ref="setRnEl" class="lp-rn" v-model="renameVal"
-            @click.stop @dblclick.stop @keydown.enter="commitRename(row)" @keydown.esc.stop="renameId = ''" @blur="commitRename(row)"
+            @click.stop @keydown.enter="commitRename(row)" @keydown.esc.stop="renameId = ''" @blur="commitRename(row)"
           />
           <!-- 名字（连同悬停全名）是用户数据才不翻：skip 只挂内层；「已改动」小点的 title 是界面词，放在 skip 外面 -->
-          <span v-else class="lp-nm" @dblclick="onNameDbl($event, row)"><span :title="row.name" :data-i18n-skip="row.lit ? null : ''">{{ row.name }}</span><i v-if="row.modified" class="lp-mod" title="已改动过（菜单里可重置）"></i></span>
+          <span v-else class="lp-nm"><span :title="row.name" :data-i18n-skip="row.lit ? null : ''">{{ row.name }}</span><i v-if="row.modified" class="lp-mod" title="已改动过（可在菜单中重置）"></i></span>
           <!-- 副读数全是界面语汇 + 日期（「星历 · 起 → 止」/ 格式名 · 导入日 / Walker 码「53° · 单星」），不含用户数据，不 skip -->
           <span v-if="row.sub" class="lp-sub">{{ row.sub }}</span>
           <span class="lp-cnt" data-i18n-skip>{{ row.count }}</span>
-          <span class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, row)"><Icon name="ellipsis" :size="13" /></span>
+          <button type="button" aria-haspopup="menu" class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, row)"><Icon name="ellipsis" :size="12" /></button>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== row.id }" :size="12" /></span>
         </div>
         <SatList
           v-if="expanded === row.id"
           :items="expItems" :reset-key="row.id" :loading="expLoading" :error="expError" :actions="expActions" :rows="14"
-          :placeholder="'在「' + row.name + '」里筛选'" empty="该集还没有卫星。"
+          :placeholder="'在「' + row.name + '」里筛选'" empty="该集暂无卫星。"
           @action="(k, p) => emit('list-action', k, p, row)" @activate="(it) => emit('list-activate', it, row)"
         />
       </template>
@@ -304,18 +312,18 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
     <div v-if="epoch !== null" ref="footEl" class="lp-foot" title="全部自定义星座共用的场景历元：星座定向以此为准，拖时间轴仍从此历元向后推演">
       <label>场景历元</label>
       <input class="ci" type="datetime-local" :value="epoch" @change="emit('epoch', $event.target.value)" />
-      <span class="lnk" title="取当前时刻为场景历元" @click="emit('epoch-now')">当前</span>
+      <button type="button" class="btn ghost sm" title="取当前时刻为场景历元" @click="emit('epoch-now')">当前</button>
     </div>
 
     <template v-if="menu">
-      <div class="lp-mbd" @mousedown="closeMenu" @contextmenu.prevent="closeMenu"></div>
-      <div class="lp-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-        <div v-if="menu.row" class="lp-mh" :data-i18n-skip="menu.row.lit ? null : ''">{{ menu.row.name }}</div>
+      <div class="lp-mbd menu-mask" @mousedown="closeMenu" @contextmenu.prevent="closeMenu"></div>
+      <div class="lp-menu menu" role="menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
+        <div v-if="menu.row" class="lp-mh menu-hd" :data-i18n-skip="menu.row.lit ? null : ''">{{ menu.row.name }}</div>
         <template v-for="(it, i) in menu.items" :key="(it.key || 'sep') + i">
-          <div v-if="it.sep" class="lp-msep"></div>
-          <div v-else class="lp-mi" :class="[it.tone || '', { warn: menu.row && it.key === 'delete' && delArm === menu.row.id, dis: it.disabled }]" @click="!it.disabled && onItem(it)">
-            <Icon v-if="it.icon" :name="it.icon" :size="12" /><span>{{ itemLabel(it, menu.row) }}</span><em v-if="it.hint" data-i18n-skip>{{ it.hint }}</em>
-          </div>
+          <div v-if="it.sep" class="lp-msep menu-sep" role="separator"></div>
+          <button v-else type="button" class="lp-mi menu-item" role="menuitem" :class="[it.tone || '', { warn: menu.row && it.key === 'delete' && delArm === menu.row.id, dis: it.disabled }]" @click="!it.disabled && onItem(it)">
+            <span v-if="it.icon" class="menu-ico"><Icon :name="it.icon" :size="12" /></span><span>{{ itemLabel(it, menu.row) }}</span><em v-if="it.hint" class="menu-kbd" data-i18n-skip>{{ it.hint }}</em>
+          </button>
         </template>
       </div>
     </template>
@@ -323,6 +331,8 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 </template>
 
 <style scoped>
+/* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button).lp-solo, :where(button).lp-eye, :where(button).lp-more { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 .lp { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 /* 搜索行 / 页脚钉住：侧栏把整块面板放进自己的滚动区时，展开一组长成员表再往下滚，
    搜索框与 ＋ 会跟着滚走。sticky 让它们贴在滚动区上 / 下沿（.lp-body 自己滚时 sticky 不起作用，也无害）。 */
@@ -331,8 +341,7 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 .lp-search { position: relative; display: flex; align-items: center; gap: 4px; }
 .lp-search input { flex: 1; min-width: 0; height: var(--h-ctl); padding: 0 24px 0 24px; box-sizing: border-box; }
 .lp-si { position: absolute; left: 7px; top: 50%; transform: translateY(-50%); color: var(--text-faint); display: inline-flex; pointer-events: none; }
-.lp-x { position: absolute; right: calc(2 * var(--h-ctl) + 14px); top: 50%; transform: translateY(-50%); color: var(--text-faint); cursor: pointer; display: inline-flex; padding: 2px; }
-.lp-x:hover { color: var(--text); }
+.lp-x { position: absolute; right: calc(2 * var(--h-ctl) + 12px); top: 50%; transform: translateY(-50%); }
 .lp-ib { flex: none; width: var(--h-ctl); height: var(--h-ctl); display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--field-border); background: var(--field-bg); color: var(--text-muted); border-radius: var(--r-ctl); cursor: pointer; padding: 0; }
 .lp-ib:hover { border-color: var(--field-border-hover); color: var(--text); }
 /* 过滤开关开着 = 小号图标开关（spec P9）：机位色字 / 描边 + 淡罩 */
@@ -342,16 +351,15 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
    不写 :active 背景（会压成浅灰底纸色字） */
 .lp-add { background: var(--primary-fill); border-color: var(--primary-fill); color: var(--primary-on); }
 .lp-add:hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
-.lp-drop { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 30; max-height: 280px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-float); animation: ui-float-in var(--dur-2) var(--ease-out); }
+/* 搜索结果下拉：浮层外观走菜单基线 .menu（结果行是带「加入 / 移出」小钮的列表行，不套 .menu-item）；这里只留挂在搜索框下的定位与高度 */
+.lp-drop { position: absolute; left: 0; right: 0; top: calc(100% + 2px); min-width: 0; max-height: 280px; padding: 0; animation-name: ui-float-in; }
 .lp-di { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; }
-.lp-di:hover { background: var(--surface-2); }
+.lp-di:hover { background: var(--wash-hover); }
 /* 已在选中集里：与列表选中同一机位色 */
 .lp-di.picked .lp-dn, .lp-di.picked .lp-dp { color: var(--accent-ui); }
 .lp-dt { flex: 1; min-width: 0; }
 .lp-dn { font-size: var(--fs-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lp-ds { font-size: var(--fs-1); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.lp-dp { flex: none; display: inline-flex; color: var(--text-faint); padding: 2px; border-radius: var(--r-box); }
-.lp-dp:hover { color: var(--accent); background: var(--bg); }
 /* 行高钉整像素：1.5 × 11px = 16.5px，读数行与「仅显示」小标的上下缘落在半像素上发虚 */
 .lp-sum { display: flex; align-items: center; gap: 8px; font-size: var(--fs-2); color: var(--text-faint); line-height: 16px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
 .lp-sn { white-space: nowrap; }
@@ -371,7 +379,7 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 .lp-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 4px; min-height: 24px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 /* 可见集墨色、隐藏集灰：一眼分出地图上现在有哪几集。★ 不要写 .lp-row.off { color } —— 会压掉隐藏行的悬停墨色 */
 .lp-row:not(.off) { color: var(--text); }
-.lp-row:hover { background: var(--surface-2); color: var(--text); }
+.lp-row:hover { background: var(--wash-hover); color: var(--text); }
 /* 展开行：实底 + 机位色挂条，与下面成员面板左缘的淡挂条连成一根 */
 .lp-row.exp { color: var(--text); background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .lp-row.exp:hover { background: color-mix(in srgb, var(--text) 5%, var(--surface-2)); }
@@ -403,12 +411,12 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 /* 眼睛 / ⋯ 是 span 充当按钮，吃不到全局 button 的状态过渡与按下罩，就地补（spec P8）；
    --t-state 里含 opacity，⋯ 的悬停显形照样 80ms */
 .lp-eye { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); border-radius: var(--r-box); transition: var(--t-state); }
-.lp-eye:hover { color: var(--text); background: var(--bg); }
+.lp-eye:hover { color: var(--text); background: var(--wash-hover); }
 /* 显示中 = 机位色实底钮（同工具栏 .tbtn.on 的「开」），整列一眼读出地图上开着哪几集。
    原来两态只差眼睛上那道斜杠：记号长在占多数的隐藏集身上，少数的显示集反倒是「缺一笔」的那个，
    缺特征的目标只能逐行找（Treisman 搜索不对称）—— 记号必须加在少数一方。 */
-.lp-row:not(.off) .lp-eye { background: var(--accent-ui); color: var(--bg); }
-.lp-row:not(.off) .lp-eye:hover { background: var(--accent-ui-hover); color: var(--bg); }
+.lp-row:not(.off) .lp-eye { background: var(--accent-fill); color: var(--accent-on); }
+.lp-row:not(.off) .lp-eye:hover { background: var(--accent-fill-hover); color: var(--accent-on); }
 /* 隐藏 = 眼睛随整行压暗（与种类图标同档），悬停该行才回到可点的亮度 */
 .lp-row.off .lp-eye { color: var(--text-faint); opacity: .45; }
 .lp-row.off:hover .lp-eye { opacity: 1; }
@@ -431,7 +439,7 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 .lp-cnt { flex: none; min-width: 34px; text-align: right; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .lp-more { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: var(--r-box); opacity: 0; transition: var(--t-state); }
 .lp-row:hover .lp-more, .lp-row.arm .lp-more { opacity: 1; }
-.lp-more:hover { color: var(--text); background: var(--bg); }
+.lp-more:hover { color: var(--text); background: var(--wash-hover); }
 .lp-more:active { box-shadow: var(--press); transition-duration: 0s; }
 .lp-row.arm .lp-more { color: var(--danger); }
 .lp-chev { flex: none; width: 14px; display: inline-flex; justify-content: center; color: var(--text-faint); }
@@ -441,25 +449,13 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
            position: sticky; bottom: 0; z-index: 3; background: var(--surface); }
 .lp-foot label { flex: none; }
 .lp-foot .ci { flex: 1; min-width: 0; }
-.lnk { cursor: pointer; color: var(--accent); display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-.lnk:hover { text-decoration: underline; }
 
-.lp-mbd { position: fixed; inset: 0; z-index: 2190; }
-/* 命令菜单（spec P3）：外框四周 3px 内距、项圆角与外框同心（6 − 3 = --r-box）；项的左右内距各减 3px，
-   字的 x 与原来一致、与组标题对齐。光标处弹出、位置会被夹回视口，入场只淡入不位移。 */
-.lp-menu { position: fixed; z-index: 2200; width: 200px; max-height: 360px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-float); padding: 3px; animation: ui-fade-in var(--dur-2) var(--ease-out); }
+/* 命令菜单：外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-hd / .menu-ico / .menu-kbd / .menu-sep / .menu-mask）。
+   这里只留定位、宽高、组标题（行名）的通栏底线与省略号、删除待确认态红字、禁用项不吃指针。 */
+.lp-menu { position: fixed; width: 200px; min-width: 0; max-height: 360px; }
 /* 组标题：左右负边距抵掉外框内距，分隔线仍通栏 */
-.lp-mh { margin: 0 -3px 3px; padding: 3px 10px 5px; font-size: var(--fs-1); color: var(--text-faint); border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lp-mi { display: flex; align-items: center; gap: 7px; padding: 4px 7px; font-size: var(--fs-3); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
-.lp-mi > svg { flex: none; color: var(--text-muted); }
+.lp-mh { margin: 0 -4px 4px; padding: 3px 14px 5px; border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lp-mi.warn { color: var(--danger); }
-/* 悬停 = 机位色实底纸色字（与菜单栏同一套）；图标 / 次级字跟随 */
-.lp-mi:hover { background: var(--accent-ui); color: var(--bg); }
-.lp-mi:hover > svg, .lp-mi:hover em { color: inherit; }
-.lp-mi:hover em { opacity: .7; }
-.lp-mi.danger:hover { background: var(--danger); color: var(--bg); }
-.lp-mi.dis, .lp-mi.dis > svg { color: var(--text-faint); }
-.lp-mi.dis { background: transparent; pointer-events: none; }
-.lp-mi em { margin-left: auto; font-style: normal; font-size: var(--fs-1); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.lp-msep { height: 1px; background: var(--border); margin: 3px 6px; }
+.lp-mi.dis { pointer-events: none; }
+.lp-mi em { font-style: normal; font-variant-numeric: tabular-nums; }
 </style>

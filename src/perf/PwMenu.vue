@@ -26,18 +26,18 @@ onBeforeUnmount(() => { document.removeEventListener('mousedown', onDoc, true); 
 
 <template>
   <span ref="root" class="pwm-wrap">
-    <span class="ptb pwm-btn" :class="{ on: open, dis: disabled }" :title="title" @click="toggle">
-      <Icon v-if="icon" :name="icon" :size="12" /><span v-if="label">{{ label }}</span><Icon name="chevron-down" :size="10" class="pwm-caret" />
-    </span>
-    <div v-if="open" class="pwm" :class="{ r: align === 'right' }">
+    <button type="button" :disabled="disabled" aria-haspopup="menu" :aria-expanded="open ? 'true' : 'false'" class="ptb pwm-btn btn" :class="{ on: open, dis: disabled }" :title="title" @click="toggle">
+      <Icon v-if="icon" :name="icon" :size="12" /><span v-if="label">{{ label }}</span><Icon name="chevron-down" :size="12" class="pwm-caret" />
+    </button>
+    <div v-if="open" class="pwm menu" role="menu" :class="{ r: align === 'right' }">
       <template v-for="(it, i) in items" :key="it.key || ('s' + i)">
-        <div v-if="it.sep" class="pwm-sep"></div>
-        <div v-else-if="it.head" class="pwm-h">{{ it.label }}</div>
-        <div v-else class="pwm-i" :class="{ dis: it.dis }" :title="it.title || ''" @click="pick(it)">
-          <Icon v-if="it.icon" :name="it.icon" :size="12" /><span :data-i18n-skip="it.skip ? '' : null">{{ it.label }}</span><em v-if="it.note" data-i18n-skip>{{ it.note }}</em>
-        </div>
+        <div v-if="it.sep" class="pwm-sep menu-sep" role="separator"></div>
+        <div v-else-if="it.head" class="pwm-h menu-hd">{{ it.label }}</div>
+        <button v-else type="button" class="pwm-i menu-item" role="menuitem" :class="{ dis: it.dis }" :title="it.title || ''" @click="pick(it)">
+          <span v-if="it.icon" class="menu-ico"><Icon :name="it.icon" :size="12" /></span><span :data-i18n-skip="it.skip ? '' : null">{{ it.label }}</span><em v-if="it.note" class="menu-kbd" data-i18n-skip>{{ it.note }}</em>
+        </button>
       </template>
-      <div v-if="!items.length" class="pwm-h">（空）</div>
+      <div v-if="!items.length" class="pwm-h menu-hd">（空）</div>
     </div>
   </span>
 </template>

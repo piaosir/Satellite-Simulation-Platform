@@ -377,7 +377,7 @@ const WF_DICT = {
   '到达通量密度': 'Received Flux Density',
   '载波占转发器回退': 'Carrier Transponder Backoff',
   '转发器输出 EIRP（每载波）': 'Transponder Output EIRP (per Carrier)',
-  '接收站 G/T': 'Rx Station G/T',
+  '收信站 G/T': 'Rx Station G/T',
   '星间发射 EIRP': 'ISL Tx EIRP',
   '星间接收 G/T': 'ISL Rx G/T',
   '附加损耗': 'Additional Losses',
@@ -449,10 +449,12 @@ function createBuilder(ctx) {
     return Number.isFinite(n) ? n : null;
   };
 
-  // 格式化（最多保留 2 位小数）
+  // 格式化：级联行（base/gain/loss/sub/chk）与 dB 对照行的数值，固定 2 位小数（0 → 0.00、3.5 → 3.50）。
+  // 2026-10-14 前是「最多两位、去尾零」，同一列出现 0 / 3.5 / 13.58，右对齐后小数点排不成列。
+  // 只是显示串变了：数值仍是 round(n×100)/100，num 从显示串解析回来逐位不变（「屏幕 = 报表」口径不破）。
   b._fmt = function (n) {
     if (n === null) return '—';
-    return '' + (Math.round(n * 100) / 100);
+    return (Math.round(n * 100) / 100).toFixed(2);
   };
 
   // 透传引擎已格式化字符串（无值显示破折号；避免科学计数法被四舍五入）

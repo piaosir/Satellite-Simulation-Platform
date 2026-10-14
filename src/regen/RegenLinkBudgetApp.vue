@@ -1,5 +1,7 @@
 <script setup>
 import { ref, shallowReactive, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
 import { stableStringify } from '../shared/configDirty.js'
@@ -17,7 +19,7 @@ import { loadCustomSats, findPoolByNorad, orbitSpecOf as poolOrbitSpecOf } from 
 import { lbOrbitSpec, pickedTreeNode, scenarioEpochPatch, pinCircularEpoch } from '../shared/lbTreeOrbit.js'   // 库条目 spec 送引擎前补历元 / 跟上场景历元
 import { GEO_T0_MODES, normGeoT0Mode, normGeoT0ISO, geoT0State, resolveGeoT0ISO, sceneSecondISO, t0InputValue, parseT0Input } from '../shared/geoT0.js'   // 自动几何的搜索起点：时间轴 / 系统时钟 / 指定
 import { slantWgs84Max, altFromSlant } from '../shared/slantRange.js'   // 手动几何：斜距换算 / 等效轨道高度
-import { resolveRefId } from '../shared/lbShare.js'
+import { resolveRefId, LIB_WINDOWS, libCopyTargets, copyLibEntry, externalLibEntries } from '../shared/lbShare.js'
 import Icon from '../components/Icon.vue'
 import TzPicker from '../components/TzPicker.vue'
 import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
@@ -39,8 +41,8 @@ import LbSlaDialog from '../components/LbSlaDialog.vue'
 import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
-import LbFontCtl from '../components/LbFontCtl.vue'
-import LbUnitCtl from '../components/LbUnitCtl.vue'
+import LbDispCtl from '../components/LbDispCtl.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import LbSlantTool from '../components/LbSlantTool.vue'
@@ -53,8 +55,17 @@ import { buildRegenScene } from '../shared/lbLinkScene.js'
 import LinkImportDialog from '../components/LinkImportDialog.vue'   // 「导入链路」：星座 3D 主窗建的图上链路
 import { suggestIslRangeKm } from '../e2e/e2eParams.js'   // 导入的星间行在手动几何下先给建议距离（同端到端手动档的建议初值）
 import { esStationType } from '../shared/lbStationType.js'   // 站带天线口径 / 天线罩 → 对号地球站库条目
+import { ngsoSatBandFacts } from '../shared/lbSatBand.js'
+import { loadDefaultSiteGeo, withDefaultSite, defaultSiteValue, seedDefaultSite, isDefaultSiteSeed, TX_SITE, RX_SITE } from '../shared/lbDefaultSite.js'   // 站址留空 → R0.01% / 海拔按默认站址取
+import { validateRows } from '../shared/lbValidate.js'   // D6：计算前数值预校验（不是数 / 越出字段范围）
+import { useNotice } from '../shared/useNotice.js'
+import { reportError, reportPartial } from '../shared/reportError.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
+// 通知条（shared/useNotice.js）：toast＝普通回执，toastFile＝导出回执（附「打开 · 在文件夹中显示」），toastError＝常驻错误；
+// 调用即把本窗登记为 reportError 的出口。必须先于下面的 useConfigTree（它要拿 toast）——const 不像函数声明那样提升。
+const N = useNotice()
+const { toast, toastFile, toastError } = N
 
 // ============ 配置列表（多级文件夹树，持久化到 userData/configs.regen.json，各工作台一份互不见面）============
 // 树的全部行为（增删改移 / 剪贴板 / 右键 / 键盘）在 shared/useConfigTree.js，五个工作台共用一份。
@@ -129,7 +140,7 @@ const LINK_MODES = [
   { key: 'uplink', label: '再生式上行', tip: '地球站 → 星上再生解调；链路总 C/N = 上行 C/(N+I)' },
   { key: 'downlink', label: '再生式下行（广播）', tip: '星上再生 → 地球站接收；链路总 C/N = 下行 C/(N+I)' },
   { key: 'isl', label: '星间链路（微波）', tip: '发射卫星 → 接收卫星，两星微波直连；几何严格（双 SGP4 + 地球临边遮挡）；合计 C/N = 星间单跳 C/N' },
-  { key: 'laser', label: '星间链路（激光）', tip: '发射卫星 → 接收卫星，相干 DP-QPSK 激光直连；第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量；完整可用度（指向抖动+建链+相干多普勒+太阳规避）' }
+  { key: 'laser', label: '星间链路（激光）', tip: '发射卫星 → 接收卫星，两星激光直连；光学功率链（发射光功率 · 光学效率 · 望远镜增益 · 指向损耗 · 自由空间损耗）得接收光功率 P_rx；链路余量 = P_rx − 接收机灵敏度 P_req；可用度 = 两星几何互视占比' }
 ]
 const MODE_KEYS = LINK_MODES.map((m) => m.key)
 const modeOf = (key) => LINK_MODES.find((m) => m.key === key) || null
@@ -142,13 +153,26 @@ const addMenuOpen = ref(false)
 // 各模块的链路表 / 字段集。四张表在下文声明，这里只按 key 分发——调用全发生在 setup 之后，不撞 TDZ
 function rowsOf(key) { return key === 'laser' ? laserLinks : key === 'isl' ? islLinks : key === 'downlink' ? rxStations : key === 'uplink' ? txStations : [] }
 function fieldsOf(key) { return key === 'laser' ? LASER_FIELDS : key === 'isl' ? ISL_FIELDS : key === 'downlink' ? RX_FIELDS : TX_FIELDS }
-// 添加 = 装上并切过去；已装的再点一次只是切过去。新模块先给一条默认行（空引用 = 各库第一份）
+// 各表的站址组（shared/lbDefaultSite.js）：发信站群只有发侧、收信站群只有收侧，星间两表没有站址
+function sitesOf(key) { return key === 'uplink' ? [TX_SITE] : key === 'downlink' ? [RX_SITE] : [] }
+// 默认站址（经纬度留空时引擎所用的那一组）的 ITU 降雨率 / 海拔：onMounted 在载入配置前取一次。
+// 用途三处：出厂行的 R0.01% / 海拔按它写；站址留空的行组参时补它；表内灰字照显它。取不到为 null，一切照旧。
+const defSite = ref(null)
+const ghostOf = (row, f) => defaultSiteValue(row, f.key, defSite.value)
+// 站址名留空的行：链路名取表内灰字那个名字（字段缺省站址名，与 StationGrid 的 ghost 同源），不再回落成「发 n / 收 n」
+const siteNameOf = (row, key, fields, i, pre) => {
+  if (row[key]) return row[key]
+  const f = (fields || []).find((x) => x.key === key)
+  return (f && (ghostOf(row, f) || f.def)) || (pre + (i + 1))
+}
+// 添加 = 装上并切过去；已装的再点一次只是切过去。新模块先给一条默认行（空引用 = 各库第一份）；
+// 上 / 下行的默认行站址写着默认站址，R0.01% / 海拔随之按默认站址的 ITU 取值写进去（seedDefaultSite）
 function addModule(key) {
   addMenuOpen.value = false
   if (!modeOf(key)) return
   if (!modules.value.includes(key)) {
     const rows = rowsOf(key)
-    if (!rows.length) rows.push(newStation(fieldsOf(key)))
+    if (!rows.length) rows.push(seedDefaultSite(newStation(fieldsOf(key)), defSite.value, sitesOf(key)))
     modules.value = [...modules.value, key]
   }
   linkMode.value = key
@@ -161,9 +185,10 @@ function moduleHasContent(key) {
   if (!r) return false
   const def = defaultsFor(fieldsOf(key))
   const s = (v) => String(v == null ? '' : v)
-  // 斜距是手动几何下软件自己按仰角/轨道高度回填的派生量（见 refreshSlant），不算用户填的内容
+  // 斜距是手动几何下软件自己按仰角/轨道高度回填的派生量（见 refreshSlant），不算用户填的内容；
+  // R0.01% / 海拔等于出厂时按默认站址写进去的值（seedDefaultSite）同样不算
   const derived = new Set(['slantRange', 'rxSlantRange', 'sla'])
-  return Object.keys(r).some((k) => !k.startsWith('_') && !derived.has(k) && s(r[k]) !== s(def[k]))
+  return Object.keys(r).some((k) => !k.startsWith('_') && !derived.has(k) && s(r[k]) !== s(def[k]) && !isDefaultSiteSeed(k, r[k], defSite.value, sitesOf(key)))
 }
 // 移除 = 模块连同它的链路行与结果一起删（配置里不留看不见的表）；关的是当前页签就切到邻近的一个
 async function removeModule(key) {
@@ -232,7 +257,8 @@ const curSat = computed(() => resolveSatellite(satId.value))
 const satOfRow = (row) => (satLink.value ? resolveSatellite(row && row.satelliteId) : curSat.value)
 // 卫星分区（配置级）的单选选项：库条目本身，不带「（默认）」
 const satPickOptions = computed(() => satConfigs.map((c) => ({ value: c.id, label: c.name })))
-// 切换归属时各行所用卫星保持不变：配置级→链路级 把场景卫星写进空着的「卫星」列；链路级→配置级 场景卫星取当前模块首行所选
+// 切换归属：配置级→链路级 把场景卫星写进上/下行站表空着的「卫星」列（已有值的行留原值）；链路级→配置级
+// 场景卫星取当前模块首行所选，上/下行全部站行随之改用这一颗（各行原先不同星时，结果会变）
 function setSatScope(v) {
   if (v !== 'link' && v !== 'config') return
   if (v === satScope.value) return
@@ -351,10 +377,13 @@ function refCount(kind, id) {
 async function removeLibEntry(arr, cfg, kind) {
   if (arr.length <= 1) return
   const n = refCount(kind, cfg.id)
-  if (n > 0 && !(await askConfirm(`「${cfg.name}」正被 ${n} 处链路/场景引用，删除后这些引用将回退到库中第一份配置。确定删除？`))) return
+  if (n > 0 && !(await askConfirm(`「${cfg.name}」正被 ${n} 处链路/场景引用，删除后相关引用将回退到库中第一份配置。确定删除？`))) return
   const idx = arr.findIndex((c) => c.id === cfg.id)
   if (idx >= 0) arr.splice(idx, 1)
+  _libGone.add(cfg.id)   // 获焦并库（mergeLibFromDisk）不许把它从盘上的旧副本里捡回来
 }
+// 本会话删掉的库条目 id（见 mergeLibFromDisk）
+const _libGone = new Set()
 
 // ngsoSat 选星态规范化（缺省=手动轨道）；legacyFolder 兼容旧配置（曾把 tree folder 存于 gtAnt.folder）
 function normNgsoSat(ns, legacyFolder) {
@@ -374,7 +403,7 @@ function serializeLibrary() {
     seq: { es: _esSeq, bb: _bbSeq, sat: _satSeq }
   }))
 }
-const libSaveFailed = (e) => toast('资源库保存失败：' + ((e && e.message) || e))
+const libSaveFailed = (e) => reportError('资源库保存失败', e)   // 写盘失败常驻通知条（不随 4 s 回执消失）
 function scheduleLibSave() {
   if (!_libLoaded || !api) return
   clearTimeout(_libT)
@@ -465,7 +494,7 @@ const txStations = reactive([])
 // 功放功率 / G/T 是硬件属性（上行＝发信站功放功率 opPowerW，下行＝收信站天线/噪温算出的 G/T），留在地球站库。
 // 星间/激光链路不受此约束：其工作点由链路自身参数给定（见 computeIsl / computeLaser）。
 const CALC_MODES = [
-  { key: 'power', label: '设置工作点', enLabel: 'Fixed Operating Point', tip: '工作点固定：上行取地球站配置的功放功率预设、下行取收信站算得的 G/T，求链路余量' },
+  { key: 'power', label: '设置工作点', enLabel: 'Fixed Operating Point', tip: '工作点固定：上行取地球站配置的功放功率预设、下行取收信站计算得到的 G/T，求链路余量' },
   { key: 'margin', label: '设置余量', enLabel: 'Fixed Margin', tip: '给定系统余量，上行反解所需功放功率、下行反解所需 G/T' }
 ]
 const calcModeOf = (bbForm) => ((bbForm && bbForm.calcMode) === 'margin' ? 'margin' : 'power')
@@ -516,7 +545,7 @@ const rxCellSub = (f, row) => {
 
 // ============ 星间链路群（再生式微波 ISL）============
 const islLinks = reactive([])
-// ============ 星间激光链路群（再生式激光 / 相干 DP-QPSK）============
+// ============ 星间激光链路群（再生式激光 / MathWorks 简化光学功率链，灵敏度 P_req 直接给定）============
 const laserLinks = reactive([])
 
 // 某卫星配置 → 轨道来源 spec（选星→真实星历；未选→手动圆轨道）。上/下/星间共用。
@@ -584,18 +613,47 @@ function mergeLaserGeometry(d, geo) {
 const refreshing = ref(false)
 async function refreshLatest() {
   refreshing.value = true
+  // 逐项取：某项失败不拦其余各项（取不到的保留原值），但不再一律报「已刷新」——失败的如实列出（A5）
+  const failed = []
+  let ok = 0
+  const step = async (name, fn) => { try { await fn(); ok++ } catch (e) { failed.push({ name, error: e }) } }
   try {
     reloadSatTree()   // 重读星座3D 页的卫星树（作轨道来源）
-    try { const c = api && await api.linkBudget.cities(); if (c) cities.value = c } catch (e) { /* keep */ }
-    try { const b = api && await api.linkBudget.baseband(); if (b) basebandOpts.value = b } catch (e) { /* keep */ }
-    toast('已刷新最新设置')
+    await step('城市库', async () => { const c = api && await api.linkBudget.cities(); if (c) cities.value = c })
+    await step('载波信号选项', async () => { const b = api && await api.linkBudget.baseband(); if (b) basebandOpts.value = b })
+    if (failed.length) reportPartial('刷新最新设置', ok, failed)
+    else toast('已刷新最新设置')
   } finally { refreshing.value = false }
+}
+// 别的链路预算窗口「复制到再生式库」写的是盘上的 library.json；本窗口内存里那份不知道，下次整写会把它冲掉。
+// 故获焦时把盘上有、内存里没有、本会话也没删过的条目并进来（只认新增，见 shared/lbShare.js externalLibEntries）。
+async function mergeLibFromDisk() {
+  if (!_libLoaded || !api) return
+  let lib = null
+  try { lib = await api.store.getLibrary(LIB_NS) } catch (e) { return }   // 读不到就下次获焦再并，不打扰
+  if (!lib) return
+  const fresh = (kind, arr) => externalLibEntries(lib, kind, arr).filter((c) => !_libGone.has(c.id))
+  const es = fresh('es', esConfigs), bb = fresh('carrier', basebandConfigs), sat = fresh('sat', satConfigs)
+  for (const c of es) esConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('es', c), form: { ...defaultsFor(ES_FIELDS), ...c.form } })
+  for (const c of bb) basebandConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null, ...c.form } })
+  for (const c of sat) satConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('sat', c), form: { ...defaultsFor(SAT_FIELDS), ...c.form }, ngsoSat: normNgsoSat(c.ngsoSat) })
+  const n = es.length + bb.length + sat.length
+  if (n) toast(`资源库新增 ${n} 条`)
+}
+// 资源库条目「复制到 ▸ 其它窗口的库」（G4）：可否与原因由 shared/lbShare.js 判（字段结构兼容才放行）
+const copyTargetsOf = (kind) => (cfg) => libCopyTargets(kind, LIB_NS, cfg)
+async function copyLibTo(kind, cfg, ns) {
+  try {
+    const made = await copyLibEntry(api, kind, LIB_NS, ns, cfg)
+    const w = LIB_WINDOWS.find((x) => x.ns === ns)
+    toast(`${w ? w.doneLabel : '已复制'}：${made.name || cfg.name}`)
+  } catch (e) { reportError('复制资源库条目', e) }
 }
 
 const LIB_TABS = [
   { key: 'station', label: '地球站', tip: '站型收发射频参数库（发射链含再生工作点）：站表「地球站配置」列按行引用' },
-  { key: 'sat', label: '卫星群', tip: '卫星库：每颗一份（选星定轨 / 手动轨道）。卫星逐链路指定时站表「卫星」列按行引用，统一指定时在主区「卫星」分区单选；星间链路恒按行引用「发射·接收卫星」' },
-  { key: 'carrier', label: '载波', tip: '载波信号库：链路表「载波信号配置」列按行引用' }
+  { key: 'sat', label: '卫星', tip: '卫星库：每颗一份（选星定轨 / 手动轨道）。卫星逐链路指定时站表「卫星」列按行引用，统一指定时在主区「卫星」分区单选；星间链路恒按行引用「发射·接收卫星」' },
+  { key: 'carrier', label: '载波', tip: '载波库：链路表「载波配置」列按行引用' }
 ]
 const libTab = ref('station')
 const flowEl = ref(null)
@@ -632,6 +690,12 @@ const satNameOf = (c) => {
   const ns = c.ngsoSat || {}
   return (((ns.mode !== 'manual' && ns.orbit) ? (ns.name || c.form.satelliteName) : c.form.satelliteName) || c.name || '—')
 }
+// 卫星分区横带（与 GSO 同构的三行定义列表：配置 / 频率 / 轨道；读数换行不截断，见 shared/lbSatBand.js）
+const satBandLines = computed(() => {
+  if (!bandSat.value) return []
+  const f = ngsoSatBandFacts(bandSat.value)
+  return [{ k: 'freq', label: '频率', items: f.freq }, { k: 'orbit', label: '轨道', items: f.orbit }]
+})
 // 主区「卫星」分区所报的那颗星：配置级＝场景单选；链路级＝当前地面模块聚焦行（未点过表时首行）所选卫星
 const bandSat = computed(() => {
   if (!satLink.value) return curSat.value
@@ -738,7 +802,7 @@ const METRIC_OPTIONS_UP = [
   // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
   { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
-  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'stationEIRPResult', label: '地球站 EIRP (dBW)' },
   { key: 'stationPSDResult', label: '功率谱密度 (dBW/Hz)' }
@@ -754,7 +818,7 @@ const METRIC_OPTIONS_DN = [
   // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
   { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
-  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'satellitePSDResult', label: '卫星功率谱密度 (dBW/Hz)' },
   { key: 'arrivalPFDAtGroundResult', label: '到达地面 PFD (dBW/m²)' }
@@ -770,7 +834,7 @@ const METRIC_OPTIONS_ISL = [
   // 文字型三列（引擎回显的载波体制）：本行用的调制 / 码率 / MODCOD 档名——看余量时不必回头翻载波库
   { key: 'modulationResult', label: '调制方式', type: 'text', tip: '本行载波的调制方式（引擎回显）' },
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
-  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: 'MODCOD 库里选的那一档的名称；未从库里选则按「调制方式 + FEC 码率」拼出' },
+  { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
   { key: 'islRfEirpResult', label: '发射 EIRP (dBW)' },
   { key: 'islVisibleFracResult', label: '互视可见度 (%)' }
@@ -1032,6 +1096,21 @@ function writeResultVals(out, mode) {
   }
 }
 // 表格聚焦行变化 → 表脚「本行读数」跟随（无结果的新行也跟）；有结果时详细预算一并切到该行链路
+// 「详细预算」节头上一条 / 下一条、序号格右键「查看详细预算」：切到第 i 条链路的详细预算，聚焦行一并跟过去
+function showDetailAt(i) {
+  if (i < 0 || i >= links.value.length) return
+  focusRowId.value = links.value[i].rowId
+  if (i !== selected.value) { selected.value = i; loadWaterfall() }
+}
+function stepDetail(d) { showDetailAt(selected.value + d) }
+const linkIdxOfRow = (rows, i) => (rows[i] ? links.value.findIndex((l) => l.rowId === rows[i]._id) : -1)
+function viewDetailOfRow(rows, i) {
+  const k = linkIdxOfRow(rows, i)
+  if (k < 0) return
+  showDetailAt(k)
+  nextTick(() => { const el = document.querySelector('[data-sec="detail"]'); if (el) el.scrollIntoView({ block: 'start' }) })
+}
+const detailMenuItem = (rows) => ({ label: '查看详细预算', icon: 'file-text', disabled: (i) => linkIdxOfRow(rows, i) < 0, run: (i) => viewDetailOfRow(rows, i) })
 function onRowFocus(idx, rowId) {
   focusRowId.value = rowId
   if (!links.value.length) return
@@ -1069,7 +1148,7 @@ async function copyWaterfallTsv() {
     }
     lines.push('')
   }
-  try { await navigator.clipboard.writeText(lines.join('\n')); toast('瀑布表已复制（TSV，可直接粘贴到 Excel）') }
+  try { await navigator.clipboard.writeText(lines.join('\n')); toast('已复制详细预算（TSV）') }
   catch (e) { toast('复制失败') }
 }
 // 几何/访问窗口卡折叠（记忆）
@@ -1079,7 +1158,7 @@ watch(geoFold, (v) => { try { localStorage.setItem('regen/geoFold', v ? '1' : '0
 function onGlobalKey(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !computing.value) { e.preventDefault(); computeActive() }
 }
-onBeforeUnmount(() => { window.removeEventListener('keydown', onGlobalKey); window.removeEventListener('focus', reloadSatTree) })
+onBeforeUnmount(() => { window.removeEventListener('keydown', onGlobalKey); window.removeEventListener('focus', reloadSatTree); window.removeEventListener('focus', mergeLibFromDisk) })
 const nLinks = computed(() => rowsOf(linkMode.value).length)
 // 链路方向标签：上行=站→星，下行=星→站，星间=发射星→接收星（txName=发射星, satName=接收星）。
 // 按链路自带的 mode 走，不看当前页签——报告把四个模块的链路排在一起，名字不能跟着页签变
@@ -1328,7 +1407,10 @@ const slaLink = computed(() => links.value[slaIdx.value] || null)
 const slaOpts = computed(() => links.value.map((l, i) => ({ i, label: `#${i + 1} ${pairLabel(l)}` })))
 const slaRow = computed(() => (slaLink.value ? modeRows.value.find((r) => r._id === slaLink.value.rowId) || null : null))
 const slaLinkName = computed(() => (slaLink.value ? pairLabel(slaLink.value) : ''))
-function openSlaDlg() {
+// 与另三窗同一启用条件（有链路即可点）：没算过或输入已变，先算当前模块再开
+async function openSlaDlg() {
+  if (!links.value.length || resultsStale.value) await computeActive()
+  if (!links.value.length) return
   slaIdx.value = Math.min(Math.max(0, selected.value), Math.max(0, links.value.length - 1))
   slaOpen.value = true
   ensureSlaScan()
@@ -1437,6 +1519,25 @@ const geoFoldSum = computed(() => {
 })
 
 // ============ 计算（按模块：功能区「计算」算当前模块；导出报告前把别的模块补算齐）============
+// —— 计算前预校验（D6）——
+// 数值格不是数、或越出字段范围（schema 的 min / max，口径见 shared/lbValidate.js）：引擎按前缀解析会静默算出错数，
+// 故开算前先查一遍。坏行不送引擎、该行结果清空（详细预算里写明是哪一格）；通知条常驻列出前 3 处与总数。
+// 返回 行下标 → 该行报因（没有坏格时为空 Map）。上一次的校验报错在这次全部合法时一并撤掉。
+let _valNotice = ''
+function preValidate(fields, rows, rowNo = (i) => i + 1) {
+  // 只查用户录入的列：计算结果列 / 自定义公式列（ro，或 _ 前缀键）不是输入
+  const bad = validateRows((fields || []).filter((f) => f && !f.ro && !String(f.key || '').startsWith('_')), rows)
+  const byRow = new Map()
+  for (const b of bad) { const t = b.label + '：' + b.msg; byRow.set(b.row, byRow.has(b.row) ? byRow.get(b.row) + '；' + t : t) }
+  if (bad.length) {
+    _valNotice = bad.slice(0, 3).map((b) => `第 ${rowNo(b.row)} 行 · ${b.label}：${b.msg}`).join('；') + `；共 ${bad.length} 处`
+    toastError(_valNotice)
+  } else if (_valNotice) {
+    if (N.notice.value === _valNotice) N.clearNotice()
+    _valNotice = ''
+  }
+  return byRow
+}
 async function computeActive() { return computeModule(linkMode.value) }
 async function computeModule(mode) {
   if (!mode || !modules.value.includes(mode)) return
@@ -1458,7 +1559,9 @@ async function finishCompute(mode, out, sweepStore) {
   sweepParamsByRow.value = Object.assign(sp, sweepStore || null)
   linksBy[mode] = out
   writeResultVals(out, mode)   // 结果列写回表格（按行 _id 映射）
-  let keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
+  // 聚焦行有结果就对到聚焦行：表脚「本行读数」与「详细预算」节头讲的是同一行
+  let keepIdx = focusRowId.value ? out.findIndex((l) => l.rowId === focusRowId.value) : -1
+  if (keepIdx < 0) keepIdx = prevSel ? out.findIndex((l) => l.rowId === prevSel.rowId) : -1
   if (keepIdx < 0) keepIdx = Math.min(selectedBy[mode], out.length - 1)
   selectedBy[mode] = keepIdx < 0 ? 0 : keepIdx
   // 先把「表格一动就置位」的 stale 侦听冲刷掉再判旗（本次计算自己写的数不是用户改的）；
@@ -1472,25 +1575,32 @@ async function computeGround(mode) {
   if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
   const isDown = mode === 'downlink'
   const stations = isDown ? rxStations : txStations
-  if (!stations.length) { errorBy[mode] = isDown ? '请至少添加一个收信站' : '请至少添加一个发信站'; return }
-  if (!satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  if (!stations.length) { errorBy[mode] = isDown ? '暂无收信站。' : '暂无发信站。'; return }
+  if (!satConfigs.length) { errorBy[mode] = '暂无卫星。'; return }
   computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const sweepStore = {}         // 逐行留底送进引擎的入参，供图表区参数扫描原地重跑
     const t0ISO = searchT0ISO()   // 本批上下行统一起点：时间轴此刻
+    // D6：数值格预校验——坏行不送引擎，该行结果清空并写明是哪一格；其余行照算
+    const badRows = preValidate((isDown ? rxGridFields : txGridFields).value, stations)
     for (let ti = 0; ti < stations.length; ti++) {
       const st = stations[ti]
       const sat = satOfRow(st)   // 这条链路所用的卫星（配置级即场景单选）：参数、轨道来源、频率都取它的
       const bbForm = resolveBaseband(st.basebandId).form
       const satName = (sat && (sat.form.satelliteName || sat.name)) || '卫星'
+      if (badRows.has(ti)) {
+        const nm = (isDown ? st.rxEarthStationLocation : st.earthStationLocation) || ((isDown ? '收' : '发') + (ti + 1))
+        out.push({ ti, rowId: st._id, txName: nm, satName, data: null, margin: '—', error: badRows.get(ti), geom: null, access: null }); continue
+      }
       // 轨道来源：选星→真实星历；未选→手动圆轨道（上/下行共用；与星间同一出口 orbitSpecOf）
       const orbitSpec = orbitSpecOf(sat)
 
       if (isDown) {
         // ===== 再生式下行：星上再生 → 收信站接收；工作点 = 收信站 G/T =====
-        const rxName = st.rxEarthStationLocation || ('收' + (ti + 1))
-        const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, st, resolveEs(st.stationId).form)
+        const rxName = siteNameOf(st, 'rxEarthStationLocation', rxGridFields.value, ti, '收')
+        // 收信站经纬度留空：R0.01% / 海拔也留空时按默认站址的 ITU 取值入算（其余行原样，入参逐位不变）
+        const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, withDefaultSite(st, defSite.value, [RX_SITE]), resolveEs(st.stationId).form)
         const freqGHz = parseFloat(sat.form.rxCenterFrequency) || 12.5   // 下行频率（几何多普勒/FSL）
         const stationGeo = { lonDeg: parseFloat(st.rxLongitude), latDeg: parseFloat(st.rxLatitude), altKm: (parseFloat(st.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(st.rxMinElevation) || 0, freqGHz }
         let geo = null, acc = null
@@ -1529,9 +1639,10 @@ async function computeGround(mode) {
 
       // ===== 再生式上行：地球站 → 星上再生解调 =====
       // 计算方式随该行所选载波：power = 按站型功放功率（工作点）算上行余量；margin = 按载波系统余量反解所需功放功率
-      const txName = st.earthStationLocation || ('发' + (ti + 1))
+      const txName = siteNameOf(st, 'earthStationLocation', txGridFields.value, ti, '发')
       const es = resolveEs(st.stationId).form
-      const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, st, es)
+      // 发信站经纬度留空：R0.01% / 海拔也留空时按默认站址的 ITU 取值入算（其余行原样，入参逐位不变）
+      const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, withDefaultSite(st, defSite.value, [TX_SITE]), es)
       let copt = { mode: 'margin' }
       if (calcModeOf(bbForm) === 'power') {
         const powerW = parseFloat(es.opPowerW)
@@ -1645,13 +1756,14 @@ async function refreshSlaScan(out, store, mode, gen) {
 // 几何=手动 时不选卫星，星间距离取本行 islRangeKm 直接算 FSL。
 async function computeIsl(mode = 'isl') {
   if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
-  if (!islLinks.length) { errorBy[mode] = '请至少添加一条星间链路'; return }
-  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  if (!islLinks.length) { errorBy[mode] = '暂无星间链路。'; return }
+  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '暂无卫星。'; return }
   computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const sweepStore = {}         // 逐行留底送进引擎的入参，供图表区参数扫描原地重跑
     const t0ISO = searchT0ISO()   // 本批星间统一起点：与上下行同口径，时间轴此刻
+    const badRows = preValidate(islGridFields.value, islLinks)   // D6：数值格预校验（坏行不算、结果清空并写明哪一格）
     for (let ti = 0; ti < islLinks.length; ti++) {
       const link = islLinks[ti]
       const manual = geoManual.value
@@ -1661,6 +1773,7 @@ async function computeIsl(mode = 'isl') {
       const bbForm = resolveBaseband(link.basebandId).form
       const txName = (txSat && (txSat.form.satelliteName || txSat.name)) || '发射星'
       const rxName = (rxSat && (rxSat.form.satelliteName || rxSat.name)) || '接收星'
+      if (badRows.has(ti)) { out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: badRows.get(ti), geom: null, islGeo: null, access: null }); continue }
       let geo = null, distKm = 0, visPct = null   // 手动几何无互视占比 → null（引擎据此不写可用度）
       if (manual) {
         distKm = pf(link.islRangeKm)
@@ -1702,15 +1815,16 @@ async function computeIsl(mode = 'isl') {
 }
 
 // 再生式激光星间：逐条激光链路（发射卫星 → 接收卫星）。几何复用两星互视最差距离/可见度；
-// 链路预算走第一性原理光学预算（P_rx 链 + 光子/bit 灵敏度）；给定速率 → 链路余量。
+// 链路预算走光学功率链（P_rx 链）；链路余量 = P_rx − 接收机灵敏度 P_req（直接给定，无速率 / 带宽概念）。
 async function computeLaser(mode = 'laser') {
   if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
-  if (!laserLinks.length) { errorBy[mode] = '请至少添加一条激光星间链路'; return }
-  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '请至少添加一颗卫星'; return }
+  if (!laserLinks.length) { errorBy[mode] = '暂无激光星间链路。'; return }
+  if (!geoManual.value && !satConfigs.length) { errorBy[mode] = '暂无卫星。'; return }
   computing.value = true; errorBy[mode] = ''
   try {
     const out = []
     const t0ISO = searchT0ISO()
+    const badRows = preValidate(laserGridFields.value, laserLinks)   // D6：数值格预校验（坏行不算、结果清空并写明哪一格）
     for (let ti = 0; ti < laserLinks.length; ti++) {
       const link = laserLinks[ti]
       const manual = geoManual.value
@@ -1718,6 +1832,7 @@ async function computeLaser(mode = 'laser') {
       const rxSat = manual ? null : resolveSatellite(link.rxSatelliteId)
       const txName = (txSat && (txSat.form.satelliteName || txSat.name)) || '发射星'
       const rxName = (rxSat && (rxSat.form.satelliteName || rxSat.name)) || '接收星'
+      if (badRows.has(ti)) { out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: badRows.get(ti), geom: null, islGeo: null, access: null }); continue }
       let geo = null, distKm = 0, visPct = null, rangeRateKmS = null
       if (manual) {
         distKm = pf(link.islRangeKm)
@@ -1790,13 +1905,102 @@ const autoGeoRx = (row, skip) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'r
 // 开窗时配置未载入则排队（onMounted 末尾 flushToolContext 放行），之后一次只处理一份上下文。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()
-function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+// 失败不再静默（A5）：从地图带对象进来没成，通知条常驻报因
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 async function applyToolContext(c) {
   if (c && c.links) await importChains(c.links)
 }
 const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
 onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
+
+// —— 回主窗口（C3）：计算窗 → 主窗口的反向通道（主进程 scene:cmd 中继，主窗被提到前台）——
+// 载荷出 IPC 前现造纯数据（Vue 的 Proxy 过不了结构化克隆）。老主进程没有这条通道时不出这些入口。
+const sceneApi = api && api.scene && api.scene.cmd ? api.scene : null
+function sceneCmd(cmd, payload) {
+  if (!sceneApi) return Promise.resolve(false)
+  return Promise.resolve(sceneApi.cmd(cmd, JSON.parse(JSON.stringify(payload || {})))).catch((e) => { reportError('在主窗口定位', e); return false })
+}
+// 卫星条目在主窗口里的身份：只有取过星的（卫星树 / 星历搜索）才在主场景里有这颗星；手动轨道是虚拟圆轨道，不发
+function satIdentOf(sat) {
+  const ns = sat && sat.ngsoSat
+  if (!ns || ns.mode === 'manual' || !ns.orbit) return null
+  const name = ns.name || (sat.form && sat.form.satelliteName) || ''
+  return (name || ns.noradId != null) ? { norad: ns.noradId != null ? ns.noradId : undefined, name } : null
+}
+const SITE_TX = { name: 'earthStationLocation', lat: 'latitude', lon: 'longitude' }
+const SITE_RX = { name: 'rxEarthStationLocation', lat: 'rxLatitude', lon: 'rxLongitude' }
+function rowSite(row, g) {
+  const lat = parseFloat(row && row[g.lat]), lon = parseFloat(row && row[g.lon])
+  return Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon, name: String(row[g.name] || '') } : null
+}
+// 站表行右键「在主窗口定位」：聚焦该行所用的卫星，画面正对本站
+async function locateStationRow(row, side) {
+  if (!row) return
+  const id = satIdentOf(satOfRow(row))
+  if (id) await sceneCmd('focusSat', id)
+  const site = rowSite(row, side)
+  if (site) await sceneCmd('faceLonLat', site)
+}
+// 星间 / 激光行：聚焦发射卫星（手动几何不选卫星，没有可定位的对象，不出这一项）
+async function locateSpaceRow(row) {
+  const id = row ? satIdentOf(resolveSatellite(row.txSatelliteId)) : null
+  if (id) await sceneCmd('focusSat', id)
+}
+const ROW_LOC = '在主窗口定位'
+const txRowMenu = [detailMenuItem(txStations), ...(sceneApi ? [{ label: ROW_LOC, icon: 'locate-fixed', run: (i) => { locateStationRow(txStations[i], SITE_TX) } }] : [])]
+const rxRowMenu = [detailMenuItem(rxStations), ...(sceneApi ? [{ label: ROW_LOC, icon: 'locate-fixed', run: (i) => { locateStationRow(rxStations[i], SITE_RX) } }] : [])]
+const islRowMenu = computed(() => (sceneApi && !geoManual.value ? [{ label: ROW_LOC, icon: 'locate-fixed', run: (i) => { locateSpaceRow(islLinks[i]) } }] : []))
+const laserRowMenu = computed(() => (sceneApi && !geoManual.value ? [{ label: ROW_LOC, icon: 'locate-fixed', run: (i) => { locateSpaceRow(laserLinks[i]) } }] : []))
+// 表格 Excel 导入 / 导出完成（StationGrid 的 xlsxDone）：导出回执带「打开 · 在文件夹中显示」，导入报行数
+function onXlsxDone(e) {
+  if (!e) return
+  if (e.kind === 'export') toastFile('已导出 Excel', e.path || '')
+  else if (e.kind === 'import') toast(`已导入 ${e.rows} 行`)
+}
+// 「卫星几何」卡的时刻：地面段＝典型时刻 t*，星间＝最差时刻 t*。主窗口时间轴拨过去、聚焦这颗星（星间取发射卫星），
+// 并在时间轴上标出 t* 与本次的搜索时窗（同 src + label 覆盖上一次的标记）
+async function locateGeomInMain(kind) {
+  const l = sel.value
+  if (!l) return
+  const row = rowsOf(linkMode.value).find((r) => r._id === l.rowId) || null
+  const g = kind === 'isl' ? islGeo.value : geom.value
+  if (!g || !g.search) return
+  const t = Date.parse(kind === 'isl' ? (g.worst && g.worst.worstISO) : g.search.typicalISO)
+  if (!Number.isFinite(t)) return
+  const s0 = Date.parse(g.search.t0ISO), hh = Number(g.search.horizonHours)
+  if (Number.isFinite(s0) && hh > 0) await sceneCmd('markTime', { t0: s0, t1: s0 + hh * 3600000, label: '搜索时窗', src: 'regen' })
+  await sceneCmd('markTime', { t0: t, label: 't*', src: 'regen' })
+  await sceneCmd('seekClock', { tMs: t })
+  const sat = kind === 'isl' ? (row ? resolveSatellite(row.txSatelliteId) : null) : (row ? satOfRow(row) : curSat.value)
+  const id = satIdentOf(sat)
+  if (id) await sceneCmd('focusSat', id)
+}
+
+// —— 整窗拖入 .lbcfg（G1）：与「分享 › 导入 › 文件」同一条导入流水线 ——
+// dragover 阶段拿不到文件名，只认「拖的是文件」；落下时按扩展名分流，不认识的类型在通知条报一句。
+// 窗口内部的拖动（配置树、结果列、表格）不带 Files，不拦；子组件已经接住的（defaultPrevented）也不再管。
+const shareRef = ref(null)
+const isFileDrag = (e) => !!(e && e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'))
+function onWinDragOver(e) {
+  if (e.defaultPrevented || !isFileDrag(e)) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+}
+async function onWinDrop(e) {
+  if (e.defaultPrevented || !isFileDrag(e)) return
+  e.preventDefault()
+  const f = e.dataTransfer.files && e.dataTransfer.files[0]
+  if (!f) return
+  const m = /\.([^.\\/]+)$/.exec(f.name || '')
+  const ext = m ? m[1].toLowerCase() : ''
+  if (ext !== 'lbcfg' && ext !== 'json') { toast('不支持的文件类型：' + (ext ? '.' + ext : (f.name || ''))); return }
+  let text = ''
+  try { text = await f.text() } catch (err) { reportError('读取拖入的文件', err); return }
+  await openShareDlg()
+  await nextTick()
+  if (shareRef.value) shareRef.value.importText(text, f.name)
+}
 // 带进来的星 → 卫星群条目：库里找同一颗（NORAD → 天线树 folder → 星名），没有就新建并按资源库取星器同一条路定轨
 // （天线树节点 → 同 RegenSatPanel.onPickTree；目录星 → 星历池按 NORAD 反解 → 同 RegenSatPanel.pickSearch，星历点序列
 // 取池的 orbitSpecOf；都取不到才退回手动轨道，高度 / 倾角取主窗口那一拍的值）
@@ -1897,14 +2101,15 @@ const ctxSatOf = (n) => ({
   slotLon: Number.isFinite(n.slotLon) ? n.slotLon : null, altKm: Number.isFinite(n.altKm) ? n.altKm : null, inclDeg: Number.isFinite(n.inclDeg) ? n.inclDeg : null
 })
 // 没动过的出厂默认行：各字段仍是出厂值或留白、没有 SLA 采用值；斜距是手动几何按仰角 / 轨道高度回填的派生量，不算
-// （同 moduleHasContent）；逐链路指定下「卫星」列等于切换归属时写进去的场景卫星也算
+// （同 moduleHasContent）；逐链路指定下「卫星」列等于切换归属时写进去的场景卫星也算；
+// R0.01% / 海拔等于出厂时按默认站址写进去的值（seedDefaultSite）也算
 function isFactoryRow(key, r) {
   if (!r || r.sla) return false
   const def = defaultsFor(fieldsOf(key))
   return Object.keys(r).every((k) => {
     if (k.startsWith('_') || k === 'slantRange' || k === 'rxSlantRange') return true
     const v = r[k] == null ? '' : String(r[k]).trim()
-    if (v === String(def[k] == null ? '' : def[k]).trim()) return true
+    if (v === String(def[k] == null ? '' : def[k]).trim() || isDefaultSiteSeed(k, v, defSite.value, sitesOf(key))) return true
     return k === 'satelliteId' && satLink.value && !!curSat.value && v === curSat.value.id
   })
 }
@@ -2001,9 +2206,6 @@ async function importChains(chains) {
 // 场景自动保存：工作区恒对应配置列表里的一份，改动约 1 s 后写回 userData/configs.regen.json（见 useConfigAutosave）。
 // localStorage 只记「上次打开的是哪一份」（{ activeId }）；v1.5.0 及以前这里存的是整份场景，载入时迁移一次（见 onMounted）。
 const STATE_KEY = 'regen/last'
-const notice = ref('')
-let _noticeT = null
-function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 
 // _ 前缀键（行内部 id / 表格「＋增加」按全字段建行带出的计算列空键）一律剥离，不入场景
 // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
@@ -2163,10 +2365,11 @@ function applyState(st) {
   const mkRow = (fields, r) => { const o = { ...defaultsFor(fields), ...r, _id: 's' + (_sid++) }; applyRowSla(o, r.sla); return o }
   // 激光行只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
   const mkLaser = (r) => { const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }; for (const f of LASER_FIELDS) if (r[f.key] !== undefined) o[f.key] = r[f.key]; applyRowSla(o, r.sla); return o }
-  // 装了的模块至少一条行（旧配置缺那张表 → 一条默认行，不留空表）；没装的模块一行也不留
+  // 装了的模块至少一条行（旧配置缺那张表 → 一条默认行，不留空表；上 / 下行默认行同 addModule 按默认站址写 R0.01% / 海拔）；
+  // 没装的模块一行也不留
   const seed = (key, rows, mk) => {
     const arr = rowsOf(key)
-    const src = mods.includes(key) ? ((rows && rows.length) ? rows : [defaultsFor(fieldsOf(key))]) : []
+    const src = mods.includes(key) ? ((rows && rows.length) ? rows : [seedDefaultSite(defaultsFor(fieldsOf(key)), defSite.value, sitesOf(key))]) : []
     arr.splice(0, arr.length, ...src.map(mk))
   }
   seed('uplink', txRows, (r) => mkRow(TX_FIELDS, r))
@@ -2210,11 +2413,6 @@ function cfgLabelOf(st) {
   return `${kindText(mods)} ${n} ${byLang('条', n === 1 ? 'link' : 'links')}`
 }
 
-// 通用确认弹窗（Electron 渲染进程无原生 confirm）
-const confirmDlg = reactive({ open: false, msg: '' })
-let _confirmResolve = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 
 // 默认（空白）配置内容：一个计算模块都没有（用户按需从模块栏添加），四张表都是空的，不内嵌三库。
 // state.orbitType 照写：瀑布表/报表按它分体制（配置库的归属已改由文件分家决定，是另一件事）。
@@ -2255,7 +2453,7 @@ const shareLib = {
   es: { arr: esConfigs, label: '地球站', keys: [], pack: packBase, makeNew: () => makeEsConfig('站型') },
   carrier: { arr: basebandConfigs, label: '载波', keys: [], pack: packBase, makeNew: () => makeBasebandConfig('载波') },
   sat: {
-    arr: satConfigs, label: '卫星群', keys: ['ngsoSat'],
+    arr: satConfigs, label: '卫星', keys: ['ngsoSat'],
     pack: (c) => ({ ...packBase(c), ngsoSat: normNgsoSat(c.ngsoSat) }),
     sanitize: (e) => {
       const ns = normNgsoSat(e.ngsoSat)
@@ -2367,7 +2565,7 @@ const REGEN_MODE_LABEL = {
   uplink: ['给定工作点', 'Given operating point'],
   downlink: ['给定工作点 G/T', 'Given G/T operating point'],
   isl: ['给定 EIRP/G-T + 严格几何', 'Given EIRP/GT + rigorous geometry'],
-  laser: ['给定速率 + 光学功率预算', 'Given rate + optical power budget']
+  laser: ['给定灵敏度 + 光学功率预算', 'Given sensitivity + optical power budget']
 }
 const REGEN_FILE_NAME = {
   uplink: ['再生式上行链路预算报告', 'Regen_Uplink_Report'],
@@ -2483,7 +2681,8 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
     return en ? `${n[1]}_${s.replace(/[^\w-]+/g, '_')}` : `${n[0]}_${s.replace(/[\\/:*?"<>|]/g, '_')}`
   },
   toast,
-  setError: (m) => { if (linkMode.value) error.value = m; else toast(m) }
+  toastFile,
+  setError: (m) => { if (linkMode.value) error.value = m; else toastError(m) }   // 没开模块时报错进常驻通知条（不随 4 s 回执消失）
 })
 
 // ============ 城市库 + 启动恢复 + 关窗守卫 ============
@@ -2492,8 +2691,10 @@ onMounted(async () => {
   try { appVersion.value = (api && await api.app.version()) || '' } catch (e) { appVersion.value = '' }
   try { cities.value = (api && await api.linkBudget.cities()) || [] } catch (e) { cities.value = [] }
   try { basebandOpts.value = (api && await api.linkBudget.baseband()) || {} } catch (e) { basebandOpts.value = {} }
+  // 默认站址的降雨率 / 海拔先于配置载入：装上 / 补出的上下行默认行要按它写 R0.01% / 海拔
+  defSite.value = await loadDefaultSiteGeo(api)
   // 全局库先于配置载入（场景行引用靠库解析）；库为空 = 首次运行/升级首启 → 保持默认三库、随后落盘
-  try { const lib = api && await api.store.getLibrary(LIB_NS); if (lib) applyLibrary(lib) } catch (e) { /* 保持默认库 */ }
+  try { const lib = api && await api.store.getLibrary(LIB_NS); if (lib) applyLibrary(lib) } catch (e) { reportError('读取资源库失败', e) }   // 保持默认库，但得让人知道
   _libLoaded = true
   scheduleLibSave()   // 首启把默认库落盘；已有库则等值覆写无害
   await loadConfigs()
@@ -2518,12 +2719,13 @@ onMounted(async () => {
   stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏时立即写盘
   window.addEventListener('keydown', onGlobalKey)   // Ctrl+Enter = 计算（按体制分发）
   window.addEventListener('focus', reloadSatTree)   // 单例窗口：切回本窗口即按卫星树重解已选星（3D 页改了根数 / 历元即跟上；同 NGSO / 端到端）
+  window.addEventListener('focus', mergeLibFromDisk)   // 同上：并入别的窗口复制来的库条目
   flushToolContext()   // 配置已载入：处理开窗时随窗带来的主窗口上下文
 })
 </script>
 
 <template>
-  <div class="lb-shell">
+  <div class="lb-shell" @dragover="onWinDragOver" @drop="onWinDrop">
     <ActivationLock />
     <div class="lb-body">
       <!-- ① 左侧栏：配置列表 / 资源库 二选一（功能区「文件 › 配置列表」「视图 › 资源库」开关，右缘可拖宽） -->
@@ -2562,32 +2764,35 @@ onMounted(async () => {
             </span>
           </div>
           <nav class="lb-lib-tabs">
-            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :title="t.tip" @click="libTab = t.key">
+            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
               {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
             </button>
           </nav>
           <div class="lb-libpane">
             <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-              auto-tip="天线口径" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+              auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
+              @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
               </template>
               <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
             </LbLibrary>
             <LbLibrary v-else-if="libTab === 'sat'" v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
-              auto-tip="所选卫星" @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
+              auto-tip="所选卫星" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
+              @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="复制此卫星" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此卫星（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
               </template>
               <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填 -->
               <template #default="{ cfg }"><RegenSatPanel :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
-              auto-tip="速率与调制" @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig" @toast="toast">
+              auto-tip="速率与调制" :copy-targets="copyTargetsOf('carrier')" @copy-to="(c, ns) => copyLibTo('carrier', c, ns)"
+              @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="复制此配置" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                <button class="lb-mini" title="创建此配置的副本" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
               </template>
               <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
@@ -2603,20 +2808,6 @@ onMounted(async () => {
       <section class="lb-col lb-build">
         <!-- 功能区：文件 · 计算 · 视图 · 导出 ‖ 状态位（计算方式随载波入资源库，功能区只留执行） -->
         <div class="lbr">
-          <div class="lbr-g">
-            <div class="lbr-items">
-              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
-              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
-              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
-              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
-                刷新
-              </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树；与「资源库」二选一）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
-            </div>
-            <div class="lbr-cap">文件</div>
-          </div>
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
@@ -2649,29 +2840,37 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`${sideView === 'library' ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星群 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用；与「配置列表」二选一）`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
-              <button class="lbr-big" :class="{ on: showViz }" :title="showViz ? '隐藏详细预算的图表区（地理场图 + 链路视图）' : '显示详细预算的图表区：链路视图（3D 站星几何）+ 地理场图（站址经纬度；星间无地面站，只出链路视图）'" @click="showViz = !showViz"><Icon name="chart-line" :size="16" />图表</button>
+              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
+                <Icon name="refresh-cw" :size="16" />
+                刷新
+              </button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树；与「资源库」二选一）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :class="{ on: sideView === 'library' }" :aria-pressed="(sideView === 'library') ? 'true' : 'false'" :title="`${sideView === 'library' ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用；与「配置列表」二选一）`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <button class="lbr-big" :class="{ on: showViz }" :aria-pressed="showViz ? 'true' : 'false'" :title="showViz ? '隐藏详细预算的图表区（地理场图 + 链路视图）' : '显示详细预算的图表区：链路视图（3D 站星几何）+ 地理场图（站址经纬度；星间无地面站，仅输出链路视图）'" @click="showViz = !showViz"><Icon name="chart-line" :size="16" />图表</button>
             </div>
             <div class="lbr-cap">视图</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="!links.length" :title="links.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '尚无计算结果'" @click="openSlaDlg">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
+              <button class="lbr-big" :disabled="!nLinks" :title="nLinks ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '暂无链路。'" @click="openSlaDlg">
+                <Icon name="shield-check" :size="16" />
                 SLA
               </button>
-              <button class="lbr-big" :disabled="reportDlg.busy || !canReport" :title="canReport ? '生成整份配置的交付级报告（每个模块一节；没算过的模块导出前自动补算）：Excel（总报告 + 几何关系 + 逐链路详情）/ Word / PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算模块'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
-              <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !canReport" :title="canReport ? '生成整份配置的交付级报告（每个模块一节；未计算的模块在导出前自动补算）：Excel（总报告 + 几何关系 + 逐链路详情）/ Word / PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算模块'" @click="openReportDialog"><Icon name="file-export" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="copy" :size="16" />TSV</button>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
-          <LbUnitCtl />
-          <LbFontCtl />
-          <div class="lbr-status">
-            <span v-if="notice" class="lb-note">{{ notice }}</span>
-            <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
-            <span v-if="resultsStale && links.length" class="lbx-stale" title="计算输入已被修改，结果列与详细预算对应修改前的参数">输入已变</span>
-          </div>
+          <LbDispCtl />
         </div>
 
         <!-- 模块栏：装了的计算模块各一个页签（状态点 · 名字 · 链路数 · ×，可拖拽换序），末尾「＋ 添加模块」「导入链路」；
@@ -2688,25 +2887,25 @@ onMounted(async () => {
             </span>
           </div>
           <div class="rlmode-add-wrap">
-            <button class="rlmode-add" :class="{ on: addMenuOpen }" :disabled="!addableModes.length" :title="addableModes.length ? '添加计算模块' : '四种模块已全部添加'" @click.stop="addMenuOpen = !addMenuOpen">
+            <button class="rlmode-add" :class="{ on: addMenuOpen }" :aria-pressed="addMenuOpen ? 'true' : 'false'" :disabled="!addableModes.length" :title="addableModes.length ? '添加计算模块' : '四种模块已全部添加'" @click.stop="addMenuOpen = !addMenuOpen">
               <svg viewBox="0 0 12 12" width="11" height="11"><path d="M6 2v8M2 6h8" /></svg><span class="rlmode-add-t">添加模块</span>
             </button>
             <template v-if="addMenuOpen">
-              <div class="rlmode-menu-mask" @click="addMenuOpen = false"></div>
-              <div class="rlmode-menu" @click.stop>
-                <div class="rlmode-menu-hd">添加模块</div>
-                <button v-for="m in LINK_MODES" :key="m.key" class="rlmode-menu-i" :class="{ added: modules.includes(m.key) }" :title="m.tip" @click="addModule(m.key)">
-                  <span class="rlmode-menu-ck"><svg v-if="modules.includes(m.key)" viewBox="0 0 12 12" width="11" height="11"><path d="M2.5 6.5l2.5 2.5 4.5-5" /></svg></span>{{ m.label }}
+              <div class="rlmode-menu-mask menu-mask" @click="addMenuOpen = false"></div>
+              <div class="rlmode-menu menu" role="menu" @click.stop>
+                <div class="rlmode-menu-hd menu-hd">添加模块</div>
+                <button v-for="m in LINK_MODES" :key="m.key" type="button" class="rlmode-menu-i menu-item" role="menuitem" :class="{ added: modules.includes(m.key) }" :title="m.tip" @click="addModule(m.key)">
+                  <span class="rlmode-menu-ck menu-ck"><Icon v-if="modules.includes(m.key)" name="check" :size="12" /></span>{{ m.label }}
                 </button>
               </div>
             </template>
           </div>
           <!-- 图上链路逐跳拆进各模块（缺的模块随之补装），故放在模块栏而非某张链路表的节头：一个模块都没装时也够得着 -->
-          <button class="lb-mini" title="导入星座 3D 主窗中建立的链路" @click="linkImpOpen = true">导入链路</button>
+          <button class="lb-mini" title="导入主窗口「目标间链路建链」中建立的链路" @click="linkImpOpen = true">导入链路</button>
         </div>
 
         <!-- 全宽分区流：当前模块的链路表分区 → 详细预算分区；没装模块时是空态 -->
-        <div ref="flowEl" class="lbx-flow lbx-cards">
+        <div ref="flowEl" class="lbx-flow lbx-cards" :class="{ 'lbx-stale-res': !!(resultsStale && links.length) }">
           <div v-if="!activeModules.length" class="rlmode-empty">
             <div class="rlmode-empty-t">尚无计算模块。</div>
             <div class="rlmode-empty-btns">
@@ -2716,30 +2915,42 @@ onMounted(async () => {
             </div>
           </div>
           <!-- 卫星分区：只在「统一指定」且是上/下行两个地面模块时出现（星间链路两端恒按行选星，无场景级卫星可言；
-               逐链路指定时卫星在站表「卫星」列里逐行选，这里再报一颗星只会混淆）：卫星群单选 + 星名 + 摘要 -->
+               逐链路指定时卫星在站表「卫星」列里逐行选，这里再报一颗星只会混淆）：卫星库单选 + 星名 + 频率 / 轨道读数 -->
           <LbSection v-if="!satLink && (linkMode === 'uplink' || linkMode === 'downlink')" id="sat" title="卫星">
             <template #actions>
-              <button class="lb-mini" title="到资源库编辑当前卫星：取星定轨 + 频率极化 + 干扰系数" @click="editInLibrary('sat')">编辑 / 选星</button>
+              <button class="lb-mini" title="到资源库编辑当前卫星：取星定轨 + 频率极化 + 干扰系数" @click="editInLibrary('sat')">编辑参数</button>
             </template>
-            <div class="lbx-satrow">
-              <label class="lbx-satpick" title="从卫星群选择本配置使用的卫星（统一指定：上/下行全部链路共用；轨道来源随卫星条目走）"><span>卫星配置</span>
-                <select :value="(curSat && curSat.id) || ''" @change="satId = $event.target.value">
-                  <option v-for="o in satPickOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-                </select>
-              </label>
-              <span v-if="curSat" class="lbx-satname" title="卫星名称：取星后由所选卫星确定" data-i18n-skip>{{ satNameOf(curSat) }}</span>
-              <span class="lbx-satsum" :title="satSummary(curSat)">{{ satSummary(curSat) }}</span>
-              <span class="lbx-satnote">全部 {{ nLinks }} 条链路共用</span>
+            <div class="lbx-satband">
+              <div class="lbx-satline">
+                <span class="lbx-satgut">配置</span>
+                <div class="lbx-satmain">
+                  <select class="lbx-satsel" :value="(curSat && curSat.id) || ''"
+                    title="从卫星库选择本配置使用的卫星（统一指定：上/下行全部链路共用；轨道来源随卫星条目走）" @change="satId = $event.target.value">
+                    <option v-for="o in satPickOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                  </select>
+                  <span v-if="curSat" class="lbx-satname" title="卫星名称：取星后由所选卫星确定" data-i18n-skip>{{ satNameOf(curSat) }}</span>
+                  <span class="lbx-satnote">全部 {{ nLinks }} 条链路共用</span>
+                </div>
+              </div>
+              <div v-for="ln in satBandLines" :key="ln.k" class="lbx-satline">
+                <span class="lbx-satgut">{{ ln.label }}</span>
+                <div class="lbx-satmain lbx-satkv">
+                  <span v-for="k in ln.items" :key="k.key" class="lbx-kv" :title="k.tip || null">
+                    <span class="lbx-kv-l">{{ k.label }}</span>
+                    <span class="lbx-kv-v">{{ k.value }}<i v-if="k.unit" :class="{ tight: k.tight }">{{ k.unit }}</i></span>
+                  </span>
+                </div>
+              </div>
             </div>
           </LbSection>
           <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length">
             <template #actions>
               <!-- 卫星的指定方式（场景级，上/下行共用一个开关）：统一指定＝上方「卫星」分区单选一颗；逐链路指定＝站表「卫星」列逐行选，上方分区收起 -->
-              <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置只用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切换时各行所用卫星保持不变，计算口径不变">
+              <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置仅使用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切到逐链路指定：上/下行站表「卫星」列为空的行填入统一指定的卫星，已有选择的行不变；切到统一指定：全部链路改用当前站表首行所用的卫星">
                 <span class="lbx-segl">卫星</span>
-                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" @click="setSatScope(s.v)">{{ s.l }}</button></span>
+                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" :aria-pressed="(satScope === s.v) ? 'true' : 'false'" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>
-              <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
+              <button class="lb-mini" :disabled="!geoManual" title="斜距工具：按轨道高度 × 仰角计算斜距，可按各行仰角批量填入「斜距」列（几何=手动时可用）" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -2760,22 +2971,20 @@ onMounted(async () => {
                   </div>
                 </div>
               </span>
+              <span class="lbx-gridbar" data-gridbar="regen.tx"></span>
             </template>
-            <div class="tx-optbar">
-              <span class="tx-optl">工作点</span>
-            </div>
             <div class="lbx-grid">
-              <StationGrid ref="txGridRef" grid-id="regen.tx" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="txStations" :fields="txGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid ref="txGridRef" grid-id="regen.tx" bar-to="[data-gridbar='regen.tx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="txStations" :fields="txGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="txRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
             <template #actions>
-              <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置只用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切换时各行所用卫星保持不变，计算口径不变">
+              <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置仅使用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切到逐链路指定：上/下行站表「卫星」列为空的行填入统一指定的卫星，已有选择的行不变；切到统一指定：全部链路改用当前站表首行所用的卫星">
                 <span class="lbx-segl">卫星</span>
-                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" @click="setSatScope(s.v)">{{ s.l }}</button></span>
+                <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" :aria-pressed="(satScope === s.v) ? 'true' : 'false'" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>
-              <button v-if="geoManual" class="lb-mini" title="斜距工具：按轨道高度 × 仰角算斜距，可按各行仰角批量填入「斜距」列" @click="slantToolOpen = true">斜距工具</button>
+              <button class="lb-mini" :disabled="!geoManual" title="斜距工具：按轨道高度 × 仰角计算斜距，可按各行仰角批量填入「斜距」列（几何=手动时可用）" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -2796,18 +3005,16 @@ onMounted(async () => {
                   </div>
                 </div>
               </span>
+              <span class="lbx-gridbar" data-gridbar="regen.rx"></span>
             </template>
-            <div class="tx-optbar">
-              <span class="tx-optl">工作点 G/T</span>
-            </div>
             <div class="lbx-grid">
-              <StationGrid ref="rxGridRef" grid-id="regen.rx" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="rxStations" :fields="rxGridFields" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid ref="rxGridRef" grid-id="regen.rx" bar-to="[data-gridbar='regen.rx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="rxStations" :fields="rxGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="rxRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
-              <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
+              <button class="lb-mini" :disabled="!geoManual" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列（几何=手动时可用）" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -2828,15 +3035,16 @@ onMounted(async () => {
                   </div>
                 </div>
               </span>
+              <span class="lbx-gridbar" data-gridbar="regen.isl"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="islGridRef" grid-id="regen.isl" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid ref="islGridRef" grid-id="regen.isl" bar-to="[data-gridbar='regen.isl']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="islRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
             <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
-              <button v-if="geoManual" class="lb-mini" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列" @click="islToolOpen = true">距离工具</button>
+              <button class="lb-mini" :disabled="!geoManual" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列（几何=手动时可用）" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -2857,14 +3065,19 @@ onMounted(async () => {
                   </div>
                 </div>
               </span>
+              <span class="lbx-gridbar" data-gridbar="regen.laser"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="laserGridRef" grid-id="regen.laser" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" @row-focus="onRowFocus" />
+              <StationGrid ref="laserGridRef" grid-id="regen.laser" bar-to="[data-gridbar='regen.laser']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="laserRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
             <!-- 激光星间不出容量汇总（载波带宽/频谱效率口径不适用），但本行读数照给 -->
             <LbCapFoot :readout="rowReadout" />
           </LbSection>
-          <LbSection v-if="linkMode" id="detail" title="详细预算" :no="detailNo" :summary="sel && links.length ? pairLabel(sel) : ''">
+          <LbSection v-if="linkMode" id="detail" title="详细预算" :stale="!!(resultsStale && links.length)" :no="detailNo" :summary="sel && links.length ? pairLabel(sel) : ''">
+            <template #nav>
+              <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected <= 0" title="上一条" @click="stepDetail(-1)"><Icon name="chevron-up" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected >= links.length - 1" title="下一条" @click="stepDetail(1)"><Icon name="chevron-down" :size="12" /></button>
+            </template>
             <div v-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
@@ -2886,11 +3099,13 @@ onMounted(async () => {
                   <span class="geo-tt">星间几何（最差工况）</span>
                   <span class="geo-badge" :title="islGeo.representative ? '手动圆轨道：几何示意' : '双 SGP4/SDP4 传播 + 地球临边遮挡'">{{ islGeo.method }}</span>
                 </div>
+                <button v-if="sceneApi && islGeo.worst.worstISO && !islGeo.representative" class="lb-mini geo-loc"
+                        title="主窗口时间轴拨到最差时刻 t* 并聚焦发射卫星；时间轴上标出 t* 与搜索时窗" @click="locateGeomInMain('isl')"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
                 <TzPicker v-model="tzMode" :ms="geoRefMs" align="right" class="geo-tz"
                           title="时刻的时标时区：本机 / UTC / UTC±N">{{ tzSuffix }}</TzPicker>
               </div>
               <div class="geo-body">
-                <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自这一物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
+                <div v-if="islGeo.worst.worstISO && !islGeo.representative" class="geo-row"><span class="geo-l" title="所有几何量取自该物理瞬间（互视样本中星间距离最大 → 最差 FSL）">最差时刻 t*</span><span class="geo-v" style="white-space:normal">{{ fmtInstant(islGeo.worst.worstISO, tzMode) }}</span></div>
                 <div class="geo-row"><span class="geo-l">星间距离（最差）</span><span class="geo-v">{{ g2(islGeo.worst.rangeKm, 1) }}<i>km</i></span></div>
                 <div class="geo-row"><span class="geo-l">最近星间距离</span><span class="geo-v">{{ g2(islGeo.worst.minRangeKm, 1) }}<i>km</i></span></div>
                 <div class="geo-row"><span class="geo-l">发射/接收卫星高度</span><span class="geo-v">{{ g2(islGeo.worst.txAltKm, 1) }} / {{ g2(islGeo.worst.rxAltKm, 1) }}<i>km</i></span></div>
@@ -2917,7 +3132,7 @@ onMounted(async () => {
                 </div>
 
                 <!-- 两星轨道与运动（合并入星间几何卡，发射 / 接收两列，NGSO 式分节）-->
-                <div class="geo-sec" v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)">两星轨道与运动<span class="geo-sec-x">发射 / 接收各一列</span></div>
+                <div class="geo-sec" v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)" title="发射 / 接收各一列">两星轨道与运动</div>
                 <div v-if="islGeo.elements && (islGeo.elements.tx || islGeo.elements.rx)" class="geo-2col">
                   <div v-for="side in [{ k: 'tx', name: sel.txName, alt: islGeo.worst.txAltKm, spd: islGeo.worst.txSpeedKmS, gspd: islGeo.worst.txGroundSpeedKmS, el: islGeo.elements.tx }, { k: 'rx', name: sel.satName, alt: islGeo.worst.rxAltKm, spd: islGeo.worst.rxSpeedKmS, gspd: islGeo.worst.rxGroundSpeedKmS, el: islGeo.elements.rx }]" :key="side.k" class="geo-col">
                     <div class="geo-col-hd" :class="side.k">{{ side.k === 'tx' ? '发射卫星' : '接收卫星' }}<em data-i18n-skip>{{ side.name }}</em></div>
@@ -2979,6 +3194,8 @@ onMounted(async () => {
                   <span class="geo-tt">站星几何（最差工况）</span>
                   <span class="geo-badge">{{ geom.method }}</span>
                 </div>
+                <button v-if="sceneApi && geom.search && geom.search.typicalISO" class="lb-mini geo-loc"
+                        title="主窗口时间轴拨到典型时刻 t* 并聚焦该卫星；时间轴上标出 t* 与搜索时窗" @click="locateGeomInMain('ground')"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
               </div>
               <div class="geo-body">
                 <div class="geo-row"><span class="geo-l">对卫星仰角</span><span class="geo-v">{{ g2(geom.worst.up.elevDeg) }}<i>°</i></span></div>
@@ -3018,7 +3235,7 @@ onMounted(async () => {
             <div class="lbx-doc-main"><WaterfallTable :segments="segments" pick="cascade" :lang="reportLang" /></div>
             <div v-if="showViz" class="lbx-doc-side"><LbVizPane ref="vizRef" :engine="sweepEngine" :params="selParams" :sweep2D="api ? api.linkBudget.sweep2D : null"
               :output-defs="api ? api.linkBudget.outputDefs : null" :sweep-unavailable="sweepUnavailable" :link-scene="linkScene"
-              :show-geo="vizShowGeo" :geo-site="vizGeoSite" store-key="regen" :lang="reportLang" /></div>
+              :show-geo="vizShowGeo" :geo-site="vizGeoSite" store-key="regen" :lang="reportLang" @exported="toastFile" /></div>
             <div class="lbx-doc-ref"><WaterfallTable :segments="segments" pick="rest" :lang="reportLang" /></div>
             </div>
           </LbSection>
@@ -3070,93 +3287,30 @@ onMounted(async () => {
       :viz-available="showViz" :sla-count="slaCountAll" store-key="regen" :busy="reportDlg.busy" :progress="reportDlg.progress"
       @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
-    <!-- 通用确认弹窗 -->
-    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">{{ confirmDlg.msg }}</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
-          <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <ConfirmDialog />
 
     <!-- 分享 / 导入弹窗（三窗共用组件）：配置多选 + 资源库多选，分享码 / 文件 / 在线三条路共用同一份勾选 -->
-    <LbShareDialog v-model:open="shareOpen" :ctx="shareCtx" :device-id="deviceId" :configured="shareConfigured" @toast="toast" />
+    <LbShareDialog ref="shareRef" v-model:open="shareOpen" :ctx="shareCtx" :device-id="deviceId" :configured="shareConfigured" @toast="toastFile" />
+    <WinStatusBar :n="N" :stale="resultsStale && links.length" stale-title="计算输入已被修改，结果列与详细预算对应修改前的参数">
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
+    </WinStatusBar>
   </div>
 </template>
 
 <style scoped>
 .lb-shell {
-  display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  /* 外壳与文档面同族：本窗口的外形（功能区 / 页签 / 侧栏 / 参数面板 / 链路表 / 详细预算）与主窗
-     一模一样，字体也必须是同一族，否则在两个窗口之间切换一眼看得出。衬线只留给交付文档
-     （报告页 lbreport.css 与各图导出路径），屏上的「详细预算」自 2026-09-07 起也走 --font-ui
-     （lbworkbench.css 的 .lbx-doc）。 */
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-  --up: #3f6d8c; --dn: #97672f;
+  /* 上行 / 下行 = lbPlotTheme.js 的 SERIES 蓝 / 赭（与链路视图、图表同一对，四窗一致） */
+  --up: #15619b; --dn: #b8571a;
 }
-html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; --up: #82a9c6; --dn: #c9a26a; }
+html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 
 /* 功能区「文件」组的刷新按钮：取数中图标旋转（按钮本体走公共 .lbr-big） */
-.lbr-big.spin .lbr-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
-@keyframes lb-spin { to { transform: rotate(360deg); } }
-/* 功能区右缘状态位文案：操作回执（绿）/ 无引擎警示（黄） */
-.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
-.lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lbr-big.spin .app-icon { animation: ui-spin .7s linear infinite; transform-origin: 50% 50%; }
+.geo-loc { flex: none; margin-left: auto; }
 
-.lb-body { flex: 1; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
-.lb-col:last-child { border-right: none; }
-/* 左侧栏（配置列表 / 资源库 二选一）：宽度由 sideWidth 内联给出，两视图各记各的 */
-/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
-.lb-side { flex: none; position: relative; }
-.lb-side.resizing { user-select: none; }
-/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
-.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer::after {
-  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
-  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
-}
-.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: .15s; }
-.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
-/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
-.lb-configs .lb-col-bd { padding: 10px 8px; }
-.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-build { flex: 1; min-width: 460px; }
 
-/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-lang-sel { font: inherit; font-size: var(--fs-2); text-transform: none; letter-spacing: 0; line-height: 1; padding: 3px 6px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
-.lb-lang-sel:focus { outline: none; border-color: var(--accent-ui); }
-.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.lb-mini:disabled { opacity: .45; cursor: not-allowed; }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
-.lb-cfg-acts { display: flex; gap: 4px; }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
-.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
-.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
-.lb-ico-svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
-.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-/* 分享弹窗自 v1.4.6 起是独立组件（components/LbShareDialog.vue，自带 lbs- 一套样式），
-   原先只服务于它的 lb-tabs / lb-area / lb-inbox 系列 / lb-share-l 等已随之删去。 */
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.lb-input:focus { outline: none; border-color: var(--accent-ui); }
-.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
-.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
-.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
 
 .rlmode { display: flex; align-items: center; gap: 4px; flex: none; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .rlmode-i { position: relative; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: var(--fs-3); font-weight: 600; padding: 6px 9px 6px 14px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); }
@@ -3169,33 +3323,26 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 /* 状态点：已计算（实心）/ 输入已变（空心，警示色）；没算过不画 */
 .rlmode-dot { flex: none; width: 7px; height: 7px; margin-left: -6px; border-radius: 50%; background: var(--ok); box-sizing: border-box; }
 .rlmode-dot.stale { background: transparent; border: 1.5px solid var(--warn); }
-.rlmode-i.on .rlmode-dot { background: var(--bg); }
-.rlmode-i.on .rlmode-dot.stale { background: transparent; border-color: var(--bg); }
+.rlmode-i.on .rlmode-dot { background: var(--sel-on); }
+.rlmode-i.on .rlmode-dot.stale { background: transparent; border-color: var(--sel-on); }
 /* 链路条数：小号数字，与资源库页签的计数同一语言 */
 .rlmode-n { font-family: var(--font-mono); font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); padding: 1px 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-faint); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-.rlmode-i.on .rlmode-n { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); border-color: transparent; }
+.rlmode-i.on .rlmode-n { background: color-mix(in srgb, var(--sel-on) 20%, transparent); color: var(--sel-on); border-color: transparent; }
 .rlmode-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 1px; border-radius: var(--r-ctl); color: currentColor; opacity: .5; }
 .rlmode-x svg { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; fill: none; }
 .rlmode-i:hover .rlmode-x { opacity: .8; }
 .rlmode-x:hover { opacity: 1; background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
-.rlmode-i.on .rlmode-x:hover { background: color-mix(in srgb, var(--bg) 28%, transparent); color: var(--bg); }
+.rlmode-i.on .rlmode-x:hover { background: color-mix(in srgb, var(--sel-on) 28%, transparent); color: var(--sel-on); }
 /* 「添加模块」随页签行拉满高度：定高 27px 比页签矮一截，两者底边对不齐 */
 .rlmode-add-wrap { position: relative; display: inline-flex; align-self: stretch; }
 .rlmode-add { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: auto; min-height: 27px; padding: 0 10px 0 8px; font: inherit; font-size: var(--fs-3); font-weight: 600; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .rlmode-add svg { stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; fill: none; }
 .rlmode-add:hover:not(:disabled), .rlmode-add.on { color: var(--accent); border-color: var(--line-hover); }
 .rlmode-add:disabled { opacity: .45; cursor: not-allowed; }
-.rlmode-menu-mask { position: fixed; inset: 0; z-index: 40; }
-/* 命令菜单口径（spec P3）：浮层圆角 + 菜单级投影（--shadow-3 只给模态框），挂在按钮下方用下落入场 */
-.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; z-index: 41; min-width: 196px; display: flex; flex-direction: column; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); animation: ui-float-in var(--dur-2) var(--ease-out); }
-.rlmode-menu-hd { font-size: var(--fs-1); font-weight: 600; letter-spacing: var(--ls-tight); color: var(--text-faint); padding: 4px 8px 6px; }
-.rlmode-menu-i { display: flex; align-items: center; gap: 6px; text-align: left; font: inherit; font-size: var(--fs-3); font-weight: 500; padding: 6px 8px; cursor: pointer; background: transparent; color: var(--text); border: none; border-radius: var(--r-ctl); white-space: nowrap; }
+/* 「添加模块」菜单：外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-hd / .menu-ck / .menu-mask）；
+   这里只留挂在按钮下方的定位与宽度、已添加项弱一档的字色（悬停让给基线蓝块） */
+.rlmode-menu { position: absolute; top: calc(100% + 5px); left: 0; min-width: 196px; animation-name: ui-float-in; }
 .rlmode-menu-i.added { color: var(--text-faint); }
-/* 悬停机位色实底（与菜单栏同）；写在 .added 之后——已添加的项点了是切过去，悬停同样要实底白字 */
-.rlmode-menu-i:hover { background: var(--accent-ui); color: var(--bg); }
-.rlmode-menu-i:hover .rlmode-menu-ck { color: inherit; }
-.rlmode-menu-ck { display: inline-flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; color: var(--accent); }
-.rlmode-menu-ck svg { stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
 /* 空态：一句话 + 四个添加按钮（按钮是控件，不是说明文字） */
 .rlmode-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 56px 16px; }
 .rlmode-empty-t { font-size: var(--fs-3); color: var(--text-faint); }
@@ -3205,10 +3352,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .rlmode-empty-b:hover { color: var(--accent); border-color: var(--line-hover); }
 
 /* 链路表节内的说明条 */
-.tx-optbar { display: flex; align-items: center; gap: 10px; flex: none; margin-bottom: 6px; flex-wrap: wrap; }
-.tx-optl { font-size: var(--fs-3); color: var(--text-muted); font-weight: 600; }
 
-.lb-err { color: var(--danger); font-size: var(--fs-3); padding: 8px; }
 
 /* 核心指标（.core-*）三线式样式统一在 styles/lbworkbench.css（三 App 共用，此处不再重复定义） */
 
@@ -3225,8 +3369,9 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .geo-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; }
 .geo-col { min-width: 0; }
 .geo-col-hd { display: flex; align-items: baseline; gap: 6px; font-size: var(--lb-fs, 11px); font-weight: 700; padding: 3px 0 4px; border-bottom: 2px solid var(--border-strong); margin-bottom: 2px; }
-.geo-col-hd.tx { color: var(--accent); border-bottom-color: var(--accent); }
-.geo-col-hd.rx { color: var(--ok); border-bottom-color: var(--ok); }
+/* 星间发射 / 接收：与上行 / 下行同一对 SERIES 蓝 / 赭（--up / --dn），绿色只留给状态 */
+.geo-col-hd.tx { color: var(--up); border-bottom-color: var(--up); }
+.geo-col-hd.rx { color: var(--dn); border-bottom-color: var(--dn); }
 .geo-col-hd em { font-style: normal; font-weight: 500; font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .geo-col-na { font-size: var(--lb-fs, 11px); color: var(--text-faint); padding: 10px 0; }
 .geo-col .geo-sec:first-of-type { border-top: none; padding-top: 3px; margin-top: 4px; }

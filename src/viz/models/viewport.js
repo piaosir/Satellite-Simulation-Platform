@@ -59,6 +59,7 @@ import { HorizontalBlurShader } from 'three/addons/shaders/HorizontalBlurShader.
 import { VerticalBlurShader } from 'three/addons/shaders/VerticalBlurShader.js'
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh'
 import { configureRenderer, createStudio, studioBackground, paintStudioBackground, rigOrientFor } from './studio.js'
+import { axisHex } from '../../shared/axisColors.js'
 import { setMaterialAnisotropy, ROLE_COLORS } from './materials.js'
 import { originalName, disposeLoaders } from './loader.js'
 import { triTable, irNodeTable, disposeBorrowed, splitMultiMaterial } from './irToThree.js'
@@ -71,7 +72,6 @@ const BVH_SYNC_TRIS = 60000
 // 交互期暂停 AO 的门槛（总三角形数）
 const AUTO_LOD_TRIS = 600000
 
-const AXIS_COL = { x: 0xe5484d, y: 0x30a46c, z: 0x3e63dd }
 const AP_COL = 0xffb224
 const AP_SEL_COL = 0x00b3ff
 const MOUNT_COL = 0x2fbf9b          // 卫星绑定的挂点（mount）：青绿，与模型挂点（attach point）的橙色分开
@@ -1040,10 +1040,10 @@ export function createViewport(el, opts = {}) {
       for (const [k, d] of [['x', [1, 0, 0]], ['y', [0, 1, 0]], ['z', [0, 0, 1]]]) {
         const i = k === 'x' ? 0 : k === 'y' ? 1 : 2
         const L = Math.min(rO * 0.9, Math.max(r * 0.28, bboxBody.max[i] * 1.12))
-        const m = dynMat(new THREE.MeshBasicMaterial({ color: AXIS_COL[k], depthTest: false, transparent: true, opacity: 0.95, toneMapped: false }))
+        const m = dynMat(new THREE.MeshBasicMaterial({ color: axisHex(k, dark), depthTest: false, transparent: true, opacity: 0.95, toneMapped: false }))
         const dv = new THREE.Vector3(d[0], d[1], d[2])
         ovBody.add(makeArrow(G, dv, L, rad, m))
-        addLabel(ovBody, k.toUpperCase(), AXIS_COL[k], dv.clone().multiplyScalar(L * 1.03), 20, true, 3)
+        addLabel(ovBody, k.toUpperCase(), axisHex(k, dark), dv.clone().multiplyScalar(L * 1.03), 20, true, 3)
       }
     }
     // LVLH（对地定向律下与本体轴重合；虚线画长一截以示区别）
@@ -1150,7 +1150,7 @@ export function createViewport(el, opts = {}) {
       ovBody.add(s)
       const L = r * 0.11
       for (const k of ['x', 'y', 'z']) {
-        const lm = dynMat(new THREE.LineBasicMaterial({ color: AXIS_COL[k], depthTest: false, transparent: true, toneMapped: false }))
+        const lm = dynMat(new THREE.LineBasicMaterial({ color: axisHex(k, dark), depthTest: false, transparent: true, toneMapped: false }))
         const a = new THREE.Vector3(k === 'x' ? L : 0, k === 'y' ? L : 0, k === 'z' ? L : 0)
         const g = new THREE.BufferGeometry().setFromPoints([p.clone().sub(a), p.clone().add(a)]); dynamic.geoms.add(g)
         const ln = new THREE.Line(g, lm); ln.renderOrder = 23

@@ -6,9 +6,9 @@
 //   平均根数：OMM CSV / JSON / KVN / XML、TLE / 3LE —— 只有平均根数星写得出（TLE 另受 Alpha-5 编号上限）。
 //   点序列：CCSDS OEM（KVN / XML）、STK .e、中国卫通 .eph —— 全部星都写得出：平均根数星按时段 × 步长采样，
 //   点序列星缺省导原始采样点（数值逐位等于导入时）。单目标格式一星一个文件。
-// 对话框壳自带（ephx- 前缀、z 300），不依赖宿主窗口的 CSS。
+// 外壳是 AppDialog；正文样式 ephx- 前缀，不依赖宿主窗口的 CSS。
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { byLang } from '../shared/i18n/lang.js'
 
 const props = defineProps({
@@ -160,6 +160,11 @@ async function run() {
 }
 function cancelRun() { if (running.value && api && api.omm && api.omm.exportCancel) api.omm.exportCancel(jobId) }
 const pct = computed(() => (progress.value && progress.value.total ? Math.round((100 * progress.value.done) / progress.value.total) : 0))
+// 导出回执：单文件档开文件；逐星档（目录）只给「在文件夹中显示」也能用 —— 主进程白名单只认本会话写过的路径
+const hasFileApi = !!(api && api.files)
+const resultPath = computed(() => { const r = result.value; return (r && (r.path || (r.paths && r.paths[0]) || (r.files && r.files[0] && r.files[0].path))) || '' })
+function openResult() { if (resultPath.value) api.files.open(resultPath.value).catch(() => {}) }
+function revealResult() { if (resultPath.value) api.files.reveal(resultPath.value).catch(() => {}) }
 const resultText = computed(() => {
   const r = result.value
   if (!r) return ''
@@ -176,11 +181,11 @@ const resultTitle = computed(() => {
   return a.concat(b).join('\n')
 })
 
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关）；写盘中 closable=false，这时的 Esc 归「停止」
 function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
+  if (e.key !== 'Escape' || e.isComposing || !running.value) return
   e.preventDefault(); e.stopPropagation()
-  if (running.value) { cancelRun(); return }
-  emit('close')
+  cancelRun()
 }
 watch([format, frame, sampling, stepS, interp, perFile, fromTxt, toTxt], refreshPlan)
 onMounted(async () => {
@@ -210,12 +215,7 @@ const hasTimeline = computed(() => Number.isFinite(Number(props.defaults.timelin
 </script>
 
 <template>
-  <div class="ephx-mask" :style="{ zIndex: z }" @mousedown.self="!running && emit('close')">
-    <div class="ephx-dlg" role="dialog" aria-modal="true">
-      <div class="ephx-hd">
-        <span>导出星历</span>
-        <button type="button" class="ephx-x" aria-label="关闭" title="关闭" :disabled="running" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <AppDialog title="导出星历" :width="520" flush :closable="!running" :layer="z > 2000 ? 'pop' : 'dialog'" @close="emit('close')">
       <div class="ephx-body">
         <div class="ephx-obj">
           <span class="ephx-on" :data-i18n-skip="titleLit ? null : ''">{{ title }}</span>
@@ -290,25 +290,20 @@ const hasTimeline = computed(() => Number.isFinite(Number(props.defaults.timelin
         </div>
         <div v-if="skipNote" class="ephx-warn">{{ skipNote }}</div>
         <div v-if="isPoint(format) && needGrid && !(spanOk && stepOk)" class="ephx-warn">时段或步长无效</div>
-        <div v-if="result" class="ephx-res" :class="{ bad: !result.ok }" :title="resultTitle">{{ resultText }}</div>
+        <div v-if="result" class="ephx-res" :class="{ bad: !result.ok }" :title="resultTitle">{{ resultText }}<template v-if="result.ok && resultPath && hasFileApi"><a class="ephx-a" @click="openResult">打开</a><a class="ephx-a" @click="revealResult">在文件夹中显示</a></template></div>
       </div>
-      <div class="ephx-ft">
+      <template #footer>
         <span v-if="running" class="ephx-cnt"><span>导出中</span> {{ pct }}%</span>
         <span v-else class="ephx-cnt"></span>
-        <button v-if="running" type="button" class="ephx-btn ghost" @click="cancelRun">停止</button>
-        <button v-else type="button" class="ephx-btn ghost" @click="emit('close')">{{ result && result.ok ? '关闭' : '取消' }}</button>
-        <button type="button" class="ephx-btn" :disabled="running || !exportable || (isPoint(format) && needGrid && !(spanOk && stepOk))" @click="run">导出…</button>
-      </div>
-    </div>
-  </div>
+        <button v-if="running" type="button" class="btn" @click="cancelRun">停止</button>
+        <button v-else type="button" class="btn" @click="emit('close')">{{ result && result.ok ? '关闭' : '取消' }}</button>
+        <button type="button" class="btn primary" :disabled="running || !exportable || (isPoint(format) && needGrid && !(spanOk && stepOk))" @click="run">导出…</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style>
-.ephx-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.ephx-dlg { width: 520px; max-width: calc(100% - 32px); max-height: 86%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.ephx-hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
-.ephx-x { margin-left: auto; cursor: pointer; display: inline-flex; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: var(--text-faint); }
-.ephx-x:hover:not(:disabled) { color: var(--text); background: var(--wash-hover); }
+/* 外壳归 AppDialog；正文 flush，内距在 .ephx-body。ephx- 前缀不 scoped（不吃宿主窗口的 CSS） */
 .ephx-body { padding: 12px 14px; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .ephx-obj { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .ephx-on { font-size: var(--fs-4); color: var(--text); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -336,13 +331,7 @@ const hasTimeline = computed(() => Number.isFinite(Number(props.defaults.timelin
 .ephx-warn { font-size: var(--fs-2); color: var(--warn); }
 .ephx-res { font-size: var(--fs-2); color: var(--ok); font-family: var(--font-mono); }
 .ephx-res.bad { color: var(--danger); font-family: inherit; }
-.ephx-ft { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
+.ephx-a { margin-left: 10px; color: var(--accent-ui); cursor: pointer; font-family: var(--font-ui, inherit); white-space: nowrap; }
+.ephx-a:hover { text-decoration: underline; }
 .ephx-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-right: auto; }
-.ephx-btn { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl-lg); padding: 0 18px;
-            font-size: var(--fs-3); white-space: nowrap; cursor: pointer; user-select: none; color: var(--primary-on);
-            background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); }
-.ephx-btn:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.ephx-btn.ghost { color: var(--text); background: var(--bg); border-color: var(--border-strong); }
-.ephx-btn.ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--line-hover); }
-.ephx-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

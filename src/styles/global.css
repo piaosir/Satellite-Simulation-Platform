@@ -23,6 +23,24 @@
   --warn: #9a6a00;
   --danger: #a32d2d;
 
+  /* —— 轨道区制色（GEO / IGSO / MEO / HEO / LEO）——
+     主窗可见性结果「类别」列与链路预算三窗的卫星面板徽章共用一套（原先 GEO 在主窗是琥珀、计算窗是绿）。
+     作 10px 文字用：浅色各档对面板 / 面板头 / 白底 ≥ 4.5:1；专业深色在深色块里另取一档。
+     专业浅色不另写，继承这里。--rg-heo-tint 只作徽章底与边（图形，不作字）。 */
+  --rg-geo: #15803d;
+  --rg-igso: #0f766e;
+  --rg-meo: #2563eb;
+  --rg-heo: #b45309;
+  --rg-heo-tint: #f59f00;
+  --rg-leo: #7c3aed;
+
+  /* —— 结构 token 兜底 ——
+     两档专业外观各自给值；这里只保证不带 skin 的报表页里引用它们也合法（回落到旧的纸 / 灰两档）。 */
+  --float-bg: var(--bg);
+  --raised: var(--bg);
+  --raised-hover: var(--surface-2);
+  --pane-well: var(--surface);
+
   /* —— 机位色 ——
      全软件唯一的彩相，只用于「开 / 选 / 焦点 / 主操作」四类状态：焦点环、复选与拨杆的选中态、
      当前页签与当前视图、表格选区与活动格、主按钮、菜单项高亮。其余一切（悬停描边、图标、
@@ -32,6 +50,22 @@
   --accent-ui-hover: #26527b;
   --accent-ui-weak: color-mix(in srgb, var(--accent-ui) 15%, transparent);   /* 选区淡罩 */
   --accent-ui-wash: color-mix(in srgb, var(--accent-ui) 8%, transparent);    /* 悬停淡罩 */
+  /* 机位色的「块」与「线与字」：--accent-fill 是块（菜单高亮、主按钮、选中段、勾选框、拨杆、眼睛钮、
+     当前行序号格这类上面压着字或图形的实底），--accent-on 是块上的字；--accent-ui 是线与字（指示条、描边、
+     焦点环、页签字、链接、开态图标）以及各处淡罩的底色。
+     两档专业外观各有一个专属蓝 = 块色（浅色档浅蓝、深色档深蓝，各自独立选，不共用公式）；线与字是同一个蓝
+     只沿明度推到「压在面板上刚好 4.5:1」的那一档，色相、彩度不动 —— 细线与小字靠明度被看见，读起来还是同一个蓝。
+     这里默认回落到 accent-ui / --bg，报表打印页（不带 skin）逐像素不变。 */
+  --accent-fill: var(--accent-ui);
+  --accent-fill-hover: var(--accent-ui-hover);
+  --accent-on: var(--bg);
+
+  /* —— 搜索框聚焦（.search-field，画法见 controls.css）——
+     画法取自 claude.ai 设计系统 --cds-focus-shadow：1px 蓝环 + 6px 柔光晕。这里是兜底值；
+     两档专业外观各取本档专属蓝：环 = 线色，晕在浅色是同色相淡蓝实色、深色是块色半透明（深底上淡蓝会发白）。 */
+  --focus-ring: #2a78d6;
+  --focus-glow: #cde2fb;
+  --focus-halo: 0 0 6px 1px var(--focus-glow);
 
   /* —— 可输入域 ——
      WCAG 1.4.11 要求控件边界对相邻底色 ≥3:1。原来输入框描边走 --border（1.30:1），
@@ -155,47 +189,172 @@
   --ls-caps: .1em;     /* 更小一号的分组名（10~11px，faint） */
 
   --ctl-box: 13px;                       /* 复选框 / 单选钮边长 */
-  --ctl-track: 3px;                      /* 滑块轨道粗细 */
-  --ctl-knob: 11px;                      /* 滑块钮径 */
   /* 勾是 mask，颜色由 background 给（跟着 --bg 走），故两主题共用一份 */
   --ctl-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.3 4.9 8.7 9.4 3.5' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   /* 下拉箭头是 background-image，颜色写死在 SVG 里，故两主题各一份 */
   --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%236b6b66' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
+/* —— 深色（2026-10-14 起即「专业深色」，替换原暖灰深色）——
+   剪辑软件口径：中性灰明度阶梯分层（不靠线、不带暖色）、面板块之间留缝、单一蓝色界面色。
+   取值逐条出自 Adobe Spectrum 2 深色主题（@adobe/spectrum-tokens 15.5.0，Apache-2.0 —— Premiere /
+   After Effects 的设计系统），不手调；与 Blender 4 默认主题（#161616–#545454）、UE5 Starship
+   （#0F0F0F–#383838）、NASA Open MCT Espresso 落在同一灰带。
+   中性而非暖灰：ITU-R BT.2035 的参考观看环境是 D65 中性背景 —— 带色相的环绕会把覆盖色标 / 影像看偏。
+   stores/theme.js 选「专业深色」时写 data-theme="dark" + data-skin="studio"（skin 管面板块 / 缝 / 焦点面板这套结构，
+   与「专业浅色」共用）；全库按 data-theme="dark" 分支的地方（画布选色、各窗口深色覆写）原样继承。
+   对比度（WCAG）：正文 / 面板 12.4、次级 7.9、三级 5.0、输入描边 / 面板 3.3、白字 / 蓝块 6.9、机位色字 / 面板 4.9。
+   ★ 专属深蓝（10-14 定）：块 #3e5b87 = OKLCH .47 / .08 / 258 —— 往靛青偏一点（与画面底 #070b12 同色相），彩度只有原
+     Spectrum 蓝 #4069fd（C .22、h 267 偏紫、顶到色域边，读作「炸」）的三分之一多。明度取「白字 6.9:1、色块对面板 2.5:1
+     仍一眼可辨」的深位：再深（.41 那档）选中态对面板只剩 1.9:1，不够醒目。
+     线与字 #6a8ab8 = 同一个蓝提到 .63，压在面板头 #222 上刚好 4.5:1 —— 深蓝本身当字只有 2.4:1，「计算」与各处开态图标
+     会比旁边的灰字还暗、主次颠倒。 */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #1c1c1a;
-  --surface: #2a2a27;
-  --surface-2: #333330;
-  --text: #ececea;
-  --text-muted: #a4a49e;
-  --text-faint: #82817a;
-  --border: #3f3f39;
-  --border-strong: #5c5b54;
-  --accent: #ececea;
-  --ok: #4caf82;
-  --warn: #d8a73a;
-  --danger: #e26a6a;
+  --bg: #111111;                 /* background-base：内容底 / 凹陷底 */
+  --surface: #1b1b1b;            /* background-layer-1：面板体、外壳条 */
+  --surface-2: #222222;          /* background-layer-2：面板头 */
+  --text: #dbdbdb;               /* gray-800：正文（不用纯白） */
+  --text-muted: #afafaf;         /* gray-700：次级 */
+  --text-faint: #8a8a8a;         /* gray-600：三级 */
+  --border: #2c2c2c;             /* gray-100：装饰线 */
+  --border-strong: #444444;      /* gray-400：结构线、浮层边 */
+  --accent: #dbdbdb;             /* 无彩强调：悬停描边、图标亮态 */
+  /* 状态三色：低饱和那套（10-14 拍板，原链路预算窗 .lb-shell 本地定义升到全局）；对面板 / 面板头 / 内容底 ≥ 5:1 */
+  --ok: #6f9d85;
+  --warn: #b59a5e;
+  --danger: #c08079;
+  /* 轨道区制色提亮一档（浅色那档压在 #1b1b1b 上不到 3:1） */
+  --rg-geo: #4ade80; --rg-igso: #2dd4bf; --rg-meo: #60a5fa; --rg-heo: #fbbf24; --rg-heo-tint: #fbbf24; --rg-leo: #a78bfa;
 
-  --accent-ui: #6ba3d6;
-  --accent-ui-hover: #82b3df;
+  --accent-fill: #3e5b87;        /* 专属深蓝：OKLCH .47 / .08 / 258 */
+  --accent-fill-hover: #496794;  /* .51：深底上悬停往亮里走 */
+  --accent-on: #ffffff;
+  --accent-ui: #6a8ab8;          /* 线与字：同一个蓝提到 .63（对 #222 4.5:1、对面板 4.9:1） */
+  --accent-ui-hover: #7a99c6;    /* .68 */
+  /* 搜索框聚焦环取线色；晕取块色 */
+  --focus-ring: #6a8ab8;
+  --focus-glow: rgba(62, 91, 135, .55);
 
-  --field-bg: #171715;
-  --field-border: #74736b;                 /* 对输入底 3.9:1、对面板底 3.1:1 */
-  --field-border-hover: #8f8e85;
+  --field-bg: #111111;           /* 输入框凹陷：比面板暗一档（Blender / UE5 同口径） */
+  --field-border: #6d6d6d;       /* gray-500：对面板 3.33、对输入底 3.65 */
+  --field-border-hover: #8a8a8a;
   --field-disabled-bg: var(--surface-2);
 
-  --shadow-1: 0 1px 3px rgba(0, 0, 0, .35);
-  --shadow-2: 0 4px 14px rgba(0, 0, 0, .45), 0 1px 4px rgba(0, 0, 0, .30);
-  --shadow-3: 0 14px 40px rgba(0, 0, 0, .55), 0 3px 10px rgba(0, 0, 0, .35);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, .45);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .55), 0 1px 4px rgba(0, 0, 0, .40);
+  --shadow-3: 0 14px 40px rgba(0, 0, 0, .65), 0 3px 10px rgba(0, 0, 0, .45);
 
-  --sel-fill: color-mix(in srgb, var(--text) 76%, var(--surface));   /* ≈ #bebebb，--bg 字 ≈ 9:1 */
-  --primary-fill: var(--sel-fill);                                     /* hover ≈ #a4a4a2，禁用 ≈ #626260 */
-  --line-hover: color-mix(in srgb, var(--text) 62%, var(--surface));  /* ≈ #a2a2a0 */
-  --scrim: rgba(0, 0, 0, .50);
+  --sel-fill: var(--accent-fill);            /* 选中段 / 页签 / 主按钮 / 勾选框 / 拨杆：与其余蓝块同一档 */
+  --sel-on: var(--accent-on);
+  --primary-fill: var(--accent-fill);
+  --primary-on: var(--accent-on);
+  --primary-fill-hover: var(--accent-fill-hover);
+  --primary-fill-disabled: color-mix(in srgb, var(--accent-fill) 30%, var(--surface));
+  --line-hover: #8a8a8a;
+  --scrim: rgba(0, 0, 0, .55);
 
-  --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23a4a49e' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  /* 面板块结构（data-skin="studio"）用的四档：缝 / 浮层 / 抬起按钮 */
+  --pane-well: #111111;          /* background-pasteboard：面板块之间的缝、窗口底 */
+  --float-bg: #222222;           /* background-elevated：菜单 / 浮层 */
+  --raised: #2c2c2c;             /* gray-100：按钮抬起一层（「纸底」按钮在深底上是凹下去的洞） */
+  --raised-hover: #323232;       /* gray-200 */
+  /* 面板块的受光边：画面底 #070b12 比缝 #111 还暗，不描这一圈，画面四周那道缝就化进黑里、看着比别处窄 */
+  --pane-edge: rgba(255, 255, 255, .07);
+
+  --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23afafaf' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+/* —— 专业浅色（与专业深色逐档对应）——
+   同一套结构（data-skin="studio"：面板块 + 缝 + 焦点面板 + 蓝色选中），配色取 Spectrum 2 浅色主题的同名 token：
+   缝 = background-pasteboard #e9e9e9、面板 = layer-1 #f8f8f8、面板头 = gray-75、内容 / 输入 = base #fff；
+   字 gray-800 / 700 / 600。
+   ★ 专属浅蓝（10-14 定）：块 #588abd = OKLCH .62 / .095 / 250 —— 与地图大海出厂色 #a3ccff（h 254）同色相，
+     即「海的颜色加深一档」；彩度不到原 Spectrum 蓝 #3b63fb（C .23、h 267 偏紫）的一半。
+     明度取「仍能托住白字（3.6:1，选中段与按钮字都是粗体）、当指示线对面板 3.4:1」的最浅位；再浅白字就虚了，
+     要改成「淡蓝底 + 深字」那套（对拍过：拨杆成了淡轨黑钮、主按钮没了分量，且与「状态标记一律上实底」的旧口径相冲）。
+     线与字 #4475a7 = 同一个蓝压到 .55，压在面板上刚好 4.5:1 —— 与块色只差 ΔL .07，肉眼读作同一个蓝。
+   ★ 10-14 原「浅色」档已删：上面 :root 那套暖灰值只剩报表打印页（report.html 钉 data-theme="light"、不带 skin）在用，
+     界面上的浅色一律是这一块。
+   对比度：正文 / 面板 13.7、次级 7.6、三级 5.3、输入描边 / 面板 3.05、机位色字 / 面板 4.55、状态三色 / 面板 ≥ 4.5。 */
+:root[data-theme="light"][data-skin="studio"] {
+  --bg: #ffffff;                 /* background-base：内容底 / 输入底 */
+  --surface: #f8f8f8;            /* background-layer-1：面板体、外壳条 */
+  --surface-2: #f3f3f3;          /* gray-75：面板头 */
+  --text: #292929;               /* gray-800 */
+  --text-muted: #505050;         /* gray-700 */
+  --text-faint: #686868;         /* gray-600 压一档：对面板头 5.0、对缝 #e9 4.6（原 #717171 只有 4.40 / 4.02，而 101 条规则是 10px + 三级灰） */
+  --border: #e1e1e1;             /* gray-200 */
+  --border-strong: #c6c6c6;      /* gray-400 */
+  --accent: #292929;
+  /* 状态三色：低饱和那套（10-14 拍板）。原拍板值 #4a7a62 / #8a7038 对面板头只有 4.45 / 4.25，
+     沿 OKLCH 明度压到 ≥ 4.5（色相、彩度不动）；红 #9c5751 本来就够 */
+  --ok: #487860;                 /* 面板 4.79 / 面板头 4.58 / 白 5.08 */
+  --warn: #856b33;               /* 4.77 / 4.56 / 5.06 */
+  --danger: #9c5751;             /* 5.08 / 4.86 / 5.39 */
+
+  --accent-fill: #588abd;        /* 专属浅蓝：OKLCH .62 / .095 / 250 */
+  --accent-fill-hover: #4c7eb0;  /* .58：浅底上悬停往深里走（白字 4.3:1） */
+  --accent-on: #ffffff;
+  --accent-ui: #4475a7;          /* 线与字：同一个蓝压到 .55（对面板 4.55:1、对外壳 #e9 4.0:1） */
+  --accent-ui-hover: #356798;    /* .50 */
+  --focus-ring: #4475a7;
+  --focus-glow: #d7eaff;         /* 同色相 .93 的淡晕 */
+
+  --field-bg: #ffffff;
+  --field-border: #8f8f8f;       /* gray-500：对白 3.23、对面板 3.05 */
+  --field-border-hover: #717171;
+  --field-disabled-bg: var(--surface-2);
+
+  --sel-fill: var(--accent-fill);
+  --sel-on: var(--accent-on);
+  --primary-fill: var(--accent-fill);
+  --primary-on: var(--accent-on);
+  --primary-fill-hover: var(--accent-fill-hover);
+  --primary-fill-disabled: color-mix(in srgb, var(--accent-fill) 30%, var(--surface));
+
+  --pane-well: #e9e9e9;          /* background-pasteboard */
+  --float-bg: #ffffff;           /* background-elevated */
+  --raised: #ffffff;
+  --raised-hover: #f3f3f3;
+  --pane-edge: rgba(0, 0, 0, .04);   /* 浅底上面板与缝靠明度已分得开，边只收一下口 */
+
+  --ctl-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.9 6 7.9 9 4.9' fill='none' stroke='%23505050' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+/* 面板块之间的缝与面板圆角（同值：缝宽 = 圆角，四角的弧与缝在视觉上等宽）。
+   缝 6 而非 4：外壳与缝同色之后，4px 的缝在 1440 宽下读作「一道粗线」，6px 才读作块与块之间的空气。
+   App.vue 按 devicePixelRatio 把 --pane-gap 取整到整设备像素（125% 下 6px = 7.5 设备像素，各道缝会 7 / 8 交替）。 */
+:root[data-skin="studio"] { --pane-gap: 6px; --r-pane: 6px; }
+
+/* —— 面板块结构：焦点面板指示（专业浅色 / 专业深色）——
+   当前在操作的那块面板（侧栏 / 画面 / 信息栏 / 时间轴 / 日志，带 data-pane 的块）描一圈 1px 机位色：
+   Premiere 的 Focus Indicators、Resolve 当前面板那条红线，同一件事 —— 快捷键落在哪块一眼看得出。
+   data-paneon 由 App.vue 在 pointerdown / focusin 时打（属性而非类名：Vue 重绘 :class 不会把它冲掉）。
+   ★ 用内缩 outline 画，不用 ::before 覆盖层：覆盖层要给面板加 position: relative，侧栏 / 日志里那些
+     没有定位祖先的绝对定位件会改认面板为包含块，位置与裁切都会变。outline 画在内容之上、不占布局。 */
+/* 主窗五块的受光边（--pane-edge），同样是内缩 outline，焦点面板那条规则在后、同特异度，把颜色换成机位色。
+   :where() 归零类名特异度；只点名主窗五块 —— 模型工作台装配栏的 .asm-pane 也带 data-pane，那是栏内分格、不是浮块。 */
+:root[data-skin="studio"] :where(.sidebar, .logdock, .stage-wrap, .rdk, .tl.bottom)[data-pane] { outline: 1px solid var(--pane-edge); outline-offset: -1px; }
+:root[data-skin="studio"] [data-paneon] { outline: 1px solid color-mix(in srgb, var(--accent-ui) 75%, transparent); outline-offset: -1px; }
+
+/* —— 浮层叠放档位（z-index）——
+   全库原有 48 个不同取值，同是右键菜单落在 41 / 61 / 400 / 2200 / 3000。按「角色」取档，不按「比谁大」：
+   pop        贴着控件弹出的下拉 / 气泡 / 命令建议（不挡别的窗口件）
+   dialog     模态对话框与它的全窗遮罩
+   dialog-pop 对话框里再弹出的下拉 / 选点框（Teleport 到 body 的 .sg-dd、CityPicker 等要压在对话框上面）
+   menu       右键菜单 / 下拉菜单（点外关闭的透明底 = menu − 1）
+   capture    视频取景这类整窗接管的操作层
+   lock       激活锁：永远在最上
+   组件内部的相对叠放（1~99：画布上的标签、拖拽柄、表头冻结列）不在此列，照旧写字面量。 */
+:root {
+  --z-pop: 300;
+  --z-dialog: 2000;
+  --z-dialog-pop: 2400;
+  --z-menu: 2600;
+  --z-capture: 3500;
+  --z-lock: 4000;
+  /* 禁用件的透明度：全库只留这一档（原 .22 / .35 / .38 / .4 / .45 五种） */
+  --dis-opacity: .4;
 }
 
 * { box-sizing: border-box; }

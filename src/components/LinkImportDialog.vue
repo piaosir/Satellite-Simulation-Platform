@@ -6,9 +6,9 @@
 // 选中项按 mapLinks.linkStrands 现造成导入载荷（纯数据：Polygon / 航迹节点按取点逐个代表点展开成支路，载具取场景时钟此刻的位置，
 // 代表点的几何口径与主窗同一份 mapLinkPoints.mjs），经 'import' 交给宿主的 importChains。行尾报支路数（> 1 才报）。
 // 勾选交互与 CityPicker 同一份口径（shared/ui/useCheckList.js）：点行翻勾、按住拖刷、Shift 连选、Ctrl+A。
-// 对话框壳自带（lki- 前缀、z 300），不依赖任何窗口的 CSS。
-import { ref, shallowRef, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import Icon from './Icon.vue'
+// 外壳是 AppDialog；正文样式 lki- 前缀，不依赖任何窗口的 CSS。
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount } from 'vue'
+import AppDialog from './AppDialog.vue'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import { pointFallbackName } from '../shared/markerNames.js'
 import { linkPointName, linkPointShort } from '../shared/linkPointNames.js'
@@ -126,31 +126,19 @@ function onListKey(e) {
   if (e.key === 'Enter' && selCount.value) { e.preventDefault(); importSelected(); return }
   L.onKey(e)
 }
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
-  e.preventDefault(); e.stopPropagation()
-  emit('close')
-}
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关、打开聚焦勾选列表）
 function onStorage(e) { if (!e || e.key === MK_KEY || e.key === PG_KEY) { nowMs.value = sceneNowMs(); reload() } }
 onMounted(() => {
   reload()
-  document.addEventListener('keydown', onKey, true)
   window.addEventListener('storage', onStorage)
-  nextTick(() => { if (listEl.value) listEl.value.focus({ preventScroll: true }) })
 })
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', onKey, true)
   window.removeEventListener('storage', onStorage)
 })
 </script>
 
 <template>
-  <div class="lki-mask" @mousedown.self="emit('close')">
-    <div class="lki-dlg" role="dialog">
-      <div class="lki-hd">
-        <span>导入链路</span>
-        <button type="button" class="lki-x" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <AppDialog title="导入链路" :width="560" flush initial-focus=".lki-list" @close="emit('close')">
       <div class="lki-body">
         <div ref="listEl" class="lki-list" :class="{ painting: L.painting.value }" tabindex="0"
              title="点一行翻勾选 · 按住拖＝刷选 · Shift 点＝连选 · Ctrl+A 全选 · 双击＝直接导入该链路" @keydown="onListKey">
@@ -170,22 +158,16 @@ onBeforeUnmount(() => {
           <div v-if="!rows.length" class="lki-empty">暂无链路。</div>
         </div>
       </div>
-      <div class="lki-ft">
+      <template #footer>
         <span class="lki-cnt"><span>可导入</span> {{ okRows.length }}/{{ rows.length }}<span class="lki-sep">·</span><span>已选</span> {{ selCount }}<template v-if="selStrands > selCount"><span class="lki-sep">·</span><span>支路</span> {{ selStrands }}</template></span>
-        <button type="button" class="lki-btn ghost" @click="emit('close')">取消</button>
-        <button type="button" class="lki-btn" :disabled="!selCount" @click="importSelected">导入<template v-if="selCount">（{{ selCount }}）</template></button>
-      </div>
-    </div>
-  </div>
+        <button type="button" class="btn" @click="emit('close')">取消</button>
+        <button type="button" class="btn primary" :disabled="!selCount" @click="importSelected">导入<template v-if="selCount">（{{ selCount }}）</template></button>
+      </template>
+  </AppDialog>
 </template>
 
 <style>
-/* 壳与 CityPicker 同一套（cpk- → lki-）：遮罩 + 标题条 + 页脚，不吃宿主窗口的 CSS */
-.lki-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lki-dlg { width: 560px; max-width: calc(100% - 32px); max-height: 86%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lki-hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
-.lki-hd .lki-x { margin-left: auto; cursor: pointer; display: inline-flex; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: var(--text-faint); }
-.lki-hd .lki-x:hover { color: var(--text); background: var(--wash-hover); }
+/* 外壳归 AppDialog；正文 flush，内距在 .lki-body。lki- 前缀不 scoped（不吃宿主窗口的 CSS） */
 .lki-body { padding: 12px 14px; min-height: 0; display: flex; flex-direction: column; }
 .lki-list { position: relative; height: min(52vh, 420px); min-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-ctl); outline: none; background: var(--bg); }
 .lki-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
@@ -208,14 +190,6 @@ onBeforeUnmount(() => {
 .lki-hops { flex: none; color: var(--text-faint); font-size: var(--fs-2); white-space: nowrap; }
 .lki-st { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
 .lki-empty { padding: 18px; text-align: center; color: var(--text-faint); font-size: var(--fs-3); }
-.lki-ft { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
 .lki-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-right: auto; }
 .lki-cnt .lki-sep { margin: 0 6px; }
-.lki-btn { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl-lg); padding: 0 18px;
-           font-size: var(--fs-3); white-space: nowrap; cursor: pointer; user-select: none; color: var(--primary-on);
-           background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); }
-.lki-btn:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.lki-btn.ghost { color: var(--text); background: var(--bg); border-color: var(--border-strong); }
-.lki-btn.ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--line-hover); }
-.lki-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

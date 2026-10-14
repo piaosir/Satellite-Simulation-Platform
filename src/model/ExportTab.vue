@@ -16,6 +16,9 @@ import { curLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
 
 const wb = inject('wb')
+// 窗口通知条（ModelApp 的 useNotice）：导出成功给一句「已导出 · 打开 · 在文件夹中显示」
+const notice = inject('notice', null)
+const receipt = (p) => { if (notice && p) notice.toastFile('已导出：' + String(p).split(/[\\/]/).pop(), p) }
 // 「透明」在词典里是透明转发（Bent pipe），这里是透明背景：按语言直接出字
 const langNow = ref(curLang())
 const offLang = onLangChange(() => { langNow.value = curLang() })
@@ -91,7 +94,7 @@ async function doExport() {
       if (blocked.value || notInLib.value) return
     }
     const r = await wb.exportCurrent({ lod: o.lod, meshopt: o.meshopt, gmdf: o.gmdf, satsim: o.satsim, originAtCom: o.originAtCom && hasCom.value })
-    if (r && !r.canceled) res.value = r
+    if (r && !r.canceled) { res.value = r; receipt(r.path) }
   } catch (e) { err.value = (e && e.message) || String(e) }
   finally { busy.value = '' }
 }
@@ -103,7 +106,7 @@ async function savePng(blob, name) {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   const r = await api.exportFile({ defaultName: name, filters: [{ name: 'PNG', extensions: ['png'] }], data: bytes })
   if (r && r.locked) return
-  if (r && r.ok) picState.value = { kind: 'ok', text: r.filePath }
+  if (r && r.ok) { picState.value = { kind: 'ok', text: r.path || r.filePath }; receipt(r.path || r.filePath) }
   else if (r && !r.canceled) picState.value = { kind: 'bad', text: r.error || '保存失败' }
 }
 const thumbSize = ref(Number(lsGet('model/export/thumb', '1024')) || 1024)
@@ -153,11 +156,11 @@ const STK_TIP = 'AGI 软件许可协议（SLA）§2(k)、§2.3(d)：STK 随附�
         </optgroup>
       </select>
     </div>
-    <div v-if="!tgt" class="lb-placeholder">未选中模型。</div>
+    <div v-if="!tgt" class="lb-placeholder">未选择模型。</div>
     <div v-else-if="loadingTgt" class="md-state"><span class="ex-spin"></span></div>
     <div v-else-if="!m && !pendingAsm && cur.error" class="md-state bad"><Icon name="alert-triangle" :size="12" /><span class="ex-t">{{ cur.error }}</span></div>
-    <div v-else-if="!m && !pendingAsm" class="lb-placeholder">未选中模型。</div>
-    <div v-else-if="blocked" class="md-state warn ex-block" :title="stk ? STK_TIP : (m.source && m.source.license) || ''"><Icon name="lock" :size="13" />{{ blocked }}</div>
+    <div v-else-if="!m && !pendingAsm" class="lb-placeholder">未选择模型。</div>
+    <div v-else-if="blocked" class="md-state warn ex-block" :title="stk ? STK_TIP : (m.source && m.source.license) || ''"><Icon name="lock" :size="12" />{{ blocked }}</div>
     <template v-else>
       <MdSec id="x-glb" title="glTF 二进制（.glb）">
           <div v-if="notInLib" class="md-state warn" title="模板没有库条目；在设计页编辑后自动创建的副本可导出"><Icon name="alert-triangle" :size="12" />未保存到库。</div>
@@ -166,14 +169,14 @@ const STK_TIP = 'AGI 软件许可协议（SLA）§2(k)、§2.3(d)：STK 随附�
           <div v-else-if="noFull" class="md-state warn"><Icon name="alert-triangle" :size="12" />完整精度模型不可用。</div>
           <div class="srow"><label title="导出精度：几何抽稀程度">精度</label>
             <div class="lbu-seg ex-seg">
-              <button v-for="l in LODS" :key="l.key" :class="{ on: o.lod === l.key }" :title="l.tip" @click="o.lod = l.key">{{ l.label }}</button>
+              <button v-for="l in LODS" :key="l.key" :class="{ on: o.lod === l.key }" :aria-pressed="(o.lod === l.key) ? 'true' : 'false'" :title="l.tip" @click="o.lod = l.key">{{ l.label }}</button>
             </div></div>
           <label class="md-chkrow" title="EXT_meshopt_compression：文件体积约为原来的 1/4；部分查看器（含较早版本 STK）不支持"><input v-model="o.meshopt" type="checkbox" />meshopt 压缩</label>
           <label class="md-chkrow" title="同名 .gmdf 附属文件（AGI 挂点 / 关节 / 太阳翼组；STK 读取时整体替代内嵌元数据）"><input v-model="o.gmdf" type="checkbox" />同时导出 .gmdf</label>
           <label class="md-chkrow" title="同名 .satsim.json（完整元数据：单位、本体轴、质量特性、部件、挂点）"><input v-model="o.satsim" type="checkbox" />同时导出 .satsim.json</label>
           <label class="md-chkrow" :class="{ dim: !hasCom }" :title="hasCom ? '平移模型使质心与导出模型原点重合（平移量记入 frame.t_model2body）' : '无质量特性'"><input v-model="o.originAtCom" type="checkbox" :disabled="!hasCom" />原点移到质心</label>
           <div class="md-acts">
-            <button class="lb-mini primary ex-go" :disabled="!canGlb" :title="exportTip" @click="doExport"><Icon name="download" :size="13" />{{ busy === 'glb' ? '导出中…' : '导出…' }}</button>
+            <button class="lb-mini primary ex-go" :disabled="!canGlb" :title="exportTip" @click="doExport"><Icon name="file-export" :size="12" />{{ busy === 'glb' ? '导出中…' : '导出…' }}</button>
           </div>
           <div v-if="err" class="md-state bad" :title="err"><Icon name="alert-triangle" :size="12" /><span class="ex-t">{{ err }}</span></div>
           <div v-if="res" class="md-kvs ex-res">
@@ -194,13 +197,13 @@ const STK_TIP = 'AGI 软件许可协议（SLA）§2(k)、§2.3(d)：STK 随附�
           </div>
           <div class="srow"><label title="前 / 侧 / 顶正交三视图 + 透视，同一比例尺，挂点引线与名称、本体轴、比例尺">三视图</label>
             <span class="ex-fill"></span>
-            <button class="lb-mini" :disabled="!!busy || !ready || !wb.currentRoot()" @click="exportThreeView"><Icon name="grid-3x3" :size="12" />导出…</button>
+            <button class="lb-mini" :disabled="!!busy || !ready || !wb.currentRoot()" @click="exportThreeView"><Icon name="grid-2x2" :size="12" />导出…</button>
           </div>
           <div class="srow"><label title="按当前视角与画质重新渲染一帧（含叠加层）">视图</label>
             <select v-model="shotSize" class="ci ex-sz"><option v-for="s in SHOT_SIZES" :key="s.key" :value="s.key" data-i18n-skip>{{ s.w }} × {{ s.h }}</option></select>
             <div class="lbu-seg ex-bg">
-              <button :class="{ on: shotBg === 'bg' }" title="带背景" @click="shotBg = 'bg'">背景</button>
-              <button :class="{ on: shotBg === 'clear' }" title="透明背景" @click="shotBg = 'clear'"><span data-i18n-skip>{{ langNow === 'en' ? 'Transparent' : '透明' }}</span></button>
+              <button :class="{ on: shotBg === 'bg' }" :aria-pressed="(shotBg === 'bg') ? 'true' : 'false'" title="带背景" @click="shotBg = 'bg'">背景</button>
+              <button :class="{ on: shotBg === 'clear' }" :aria-pressed="(shotBg === 'clear') ? 'true' : 'false'" title="透明背景" @click="shotBg = 'clear'"><span data-i18n-skip>{{ langNow === 'en' ? 'Transparent' : '透明' }}</span></button>
             </div>
             <button class="lb-mini" :disabled="!!busy || !ready" @click="exportShot"><Icon name="image" :size="12" />导出…</button>
           </div>
@@ -227,6 +230,5 @@ const STK_TIP = 'AGI 软件许可协议（SLA）§2(k)、§2.3(d)：STK 随附�
 .ex-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ex-sz { flex: none !important; width: 110px; min-width: 0 !important; }
 .ex-fill { flex: 1; }
-.ex-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ex-spin .7s linear infinite; }
-@keyframes ex-spin { to { transform: rotate(360deg); } }
+.ex-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

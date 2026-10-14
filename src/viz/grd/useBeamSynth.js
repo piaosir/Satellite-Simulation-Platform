@@ -14,6 +14,8 @@
 //   此后本组任何改动（波束 / 设置 / 组名 / 编号）150 ms 合帧后静默 updateAnalyticAntenna 就地同步（拖拽中不同步、松手补一次）。
 //   草图轮廓 = 当前星位下 θ3/2 锥与 WGS-84 的精确交线（coneFootprint），不是 az/el 平面椭圆。
 import { ref, reactive, computed, watch, onScopeDispose, getCurrentScope } from 'vue'
+import { guardedPersist } from '../../shared/persistGuard.js'
+import { reportPartial } from '../../shared/reportError.js'
 import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, snapTangentTrue, colorFreqPlan, freqPlanNodesTrue, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd, pamLobeSplit, shapedStations, stationKey } from './synth.js'
 import { dirToAzEl, azElGround, gridDir } from './coverage.js'
 import { solveStk, syncModel, freshModel, STK_MODEL_DEFAULT, buildRecord, coneFootprint } from './gaussStk.js'
@@ -404,7 +406,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function persist() {
     if (_disposed || _loading || _drag) return   // _disposed：卸载时正 await 着的生成 / 同步收尾也不许回写
     commitActive()
-    try { localStorage.setItem(KEY, JSON.stringify({ v: 2, activeGroupId: activeGroupId.value, groups: groups.value.map(serializeGroup) })) } catch { /* ignore */ }
+    guardedPersist(KEY, '波束组', () => localStorage.setItem(KEY, JSON.stringify({ v: 2, activeGroupId: activeGroupId.value, groups: groups.value.map(serializeGroup) })))
   }
   // 高斯组设置：模型经 syncModel 三驱动拉齐，宽度 = 模型 θ3，Auto 间距 = θ3。base = 起步模型（缺省 STK 出厂值）
   function stkSettingFrom(base, idx, nameHint) {
@@ -499,9 +501,11 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (Array.isArray(d.stOv)) p.stOv = d.stOv                                   // 站点修正随快照回滚（老快照没这两键 → 保持现状）
     if (Array.isArray(d.stAdd)) p.stAdd = d.stAdd
   }
-  function pushUndo() { if (!activeGroupId.value) return; const s = stackFor(activeGroupId.value); s.undo.push(_snap()); if (s.undo.length > 100) s.undo.shift(); s.redo.length = 0; _flags() }
+  // lastEditAt / lastUndoAt：最近一次压栈 / 撤销的时刻（performance.now）—— 主窗口 Ctrl+Z 在「组内撤销」与「场景撤销」之间按谁更近来分派
+  const lastEditAt = ref(0), lastUndoAt = ref(0)
+  function pushUndo() { if (!activeGroupId.value) return; const s = stackFor(activeGroupId.value); s.undo.push(_snap()); if (s.undo.length > 100) s.undo.shift(); s.redo.length = 0; lastEditAt.value = performance.now(); _flags() }
   function dropUndo() { const s = _stacks.get(activeGroupId.value); if (s) s.undo.pop(); _flags() }
-  function undo() { const s = _stacks.get(activeGroupId.value); if (!s || !s.undo.length) return; s.redo.push(_snap()); _apply(s.undo.pop()); _flags(); refresh() }
+  function undo() { const s = _stacks.get(activeGroupId.value); if (!s || !s.undo.length) return; s.redo.push(_snap()); _apply(s.undo.pop()); lastUndoAt.value = performance.now(); _flags(); refresh() }
   function redo() { const s = _stacks.get(activeGroupId.value); if (!s || !s.redo.length) return; s.undo.push(_snap()); _apply(s.redo.pop()); _flags(); refresh() }
 
   // ---- 组 CRUD ----
@@ -538,9 +542,11 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     _flags(); persist(); refresh()
     return g.id
   }
+  // 删组返回可还原的载荷 { g, idx, stack }（组对象本身 + 原位置 + 它的组内撤销栈），交给主窗口的场景撤销；restoreGroup 原样放回
   function removeGroup(id) {
     const idx = groups.value.findIndex((g) => g.id === id)
-    if (idx < 0) return
+    if (idx < 0) return null
+    const payload = { g: groups.value[idx], idx, stack: _stacks.get(id) || null }
     _stacks.delete(id)
     const wasActive = id === activeGroupId.value
     groups.value.splice(idx, 1)
@@ -552,6 +558,20 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     }
     _flags(); persist(); refresh()
     scheduleAutoSync()                             // 后面各组的整星编号前移 → 已生成的高斯组天线波束名跟着改
+    return payload
+  }
+  function restoreGroup(payload) {
+    if (!payload || !payload.g || groups.value.some((x) => x.id === payload.g.id)) return false
+    const i = Math.max(0, Math.min(groups.value.length, payload.idx | 0))
+    groups.value.splice(i, 0, payload.g)
+    if (payload.stack) _stacks.set(payload.g.id, payload.stack)
+    activeGroupId.value = payload.g.id
+    satFolder.value = payload.g.satFolder
+    hydrate(payload.g)
+    placing.value = false; adjusting.value = false; deleting.value = false
+    _flags(); persist(); refresh()
+    scheduleAutoSync()
+    return true
   }
   function renameGroup(id, name) {
     const g = groups.value.find((x) => x.id === id); if (!g) return
@@ -629,7 +649,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const sid = id || activeSettingId.value
     const s = settings.value.find((x) => x.id === sid); if (!s) return
     const hit = beams.value.filter((b) => b.settingId === sid)
-    if (!hit.length) { appAlert('该设置下还没有放置任何波束'); return }
+    if (!hit.length) { appAlert('该设置下暂无波束。'); return }
     pushUndo()
     for (const b of hit) { b.thX = s.thX; b.thY = s.thY; b.rot = s.rot || 0; b._ring = null }
     status.value = `已将「${s.name}」的宽度 ${s.thX}×${s.thY}° 应用至 ${hit.length} 个波束`
@@ -698,7 +718,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       return
     }
     if (mode.value !== 'gauss' && mode.value !== 'stk' && mode.value !== 'pam') return
-    if ((mode.value === 'gauss' || mode.value === 'stk') && !curSetting.value) { appAlert('请先添加波束设置'); return }
+    if ((mode.value === 'gauss' || mode.value === 'stk') && !curSetting.value) { appAlert('暂无波束设置。'); return }
     const aw = activeWidth()
     const s = snapGround(+ll.lon.toFixed(4), +ll.lat.toFixed(4), null, null)
     pushUndo()
@@ -926,7 +946,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!Array.isArray(p.stAdd)) p.stAdd = []
     pushUndo()
     p.stAdd.push({ id: newId('sa'), az: +ae.az.toFixed(4), el: +ae.el.toFixed(4) })
-    status.value = `已加站 ${ll.lon.toFixed(2)}°E, ${ll.lat.toFixed(2)}°N（Contour；可框选后改类型/目标）`
+    status.value = `已添加站点 ${ll.lon.toFixed(2)}°E, ${ll.lat.toFixed(2)}°N（Contour；可框选后改类型/目标）`
     refresh()
   }
   // 框选模式开关。★ 模式与选区分家：退出框选【保留】已选中的站——退出后地图恢复左键平移，
@@ -948,12 +968,13 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     stEditOn.value = false; adjusting.value = false; deleting.value = false
     stPick.value = true
     placing.value = true
-    status.value = '在地图上点击添加站点（可连续；再点「加站」退出）'
+    status.value = '在地图上点击添加站点（可连续；再点「添加站点」退出）'
   }
   function dragBeam(vi, ll, phase) {
     if (phase === 'end') { _drag = false; persist(); if (_autoPending) { _autoPending = false; scheduleAutoSync(0) } return }   // 拖拽中攒下的高斯组同步：松手补一次
     const b = beams.value[vi]
     if (!b || !ll) return
+    if (phase === 'start') pushUndo()   // 图上拖动波束中心也进组内撤销栈（Ctrl+Z 可退回）
     _drag = true
     const s = snapGround(+ll.lon.toFixed(4), +ll.lat.toFixed(4), b, 0.22)
     b.lon = s.lon; b.lat = s.lat
@@ -963,12 +984,12 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function clearBeams() { if (!beams.value.length) return; pushUndo(); beams.value = []; refresh() }
   function hexFill() {
     const pg = polysOf().find((x) => x.id === p.polyId && x.pts && x.pts.length >= 3)
-    if (!pg) { appAlert('请先在下拉框中选择 Polygon（需 ≥3 顶点，可在 Polygon 面板绘制）'); return }
+    if (!pg) { appAlert('未选择 Polygon。'); return }
     const node = satNode()
-    if (!node) { appAlert('请先选择卫星'); return }
+    if (!node) { appAlert('未选择卫星。'); return }
     const pos = livePos(node)
     if (!pos) { appAlert('关联卫星当前无星历'); return }            // 选了星、只是此刻解不出星位（与生成同一句）
-    if ((mode.value === 'gauss' || mode.value === 'stk') && !curSetting.value) { appAlert('请先添加波束设置'); return }
+    if ((mode.value === 'gauss' || mode.value === 'stk') && !curSetting.value) { appAlert('暂无波束设置。'); return }
     // 间距：多馈源 / 高斯组＝当前设置的波束间距（Auto=波束宽）；相控阵＝Butler 波束间距（λ/Nd）
     const sp = mode.value === 'pam'
       ? (pam.value && pam.value.ok ? Math.max(pam.value.beamSpacingXDeg || 0, pam.value.beamSpacingYDeg || 0) : NaN)
@@ -994,7 +1015,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   })
   function assignFreqPlan() {
     const node = satNode()
-    if (!node) { appAlert('请先选择卫星'); return }
+    if (!node) { appAlert('未选择卫星。'); return }
     const pos = livePos(node)
     if (!pos) { appAlert('关联卫星当前无星历'); return }
     const valid = beams.value.filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat) && b.thX > 0 && b.thY > 0)
@@ -1012,7 +1033,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     // ★ 用可达间距 reuseDist(k) 而不是 √k：10 色这类非复用因子取不到 √k（最远 = √7，与七色同档），
     //   照 √k 报就成了虚标；顺带把这句话挑明，省得有人以为加到十色就更开。
     const D = reuseDist(k)
-    const cap = Math.abs(D - Math.sqrt(k)) > 0.01 ? `（${k} 色不是复用因子，最远只到这一档，与 ${Math.round(D * D)} 色同水平）` : ''
+    const cap = Math.abs(D - Math.sqrt(k)) > 0.01 ? `（${k} 色不是复用因子，最远仅到该档，与 ${Math.round(D * D)} 色同水平）` : ''
     status.value = r.conflicts
       ? `频率配色：${k} 色下仍有 ${r.conflicts} 对同色波束间距不足 ${D.toFixed(2)}× 波束间距 —— 该布局 ${k} 色排不开，可增加颜色数或加大波束间距`
       : `频率配色完成：${valid.length} 个波束 · ${k} 色，同色最小间距 ≥ ${D.toFixed(2)}× 波束间距${cap}`
@@ -1147,7 +1168,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const name = String(g.name || '').trim() || defName(g.mode)
     if (g.mode === 'stk') return generateStk(g, node, pos, name, silent)
     const clash = node.antennas.find((a) => a.name === name && !a.synth)
-    if (clash) { appAlert(`卫星「${node.satName}」下已有同名天线「${name}」且不是合成天线，请换一个组名`); return null }
+    if (clash) { appAlert(`卫星「${node.satName}」下已有同名天线「${name}」且不是合成天线`); return null }
     // 组名改过、且旧名的合成天线还在 → 先清理，避免留下孤儿天线
     if (g._genName && g._genName !== name) {
       const orphan = node.antennas.find((a) => a.name === g._genName && a.synth)
@@ -1156,7 +1177,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     let key = null
     if (g.mode === 'gauss') {
       const valid = (g.beams || []).filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat))
-      if (!valid.length) { appAlert(`组「${name}」还没有波束：开启「地图放置」，或用蜂窝布满 / 批量表格添加`); return null }
+      if (!valid.length) { appAlert(`组「${name}」暂无波束。`); return null }
       // 每波束按【其所属波束设置】的反射面算：波束宽 θ3、峰值 = 该设置反射面口径方向性（多种波束宽各自增益正确）。
       const setById = new Map((g.settings || []).map((s) => [s.id, s]))
       const reflCache = new Map()
@@ -1184,10 +1205,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       }
     } else if (g.mode === 'shaped') {
       const pgs = polysForP(g.p)
-      if (!pgs.length) { appAlert(`赋形组「${name}」请先勾选至少一个 Polygon（需 ≥3 顶点）`); return null }
+      if (!pgs.length) { appAlert(`赋形组「${name}」未选择 Polygon。`); return null }
       const sf = g.p.simSame !== false ? Number(g.p.fGHz) : Number(g.p.fSim)
       const t3 = shapedTheta3db(sf, Number(g.p.antD), Number(g.p.taper))
-      if (!(t3 > 0)) { appAlert('成分波束宽度无效：请检查（仿真）频率与口径'); return null }
+      if (!(t3 > 0)) { appAlert('成分波束宽度无效。'); return null }
       // 覆盖区 = Polygon 并集（无覆盖值）；增益恒由口径物理算出（∫P̂dΩ 定标）。
       // 塑形 = 站点栅（SATSOFT 原生：类型/目标偏置）；峰值点已按用户拍板从赋形反射面档移除（SATSOFT 无此物），旧档 hotspots 不再参与。
       const polysPts = pgs.map((pg) => pg.pts.map((q) => [q[0], q[1]]))
@@ -1219,12 +1240,12 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const gp = g.p
       const pamCfg = { Nx: Number(gp.pamNx), Ny: Number(gp.pamNy), dxWl: Number(gp.pamDx), dyWl: Number(gp.pamDy), R: Number(gp.pamR), tri: gp.pamTri === true, elem: gp.pamElem !== false, eff: Number(gp.pamEff), fGHz: Number(gp.pamFGHz) }
       const sol = solvePam(pamCfg)
-      if (!sol.ok) { appAlert('相控阵参数无效：请检查阵元数 / 间距 / 频率'); return null }
+      if (!sol.ok) { appAlert('相控阵参数无效。'); return null }
       if (gp.pamCover === 'shaped') {
         // 相控阵赋形（SATSOFT §6.5 Butler beamlet + §8/§9/§10 minimax）：Polygon 覆盖区（无覆盖值，增益物理算出）
         // → Butler beamlet 合成赋形等值线；塑形＝站点栅（与反射面赋形同款）；产测控上注 BFN 的星上激励指令。
         const pgs = polysForP(gp)
-        if (!pgs.length) { appAlert(`相控阵赋形「${name}」请先在「覆盖区域」勾选至少一个 Polygon（需 ≥3 顶点）`); return null }
+        if (!pgs.length) { appAlert(`相控阵赋形「${name}」未选择 Polygon。`); return null }
         const expDeg = Number(gp.expandDeg) > 0 ? Number(gp.expandDeg) : 0
         const r = buildPamShapedGrd({
           satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm,
@@ -1246,7 +1267,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       } else {
         // 相控阵点波束群（SATSOFT §6.5）：每波束 → (az,el) 电扫指向，buildPamGrd 逐波束写 pamField 场（sinc 旁瓣/栅瓣/扫描损失内建）
         const valid = (g.beams || []).filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat))
-        if (!valid.length) { appAlert(`组「${name}」还没有波束：开启「地图放置」，或用蜂窝布满 / 批量表格添加`); return null }
+        if (!valid.length) { appAlert(`组「${name}」暂无波束。`); return null }
         const beamsAe = valid.map((b) => { const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: ae.az, el: ae.el } })
         const text = buildPamGrd({ satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, pam: pamCfg, beams: beamsAe })
         key = await grd.importSynthGrd(node.folder, name, text, { ctype: 'rel', levels: [-3] })
@@ -1268,8 +1289,23 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         }
       }
     }
+    if (key) g._genSig = genSigOf(g)   // 记下生成那一刻的输入签名 → genStale 据此判「输入已变」
     return key
   }
+  // 多馈源 / 赋形 / 相控阵组：生成那一刻的输入签名（参数 + 波束设置 + 波束 + 勾选的覆盖 Polygon 几何）。
+  // 高斯组（stk）另有 stkSig + 自动同步，不走这条。
+  function genSigOf(g) {
+    let pg = []
+    try { if (g.mode === 'shaped' || g.mode === 'pam') pg = polysForP(g.p).map((x) => [x.id, x.pts]) } catch { /* ignore */ }
+    return hashSig(JSON.stringify([g.satFolder, String(g.name || '').trim(), g.mode, g.p || {}, (g.settings || []).map((s) => bareSetting(s, g.mode)), bare(g.beams || []), pg]))
+  }
+  // 当前组的天线还在树上、但组参数已改过而没再「生成 / 更新此组」→ 输入已变
+  const genStale = computed(() => {
+    const g = curGroup.value
+    if (!g || g.mode === 'stk' || !g._genName || !g._genSig) return false
+    if (!genAntExists.value) return false   // 天线已被删 → 按钮本来就是「生成」，不报过期
+    return g._genSig !== genSigOf(g)
+  })
 
   // ---- 高斯组（stk）生成 / 自动同步 ----
   // 整星连续编号的起点：同星、排在 g 前面、有放置波束的组的波束总数。★ 按【全部】这类组数，不看「常显 / 激活」——
@@ -1301,7 +1337,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   async function generateStk(g, node, pos, name, silent) {
     const say = (m) => { if (!silent) appAlert(m); else syncFail(g, m) }   // 静默同步失败 → 激活组的状态行（不弹窗）
     const gs = Array.isArray(g.settings) ? g.settings : []
-    if (!gs.length) { say('请先添加波束设置'); return null }
+    if (!gs.length) { say('暂无波束设置。'); return null }
     const sig = stkSig(g)                                            // 先取签名（await 期间再有改动 → 下一轮接着同步）
     const byId = new Map(gs.map((s) => [s.id, s]))
     const fb = byId.get(g.activeSettingId) || gs[0]
@@ -1313,7 +1349,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat)
       recBeams.push({ name: String(off + i + 1), az: ae.az, el: ae.el, model: stkModelIdOf(g, b, byId, fb) })
     })
-    if (!recBeams.length) { say(`组「${name}」还没有波束：开启「地图放置」，或用蜂窝布满 / 批量表格添加`); return null }
+    if (!recBeams.length) { say(`组「${name}」暂无波束。`); return null }
     const record = buildRecord({
       sat: { name: node.satName, lon: pos.lon, lat: pos.lat || 0, altKm: pos.altKm },
       models: gs.map(stkModelOf), beams: recBeams, owner: { kind: 'beamsynth', groupId: g.id }
@@ -1329,7 +1365,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     }
     // 另一个在世的组认它为自己的产物（_genName 指着它）→ 不许动
     const heldByOther = (ow, nm) => !!ow && ow !== g.id && groups.value.some((x) => x.id === ow && x._genName === nm)
-    const clashMsg = `卫星「${node.satName}」下已有同名天线「${name}」且不是合成天线，请换一个组名`
+    const clashMsg = `卫星「${node.satName}」下已有同名天线「${name}」且不是合成天线`
     let key = null, updated = false
     let selFlag = true, actFlag = !silent                            // 首次生成：勾选 + 聚焦（同多馈源）；替换时沿用原天线的勾选 / 聚焦态
     const keepFlags = (nm) => { selFlag = !!grd.isSelected(folder, nm); actFlag = !!grd.active && grd.active.value === grd.keyOf(folder, nm) }
@@ -1505,7 +1541,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   // 生成激活组（面板底部按钮）
   async function generate() {
     commitActive()
-    if (!curGroup.value) { appAlert('请先新建波束组'); return null }
+    if (!curGroup.value) { appAlert('暂无波束组。'); return null }
     if (_autoT) { clearTimeout(_autoT); _autoT = 0 }                 // 手动生成盖过排队中的自动同步（跑完再补排其它组）
     if (_autoRun) { try { await _autoRun } catch { /* ignore */ } }
     try { const k = await generateGroup(curGroup.value); if (k) persist(); return k } catch (e) { console.error('波束合成失败', e); appAlert('波束合成失败：' + ((e && e.message) || e)); return null } finally { scheduleAutoSync() }
@@ -1514,11 +1550,13 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   async function generateAll() {
     commitActive()
     const gs = groups.value.filter((g) => g.satFolder === satFolder.value)
-    if (!gs.length) { appAlert('当前卫星下还没有波束组'); return { ok: 0, total: 0 } }
+    if (!gs.length) { appAlert('当前卫星暂无波束组。'); return { ok: 0, total: 0 } }
     if (_autoT) { clearTimeout(_autoT); _autoT = 0 }                 // 同 generate：先让在跑的自动同步收尾，免得同一组两路并发
     if (_autoRun) { try { await _autoRun } catch { /* ignore */ } }
     let ok = 0
-    for (const g of gs) { try { const k = await generateGroup(g); if (k) ok++ } catch (e) { console.error('生成失败', g.name, e) } }
+    const failed = []
+    for (const g of gs) { try { const k = await generateGroup(g); if (k) ok++ } catch (e) { failed.push({ name: g.name, error: e }) } }
+    if (failed.length) reportPartial('全部生成', ok, failed)
     if (ok) persist()   // _genName 等在 generateGroup 里写到 group 对象上，需落盘（组对象不在深监听里）
     status.value = `全部生成完成：${ok}/${gs.length} 个组已生成天线`
     return { ok, total: gs.length }
@@ -1610,9 +1648,9 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     stEditOn, stPick, stSel, stInfo, stSelOne, stSelType, stBoxSelect, stClickSelect, clearStSel, selectAllSt, invertStSel, applyStType, applyStGoal, resetStations, toggleStEdit, toggleStPick, exitStEdit,
     addGroup, removeGroup, renameGroup, duplicateGroup, toggleGroupVisible, selectGroup, setSat,
     addSetting, removeSetting, renameSetting, selectSetting, applySettingToBeams, setStkModel,
-    generate, generateGroup, generateAll, genAntExists,
+    generate, generateGroup, generateAll, genAntExists, genStale,
     fcStats, assignFreqPlan, clearFreqPlan, fcCss,
-    canUndo, canRedo, pushUndo, dropUndo, undo, redo,
+    canUndo, canRedo, pushUndo, dropUndo, undo, redo, lastEditAt, lastUndoAt, restoreGroup,
     tblAddRow, tblUpdate, tblPasteAppend, tblPasteBlock
   }
 }

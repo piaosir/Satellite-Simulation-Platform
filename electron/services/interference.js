@@ -107,7 +107,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       // ---- 自定义星历组：记录就在 custom.json 里，不经 omm，也无所谓「载入」----
       if (k.kind === 'custom') {
         const recs = (customSats && customSats.groupRecords) ? customSats.groupRecords(k.id) : null;
-        if (!recs || !recs.length) return { sats: [], error: '自定义星历组已不存在（可能在文件管理里被删了）' };
+        if (!recs || !recs.length) return { sats: [], error: '自定义星历组已不存在（可能已在文件管理中删除）' };
         const sats = recsToSats(recs);
         if (!sats.length) return { sats: [], error: '自定义星历组内没有可用的卫星（记录全部 SGP4 校验失败）' };
         return applyLimit(sats, spec.limit);
@@ -116,7 +116,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       // ---- 我的卫星组：组里只有 NORAD 号，从 active 全量编目 + 自定义星历解析回 satrec ----
       if (k.kind === 'satgroup') {
         const ids = (spec.satIds || []).map(String).filter(Boolean);
-        if (!ids.length) return { sats: [], error: '卫星组是空的（在星座页往组里加几颗星）' };
+        if (!ids.length) return { sats: [], error: '卫星组为空。' };
         const pool = new Map();
         for (const s of ((omm && omm.peek) ? (omm.peek('active') || []) : [])) {
           const n = s.satrec && s.satrec.satnum;
@@ -132,7 +132,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
           if (rec) { const c = recsToSats([rec]); if (c.length) { sats.push(c[0]); continue; } }
           missing++;   // 编目里没有、自定义星历里也没有：退役星或编目号写错
         }
-        if (!sats.length) return { sats: [], error: `卫星组里 ${ids.length} 颗星在全量编目与自定义星历里都找不到（可能已退役）` };
+        if (!sats.length) return { sats: [], error: `卫星组中 ${ids.length} 颗星在全量编目与自定义星历中均未找到（可能已退役）` };
         const out = applyLimit(sats, spec.limit);
         if (missing) out.missing = missing;
         return out;
@@ -156,7 +156,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
     // 由渲染端按 resolveScenarioEpoch 透传，否则合成星在地固系的指向与星座3D 页对不上。
     if (src === 'elements') {
       const list = spec.sats || [];
-      if (!list.length) return { sats: [], error: '自定义星座是空的（参数生成不出卫星，去星座页看一眼 Walker 参数）' };
+      if (!list.length) return { sats: [], error: '自定义星座为空。' };
       const out = [];
       for (let i = 0; i < list.length; i++) {
         const s = list[i] || {};
@@ -536,7 +536,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       if (s.missing) resolveWarnings.push(`干扰星座「${g.name || g.id}」的卫星组中有 ${s.missing} 颗未找到星历，已跳过，聚合干扰因此偏低`);
       if (s.samplingFactor > 1.001) {
         // 干扰源抽样是会算错的那一头：少算了 (K−1)/K 的干扰源，C/I 系统性偏乐观
-        resolveWarnings.push(`⚠ 干扰星座「${g.name || g.id}」从 ${s.total} 颗中抽了 ${s.sats.length} 颗（1/${s.samplingFactor.toFixed(1)}）——聚合干扰因此偏低约 ${(10 * Math.log10(s.samplingFactor)).toFixed(1)} dB，C/I 偏乐观；如需完整结果请将「抽样上限」留空`);
+        resolveWarnings.push(`⚠ 干扰星座「${g.name || g.id}」从 ${s.total} 颗中抽了 ${s.sats.length} 颗（1/${s.samplingFactor.toFixed(1)}）——聚合干扰因此偏低约 ${(10 * Math.log10(s.samplingFactor)).toFixed(1)} dB，C/I 偏乐观`);
       }
       // 抽样倍率要一路带进引擎：不止在这里说一句，每个分位数上都要留下 sampled 标记
       groups.push({ ...g, sats: s.sats, samplingFactor: s.samplingFactor || 1 });

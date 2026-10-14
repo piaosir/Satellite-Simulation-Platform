@@ -9,9 +9,13 @@
 // 设计页（2026-10-06 文档标签条）：功能区下方一条文档标签条（design/DocTabs.vue），设计页显示什么只由激活签决定；
 // Ctrl+Tab / Ctrl+Shift+Tab 按签顺序切换、Ctrl+W 关闭激活签（捕获阶段统一处理，非设计页空操作）。
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, provide, defineAsyncComponent, nextTick } from 'vue'
+import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
+import { useNotice } from '../shared/useNotice.js'
 import { alertMsg, closeAlert } from '../stores/alert.js'
 import { theme, setTheme } from '../stores/theme.js'
 import { byLang, curLang } from '../shared/i18n/lang.js'
@@ -44,16 +48,15 @@ const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == n
 const lsSet = (k, v) => { try { localStorage.setItem(k, v) } catch { /* 便利数据 */ } }
 
 // ============ 窗内提示（唯一出口）============
-const notice = ref(''), hintText = ref('')
-let _nt = null, _ht = null
-function toast(msg) { notice.value = msg; clearTimeout(_nt); _nt = setTimeout(() => (notice.value = ''), 4000) }
+// 通知条走 shared/useNotice（普通 4 s · 导出带「打开 · 在文件夹中显示」· 失败常驻），同时登记为本窗的
+// reportError / 全局异常出口；导出页、JSON 节经 inject('notice') 发导出回执
+const N = useNotice()
+provide('notice', N)
+const toast = N.toast
+const hintText = ref('')
+let _ht = null
 function hint(msg) { hintText.value = msg; clearTimeout(_ht); _ht = setTimeout(() => (hintText.value = ''), 8000) }
 
-// ============ 应用内确认（替代 window.confirm）============
-const confirmDlg = reactive({ open: false, msg: '' })
-let _cr = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((r) => { _cr = r }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _cr; _cr = null; if (r) r(ok) }
 
 const wb = createWorkbench({ toast, hint, askConfirm })
 provide('wb', wb)
@@ -67,11 +70,11 @@ provide('sat', sat)
 // 左栏快速设置（驱动参数 / 主要参数）+ 组件库，中间视口，右栏结构树 + 属性（选根节点 = 模型级属性：质量特性、挂点、关节、太阳翼组…）。
 const TABS = [
   { key: 'lib', order: 10, label: '库', icon: 'package', tip: '库：模型（内置 / 云端 / 本机 / STK / 参数化 / 装配）与组件（全部组件与常用型号）；双击在设计页打开（模板打开为模板签，编辑时自动创建副本；组件以此为根件新建装配件）', comp: defineAsyncComponent(() => import('./LibTab.vue')) },
-  { key: 'import', order: 20, label: '导入', icon: 'import', tip: '导入 glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP，或从本机 STK 目录导入', comp: defineAsyncComponent(() => import('./ImportTab.vue')) },
+  { key: 'import', order: 20, label: '导入', icon: 'file-import', tip: '导入 glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP，或从本机 STK 目录导入', comp: defineAsyncComponent(() => import('./ImportTab.vue')) },
   { key: 'design', order: 30, label: '设计', icon: 'boxes', tip: '设计：快速设置驱动参数，或在结构树与属性面板中逐件编辑；选中根节点查看模型级属性', comp: defineAsyncComponent(() => import('./design/DesignSide.vue')) },
   { key: 'sat', order: 50, label: '卫星', icon: 'satellite', tip: '为卫星绑定模型、姿态律与挂点（天线安装位置：位置 / 视轴 / 视场 / 万向节 / 天线引用）', comp: defineAsyncComponent(() => import('./SatTab.vue')) },
   { key: 'ana', order: 60, label: '分析', icon: 'chart-line', tip: '当前卫星与选中挂点：本体遮挡掩模、万向节可达性、太阳翼功率、星侧太阳侵入', comp: defineAsyncComponent(() => import('./AnalysisTab.vue')) },
-  { key: 'export', order: 70, label: '导出', icon: 'file-down', tip: '导出 glb（含 .gmdf / .satsim.json）、缩略图与三视图', comp: defineAsyncComponent(() => import('./ExportTab.vue')) }
+  { key: 'export', order: 70, label: '导出', icon: 'file-export', tip: '导出 glb（含 .gmdf / .satsim.json）、缩略图与三视图', comp: defineAsyncComponent(() => import('./ExportTab.vue')) }
 ].sort((a, b) => a.order - b.order)
 const TAB_KEYS = TABS.map((t) => t.key)
 // 旧页签键（URL ?tab= / 本机记住的 / 3D 页「在工作台中打开」）：模型 / 生成 / 装配 → 设计页（显示哪份文档由激活签 / 跳转目标定）
@@ -328,7 +331,7 @@ function onDocKey(e) {
   e.preventDefault()
   e.stopPropagation()
   if (e.repeat && isW) return
-  if (st.tab !== 'design' || confirmDlg.open) return
+  if (st.tab !== 'design' || confirmState.open) return
   if (asmOn.value && (asm.ui.dragging || (asm.ui.mode !== 'idle' && asm.ui.mode !== 'hover'))) return
   const a = document.activeElement
   if (a && a !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) a.blur()
@@ -462,7 +465,7 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
     <div ref="lbrEl" class="lbr">
       <div class="lbr-g">
         <div class="lbr-items">
-          <button v-for="t in TABS" :key="t.key" class="lbr-big" :class="{ on: st.tab === t.key }" :title="t.tip" @click="st.tab = t.key">
+          <button v-for="t in TABS" :key="t.key" class="lbr-big" :class="{ on: st.tab === t.key }" :aria-pressed="(st.tab === t.key) ? 'true' : 'false'" :title="t.tip" @click="st.tab = t.key">
             <Icon :name="t.icon" :size="16" />{{ t.label }}
           </button>
         </div>
@@ -496,16 +499,16 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
               </label>
               <label><span>姿态</span>
                 <span class="lbu-seg">
-                  <button data-act="pose-zero" :class="{ on: !asm.ui.posePreview }" title="零位：按关节零位编辑（接口 / 面安装 / 拾取 / 干涉检查基于同一几何）" @click="asm.setPosePreview(false)">零位</button>
-                  <button data-act="pose-init" :class="{ on: asm.ui.posePreview }" title="初值：按关节初值姿态预览（预览时不可编辑）" @click="asm.setPosePreview(true)">初值</button>
+                  <button data-act="pose-zero" :class="{ on: !asm.ui.posePreview }" :aria-pressed="(!asm.ui.posePreview) ? 'true' : 'false'" title="零位：按关节零位编辑（接口 / 面安装 / 拾取 / 干涉检查基于同一几何）" @click="asm.setPosePreview(false)">零位</button>
+                  <button data-act="pose-init" :class="{ on: asm.ui.posePreview }" :aria-pressed="asm.ui.posePreview ? 'true' : 'false'" title="初值：按关节初值姿态预览（预览时不可编辑）" @click="asm.setPosePreview(true)">初值</button>
                 </span>
               </label>
             </template>
             <template v-else>
               <label><span>光照</span>
                 <span class="lbu-seg">
-                  <button :class="{ on: light === 'studio' }" title="影棚：环境反射 + 主光 / 补光 / 轮廓光 + 软阴影" @click="light = 'studio'">影棚</button>
-                  <button :class="{ on: light === 'sun' }" title="太阳：单一硬平行光 + 地球反照，暗面近黑" @click="light = 'sun'">太阳</button>
+                  <button :class="{ on: light === 'studio' }" :aria-pressed="(light === 'studio') ? 'true' : 'false'" title="影棚：环境反射 + 主光 / 补光 / 轮廓光 + 软阴影" @click="light = 'studio'">影棚</button>
+                  <button :class="{ on: light === 'sun' }" :aria-pressed="(light === 'sun') ? 'true' : 'false'" title="太阳：单一硬平行光 + 地球反照，暗面近黑" @click="light = 'sun'">太阳</button>
                 </span>
               </label>
               <label><span>画质</span>
@@ -516,8 +519,8 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
             </template>
           </div>
           <div class="md-ovgrid">
-            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
-              <Icon :name="o.icon" :size="13" /><span>{{ ovLabel(o) }}</span>
+            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :aria-pressed="(ovOn(o.key)) ? 'true' : 'false'" :title="ovTip(o)" @click="ovToggle(o.key)">
+              <Icon :name="o.icon" :size="12" /><span>{{ ovLabel(o) }}</span>
             </button>
           </div>
         </div>
@@ -525,7 +528,7 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
       </div>
       <div v-if="ribbonNarrow && !emptyOn" class="lbr-g" data-grp="more">
         <div class="lbr-items">
-          <button class="lbr-big" data-act="ribbon-more" :class="{ on: !!moreMenu }" title="视图 · 字号" @click="toggleMore">
+          <button class="lbr-big" data-act="ribbon-more" :class="{ on: !!moreMenu }" :aria-pressed="(!!moreMenu) ? 'true' : 'false'" title="视图 · 字号" @click="toggleMore">
             <Icon name="ellipsis" :size="16" />视图
           </button>
         </div>
@@ -537,27 +540,27 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
         <div class="lbr-items">
           <template v-if="!asmOn">
             <button class="lbr-big" data-act="import" :disabled="!api" title="选择模型文件导入（glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP）；也可直接拖入窗口" @click="pickAndImport">
-              <Icon name="folder-open" :size="16" />导入文件…
+              <Icon name="file-import" :size="16" />导入文件…
             </button>
             <button class="lbr-big" data-act="import-stk" :disabled="!api" title="从本机 STK 安装目录导入 glb（不可导出、不可分发）" @click="openStk">
               <Icon name="satellite" :size="16" />从 STK 导入…
             </button>
             <button class="lbr-big" data-act="export" :disabled="!canOpenExport" title="导出当前模型" @click="openExport">
-              <Icon name="download" :size="16" />导出…
+              <Icon name="file-export" :size="16" />导出…
             </button>
           </template>
           <template v-else>
             <div class="asm-rb-col">
               <button class="asm-tg" data-act="import" :disabled="!api" title="选择模型文件导入（glb / glTF / OBJ / STL / FBX / STEP / IGES / BREP）；也可直接拖入窗口" @click="pickAndImport">
-                <Icon name="folder-open" :size="13" /><span>导入文件…</span>
+                <Icon name="file-import" :size="12" /><span>导入文件…</span>
               </button>
               <button class="asm-tg" data-act="import-stk" :disabled="!api" title="从本机 STK 安装目录导入 glb（不可导出、不可分发）" @click="openStk">
-                <Icon name="satellite" :size="13" /><span>从 STK 导入…</span>
+                <Icon name="satellite" :size="12" /><span>从 STK 导入…</span>
               </button>
             </div>
             <div class="asm-rb-col">
               <button class="asm-tg" data-act="export" :disabled="!canOpenExport" title="导出当前装配件（未入库时先入库）" @click="openExport">
-                <Icon name="download" :size="13" /><span>导出…</span>
+                <Icon name="file-export" :size="12" /><span>导出…</span>
               </button>
             </div>
           </template>
@@ -567,13 +570,6 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
 
       <LbFontCtl v-if="!ribbonNarrow && !emptyOn" />
 
-      <div class="lbr-status">
-        <span v-if="st.busy" class="md-busy"><span class="md-spin"></span><span data-i18n-skip>{{ st.busy }}</span></span>
-        <span v-if="notice" class="lb-note" data-i18n-skip>{{ notice }}</span>
-        <span v-if="hintText" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span>{{ hintText }}</span></span>
-        <span v-if="cur.saveErr" class="lb-hint" :title="cur.saveErr"><Icon name="alert-triangle" :size="12" /> 未保存</span>
-        <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
-      </div>
     </div>
 
     <!-- 文档标签条（设计页；横跨三栏） -->
@@ -605,12 +601,12 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
           <div v-if="curSub" class="md-cap-s" data-i18n-skip>{{ curSub }}</div>
         </div>
         <div v-if="emptyOn" class="md-empty">未打开文档。</div>
-        <div v-else-if="!asmOn && !cur.meta && !cur.loading && !cur.error" class="md-empty">{{ cur.blank || '未选中模型。' }}</div>
+        <div v-else-if="!asmOn && !cur.meta && !cur.loading && !cur.error" class="md-empty">{{ cur.blank || '未选择模型。' }}</div>
         <div v-if="!asmOn && !emptyOn && cur.loading" class="md-load">
           <span class="md-spin"></span>
           <span v-if="dlPct != null" data-i18n-skip>{{ dlPct }}%</span>
         </div>
-        <div v-if="!asmOn && !emptyOn && cur.error && !cur.loading" class="md-err"><Icon name="alert-triangle" :size="13" /> <span>{{ cur.error }}</span></div>
+        <div v-if="!asmOn && !emptyOn && cur.error && !cur.loading" class="md-err"><Icon name="alert-triangle" :size="12" /> <span>{{ cur.error }}</span></div>
         <div v-if="cur.meta && !asmOn && !emptyOn" class="md-read">
           <span class="md-rk">三角形</span><span class="md-rv" data-i18n-skip>{{ fmtInt(rd.tris) }}</span>
           <template v-if="boxText"><span class="md-rs">·</span><span class="md-rk">包围盒</span><span class="md-rv" data-i18n-skip>{{ boxText }}</span><span class="md-ru">m</span></template>
@@ -626,8 +622,8 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
     </div>
 
     <Teleport to="body">
-      <div v-if="moreMenu" class="lb-ctx-mask" @mousedown="moreMenu = null" @contextmenu.prevent="moreMenu = null">
-        <div class="lb-ctx md-more" :style="{ left: moreMenu.x + 'px', top: moreMenu.y + 'px' }" @mousedown.stop>
+      <div v-if="moreMenu" class="lb-ctx-mask menu-mask" @mousedown="moreMenu = null" @contextmenu.prevent="moreMenu = null">
+        <div class="lb-ctx md-more menu" :style="{ left: moreMenu.x + 'px', top: moreMenu.y + 'px' }" @mousedown.stop>
           <div class="lbr-form">
             <label><span>视角</span>
               <select :value="view" @change="applyView($event.target.value)">
@@ -641,14 +637,14 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
             </label>
             <label><span>姿态</span>
               <span class="lbu-seg">
-                <button :class="{ on: !asm.ui.posePreview }" title="零位：按关节零位编辑" @click="asm.setPosePreview(false)">零位</button>
-                <button :class="{ on: asm.ui.posePreview }" title="初值：按关节初值姿态预览（预览时不可编辑）" @click="asm.setPosePreview(true)">初值</button>
+                <button :class="{ on: !asm.ui.posePreview }" :aria-pressed="(!asm.ui.posePreview) ? 'true' : 'false'" title="零位：按关节零位编辑" @click="asm.setPosePreview(false)">零位</button>
+                <button :class="{ on: asm.ui.posePreview }" :aria-pressed="asm.ui.posePreview ? 'true' : 'false'" title="初值：按关节初值姿态预览（预览时不可编辑）" @click="asm.setPosePreview(true)">初值</button>
               </span>
             </label>
           </div>
           <div class="md-ovgrid">
-            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :title="ovTip(o)" @click="ovToggle(o.key)">
-              <Icon :name="o.icon" :size="13" /><span>{{ ovLabel(o) }}</span>
+            <button v-for="o in ovsNow" :key="o.key" type="button" class="md-tg" :class="{ on: ovOn(o.key) }" :aria-pressed="(ovOn(o.key)) ? 'true' : 'false'" :title="ovTip(o)" @click="ovToggle(o.key)">
+              <Icon :name="o.icon" :size="12" /><span>{{ ovLabel(o) }}</span>
             </button>
           </div>
           <div class="md-more-font"><LbFontCtl /></div>
@@ -658,18 +654,14 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
 
     <NewMenu v-if="newMenu" :x="newMenu.x" :y="newMenu.y" @close="newMenu = null" />
 
-    <div v-if="dropOn" class="md-drop"><div class="md-drop-in"><Icon name="import" :size="30" /><span>导入</span></div></div>
+    <div v-if="dropOn" class="md-drop"><div class="md-drop-in"><Icon name="file-import" :size="30" /><span>导入</span></div></div>
 
-    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">{{ confirmDlg.msg }}</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
-          <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <WinStatusBar :n="N" :busy="st.busy || ''">
+      <span v-if="hintText" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span>{{ hintText }}</span></span>
+      <span v-if="cur.saveErr" class="lb-hint" :title="cur.saveErr"><Icon name="alert-triangle" :size="12" /> 未保存</span>
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
+    </WinStatusBar>
+    <ConfirmDialog />
     <div v-if="alertMsg" class="lb-mask" @click.self="closeAlert">
       <div class="lb-dlg">
         <div class="lb-dlg-hd">提示</div>
@@ -681,44 +673,9 @@ if (import.meta.env.DEV || q0.has('wbHarness')) window.__modelwb = { wb, sat, sa
 </template>
 
 <style scoped>
-/* —— 工作台外壳（.lb-* 一族）——
-   这套类是各工作台窗口共用的「壳」，但它们从来是各 App 在自己的 <style scoped> 里各写一份
-   （scoped 会给选择器缀上 data-v-，别的组件根本吃不到）。少了这一层，深色主题下按钮退回浏览器
-   默认样式——UA 给浅灰实底、字色继承 .lb-shell 的近白墨色，于是「白底白字」。
-   故照 SsaApp 的同名规则原样抄来（改动须与另几窗同步）。 */
-.lb-shell {
-  display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-}
-html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
-.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col / .lb-side / .lb-mini / .lb-dlg…）在 styles/lbworkbench.css，此处只留本窗的变体 */
 .lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-body { flex: 1; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
-.lb-col:last-child { border-right: none; }
-/* 栏宽不过渡：拖宽是逐帧跟手的，过渡只会让栏宽落后指针一截 */
-.lb-side { flex: none; position: relative; }
-.lb-side.resizing { transition: none; user-select: none; }
-.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-side.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
-.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-build { flex: 1; min-width: 460px; }
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 10px 0; }
-/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); white-space: pre-wrap; }
 
 /* —— 本窗口专有 —— */
 .md-side-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; min-height: 0; }
@@ -741,19 +698,17 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
   background: color-mix(in srgb, var(--bg) 85%, transparent); border: 1px solid var(--border); border-radius: var(--r-card); font-variant-numeric: tabular-nums; pointer-events: none; }
 .md-err { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: 70%; display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: var(--fs-3); color: var(--danger);
   background: color-mix(in srgb, var(--bg) 88%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border)); border-radius: var(--r-card); }
-.md-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: md-spin .7s linear infinite; flex: none; }
-@keyframes md-spin { to { transform: rotate(360deg); } }
+.md-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; flex: none; }
 .md-stage.sun .md-cap-t { color: #e9edf3; text-shadow: 0 0 6px #000, 0 0 2px #000; }
 .md-stage.sun .md-cap-s, .md-stage.sun .md-empty { color: #97a0ad; text-shadow: 0 0 4px #000; }
 .md-stage.sun .md-read { color: #97a0ad; background: rgba(8, 10, 14, 0.72); border-color: rgba(255, 255, 255, 0.12); }
 .md-stage.sun .md-rv { color: #e9edf3; }
 .md-stage.sun .md-ru, .md-stage.sun .md-rs { color: #6d7684; }
-.md-busy { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-2); color: var(--text-muted); }
 /* 功能区「视图」组：叠加开关 3 × 2 小拨钮（开＝机位色描边 + 底色抬一档） */
 .md-ovgrid { display: grid; grid-template-columns: repeat(3, auto); gap: 2px 3px; padding: 0 2px 0 6px; }
 .md-tg { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; font: inherit; font-size: var(--fs-2); line-height: 1; cursor: pointer; white-space: nowrap;
   color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); transition: var(--t-state); }
-.md-tg:hover { color: var(--text); border-color: var(--border); background: var(--bg); }
+.md-tg:hover { color: var(--text); border-color: var(--border); background: var(--wash-hover); }
 .md-tg.on { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); transition-duration: 0s; }
 .lbr-form select { min-width: 88px; }
 .lbr-g[data-grp="view"].asm .lbr-form select { min-width: 78px; }
@@ -780,7 +735,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .md-more-font :deep(.lbr-g::after) { display: none; }
 .md-more-font :deep(.lbr-cap) { text-align: left; }
 /* 整窗拖放 */
-.md-drop { position: fixed; inset: 0; z-index: 250; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent-ui) 10%, transparent); pointer-events: none; }
+.md-drop { position: fixed; inset: 0; z-index: var(--z-pop); display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--accent-ui) 10%, transparent); pointer-events: none; }
 .md-drop-in { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 34px; color: var(--accent-ui); font-size: var(--fs-4); font-weight: 600;
   background: var(--bg); border: 2px dashed var(--accent-ui); border-radius: var(--r-float); box-shadow: var(--shadow-2); }
 </style>

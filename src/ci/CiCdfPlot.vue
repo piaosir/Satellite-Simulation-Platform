@@ -10,8 +10,13 @@
 //   · 中位线（一半时间比它好），给「常态如何」一个锚；
 //   · 若给了门限 C/I，画一条竖线，与曲线的交点即「达不到门限的时间占比」——这是这张图
 //     真正要回答的问题。
+//
+// 排版：viewBox 宽 = 容器实宽，字号恒 11 px（见 ciPlotKit）。
 import { computed, ref } from 'vue'
 import { exportSvgPng, canExportPng, PNG_SCALE } from './ciFigureExport.js'
+import { PLOT_FS as FS, usePlotWidth, usePlotSeriesVars, linTicks } from './ciPlotKit.js'
+import NoticeLine from '../components/NoticeLine.vue'
+import { useNotice } from '../shared/useNotice.js'
 
 const props = defineProps({
   // [{ pct, ciDb }]，pct 升序（0→100）
@@ -25,10 +30,14 @@ const props = defineProps({
   fileName: { type: String, default: '' }
 })
 
-// 绘图矩形（viewBox 单位）
-const W = 320, H = 200
-const M = { l: 44, r: 12, t: 12, b: 30 }
-const PW = W - M.l - M.r, PH = H - M.t - M.b
+// 绘图矩形（px）
+const wrapEl = ref(null)
+const W = usePlotWidth(wrapEl, 420)
+const serVars = usePlotSeriesVars()
+const H = 260
+const M = { l: 58, r: 16, t: 14, b: 42 }
+const PW = computed(() => W.value - M.l - M.r)
+const PH = H - M.t - M.b
 
 // 纵轴：对数百分比，从 PCT_MIN 到 100
 const PCT_MIN = 1e-3
@@ -51,7 +60,7 @@ const xDomain = computed(() => {
 })
 const xOf = (v) => {
   const [lo, hi] = xDomain.value
-  return M.l + PW * ((Number(v) - lo) / (hi - lo))
+  return M.l + PW.value * ((Number(v) - lo) / (hi - lo))
 }
 
 const pathD = computed(() => {
@@ -60,21 +69,19 @@ const pathD = computed(() => {
   return p.map((d, i) => `${i ? 'L' : 'M'}${xOf(d.ciDb).toFixed(2)},${yOf(d.pct).toFixed(2)}`).join(' ')
 })
 
-// 纵轴刻度（每个数量级 + 中间的 50%）
+// 纵轴刻度（每个数量级 + 中间的 50%），标签写全（0.001%，不写 .001%）
 const Y_TICKS = [0.001, 0.01, 0.1, 1, 10, 50, 100]
-const yLabel = (p) => (p >= 1 ? p + '%' : p.toString().replace(/^0/, '') + '%')
+const yLabel = (p) => p + '%'
+// 对数轴上 50% 与 100% 只差 0.3 个数量级：两个标签挨得比一行字还近时上下各让一半
+const yLabelY = (p) => {
+  const gap = yOf(50) - yOf(100), need = FS + 2
+  if (gap >= need || (p !== 50 && p !== 100)) return yOf(p)
+  const d = (need - gap) / 2
+  return p === 100 ? yOf(p) - d : yOf(p) + d
+}
 
-// 横轴刻度：在定义域上取 5 档整数
-const xTicks = computed(() => {
-  const [lo, hi] = xDomain.value
-  const span = hi - lo
-  const raw = span / 4
-  const mag = Math.pow(10, Math.floor(Math.log10(raw)))
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) || mag * 10
-  const out = []
-  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6))
-  return out
-})
+// 横轴刻度：整步长，档数随实宽
+const xTicks = computed(() => linTicks(xDomain.value[0], xDomain.value[1], Math.max(3, Math.floor(PW.value / 70))))
 
 // 工程分位标记
 const marks = computed(() => {
@@ -103,63 +110,68 @@ const breach = computed(() => {
   }
   return null
 })
-// 0 要显式说成「全时段高于门限」而不是「低于门限 0%」——后者读起来像「刚好卡在门限上」，
-// 而实际情形是门限整个落在曲线左侧，一次都没越过。指数记法只留给真正的小数（1e-3 量级）。
+// 两个分支同构：一律「低于门限 x% 的时间」，0 就写 0%（结果区只出数，不出文字判定）。
+// 指数记法只留给真正的小数（1e-3 量级）。
 const fmtPct = (v) => (v <= 0 ? '0%' : v >= 1 ? v.toFixed(2) + '%' : v >= 0.01 ? v.toFixed(3) + '%' : v.toExponential(1) + '%')
+// 门限标签靠近右缘时翻到竖线左侧
+const thrAnchor = computed(() => (xOf(props.thresholdDb) > M.l + PW.value * 0.62 ? 'end' : 'start'))
+const thrDx = computed(() => (thrAnchor.value === 'end' ? -4 : 4))
 
 // —— 出图 ——
 // 按钮长在图上：外层不必先判断「当前是哪张图」，图自己知道自己叫什么、画的是什么。
 const svgEl = ref(null)
 const busy = ref(false)
-const expErr = ref('')
+// 出图回执挂在图头上：成功带「打开 · 在文件夹中显示」，失败红字常驻。
+// errorSink:false —— 本窗口的失败出口由 CiApp 那一条登记，图头这一条不抢。
+const N = useNotice({ errorSink: false })
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
 async function exportPng() {
   if (busy.value) return
-  busy.value = true; expErr.value = ''
+  busy.value = true; N.clearNotice()
   try {
     const r = await exportSvgPng(svgEl.value, props.fileName || props.title)
-    if (r && !r.ok && !r.canceled && !r.missing) expErr.value = '导出失败：' + (r.error || '')
+    if (r && r.ok) { const fp = outPath(r); N.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
+    else if (r && !r.canceled && !r.missing) N.toastError('导出失败：' + (r.error || ''))
   } finally { busy.value = false }
 }
 defineExpose({ svg: svgEl, exportPng })
 </script>
 
 <template>
-  <div class="ci-cdf">
+  <div ref="wrapEl" class="ci-cdf" :style="serVars">
     <div class="ci-fig-hd">
       <b class="ci-fig-name">{{ title }}</b>
       <span class="ci-fig-sp" />
-      <span v-if="expErr" class="ci-fig-err" :title="expErr">{{ expErr }}</span>
+      <NoticeLine :n="N" />
       <button
         v-if="canExportPng" class="ci-fig-exp" :disabled="busy || pts.length < 2"
         :title="`导出为 PNG 图片（${PNG_SCALE} 倍分辨率）`" @click="exportPng">导出</button>
     </div>
-    <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
+    <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H">
       <!-- 绘图区 -->
       <rect :x="M.l" :y="M.t" :width="PW" :height="PH" class="pl-bg" />
 
       <!-- 纵轴网格与刻度 -->
       <g v-for="p in Y_TICKS" :key="'y' + p">
         <line :x1="M.l" :y1="yOf(p)" :x2="M.l + PW" :y2="yOf(p)" class="pl-grid" />
-        <text :x="M.l - 4" :y="yOf(p)" class="pl-tick" text-anchor="end" dominant-baseline="middle">{{ yLabel(p) }}</text>
+        <text :x="M.l - 5" :y="yLabelY(p)" class="pl-tick" text-anchor="end" dominant-baseline="middle">{{ yLabel(p) }}</text>
       </g>
       <!-- 横轴网格与刻度 -->
       <g v-for="v in xTicks" :key="'x' + v">
         <line :x1="xOf(v)" :y1="M.t" :x2="xOf(v)" :y2="M.t + PH" class="pl-grid" />
-        <text :x="xOf(v)" :y="M.t + PH + 10" class="pl-tick" text-anchor="middle">{{ v }}</text>
+        <text :x="xOf(v)" :y="M.t + PH + FS + 4" class="pl-tick" text-anchor="middle">{{ v }}</text>
       </g>
 
       <!-- 门限竖线 + 越限占比 -->
       <template v-if="Number.isFinite(Number(thresholdDb))">
         <line :x1="xOf(thresholdDb)" :y1="M.t" :x2="xOf(thresholdDb)" :y2="M.t + PH" class="pl-thr" />
-        <text :x="xOf(thresholdDb) + 3" :y="M.t + 8" class="pl-thr-lab">门限 {{ thresholdDb }} dB</text>
+        <text :x="xOf(thresholdDb) + thrDx" :y="M.t + FS + 2" :text-anchor="thrAnchor" class="pl-thr-lab">门限 {{ thresholdDb }} dB</text>
         <template v-if="breach">
-          <circle v-if="breach.pct > 0" :cx="xOf(thresholdDb)" :cy="yOf(breach.pct)" r="2.4" class="pl-breach" />
+          <circle v-if="breach.pct > 0" :cx="xOf(thresholdDb)" :cy="yOf(breach.pct)" r="3" class="pl-breach" />
           <text
-            :x="xOf(thresholdDb) + 3"
-            :y="breach.pct > 0 ? yOf(breach.pct) - 3 : M.t + PH - 4"
-            class="pl-breach-lab">
-            {{ breach.pct > 0 ? `低于门限 ${fmtPct(breach.pct)} 的时间` : '全时段高于门限' }}
-          </text>
+            :x="xOf(thresholdDb) + thrDx"
+            :y="breach.pct > 0 ? Math.max(M.t + 2 * FS + 6, yOf(breach.pct) - 5) : M.t + PH - 6"
+            :text-anchor="thrAnchor" class="pl-breach-lab">低于门限 {{ fmtPct(breach.pct) }} 的时间</text>
         </template>
       </template>
 
@@ -168,7 +180,7 @@ defineExpose({ svg: svgEl, exportPng })
 
       <!-- 工程分位标记 -->
       <g v-for="m in marks" :key="'m' + m.pct">
-        <circle :cx="xOf(m.ciDb)" :cy="yOf(m.pct)" r="1.5" class="pl-dot" />
+        <circle :cx="xOf(m.ciDb)" :cy="yOf(m.pct)" r="2.4" class="pl-dot" />
       </g>
 
       <!-- 中位线 -->
@@ -177,17 +189,17 @@ defineExpose({ svg: svgEl, exportPng })
       </template>
 
       <!-- 轴名 -->
-      <text :x="M.l + PW / 2" :y="H - 4" class="pl-axis" text-anchor="middle">C/I（dB）</text>
-      <text :x="10" :y="M.t + PH / 2" class="pl-axis" text-anchor="middle"
-        :transform="`rotate(-90 10 ${M.t + PH / 2})`">超越时间百分比</text>
+      <text :x="M.l + PW / 2" :y="H - 6" class="pl-axis" text-anchor="middle">C/I (dB)</text>
+      <text :x="14" :y="M.t + PH / 2" class="pl-axis" text-anchor="middle"
+        :transform="`rotate(-90 14 ${M.t + PH / 2})`">超越时间 (%)</text>
     </svg>
     <p v-if="pts.length < 2" class="ci-cdf-empty">尚无扫描结果。</p>
   </div>
 </template>
 
 <style scoped>
-.ci-cdf { width: 100%; }
-.ci-cdf svg { width: 100%; height: auto; display: block; }
+.ci-cdf { width: 100%; min-width: 0; }
+.ci-cdf svg { display: block; max-width: 100%; }
 
 /* 题行：图名 + 出图。与 CiSeriesPlot 同一份（两图是并列的一对，样式一向各存各的） */
 .ci-fig-hd { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
@@ -199,21 +211,21 @@ defineExpose({ svg: svgEl, exportPng })
 }
 .ci-fig-exp:hover:not(:disabled) { border-color: var(--border-strong); }
 .ci-fig-exp:disabled { opacity: 0.45; cursor: default; }
-.ci-fig-err { color: var(--danger); font-size: var(--fs-1); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.pl-bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 0.6; }
-.pl-grid { stroke: var(--border); stroke-width: 0.4; }
-.pl-tick { font-size: 7px; fill: var(--text-muted); }
-.pl-axis { font-size: 7.5px; fill: var(--text-muted); font-weight: 600; }
+/* 字号恒 11 px（viewBox 单位 = CSS px），与链路预算两张图同档 */
+.pl-bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1; }
+.pl-grid { stroke: var(--border); stroke-width: 1; }
+.pl-tick { font-size: 11px; fill: var(--text-muted); font-variant-numeric: tabular-nums; }
+.pl-axis { font-size: 11px; fill: var(--text-muted); font-weight: 600; }
 
-.pl-line { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
-.pl-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 0.5; }
-.pl-median { stroke: var(--text-muted); stroke-width: 0.6; stroke-dasharray: 2 2; }
+.pl-line { fill: none; stroke: var(--plot-s0); stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.pl-dot { fill: var(--plot-s0); stroke: var(--surface-2); stroke-width: 1; }
+.pl-median { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
 
-.pl-thr { stroke: var(--warn, #d08a2e); stroke-width: 1; stroke-dasharray: 3 2; }
-.pl-thr-lab { font-size: 6.5px; fill: var(--warn, #d08a2e); font-weight: 600; }
-.pl-breach { fill: var(--warn, #d08a2e); stroke: var(--surface); stroke-width: 0.6; }
-.pl-breach-lab { font-size: 6.5px; fill: var(--warn, #d08a2e); }
+.pl-thr { stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 4 3; }
+.pl-thr-lab { font-size: 11px; fill: var(--warn); font-weight: 600; }
+.pl-breach { fill: var(--warn); stroke: var(--surface-2); stroke-width: 1; }
+.pl-breach-lab { font-size: 11px; fill: var(--warn); font-variant-numeric: tabular-nums; }
 
 .ci-cdf-empty { margin: 6px 0 0; text-align: center; font-size: var(--fs-3); color: var(--text-muted); }
 </style>

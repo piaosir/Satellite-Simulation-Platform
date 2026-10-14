@@ -381,7 +381,7 @@ function createNgsoCiRun(o) {
     const short = DEFAULT_PCTS.filter((p) => (p / 100) * T < 1);
     if (short.length) {
       const need = Math.ceil(100 / Math.min(...short));
-      warnings.push(`时窗 ${(horizonSec / 3600).toFixed(1)} h、步长 ${stepSec} s 共 ${T} 个样本，不足以支撑 ${short.map((p) => p + '%').join(' / ')} 分位（最细一档需 ≥ ${need.toLocaleString()} 个样本，约 ${(need * stepSec / 3600).toFixed(1)} h），该几档将标记为样本不足`);
+      warnings.push(`时窗 ${(horizonSec / 3600).toFixed(1)} h、步长 ${stepSec} s 共 ${T} 个样本，不足以支撑 ${short.map((p) => p + '%').join(' / ')} 分位（最细一档需 ≥ ${need.toLocaleString('en-US')} 个样本，约 ${(need * stepSec / 3600).toFixed(1)} h），该几档将标记为样本不足`);
     }
   }
 
@@ -949,7 +949,7 @@ function createNgsoCiMultiRun(o) {
     const short = DEFAULT_PCTS.filter((p) => (p / 100) * T < 1);
     if (short.length) {
       const need = Math.ceil(100 / Math.min(...short));
-      w.push(`${epochs.length} 个历元合计 ${T} 个样本，仍不足以支撑 ${short.map((p) => p + '%').join(' / ')} 分位（最细一档需 ≥ ${need.toLocaleString()} 个），需增加历元数、延长各段时窗或减小步长`);
+      w.push(`${epochs.length} 个历元合计 ${T} 个样本，仍不足以支撑 ${short.map((p) => p + '%').join(' / ')} 分位（最细一档需 ≥ ${need.toLocaleString('en-US')} 个），需增加历元数、延长各段时窗或减小步长`);
     }
   }
   const perRunDone = runs.map(() => 0);
@@ -1525,7 +1525,7 @@ function summarize(s) {
     const weak = DEFAULT_PCTS.filter((p) => support[p].weak);
     if (weak.length) s.warnings.push(`${weak.map((p) => p + '%').join(' / ')} 档有效样本不足 ${PCT_WEAK_SAMPLES} 个（分别为 ${weak.map((p) => support[p].nEff.toFixed(2)).join(' / ')} 个），数值仅供参考`);
     const none = DEFAULT_PCTS.filter((p) => !support[p].enough);
-    if (none.length) s.warnings.push(`${none.map((p) => p + '%').join(' / ')} 档样本不足（各需 ≥ ${none.map((p) => support[p].needSamples.toLocaleString()).join(' / ')} 个，现有 ${vals.length.toLocaleString()} 个），已按无数据处理`);
+    if (none.length) s.warnings.push(`${none.map((p) => p + '%').join(' / ')} 档样本不足（各需 ≥ ${none.map((p) => support[p].needSamples.toLocaleString('en-US')).join(' / ')} 个，现有 ${vals.length.toLocaleString('en-US')} 个），已按无数据处理`);
     if (sampled) s.warnings.push(`干扰星座按 1/${s.samplingFactorMax.toFixed(1)} 抽样，全部分位数已标记 sampled；聚合干扰因此偏低约 ${(10 * LOG10(s.samplingFactorMax)).toFixed(1)} dB`);
   }
 

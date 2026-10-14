@@ -2,8 +2,9 @@
 // 历史版本对话框（链路预算四窗共用）：列出一份配置的自动留档（打开时 / 定时 / 还原前），选一档还原或另建副本。
 // 留档口径见 shared/useConfigAutosave.js；清单与整份 state 走 store.listVersions / getVersion（主进程 versions.<ns>.json）。
 // 选中那一档的 state 经 restore / duplicate 回传，落盘与载入在 shared/useConfigVersions.js。
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { ref, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -55,26 +56,13 @@ function onRowKey(e) {
     e.preventDefault()
   } else if (e.key === 'Enter') { act('restore'); e.preventDefault() }
 }
-// 捕获阶段收 Esc（与 LbShareDialog 同一套）：不漏给下面的表格去取消单元格编辑；组字中的 Esc 归输入法
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
-  e.stopPropagation()
-  close()
-}
-watch(() => props.open, (v) => {
-  if (v) { load(); window.addEventListener('keydown', onKey, true) } else window.removeEventListener('keydown', onKey, true)
-}, { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关、打开聚焦版本列表）
+watch(() => props.open, (v) => { if (v) load() }, { immediate: true })
 </script>
 
 <template>
-  <div v-if="open" class="lbv-mask" @click="close">
-    <div class="lbv-dlg" role="dialog" @click.stop>
-      <div class="lbv-hd">
-        <Icon name="history" :size="13" />
-        <span class="lbv-hd-t">历史版本</span>
-        <span class="lbv-nm" data-i18n-skip :title="cfgName">{{ cfgName }}</span>
-      </div>
+  <AppDialog :open="open" :width="560" flush initial-focus=".lbv-list" @close="close">
+      <template #title><span class="lbv-hd"><Icon name="history" :size="12" /><span class="lbv-hd-t">历史版本</span><span class="lbv-nm" data-i18n-skip :title="cfgName">{{ cfgName }}</span></span></template>
       <div class="lbv-bd">
         <div v-if="!loading && !list.length" class="lbv-empty">暂无历史版本。</div>
         <div v-else class="lbv-list" tabindex="0" @keydown="onRowKey">
@@ -90,26 +78,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
           </table>
         </div>
       </div>
-      <div class="lbv-ft">
-        <button class="lbv-btn" :disabled="!selId || busy" @click="act('duplicate')"><Icon name="copy" :size="12" />创建副本</button>
-        <span class="lbv-sp"></span>
-        <button class="lbv-btn" @click="close">关闭</button>
-        <button class="lbv-btn primary" :disabled="!selId || busy" @click="act('restore')">还原</button>
-      </div>
-    </div>
-  </div>
+      <template #footer>
+        <span class="adlg-ft-l"><button class="btn" :disabled="!selId || busy" @click="act('duplicate')"><Icon name="copy" :size="12" />创建副本</button></span>
+        <button class="btn" @click="close">关闭</button>
+        <button class="btn primary" :disabled="!selId || busy" @click="act('restore')">还原</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 视觉语言同 LbShareDialog（遮罩 --scrim 瞬时出现、框体 160ms 升入；方角细边；定高按钮）。
-   类名统一 lbv- 前缀，不与各 App 的 scoped 类冲突。选中行与资源库列表同一口径（surface-2 底 + 左缘 2px 机位色）。 */
-.lbv-mask { position: fixed; inset: 0; z-index: 310; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lbv-dlg { width: 560px; max-width: 94vw; max-height: 80vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lbv-hd { display: flex; align-items: center; gap: 7px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.lbv-hd-t { flex: none; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; }
-.lbv-nm { flex: 1; min-width: 0; font-size: var(--fs-3); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lbv-bd { flex: 1; min-height: 0; padding: 10px 12px 12px; display: flex; flex-direction: column; }
+/* 外壳归 AppDialog。类名统一 lbv- 前缀，不与各 App 的 scoped 类冲突。选中行与资源库列表同一口径（surface-2 底 + 左缘 2px 机位色）。 */
+.lbv-hd { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.lbv-hd-t { flex: none; }
+.lbv-nm { flex: 1; min-width: 0; font-size: var(--fs-3); font-weight: 400; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lbv-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; }
 .lbv-empty { padding: 18px 4px; font-size: var(--fs-3); color: var(--text-faint); text-align: center; }
 .lbv-list { flex: 1; min-height: 160px; max-height: 52vh; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
 .lbv-list:focus-visible { border-color: var(--accent-ui); }
@@ -123,11 +105,4 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .lbv-tbl tbody tr.on { background: var(--surface-2); }
 .lbv-tbl tbody tr.on td:first-child { box-shadow: inset 2px 0 0 var(--accent-ui); }
 .lbv-tbl tbody tr.on .c-k { color: var(--text); }
-.lbv-ft { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lbv-sp { flex: 1; }
-.lbv-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl); font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 12px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.lbv-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.lbv-btn:disabled { opacity: .45; cursor: not-allowed; }
-.lbv-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lbv-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

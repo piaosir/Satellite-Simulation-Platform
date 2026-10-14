@@ -162,7 +162,7 @@ export function buildNgsoScene(sel, params) {
   const pu = destPoint(tx.latDeg, tx.lonDeg, initialBearing(tx.latDeg, tx.lonDeg, rx.latDeg, rx.lonDeg), λu)
   const pd = destPoint(rx.latDeg, rx.lonDeg, initialBearing(rx.latDeg, rx.lonDeg, tx.latDeg, tx.lonDeg), λd)
   const one = angDist(pu.latDeg, pu.lonDeg, pd.latDeg, pd.lonDeg) < 0.5
-  const notes = ['闭式球面最差几何：上/下行各自取自家最低仰角，' + (one ? '此处恰好重合' : '图中两颗星不在同一瞬间') + '；方位为示意（仰角只定中心角）']
+  const notes = ['闭式球面最差几何：上/下行各自取自家最低仰角，' + (one ? '此处恰好重合' : '图中两颗星不在同一瞬间') + '；方位为示意（仰角仅决定中心角）']
   // schematicSat：星位的方位是编的（仰角只定中心角），凡是要用星位去算别的东西的地方
   // 都得先看这面旗——如地理图的覆盖门（见 satForSide）
   if (one) {
@@ -205,13 +205,13 @@ export function buildRegenScene(sel, params, mode) {
     const ig = sel.islGeo
     const w = ig && ig.feasible && ig.worst
     // 手动几何只给了一个星间距离，没有两星轨道 → 无处摆星，如实说明（不是几何解不出来）
-    if (sel.islManual) return blocked('手动几何：只给了星间链路距离，无两星轨道可画')
+    if (sel.islManual) return blocked('手动几何：仅给定星间链路距离，无两星轨道可画')
     if (!w || !w.txSub || !w.rxSub) return blocked('星间几何不可解（两星互不可见或缺相位）')
     const a = satNode('satA', sel.txName || '发射星', w.txSub.lonDeg, w.txSub.latDeg, w.txSub.altKm)
     const b = satNode('satB', sel.satName || '接收星', w.rxSub.lonDeg, w.rxSub.latDeg, w.rxSub.altKm)
     if (!a || !b) return blocked('缺少两星的星下点')
     const graz = num(w.grazAltKm)
-    const notes = [ig.representative ? '手动圆轨道：两星位置为示意（相位缺省），几何量仍按此刻严格算出' : '两星位于最差星间距离时刻的位置']
+    const notes = [ig.representative ? '手动圆轨道：两星位置为示意（相位缺省），几何量仍按此刻严格计算' : '两星位于最差星间距离时刻的位置']
     if (graz !== null) notes.push('LOS 掠地高度 ' + graz.toFixed(0) + ' km' + (graz < 0 ? '（被地球遮挡）' : ''))
     return {
       epochISO: w.worstISO || null, method: ig.method || '',
@@ -253,6 +253,6 @@ export function buildRegenScene(sel, params, mode) {
   return {
     epochISO: null, method: g ? g.method : '闭式球面', schematicSat: true,
     nodes: [st, sat], legs: [leg],
-    notes: ['闭式球面最差几何：卫星按该仰角的中心角摆位，方位为示意（仰角只定中心角）']
+    notes: ['闭式球面最差几何：卫星按该仰角的中心角摆位，方位为示意（仰角仅决定中心角）']
   }
 }

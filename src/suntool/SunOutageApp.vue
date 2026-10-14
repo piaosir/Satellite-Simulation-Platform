@@ -6,16 +6,25 @@
 // 取星两档：定轨＝把卫星当理想地球静止轨道（按轨位）；星历＝按该星 GP 根数逐时刻 SGP4 推算。
 // 判据两档：恶化门限＝ D(θ) ≥ D_th；纯几何＝ θ_th ≡ θ_3dB = 70λ/D。
 import { ref, reactive, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { askConfirm } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import TzPicker from '../components/TzPicker.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import { useNotice } from '../shared/useNotice.js'
+import { reportError } from '../shared/reportError.js'
+import { errText } from '../shared/errText.js'
 import { useConfigTree } from '../shared/useConfigTree.js'
+import { useConfigAutosave } from '../shared/useConfigAutosave.js'
+import { useConfigVersions } from '../shared/useConfigVersions.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
-import { byLang } from '../shared/i18n/lang.js'
+import { byLang, curLang } from '../shared/i18n/lang.js'
 import { halfStr } from '../shared/num.js'
 import { epochMs } from '../shared/epochMs.js'
 import { fmtGeoSlot, classifyOrbit } from '../shared/orbitClass.js'
@@ -28,15 +37,20 @@ import {
 } from './sunParams.js'
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.sunOutage : null
-const STATE_KEY = 'sun/last'
+const STATE_KEY = 'sun/last'      // 只记「上次打开的是哪一份」；v1.5.1 及以前存的是整份场景（见 onMounted 的迁移）
+const winApi = (typeof window !== 'undefined' && window.api) || null   // 配置库（store.*）走总桥
 const p2 = (n) => String(n).padStart(2, '0')
 const pf = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : NaN }
 const fx = (v, d) => (v == null || !Number.isFinite(+v)) ? '—' : (+v).toFixed(d)
 
-// ============ 窗内提示 ============
-const notice = ref('')
-let _noticeT = null
-function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
+// ============ 窗内提示（shared/useNotice：普通 4 s · 导出带「打开 · 在文件夹中显示」· 失败常驻）============
+const N = useNotice()
+const { toast, toastFile } = N
+// 主进程保存处理器回的实际写入路径（新字段 path / paths；兼容旧的 filePath）
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+// 站表「导入 / 导出 Excel」的回执（StationGrid emit xlsxDone）
+function onGridXlsx(r) { if (!r) return; if (r.kind === 'export') { if (r.path) toastFile('已导出 Excel', r.path); else toast('已导出 Excel') } else toast(`已导入 ${r.rows || 0} 行`) }
+const baseName = (p) => String(p || '').split(/[\\/]/).pop()
 
 // ============ 显示时区（窗口偏好，不进配置）============
 const tzMode = ref(normTzMode(localStorage.getItem('sun/tz'), 'local'))
@@ -107,14 +121,31 @@ const globals = () => ({
 // 刷新完不自动重算 —— 结果卡里那一行写的是算的时候用的值。
 const sfStatus = shallowRef(null)
 const sfBusy = ref(false)
+// 非空 = 最近一次手动刷新没取到新数据：读数行如实挂「更新失败」，原因在悬停 title（不弹框）
+const sfFail = ref('')
+const sfFresh = (s) => !!(s && (s.source === 'network' || s.source === 'cloud'))
 async function loadSolarFlux() {
   if (!api || !api.solarFlux) return
-  try { sfStatus.value = await api.solarFlux() } catch (e) { /* 取不到就不显示这一行 */ }
+  const before = sfStatus.value
+  try {
+    const s = await api.solarFlux()
+    sfStatus.value = s
+    // 后台那一轮（主进程开窗 / 算完顺手刷）换到了新数据：撤掉上次手动刷新留下的失败标记
+    if (sfFail.value && sfFresh(s) && (!before || before.fetchedAt !== s.fetchedAt)) sfFail.value = ''
+  } catch (e) { /* 取不到就不显示这一行 */ }
 }
 async function refreshSolarFlux() {
   if (!api || !api.solarFluxRefresh || sfBusy.value) return
   sfBusy.value = true
-  try { sfStatus.value = await api.solarFluxRefresh() } catch (e) { /* 失败照旧显示原读数 */ }
+  const before = sfStatus.value
+  try {
+    const s = await api.solarFluxRefresh()
+    sfStatus.value = s
+    // 主进程刷新失败不抛、照样回 status（数据仍是原来那份）。强制刷新真成功时来源必是直连 / 云镜像，
+    // 且不会与刷新前那份直连 / 云镜像数据同一时间。
+    const ok = sfFresh(s) && !(sfFresh(before) && before.fetchedAt === s.fetchedAt)
+    sfFail.value = ok ? '' : (s && s.offline ? byLang('离线', 'Offline') : byLang('SWPC 与云镜像均不可用', 'SWPC and cloud mirror unavailable'))
+  } catch (e) { sfFail.value = errText(e) }
   finally { sfBusy.value = false }
 }
 const SF_SRC = { network: ['直连', 'Direct'], cloud: ['云镜像', 'Cloud mirror'], cache: ['本地缓存', 'Local cache'], bundled: ['内置快照', 'Bundled snapshot'] }
@@ -178,10 +209,10 @@ function cellClassFn(f, row) {
 let _gen = 0
 async function compute() {
   if (!api) { toast('计算需在桌面客户端中运行'); return false }
-  if (!stations.length) { toast('请先添加地球站'); return false }
+  if (!stations.length) { toast('暂无地球站。'); return false }
   const y = parseInt(String(halfStr(year.value)), 10)
   if (!(y >= 1900 && y <= 2200)) { toast('年份需在 1900 ~ 2200 之间'); return false }
-  if (sat.source === 'slot' && !Number.isFinite(pf(sat.slotLon))) { toast('请先填写卫星轨位'); return false }
+  if (sat.source === 'slot' && !Number.isFinite(pf(sat.slotLon))) { toast('卫星轨位未填写。'); return false }
   if (criterion.mode === 'degradation' && !(pf(criterion.degDb) > 0)) { toast('恶化门限需大于 0 dB'); return false }
 
   const gen = ++_gen
@@ -207,7 +238,7 @@ async function compute() {
       : byLang(`完成，共 ${ids.length} 个地球站`, `Done, ${ids.length} stations`))
     return true
   } catch (e) {
-    if (gen === _gen) { toast('计算失败：' + ((e && e.message) || e)); resultById.value = {} }
+    if (gen === _gen) { reportError('计算失败', e); resultById.value = {} }
     return false
   } finally {
     if (gen === _gen) { computing.value = false; progress.value = '' }
@@ -279,7 +310,7 @@ function pickSat(rec) {
     sat.noradId = ''; sat.orbit = null; sat.epoch = ''; sat.inclDeg = null; sat.source = 'slot'
   } else {
     sat.noradId = String(rec.noradId || '')
-    try { sat.orbit = orbitSpecOf(rec) } catch (e) { sat.orbit = null; toast('这颗星的轨道类型无法用于日凌计算') }
+    try { sat.orbit = orbitSpecOf(rec) } catch (e) { sat.orbit = null; toast('该卫星的轨道类型无法用于日凌计算') }
     sat.epoch = rec.epoch || ''
     sat.inclDeg = Number(rec.incl) || 0
   }
@@ -289,8 +320,8 @@ function pickSat(rec) {
 async function refreshOrbit() {
   if (!sat.noradId) return
   const rec = await findPoolByNorad(sat.noradId)
-  if (!rec) { toast('星历库里没有这颗星'); return }
-  try { sat.orbit = orbitSpecOf(rec) } catch (e) { toast('这颗星的轨道类型无法用于日凌计算'); return }
+  if (!rec) { toast('星历库中未找到该卫星'); return }
+  try { sat.orbit = orbitSpecOf(rec) } catch (e) { toast('该卫星的轨道类型无法用于日凌计算'); return }
   sat.epoch = rec.epoch || ''
   sat.inclDeg = Number(rec.incl) || 0
   const lon = slotLonOf(rec)
@@ -309,26 +340,19 @@ function setSatSource(s) {
 // 站址追加成行；新建的配置里那条出厂默认行由站址行顶替。开窗时配置未载入则排队。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()
-function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 const ctxNameKey = (s) => String(s || '').trim().toLowerCase()
 const isCurSat = (s) => (s.noradId && sat.noradId ? String(sat.noradId) === s.noradId : ctxNameKey(sat.name) === ctxNameKey(s.name))
 async function applyToolContext(c) {
   if (!c) return
   const s = c.sat, sites = c.sites || []
-  let fresh = false, kept = null
+  let fresh = false
   if (s && !isCurSat(s)) {
-    // 带来的是另一颗星：换一份新配置承接，原来的内容一律不丢——
-    //   ① 有归属配置且改过：现有三选一（保存 / 不保存 / 取消），取消即不动现场；
-    //   ② 没有归属配置、工作区又不是出厂空白（不存配置直接用是支持的用法）：先原样存成一份配置留底；
-    //   ③ 带来的星 / 站套到出厂空白上，按出厂名（星名 + 年份）一次存成新配置并接上（尾部 saveWorkspaceAs）——
-    //      列表里那份就是带来的内容，不是一份空白「新配置」，之后也不会无端弹保存提示
-    if (!(await guardedLeave())) return
-    if (!activeId.value && fingerprint() !== stableStringify(normState(blankState()))) {
-      kept = await cfgTree.saveWorkspaceAs()
-      if (!kept) return   // 存不进去就不动现场
-    }
-    applyState(blankState())
+    // 带来的是另一颗星：另建一份配置承接（当前配置的改动先落盘），原配置不动；
+    // 新配置名字随内容（星名 + 年份），带来的星 / 站直接写进它
+    const n = await cfgTree.createAndOpen({ state: blankState(), nameAuto: true })
+    if (!n) return
     fresh = true
     let rec = null
     if (s.noradId) { try { rec = await findPoolByNorad(s.noradId) } catch (e) { rec = null } }
@@ -346,9 +370,7 @@ async function applyToolContext(c) {
     if (fresh) stations.splice(0, stations.length, ...rows)
     else stations.push(...rows)
   }
-  if (fresh) await cfgTree.saveWorkspaceAs()
-  const keptTip = kept ? byLang(`原内容已存为「${kept.name}」；`, `Previous content saved as “${kept.name}”; `) : ''
-  toast(keptTip + (sites.length
+  toast((sites.length
     ? byLang(`已添加 ${sites.length} 个地球站（${sat.name}）`, `Added ${sites.length} station${sites.length === 1 ? '' : 's'} (${sat.name})`)
     : byLang(`已载入卫星：${sat.name}`, `Satellite loaded: ${sat.name}`)))
 }
@@ -445,6 +467,30 @@ const secLabel = (sec) => {
   return tagOf(ms)
 }
 
+// —— 逐日表一行 → 主窗口（C3，api.scene.cmd）：拨时间轴到该日峰值时刻 · 聚焦这颗星 · 时间轴上标出该日日凌窗口 ——
+// 主窗口不在 / 老主进程没有 scene 通道时按钮不出。时刻按引擎给的 UTC 日期 + 时刻还原（跨 UTC 零点的那一日把
+// 峰值 / 结束顺延一天）；星按当前这颗认（NORAD 优先，定轨档没有编号就按星名）。
+const sceneApi = (typeof window !== 'undefined' && window.api && window.api.scene && window.api.scene.cmd) ? window.api.scene : null
+async function locateInMain(d) {
+  if (!sceneApi || !d) return
+  const at = (hms) => Date.parse(`${d.date}T${hms}Z`)
+  const t0 = at(d.startTimeUTC)
+  const fix = (t) => (Number.isFinite(t) && Number.isFinite(t0) && t < t0 ? t + 86400e3 : t)
+  const tp = fix(at(d.peakTimeUTC)), t1 = fix(at(d.endTimeUTC))
+  if (!Number.isFinite(tp)) return
+  const row = selRow.value
+  const site = (row && String(effectiveRow(row).stationName || '').trim()) || byLang('地球站', 'Station')
+  try {
+    await sceneApi.cmd('seekClock', { tMs: tp })
+    if (sat.noradId || (sat.name || '').trim()) {
+      await sceneApi.cmd('focusSat', sat.noradId ? { norad: String(sat.noradId), name: sat.name || '' } : { name: String(sat.name).trim() })
+    }
+    if (Number.isFinite(t0)) {
+      await sceneApi.cmd('markTime', { t0, t1: Number.isFinite(t1) ? t1 : undefined, label: byLang('日凌 ', 'Sun outage ') + site, src: 'suntool' })
+    }
+  } catch (e) { reportError('在主窗口定位', e) }
+}
+
 // ============ 导出 ============
 // 逐站导出对象：Excel 吃 *Sec（秒）、Word 吃 *Disp（显示串），一套 payload 两处共用。
 function stationExport(row) {
@@ -504,10 +550,11 @@ function exportPayload() {
     seasons: seasons.value.slice(),
     tzLabel: tzLabel.value,
     criterion: { mode: criterion.mode, degDb: criterion.degDb },
-    stations: stations.map(stationExport)
+    stations: stations.map(stationExport),
+    lang: curLang()      // Word / Excel / ICS 的表头 / 表题 / 表注跟界面语言（report.js 日凌三件）
   }))
 }
-const fileBase = computed(() => `日凌预报_${(sat.name || '').trim() || slotText.value}_${year.value}`)
+const fileBase = computed(() => `${byLang('日凌预报', 'Sun Outage Forecast')}_${(sat.name || '').trim() || slotText.value}_${year.value}`)
 async function runExport(kind) {
   if (!api || computing.value) return
   // 导出讲【当前输入】（口径同链路预算四窗的导出前补算）：输入已变或还没算过，先按当前输入算一遍；
@@ -521,9 +568,9 @@ async function runExport(kind) {
   if (!fn) { toast('导出需在桌面客户端中运行'); return }
   try {
     const r = await fn(p)
-    if (r && r.ok) toast(byLang('已导出：', 'Exported: ') + r.filePath)
-    else if (r && !r.canceled) toast('导出失败：' + (r && r.error))
-  } catch (e) { toast('导出失败：' + ((e && e.message) || e)) }
+    if (r && r.ok) { const fp = outPath(r); toastFile(byLang('已导出：', 'Exported: ') + baseName(fp), fp) }
+    else if (r && !r.canceled) reportError('导出失败', r.error)
+  } catch (e) { reportError('导出失败', e) }
 }
 
 // ============ 配置持久化（configs.sun.json，ns='sun'）============
@@ -561,82 +608,83 @@ function applyState(st) {
   resultsStale.value = false
 }
 
-// —— 脏态 ——
-function fingerprint() { return stableStringify(serializeState()) }
-let activeBaseline = ''
-const dirtyFlag = ref(false)
-function setBaseline() { activeBaseline = fingerprint(); dirtyFlag.value = false }
-function isDirty() { return !!cfgTree.activeId.value && fingerprint() !== activeBaseline }
-
-// —— 工作状态 ——
-let _stateT = null
-function flushSaveState() {
-  clearTimeout(_stateT)
-  try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: cfgTree.activeId.value })) } catch (e) { /* ignore */ }
-}
-function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { flushSaveState(); dirtyFlag.value = isDirty() }, 600) }
-watch([sat, year, seasons, criterion, stations], scheduleSaveState, { deep: true })
-
-// —— 三个对话框 ——
-const confirmDlg = reactive({ open: false, msg: '' })
-let _confirmResolve = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-const leaveDlg = reactive({ open: false, name: '' })
-let _leaveResolve = null
-function leaveAnswer(ans) { leaveDlg.open = false; const r = _leaveResolve; _leaveResolve = null; if (r) r(ans) }
-async function guardedLeave() {
-  if (!isDirty()) return true
-  const ans = await new Promise((res) => { leaveDlg.name = cfgTree.activeName(); leaveDlg.open = true; _leaveResolve = res })
-  if (ans === 'cancel') return false
-  if (ans === 'save') return await updateConfig()
-  return true
-}
-// 出厂名＝星名（或轨位）+ 年份 + 存盘时刻（自命名随平台语言走）
+// —— 配置自动保存（与链路预算四窗同口径，2026-10-15 起取消「保存 / 另存」）——
+// 工作区恒对应配置列表里的一份配置，改动约 1 s 后写回；后悔药是历史版本。
+function fingerprintOf(st) { return stableStringify(normState(st)) }
+// 自动名（名字随内容的配置用）：星名（或轨位）+ 年份，按平台语言出字
 function defaultCfgName() {
-  const t = tzParts(Date.now(), tzMode.value)
-  const stamp = `${p2(t.mo)}-${p2(t.d)} ${p2(t.h)}:${p2(t.mi)}`
   const who = (sat.name || '').trim() || slotText.value
-  return byLang(`${who} 日凌 ${year.value} ${stamp}`, `${who} Sun Outage ${year.value} ${stamp}`)
+  return byLang(`${who} 日凌 ${year.value}`, `${who} Sun Outage ${year.value}`)
+}
+function cfgLabelOf(st) {
+  const n = normState(st)
+  const who = ((n.sat && n.sat.name) || '').trim() || (n.sat && n.sat.slotLon != null && n.sat.slotLon !== '' ? (fmtGeoSlot(Number(n.sat.slotLon)) || '') : '')
+  return byLang(`${who} 日凌 ${n.year} · ${n.stations.length} 站`, `${who} Sun Outage ${n.year} · ${n.stations.length} sta`)
+}
+function setBaseline() { autosave.attach() }
+async function guardedLeave() {
+  if (await autosave.flush()) return true
+  return await askConfirm(`「${cfgTree.activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要离开？`)
 }
 
 const cfgTree = useConfigTree({
-  ns: 'sun', orbitType: ORBIT_TYPE, api: (typeof window !== 'undefined' && window.api) || null, storageKey: 'sun/cfgExpanded',
-  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName
+  ns: 'sun', orbitType: ORBIT_TYPE, api: winApi, storageKey: 'sun/cfgExpanded',
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName,
+  autosave: true, onNameAuto: (id) => { if (id === activeId.value) autosave.flush() }
 })
 const {
-  configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu,
-  loadConfigs, selectConfig, openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, ctxMenu,
+  loadConfigs, uniqueCfgName, selectConfig, ensureActive, duplicateItem,
   toggleFolder, expandAll, collapseAll,
   addFolder, addBlankConfig, onDeleteItem, onMove, moveToRoot,
   startRename, commitRename, cancelRename,
   copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, onCfgKey
 } = cfgTree
-const showConfigs = ref(true)
+const autosave = useConfigAutosave({
+  ns: 'sun', api: winApi, activeId, itemById: cfgTree.itemById, serialize: serializeState, fingerprint: fingerprintOf,
+  autoName: defaultCfgName, uniqueName: uniqueCfgName, summarize: (st) => ({ label: cfgLabelOf(st) }), toast
+})
+const { error: saveError } = autosave
+let stopAutosaveListen = null
+onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.dispose() })
+const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
+  ns: 'sun', api: winApi, tree: cfgTree, autosave, applyState, summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
+})
+watch([sat, year, seasons, criterion, stations], () => autosave.touch(), { deep: true })
+watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* 配额满等忽略 */ } })
+
+// 左侧栏「配置列表」显隐（功能区「配置列表」与栏头 × / 右键「隐藏配置列表」互为一对；记住上次）
+const showConfigs = ref((() => { try { return localStorage.getItem('sun/showConfigs') !== '0' } catch (e) { return true } })())
+watch(showConfigs, (v) => { try { localStorage.setItem('sun/showConfigs', v ? '1' : '0') } catch (e) { /* ignore */ } })
+// Ctrl+Enter = 计算（全部计算窗同一个键）
+function onGlobalKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.isComposing && !computing.value) { e.preventDefault(); compute() }
+}
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 onMounted(async () => {
   // 城市库全量：StationGrid 拿它做「站名 → 经纬度」反查（CityPicker 自己走 window.api.linkBudget，与本窗口无关）
   try { cities.value = (api && await api.cities()) || [] } catch (e) { cities.value = [] }
   loadSolarFlux()          // 不 await：这一行只是读数，开窗不必等它
   await loadConfigs()
-  try {
-    const raw = localStorage.getItem(STATE_KEY)
-    if (raw) {
-      const st = JSON.parse(raw)
-      const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
-      else applyState(st)
-      dirtyFlag.value = isDirty()
-    }
-  } catch (e) { /* ignore */ }
-  // 关窗序：守卫（可保存 / 取消）→ 冲刷工作状态 → 放行关闭
+  // 打开上次那份配置；它没了就开树上第一份，一份都没有就新建一份空白配置（工作区恒对应一份配置）。
+  // 迁移：v1.5.1 及以前「上次会话」存的是整份场景——对应的配置还在就接上那份改动；不属于任何配置、
+  // 又不是出厂空白的（旧版允许不存配置直接用）存成一份新配置，免得升级后丢了。
+  let last = null
+  try { last = JSON.parse(localStorage.getItem(STATE_KEY) || 'null') } catch (e) { last = null }
+  const hasScene = !!(last && Array.isArray(last.stations))
+  if (hasScene && !last.activeId && fingerprintOf(last) !== fingerprintOf(blankState())) await cfgTree.createAndOpen({ state: last, nameAuto: true })
+  await ensureActive(last && last.activeId)
+  if (hasScene && last.activeId && last.activeId === activeId.value) { applyState(last); autosave.touch() }
+  try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* 配额满等忽略 */ }
+  // 关窗：把挂起的写盘冲掉即放行；只有写不进磁盘时才问一句
   api?.onCloseRequested?.(async () => {
-    let go = false
-    try { go = await guardedLeave() } catch (e) { toast('关闭前保存失败：' + ((e && e.message) || e)); return }
-    if (!go) return
-    flushSaveState(); api.confirmClose()
+    const ok = await autosave.flush()
+    if (!ok && !(await askConfirm(`「${cfgTree.activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要关闭窗口？`))) return
+    api.confirmClose()
   })
-  window.addEventListener('beforeunload', flushSaveState)
+  stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏时立即写盘
+  window.addEventListener('keydown', onGlobalKey)
   flushToolContext()   // 配置已载入：处理开窗时随窗带来的主窗口上下文
 })
 </script>
@@ -645,25 +693,13 @@ onMounted(async () => {
   <div class="lb-shell">
     <ActivationLock />
     <ConfigTreeMenu
-      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api"
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!winApi" autosave
       @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
-      @save-new="openSaveDlg" @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
       @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="showConfigs = false"
+      @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
     />
 
-    <div class="lb-topbar">
-      <span class="lb-brand">日凌预报 · GSO</span>
-      <span class="lb-flex"></span>
-      <span v-if="notice" class="lb-notice">{{ notice }}</span>
-      <span v-if="!api" class="lb-warn">需在桌面客户端中运行</span>
-      <button v-if="sfText" class="so-sf" :disabled="sfBusy" title="重新联网取 SWPC 太阳射电流量" @click="refreshSolarFlux">
-        <span>F10.7 数据</span> <b data-i18n-skip>{{ sfText }}</b>
-      </button>
-      <TzPicker v-model="tzMode" align="right" title="逐日表与报告的时标（ICS 日历事件恒用 UTC，导入后由日历软件换算）" />
-      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="导出 Excel（两张三线表：地球站参数 / 逐日日凌窗口）" @click="runExport('excel')">导出 Excel</button>
-      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="导出 Word 报告（逐站一节）" @click="runExport('word')">导出 Word</button>
-      <button class="lb-mini" :disabled="!api || computing || !stations.length" title="RFC 5545 iCalendar，Outlook / Google / Apple 日历直接导入，含提前 1 天与 30 分钟提醒" @click="runExport('ics')">导出 ICS</button>
-    </div>
 
     <div class="lb-body">
       <!-- ① 配置列表 -->
@@ -671,10 +707,9 @@ onMounted(async () => {
         <div class="lb-col-hd">
           <span class="lb-cfg-hd-t">配置列表</span>
           <span class="lb-cfg-acts">
-            <button class="lb-mini" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" :disabled="!api" @click="saveCurrent">保存<span v-if="dirtyFlag" class="lbx-dirty"></span></button>
-            <button class="lb-mini" :disabled="!api" title="另存为新配置" @click="openSaveDlg">另存</button>
-            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
-            <button class="lb-mini lb-mini-ico" title="新建配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!winApi" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="新建配置" :disabled="!winApi" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="showConfigs = false"><Icon name="x" :size="12" /></button>
           </span>
         </div>
         <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
@@ -692,11 +727,57 @@ onMounted(async () => {
 
       <!-- ② 站表 -->
       <section class="lb-col lb-build">
+        <div class="lbr">
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big primary" :disabled="computing || !api || !stations.length" :title="calcText + '（Ctrl+Enter）'" @click="compute">
+                <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
+                {{ computing ? '计算中…' : '计算' }}
+              </button>
+            </div>
+            <div class="lbr-cap">计算</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="!winApi || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :class="{ on: showConfigs }" :aria-pressed="showConfigs ? 'true' : 'false'" title="左侧栏显示「配置列表」" @click="showConfigs = !showConfigs"><Icon name="panel-left" :size="16" />配置列表</button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="!api || computing || !stations.length" title="导出 Excel 日凌时间表（每季一张工作表）" @click="runExport('excel')"><Icon name="file-export" :size="16" />Excel</button>
+              <button class="lbr-big" :disabled="!api || computing || !stations.length" title="导出 Word 报告（逐站一节）" @click="runExport('word')"><Icon name="file-text" :size="16" />Word</button>
+              <button class="lbr-big" :disabled="!api || computing || !stations.length" title="RFC 5545 iCalendar，Outlook / Google / Apple 日历直接导入，含提前 1 天与 30 分钟提醒" @click="runExport('ics')"><Icon name="calendar" :size="16" />ICS</button>
+            </div>
+            <div class="lbr-cap">导出</div>
+          </div>
+          <div v-if="sfText || sfFail" class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :class="{ spin: sfBusy }" :disabled="sfBusy" title="重新联网取 SWPC 太阳射电流量" @click="refreshSolarFlux">
+                <Icon name="refresh-cw" :size="16" />
+                刷新
+              </button>
+              <div class="so-reads">
+                <div class="so-read-l"><span class="so-read-k">F10.7</span><b data-i18n-skip>{{ sfText || '—' }}</b></div>
+                <div v-if="sfFail" class="so-read-l so-sf-err" :title="sfFail">更新失败</div>
+              </div>
+            </div>
+            <div class="lbr-cap">数据</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <TzPicker v-model="tzMode" title="逐日表与报告的时标（ICS 日历事件恒用 UTC，导入后由日历软件换算）" />
+            </div>
+            <div class="lbr-cap">时区</div>
+          </div>
+        </div>
         <div class="rain-toolbar">
           <div class="rain-seg-grp so-sat">
             <span class="rain-seg-lb">卫星</span>
             <label class="so-search">
-              <input v-model="kw" placeholder="名称 / NORAD" spellcheck="false" @focus="onSearchFocus" @blur="onSearchBlur" />
+              <input v-model="kw" class="search-field" placeholder="名称 / NORAD" spellcheck="false" @focus="onSearchFocus" @blur="onSearchBlur" />
               <div v-if="searchOpen && (kw.trim() || poolLoading || poolErr)" class="so-drop">
                 <div v-if="poolLoading" class="so-drop-i dim">载入星历…</div>
                 <div v-else-if="poolErr" class="so-drop-i dim" data-i18n-skip>{{ poolErr }}</div>
@@ -713,13 +794,13 @@ onMounted(async () => {
               </div>
             </label>
             <label class="rain-geom so-name" title="卫星名称（检索到的星取编目名，可改）"><input v-model="sat.name" spellcheck="false" /></label>
-            <div class="rain-seg">
-              <button :class="{ on: sat.source === 'slot' }" title="定轨：按轨位把卫星当理想地球静止轨道" @click="setSatSource('slot')">{{ SAT_SOURCE_LABEL.slot }}</button>
-              <button :class="{ on: sat.source === 'ephemeris' }" :disabled="!canEphem"
+            <div class="seg" role="radiogroup" aria-label="取星">
+              <button type="button" class="sg" role="radio" :aria-checked="sat.source === 'slot'" :class="{ on: sat.source === 'slot' }" title="定轨：按轨位把卫星当理想地球静止轨道" @click="setSatSource('slot')">{{ SAT_SOURCE_LABEL.slot }}</button>
+              <button type="button" class="sg" role="radio" :aria-checked="sat.source === 'ephemeris'" :class="{ on: sat.source === 'ephemeris' }" :disabled="!canEphem"
                       :title="canEphem ? '星历：按该星 GP 根数逐时刻 SGP4/SDP4 推算真实位置（含倾角、偏心率与漂移，不含轨道保持机动）' : '需先检索到带星历的卫星'"
                       @click="setSatSource('ephemeris')">{{ SAT_SOURCE_LABEL.ephemeris }}</button>
             </div>
-            <label class="rain-geom" :title="sat.source === 'ephemeris' ? '历元星下点经度（星历档下由根数算出）' : '定点轨位（东经为正，西经为负）'">
+            <label class="rain-geom" :title="sat.source === 'ephemeris' ? '历元星下点经度（星历档下由根数计算得出）' : '定点轨位（东经为正，西经为负）'">
               <span>轨位</span><input v-model="sat.slotLon" :readonly="sat.source === 'ephemeris'" spellcheck="false" /><i>°E</i>
             </label>
           </div>
@@ -745,19 +826,19 @@ onMounted(async () => {
           <div class="rain-seg-grp">
             <span class="rain-seg-lb">分点</span>
             <span class="chips">
-              <button v-for="s in SEASONS" :key="s" class="chip" :class="{ on: seasonOn(s) }" @click="toggleSeason(s)">{{ SEASON_CN[s] }}</button>
+              <button v-for="s in SEASONS" :key="s" type="button" class="btn sm" :class="{ on: seasonOn(s) }" :aria-pressed="(seasonOn(s)) ? 'true' : 'false'" @click="toggleSeason(s)">{{ SEASON_CN[s] }}</button>
             </span>
           </div>
           <div class="rain-seg-grp">
             <span class="rain-seg-lb">判据</span>
-            <div class="rain-seg">
-              <button :class="{ on: criterion.mode === 'degradation' }" title="恶化门限：D(θ) = 10·lg(1 + ΔT(θ)/T_sys) ≥ D_th" @click="criterion.mode = 'degradation'">恶化门限</button>
-              <button :class="{ on: criterion.mode === 'geometric' }" title="纯几何：门限角 θ_th ≡ θ_3dB = 70λ/D（全宽，不加太阳视半径）" @click="criterion.mode = 'geometric'">纯几何</button>
+            <div class="seg" role="radiogroup" aria-label="判据">
+              <button type="button" class="sg" role="radio" :aria-checked="criterion.mode === 'degradation'" :class="{ on: criterion.mode === 'degradation' }" title="恶化门限：D(θ) = 10·lg(1 + ΔT(θ)/T_sys) ≥ D_th" @click="criterion.mode = 'degradation'">恶化门限</button>
+              <button type="button" class="sg" role="radio" :aria-checked="criterion.mode === 'geometric'" :class="{ on: criterion.mode === 'geometric' }" title="纯几何：门限角 θ_th ≡ θ_3dB = 70λ/D（全宽，不加太阳视半径）" @click="criterion.mode = 'geometric'">纯几何</button>
             </div>
             <label class="rain-geom"><input v-model="criterion.degDb" :disabled="criterion.mode === 'geometric'" spellcheck="false" /><i>dB</i></label>
             <span v-if="criterion.mode === 'geometric'" class="so-read-k" data-i18n-skip>θ_th = θ_3dB</span>
-            <span v-else class="chips">
-              <button v-for="p in DEG_PRESETS" :key="p" class="chip" :class="{ on: criterion.degDb === p }" @click="criterion.degDb = p">{{ p }} dB</button>
+            <span v-else class="seg nseg" role="radiogroup" aria-label="门限预设">
+              <button v-for="p in DEG_PRESETS" :key="p" type="button" class="sg" role="radio" :aria-checked="criterion.degDb === p" :class="{ on: criterion.degDb === p }" @click="criterion.degDb = p">{{ p }} dB</button>
             </span>
           </div>
         </div>
@@ -765,18 +846,13 @@ onMounted(async () => {
         <div class="rain-grid">
           <StationGrid
             ref="stationGridRef" grid-id="sun.stations" :stations="stations" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            @xlsx-done="onGridXlsx"
             :cities="cities" :city-search="citySearch"
             :extra-values="extraValues" :cell-class="cellClassFn" :focus-id="selectedId" label="地球站"
             @row-focus="onRowFocus"
           />
         </div>
 
-        <div class="lb-foot">
-          <span v-if="resultsStale" class="rain-stale">输入已变</span>
-          <span v-if="progress" class="lb-notice" data-i18n-skip>{{ progress }}</span>
-          <span class="lb-flex"></span>
-          <button class="lb-calc" :disabled="computing || !api" @click="compute">{{ computing ? '计算中…' : calcText }}</button>
-        </div>
       </section>
 
       <!-- ③ 结果 -->
@@ -821,6 +897,7 @@ onMounted(async () => {
                     <th class="r">时长</th>
                     <th class="r">峰值恶化 dB</th>
                     <th class="r">最小夹角 °</th>
+                    <th v-if="sceneApi" class="c"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -833,6 +910,9 @@ onMounted(async () => {
                     <td class="r mono" data-i18n-skip>{{ d.durationStr }}</td>
                     <td class="r mono" :class="degClass(d.peakCNdeg)" data-i18n-skip>{{ d.peakCNdeg }}</td>
                     <td class="r mono" data-i18n-skip>{{ d.peakSeparation }}</td>
+                    <td v-if="sceneApi" class="c so-loc-td">
+                      <button class="so-loc" title="在主窗口定位" @click="locateInMain(d)"><Icon name="locate-fixed" :size="12" /></button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -851,107 +931,46 @@ onMounted(async () => {
       </aside>
     </div>
 
-    <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">保存为新配置</div>
-        <input v-model="cfgDlg.name" class="lb-dlg-inp" placeholder="配置名称" @keyup.enter="confirmCfgDlg" />
-        <div class="lb-dlg-acts">
-          <button class="lb-mini" @click="cfgDlg.open = false">取消</button>
-          <button class="lb-mini pri" @click="confirmCfgDlg">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="leaveDlg.open" class="lb-mask" @click="leaveAnswer('cancel')">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">配置已修改</div>
-        <div class="lb-dlg-msg">「<b data-i18n-skip>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div>
-        <div class="lb-dlg-acts">
-          <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
-          <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>
-          <button class="lb-mini pri" @click="leaveAnswer('save')">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-msg" data-i18n-skip>{{ confirmDlg.msg }}</div>
-        <div class="lb-dlg-acts">
-          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
-          <button class="lb-mini pri" @click="answerConfirm(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <WinStatusBar :n="N" :busy="progress || (computing ? '计算中…' : '')" :stale="resultsStale" stale-title="计算输入已被修改，结果对应修改前的参数">
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
+    </WinStatusBar>
+    <LbVersionsDialog v-model:open="verDlg.open" ns="sun" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
+    <ConfirmDialog />
   </div>
 </template>
 
 <style scoped>
-/* 工作台外壳（.lb-* 一族）——这套类是各工作台窗口共用的「壳」，但一向由各 App 在自己的
-   <style scoped> 里各写一份（scoped 会给选择器缀上 data-v-，别的组件吃不到）。本文件这一段
-   整块抄自 src/rain/RainApp.vue，只补了本窗口自己的 .so-* 几件。 */
-.lb-shell {
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-  display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text);
-  font-size: var(--fs-4); overflow: hidden;
-}
-:root[data-theme="dark"] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col / .lb-side / .lb-mini…）在 styles/lbworkbench.css，此处只留本窗的变体 */
+.lb-shell { font-size: var(--fs-4); overflow: hidden; }
 
-.lb-topbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.lb-brand { font-family: var(--font-serif); font-size: var(--fs-5); font-weight: 600; }
-.lb-flex { flex: 1 1 auto; }
-.lb-notice { font-size: var(--fs-3); color: var(--ok); }
-.lb-warn { font-size: var(--fs-3); color: var(--danger); }
-
-.lb-body { flex: 1 1 auto; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; position: relative; }
 .lb-configs { flex: none; border-right: 1px solid var(--border); background: var(--surface); }
-.lb-build { flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .lb-result { flex: none; border-left: 1px solid var(--border); background: var(--surface); }
 
-.lb-col-hd { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
-.lb-cfg-hd-t { font-weight: 600; }
-.lb-cfg-acts { display: inline-flex; gap: 4px; margin-left: auto; }
-.lb-col-bd { flex: 1 1 auto; overflow: auto; padding: 6px; outline: none; }
-.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-col.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
 /* 结果栏贴窗口右沿，拖宽缝在左缘（startResize 的取负与之配套） */
 .so-res-resizer { right: auto; left: 0; }
 
-.lb-mini { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { border-color: var(--line-hover); }
-.lb-mini:disabled { opacity: .5; cursor: default; }
-/* 墨色主按钮（P1）：走 --primary-fill，深色下不再是近白块；悬停 / 禁用各有一档 */
-.lb-mini.pri { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
-.lb-mini.pri:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
-.lb-mini.pri:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
-.lb-mini-ico { padding: 0 6px; }
-/* F10.7 数据读数：外观是读数（无边框），行为是按钮（点一下重新联网取） */
-.so-sf { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 6px; border: 1px solid transparent; background: none; color: var(--text-faint); border-radius: var(--r-ctl); cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
-.so-sf:hover:not(:disabled) { border-color: var(--border); color: var(--text); }
-.so-sf:disabled { opacity: .5; cursor: default; }
-.so-sf b { font-weight: 500; color: var(--text-muted); font-family: var(--font-mono); }   /* 原写 --text-dim：全库未定义，整条失效 */
-.so-sf:hover:not(:disabled) b { color: var(--text); }
+/* 功能区「数据」组的读数（F10.7 太阳射电流量）：运行时数据，口径在 title */
+.so-reads { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 4px; font-size: var(--fs-2); }
+.so-read-l { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.so-read-l b { font-weight: 400; color: var(--text); font-family: var(--font-mono); }
+.so-sf-err { color: var(--danger); }
+.lbr-big.spin .app-icon { animation: ui-spin .7s linear infinite; transform-origin: 50% 50%; }
+/* 逐日表行尾「在主窗口定位」：无框图标钮，悬停才显形 */
+.tbl td.so-loc-td { padding: 0 4px; }
+.so-loc { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 20px; padding: 0; border: 1px solid transparent; border-radius: var(--r-ctl); background: none; color: var(--text-faint); cursor: pointer; }
+.so-loc:hover { color: var(--text); border-color: var(--border); background: var(--surface); }
 .rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); margin-left: auto; max-width: 220px; }
 
 /* 工具栏（两行：卫星 / 时间与判据） */
-/* 上下 6px：6 + 24（分段 / 几何框 / 芯片）+ 6 + 1 = 37，与左右两栏的栏头同高，三栏的底线落在同一 y */
 .rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 /* 第二条工具条（年份 / 分点 / 判据）无栏头可对，保持原 8px 节奏：两行 = 8+24+8+24+8+1 = 73 */
 .rain-toolbar + .rain-toolbar { padding-top: 8px; padding-bottom: 8px; }
 .rain-seg-grp { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .rain-seg-lb.nocap { text-transform: none; }
 .rain-seg-lb { flex: none; white-space: nowrap; font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
-.rain-seg { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
-.rain-seg button { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); padding: 0 12px; border: 0; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
-.rain-seg button + button { border-left: 1px solid var(--border); }
-.rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent-ui); background: var(--surface); }
-.rain-seg button:disabled { opacity: .45; cursor: default; }
-.rain-seg button:hover:not(.on):not(:disabled) { color: var(--text); background: var(--surface); }
-/* 几何框是输入框不是按钮：高 22 + 描边 2 与分段同高；底色 / 描边 / 悬停 / 焦点跟全局输入框一套（field-*），
+/* 几何框是输入框不是按钮：与分段同高（--h-ctl，含描边）；底色 / 描边 / 悬停 / 焦点跟全局输入框一套（field-*），
    焦点环描整个框而不是框里的裸 input */
-.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: calc(var(--h-ctl) + 2px); padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
+.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: var(--h-ctl); box-sizing: border-box; padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
 .rain-geom:hover { border-color: var(--field-border-hover); }
 .rain-geom:focus-within { border-color: var(--accent-ui); background: var(--field-bg); }
 .rain-geom:has(input:focus-visible) { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
@@ -963,21 +982,14 @@ onMounted(async () => {
 .rain-geom i { font-style: normal; font-size: var(--fs-1); color: var(--text-faint); }
 .so-name input { width: 132px; text-align: left; }
 .chips { display: inline-flex; gap: 5px; }
-/* 芯片与同一行的「判据」分段说同一种语言（工作台口径）：选中 = 浅底 + 2px 机位色下划线，不再是墨色实底 */
-.chip { border: 1px solid var(--border); background: var(--surface-2); color: var(--text-muted); height: calc(var(--h-ctl) + 2px); padding: 0 10px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); transition: var(--t-state); }
-.chip:hover:not(.on) { border-color: var(--border-strong); color: var(--text); background: var(--surface); }
-.chip.on { background: var(--surface); color: var(--text); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); font-weight: 600; transition-duration: 0s; }
-/* 选中态自带 box-shadow 会盖掉全局按压阴影，这里叠回去（点选中芯片 = 取消该季） */
-.chip.on:active { box-shadow: inset 0 -2px 0 var(--accent-ui), var(--press); }
 
 /* 卫星检索 */
 .so-sat { position: relative; }
 .so-search { position: relative; display: inline-flex; }
-.so-search input { font: inherit; font-size: var(--fs-3); height: calc(var(--h-ctl) + 2px); width: 150px; padding: 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); outline: none; }
-.so-search input:focus { border-color: var(--accent-ui); }
-.so-drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 380px; max-height: 300px; overflow-y: auto; z-index: 50; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-box); padding: 3px; animation: ui-float-in var(--dur-2) var(--ease-out); }
+.so-search input { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); width: 150px; padding: 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); outline: none; }
+.so-drop { position: absolute; top: calc(100% + 3px); left: 0; min-width: 380px; max-height: 300px; overflow-y: auto; z-index: var(--z-pop); background: var(--bg); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); border-radius: var(--r-box); padding: 3px; animation: ui-float-in var(--dur-2) var(--ease-out); }
 .so-drop-i { display: flex; align-items: baseline; gap: 5px; padding: 4px 8px; cursor: pointer; font-size: var(--fs-3); color: var(--text-muted); border-radius: var(--r-ctl); white-space: nowrap; }
-.so-drop-i:hover { background: var(--surface-2); color: var(--text); }
+.so-drop-i:hover { background: var(--wash-hover); color: var(--text); }
 .so-drop-i.dim { color: var(--text-faint); cursor: default; }
 .so-drop-i b { font-weight: 600; color: var(--text); }
 .so-d { color: var(--text-faint); }
@@ -994,13 +1006,6 @@ onMounted(async () => {
 
 .rain-grid { flex: 1 1 auto; min-height: 0; min-width: 0; overflow: hidden; display: flex; padding: 8px; }
 .rain-grid > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
-.rain-stale { flex: none; font-size: var(--fs-2); padding: 2px 7px; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
-
-.lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--primary-fill); background: var(--primary-fill); color: var(--primary-on); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-calc:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
-/* 禁用走 P1 配方而不是 opacity .55：半透明的墨块看着仍像能点 */
-.lb-calc:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 
 /* 结果栏 */
 .lb-result-bd { flex: 1 1 auto; overflow: auto; padding: 10px; }
@@ -1036,12 +1041,4 @@ onMounted(async () => {
 .so-empty .dim { color: var(--text-faint); font-family: var(--font-mono); margin-top: 6px; }
 .rain-err { color: var(--danger); font-size: var(--fs-4); padding: 16px 8px; }
 
-/* 弹窗 */
-/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
-.lb-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 300; }
-.lb-dlg { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lb-dlg-hd { font-size: var(--fs-4); font-weight: 600; margin-bottom: 10px; }
-.lb-dlg-msg { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
-.lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); margin-bottom: 12px; }
-.lb-dlg-acts { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

@@ -300,8 +300,8 @@ const boreTip = computed(() => {
   // 该天线此刻没画出来（无实时读数）→ 退回天线自身的峰值 dB，同样不报坐标。
   const lp = grd.livePeak.value[isShell.value ? 'shell' : 'ground']
   const tail = lp
-    ? ` · 峰值 ${fx(lp.db)}dB` + (lp.hit ? ` @ ${fx(lp.lon)},${fx(lp.lat)}` : '')
-    : (Number.isFinite(+m.peakDb) ? ` · 峰值 ${fx(m.peakDb)}dB` : '')
+    ? ` · 峰值 ${fx(lp.db)} dB` + (lp.hit ? ` @ ${fx(lp.lon)},${fx(lp.lat)}` : '')
+    : (Number.isFinite(+m.peakDb) ? ` · 峰值 ${fx(m.peakDb)} dB` : '')
   // 姿态 + 挂点：（律退过才有的状态）+ 视轴在星下天底系的 Az/El（与「本体固定」档同一口径）+ 钟向角 ψ（含「旋转 Rot」）
   // + 偏航导引此刻的本体偏航角（随时刻变的量，下拉里看不到）+ 视轴落点。Az/El/ψ 正是写给链路预算 / 主进程采样器的等效手动指向（attEquiv）
   if (isAtt.value) {
@@ -314,7 +314,7 @@ const boreTip = computed(() => {
   }
   if (isSatMode.value) {
     const off = st.boreType === 'satoff' ? ` · 偏置 ${fx(st.boreOffAz || 0)}°/${fx(st.boreOffEl || 0)}°` : ''
-    return (st.boreSat ? (satResolved.value ? '指向 ' + (st.boreSatName || '目标星') : '目标星不在场，已退回天底') : '未选目标星') + off + tail
+    return (st.boreSat ? (satResolved.value ? '指向 ' + (st.boreSatName || '目标卫星') : '目标卫星不在场，已退回天底') : '未选目标卫星') + off + tail
   }
   if (st.boreType === 'point') {
     return `指向空间点 ${fx(st.borePtLon == null ? m.satLon : st.borePtLon)}°E, ${fx(st.borePtLat || 0)}°N @ ${fx(st.borePtAlt || 0, 0)} km${tail}`
@@ -333,13 +333,13 @@ const boreTip = computed(() => {
           <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
         </svg>
         <span class="setlbl">天线设置</span><span class="setname" :title="grd.activeName()">{{ grd.activeName() }}</span>
-        <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置只作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
+        <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置仅作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
       </div>
       <template v-if="isSecOpen('grd-set')">
         <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
         <template v-if="anRec">
           <div class="sect" data-sec="grd-model"><span>方向图</span>
-            <span v-if="anOwned" class="lnk" title="该天线由电磁波束仿真生成，参数须在电磁波束仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在电磁波束仿真中编辑</span>
+            <button type="button" v-if="anOwned" class="lnk" title="该天线由电磁波束仿真生成，参数须在电磁波束仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在电磁波束仿真中编辑</button>
           </div>
           <template v-if="!anOwned">
             <template v-for="(m, i) in anDrafts" :key="m.id || i">
@@ -357,7 +357,7 @@ const boreTip = computed(() => {
         </template>
         <template v-if="grd.beamListOn()">
           <div class="sect"><span>Beams To Plot · {{ bCount }} 波束</span></div>
-          <input class="ci bq" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
+          <input class="ci bq search-field" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
           <!-- 整行都是勾选热区，按住左键拖＝刷选（长按多选）；名字是纯文本，改名走行尾铅笔 / F2。
                复选框只当显示件（CSS 里 pointer-events:none），指针交互一律归行处理。 -->
           <div
@@ -370,7 +370,7 @@ const boreTip = computed(() => {
               <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
               <span class="bpk">{{ bOnCount }}/{{ bCount }}</span>
               <span class="bacts">
-                <span v-if="bOnCount && bCount > 1" class="ic del" :title="`删除勾选的 ${bOnCount} 个波束（可重新导入原 GRD 恢复）`" @mousedown.stop @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="12" /></span>
+                <button type="button" v-if="bOnCount && bCount > 1" class="del ibtn sm danger" :title="`删除勾选的 ${bOnCount} 个波束（可重新导入原 GRD 恢复）`" @mousedown.stop @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="12" /></button>
               </span>
             </div>
             <div
@@ -389,8 +389,8 @@ const boreTip = computed(() => {
               <span v-else class="bnm" :title="b.label" data-i18n-skip>{{ b.label }}</span>
               <span v-if="bCount === 1" class="bpk">{{ b.peakDb.toFixed(1) }}</span>
               <span class="bacts">
-                <span class="ic" title="重命名波束（地图标注同步用此名）· 快捷键 F2" @mousedown.stop @click.stop.prevent="startRenameBeam(b)"><Icon name="pencil" :size="12" /></span>
-                <span v-if="bCount > 1" class="ic del" title="删除该波束（可重新导入原 GRD 恢复）" @mousedown.stop @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="12" /></span>
+                <button type="button" class="ibtn sm" title="重命名波束（地图标注同步用此名）· 快捷键 F2" @mousedown.stop @click.stop.prevent="startRenameBeam(b)"><Icon name="pencil" :size="12" /></button>
+                <button type="button" v-if="bCount > 1" class="del ibtn sm danger" title="删除该波束（可重新导入原 GRD 恢复）" @mousedown.stop @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="12" /></button>
               </span>
             </div>
             <div v-if="!bRows.length" class="empty">无匹配波束</div>
@@ -400,9 +400,9 @@ const boreTip = computed(() => {
         <div v-if="anRec && !grd.beamListOn()" class="sect"><span>参数</span></div>
         <div class="srow"><label>极化</label><select v-model="st.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
         <div class="srow"><label>类型</label>
-          <span class="seg sm"><span class="sg" :class="{ on: st.ctype === 'rel' }" @click="st.ctype = 'rel'">相对峰值</span><span class="sg" :class="{ on: st.ctype === 'relInput' }" @click="st.ctype = 'relInput'">相对输入值</span><span class="sg" :class="{ on: st.ctype === 'abs' }" @click="st.ctype = 'abs'">绝对</span></span>
+          <span role="radiogroup" class="seg sm"><button type="button" role="radio" :aria-checked="!!(st.ctype === 'rel')" class="sg" :class="{ on: st.ctype === 'rel' }" @click="st.ctype = 'rel'">相对峰值</button><button type="button" role="radio" :aria-checked="!!(st.ctype === 'relInput')" class="sg" :class="{ on: st.ctype === 'relInput' }" @click="st.ctype = 'relInput'">相对输入值</button><button type="button" role="radio" :aria-checked="!!(st.ctype === 'abs')" class="sg" :class="{ on: st.ctype === 'abs' }" @click="st.ctype = 'abs'">绝对</button></span>
         </div>
-        <div v-if="st.ctype === 'relInput'" class="srow sub"><label>参考电平</label><input class="ci" type="number" step="0.5" v-model.number="st.refDb" title="电平表里的值相对此值（而非波束峰值）" /><span class="u">dB</span></div>
+        <div v-if="st.ctype === 'relInput'" class="srow sub"><label>参考电平</label><input class="ci" type="number" step="0.5" v-model.number="st.refDb" title="电平表中的值相对此值（而非波束峰值）" /><span class="u">dB</span></div>
         <label v-if="st.ctype !== 'abs'" class="chk2"><input type="checkbox" v-model="st.labelAbs" /><span title="等值线数值标签印绝对 dB（档值仍按相对填）">绝对标签</span></label>
         <div class="srow"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.number="st.gainOffset" /><span class="u">dB</span></div>
         <div class="srow"><label>路径损耗</label><select v-model="st.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select><span class="u">{{ plSpan }}</span></div>
@@ -413,11 +413,11 @@ const boreTip = computed(() => {
           <!-- 表头落在表内、用与数据行同一套列宽 —— 原来是一串靠右的「填充 · 线 · 值 · 绝对」，
                飘在表格右上角，压根不在它命名的那几列头上，两个色块也分不出谁是填充谁是线。 -->
           <div class="glvtb">
-            <span class="ic" title="上移当前档" @click="lvMove(-1)"><Icon name="arrow-up" :size="12" /></span>
-            <span class="ic" title="下移当前档" @click="lvMove(1)"><Icon name="arrow-down" :size="12" /></span>
-            <span class="ic" title="在当前档后插入一档" @click="lvInsert()"><Icon name="plus" :size="12" /></span>
-            <span class="ic" title="复制全部电平值到剪贴板" @click="lvCopy()"><Icon name="clipboard" :size="12" /></span>
-            <span class="ic" title="从剪贴板粘贴电平值（空格 / 逗号 / 换行分隔）" @click="lvPaste()"><Icon name="file-down" :size="12" /></span>
+            <button type="button" class="ibtn sm" title="上移当前档" @click="lvMove(-1)"><Icon name="arrow-up" :size="12" /></button>
+            <button type="button" class="ibtn sm" title="下移当前档" @click="lvMove(1)"><Icon name="arrow-down" :size="12" /></button>
+            <button type="button" class="ibtn sm" title="在当前档后插入一档" @click="lvInsert()"><Icon name="plus" :size="12" /></button>
+            <button type="button" class="ibtn sm" title="复制全部电平值到剪贴板" @click="lvCopy()"><Icon name="copy" :size="12" /></button>
+            <button type="button" class="ibtn sm" title="从剪贴板粘贴电平值（空格 / 逗号 / 换行分隔）" @click="lvPaste()"><Icon name="clipboard" :size="12" /></button>
           </div>
           <div class="glvhd" aria-hidden="true"><span class="h-clr">填充</span><span class="h-clr">线</span><span class="h-val">值 (dB)</span><span class="h-nm">名称</span><span class="h-del"></span><span class="h-del"></span></div>
           <template v-for="(L, i) in st.levels" :key="i">
@@ -430,18 +430,18 @@ const boreTip = computed(() => {
                 :title="L.name ? '自定义名称（等值线数值标签用此名，清空恢复电平值）' : '点击自定义名称（默认显示电平值，作等值线数值标签）'"
                 @click.stop @focus="startRenameLv(i, L)" @input="e => inputRenameLv(i, e.target.value)"
                 @keydown.enter="e => e.target.blur()" @blur="commitRenameLv(i)" />
-              <span class="ic" :class="{ on: hasSty(L) }" title="该档的线型 / 线宽 / 填充透明度（留空＝跟全局）" @click.stop="styLv = styLv === i ? -1 : i"><Icon name="sliders-horizontal" :size="12" /></span>
-              <span class="ic del" title="删除该档" @click.stop="grd.removeLevel(i)"><Icon name="x" :size="12" /></span>
+              <button type="button" :aria-pressed="(hasSty(L)) ? 'true' : 'false'" class="ibtn sm" :class="{ on: hasSty(L) }" title="该档的线型 / 线宽 / 填充不透明度（留空＝跟全局）" @click.stop="styLv = styLv === i ? -1 : i"><Icon name="sliders-horizontal" :size="12" /></button>
+              <button type="button" class="del ibtn sm danger" title="删除该档" @click.stop="grd.removeLevel(i)"><Icon name="x" :size="12" /></button>
             </div>
             <div v-if="styLv === i" class="glvsty">
               <div class="srow"><label>线型</label>
                 <select :value="L.dash || ''" @change="e => L.dash = e.target.value || null"><option v-for="d in LV_DASH" :key="d[0]" :value="d[0]">{{ d[1] }}</option></select>
               </div>
               <div class="srow"><label>线宽</label><input class="ci" type="number" step="0.1" min="0.1" max="8" placeholder="跟全局" :value="L.width == null ? '' : L.width" @change="e => lvNum(L, 'width', e.target.value, 0.1, 8)" /></div>
-              <div class="srow"><label>填充透明度</label><input class="ci" type="number" step="0.05" min="0" max="1" placeholder="跟全局" :value="L.fillAlpha == null ? '' : L.fillAlpha" @change="e => lvNum(L, 'fillAlpha', e.target.value, 0, 1)" /></div>
+              <div class="srow"><label>填充不透明度</label><input class="ci" type="number" step="0.05" min="0" max="1" placeholder="跟全局" :value="L.fillAlpha == null ? '' : L.fillAlpha" @change="e => lvNum(L, 'fillAlpha', e.target.value, 0, 1)" /></div>
             </div>
           </template>
-          <div class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="12" /> 添加电平</div>
+          <button type="button" class="glvadd" @click="grd.addLevel()"><Icon name="plus" :size="12" /> 添加电平</button>
         </div>
         <div class="glvgen" data-sec="电平生成">
           <div class="srow"><label>起始</label><input class="ci" type="number" step="0.5" v-model.number="gen.start" /><span class="u">dB</span></div>
@@ -450,34 +450,34 @@ const boreTip = computed(() => {
           <div class="srow"><label>配色</label>
             <select v-model="gen.scheme"><option v-for="n in SCHEME_NAMES" :key="n" :value="n">{{ n }}</option><option value="custom">自定义</option></select>
           </div>
-          <div class="glvadd" title="按起始 / 间隔 / 档数重建整张电平表" @click="lvGenerate()"><Icon name="refresh-cw" :size="12" /> 生成电平</div>
+          <button type="button" class="glvadd" title="按起始 / 间隔 / 档数重建整张电平表" @click="lvGenerate()"><Icon name="refresh-cw" :size="12" /> 生成电平</button>
         </div>
-        <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(1) }}</span></div>
+        <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="st.lineWidth" /><span class="u">{{ st.lineWidth.toFixed(2) }}</span></div>
         <div class="srow"><label>线型</label>
           <select v-model="st.lineStyle"><option value="solid">实线</option><option value="dash">虚线</option><option value="dot">点线</option><option value="dashdot">点划线</option></select>
-          <span class="lnk" title="清掉每档单独设的线宽 / 线型，全表回到这两项" @click="grd.applyLineToAll()">应用到全部档</span>
+          <button type="button" class="btn ghost sm" title="清掉每档单独设的线宽 / 线型，全表回到这两项" @click="grd.applyLineToAll()">应用到全部档</button>
         </div>
-        <div class="srow"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="st.lineAlpha" title="只作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
+        <div class="srow"><label>线不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="st.lineAlpha" title="仅作用于等值线，不影响分带填充" /><span class="u">{{ fx(st.lineAlpha) }}</span></div>
       </template>
     </div>
 
     <div class="sec">
       <label class="chk2"><input type="checkbox" v-model="st.fill" /><span>Fill Contours（分带填充）</span></label>
       <label class="chk2"><input type="checkbox" v-model="st.line" /><span>显示等值线</span></label>
-      <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="st.alpha" /><span class="u">{{ st.alpha.toFixed(2) }}</span></div>
+      <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="st.alpha" /><span class="u">{{ st.alpha.toFixed(2) }}</span></div>
     </div>
 
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-bore') }" :size="12" /><span>天线 boresight</span>
+      <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-bore') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-bore')" @keydown.space.self.prevent="toggleSec('grd-bore')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-bore') }" :size="12" /><span>天线 boresight</span>
         <span class="lnk" :class="{ on: grd.dragBore.value, dis: isAtt }" :title="isAtt ? '姿态 + 挂点：视轴由姿态律给出，不可拖拽' : (isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心')" @click.stop="isAtt || grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
       </div>
       <template v-if="isSecOpen('grd-bore')">
         <!-- 两大类：对地指向瞄地面/相对天底，对星指向瞄空间（目标星或空间定点，可指反天底）。
              同一份指向设置两视图共用，故两边下拉必须给全，缺项会让另一视图选出来的模式在这里显示空白。 -->
         <div class="srow"><label>指向来源</label>
-          <div class="seg">
-            <span class="sg" :class="{ on: boreSrc === 'manual' }" title="按下面的指向模式手动给定" @click="boreSrc = 'manual'">手动</span>
-            <span class="sg" :class="{ on: boreSrc === 'att' }" title="视轴 = 卫星本体姿态律 × 挂点；随仿真时刻更新。切回手动时恢复原指向" @click="boreSrc = 'att'">姿态 + 挂点</span>
+          <div role="radiogroup" class="seg">
+            <button type="button" role="radio" :aria-checked="!!(boreSrc === 'manual')" class="sg" :class="{ on: boreSrc === 'manual' }" title="按下面的指向模式手动给定" @click="boreSrc = 'manual'">手动</button>
+            <button type="button" role="radio" :aria-checked="!!(boreSrc === 'att')" class="sg" :class="{ on: boreSrc === 'att' }" title="视轴 = 卫星本体姿态律 × 挂点；随仿真时刻更新。切回手动时恢复原指向" @click="boreSrc = 'att'">姿态 + 挂点</button>
           </div>
         </div>
         <!-- ★ att 自成一支：下面手动那条 v-if / v-else-if / v-else 链整块包进 v-else，att 不会掉进末尾的 az/el 分支。
@@ -488,7 +488,7 @@ const boreTip = computed(() => {
             <select v-model="mountSel" title="绑定中的挂点；「缺省」= antennaRef 指向本天线的挂点，若无则取本体 +Z（上向为本体 −Y，与手动天底同一基准）">
               <option v-for="o in mountOpts" :key="o.id || '_def'" :value="o.id" data-i18n-skip>{{ o.name }}</option>
             </select>
-            <span v-if="grd.bodyEditorOk && grd.bodyEditorOk()" class="ic" title="在模型工作台「卫星」页编辑挂点与姿态律" @click="grd.openBodyEditor()"><Icon name="external-link" :size="12" /></span>
+            <button type="button" v-if="grd.bodyEditorOk && grd.bodyEditorOk()" class="ibtn sm" title="在模型工作台「卫星」页编辑挂点与姿态律" @click="grd.openBodyEditor()"><Icon name="external-link" :size="12" /></button>
           </div>
         </template>
         <template v-else>
@@ -517,14 +517,14 @@ const boreTip = computed(() => {
           <div class="srow"><label>高度</label><input class="ci" type="number" step="10" min="0" v-model.number="st.borePtAlt" title="指向点的轨道高度（地心球面 r = 6378.137 + 该值，与轨道壳层同口径）" /><span class="u">km</span></div>
         </template>
         <template v-else-if="isSatMode">
-          <div class="srow"><label>目标星</label>
+          <div class="srow"><label>目标卫星</label>
             <span class="tgtnm" :class="{ bad: st.boreSat && !satResolved }">{{ st.boreSatName || '未选择' }}</span>
-            <span v-if="st.boreSat" class="ic del" title="清除目标星" @click="grd.setBoreSat(null, '')"><Icon name="x" :size="12" /></span>
+            <button type="button" v-if="st.boreSat" class="del ibtn sm danger" title="清除目标卫星" @click="grd.setBoreSat(null, '')"><Icon name="x" :size="12" /></button>
           </div>
-          <div class="srow"><input class="ci" v-model="bq" placeholder="搜索目标星：卫星名 / NORAD / 星座 / 卫星组" /></div>
+          <div class="srow"><input class="ci search-field" v-model="bq" placeholder="搜索目标卫星：卫星名 / NORAD / 星座 / 卫星组" /></div>
           <div v-if="bq.trim()" class="sres">
             <div v-if="bBusy" class="sres-e">搜索中…</div>
-            <div v-else-if="!bcand.length" class="sres-e">没有匹配的卫星。</div>
+            <div v-else-if="!bcand.length" class="sres-e">无匹配卫星。</div>
             <template v-else>
               <div class="sres-list">
                 <div v-for="e in bcand" :key="e.noradId || e.name" class="sitem" @click="pickBoreSat(e)">
@@ -551,7 +551,7 @@ const boreTip = computed(() => {
     </div>
 
     <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-disp', false) }" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
+      <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-disp', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-disp', false)" @keydown.space.self.prevent="toggleSec('grd-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-disp', false) }" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
         <!-- 每项自带一枚色块（钉在行尾成一列）：色块是该项的从属参数，与字号/大小同进退——勾上才出现。
              ★ 必须放在 <label class="chk2"> 里面：取色框属于 interactive content，点它不会触发 label 的
@@ -559,25 +559,25 @@ const boreTip = computed(() => {
                `.sec > * + *` 规则也跟着要改。 -->
         <label class="chk2"><input type="checkbox" v-model="st.fontBold" /><span title="波束名 / 峰值电平 / 数值标签共用">标签粗体</span></label>
         <label class="chk2"><input type="checkbox" v-model="st.showName" /><span>显示波束名</span><input v-if="st.showName" class="clr sw" type="color" v-model="st.nameColor" title="波束名颜色（两个视图同一套样式）" /></label>
-        <div v-if="st.showName" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.5" v-model.number="st.nameSize" /><span class="u">{{ st.nameSize }}</span></div>
+        <div v-if="st.showName" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="32" step="0.1" v-model.number="st.nameSize" /><span class="u">{{ fx(st.nameSize, 1) }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showBore" /><span title="当前场的峰值格点打在地球/壳层上的位置；峰值方向越过地平时不标">显示峰值点</span><input v-if="st.showBore" class="clr sw" type="color" v-model="st.boreColor" title="峰值点十字颜色（两个视图同一套样式）" /></label>
-        <div v-if="st.showBore" class="srow sub"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.1" v-model.number="st.boreSize" /><span class="u">{{ st.boreSize }}</span></div>
+        <div v-if="st.showBore" class="srow sub"><label>大小</label><input class="rng" type="range" min="0.1" max="3" step="0.01" v-model.number="st.boreSize" /><span class="u">{{ fx(st.boreSize, 2) }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showRay" /><span title="从卫星沿方向图 u=v=0 方向射出的一条线，一根天线一条">显示天线视轴</span><input v-if="st.showRay" class="clr sw" type="color" v-model="st.rayColor" title="视轴颜色（两个视图同一套样式）" /></label>
         <template v-if="st.showRay">
-          <div class="srow sub"><label>线宽</label><input class="rng" type="range" min="0.1" max="6" step="0.1" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 1) }}</span></div>
-          <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
+          <div class="srow sub"><label>线宽</label><input class="rng" type="range" min="0.1" max="6" step="0.01" v-model.number="st.rayWidth" /><span class="u">{{ fx(st.rayWidth, 2) }}</span></div>
+          <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="st.rayOpacity" /><span class="u">{{ fx(st.rayOpacity) }}</span></div>
         </template>
         <label class="chk2"><input type="checkbox" v-model="st.showPeak" /><span title="峰值点处的 dB 读数，随极化 / 增益偏置 / 路径损耗变">显示峰值电平</span><input v-if="st.showPeak" class="clr sw" type="color" v-model="st.peakColor" title="峰值电平读数颜色（两个视图同一套样式）" /></label>
-        <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.peakSize" /><span class="u">{{ st.peakSize }}</span></div>
+        <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.1" v-model.number="st.peakSize" /><span class="u">{{ fx(st.peakSize, 1) }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span><input v-if="st.showVal" class="clr sw" type="color" v-model="st.valColor" title="数值标签颜色（两个视图同一套样式）" /></label>
-        <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.5" v-model.number="st.valSize" /><span class="u">{{ st.valSize }}</span></div>
+        <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.1" v-model.number="st.valSize" /><span class="u">{{ fx(st.valSize, 1) }}</span></div>
         <div v-if="st.showVal" class="srow sub"><label>标签</label><select v-model="st.labelMode"><option value="single">单个</option><option value="interval">沿线间隔</option></select></div>
         <div v-if="st.showVal && st.labelMode === 'interval'" class="srow sub"><label>间隔</label><input class="ci" type="number" step="1" min="2" max="200" v-model.number="st.labelGap" title="两个标签之间隔几个标签宽（SATSOFT Interval）" /></div>
         <label v-if="st.showVal" class="chk2 sub"><input type="checkbox" v-model="st.labelWithName" /><span title="该档起过名时，标签印「值 名称」">值 + 名称</span></label>
         <!-- 拖动标签位置只在【对地】视图给：可拖标签由对地图层构建时捕获(_dragLabels)，壳层上的标签不在其中。
              壳层视图里开这个模式只会掐掉左键旋转、什么也拖不动，故不出这个入口。 -->
         <div v-if="st.showVal && !isShell" class="srow sub" style="justify-content:flex-start">
-          <span class="lnk" :class="{ on: grd.dragLabel.value }" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon v-if="grd.dragLabel.value" name="check" :size="12" /> 拖动标签位置</span>
+          <button type="button" class="btn" :class="{ on: grd.dragLabel.value }" :aria-pressed="grd.dragLabel.value ? 'true' : 'false'" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon name="move" :size="12" /><span>拖动标签位置</span></button>
         </div>
       </template>
     </div>
@@ -585,6 +585,8 @@ const boreTip = computed(() => {
 </template>
 
 <style scoped>
+/* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button).glvadd, :where(button).lnk { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 /* 与「对地覆盖分析」侧栏（ConstellationMap3D.vue）逐条同源：本组件在两个视图里各挂一次，
    宿主页的 scoped 样式进不来，故这里自带一份。改动请两处对照，别只改一边。 */
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -613,23 +615,6 @@ const boreTip = computed(() => {
 /* ③ 读数列：钉宽 + 右对齐 + 等宽数字。原来 .u 宽度随文字走（dB / ° / 0.56 / 5 各不同），
    而滑杆是 flex:1 —— 读数宽一格滑杆就短一格，逐行长短不一。钉住之后所有滑杆等长。 */
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
-   原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
-.seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-/* 行高钉 16 + 上下 2 + 外框 2 ＝ --h-ctl 22，与同行输入框齐平（允许折行的段每行也是 16） */
-.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-/* span 不吃全局 <button> 按下罩，就地补一档 */
-.seg .sg:active:not(.on):not(.dis) { box-shadow: var(--press); transition-duration: 0s; }
-/* 选中是结论不是过程：切换瞬时；深色下走 --sel-fill 压一档，不再是近白刺眼块 */
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-/* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
-.seg.sm .sg { padding: 2px 7px; font-size: var(--fs-2); }
-/* 参数行里的分段控件：铺满整行、段内等分，挤不下时段文字折行而不是顶出面板（同 controls.css） */
-.srow > .seg { flex: 1 1 auto; }
-.srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
 /* 标题 / 行尾动作层级（与宿主页 .sect 逐字同源）：标题墨色，行尾动作浅灰、悬停转墨加下划线，开着的动作转机位色 */
 .sect { display: flex; align-items: center; color: var(--text); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; }
@@ -664,7 +649,7 @@ const boreTip = computed(() => {
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 /* 整行都是 label 命中区：指在文字上时复选框也给悬停反馈（同宿主页） */
 .chk2:hover > input[type=checkbox]:not(:checked):not(:disabled) { border-color: var(--field-border-hover); }
-.chk2:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.chk2:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 /* 勾选行行尾的色块：推到最右成一列。行文字长到要换行时它跟着掉行，不挤压文字。 */
 .chk2 > .clr.sw { margin-left: auto; }
 .empty { color: var(--text-faint); padding: 4px 0; }
@@ -674,9 +659,9 @@ const boreTip = computed(() => {
 .tip { color: var(--text-faint); font-size: var(--fs-2); line-height: 1.5; }
 .rng { flex: 1; min-width: 0; }
 .ci.bq { width: 100%; border: 1px solid var(--field-border); background: var(--field-bg); padding: 3px 6px; font-size: var(--fs-3); outline: none; color: var(--text); }
-.ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; display: inline-flex; }
-.ic:hover { color: var(--text); }
-.ic.del:hover { color: var(--danger); }
+/* 行内图标钮走 .ibtn.sm；负外边距让 20px 命中框不撑高所在行 */
+.bacts .ibtn, .glvrow .ibtn, .glvtb .ibtn { margin: -2px 0; }
+.ibtn.del:hover:not(:disabled) { color: var(--danger); }
 /* GRD 电平表 */
 .glv { border: 1px solid var(--border); border-radius: var(--r-ctl); }
 /* 电平表头：与 .glvrow 同一套列宽（20 / 20 / 66 / flex / 删除），内距对齐到各列输入框的文字起点 */
@@ -708,16 +693,15 @@ const boreTip = computed(() => {
 .glvrow .lvname:hover { border-color: var(--field-border-hover); }
 .glvrow .lvname:focus { border-color: var(--accent-ui); background: var(--field-bg); color: var(--text); }
 .glvrow .lvname.named { color: var(--text); }
-.glvrow .ic.del:hover { color: var(--danger); }
-.glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-top: 1px solid var(--border); }
-.glvadd:hover { color: var(--accent); background: var(--bg); }
+.glvadd { display: block; width: 100%; padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-top: 1px solid var(--border); }
+.glvadd:hover { color: var(--accent); background: var(--wash-hover); }
 /* Beams To Plot 多波束多选列表（SATSOFT 风格）：勾选＝要绘制。整行都是勾选热区，按住拖＝刷选。
    position:relative 是给 offsetTop 定基准的（拖刷按行的 offsetTop 二分查行，见脚本 bIdxAt）。 */
 .bplist { position: relative; border: 1px solid var(--border); border-radius: var(--r-ctl); max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; outline: none; }
 .bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); user-select: none; }
 .brow + .brow { border-top: 1px solid var(--border); }
-.brow:hover { background: var(--bg); }
+.brow:hover { background: var(--wash-hover); }
 .brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
 .brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
 .brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }

@@ -11,8 +11,9 @@
 // 这一块整体不出现（import.meta.glob 不报编译错），只留「搜一搜」文字入口 + 复制名称。
 //
 // 视觉沿用 MiniBindDialog（同一套 mask / dlg / dhd / dft）。
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import avatarUrl from '../assets/linklab-miniapp-mark.png'
 import { TTL_DAYS } from '../shared/miniPack.js'
 import { MINI_NAME } from '../shared/appLinks.js'
@@ -43,24 +44,12 @@ async function copyName() {
   try { await navigator.clipboard.writeText(MINI_NAME); copied.value = true; setTimeout(() => { copied.value = false }, 1200) } catch (e) { /* 无剪贴板权限 */ }
 }
 
-// Esc 关窗（捕获阶段先收；输入法组字中不关），打开即聚焦「完成」
-const okBtn = ref(null)
-function onKey(e) { if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); emit('close') } }
-onMounted(() => {
-  window.addEventListener('keydown', onKey, true)
-  okBtn.value?.focus({ preventScroll: true })
-})
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc / 关闭钮关、打开即聚焦「关闭」、点遮罩不关）
 </script>
 
 <template>
-  <div class="mask" @click.self="emit('close')">
-    <div class="dlg" role="dialog" aria-modal="true">
-      <header class="dhd">
-        <span class="dt"><Icon name="wechat" :size="16" />微信小程序</span>
-        <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </header>
-
+  <AppDialog :width="580" flush initial-focus=".mabt-ok" @close="emit('close')">
+      <template #title><span class="dt"><Icon name="wechat" :size="16" />微信小程序</span></template>
       <div class="body">
         <!-- 名片：头像 + 名称 + 定位 + 打开方式；右侧小程序码（有图才出） -->
         <div class="idcard">
@@ -107,36 +96,27 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
         </section>
       </div>
 
-      <footer class="dft">
-        <button class="gh" @click="emit('bind')">绑定小程序账号…</button>
-        <button ref="okBtn" class="ok" @click="emit('close')">完成</button>
-      </footer>
-    </div>
-  </div>
+      <template #footer>
+        <button class="btn" @click="emit('bind')">绑定小程序账号…</button>
+        <button class="btn primary mabt-ok" @click="emit('close')">关闭</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
 /* 与 MiniBindDialog / SettingsModal 同一套视觉语言 */
-/* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
-.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-.dlg { width: 580px; max-width: calc(100vw - 32px); max-height: calc(100vh - 64px); display: flex; flex-direction: column;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3);
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-/* 标题栏内距挪进 .dt，关闭键才能占满整条标题栏高度（总高不变） */
-.dhd { display: flex; align-items: stretch; justify-content: space-between; padding: 0; border-bottom: 1px solid var(--border); }
-.dt { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-size: var(--fs-5); padding: 12px 16px; align-self: center; }
-/* 关闭键与「设置」「文件管理」同一枚：Windows 风矩形热区，悬停红底白字；右上内圆角 = 框体圆角 − 1px */
-.winx { width: 44px; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: var(--t-state);
-  border-top-right-radius: calc(var(--r-card) - 1px); }
-.winx:hover { background: #c42b1c; color: #fff; }
-.body { padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 16px; }
+/* 外壳归 AppDialog；题条里图标 + 字（字体 / 字号跟 AppDialog 题条） */
+.dt { display: inline-flex; align-items: center; gap: 8px; }
+.body { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
 
 /* 名片：头像 + 名称 + 一句话 + 打开方式 */
 .idcard { display: flex; align-items: center; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 /* 小程序真身头像：不随主题反相 —— 品牌标识按其本来面目呈现（同微信图标固定绿的口径）。
    原图背景与「L」笔画都是镂空的，深色主题下直接放会连球体带笔画一起糊掉，故必须垫一层固定白底；
-   墨迹恰好居中且不出内切圆（实测圆形裁切 0 损失），圆片与微信里的头像呈现一致。 */
-.ava { width: 56px; height: 56px; flex: none; align-self: flex-start; background: #fff; border-radius: 50%; user-select: none; -webkit-user-drag: none; }
+   墨迹恰好居中且不出内切圆（实测圆形裁切 0 损失），圆片与微信里的头像呈现一致。
+   垫底走 token：浅色 = 纸白；深色取正文灰 #dbdbdb —— 纯白 56px 圆片在深色面板上是全屏最亮的块。 */
+.ava { width: 56px; height: 56px; flex: none; align-self: flex-start; background: var(--bg); border-radius: 50%; user-select: none; -webkit-user-drag: none; }
+:root[data-theme="dark"] .ava { background: var(--text); }
 .idtx { min-width: 0; flex: 1; }
 .nm { font-family: var(--font-serif); font-size: var(--fs-5); letter-spacing: var(--ls-tight); color: var(--text); }
 .sub { margin-top: 3px; font-size: var(--fs-3); line-height: 1.5; color: var(--text-muted); }
@@ -159,15 +139,4 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .dest { font-size: var(--fs-2); line-height: 1.6; color: var(--text-faint); text-align: right; white-space: nowrap; }
 .hd { font-size: var(--fs-2); color: var(--text-faint); }
 .wide { grid-column: 2 / -1; }
-
-.dft { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 16px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
-/* 次要钮：纸底 + 结构描边 + 正文字；主钮：墨色实底（走 token，深色压一档）。按下由全局按下罩提供 */
-.gh, .ghost { background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
-.gh:hover:not(:disabled), .ghost:hover:not(:disabled) { border-color: var(--line-hover); }
-.gh:disabled { opacity: 1; color: var(--text-faint); background: var(--field-disabled-bg); border-color: var(--border); cursor: default; }
-/* 实底控件的字色一律跟 token（--primary-on = --bg）：深色主题下底色是浅色，写死 #fff 会白底白字 */
-.ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
-.ok:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.ok:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 </style>

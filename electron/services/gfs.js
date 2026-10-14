@@ -340,8 +340,7 @@ module.exports = function createGfs(userDataDir) {
     const est = estimate(o || {});
     if (est.error) return { error: est.error };
     if (est.overHard) {
-      return { error: `本次数据体约 ${(est.bytes / 1048576).toFixed(0)} MB，超过上限 ${(MAX_BYTES / 1048576).toFixed(0)} MB。`
-        + '请缩小范围、放粗格距或拉长帧间隔。' };
+      return { error: `本次数据体约 ${(est.bytes / 1048576).toFixed(0)} MB，超过上限 ${(MAX_BYTES / 1048576).toFixed(0)} MB。` };
     }
     const ds = dsOf(est.res);
     const box = est.bbox, stepH = est.stepH;

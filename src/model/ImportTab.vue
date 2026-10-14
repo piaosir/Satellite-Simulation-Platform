@@ -193,7 +193,7 @@ const liveCount = computed(() => st.imports.filter((j) => j.live).length)
     <MdSec id="imp-files" title="文件">
       <div class="md-acts">
         <button class="lb-mini primary imp-pick" :disabled="!wb.api" title="glb · glTF · OBJ（含 .mtl 与贴图）· STL · FBX · STEP · IGES · BREP；也可直接拖入窗口" @click="pick">
-          <Icon name="folder-open" :size="13" />选择文件…
+          <Icon name="folder-open" :size="12" />选择文件…
         </button>
         <span v-if="liveCount" class="md-state"><span class="imp-spin"></span><span data-i18n-skip>{{ liveCount }}</span></span>
       </div>
@@ -215,7 +215,7 @@ const liveCount = computed(() => st.imports.filter((j) => j.live).length)
         <label title="STK 模型目录（缺省按注册表识别本机 STK 安装位置；清空恢复自动）"><span data-i18n-skip>{{ langNow === 'en' ? 'Directory' : '目录' }}</span></label>
         <input v-model="stkDir" class="ci imp-dir" type="text" spellcheck="false" data-i18n-skip
                :placeholder="loc && loc.found ? loc.dir : ''" @keydown.enter="doScan" />
-        <button class="lb-mini" :disabled="!wb.api" title="选择目录" @click="browse"><Icon name="folder" :size="13" /></button>
+        <button class="lb-mini" :disabled="!wb.api" title="选择目录" @click="browse"><Icon name="folder" :size="12" /></button>
         <button class="lb-mini" :disabled="!wb.api || scanning" title="扫描目录下的 *.glb 与同名 *.gmdf" @click="doScan">{{ scanning ? '扫描中…' : '扫描' }}</button>
       </div>
       <div v-if="scan && scan.error" class="md-state bad"><Icon name="alert-triangle" :size="12" /><span>{{ scan.error }}</span></div>
@@ -227,7 +227,7 @@ const liveCount = computed(() => st.imports.filter((j) => j.live).length)
                      :head-tip="(c) => c.tip || c.label" empty-text="无 glb 模型。" />
         </div>
         <div class="md-acts">
-          <button class="lb-mini primary" :disabled="!nChecked" @click="importChecked"><Icon name="import" :size="13" />导入所选</button>
+          <button class="lb-mini primary" :disabled="!nChecked" @click="importChecked"><Icon name="file-import" :size="12" />导入所选</button>
           <span class="md-state"><span data-i18n-skip>{{ nChecked }}</span><span>/</span><span data-i18n-skip>{{ scan.items.length }}</span></span>
           <span v-if="scan.truncated" class="md-state warn">已截断。</span>
           <span class="sp"></span>
@@ -242,6 +242,5 @@ const liveCount = computed(() => st.imports.filter((j) => j.live).length)
 .imp { display: flex; flex-direction: column; gap: 4px; }
 .imp-pick { height: var(--h-ctl-lg) !important; padding: 0 14px !important; font-size: var(--fs-3) !important; }
 .imp-dir { font-family: var(--font-mono); font-size: var(--fs-2); }
-.imp-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: imp-spin .7s linear infinite; }
-@keyframes imp-spin { to { transform: rotate(360deg); } }
+.imp-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

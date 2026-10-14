@@ -392,7 +392,7 @@ function nadirBasis(satLon, satLat, altKm) {
 //   EIRP 语义由天线级「增益偏置」叠加）。floorDb：相对峰值地板（默认 −50，避免 0 功率 NaN 点）。
 export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct = 55, beams, floorDb = -50 }) {
   const n = beams.length
-  if (!n) throw new Error('尚无波束：请先在地图上放置波束轮廓')
+  if (!n) throw new Error('暂无波束。')
   // 分辨率随波束数自适应：波束少画得细，波束多控制总量（网格是每波束局部小窗口，远小于导入 HTS 的整幅网格）。
   // 蜂窝布满不设数量上限 → 靠降档托底：上千波束时每束波束在图上本就很小，粗网格无感知；
   // 总点数 n·res² 控制在 ~2M 内，文本/解析/绘制均不失控。
@@ -739,9 +739,9 @@ export function butlerCenters(pam) {
 // pam: {Nx,Ny,dxWl,dyWl,R,tri,elem,eff,fGHz}。
 export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beams, floorDb = -50 }) {
   const n = beams.length
-  if (!n) throw new Error('尚无波束：请先在地图上放置波束')
+  if (!n) throw new Error('暂无波束。')
   const sol = solvePam(pam)
-  if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
+  if (!sol.ok) throw new Error('相控阵参数无效。')
   const th3 = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
   const peakDbi = sol.dirDbi
   const res = n <= 4 ? 121 : n <= 16 ? 95 : n <= 48 ? 71 : n <= 120 ? 55 : n <= 400 ? 41 : 31
@@ -839,7 +839,7 @@ function hashGrid(pts, cell) {
 // 站点数兜底（见 ST_MAX）：超限当场抛错并把数目带出去（err.stCount 供预览侧读数），不静默抽稀
 function stGuard(n, cap, what) {
   if (!(n > cap)) return
-  const e = new Error(`${what} ${Math.round(n)} 超出可算范围（上限 ${cap}）：请降低栅密度或缩小覆盖区`)
+  const e = new Error(`${what} ${Math.round(n)} 超出可计算范围（上限 ${cap}）。`)
   e.stCount = Math.round(n)
   throw e
 }
@@ -1130,8 +1130,8 @@ export function shapedStations({ satLon, satLat = 0, altKm, polysPts, theta3, ex
 }
 
 export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stGrid = null, stEdits = null }) {
-  if (!(theta3 > 0)) throw new Error('滚降波束宽度无效：请检查频率 / 口径')
-  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
+  if (!(theta3 > 0)) throw new Error('滚降波束宽度无效。')
+  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效。')
   const { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 } = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets, hotspots, expandDeg })
   const covValue = contourVals.length ? Math.min(...contourVals) : value   // 覆盖保证值 = 最低 contour 标签（隔离区不计）
   const th = theta3
@@ -1242,7 +1242,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     return { F, Fmax, sumP, kMax }
   }
   let { F, Fmax, sumP, kMax } = computeField()
-  if (!(Fmax > 0)) throw new Error('合成场为空：请检查 Polygon 与参数')
+  if (!(Fmax > 0)) throw new Error('合成场为空。')
   // —— 峰点引导自适应抬坡（对真实出图场闭环）：严格 minimax 只抬最低点，区内自然拱起（穹顶化，
   // SATSOFT 同款语义），静态目标坡可能被淹没（坡 +3dB、别处自然拱到 +2.6dB → argmax 不在引导点）；且站点
   // 栅（θ3/2 步距）之间的细网格场还会高出站点采样。故直接量测出图场：argmax 不在任一正 boost 峰点
@@ -1364,7 +1364,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   else if (N <= 2 && omegaDeg2 < 1.5 * 0.866 * Math.pow(BEAMLET_SP * th, 2)) warn = (warn ? warn + '；' : '') + `区域尺度小于 θ3=${th.toFixed(2)}°，赋形退化为准单波束（加大口径方能贴合 Polygon）`
   else if (cornerDip > 2.5) warn = (warn ? warn + '；' : '') + `个别边角凹陷至 ${covMin.toFixed(1)}（低于保证值 ${cornerDip.toFixed(1)} dB）—— 细部小于口径分辨率 θ3=${th.toFixed(2)}°，加大口径可贴合`
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
-  if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外 —— 目标场只作用于覆盖区内/边界站点，区外峰点基本无效（请移入 Polygon）`
+  if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰点在覆盖区外`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大口径，或将峰点宽度放大至 ≥2·θ3）`
   // 站点栅统计（SATSOFT 式回报）：区内/边界/抑制站数 + 站点修正命中/孤儿（栅变了旧修正失配 → 提示重置）
   const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
@@ -1429,8 +1429,8 @@ const MAXPROD_PAM = 3e7                             // LP 规模守卫 M·(2N+1)
 //        peakAt, scanDeg(峰值电扫角), excit:[{port,n,m,u0,v0,az,el,lon,lat,ampDb,phaseDeg,powPct}] }。
 export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, pam, mode = 'value', value = null, floorDb = -50, marginBw = 1.0, expandDeg = 0, stGrid = null, stEdits = null }) {
   const sol = solvePam(pam)
-  if (!sol.ok) throw new Error('相控阵参数无效：请检查阵元数 / 间距 / 频率')
-  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效：请填写区域内的电平（dB）')
+  if (!sol.ok) throw new Error('相控阵参数无效。')
+  if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效。')
   const R = Number(pam.R) || 0
   const th = Math.max(sol.th3xDeg, sol.th3yDeg, 1e-3)
   // —— 多边形分类/指向误差外扩/并集/峰值点/立体角：与 buildShapedGrd 共用 _shapedPrep（同款 base/iso/面积升序）——
@@ -1444,7 +1444,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
   const lb = layoutButlerBeamlets(geo, pam, th, marginBw)
   let ports = lb.ports
   const spacing = lb.spacingDeg
-  if (!ports.length) throw new Error('覆盖区内没有 Butler 波束端口：请检查阵面参数 / 覆盖区')
+  if (!ports.length) throw new Error('覆盖区内无 Butler 波束端口。')
   let portWarn = ''
   if (ports.length > NMAX_PAM) {                     // 端口过多（阵大/覆盖广）→ 空间抽稀 + 告警（激励指令为近似）
     const st = Math.ceil(ports.length / NMAX_PAM)
@@ -1537,7 +1537,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
     return { F, Fmax, sumP, kMax }
   }
   let { F, Fmax, sumP, kMax } = computeField()
-  if (!(Fmax > 0)) throw new Error('合成场为空：请检查 Polygon 与阵面参数')
+  if (!(Fmax > 0)) throw new Error('合成场为空。')
   // 峰值点自适应抬坡（对真实出图场闭环，同 buildShapedGrd）：区内自然超出令静态坡被淹没 → argmax 不在任一正
   //   boost 峰点核心(0.35w)内 → 按「全场峰 − 峰点场 + 0.4dB 保护带」抬坡热启动续跑（≤3 轮、累计 ≤12dB）。
   //   相控阵波束宽 → 峰点拱起有物理上限(Butler 端口固定,不能移到峰点)，此环在该上限内尽力抬；到不了则如实欠额。
@@ -1677,7 +1677,7 @@ export function buildPamShapedGrd({ satName = '', satLon, satLat = 0, altKm, pol
     if (overPorts) warn = (warn ? warn + '；' : '') + `⚠ ${overPorts} 个 Butler 端口超无栅瓣可扫界 ±${sol.scanMaxDeg.toFixed(0)}°：栅瓣进实空间，峰值已按分能修正 ${lsPk.corrDb.toFixed(1)} dB`
   }
   const hotOut = hots.filter((h) => geo.signedDist(h.az, h.el) < 0).length
-  if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外——目标只作用于覆盖区内，区外峰点基本无效（请移入覆盖区）`
+  if (hotOut) warn = (warn ? warn + '；' : '') + `${hotOut} 个峰值点在覆盖区外`
   if (hotGap > 1.5) warn = (warn ? warn + '；' : '') + `峰值点最大欠额 ${hotGap.toFixed(1)} dB（阵面波束宽 θ3=${th.toFixed(2)}° 无法形成更锐的局部峰——加大阵元数 / 减小间距，或将峰点宽度放大至 ≥2·θ3）`
   // 站点栅统计（与反射面赋形同款）：区内/边界/抑制 + 修正命中/孤儿
   const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }

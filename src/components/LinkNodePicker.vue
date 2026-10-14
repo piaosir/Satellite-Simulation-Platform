@@ -23,13 +23,13 @@ const props = defineProps({
 })
 const emit = defineEmits(['pick', 'hover', 'close', 'undo', 'finish'])
 
-const ICON = { st: 'satellite-dish', pt: 'map-pin', sat: 'satellite', city: 'plus', tj: 'ship', pg: 'hexagon' }
+const ICON = { st: 'satellite-dish', pt: 'map-pin', sat: 'satellite', city: 'map-pin', tj: 'ship', pg: 'polygon' }
 const ROW_H = 24                 // 行高（与 .lnp-it 同值：虚拟滚动按它换算）
 const VP_ROWS = 12               // 卫星集视图的视口行数
 const OVERSCAN = 4
 const uid = 'lnp' + Math.random().toString(36).slice(2, 8)
 const optId = (id) => uid + '-' + String(id).replace(/[^\w-]/g, '_')
-const fmtN = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? '' : Number(v).toLocaleString())
+const fmtN = (v) => (v === '' || v == null || !Number.isFinite(Number(v)) ? '' : Number(v).toLocaleString('en-US'))
 
 const q = ref('')
 const open = ref(false)
@@ -298,12 +298,12 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
 
 <template>
   <div ref="rootEl" class="lnp" :class="['m-' + mode, { open, scoped: !!scope }]">
-    <div class="lnp-in" @mousedown="onBoxDown">
+    <div class="lnp-in search-field" @mousedown="onBoxDown">
       <Icon name="search" :size="12" class="lnp-si" />
       <span v-if="scope" class="lnp-tok" :title="scope.name">
-        <Icon :name="scope.icon || 'layers'" :size="11" class="lnp-toki" />
+        <Icon :name="scope.icon || 'layers'" :size="12" class="lnp-toki" />
         <span class="lnp-tokn" :data-i18n-skip="scope.lit ? undefined : ''">{{ scope.name }}</span>
-        <button type="button" class="lnp-tokx" title="清除检索范围" aria-label="清除检索范围" @mousedown.prevent.stop @click.stop="onTokX"><Icon name="x" :size="10" /></button>
+        <button type="button" class="lnp-tokx" title="清除检索范围" aria-label="清除检索范围" @mousedown.prevent.stop @click.stop="onTokX"><Icon name="x" :size="12" /></button>
       </span>
       <input
         ref="inputEl" v-model="q" class="lnp-q" type="text" spellcheck="false" autocomplete="off"
@@ -376,7 +376,7 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
   border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg);
 }
 .lnp-in:hover { border-color: var(--field-border-hover); }
-.lnp.open .lnp-in { border-color: var(--accent-ui); }
+.lnp.open .lnp-in { border-color: var(--focus-ring); box-shadow: var(--focus-halo); }
 .lnp-si { flex: none; color: var(--text-faint); }
 /* 输入框外观交给外层壳：controls.css 给裸 input 的边框 / 底色 / 高度在这里全部让位 */
 .lnp-in .lnp-q {
@@ -415,9 +415,8 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
 .lnp-spin {
   margin-left: auto; width: 10px; height: 10px; border-radius: 50%; box-sizing: border-box;
   border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui);
-  animation: lnp-spin .7s linear infinite;
+  animation: ui-spin .7s linear infinite;
 }
-@keyframes lnp-spin { to { transform: rotate(360deg); } }
 .lnp-it {
   display: flex; align-items: center; gap: 6px; height: 24px; box-sizing: border-box; padding: 0 8px;
   cursor: pointer; font-size: var(--fs-3); scroll-margin-top: 20px;

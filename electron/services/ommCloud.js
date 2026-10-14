@@ -224,7 +224,7 @@ async function maybeUpload(group, text, label, checkValid, tagOverride) {
     const r = await put(objKey(group), gz)
     if (r.ok) {
       _uploaded.add(group)
-      log.emit(`${tag}已回传云镜像 —— ${fmtBytes(gz.length)}(gz) · 耗时 ${fmtSec(Date.now() - t0)}，无法直连 CelesTrak 的用户将从这里获取`)
+      log.emit(`${tag}已回传云镜像 —— ${fmtBytes(gz.length)}(gz) · 耗时 ${fmtSec(Date.now() - t0)}，无法直连 CelesTrak 的用户将从此处获取`)
       return true
     }
     if (r.status === 403) {

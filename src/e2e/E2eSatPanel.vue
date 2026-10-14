@@ -2,6 +2,7 @@
 // 取星口径的两件纯函数放在模块作用域并导出：窗口刷新卫星树时（E2eLinkBudgetApp.reloadSatTree）按树里现在的节点
 // 重解已选条目的轨道，与本面板选星走同一份代码（3D 页改了根数 / 历元，端到端窗口跟着变）。
 import { findPoolByNorad } from '../ngso/satSearchPool.js'
+import Icon from '../components/Icon.vue'
 import { treeElementsSpec } from '../shared/treeOrbitEpoch.js'
 
 const _MU = 398600.4418, _RE = 6378.137
@@ -38,13 +39,13 @@ export async function treeNodeOrbit(node) {
       }
       return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
     }
-    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「从星历搜索」按 NORAD 重选，或改用手动轨道高度+倾角。` }
+    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）未在星历库中解析到轨道。` }
   }
   if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
   const el = node.elements
   if (el && el.altKm != null) return treeElementsSpec(el, node.noradId)
   if ((kind === 'preset' || kind === 'custom' || !kind) && node.altKm != null) return { type: 'snapshot', lonDeg: Number(node.lon) || 0, latDeg: Number(node.lat) || 0, altKm: Number(node.altKm) || 0, noradId: node.noradId }
-  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数。请在「星座3D」页为其补充轨道根数，或改用手动轨道高度+倾角。` }
+  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少轨道根数。` }
 }
 </script>
 
@@ -198,24 +199,24 @@ const unresolved = computed(() => {
     <!-- 轨道 -->
     <div class="esp-sub">轨道</div>
     <div class="esp-seg">
-      <button class="esp-segb" :class="{ on: isGso }" title="地球静止轨道：定点经度即可定几何" @click="setOrbitClass('GSO')">GSO</button>
-      <button class="esp-segb" :class="{ on: !isGso }" title="非静止轨道：手填轨道高度/倾角，或从星历搜索一颗真星" @click="setOrbitClass('NGSO')">NGSO</button>
+      <button class="esp-segb" :class="{ on: isGso }" :aria-pressed="isGso ? 'true' : 'false'" title="地球静止轨道：定点经度即可定几何" @click="setOrbitClass('GSO')">GSO</button>
+      <button class="esp-segb" :class="{ on: !isGso }" :aria-pressed="(!isGso) ? 'true' : 'false'" title="非静止轨道：手填轨道高度/倾角，或从星历搜索一颗真星" @click="setOrbitClass('NGSO')">NGSO</button>
     </div>
     <E2eFields :fields="orbitFields" :form="form" :readonly-keys="roKeys" />
 
     <!-- NGSO 取星器 -->
     <template v-if="!isGso">
       <div class="esp-modes">
-        <button class="esp-tab" :class="{ on: mode === 'search' }" @click="switchMode('search')">从星历搜索</button>
-        <button class="esp-tab" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">卫星/天线树</button>
+        <button class="esp-tab" :class="{ on: mode === 'search' }" :aria-pressed="(mode === 'search') ? 'true' : 'false'" @click="switchMode('search')">从星历搜索</button>
+        <button class="esp-tab" :class="{ on: mode === 'tree' }" :aria-pressed="(mode === 'tree') ? 'true' : 'false'" @click="switchMode('tree')">卫星/天线树</button>
         <span class="esp-flex"></span>
-        <button v-if="satSelected" class="esp-clear" title="取消选星，恢复手填轨道高度/倾角" @click="onClear">✕ 取消选星</button>
+        <button v-if="satSelected" class="esp-clear" title="取消选星，恢复手填轨道高度/倾角" @click="onClear"><Icon name="x" :size="12" />取消选星</button>
       </div>
 
       <div v-if="mode === 'search'" class="esp-pick">
-        <input v-model="kw" class="esp-in" placeholder="名称 / NORAD 号，如 STARLINK / 44713"
+        <input v-model="kw" class="esp-in search-field" placeholder="名称 / NORAD 号，如 STARLINK / 44713"
                @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
-        <div v-if="loading" class="esp-tip">正在加载星历…</div>
+        <div v-if="loading" class="esp-tip">加载中…</div>
         <div v-else-if="loadErr" class="esp-tip esp-err">{{ loadErr }}</div>
         <template v-else-if="listOpen">
           <div v-if="kw && !searchRes.length" class="esp-tip">无匹配卫星</div>
@@ -229,8 +230,8 @@ const unresolved = computed(() => {
               </span>
               <span class="esp-li-i">
                 {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
-                <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }}km</template>
-                <template v-else>h≈{{ Math.round(r.perigeeKm) }}km</template>
+                <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }} km</template>
+                <template v-else>h≈{{ Math.round(r.perigeeKm) }} km</template>
               </span>
             </li>
           </ul>
@@ -307,18 +308,18 @@ const unresolved = computed(() => {
 .esp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
 .esp-li-i { display: block; font-size: var(--fs-1); color: var(--text-muted); font-family: var(--font-mono); }
 .esp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
-.esp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.esp-badge.esp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
-.esp-badge.esp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
-.esp-badge.esp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
-.esp-badge.esp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
+.esp-badge-cc { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
+.esp-badge.esp-rg-GEO { background: color-mix(in srgb, var(--rg-geo) 10%, transparent); color: var(--rg-geo); border-color: color-mix(in srgb, var(--rg-geo) 33%, transparent); }
+.esp-badge.esp-rg-IGSO { background: color-mix(in srgb, var(--rg-igso) 10%, transparent); color: var(--rg-igso); border-color: color-mix(in srgb, var(--rg-igso) 33%, transparent); }
+.esp-badge.esp-rg-MEO { background: color-mix(in srgb, var(--rg-meo) 10%, transparent); color: var(--rg-meo); border-color: color-mix(in srgb, var(--rg-meo) 33%, transparent); }
+.esp-badge.esp-rg-HEO { background: color-mix(in srgb, var(--rg-heo-tint) 13%, transparent); color: var(--rg-heo); border-color: color-mix(in srgb, var(--rg-heo-tint) 33%, transparent); }
 .esp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-ctl, 2px); padding: 5px 7px; margin: 4px 0 2px; }
 .esp-name { user-select: text; -webkit-user-select: text; cursor: text; color: var(--text); }
 .esp-shape { margin-top: 3px; padding-top: 3px; border-top: 1px dashed var(--border); }
 .esp-regime { font-weight: 700; }
-.esp-regime.esp-rg-GEO { color: #16a34a; }
-.esp-regime.esp-rg-IGSO { color: #0d9488; }
-.esp-regime.esp-rg-MEO { color: #2563eb; }
+.esp-regime.esp-rg-GEO { color: var(--rg-geo); }
+.esp-regime.esp-rg-IGSO { color: var(--rg-igso); }
+.esp-regime.esp-rg-MEO { color: var(--rg-meo); }
 .esp-regime.esp-rg-LEO { color: var(--text-muted); }
-.esp-regime.esp-rg-HEO { color: #d98600; }
+.esp-regime.esp-rg-HEO { color: var(--rg-heo); }
 </style>

@@ -11,7 +11,10 @@ import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { SAT_COL_DEFS, SAT_COL_GROUPS, satVisibleColumns, fillSatOpts } from '../viz/grd/useSatPerfTable.js'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, safeFileName } from '../shared/gridXlsx.js'
 import { tzParts, tzToMs } from '../shared/tz.js'
+import { parseDateTimeText } from '../shared/ui/rangeFieldCore.js'
 import { appAlert } from '../stores/alert.js'
+import NoticeLine from '../components/NoticeLine.vue'
+import { useNotice } from '../shared/useNotice.js'
 import { useBridge, useMirror } from './bridge.js'
 import { persistedRef } from './prefs.js'
 import PerfOptsDialog from './PerfOptsDialog.vue'
@@ -77,7 +80,7 @@ onBeforeUnmount(() => { if (cTimer) clearTimeout(cTimer); if (seekRaf) cancelAni
 // ===== 两张网格 =====
 const PICK_COLS = [
   { key: 'no', label: 'No.', num: true },
-  { key: 'name', label: '目标卫星' },
+  { key: 'name', label: '目标卫星', alias: ['目标星'] },   // 旧版导出的工作表表头写「目标星」
   { key: 'noradId', label: 'NORAD', num: true },
   { key: 'group', label: '分组' }
 ]
@@ -122,9 +125,9 @@ const satMenu = ({ row }) => (row && (row.tgtName || row.name) ? [{ key: 'focus'
 const optsOpen = ref(false)
 const hoverId = ref('')
 const resEmptyText = computed(() => {
-  if (!pickRows.value.length) return beamMode.value ? '当前波束内没有卫星。' : '还没有目标星。'
+  if (!pickRows.value.length) return beamMode.value ? '当前波束内暂无卫星。' : '暂无目标卫星。'
   if (win.value.on && !wi.value) return '尚未扫描时段。'
-  return '这些目标星都没有取到值。'
+  return '这些目标卫星都没有取到值。'
 })
 function focusRow(r) { if (r && (r.tgtName || r.name)) act('focus', { name: r.tgtName || r.name, noradId: r.noradId }) }
 
@@ -150,6 +153,8 @@ const bands = computed(() => (wi.value && wi.value.bands) || [])
 const cursorLocal = ref(null)
 watch(() => win.value.cursorMs, (v) => { cursorLocal.value = Number.isFinite(v) ? v : null })
 const curMs = computed(() => (Number.isFinite(cursorLocal.value) ? cursorLocal.value : (wi.value ? wi.value.t0Ms : 0)))
+// 游标时刻读数即输入框：打「YYYY-MM-DD HH:MM:SS」或只打「HH:MM[:SS]」（日期沿用当前游标），按本窗时区档位换回时刻
+const curRnum = { fromText: (s) => { const p = parseDateTimeText(s, tzParts(curMs.value, tzMode.value)); return p ? tzToMs(tzMode.value, p.y, p.mo, p.d, p.h, p.mi, p.s) : NaN } }
 const curFrac = computed(() => { const w = wi.value; if (!w || !(w.t1Ms > w.t0Ms)) return 0; return Math.max(0, Math.min(1, (curMs.value - w.t0Ms) / (w.t1Ms - w.t0Ms))) })
 let seekRaf = 0
 function seek(tMs) {
@@ -212,29 +217,37 @@ const xlsxVal = (r, c) => {
   return fmtCell(c, v)
 }
 const ctxName = () => (ctx.value ? ctx.value.satName + '_' + ctx.value.antName : '对星性能')
+// 导出回执（「已导出 · 打开 · 在文件夹中显示」，shared/useNotice + NoticeLine）。结果栏那一条兼本窗失败出口；目标星栏那一条只管目标星的导出。
+const N = useNotice()
+const Nin = useNotice({ errorSink: false })
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+function exportDone(n, r) {
+  if (r && r.ok) { const fp = outPath(r); n.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
+  else if (r && r.error) appAlert('导出失败：' + r.error)
+}
 const viewName = () => (!win.value.on ? '当前时刻' : '时间窗口')
 const noteText = () => [ctx.value ? '源卫星 ' + ctx.value.satName : '', ctx.value ? '天线 ' + ctx.value.antName : '', '视图 ' + viewName(), stampText.value ? '时刻 ' + stampText.value : ''].filter(Boolean).join(' · ')
 async function exportResultXlsx() {
   if (!cols.value.length) { appAlert('当前没有显示任何列'); return }
   const sheets = [
     sheetModel({ name: '性能结果 · ' + viewName(), cols: cols.value, rows: resGrid.rows.value, value: xlsxVal, note: noteText() }),
-    sheetModel({ name: '目标星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })
+    sheetModel({ name: '目标卫星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })
   ]
   const r = await exportSheets({ defaultName: safeFileName('对星性能指标表_' + ctxName(), '对星性能指标表') + '.xlsx', title: '导出对星性能指标表', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  exportDone(N, r)
 }
 async function exportPicksXlsx() {
-  if (!pickRows.value.length) { appAlert('还没有目标星'); return }
-  const r = await exportSheets({ defaultName: safeFileName('目标星_' + ctxName(), '目标星') + '.xlsx', title: '导出目标星', sheets: [sheetModel({ name: '目标星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })] })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  if (!pickRows.value.length) { appAlert('暂无目标卫星。'); return }
+  const r = await exportSheets({ defaultName: safeFileName('目标卫星_' + ctxName(), '目标卫星') + '.xlsx', title: '导出目标卫星', sheets: [sheetModel({ name: '目标卫星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })] })
+  exportDone(Nin, r)
 }
 async function importPicksXlsx() {
-  if (beamMode.value) { appAlert('「波束内」的目标星随时钟自动重算，切到「点选」再导入'); return }
-  const r = await importWorkbook({ title: '导入目标星' })
+  if (beamMode.value) { appAlert('「波束内」的目标卫星随时钟自动重算，切到「点选」再导入'); return }
+  const r = await importWorkbook({ title: '导入目标卫星' })
   if (!r || r.canceled) return
   if (!r.ok) { appAlert('导入失败：' + (r.error || '无法读取该文件')); return }
   const sheet = pickSheet(r.sheets, PICK_COLS)
-  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  if (!sheet) { appAlert('该工作簿中没有数据'); return }
   const { records } = sheetToRecords(sheet, PICK_COLS)
   const list = records
     ? records.map((x) => ({ name: String(x.name || '').trim(), noradId: Number(x.noradId) || null, group: String(x.group || '').trim() }))
@@ -263,22 +276,23 @@ function dragSplit(e) {
     <!-- 上：目标星（想看哪颗加哪颗；「加入波束内的星」把当前落在方向图里的一次捞进来） -->
     <section class="pw-in" :style="{ height: inH + 'px' }">
       <div class="pw-bar">
-        <span class="pw-t">目标星</span>
-        <span class="seg2" role="group" aria-label="目标星来源">
-          <span class="sg" :class="{ on: !beamMode }" title="自己加的名单，不随时刻变" @click="act('targetMode', 'pick')">点选</span>
-          <span class="sg" :class="{ on: beamMode }" title="此刻落在方向图域内的星，随时钟每拍重算" @click="act('targetMode', 'beam')">波束内</span>
+        <span class="pw-t">目标卫星</span>
+        <span class="seg seg2" role="radiogroup" aria-label="目标卫星来源">
+          <button type="button" role="radio" :aria-checked="!!(!beamMode)" class="sg" :class="{ on: !beamMode }" title="自己加的名单，不随时刻变" @click="act('targetMode', 'pick')">点选</button>
+          <button type="button" role="radio" :aria-checked="!!(beamMode)" class="sg" :class="{ on: beamMode }" title="此刻落在方向图域内的星，随时钟每拍重算" @click="act('targetMode', 'beam')">波束内</button>
         </span>
-        <input v-if="!beamMode" class="pw-q" v-model="tq" placeholder="搜索添加：卫星名 / NORAD / 星座 / 卫星组" />
-        <span v-if="!beamMode" class="ptb" title="把当前落在方向图网格域内的在场卫星一次性加为目标" @click="act('addInBeam')"><Icon name="plus" :size="12" /> 加入波束内的星</span>
-        <span v-if="!beamMode" class="ptb" title="从 Excel 导入目标星（表头含「目标卫星 / NORAD / 分组」，或星名放第一列）" @click="importPicksXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
-        <span class="ptb" :class="{ dis: !pickRows.length }" title="把目标星列表导出为 Excel" @click="exportPicksXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span v-if="!beamMode" class="ptb" :class="{ dis: !pickGrid.selRowCount.value }" title="移除选中的目标星（表内 Delete / Ctrl+- 同）" @click="pickGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="pickGrid.selRowCount.value" class="ptb-n">{{ pickGrid.selRowCount.value }}</em></span>
-        <span v-if="!beamMode" class="ptb" :class="{ dis: !picks.length }" title="清空目标星列表" @click="act('picks:clear')"><Icon name="trash" :size="12" /> 清空</span>
+        <input v-if="!beamMode" class="pw-q search-field" v-model="tq" placeholder="搜索添加：卫星名 / NORAD / 星座 / 卫星组" />
+        <button type="button" v-if="!beamMode" class="ptb btn" title="把当前落在方向图网格域内的在场卫星一次性加为目标" @click="act('addInBeam')"><Icon name="plus" :size="12" /> 加入波束内的星</button>
+        <button type="button" v-if="!beamMode" class="ptb btn" title="从 Excel 导入目标卫星（表头含「目标卫星 / NORAD / 分组」，或星名放第一列）" @click="importPicksXlsx"><Icon name="file-import" :size="12" /> 导入 Excel</button>
+        <button type="button" :disabled="!pickRows.length" class="ptb btn" :class="{ dis: !pickRows.length }" title="把目标卫星列表导出为 Excel" @click="exportPicksXlsx"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" :disabled="!pickGrid.selRowCount.value" v-if="!beamMode" class="ptb btn" :class="{ dis: !pickGrid.selRowCount.value }" title="移除选中的目标卫星（表内 Delete / Ctrl+- 同）" @click="pickGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="pickGrid.selRowCount.value" class="ptb-n">{{ pickGrid.selRowCount.value }}</em></button>
+        <button type="button" :disabled="!picks.length" v-if="!beamMode" class="ptb btn" :class="{ dis: !picks.length }" title="清空目标卫星列表" @click="act('picks:clear')"><Icon name="trash" :size="12" /> 清空</button>
+        <NoticeLine :n="Nin" />
         <span class="pw-cnt">{{ pickRows.length }} 目标</span>
       </div>
       <div v-if="!beamMode && tq.trim()" class="sres">
         <div v-if="cBusy" class="sres-e">搜索中…</div>
-        <div v-else-if="!cand.length" class="sres-e">没有匹配的卫星。</div>
+        <div v-else-if="!cand.length" class="sres-e">无匹配卫星。</div>
         <template v-else>
           <div class="sres-list">
             <div v-for="e in cand" :key="e.noradId || e.name" class="sitem" @click="addCand(e)">
@@ -288,16 +302,16 @@ function dragSplit(e) {
           </div>
           <div class="sres-n">
             <span>{{ cTotal > cand.length ? `命中 ${cTotal} 颗 · 列出前 ${cand.length}` : `${cTotal} 颗` }}</span>
-            <span class="ptb" title="把当前列出的结果全部加为目标星" @click="addAllCands">全选结果</span>
+            <button type="button" class="ptb btn" title="把当前列出的结果全部加为目标卫星" @click="addAllCands">全选结果</button>
           </div>
         </template>
       </div>
       <ExcelGrid class="pw-grid sc-grid" :grid="pickGrid" :cols="PICK_COLS" :text="(r, c) => (r[c.key] == null ? '' : String(r[c.key]))"
                  :serial="false" :actions-width="46" :menu-items="satMenu" :row-class="(r) => (hoverId && hoverId === (r.noradId || r.name) ? 'hov' : null)"
-                 :empty-text="beamMode ? '当前波束内没有卫星。' : '还没有目标星。'">
+                 :empty-text="beamMode ? '当前波束内暂无卫星。' : '暂无目标卫星。'">
         <template #actions="{ row }">
-          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></span>
-          <span v-if="!beamMode" class="del" title="移除该目标星" @click="act('picks:remove', { id: row.id })"><Icon name="x" :size="12" /></span>
+          <button type="button" class="foc ibtn sm" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></button>
+          <button type="button" v-if="!beamMode" class="del ibtn sm danger" title="移除该目标卫星" @click="act('picks:remove', { id: row.id })"><Icon name="x" :size="12" /></button>
         </template>
       </ExcelGrid>
     </section>
@@ -308,18 +322,19 @@ function dragSplit(e) {
     <section class="pw-res">
       <div class="pw-bar">
         <span class="pw-t">性能结果<em>只读</em></span>
-        <span class="seg2">
-          <span class="sg" :class="{ on: !win.on }" title="表跟仿真时钟走" @click="setWinOn(false)">当前时刻</span>
-          <span class="sg" :class="{ on: win.on }" title="扫出可见时段，拖游标看任意一刻" @click="setWinOn(true)">时间窗口</span>
+        <span role="radiogroup" class="seg seg2">
+          <button type="button" role="radio" :aria-checked="!!(!win.on)" class="sg" :class="{ on: !win.on }" title="表跟仿真时钟走" @click="setWinOn(false)">当前时刻</button>
+          <button type="button" role="radio" :aria-checked="!!(win.on)" class="sg" :class="{ on: win.on }" title="扫出可见时段，拖游标看任意一刻" @click="setWinOn(true)">时间窗口</button>
         </span>
-        <label class="pw-chk"><input type="checkbox" v-model="opts.filterOn" title="仅列方向性≥阈值（被波束照到）的目标星；取不到值的（域外/背面/遮挡）一并不列" /> 仅照到的星</label>
+        <label class="pw-chk"><input type="checkbox" v-model="opts.filterOn" title="仅列方向性≥阈值（被波束照到）的目标卫星；取不到值的（域外/背面/遮挡）一并不列" /> 仅照到的星</label>
         <label class="pw-chk" :class="{ dis: !opts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="opts.minDir" :disabled="!opts.filterOn" /><span class="u">dB</span></label>
-        <input class="pw-q" v-model="query" placeholder="查询：卫星名 / 分组 / NORAD" />
-        <span v-if="!win.on" class="ptb" title="按当前时间轴时刻重算" @click="act('recompute')"><Icon name="refresh-cw" :size="12" /> 重算</span>
-        <span v-if="!beamMode" class="ptb" :class="{ dis: !resGrid.selRowCount.value }" title="移除选中行对应的目标星（表内 Delete / Ctrl+- 同）" @click="resGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="resGrid.selRowCount.value" class="ptb-n">{{ resGrid.selRowCount.value }}</em></span>
-        <span class="ptb" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyTsv"><Icon name="copy" :size="12" /> 复制全表</span>
-        <span class="ptb" title="导出为 Excel（结果表 + 目标星两张工作表；数字列存真数字）" @click="exportResultXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span class="ptb" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 参数计算 / 指向误差" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 选项…</span>
+        <input class="pw-q search-field" v-model="query" placeholder="查询：卫星名 / 分组 / NORAD" />
+        <button type="button" v-if="!win.on" class="ptb btn" title="按当前时间轴时刻重算" @click="act('recompute')"><Icon name="refresh-cw" :size="12" /> 重算</button>
+        <button type="button" :disabled="!resGrid.selRowCount.value" v-if="!beamMode" class="ptb btn" :class="{ dis: !resGrid.selRowCount.value }" title="移除选中行对应的目标卫星（表内 Delete / Ctrl+- 同）" @click="resGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="resGrid.selRowCount.value" class="ptb-n">{{ resGrid.selRowCount.value }}</em></button>
+        <button type="button" class="ptb btn" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyTsv"><Icon name="copy" :size="12" /> 复制全表</button>
+        <button type="button" class="ptb btn" title="导出为 Excel（结果表 + 目标卫星两张工作表；数字列存真数字）" @click="exportResultXlsx"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" :aria-pressed="(optsOpen) ? 'true' : 'false'" class="ptb btn" :class="{ on: optsOpen }" title="显示列 / 波束筛选 / 参数计算 / 指向误差" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 选项…</button>
+        <NoticeLine :n="N" />
         <span class="pw-cnt">{{ filteredRows.length }} 行</span>
       </div>
 
@@ -327,11 +342,11 @@ function dragSplit(e) {
       <div v-if="win.on" class="tw-bar">
         <label>起始</label>
         <input class="ci dt" type="datetime-local" step="1" v-model="startLocal" />
-        <span class="ptb sq" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="act('win', { startMs: null })"><Icon name="refresh-cw" :size="12" /></span>
+        <button type="button" :disabled="win.startMs == null" class="ptb btn icon" :class="{ dis: win.startMs == null }" title="回到跟随时间轴当前时刻" @click="act('win', { startMs: null })"><Icon name="refresh-cw" :size="12" /></button>
         <label>时长</label>
         <input class="ci w56" type="number" step="1" min="0.02" max="720" v-model.lazy.number="durH" /><span class="u">h</span>
-        <span v-if="!win.busy" class="ptb go" :class="{ warn: staleNow }" title="扫描全部目标星在该时窗内的可见时段" @click="act('scan')"><Icon name="play" :size="12" /> {{ staleNow ? '重算' : '计算' }}</span>
-        <span v-else class="ptb" title="中止本次扫描" @click="act('cancelScan')"><Icon name="x" :size="12" /> 取消 {{ Math.round(win.progress * 100) }}%</span>
+        <button type="button" v-if="!win.busy" class="ptb go btn" :class="{ warn: staleNow }" title="扫描全部目标卫星在该时窗内的可见时段" @click="act('scan')"><Icon name="play" :size="12" /> {{ staleNow ? '重算' : '计算' }}</button>
+        <button type="button" v-else class="ptb btn" title="中止本次扫描" @click="act('cancelScan')"><Icon name="x" :size="12" /> 取消 {{ Math.round(win.progress * 100) }}%</button>
         <span v-if="win.busy" class="pw-prog"><i :style="{ width: (win.progress * 100) + '%' }"></i></span>
         <span v-else-if="wi" class="pw-cnt">{{ wi.nLit }}/{{ wi.nTarget }} 有窗口 · {{ wi.nWin }} 个时段 · {{ durText((wi.t1Ms - wi.t0Ms) / 60000) }}</span>
       </div>
@@ -347,7 +362,7 @@ function dragSplit(e) {
           <div v-for="b in bands" :key="b.id" class="sgt-row" :class="{ hov: hoverId === b.id }"
                :title="b.name + ' · ' + b.nWin + ' 次 · 总 ' + durText(b.totMin) + ' · 占比 ' + b.pct.toFixed(1) + '%'"
                @mouseenter="hoverId = b.id" @mouseleave="hoverId = ''">
-            <span class="sgt-n" data-i18n-skip @click="act('focus', { name: b.name, noradId: b.noradId })">{{ b.name }}</span>
+            <button type="button" class="sgt-n" data-i18n-skip @click="act('focus', { name: b.name, noradId: b.noradId })">{{ b.name }}</button>
             <span class="sgt-bar" @pointerdown="barDown($event, b)">
               <i v-for="(s, si) in b.segs" :key="si" :style="{ left: (s.a * 100) + '%', width: Math.max(0.35, (s.b - s.a) * 100) + '%' }"></i>
               <b class="sgt-cur" :style="{ left: (curFrac * 100) + '%' }"></b>
@@ -356,12 +371,12 @@ function dragSplit(e) {
           </div>
         </div>
         <div class="swc">
-          <span class="ptb sq" title="上一个窗口峰值" @click="jumpPeak(-1)"><Icon name="chevron-left" :size="12" /></span>
-          <input class="swc-sl" type="range" :min="wi.t0Ms" :max="wi.t1Ms" step="1000" :value="curMs" @input="seek(Number($event.target.value))" />
-          <span class="ptb sq" title="下一个窗口峰值" @click="jumpPeak(1)"><Icon name="chevron-right" :size="12" /></span>
-          <span class="swc-t" data-i18n-skip>{{ fmtTime(curMs) }}</span>
+          <button type="button" class="ptb btn icon" title="上一个窗口峰值" @click="jumpPeak(-1)"><Icon name="chevron-left" :size="12" /></button>
+          <input class="swc-sl" type="range" :min="wi.t0Ms" :max="wi.t1Ms" step="1000" :value="curMs" :rnumMap.prop="curRnum" @input="seek(Number($event.target.value))" />
+          <button type="button" class="ptb btn icon" title="下一个窗口峰值" @click="jumpPeak(1)"><Icon name="chevron-right" :size="12" /></button>
+          <span class="swc-t" data-i18n-skip data-rnum>{{ fmtTime(curMs) }}</span>
           <span class="pw-cnt">窗口内 {{ inWinCount }} 颗</span>
-          <span class="ptb" title="把主时间轴跳到游标时刻（画面上的星位随之走到这一刻）" @click="act('seekClock', { t: curMs })">同步到时间轴</span>
+          <button type="button" class="ptb btn" title="把主时间轴跳到游标时刻（画面上的星位随之更新至该时刻）" @click="act('seekClock', { t: curMs })">同步到时间轴</button>
         </div>
       </div>
 
@@ -372,7 +387,7 @@ function dragSplit(e) {
                  :empty-text="resEmptyText"
                  @row-enter="(r) => hoverId = r.noradId || r.tgtName" @row-leave="hoverId = ''">
         <template #actions="{ row }">
-          <span class="foc" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></span>
+          <button type="button" class="foc ibtn sm" title="聚焦该卫星（旋转地球正对它并选中）" @click="focusRow(row)"><Icon name="crosshair" :size="12" /></button>
         </template>
       </ExcelGrid>
     </section>

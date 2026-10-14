@@ -34,13 +34,13 @@ const pnum = (v) => { const n = parseFloat(halfStr(v)); return isFinite(n) ? n :
 //   · 下游段起点（再生节点）＝重新编码调制，建节点时默认整套照抄链首那份（「和第一跳一致」），之后各改各的；
 //   · ★ 信息速率全程不能动：只有链首那份算数，各段一律用它（守恒，见 buildChain）。
 export const CARRIER_FIELDS = [
-  { key: 'infoRate', label: '信息速率', unit: 'kbps', type: 'num', def: '2048' },
+  { key: 'infoRate', label: '信息速率', unit: 'kbps', type: 'num', min: 0, minEx: true, def: '2048' },
   { key: 'modulation', label: '调制方式', type: 'select', options: ['BPSK', 'QPSK', '8PSK', '16APSK', '32APSK'], def: 'QPSK' },
   { key: 'fec', label: 'FEC 码率', type: 'text', def: '3/4' },
   { key: 'ebno', label: '门限', unit: 'dB', type: 'num', def: '5.50' },
-  { key: 'ber', label: '误码率 10⁻ⁿ', unit: 'n', type: 'num', def: '7' },
-  { key: 'm', label: '扩频增益', type: 'num', def: '1.00' },
-  { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', def: '1.20' },
+  { key: 'ber', label: '误码率 10⁻ⁿ', unit: 'n', type: 'num', min: 1, max: 20, def: '7' },
+  { key: 'm', label: '扩频增益', type: 'num', min: 1, def: '1.00' },
+  { key: 'bandwidthFactor', label: '滚降系数 (1+α)', type: 'num', min: 1, max: 2, def: '1.20' },
   { key: 'rsCode', label: '帧效率', type: 'text', def: '188/204' },
   { key: 'noiseRatioMode', label: '门限模式', def: 'ebno' },
   // 3GPP NTN 的物理层描述子（对象，非表单格）：门限模式 = snr 时由它定占用带宽 / 信息速率 / TBS。
@@ -58,18 +58,18 @@ export const defaultCarrier = () => ({
 // 一座站 = 一面天线：口径收发共用（side:'common'），效率按收发频段分设。
 // 频率 / 极化在 hop 上（一条链每一跳频率各异），干扰在卫星上——与平台既定归属一致。
 export const ES_FIELDS = [
-  { key: 'antennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）', side: 'common', unit: 'm', type: 'num', def: '9.0' },
-  { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率（W）。端到端只有正向计算：这个数就是这一段链路的起点电平，不反算', side: 'tx', hero: true, unit: 'W', type: 'num', def: '120' },
-  { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', def: '65' },
-  { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', def: '0' },
-  { key: 'feederLoss', label: '馈线损耗', side: 'tx', unit: 'dB', type: 'num', def: '3.5' },
+  { key: 'antennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）', side: 'common', unit: 'm', type: 'num', min: 0.1, max: 50, def: '9.0' },
+  { key: 'opPowerW', label: '功放功率预设', tip: '功放输出功率（W）。端到端仅有正向计算：该值即为该段链路的起点电平，不反算', side: 'tx', hero: true, unit: 'W', type: 'num', min: 0, minEx: true, def: '120' },
+  { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', min: 0, minEx: true, max: 100, def: '65' },
+  { key: 'paBackoff', label: '功放回退', side: 'tx', unit: 'dB', type: 'num', min: 0, def: '0' },
+  { key: 'feederLoss', label: '馈线损耗', side: 'tx', unit: 'dB', type: 'num', min: 0, def: '3.5' },
   { key: 'uplinkPowerControl', label: 'UPC', tip: '上行功率控制 (Uplink Power Control)', side: 'tx', type: 'select', options: ['否', '是', '自定义'], def: '否' },
   { key: 'upcValue', label: 'UPC值', tip: '仅「UPC = 自定义」时生效', side: 'tx', unit: 'dB', type: 'num', def: '0' },
-  { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', def: '68' },
+  { key: 'rxAntennaEfficiency', label: '天线效率', side: 'rx', unit: '%', type: 'num', min: 0, minEx: true, max: 100, def: '68' },
   { key: 'rxAntennaNoiseTempMode', label: '天线噪温模式', tip: '自动 = 按 ITU-R P.618-14 §3 由晴空大气衰减与链路仰角实时求取天空噪温（+25 K 地面拾取常数）；自定义 = 用「天线噪温」数值', side: 'rx', type: 'select', options: ['自动', '自定义'], def: '自动' },
-  { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', def: '35' },
-  { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', def: '75' },
-  { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', def: '0.2' }
+  { key: 'rxAntennaNoiseTemp', label: '天线噪温', tip: '天线噪声温度（K）；仅「天线噪温模式 = 自定义」时生效', side: 'rx', unit: 'K', type: 'num', min: 0, def: '35' },
+  { key: 'rxReceiverNoiseTemp', label: '接收机噪温', side: 'rx', unit: 'K', type: 'num', min: 0, def: '75' },
+  { key: 'rxFeederLoss', label: '馈线损耗', side: 'rx', unit: 'dB', type: 'num', min: 0, def: '0.2' }
 ]
 export const ES_COMMON_FIELDS = ES_FIELDS.filter((f) => f.side === 'common')
 export const ES_TX_FIELDS = ES_FIELDS.filter((f) => f.side === 'tx')
@@ -83,18 +83,18 @@ export const SAT_FIELDS = [
   { key: 'satelliteName', label: '卫星名称', type: 'text', def: 'Satellite', grp: 'id' },
   { key: 'frequencyBand', label: '工作频段', type: 'select', options: ['L', 'S', 'X', 'ExtC', 'C', 'ExtKu', 'Ku', 'Ku-BSS', 'Ka', 'Q', 'V'], def: 'Ku', grp: 'id' },
   { key: 'orbitClass', label: '轨道类型', tip: 'GSO＝地球静止轨道（定点经度即可定几何）；NGSO＝非静止轨道（手填轨道高度/倾角，或从星历搜索一颗真星取轨道根数）', type: 'select', options: ['GSO', 'NGSO'], def: 'GSO', grp: 'orbit' },
-  { key: 'orbitLongitude', label: '定点经度', tip: '静止星的定点经度（°E，西经取负）：自动几何按站址与它算斜距/仰角', unit: '°E', type: 'num', def: '110.5', grp: 'orbit' },
-  { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度（km）。选星后由所选卫星轨道自动确定', unit: 'km', type: 'num', def: '1200', grp: 'orbit' },
-  { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角（°）。选星后由所选卫星轨道自动确定', unit: '°', type: 'num', def: '53', grp: 'orbit' },
+  { key: 'orbitLongitude', label: '定点经度', tip: '静止星的定点经度（°E，西经取负）：自动几何按站址与该经度计算斜距/仰角', unit: '°E', type: 'num', min: -180, max: 360, def: '110.5', grp: 'orbit' },
+  { key: 'orbitAltitude', label: '轨道高度', tip: '圆轨道高度（km）。选星后由所选卫星轨道自动确定', unit: 'km', type: 'num', min: 0, minEx: true, def: '1200', grp: 'orbit' },
+  { key: 'orbitInclination', label: '轨道倾角', tip: '轨道倾角（°）。选星后由所选卫星轨道自动确定', unit: '°', type: 'num', min: 0, max: 180, def: '53', grp: 'orbit' },
   { key: 'gt', label: '卫星 G/T', tip: '卫星接收品质因数 G/T（dB/K）：按该站对本星的波束位置手动输入（平台既定：不做方向图自动取值）', unit: 'dB/K', type: 'num', def: '2', grp: 'rx' },
   { key: 'sfdRef', label: '卫星 SFD', tip: '饱和通量密度 SFD（dBW/m²，参考 G/T）', unit: 'dBW/m²', type: 'num', def: '-84', grp: 'txp' },
   { key: 'sfdGtRef', label: 'SFD 参考 G/T', tip: 'SFD 标称所依据的参考 G/T（dB/K）；引擎入口按 有效SFD = SFD + 参考G/T 换算', unit: 'dB/K', type: 'num', def: '0', grp: 'txp' },
-  { key: 'BOi', label: '输入回退 IBO', unit: 'dB', type: 'num', def: '6', grp: 'txp' },
-  { key: 'BOo', label: '输出回退 OBO', unit: 'dB', type: 'num', def: '3', grp: 'txp' },
-  { key: 'transponderBandwidth', label: '转发器带宽', unit: 'MHz', type: 'num', def: '36', grp: 'txp' },
+  { key: 'BOi', label: '输入回退 IBO', unit: 'dB', type: 'num', min: 0, def: '6', grp: 'txp' },
+  { key: 'BOo', label: '输出回退 OBO', unit: 'dB', type: 'num', min: 0, def: '3', grp: 'txp' },
+  { key: 'transponderBandwidth', label: '转发器带宽', unit: 'MHz', type: 'num', min: 0, minEx: true, def: '36', grp: 'txp' },
   { key: 'eirpSat', label: '卫星饱和 EIRP', tip: '透明转发器整星饱和下行 EIRP（dBW）；每载波输出 EIRP = 饱和 EIRP − OBO − 该载波占转发器回退', unit: 'dBW', type: 'num', def: '46', grp: 'txp' },
   { key: 'eirp', label: '再生下行 EIRP', tip: '再生载荷该载波的下行 EIRP（dBW，直发口径，非整波束饱和值）：手动输入', unit: 'dBW', type: 'num', def: '28', grp: 'regen' },
-  { key: 'procDelayMs', label: '处理时延', tip: '再生载荷解调-重调的处理时延（ms），计入端到端时延', unit: 'ms', type: 'num', def: '0', grp: 'regen' },
+  { key: 'procDelayMs', label: '处理时延', tip: '再生载荷解调-重调的处理时延（ms），计入端到端时延', unit: 'ms', type: 'num', min: 0, def: '0', grp: 'regen' },
   { key: 'aciUplinkFactor', label: '上行C/ACI', tip: '上行载波/邻道干扰比 (Adjacent Channel Interference)', unit: 'dB', type: 'num', def: '30', grp: 'intfUp' },
   { key: 'adjUplinkFactor', label: '上行C/ASI', tip: '上行载波/邻星干扰比 (Adjacent Satellite Interference)', unit: 'dB', type: 'num', def: '25', grp: 'intfUp' },
   { key: 'xpolUplinkFactor', label: '上行C/XPI', tip: '上行载波/交叉极化干扰比；雨致去极化由引擎并入', unit: 'dB', type: 'num', def: '26', grp: 'intfUp' },
@@ -145,16 +145,16 @@ export function orbitSpecOf(cfg, treeSats) {
 // ============ 节点（地球站）站址字段 ============
 export const NODE_ES_FIELDS = [
   { key: 'name', label: '站名', type: 'text', def: '地球站' },
-  { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074' },
-  { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042' },
+  { key: 'longitude', label: '经度', unit: '°E', type: 'num', min: -180, max: 360, def: '116.4074' },
+  { key: 'latitude', label: '纬度', unit: '°N', type: 'num', min: -90, max: 90, def: '39.9042' },
   { key: 'altitude', label: '海拔', tip: '站址海拔（m）。填好经纬度即按 ITU-R P.1511 地形高程自动取值，也可直接改；站址再变即重取', unit: 'm', type: 'num', def: '0' },
-  { key: 'rainRate', label: 'R0.01%', tip: '站址年 0.01% 时间降雨率（mm/h）。填好经纬度即按 ITU-R P.837 自动取值，也可直接改；站址再变即重取', unit: 'mm/h', type: 'num', def: '54' },
-  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度之积；星间段不参与', unit: '%', type: 'num', def: '100' }   // 出厂 100%＝晴天（2026-09-16 用户拍板）
+  { key: 'rainRate', label: 'R0.01%', tip: '站址年 0.01% 时间降雨率（mm/h）。填好经纬度即按 ITU-R P.837 自动取值，也可直接改；站址再变即重取', unit: 'mm/h', type: 'num', min: 0, def: '54' },
+  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度之积；星间段不参与', unit: '%', type: 'num', min: 0, max: 100, def: '100' }   // 出厂 100%＝晴天（2026-09-16 用户拍板）
 ]
 // 段起点电平的快调入口：功放功率可在【节点上】覆盖库条目（空＝跟随库）。
 // 只在该站作为段起点（发信站 / 地面转接站的上行侧）时有物理意义，检查器按此显示。
 export const NODE_ES_TX_FIELDS = [
-  { key: 'opPowerW', label: '功放功率', tip: '本站功放输出功率（W）＝这一段正向递推的起点电平。留空＝跟随地球站库条目', unit: 'W', type: 'num', def: '' }
+  { key: 'opPowerW', label: '功放功率', tip: '本站功放输出功率（W）＝该段正向递推的起点电平。留空＝跟随地球站库条目', unit: 'W', type: 'num', min: 0, minEx: true, def: '' }
 ]
 
 // ============ 节点上的调制解调（再生节点＝解调器 + 编码调制器两个盒子）============
@@ -162,15 +162,15 @@ export const NODE_ES_TX_FIELDS = [
 // 发侧：按【下一段】体制重新编码调制；信息速率默认穿过节点守恒，真要变（星上复用/分流、
 //       槽位固定换高阶调制）就在这里给适配比，账面上看得见。
 export const NODE_DEMOD_FIELDS = [
-  { key: 'demodLossDb', label: '解调实现损失', tip: '本节点解调器的实现损失（dB）：载波/符号同步、量化、滤波等非理想因素，工程常用 0.5~1.5 dB。实际解调门限 = 体制理论门限 + 本项', unit: 'dB', type: 'num', def: '0' }
+  { key: 'demodLossDb', label: '解调实现损失', tip: '本节点解调器的实现损失（dB）：载波/符号同步、量化、滤波等非理想因素，工程常用 0.5~1.5 dB。实际解调门限 = 体制理论门限 + 本项', unit: 'dB', type: 'num', min: 0, def: '0' }
 ]
 // ============ hop 字段 ============
 export const HOP_GS_FIELDS = [
-  { key: 'frequency', label: '频率', unit: 'GHz', type: 'num', def: '14.25' },
+  { key: 'frequency', label: '频率', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '14.25' },
   { key: 'polarization', label: '极化', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'V' },
-  { key: 'slantRange', label: '斜距', tip: '本跳的星地斜距（km）。留空即报错——端到端窗口不按轨道高度兜底换算（几何全部手填）。可用「斜距工具」按站址纬度/海拔/仰角/轨道高度算出后填入', unit: 'km', type: 'num', def: '' },
-  { key: 'elevation', label: '仰角', tip: '本跳对卫星的仰角（°）：直接送进引擎，不解算轨道。GSO 跳选星后斜距/仰角为真几何联动回填；手改仰角后斜距不再联动，按所填值计算', unit: '°', type: 'num', def: '25' },
-  { key: 'miscLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合（dB）', unit: 'dB', type: 'num', def: '0.3' }
+  { key: 'slantRange', label: '斜距', tip: '本跳的星地斜距（km）。留空即报错——端到端窗口不按轨道高度兜底换算（几何全部手填）。可用「斜距工具」按站址纬度/海拔/仰角/轨道高度计算后填入', unit: 'km', type: 'num', min: 0, minEx: true, def: '' },
+  { key: 'elevation', label: '仰角', tip: '本跳对卫星的仰角（°）：直接送进引擎，不解算轨道。GSO 跳选星后斜距/仰角为真几何联动回填；手改仰角后斜距不再联动，按所填值计算', unit: '°', type: 'num', min: 0, max: 90, def: '25' },
+  { key: 'miscLoss', label: '其他损耗', tip: '指向/极化/天线罩/接头等未单列损耗之综合（dB）', unit: 'dB', type: 'num', min: 0, def: '0.3' }
 ]
 // 星地跳的【侧向】默认频率/极化：上行一套、下行一套。频率与极化是有向量——改拓扑时新跳与
 // 来源跳方向相反（链首接卫星把上行跳变成下行跳这类），承接过来就是串味，此时取本侧默认。
@@ -180,27 +180,27 @@ export const GS_SIDE_DEFAULTS = {
   down: { frequency: '12.50', polarization: 'H' }
 }
 export const HOP_ISL_FIELDS = [
-  { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km），直接送进引擎算自由空间损耗。留空即报错。可用「距离工具」按两星轨道在时间轴上算出后填入', unit: 'km', type: 'num', def: '' },
-  { key: 'frequency', label: '星间频率', unit: 'GHz', type: 'num', def: '23' },
+  { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km），直接送入引擎计算自由空间损耗。留空即报错。可用「距离工具」按两星轨道在时间轴上计算后填入', unit: 'km', type: 'num', min: 0, minEx: true, def: '' },
+  { key: 'frequency', label: '星间频率', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '23' },
   { key: 'islEirp', label: '发射EIRP', tip: '发射卫星星间发射 EIRP（dBW，手填）', unit: 'dBW', type: 'num', def: '45' },
   { key: 'islGT', label: '接收G/T', tip: '接收卫星星间接收品质因数 G/T（dB/K，手填）', unit: 'dB/K', type: 'num', def: '12' },
   // 星间干扰：与星地那四项不是同一个物理域（真空段无雨致去极化、无地面 ASI 路径），且随这条
   // 链路的几何与频率复用而变，故聚合成一项挂在跳上（与 islEirp/islGT 同构），不挂卫星。
   { key: 'islCI', label: '星间C/I', tip: '本跳星间干扰合计载噪比（dB）：星座内邻 ISL 同频、邻道、极化泄漏等之合计，经工程分析后手填；留空＝不计入。发射端为透明星时其转发器互调另按该星工作点折算入账，与本项不重复', unit: 'dB', type: 'num', def: '' },
-  { key: 'miscLoss', label: '其他损耗', unit: 'dB', type: 'num', def: '1' }
+  { key: 'miscLoss', label: '其他损耗', unit: 'dB', type: 'num', min: 0, def: '1' }
 ]
 export const HOP_LASER_FIELDS = [
-  { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km）。留空即报错', unit: 'km', type: 'num', def: '' },
+  { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km）。留空即报错', unit: 'km', type: 'num', min: 0, minEx: true, def: '' },
   { key: 'txPowerDbm', label: '发射光功率 P_tx', unit: 'dBm', type: 'num', def: '30' },
-  { key: 'wavelengthNm', label: '波长 λ', unit: 'nm', type: 'num', def: '1550' },
-  { key: 'txApertureMm', label: '发射口径 D_tx', unit: 'mm', type: 'num', def: '80' },
-  { key: 'rxApertureMm', label: '接收口径 D_rx', unit: 'mm', type: 'num', def: '80' },
-  { key: 'txOpticsEff', label: '发射光学效率 η_tx', tip: '∈ (0,1]；OE = 10·lg(η)', type: 'num', def: '0.8' },
-  { key: 'rxOpticsEff', label: '接收光学效率 η_rx', tip: '∈ (0,1]', type: 'num', def: '0.8' },
-  { key: 'txPointingErrUrad', label: '发射指向误差', unit: 'µrad', type: 'num', def: '1' },
-  { key: 'rxPointingErrUrad', label: '接收指向误差', unit: 'µrad', type: 'num', def: '1' },
+  { key: 'wavelengthNm', label: '波长 λ', unit: 'nm', type: 'num', min: 0, minEx: true, def: '1550' },
+  { key: 'txApertureMm', label: '发射口径 D_tx', unit: 'mm', type: 'num', min: 0, minEx: true, def: '80' },
+  { key: 'rxApertureMm', label: '接收口径 D_rx', unit: 'mm', type: 'num', min: 0, minEx: true, def: '80' },
+  { key: 'txOpticsEff', label: '发射光学效率 η_tx', tip: '∈ (0,1]；OE = 10·lg(η)', type: 'num', min: 0, minEx: true, max: 1, def: '0.8' },
+  { key: 'rxOpticsEff', label: '接收光学效率 η_rx', tip: '∈ (0,1]', type: 'num', min: 0, minEx: true, max: 1, def: '0.8' },
+  { key: 'txPointingErrUrad', label: '发射指向误差', unit: 'µrad', type: 'num', min: 0, def: '1' },
+  { key: 'rxPointingErrUrad', label: '接收指向误差', unit: 'µrad', type: 'num', min: 0, def: '1' },
   { key: 'rxSensitivityDbm', label: '接收机灵敏度 P_req', tip: '所需接收功率（dBm）；本跳余量 = P_rx − P_req。灵敏度应与本段体制的设计 BER 取同一定义点', unit: 'dBm', type: 'num', def: '-35.5' },
-  { key: 'otherLossDb', label: '其他损耗 L', unit: 'dB', type: 'num', def: '0' }
+  { key: 'otherLossDb', label: '其他损耗 L', unit: 'dB', type: 'num', min: 0, def: '0' }
 ]
 const LASER_KEYS = HOP_LASER_FIELDS.map((f) => f.key).filter((k) => k !== 'rangeKm')
 

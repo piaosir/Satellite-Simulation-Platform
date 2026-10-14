@@ -8,14 +8,16 @@
 // ★ 样式为什么按计算值逐节点内联，而不是把 .pl-* 的 CSS 规则抄进 <style>：
 //   图上的颜色全走 var(--accent) / var(--surface-2) 这类主题变量，抄规则还得把变量一起搬，
 //   且要能读到 document.styleSheets（打包后的样式表未必读得到 cssRules）。逐节点取
-//   getComputedStyle 则一步到位——变量已解析成具体颜色，深浅色主题也自然跟随当前主题。
+//   getComputedStyle 则一步到位——变量已解析成具体颜色。取色那一刻先在 <svg> 上套纸色板
+//   （shared/paperTheme.js 的 withPaper），所以不论屏上是深色还是浅色，导出的都是白纸上的图。
 //   代价是几百次 getComputedStyle，对这个规模的图可以忽略。
 //
-// 6 倍：一张 640 单位宽的时序图出来是 3840 px，报告里按整幅宽（约 16 cm）放置约合 600 dpi，
-// 放大到 200% 看曲线仍不见锯齿。屏幕上的 7 px 字号同比放到 42 px，中文笔画不糊。
+// 4 倍（与链路预算的两张图同档）：图按屏上实宽排版（字号恒 11 px），一张 ~900 px 宽的时序图
+// 出来是 3600 px，报告里按整幅宽（约 16 cm）放置约合 600 dpi。
 import { DOC_FONT_STACK } from '../shared/lbFont.js'
+import { PAPER, withPaper } from '../shared/paperTheme.js'
 
-export const PNG_SCALE = 6
+export const PNG_SCALE = 4
 
 // 只搬这些属性：全量 cssText 会把上千条声明抄进每个节点，SVG 体积暴涨且栅格化变慢
 // ★ 不搬 font-family：它是屏上无衬线的计算值，逐节点写死会把根节点那条衬线（见 svgToPngBlob）整个盖掉，
@@ -60,7 +62,7 @@ function stripComments(node) {
 /**
  * 把一幅 <svg> 栅格化成 PNG 的 Blob。
  * @param {SVGSVGElement} svgEl 屏幕上的那幅 SVG（取它的 viewBox 定尺寸、取它的计算样式定颜色）
- * @param {object} opt  { scale 倍率, background 底色（留空取 --surface） }
+ * @param {object} opt  { scale 倍率, background 底色（留空取纸色 PAPER.bg） }
  */
 export async function svgToPngBlob(svgEl, opt = {}) {
   if (!svgEl) return null
@@ -70,7 +72,7 @@ export async function svgToPngBlob(svgEl, opt = {}) {
   const h = (vb && vb.height) || svgEl.clientHeight || 220
 
   const clone = svgEl.cloneNode(true)
-  inlineInk(svgEl, clone)
+  withPaper(svgEl, () => inlineInk(svgEl, clone))
   stripComments(clone)
   clone.setAttribute('xmlns', SVGNS)
   clone.removeAttribute('class')
@@ -87,10 +89,7 @@ export async function svgToPngBlob(svgEl, opt = {}) {
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src)
   await img.decode()
 
-  let bg = opt.background
-  if (!bg) {
-    try { bg = (getComputedStyle(document.documentElement).getPropertyValue('--surface') || '').trim() } catch (e) { bg = '' }
-  }
+  const bg = opt.background || PAPER.bg
   const cv = document.createElement('canvas')
   cv.width = Math.max(1, Math.round(w * s))
   cv.height = Math.max(1, Math.round(h * s))

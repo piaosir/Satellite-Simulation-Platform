@@ -580,7 +580,8 @@ function sweepLink2D(spec, hooks) {
 //   satParams, linkParams, opt     三窗：与 sweepLink 同一份留底入参
 //   chain                          端到端：buildChain 出的链描述子
 //   samples  三窗 [{ tag, tier?, up, dn }…]；chain [{ tag, tier?, k }…]（对全部地球站节点
-//            availability ← 100 − (100 − a)·k）
+//            availability ← 100 − (100 − a)·k）或 [{ tag, tier?, avail }…]（全部节点 100% 时的等分样本：
+//            各地球站节点 availability ← avail）
 //   keys     可选：只要这些输出键（默认全清单）
 // }
 // → { pin, rows: [{ tag, tier, up, dn, ok, message, data }], clear, message }
@@ -606,12 +607,13 @@ function scanSlaTiers(spec) {
     _quiet(() => _precise(() => {
       for (const s of samples) {
         const c = JSON.parse(JSON.stringify(spec.chain || {}));
-        const k = _num(s.k);
+        const k = _num(s.k), av = _num(s.avail);
         for (const nd of (Array.isArray(c.nodes) ? c.nodes : [])) {
           if (!nd || nd.kind !== 'es') continue;
           const a = _num(nd.availability);
-          if (a === null || k === null) continue;
-          nd.availability = String(100 - (100 - a) * k);
+          if (a === null) continue;
+          if (av !== null) nd.availability = String(av);
+          else if (k !== null) nd.availability = String(100 - (100 - a) * k);
         }
         let r = null;
         try { r = chainMod.computeLinkChain(c); } catch (e) { r = { success: false, message: e && e.message }; }

@@ -972,7 +972,7 @@ function solveIslWorstCase(opts) {
   if (worst.s.rangeKm < 1) {
     return {
       feasible: false, method: '闭式球面·示意', representative: true,
-      reason: '两星几何重合（星间距离≈0）：手动圆轨道相位缺省相同。请改选两颗真实卫星，或使两星轨道（相位/升交点/高度）不同。',
+      reason: '两星几何重合（星间距离≈0）：手动圆轨道相位缺省相同。',
       visibility: { visibleFrac, visibleMinutes: visibleFrac * windowMinutes, windowMinutes },
       search: { t0ISO: t0.toISOString(), horizonHours, stepSec, atmMarginKm, blockRadiusKm, freqGHz }
     };

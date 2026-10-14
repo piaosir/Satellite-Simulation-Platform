@@ -16,6 +16,7 @@
 // 于是「哪个量属于哪一段链路」在表、图、清单三处是同一口径。
 import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import LbSurfacePlot from './LbSurfacePlot.vue'
+import { surfacePngDataUrl } from '../shared/surfacePng.js'
 import { lbDocT, lbZName } from '../shared/lbDocI18n.js'
 import { satForSide } from '../shared/lbLinkScene.js'
 import { isFlatSpan } from '../shared/lbPlotScale.js'
@@ -47,6 +48,12 @@ const props = defineProps({
   plotHeight: { type: Number, default: 320 }
 })
 const t = computed(() => lbDocT(props.lang))
+
+// 导出成功的回执交给宿主窗口的通知条（带「打开 · 在文件夹中显示」）：路径取主进程保存处理器回传的 path（旧版 filePath）
+const emit = defineEmits(['exported'])
+const savedPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+const baseName = (p) => String(p || '').split(/[\/]/).pop()
+function exported(r) { const p = savedPath(r); emit('exported', '已导出：' + (baseName(p) || ''), p) }
 
 // 网格档位：逐格一次完整引擎调用（「功带平衡」还含二分求解）。
 // 实测 GEO：设置余量 0.05 ms/格、功带平衡 1.2 ms/格 → 41×41 分别约 0.1 s 与 2 s。
@@ -302,60 +309,14 @@ function onZoom(r) {
 // 就地做，不上交给外层：外层还得先判断「当前是哪张图」，而按钮本来就长在图上。
 const plotEl = ref(null)
 const exportFile = (typeof window !== 'undefined' && window.api) ? window.api.exportFile : null
-const CSS_VARS = ['--lb-fs', '--lb-serif', '--font-serif', '--text', '--text-muted', '--text-faint',
-  '--lb-rule-strong', '--lb-rule', '--lb-rule-soft', '--ok', '--danger', '--accent', '--bg', '--surface']
 const figName = computed(() => t.value('地理场图') + '·' + zLabel.value)
-
-// 抓页面里与图有关的 CSS 规则：SVG 离开页面后没有外部样式表可依
-function collectRules() {
-  const out = []
-  for (const sheet of Array.from(document.styleSheets)) {
-    let rules
-    try { rules = sheet.cssRules } catch (e) { continue }   // 跨源样式表读不到，跳过
-    for (const r of Array.from(rules || [])) {
-      if (r.selectorText && /\.sf-/.test(r.selectorText)) out.push(r.cssText)
-    }
-  }
-  return out.join('\n')
-}
-// 出图 = PNG。图内部仍先拼成一份自洽的 SVG（矢量的线与字 + 位图的场），再整幅栅格化：
-// 直接截屏会连页面背景与相邻元素一起截进来，而按 SVG 渲染的是这张图本身。
+// 出图 = PNG（地理场图与 C/CCI 场图共用 shared/surfacePng.js 那一条路径，纸色白底）。
 // 放大 4 倍出：一张与右栏同宽（~900 px）的图出来是 3600 px，报告里按整幅宽放置约合 600 dpi。
-// 倍率同时传进 exportSvgString：矢量层（等值线/刻度/文字）浏览器会在 drawImage 的目标尺寸上
-// 重新栅格化，本就实；位图层（底图 / 场 / 国界）没有这个待遇，必须**按倍率重画一遍**。
-// 少了这一路，出的图就是把一张屏幕分辨率（dpr 1~2）的位图硬撑成 4 倍大——岸线糊成宽边，
-// 正是原先「出图质量太差」的样子。
 const PNG_SCALE = 4
 // 出一张图 = 一个 data:image/png URL。抽出来单独一支是给「报告导出」用的：那边要把
 // 每条链路的这张图收进报告模型，走的必须是与手动「出图」完全相同的一条渲染路径
 // ——报告里的图和用户自己导出来的图，不该是两张不一样的图。
-async function pngDataUrl(scale) {
-  if (!plotEl.value) return ''
-  const s = scale || PNG_SCALE
-  const cs = getComputedStyle(document.documentElement)
-  const bg = (cs.getPropertyValue('--bg') || '#fff').trim() || '#fff'
-  // 空值的自定义属性不能写进声明：`--lb-serif:;` 会让 var(--lb-serif, 回落) 落到「空」
-  // 而不是回落值（自定义属性的空值是合法值，不触发 fallback），整幅字体因此失效
-  const decl = CSS_VARS.map((v) => [v, (cs.getPropertyValue(v) || '').trim()])
-    .filter(([, val]) => val).map(([v, val]) => v + ':' + val).join(';') + ';background:' + bg
-  let src = plotEl.value.exportSvgString(decl, s)
-  if (!src) return ''
-  // 离开页面就没有外部样式表可依，故把与图有关的规则内联进去
-  src = src.replace(/<svg([^>]*)>/, (m, a) => `<svg${a}><style>${collectRules()}</style>`)
-  const { w, h } = plotEl.value.svgSize()
-  try {
-    const img = new Image()
-    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(src)
-    await img.decode()
-    const cv = document.createElement('canvas')
-    cv.width = Math.max(1, Math.round(w * s)); cv.height = Math.max(1, Math.round(h * s))
-    const ctx = cv.getContext('2d')
-    ctx.fillStyle = bg                       // PNG 不留透明底：贴进报告会露出下面的东西
-    ctx.fillRect(0, 0, cv.width, cv.height)
-    ctx.drawImage(img, 0, 0, cv.width, cv.height)
-    return cv.toDataURL('image/png')
-  } catch (e) { return '' }                  // 渲染失败：没有这张图即可，不打断上层
-}
+const pngDataUrl = (scale) => surfacePngDataUrl(plotEl.value, scale || PNG_SCALE)
 // file:save 写失败（文件被占用：CSV 正开在 Excel 里最常见）不抛、只回 {ok:false,error}；取消回 canceled。
 // 看返回值，失败就在按钮旁出错误本身 —— 原先丢掉返回值，点了没反应
 const expErr = ref('')
@@ -369,6 +330,7 @@ async function exportPng() {
     const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
     const r = await exportFile({ defaultName: figName.value + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
     if (r && !r.ok && !r.canceled) expErr.value = failText(r)
+    else if (r && r.ok) exported(r)
   } catch (e) { expErr.value = failText({ error: (e && e.message) || String(e) }) }
 }
 async function exportCsv() {
@@ -380,6 +342,7 @@ async function exportCsv() {
     // BOM：Excel 认这个才不会把中文表头读成乱码
     const r = await exportFile({ defaultName: figName.value + '.csv', data: new TextEncoder().encode('﻿' + csv), filters: [{ name: t.value('CSV 表格'), extensions: ['csv'] }] })
     if (r && !r.ok && !r.canceled) expErr.value = failText(r)
+    else if (r && r.ok) exported(r)
   } catch (e) { expErr.value = failText({ error: (e && e.message) || String(e) }) }
 }
 

@@ -191,7 +191,7 @@ const principal = computed(() => { const I = inertia.value; if (!I) return []; t
     <template v-if="m">
       <div class="srow"><label title="三种来源互斥：结果仅取当前所选来源">来源</label>
         <div class="lbu-seg">
-          <button v-for="x in MODES" :key="x.key" :class="{ on: mode === x.key }" :title="x.tip" :disabled="ro && !isParam" @click="mode = x.key">{{ x.label }}</button>
+          <button v-for="x in MODES" :key="x.key" :class="{ on: mode === x.key }" :aria-pressed="(mode === x.key) ? 'true' : 'false'" :title="x.tip" :disabled="ro && !isParam" @click="mode = x.key">{{ x.label }}</button>
         </div>
       </div>
 
@@ -251,7 +251,7 @@ const principal = computed(() => { const I = inertia.value; if (!I) return []; t
         <div class="md-kvs">
           <div class="md-kv"><span class="k">质量</span><span class="v" data-i18n-skip>{{ fmtNum(mp.massKg, 6) }}</span><span class="u">kg</span></div>
           <div class="md-kv" :title="mp.source + ' · ' + conf"><span class="k">来源</span><span class="v ms-src">{{ (MODES.find((x) => x.key === mp.source) || {}).label || mp.source }}</span>
-            <Icon :name="conf === 'high' ? 'check' : 'alert-triangle'" :size="11" :class="conf === 'high' ? 'ms-good' : 'ms-poor'" /></div>
+            <Icon :name="conf === 'high' ? 'check' : 'alert-triangle'" :size="12" :class="conf === 'high' ? 'ms-good' : 'ms-poor'" /></div>
           <div class="md-kv"><span class="k">质心 X</span><span class="v" data-i18n-skip>{{ fmtNum(mp.comBody[0], 5) }}</span><span class="u">m</span></div>
           <div class="md-kv"><span class="k">质心 Y</span><span class="v" data-i18n-skip>{{ fmtNum(mp.comBody[1], 5) }}</span><span class="u">m</span></div>
           <div class="md-kv"><span class="k">质心 Z</span><span class="v" data-i18n-skip>{{ fmtNum(mp.comBody[2], 5) }}</span><span class="u">m</span></div>

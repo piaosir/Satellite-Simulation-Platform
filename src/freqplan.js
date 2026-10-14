@@ -9,5 +9,8 @@ import './styles/lbworkbench.css'
 import './stores/theme'
 import './stores/uiFont'
 import './shared/i18n/runtime'
+import { installGlobalErrors } from './shared/reportError.js'
 
-createApp(FreqPlanApp).use(createPinia()).mount('#app')
+const app = createApp(FreqPlanApp).use(createPinia())
+installGlobalErrors(app)
+app.mount('#app')

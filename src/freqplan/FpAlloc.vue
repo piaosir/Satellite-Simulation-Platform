@@ -39,6 +39,7 @@ import { resolveAll, upFromDn, cleanFreq, POLS, POL_LABEL } from '../shared/freq
 import { num as parseNum } from '../shared/num.js'   // 全角容错：中文输入法下的全角数字也能落值
 import { useFreqUnit } from './fpUnit.js'
 import Icon from '../components/Icon.vue'
+import { byLang } from '../shared/i18n/lang.js'
 
 const props = defineProps({
   plan: { type: Object, required: true },
@@ -174,11 +175,15 @@ function addCarrier(g) {
   selectOne(c.id)
   openId.value = g.channelId       // 收起的那一条上加了一条，不摊开等于没加
 }
-function removeIds(ids) {
+// 删载波不确认（Delete / Backspace / 行尾 × / 右键「删除」）：整份计划有撤销栈兜底（Ctrl+Z，见 fpHistory.js），
+// 删完在通知条上留一句数目。剪切（quiet）由 copySel 自己报。
+function removeIds(ids, quiet = false) {
   const s = new Set(ids)
   if (!s.size) return
+  const n = props.carriers.filter((c) => s.has(c.id)).length
   emit('update:carriers', props.carriers.filter((c) => !s.has(c.id)))
   sel.value = sel.value.filter((x) => !s.has(x))
+  if (!quiet && n) emit('flash', byLang(`已删除 ${n} 个载波`, `Deleted ${n} carrier${n === 1 ? '' : 's'}`))
 }
 // 速率不随刻度走（kbps 是它自己的单位），故不经 dput，只做全角容错
 const setRate = (id, v) => patch(id, { infoRateKbps: parseNum(v) })
@@ -220,7 +225,7 @@ function commitEdge(g, r, which, v) {
 function edgeTitle(which) {
   const self = which === 'f1' ? '起始' : '终止'
   const oth = which === 'f1' ? '终止' : '起始'
-  return `载波频带${which === 'f1' ? '下' : '上'}边沿。改这里${oth}钉住，中心与占用带宽一并重算`
+  return `载波频带${which === 'f1' ? '下' : '上'}边沿。修改此处${oth}钉住，中心与占用带宽一并重算`
     + `（中心 =（起 + 止）/ 2 · 占用带宽 = 止 − 起）；${self}越过${oth}时改按「带宽不变、整条载波平移」处理。回车或离焦落值。`
 }
 
@@ -251,7 +256,7 @@ function copySel(cut = false) {
   }
   if (!items.length) return
   clip.value = items
-  if (cut) removeIds(items.map((i) => i.c.id))
+  if (cut) removeIds(items.map((i) => i.c.id), true)
   emit('flash', `${cut ? '已剪切' : '已复制'} ${items.length} 条载波`)
 }
 function pasteInto(gid) {
@@ -427,7 +432,7 @@ const colorOf = (r) => (colorOn.value && r?.beam?.color ? r.beam.color : BLUE)
 const stacked = (g) => !g.orphan && (g.beams || []).length > 1 && !(g.splitSegs || []).length
 const pickBeam = (g, id) => emit('set-channel-beam', { channelId: g.channelId, beamId: id })
 // 这一格是「钉死的」还是「自动认到的」，口径写在 title 上（界面不写解释文字）
-const beamCellTitle = (g, r) => (!g.beams || !g.beams.length ? '这条转发器没有挂波束'
+const beamCellTitle = (g, r) => (!g.beams || !g.beams.length ? '该转发器未挂载波束'
   : r.beamPinned ? `钉死在「${r.beam.name}」。选「自动」交回自动认领`
     : `自动认到「${r.beam?.name || '—'}」（${(g.splitSegs || []).length ? '按频率落在哪一段' : '整条转发器指定的那个'}）。选一个即钉死`)
 // 选中的那几条一起改波束（右键菜单那一路）。'' = 交回自动
@@ -682,7 +687,7 @@ function nudge(g, sign, big) {
         <input class="ci num nar" :value="dval('guard', guardMHz)"
           @input="dput('guard', $event.target.value, (m) => { guardMHz = m ?? 0 })" @blur="ddone" /> {{ U }}</label>
       <span class="sep"></span>
-      <button class="sw" :class="{ on: colorOn }" @click="colorOn = !colorOn"
+      <button class="sw" :class="{ on: colorOn }" :aria-pressed="colorOn ? 'true' : 'false'" @click="colorOn = !colorOn"
         title="载波块按所属波束着色。频带划分给多个波束时按频率归属（条带顶部色带即划分点，载波与其上方对应段同色）；多个波束同频叠放时在组头点击色片选择；逐条载波可在明细表「波束」列中锁定">波束着色</button>
       <span class="spacer"></span>
       <span class="sm" v-if="S.issueCount"><b class="bad">{{ S.issueCount }}</b> 处冲突</span>
@@ -703,7 +708,7 @@ function nudge(g, sign, big) {
                  频带切开的那种色片只是图例 —— 归谁由频率定，点它没有意义 -->
             <span class="gbm" :class="{ pick: stacked(g) }" v-if="g.beams && g.beams.length">
               <template v-if="stacked(g)">
-                <button v-for="b in g.beams" :key="b.id" class="bmp" :class="{ on: g.pickBeamId === b.id }"
+                <button v-for="b in g.beams" :key="b.id" class="bmp" :class="{ on: g.pickBeamId === b.id }" :aria-pressed="(g.pickBeamId === b.id) ? 'true' : 'false'"
                   @click.stop="pickBeam(g, b.id)"
                   :title="`该转发器上多个波束同频叠放，无法按频率区分归属。点击可将本条转发器的载波默认归入「${b.name}」（逐条仍可在明细表中另行指定）`">
                   <i class="dot" :style="{ background: b.color }"></i>{{ b.name }}
@@ -868,7 +873,7 @@ function nudge(g, sign, big) {
             </tbody>
           </table>
           </div>
-          <div v-else class="pnone">还没有载波。</div>
+          <div v-else class="pnone">暂无载波。</div>
 
           <div v-for="(is, i) in g.issues" :key="i" class="isrow">{{ is.msg }}</div>
         </div>
@@ -881,23 +886,23 @@ function nudge(g, sign, big) {
     <template v-if="menu">
       <!-- pointerdown 上 preventDefault：连带把随后的 mousedown / click 一并压掉，菜单开着时
            点别处只关菜单，不会顺手把底下那一行也点选了 -->
-      <div class="mmask" @pointerdown.prevent="closeMenu" @contextmenu.prevent="closeMenu"></div>
-      <div class="cmenu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-        <button :disabled="!sel.length" @click="runMenu('copy')"><span>复制</span><i>Ctrl+C</i></button>
-        <button :disabled="!sel.length" @click="runMenu('cut')"><span>剪切</span><i>Ctrl+X</i></button>
-        <button :disabled="!clip.length || menu.orphan" @click="runMenu('paste')"><span>粘贴</span><i>Ctrl+V</i></button>
+      <div class="mmask menu-mask" @pointerdown.prevent="closeMenu" @contextmenu.prevent="closeMenu"></div>
+      <div class="cmenu menu" role="menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
+        <button type="button" class="menu-item" role="menuitem" :disabled="!sel.length" @click="runMenu('copy')"><span>复制</span><i class="menu-kbd">Ctrl+C</i></button>
+        <button type="button" class="menu-item" role="menuitem" :disabled="!sel.length" @click="runMenu('cut')"><span>剪切</span><i class="menu-kbd">Ctrl+X</i></button>
+        <button type="button" class="menu-item" role="menuitem" :disabled="!clip.length || menu.orphan" @click="runMenu('paste')"><span>粘贴</span><i class="menu-kbd">Ctrl+V</i></button>
         <!-- 波束：选中的那几条一起改。挂两个波束的转发器上，这就是那个「二选一」 -->
         <template v-if="menuBeams.length">
-          <div class="msep"></div>
-          <button v-for="b in menuBeams" :key="b.id" class="bm" :disabled="!sel.length" @click="runMenu('beam', b.id)">
+          <div class="msep menu-sep" role="separator"></div>
+          <button v-for="b in menuBeams" :key="b.id" type="button" class="bm menu-item" role="menuitem" :disabled="!sel.length" @click="runMenu('beam', b.id)">
             <span class="cdot" :style="{ background: b.color }"></span><span data-i18n-skip>{{ b.name }}</span>
           </button>
-          <button class="bm" :disabled="!sel.length" @click="runMenu('beam', '')">
+          <button type="button" class="bm menu-item" role="menuitem" :disabled="!sel.length" @click="runMenu('beam', '')">
             <span class="cdot none"></span><span>自动</span>
           </button>
         </template>
-        <div class="msep"></div>
-        <button class="dgr" :disabled="!sel.length" @click="runMenu('del')"><span>删除</span><i>Delete</i></button>
+        <div class="msep menu-sep" role="separator"></div>
+        <button type="button" class="dgr menu-item danger" role="menuitem" :disabled="!sel.length" @click="runMenu('del')"><span>删除</span><i class="menu-kbd">Delete</i></button>
       </div>
     </template>
 
@@ -927,7 +932,7 @@ function nudge(g, sign, big) {
 /* 波束着色开关：按下是实底（与 .mini 同高，两者在工具栏上并排） */
 .sw { font: inherit; font-size: var(--fs-4); padding: 3px 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
 .sw:hover { color: var(--text); }
-.sw.on { background: var(--text); border-color: var(--text); color: var(--bg); }
+.sw.on { background: var(--sel-fill); border-color: var(--sel-fill); color: var(--sel-on); }
 
 .body { flex: 1; overflow: auto; }
 .none { padding: 20px; text-align: center; color: var(--text-faint); font-size: var(--fs-4); }
@@ -955,7 +960,7 @@ function nudge(g, sign, big) {
 .bmp { font: inherit; font-size: var(--fs-3); line-height: 1.1; padding: 1px 5px 1px 3px; margin-right: 4px;
   border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
 .bmp .dot { opacity: .3; }
-.bmp:hover { border-color: var(--border-strong); background: var(--bg); }
+.bmp:hover { border-color: var(--border-strong); background: var(--wash-hover); }
 .bmp.on { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
 .bmp.on .dot { opacity: 1; }
 .gn { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
@@ -971,8 +976,8 @@ function nudge(g, sign, big) {
 .mpwr { position: absolute; bottom: 0; left: 0; height: 2px; background: var(--warn); opacity: .85; }
 .gadd { display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: var(--fs-2); padding: 0 4px; height: 17px; flex: none;
   border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
-.th:hover .gadd { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
-.th .gadd:hover { color: var(--text); border-color: var(--text); background: var(--bg); }   /* 与上一条同权重，写在后面才压得住 */
+.th:hover .gadd { color: var(--text); border-color: var(--border-strong); background: var(--wash-hover); }
+.th .gadd:hover { color: var(--text); border-color: var(--text); background: var(--wash-hover); }   /* 与上一条同权重，写在后面才压得住 */
 
 /* ── 编排面板 ── 摊开的那一条 */
 .panel { padding: 8px 0 6px; background: var(--bg); outline: none; }
@@ -1049,22 +1054,13 @@ function nudge(g, sign, big) {
 .isrow { color: var(--danger); font-size: var(--fs-3); padding: 3px 48px 0; }
 
 /* 右键菜单。遮罩吃掉一次点击（含右键）——菜单开着时点别处只该关菜单，不该同时选中别的东西 */
-.mmask { position: fixed; inset: 0; z-index: 40; }
-/* 命令菜单（P3，本窗全方角故不加圆角）：四周 3px 内距、项左右内距 10 → 7 字不动；光标处出现故只淡入；
-   悬停机位色实底（与菜单栏一致），快捷键跟着反白、压一档；危险项悬停 --danger 实底 */
-.cmenu { position: fixed; z-index: 41; min-width: 132px; padding: 3px; background: var(--bg);
-  border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.cmenu button { display: flex; align-items: center; gap: 14px; width: 100%; font: inherit; font-size: var(--fs-4);
-  padding: 3px 7px; border: none; background: none; color: var(--text); cursor: pointer; text-align: left; }
-.cmenu button i { margin-left: auto; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
-.cmenu button.bm { gap: 7px; }
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-kbd / .menu-sep / .menu-mask，层级 --z-menu）；
+   这里只留定位、宽度、本窗全方角，以及波束色点 */
+.cmenu { position: fixed; min-width: 132px; }
+.cmenu, .cmenu .menu-item { border-radius: 0; }
+.cmenu .menu-kbd { font-style: normal; }
 .cmenu .cdot { flex: none; width: 8px; height: 8px; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); }
 .cmenu .cdot.none { background: transparent; border-style: dashed; }
-.cmenu button:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
-.cmenu button:hover:not(:disabled) i { color: inherit; opacity: .7; }
-.cmenu button:disabled { color: var(--text-faint); cursor: default; }
-.cmenu button.dgr:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
-.msep { height: 1px; margin: 3px 6px; background: var(--border); }
 
 /* 表末整星合计：压双线，与上面每一条的分区线拉开层级 */
 .foot { display: flex; align-items: baseline; gap: 4px; padding: 4px 10px; font-size: var(--fs-3);
@@ -1093,6 +1089,6 @@ function nudge(g, sign, big) {
 .del { border: none; background: transparent; color: var(--text-faint); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 4px; }
 .del:hover { color: var(--danger); }
 .mini { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text-muted); cursor: pointer; }
-.mini:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.mini:hover:not(:disabled) { background: var(--wash-hover); color: var(--text); }
 .mini:disabled { opacity: .45; cursor: default; }
 </style>

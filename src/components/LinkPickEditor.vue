@@ -125,7 +125,7 @@ onMounted(() => nextTick(() => { if (listEl.value) listEl.value.focus({ preventS
               <span class="lpe-lb" data-i18n-skip>{{ linkPointLabel(kind, c) }}</span>
               <span class="lpe-sub" data-i18n-skip>
                 <template v-for="(s, j) in sub(c, readOf(c.key))" :key="j">
-                  <span v-if="s === null" class="lpe-t" title="时间轴跳到该时刻" @click.stop="emit('seek', c.tMs)">{{ fmtTime(c.tMs) }}</span>
+                  <button type="button" v-if="s === null" class="lpe-t" title="时间轴跳到该时刻" @click.stop="emit('seek', c.tMs)">{{ fmtTime(c.tMs) }}</button>
                   <span v-else>{{ s }}</span>
                 </template>
               </span>
@@ -139,15 +139,17 @@ onMounted(() => nextTick(() => { if (listEl.value) listEl.value.focus({ preventS
 </template>
 
 <style scoped>
+/* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button).lpe-t { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 .lpe { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .lpe-fams { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 /* 族开关：描边小钮，开 = 机位色淡底；等分族的点数框并在钮里 */
 .lpe-f {
   display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; margin: 0;
-  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg);
+  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--raised);
   color: var(--text-muted); font: inherit; font-size: var(--fs-2); cursor: pointer; white-space: nowrap;
 }
-.lpe-f:hover { color: var(--text); border-color: var(--field-border-hover, var(--border-strong)); }
+.lpe-f:hover { color: var(--text); background: var(--raised-hover); border-color: var(--field-border-hover, var(--border-strong)); }
 .lpe-f.on { background: var(--accent-ui-weak); border-color: color-mix(in srgb, var(--accent-ui) 55%, transparent); color: var(--accent-ui); }
 .lpe-fn { font-family: var(--font-mono); font-size: var(--fs-1); opacity: .85; }
 .lpe-fd { padding: 0; cursor: default; overflow: hidden; }
@@ -157,7 +159,7 @@ onMounted(() => nextTick(() => { if (listEl.value) listEl.value.focus({ preventS
   border-radius: 0; background: var(--field-bg); color: var(--text); font-family: var(--font-mono); font-size: var(--fs-2); text-align: right;
 }
 .lpe-cnt { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.lpe-cnt.none { color: var(--warn, #d29922); }
+.lpe-cnt.none { color: var(--warn); }
 .lpe-list { border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--bg); outline: none; overflow: hidden; }
 .lpe-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .lpe-vp { max-height: 198px; overflow-y: auto; overscroll-behavior: contain; }
@@ -165,7 +167,7 @@ onMounted(() => nextTick(() => { if (listEl.value) listEl.value.focus({ preventS
 .lpe-row.hi { background: var(--accent-ui-weak); }
 /* 实心 = 已取、空心 = 未取（与图上候选点同一套图形） */
 .lpe-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--text-faint); }
-.lpe-row.on .lpe-dot { border-color: var(--accent-ui); background: var(--accent-ui); }
+.lpe-row.on .lpe-dot { border-color: var(--accent-fill); background: var(--accent-fill); }
 .lpe-lb { flex: none; min-width: 52px; color: var(--text-muted); white-space: nowrap; }
 .lpe-row.on .lpe-lb { color: var(--text); }
 .lpe-sub { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text-faint); }
@@ -173,5 +175,5 @@ onMounted(() => nextTick(() => { if (listEl.value) listEl.value.focus({ preventS
 .lpe-t { cursor: pointer; }
 .lpe-t:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .lpe-rd { flex: none; min-width: 38px; text-align: right; font-family: var(--font-mono); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.lpe-rd.off { color: var(--warn, #d29922); }
+.lpe-rd.off { color: var(--warn); }
 </style>

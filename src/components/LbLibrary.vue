@@ -5,7 +5,7 @@
 // 列表本身就是全库速览——信息密度与「同屏一个上下文」两头都占。
 // 两种排布（layout）：'row' = 左列表右编辑器（宽区）；'column' = 上列表下编辑器（右侧「资源库」侧栏）。
 // 「复制名称」（行内钮 / 名称旁的钮 / 选中条目按 Ctrl+C）把条目名送进剪贴板，到链路表的配置列 Ctrl+V 即套用。
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
@@ -16,9 +16,35 @@ const props = defineProps({
   minKeep: { type: Number, default: 1 },         // 少于等于该数量时禁删
   namePlaceholder: { type: String, default: '配置名称' },
   autoTip: { type: String, default: '关键参数' }, // 自动命名取哪几项（「自动」标记的悬浮说明用）
-  layout: { type: String, default: 'row' }       // 'row' 主从横排 / 'column' 上下堆叠（侧栏窄区）
+  layout: { type: String, default: 'row' },      // 'row' 主从横排 / 'column' 上下堆叠（侧栏窄区）
+  // 「复制到 ▸ 其它窗口的资源库」菜单项：(cfg) => [{ ns, label, disabled, reason }]（见 shared/lbShare.js libCopyTargets）。
+  // 不给就没有这个菜单（行右键照常是浏览器缺省）
+  copyTargets: { type: Function, default: null }
 })
-const emit = defineEmits(['update:modelValue', 'add', 'duplicate', 'remove', 'toast'])
+const emit = defineEmits(['update:modelValue', 'add', 'duplicate', 'remove', 'toast', 'copy-to'])
+
+// —— 行菜单（右键 / 行内「更多」钮）：目前只有「复制到 ▸ 某库」——
+const rowMenu = ref(null)   // { x, y, cfg, items }
+function openRowMenu(e, cfg) {
+  if (!props.copyTargets) return
+  let items = []
+  try { items = props.copyTargets(cfg) || [] } catch (err) { items = [] }
+  if (!items.length) return
+  e.preventDefault()
+  // 贴着指针开；靠近窗口右 / 下缘时往回收，菜单不出界
+  const W = 190, H = 12 + items.length * 26
+  rowMenu.value = { x: Math.max(4, Math.min(e.clientX, window.innerWidth - W - 4)), y: Math.max(4, Math.min(e.clientY, window.innerHeight - H - 4)), cfg, items }
+}
+function pickRowMenu(it) {
+  const m = rowMenu.value
+  rowMenu.value = null
+  if (!m || !it || it.disabled) return
+  emit('copy-to', m.cfg, it.ns)
+}
+// Esc 关菜单：捕获阶段收，不漏给下面的表格 / 对话框
+function onMenuKey(e) { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); rowMenu.value = null } }
+watch(rowMenu, (m) => (m ? window.addEventListener('keydown', onMenuKey, true) : window.removeEventListener('keydown', onMenuKey, true)))
+onBeforeUnmount(() => window.removeEventListener('keydown', onMenuKey, true))
 
 const selected = computed(() => props.items.find((c) => c.id === props.modelValue) || props.items[0] || null)
 // 选中项被删/换库后自动落回第一份
@@ -68,7 +94,7 @@ function onNameBlur() {
   flash('已恢复自动命名')
 }
 
-// —— 复制名称：条目名进剪贴板，到链路表的「载波信号配置 / 地球站配置」那一格 Ctrl+V 就套用了 ——
+// —— 复制名称：条目名进剪贴板，到链路表的「载波配置 / 地球站配置」那一格 Ctrl+V 就套用了 ——
 // 那些列存的是条目 id、显示的是条目名，粘贴时按显示名反查存值（StationGrid.normalizeFieldValue），
 // 所以剪贴板里放的就是这个名字：粘一格改一条，先框一片格再粘就整片套用（Excel 平铺），与手动下拉选同一结果。
 // 名字本身也常要往外抄（发给同事、贴进报告），故按钮就叫「复制名称」，不掺别的内容——只放这一行纯文本。
@@ -76,9 +102,9 @@ const copied = ref('')   // 刚复制过的条目 id：该条的按钮图标临�
 let _copyT = null
 async function copyName(cfg) {
   const nm = String((cfg && cfg.name) || '').trim()
-  if (!nm) { flash('这条还没有名称'); return }
+  if (!nm) { flash('该条目名称为空。'); return }
   try { await navigator.clipboard.writeText(nm) } catch (e) { emit('toast', '复制失败：剪贴板不可用'); return }
-  emit('toast', `已复制「${nm}」——在链路表选中配置格 Ctrl+V 即套用本条`)
+  emit('toast', `已复制「${nm}」`)
   copied.value = cfg.id
   clearTimeout(_copyT)
   _copyT = setTimeout(() => { copied.value = '' }, 1500)
@@ -105,16 +131,18 @@ function onListKey(e) {
 
 <template>
   <!-- tabindex=-1：点面板任意空白处即让容器接住焦点，Ctrl+C 才有落点（列表另有 tabindex=0，可 Tab 进来） -->
-  <div class="lbl" :class="layout === 'column' ? 'lbl-col' : 'lbl-row'" tabindex="-1" @keydown="onKey">
+  <div class="lbl" :class="[layout === 'column' ? 'lbl-col' : 'lbl-row', { 'has-more': !!copyTargets }]" tabindex="-1" @keydown="onKey">
     <div ref="listEl" class="lbl-list" role="listbox" tabindex="0" @keydown="onListKey">
       <div v-for="cfg in items" :key="cfg.id" class="lbl-row" :class="{ on: selected && cfg.id === selected.id }"
-           role="option" :aria-selected="selected && cfg.id === selected.id" @click="emit('update:modelValue', cfg.id)">
+           role="option" :aria-selected="selected && cfg.id === selected.id" @click="emit('update:modelValue', cfg.id)"
+           @contextmenu="openRowMenu($event, cfg)">
         <span class="lbl-nm" :title="cfg.name" data-i18n-skip>{{ cfg.name || byLang('（未命名）', '(Unnamed)') }}</span>
         <span v-if="sumOf(cfg)" class="lbl-sum" :title="sumOf(cfg)">{{ sumOf(cfg) }}</span>
         <span class="lbl-row-acts">
           <button class="lbl-ico" :class="{ done: copied === cfg.id }" title="复制名称（到链路表的配置格 Ctrl+V 即套用本条）"
                   @click.stop="copyName(cfg)"><Icon :name="copied === cfg.id ? 'check' : 'clipboard'" :size="12" /></button>
           <button class="lbl-ico" title="复制此配置" @click.stop="emit('duplicate', cfg)"><Icon name="copy" :size="12" /></button>
+          <button v-if="copyTargets" class="lbl-ico" title="复制到其它窗口的资源库" @click.stop="openRowMenu($event, cfg)"><Icon name="ellipsis" :size="12" /></button>
           <button class="lbl-ico del" title="删除此配置" :disabled="items.length <= minKeep" @click.stop="emit('remove', cfg)"><Icon name="x" :size="12" /></button>
         </span>
       </div>
@@ -126,7 +154,7 @@ function onListKey(e) {
         <input :value="selected.name" class="lbl-ed-nm" :placeholder="namePlaceholder" spellcheck="false"
                @input="onNameInput" @blur="onNameBlur" />
         <button class="lbl-cpy" :class="{ done: copied === selected.id }" @click="copyName(selected)"
-                :title="`复制名称「${selected.name}」到剪贴板：在链路表选中「载波信号配置 / 地球站配置」单元格后 Ctrl+V 即套用本条（选中条目直接按 Ctrl+C 亦可）`">
+                :title="`复制名称「${selected.name}」到剪贴板：在链路表选中「载波配置 / 地球站配置」单元格后 Ctrl+V 即套用本条（选中条目直接按 Ctrl+C 亦可）`">
           <Icon :name="copied === selected.id ? 'check' : 'clipboard'" :size="12" />
         </button>
         <span v-if="selected.nameAuto" class="lbl-auto" :title="`名称随${autoTip}自动生成；在此改名后就固定为自定义名称，不再自动更新（清空名称可恢复自动）`">自动</span>
@@ -136,6 +164,14 @@ function onListKey(e) {
       </div>
       <div class="lbl-ed-bd">
         <slot :cfg="selected" />
+      </div>
+    </div>
+
+    <!-- 行菜单：遮罩接住点外 / 右键即关；不可用的目标灰显，原因在悬停 title -->
+    <div v-if="rowMenu" class="lbl-menu-mask menu-mask" @mousedown.self="rowMenu = null" @contextmenu.prevent="rowMenu = null">
+      <div class="lbl-menu menu" role="menu" :style="{ left: rowMenu.x + 'px', top: rowMenu.y + 'px' }">
+        <button v-for="it in rowMenu.items" :key="it.ns" type="button" class="lbl-menu-i menu-item" role="menuitem" :disabled="it.disabled"
+                :title="it.reason || ''" @click="pickRowMenu(it)">{{ it.label }}</button>
       </div>
     </div>
   </div>
@@ -155,6 +191,7 @@ function onListKey(e) {
 .lbl-row:not(.on) .lbl-nm { color: var(--text-muted); font-weight: 400; }
 .lbl-sum { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lbl-row-acts { position: absolute; top: 5px; right: 5px; display: none; gap: 2px; }
+.lbl.has-more .lbl-nm { padding-right: 78px; }   /* 行内钮多一枚「更多」 */
 .lbl-row:hover .lbl-row-acts { display: inline-flex; }
 .lbl-ico { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbl-ico:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
@@ -176,8 +213,6 @@ function onListKey(e) {
 .lbl-auto { flex: none; font-size: var(--fs-1); line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .lbl-hint { flex: 0 1 auto; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: lbl-hint-fade 2.6s ease forwards; }
 @keyframes lbl-hint-fade { 0% { opacity: 0 } 8%, 70% { opacity: 1 } 100% { opacity: 0 } }
-/* 减弱动效：回执直接常显，到时由 flash() 的定时器撤掉（不靠淡出） */
-@media (prefers-reduced-motion: reduce) { .lbl-hint { animation: none; } }
 .lbl-ed-sp { flex: 1; }
 .lbl-ed-bd { padding: 10px 12px 6px; overflow-x: auto; }
 
@@ -188,4 +223,6 @@ function onListKey(e) {
 .lbl-col .lbl-ed { min-height: 0; }
 .lbl-col .lbl-ed-nm { flex: 1; min-width: 0; width: auto; }
 .lbl-col .lbl-ed-bd { flex: 1; min-height: 0; padding: 9px 10px 14px; overflow-y: auto; overflow-x: hidden; }
+/* 行菜单（复制到其它窗口的资源库）：外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-mask），这里只留定位与宽度 */
+.lbl-menu { position: fixed; min-width: 160px; }
 </style>

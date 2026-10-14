@@ -136,7 +136,7 @@ for (const fmt of ['ccsds-oem-kvn', 'ccsds-oem-xml']) {
 }
 let threw = ''
 try { customSats.groupText(gE.id, 'omm-csv') } catch (e) { threw = e.message }
-ok(/只能导出成/.test(threw), 'ephem 组不许导出成 OMM/TLE（点名拒绝）', threw)
+ok(/仅可导出为/.test(threw), 'ephem 组不许导出成 OMM/TLE（点名拒绝）', threw)
 // gp 组导出成点序列：按 SGP4 采样
 const gpE = customSats.groupText(gG.id, 'stk-e', { stepS: 300 })
 ok(ephF.detectFormat(gpE) === 'stk-e', 'gp 组能导出成 .e')

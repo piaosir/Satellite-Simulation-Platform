@@ -385,3 +385,5 @@ build/review/
 .fsvharness/
 # .refaxharness/ 是参考系轴（ECEF / J2000 / 赤道面）+ RIC 三轴的渲染验证台：只挂真 createGlobeScene（npx vite --config .refaxharness/vite.config.mjs）。
 .refaxharness/
+# 滑杆配数值框验证台（rangeField.js + controls.css「滑杆配数值框」一节）：preview_start rnum-harness
+.rnumharness/

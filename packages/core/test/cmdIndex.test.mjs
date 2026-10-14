@@ -37,7 +37,8 @@ ok('行级 title 作说明', by('mk-points')[0].items.some((i) => i.label === '�
 ok('宇宙空间归地图设置视图（原晨昏线分区 geo-term 已并入）', by('geo-space')[0] && by('geo-space')[0].view === 'geo' && !by('geo-term').length)
 ok('轨道壳层（SatCovPanel）归对星覆盖分析', by('satcov-shell')[0] && by('satcov-shell')[0].view === 'satcov' && has('satcov-shell', '线宽'))
 ok('设置窗按 settings 归档', by('set-quality')[0] && by('set-quality')[0].view === 'settings' && has('set-quality', '渲染分辨率'))
-ok('视图顶部（分区前）的行挂到 <view>-top', has('gxt-top', '线粗'))
+ok('视图顶部（分区前）的行挂到 <view>-top', has('constellation-top', '轨道类型'))
+ok('GXT 视图首块有节头（2026-10-15 补）：卫星行归 gxt-sats', has('gxt-sats', '线粗'))
 ok('动态标题的分区 title 为空', by('vis-list')[0] && by('vis-list')[0].title === null)
 
 // 模板里每个 data-sec 都进了索引（漏一个就是一块搜不到）

@@ -23,8 +23,7 @@ const props = defineProps({
   sat: { type: Object, default: null },          // { key, name } 主选星；null = 未选中
   model: { type: Object, default: null },        // 主选星的模型信息（页面 selModel）
   lib: { type: Array, default: () => [] },       // manifest 条目（含 local 状态）+ 参数化模板
-  following: { type: Boolean, default: false },
-  canFollow: { type: Boolean, default: true },
+  following: { type: Boolean, default: false },   // 正在跟随（3D 相机跟随 / 2D 星下点跟随都算）
   st: { type: Object, required: true }           // focusStyle（modelOn / modelPx / hud*）
 })
 const emit = defineEmits(['toggle-follow', 'bind', 'set-style', 'reset-style', 'open-wb'])
@@ -33,9 +32,9 @@ const models = (typeof window !== 'undefined' && window.api && window.api.models
 // ---------------- 当前卫星 ----------------
 const FID = {
   outreach: { icon: 'image', t: '科普美术模型' },
-  parametric: { icon: 'box', t: '参数化生成' },
-  cad: { icon: 'package', t: 'CAD 模型' },
-  engineering: { icon: 'ruler', t: '工程模型' }
+  parametric: { icon: 'sliders-horizontal', t: '参数化生成' },
+  cad: { icon: 'box', t: 'CAD 模型' },
+  engineering: { icon: 'weight', t: '工程模型' }
 }
 const fidOf = (f) => FID[f] || FID.outreach
 // 二期新加的界面词（姿态律 / 挂点）按语言直接出字：词典（uiDict）不归本面板管，呈现层查不到就会在英文界面漏成中文。
@@ -230,7 +229,7 @@ function onCardDrag(e, m) {
     const x = c.getContext('2d')
     x.scale(dpr, dpr)
     const cs = getComputedStyle(document.documentElement)
-    const bg = cs.getPropertyValue('--surface').trim() || '#1e1e1c', ln = cs.getPropertyValue('--accent-ui').trim() || '#6ba3d6'
+    const bg = cs.getPropertyValue('--surface').trim() || '#1b1b1b', ln = cs.getPropertyValue('--accent-ui').trim() || '#6a8ab8'
     x.beginPath(); x.roundRect(1, 1, S - 2, S - 2, 6)
     x.globalAlpha = 0.92; x.fillStyle = bg; x.fill(); x.globalAlpha = 1
     x.lineWidth = 1.5; x.strokeStyle = ln; x.stroke()
@@ -260,9 +259,9 @@ const HUD = [
   <div class="cov-side mdl-side docked">
 
     <div class="sec">
-      <div class="sect acc" data-sec="mdl-cur" :class="{ open: isSecOpen('mdl-cur') }" @click="toggleSec('mdl-cur')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-cur') }" :size="12" /><span>当前卫星</span></div>
+      <div class="sect acc" data-sec="mdl-cur" :class="{ open: isSecOpen('mdl-cur') }" @click="toggleSec('mdl-cur')" role="button" tabindex="0" :aria-expanded="isSecOpen('mdl-cur') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mdl-cur')" @keydown.space.self.prevent="toggleSec('mdl-cur')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-cur') }" :size="12" /><span>当前卫星</span></div>
       <template v-if="isSecOpen('mdl-cur')">
-        <div v-if="!sat" class="empty">未选中卫星。</div>
+        <div v-if="!sat" class="empty">未选择卫星。</div>
         <template v-else>
           <div class="cur">
             <div class="cthumb" :class="{ none: !thumbCur }">
@@ -291,28 +290,28 @@ const HUD = [
             </select>
           </div>
           <div class="btns">
-            <button type="button" class="btn" :class="{ on: following }" :disabled="!canFollow" :title="canFollow ? '' : '仅 3D 球体'" @click="emit('toggle-follow')"><Icon name="locate-fixed" :size="13" /><span>{{ following ? '退出跟随' : '跟随卫星' }}</span></button>
-            <button type="button" class="btn" :disabled="!sat.key" :title="zhEn('模型工作台「卫星」页：姿态律、挂点、遮挡掩模', 'Model workbench, Satellite page: attitude law, mounts, obscuration masks')" @click="emit('open-wb', { tab: 'sat', satKey: sat.key, modelId: model && model.id })"><Icon name="pencil" :size="13" /><span>编辑…</span></button>
+            <button type="button" class="btn" :class="{ on: following }" :aria-pressed="following ? 'true' : 'false'" @click="emit('toggle-follow')"><Icon name="locate-fixed" :size="12" /><span>跟随卫星</span></button>
+            <button type="button" class="btn" :disabled="!sat.key" :title="zhEn('模型工作台「卫星」页：姿态律、挂点、遮挡掩模', 'Model workbench, Satellite page: attitude law, mounts, obscuration masks')" @click="emit('open-wb', { tab: 'sat', satKey: sat.key, modelId: model && model.id })"><Icon name="pencil" :size="12" /><span>编辑…</span></button>
           </div>
         </template>
       </template>
     </div>
 
     <div class="sec" :class="{ hid: !st.modelOn }">
-      <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><span class="lnk" title="本节恢复出厂设置" @click.stop="emit('reset-style')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星显示为点符号，标记显示为图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
+      <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')" role="button" tabindex="0" :aria-expanded="isSecOpen('mdl-disp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mdl-disp')" @keydown.space.self.prevent="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="emit('reset-style')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星显示为点符号，标记显示为图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
       <template v-if="isSecOpen('mdl-disp')">
-        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围直径（屏幕像素），随视距缩放；对全部卫星统一生效。标记所挂模型的大小与标记图标一致', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="4" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
+        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围直径（屏幕像素），随视距缩放；对全部卫星统一生效。标记所挂模型的大小与标记图标一致', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="1" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
         <div class="hudt" title="跟随卫星时叠加的方向指示">HUD</div>
         <label v-for="h in HUD" :key="h.k" class="chk2" :title="h.en ? zhEn(h.tt, h.ttEn) : (h.tt || '')"><input type="checkbox" :checked="st[h.k]" @change="emit('set-style', h.k, $event.target.checked)" /><span>{{ h.en ? zhEn(h.t, h.en) : h.t }}</span></label>
       </template>
     </div>
 
     <div ref="libEl" class="sec lib">
-      <div class="sect acc" data-sec="mdl-lib" :class="{ open: isSecOpen('mdl-lib') }" @click="toggleSec('mdl-lib')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-lib') }" :size="12" /><span>模型库</span><span class="cnt">{{ shown.length }}</span></div>
+      <div class="sect acc" data-sec="mdl-lib" :class="{ open: isSecOpen('mdl-lib') }" @click="toggleSec('mdl-lib')" role="button" tabindex="0" :aria-expanded="isSecOpen('mdl-lib') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mdl-lib')" @keydown.space.self.prevent="toggleSec('mdl-lib')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-lib') }" :size="12" /><span>模型库</span><span class="cnt">{{ shown.length }}</span></div>
       <template v-if="isSecOpen('mdl-lib')">
-        <div class="srch"><Icon name="search" :size="12" /><input v-model="q" type="text" placeholder="搜索" spellcheck="false" /><span v-if="q" class="clr" title="清除" @click="q = ''"><Icon name="x" :size="12" /></span></div>
-        <div class="seg nseg" role="group" aria-label="来源">
-          <span v-for="s in SEGS" :key="s.k" class="sg" :class="{ on: seg === s.k }" @click="seg = s.k">{{ s.t }}</span>
+        <div class="srch search-field"><Icon name="search" :size="12" /><input v-model="q" type="text" placeholder="搜索" spellcheck="false" /><button type="button" v-if="q" class="ibtn sm" title="清除" @click="q = ''"><Icon name="x" :size="12" /></button></div>
+        <div class="seg nseg" role="radiogroup" aria-label="来源">
+          <button type="button" v-for="s in SEGS" :key="s.k" role="radio" :aria-checked="!!(seg === s.k)" class="sg" :class="{ on: seg === s.k }" @click="seg = s.k">{{ s.t }}</button>
         </div>
         <div v-if="!lib.length" class="empty">暂无模型。</div>
         <div v-else-if="!shown.length" class="empty">无匹配模型。</div>
@@ -324,10 +323,10 @@ const HUD = [
             <div class="th">
               <img v-if="thumbs.get(m.id)" :src="thumbs.get(m.id)" crossorigin="anonymous" alt="" draggable="false" loading="lazy" />
               <Icon v-else :name="phIcon(m)" :size="26" :stroke-width="1.2" />
-              <span class="fid" :title="fidOf(m.fidelity).t"><Icon :name="fidOf(m.fidelity).icon" :size="11" /></span>
+              <span class="fid" :title="fidOf(m.fidelity).t"><Icon :name="fidOf(m.fidelity).icon" :size="12" /></span>
               <template v-if="stateOf(m)">
                 <span v-if="stateOf(m).cls === 'dl'" class="bar" :title="stateOf(m).t"><i :style="{ width: Math.round(stateOf(m).frac * 100) + '%' }"></i></span>
-                <span v-else class="stt" :class="stateOf(m).cls" :title="stateOf(m).t"><Icon :name="stateOf(m).cls === 'cloud' ? 'cloud-download' : 'check'" :size="10" /></span>
+                <span v-else class="stt" :class="stateOf(m).cls" :title="stateOf(m).t"><Icon :name="stateOf(m).cls === 'cloud' ? 'cloud-download' : 'check'" :size="12" /></span>
               </template>
             </div>
             <div class="nm" data-i18n-skip>{{ nameOf(m) }}</div>
@@ -337,13 +336,13 @@ const HUD = [
     </div>
 
     <div class="foot">
-      <button type="button" class="btn wide" @click="emit('open-wb', { satKey: sat && sat.key, modelId: model && model.id })"><Icon name="box" :size="13" /><span>模型工作台</span></button>
+      <button type="button" class="btn wide" @click="emit('open-wb', { satKey: sat && sat.key, modelId: model && model.id })"><Icon name="box" :size="12" /><span>模型工作台</span></button>
     </div>
 
-    <div v-if="menu" ref="menuEl" class="mdl-menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
-      <div class="mi" :class="{ dis: !canDownload(menu.m) }" @click="canDownload(menu.m) && doDownload(menu.m)">下载</div>
-      <div v-if="isCloud(menu.m)" class="mi" :class="{ dis: !canRemoveCache(menu.m) }" @click="canRemoveCache(menu.m) && doRemove(menu.m)">移除缓存</div>
-      <div class="mi" @click="doOpen(menu.m)">在工作台中打开</div>
+    <div v-if="menu" ref="menuEl" class="mdl-menu menu" role="menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }">
+      <button type="button" class="mi menu-item" role="menuitem" :class="{ dis: !canDownload(menu.m) }" @click="canDownload(menu.m) && doDownload(menu.m)">下载</button>
+      <button type="button" v-if="isCloud(menu.m)" class="mi menu-item" role="menuitem" :class="{ dis: !canRemoveCache(menu.m) }" @click="canRemoveCache(menu.m) && doRemove(menu.m)">移除缓存</button>
+      <button type="button" class="mi menu-item" role="menuitem" @click="doOpen(menu.m)">在工作台中打开</button>
     </div>
   </div>
 </template>
@@ -373,6 +372,9 @@ const HUD = [
 .sect .lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .sect-layersw { margin-left: auto; }
 .sect .lnk ~ .sect-layersw { margin-left: 12px; }
+.sect > .sect-rst { margin-left: auto; color: var(--text-faint); }
+.sect > .sect-rst:hover { color: var(--text); }
+.sect > .sect-rst + .sect-layersw { margin-left: 6px; }
 .sect .cnt { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: var(--fs-2); }
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .chk2 + .chk2 { margin-top: 5px; }
@@ -398,23 +400,16 @@ const HUD = [
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl); padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); font-size: var(--fs-3); cursor: pointer; transition: background-color var(--dur-1) linear, border-color var(--dur-1) linear; }
 .btn:hover:not(:disabled) { background: var(--wash-hover); }
 .btn:disabled { color: var(--text-faint); cursor: default; }
-.btn.on { border-color: var(--accent-ui); color: var(--accent-ui); }
+/* 切换钮按下态：与全局 controls.css 的 .btn.on 同一种实底（本文件自带一份 .btn，特异度更高，须就地再写） */
+.btn.on, .btn.on:hover:not(:disabled) { background: var(--sel-fill); border-color: var(--sel-fill); color: var(--sel-on); }
 .btns .btn { flex: 1 1 0; }
 .btn.wide { width: 100%; }
 
 /* 模型库 */
 .srch { display: flex; align-items: center; gap: 6px; height: var(--h-ctl); padding: 0 8px; border: 1px solid var(--field-border); background: var(--field-bg); color: var(--text-faint); }
 .srch input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; color: var(--text); font-size: var(--fs-3); padding: 0; height: 100%; }
-.srch .clr { display: inline-flex; cursor: pointer; }
-.srch .clr:hover { color: var(--text); }
-/* 分段控件：与 3D 页 .seg 同一口径（那份是 scoped 的、进不到本组件，逐字照抄；改动请两边一起改） */
-.seg { display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.seg .sg { flex: 1 1 auto; text-align: center; padding: 2px 4px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
+/* 分段（本体在 controls.css）：来源三段铺满整行 */
+.seg > .sg { flex: 1 1 auto; padding-left: 4px; padding-right: 4px; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .card { border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface); cursor: pointer; overflow: hidden; transition: border-color var(--dur-1) linear, background-color var(--dur-1) linear; }
 .card:hover { border-color: var(--border-strong); background: color-mix(in srgb, var(--text) 4%, var(--surface)); }
@@ -431,8 +426,6 @@ const HUD = [
 /* 两行截断：留白放在 margin 上 —— 放 padding 里的话第三行会从下内边距里露出半截（overflow 按内边距盒裁） */
 .nm { margin: 4px 6px 5px; font-size: var(--fs-2); line-height: 1.3; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: calc(2 * 1.3em); max-height: calc(2 * 1.3em); }
 .foot { padding: 12px 16px; }
-.mdl-menu { position: fixed; z-index: 2200; min-width: 132px; padding: 4px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-box); box-shadow: var(--shadow-2, 0 6px 20px rgba(0,0,0,.25)); font-size: var(--fs-3); }
-.mdl-menu .mi { padding: 5px 10px; border-radius: var(--r-box); cursor: pointer; white-space: nowrap; }
-.mdl-menu .mi:hover { background: var(--accent-ui); color: var(--bg); }
-.mdl-menu .mi.dis, .mdl-menu .mi.dis:hover { color: var(--text-faint); background: none; cursor: default; }
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item）；这里只留定位与宽度 */
+.mdl-menu { position: fixed; min-width: 132px; }
 </style>

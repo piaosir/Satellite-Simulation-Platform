@@ -195,8 +195,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="boxEl" class="ms" :class="{ open }">
-    <div class="ms-box" title="搜索 (Alt+Q)" @click="focusBox">
-      <Icon class="ms-ico" name="search" :size="14" />
+    <div class="ms-box search-field" title="搜索 (Alt+Q)" @click="focusBox">
+      <Icon class="ms-ico" name="search" :size="12" />
       <input
         ref="inputEl" class="ms-in" type="text" :value="q" placeholder="搜索" spellcheck="false" autocomplete="off"
         @focus="onFocus" @input="onInput" @keydown="onKey"
@@ -215,14 +215,14 @@ onBeforeUnmount(() => {
               v-if="row.find" class="ms-row" :class="{ on: active === flat.indexOf(row) }" :data-row="flat.indexOf(row)"
               @mouseenter="hoverRow(flat.indexOf(row))" @click="runRow(row)"
             >
-              <span class="ms-rico"><Icon name="satellite" :size="14" /></span>
+              <span class="ms-rico"><Icon name="satellite" :size="12" /></span>
               <span class="ms-lbl">在星座中搜索“{{ row.text }}”</span>
             </div>
             <div
               v-else class="ms-row" :class="{ on: active === flat.indexOf(row), dis: row.cmd.disabled }" :data-row="flat.indexOf(row)" :title="row.cmd.hint || (row.parent && row.parent.hint) || null"
               @mouseenter="hoverRow(flat.indexOf(row))" @mouseleave="emit('hint', '')" @click="runRow(row)"
             >
-              <span class="ms-rico"><Icon :name="row.cmd.icon || (row.parent && row.parent.icon) || 'chevron-right'" :size="14" /></span>
+              <span class="ms-rico"><Icon :name="row.cmd.icon || (row.parent && row.parent.icon) || 'chevron-right'" :size="12" /></span>
               <span class="ms-lbl"><template v-if="row.parent || row.cmd.path"><span class="ms-par">{{ row.parent ? row.parent.label : row.cmd.path }}</span><span class="ms-arr">›</span></template>{{ row.cmd.label }}</span>
               <span v-if="row.cmd.group || (row.parent && row.parent.group)" class="ms-grp">{{ row.cmd.group || row.parent.group }}</span>
               <span v-if="row.cmd.check" class="ms-ck"><Icon name="check" :size="12" /></span>
@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </template>
-        <div v-if="q.trim() && !flat.length" class="ms-empty">没有匹配的操作。</div>
+        <div v-if="q.trim() && !flat.length" class="ms-empty">无匹配操作。</div>
       </div>
 
       <!-- 子菜单：贴在面板右侧、与父行齐平 -->
@@ -239,7 +239,7 @@ onBeforeUnmount(() => {
           v-for="(it, j) in sub.items" :key="it.id" class="ms-row" :class="{ on: sub.active === j, dis: it.disabled }" :title="it.hint || null"
           @mouseenter="sub.active = j" @click="runSubItem(it)"
         >
-          <span class="ms-rico"><Icon v-if="it.icon" :name="it.icon" :size="14" /></span>
+          <span class="ms-rico"><Icon v-if="it.icon" :name="it.icon" :size="12" /></span>
           <span class="ms-lbl">{{ it.label }}</span>
           <span v-if="it.check" class="ms-ck"><Icon name="check" :size="12" /></span>
         </div>
@@ -259,7 +259,9 @@ onBeforeUnmount(() => {
   transition: border-color var(--dur-1) linear, box-shadow var(--dur-1) linear;
 }
 .ms-box:hover { border-color: var(--border-strong); }
-.ms.open .ms-box { border-color: var(--accent-ui); box-shadow: 0 0 0 1px var(--accent-ui); color: var(--text); }
+/* 专业深色：标题栏底是台面色 #111（App.vue 外壳 = --pane-well），--bg 与它同值，框底抬到面板色才分得出来 */
+:root[data-theme='dark'][data-skin='studio'] .ms-box { background: var(--surface); }
+.ms.open .ms-box { border-color: var(--focus-ring); box-shadow: var(--focus-halo); color: var(--text); }
 .ms-ico { flex: none; color: var(--text-faint); }
 .ms-in {
   flex: 1; min-width: 0; height: 100% !important; border: 0; outline: 0; background: transparent; padding: 0;
@@ -267,15 +269,15 @@ onBeforeUnmount(() => {
 }
 .ms-in::placeholder { color: var(--text-faint); }
 /* 焦点环只画一层：controls.css 给所有输入框的 2px 机位色环带 !important，这里同样带 !important 压掉，
-   由整个框（.ms.open .ms-box 的 1px 描边 + 1px 外环 = 2px）来画 —— 否则框内再套一圈就是双重聚焦框 */
+   由整个框（.search-field / .ms.open .ms-box 的蓝环 + 外晕）来画 —— 否则框内再套一圈就是双重聚焦框 */
 .ms-in:focus, .ms-in:focus-visible { outline: none !important; }
 .ms-x { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
-.ms-x:hover { background: var(--surface-2); color: var(--text); }
+.ms-x:hover { background: var(--wash-hover); color: var(--text); }
 
 /* 下拉：与框同宽，贴在框下。四周 4px 内距让高亮行成为与外框同心的圆角块（6 − 4 = 2）；
    行的左右内距各减 4px，图标与文字 x 不动 */
 .ms-pop {
-  position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: 120;
+  position: absolute; top: calc(100% + 3px); left: 0; right: 0; z-index: var(--z-pop);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float);
   box-shadow: var(--shadow-2); padding: 4px;
   animation: ui-float-in var(--dur-2) var(--ease-out);
@@ -288,7 +290,7 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px 0 6px; border-radius: var(--r-ctl);
   font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap;
 }
-.ms-row.on { background: var(--accent-ui); color: var(--bg); }
+.ms-row.on { background: var(--accent-fill); color: var(--accent-on); }
 .ms-row.dis { color: var(--text-faint); }
 .ms-row.dis.on { background: var(--wash-hover); color: var(--text-faint); }   /* 键盘光标落在禁用项上仍可见，但不像可执行 */
 .ms-rico { width: 16px; flex: none; display: inline-flex; justify-content: center; color: var(--text-faint); }
@@ -304,7 +306,7 @@ onBeforeUnmount(() => {
 
 /* 子菜单：面板右侧、首行与父行齐平（top 由 openSub 扣掉边框 + 内距）；悬停即出，不加入场 */
 .ms-sub {
-  position: absolute; left: calc(100% - 2px); min-width: 180px; z-index: 121;
+  position: absolute; left: calc(100% - 2px); min-width: 180px; z-index: calc(var(--z-pop) + 1);
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float);
   box-shadow: var(--shadow-2); padding: 4px;
 }

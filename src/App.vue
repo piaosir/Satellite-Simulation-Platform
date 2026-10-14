@@ -6,9 +6,11 @@ import { mapCrs, fmtLL, datumTag } from './stores/mapCrs.js'
 import { view } from './stores/view'
 import { covNav } from './stores/coveragePanels'
 import { zoom, ZOOM_TMAX } from './stores/zoom'
-import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM } from './stores/shellUi'
+import { shellUi as ui, toggleUi, sideWKey, SIDE_W_LIM, requestSide, sideLocked } from './stores/shellUi'
 import { theme, setTheme } from './stores/theme'
 import { logStore, logMsg, clearLog, diag, setDiag } from './stores/log'
+import { statusMsg, showStatus, clearStatus, runStatusAction } from './stores/statusMsg'
+import { setErrorSink } from './shared/reportError.js'
 import { registerCommands, commands } from './stores/commands'
 import cmdIndex from './shared/cmdIndex.data.js'
 import { kwOf, kwId } from './shared/cmdKeywords.js'
@@ -16,13 +18,15 @@ import { revealSection, revealRow } from './stores/panelSections'
 import { getLang, setLang } from './shared/i18n/runtime'
 import { playing as clockPlaying, isLive as clockLive, play as clockPlay, pause as clockPause, goLive as clockGoLive, initClockMirror } from './stores/simClock'
 import { quality, effective as displayQuality, setTier, setField, TIERS } from './stores/displayQuality'
-import { activation, activationLocked, initActivation, refreshActivation, activationText, lockTitle } from './stores/activation'
+import { activation, activationLocked, lockAsk, initActivation, refreshActivation, activationText, lockTitle } from './stores/activation'
 import SettingsModal from './components/SettingsModal.vue'
 import MiniBindDialog from './components/MiniBindDialog.vue'
 import MiniAboutDialog from './components/MiniAboutDialog.vue'
 import AboutDialog from './components/AboutDialog.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import FileManager from './components/FileManager.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import AppDialog from './components/AppDialog.vue'   // askConfirm()（shared/ui/useConfirm.js）的那一个：主窗只挂这一处
 import Icon from './components/Icon.vue'
 import CmdSearch from './components/CmdSearch.vue'
 import logoUrl from './assets/linklab-avatar-dark.png'
@@ -48,8 +52,88 @@ const updateOpen = ref(false)    // 检查更新（帮助菜单，与关于平�
 const appVersion = ref('')
 const openMenu = ref('')     // 当前展开的菜单 key（''=全收起）；经典菜单栏：点击展开，展开后悬停即切换
 // 展开中悬停换菜单 = 「跳」：新面板不重播入场（原生菜单横扫标题是瞬切），只有点开那一下才淡入
+// 活动栏分组：每组首个视图的 key（组间留缝，顺序不动）
+const ACT_GROUP_START = new Set(['antenna', 'markers', 'env', 'model'])
 const menuHop = ref(false)
-function hopTo(k) { menuHop.value = true; openMenu.value = k }
+function hopTo(k) { menuHop.value = true; openMenu.value = k; menuHi.value = -1 }
+// —— 菜单栏键盘 ——
+// menuKb：键盘态（Alt / F10 进入；标题上显示助记符、当前标题高亮）；kbTitle：键盘态下高亮的标题；menuHi：展开菜单里高亮的项下标
+const menuKb = ref(false)
+const kbTitle = ref('')
+const menuHi = ref(-1)
+let altAlone = false
+function closeMenus() { openMenu.value = ''; menuKb.value = false; kbTitle.value = ''; menuHi.value = -1 }
+const navItems = (key) => { const m = menus.value.find((x) => x.key === key); return m ? m.items : [] }
+const hiOk = (it) => it && !it.sep && !it.hd && !it.disabled
+function stepHi(dir) {
+  const items = navItems(openMenu.value), n = items.length
+  if (!n) return
+  let i = menuHi.value
+  for (let k = 0; k < n; k++) { i = (i + dir + n) % n; if (hiOk(items[i])) { menuHi.value = i; return } }
+}
+function openKb(key, first = true) { menuKb.value = true; kbTitle.value = key; menuHop.value = false; openMenu.value = key; menuHi.value = -1; if (first) stepHi(1) }
+function stepTitle(dir) {
+  const keys = menus.value.map((m) => m.key)
+  const cur = openMenu.value || kbTitle.value || keys[0]
+  const k = keys[(keys.indexOf(cur) + dir + keys.length) % keys.length]
+  if (openMenu.value) openKb(k); else kbTitle.value = k
+}
+// 窗口级捕获：在页面自己的方向键 / 空格处理之前接走（只在键盘态或菜单展开时才拦）
+function onMenuKey(e) {
+  if (e.key === 'Alt') { if (!e.repeat) altAlone = true; return }
+  altAlone = false
+  // Alt + 助记符：直接展开（Alt+Q 归标题栏搜索，不占）
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^Key[A-Z]$/.test(e.code)) {
+    const m = menus.value.find((x) => x.mn === e.code.slice(3))
+    if (m) { e.preventDefault(); e.stopImmediatePropagation(); openKb(m.key); return }
+  }
+  if (e.key === 'F10' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+    e.preventDefault(); e.stopImmediatePropagation()
+    if (menuKb.value || openMenu.value) closeMenus(); else { menuKb.value = true; kbTitle.value = menus.value[0].key }
+    return
+  }
+  if (!menuKb.value && !openMenu.value) return
+  if (e.isComposing) return
+  const k = e.key
+  const stop = () => { e.preventDefault(); e.stopImmediatePropagation() }
+  if (k === 'Escape') {
+    stop()
+    if (openMenu.value && menuKb.value) { kbTitle.value = openMenu.value; openMenu.value = ''; menuHi.value = -1 }
+    else closeMenus()
+    return
+  }
+  if (!menuKb.value && !(openMenu.value && /^Arrow(Up|Down)$/.test(k))) return   // 鼠标展开的菜单：只接上下键（顺手转入键盘态）
+  if (k === 'ArrowLeft') { stop(); stepTitle(-1) }
+  else if (k === 'ArrowRight') { stop(); stepTitle(1) }
+  else if (k === 'ArrowDown') { stop(); if (!openMenu.value) openKb(kbTitle.value); else { menuKb.value = true; stepHi(1) } }
+  else if (k === 'ArrowUp') { stop(); if (!openMenu.value) { openKb(kbTitle.value, false); stepHi(-1) } else { menuKb.value = true; stepHi(-1) } }
+  else if (k === 'Enter' || k === ' ') {
+    stop()
+    if (!openMenu.value) { openKb(kbTitle.value); return }
+    const it = navItems(openMenu.value)[menuHi.value]
+    if (hiOk(it)) { const wasKb = menuKb.value; runItem(it); if (it.keep && wasKb) menuKb.value = true }
+  } else if (/^Key[A-Z]$/.test(e.code) && !e.ctrlKey && !e.metaKey) {
+    // 键盘态下直接按助记符（不按 Alt）也展开对应菜单
+    const m = menus.value.find((x) => x.mn === e.code.slice(3))
+    if (m && !openMenu.value) { stop(); openKb(m.key) }
+  } else if (k !== 'Shift' && k !== 'Control') { closeMenus() }   // 其它键：退出键盘态，键照常交给页面
+}
+function onMenuKeyUp(e) {
+  if (e.key !== 'Alt') return
+  if (altAlone && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+    e.preventDefault()
+    if (menuKb.value || openMenu.value) closeMenus(); else { menuKb.value = true; kbTitle.value = menus.value[0].key }
+  }
+  altAlone = false
+}
+function onMenuBlur() { altAlone = false; if (menuKb.value && !openMenu.value) closeMenus() }
+if (typeof window !== 'undefined') {
+  // setup 期就挂（早于各页面 onMounted 里挂的捕获监听），菜单键盘态下的方向键 / 空格先到这里
+  window.addEventListener('keydown', onMenuKey, true)
+  window.addEventListener('keyup', onMenuKeyUp, true)
+  window.addEventListener('blur', onMenuBlur)
+}
+onBeforeUnmount(() => { window.removeEventListener('keydown', onMenuKey, true); window.removeEventListener('keyup', onMenuKeyUp, true); window.removeEventListener('blur', onMenuBlur) })
 const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/工具按钮时显示，默认「就绪」）
 
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
@@ -60,22 +144,22 @@ const sideViews = computed(() => [
   { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
   { key: 'antenna', label: '对地覆盖分析', icon: 'earth', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 波束在地球上的覆盖范围 / 性能指标表（GRD）' },
   { key: 'satcov', label: '对星覆盖分析', icon: 'orbit', disabled: !covNav.grdAvail, hint: '同一棵天线树 → 波束在各轨道壳层上的投影（含反天底侧）/ 对星性能指标表' },
-  { key: 'poly', label: 'Polygon（协调区）', icon: 'hexagon', disabled: !covNav.polyAvail, hint: '协调区多边形：绘制 / 调点 / 扩缩 / 导出' },
-  { key: 'vis', label: '可见性分析', icon: 'eye', disabled: !pageReady.value, hint: '选目标（地球站 / 点 / 航迹 / Polygon）→ 设仰角门限 → 算可见卫星（复刻 STK Access / Coverage）' },
-  { key: 'beams', label: '电磁波束仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '多馈源反射面 / 赋形反射面：设参数 → 点图放置轮廓 → 生成方向图天线' },
-  { key: 'gxt', label: 'GXT/KML 显示', icon: 'waves', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库里的波束' },
+  { key: 'poly', label: 'Polygon（协调区）', icon: 'polygon', disabled: !covNav.polyAvail, hint: 'Polygon：绘制 / 调点 / 扩缩 / 导出' },
+  { key: 'vis', label: '可见性分析', icon: 'scan-eye', disabled: !pageReady.value, hint: '选择目标（地球站 / 点 / Polygon）→ 设置最低仰角 → 计算可见卫星（参照 STK Access / Coverage）' },
+  { key: 'beams', label: '电磁波束仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '高斯波束 / 多馈源反射面 / 赋形反射面 / 相控阵：设参数 → 点图放置轮廓 → 生成方向图天线' },
+  { key: 'gxt', label: 'GXT/KML 显示', icon: 'layers', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库中的波束' },
   { key: 'markers', label: '地图标记设置', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
-  { key: 'links', label: '目标间链路建链', icon: 'waypoints', disabled: !pageReady.value, hint: '建链：在图上依次点选或在链路详情中检索地球站 / 卫星，建立单向链路，再导入链路预算（STK Chain 范式）' },
+  { key: 'links', label: '目标间链路建链', icon: 'waypoints', disabled: !pageReady.value, hint: '建链：在图上依次点选或在链路详情中检索地球站 / 卫星，建立单向链路，再导入链路预算（参照 STK Chain）' },
   { key: 'env', label: '环境场显示', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
   { key: 'envLive', label: '实时气象分析', icon: 'cloud-rain-live', disabled: !pageReady.value, hint: '实时与预报气象场（NCEP GFS 栅格 + 和风天气按点值）：降水强度 / 瞬时雨衰 / 气体吸收 / 合计衰减 / 云量 / 气温 / 湿度（随时间轴更新）' },
   { key: 'model', label: '仿真对象模型', icon: 'box', disabled: !pageReady.value, hint: '聚焦星的 3D 模型：模型绑定 / 球面图标 / 跟随卫星视图 / 模型库（NASA · 参数化 · 本机导入）' },
-  { key: 'focus', label: '卫星聚焦特效设置', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦星画什么、怎么画：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
-  { key: 'geo', label: '地图综合设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '海陆配色 / 国界省界 / 名称标注 / 晨昏线' }
+  { key: 'focus', label: '卫星聚焦特效设置', icon: 'crosshair', disabled: !pageReady.value, hint: '聚焦卫星的显示要素与样式：轨道线 / 星下点轨迹 / 覆盖圈（口径与填充）/ 覆盖锥 / 卫星标记' },
+  { key: 'geo', label: '地图综合设置', icon: 'sliders-horizontal', disabled: !pageReady.value, hint: '2D 投影 / 宇宙空间 / 配色 / 边界线 / 地名 / 行政区 / 岛链 / 坐标系 / 地图视角' }
 ])
 const sideTitle = computed(() => sideViews.value.find((v) => v.key === ui.side)?.label || '')
 function setSide(k) {
-  if (activationLocked.value) { lockOpen.value = true; return }   // 侧栏视图全部在锁定范围（活动栏与「显示」菜单同入口）
-  ui.side = ui.side === k ? '' : k
+  if (ui.side === k) { ui.side = ''; return }   // 再点当前项 = 收起，不受锁
+  requestSide(k)   // 侧栏视图在锁定范围（地图综合设置除外）：活动栏 / 「显示」菜单 / 3D 页各入口同一道闸
 }
 
 // ---- 激活（终端设备侧）：未激活时仅保留地图拖拽/缩放与视图切换等常规操作，
@@ -87,9 +171,11 @@ const actText = computed(() => activationText())
 const actCellOn = computed(() => activation.ready && (activation.busy || !activation.active || activation.expiresAt > 0))
 // 激活后自动收掉锁窗（管理端开通 → 定时心跳或手动刷新拉到 → 就地解锁）
 watch(() => activation.active, (v) => { if (v) lockOpen.value = false })
+// 别处（3D 页右键 / 信息栏 / 面板间跳转，经 requestSide / requireActivation）撞上锁时请锁窗出来
+watch(lockAsk, () => { lockOpen.value = true })
 // 撤销/到期到达时就地收起已开的侧栏面板：入口 guard 只拦「下一次打开」，
 // 开着的面板不收的话，撤销前打开的功能会一直可用
-watch(activationLocked, (v) => { if (v && ui.side) ui.side = '' })
+watch(activationLocked, (v) => { if (v && sideLocked(ui.side)) ui.side = '' })
 async function doRefreshActivation() {
   if (activation.busy) return
   logMsg('刷新激活状态…')
@@ -117,6 +203,21 @@ function multiTap(key, n, fn) {
 // 拖动期间整窗锁 col-resize 光标（html.ui-col-resize），侧栏与画布不接指针：
 // 指针扫过画布时不再改光标、不刷光标经纬度读数，也不会被侧栏里的控件吃掉悬停
 const colDrag = ref(false)
+// 日志窗格高度：上缘可拖（60 px ~ 窗高的 60%），记住上次的高度
+const LOG_H_KEY = 'log/height'
+const logH = ref((() => { try { const n = Number(localStorage.getItem(LOG_H_KEY)); return Number.isFinite(n) && n >= 60 ? n : 110 } catch { return 110 } })())
+const logDrag = ref(false)
+function logSplitDown(e) {
+  const y0 = e.clientY, h0 = logH.value
+  logDrag.value = true; document.documentElement.classList.add('ui-row-resize')
+  const move = (ev) => { logH.value = Math.round(Math.max(60, Math.min(window.innerHeight * 0.6, h0 - (ev.clientY - y0)))) }
+  const up = () => {
+    logDrag.value = false; document.documentElement.classList.remove('ui-row-resize')
+    document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up)
+    try { localStorage.setItem(LOG_H_KEY, String(logH.value)) } catch { /* ignore */ }
+  }
+  document.addEventListener('mousemove', move); document.addEventListener('mouseup', up)
+}
 function splitDown(e) {
   const k = sideWKey(), [lo, hi] = SIDE_W_LIM[k]
   const x0 = e.clientX; const w0 = ui[k]
@@ -187,12 +288,9 @@ const currentLabel = computed(
 )
 
 // 光标经纬度读数：档位（大地基准 / 坐标格式）由星座地图页的「坐标系」分节定，见 stores/mapCrs。
-// 内部恒为 WGS-84 十进制度，这里只做呈现层换算。经度在前、纬度在后（十进制度档）。
-const fmtCoord = (ll) => {
-  const s = fmtLL(ll.lon, ll.lat, 2)
-  if (mapCrs.fmt !== 'deg') return s
-  return `${Math.abs(ll.lon).toFixed(2)}°${ll.lon >= 0 ? 'E' : 'W'}  ${Math.abs(ll.lat).toFixed(2)}°${ll.lat >= 0 ? 'N' : 'S'}`
-}
+// 内部恒为 WGS-84 十进制度，这里只做呈现层换算。一律走 fmtLL：大地基准（GCJ-02 等）换算与
+// 次序（全平台 coordFormat 一种）都在那里。原先十进制度档另拼「经前纬后」串，绕过了基准换算却照挂基准标签。
+const fmtCoord = (ll) => fmtLL(ll.lon, ll.lat, 2)
 
 // 底部状态栏缩放进度条：拖动/按钮 → 设回当前活动地图（zoom.apply）；地图滚轮缩放回填 zoom.value。
 const onZoomInput = (e) => { const t = Number(e.target.value); if (zoom.apply) zoom.apply(t) }
@@ -200,65 +298,74 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(ZOOM_TMAX, zoom.value +
 
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
-  { key: 'file', label: '文件', items: [
-    { label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
-    // 与文件管理同组：编目与星历都是「已有的资料」，本模块只统计不计算，不产出任何工程结论
-    { label: '空间态势报告…', icon: 'insert-chart', lock: true, hint: 'CelesTrak 卫星编目（SATCAT）与星历统计：全量或聚焦我的卫星组，生成电子报告并可导出 Word（独立窗口）', run: openSsa },
+  { key: 'file', label: '文件', mn: 'F', items: [
+    { id: 'menu.file.0', label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
     // 频率计划是「文件」不是「计算」：它与天线方向图平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
-    { label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
-    { label: '导入星历文件…', icon: 'import', lock: true, disabled: !covNav.importTle, hint: '从本地文件导入卫星星历：OMM（CSV / JSON / KVN / XML）、TLE / 3LE、GPS 年历，以及 STK .e、CCSDS OEM、SP3、中国卫通 .eph 等时间标签星历，按内容自动识别；时间标签星历可新建卫星或对应已有卫星', run: () => covNav.importTle?.() },
-    { label: '导出星历…', icon: 'download', lock: true, disabled: !covNav.exportEphem, hint: '导出聚焦卫星的星历（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）', run: () => covNav.exportEphem?.() },
+    { id: 'menu.file.2', label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
+    { id: 'menu.file.3', label: '导入星历文件…', icon: 'file-import', lock: true, disabled: !covNav.importTle, hint: '从本地文件导入卫星星历：OMM（CSV / JSON / KVN / XML）、TLE / 3LE、GPS 年历，以及 STK .e、CCSDS OEM、SP3、中国卫通 .eph 等时间标签星历，按内容自动识别；时间标签星历可新建卫星或对应已有卫星', run: () => covNav.importTle?.() },
+    { id: 'menu.file.4', label: '导出星历…', icon: 'file-export', lock: true, disabled: !covNav.exportEphem, hint: '导出聚焦卫星的星历（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）', run: () => covNav.exportEphem?.() },
     { sep: true },
-    { label: '退出', icon: 'log-out', hint: '关闭主窗口', run: () => window.close() }
+    // 退出 = 关掉整个程序（STK / MATLAB 口径）：主进程逐个关计算窗（各走各的关窗守卫），全关完再退；任一窗取消则中止
+    { id: 'menu.file.6', label: '退出', icon: 'log-out', hint: '退出程序', run: () => { const q = window.api?.app?.quit; if (q) q().catch(() => window.close()); else window.close() } }
   ] },
-  { key: 'calc', label: '计算', items: [
+  { key: 'calc', label: '计算', mn: 'C', items: [
     // 链路预算三工作台的专业命名：轨道维度（GSO 对地静止 / NGSO 非对地静止，ITU《无线电规则》口径）×
     // 转发体制维度（透明弯管转发 / 星上再生处理 OBP）——「GEO/NGSO/再生式」旧并列混淆了两个维度，已更正。
-    { label: 'GSO 透明转发链路预算', icon: 'calculator', lock: true, hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
-    { label: 'NGSO 透明转发链路预算', icon: 'ngso', lock: true, hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
-    { label: '再生处理（OBP）链路预算', icon: 'cpu', lock: true, hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
-    { label: '端到端链路预算（多跳 / 混合转发）', icon: 'share-2', lock: true, hint: '任意节点链：多颗透明星 ISL 串联 / 透明与再生混用 / 双跳地面转接，按段结算取最弱段（独立窗口）', run: openE2e },
-    { label: '日凌预报（GSO）', icon: 'sun', lock: true, hint: '打开日凌预报（独立窗口）', run: openSunOutage },
-    { label: '雨衰计算', icon: 'droplets', lock: true, hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
-    { label: '干扰分析（C/I）', icon: 'radio-tower', lock: true, hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
-    { label: 'PFD EIRP Mask 生成器', icon: 'table', lock: true, hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask }
+    { id: 'menu.calc.0', label: 'GSO 透明转发链路预算', icon: 'calculator', lock: true, hint: '对地静止轨道（GSO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openLinkBudget },
+    { id: 'menu.calc.1', label: 'NGSO 透明转发链路预算', icon: 'ngso', lock: true, hint: '非对地静止轨道（NGSO，含 LEO/MEO/HEO）· 透明弯管转发器：打开链路预算工作台（独立窗口）', run: openNgso },
+    { id: 'menu.calc.2', label: '再生处理（OBP）链路预算', icon: 'cpu', lock: true, hint: '星上再生处理转发器：上行 / 下行 / 星间微波 / 星间激光，链路预算解耦（独立窗口）', run: openRegen },
+    { id: 'menu.calc.3', label: '端到端链路预算（多跳 / 混合转发）', icon: 'route', lock: true, hint: '任意节点链：多颗透明星 ISL 串联 / 透明与再生混用 / 双跳地面转接，按段结算取最弱段（独立窗口）', run: openE2e },
+    { sep: true },   // 四个链路预算一组，其余计算工具一组
+    { id: 'menu.calc.4', label: '日凌预报（GSO）', icon: 'sun', lock: true, hint: '打开日凌预报（独立窗口）', run: openSunOutage },
+    { id: 'menu.calc.5', label: '雨衰计算', icon: 'droplets', lock: true, hint: '打开雨衰计算（独立窗口，通用于各类卫星）', run: openRain },
+    { id: 'menu.calc.6', label: '干扰分析（C/I）', icon: 'device-analytics', lock: true, hint: 'C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）', run: openCi },
+    { id: 'menu.calc.7', label: 'PFD EIRP Mask 生成器', icon: 'app-window-mac', lock: true, hint: 'ITU-R S.1503 掩模：下行 PFD / 星间 EIRP / 上行 EIRP 三种 + 系统运行参数，输出可提交的 XML（独立窗口）', run: openPfdMask },
+    // 空间态势报告：编目与星历的统计报告（原在「文件」菜单，2026-10-15 挪到这里，分隔线后单列）
+    { sep: true },
+    { id: 'menu.file.1', label: '空间态势报告…', icon: 'file-chart-column', lock: true, hint: 'CelesTrak 卫星编目（SATCAT）与星历统计：全量或聚焦我的卫星组，生成电子报告并可导出 Word（独立窗口）', run: openSsa }
   ] },
-  { key: 'view', label: '视图', items: [
+  { key: 'view', label: '视图', mn: 'V', items: [
     { label: '3D 球体', icon: 'globe', check: !view.flat, hint: '三维地球视图', run: () => pickView(false) },
     { label: '2D 平面图', icon: 'map', check: view.flat, hint: '等经纬度平面世界图', run: () => pickView(true) },
     { sep: true },
     { label: '工具栏', check: ui.toolbar, hint: '显示 / 隐藏图标工具栏', run: () => toggleUi('toolbar') },
-    { label: '侧栏', check: !!ui.side, hint: '显示 / 隐藏侧栏（活动栏图标可切换视图）', run: () => { ui.side = ui.side ? '' : 'constellation' } },
+    { label: '侧栏', check: !!ui.side, hint: '显示 / 隐藏侧栏（活动栏图标可切换视图）', run: () => { if (ui.side) ui.side = ''; else requestSide('constellation') } },
     { label: '日志窗格', check: ui.log, hint: '显示 / 隐藏底部日志窗格', run: () => toggleUi('log') },
     // 追加在末尾：appCommands 的命令 id 按下标生成（menu.view.N），插在中间会让「最近使用」指错命令
-    { label: '卫星信息栏', check: ui.satInfo, hint: '显示 / 隐藏卫星信息栏（Ctrl+Alt+B）', run: () => toggleUi('satInfo') }
+    { label: '卫星信息栏', check: ui.satInfo, kbd: 'Ctrl+Alt+B', hint: '显示 / 隐藏卫星信息栏', run: () => toggleUi('satInfo') }
   ] },
   // 显示 = 活动栏视图的菜单镜像（键盘/菜单党可达性）
-  { key: 'display', label: '显示', items: sideViews.value.map((v) => (
+  { key: 'display', label: '显示', mn: 'D', items: sideViews.value.map((v) => (
     { label: v.label, icon: v.icon, check: ui.side === v.key, disabled: v.disabled, hint: v.hint, run: () => setSide(v.key) }
   )) },
-  { key: 'export', label: '导出', items: [
-    { label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
-    { label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
-    { label: EXP_NAME.png8k, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '按 7680 px 宽出图；全球图/洲际图有真实细节可填，省级以下为空放大', run: () => doExport('png8k') },
-    { label: EXP_NAME.pdf, icon: 'file-text', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
+  { key: 'export', label: '导出', mn: 'E', items: [
+    { hd: '导出范围' },
+    { id: 'menu.export.scope.world', label: '全球图', icon: 'world-map', check: expScope.value === 'world', keep: true, hint: '整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）', run: () => { expScope.value = 'world' } },
+    { id: 'menu.export.scope.view', label: '截图（当前视图）', icon: 'screen-cut', check: expScope.value === 'view', keep: true, hint: '当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图', run: () => { expScope.value = 'view' } },
     { sep: true },
-    { label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
-    { label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
+    { id: 'menu.export.0', label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
+    { id: 'menu.export.1', label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
+    { id: 'menu.export.2', label: EXP_NAME.png8k, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '按 7680 px 宽出图；全球图/洲际图有真实细节可填，省级以下为空放大', run: () => doExport('png8k') },
+    { id: 'menu.export.3', label: EXP_NAME.pdf, icon: 'file-type-pdf', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
     { sep: true },
-    { label: '发送覆盖图到小程序…', icon: 'upload', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + 协调区多边形上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() },
-    { label: '发送航迹到小程序…', icon: 'upload', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() },
-    // 追加在末尾：appCommands 的命令 id 按下标生成（menu.export.N），插在中间会让「最近使用」指错命令
+    { id: 'menu.export.5', label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
+    { id: 'menu.export.6', label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     { sep: true },
-    { label: '导出视频…', icon: 'video', lock: true, disabled: !covNav.exportVideo, hint: '按时间段逐帧渲染当前 3D / 2D 视图，导出 H.264 MP4 或 PNG / JPEG 图片序列，可叠加时间、卫星、站星几何、场强、图例等信息', run: () => covNav.exportVideo && covNav.exportVideo() }
+    { id: 'menu.export.8', label: '发送覆盖图到小程序…', icon: 'device-mobile-share', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() },
+    { id: 'menu.export.9', label: '发送航迹到小程序…', icon: 'device-mobile-share', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() },
+    // 取景框导出（取景 / 分辨率 / 叠加信息）与上面的「按范围快速出图」是两条路：分组、各自成名
+    { sep: true },
+    { hd: '取景与叠加' },
+    { id: 'menu.export.11', label: '图片…', icon: 'image', lock: true, disabled: !covNav.exportImage, hint: '按当前时间轴时刻出一张图：取景框、分辨率与叠加信息（时间、标题、聚焦卫星、图例、徽标…）同导出视频', run: () => covNav.exportImage && covNav.exportImage() },
+    { id: 'menu.export.12', label: '视频…', icon: 'video', lock: true, disabled: !covNav.exportVideo, hint: '按时间段逐帧渲染当前 3D / 2D 视图，导出 H.264 MP4 或 PNG / JPEG 图片序列，可叠加时间、卫星、站星几何、场强、图例等信息', run: () => covNav.exportVideo && covNav.exportVideo() }
   ] },
-  { key: 'tools', label: '工具', items: [
+  { key: 'tools', label: '工具', mn: 'T', items: [
     { label: '绑定小程序账号…', icon: 'wechat', lock: true, hint: '登记小程序端的认证码，此后「发送到小程序」可免密钥直接投递，接收方打开小程序后自动同步', run: () => { bindOpen.value = true } },
     { sep: true },
     { label: '设置…', icon: 'settings', hint: '外观主题 / 显示画质 / 单位等设置', run: () => { settingsOpen.value = true } }
   ] },
-  { key: 'help', label: '帮助', items: [
+  { key: 'help', label: '帮助', mn: 'H', items: [
     { label: '微信小程序 LinkLab…', icon: 'wechat', hint: '「LinkLab星链链路计算」手机端：链路预算 / AR 对星 / 覆盖图 / 星座地图，并可接收本平台发送的覆盖快照、链路配置与频率计划', run: () => { miniAboutOpen.value = true } },
     { sep: true },
     { label: '检查更新…', icon: 'refresh-cw', hint: '向更新服务器核对版本；有新版本即后台下载，下载完成后可立即重启安装', run: () => { updateOpen.value = true } },
@@ -267,7 +374,9 @@ const menus = computed(() => [
 ])
 function runItem(it) {
   if (it.disabled) return
-  openMenu.value = ''; hint.value = ''
+  if (it.keep) { it.run && it.run(); return }   // 单选项（导出范围）：选中即生效、菜单不收
+  closeMenus()
+  hint.value = ''
   if (it.lock && activationLocked.value) { lockOpen.value = true; return }
   it.run && it.run()
 }
@@ -275,25 +384,25 @@ function runItem(it) {
 // ---- 工具栏（只放侧栏覆盖不到的动作：文件 / 计算窗口 / 视图切换 / 导出 / 设置；面板切换交给活动栏，不重复）----
 const toolButtons = computed(() => [
   { icon: 'folder-open', tip: '文件管理', lock: true, run: () => { fileOpen.value = true } },
-  { icon: 'insert-chart', tip: '空间态势报告', lock: true, run: openSsa },
+  { icon: 'file-chart-column', tip: '空间态势报告', lock: true, run: openSsa },
   // 与文件管理同组：频率计划挂在卫星下、与 GRD 天线平级，属文件区而非计算区
   { icon: 'freq-plan', tip: '转发器频率计划', lock: true, run: openFreqPlan },
   { sep: true },
   { icon: 'calculator', tip: 'GSO 透明转发链路预算', lock: true, run: openLinkBudget },
   { icon: 'ngso', tip: 'NGSO 透明转发链路预算', lock: true, run: openNgso },
   { icon: 'cpu', tip: '再生处理（OBP）链路预算', lock: true, run: openRegen },
-  { icon: 'share-2', tip: '端到端链路预算（多跳 / 混合转发）', lock: true, run: openE2e },
+  { icon: 'route', tip: '端到端链路预算（多跳 / 混合转发）', lock: true, run: openE2e },
   { icon: 'sun', tip: '日凌预报（GSO）', lock: true, run: openSunOutage },
   { icon: 'droplets', tip: '雨衰计算', lock: true, run: openRain },
-  { icon: 'radio-tower', tip: '干扰分析（C/I）', lock: true, run: openCi },
+  { icon: 'device-analytics', tip: '干扰分析（C/I）', lock: true, run: openCi },
   // ∠ 取「辐射功率随角度的上包络」之意：三种掩模的自变量恰好全是角度（α 角 / 天底角 / 方位仰角）
-  { icon: 'table', tip: 'PFD EIRP Mask 生成器（ITU-R S.1503）', lock: true, run: openPfdMask },
+  { icon: 'app-window-mac', tip: 'PFD EIRP Mask 生成器（ITU-R S.1503）', lock: true, run: openPfdMask },
   { sep: true },
   { icon: 'globe', tip: '3D 球体视图', on: !view.flat, run: () => pickView(false) },
   { icon: 'map', tip: '2D 平面图视图', on: view.flat, run: () => pickView(true) },
   { sep: true },
   { icon: 'image', tip: '导出高清 PNG（4×）', lock: true, disabled: !covNav.exportAvail, run: () => doExport('png4') },
-  { icon: 'file-down', tip: '导出矢量 PDF', lock: true, disabled: !covNav.exportAvail, run: () => doExport('pdf') },
+  { icon: 'file-type-pdf', tip: '导出矢量 PDF', lock: true, disabled: !covNav.exportAvail, run: () => doExport('pdf') },
   { sep: true },
   { icon: 'wechat', tip: '绑定小程序账号', lock: true, run: () => { bindOpen.value = true } },
   { icon: 'settings', tip: '设置', run: () => { settingsOpen.value = true } }
@@ -329,7 +438,7 @@ const SECTIONS = (() => {
   }
   return out
 })()
-const THEME_CMDS = [{ key: 'system', label: '跟随系统', icon: 'monitor' }, { key: 'light', label: '浅色', icon: 'sun' }, { key: 'dark', label: '深色', icon: 'moon' }]
+const THEME_CMDS = [{ key: 'system', label: '跟随系统', icon: 'monitor' }, { key: 'studio-light', label: '专业浅色', icon: 'sun' }, { key: 'dark', label: '专业深色', icon: 'moon' }]
 const FILE_TABS = [
   { key: 'omm', label: '轨道星历' },
   { key: 'grd', label: '天线方向图' },
@@ -337,18 +446,18 @@ const FILE_TABS = [
   { key: 'modcod', label: 'MODCOD 表' },
   { key: 'gxt', label: 'GXT/KML 管理' }
 ]
-function showSide(k) { ui.side = k }   // 搜索命令：打开视图（活动栏 setSide 是「再点收起」的切换语义，这里不要）
+function showSide(k) { requestSide(k) }   // 搜索命令：打开视图（活动栏 setSide 是「再点收起」的切换语义，这里不要）
 function appCommands() {
   const out = []
   for (const m of menus.value) {
     if (m.key === 'display') continue   // 视图项下面单独登记（打开而非切换）
     m.items.forEach((it, i) => {
-      if (it.sep) return
-      out.push({ id: 'menu.' + m.key + '.' + i, label: it.label, icon: it.icon, group: m.label, hint: it.hint, keywords: kwOf(it.label), lock: it.lock, disabled: it.disabled, check: it.check, run: it.run })
+      if (it.sep || it.hd) return
+      out.push({ id: it.id || ('menu.' + m.key + '.' + i), label: it.label, icon: it.icon, group: m.label, hint: it.hint, keywords: kwOf(it.label), lock: it.lock, disabled: it.disabled, check: it.check, run: it.run })
     })
   }
   for (const v of sideViews.value) {
-    out.push({ id: 'side.' + v.key, label: v.label, icon: v.icon, group: '显示', hint: v.hint, keywords: kwOf(v.label), lock: true, disabled: v.disabled, check: ui.side === v.key, run: () => showSide(v.key) })
+    out.push({ id: 'side.' + v.key, label: v.label, icon: v.icon, group: '显示', hint: v.hint, keywords: kwOf(v.label), lock: sideLocked(v.key), disabled: v.disabled, check: ui.side === v.key, run: () => showSide(v.key) })
   }
   for (const sec of SECTIONS) {
     const v = sec.view === 'settings' ? { label: '设置', icon: 'settings', disabled: false } : sideViews.value.find((x) => x.key === sec.view)
@@ -357,12 +466,12 @@ function appCommands() {
     const top = key.endsWith('-top')
     // 分区本身：视图顶部块 / 设置窗分区（外观 / 语言… 上面另有带子菜单的命令）/ 星座地图页登记的那些不再重复登记
     if (!top && sec.view !== 'settings' && !sec.keys.some((k) => PAGE_SECS.has(k))) {
-      out.push({ id: 'sec.' + key, label: sec.title, icon: v.icon, group: v.label, keywords: kwId('sec.' + key), lock: true, disabled: v.disabled, run: () => revealSection(sec.view, sec.keys) })
+      out.push({ id: 'sec.' + key, label: sec.title, icon: v.icon, group: v.label, keywords: kwId('sec.' + key), lock: sideLocked(sec.view), disabled: v.disabled, run: () => revealSection(sec.view, sec.keys) })
     }
     // 参数行：「分区 › 行」，选中即定位到那一行
     for (const it of sec.items) {
       if (PAGE_ROWS.has(key + '|' + it.label)) continue
-      out.push({ id: 'row.' + key + '.' + it.label, label: it.label, path: sec.title, icon: v.icon, group: v.label, hint: it.hint, keywords: kwId('row.' + key + '.' + it.label), lock: sec.view !== 'settings', disabled: v.disabled, run: () => goRow(sec, it.label) })
+      out.push({ id: 'row.' + key + '.' + it.label, label: it.label, path: sec.title, icon: v.icon, group: v.label, hint: it.hint, keywords: kwId('row.' + key + '.' + it.label), lock: sec.view !== 'settings' && sideLocked(sec.view), disabled: v.disabled, run: () => goRow(sec, it.label) })
     }
   }
   for (const t of FILE_TABS) {
@@ -371,19 +480,19 @@ function appCommands() {
   // 模型工作台：id 手写固定（不挂菜单 —— 菜单命令的 id 按下标生成，中间插一项后面全移位）
   out.push(
     { id: 'model.open', label: '模型工作台', icon: 'box', group: '仿真对象模型', keywords: kwId('model.open'), lock: true, run: () => openModelWb({ tab: 'lib' }) },
-    { id: 'model.import', label: '导入 3D 模型', icon: 'import', group: '仿真对象模型', keywords: kwId('model.import'), lock: true, run: () => openModelWb({ tab: 'import' }) },
+    { id: 'model.import', label: '导入 3D 模型', icon: 'file-import', group: '仿真对象模型', keywords: kwId('model.import'), lock: true, run: () => openModelWb({ tab: 'import' }) },
     { id: 'model.gen', label: '参数化生成卫星模型', icon: 'sliders-horizontal', group: '仿真对象模型', keywords: kwId('model.gen'), lock: true, run: () => openModelWb({ tab: 'gen' }) }
   )
   const lang = getLang()
   out.push(
     { id: 'set.theme', label: '外观', icon: 'monitor', group: '设置', keywords: kwOf('外观'),
       children: THEME_CMDS.map((t) => ({ id: 'set.theme.' + t.key, label: t.label, icon: t.icon, keywords: [t.key, 'theme'], check: theme.mode === t.key, run: () => setTheme(t.key) })) },
-    { id: 'set.lang', label: '语言', icon: 'settings', group: '设置', keywords: kwOf('语言'),
+    { id: 'set.lang', label: '语言', icon: 'languages', group: '设置', keywords: kwOf('语言'),
       children: [
         { id: 'set.lang.zh', label: '中文', keywords: ['chinese', 'zh'], check: lang === 'zh', run: () => setLang('zh') },
         { id: 'set.lang.en', label: 'English', keywords: ['english', 'en'], check: lang === 'en', run: () => setLang('en') }
       ] },
-    { id: 'set.font', label: '界面字体', icon: 'settings', group: '设置', keywords: kwOf('界面字体'), run: () => { settingsOpen.value = true } },
+    { id: 'set.font', label: '界面字体', icon: 'type', group: '设置', keywords: kwOf('界面字体'), run: () => { settingsOpen.value = true } },
     { id: 'set.quality', label: '显示设置', icon: 'monitor', group: '设置', keywords: kwOf('显示设置'),
       children: TIERS.map((t) => ({ id: 'set.quality.' + t.key, label: t.label, keywords: [t.key, 'quality'], check: quality.tier === t.key, run: () => setTier(t.key) })) },
     { id: 'set.msaa', label: 'MSAA 抗锯齿', icon: 'monitor', group: '设置', keywords: kwOf('MSAA 抗锯齿'), check: displayQuality.value.msaa !== false, run: () => setField('msaa', displayQuality.value.msaa === false) },
@@ -413,8 +522,7 @@ function runCommand(cmd) {
 }
 // 「在星座中搜索“…”」：切到星座视图，把词填进那边的搜索框（即筛选显示）
 function findInConstellation(q) {
-  if (activationLocked.value) { lockOpen.value = true; return }
-  ui.side = 'constellation'
+  if (!requestSide('constellation')) return
   nextTick(() => {
     covNav.searchSats && covNav.searchSats(q)
     const el = document.querySelector('#side-view .lp-search input')
@@ -428,10 +536,20 @@ const logEl = ref(null)
 watch(() => logStore.items.length, () => {
   nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
 })
+// 本窗口的失败出口（shared/reportError）：进日志（error/warn 级）+ 状态栏状态句
+setErrorSink((msg, o) => {
+  const lv = o && o.level === 'warn' ? 'warn' : 'error'
+  logMsg(msg, lv)
+  showStatus(msg, { level: lv })
+})
+// 状态句上的「打开 / 在文件夹中显示」（主进程白名单只认本会话写过的文件）
+const hasFileApi = !!(typeof window !== 'undefined' && window.api && window.api.files)
+function statusOpenFile() { if (statusMsg.file) window.api?.files?.open?.(statusMsg.file)?.catch?.(() => {}) }
+function statusRevealFile() { if (statusMsg.file) window.api?.files?.reveal?.(statusMsg.file)?.catch?.(() => {}) }
 
 function onKey(e) {
   if (e.key === 'Escape') {
-    openMenu.value = ''; hint.value = ''
+    closeMenus(); hint.value = ''
     if (!e.isComposing) lockOpen.value = false   // 「未激活」提示框同其它对话框：Esc 关（输入法组字中的 Esc 归输入法）
   }
   // 「特定动作」之三：Ctrl+Alt+A 刷新激活状态
@@ -448,15 +566,40 @@ function onKey(e) {
 }
 
 // 自定义标题栏：把原生窗口控制按钮（Windows 覆盖式）的配色同步到当前主题，避免暗色下亮色三键突兀。
-// 直接读 --surface/--text，主题色一改这里自动跟随，无需在两处维护色值。
+// 底色读菜单栏实际的计算底色（专业两档外壳取 --pane-well，不是 --surface），三键与菜单栏永远同一块；
+// 计算值是 rgb()，转成 #rrggbb 再交给主进程。
 function syncTitleOverlay() {
   if (!window.api?.win?.setOverlay) return
-  const cs = getComputedStyle(document.documentElement)
-  const color = cs.getPropertyValue('--surface').trim()
-  const symbolColor = cs.getPropertyValue('--text').trim()
+  const bar = document.querySelector('.menubar')
+  const m = bar && getComputedStyle(bar).backgroundColor.match(/\d+/g)
+  const color = m && m.length >= 3 ? '#' + m.slice(0, 3).map((v) => (+v).toString(16).padStart(2, '0')).join('') : ''
+  const symbolColor = getComputedStyle(document.documentElement).getPropertyValue('--text').trim()
   if (color && symbolColor) window.api.win.setOverlay({ color, symbolColor })
 }
-watch(() => theme.resolved, () => nextTick(syncTitleOverlay))
+watch(() => theme.resolved + theme.skin, () => nextTick(syncTitleOverlay))   // 深色 ↔ 专业深色 resolved 同为 dark，要连 skin 一起看
+
+// 面板缝取整到整设备像素（名义 6px，与 global.css 的 --pane-gap 同值）：125% / 175% 缩放下 6px 是 7.5 / 10.5 设备像素，
+// 各道缝按所在位置被取整成 7 / 8 交替，一眼看得出宽窄不一。拖到别的屏 / Ctrl+滚轮缩放（DPR 变）时重算。
+const PANE_GAP = 6
+let dprMq = null
+function snapPaneGap() {
+  const d = window.devicePixelRatio || 1
+  document.documentElement.style.setProperty('--pane-gap', Math.max(1, Math.round(PANE_GAP * d)) / d + 'px')
+  dprMq?.removeEventListener('change', snapPaneGap)
+  dprMq = window.matchMedia(`(resolution: ${d}dppx)`)
+  dprMq.addEventListener('change', snapPaneGap)
+}
+
+// 焦点面板指示（专业深色外观下可见，global.css [data-paneon]）：最近一次按下 / 聚焦落在哪块 data-pane 面板，
+// 就给它打 data-paneon。用属性不用类名 —— 面板根上多有 :class 绑定，Vue 重绘时会整串改写 className。
+let paneOn = null
+function markPane(e) {
+  const p = e.target && e.target.closest ? e.target.closest('[data-pane]') : null
+  if (!p || p === paneOn) return
+  if (paneOn) paneOn.removeAttribute('data-paneon')
+  paneOn = p
+  p.setAttribute('data-paneon', '')
+}
 
 // 星历取数链路跑在主进程（CelesTrak 直连 / 云镜像兜底 / 众包回传），把它的操作明细接进日志窗格，
 // 让「这批星历到底哪来的、为什么走了兜底」在界面上可自证，而不是只留在用户看不到的主进程 console 里。
@@ -467,13 +610,19 @@ window.api?.omm?.onLog?.((p) => logMsg(p && p.text, (p && p.level) || 'info'))
 onMounted(() => {
   initClockMirror()   // 主窗口的时钟往 localStorage 写场景时刻镜像（别的窗口「当前时刻」读它，见 shared/sceneClock.js）
   window.addEventListener('keydown', onKey)
+  document.addEventListener('pointerdown', markPane, true)
+  document.addEventListener('focusin', markPane, true)
   window.api?.app?.version?.().then((v) => { appVersion.value = v || '' }).catch(() => { /* 浏览器直跑无 IPC */ })
   syncTitleOverlay()
+  snapPaneGap()
   initActivation()
   logMsg('卫星仿真平台就绪')
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
+  document.removeEventListener('pointerdown', markPane, true)
+  document.removeEventListener('focusin', markPane, true)
+  dprMq?.removeEventListener('change', snapPaneGap)
   document.documentElement.classList.remove('ui-col-resize')   // 拖分隔条途中卸载：别把整窗光标锁死
 })
 </script>
@@ -486,34 +635,33 @@ onBeforeUnmount(() => {
       <nav class="menus" :class="{ open: !!openMenu }">
         <span v-for="m in menus" :key="m.key" class="mwrap">
           <span
-            class="mtitle" :class="{ on: openMenu === m.key }"
-            @click.stop="menuHop = false; openMenu = openMenu === m.key ? '' : m.key"
+            class="mtitle" :class="{ on: openMenu === m.key, kb: menuKb && !openMenu && kbTitle === m.key }"
+            role="menuitem" aria-haspopup="menu" :aria-expanded="openMenu === m.key ? 'true' : 'false'"
+            @click.stop="menuHop = false; menuKb = false; menuHi = -1; openMenu = openMenu === m.key ? '' : m.key"
             @mouseenter="openMenu && openMenu !== m.key && hopTo(m.key)"
-          >{{ m.label }}</span>
-          <div v-if="openMenu === m.key" class="mpanel" :class="{ hop: menuHop }" @click.stop>
-            <div v-if="m.key === 'export'" class="vscope">
-              <span class="vsp" :class="{ on: expScope === 'world' }" title="整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）" @click="expScope = 'world'">全球图</span>
-              <span class="vsp" :class="{ on: expScope === 'view' }" title="当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图" @click="expScope = 'view'">截图</span>
-            </div>
-            <div v-if="m.key === 'export'" class="msep"></div>
+          >{{ m.label }}<span v-if="menuKb && m.mn" class="mnem" data-i18n-skip>({{ m.mn }})</span></span>
+          <div v-if="openMenu === m.key" class="mpanel menu" role="menu" :class="{ hop: menuHop }" @click.stop>
             <template v-for="(it, i) in m.items" :key="i">
-              <div v-if="it.sep" class="msep"></div>
-              <div
-                v-else class="mitem" :class="{ dis: it.disabled }"
+              <div v-if="it.sep" class="msep menu-sep" role="separator"></div>
+              <div v-else-if="it.hd" class="menu-hd">{{ it.hd }}</div>
+              <button
+                v-else type="button" class="mitem menu-item" :role="it.keep ? 'menuitemradio' : 'menuitem'" :aria-checked="it.keep ? !!it.check : undefined"
+                :class="{ dis: it.disabled, hi: menuHi === i }" :title="it.hint || null"
                 @click="runItem(it)"
-                @mouseenter="hint = it.disabled ? '' : (it.hint || '')" @mouseleave="hint = ''"
+                @mouseenter="menuHi = i; hint = it.disabled ? '' : (it.hint || '')" @mouseleave="hint = ''"
               >
-                <span class="ck"><Icon v-if="it.check" name="check" :size="12" /></span>
-                <span class="mico"><Icon v-if="it.icon" :name="it.icon" :size="12" /></span>
+                <span class="ck menu-ck"><Icon v-if="it.check" name="check" :size="12" /></span>
+                <span class="mico menu-ico"><Icon v-if="it.icon" :name="it.icon" :size="12" /></span>
                 <span class="mlbl">{{ it.label }}</span>
-              </div>
+                <span v-if="it.kbd" class="menu-kbd" data-i18n-skip>{{ it.kbd }}</span>
+              </button>
             </template>
           </div>
         </span>
       </nav>
       <!-- 标题栏搜索（仿 Office：Alt+Q 聚焦；命令 / 视图 / 分区 / 设置项按关键词检索，选中即执行） -->
       <div class="mslot"><CmdSearch class="msearch" :find="findInConstellation" :find-avail="!!covNav.searchSats" @run="runCommand" @hint="hint = $event" @open="searchOpen = $event" /></div>
-      <div v-if="openMenu" class="vmask" @click="openMenu = ''"></div>
+      <div v-if="openMenu" class="vmask" @click="closeMenus()"></div>
     </header>
 
     <!-- ② 工具栏：常用操作图标（视图菜单可隐藏） -->
@@ -527,9 +675,9 @@ onBeforeUnmount(() => {
         ><Icon :name="b.icon" :size="16" /></button>
       </template>
       <span class="tgrow"></span>
-      <button class="tbtn" :class="{ on: ui.log }" title="日志窗格" @click="toggleUi('log')"><Icon name="panel-bottom" :size="16" /></button>
+      <button class="tbtn" :class="{ on: ui.log }" :aria-pressed="ui.log ? 'true' : 'false'" title="日志窗格" @click="toggleUi('log')"><Icon name="panel-bottom" :size="16" /></button>
       <!-- 右侧卫星信息栏：排在日志键之后、最右端（与 VS Code 布局键「下 / 右」的空间顺序一致） -->
-      <button class="tbtn" :class="{ on: ui.satInfo }" title="卫星信息栏（Ctrl+Alt+B）" @click="toggleUi('satInfo')"><Icon name="panel-right" :size="16" /></button>
+      <button class="tbtn" :class="{ on: ui.satInfo }" :aria-pressed="ui.satInfo ? 'true' : 'false'" title="卫星信息栏（Ctrl+Alt+B）" @click="toggleUi('satInfo')"><Icon name="panel-right" :size="16" /></button>
     </div>
 
     <div class="body">
@@ -537,7 +685,7 @@ onBeforeUnmount(() => {
       <nav class="actbar">
         <button
           v-for="v in sideViews" :key="v.key"
-          class="actbtn" :class="{ on: ui.side === v.key, dis: v.disabled }" :title="v.label"
+          class="actbtn" :class="{ on: ui.side === v.key, dis: v.disabled, gs: ACT_GROUP_START.has(v.key) }" :title="v.label"
           @mouseenter="hint = v.disabled ? '' : v.hint" @mouseleave="hint = ''"
           @click="!v.disabled && setSide(v.key)"
         ><Icon :name="v.icon" :size="16" :stroke-width="1.7" /></button>
@@ -548,10 +696,10 @@ onBeforeUnmount(() => {
            且 pageKey（nav.current / msaa）变化会整页重挂载 → 其 Teleport 随之卸载重建；而 Teleport 只在
            自身挂载时用 querySelector 解析一次 to 目标、之后不重试。若目标被 v-if 卸载，重挂载/异步时序错位下
            就会解析落空 → 侧栏偶发空白（刷新才好）。目标常驻即可根除此竞态（收起时靠 v-show 隐藏，节点不销毁）。 -->
-      <aside v-show="ui.side" class="dock sidebar" :style="{ width: ui[sideWKey()] + 'px' }">
+      <aside v-show="ui.side" class="dock sidebar" data-pane="side" :style="{ width: ui[sideWKey()] + 'px' }">
         <div class="dock-hd">
           <span class="dock-tt">{{ sideTitle }}</span>
-          <span class="dock-x" title="收起侧栏" @click="ui.side = ''"><Icon name="x" :size="12" /></span>
+          <button type="button" class="dock-x ibtn" title="收起侧栏" @click="ui.side = ''"><Icon name="x" :size="12" /></button>
         </div>
         <div class="dock-bd sbody">
           <div id="side-view" class="sv"></div>
@@ -568,12 +716,13 @@ onBeforeUnmount(() => {
         </main>
 
         <!-- ⑤ 底部「日志」窗格（默认收起，工具栏/视图菜单开启） -->
-        <div v-if="ui.log" class="dock logdock">
+        <div v-if="ui.log" class="dock logdock" data-pane="log" :style="{ height: logH + 'px' }">
+          <div class="logsplit" :class="{ on: logDrag }" title="拖动调整日志窗格高度" @mousedown.prevent="logSplitDown"></div>
           <div class="dock-hd">
             <span class="dock-tt">日志</span>
-            <span class="dock-x" :class="{ on: diag.on }" title="搜索诊断（顶部命令搜索与侧栏卫星搜索的下拉收起 / 命令表重建 / 登记方抛错 / 全量池更换）" @click="setDiag(!diag.on)"><Icon name="search" :size="12" /></span>
-            <span class="dock-x" title="清空日志" @click="clearLog()"><Icon name="trash" :size="12" /></span>
-            <span class="dock-x" title="关闭（视图菜单可恢复）" @click="toggleUi('log')"><Icon name="x" :size="12" /></span>
+            <button type="button" :aria-pressed="(diag.on) ? 'true' : 'false'" class="dock-x ibtn" :class="{ on: diag.on }" title="搜索诊断（顶部命令搜索与侧栏卫星搜索的下拉收起 / 命令表重建 / 登记方抛错 / 全量池更换）" @click="setDiag(!diag.on)"><Icon name="bug" :size="12" /></button>
+            <button type="button" class="dock-x ibtn" title="清空日志" @click="clearLog()"><Icon name="trash" :size="12" /></button>
+            <button type="button" class="dock-x ibtn" title="关闭（视图菜单可恢复）" @click="toggleUi('log')"><Icon name="x" :size="12" /></button>
           </div>
           <div ref="logEl" class="loglines">
             <div v-for="(l, i) in logStore.items" :key="i" class="ln" :class="l.level">
@@ -600,18 +749,16 @@ onBeforeUnmount(() => {
     <UpdateDialog v-if="updateOpen" @close="updateOpen = false" />
 
     <!-- 未激活：功能入口点击统一落到这里（地图拖拽/缩放等常规操作不受限） -->
-    <div v-if="lockOpen" class="about-mask" @click.self="lockOpen = false">
-      <div class="about">
+    <AppDialog v-if="lockOpen" title="未激活" :width="400" @close="lockOpen = false">
         <div class="ab-name">{{ lockTitle() }}</div>
         <div class="ab-ver mono ab-id" :title="lockCopied ? '已复制' : '点击复制设备ID'" @click="copyDeviceId">
           设备ID {{ activation.deviceId || '—' }}<span v-if="lockCopied" class="ab-copied">已复制</span>
         </div>
-        <div class="lk-btns">
-          <button class="ab-close" :disabled="activation.busy" @click="doRefreshActivation()">{{ activation.busy ? '刷新中…' : '刷新激活状态' }}</button>
-          <button class="ab-close" @click="lockOpen = false">关闭</button>
-        </div>
-      </div>
-    </div>
+        <template #footer>
+          <button type="button" class="btn" :disabled="activation.busy" @click="doRefreshActivation()">{{ activation.busy ? '刷新中…' : '刷新激活状态' }}</button>
+          <button type="button" class="btn primary" @click="lockOpen = false">关闭</button>
+        </template>
+    </AppDialog>
 
     <!-- ⑥ 状态栏：左激活状态 + 提示，右侧凹陷读数格（视图 / 缩放 / 光标经纬度） -->
     <footer class="statusbar">
@@ -620,14 +767,20 @@ onBeforeUnmount(() => {
         v-if="actCellOn" class="sb-actv" :class="activation.active ? 'a-on' : 'a-off'"
         :title="`设备ID ${activation.deviceId}`" @click="multiTap('cell', 5, doRefreshActivation)"
       >{{ activation.busy ? '刷新中…' : actText }}</span>
-      <span class="hint">{{ hint || (activationLocked ? '' : '就绪') }}</span>
+      <span v-if="hint || !statusMsg.text" class="hint">{{ hint || (activationLocked ? '' : '就绪') }}</span>
+      <span v-else class="hint smsg" :class="statusMsg.level" :title="statusMsg.text">
+        <span class="smsg-t">{{ statusMsg.text }}</span>
+        <template v-if="statusMsg.file && hasFileApi"><button type="button" class="smsg-a" @click="statusOpenFile">打开</button><button type="button" class="smsg-a" @click="statusRevealFile">在文件夹中显示</button></template>
+        <button type="button" v-for="(a, i) in statusMsg.actions" :key="i" class="smsg-a" @click="runStatusAction(i)">{{ a.label }}</button>
+        <button type="button" aria-label="关闭" v-if="statusMsg.level === 'error'" class="smsg-x ibtn sm" title="关闭" @click="clearStatus()"><Icon name="x" :size="12" /></button>
+      </span>
       <span class="cells">
         <span class="cell">{{ view.flat ? '2D 平面图' : '3D 球体' }}</span>
         <span v-if="zoom.avail" class="cell zoomctl" title="地图缩放（拖动精细调节，滚轮亦可）">
-          <button class="zbtn" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="12" /></button>
+          <button type="button" class="zbtn ibtn sm" title="缩小" @click="stepZoom(-0.01)"><Icon name="minus" :size="12" /></button>
           <input class="zrange" type="range" min="0" :max="ZOOM_TMAX" step="0.001" :value="zoom.value" @input="onZoomInput" />
-          <button class="zbtn" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="12" /></button>
-          <span class="zpct">{{ Math.round(zoom.value * 100) }}%</span>
+          <button type="button" class="zbtn ibtn sm" title="放大" @click="stepZoom(0.01)"><Icon name="plus" :size="12" /></button>
+          <span class="zpct" data-rnum>{{ Math.round(zoom.value * 100) }}%</span>
         </span>
         <!-- 环境场读数：只在图层开着且光标在图上时出现（没有图层时不占位，状态栏不留空格子） -->
         <span v-if="cursor.env" class="cell envval" :title="`${cursor.env.label}：取自当前环境场栅格（格距 ${cursor.env.step >= 1 ? cursor.env.step.toFixed(0) : cursor.env.step.toFixed(3)}°，双线性）；精确取值以链路预算的逐点查表为准`">
@@ -647,6 +800,7 @@ onBeforeUnmount(() => {
         </span>
       </span>
     </footer>
+    <ConfirmDialog />
   </div>
 </template>
 
@@ -680,36 +834,19 @@ onBeforeUnmount(() => {
 .mtitle { display: flex; align-items: center; padding: 0 11px; font-size: var(--fs-4); color: var(--text); cursor: default; }
 .mtitle:not(.on) { transition: background-color var(--dur-1) linear; }
 .menus.open .mtitle { transition: none; }   /* 菜单展开中扫过标题：瞬时，像原生 */
-.mtitle:hover { background: var(--surface-2); }
+.mtitle:hover, .mtitle.kb { background: var(--wash-hover); }
+/* 键盘态（Alt / F10）下标题后的助记符 */
+.mnem { margin-left: 1px; color: var(--text-muted); }
+.mtitle.on .mnem { color: inherit; }
 .mtitle.on { background: var(--accent-ui); color: var(--bg); }
+/* 菜单栏下拉：外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-ck / .menu-ico / .menu-sep）；
+   这里只留挂在标题下的定位、宽度，以及左上角直角（挂在标题色块下） */
 .mpanel {
-  position: absolute; top: 100%; left: 0; z-index: 100; min-width: 200px;
-  background: var(--surface); border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-2); padding: 3px;
-  border-radius: 0 var(--r-float) var(--r-float) var(--r-float);   /* 左上角挂在标题色块下，保持直角 */
-  animation: ui-float-in var(--dur-2) var(--ease-out);
+  position: absolute; top: 100%; left: 0; min-width: 200px;
+  border-radius: 0 var(--r-float) var(--r-float) var(--r-float);
+  animation-name: ui-float-in;
 }
 .mpanel.hop { animation: none; }   /* 展开中悬停换菜单：不重播入场 */
-/* 行高钉 28px：原 5px 上下内距 + 行高 = 27.55px，150% 缩放下落在 41.3 设备像素，悬停块 41/42 交替闪；与搜索下拉行同高 */
-.mitem { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px 0 6px; border-radius: var(--r-box); font-size: var(--fs-4); color: var(--text); cursor: default; white-space: nowrap; }
-.mitem:hover { background: var(--accent-ui); color: var(--bg); }
-.mitem.dis, .mitem.dis:hover { background: transparent; color: var(--text-faint); }
-.mitem .ck { width: 14px; flex: none; display: inline-flex; justify-content: center; }
-.mitem .mico { width: 16px; flex: none; display: inline-flex; justify-content: center; color: var(--text-faint); }
-.mitem:hover .mico { color: inherit; }
-.mitem.dis .mico { color: var(--text-faint); }
-.msep { height: 0; border-top: 1px solid var(--border); margin: 3px 6px; }   /* 边框按整设备像素取整：150% 下 height:1px 实底会 1/2 px 交替 */
-/* 导出范围：连体分段（外框 = 按钮组结构线，段间细线）；选中段机位色实底 = 「当前视图」语义，不跳粗 */
-.vscope { display: flex; height: var(--h-ctl); margin: 4px 0 3px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.vsp {
-  flex: 1; display: flex; align-items: center; justify-content: center; cursor: default; font-size: var(--fs-3);
-  color: var(--text-muted); transition: var(--t-state);
-}
-.vsp + .vsp { border-left: 1px solid var(--border); }
-.vsp:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.vsp:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.vsp.on { background: var(--accent-ui); color: var(--bg); transition-duration: 0s; }
-.vsp.on, .vsp.on + .vsp { border-left-color: transparent; }
 .vmask { position: fixed; inset: 0; z-index: 99; }
 
 /* ===== ② 工具栏 ===== */
@@ -722,11 +859,11 @@ onBeforeUnmount(() => {
   border: 1px solid transparent; background: transparent; color: var(--text-muted);
   border-radius: var(--r-ctl); padding: 0; cursor: pointer;
 }
-.tbtn:hover { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
+.tbtn:hover { border-color: var(--border-strong); background: var(--wash-hover); color: var(--text); }
 .tbtn.on { background: var(--accent-ui); border-color: var(--accent-ui); color: var(--bg); }
 .tbtn.on:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 /* 深色下 --bg 比工具栏底更暗，照搬浅色的「白底抬起」会变成下沉；深色也抬起 */
-:root[data-theme='dark'] .tbtn:hover:not(.on):not(.dis) { background: var(--surface-2); }
+:root[data-theme='dark'] .tbtn:hover:not(.on):not(.dis) { background: var(--wash-hover); }
 .tbtn:focus-visible { outline-offset: -2px; }
 .tbtn.dis, .tbtn.dis:hover { border-color: transparent; background: transparent; color: var(--text-faint); opacity: .45; cursor: default; }
 .tsep { width: 1px; height: 16px; border-left: 1px solid color-mix(in srgb, var(--border-strong) 50%, var(--border)); margin: 0 5px; flex: none; }   /* 同上：画成边框，占位仍 1px（border-box） */
@@ -740,6 +877,8 @@ onBeforeUnmount(() => {
   width: 40px; flex: none; display: flex; flex-direction: column; align-items: center;
   padding: 6px 0 6px 1px; gap: 2px; background: var(--surface); border-right: 1px solid var(--border);
 }
+/* 组间留缝（顺序不动）：星座 ｜ 覆盖与分析 ｜ 标记·链路 ｜ 环境 ｜ 模型·聚焦·地图设置 */
+.actbtn.gs { margin-top: 9px; }
 .actbtn {
   position: relative; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: var(--r-box); background: transparent; color: var(--text-faint); padding: 0; cursor: pointer;
@@ -760,14 +899,7 @@ onBeforeUnmount(() => {
   background: var(--surface-2); border-bottom: 1px solid var(--border); flex: none;
 }
 .dock-tt { flex: 1; font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.dock-x { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); }
-.dock-x:hover { background: var(--border); color: var(--text); }
-/* .dock-x 是 span，拿不到全局 <button> 的过渡与按下罩，就地补 */
-.dock-x { transition: var(--t-state); }
-.dock-x:active { box-shadow: var(--press); transition-duration: 0s; }
-/* 开关态（日志窗「搜索诊断」）：此前开 / 关长得一样 */
-.dock-x.on { color: var(--accent-ui); background: var(--accent-ui-weak); }
-.dock-x.on:hover { color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 22%, transparent); }
+/* 窗格标题栏的关闭 / 清空 / 诊断钮：外观走 controls.css 的 .ibtn（22×22，开关态 .on 选中实底） */
 /* scrollbar-gutter: stable —— 恒定预留竖滚动条槽位：侧栏面板内容（如可见性「瞬时可见」随时间轴每帧重算，
    可见星条数变化 → 面板高度增减 → 竖滚动条忽隐忽现）时，Windows 经典滚动条占 ~15px 会令内容宽度左右跳动；
    预留槽位后宽度恒定，消除拖时间轴时的横向抖动。 */
@@ -781,14 +913,20 @@ onBeforeUnmount(() => {
   content: ''; position: absolute; top: 0; bottom: 0; left: 1px; width: 2px;
   background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
 }
-.vsplit:hover::after { opacity: 1; transition-delay: .15s; }
+.vsplit:hover::after { opacity: 1; transition-delay: var(--dur-3); }
 .vsplit.on::after { opacity: 1; background: var(--accent-ui); transition: none; }
 .shell.col-drag .sidebar, .shell.col-drag .content { pointer-events: none; }
 
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .content { flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 
-.logdock { flex: none; height: 110px; border-top: 1px solid var(--border); }
+.logdock { position: relative; flex: none; height: 110px; border-top: 1px solid var(--border); }
+/* 日志窗格上缘的拖高把手（命中 6 px，视觉同侧栏分隔条：悬停才现形，拖动中机位色） */
+.logsplit { position: absolute; left: 0; right: 0; top: -3px; height: 6px; cursor: row-resize; z-index: 5; }
+.logsplit::after { content: ''; position: absolute; left: 0; right: 0; top: 2px; height: 2px; background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear; }
+.logsplit:hover::after { opacity: 1; transition-delay: var(--dur-3); }
+.logsplit.on::after { opacity: 1; background: var(--accent-ui); transition: none; }
+html.ui-row-resize, html.ui-row-resize * { cursor: row-resize !important; user-select: none !important; }
 /* 西文 / 数字 / 时间戳仍 Consolas；中文回落到界面字体（--font-code 尾部的 monospace 在中文 Windows 上落到 NSimSun 宋体）。
    左内距 11 与窗头「日志」标题同一条左缘；行高钉整像素 */
 .loglines {
@@ -804,21 +942,11 @@ onBeforeUnmount(() => {
 
 /* ===== 关于对话框 ===== */
 /* z 2000：原 200 会被星座页 z 2100 / 2200 的浮层压住；遮罩瞬时出现，只框体入场 */
-.about-mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-.about {
-  min-width: 300px; padding: 26px 34px 22px; text-align: center;
-  background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-3);
-  border-radius: var(--r-card); animation: ui-dlg-in var(--dur-3) var(--ease-out);
-}
-.ab-name { font-family: var(--font-serif); font-size: var(--fs-6); letter-spacing: var(--ls-tight); }
+.ab-name { font-size: var(--fs-5); font-weight: 600; letter-spacing: var(--ls-tight); }
 .ab-ver { margin-top: 8px; font-size: var(--fs-3); color: var(--text-muted); }
-.ab-close { margin-top: 18px; height: var(--h-ctl-lg); white-space: nowrap; padding: 0 22px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
-.ab-close:hover:not(:disabled) { border-color: var(--line-hover); }
-.ab-close:disabled { opacity: .5; cursor: default; }
 .ab-id { cursor: pointer; user-select: text; font-size: var(--fs-5); }
 .ab-id:hover { color: var(--text); }
 .ab-copied { margin-left: 8px; color: var(--ok); font-size: var(--fs-2); }
-.lk-btns { display: flex; gap: 10px; justify-content: center; }
 
 /* 状态栏激活状态（左侧纯文字，无背景框） */
 .sb-actv { flex: none; cursor: default; font-variant-numeric: tabular-nums; }
@@ -833,6 +961,13 @@ onBeforeUnmount(() => {
   font-size: var(--fs-3); color: var(--text-muted);
 }
 .hint { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.smsg { display: flex; align-items: center; gap: 10px; min-width: 0; color: var(--text); }
+.smsg.warn { color: var(--warn); }
+.smsg.error { color: var(--danger); }
+.smsg-t { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* 状态句里的动作：<button> 但保持链接样（清掉 UA 内距 / 描边） */
+.smsg-a { flex: none; margin: 0; padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ui); cursor: pointer; white-space: nowrap; }
+.smsg-a:hover { text-decoration: underline; }
 .cells { display: flex; align-items: center; gap: 6px; flex: none; }
 .cell {
   display: inline-flex; align-items: center; gap: 6px; height: var(--h-ctl-sm); padding: 0 9px;
@@ -842,13 +977,51 @@ onBeforeUnmount(() => {
 /* 环境场读数格：量名（灰）+ 数值（等宽白）+ 单位（灰），与经纬度格同一档视觉重量 */
 .cell.envval { color: var(--text); gap: 5px; }
 .cell.envval .ekey, .cell.envval .eunit { color: var(--text-faint); font-size: var(--fs-2); }
-.cell.envval .cval { font-family: var(--font-code); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cell.envval .cval { font-family: var(--font-code); font-weight: 600; font-variant-numeric: tabular-nums; min-width: 6ch; text-align: right; }   /* 光标离开地图时显示「—」、宽度不缩：整排不跳 */
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
 .cell.coord .cval { font-family: var(--font-code); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }
 /* 格内小钮不再自带描边（格子已有一圈），悬停走中性罩 */
-.zoomctl .zbtn { width: 16px; height: 14px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; border-radius: var(--r-ctl); }
-.zoomctl .zbtn:hover { color: var(--text); background: var(--wash-hover); }
-.zoomctl .zrange { width: 110px; }
-.zoomctl .zpct { width: 32px; text-align: right; font-family: var(--font-code); color: var(--text-muted); }
+/* 缩放 ±：.ibtn.sm，高度收到格内净高 16（格子 18 含描边），宽仍 20 */
+.zoomctl .ibtn { height: 16px; }
+.zoomctl .zrange { width: 110px; --rbar-h: 12px; }
+.zoomctl .zpct { --rnum-w: 40px; text-align: right; font-family: var(--font-code); color: var(--text-muted); }
+/* ===== 专业浅色 / 专业深色：外壳一圈 + 台面上的面板块（剪辑软件口径）=====
+   外壳 = 菜单栏 / 工具栏 / 活动栏 / 状态栏，底色就是台面色 --pane-well：外壳、缝、窗口四缘是同一块底，
+   侧栏 / 画面 / 信息栏 / 时间轴 / 日志是浮在上面的块（--r-pane 圆角，块间 --pane-gap 缝，深色另描 --pane-edge 受光边）。
+   ★ 外壳不能取面板色（10-14 第一版即如此）：外壳与面板同色，缝就只剩夹在两块同色之间的一道暗槽，
+     读作「刻出来的粗线」而不是块与块之间的空气；Resolve / Premiere 25 / Linear 都是外壳与缝同底、面板单独抬一档。
+   分区靠明度与缝、不靠 1px 线。挂在 data-skin="studio" 上（专业浅色 / 专业深色恒带它）。画面内三块在 3D 页里同口径。
+   ★ 侧栏 / 日志不加 overflow: hidden（也不加定位）：里面有不带定位祖先的绝对定位件，裁切 / 改认包含块都会变样。
+     圆角由面板自己的底色画，顶上那条头的底色另给上圆角，免得方角盖住圆角。 */
+:root[data-skin='studio'] .shell,
+:root[data-skin='studio'] .menubar,
+:root[data-skin='studio'] .toolbar,
+:root[data-skin='studio'] .actbar,
+:root[data-skin='studio'] .statusbar { background: var(--pane-well); }
+:root[data-skin='studio'] .menubar,
+:root[data-skin='studio'] .toolbar { border-bottom: 0; }
+:root[data-skin='studio'] .actbar { border-right: 0; }
+:root[data-skin='studio'] .statusbar { border-top: 0; }
+/* 工具栏最右一钮、状态栏最右一格的外缘与面板右缘对齐（都离窗口右缘一道缝） */
+:root[data-skin='studio'] .toolbar,
+:root[data-skin='studio'] .statusbar { padding-right: var(--pane-gap); }
+/* 台面四周留缝；活动栏贴窗口左缘不留（它属于外壳） */
+:root[data-skin='studio'] .sidebar { margin: var(--pane-gap) 0 var(--pane-gap) var(--pane-gap); border-right: 0; border-radius: var(--r-pane); }
+:root[data-skin='studio'] .dock > .dock-hd { border-radius: var(--r-pane) var(--r-pane) 0 0; }
+:root[data-skin='studio'] .main-col { margin: var(--pane-gap); gap: var(--pane-gap); }
+/* 分隔条就是那道缝：宽 = 缝、负右外距吃回（主列自带左缝，侧栏收起时它照样离活动栏一道缝）；
+   命中区两侧各外扩 2px，2px 细线落在缝正中 */
+:root[data-skin='studio'] .vsplit { width: var(--pane-gap); margin: var(--pane-gap) calc(-1 * var(--pane-gap)) var(--pane-gap) 0; }
+:root[data-skin='studio'] .vsplit::before { content: ''; position: absolute; top: 0; bottom: 0; left: -2px; right: -2px; }
+:root[data-skin='studio'] .vsplit::after { left: calc(50% - 1px); }
+:root[data-skin='studio'] .logdock { border-top: 0; border-radius: var(--r-pane); }
+/* 工具栏开态：只点亮图标 + 淡机位罩，不铺实底（Resolve 口径：开着的工具亮起来，不变成色块） */
+:root[data-skin='studio'] .tbtn:hover:not(.on):not(.dis) { background: var(--wash-hover); border-color: transparent; }
+:root[data-skin='studio'] .tbtn.on { background: var(--accent-ui-weak); border-color: transparent; color: var(--accent-ui); }
+:root[data-skin='studio'] .tbtn.on:hover { background: color-mix(in srgb, var(--accent-ui) 22%, transparent); border-color: transparent; color: var(--accent-ui-hover); }
+/* 菜单：浮层抬一层；高亮 = 蓝实底白字（Spectrum accent-background） */
+:root[data-skin='studio'] .mtitle.on { background: var(--primary-fill); color: var(--primary-on); }
+/* 状态栏读数格：外壳上的小面板（与面板块同底），不再描框 */
+:root[data-skin='studio'] .cell { border-color: transparent; background: var(--surface); }
 </style>

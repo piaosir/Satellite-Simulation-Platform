@@ -8,7 +8,14 @@ const fs = require('fs')
 const path = require('path')
 const { writeJsonAtomic, readJsonSafe } = require('./jsonStore')
 
-module.exports = function createCoverageGxt(saveDirFn) {
+// opts.trash(absPath) → Promise：删卫星 / 波束时把盘上的文件（整个卫星目录 / 波束的 .gxt 原文）先送进系统回收站
+// （main.js 注入 shell.trashItem；交互调研 A1）。进不去或没注入就直接删。归一化 JSON 是派生件，照旧直接删。
+module.exports = function createCoverageGxt(saveDirFn, opts) {
+  const trashFn = opts && typeof opts.trash === 'function' ? opts.trash : null
+  async function discard(fp, isDir) {
+    if (trashFn) { try { await trashFn(fp); return } catch { /* 落到直接删 */ } }
+    try { if (isDir) fs.rmSync(fp, { recursive: true, force: true }); else fs.unlinkSync(fp) } catch { /* 已不在 */ }
+  }
   function dir() {
     const d = typeof saveDirFn === 'function' ? saveDirFn() : saveDirFn
     fs.mkdirSync(d, { recursive: true })
@@ -60,11 +67,15 @@ module.exports = function createCoverageGxt(saveDirFn) {
     sat.name = (name || sat.name).toString().trim() || sat.name
     writeIndex(idx); return { ok: true, sat }
   }
+  // 先改索引再处理文件：卫星 / 波束 id 唯一，索引里没了就不会再有写入落进这些路径，回收站那一步可以异步做
   function removeSat(satId) {
     const idx = readIndex(); const sat = idx.satellites.find((s) => s.id === satId)
-    if (sat) { try { fs.rmSync(path.join(dir(), clean(satId)), { recursive: true, force: true }) } catch {} }
     idx.satellites = idx.satellites.filter((s) => s.id !== satId)
-    writeIndex(idx); return { ok: true }
+    writeIndex(idx)
+    const sub = sat ? path.join(dir(), clean(satId)) : null
+    if (!sub || !fs.existsSync(sub)) return trashFn ? Promise.resolve({ ok: true }) : { ok: true }
+    if (!trashFn) { try { fs.rmSync(sub, { recursive: true, force: true }) } catch {} return { ok: true } }
+    return discard(sub, true).then(() => ({ ok: true }))
   }
   // 按卫星名找/建用户卫星（给内置卫星「＋波束」时，用同名用户卫星承载新波束 → 前端按名合并）
   function ensureSat(name, lon) {
@@ -103,9 +114,15 @@ module.exports = function createCoverageGxt(saveDirFn) {
   function removeBeam(satId, beamId) {
     const idx = readIndex(); const sat = idx.satellites.find((s) => s.id === satId); if (!sat) return { ok: false }
     const beam = sat.beams.find((b) => b.id === beamId)
-    if (beam) { for (const f of [beam.file, beam.rawFile]) if (f) { try { fs.unlinkSync(safePath(f)) } catch {} } }
     sat.beams = sat.beams.filter((b) => b.id !== beamId)
-    writeIndex(idx); return { ok: true }
+    writeIndex(idx)
+    if (beam && beam.file) { try { fs.unlinkSync(safePath(beam.file)) } catch {} }   // 归一化 JSON：派生件
+    if (!(beam && beam.rawFile)) return trashFn ? Promise.resolve({ ok: true }) : { ok: true }
+    if (!trashFn) { try { fs.unlinkSync(safePath(beam.rawFile)) } catch {} return { ok: true } }
+    let raw = null
+    try { raw = safePath(beam.rawFile) } catch { return Promise.resolve({ ok: true }) }
+    if (!fs.existsSync(raw)) return Promise.resolve({ ok: true })
+    return discard(raw, false).then(() => ({ ok: true }))
   }
   // 把解析好的数据写到某波束：rawText=原始 GXT 文本；json={ lon, bore, contours, ... } 归一化数据。
   function attach(satId, beamId, payload) {

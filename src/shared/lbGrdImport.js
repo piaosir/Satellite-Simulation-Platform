@@ -162,6 +162,32 @@ export async function importGrdAntennas(spec) {
   return out
 }
 
+// 某卫星条目名下导入的方向图个数（删条目时问「要不要一并删」用）
+export function localAntennaCount(folder) {
+  if (!isLocalFolder(folder)) return 0
+  const n = loadLocalGrdSats().sats.find((s) => s.folder === folder)
+  return n && Array.isArray(n.antennas) ? n.antennas.length : 0
+}
+
+// 整个节点连同盘上的原始 GRD 一起删（删卫星库条目时选「一并删除方向图」）。
+// 主进程 coverageGrd.remove 走系统回收站，失败再 unlink；逐个删，失败的计入 failed 由调用方报出。
+// @returns {Promise<{ removed:number, failed:Array<{name:string,error:*}> }>}
+export async function removeLocalNode(folder) {
+  const out = { removed: 0, failed: [] }
+  if (!isLocalFolder(folder)) return out
+  const state = loadLocalGrdSats()
+  const node = state.sats.find((s) => s.folder === folder)
+  if (!node) return out
+  state.sats = state.sats.filter((s) => s !== node)
+  saveLocalGrdSats(state)
+  for (const a of (node.antennas || [])) {
+    if (!a || !a.file) continue
+    if (!api || !api.coverageGrd || !api.coverageGrd.remove) { out.failed.push({ name: a.name, error: '需在桌面客户端中运行' }); continue }
+    try { await api.coverageGrd.remove(a.file); out.removed++ } catch (e) { out.failed.push({ name: a.name, error: e }) }
+  }
+  return out
+}
+
 // 删除本模块导入的一副天线（连同盘上的原始 GRD）。3D 页导入的天线不归本模块管，直接返回 false。
 export async function removeLocalAntenna(folder, name) {
   if (!isLocalFolder(folder)) return false

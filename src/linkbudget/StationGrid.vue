@@ -9,13 +9,20 @@ let _rowSeq = 1
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from '../components/Icon.vue'
 import { defaultsFor } from './params.js'
-import { toHalf, halfStr } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
+import { toHalf, halfStr, numStrict } from '../shared/num.js'   // 数字列输入/粘贴归一全角→半角，避免全角减号令负数经纬度等被吞
 import { cityName, cityNameKeys } from '../shared/cityName.js'   // 城市名是数据、呈现层翻不到：英文界面下导入列表与写进站名的一律取英文名
 import CityPicker from '../components/CityPicker.vue'   // 导入站址对话框（与性能指标表「典型城市」同一份）
 import { pointFallbackName, stationFallbackName } from '../shared/markerNames.js'   // 无名标记兜底名（全平台一个口径）
+import { validateValue, invalidTitle } from '../shared/lbValidate.js'   // 数值格校验（与计算前预校验同一口径）：坏格标红 + 悬停范围
+import { sheetModel, exportSheets, importWorkbook, pickSheet, sheetToRecords, sheetToTsv, safeFileName } from '../shared/gridXlsx.js'   // 表格 ⇄ Excel（与 ExcelGrid 系同一套）
+import { reportError } from '../shared/reportError.js'
 
-// 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行）、
-// 填充柄向下填充、「＋增加」在聚焦行下方插入行、多选行批量删除/设值、清空、撤销/重做、逐行选址、点列头选整列。
+// ★ 本文件与 src/ngso/StationGrid.vue 逐字相同、只差上面 defaultsFor 那一行 import（两份 params 的 defaultsFor 同一实现）；
+//   packages/core/test/stationGridSync.test.mjs 盯着。改一份就整份拷到另一份（再把那行 import 改回去）。
+//
+// 发信/收信站群 Excel 式电子表格：单元格框选（拖拽）、Ctrl+C/X/V 复制/剪切/粘贴（TSV，序号列选中时按整行；
+// Ctrl+Shift+C 连表头）、填充柄 / Ctrl+D 向下填充、Ctrl+Shift++ / Ctrl+- 插入 / 删除行、「＋增加」在聚焦行下方插入行、
+// 多选行批量删除/设值、清空、撤销/重做（单格键入也算一步）、导入 / 导出 Excel、逐行选址、点列头选整列。
 const props = defineProps({
   stations: { type: Array, required: true },
   fields: { type: Array, required: true },
@@ -48,13 +55,23 @@ const props = defineProps({
   // 单元格「第二行小字」钩子 (field, row) => string|null：在单元格值下方渲染一行只读小字
   // （链路表用它把实时 EIRP/G·T 挂到「地球站配置」格下方，替代原独立列）；返回空即不加第二行。
   cellSub: { type: Function, default: null },
+  // 工具条「导入 Excel / 导出 Excel」：缺省开。导出＝当前可见列 + 表头；导入＝按表头名对列（认不出表头按列位置），
+  // 从当前行起覆盖、超出则加行，整批一步撤销。
+  showXlsx: { type: Boolean, default: true },
+  // 工具条挂到别处（选择器，如分节头的动作区）：链路预算三窗把它并进「链路表」节头，与节头动作同一行；
+  // 挂过去后不再报总行数（节头自带计数）。留空 = 原位（雨衰 / 日凌）。
+  barTo: { type: String, default: '' },
+  // 行右键菜单扩展口：[{ label, icon?, disabled?, run(rowIndex) }]，渲染在菜单末尾（前面一条分隔线），
+  // 单元格右键与序号列右键都有，rowIndex＝右键落在的那一行。label 是中文原文（界面语言切换走 DOM 呈现层，
+  // 与本菜单其它项同一机制：词条进 src/shared/i18n/uiDict.data.js）；disabled 可为布尔或 (rowIndex) => 布尔。
+  rowMenuExtra: { type: Array, default: () => [] },
   // 单元格「行内尾标」钩子 (field, row) => string|null：跟在单元格值后面、同一行的一枚淡色小字
   // （链路表用它把发信站实时算出的功放功率贴在「地球站配置」名之后，正在第二行小字 EIRP 之上）；返回空即不加。
   cellTag: { type: Function, default: null },
   // 单元格「占比填充条」钩子 (field, row) => 0..1 或 null：在格底画按值比例的数据条
   // （链路表功率/带宽占用列）；返回 null / 非正数即不画，>1 封顶铺满（超限着色由 cellClass 的 st-bad 接手）。
   cellFill: { type: Function, default: null },
-  // 出厂冻结「关键列」（首列起到城市列的粘性左固定列）——只是缺省值，用户可在表内自行改冻结到哪一列。
+  // 出厂冻结「关键列」（首列起到城市列 / frozen 前缀的粘性左固定列）——只是缺省值，用户可在表内自行改冻结到哪一列。
   freezeKeys: { type: Boolean, default: true },
   // 冻结列的记忆键（各表一个，如 'lb.links'）：非空才把用户改过的冻结位置记进 localStorage。
   // 留空＝不记忆（行为与旧版一致）。
@@ -63,10 +80,14 @@ const props = defineProps({
   // 不取组件内部的 range.fr：点列头 / 粘贴 / Ctrl+A / 整行选择几条路径会直接改写它且不 emit rowFocus，
   // 绑它就会出现「表里标这行、读数写那行」。留空即不标（不传的表，如雨衰页，行为与改动前完全一致）。
   focusId: { type: String, default: '' },
+  // 灰字占位钩子 (row, field) => string|null：留空格「实际入算值」不是静态 f.def 时由宿主给（链路预算：站址经纬度留空时
+  // R0.01% / 海拔按默认站址的 ITU 取值，见 shared/lbDefaultSite.js）；返回 null / '' 即回退 f.def。不传＝行为不变。
+  ghostOf: { type: Function, default: null },
 })
 // rowFocus (行下标, 行_id)：聚焦行变化（链路表联动详细预算）
 // editLib (资源库子栏key, 条目id)：库引用列的「编辑参数」钮 → App 导航到资源库该条目
-const emit = defineEmits(['rowFocus', 'editLib'])
+// xlsxDone ({ kind: 'import' | 'export', path, rows })：Excel 导入 / 导出完成（宿主可接通知条「打开 · 在文件夹中显示」）
+const emit = defineEmits(['rowFocus', 'editLib', 'xlsxDone'])
 // 某列是否只读（按字段 key 判定，动态；f.ro 计算列恒只读）
 const isReadonlyCol = (c) => { const f = props.fields[c]; return !!(f && (f.ro || props.readonlyKeys.includes(f.key))) }
 // 计算列取值（extraValues 映射）
@@ -76,6 +97,24 @@ const fillFrac = (f, s) => { if (!props.cellFill) return null; const v = props.c
 // 占比填充条色阶（四档，阈值 25/50/75%）：按未封顶的原始占比取档，>75%（含超 100%）统一落 lv4。
 // 档位类挂在 .sg-fillbar 上，色值 --lb-lv1..4 见 lbworkbench.css
 const fillLv = (f, s) => { const v = props.cellFill ? props.cellFill(f, s) : 0; return v > 0.75 ? 'lv4' : v > 0.5 ? 'lv3' : v > 0.25 ? 'lv2' : 'lv1' }
+// 数值格校验：坏格（「36 MHz」「12,5」、超出字段 min/max）挂 st-bad（与结果列超限同一套红字）+ sg-inv（细红框），
+// 悬停 title 写状态与字段范围（「超出范围 0.1–100 GHz」）。口径与计算前预校验同一处（shared/lbValidate.js）。
+// 只看可编辑的数值列：计算列 / 只读字段由系统回填，不归用户改。按行对象索引，模板里 O(1) 取。
+const badMap = computed(() => {
+  const m = new Map()
+  const nf = props.fields.filter((f, c) => f.type === 'num' && !f.ro && !isReadonlyCol(c))
+  if (!nf.length) return m
+  for (const s of props.stations) {
+    for (const f of nf) {
+      const res = validateValue(f, s[f.key])
+      if (!res) continue
+      let row = m.get(s); if (!row) { row = new Map(); m.set(s, row) }
+      row.set(f.key, invalidTitle(f, res))
+    }
+  }
+  return m
+})
+const badTitle = (s, f) => { const row = badMap.value.get(s); return (row && row.get(f.key)) || '' }
 // 列组表头：按可见字段的 f.group 相邻归并成跨列头（组标签取 groups prop）
 const headerGroups = computed(() => {
   if (!props.groups || !props.groups.length) return null
@@ -120,11 +159,14 @@ const geoGroups = computed(() => {
 // 某键所属的站址组（名称/经度/纬度任一命中）
 const geoOfKey = (key) => geoGroups.value.find((g) => g.name === key || g.lon === key || g.lat === key) || null
 const nCol = computed(() => props.fields.length)
-// 出厂冻结数（原始列下标口径）：从第一列起，一直冻结到「名称/城市」字段（含）为止——例如发信站表把
-// 「载波信号配置」放在「地球站位置」前面，两列都需要冻结；收信站表只有「地球站位置」一列，冻结数即为 1。
-// freezeKeys=false（链路表）：出厂不冻结任何数据列（序号列 sg-sel 仍单独粘性固定，属行手柄不算数据列）。
+// 出厂冻结数（原始列下标口径）：优先取字段显式 frozen 标记的「前缀连续段」长度（列与城市字段位置解耦，
+// 可任意调列序仍固定冻结几列，再生式站表在用）；无 frozen 标记时回退旧启发式——从第一列起冻结到
+// 「名称/城市」字段（含）为止（例如发信站表把「载波信号配置」放在「地球站位置」前面，两列都需要冻结；
+// 收信站表只有「地球站位置」一列，冻结数即为 1）。freezeKeys=false（链路表）：出厂不冻结任何数据列
+// （序号列 sg-sel 仍单独粘性固定，属行手柄不算数据列）。
 const cityFieldIdx = computed(() => props.fields.findIndex((f) => f.city))
-const defFrozen = computed(() => (props.freezeKeys ? (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1) : 0))
+const frozenPrefix = computed(() => { let n = 0; for (const f of props.fields) { if (f.frozen) n++; else break } return n })
+const defFrozen = computed(() => (!props.freezeKeys ? 0 : (frozenPrefix.value > 0 ? frozenPrefix.value : (cityFieldIdx.value >= 0 ? cityFieldIdx.value + 1 : 1))))
 // 出厂关键列恒按 90px 窄宽度排版（.sg-kw），与「当前冻不冻结」解耦——临时取消冻结不该让这几列忽然变宽。
 const isNarrowKey = (c) => c < defFrozen.value
 // 只读列(EIRP/G·T)作为「可选不可编辑」的最后一列：可框选/复制，但不可编辑/粘贴/填充。
@@ -495,6 +537,7 @@ function ghost(s, f) {
   if (f.ro) return ''   // 计算列无默认占位
   const v = s[f.key]
   if (v != null && String(v).trim() !== '') return ''
+  if (props.ghostOf) { const g = props.ghostOf(s, f); if (g != null && g !== '') return String(g) }
   if (f.def == null || f.def === '') return ''
   if (f.type === 'select') { const hit = fieldOptions(f).find((o) => optVal(o) === f.def); return hit ? optLabel(hit) : f.def }
   return f.def
@@ -565,10 +608,14 @@ function applyCityForNames(row, nameKinds, keepCoord, coordKinds) {
 }
 
 // —— 撤销/重做 ——
+// 一步＝一次批量操作，或一次单元格提交（Excel 口径）：单格编辑在进入编辑时记下整表快照（_editSnap），
+// 提交时值真的变了才把那份快照压栈——由此触发的联动回填（站名 → 经纬度、经纬度 → 降雨率 / 海拔，含 autoGeo
+// 异步写回）都落在这一步里，Ctrl+Z 一次全撤。
 const undoStack = ref([]); const redoStack = ref([])
 const snapshot = () => props.stations.map((s) => ({ ...s }))
 function restore(snap) { props.stations.splice(0, props.stations.length, ...snap.map((s) => ({ ...s }))) }
-function pushUndo() { undoStack.value.push(snapshot()); if (undoStack.value.length > 100) undoStack.value.shift(); redoStack.value = [] }
+function pushSnap(snap) { undoStack.value.push(snap); if (undoStack.value.length > 100) undoStack.value.shift(); redoStack.value = [] }
+function pushUndo() { pushSnap(snapshot()) }
 function undo() { if (!undoStack.value.length) return; redoStack.value.push(snapshot()); restore(undoStack.value.pop()) }
 function redo() { if (!redoStack.value.length) return; undoStack.value.push(snapshot()); restore(redoStack.value.pop()) }
 // 宿主载入 / 切换配置时调：栈里是上一份配置的行快照，留着的话一按撤销就把那份表整个灌进当前配置
@@ -602,7 +649,7 @@ function removeSelected() {
   for (let i = props.stations.length - 1; i >= 0; i--) if (ids.has(props.stations[i]._id)) props.stations.splice(i, 1)
   sel.value = {}
 }
-function clearAll() { if (!props.stations.length) return; pushUndo(); props.stations.splice(0, props.stations.length); sel.value = {} }
+function clearAll() { if (!props.stations.length) return; pushUndo(); props.stations.splice(0, props.stations.length); sel.value = {}; range.ar = range.fr = 0; range.ac = range.fc = firstVisSelCol() }
 
 // ============ 电子表格单元格选区 ============
 const range = reactive({ ar: 0, ac: 0, fr: 0, fc: 0 }) // anchor / focus (行,列)
@@ -790,7 +837,7 @@ function onHeaderDown(c, e) {
 function onHeaderEnter(c) { if (colDragging) selectCols(colAnchor, c) }
 // 列头右键：进「整列模式」——右键列不在选区内就只选该列；菜单只留列相关项（冻结/隐藏/清列）
 function onHeaderContext(c, e) {
-  e.preventDefault(); editing.value = null; sel.value = {}; menu.c = c
+  e.preventDefault(); if (editing.value) endEdit(); sel.value = {}; menu.c = c; menu.r = -1
   if (!(dp(c) >= dp0.value && dp(c) <= dp1.value)) { colAnchor = c; selectCols(c, c) }
   focusGrid(); openMenu(e, 'col')
 }
@@ -844,6 +891,8 @@ function onFillDbl(e) {
 }
 
 let _editOrig = null   // 进入编辑时的原值：用于判断名称是否真的改动（避免无改动失焦时误覆盖经纬度）
+let _editSnap = null   // 进入编辑时的整表快照：提交时值真的变了才压进撤销栈（单格提交＝一步）
+const sameVal = (a, b) => (a == null ? '' : String(a)) === (b == null ? '' : String(b))
 // F2/双击进入编辑：select 字段弹原生下拉；其余字段把原值带入常驻捕获框、光标置末尾（插入而非整体替换，与 Excel 一致）。
 // 直接键入/输入法进入编辑不走这里——它们由 .sg-cap 的 @input/@compositionstart（onCapInput/onCapCompStart）就地翻成编辑态，
 // 使中文输入法从第一个拼音字母起就落在真实 <input> 内，不丢首字母。
@@ -852,6 +901,7 @@ function startEdit(r, c) {
   const f = props.fields[c]
   if (f.type === 'select') { openDropdown(r, c); return }   // select：委托自建下拉列表（替代原生 <select>）
   _editOrig = props.stations[r][f.key]
+  _editSnap = snapshot()
   editing.value = { r, c, typed: false }
   nextTick(() => {
     const el = capEl()
@@ -875,8 +925,10 @@ function endEdit() {
     } else if (g && props.autoGeo) {
       if (row[f.key] !== _editOrig) props.autoGeo(row, undefined, g.kind)   // 仅坐标真的改动才重算降雨/海拔，避免 Enter/Tab 掠过未改坐标时清掉手改值
     }
+    // 值真的变了才算一步（F2 进去原样回车 / 下拉点回原项不压栈）；联动回填已在上面跑完，同属这一步
+    if (_editSnap && f && row && !sameVal(row[f.key], _editOrig)) pushSnap(_editSnap)
   }
-  editing.value = null; _editOrig = null
+  editing.value = null; _editOrig = null; _editSnap = null
   const el = capEl(); if (el) el.value = ''   // 复位捕获框为空，供下次「键入即替换」
   focusGrid()
 }
@@ -887,9 +939,20 @@ function cancelEdit() {
     const { r, c } = editing.value; const f = props.fields[c]
     if (f) props.stations[r][f.key] = _editOrig
   }
-  editing.value = null; _editOrig = null
+  editing.value = null; _editOrig = null; _editSnap = null
   const el = capEl(); if (el) el.value = ''
   focusGrid()
+}
+// Backspace（Excel）：清空活动格并进入编辑——Enter / 失焦提交（算一步），Esc 还原。select 列没有可编辑文本，等同 Delete。
+function clearAndEdit(r, c) {
+  if (isRO(c) || isReadonlyCol(c) || !props.stations[r]) return
+  const f = props.fields[c]
+  if (f.type === 'select') { clearSel(); return }
+  _editOrig = props.stations[r][f.key]
+  _editSnap = snapshot()
+  props.stations[r][f.key] = ''
+  editing.value = { r, c, typed: true }
+  nextTick(() => { const el = capEl(); if (el) { el.value = ''; el.focus({ preventScroll: true }) } })
 }
 // 常驻捕获框 / 原生下拉的键盘处理。导航态（未进入编辑）不接管——交还冒泡给容器 onKey 做方向/命令键；
 // 编辑态才处理提交/取消/跳格。组字中（isComposing/229）一律放行，让 Enter/Esc 去确认/取消输入法候选，勿误提交单元格。
@@ -907,6 +970,7 @@ function onCapKey(e) {
 function beginCapEdit(r, c) {
   if (editing.value || isRO(c)) return
   _editOrig = props.stations[r][props.fields[c].key]
+  _editSnap = snapshot()
   editing.value = { r, c, typed: true }
 }
 function onCapCompStart(r, c) {
@@ -970,6 +1034,7 @@ function openDropdown(r, c, seed) {
   if (!f || f.type !== 'select') return
   if (editing.value && !(editing.value.r === r && editing.value.c === c)) endEdit()
   _editOrig = props.stations[r][f.key]
+  _editSnap = snapshot()
   editing.value = { r, c, typed: false }
   setFocus(r, c, false)   // 确保编辑格==聚焦格：组合框输入靠本格的 .sg-cap，二者必须重合（editing 先置好，watch 不会抢焦）
   const cur = props.stations[r][f.key] == null ? '' : props.stations[r][f.key]
@@ -1061,8 +1126,14 @@ function clearSel() {
   pushUndo()
   for (let r = r0.value; r <= r1.value; r++) for (const c of selCols.value) if (!isRO(c) && !isReadonlyCol(c)) props.stations[r][props.fields[c].key] = ''
 }
-function copyRange() {
+// 列头文本（带表头复制 / 导出 Excel 用）：与界面表头同款「标签 (单位)」，导回来 gridXlsx.findHeader 认得
+const colHead = (c) => (isRO(c)
+  ? props.roLabel + (props.roUnit ? ' (' + props.roUnit + ')' : '')
+  : (props.fields[c].label + (props.fields[c].unit ? ' (' + props.fields[c].unit + ')' : '')))
+// withHeader（Ctrl+Shift+C / 右键「复制（含表头）」）：首行连列头一起复制，与 ExcelGrid 同口径
+function copyRange(withHeader) {
   const lines = []
+  if (withHeader) lines.push(selCols.value.map(colHead).join('\t'))
   for (let r = r0.value; r <= r1.value; r++) {
     const row = []
     for (const c of selCols.value) row.push(cellText(props.stations[r], c) ?? '')   // 按显示序，含只读列（取其计算值）
@@ -1070,54 +1141,156 @@ function copyRange() {
   }
   try { navigator.clipboard.writeText(lines.join('\n')) } catch (e) { /* ignore */ }
 }
-async function pasteRange() {
-  let text = ''
-  try { text = await navigator.clipboard.readText() } catch (e) { return }
-  if (!text) return
-  const rows = text.replace(/\r/g, '').split('\n'); if (rows.length && rows[rows.length - 1] === '') rows.pop()
-  const grid = rows.map((r) => r.split('\t'))
-  if (!grid.length) return
-  const gR = grid.length, gC = grid[0].length
-  const sr = r0.value, sd = dp0.value            // 起点：行下标 + 列的**显示位**
-  // Excel 平铺：目标选区比剪贴板大、且行列都是整数倍时，把源块循环铺满整个选区（如复制 1 格铺满一片）
-  const selR = r1.value - r0.value + 1, selC = dp1.value - dp0.value + 1
-  const tile = (selR > gR || selC > gC) && selR % gR === 0 && selC % gC === 0
-  const outR = tile ? selR : gR, outC = tile ? selC : gC
+// 制表符分列、换行分行的文本块 → 二维数组（末尾空行去掉）
+function parseTsv(text) {
+  if (!text) return []
+  const rows = String(text).replace(/\r/g, '').split('\n'); if (rows.length && rows[rows.length - 1] === '') rows.pop()
+  return rows.map((r) => r.split('\t'))
+}
+// 把一组 [原始列下标, 原始串] 写进一行（粘贴 / 导入 Excel 共用口径）：只读列跳过；经纬度截 6 位、select 按显示名归一；
+// 写了「地球站位置」就按城市库带出经纬度（不覆盖本轮显式给的经纬度）；经纬度变了按站址组联动 autoGeo（跳过本轮显式给的降雨 / 海拔）。
+function writeCells(row, pairs) {
+  const coordKinds = new Set()       // 该行哪些站址组的经纬度被改动 → 按组联动 autoGeo 重算降雨/海拔
+  const givenAuto = new Set()        // 本轮已显式带入的降雨/海拔列（如整行复制）：重算时跳过，不覆盖带入值
+  const nameKinds = new Set()        // 本轮写了哪些站址组的「地球站位置」→ 按名字反查城市库带出经纬度
+  const keepCoord = new Set()        // 本轮显式写入的经/纬度键：名字反查不得覆盖（整行复制时带入值优先）
+  for (const [c, src] of pairs) {
+    if (src === undefined || c === undefined || c < 0 || isRO(c) || isReadonlyCol(c)) continue
+    const f = props.fields[c]
+    if (!f) continue
+    const v = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
+    const g = geoOfKey(f.key)
+    const nonEmpty = String(v == null ? '' : v).trim() !== ''
+    if (g && f.key === g.name) { if (nonEmpty) nameKinds.add(g.kind) }
+    else if (g) { if (row[f.key] !== v) coordKinds.add(g.kind); if (nonEmpty) keepCoord.add(f.key) }
+    if (f.auto && nonEmpty) givenAuto.add(f.key)
+    row[f.key] = v
+  }
+  applyCityForNames(row, nameKinds, keepCoord, coordKinds)
+  if (props.autoGeo) for (const kind of coordKinds) props.autoGeo(row, givenAuto, kind)
+}
+// 从第 sr 行、第 sd 个显示位起，把 grid 铺成 outR × outC（源块 gR 行 × gC 列循环；某行短了缺的格不写）；
+// 超出表尾加行。整块一步撤销。
+function pasteGrid(grid, sr, sd, outR, outC, gC) {
+  const gR = grid.length
+  if (!gR || !outR || !outC) return 0
+  sr = Math.max(0, Math.min(sr, props.stations.length))   // 空表 / 选区越界：从表尾接着写
   pushUndo()
   for (let i = 0; i < outR; i++) {
     const r = sr + i
     if (r >= props.stations.length) props.stations.push(makeRow())
     const row = props.stations[r]
-    const coordKinds = new Set()       // 该行哪些站址组的经纬度被粘贴改动 → 按组联动 autoGeo 重算降雨/海拔
-    const pastedAuto = new Set()       // 粘贴已显式带入的降雨/海拔列（如整行复制）：重算时跳过，不覆盖粘贴值
-    const nameKinds = new Set()        // 粘贴写了哪些站址组的「地球站位置」→ 按名字反查城市库带出经纬度
-    const keepCoord = new Set()        // 本轮显式粘贴的经/纬度键：名字反查不得覆盖（整行复制时粘贴值优先）
-    for (let j = 0; j < outC; j++) {
-      const c = visSelCols.value[sd + j]                 // 按显示序往右铺，与屏幕上看到的一致
-      const src = grid[i % gR][j % gC]
-      if (src === undefined || c === undefined) continue
-      if (!isRO(c) && !isReadonlyCol(c)) {
-        const f = props.fields[c]
-        const v = isLatLonKey(f.key) ? clampLatLon(src) : normalizeFieldValue(f, src)
-        const g = geoOfKey(f.key)
-        const nonEmpty = String(v == null ? '' : v).trim() !== ''
-        if (g && f.key === g.name) { if (nonEmpty) nameKinds.add(g.kind) }
-        else if (g) { if (row[f.key] !== v) coordKinds.add(g.kind); if (nonEmpty) keepCoord.add(f.key) }
-        if (f.auto && nonEmpty) pastedAuto.add(f.key)
-        row[f.key] = v
-      }
-    }
-    applyCityForNames(row, nameKinds, keepCoord, coordKinds)
-    if (props.autoGeo) for (const kind of coordKinds) props.autoGeo(row, pastedAuto, kind)
+    const src = grid[i % gR]
+    const pairs = []
+    for (let j = 0; j < outC; j++) pairs.push([visSelCols.value[sd + j], src[j % gC]])   // 按显示序往右铺，与屏幕上看到的一致
+    writeCells(row, pairs)
   }
   range.ar = sr; range.ac = visSelCols.value[sd]
   range.fr = Math.min(props.stations.length - 1, sr + outR - 1)
   range.fc = visSelCols.value[Math.min(visSelCols.value.length - 1, sd + outC - 1)]
+  return outR
 }
+async function pasteRange() {
+  let text = ''
+  try { text = await navigator.clipboard.readText() } catch (e) { return }
+  const grid = parseTsv(text)
+  if (!grid.length) return
+  const gR = grid.length, gC = grid[0].length
+  const empty = !props.stations.length
+  const sr = empty ? 0 : r0.value, sd = empty ? 0 : dp0.value            // 起点：行下标 + 列的**显示位**
+  // Excel 平铺：目标选区比剪贴板大、且行列都是整数倍时，把源块循环铺满整个选区（如复制 1 格铺满一片）
+  const selR = r1.value - r0.value + 1, selC = dp1.value - dp0.value + 1
+  const tile = !empty && (selR > gR || selC > gC) && selR % gR === 0 && selC % gC === 0
+  pasteGrid(grid, sr, sd, tile ? selR : gR, tile ? selC : gC, gC)
+}
+// 文本块（制表符分列、换行分行）从第 atRow 行、第 atDisp 个显示位起写入（缺省：选区左上角）；超出表尾加行，
+// 整块一步撤销。返回写入的行数。导入 Excel 认不出表头时走这条（按列位置，与「从 Excel 复制粘贴」逐字一致）。
+function pasteText(text, atRow, atDisp) {
+  const grid = parseTsv(text)
+  if (!grid.length) return 0
+  const w = Math.max(...grid.map((r) => r.length))
+  return pasteGrid(grid, atRow == null ? r0.value : atRow, atDisp == null ? dp0.value : atDisp, grid.length, w, w)
+}
+
+// —— Excel 文件进出（主进程 grid:importXlsx / grid:exportXlsx，模型与表头匹配见 shared/gridXlsx.js）——
+// 导出：当前可见列（显示序，含只读末列）+ 表头「标签 (单位)」；select 列写显示名，数值列合法的写成真数字（Excel 里可算），
+// 不合法的原样写成文本（不替用户「修」成别的数）；计算列未算出（—）留空。
+async function exportXlsx() {
+  if (editing.value) endEdit()
+  if (!props.stations.length) return
+  const cols = visSelCols.value.map((c) => (isRO(c)
+    ? { key: '\u0000ro', label: props.roLabel, unit: props.roUnit, num: false, align: 'right', c }
+    : { key: props.fields[c].key, label: props.fields[c].label, unit: props.fields[c].unit, num: false, align: (props.fields[c].type === 'num' || props.fields[c].ro) ? 'right' : undefined, c }))
+  const value = (s, col) => {
+    let v = cellText(s, col.c)
+    if (v === '—' && (isRO(col.c) || props.fields[col.c].ro)) return null
+    if (v == null || String(v).trim() === '') return null
+    if (col.align === 'right') { const n = numStrict(v); if (typeof n === 'number' && Number.isFinite(n)) return n }
+    return String(v)
+  }
+  const sheet = sheetModel({ name: props.label || 'Sheet1', cols, rows: props.stations, value })
+  const name = safeFileName(props.label || '表格', '表格') + '.xlsx'
+  let r = null
+  try { r = await exportSheets({ defaultName: name, title: '导出 Excel', sheets: [sheet] }) } catch (e) { reportError('导出 Excel', e); return }
+  if (!r || r.canceled) return
+  if (!r.ok) { reportError('导出 Excel', r.error); return }
+  emit('xlsxDone', { kind: 'export', path: r.filePath || r.path || '', rows: props.stations.length })
+}
+// 导入：按表头名对列（列序随便、未知列忽略、缺的列不动）；认不出表头就按列位置从首个显示列起铺（同粘贴）。
+// 从当前行起逐行覆盖，超出表尾加行；整批一步撤销；写完选中导入的那几行。
+async function importXlsx() {
+  if (editing.value) endEdit()
+  let res = null
+  try { res = await importWorkbook({ title: '导入 Excel' }) } catch (e) { reportError('导入 Excel', e); return }
+  if (!res || res.canceled) return
+  if (!res.ok) { reportError('导入 Excel', res.error); return }
+  const idx = new Map()
+  const cols = []
+  props.fields.forEach((f, c) => { if (!f.ro && !isReadonlyCol(c)) { idx.set(f.key, c); cols.push({ key: f.key, label: f.label, unit: f.unit, alias: f.alias }) } })
+  const sheet = pickSheet(res.sheets, cols)
+  if (!sheet) { reportError('导入 Excel', '该工作簿中没有数据', { level: 'warn' }); return }
+  const at = props.stations.length ? r0.value : 0
+  const { records } = sheetToRecords(sheet, cols)
+  let n = 0
+  if (records) {
+    if (records.length) {
+      pushUndo()
+      records.forEach((rec, i) => {
+        const r = at + i
+        if (r >= props.stations.length) props.stations.push(makeRow())
+        writeCells(props.stations[r], Object.keys(rec).map((k) => [idx.get(k), rec[k]]))
+      })
+      n = records.length
+    }
+  } else n = pasteText(sheetToTsv(sheet), at, 0)
+  if (!n) { reportError('导入 Excel', '该工作簿中没有数据', { level: 'warn' }); return }
+  sel.value = {}
+  range.ar = at; range.ac = firstVisSelCol(); range.fr = Math.min(props.stations.length - 1, at + n - 1); range.fc = lastVisSelCol()
+  focusGrid()
+  emit('xlsxDone', { kind: 'import', path: res.filePath || '', rows: n })
+}
+
+// Ctrl+D（Excel）：选区多行 → 用选区首行填满其下各行；只选一行 → 用上一行填这一行。只读列跳过，选区不变，一步撤销。
+function fillDownKey() {
+  const cols = selCols.value
+  if (!cols.length || !props.stations.length) return
+  const a = r0.value, b = r1.value
+  const keep = { ar: range.ar, ac: range.ac, fr: range.fr, fc: range.fc }
+  if (b > a) fillDownTo(a, a, cols, b)
+  else if (a > 0) fillDownTo(a - 1, a - 1, cols, a)
+  else return
+  Object.assign(range, keep)
+}
+// Ctrl+Shift++（Excel）：在选区上方插入同样多的行；空表插一行
+function insertRowsKey() { if (props.stations.length) insertAbove(); else insertRowsAt(0, 1) }
 
 // —— 整行复制/剪切：当「序号列选中了整行」时，Ctrl+C/X 跨全部列作用于这些整行 ——
 function fullRowTSV(i) { return visSelCols.value.map((c) => cellText(props.stations[i], c) ?? '').join('\t') }   // 按显示序，与整行粘贴同一次序
-function copyRows(idx) { try { navigator.clipboard.writeText(idx.map(fullRowTSV).join('\n')) } catch (e) { /* ignore */ } }
+function copyRows(idx, withHeader) {
+  const lines = idx.map(fullRowTSV)
+  if (withHeader) lines.unshift(visSelCols.value.map(colHead).join('\t'))
+  try { navigator.clipboard.writeText(lines.join('\n')) } catch (e) { /* ignore */ }
+}
 function cutRows(idx) {
   copyRows(idx)                                   // 整行剪切＝移动语义：复制后删除这些行（可 Ctrl+V 到别处；可撤销）
   const set = new Set(idx.map((i) => props.stations[i]._id))
@@ -1127,7 +1300,7 @@ function cutRows(idx) {
   if (props.stations.length) setFocus(Math.min(idx[0], props.stations.length - 1), firstVisSelCol(), false)
 }
 // 复制/剪切统一入口：序号列选中整行时按整行、否则按单元格选区——键盘 Ctrl+C/X 与右键菜单共用，口径一致
-function smartCopy() { const ri = selectedRowIdx(); ri.length ? copyRows(ri) : copyRange() }
+function smartCopy(withHeader) { const ri = selectedRowIdx(); ri.length ? copyRows(ri, withHeader === true) : copyRange(withHeader === true) }
 function smartCut() { const ri = selectedRowIdx(); ri.length ? cutRows(ri) : cutRange() }
 // 单元格导航（方向键/Enter/Tab/Home/End/翻页）收起整行勾选，回到单选，与 Excel 一致
 function collapseRowSel() { if (selectedRows.value.length) sel.value = {} }
@@ -1135,13 +1308,19 @@ function collapseRowSel() { if (selectedRows.value.length) sel.value = {} }
 function onKey(e) {
   if (editing.value) return
   if (e.isComposing || e.keyCode === 229) return   // 输入法（中文）组字中：交给 IME，勿吞首字/误触发覆盖编辑
-  if (!props.stations.length) return
   const mod = e.ctrlKey || e.metaKey
+  // 撤销 / 重做 / 粘贴 / 插删行在空表上也要能用（「清空」之后 Ctrl+Z 撤回来、Ctrl+V 贴进来），故在空表守卫之前
   if (mod && (e.key === 'z' || e.key === 'Z')) { if (e.shiftKey) redo(); else undo(); e.preventDefault(); return }
   if (mod && (e.key === 'y' || e.key === 'Y')) { redo(); e.preventDefault(); return }
-  if (mod && (e.key === 'c' || e.key === 'C')) { smartCopy(); e.preventDefault(); return }
-  if (mod && (e.key === 'x' || e.key === 'X')) { smartCut(); e.preventDefault(); return }
   if (mod && (e.key === 'v' || e.key === 'V')) { pasteRange(); e.preventDefault(); return }
+  // Excel：Ctrl+Shift++（主键盘上是 Shift+=）/ 小键盘 Ctrl++ 插入行，Ctrl+- 删除行（键位同 ExcelGrid）。
+  // 一律 preventDefault——放过去会落到窗口缺省菜单，变成整页缩放。
+  if (mod && (e.key === '+' || (e.shiftKey && e.key === '='))) { insertRowsKey(); e.preventDefault(); return }
+  if (mod && e.key === '-') { if (props.stations.length) deleteCtxRows(); e.preventDefault(); return }
+  if (!props.stations.length) return
+  if (mod && (e.key === 'c' || e.key === 'C')) { smartCopy(e.shiftKey); e.preventDefault(); return }   // Ctrl+Shift+C 连表头
+  if (mod && (e.key === 'x' || e.key === 'X')) { smartCut(); e.preventDefault(); return }
+  if (mod && (e.key === 'd' || e.key === 'D')) { fillDownKey(); e.preventDefault(); return }           // Excel Ctrl+D 向下填充
   if (mod && (e.key === 'a' || e.key === 'A')) { sel.value = {}; range.ar = 0; range.ac = firstVisSelCol(); range.fr = props.stations.length - 1; range.fc = lastVisSelCol(); e.preventDefault(); return }
   if (mod && e.key === 'Home') { collapseRowSel(); setFocus(0, firstVisSelCol(), e.shiftKey); e.preventDefault(); return }
   if (mod && e.key === 'End') { collapseRowSel(); setFocus(props.stations.length - 1, lastVisSelCol(), e.shiftKey); e.preventDefault(); return }
@@ -1159,7 +1338,13 @@ function onKey(e) {
   if (e.key === 'F2') { startEdit(range.fr, range.fc); e.preventDefault(); return }
   if (e.key === 'Enter') { collapseRowSel(); setFocus(range.fr + (e.shiftKey ? -1 : 1), range.fc); e.preventDefault(); return }   // Excel：Enter 下移、Shift+Enter 上移（编辑用 F2/双击/直接键入）
   if (e.key === 'Tab') { collapseRowSel(); tabMove(e.shiftKey); e.preventDefault(); return }
-  if (e.key === 'Delete' || e.key === 'Backspace') { clearSel(); e.preventDefault(); return }
+  if (e.key === 'Delete') { clearSel(); e.preventDefault(); return }
+  // Backspace（Excel）：单格＝清空并进入编辑；多格 / 整行选区＝清空选区（同 Delete）
+  if (e.key === 'Backspace') {
+    if (r0.value === r1.value && selCols.value.length === 1 && !selectedRows.value.length) clearAndEdit(range.fr, range.fc)
+    else clearSel()
+    e.preventDefault(); return
+  }
   if (e.key === 'Home') { collapseRowSel(); setFocus(range.fr, firstVisSelCol(), e.shiftKey); e.preventDefault(); return }
   if (e.key === 'End') { collapseRowSel(); setFocus(range.fr, lastVisSelCol(), e.shiftKey); e.preventDefault(); return }
   if (e.key === 'PageUp' || e.key === 'PageDown') { collapseRowSel(); const PAGE = 12; setFocus(range.fr + (e.key === 'PageUp' ? -PAGE : PAGE), range.fc, e.shiftKey); e.preventDefault(); return }
@@ -1224,8 +1409,8 @@ const impExtra = ref([])
 const impOtherGroup = computed(() => geoGroups.value.find((x) => x.kind !== imp.side) || null)
 const impNote = computed(() => {
   const f = imp.filledN, n = imp.addedN
-  if (f && n) return `本次已填 ${f} 行 · 已加 ${n} 行`
-  return f ? `本次已填 ${f} 行` : (n ? `本次已加 ${n} 行` : '')
+  if (f && n) return `本次已填 ${f} 行 · 已添加 ${n} 行`
+  return f ? `本次已填 ${f} 行` : (n ? `本次已添加 ${n} 行` : '')
 })
 function readMarkers() { try { return JSON.parse(localStorage.getItem('globe3d/markers') || 'null') || {} } catch (e) { return {} } }
 // 标记分区：点标记 / 地球站各一组，航迹按整条各成一组（每个航点一项，名取「航迹名#序号」）；空组不列
@@ -1330,25 +1515,30 @@ function doBatch() {
 const batchField = computed(() => props.fields.find((f) => f.key === batch.key) || props.fields[0])
 
 // ============ 右键菜单（Excel 式）：复制/剪切/粘贴/清除内容 · 插入/删除行 · 隐藏列/清除整列 ============
-const menu = reactive({ open: false, x: 0, y: 0, mode: 'cell', c: -1 })   // mode: cell | row | col（列头右键不出行操作）；c＝右键落在哪一列（列宽菜单项用）
+// mode: cell | row | col（列头右键不出行操作）；c＝右键落在哪一列（列宽菜单项用）；r＝右键落在哪一行（rowMenuExtra 用，列头为 -1）
+const menu = reactive({ open: false, x: 0, y: 0, mode: 'cell', c: -1, r: -1 })
 function openMenu(e, mode) {
+  const extra = mode === 'col' ? 0 : props.rowMenuExtra.length
   menu.x = Math.min(e.clientX, window.innerWidth - 200)     // 防贴右/下边溢出
-  menu.y = Math.min(e.clientY, window.innerHeight - (mode === 'col' ? 200 : 380))
+  menu.y = Math.max(4, Math.min(e.clientY, window.innerHeight - (mode === 'col' ? 240 : 470 + (extra ? 10 + 30 * extra : 0))))
   menu.mode = mode || 'cell'
   menu.open = true
 }
+// 扩展菜单项的可用态：disabled 可为布尔或 (rowIndex) => 布尔
+const extraOff = (it) => (typeof it.disabled === 'function' ? !!it.disabled(menu.r) : !!it.disabled)
+function runExtra(it) { const r = menu.r; menu.open = false; if (it && typeof it.run === 'function' && r >= 0) it.run(r) }
 function menuDo(fn) { menu.open = false; fn() }
 function selectedRowIdx() { const out = []; props.stations.forEach((s, i) => { if (sel.value[s._id]) out.push(i) }); return out }
 function selectFullRows(lo, hi) { range.ar = lo; range.fr = hi; range.ac = firstVisSelCol(); range.fc = lastVisSelCol() }
 // 单元格右键：进入「单元格模式」——清行勾选；右键落在选区外则选区跳到该格（与 Excel 一致）
 function onCellContext(r, c, e) {
-  e.preventDefault(); editing.value = null; sel.value = {}; menu.c = c
+  e.preventDefault(); if (editing.value) endEdit(); sel.value = {}; menu.c = c; menu.r = r   // 右键＝先提交在编的格（同点别的格），撤销步不丢
   if (!inSel(r, c)) setFocus(r, c, false)
   focusGrid(); openMenu(e, 'cell')
 }
 // 序号列右键：进入「整行模式」——右键行在已选外则只选该行；并让单元格选区覆盖选中行整行
 function onIdxContext(i, e) {
-  e.preventDefault(); editing.value = null; menu.c = -1
+  e.preventDefault(); if (editing.value) endEdit(); menu.c = -1; menu.r = i
   if (!sel.value[props.stations[i]._id]) sel.value = { [props.stations[i]._id]: true }
   const idx = selectedRowIdx()
   if (idx.length) selectFullRows(Math.min(...idx), Math.max(...idx))
@@ -1419,6 +1609,17 @@ function hideCols() {
   range.ac = snap(range.ac, pa); range.fc = snap(range.fc, pf)
 }
 function unhideAll() { hiddenCols.value = [] }
+// 工具条「更多」命令下拉：选一项即执行，随即复位到「更多」
+function runMore(e) {
+  const v = e.target.value
+  e.target.value = ''
+  if (v === 'importXlsx') importXlsx()
+  else if (v === 'exportXlsx') exportXlsx()
+  else if (v === 'batch') openBatch()
+  else if (v === 'removeSel') removeSelected()
+  else if (v === 'clear') clearAll()
+  else if (v === 'unhide') unhideAll()
+}
 function clearColContents() {
   const cols = targetColIdx().filter((c) => c < props.fields.length && !isRO(c))
   if (!cols.length || !props.stations.length) return
@@ -1429,23 +1630,32 @@ function clearColContents() {
 
 <template>
   <div ref="host" class="sg">
-    <div class="sg-bar">
-      <span class="sg-count">{{ stations.length }} 个{{ label }}<template v-if="selectedRows.length"> · 选中 {{ selectedRows.length }} 行</template></span>
+    <!-- 工具条：常用动作直出（增加行 / 导入站址 / 撤销重做 / 上下移 / 冻结列），低频动作收进「更多」命令下拉，
+         一行装得下、窄栏不再折行。给了 barTo 就挂到那里（defer：等目标节点上屏再挂） -->
+    <Teleport :to="barTo || 'body'" :disabled="!barTo" defer>
+    <div class="sg-bar" :class="{ inhd: !!barTo }">
+      <span v-if="!barTo || selectedRows.length" class="sg-count"><template v-if="!barTo">{{ stations.length }} 个{{ label }}</template><template v-if="selectedRows.length"><template v-if="!barTo"> · </template>选中 {{ selectedRows.length }} 行</template></span>
       <span class="sg-sp"></span>
       <button class="sg-btn" title="在聚焦行下方插入一行（表为空则新建首行）" @click="addRow()"><Icon name="plus" :size="12" /> 增加行</button>
-      <button v-if="showImport && focusGeo" class="sg-btn" :title="focusImpTitle" @click="openImportAt"><Icon name="import" :size="12" /> 导入站址</button>
-      <button class="sg-btn" :disabled="!selectedRows.length" @click="openBatch">批量设值</button>
-      <button class="sg-btn" :disabled="!selectedRows.length" @click="removeSelected">删除选中</button>
-      <button class="sg-btn" :disabled="!stations.length" @click="clearAll">清空</button>
-      <button class="sg-btn" :disabled="!undoStack.length" title="撤销" @click="undo"><Icon name="undo-2" :size="12" /></button>
-      <button class="sg-btn" :disabled="!redoStack.length" title="重做" @click="redo"><Icon name="redo-2" :size="12" /></button>
-      <button class="sg-btn" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp"><Icon name="arrow-up" :size="12" /> 上移</button>
-      <button class="sg-btn" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown"><Icon name="arrow-down" :size="12" /> 下移</button>
-      <button class="sg-btn" :class="{ on: pinAllOn }" :disabled="!canPin"
+      <button v-if="showImport && focusGeo" class="sg-btn" :title="focusImpTitle" @click="openImportAt"><Icon name="file-import" :size="12" /> 导入站址</button>
+      <button class="sg-btn sg-ico" :disabled="!undoStack.length" title="撤销" @click="undo"><Icon name="undo-2" :size="12" /></button>
+      <button class="sg-btn sg-ico" :disabled="!redoStack.length" title="重做" @click="redo"><Icon name="redo-2" :size="12" /></button>
+      <button class="sg-btn sg-ico" :disabled="!canMoveUp" title="上移一行（Alt+↑）" @click="moveUp"><Icon name="arrow-up" :size="12" /></button>
+      <button class="sg-btn sg-ico" :disabled="!canMoveDown" title="下移一行（Alt+↓）" @click="moveDown"><Icon name="arrow-down" :size="12" /></button>
+      <button class="sg-btn sg-ico" :class="{ on: pinAllOn }" :aria-pressed="pinAllOn ? 'true' : 'false'" :disabled="!canPin"
               :title="(pinAllOn ? '取消冻结当前列' : '把当前列钉在左侧，横滚时不动') + (frozenVisCount ? '（当前冻结 ' + frozenVisCount + ' 列）' : '')"
-              @click="togglePin"><Icon name="panel-left" :size="12" /> 冻结列</button>
-      <button v-if="hiddenCols.length" class="sg-btn" :title="'已隐藏 ' + hiddenCols.length + ' 列，点击全部显示'" @click="unhideAll">显示隐藏列（{{ hiddenCols.length }}）</button>
+              @click="togglePin"><Icon name="panel-left" :size="12" /></button>
+      <select class="cmd-sel sg-more" value="" title="更多表格操作" @change="runMore">
+        <option value="" hidden>更多</option>
+        <option v-if="showXlsx" value="importXlsx">导入 Excel</option>
+        <option v-if="showXlsx" value="exportXlsx" :disabled="!stations.length">导出 Excel</option>
+        <option value="batch" :disabled="!selectedRows.length">批量设值</option>
+        <option value="removeSel" :disabled="!selectedRows.length">删除选中</option>
+        <option value="clear" :disabled="!stations.length">清空</option>
+        <option v-if="hiddenCols.length" value="unhide">显示隐藏列（{{ hiddenCols.length }}）</option>
+      </select>
     </div>
+    </Teleport>
 
     <div ref="root" class="sg-scroll" :class="{ 'rz-hover': rz.hover >= 0 || rz.on }" tabindex="0" @keydown="onKey" @focus="onRootFocus" @wheel="onWheel" @scroll.passive="onScroll"
          @mousemove="onRzMove" @mouseleave="onRzLeave" @mousedown.capture="onRzDownCap" @dblclick.capture="onRzDblCap">
@@ -1463,13 +1673,13 @@ function clearColContents() {
           <tr class="sg-hrow">
             <th class="sg-sel"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
             <th v-for="({ f, c, vi }) in visFields" :key="f.key" class="sg-hcol"
-                :class="{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c) }"
+                :class="{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), colsel: colHeadSel(c), 'sg-gend': isGroupEnd(c), 'sg-num': f.type === 'num' }"
                 :style="colStyle(c, vi)" :title="f.tip || f.label"
                 @mousedown.left="onHeaderDown(c, $event)" @mouseenter="onHeaderEnter(c)" @contextmenu.prevent="onHeaderContext(c, $event)">
               <span class="sg-ht">{{ f.label }}<i v-if="f.unit"> ({{ f.unit }})</i>
               <!-- 站址组锚点列（地球站位置）：列头内联导入钮，点击按该侧（f.city='tx'/'rx'）打开导入 -->
               <button v-if="showImport && f.city" class="sg-himp" :title="'导入站址到' + (f.city === 'rx' ? '收信站' : '发信站') + '：城市库 / 点标记 / 地球站 / 航迹'"
-                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="import" :size="12" /></button></span>
+                      @mousedown.left.stop @click.stop="openImport(f.city, $event)"><Icon name="file-import" :size="12" /></button></span>
             </th>
             <th v-if="roLabel" class="sg-ro">{{ roLabel }}<i v-if="roUnit"> ({{ roUnit }})</i></th>
           </tr>
@@ -1478,8 +1688,8 @@ function clearColContents() {
           <tr v-for="(s, i) in stations" :key="s._id || i" :class="{ on: sel[s._id], cur: !!focusId && s._id === focusId }">
             <td class="sg-sel" :title="'拖拽序号可框选行 · 右键插入/删除行'" @mousedown.left="onRowDown(i, $event)" @mouseenter="onRowEnter(i)" @contextmenu.prevent="onIdxContext(i, $event)"><span class="sg-idx">{{ i + 1 }}</span></td>
             <td v-for="({ f, c, vi }) in visFields" :key="f.key"
-                class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), 'ro-field': isReadonlyCol(c), sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c) }, cellClass ? cellClass(f, s) : null]"
-                :style="colStyle(c, vi)"
+                class="sg-cell" :class="[{ 'sg-fz': isKeyCol(c), 'sg-kw': isNarrowKey(c), 'sg-wset': hasW(c), 'ro-field': isReadonlyCol(c), 'sg-num': f.type === 'num', sel: inSel(i, c), focus: isFocus(i, c), editing: isEditing(i, c), fillp: inFill(i, c), 'sg-gend': isGroupEnd(c), 'st-bad': !!badTitle(s, f), 'sg-inv': !!badTitle(s, f) }, cellClass ? cellClass(f, s) : null]"
+                :style="colStyle(c, vi)" :title="badTitle(s, f) || null"
                 @mousedown.left="onDown(i, c, $event)" @mouseenter="onEnter(i, c)" @dblclick="startEdit(i, c)" @contextmenu.prevent="onCellContext(i, c, $event)">
               <!-- 占比填充条（单色半透明，无格底衬色）：最先渲染画在格底（::after 按 --fill 比例铺色，档位类 lv1..lv4 定色），后继 .sg-v 抬为 relative 浮于其上（样式在 lbworkbench.css） -->
               <span v-if="fillFrac(f, s) != null" class="sg-fillbar" :class="fillLv(f, s)" :style="{ '--fill': (fillFrac(f, s) * 100).toFixed(2) + '%' }"></span>
@@ -1494,12 +1704,12 @@ function clearColContents() {
                        @keydown="onCapKey" @blur="onCapBlur"
                        @copy="onCapClip" @cut="onCapClip" @paste="onCapClip" />
                 <span v-if="!(isEditing(i, c) && f.type === 'select')" class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}<i v-if="cellTag && cellTag(f, s)" class="sg-tag">{{ cellTag(f, s) }}</i></span>
-                <span v-if="f.type === 'select'" class="sg-caret" :class="{ open: isEditing(i, c) }"
+                <span v-if="f.type === 'select'" class="sg-caret" aria-hidden="true" :class="{ open: isEditing(i, c) }"
                       @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
               <template v-else>
                 <span class="sg-v" :class="{ mono: f.type === 'num', 'has-caret': f.type === 'select', ph: ghost(s, f) }">{{ ghost(s, f) || displayValue(s, f) }}<i v-if="cellTag && cellTag(f, s)" class="sg-tag">{{ cellTag(f, s) }}</i></span>
-                <span v-if="f.type === 'select'" class="sg-caret"
+                <span v-if="f.type === 'select'" class="sg-caret" aria-hidden="true"
                       @mousedown.left.stop.prevent="onCaretDown(i, c)"><Icon name="chevron-down" :size="12" /></span>
               </template>
               <!-- 库引用列（载波信号配置 / 地球站配置 / 卫星）格内「编辑参数」钮：悬停或聚焦本格才现形，
@@ -1538,7 +1748,7 @@ function clearColContents() {
     <CityPicker v-if="imp.open" title="导入站址" :has="impHas" dup :extra="impExtra" :note="impNote" @add="importItems" @close="closeImport">
       <template #head>
         <template v-if="geoGroups.length > 1">
-          <button v-for="gg in geoGroups" :key="gg.kind" class="sg-sideb" :class="{ on: imp.side === gg.kind }"
+          <button v-for="gg in geoGroups" :key="gg.kind" class="sg-sideb" :class="{ on: imp.side === gg.kind }" :aria-pressed="(imp.side === gg.kind) ? 'true' : 'false'"
                   :title="gg.kind === 'rx' ? '站址写入收信站侧' : '站址写入发信站侧'" @click="imp.side = gg.kind">{{ gg.kind === 'rx' ? '收信站' : '发信站' }}</button>
         </template>
         <span v-else class="sg-side1">{{ imp.side === 'rx' ? '收信站' : '发信站' }}</span>
@@ -1582,31 +1792,38 @@ function clearColContents() {
     </div>
 
     <!-- 右键菜单（Excel 式） -->
-    <div v-if="menu.open" class="sg-ctx-mask" @click="menu.open = false" @contextmenu.prevent="menu.open = false">
-      <div class="sg-ctx" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop @contextmenu.stop.prevent>
-        <button class="sg-ctx-i" @click="menuDo(smartCopy)"><span>复制</span><kbd>Ctrl+C</kbd></button>
-        <button class="sg-ctx-i" @click="menuDo(smartCut)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
-        <button class="sg-ctx-i" @click="menuDo(pasteRange)"><span>粘贴</span><kbd>Ctrl+V</kbd></button>
-        <button class="sg-ctx-i" @click="menuDo(clearSel)"><span>清除内容</span><kbd>Del</kbd></button>
+    <div v-if="menu.open" class="sg-ctx-mask menu-mask" @click="menu.open = false" @contextmenu.prevent="menu.open = false">
+      <div class="sg-ctx menu" role="menu" :style="{ left: menu.x + 'px', top: menu.y + 'px' }" @click.stop @contextmenu.stop.prevent>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(smartCopy)"><span>复制</span><kbd class="menu-kbd">Ctrl+C</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(() => smartCopy(true))"><span>复制（含表头）</span><kbd class="menu-kbd">Ctrl+Shift+C</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(smartCut)"><span>剪切</span><kbd class="menu-kbd">Ctrl+X</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(pasteRange)"><span>粘贴</span><kbd class="menu-kbd">Ctrl+V</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(clearSel)"><span>清除内容</span><kbd class="menu-kbd">Del</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="r1 === 0" @click="menuDo(fillDownKey)"><span>向下填充</span><kbd class="menu-kbd">Ctrl+D</kbd></button>
         <template v-if="menu.mode !== 'col'">
-        <div class="sg-ctx-sep"></div>
-        <button class="sg-ctx-i" @click="menuDo(insertAbove)">在上方插入行</button>
-        <button class="sg-ctx-i" @click="menuDo(insertBelow)">在下方插入行</button>
-        <button class="sg-ctx-i danger" @click="menuDo(deleteCtxRows)">删除行</button>
-        <div class="sg-ctx-sep"></div>
-        <button class="sg-ctx-i" :disabled="!canMoveUp" @click="menuDo(moveUp)"><span>上移一行</span><kbd>Alt+↑</kbd></button>
-        <button class="sg-ctx-i" :disabled="!canMoveDown" @click="menuDo(moveDown)"><span>下移一行</span><kbd>Alt+↓</kbd></button>
+        <div class="sg-ctx-sep menu-sep" role="separator"></div>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(insertAbove)"><span>在上方插入行</span><kbd class="menu-kbd">Ctrl+Shift++</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(insertBelow)">在下方插入行</button>
+        <button class="sg-ctx-i menu-item danger" role="menuitem" @click="menuDo(deleteCtxRows)"><span>删除行</span><kbd class="menu-kbd">Ctrl+-</kbd></button>
+        <div class="sg-ctx-sep menu-sep" role="separator"></div>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!canMoveUp" @click="menuDo(moveUp)"><span>上移一行</span><kbd class="menu-kbd">Alt+↑</kbd></button>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!canMoveDown" @click="menuDo(moveDown)"><span>下移一行</span><kbd class="menu-kbd">Alt+↓</kbd></button>
         </template>
-        <div class="sg-ctx-sep"></div>
-        <button class="sg-ctx-i" :disabled="!canPin" title="把这一列钉在左侧，横滚时不动（钉住的列并排排在最左边）" @click="menuDo(togglePin)">{{ pinAllOn ? '取消冻结此列' : '冻结此列' }}</button>
-        <button class="sg-ctx-i" :disabled="!frozenVisCount" @click="menuDo(unfreeze)">取消全部冻结</button>
-        <div class="sg-ctx-sep"></div>
-        <button class="sg-ctx-i" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
-        <button v-if="hiddenCols.length" class="sg-ctx-i" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
-        <button class="sg-ctx-i" @click="menuDo(clearColContents)">清除整列内容</button>
-        <div class="sg-ctx-sep"></div>
-        <button class="sg-ctx-i" :disabled="!hasW(menu.c)" title="恢复这一列按内容自适应宽度" @click="menuDo(() => autoFitCol(menu.c))">自动列宽</button>
-        <button class="sg-ctx-i" :disabled="!anyW" title="恢复全部列按内容自适应宽度" @click="menuDo(autoFitAll)">全部列自适应</button>
+        <div class="sg-ctx-sep menu-sep" role="separator"></div>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!canPin" title="把该列钉在左侧，横滚时不动（钉住的列并排排在最左边）" @click="menuDo(togglePin)">{{ pinAllOn ? '取消冻结此列' : '冻结此列' }}</button>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!frozenVisCount" @click="menuDo(unfreeze)">取消全部冻结</button>
+        <div class="sg-ctx-sep menu-sep" role="separator"></div>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!canHideSel" @click="menuDo(hideCols)">隐藏列</button>
+        <button v-if="hiddenCols.length" class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(unhideAll)">显示所有列（{{ hiddenCols.length }}）</button>
+        <button class="sg-ctx-i menu-item" role="menuitem" @click="menuDo(clearColContents)">清除整列内容</button>
+        <div class="sg-ctx-sep menu-sep" role="separator"></div>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!hasW(menu.c)" title="恢复该列按内容自适应宽度" @click="menuDo(() => autoFitCol(menu.c))">自动列宽</button>
+        <button class="sg-ctx-i menu-item" role="menuitem" :disabled="!anyW" title="恢复全部列按内容自适应宽度" @click="menuDo(autoFitAll)">全部列自适应</button>
+        <!-- 宿主挂的行级菜单项（rowMenuExtra），作用于右键落在的那一行 -->
+        <template v-if="menu.mode !== 'col' && menu.r >= 0 && rowMenuExtra.length">
+          <div class="sg-ctx-sep menu-sep" role="separator"></div>
+          <button v-for="(it, k) in rowMenuExtra" :key="'x' + k" class="sg-ctx-i menu-item" role="menuitem" :disabled="extraOff(it)" @click="runExtra(it)"><span class="sg-ctx-ex"><Icon v-if="it.icon" :name="it.icon" :size="12" />{{ it.label }}</span></button>
+        </template>
       </div>
     </div>
 
@@ -1634,15 +1851,21 @@ function clearColContents() {
 <style scoped>
 .sg { position: relative; display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .sg-bar { display: flex; align-items: center; gap: 6px; padding: 4px 2px 6px; flex: none; flex-wrap: wrap; }
+/* 挂进分节头（barTo）：不再自带上下内距、不折行，与节头动作同一行 */
+.sg-bar.inhd { display: inline-flex; padding: 0; gap: 4px; flex-wrap: nowrap; }
+.sg-bar.inhd .sg-sp { display: none; }
+.sg-btn.sg-ico { padding: 0 5px; }
+.sg-more { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); padding: 0 4px; border-radius: var(--r-ctl, 2px); }
 .sg-count { font-size: var(--fs-2); color: var(--text-muted); }
 .sg-sp { flex: 1; }
 .sg-btn { font: inherit; font-size: var(--fs-2); height: var(--h-ctl); white-space: nowrap; padding: 0 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
 .sg-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sg-btn:disabled { opacity: .4; cursor: not-allowed; }
-.sg-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
+.sg-btn.primary { background: var(--accent-fill); color: var(--accent-on); border-color: var(--accent-fill); }
 /* 主按钮悬停：加深一档机位色，字色钉 --bg（通用 .sg-btn 悬停会把字染成 --text，蓝底黑字） */
-.sg-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
-.sg-btn.on { color: var(--text); border-color: var(--accent); }
+.sg-btn.primary:hover:not(:disabled) { color: var(--accent-on); background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
+/* 切换钮按下态（冻结列：当前列已钉住）—— 与 controls.css 的 .btn.on 同一种实底；原先只换描边色，混在十几颗一次性命令钮里看不出是开着的 */
+.sg-btn.on, .sg-btn.on:hover:not(:disabled) { color: var(--sel-on); background: var(--sel-fill); border-color: var(--sel-fill); }
 
 .sg-scroll { flex: 1; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--r-box, 3px); outline: none; }
 .sg-tbl { border-collapse: separate; border-spacing: 0; font-size: var(--lb-fs, 11px); white-space: nowrap; }
@@ -1683,6 +1906,10 @@ function clearColContents() {
 .sg-addlbl { position: sticky; left: 8px; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: inherit; height: var(--h-ctl); white-space: nowrap; padding: 0 7px; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
 .sg-addlbl:hover { color: var(--accent); border-color: var(--border); background: var(--surface); }
 .sg-tbl th.sg-hcol { cursor: pointer; }
+/* 数值列（f.type==='num'：数值输入列与数值结果列）右对齐、表头同侧；文本列 / 下拉列仍左对齐（对照 ExcelGrid 的 td.n）。
+   表头内距左右互换（右 6 = 数据格 .sg-v 的内距）：列头文字与列值右缘对齐。占用数据条仍从左铺（.sg-fillbar 不受影响） */
+.sg-tbl th.sg-hcol.sg-num { text-align: right; padding-left: 8px; padding-right: 6px; }
+.sg-tbl td.sg-num .sg-v { text-align: right; }
 .sg-tbl th.sg-hcol:hover { color: var(--text); }
 /* 选中列表头与 ExcelGrid 同一色（机位色 22% 兑纸色，仍不透明——sticky 表头要盖住滚过的行） */
 .sg-tbl th.colsel { background: color-mix(in srgb, var(--accent-ui) 22%, var(--bg)); color: var(--text); }
@@ -1694,18 +1921,18 @@ function clearColContents() {
 /* 表头全选框按行高居中（基线对齐时比同行列头文字低 1–2px） */
 .sg-tbl th.sg-sel input[type="checkbox"] { vertical-align: middle; }
 .sg-tbl td.sg-sel { cursor: pointer; user-select: none; }
-.sg-tbl td.sg-sel:hover { background: var(--surface-2); }
+.sg-tbl td.sg-sel:hover { background: var(--wash-hover); }
 .sg-tbl tbody tr.on > td.sg-sel { background: var(--surface-2); }
 .sg-tbl tbody tr.on > td.sg-sel .sg-idx { color: var(--accent); font-weight: 700; }
 /* 当前行＝把它的序号格整格点亮成「活动行表头」（Excel 活动行列表头、Calc 行号表头恒高亮的老惯例）：
    只动 34px 序号格，数据格一个像素不改，结果列的红字与档位色不受影响。
    ★ 走实底而不是淡底：accent-ui 14% 兑白恰好落在 --surface-2（勾选行那档灰）的明度上，浅色主题里
-     两个通道撞在一起等于白做；实底 + var(--bg) 的字两套主题都一眼看见，也与表脚 / 节头那两枚
-     同款小标（.lbx-rr-no / .lbx-sec-no）严格同形。实底字色用 var(--bg) 是全平台铁律。
+     两个通道撞在一起等于白做；实底（--accent-fill）+ --accent-on 的字两套主题都一眼看见，也与表脚 / 节头那两枚
+     同款小标（.lbx-rr-no / .lbx-sec-no）严格同形。实底块一律 --accent-fill / --accent-on 成对取，不拿 --accent-ui（那是线与字的档）。
    ★ 写在 tr.on 两条之后：同特异度、后来居上，既被勾选又是当前行的那行才显示当前态。
    ★ 特异度也压得过 td.sg-sel:hover，鼠标扫过当前行的序号格不会把标记洗掉。 */
-.sg-tbl tbody tr.cur > td.sg-sel { background: var(--accent-ui); }
-.sg-tbl tbody tr.cur > td.sg-sel .sg-idx { color: var(--bg); font-weight: 700; }
+.sg-tbl tbody tr.cur > td.sg-sel { background: var(--accent-fill); }
+.sg-tbl tbody tr.cur > td.sg-sel .sg-idx { color: var(--accent-on); font-weight: 700; }
 .sg-idx { color: var(--text-faint); font-size: var(--fs-1); display: block; }
 /* —— 冻结列（Excel 冻结窗格）——
    .sg-fz    粘住不随横滚；左偏移由 <table> 上的 --sgfN 给（实测列宽逐列累加，见 measureFrozen）
@@ -1733,16 +1960,17 @@ function clearColContents() {
 /* Excel 填充柄：聚焦格右下角黑色方块，悬停为十字光标 */
 .sg-handle { position: absolute; right: -2px; bottom: -2px; width: 6px; height: 6px; background: var(--accent); border: 1px solid var(--bg); cursor: crosshair; z-index: 6; }
 .sg-cell.fillp { outline: 1px dashed var(--accent); outline-offset: -1px; }
-.sg-v { display: block; padding: 2.5px 6px; min-width: 76px; min-height: 19px; overflow: hidden; text-overflow: ellipsis; }
+.sg-v { display: block; padding: 2.5px 6px; min-width: 76px; min-height: 19px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; }
 .sg-kw .sg-v { min-width: 78px; }
 .sg-v.mono { font-family: var(--font-mono); }
-/* 留空单元格「浅显示」默认值（占位提示，非真实输入）——比正常内容更淡，用户一眼可辨 */
-.sg-v.ph { color: var(--text-faint); opacity: .7; }
+/* 留空单元格「浅显示」默认值（占位提示，非真实输入）：单用 --text-faint，与全局 ::placeholder（controls.css）、
+   资源库表单占位、E2E 以库值作占位同一种呈现——不再叠 opacity（叠了就比另两处淡一档） */
+.sg-v.ph { color: var(--text-faint); }
 /* 行内尾标（如「地球站配置」名之后的实时功放功率）：跟在值后同一行，与第二行小字同一档字号/色阶——
    读数性质相同（都是随输入实时回填的算出量），只是一个贴在名后、一个另起一行。 */
-.sg-tag { margin-left: 6px; font-style: normal; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); color: var(--text-faint); }
+.sg-tag { margin-left: 6px; font-style: normal; font-size: max(10px, calc(var(--lb-fs, 11px) - 2px)); color: var(--text-faint); }
 /* 单元格第二行只读小字（如「地球站配置」下的实时 EIRP/G·T）：更小更淡、等宽、不吃鼠标（点击落到 td 选中本格） */
-.sg-sub { display: block; padding: 0 6px 2px; margin-top: -1px; font-size: max(9px, calc(var(--lb-fs, 11px) - 2px)); line-height: 1.3; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.sg-sub { display: block; padding: 0 6px 2px; margin-top: -1px; font-size: max(10px, calc(var(--lb-fs, 11px) - 2px)); line-height: 1.3; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .sg-cell.sel { background: color-mix(in srgb, var(--accent-ui) 12%, var(--bg)); }
 /* 聚焦/编辑格抬一层（仍低于冻结列与表头）：让填充柄那 2px 出檐、编辑框边框压过相邻格 */
 .sg-cell.focus, .sg-cell.editing { z-index: 1; }
@@ -1757,7 +1985,7 @@ function clearColContents() {
 .sg-cap.mono { font-family: var(--font-mono); }
 .sg-cap:focus { outline: none; }
 .sg-cap.editing { background: var(--surface); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
-.sg-cap.editing::placeholder { color: var(--text-faint); opacity: .7; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
+.sg-cap.editing::placeholder { color: var(--text-faint); opacity: 1; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
 .sg-act { position: sticky; right: 0; z-index: 2; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
 .sg-tbl thead th.sg-act { z-index: 5; }
 .sg-mini { font: inherit; font-size: var(--fs-2); padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
@@ -1783,14 +2011,14 @@ function clearColContents() {
 .sg-fzbar { position: absolute; width: 7px; margin-left: -3px; z-index: 8; cursor: col-resize; }
 .sg-fzbar::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px; background: var(--lb-rule, var(--border-strong)); }
 .sg-fzbar:hover::before, .sg-fzbar.drag::before { background: var(--accent); }
-.sg-fzbar::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity .12s;
+.sg-fzbar::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity var(--dur-2);
   background: linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent); }
 .sg-fzbar.scrolled::after { opacity: 1; }
 /* 拖动中的落点预览线（松手才真冻结，与 Excel 拖冻结条一致） */
 .sg-fzprev { position: absolute; width: 2px; margin-left: -1px; z-index: 9; pointer-events: none; background: var(--accent); }
 
 /* 对话框口径（spec P6）：遮罩全软件一档 --scrim、瞬时出现；框体 160ms 入场 */
-.sg-mask { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
+.sg-mask { position: fixed; inset: 0; z-index: var(--z-dialog); display: flex; align-items: center; justify-content: center; background: var(--scrim); }
 .sg-box { width: 380px; max-height: 72vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .sg-box-sm { width: 320px; }
 .sg-box-hd { padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
@@ -1816,39 +2044,33 @@ function clearColContents() {
 .sg-box-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 12px 12px; }
 
 /* 右键菜单（Excel 式）：满屏遮罩拦截点击关闭 + 浮层菜单 */
-.sg-ctx-mask { position: fixed; inset: 0; z-index: 400; }
-/* 命令菜单口径（spec P3）：浮层圆角、光标处淡入、悬停机位色实底（与菜单栏 / 其它右键菜单同）；
-   外框内距 4px → 项圆角 --r-ctl 与外框同心 */
-.sg-ctx { position: fixed; min-width: 168px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.sg-ctx-i { display: flex; align-items: center; justify-content: space-between; gap: 16px; font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl); white-space: nowrap; }
-.sg-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
-.sg-ctx-i:disabled { opacity: .45; cursor: not-allowed; }
-.sg-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
-.sg-ctx-i kbd { font: inherit; font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); padding: 0 4px; }
-/* 悬停项里的快捷键跟随字色退半档；键帽的浅灰底去掉，否则实底上是一块浅灰里的白字 */
-.sg-ctx-i:hover:not(:disabled) :is(kbd, em, small, span + span) { color: inherit; opacity: .7; }
-.sg-ctx-i:hover:not(:disabled) kbd { background: transparent; border-color: currentColor; }
-.sg-ctx-sep { height: 1px; margin: 3px 6px; background: var(--border); }
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-kbd / .menu-sep / .menu-mask），这里只留定位、宽度与快捷键等宽字 */
+.sg-ctx { position: fixed; min-width: 168px; }
+.sg-ctx-i kbd { font-family: var(--font-code); }
+.sg-ctx-ex { display: inline-flex; align-items: center; gap: 6px; }
+/* 坏数值格（st-bad 红字之外）：一圈细红框，聚焦外框（outline）照常压在上面 */
+.sg-cell.sg-inv { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 60%, transparent); }
 
 /* select 单元格下拉指示 chevron：单击即开的热区，pointer-events 高于透明捕获框(.sg-cap z3) */
-/* top:10px（首行 ~19px 行高的中线）而非 50%：单行格与 50% 等效，双行格（配置名+第二行小字）时 chevron 仍贴首行的配置名 */
-.sg-caret { position: absolute; right: 2px; top: 10px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 18px; color: var(--text-faint); cursor: pointer; z-index: 6; pointer-events: auto; transition: transform .12s, color .12s; }
+/* top = 首行中线（.sg-v 上内距 2.5px + 半个 1.3 行高），随 --lb-fs 走；不取 50%：双行格（配置名+第二行小字）时 chevron 仍贴首行的配置名。
+   原先写死 10px，字号调到 16 / 20 时箭头偏上 */
+.sg-caret { position: absolute; right: 2px; top: max(9.5px, calc(2.5px + .65em)); transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 18px; color: var(--text-faint); cursor: pointer; z-index: 6; pointer-events: auto; transition: transform var(--dur-2), color var(--dur-2); }
 .sg-cell:hover .sg-caret, .sg-cell.focus .sg-caret { color: var(--text-muted); }
 .sg-caret.open { color: var(--accent); transform: translateY(-50%) scaleY(-1); }
 .sg-v.has-caret { padding-right: 18px; }
 /* 库引用列格内「编辑参数」钮：默认隐形且不占位，悬停/聚焦本格才现形——现形时是一枚不透明小钮，
    浮在值尾部之上（Airtable 悬停「展开记录」钮的做法）。这样列宽与普通 select 列一致，不必为一个
    偶尔按一次的钮长期让出 16px。竖直上与 chevron 同基线（首行中线），横向排在它左边。 */
-.sg-libed { position: absolute; right: 17px; top: 10px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); box-shadow: var(--shadow-1); z-index: 6; }
+.sg-libed { position: absolute; right: 17px; top: max(9.5px, calc(2.5px + .65em)); transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); box-shadow: var(--shadow-1); z-index: 6; }
 .sg-cell:hover .sg-libed, .sg-cell.focus .sg-libed { visibility: visible; }
 .sg-libed:hover { color: var(--accent); border-color: var(--border-strong); }
 .sg-cap.combo { padding-right: 20px; }   /* 组合框输入：右留位给 chevron，打字不压住箭头 */
 /* 自建下拉列表（Teleport 到 body，fixed 定位；层级高于 sticky 表头/冻结列 z4，低于模态遮罩 z200） */
 /* Teleport 到 body 在 .lb-shell 之外，字体/字号显式跟数据区（衬线栈 + --lb-fs） */
-.sg-dd { position: fixed; z-index: 250; min-width: 96px; max-height: 320px; padding: 3px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2); font-size: var(--lb-fs, 11px); }
+.sg-dd { position: fixed; z-index: var(--z-dialog-pop); min-width: 96px; max-height: 320px; padding: 3px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-box, 3px); box-shadow: var(--shadow-2); font-size: var(--lb-fs, 11px); }
 .sg-dd.flip { box-shadow: var(--shadow-2); }
 .sg-opt { display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer; border-radius: var(--r-ctl, 2px); color: var(--text); white-space: nowrap; user-select: none; }
-.sg-opt:hover { background: var(--surface-2); }
+.sg-opt:hover { background: var(--wash-hover); }
 .sg-opt.active { background: color-mix(in srgb, var(--accent-ui) 16%, var(--bg)); }
 .sg-opt.sel { color: var(--accent); font-weight: 600; }
 .sg-opt-ck { flex: none; width: 12px; color: var(--accent); }
@@ -1858,7 +2080,7 @@ function clearColContents() {
    用 visibility 而非 display：位置常驻，列表宽度不随鼠标跳动。 */
 .sg-opt-ed { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 2px; padding: 0; visibility: hidden; cursor: pointer; color: var(--text-faint); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px); }
 .sg-opt:hover .sg-opt-ed, .sg-opt.active .sg-opt-ed { visibility: visible; }
-.sg-opt-ed:hover { color: var(--accent); background: var(--bg); border-color: var(--border); }
+.sg-opt-ed:hover { color: var(--accent); background: var(--wash-hover); border-color: var(--border); }
 .sg-opt-empty { color: var(--text-faint); cursor: default; justify-content: center; }
 .sg-opt-empty:hover { background: transparent; }
 </style>

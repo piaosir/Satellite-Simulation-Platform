@@ -64,7 +64,7 @@ function toggle(id) {
       <span class="nm">{{ beamLabel(b, unit) }}</span>
     </button>
     <p v-if="inheriting && inherit.length" class="bp-inh">未选 = 随上行（{{ inheritText }}）</p>
-    <p v-if="!beams.length" class="bp-none">还没有波束。</p>
+    <p v-if="!beams.length" class="bp-none">暂无波束。</p>
   </div>
 </template>
 

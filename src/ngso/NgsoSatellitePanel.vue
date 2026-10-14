@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import Icon from '../components/Icon.vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { ensureSearchPool } from './satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
@@ -154,11 +155,11 @@ const rows = computed(() => {
     <!-- 取星模式头：两种取星都开启时才显分段切换；只开一种时仅在已选星时显「取消选星」 -->
     <div v-if="(showTree && showSearch) || (anyPicker && satSelected)" class="sp-modes">
       <template v-if="showTree && showSearch">
-        <button class="sp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">卫星/天线树选择</button>
-        <button class="sp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">从星历搜索</button>
+        <button class="sp-seg" :class="{ on: mode === 'tree' }" :aria-pressed="(mode === 'tree') ? 'true' : 'false'" @click="switchMode('tree')">卫星/天线树选择</button>
+        <button class="sp-seg" :class="{ on: mode === 'search' }" :aria-pressed="(mode === 'search') ? 'true' : 'false'" @click="switchMode('search')">从星历搜索</button>
       </template>
       <span class="sp-flex"></span>
-      <button v-if="satSelected" class="sp-clear" title="取消选星，恢复手动填轨道" @click="onClear">✕ 取消选星</button>
+      <button v-if="satSelected" class="sp-clear" title="取消选星，恢复手动填轨道" @click="onClear"><Icon name="x" :size="12" />取消选星</button>
     </div>
 
     <!-- ① 卫星/天线树选择（资源库卫星编辑器，配置级：写该条目 ngsoSat 轨道来源） -->
@@ -178,10 +179,10 @@ const rows = computed(() => {
     <!-- ② 搜索卫星（资源库编辑器，配置级） -->
     <div v-if="showSearchPicker" class="sp-grd">
       <label class="pf"><span class="pf-l">搜索卫星</span>
-        <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
+        <input v-model="kw" class="pf-i search-field" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
       </label>
-      <div v-if="loading" class="sp-tip">正在加载星历…</div>
+      <div v-if="loading" class="sp-tip">加载中…</div>
       <div v-else-if="loadErr" class="sp-tip sp-err">{{ loadErr }}</div>
       <template v-else-if="listOpen">
         <div v-if="kw && !searchRes.length" class="sp-tip">无匹配卫星</div>
@@ -195,8 +196,8 @@ const rows = computed(() => {
             </span>
             <span class="sp-li-i">
               {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
-              <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }}km</template>
-              <template v-else>h≈{{ Math.round(r.perigeeKm) }}km</template>
+              <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }} km</template>
+              <template v-else>h≈{{ Math.round(r.perigeeKm) }} km</template>
             </span>
           </li>
         </ul>
@@ -207,7 +208,7 @@ const rows = computed(() => {
     <div v-if="anyPicker && satSelected" class="sp-sel">
       <div>已选卫星：<b class="sp-name" title="可框选复制此卫星名" data-i18n-skip>{{ ngsoSat.name || form.satelliteName }}</b>
         <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span>
-        · 取星来源：{{ srcLabel }} · 轨道高度/倾角已由所选卫星自动确定
+        · 取星来源：{{ srcLabel }}
       </div>
       <div v-if="orbitShape" class="sp-shape">
         <b class="sp-regime" :class="'sp-rg-' + orbitShape.regime" :title="orbitShape.regimeZh">{{ orbitShape.regime }}</b>
@@ -256,23 +257,23 @@ const rows = computed(() => {
 .sp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
 .sp-li-i { display: block; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
 .sp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
-.sp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.sp-badge-cc { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
-.sp-badge.sp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
-.sp-badge.sp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
-.sp-badge.sp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
-.sp-badge.sp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
+.sp-badge.sp-rg-GEO { background: color-mix(in srgb, var(--rg-geo) 10%, transparent); color: var(--rg-geo); border-color: color-mix(in srgb, var(--rg-geo) 33%, transparent); }
+.sp-badge.sp-rg-IGSO { background: color-mix(in srgb, var(--rg-igso) 10%, transparent); color: var(--rg-igso); border-color: color-mix(in srgb, var(--rg-igso) 33%, transparent); }
+.sp-badge.sp-rg-MEO { background: color-mix(in srgb, var(--rg-meo) 10%, transparent); color: var(--rg-meo); border-color: color-mix(in srgb, var(--rg-meo) 33%, transparent); }
+.sp-badge.sp-rg-HEO { background: color-mix(in srgb, var(--rg-heo-tint) 13%, transparent); color: var(--rg-heo); border-color: color-mix(in srgb, var(--rg-heo-tint) 33%, transparent); }
 .sp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
 /* 卫星名可框选复制（覆盖全局 user-select:none），文本光标作可选的提示 —— 方便用户复制去改名 */
 .sp-name { user-select: text; -webkit-user-select: text; cursor: text; }
 .sp-shape { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
 /* 轨道区制标签（选星摘要）配色 */
 .sp-regime { font-weight: 700; }
-.sp-regime.sp-rg-GEO { color: #16a34a; }
-.sp-regime.sp-rg-IGSO { color: #0d9488; }
-.sp-regime.sp-rg-MEO { color: #2563eb; }
+.sp-regime.sp-rg-GEO { color: var(--rg-geo); }
+.sp-regime.sp-rg-IGSO { color: var(--rg-igso); }
+.sp-regime.sp-rg-MEO { color: var(--rg-meo); }
 .sp-regime.sp-rg-LEO { color: var(--text-muted); }
-.sp-regime.sp-rg-HEO { color: #d98600; }
+.sp-regime.sp-rg-HEO { color: var(--rg-heo); }
 /* 参数密排网格（与 GEO 卫星面板同款） */
 .sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px 11px; }
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */

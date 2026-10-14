@@ -35,7 +35,7 @@ async function copyId() {
 
 <style scoped>
 .al-mask {
-  position: fixed; inset: 0; z-index: 4000;
+  position: fixed; inset: 0; z-index: var(--z-lock);
   display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--bg) 72%, transparent);
   backdrop-filter: blur(5px);

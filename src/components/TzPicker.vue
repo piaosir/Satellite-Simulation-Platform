@@ -97,7 +97,7 @@ defineExpose({ close })
         <!-- 带 head：头 + 档位滚动区上下两段（头不随列表滚走）；不带：档位直接排在菜单里，与原来同一份标记。
              tabindex=-1：点到头里的空白处焦点落在菜单上而不是掉回 body —— 仍算「焦点在菜单里」，Esc 关时照样交还触发器。
              @contextmenu.stop：菜单是遮罩的子节点，菜单里的右键冒泡到遮罩会被当成「点外面」关掉 -->
-        <div v-if="hasHead" ref="menu" class="tzp-menu has-head" role="dialog" tabindex="-1" :style="pos" @mousedown.stop @wheel.stop @contextmenu.stop>
+        <div v-if="hasHead" ref="menu" class="tzp-menu menu has-head" role="dialog" tabindex="-1" :style="pos" @mousedown.stop @wheel.stop @contextmenu.stop>
           <div class="tzp-head"><slot name="head" /></div>
           <div ref="list" class="tzp-list">
             <button v-for="o in opts" :key="String(o.value)" type="button" class="tzp-i"
@@ -106,7 +106,7 @@ defineExpose({ close })
             </button>
           </div>
         </div>
-        <div v-else ref="menu" class="tzp-menu" :style="pos" @mousedown.stop @wheel.stop>
+        <div v-else ref="menu" class="tzp-menu menu" :style="pos" @mousedown.stop @wheel.stop>
           <button v-for="o in opts" :key="String(o.value)" type="button" class="tzp-i"
                   :class="{ on: o.value === modelValue, sep: o.value === FIRST_FIXED }" @click="pick(o.value)">
             <span :data-i18n-skip="o.fixed ? '' : null">{{ o.label }}</span><em v-if="o.tag" data-i18n-skip>{{ o.tag }}</em>
@@ -123,13 +123,12 @@ defineExpose({ close })
 
 <style>
 /* 菜单 Teleport 出去了，scoped 打不到它的节点（scoped 只给组件自身 DOM 加标记） */
-.tzp-mask { position: fixed; inset: 0; z-index: 2400; }
-.tzp-menu {
-  position: fixed; z-index: 2401; width: 150px; max-height: 292px; overflow-y: auto; padding: 3px;
-  background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-2);
-  /* 会朝上翻也会朝下开，方向不定 → 只淡入不位移；--shadow-3 只留给模态对话框 */
-  animation: ui-fade-in var(--dur-2) var(--ease-out);
-}
+.tzp-mask { position: fixed; inset: 0; z-index: calc(var(--z-dialog-pop) - 1); }
+/* 浮层外观（底 / 描边 / 圆角 / 投影 / 淡入）走 controls.css 的菜单基线 .menu；这里只留定位、宽高与层级。
+   层级取 --z-dialog-pop 而非 --z-menu：时区选择也开在对话框里，须压过对话框。
+   双类写法：本表非 scoped，与 .menu 同特异度时胜负看打包顺序，故抬一级。
+   档位项不套 .menu-item：这是选值拾取器，悬停淡罩与当前档实底必须可分（命令菜单才是蓝块悬停） */
+.tzp-menu.menu { position: fixed; z-index: var(--z-dialog-pop); width: 150px; min-width: 0; max-height: 292px; overflow-y: auto; padding: 3px; display: block; }
 .tzp-i {
   display: flex; align-items: baseline; gap: 8px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left;
   /* 圆角与外框同心：外框 6 − 内距 3 */
@@ -139,8 +138,8 @@ defineExpose({ close })
 .tzp-i > em { flex: none; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 /* 选项拾取器：悬停淡罩、当前档实底，二者必须可分（命令菜单才是机位色实底悬停） */
 .tzp-i:hover { background: var(--accent-ui-weak); }
-.tzp-i.on { background: var(--accent-ui); color: var(--bg); }
-.tzp-i.on > em { color: var(--bg); opacity: .75; }
+.tzp-i.on { background: var(--accent-fill); color: var(--accent-on); }
+.tzp-i.on > em { color: var(--accent-on); }   /* 不再压透明度：专业浅色的浅蓝块上白字本就只有 3.6:1，再乘 .75 掉到 2.75 */
 /* 分隔线两端各让 6px、上下各空 3px，与命令菜单的分隔线同一画法；
    margin 7 + padding 4 = 原 margin 4 + border 1 + padding 6，文字纵向位置不动 */
 .tzp-i.sep { margin-top: 7px; padding-top: 4px; border-top: 0; position: relative; }
@@ -148,7 +147,7 @@ defineExpose({ close })
 /* 带 head：菜单自己不滚、不定宽（max-content，下限仍 150），内距挪给头与列表各自带 ——
    列表是滚动区，滚动条照旧贴着外框右沿；列表 max-height 290 + 外框 2 = 原菜单 292，档位可见区一行不差。
    头与列表之间的分隔线与 .sep 同一画法：两端各让 6px、上下各空 3px（头底内距 3 + 线 1 + 列表顶内距 3） */
-.tzp-menu.has-head { display: flex; flex-direction: column; width: max-content; min-width: 150px; max-height: none; overflow: hidden; padding: 0; }
+.tzp-menu.menu.has-head { display: flex; flex-direction: column; width: max-content; min-width: 150px; max-height: none; overflow: hidden; padding: 0; }
 .tzp-menu.has-head:focus { outline: none; }
 .tzp-head { flex: none; position: relative; padding: 3px 3px 4px; }
 .tzp-head::after { content: ''; position: absolute; left: 6px; right: 6px; bottom: 0; height: 1px; background: var(--border); }

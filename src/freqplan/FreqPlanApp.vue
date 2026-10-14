@@ -6,7 +6,7 @@
 //
 // 版式沿用平台既定范式：左列表（主从）· 中主体（图 + 页签）· 右检查器，同屏一个上下文。
 // 存盘策略是「改即存」（debounce 600ms）——频率计划是「文件」不是「会话」，所以不设关窗守卫。
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import {
   newPlan, normalizePlan, newChannel, newLo, newBeam, genSeries, validatePlan, errorCount,
@@ -35,7 +35,15 @@ import MiniSendDialog from '../components/MiniSendDialog.vue'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { estimateBytes, SIZE_MAX } from '../shared/miniPack.js'
 import { buildFreqPlanXlsx } from '../shared/fpXlsxModel.js'
-import { byLang } from '../shared/i18n/lang.js'   // 运行时才拼得出全貌的长句：生成时就按平台语言出字
+import { byLang, curLang } from '../shared/i18n/lang.js'   // 运行时才拼得出全貌的长句：生成时就按平台语言出字
+import WinStatusBar from '../components/WinStatusBar.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import { useNotice } from '../shared/useNotice.js'
+import { reportError, reportPartial } from '../shared/reportError.js'
+import { createPlanHistory } from './fpHistory.js'
+import { useFpVersions, FP_VERSION_NS } from './fpVersions.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
 
@@ -46,10 +54,10 @@ const currentId = ref('')
 const selectedId = ref('')         // 选中通道
 const tab = ref('table')           // table | alloc | check
 const carriers = ref([])           // 频率分配表的载波（随计划走，存在计划里）
-const msg = ref('')
+// 通知条（shared/useNotice + NoticeLine）：普通状态 3.6 s · 导出带「打开 · 在文件夹中显示」· 失败常驻；
+// 同时登记为本窗的 reportError / 全局异常出口
+const N = useNotice({ ms: 3600 })
 const busy = ref('')
-const confirmMsg = ref('')
-let _confirmResolve = null
 const chartWrap = ref(null)
 const chartW = ref(1240)
 
@@ -162,9 +170,35 @@ function onWheelZoom(e) {
   zoom.value = zoomClamp(Math.round(zoom.value * (e.deltaY < 0 ? 1.2 : 1 / 1.2) * 20) / 20)
 }
 
-function flash(t) { msg.value = t; setTimeout(() => { if (msg.value === t) msg.value = '' }, 3600) }
-function ask(m) { confirmMsg.value = m; return new Promise((r) => { _confirmResolve = r }) }
-function answer(ok) { confirmMsg.value = ''; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
+function flash(t) { N.toast(t) }
+// 主进程保存处理器回的实际写入路径（新字段 path / paths；兼容旧的 filePath）
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+const baseName = (fp) => String(fp || '').split(/[\\/]/).pop()
+// 确认框：全平台一份（shared/ui/useConfirm.js + ConfirmDialog）；Esc / 关闭钮 = 取消
+const ask = (m) => askConfirm(m)
+
+// 功能区「导出 ▾」：点击开合（原来悬停即展开、点击无反应、键盘打不开）。
+// 打开后 ↑ / ↓ 在菜单项间移动，Esc 收起并把焦点还给按钮；点菜单外收起。
+const expOpen = ref(false)
+const expBtn = ref(null)
+const expMenu = ref(null)
+function toggleExport(viaKey) {
+  if (!plan.value) return
+  expOpen.value = !expOpen.value
+  if (expOpen.value && viaKey) nextTick(() => expMenu.value?.querySelector('.menu-item')?.focus())
+}
+function closeExport(refocus) { expOpen.value = false; if (refocus) nextTick(() => expBtn.value?.focus()) }
+function runExport(kind) { closeExport(false); if (kind === 'merge') openMerge(); else if (kind === 'mini') openMiniSend(); else doExport(kind) }
+function onExpKey(e) {
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeExport(true); return }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  e.preventDefault()
+  const items = [...(expMenu.value?.querySelectorAll('.menu-item:not(:disabled)') || [])]
+  if (!items.length) return
+  const i = items.indexOf(document.activeElement)
+  const n = e.key === 'ArrowDown' ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1)
+  items[n].focus()
+}
 
 // ---- 左栏：一棵「卫星 → 该星的频率计划」的树 ----
 //
@@ -191,6 +225,23 @@ function expandSat(folder) {
   const s = new Set(collapsed.value); s.delete(key); collapsed.value = s
   try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...s])) } catch { /* ignore */ }
 }
+
+// 卫星树在主窗口写的同源 localStorage 里（globe3d/settings 快照 + globe3d/grdSats 自建星），不是响应式的：
+// 开着本窗口去主窗口建星 / 删星，这边要显式重读 —— storage 事件（别的窗口写才触发；200 ms 合并）+ 窗口获焦再核一次
+// （口径同 model/satStore.js 的天线树同步、链路预算窗口获焦时的 reloadSatTree）。
+// 只换 satNodes：打开的计划、检查器「卫星」下拉的选中项都挂在 plan.satFolder 上，节点还在就照旧选中；
+// 折叠状态按 folder 记，同样不动。内容没变不换引用（3D 页每存一次设置都会来一次事件），树不必白重算。
+const SAT_TREE_KEYS = ['globe3d/settings', 'globe3d/grdSats']
+function reloadSatNodes() {
+  const next = loadSatNodes()
+  if (JSON.stringify(next) !== JSON.stringify(satNodes.value)) satNodes.value = next
+}
+let satTreeT = 0
+function onSatTreeStorage(e) {
+  if (!e || !SAT_TREE_KEYS.includes(e.key)) return
+  clearTimeout(satTreeT); satTreeT = setTimeout(reloadSatNodes, 200)
+}
+function onSatTreeFocus() { clearTimeout(satTreeT); satTreeT = 0; reloadSatNodes() }
 
 // 同一棵树两处用：左栏（跟 q 走）与「合成导出」的选单（跟它自己那个筛选框走）。
 // 树的口径只此一处 —— 两处各写一遍，卫星分组/孤儿归位的规则迟早分叉。
@@ -249,8 +300,12 @@ async function openPlan(id) {
   dirty = false
   // 从文件区双击进来、或新建/复制出来的那份，可能落在折叠着或滚动区外的位置——把它显出来
   expandSat(plan.value.satFolder || '')
+  hist.reset()                          // 换了一份计划：撤销栈只属于这一份
   nextTick(() => {
     loading = false                     // 深监听是 pre-flush，nextTick 时它已经跑完了
+    // 换入时的自动校正（频段自动档等）已在深监听里落定：以此刻为撤销基线与「打开时」那一档
+    hist.reset()
+    ver.attach()
     document.querySelector(`.li[data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' })
   })
 }
@@ -277,20 +332,93 @@ function scheduleSave() {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(doSave, 600)
 }
+// 当前计划整份纯数据（写盘 / 历史版本同一形状：计划 + 载波）
+function planPayload() {
+  if (!plan.value || !currentId.value) return null
+  return { ...JSON.parse(JSON.stringify(plan.value)), id: currentId.value, carriers: JSON.parse(JSON.stringify(carriers.value)) }
+}
+// 返回是否已落盘（历史版本的「还原」据此报结果）
 async function doSave() {
-  if (!api?.freqPlan || !plan.value || !currentId.value) return
+  if (!api?.freqPlan || !plan.value || !currentId.value) return false
   clearTimeout(saveTimer)
+  const id = currentId.value
   try {
     // 载波跟着计划走（频率分配表是这份计划的一部分，分开存会出现「计划改了载波还挂在旧转发器上」）
     // updateOnly：这份要是已经在文件区被删了，别把它写回来（广播还没到时也拦得住）
-    const r = await api.freqPlan.save({ ...JSON.parse(JSON.stringify(plan.value)), id: currentId.value, carriers: JSON.parse(JSON.stringify(carriers.value)) }, { updateOnly: true })
-    if (r?.ok) { dirty = false; await loadIndex() }
-    else { dirty = false; flash('保存失败：' + (r?.error || '未知错误')); await loadIndex() }
-  } catch (e) { flash('保存失败：' + e.message) }
+    const state = planPayload()
+    const r = await api.freqPlan.save(state, { updateOnly: true })
+    if (r?.ok) { dirty = false; await loadIndex(); ver.afterSave(id, state); return true }
+    dirty = false; reportError('频率计划存盘失败', r?.error || '未知错误'); await loadIndex()
+    return false
+  } catch (e) { reportError('频率计划存盘失败', e); return false }
 }
 // 深监听：图/表/检查器三处都直接改 plan，逐处调 scheduleSave 迟早漏
 watch(plan, () => { if (plan.value && !loading) scheduleSave() }, { deep: true })
 watch(carriers, () => { if (plan.value && !loading) scheduleSave() }, { deep: true })
+
+// ---- 撤销 / 重做（整份快照栈，见 fpHistory.js）----
+// Ctrl+Z / Ctrl+Y（Ctrl+Shift+Z）在本窗口内生效；焦点在输入框里时让给输入框自己的撤销。上限 100 步，换计划清栈。
+const hist = createPlanHistory({
+  snapshot: () => (plan.value && currentId.value ? JSON.stringify({ plan: plan.value, carriers: carriers.value }) : null),
+  apply: applyHist
+})
+const { canUndo, canRedo } = hist
+watch([plan, carriers], () => { if (plan.value && !loading) hist.touch() }, { deep: true })
+// 整份换入之后：选中 / 勾选 / 落不下去的那一端都可能指着已不存在的条目
+function afterReplace() {
+  const list = plan.value?.channels || []
+  if (!list.some((c) => c.id === selectedId.value)) selectedId.value = list[0]?.id || ''
+  const ids = new Set(list.map((c) => c.id))
+  if ([...checkedIds.value].some((x) => !ids.has(x))) checkedIds.value = new Set([...checkedIds.value].filter((x) => ids.has(x)))
+  clearPend()
+}
+function applyHist(s) {
+  let o = null
+  try { o = JSON.parse(s) } catch (e) { return }
+  if (!o || !o.plan) return
+  plan.value = o.plan                   // 不置 loading：撤销本身就是一笔改动，照常存盘
+  carriers.value = Array.isArray(o.carriers) ? o.carriers : []
+  afterReplace()
+}
+const undoPlan = () => { hist.undo() }
+const redoPlan = () => { hist.redo() }
+function onHistKey(e) {
+  if (e.isComposing || e.altKey || !(e.ctrlKey || e.metaKey)) return
+  const k = (e.key || '').toLowerCase()
+  if (k !== 'z' && k !== 'y') return
+  if (e.defaultPrevented || !plan.value) return
+  const t = e.target, tag = t && t.tagName
+  if (t && (t.isContentEditable || tag === 'TEXTAREA' || tag === 'SELECT'
+    || (tag === 'INPUT' && !/^(checkbox|radio|button|range|color)$/i.test(t.type || '')))) return
+  if (confirmState.open || mergeOpen.value || miniOpen.value || verDlg.open) return
+  e.preventDefault()
+  if (k === 'y' || e.shiftKey) redoPlan(); else undoPlan()
+}
+// 指针按住期间（拖载波、拖行选、拖栏宽）的改动等松手再落步：一次拖拽 = 一步
+const onHistDown = () => hist.hold(true)
+const onHistUp = () => hist.hold(false)
+
+// ---- 历史版本（与链路预算同口径：打开时 / 每 10 分钟 / 还原前；见 fpVersions.js）----
+const ver = useFpVersions({
+  api,
+  currentId,
+  entryOf: (id) => index.value.find((e) => e.id === id) || null,
+  stateNow: planPayload,
+  saveNow: () => doSave(),
+  applyState: (st) => {
+    if (!st || !plan.value) return
+    plan.value = normalizePlan(st)
+    carriers.value = Array.isArray(st.carriers) ? st.carriers : []
+    afterReplace()
+  },
+  duplicate: duplicateFromState,
+  summarize: (st) => ({
+    label: byLang(`${(st.channels || []).length} 条通道 · ${(st.carriers || []).length} 个载波`,
+      `${(st.channels || []).length} channels · ${(st.carriers || []).length} carriers`)
+  }),
+  toast: flash
+})
+const { available: verAvail, verDlg, openVersions: openPlanVersions, restoreVersion, duplicateVersion } = ver
 
 // 文件区（主窗口）删/改名的广播：那边直接改库，编辑窗手里这份可能就是它。
 function planRemovedRemote(id) {
@@ -298,6 +426,7 @@ function planRemovedRemote(id) {
     clearTimeout(saveTimer); dirty = false      // 待存的那一笔要是落下去，删掉的计划就整份复活了
     plan.value = null; currentId.value = ''; carriers.value = []; selectedId.value = ''
     clearChecked()
+    hist.clear(); ver.detach()
   }
   loadIndex()
 }
@@ -305,6 +434,7 @@ function planRenamedRemote(id, name) {
   if (currentId.value === id && plan.value && name) {
     loading = true                              // 跟进别人的改名不是编辑，别反手把整份存回去（旧名字就赢了）
     plan.value.name = name
+    hist.rebase((o) => { if (o && o.plan) o.plan.name = name; return o })   // 也别让撤销把它改回旧名
     nextTick(() => { loading = false })
   }
   loadIndex()
@@ -342,7 +472,7 @@ async function createPlan(satFolder, fromPlan = null) {
 async function removePlan(e) {
   if (!(await ask(`删除频率计划「${e.name}」？此操作不可撤销。`))) return
   await api.freqPlan.remove(e.id)
-  if (currentId.value === e.id) { plan.value = null; currentId.value = ''; carriers.value = [] }
+  if (currentId.value === e.id) { plan.value = null; currentId.value = ''; carriers.value = []; hist.clear(); ver.detach() }
   await loadIndex()
   flash('已删除')
 }
@@ -352,6 +482,16 @@ async function duplicatePlan(e) {
   const copy = { ...src, id: '', name: src.name + ' Copy' }      // 名字会进图，后缀同样走英文
   const r = await api.freqPlan.save(copy)
   if (r?.ok) { await loadIndex(); await openPlan(r.id); flash('已复制') }
+}
+// 历史版本「创建副本」：用那一档内容另建一份（名字照「复制」的规矩加英文后缀，名字会进图）
+async function duplicateFromState(st) {
+  if (!api?.freqPlan || !st) return
+  const src = index.value.find((e) => e.id === currentId.value)
+  const copy = { ...JSON.parse(JSON.stringify(st)), id: '', name: (src?.name || st.name || 'Frequency Plan') + ' Copy' }
+  let r = null
+  try { r = await api.freqPlan.save(copy) } catch (e) { reportError('创建副本', e); return }
+  if (r?.ok) { await loadIndex(); await openPlan(r.id); flash('已复制') }
+  else reportError('创建副本', r?.error || '未知错误')
 }
 
 // ---- 频段 ----
@@ -673,10 +813,10 @@ function edgeTitle(ch, side, which) {
   const e = chEdges(ch, side)
   return byLang(
     `${side === 'up' ? '上行' : '下行'}频带${which === 'f1' ? '下' : '上'}边沿。`
-      + `改这里${other}钉住，中心与带宽一并重算（中心 =（起 + 止）/ 2 · 带宽 = 止 − 起）；`
+      + `修改此处${other}钉住，中心与带宽一并重算（中心 =（起 + 止）/ 2 · 带宽 = 止 − 起）；`
       + `${self}越过${other}时改按「带宽不变、整条频带平移」处理。回车或离焦生效。`
       + (e.fc == null && e.bw == null ? '这条还没有中心也没有带宽 —— 两端都录进来即定出这一段。'
-        : e.bw == null ? '当前带宽未定 —— 此时改为中心钉住、由这一端定出带宽。'
+        : e.bw == null ? '当前带宽未定 —— 此时改为中心钉住、由该端定出带宽。'
           : '带宽随之落成本转发器自填值（不再随波束/带宽组）。')
       + (side === 'dn' && dnLinked(ch) ? '下行与 LO 联动：上行随等式反解，带宽两侧同宽故落在上行。' : ''),
     `${side === 'up' ? 'Uplink' : 'Downlink'} band ${which === 'f1' ? 'lower' : 'upper'} edge. `
@@ -739,10 +879,10 @@ function segEdgeTitle(ch, side, b, which) {
   const g = segOf(ch, side, b.id)
   const auto = g && g.autoOff
   return byLang(
-    `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}频带里占的那一段的${which === 'f1' ? '下' : '上'}边沿（绝对频率）。`
+    `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}频带中所占频段的${which === 'f1' ? '下' : '上'}边沿（绝对频率）。`
       + (auto ? `当前是${LAYOUT_TEXT[g.from] || '自动'}排布生成的位置，录入后即固定。` : '')
-      + `改这里${other}钉住、带宽随之变（带宽 = 终止 − 起始）；${self}越过${other}时改按「带宽不变、整段平移」处理。`
-      + (which === 'f1' ? '清空 = 这个波束回到自动排布。' : '')
+      + `修改此处${other}钉住、带宽随之变（带宽 = 终止 − 起始）；${self}越过${other}时改按「带宽不变、整段平移」处理。`
+      + (which === 'f1' ? '清空 = 该波束恢复自动排布。' : '')
       + (side === 'dn' ? '留空 = 随上行（整段随本转发器的 LO 平移）。' : '')
       + '回车或离焦生效。',
     `${which === 'f1' ? 'Lower' : 'Upper'} edge (absolute frequency) of the slice beam “${b.name}” takes in this transponder’s ${side === 'dn' ? 'downlink' : 'uplink'} band. `
@@ -756,17 +896,17 @@ function segEdgeTitle(ch, side, b, which) {
 function segBwTitle(ch, side, b) {
   return `波束「${b.name}」在本转发器${side === 'dn' ? '下行' : '上行'}占的那一段有多宽（${U.value}）：`
     + '起始钉住、终止随之走（终止 = 起始 + 带宽）。'
-    + `留空 = 随该波束的${side === 'dn' ? '下行' : ''}标称带宽（「波束/带宽」那里填的），波束也没填则占满整条频带。`
+    + `留空 = 随该波束的${side === 'dn' ? '下行' : ''}标称带宽（「波束/带宽」处所填），波束也未填写则占满整条频带。`
 }
 // 波束那边只剩标称带宽这一个数（频率不在那里设，上下行也不分两格）
 function bmBwTitle(b) {
   return `波束「${b.name}」的标称带宽（${U.value}）：`
-    + '转发器那行的带宽留空即取这个值；它在各转发器里占哪一段由那条转发器的占段表定，留空 = 占满整条频带。'
-    + '收发不等宽的转发器在占段表里两侧各录各的。'
+    + '转发器行的带宽留空即取该值；其在各转发器中所占频段由对应转发器的占段表确定，留空 = 占满整条频带。'
+    + '收发不等宽的转发器在占段表中两侧分别录入。'
 }
 const LAYOUT_TEXT = { tile: '频分', stack: '同频', seg: '录入' }
 const LAYOUT_TEXT_EN = { tile: 'frequency-division', stack: 'co-frequency', seg: 'manual' }
-const LAYOUT_TIP = '这条转发器的频带在几个波束之间怎么摆（只管【没逐个录过起止】的那些）：'
+const LAYOUT_TIP = '该转发器的频带在各波束间的分配方式（仅针对【未逐个录入起止】的波束）：'
   + '自适应 = 人人有带宽且装得下就频分排布，装不下就同频叠加；'
   + '频分排布 = 自频带下边沿依次紧排（HTS 那一路，转发器带宽 = Σ 各波束带宽）；'
   + '同频叠加 = 各自贴频带下边沿、各占各的带宽（常规多波束转发器 / 频率复用）。'
@@ -1008,7 +1148,7 @@ function batchDuplicate() {
 async function batchRemove() {
   const list = checkedChannels.value
   if (!list.length || !plan.value) return
-  if (!(await ask(`删除选中的 ${list.length} 个转发器？此操作不可撤销。`))) return
+  if (!(await ask(byLang(`删除选中的 ${list.length} 个转发器？`, `Delete the ${list.length} selected transponders?`)))) return
   const ids = new Set(list.map((c) => c.id))
   plan.value.channels = plan.value.channels.filter((c) => !ids.has(c.id))
   clearChecked()
@@ -1072,7 +1212,12 @@ function runGen() {
 
 // ---- LO / 波束 ----
 function addLo() { openSec('lo'); plan.value?.los.push(newLo({ name: `LO${(plan.value.los.length || 0) + 1}`, valueMHz: null })) }
-function removeLo(id) {
+async function removeLo(id) {
+  if (!plan.value) return
+  const lo = plan.value.los.find((l) => l.id === id)
+  const n = plan.value.channels.filter((c) => c.loId === id).length
+  if (n && !(await ask(byLang(`删除本振「${lo?.name || ''}」？引用它的 ${n} 个转发器将不再挂本振。`,
+    `Delete LO “${lo?.name || ''}”? ${n} transponder(s) referencing it will be left without an LO.`)))) return
   if (!plan.value) return
   plan.value.los = plan.value.los.filter((l) => l.id !== id)
   for (const c of plan.value.channels) if (c.loId === id) c.loId = ''
@@ -1114,7 +1259,7 @@ const synthOtherSat = (g) => (g.satFolder === (plan.value?.satFolder || '') ? ''
 function synthTitle(g) {
   const sat = synthSatName(g.satFolder)
   const head = `${g.name}${sat ? ` · ${sat}` : ''} · ${g.beamCount} 个波束`
-  if (!g.colors.length) return `${head}｜还没有频率配色`
+  if (!g.colors.length) return `${head}｜暂无频率配色`
   return `${head}｜${g.colors.map((c) => `${fcLabel(c.fc)}×${c.count}`).join(' · ')}${g.uncolored ? `｜${g.uncolored} 个未配色` : ''}`
 }
 // 名字 = 这一条覆盖的波束代号。撞名（另一颗星的组也有这几个号）才补上组名
@@ -1156,7 +1301,12 @@ function importSynth(g) {
 }
 
 // 带宽录入与表里那几格同一套：显示按工具栏那一个单位、存进去一律 MHz（36 MHz ⇄ 36000 kHz）
-function removeBeam(id) {
+async function removeBeam(id) {
+  if (!plan.value) return
+  const bm = plan.value.beams.find((b) => b.id === id)
+  const n = plan.value.channels.filter((c) => (c.beamUpIds || []).includes(id) || (c.beamDnIds || []).includes(id)).length
+  if (n && !(await ask(byLang(`删除波束「${bm?.name || ''}」？引用它的 ${n} 个转发器将移出该波束。`,
+    `Delete beam “${bm?.name || ''}”? ${n} transponder(s) referencing it will be removed from it.`)))) return
   if (!plan.value) return
   plan.value.beams = plan.value.beams.filter((b) => b.id !== id)
   for (const c of plan.value.channels) {
@@ -1168,10 +1318,66 @@ function removeBeam(id) {
 // ---- 导入 ----
 async function importJson() {
   if (!api?.freqPlan?.importJson) return
-  const r = await api.freqPlan.importJson()
+  let r = null
+  try { r = await api.freqPlan.importJson() } catch (e) { reportError('导入 JSON', e); return }
   if (!r || r.canceled) return
   await loadIndex()
-  flash(`导入 ${r.added} 份${r.replaced ? `，覆盖 ${r.replaced} 份` : ''}${r.errors?.length ? `，${r.errors.length} 份失败` : ''}`)
+  importDone(r.added || 0, (r.errors || []).map((x) => ({ name: '', error: x })), r.replaced || 0)
+}
+// 有失败：「n 成功 / m 失败：文件（原因）」常驻；全成功：一句读数
+function importDone(added, failed, replaced = 0) {
+  if (failed.length) { reportPartial('导入频率计划', added, failed); return }
+  flash(byLang(`导入 ${added} 份${replaced ? `，覆盖 ${replaced} 份` : ''}`, `Imported ${added}${replaced ? `, replaced ${replaced}` : ''}`))
+}
+
+// ---- 拖入 .json（调研 G1）：整窗收，走与「导入 JSON」同一条入库口径 ----
+// 主进程的导入只认它自己的文件框，故拖进来的在渲染端读出文本、按 freqPlan.importMany 的 merge 档逐份入库：
+// 文件里是计划数组或单份计划；库里已有同 id 的另起新 id（不覆盖），没有的保留原 id。
+// dragover 阶段拿不到文件名，只看得到 MIME：带 JSON（或系统没给类型）的文件才接；别的类型不 preventDefault，
+// drop 时再按扩展名筛一遍，一个 .json 都没有就原样放过（不吞事件）。
+const dropOn = ref(false)
+const dragJsonish = (e) => {
+  const dt = e.dataTransfer
+  if (!dt || !Array.from(dt.types || []).includes('Files')) return false
+  const items = Array.from(dt.items || [])
+  return !items.length || items.some((it) => it.kind === 'file' && (!it.type || /json/i.test(it.type)))
+}
+function onDropOver(e) {
+  if (!api?.freqPlan?.save || !dragJsonish(e)) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+  dropOn.value = true
+}
+function onDropLeave(e) {
+  if (!e.relatedTarget || !e.currentTarget.contains(e.relatedTarget)) dropOn.value = false
+}
+async function onDropFiles(e) {
+  dropOn.value = false
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []).filter((f) => /\.json$/i.test(f.name || ''))
+  if (!files.length || !api?.freqPlan?.save) return
+  e.preventDefault()
+  const plans = [], failed = []
+  for (const f of files) {
+    try {
+      const j = JSON.parse(await f.text())
+      if (Array.isArray(j)) plans.push(...j)
+      else if (j && typeof j === 'object') plans.push(j)
+      else failed.push({ name: f.name, error: byLang('不是频率计划', 'Not a frequency plan') })
+    } catch (err) { failed.push({ name: f.name, error: err }) }
+  }
+  let added = 0
+  for (const raw of plans) {
+    if (!raw || typeof raw !== 'object') continue
+    const p = JSON.parse(JSON.stringify(raw))
+    try {
+      if (p.id && (await api.freqPlan.get(p.id))) p.id = ''
+      const r = await api.freqPlan.save(p)
+      if (r?.ok) added++
+      else failed.push({ name: p.name || '', error: r?.error || '未知错误' })
+    } catch (err) { failed.push({ name: p.name || '', error: err }) }
+  }
+  await loadIndex()
+  importDone(added, failed)
 }
 
 // ---- 导出 ----
@@ -1196,7 +1402,7 @@ async function doExport(kind, opts = {}) {
       // ★ 出 IPC 前现造一份纯数据：Vue 的响应式 Proxy 过不了结构化克隆，invoke 会当场抛且
       //   没人 catch（见 ipc-no-reactive-proxy）。模型本就是逐字段重造的，这一趟只作保险。
       payload = JSON.parse(JSON.stringify(
-        buildFreqPlanXlsx(kind === 'xlsxData' ? 'data' : 'styled', plan.value, carriers.value, { unit: opt.value.unit })
+        buildFreqPlanXlsx(kind === 'xlsxData' ? 'data' : 'styled', plan.value, carriers.value, { unit: opt.value.unit, lang: curLang() })
       ))
     } else if (kind === 'svg') payload = composite ? toSvgTextMulti(list, style) : toSvgText(plan.value, style)
     else if (kind === 'pdf') payload = composite ? await toPdfDataUrlMulti(list, style) : await toPdfDataUrl(plan.value, style)
@@ -1207,13 +1413,14 @@ async function doExport(kind, opts = {}) {
       : (kind === 'xlsx' || kind === 'xlsxData') ? 'xlsx' : 'png'
     // Excel 的默认文件名带上体例：一份计划两种版式常常同时导，同名会互相盖掉
     const base = opts.name || plan.value?.name || 'Frequency Plan'
-    const name = kind === 'xlsx' ? `${base}-频率分配表`
-      : kind === 'xlsxData' ? `${base}-频率计划数据表` : base
+    const name = kind === 'xlsx' ? `${base}-${byLang('频率分配表', 'Frequency Allocation')}`
+      : kind === 'xlsxData' ? `${base}-${byLang('频率计划数据表', 'Frequency Plan Data')}` : base
     const r = await api.freqPlan.exportFile(ext, payload, name)
     if (r?.canceled) return r
-    flash(r?.ok ? '已导出：' + r.filePath + note : '导出失败：' + (r?.error || '未知错误'))
+    if (r?.ok) { const fp = outPath(r); N.toastFile('已导出：' + baseName(fp) + note, fp) }
+    else reportError('导出失败', r?.error || '未知错误')
     return r
-  } catch (e) { flash('导出失败：' + e.message); return null } finally { busy.value = '' }
+  } catch (e) { reportError('导出失败', e); return null } finally { busy.value = '' }
 }
 
 // ---- 发到小程序 ----
@@ -1298,7 +1505,7 @@ async function openMerge() {
   if (currentId.value && !mergeIds.value.includes(currentId.value)) mergeIds.value.unshift(currentId.value)
   mergeTitle.value = defaultMergeTitle()
   mergeOpen.value = true
-  busy.value = '载入中…'
+  busy.value = '加载中…'
   try { await syncMergePlans(); sortMergeByFreq() } finally { busy.value = '' }
 }
 async function toggleMerge(id) {
@@ -1363,7 +1570,15 @@ function measure() {
 }
 
 onMounted(async () => {
-  satNodes.value = loadSatNodes()
+  reloadSatNodes()
+  window.addEventListener('storage', onSatTreeStorage)
+  window.addEventListener('focus', onSatTreeFocus)
+  window.addEventListener('keydown', onHistKey)
+  window.addEventListener('pointerdown', onHistDown, true)
+  window.addEventListener('pointerup', onHistUp, true)
+  window.addEventListener('pointercancel', onHistUp, true)
+  window.addEventListener('blur', onHistUp)
+  ver.probe()            // 主进程版本库收不收 'freqplan' 命名空间：不收则「历史版本」入口不出
   await loadIndex()
   if (index.value.length) await openPlan(index.value[0].id)
   measure()
@@ -1372,7 +1587,8 @@ onMounted(async () => {
   // 从前浮层只能点遮罩关，而手已经在键盘上（浮层多半是敲完一格顺手点开的）
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return
-    if (confirmMsg.value) { answer(false); return }
+    if (confirmState.open) return   // 确认框自己接 Esc（AppDialog）
+    if (expOpen.value) { closeExport(true); return }
     if (mergeOpen.value) { mergeOpen.value = false; return }
     if (addPop.value || beamPop.value || synthPop.value) { addPop.value = false; beamPop.value = ''; synthPop.value = false }
   })
@@ -1386,51 +1602,86 @@ onMounted(async () => {
   api?.share?.configured?.().then((v) => { miniConfigured.value = !!v }).catch(() => {})
   api?.app?.deviceId?.().then((v) => { miniDeviceId.value = String(v || '') }).catch(() => {})
 })
+onUnmounted(() => {
+  clearTimeout(satTreeT)
+  window.removeEventListener('storage', onSatTreeStorage)
+  window.removeEventListener('focus', onSatTreeFocus)
+  window.removeEventListener('keydown', onHistKey)
+  window.removeEventListener('pointerdown', onHistDown, true)
+  window.removeEventListener('pointerup', onHistUp, true)
+  window.removeEventListener('pointercancel', onHistUp, true)
+  window.removeEventListener('blur', onHistUp)
+})
 watch(tab, () => nextTick(measure))
 watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏变窄，图跟着重算宽度
 </script>
 
 <template>
-  <div class="fp">
+  <div class="fp" :class="{ 'drop-on': dropOn }" @dragover="onDropOver" @dragleave="onDropLeave" @drop="onDropFiles">
     <ActivationLock />
-    <!-- 工具栏 -->
-    <header class="tb">
-      <span class="brand">转发器频率计划</span>
-      <span class="sep"></span>
-      <!-- 「新建」不在这里：见左栏每颗卫星行右端的 ＋ —— 建给哪颗星，由点哪颗星决定 -->
-      <button class="mini ghost" @click="importJson"><Icon name="import" :size="12" /> 导入 JSON</button>
-      <span class="sep"></span>
-      <div class="dd" :class="{ off: !plan }">
-        <button class="mini ghost" :disabled="!plan">导出 ▾</button>
-        <div class="ddm">
-          <button @click="doExport('png2')">PNG 2×</button>
-          <button @click="doExport('png4')">PNG 4×</button>
-          <button @click="doExport('png6')">PNG 6×</button>
-          <button @click="doExport('pdf')">PDF（矢量）</button>
-          <button @click="doExport('svg')">SVG</button>
-          <button @click="doExport('json')">JSON 数据</button>
-          <div class="ddsep"></div>
-          <button @click="doExport('xlsx')" title="依《卫星转发器频率分配表》体例：总表（频率轴上的转发器排布，按极化分行，编号行下逐条绘制波束占段，配色与界面一致）＋ 波束表（各波束所属转发器）＋ 每 3 条转发器一张的分配表（波束占段带 · 载波占用条 · 使用情况汇总 · 冲突与越界明细）">Excel · 频率分配表（样式版）</button>
-          <button @click="doExport('xlsxData')" title="两张表：计划概览（规模 / 跨度 / 装填合计 / 波束 / 本振 / 校验条目）＋ 转发器·载波总表（每行一条载波，转发器字段随之重复；整列无值时不输出该列）。频率与带宽以数值写入，逐转发器 / 逐波束的核算可由透视表直接得出">Excel · 纯数据表</button>
-          <div class="ddsep"></div>
-          <button @click="openMerge" title="选择多份计划（同一卫星的 C / Ku / Ka 各一份），自上而下合成为一张完整的频率计划">合成导出（多份）…</button>
-          <div class="ddsep"></div>
-          <button @click="openMiniSend" title="生成只读快照并上传，返回 8 位密钥；在小程序「工具栏 · 频率计划」输入该密钥即可查看图、转发器清单与频率分配表。快照对应当前版式，计划变更后需重新发送">发送到小程序…</button>
+    <!-- 功能区：文件 | 编辑 | 导出 | 显示（本窗没有「计算」：图与表随编辑即时重绘；窗名在 OS 标题栏） -->
+    <div class="lbr fp-lbr">
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <!-- 「新建」不在这里：见左栏每颗卫星行右端的 ＋ —— 建给哪颗星，由点哪颗星决定 -->
+          <button class="lbr-big" title="导入 JSON 频率计划" @click="importJson"><Icon name="file-import" :size="16" />导入</button>
+          <button v-if="verAvail" class="lbr-big" :disabled="!plan" title="历史版本" @click="openPlanVersions"><Icon name="history" :size="16" />历史版本</button>
         </div>
+        <div class="lbr-cap">文件</div>
       </div>
-      <span class="spacer"></span>
-      <select class="ci nar" v-model="opt.unit"
-        title="整份计划共用的单位：图上的频率标注与图例、转发器表、检查器、批量条、批量生成、LO、频率分配表、校验条目，全部频率与带宽按此刻度读写。仅变更刻度，不改变物理量 —— 14000 MHz 切换至 kHz 即记为 14000000，既有计划一并换算">
-        <option v-for="u in FREQ_UNITS" :key="u" :value="u">{{ u }}</option>
-      </select>
-      <label class="fld">图字号 <input class="ci num xnar" type="number" v-model.number="opt.fontSize" min="8" max="22" /></label>
-      <label class="fld" title="10~800%，回车或离焦生效；Ctrl+滚轮同效。仅缩放界面显示，导出倍率在「导出」菜单中选择">缩放
-        <input class="ci num xnar" :value="zoomPct" @input="zoomPct = $event.target.value"
-          @change="commitZoom" @keydown.enter="commitZoom" /><span class="pct">%</span>
-      </label>
-      <span v-if="busy" class="busy">{{ busy }}</span>
-    </header>
-    <div v-if="msg" class="msg">{{ msg }}</div>
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <button class="lbr-big" :disabled="!plan || !canUndo" title="撤销 (Ctrl+Z)" @click="undoPlan"><Icon name="undo-2" :size="16" />撤销</button>
+          <button class="lbr-big" :disabled="!plan || !canRedo" title="重做 (Ctrl+Y)" @click="redoPlan"><Icon name="redo-2" :size="16" />重做</button>
+        </div>
+        <div class="lbr-cap">编辑</div>
+      </div>
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <span class="dd">
+            <button ref="expBtn" class="lbr-big" :class="{ on: expOpen }" :disabled="!plan" aria-haspopup="menu" :aria-expanded="expOpen ? 'true' : 'false'"
+              @click="toggleExport(false)" @keydown.enter.prevent="toggleExport(true)" @keydown.space.prevent="toggleExport(true)" @keydown.down.prevent="!expOpen && toggleExport(true)">
+              <Icon name="file-export" :size="16" /><span>导出 <Icon name="chevron-down" :size="12" /></span>
+            </button>
+            <template v-if="expOpen">
+              <div class="menu-mask" @mousedown.self="closeExport(false)" @contextmenu.prevent="closeExport(false)"></div>
+              <div ref="expMenu" class="ddm menu" role="menu" @keydown="onExpKey">
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('png2')">PNG 2×</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('png4')">PNG 4×</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('png6')">PNG 6×</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('pdf')">PDF（矢量）</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('svg')">SVG</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('json')">JSON 数据</button>
+                <div class="menu-sep" role="separator"></div>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('xlsx')" title="依《卫星转发器频率分配表》体例：总表（频率轴上的转发器排布，按极化分行，编号行下逐条绘制波束占段，配色与界面一致）＋ 波束表（各波束所属转发器）＋ 每 3 条转发器一张的分配表（波束占段带 · 载波占用条 · 使用情况汇总 · 冲突与越界明细）">Excel · 频率分配表（样式版）</button>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('xlsxData')" title="两张表：计划概览（规模 / 跨度 / 装填合计 / 波束 / 本振 / 校验条目）＋ 转发器·载波总表（每行一条载波，转发器字段随之重复；整列无值时不输出该列）。频率与带宽以数值写入，逐转发器 / 逐波束的核算可由透视表直接得出">Excel · 纯数据表</button>
+                <div class="menu-sep" role="separator"></div>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('merge')" title="选择多份计划（同一卫星的 C / Ku / Ka 各一份），自上而下合成为一张完整的频率计划">合成导出（多份）…</button>
+                <div class="menu-sep" role="separator"></div>
+                <button type="button" class="menu-item" role="menuitem" @click="runExport('mini')" title="生成只读快照并上传，返回 8 位密钥；在小程序「工具栏 · 频率计划」输入该密钥即可查看图、转发器清单与频率分配表。快照对应当前版式，计划变更后需重新发送">发送到小程序…</button>
+              </div>
+            </template>
+          </span>
+        </div>
+        <div class="lbr-cap">导出</div>
+      </div>
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <div class="lbr-form">
+            <label title="整份计划共用的单位：图上的频率标注与图例、转发器表、检查器、批量条、批量生成、LO、频率分配表、校验条目，全部频率与带宽按此刻度读写。仅变更刻度，不改变物理量 —— 14000 MHz 切换至 kHz 即记为 14000000，既有计划一并换算"><span>单位</span>
+              <select v-model="opt.unit"><option v-for="u in FREQ_UNITS" :key="u" :value="u">{{ u }}</option></select>
+            </label>
+            <label><span>图字号</span><input type="number" v-model.number="opt.fontSize" min="8" max="22" /></label>
+          </div>
+          <div class="lbr-form">
+            <label title="10~800%，回车或离焦生效；Ctrl+滚轮同效。仅缩放界面显示，导出倍率在「导出」菜单中选择"><span>缩放</span>
+              <input :value="zoomPct" @input="zoomPct = $event.target.value" @change="commitZoom" @keydown.enter="commitZoom" /><span class="lbr-u">%</span>
+            </label>
+          </div>
+        </div>
+        <div class="lbr-cap">显示</div>
+      </div>
+    </div>
 
     <!-- 分配表是整幅的文档，故那一页的设置栏另记一个宽度、可一路拖到 0 收起（见 allocRightW）：
          十四列的表要中栏宽，而波束占段又只在设置栏里改，两边都得让人自己定。收起时第四轨从 0
@@ -1446,12 +1697,12 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
         </div>
         <div class="lq" v-if="satNodes.length">
           <Icon name="search" :size="12" class="qi-ic" />
-          <input class="qi" v-model="q" placeholder="筛选卫星 / 计划" />
+          <input class="qi search-field" v-model="q" placeholder="筛选卫星 / 计划" />
           <button v-if="q" class="qx" title="清空" @click="q = ''"><Icon name="x" :size="12" /></button>
         </div>
         <div class="lscroll">
           <div v-if="!satNodes.length" class="lnone">卫星树为空。</div>
-          <div v-else-if="!tree.length" class="lnone">没有匹配「{{ q }}」的卫星或频率计划。</div>
+          <div v-else-if="!tree.length" class="lnone">无匹配「{{ q }}」的卫星或频率计划。</div>
           <template v-else>
             <section v-for="g in tree" :key="g.key" class="grp">
               <!-- 一级：卫星。有计划 → 点行折叠/展开；还没有 → 点行直接为它新建 -->
@@ -1509,17 +1760,17 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               @select="selectedId = $event" @dblclick-block="editBlock" />
           </div>
 
-          <div class="tabs">
-            <button class="tb-b" :class="{ on: tab === 'table' }" @click="tab = 'table'">转发器表 <i>{{ plan.channels.length }}</i></button>
-            <button class="tb-b" :class="{ on: tab === 'alloc' }" @click="tab = 'alloc'">频率分配表 <i v-if="carriers.length">{{ carriers.length }}</i></button>
-            <button class="tb-b" :class="{ on: tab === 'check' }" @click="tab = 'check'">校验 <i v-if="issues.length" :class="{ bad: errCount }">{{ issues.length }}</i></button>
+          <div class="tabs lbx-tabs" role="tablist">
+            <button type="button" role="tab" class="lbx-tab" :class="{ on: tab === 'table' }" :aria-selected="tab === 'table'" @click="tab = 'table'">转发器表<span class="lbx-tab-sub">{{ plan.channels.length }}</span></button>
+            <button type="button" role="tab" class="lbx-tab" :class="{ on: tab === 'alloc' }" :aria-selected="tab === 'alloc'" @click="tab = 'alloc'">频率分配表<span v-if="carriers.length" class="lbx-tab-sub">{{ carriers.length }}</span></button>
+            <button type="button" role="tab" class="lbx-tab" :class="{ on: tab === 'check' }" :aria-selected="tab === 'check'" @click="tab = 'check'">校验<span v-if="issues.length" class="lbx-tab-sub" :class="{ bad: errCount }">{{ issues.length }}</span></button>
             <span class="spacer"></span>
             <template v-if="tab === 'table'">
               <button class="mini" @click="addChannel()"><Icon name="plus" :size="12" /> 转发器</button>
               <!-- 信标 / 遥控 / 遥测：加得少，收在一个小菜单里，免得工具栏并排四个「+」 -->
               <span class="bwrap">
-                <button class="mini ghost caret" :class="{ on: addPop }" @click="addPop = !addPop"
-                  title="添加信标 / 遥控 TC / 遥测 TM —— 该三类仅含频率与极化，图上以箭头标注">▾</button>
+                <button class="mini ghost caret" :class="{ on: addPop }" :aria-pressed="addPop ? 'true' : 'false'" @click="addPop = !addPop"
+                  title="添加信标 / 遥控 TC / 遥测 TM —— 该三类仅含频率与极化，图上以箭头标注"><Icon name="chevron-down" :size="12" /></button>
                 <template v-if="addPop">
                   <div class="bpmask" @click="addPop = false"></div>
                   <div class="bpop addpop">
@@ -1533,7 +1784,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
             </template>
             <!-- 分配表页的设置栏开合。宽度靠拖分界线调，这个钮只管开与关（收起后分界线贴着窗口
                  右缘，光靠它不好找） -->
-            <button v-if="tab === 'alloc'" class="mini ghost pnb" :class="{ on: allocRightW > 0 }" @click="toggleAllocRight"
+            <button v-if="tab === 'alloc'" class="mini ghost pnb" :class="{ on: allocRightW > 0 }" :aria-pressed="(allocRightW > 0) ? 'true' : 'false'" @click="toggleAllocRight"
               title="设置栏：波束占段（转发器频带在各波束间的划分）、转发器参数、LO 均在此处编辑。拖动左缘调整宽度">
               <Icon name="panel-right" :size="12" />
             </button>
@@ -1548,27 +1799,27 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 
               <!-- 这四个下拉不另配文字标签：占位项本身就是标签（「类型…」），选完即施加、随即弹回。
                    一条批量条上七八组控件，每组再前置两三个字，窄栏下能折成三行 -->
-              <select class="ci bsl" v-model="bsel.kind" @change="batchSet('kind')" title="将已选转发器的类型统一设为…">
+              <select class="ci bsl cmd-sel" v-model="bsel.kind" @change="batchSet('kind')" title="将已选转发器的类型统一设为…">
                 <option value="">类型…</option>
                 <option v-for="k in CHANNEL_KINDS" :key="k.key" :value="k.key">{{ k.label }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.upPol" @change="batchSet('upPol')" title="将已选转发器的上行极化统一设为…">
+              <select class="ci bsl cmd-sel" v-model="bsel.upPol" @change="batchSet('upPol')" title="将已选转发器的上行极化统一设为…">
                 <option value="">上行极化…</option>
                 <option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.dnPol" @change="batchSet('dnPol')" title="将已选转发器的下行极化统一设为…">
+              <select class="ci bsl cmd-sel" v-model="bsel.dnPol" @change="batchSet('dnPol')" title="将已选转发器的下行极化统一设为…">
                 <option value="">下行极化…</option>
                 <option value="ortho">逐条取上行的正交</option>
                 <option v-for="p in POLS" :key="p" :value="p">{{ POL_LABEL[p] }}</option>
               </select>
-              <select class="ci bsl" v-model="bsel.lo" @change="batchSet('lo')" title="将已选转发器统一挂接至同一本振（下行随之按等式重算）">
+              <select class="ci bsl cmd-sel" v-model="bsel.lo" @change="batchSet('lo')" title="将已选转发器统一挂接至同一本振（下行随之按等式重算）">
                 <option value="">本振 LO…</option>
                 <option :value="NO_LO">不挂 LO</option>
                 <option v-for="l in plan.los" :key="l.id" :value="l.id">{{ loOption(l) }}</option>
               </select>
               <!-- 波束是多选，塞不进一个下拉：点开一个小浮层照常勾，勾完一次落到这 N 条上 -->
               <span v-for="side in ['up', 'dn']" :key="side" class="bwrap">
-                <button class="mini ghost" :class="{ on: beamPop === side }" @click="openBeamPop(side)">
+                <button class="mini ghost" :class="{ on: beamPop === side }" :aria-pressed="(beamPop === side) ? 'true' : 'false'" @click="openBeamPop(side)">
                   {{ side === 'up' ? '上行波束' : '下行波束' }} ▾
                 </button>
                 <template v-if="beamPop === side">
@@ -1693,7 +1944,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                         @input="lput(slotKey(ch, mkSide(ch)), ch, $event.target.value)"
                         @change="lend(slotKey(ch, mkSide(ch)), (c, m) => { c[mkSide(c)].slotMHz = m })"
                         @blur="lend(slotKey(ch, mkSide(ch)), (c, m) => { c[mkSide(c)].slotMHz = m })"
-                        :title="`${KIND_LABEL[ch.kind]}在频率轴上占的那一格（间隔带宽，不是信号带宽）：填 n 则频带端点算到 频率 ± n/2 上；留空 = 不占频带`" /></td>
+                        :title="`${KIND_LABEL[ch.kind]}在频率轴上占的那一格（间隔带宽，不是信号带宽）：填 n 则频带端点计至 频率 ± n/2；留空 = 不占频带`" /></td>
                     <td><select v-if="hasSide(ch, 'up')" class="ci selc selpol" v-model="ch.up.pol" :title="POL_LABEL[ch.up.pol]"><option v-for="p in POLS" :key="p" :value="p">{{ p }}</option></select></td>
                     <td>
                       <BeamPicker v-if="!isMk(ch)" mode="chips" :beams="plan.beams" :unit="opt.unit" v-model="ch.beamUpIds" />
@@ -1712,7 +1963,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                           @input="lput(fcKey(ch, 'dn'), ch, $event.target.value)"
                           @change="lend(fcKey(ch, 'dn'), (c, m) => commitFc(c, 'dn', m))" @blur="lend(fcKey(ch, 'dn'), (c, m) => commitFc(c, 'dn', m))"
                           :title="(isMk(ch) ? `${KIND_LABEL[ch.kind]}的频率（下行）`
-                            : (dnLinked(ch) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
+                            : (dnLinked(ch) ? '与上行由 LO 联动：f下 = f上 − LO —— 修改此处，上行随之变化'
                               : (dnCut(ch) ? '下行已与 LO 解耦（cross-strap）：上下行分别录入。点击右侧图标按 LO 恢复联动'
                                 : '未挂 LO —— 上下行各自独立；在左边 LO 列选一个即可联动'))) + '。回车或离焦生效'" />
                         <input v-else class="ci num" :class="pendCls(ch, 'dn', 'f1')" :value="edgeVal(ch, 'dn', 'f1')" :title="edgeTitle(ch, 'dn', 'f1')"
@@ -1742,7 +1993,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
                   </tr>
                 </tbody>
               </table>
-              <div v-if="!plan.channels.length" class="none">还没有转发器。</div>
+              <div v-if="!plan.channels.length" class="none">暂无转发器。</div>
             </div>
 
             <!-- 频率分配表（左栏树里挂在这份计划下的那个子节点，也从这里出） -->
@@ -1925,7 +2176,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           <label class="row"><span>中心频率 {{ U }}</span>
             <input class="ci num" data-f="dn" :value="lval(fcKey(selected, 'dn'), dnDisp(selectedResolved))"
               :placeholder="dnLinked(selected) ? '' : '未挂 LO'"
-              :title="(dnLinked(selected) ? '与上行由 LO 联动：f下 = f上 − LO —— 改这里上行跟着变'
+              :title="(dnLinked(selected) ? '与上行由 LO 联动：f下 = f上 − LO —— 修改此处，上行随之变化'
                 : (dnCut(selected) ? '下行已与 LO 解耦（cross-strap）：两侧各填各的' : '未挂 LO —— 上下行各自独立')) + '。回车或离焦生效'"
               @input="lput(fcKey(selected, 'dn'), selected, $event.target.value)"
               @change="lend(fcKey(selected, 'dn'), (c, m) => commitFc(c, 'dn', m))"
@@ -2012,7 +2263,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               <!-- 变频量同样跟刻度走：1750 MHz 在 kHz 档下写成 1750000（图上的 LO 注记与这里一致） -->
               <input class="ci num" :value="dval(`lo${l.id}`, l.valueMHz)" :placeholder="U"
                 @input="dput(`lo${l.id}`, $event.target.value, (m) => { l.valueMHz = m })" @blur="ddone" />
-              <button class="lop del" @click="removeLo(l.id)"><Icon name="x" :size="12" /></button>
+              <button class="lop del" title="删除该本振" aria-label="删除该本振" @click="removeLo(l.id)"><Icon name="x" :size="12" /></button>
             </div>
           </div>
         </section>
@@ -2027,9 +2278,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
             <button class="mini ghost xs" @click.stop="addBeam" title="添加波束"><Icon name="plus" :size="12" /></button>
             <!-- 从电磁波束仿真导入：一色一条（同色 = 同频同极化，一个色号对应一批波束号）。
                  浮层现读现用，不缓存另一个窗口的旧数据。 -->
-            <button class="mini ghost xs" :class="{ on: synthPop }" @click.stop="synthPop ? (synthPop = false) : openSynthPop()"
+            <button class="mini ghost xs" :class="{ on: synthPop }" :aria-pressed="synthPop ? 'true' : 'false'" @click.stop="synthPop ? (synthPop = false) : openSynthPop()"
               title="从电磁波束仿真导入：每个频率配色（F#）生成一条，该色对应的波束编号一并导入；带宽与频率仍在本平台录入">
-              <Icon name="import" :size="12" />
+              <Icon name="file-import" :size="12" />
             </button>
             <span class="spacer"></span>
             <span class="shn">{{ plan.beams.length }}</span>
@@ -2062,7 +2313,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
               @input="lput(`bm.${b.id}.bw`, b, $event.target.value)"
               @change="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))"
               @blur="lend(`bm.${b.id}.bw`, (x, m) => setBeamBw(x, m))" />
-            <button class="lop del" @click="removeBeam(b.id)"><Icon name="x" :size="12" /></button>
+            <button class="lop del" title="删除该波束" aria-label="删除该波束" @click="removeBeam(b.id)"><Icon name="x" :size="12" /></button>
           </div>
           </div>
         </section>
@@ -2086,7 +2337,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
             <label class="row2"><span>下行起始频率 {{ U }}</span>
               <input class="ci num" :value="dval('g.dnstart', genDnStartMHz)" :disabled="genLo == null" :placeholder="genLo == null ? '先选 LO' : ''"
                 @input="dput('g.dnstart', $event.target.value, setGenDnStart)" @blur="ddone"
-                title="第一个转发器下行频带的下边沿。与上行起始频率经所选 LO 互算：任一侧输入后另一侧随动" />
+                title="第一个转发器下行频带的下边沿。与上行起始频率经所选 LO 互相换算：任一侧输入后另一侧随动" />
             </label>
             <label class="row2"><span>转发器带宽 {{ U }}</span>
               <input class="ci num" :value="dval('g.bw', gen.bwMHz)" placeholder="随波束组" title="留空 = 取所选上行波束组的标称带宽"
@@ -2133,7 +2384,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
           <div class="mleft">
             <div class="lq">
               <Icon name="search" :size="12" class="qi-ic" />
-              <input class="qi" v-model="mergeQ" placeholder="筛选卫星 / 计划" />
+              <input class="qi search-field" v-model="mergeQ" placeholder="筛选卫星 / 计划" />
               <button v-if="mergeQ" class="qx" title="清空" @click="mergeQ = ''"><Icon name="x" :size="12" /></button>
             </div>
             <div class="mscroll">
@@ -2200,17 +2451,10 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
       </div>
     </div>
 
-    <div v-if="confirmMsg" class="mask">
-      <div class="cdlg">
-        <p>{{ confirmMsg }}</p>
-        <div class="cops">
-          <button class="mini ghost" @click="answer(false)">取消</button>
-          <button class="mini imp" @click="answer(true)">确定</button>
-        </div>
-      </div>
-    </div>
-
+    <WinStatusBar :n="N" :busy="busy" />
     <MiniSendDialog v-model:open="miniOpen" :build="buildMiniPack" :device-id="miniDeviceId" :configured="miniConfigured" @toast="flash" />
+    <ConfirmDialog />
+    <LbVersionsDialog v-model:open="verDlg.open" :ns="FP_VERSION_NS" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
   </div>
 </template>
 
@@ -2218,12 +2462,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 /* 根字号写死：本窗口的表格/检查器/工具栏字号全部逐处固定，跟 --lb-fs 联动等于只动一个
    谁也继承不到的根值——原先那个「界面字号」输入框正因如此调了没反应，已连同变量一起去掉。 */
 .fp { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: var(--font-ui); font-size: var(--fs-4); }
-.tb { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-bottom: 1px solid var(--border-strong); background: var(--surface); flex-wrap: wrap; }
-.brand { font-weight: 600; }
-.sep { width: 1px; height: 16px; background: var(--border-strong); margin: 0 2px; }
 .spacer { flex: 1; }
-.busy { color: var(--text-muted); font-size: var(--fs-3); }
-.msg { padding: 4px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: var(--fs-4); color: var(--text-muted); }
+/* 拖入 .json 时整窗描一圈机位色（落下即导入） */
+.fp.drop-on { box-shadow: inset 0 0 0 2px var(--accent-ui); }
 
 /* 五列（列宽由 :style 出，左右两栏都可拖）；两条 0 宽轨只用来挂拖宽手柄 */
 .body { flex: 1; display: grid; grid-template-columns: 250px 0px minmax(0,1fr) 0px 396px; min-height: 0; }
@@ -2235,7 +2476,6 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .lq { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .lq .qi-ic { color: var(--text-faint); }
 .qi { flex: 1; min-width: 0; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); padding: 1px 4px; font: inherit; font-size: var(--fs-3); }
-.qi:focus { border-color: var(--accent-ui); outline: none; }
 .qx { flex: none; border: none; background: none; color: var(--text-faint); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; display: flex; }
 .qx:hover { color: var(--text); }
 .lscroll { flex: 1; overflow: auto; }
@@ -2263,8 +2503,8 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .sadd { flex: none; display: inline-flex; align-items: center; gap: 2px; font: inherit; font-size: var(--fs-2);
   padding: 0 3px; height: 17px; border: 1px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
 .sadd.bare { color: var(--text-muted); }
-.sat:hover .sadd { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
-.sat .sadd:hover { color: var(--text); border-color: var(--text); background: var(--bg); }   /* 与上一条同权重，写在后面才压得住 */
+.sat:hover .sadd { color: var(--text); border-color: var(--border-strong); background: var(--wash-hover); }
+.sat .sadd:hover { color: var(--text); border-color: var(--text); background: var(--wash-hover); }   /* 与上一条同权重，写在后面才压得住 */
 
 /* ── 二级：该星下的计划 ── 缩进 + 一条导引线，白底 */
 .kids { margin-left: 10px; border-left: 1px solid var(--border); }
@@ -2297,12 +2537,9 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .mnone p { margin: 0; }
 .mnone .dim { color: var(--text-faint); font-size: var(--fs-4); }
 .chartbox { padding: 10px 12px; border-bottom: 1px solid var(--border-strong); overflow: auto; max-height: 52%; }
-.tabs { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.tb-b { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); white-space: nowrap; padding: 0 10px; border: 1px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; }
+/* 页签条（.lbx-tabs，样式在 lbworkbench.css）右端的本页工具：竖直居中，不跟页签贴底 */
+.tabs > :not(.lbx-tab) { align-self: center; margin-bottom: 3px; }
 /* 经典连体文件页签：选中页与下方内容面同底，顶缘 2px 墨条 —— 页与它管的那片内容连成一体 */
-.tb-b.on { background: var(--bg); border-color: var(--border-strong); color: var(--text); box-shadow: inset 0 2px 0 var(--accent-ui); }
-.tb-b i { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-left: 3px; }
-.tb-b i.bad { color: var(--danger); }
 .tabbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .tscroll { flex: 1; overflow: auto; }
 
@@ -2361,7 +2598,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
    勾选框自己不收鼠标事件 —— 按下即切换的活由整格干，留着它自己那次 click 会再翻一次成来回抵消 */
 .t th.ck, .t td.ck { width: 38px; padding-left: 6px; padding-right: 2px; white-space: nowrap; }
 .t td.ck { cursor: pointer; user-select: none; }
-.t td.ck:hover { background: var(--surface-2); }
+.t td.ck:hover { background: var(--wash-hover); }
 .t .ck input { margin: 0; vertical-align: middle; }
 .t td.ck input { pointer-events: none; }
 .t .ck .rn { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); margin-left: 3px; font-variant-numeric: tabular-nums; }
@@ -2420,7 +2657,7 @@ watch([leftW, rightWNow], () => nextTick(measure))   // 左右栏拖宽 = 中栏
 .shnav i { font-style: normal; font-size: var(--fs-2); color: var(--text-muted); font-variant-numeric: tabular-nums; padding: 0 1px; }
 .shb { flex: none; display: flex; align-items: center; border: 1px solid transparent; background: none;
   color: var(--text-muted); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; }
-.shb:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--bg); }
+.shb:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); background: var(--wash-hover); }
 .shb:disabled { color: var(--text-faint); cursor: default; }
 /* 区内分组头（↑ 上行 / ↓ 下行 / 转发器参数）：小号字距 + 题线，把一列 13 行的长表分成图上那三段。
    ★ 类名不叫 .gh —— BeamPicker 里 .gh 已是「继承态（随上行）」的修饰类。scoped CSS 今天挡得住
@@ -2549,7 +2786,7 @@ html[data-theme="dark"] .t .ci.selc {
 .t .ci.selkind { min-width: 86px; max-width: 96px; }
 
 .mini { font: inherit; font-size: var(--fs-4); height: var(--h-ctl); padding: 0 9px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; white-space: nowrap; }
-.mini:hover:not(:disabled) { background: var(--surface-2); }
+.mini:hover:not(:disabled) { background: var(--wash-hover); }
 .mini:disabled { opacity: .45; cursor: default; }
 /* 墨色主按钮（P1）：走 --primary-fill（深色下压一档）。悬停写到 0,4,0 压过上面的 .mini:hover——
    原来那条把底换成 surface-2 而字仍是纸色，「确定 / 生成」悬停时字就没了 */
@@ -2557,6 +2794,7 @@ html[data-theme="dark"] .t .ci.selc {
 .mini.imp:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
 .mini.imp:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
 .mini.ghost { color: var(--text-muted); }
+.mini.ico { display: inline-flex; align-items: center; justify-content: center; padding: 0 6px; }
 /* 分配表页的设置栏开合钮：只有一个图标，故按下态靠边框与墨色区分（同批量条那几个小钮的写法） */
 .pnb { display: inline-flex; align-items: center; padding: 3px 7px; }
 .pnb.on { border-color: var(--text); color: var(--text); }
@@ -2565,20 +2803,15 @@ html[data-theme="dark"] .t .ci.selc {
 .fld { font-size: var(--fs-3); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
 .fld .pct { margin-left: -2px; }   /* 百分号紧贴输入框，别被 .fld 的 gap 推开成一个独立词 */
 
-.dd { position: relative; }
-.dd:hover .ddm { display: block; }
-/* 导出钮禁用（未打开计划）时悬停不许展开菜单：同特异度，必须写在上一条之后 */
-.dd.off .ddm { display: none; }
-/* 命令菜单（P3，本窗全方角故不加圆角）：四周 3px 内距、项左右内距 10 → 7 字不动；悬停机位色实底 */
-.ddm { display: none; position: absolute; left: 0; top: 100%; z-index: 20; background: var(--bg); border: 1px solid var(--border-strong); min-width: 130px; padding: 3px; box-shadow: var(--shadow-2); animation: ui-float-in var(--dur-2) var(--ease-out); }
-.ddm button { display: block; width: 100%; text-align: left; font: inherit; font-size: var(--fs-4); padding: 4px 7px; border: none; background: transparent; color: var(--text); cursor: pointer; }
-.ddm button:hover { background: var(--accent-ui); color: var(--bg); }
+.dd { position: relative; display: inline-flex; }
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-sep）；这里只留挂在钮下的定位、宽度、本窗全方角 */
+.ddm { position: absolute; left: 0; top: 100%; min-width: 130px; animation-name: ui-float-in; }
+.ddm, .ddm .menu-item { border-radius: 0; }
+.fp-lbr .lbr-big > span { display: inline-flex; align-items: center; gap: 2px; }
+.lbx-tab-sub.bad { color: var(--danger); }
 
 /* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场、出场瞬时（方角照旧） */
 .mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 99; }
-.cdlg { background: var(--bg); border: 1px solid var(--border-strong); padding: 16px 18px; max-width: 420px; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.cdlg p { margin: 0 0 12px; line-height: 1.6; }
-.cops { display: flex; gap: 8px; justify-content: flex-end; }
 .dim { color: var(--text-faint); }
 
 /* ── 合成导出 ── 左选右览：勾选与顺序都在左边一列（勾了才排得上号），右边整张预览 */
@@ -2615,5 +2848,4 @@ html[data-theme="dark"] .t .ci.selc {
 .mfoot { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border-strong); background: var(--surface); }
 .mfoot .ttl { flex: 1; min-width: 0; }
 .mfoot .ttl .ci { flex: 1; min-width: 0; }
-.ddsep { height: 1px; background: var(--border); margin: 3px 6px; }
 </style>

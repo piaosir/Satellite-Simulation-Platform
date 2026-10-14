@@ -186,9 +186,16 @@ export function useVisibility({
   // ---- ACCESS：几何粗筛（剔到不了目标纬度的星）→ 分帧扫描过境（不冻结 UI + 进度）。大星座（Starlink ~1 万）也能算。----
   const ACCESS_MAX_SATS = 20000   // 粗筛后仍超此数才拦（防极端）；分帧异步避免长扫描冻结页面
   let _accToken = 0               // 取消令牌：重复点击/参数变时作废上一次分帧扫描
-  function computeAccess() {
+  // 「计算过境」那一刻的输入快照：结果表 / 导出 Excel 的目标名、门限、卫星集一律读它，不读界面当前值
+  // （否则改了目标或门限后不重算就导出，表头写着新目标、数据却是旧目标的过境——张冠李戴）。
+  // 输入指纹与快照不符 → accessStale 亮「输入已变」。
+  const accessMeta = ref(null)
+  const accessSigNow = () => JSON.stringify([targetKind.value, targetId.value, Number(minElev.value) || 0, Number(horizonH.value) || 24, satSrc.value])
+  const accessStale = computed(() => !!(accessMeta.value && !accessBusy.value && accessResults.value.length && accessMeta.value.sig !== accessSigNow()))
+  function computeAccess(extra) {
     const tp = targetPoints()
-    if (!tp.length) { accessMsg.value = '请先选择分析目标'; accessResults.value = []; return }
+    accessMeta.value = null
+    if (!tp.length) { accessMsg.value = '未选择分析目标。'; accessResults.value = []; return }
     const srcAll = getSatSet() || []
     if (!srcAll.length) { accessMsg.value = '卫星集为空'; accessResults.value = []; return }
     // 移动的航迹目标：扫描时窗里每一刻取载具那一点（观测者按真实时刻缓存在 accessWindows 里）
@@ -203,8 +210,8 @@ export function useVisibility({
     const tgtLat = crossEq ? 0 : pool.reduce((a, q) => (Math.abs(q.lat) < Math.abs(a) ? q.lat : a), pool[0].lat)
     const me = Number(minElev.value) || 0
     const src = srcAll.filter((e) => orbitCanReach(e.rec, tgtLat, me))   // 几何粗筛（不传播）
-    if (!src.length) { accessResults.value = []; accessMsg.value = '卫星集里没有轨道能覆盖该目标纬度的星'; return }
-    if (src.length > ACCESS_MAX_SATS) { accessResults.value = []; accessMsg.value = `候选 ${src.length} 颗过多——请缩短时窗或在「星座」筛选星座`; return }
+    if (!src.length) { accessResults.value = []; accessMsg.value = '卫星集中没有轨道能覆盖该目标纬度的星'; return }
+    if (src.length > ACCESS_MAX_SATS) { accessResults.value = []; accessMsg.value = `候选 ${src.length} 颗，超过上限。`; return }
     accessBusy.value = true; accessResults.value = []; accessMsg.value = `扫描过境… 0 / ${src.length}`
     const token = ++_accToken
     const now = calcAt(), ccNow = ccTimeAt(now)
@@ -212,6 +219,7 @@ export function useVisibility({
     accessHorizonMin.value = H / 60   // 钉住本次实际时窗（输入框超范围被 clamp 时，分母/横轴仍与窗口口径一致）
     accessBaseMs.value = now.getTime()   // 钉住时窗起点：绝对时刻 = 起点 + 相对分钟（cc 星的窗口也按此轴换算，与甘特同轴）
     accessScanned.value = src.length
+    accessMeta.value = { ...(extra && typeof extra === 'object' ? extra : {}), sig: accessSigNow(), targetKind: targetKind.value, targetId: targetId.value, minElev: me, tp0: { lat: tp[0].lat, lon: tp[0].lon } }
     // slot=GEO 定点标注，透传到过境表；eph=星历点序列表（accessWindows 经 propOf 取位）
     const ents = src.map((e) => ({ rec: e.rec, eph: e.eph, name: e.name, noradId: e.noradId, group: e.group, slot: geoSlotOfSatrec(e.rec), _cc: !!isCustomEntry(e) }))
     const BATCH = 400, out = []
@@ -262,7 +270,12 @@ export function useVisibility({
     if (!drawCov) return
     drawCov((open.value && mode.value === 'coverage' && covData.value) ? covLayer() : null)
   }
+  // 覆盖分析同口径：计算那一刻的参数指纹，参数改了不重算 → 「输入已变」
+  const covSigNow = () => JSON.stringify([covRegionKind.value, covLatMin.value, covLatMax.value, covLonMin.value, covLonMax.value, covPolyId.value, covStep.value, covHorizonH.value, covSample.value, Number(minElev.value) || 0, satSrc.value])
+  const covSig = ref('')
+  const covStale = computed(() => !!(covData.value && !covBusy.value && covSig.value && covSig.value !== covSigNow()))
   function computeCoverage() {
+    covSig.value = covSigNow()
     const region = covRegionValue()
     const grid = makeCoverageGrid(region, Number(covStep.value) || 5)
     if (!grid.cells.length) { covData.value = null; covMsg.value = '该区域没有网格胞元（检查边界 / Polygon）'; drawCovNow(); return }
@@ -274,7 +287,7 @@ export function useVisibility({
     const T0 = Math.floor(horizonSec / sampleSec) + 1
     if (estimateCoverageWork(grid.cells.length, srcAll.length, horizonSec, sampleSec) > COV_MAX_WORK) {
       covData.value = null
-      covMsg.value = `计算量过大（${grid.cells.length.toLocaleString()} 格 × ${srcAll.length.toLocaleString()} 星 × ${T0.toLocaleString()} 采样）——请增大网格步长 / 缩短时窗 / 增大采样步长，或在「星座」筛选卫星`
+      covMsg.value = `计算量过大（${grid.cells.length.toLocaleString('en-US')} 格 × ${srcAll.length.toLocaleString('en-US')} 星 × ${T0.toLocaleString('en-US')} 采样）。`
       drawCovNow(); return
     }
     covBusy.value = true; covData.value = null; covMsg.value = `覆盖计算… 0 / ${T0}`; drawCovNow()
@@ -293,7 +306,7 @@ export function useVisibility({
       if (done < T) { covMsg.value = `覆盖计算… ${done} / ${T}`; setTimeout(stepFn, 0) }
       else {
         covData.value = run.finalize(); covBusy.value = false
-        covMsg.value = covData.value.satActive ? '' : '卫星集里没有轨道能覆盖该区域的星'
+        covMsg.value = covData.value.satActive ? '' : '卫星集中没有轨道能覆盖该区域的星'
         drawCovNow()
       }
     }
@@ -415,7 +428,7 @@ export function useVisibility({
   return {
     open, minElev, targetKind, targetId, results, sortedResults, hoveredId, sortKey,
     hasTarget, satCount, kpi, skyPoints, skyThrR,
-    mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessBaseMs, accessTz, accOrder, accessScanned, accessKpi, computeAccess, setMode,
+    mode, horizonH, accessResults, accessBusy, accessMsg, accessHorizonMin, accessBaseMs, accessTz, accOrder, accessScanned, accessKpi, computeAccess, setMode, accessMeta, accessStale, covStale,
     iconSize, showName, nameSize, nameBold, iconColor, showLines, satSrc,
     // 覆盖分析（Coverage）
     covRegionKind, covLatMin, covLatMax, covLonMin, covLonMax, covPolyId, covStep, covHorizonH, covSample,

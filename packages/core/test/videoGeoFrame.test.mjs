@@ -15,7 +15,7 @@ const fakeCtx = () => ({
   font: '', fillStyle: '', strokeStyle: '', lineWidth: 1, textAlign: 'left', textBaseline: 'alphabetic', lineCap: '',
   texts: [],
   save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, arc() {}, rect() {}, clip() {}, stroke() {}, setLineDash() {},
-  fillRect() {}, strokeRect() {}, translate() {}, rotate() {}, transform() {},
+  fillRect() {}, strokeRect() {}, fill() {}, translate() {}, rotate() {}, transform() {},
   fillText(s) { this.texts.push(s) },
   measureText(s) { const px = Number((/([\d.]+)px/.exec(this.font) || [0, 12])[1]); return { width: String(s).length * px * 0.55 } }
 })
@@ -125,12 +125,13 @@ function viewOf(pj, stageW, stageH, W, H, zoom = 1, panX = 0, panY = 0) {
 }
 // ⑧ 档位存储（stores/mapCrs）：出厂开、逐项合并、认不得的值留原值、出厂表不被改到；读回旧存档按 MAP_CRS_REV 迁
 {
-  const { mapCrs, setMapCrs, restoreMapCrs, MAP_CRS_DEF, MAP_CRS_REV } = await import('../../../src/stores/mapCrs.js')
-  ok('⑧ 出厂：开、自动间隔、SATSOFT 标注、浅色、带网格线', JSON.stringify(mapCrs.frame) === JSON.stringify({ on: true, step: 0, fmt: 'num', theme: 'light', lines: true }))
+  const { mapCrs, setMapCrs, restoreMapCrs, MAP_CRS_DEF, MAP_CRS_REV, frameThemeOf } = await import('../../../src/stores/mapCrs.js')
+  ok('⑧ 出厂：开、自动间隔、SATSOFT 标注、跟随外观、带网格线', JSON.stringify(mapCrs.frame) === JSON.stringify({ on: true, step: 0, fmt: 'num', theme: 'auto', lines: true }))
+  ok('⑧ 跟随外观按当前外观解析；手选的浅 / 深色不跟', frameThemeOf('auto', 'dark') === 'dark' && frameThemeOf('auto', 'light') === 'light' && frameThemeOf('light', 'dark') === 'light' && frameThemeOf('dark', 'light') === 'dark')
   setMapCrs({ frame: { on: false, fmt: 'hemi' } })
-  ok('⑧ 只给两项：其余保持', mapCrs.frame.on === false && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.step === 0 && mapCrs.frame.theme === 'light' && mapCrs.frame.lines === true)
+  ok('⑧ 只给两项：其余保持', mapCrs.frame.on === false && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.step === 0 && mapCrs.frame.theme === 'auto' && mapCrs.frame.lines === true)
   setMapCrs({ frame: { step: 'x', fmt: 'deg', theme: 'red', lines: 'no', on: 1 } })
-  ok('⑧ 坏值一律留原值', mapCrs.frame.on === false && mapCrs.frame.step === 0 && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.theme === 'light' && mapCrs.frame.lines === true)
+  ok('⑧ 坏值一律留原值', mapCrs.frame.on === false && mapCrs.frame.step === 0 && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.theme === 'auto' && mapCrs.frame.lines === true)
   setMapCrs({ frame: { step: 30, theme: 'dark', lines: false } })
   ok('⑧ 合法值收下', mapCrs.frame.step === 30 && mapCrs.frame.theme === 'dark' && mapCrs.frame.lines === false)
   setMapCrs({ datum: 'wgs84' })
@@ -139,7 +140,11 @@ function viewOf(pj, stageW, stageH, W, H, zoom = 1, panX = 0, panY = 0) {
   ok('⑧ 恢复出厂：回到开；出厂表本身没被改', mapCrs.frame.on === true && mapCrs.frame.step === 0 && MAP_CRS_DEF.frame.on === true && mapCrs.frame !== MAP_CRS_DEF.frame)
   // 读回视图快照：出厂改开之前存的（无 rev）里那个 on 是旧出厂值顺手存下来的 → 不认、留新出厂值，其余项照收；带 rev 的照存档
   restoreMapCrs({ datum: 'wgs84', frame: { on: false, step: 15, fmt: 'hemi', theme: 'dark', lines: false } })
-  ok('⑧ 旧存档（无 rev）：开关按新出厂值，其余项照收', mapCrs.frame.on === true && mapCrs.frame.step === 15 && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.theme === 'dark' && mapCrs.frame.lines === false)
+  ok('⑧ 旧存档（无 rev）：开关与底色按新出厂值，其余项照收', mapCrs.frame.on === true && mapCrs.frame.step === 15 && mapCrs.frame.fmt === 'hemi' && mapCrs.frame.theme === 'auto' && mapCrs.frame.lines === false)
+  restoreMapCrs({ rev: 1, frame: { on: false, theme: 'light' } })
+  ok('⑧ rev 1 存档：开关照收，底色（旧出厂浅色）按新出厂「跟随外观」', mapCrs.frame.on === false && mapCrs.frame.theme === 'auto')
+  restoreMapCrs({ rev: MAP_CRS_REV, frame: { on: true, theme: 'light' } })
+  ok('⑧ 新存档：手选的浅色照收', mapCrs.frame.theme === 'light')
   restoreMapCrs({ rev: MAP_CRS_REV, frame: { on: false } })
   ok('⑧ 新存档（带 rev）：用户关掉的照关', mapCrs.frame.on === false && mapCrs.frame.step === 15)
   restoreMapCrs({ lon0: -30 })

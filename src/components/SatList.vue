@@ -266,21 +266,21 @@ function onAction(a, e) {
 <template>
   <div ref="rootEl" class="sl" :class="{ hassel: count > 0 }">
     <div class="slh">
-      <span class="slf">
+      <span class="slf search-field">
         <Icon name="search" :size="12" />
         <input v-model="kw" :placeholder="placeholder" spellcheck="false" @keydown.esc.stop="kw = ''" @keydown.stop />
       </span>
-      <span class="slb" title="全选当前筛选结果（并入已选）· 列表内 Ctrl+A" @click="selectAll"><Icon name="check" :size="12" /></span>
-      <span class="slb" :class="{ off: !count }" title="清除选择 · 列表内 Esc" @click="clearSel"><Icon name="x" :size="12" /></span>
+      <button type="button" class="slb ibtn sm" title="全选当前筛选结果（并入已选）· 列表内 Ctrl+A" @click="selectAll"><Icon name="check" :size="12" /></button>
+      <button type="button" class="slb ibtn sm" :class="{ off: !count }" title="清除选择 · 列表内 Esc" @click="clearSel"><Icon name="x" :size="12" /></button>
     </div>
     <div class="slm">
       <span class="sln"><template v-if="!loading">{{ total }} 颗<template v-if="count"> · 已选 {{ count }}</template></template></span>
-      <span
+      <button type="button" :aria-disabled="(!a.always && !count) ? 'true' : null"
         v-for="a in actions" :key="a.key"
         class="sla" :class="[a.tone || '', { off: !a.always && !count }]"
         :title="(!a.always && !count) ? '先在下面选中卫星：点选一颗 · 按住拖刷一片 · Shift 点连选 · Ctrl+A 全选' : (a.title || a.label)"
         @click="onAction(a, $event)"
-      ><Icon v-if="a.icon" :name="a.icon" :size="12" />{{ a.label }}</span>
+      ><Icon v-if="a.icon" :name="a.icon" :size="12" />{{ a.label }}</button>
     </div>
     <div v-if="loading" class="slmsg">加载中…</div>
     <div v-else-if="error" class="slmsg err">{{ error }}</div>
@@ -313,26 +313,21 @@ function onAction(a, e) {
 </template>
 
 <style scoped>
+/* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button).sla { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 /* 左缘挂条不在这里画：侧栏里由 SatLayersPanel 给 .sl 画（.lp-body :deep(.sl)::before），
    查找对话框里同一个组件就不带条 —— 条是「挂在上面那一行」的意思，对话框里没有上面那一行。 */
 .sl { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface-2); }
 /* 头：筛选框 + 全选/清除 */
 .slh { display: flex; align-items: center; gap: 5px; padding: 5px 10px 4px 12px; }
 /* 筛选框：外框才是「输入框」，里面的 input 只是透明的字面 —— 描边 / 高度 / 焦点环都画在外框上，
-   与全局文本框同一套（--h-ctl、--field-*、2px 机位色环压在描边上）。原来 input 吃了全局 22px 高度，
+   与全局文本框同一套（--h-ctl、--field-*、聚焦走 .search-field）。原来 input 吃了全局 22px 高度，
    外框再包 1px 内距 + 描边，成了 26px 的异类。 */
 .slf { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; height: var(--h-ctl); box-sizing: border-box;
        border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); padding: 0 6px; color: var(--text-faint); }
 .slf:hover { border-color: var(--field-border-hover); }
-.slf:focus-within { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
 .slf input { flex: 1; min-width: 0; height: 100%; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-3); padding: 0; outline: none; }
-/* 全局焦点环是 !important 的；环已由外框 :focus-within 画，这里不再描第二圈 */
-.slf input:focus-visible { outline: none !important; }
-.slb { flex: none; display: inline-flex; align-items: center; width: 18px; height: 18px; justify-content: center; padding: 0; color: var(--text-faint); cursor: pointer; border-radius: var(--r-box); transition: var(--t-state); }
-.slb:hover { color: var(--text); background: var(--bg); }
-/* span 充当按钮，吃不到全局 button 按下罩，就地补（spec P8） */
-.slb:not(.off):active { box-shadow: var(--press); transition-duration: 0s; }
-.slb.off { opacity: .4; }
+.slb.off { opacity: var(--dis-opacity); }
 /* 读数行 + 操作条 */
 .slm { display: flex; align-items: center; gap: 8px; padding: 0 10px 5px 12px; font-size: var(--fs-2); }
 .sln { flex: 1; min-width: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -361,11 +356,11 @@ function onAction(a, e) {
         border: 1px solid var(--field-border); background: var(--field-bg); border-radius: var(--r-ctl); opacity: 0; transition: opacity var(--dur-1) linear; }
 .slr:hover .slck, .slr.on .slck, .sl.hassel .slck { opacity: 1; }
 .slck:hover { border-color: var(--field-border-hover); }
-.slck.on { background: var(--accent-ui); border-color: var(--accent-ui); }
-.slck.on:hover { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
-.slck.on::after { content: ''; position: absolute; inset: 0; background: var(--bg);
+.slck.on { background: var(--accent-fill); border-color: var(--accent-fill); }
+.slck.on:hover { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
+.slck.on::after { content: ''; position: absolute; inset: 0; background: var(--accent-on);
                   -webkit-mask: var(--ctl-check) center / 11px no-repeat; mask: var(--ctl-check) center / 11px no-repeat; }
-.slr:hover { background: var(--surface-2); color: var(--text); }
+.slr:hover { background: var(--wash-hover); color: var(--text); }
 .slr.on { background: var(--accent-ui-weak); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .slr.on:hover { background: color-mix(in srgb, var(--accent-ui) 22%, transparent); }
 /* 键盘光标行：只在列表有焦点时描（失焦还挂着一圈框，读起来像第二种选中） */

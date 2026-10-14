@@ -9,6 +9,7 @@ import MdSec from '../MdSec.vue'
 import { applyJsonImport, metaForExport, attachSubset } from '../wbLogic.js'
 
 const wb = inject('wb')
+const notice = inject('notice', null)   // 窗口通知条：导出成功给「已导出 · 打开 · 在文件夹中显示」
 const { cur } = wb
 const m = computed(() => cur.meta)
 const ro = computed(() => !cur.editable)
@@ -23,7 +24,11 @@ async function saveText(text, name) {
   try {
     const r = await api.exportFile({ defaultName: name, filters: [{ name: 'JSON', extensions: ['json'] }], data: text })
     if (r && r.locked) return
-    if (r && r.ok) state.value = { kind: 'ok', text: r.filePath }
+    if (r && r.ok) {
+      const p = r.path || r.filePath
+      state.value = { kind: 'ok', text: p }
+      if (notice && p) notice.toastFile('已导出：' + String(p).split(/[\\/]/).pop(), p)
+    }
     else if (r && !r.canceled) state.value = { kind: 'bad', text: r.error || '保存失败' }
   } catch (e) { state.value = { kind: 'bad', text: (e && e.message) || String(e) } }
 }
@@ -63,12 +68,12 @@ async function pasteJson() {
   <MdSec id="m-json" title="JSON" :default-open="false" tip="ModelMeta（与导出模型同名 .satsim.json 格式一致）；导入仅覆盖元数据字段，编号、来源与文件以库中记录为准">
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini" :disabled="!api" title="完整元数据另存为 .satsim.json" @click="exportMeta"><Icon name="file-down" :size="12" />导出…</button>
-        <button class="lb-mini" :disabled="!api || !(m.attachPoints && m.attachPoints.length)" title="仅导出挂点 {attachPoints:[…]}" @click="exportAttach"><Icon name="locate-fixed" :size="12" />导出挂点…</button>
+        <button class="lb-mini" :disabled="!api" title="完整元数据另存为 .satsim.json" @click="exportMeta"><Icon name="file-export" :size="12" />导出…</button>
+        <button class="lb-mini" :disabled="!api || !(m.attachPoints && m.attachPoints.length)" title="仅导出挂点 {attachPoints:[…]}" @click="exportAttach"><Icon name="file-export" :size="12" />导出挂点…</button>
         <button class="lb-mini" title="将完整元数据复制到剪贴板" @click="copyMeta"><Icon name="copy" :size="12" />复制</button>
       </div>
       <div class="md-acts">
-        <button class="lb-mini" :disabled="ro" title="从 .satsim.json / 挂点 JSON 文件导入（完整元数据或仅挂点）" @click="pickFile"><Icon name="upload" :size="12" />导入…</button>
+        <button class="lb-mini" :disabled="ro" title="从 .satsim.json / 挂点 JSON 文件导入（完整元数据或仅挂点）" @click="pickFile"><Icon name="file-import" :size="12" />导入…</button>
         <button class="lb-mini" :disabled="ro" title="从剪贴板导入" @click="pasteJson"><Icon name="clipboard" :size="12" />粘贴</button>
         <input ref="fileEl" type="file" accept=".json,application/json" hidden @change="onFile" />
       </div>

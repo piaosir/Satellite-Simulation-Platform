@@ -19,7 +19,7 @@ export const FRAME_MODES = ['fixed', 'inertial']
 // 不是用户挑的），按新出厂值入场；存过一次之后 viewRev 齐平，用户的选择照旧跟着存档走。
 export const VIEW_PREFS_REV = 1
 export const VIEW_PREF_RANGE = {
-  dragDamping: { min: 0, max: 100, step: 5 },
-  wheelStep3d: { min: 1, max: 20, step: 1 },
-  wheelStep2d: { min: 1, max: 20, step: 1 }
+  dragDamping: { min: 0, max: 100, step: 1 },
+  wheelStep3d: { min: 1, max: 20, step: 0.1 },
+  wheelStep2d: { min: 1, max: 20, step: 0.1 }
 }

@@ -27,6 +27,27 @@ import {
   planSummary, validatePlan
 } from './freqPlanModel.js'
 import { buildAllocation } from './freqPlanCapacity.js'
+import { curLang } from './i18n/lang.js'
+
+// ---- 语言：表头 / 表题 / 标签跟界面语言（入口 opts.lang，缺省 curLang()）----
+// 只换本模块自己写的字；计划里的名字、校验条目（validatePlan 的 msg）、planSummary 摘要串原样。
+// 中文档与改造前逐字一致（模型里也不多出 lang 字段）。入口是同步的，故用模块级开关 + finally 复位。
+let EN = false
+const T = (zh, en) => (EN ? en : zh)
+const POL_EN = { H: 'H (horizontal)', V: 'V (vertical)', L: 'LHCP (left-hand)', R: 'RHCP (right-hand)' }
+const KIND_EN = { transponder: 'Transponder', beacon: 'Beacon', tm: 'TM', tc: 'TC', reserved: 'Reserved' }
+const polLab = (p) => (EN ? POL_EN[p] : POL_LABEL[p])
+const kindLab = (k) => (EN ? (KIND_EN[k] || KIND_LABEL[k]) : KIND_LABEL[k])
+function withLang(opts, build) {
+  const prev = EN
+  const l = opts && (opts.lang === 'en' || opts.lang === 'zh') ? opts.lang : curLang()
+  EN = l === 'en'
+  try {
+    const m = build()
+    if (EN) m.lang = 'en'
+    return m
+  } finally { EN = prev }
+}
 
 const EPS = 1e-6
 
@@ -263,7 +284,7 @@ function overviewBand(plan, rs, side, u, cols) {
         })
       } else cells.push(...bc)
     }
-    return { pol, polLabel: POL_LABEL[pol] || pol, blocks, lanes: packLanes(cells) }
+    return { pol, polLabel: polLab(pol) || pol, blocks, lanes: packLanes(cells) }
   })
 
   // 信标 / 遥控 / 遥测：一根箭头，只有频率与极化，不归波束也没有带宽（见模型 CHANNEL_KINDS）。
@@ -274,14 +295,14 @@ function overviewBand(plan, rs, side, u, cols) {
     .sort((a, b) => a.x.fc - b.x.fc)
     .map(({ r, x }) => ({
       c: Math.min(cols, col(x.fc)),               // 箭头是【一格】，落在上边沿的那根不能排到网格外
-      tag: kindTag(r.kind) || KIND_LABEL[r.kind] || '',
+      tag: kindTag(r.kind) || kindLab(r.kind) || '',
       no: s(r.no), pol: s(x.pol), f: uv(u, x.fc),
       arrow: side === 'dn' ? '↓' : '↑'
     }))
 
   return {
     side,
-    title: `${side === 'up' ? '上行 UPLINK' : '下行 DOWNLINK'} · ${fmtFreqNum(ext.dataMin, u.label)}~${fmtFreqNum(ext.dataMax, u.label)} ${u.label}`,
+    title: `${side === 'up' ? T('上行 UPLINK', 'UPLINK') : T('下行 DOWNLINK', 'DOWNLINK')} · ${fmtFreqNum(ext.dataMin, u.label)}~${fmtFreqNum(ext.dataMax, u.label)} ${u.label}`,
     f1: uv(u, ext.dataMin), f2: uv(u, ext.dataMax),
     rows, marks: markRow
   }
@@ -331,7 +352,7 @@ function stripBlock(g, u) {
       // 太窄的空当不单独成段（一列都占不满的间隙写上「空」反而喧宾夺主）
       if (it.b - it.a < span / 200) { used = c0 - 1; continue }
       segs.push({
-        gap: true, c0, c1, name: '空',
+        gap: true, c0, c1, name: T('空', 'Free'),
         f1: uv(u, it.a), f2: uv(u, it.b), bw: uv(u, it.b - it.a),
         fill: GAP_FILL, ink: 'FF8A8F98'
       })
@@ -371,27 +392,27 @@ function allocBlock(g, u) {
   const strip = stripBlock(g, u)
   const fq = (mhz) => fmtFreqNum(mhz, u.label)
   const title = Number.isFinite(g.f1)
-    ? `${g.no || '—'}（${fq(g.f1)} · ${fq((g.f1 + g.f2) / 2)} · ${fq(g.f2)} ${u.label}）`
-    : `${g.no || '—'}（无下行频带）`
+    ? (EN ? `${g.no || '—'} (${fq(g.f1)} · ${fq((g.f1 + g.f2) / 2)} · ${fq(g.f2)} ${u.label})` : `${g.no || '—'}（${fq(g.f1)} · ${fq((g.f1 + g.f2) / 2)} · ${fq(g.f2)} ${u.label}）`)
+    : (EN ? `${g.no || '—'} (no downlink band)` : `${g.no || '—'}（无下行频带）`)
   // 使用情况总结：只出数值，不写「达标 / 受限」这类文字判定（平台既定口径）
   const pct = (v) => (Number.isFinite(v) ? Number((v * 100).toFixed(1)) : null)
   const summary = [
-    [`转发器带宽 (${u.label})`, uv(u, g.bwMHz), null],
-    [`已占用带宽 (${u.label})`, uv(u, g.occSum), pct(g.bwUtil)],
-    [`功率占用带宽 (${u.label})`, uv(u, g.pwrSum), pct(g.pwrUtil)],
-    [`剩余可用带宽 (${u.label})`, g.freeMHz == null ? null : uv(u, g.freeMHz), null],
-    ['载波数', g.count || 0, null],
-    ['信息速率合计 (kbps)', g.rateSum ? Number(g.rateSum.toFixed(0)) : 0, null]
+    [`${T('转发器带宽', 'Transponder bandwidth')} (${u.label})`, uv(u, g.bwMHz), null],
+    [`${T('已占用带宽', 'Occupied bandwidth')} (${u.label})`, uv(u, g.occSum), pct(g.bwUtil)],
+    [`${T('功率占用带宽', 'Power-equivalent bandwidth')} (${u.label})`, uv(u, g.pwrSum), pct(g.pwrUtil)],
+    [`${T('剩余可用带宽', 'Free bandwidth')} (${u.label})`, g.freeMHz == null ? null : uv(u, g.freeMHz), null],
+    [T('载波数', 'Carriers'), g.count || 0, null],
+    [T('信息速率合计 (kbps)', 'Total information rate (kbps)'), g.rateSum ? Number(g.rateSum.toFixed(0)) : 0, null]
   ]
   // 波束占段：色带上画的那几截，这里给出数。★ 上限八条 —— HTS 一条转发器上挂着几十个波束时
   // 逐条列会把小结撑成一整页（色带已经把格局画出来了，数由「波束」表逐条给）
   const segList = (g.segs || []).filter((x) => x && x.beam)
   if (segList.length) {
-    summary.push([`波束数`, segList.length, null])
+    summary.push([T('波束数', 'Beams'), segList.length, null])
     if (segList.length <= 8) {
       for (const x of segList) {
         summary.push([
-          `波束 · ${s(x.beam.name)} (${u.label})`,
+          `${T('波束', 'Beam')} · ${s(x.beam.name)} (${u.label})`,
           uv(u, x.bw),
           Number.isFinite(x.bw) && Number.isFinite(g.bwMHz) && g.bwMHz > 0 ? pct(x.bw / g.bwMHz) : null
         ])
@@ -412,8 +433,8 @@ function allocBlock(g, u) {
   // 标题右边那一行：极化 + 上行频带（下行是标题里那三个数，两侧凑齐才对得上频谱仪）。
   // 波束不写在这里 —— 它有自己的一整条色带（见 beamLanes），名字写两遍只会互相打架
   const tail = [
-    POL_LABEL[g.pol] || s(g.pol),
-    Number.isFinite(g.upF1) ? `上行 ${fq(g.upF1)}~${fq(g.upF2)} ${u.label}` : ''
+    polLab(g.pol) || s(g.pol),
+    Number.isFinite(g.upF1) ? `${T('上行', 'Uplink')} ${fq(g.upF1)}~${fq(g.upF2)} ${u.label}` : ''
   ].filter(Boolean).join(' · ')
   return {
     channelId: s(g.channelId),
@@ -421,7 +442,7 @@ function allocBlock(g, u) {
     title,
     tail,
     pol: s(g.pol),
-    polLabel: POL_LABEL[g.pol] || s(g.pol),
+    polLabel: polLab(g.pol) || s(g.pol),
     beam: beamNames(g.beams),
     beamColor: firstColor(g.beams),
     f1: uv(u, g.f1), f2: uv(u, g.f2), bw: uv(u, g.bwMHz),
@@ -464,7 +485,7 @@ function styledBeamSheet(plan, rs, u) {
       bw: uv(u, beamBw(b)),
       tpCount: tps.length,
       occ: sum > 0 ? uv(u, sum) : null,
-      tps: tps.join('、'),
+      tps: tps.join(T('、', ', ')),
       note: beamSynthText(b)
     }
   })
@@ -482,6 +503,9 @@ function styledBeamSheet(plan, rs, u) {
  * @returns 纯数据模型（可直接过 IPC）
  */
 export function buildStyledXlsx(plan, carriers = [], opts = {}) {
+  return withLang(opts, () => styledXlsx(plan, carriers, opts))
+}
+function styledXlsx(plan, carriers, opts) {
   const u = unitOf(opts.unit || 'MHz')
   const perSheet = Math.max(1, Math.min(12, Number(opts.perSheet) || 3))
   const rs = resolveAll(plan)
@@ -518,7 +542,7 @@ export function buildStyledXlsx(plan, carriers = [], opts = {}) {
   const sheets = []
   for (let i = 0; i < blocks.length; i += perSheet) {
     const part = blocks.slice(i, i + perSheet)
-    sheets.push({ name: part.map((b) => b.no || '—').join('、'), blocks: part })
+    sheets.push({ name: part.map((b) => b.no || '—').join(T('、', ', ')), blocks: part })
   }
   // 未归属转发器的载波：单成一张表，藏起来只会让人以为它们没录进去
   const orphan = (alloc.unassigned || []).map((r) => ({
@@ -561,29 +585,29 @@ function dataSheetAll(plan, rs, alloc, u) {
   const F = { fmt: u.numFmt, a: 'right' }
   const cols = [
     COL('#', { key: 'i', w: 5, a: 'center', keep: true }),
-    COL('转发器', { key: 'no', w: 11, keep: true }),
-    COL('类型', { key: 'kind', w: 9, a: 'center' }),
-    COL(`上行起始 (${u.label})`, { key: 'upF1', ...F }),
-    COL(`上行终止 (${u.label})`, { key: 'upF2', ...F }),
-    COL(`上行带宽 (${u.label})`, { key: 'upBw', ...F }),
-    COL('上行极化', { key: 'upPol', w: 9, a: 'center' }),
-    COL('上行波束', { key: 'upBeam', w: 16 }),
-    COL('本振', { key: 'lo', w: 9 }),
-    COL(`本振值 (${u.label})`, { key: 'loV', ...F }),
-    COL(`下行起始 (${u.label})`, { key: 'dnF1', ...F }),
-    COL(`下行终止 (${u.label})`, { key: 'dnF2', ...F }),
-    COL(`下行带宽 (${u.label})`, { key: 'dnBw', ...F }),
-    COL('下行极化', { key: 'dnPol', w: 9, a: 'center' }),
-    COL('下行波束', { key: 'dnBeam', w: 16 }),
-    COL('载波', { key: 'cName', w: 18, keep: true }),
-    COL(`载波下行中心 (${u.label})`, { key: 'cDn', ...F }),
-    COL(`载波上行中心 (${u.label})`, { key: 'cUp', ...F }),
-    COL(`占用带宽 (${u.label})`, { key: 'occ', ...F }),
-    COL(`功率带宽 (${u.label})`, { key: 'pwr', ...F }),
-    COL('载波波束', { key: 'cBeam', w: 16 }),
-    COL('调制 · 编码', { key: 'modcod', w: 14 }),
-    COL('信息速率 (kbps)', { key: 'rate', fmt: '0', a: 'right' }),
-    COL('备注', { key: 'note', w: 22 }),
+    COL(T('转发器', 'Transponder'), { key: 'no', w: 11, keep: true }),
+    COL(T('类型', 'Type'), { key: 'kind', w: 9, a: 'center' }),
+    COL(`${T('上行起始', 'Uplink start')} (${u.label})`, { key: 'upF1', ...F }),
+    COL(`${T('上行终止', 'Uplink stop')} (${u.label})`, { key: 'upF2', ...F }),
+    COL(`${T('上行带宽', 'Uplink bandwidth')} (${u.label})`, { key: 'upBw', ...F }),
+    COL(T('上行极化', 'Uplink polarization'), { key: 'upPol', w: 9, a: 'center' }),
+    COL(T('上行波束', 'Uplink beam'), { key: 'upBeam', w: 16 }),
+    COL(T('本振', 'LO'), { key: 'lo', w: 9 }),
+    COL(`${T('本振值', 'LO value')} (${u.label})`, { key: 'loV', ...F }),
+    COL(`${T('下行起始', 'Downlink start')} (${u.label})`, { key: 'dnF1', ...F }),
+    COL(`${T('下行终止', 'Downlink stop')} (${u.label})`, { key: 'dnF2', ...F }),
+    COL(`${T('下行带宽', 'Downlink bandwidth')} (${u.label})`, { key: 'dnBw', ...F }),
+    COL(T('下行极化', 'Downlink polarization'), { key: 'dnPol', w: 9, a: 'center' }),
+    COL(T('下行波束', 'Downlink beam'), { key: 'dnBeam', w: 16 }),
+    COL(T('载波', 'Carrier'), { key: 'cName', w: 18, keep: true }),
+    COL(`${T('载波下行中心', 'Carrier downlink center')} (${u.label})`, { key: 'cDn', ...F }),
+    COL(`${T('载波上行中心', 'Carrier uplink center')} (${u.label})`, { key: 'cUp', ...F }),
+    COL(`${T('占用带宽', 'Occupied bandwidth')} (${u.label})`, { key: 'occ', ...F }),
+    COL(`${T('功率带宽', 'Power-equivalent bandwidth')} (${u.label})`, { key: 'pwr', ...F }),
+    COL(T('载波波束', 'Carrier beam'), { key: 'cBeam', w: 16 }),
+    COL(T('调制 · 编码', 'Modulation · coding'), { key: 'modcod', w: 14 }),
+    COL(T('信息速率 (kbps)', 'Information rate (kbps)'), { key: 'rate', fmt: '0', a: 'right' }),
+    COL(T('备注', 'Note'), { key: 'note', w: 22 }),
     COL('SFD (dBW/m²)', { key: 'sfd', fmt: '0.0', a: 'right' }),
     COL('G/T (dB/K)', { key: 'gt', fmt: '0.0', a: 'right' }),
     COL('IBO (dB)', { key: 'ibo', fmt: '0.0', a: 'right' }),
@@ -606,7 +630,7 @@ function dataSheetAll(plan, rs, alloc, u) {
     const ch = r.raw
     return {
       no: s(r.no),
-      kind: hasMark ? (KIND_LABEL[r.kind] || s(r.kind)) : '',
+      kind: hasMark ? (kindLab(r.kind) || s(r.kind)) : '',
       upF1: uv(u, spanEdge(r.up, 'f1')), upF2: uv(u, spanEdge(r.up, 'f2')), upBw: uv(u, r.up?.bw),
       upPol: s(r.up?.pol), upBeam: beamNames(r.beamsUp),
       lo: s(r.lo?.name), loV: uv(u, r.lo?.valueMHz),
@@ -629,7 +653,7 @@ function dataSheetAll(plan, rs, alloc, u) {
     if (!list.length) { items.push({ ...t, note: s(r.raw.note) }); continue }
     for (const cr of list) items.push({ ...t, ...carrierOf(cr) })
   }
-  for (const cr of (alloc.unassigned || [])) items.push({ no: '（未归属）', ...carrierOf(cr) })
+  for (const cr of (alloc.unassigned || [])) items.push({ no: T('（未归属）', '(unassigned)'), ...carrierOf(cr) })
   items.forEach((it, i) => { it.i = i + 1 })
 
   // 两列写着同一件事就并成一列：绝大多数计划两侧挂的是同一组波束（下行没单独指定就随上行，
@@ -638,7 +662,7 @@ function dataSheetAll(plan, rs, alloc, u) {
   const colOf = (k) => cols.find((c) => c.key === k)
   if (items.every((it) => (it.upBeam || '') === (it.dnBeam || ''))) {
     for (const it of items) it.dnBeam = ''
-    colOf('upBeam').header = '波束'
+    colOf('upBeam').header = T('波束', 'Beam')
   }
   if (items.every((it) => !it.cBeam || it.cBeam === (it.dnBeam || it.upBeam))) {
     for (const it of items) it.cBeam = ''
@@ -647,14 +671,14 @@ function dataSheetAll(plan, rs, alloc, u) {
   const has = (c) => c.keep || items.some((it) => it[c.key] != null && it[c.key] !== '')
   const columns = cols.filter(has)
   const rows = items.map((it) => columns.map((c) => (it[c.key] === undefined || it[c.key] === '' ? null : it[c.key])))
-  return { name: '转发器 · 载波', title: '转发器与载波总表', columns, rows, freeze: 3 }
+  return { name: T('转发器 · 载波', 'Transponders · Carriers'), title: T('转发器与载波总表', 'Transponders and carriers'), columns, rows, freeze: 3 }
 }
 
 // ---- 概览（键值表）----
 function metaOf(plan, carriers, u, alloc) {
   const S = alloc.summary
   return {
-    planName: s(plan.name) || '频率计划',
+    planName: s(plan.name) || T('频率计划', 'Frequency Plan'),
     satName: s(plan.satName),
     band: s(plan.band),
     note: s(plan.note),
@@ -677,73 +701,73 @@ function dataSheetOverview(plan, rs, alloc, u) {
   const tp = rs.filter((r) => r.kind === 'transponder')
   const marks = rs.filter((r) => isMarkKind(r.kind))
   const rows = [
-    ['—— 计划', null, null],
-    ['计划名称', s(plan.name), ''],
-    ['卫星', s(plan.satName), ''],
-    ['频段', s(plan.band) + (plan.bandAuto === false ? '（手选）' : '（自动判定）'), ''],
-    ['显示刻度', u.label, ''],
-    ['更新时间', s(plan.updatedAt), ''],
-    ['备注', s(plan.note), ''],
-    ['—— 规模', null, null],
-    ['转发器数', tp.length, '条'],
-    ['信标 / 遥测遥控数', marks.length, '条'],
-    ['波束 / 带宽组数', (plan.beams || []).length, '组'],
-    ['本振数', (plan.los || []).length, '个'],
-    ['载波数', S.carrierCount, '条'],
-    ['未归属载波数', S.unassignedCount, '条'],
-    ['—— 频率跨度', null, null],
-    ['上行起始', extUp ? fq(extUp.dataMin) : null, u.label],
-    ['上行终止', extUp ? fq(extUp.dataMax) : null, u.label],
-    ['下行起始', extDn ? fq(extDn.dataMin) : null, u.label],
-    ['下行终止', extDn ? fq(extDn.dataMax) : null, u.label],
-    ['—— 装填（下行域）', null, null],
-    ['转发器总带宽', fq(S.totalBwMHz), u.label],
-    ['已占用带宽', fq(S.occupiedBwMHz), u.label],
-    ['功率占用带宽', fq(S.powerBwMHz), u.label],
-    ['剩余可用带宽', fq(S.freeBwMHz), u.label],
-    ['带宽占用率', S.bwUtil == null ? null : Number((S.bwUtil * 100).toFixed(1)), '%'],
-    ['功率占用率', S.pwrUtil == null ? null : Number((S.pwrUtil * 100).toFixed(1)), '%'],
-    ['已装载转发器数', S.tpUsed, '条'],
-    ['信息速率合计', S.totalRateKbps ? Number(S.totalRateKbps.toFixed(0)) : 0, 'kbps'],
-    ['平均频谱效率', S.avgEffBpsHz == null ? null : Number(S.avgEffBpsHz.toFixed(2)), 'bps/Hz']
+    [T('—— 计划', '—— Plan'), null, null],
+    [T('计划名称', 'Plan name'), s(plan.name), ''],
+    [T('卫星', 'Satellite'), s(plan.satName), ''],
+    [T('频段', 'Band'), s(plan.band) + (plan.bandAuto === false ? T('（手选）', ' (manual)') : T('（自动判定）', ' (auto)')), ''],
+    [T('显示刻度', 'Display unit'), u.label, ''],
+    [T('更新时间', 'Updated'), s(plan.updatedAt), ''],
+    [T('备注', 'Note'), s(plan.note), ''],
+    [T('—— 规模', '—— Scale'), null, null],
+    [T('转发器数', 'Transponders'), tp.length, T('条', '')],
+    [T('信标 / 遥测遥控数', 'Beacons / TM/TC'), marks.length, T('条', '')],
+    [T('波束 / 带宽组数', 'Beams / bandwidth groups'), (plan.beams || []).length, T('组', '')],
+    [T('本振数', 'LOs'), (plan.los || []).length, T('个', '')],
+    [T('载波数', 'Carriers'), S.carrierCount, T('条', '')],
+    [T('未归属载波数', 'Unassigned carriers'), S.unassignedCount, T('条', '')],
+    [T('—— 频率跨度', '—— Frequency span'), null, null],
+    [T('上行起始', 'Uplink start'), extUp ? fq(extUp.dataMin) : null, u.label],
+    [T('上行终止', 'Uplink stop'), extUp ? fq(extUp.dataMax) : null, u.label],
+    [T('下行起始', 'Downlink start'), extDn ? fq(extDn.dataMin) : null, u.label],
+    [T('下行终止', 'Downlink stop'), extDn ? fq(extDn.dataMax) : null, u.label],
+    [T('—— 装填（下行域）', '—— Loading (downlink)'), null, null],
+    [T('转发器总带宽', 'Total transponder bandwidth'), fq(S.totalBwMHz), u.label],
+    [T('已占用带宽', 'Occupied bandwidth'), fq(S.occupiedBwMHz), u.label],
+    [T('功率占用带宽', 'Power-equivalent bandwidth'), fq(S.powerBwMHz), u.label],
+    [T('剩余可用带宽', 'Free bandwidth'), fq(S.freeBwMHz), u.label],
+    [T('带宽占用率', 'Bandwidth utilization'), S.bwUtil == null ? null : Number((S.bwUtil * 100).toFixed(1)), '%'],
+    [T('功率占用率', 'Power utilization'), S.pwrUtil == null ? null : Number((S.pwrUtil * 100).toFixed(1)), '%'],
+    [T('已装载转发器数', 'Loaded transponders'), S.tpUsed, T('条', '')],
+    [T('信息速率合计', 'Total information rate'), S.totalRateKbps ? Number(S.totalRateKbps.toFixed(0)) : 0, 'kbps'],
+    [T('平均频谱效率', 'Average spectral efficiency'), S.avgEffBpsHz == null ? null : Number(S.avgEffBpsHz.toFixed(2)), 'bps/Hz']
   ]
   // 波束：名字 + 标称带宽 + 挂在几条转发器上（占哪一段是样式版那本表的事，见 styledBeamSheet）
   if ((plan.beams || []).length) {
-    rows.push(['—— 波束 / 带宽组', null, null])
+    rows.push([T('—— 波束 / 带宽组', '—— Beams / bandwidth groups'), null, null])
     for (const b of plan.beams) {
       const n = rs.filter((r) => !r.mark
         && [...(r.beamsUp || []), ...(r.beamsDn || [])].some((x) => x.id === b.id)).length
-      rows.push([s(b.name), uv(u, beamBw(b)), `${u.label} · ${n} 条转发器`])
+      rows.push([s(b.name), uv(u, beamBw(b)), EN ? `${u.label} · ${n} transponders` : `${u.label} · ${n} 条转发器`])
     }
   }
   if ((plan.los || []).length) {
-    rows.push(['—— 本振', null, null])
+    rows.push([T('—— 本振', '—— LOs'), null, null])
     for (const l of plan.los) {
       const n = rs.filter((r) => r.lo && r.lo.id === l.id).length
-      rows.push([s(l.name), uv(u, l.valueMHz), `${u.label} · ${n} 条转发器`])
+      rows.push([s(l.name), uv(u, l.valueMHz), EN ? `${u.label} · ${n} transponders` : `${u.label} · ${n} 条转发器`])
     }
   }
   // 校验：条数 + 逐条说明。★ 只报条数等于把问题藏进一个数字里
-  const SEV = { error: '错误', warn: '警告', info: '提示' }
+  const SEV = EN ? { error: 'Error', warn: 'Warning', info: 'Info' } : { error: '错误', warn: '警告', info: '提示' }
   const idNo = new Map((plan.channels || []).map((c) => [c.id, c.no]))
   const issues = []
   for (const is of validatePlan(plan, u.label)) {
-    const refs = (is.refs || []).map((id) => idNo.get(id) || '').filter(Boolean).join('、')
+    const refs = (is.refs || []).map((id) => idNo.get(id) || '').filter(Boolean).join(T('、', ', '))
     issues.push([`${SEV[is.severity] || s(is.severity)}${refs ? ' · ' + refs : ''}`, s(is.msg), ''])
   }
   for (const g of alloc.groups) {
-    for (const is of g.issues || []) issues.push([`警告 · ${s(g.no)}`, s(is.msg), ''])
+    for (const is of g.issues || []) issues.push([`${T('警告', 'Warning')} · ${s(g.no)}`, s(is.msg), ''])
   }
-  rows.push(['—— 校验', null, null])
-  rows.push(['装填冲突条目', S.issueCount, '条'])
-  rows.push(['计划校验条目', validatePlan(plan, u.label).length, '条'])
+  rows.push([T('—— 校验', '—— Checks'), null, null])
+  rows.push([T('装填冲突条目', 'Loading conflicts'), S.issueCount, T('条', '')])
+  rows.push([T('计划校验条目', 'Plan check items'), validatePlan(plan, u.label).length, T('条', '')])
   rows.push(...issues)
 
   return {
-    name: '计划概览',
-    title: s(plan.name) || '频率计划',
+    name: T('计划概览', 'Plan Overview'),
+    title: s(plan.name) || T('频率计划', 'Frequency Plan'),
     kv: true,
-    columns: [COL('项', { w: 26 }), COL('值', { w: 40 }), COL('单位', { w: 18 })],
+    columns: [COL(T('项', 'Item'), { w: 26 }), COL(T('值', 'Value'), { w: 40 }), COL(T('单位', 'Unit'), { w: 18 })],
     rows,
     freeze: 0
   }
@@ -757,6 +781,9 @@ function dataSheetOverview(plan, rs, alloc, u) {
  * @param {object} plan   @param {Array} carriers   @param {object} opts { unit }
  */
 export function buildDataXlsx(plan, carriers = [], opts = {}) {
+  return withLang(opts, () => dataXlsx(plan, carriers, opts))
+}
+function dataXlsx(plan, carriers, opts) {
   const u = unitOf(opts.unit || 'MHz')
   const rs = resolveAll(plan)
   const alloc = buildAllocation(plan, carriers, { unit: opts.unit || 'MHz', side: 'dn', beamMode: 'freq' })

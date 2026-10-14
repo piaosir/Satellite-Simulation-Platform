@@ -90,22 +90,22 @@ function paletteOf(forExport) {
   const dark = isDark()
   return {
     bg: 'transparent',
-    plot: cssVar(cs, '--bg', dark ? '#1c1c1a' : '#ffffff'),
-    text: cssVar(cs, '--text', dark ? '#ececea' : '#1a1a1a'),
-    muted: cssVar(cs, '--text-muted', dark ? '#a4a49e' : '#6b6b66'),
-    faint: cssVar(cs, '--text-faint', dark ? '#82817a' : '#86867f'),
-    grid: cssVar(cs, '--border', dark ? '#3f3f39' : '#d3d2cc'),
-    frame: cssVar(cs, '--border-strong', dark ? '#5c5b54' : '#adaca4'),
-    // 大面积实填：浅色取 RED[2]（中浅）、深色取 RED[4]（中深，压在 #1c1c1a 上不刺眼）
+    plot: cssVar(cs, '--bg', dark ? '#111111' : '#ffffff'),
+    text: cssVar(cs, '--text', dark ? '#dbdbdb' : '#292929'),
+    muted: cssVar(cs, '--text-muted', dark ? '#afafaf' : '#505050'),
+    faint: cssVar(cs, '--text-faint', dark ? '#8a8a8a' : '#686868'),
+    grid: cssVar(cs, '--border', dark ? '#2c2c2c' : '#e1e1e1'),
+    frame: cssVar(cs, '--border-strong', dark ? '#444444' : '#c6c6c6'),
+    // 大面积实填：浅色取 RED[2]（中浅）、深色取 RED[4]（中深，压在 #111 上不刺眼）
     blocked: dark ? RED[4] : RED[2],
     // 顺序色阶按「近 = 显著」：浅色主题近端深，深色主题近端亮。t=0 为近端。
     //   两头各收一级：浅色的远端不取最浅的 RED[0]（白底上几乎看不见），深色的近端不取 RED[0/1]（整片贴着挂点的大块浅粉在暗底上刺眼）
     ramp: dark ? RED.slice(2) : RED.slice(1).reverse(),
-    ink: cssVar(cs, '--text', dark ? '#ececea' : '#1a1a1a'),
-    halo: cssVar(cs, '--bg', dark ? '#1c1c1a' : '#ffffff'),
-    hi: cssVar(cs, '--text', dark ? '#ececea' : '#1a1a1a'),
-    tipBg: cssVar(cs, '--bg', dark ? '#1c1c1a' : '#ffffff'),
-    tipBorder: cssVar(cs, '--border-strong', dark ? '#5c5b54' : '#adaca4'),
+    ink: cssVar(cs, '--text', dark ? '#dbdbdb' : '#292929'),
+    halo: cssVar(cs, '--bg', dark ? '#111111' : '#ffffff'),
+    hi: cssVar(cs, '--text', dark ? '#dbdbdb' : '#292929'),
+    tipBg: cssVar(cs, '--bg', dark ? '#111111' : '#ffffff'),
+    tipBorder: cssVar(cs, '--border-strong', dark ? '#444444' : '#c6c6c6'),
     dark
   }
 }
@@ -185,7 +185,7 @@ export class MaskChart {
     // 主题 / 界面字体（<html> 行内 --font-ui）一变就重画：屏上配色与字体都是现读 CSS 变量的
     if (typeof MutationObserver !== 'undefined') {
       this._mo = new MutationObserver(() => { this._imgKey = ''; this.draw() })
-      this._mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'style'] })
+      this._mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'style'] })
     }
     this.resize()
     return this

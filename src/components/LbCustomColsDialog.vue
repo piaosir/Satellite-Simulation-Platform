@@ -1,13 +1,13 @@
 <script setup>
 // 「自定义列」独立弹窗：新建/编辑/删除都在这（GSO / NGSO / 再生式三窗共用）。
 // 与「结果列」下拉分工——下拉只管勾选显隐，这里负责建：写公式是费时间的事，
-// 遮罩刻意【不】点击关闭（口径同高级计算弹窗），只有标题栏 × 与「关闭」按钮能关，误点不丢工作。
+// 外壳是 AppDialog：遮罩不点击关闭（全平台口径），标题栏 × / Esc / 「关闭」按钮关，误点不丢工作。
 // 左栏＝列清单（点选载入、＋新建、悬停删除），右栏＝编辑器（保存不关窗，可连续建多列）。
 // 单位【只算不填】：每个引用带着自己的单位进公式，按量纲演算推导（1min/10s=6 无量纲、
 // [斜距(km)]/12 仍是 km、dBW−dBW=dB），量纲冲突当场报错。详见 shared/lbCustomCols.js。
 // 表达式语法/校验/推导见 shared/lbCustomCols.js；错误行与预览行是状态与读数，不是教学文字。
 import { ref, computed, watch } from 'vue'
-import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { compileExpr, deriveColumn, makeResolver, newDefId, unitOf, MAX_DP } from '../shared/lbCustomCols.js'
 
 const props = defineProps({
@@ -116,13 +116,8 @@ const listUnit = (c) => unitOf(c, props.pool)
 </script>
 
 <template>
-  <div v-if="open" class="ccd-mask">
-    <div class="ccd" role="dialog" aria-modal="true">
-      <div class="ccd-hd">
-        <span class="ccd-fx">ƒx</span>自定义列<span v-if="subtitle" class="ccd-sub">· {{ subtitle }}</span>
-        <span class="ccd-sp"></span>
-        <button class="ccd-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <AppDialog :open="open" :width="620" flush initial-focus=".ccd-expr" @close="emit('close')">
+      <template #title><span class="ccd-fx">ƒx</span>自定义列<span v-if="subtitle" class="ccd-sub">· {{ subtitle }}</span></template>
       <div class="ccd-bd">
         <div class="ccd-list">
           <button class="lb-mini ccd-newbtn" @click="openNew">＋ 新建</button>
@@ -130,7 +125,7 @@ const listUnit = (c) => unitOf(c, props.pool)
             <span class="ccd-it-n">{{ c.label }}<i v-if="listUnit(c)"> ({{ listUnit(c) }})</i></span>
             <button class="ccd-it-del" title="删除" @click.stop="remove(c.id)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l10 10M13 3L3 13"/></svg></button>
           </div>
-          <div v-if="!cols.length" class="ccd-empty">还没有自定义列。</div>
+          <div v-if="!cols.length" class="ccd-empty">暂无自定义列。</div>
         </div>
         <div class="ccd-ed">
           <template v-if="editing">
@@ -139,12 +134,12 @@ const listUnit = (c) => unitOf(c, props.pool)
                 <input v-model="editing.label" class="ccd-in" /></label>
               <label class="ccd-f"><span class="ccd-l">小数位</span>
                 <input v-model.number="editing.dp" class="ccd-in ccd-dp" type="number" min="0" :max="MAX_DP"
-                  title="引擎出参多数只带 2 位小数（toFixed(2+FX)），上限 10 位即引擎自身最大精度；再多位是源数据量化噪声" /></label>
+                  title="引擎出参多数仅带 2 位小数（toFixed(2+FX)），上限 10 位即引擎自身最大精度；再多位是源数据量化噪声" /></label>
             </div>
             <label class="ccd-f"><span class="ccd-l">表达式</span>
               <textarea ref="exprEl" v-model="editing.expr" class="ccd-expr" rows="3" spellcheck="false"></textarea></label>
             <div class="ccd-row">
-              <select class="ccd-in ccd-sel" title="在光标处插入字段引用（池按本体制实际算出的键过滤：输入参数 + 全部输出参数）" @change="insertField">
+              <select class="ccd-in ccd-sel cmd-sel" title="在光标处插入字段引用（池按本体制实际计算出的键过滤：输入参数 + 全部输出参数）" @change="insertField">
                 <option value="">插入字段</option>
                 <optgroup v-for="g in fieldGroups" :key="g.name" :label="g.name">
                   <option v-for="o in g.opts" :key="o.ref + o.text" :value="o.ref">{{ o.text }}</option>
@@ -157,11 +152,6 @@ const listUnit = (c) => unitOf(c, props.pool)
             </div>
             <div v-if="preview !== null" class="ccd-prev">预览 <b>{{ preview }}</b><i v-if="editUnit"> {{ editUnit }}</i></div>
             <div v-if="liveErr" class="ccd-err">{{ liveErr }}</div>
-            <div class="ccd-row ccd-act">
-              <span class="ccd-sp"></span>
-              <button class="lb-mini" :disabled="!!liveErr || !String(editing.expr || '').trim()" @click="save">保存</button>
-              <button class="lb-mini" @click="emit('close')">关闭</button>
-            </div>
             <!-- 语法参考（2026-08-07 用户点名要求的常驻参考区——规格清单不是教学文字，勿按「界面不写说明文字」惯例删除） -->
             <div class="ccd-ref">
               <div class="ccd-ref-r"><b>运算</b><span>+ − * / ^（右结合）· 括号 · 常量 pi e · 百分数 20% ≡ 0.2 · 引用 [列名] / [列名(单位)] / 键名</span></div>
@@ -174,21 +164,18 @@ const listUnit = (c) => unitOf(c, props.pool)
           <div v-else class="ccd-empty">未选择列。</div>
         </div>
       </div>
-    </div>
-  </div>
+      <!-- 保存不关窗（可连续建多列）；只有关闭钮 / Esc / 「关闭」能关，点遮罩不关，误点不丢工作 -->
+      <template #footer>
+        <button class="btn" @click="emit('close')">关闭</button>
+        <button v-if="editing" class="btn primary" :disabled="!!liveErr || !String(editing.expr || '').trim()" @click="save">保存</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.ccd-mask { position: fixed; inset: 0; z-index: 220; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-.ccd { width: 620px; max-width: calc(100vw - 48px); max-height: calc(100vh - 64px); display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, rgba(128,128,128,.5)); border-radius: var(--r-box, 4px); box-shadow: var(--shadow-3);
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.ccd-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); font-weight: 600; color: var(--text); border-bottom: 1px solid var(--border, rgba(128,128,128,.3)); }
-.ccd-fx { font-style: italic; font-weight: 700; color: var(--accent, var(--text)); }
-.ccd-sub { font-weight: 400; color: var(--text-faint, #888); font-size: var(--fs-3); }
-.ccd-sp { flex: 1 1 auto; }
-.ccd-x { display: inline-flex; border: 0; background: transparent; color: var(--text-faint, #888); cursor: pointer; padding: 2px; }
-.ccd-x:hover { color: var(--text); }
+/* 外壳归 AppDialog */
+.ccd-fx { margin-right: 6px; font-style: italic; font-weight: 700; color: var(--accent, var(--text)); }
+.ccd-sub { margin-left: 6px; font-weight: 400; color: var(--text-faint, #888); font-size: var(--fs-3); }
 .ccd-bd { display: flex; align-items: stretch; min-height: 0; overflow: hidden; }
 .ccd-list { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; padding: 8px; border-right: 1px solid var(--border, rgba(128,128,128,.3)); overflow-y: auto; }
 .ccd-newbtn { align-self: flex-start; margin-bottom: 4px; }
@@ -199,7 +186,7 @@ const listUnit = (c) => unitOf(c, props.pool)
 .ccd-it-n i { font-style: normal; color: var(--text-faint, #888); font-size: var(--fs-2); font-weight: 400; }
 .ccd-it-del { display: none; flex: 0 0 auto; border: 0; background: transparent; color: var(--text-faint, #888); cursor: pointer; height: var(--h-ctl); white-space: nowrap; padding: 0 2px; }
 .ccd-it:hover .ccd-it-del { display: inline-flex; }
-.ccd-it-del:hover { color: var(--danger, #9c5751); }
+.ccd-it-del:hover { color: var(--danger); }
 .ccd-empty { padding: 8px 6px; font-size: var(--fs-3); color: var(--text-faint, #888); }
 .ccd-ed { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; overflow-y: auto; }
 .ccd-row { display: flex; align-items: center; gap: 8px; }
@@ -217,8 +204,7 @@ const listUnit = (c) => unitOf(c, props.pool)
 .ccd-prev { font-size: var(--fs-3); color: var(--text-muted, var(--text)); }
 .ccd-prev b { font-weight: 600; }
 .ccd-prev i { font-style: normal; color: var(--text-faint, #888); font-size: var(--fs-2); }
-.ccd-err { font-size: var(--fs-2); color: var(--danger, #9c5751); }
-.ccd-act { margin-top: 2px; }
+.ccd-err { font-size: var(--fs-2); color: var(--danger); }
 .ccd-ref { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border, rgba(128,128,128,.3)); display: flex; flex-direction: column; gap: 2px; }
 .ccd-ref-r { display: flex; gap: 8px; font-size: var(--fs-2); color: var(--text-faint, #888); line-height: 1.5; }
 .ccd-ref-r b { flex: 0 0 34px; font-weight: 600; color: var(--text-muted, var(--text-faint, #888)); letter-spacing: var(--ls-label); }

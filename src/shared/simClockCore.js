@@ -180,7 +180,7 @@ export function fmtStep(sec) {
 export const fmtStepShort = (sec) => fmtStep(sec).replace(' min', 'm').replace(' s', 's').replace(' h', 'h').replace(' d', 'd')
 export function fmtRate(x) {
   const v = Number(x) || 0
-  if (v >= 100) return Math.round(v).toLocaleString()
+  if (v >= 100) return Math.round(v).toLocaleString('en-US')
   if (v >= 10) return v.toFixed(0)
   return String(Number(v.toFixed(2)))
 }

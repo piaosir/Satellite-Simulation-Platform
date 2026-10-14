@@ -83,21 +83,21 @@ function onWheel(ev) {
     <div v-for="d in st.docs" :key="d.id" class="dtab" role="tab" :class="{ on: d.id === st.activeDoc }" :aria-selected="d.id === st.activeDoc"
          :data-doc="d.id" :data-kind="d.kind" :title="tipOf(d)"
          @click="activate(d)" @mousedown.middle.prevent @mouseup.middle="close(d)" @contextmenu.prevent="openCtx($event, d)">
-      <Icon class="dtab-ic" :name="iconOf(d)" :size="13" />
+      <Icon class="dtab-ic" :name="iconOf(d)" :size="12" />
       <span class="dtab-n" data-i18n-skip>{{ nameOf(d) }}</span>
       <span v-if="d.templateKey" class="dtab-tag" title="编辑时自动创建副本">模板</span>
-      <Icon v-if="readonly(d)" class="dtab-lock" name="lock" :size="11" />
+      <Icon v-if="readonly(d)" class="dtab-lock" name="lock" :size="12" />
       <i v-if="d.dirty || d.saveErr" class="dtab-dot" :class="{ err: !!d.saveErr }"></i>
       <button type="button" class="dtab-x" data-act="doc-close" title="关闭（Ctrl+W）" @click.stop="close(d)" @mousedown.middle.stop><Icon name="x" :size="12" /></button>
     </div>
   </div>
   <Teleport to="body">
-    <div v-if="ctx" class="lb-ctx-mask" @mousedown="ctx = null" @contextmenu.prevent="ctx = null">
-      <div class="lb-ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
-        <button class="lb-ctx-i" data-act="doc-ctx-close" @click="ctxDo((id) => wb.closeDoc(id))">关闭</button>
-        <button class="lb-ctx-i" data-act="doc-ctx-close-others" :disabled="st.docs.length < 2" @click="ctxDo((id) => wb.closeOtherDocs(id))">关闭其他</button>
-        <div class="lb-ctx-sep"></div>
-        <button class="lb-ctx-i" data-act="doc-ctx-copy" :disabled="!canCopy" @click="ctxDo((id) => wb.saveDocCopy(id))">另存副本</button>
+    <div v-if="ctx" class="lb-ctx-mask menu-mask" @mousedown="ctx = null" @contextmenu.prevent="ctx = null">
+      <div class="lb-ctx menu" role="menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @mousedown.stop>
+        <button class="lb-ctx-i menu-item" role="menuitem" data-act="doc-ctx-close" @click="ctxDo((id) => wb.closeDoc(id))">关闭</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" data-act="doc-ctx-close-others" :disabled="st.docs.length < 2" @click="ctxDo((id) => wb.closeOtherDocs(id))">关闭其他</button>
+        <div class="lb-ctx-sep menu-sep" role="separator"></div>
+        <button class="lb-ctx-i menu-item" role="menuitem" data-act="doc-ctx-copy" :disabled="!canCopy" @click="ctxDo((id) => wb.saveDocCopy(id))">另存副本</button>
       </div>
     </div>
   </Teleport>

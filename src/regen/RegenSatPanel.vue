@@ -2,6 +2,7 @@
 // 取星口径的两件纯函数放在模块作用域并导出：窗口刷新卫星树时（RegenLinkBudgetApp.reloadSatTree）按树里现在的节点
 // 重解已选条目的轨道，与本面板选星走同一份代码（3D 页改了根数 / 历元，再生式窗口跟着变）。
 import { findPoolByNorad } from '../ngso/satSearchPool.js'
+import Icon from '../components/Icon.vue'
 import { treeElementsSpec } from '../shared/treeOrbitEpoch.js'
 
 // 平均运动(rev/day) → 圆轨道高度(km)
@@ -26,13 +27,13 @@ export async function treeNodeOrbit(node) {
       }
       return { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
     }
-    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）暂未在星历库解析到轨道（可能离线或本地缓存缺失）。请联网后在「从星历搜索」按 NORAD 重选，或改用手动轨道高度+倾角。` }
+    return { type: 'unresolved', noradId: node.noradId, reason: `关联星（NORAD ${node.noradId}）未在星历库中解析到轨道。` }
   }
   if (node.omm && node.omm.meanMotion) return Object.assign({ type: 'omm' }, node.omm)
   const el = node.elements
   if (el && el.altKm != null) return treeElementsSpec(el, node.noradId)
   if ((kind === 'preset' || kind === 'custom' || !kind) && node.altKm != null) return { type: 'snapshot', lonDeg: Number(node.lon) || 0, latDeg: Number(node.lat) || 0, altKm: Number(node.altKm) || 0, noradId: node.noradId }
-  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少可用轨道根数，无法确定其轨道。请在「星座3D」页为其补充轨道根数，或改用手动轨道高度+倾角。` }
+  return { type: 'unresolved', noradId: node.noradId, reason: `卫星「${node.satName || node.folder}」缺少轨道根数。` }
 }
 
 // 选星后回显轨道高度/倾角到 form（只读「自动」）
@@ -197,10 +198,10 @@ const rows = computed(() => {
   <div class="rsp">
     <!-- 取星模式 -->
     <div class="rsp-modes">
-      <button class="rsp-seg" :class="{ on: mode === 'tree' }" @click="switchMode('tree')">卫星/天线树选择</button>
-      <button class="rsp-seg" :class="{ on: mode === 'search' }" @click="switchMode('search')">从星历搜索</button>
+      <button class="rsp-seg" :class="{ on: mode === 'tree' }" :aria-pressed="(mode === 'tree') ? 'true' : 'false'" @click="switchMode('tree')">卫星/天线树选择</button>
+      <button class="rsp-seg" :class="{ on: mode === 'search' }" :aria-pressed="(mode === 'search') ? 'true' : 'false'" @click="switchMode('search')">从星历搜索</button>
       <span class="rsp-flex"></span>
-      <button v-if="satSelected" class="rsp-clear" title="取消选星，恢复手动填轨道" @click="onClear">✕ 取消选星</button>
+      <button v-if="satSelected" class="rsp-clear" title="取消选星，恢复手动填轨道" @click="onClear"><Icon name="x" :size="12" />取消选星</button>
     </div>
 
     <!-- ① 卫星/天线树选择：取所选卫星轨道用于几何求解 -->
@@ -218,10 +219,10 @@ const rows = computed(() => {
     <!-- ② 搜索卫星 -->
     <div v-else class="rsp-grd">
       <label class="pf"><span class="pf-l">搜索卫星</span>
-        <input v-model="kw" class="pf-i" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
+        <input v-model="kw" class="pf-i search-field" placeholder="名称 / NORAD 号，如 STARLINK / 44713" @focus="onSearchFocus" @click="listOpen = true" @input="listOpen = true" @blur="onSearchBlur" />
         <i class="pf-u"></i>
       </label>
-      <div v-if="loading" class="rsp-tip">正在加载星历…</div>
+      <div v-if="loading" class="rsp-tip">加载中…</div>
       <div v-else-if="loadErr" class="rsp-tip rsp-err">{{ loadErr }}</div>
       <template v-else-if="listOpen">
         <div v-if="kw && !searchRes.length" class="rsp-tip">无匹配卫星</div>
@@ -235,8 +236,8 @@ const rows = computed(() => {
             </span>
             <span class="rsp-li-i">
               {{ r.custom ? '合成' : 'NORAD' }} {{ r.noradId }} · i={{ (+r.incl).toFixed(1) }}° ·
-              <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }}km</template>
-              <template v-else>h≈{{ Math.round(r.perigeeKm) }}km</template>
+              <template v-if="(+r.ecc) >= 0.01">近{{ Math.round(r.perigeeKm) }}/远{{ Math.round(r.apogeeKm) }} km</template>
+              <template v-else>h≈{{ Math.round(r.perigeeKm) }} km</template>
             </span>
           </li>
         </ul>
@@ -246,7 +247,7 @@ const rows = computed(() => {
     <!-- 当前选星摘要 -->
     <div v-if="satSelected" class="rsp-sel">
       <div>已选卫星：<b class="rsp-name" title="可框选复制此卫星名" data-i18n-skip>{{ ngsoSat.name || form.satelliteName }}</b>
-        <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span> · 轨道高度/倾角已由所选卫星自动确定
+        <span v-if="ngsoSat.noradId">（NORAD {{ ngsoSat.noradId }}）</span>
       </div>
       <div v-if="orbitShape" class="rsp-shape">
         <b class="rsp-regime" :class="'rsp-rg-' + orbitShape.regime" :title="orbitShape.regimeZh">{{ orbitShape.regime }}</b>
@@ -293,23 +294,23 @@ const rows = computed(() => {
 .rsp-li-n { display: block; font-size: var(--fs-3); color: var(--text); }
 .rsp-li-i { display: block; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
 .rsp-badge { display: inline-block; font-size: var(--fs-1); font-style: normal; padding: 0 5px; margin-left: 5px; border-radius: var(--r-ctl); background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
-.rsp-badge-cc { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.rsp-badge-cc { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
 /* 轨道区制徽标配色（列表）：GEO 绿 / IGSO 青 / MEO 蓝 / HEO 琥珀（LEO 不显示徽标） */
-.rsp-badge.rsp-rg-GEO { background: #16a34a1a; color: #16a34a; border-color: #16a34a55; }
-.rsp-badge.rsp-rg-IGSO { background: #0d94881a; color: #0d9488; border-color: #0d948855; }
-.rsp-badge.rsp-rg-MEO { background: #2563eb1a; color: #2563eb; border-color: #2563eb55; }
-.rsp-badge.rsp-rg-HEO { background: #f59f0022; color: #d98600; border-color: #f59f0055; }
+.rsp-badge.rsp-rg-GEO { background: color-mix(in srgb, var(--rg-geo) 10%, transparent); color: var(--rg-geo); border-color: color-mix(in srgb, var(--rg-geo) 33%, transparent); }
+.rsp-badge.rsp-rg-IGSO { background: color-mix(in srgb, var(--rg-igso) 10%, transparent); color: var(--rg-igso); border-color: color-mix(in srgb, var(--rg-igso) 33%, transparent); }
+.rsp-badge.rsp-rg-MEO { background: color-mix(in srgb, var(--rg-meo) 10%, transparent); color: var(--rg-meo); border-color: color-mix(in srgb, var(--rg-meo) 33%, transparent); }
+.rsp-badge.rsp-rg-HEO { background: color-mix(in srgb, var(--rg-heo-tint) 13%, transparent); color: var(--rg-heo); border-color: color-mix(in srgb, var(--rg-heo-tint) 33%, transparent); }
 .rsp-sel { font-size: var(--fs-2); color: var(--text-muted); background: var(--surface); border-radius: var(--r-box); padding: 6px 8px; margin-bottom: 10px; }
 /* 卫星名可框选复制（覆盖全局 user-select:none），文本光标作可选的提示 —— 方便用户复制去改名 */
 .rsp-name { user-select: text; -webkit-user-select: text; cursor: text; }
 .rsp-shape { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
 /* 轨道区制标签（选星摘要）配色 */
 .rsp-regime { font-weight: 700; }
-.rsp-regime.rsp-rg-GEO { color: #16a34a; }
-.rsp-regime.rsp-rg-IGSO { color: #0d9488; }
-.rsp-regime.rsp-rg-MEO { color: #2563eb; }
+.rsp-regime.rsp-rg-GEO { color: var(--rg-geo); }
+.rsp-regime.rsp-rg-IGSO { color: var(--rg-igso); }
+.rsp-regime.rsp-rg-MEO { color: var(--rg-meo); }
 .rsp-regime.rsp-rg-LEO { color: var(--text-muted); }
-.rsp-regime.rsp-rg-HEO { color: #d98600; }
+.rsp-regime.rsp-rg-HEO { color: var(--rg-heo); }
 /* 参数密排网格（与 GEO/NGSO 卫星面板同款） */
 .rsp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px 11px; }
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色 */

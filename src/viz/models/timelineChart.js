@@ -289,21 +289,21 @@ function paletteOf(forExport) {
   const dark = isDark()
   return {
     bg: 'transparent',
-    text: cssVar(cs, '--text', dark ? '#ececea' : '#1a1a1a'),
-    muted: cssVar(cs, '--text-muted', dark ? '#a4a49e' : '#6b6b66'),
-    faint: cssVar(cs, '--text-faint', dark ? '#82817a' : '#86867f'),
-    grid: cssVar(cs, '--border', dark ? '#3f3f39' : '#d3d2cc'),
-    frame: cssVar(cs, '--border-strong', dark ? '#5c5b54' : '#adaca4'),
-    shade: cssVar(cs, '--surface-2', dark ? '#333330' : '#e4e3de'),
-    hatch: cssVar(cs, '--text-faint', dark ? '#82817a' : '#86867f'),
-    ok: cssVar(cs, '--ok', dark ? '#4caf82' : '#1d7a52'),
-    danger: cssVar(cs, '--danger', dark ? '#e26a6a' : '#a32d2d'),
+    text: cssVar(cs, '--text', dark ? '#dbdbdb' : '#292929'),
+    muted: cssVar(cs, '--text-muted', dark ? '#afafaf' : '#505050'),
+    faint: cssVar(cs, '--text-faint', dark ? '#8a8a8a' : '#686868'),
+    grid: cssVar(cs, '--border', dark ? '#2c2c2c' : '#e1e1e1'),
+    frame: cssVar(cs, '--border-strong', dark ? '#444444' : '#c6c6c6'),
+    shade: cssVar(cs, '--surface-2', dark ? '#222222' : '#f3f3f3'),
+    hatch: cssVar(cs, '--text-faint', dark ? '#8a8a8a' : '#686868'),
+    ok: cssVar(cs, '--ok', dark ? '#6f9d85' : '#487860'),
+    danger: cssVar(cs, '--danger', dark ? '#c08079' : '#9c5751'),
     series: dark ? SERIES_DARK : SERIES_LIGHT,
-    cross: cssVar(cs, '--text-muted', dark ? '#a4a49e' : '#6b6b66'),
-    tipBg: cssVar(cs, '--bg', dark ? '#1c1c1a' : '#ffffff'),
-    tipBorder: cssVar(cs, '--border-strong', dark ? '#5c5b54' : '#adaca4'),
-    ring: cssVar(cs, '--bg', dark ? '#1c1c1a' : '#ffffff'),
-    ref: cssVar(cs, '--text-faint', dark ? '#82817a' : '#86867f')
+    cross: cssVar(cs, '--text-muted', dark ? '#afafaf' : '#505050'),
+    tipBg: cssVar(cs, '--bg', dark ? '#111111' : '#ffffff'),
+    tipBorder: cssVar(cs, '--border-strong', dark ? '#444444' : '#c6c6c6'),
+    ring: cssVar(cs, '--bg', dark ? '#111111' : '#ffffff'),
+    ref: cssVar(cs, '--text-faint', dark ? '#8a8a8a' : '#686868')
   }
 }
 const DASHES = [[], [7, 4], [2, 3]]
@@ -347,7 +347,7 @@ export class TimelineChart {
     if (typeof ResizeObserver !== 'undefined') { this._ro = new ResizeObserver(() => this.resize()); this._ro.observe(el) }
     if (typeof MutationObserver !== 'undefined') {
       this._mo = new MutationObserver(() => this.draw())
-      this._mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'style'] })
+      this._mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin', 'style'] })
     }
     this.resize()
     return this

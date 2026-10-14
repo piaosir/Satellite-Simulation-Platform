@@ -20,9 +20,9 @@ const comp = computed(() => (kind === 'shell' ? ShellPerfWin : kind === 'met' ? 
     <!-- 应用内提示（替代原生 alert：原生弹窗关掉后会夺走渲染进程焦点，之后输入框点不进去） -->
     <div v-if="alertMsg" class="pw-mask" @click.self="closeAlert">
       <div class="pw-dlg pw-alert">
-        <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert"><Icon name="x" :size="12" /></span></div>
+        <div class="sdh"><span>提示</span><button type="button" class="csx ibtn" title="关闭" aria-label="关闭" @click="closeAlert"><Icon name="x" :size="12" /></button></div>
         <div class="sdbody"><p class="al-msg">{{ alertMsg }}</p></div>
-        <div class="sdfoot"><span class="save" @click="closeAlert">确定</span></div>
+        <div class="sdfoot"><button type="button" class="save btn primary" @click="closeAlert">确定</button></div>
       </div>
     </div>
     <ActivationLock />

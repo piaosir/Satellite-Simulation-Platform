@@ -265,9 +265,9 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
       <div ref="rowsEl" class="asm-tree-rows">
       <div class="asm-tr asm-tr-root" :class="{ on: !ui.selIds.length }" data-root="1" :title="ROOT_LABELS[domain] + '：模型级属性（质量特性、挂点、关节、太阳翼组…）'" @click="asm.select([])">
         <span class="asm-tr-chev empty"></span>
-        <span class="asm-tr-ic"><Icon :name="DOMAIN_ICONS[domain] || 'boxes'" :size="13" /></span>
+        <span class="asm-tr-ic" aria-hidden="true"><Icon :name="DOMAIN_ICONS[domain] || 'boxes'" :size="12" /></span>
         <span class="asm-tr-nm" data-i18n-skip>{{ ROOT_LABELS[domain] || '整体' }}<span class="asm-tr-id">{{ docName }}</span></span>
-        <span v-if="driven" class="asm-tr-drv" title="总体参数驱动"><Icon name="link-2" :size="11" /></span>
+        <span v-if="driven" class="asm-tr-drv" title="总体参数驱动"><Icon name="link-2" :size="12" /></span>
       </div>
       <div v-if="!rows.length" class="asm-empty">暂无组件。</div>
       <div v-for="r in rows" :key="r.id" class="asm-tr" :data-id="r.id"
@@ -275,14 +275,14 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
            :style="{ paddingLeft: (6 + (r.depth + 1) * 14) + 'px' }" :title="r.type"
            @pointerdown="onRowDown($event, r)" @click="onRowClick($event, r)" @dblclick="startRename(r.id)" @contextmenu.prevent.stop="onCtx($event, r)">
         <span v-for="d in r.depth + 1" :key="'g' + d" class="asm-tr-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
-        <span class="asm-tr-chev" :class="{ empty: !r.hasKids }" @click.stop="r.hasKids && toggle(r.id)" @pointerdown.stop @dblclick.stop>
+        <span class="asm-tr-chev" :class="{ empty: !r.hasKids }" :title="r.hasKids ? (r.open ? '收起' : '展开') : null" :aria-label="r.hasKids ? (r.open ? '收起' : '展开') : null" :aria-expanded="r.hasKids ? (r.open ? 'true' : 'false') : null" @click.stop="r.hasKids && toggle(r.id)" @pointerdown.stop @dblclick.stop>
           <Icon v-if="r.hasKids" name="chevron-down" class="disc" :class="{ shut: !r.open }" :size="12" />
         </span>
-        <span class="asm-tr-ic"><Icon :name="r.icon" :size="13" /></span>
+        <span class="asm-tr-ic" aria-hidden="true"><Icon :name="r.icon" :size="12" /></span>
         <input v-if="ui.renaming === r.id" ref="renameIn" v-model="renameDraft" class="asm-tr-rename" spellcheck="false" :placeholder="defTitle(r.type)"
                @click.stop @dblclick.stop @pointerdown.stop @keydown.enter.prevent.stop="commitRename" @keydown.esc.prevent.stop="cancelRename" @blur="commitRename" />
         <span v-else class="asm-tr-nm" data-i18n-skip>{{ r.label }}<span class="asm-tr-id">{{ r.id }}</span></span>
-        <span v-if="r.sym" class="asm-tr-sym" :title="r.sym.tip"><Icon :name="r.sym.icon" :size="11" /><b data-i18n-skip>×{{ r.sym.n }}</b></span>
+        <span v-if="r.sym" class="asm-tr-sym" :title="r.sym.tip"><Icon :name="r.sym.icon" :size="12" /><b data-i18n-skip>×{{ r.sym.n }}</b></span>
         <span v-if="driven && overN(r.id)" class="asm-tr-ovr" :title="'已改写 ' + overN(r.id) + ' 项'"></span>
         <span v-else-if="driven && isUser(r.id)" class="asm-tr-usr" title="附加件（不由总体参数生成）">＋</span>
         <span v-if="r.hidden || r.locked" class="asm-tr-st">
@@ -297,21 +297,21 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
     </div>
 
     <Teleport to="body">
-      <div v-if="ui.ctx && ctxComps.length" class="lb-ctx-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
-        <div class="lb-ctx asm-ctx" :style="ctxPos" @mousedown.stop @contextmenu.prevent>
-          <button class="lb-ctx-i" data-act="ctx-rename" :disabled="!ctxOne || ctxAnyLocked" @click="ctxDo(doRename)">重命名<span class="asm-kbd">F2</span></button>
-          <button class="lb-ctx-i" data-act="ctx-frame" @click="ctxDo(() => asm.frameSelection())">取景<span class="asm-kbd">F</span></button>
-          <div class="lb-ctx-sep"></div>
-          <button class="lb-ctx-i" data-act="ctx-pickup" :disabled="!ctxPick" @click="ctxDo(() => asm.pickup())">重新放置<span class="asm-kbd">G</span></button>
-          <button class="lb-ctx-i" data-act="ctx-duplicate" :disabled="ui.posePreview" @click="ctxDo(() => asm.duplicate())">复制<span class="asm-kbd">Ctrl+D</span></button>
-          <button class="lb-ctx-i" data-act="ctx-mirror" :disabled="ctxHasRoot || ctxAnyLocked" @click="ctxDo(() => asm.mirror())">镜像<span class="asm-kbd">M</span></button>
-          <button class="lb-ctx-i" data-act="ctx-split" :disabled="!ctxSplit.ok || ctxAnyLocked" :title="ctxSplit.why" @click="ctxDo(doSplit)">拆分对称</button>
-          <button class="lb-ctx-i" data-act="ctx-root" :disabled="!ctxOne || ctxHasRoot || ctxAnyLocked" @click="ctxDo(doRoot)">设为根件</button>
-          <div class="lb-ctx-sep"></div>
-          <button class="lb-ctx-i" data-act="ctx-hide" @click="ctxDo(doHidden)">{{ ctxAllHidden ? '显示' : '隐藏' }}</button>
-          <button class="lb-ctx-i" data-act="ctx-lock" @click="ctxDo(doLocked)">{{ ctxAllLocked ? '解锁' : '锁定' }}</button>
-          <div class="lb-ctx-sep"></div>
-          <button class="lb-ctx-i danger" data-act="ctx-remove" :disabled="ctxAnyLocked" @click="ctxDo(() => asm.remove())">删除<span class="asm-kbd">Delete</span></button>
+      <div v-if="ui.ctx && ctxComps.length" class="lb-ctx-mask menu-mask" @mousedown="closeCtx" @contextmenu.prevent="closeCtx">
+        <div class="lb-ctx asm-ctx menu" role="menu" :style="ctxPos" @mousedown.stop @contextmenu.prevent>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-rename" :disabled="!ctxOne || ctxAnyLocked" @click="ctxDo(doRename)">重命名<span class="asm-kbd menu-kbd">F2</span></button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-frame" @click="ctxDo(() => asm.frameSelection())">取景<span class="asm-kbd menu-kbd">F</span></button>
+          <div class="lb-ctx-sep menu-sep" role="separator"></div>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-pickup" :disabled="!ctxPick" @click="ctxDo(() => asm.pickup())">重新放置<span class="asm-kbd menu-kbd">G</span></button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-duplicate" :disabled="ui.posePreview" @click="ctxDo(() => asm.duplicate())">复制<span class="asm-kbd menu-kbd">Ctrl+D</span></button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-mirror" :disabled="ctxHasRoot || ctxAnyLocked" @click="ctxDo(() => asm.mirror())">镜像<span class="asm-kbd menu-kbd">M</span></button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-split" :disabled="!ctxSplit.ok || ctxAnyLocked" :title="ctxSplit.why" @click="ctxDo(doSplit)">拆分对称</button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-root" :disabled="!ctxOne || ctxHasRoot || ctxAnyLocked" @click="ctxDo(doRoot)">设为根件</button>
+          <div class="lb-ctx-sep menu-sep" role="separator"></div>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-hide" @click="ctxDo(doHidden)">{{ ctxAllHidden ? '显示' : '隐藏' }}</button>
+          <button class="lb-ctx-i menu-item" role="menuitem" data-act="ctx-lock" @click="ctxDo(doLocked)">{{ ctxAllLocked ? '解锁' : '锁定' }}</button>
+          <div class="lb-ctx-sep menu-sep" role="separator"></div>
+          <button class="lb-ctx-i menu-item danger" role="menuitem" data-act="ctx-remove" :disabled="ctxAnyLocked" @click="ctxDo(() => asm.remove())">删除<span class="asm-kbd menu-kbd">Delete</span></button>
         </div>
       </div>
     </Teleport>
@@ -325,7 +325,7 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
   position: relative; display: flex; align-items: flex-start; gap: 4px; padding: 4px 6px; font-size: var(--fs-3); cursor: default;
   border-radius: var(--r-ctl); color: var(--text-muted); transition: background-color var(--dur-1) linear;
 }
-.asm-tr:hover { background: var(--surface-2); color: var(--text); }
+.asm-tr:hover { background: var(--wash-hover); color: var(--text); }
 .asm-tr.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); transition-duration: 0s; }
 .asm-tree:focus-visible .asm-tr.pri { box-shadow: inset 2px 0 0 var(--accent-ui), inset 0 0 0 1px var(--border-strong); }
 .asm-tr.hid .asm-tr-nm, .asm-tr.hid .asm-tr-ic { color: var(--text-faint); }
@@ -340,7 +340,7 @@ onBeforeUnmount(() => { endDrag(); window.removeEventListener('keydown', onCtxKe
 .asm-tr:hover .asm-tr-guide, .asm-tr.on .asm-tr-guide { background: var(--border-strong); }
 .asm-tr-chev { flex: none; width: 14px; height: 1.35em; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: var(--r-box); cursor: pointer; }
 .asm-tr-chev.empty { cursor: default; }
-.asm-tr-chev:not(.empty):hover { color: var(--text); background: var(--bg); }
+.asm-tr-chev:not(.empty):hover { color: var(--text); background: var(--wash-hover); }
 .asm-tr-ic { flex: none; height: 1.35em; display: inline-flex; align-items: center; color: var(--text-faint); }
 .asm-tr.on .asm-tr-ic { color: var(--accent-ui); }
 /* 名称不截断（这栏最窄 260px，组件名常带编号）：换行；id 紧跟名称、等宽小一号 */

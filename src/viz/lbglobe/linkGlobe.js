@@ -19,6 +19,7 @@ import { LineGeometry } from 'three/addons/lines/LineGeometry.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { loadBasemap, onBasemapChange, basemapPaths, OCEAN, LAND, COAST, BORDER } from '../../shared/lbBasemap.js'
 import { uiFontStack, DOC_FONT_STACK } from '../../shared/lbFont.js'
+import { PAPER } from '../../shared/paperTheme.js'
 
 const RE_KM = 6378.137
 const D2R = Math.PI / 180
@@ -68,9 +69,24 @@ function lla(latDeg, lonDeg, altKm) {
 // ---------------------------------------------------------------------------
 // 只缓当前主题这一份：3072×1536 一份就 18 MB，两份不值当（换主题重生成约 330 ms，很少发生）
 let _tex = null, _texKey = ''
+// 出图用的浅色贴图（交付物一律白纸，见 shared/paperTheme.js）：屏上是深色时另存一份，
+// 第一次出图时生成、之后复用；屏上本就是浅色则直接用 _tex，不多占一份。
+let _paperTex = null
 async function earthTexture(dark) {
   const key = dark ? 'dark' : 'light'
   if (_tex && _texKey === key) return _tex
+  const tex = await buildEarthTexture(dark)
+  if (_tex) _tex.dispose()               // 换主题：旧的那份连同 18 MB 画布一起放掉
+  _tex = tex; _texKey = key
+  if (key === 'light' && _paperTex) { _paperTex.dispose(); _paperTex = null }
+  return tex
+}
+async function paperTexture() {
+  if (_tex && _texKey === 'light') return _tex
+  if (!_paperTex) _paperTex = await buildEarthTexture(false)
+  return _paperTex
+}
+async function buildEarthTexture(dark) {
   const map = await loadBasemap()
   // 3072×1536：这颗球默认取景约 300 CSS px 宽、超采样后约 750 设备像素，正面半球（180° 经度）
   // 摊开是 1536 texel —— minification ≈ 2.05，采样正好落在 mip 1（一份盒式滤波过的 1536 图）
@@ -118,8 +134,6 @@ async function earthTexture(dark) {
   const tex = new THREE.CanvasTexture(cv)
   tex.colorSpace = THREE.SRGBColorSpace
   tex.anisotropy = 16                    // 临边（视线掠过球面处）压缩极大，各向异性采样是唯一救法
-  if (_tex) _tex.dispose()               // 换主题：旧的那份连同 18 MB 画布一起放掉
-  _tex = tex; _texKey = key
   return tex
 }
 
@@ -269,6 +283,7 @@ export function createLinkGlobe(container) {
   const lineMats = new Set()
   let curW = w0, curH = h0
   let dark = false
+  let paper = false     // 出图那一帧：纸色（白底、浅色贴图、纸上墨色），见 snapshot
   let dirty = 6                        // 待渲染帧数：交互/改数时补满，静止时降到 0 不空转
   const mark = (n) => { dirty = Math.max(dirty, n || 30) }
   controls.addEventListener('change', () => mark(2))
@@ -376,7 +391,7 @@ export function createLinkGlobe(container) {
     if (!current || !current.nodes || !current.nodes.length) { mark(2); return }
     const C = dark ? DIR_COLOR.dark : DIR_COLOR.light
     const cs = getComputedStyle(document.documentElement)
-    const textColor = (cs.getPropertyValue('--text') || '').trim() || (dark ? '#e8e6e1' : '#1f1f1d')
+    const textColor = paper ? PAPER.text : ((cs.getPropertyValue('--text') || '').trim() || (dark ? '#e8e6e1' : '#1f1f1d'))
     const halo = dark ? 'rgba(20,20,18,0.88)' : 'rgba(255,255,255,0.92)'
     const hex = (n) => '#' + n.toString(16).padStart(6, '0')
 
@@ -494,8 +509,8 @@ export function createLinkGlobe(container) {
   async function applyTheme(isDark) {
     dark = !!isDark
     const cs = getComputedStyle(document.documentElement)
-    const bg = (cs.getPropertyValue('--bg') || '').trim() || (dark ? '#1c1c1a' : '#ffffff')
-    try { renderer.setClearColor(new THREE.Color(bg), 1) } catch (e) { renderer.setClearColor(dark ? 0x1c1c1a : 0xffffff, 1) }
+    const bg = (cs.getPropertyValue('--bg') || '').trim() || (dark ? '#111111' : '#ffffff')
+    try { renderer.setClearColor(new THREE.Color(bg), 1) } catch (e) { renderer.setClearColor(dark ? 0x111111 : 0xffffff, 1) }
     const tex = await earthTexture(dark)
     globe.material.map = tex
     globe.material.needsUpdate = true
@@ -517,11 +532,20 @@ export function createLinkGlobe(container) {
   // 出图：临时把渲染分辨率抬到 scale 倍再取一帧（一张 ~900 CSS px 宽的图出来是 3600 px，
   // 报告里按整幅宽放置约合 600 dpi）。上限按最大边 8192 收——再大的帧缓冲在一部分驱动上
   // 直接分配失败，toDataURL 取回来的是一张黑图，而用户看到的只是「出图坏了」。
-  function snapshot(scale) {
+  // 交付物与屏幕主题解耦：屏上深色时，出图那一帧换白底 + 浅色贴图 + 浅色线色，出完换回。
+  // 浅色贴图先 await 备好（生成要 ~300 ms），换色、渲染、取帧、换回整段同步完成——
+  // 不会出一张半截换色的图，屏上也画不出浅色那一帧。
+  async function snapshot(scale) {
     const cap = Math.max(1, Math.min(8, 8192 / Math.max(curW, curH)))
     const s = Math.max(1, Math.min(cap, scale || 4))
+    const paperTex = await paperTexture()
     const dpr = renderer.getPixelRatio()
+    const darkPrev = dark, mapPrev = globe.material.map
+    const clearPrev = new THREE.Color(); renderer.getClearColor(clearPrev)
     try {
+      paper = true; dark = false
+      renderer.setClearColor(new THREE.Color(PAPER.bg), 1)
+      if (globe.material.map !== paperTex) { globe.material.map = paperTex; globe.material.needsUpdate = true }
       renderer.setPixelRatio(s)
       // 线宽（Line2/LineMaterial）**不动 resolution**。材质里线的半宽 = linewidth / resolution.y
       // 个 NDC，也就是「resolution 这套坐标下的 linewidth 像素」；屏上 resolution 记的是 CSS
@@ -541,6 +565,9 @@ export function createLinkGlobe(container) {
       return renderer.domElement.toDataURL('image/png')
     } finally {
       LABEL_FONT = null
+      paper = false; dark = darkPrev
+      renderer.setClearColor(clearPrev, 1)
+      if (globe.material.map !== mapPrev) { globe.material.map = mapPrev; globe.material.needsUpdate = true }
       setScene(current, true)       // 换回屏上那一份；机位不动，用户看不出中间那一帧
       renderer.setPixelRatio(dpr)   // 抛了也要还原，否则整块画布卡在出图分辨率上
       mark(6)
@@ -571,7 +598,7 @@ export function createLinkGlobe(container) {
   const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(resize) : null
   if (ro) ro.observe(container)
   // 「地图视角」变了底图整份重建 → 缓存的贴图作废，按当前主题重生成（applyTheme 会重新拿 earthTexture）
-  const offBasemap = onBasemapChange(() => { _texKey = ''; applyTheme(dark).catch((e) => console.warn('[linkGlobe] 底图重建', e)) })
+  const offBasemap = onBasemapChange(() => { _texKey = ''; if (_paperTex) { _paperTex.dispose(); _paperTex = null }; applyTheme(dark).catch((e) => console.warn('[linkGlobe] 底图重建', e)) })
 
   return {
     setScene,

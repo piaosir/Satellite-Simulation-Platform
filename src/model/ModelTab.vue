@@ -71,7 +71,7 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', onKey); pick.stop(
 
 <template>
   <div class="mdl">
-    <div v-if="!cur.meta" class="lb-placeholder">未选中模型。</div>
+    <div v-if="!cur.meta" class="lb-placeholder">未选择模型。</div>
     <template v-else>
       <div class="mdl-top">
         <span v-if="roText" class="md-state warn"><Icon name="lock" :size="12" />{{ roText }}</span>
@@ -79,8 +79,8 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', onKey); pick.stop(
         <span class="sp"></span>
         <span v-if="cur.saving" class="md-state"><span class="mdl-spin"></span></span>
         <span v-else-if="cur.saveErr" class="md-state bad" :title="cur.saveErr"><Icon name="alert-triangle" :size="12" />未保存</span>
-        <button class="lb-mini lb-mini-ico" :disabled="!cur.undoN" title="撤销（Ctrl+Z）" @click="wb.undo()"><Icon name="undo-2" :size="13" /></button>
-        <button class="lb-mini lb-mini-ico" :disabled="!cur.redoN" title="重做（Ctrl+Y）" @click="wb.redo()"><Icon name="redo-2" :size="13" /></button>
+        <button class="lb-mini lb-mini-ico" :disabled="!cur.undoN" title="撤销（Ctrl+Z）" @click="wb.undo()"><Icon name="undo-2" :size="12" /></button>
+        <button class="lb-mini lb-mini-ico" :disabled="!cur.redoN" title="重做（Ctrl+Y）" @click="wb.redo()"><Icon name="redo-2" :size="12" /></button>
       </div>
       <SecOverview />
       <SecUnits />
@@ -100,6 +100,5 @@ onBeforeUnmount(() => { window.removeEventListener('keydown', onKey); pick.stop(
 .mdl { display: flex; flex-direction: column; gap: 2px; }
 .mdl-top { display: flex; align-items: center; gap: 6px; min-height: 24px; margin-bottom: 2px; }
 .mdl-top .sp { flex: 1; }
-.mdl-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: mdl-spin .7s linear infinite; }
-@keyframes mdl-spin { to { transform: rotate(360deg); } }
+.mdl-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

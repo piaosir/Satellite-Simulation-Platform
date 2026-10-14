@@ -135,11 +135,11 @@ onBeforeUnmount(() => pick.stop('attach'))
   <MdSec id="m-attach" title="挂点" :count="aps.length || null">
     <template v-if="m">
       <div class="md-acts">
-        <button class="lb-mini" :class="{ on: picking }" :disabled="ro || !rootOk" title="在预览中点击模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
-          <Icon name="locate-fixed" :size="13" />表面拾取
+        <button class="lb-mini" :class="{ on: picking }" :aria-pressed="picking ? 'true' : 'false'" :disabled="ro || !rootOk" title="在预览中点击模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
+          <Icon name="mouse-pointer-click" :size="12" />表面拾取
         </button>
-        <button class="lb-mini" :disabled="ro || g.rect.value.r0 < 0" title="复制所选挂点" @click="duplicate"><Icon name="copy" :size="13" />复制</button>
-        <button class="lb-mini" :disabled="ro || !g.canDelete.value || g.rect.value.r0 < 0" title="删除所选挂点" @click="g.deleteRows()"><Icon name="trash" :size="13" />删除</button>
+        <button class="lb-mini" :disabled="ro || g.rect.value.r0 < 0" title="复制所选挂点" @click="duplicate"><Icon name="copy" :size="12" />复制</button>
+        <button class="lb-mini" :disabled="ro || !g.canDelete.value || g.rect.value.r0 < 0" title="删除所选挂点" @click="g.deleteRows()"><Icon name="trash" :size="12" />删除</button>
       </div>
       <div class="md-grid">
         <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :menu-items="menuItems" :head-tip="(c) => c.tip || c.label" empty-text="暂无挂点。" />

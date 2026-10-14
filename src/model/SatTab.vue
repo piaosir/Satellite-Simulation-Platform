@@ -44,9 +44,9 @@ async function clearBinding() {
         <span v-if="S.saving" class="md-state"><span class="st-spin"></span></span>
         <span v-else-if="S.saveErr" class="md-state bad" :title="S.saveErr"><Icon name="alert-triangle" :size="12" />未保存</span>
         <span v-if="S.errors.length" class="md-state warn" :title="S.errors.join('\n')"><Icon name="alert-triangle" :size="12" /><span data-i18n-skip>{{ S.errors.length }}</span></span>
-        <button class="lb-mini lb-mini-ico" :disabled="!S.undoN" title="撤销（Ctrl+Z）" @click="sat.undo()"><Icon name="undo-2" :size="13" /></button>
-        <button class="lb-mini lb-mini-ico" :disabled="!S.redoN" title="重做（Ctrl+Y）" @click="sat.redo()"><Icon name="redo-2" :size="13" /></button>
-        <button class="lb-mini lb-mini-ico" title="清除该卫星的绑定" @click="clearBinding"><Icon name="trash" :size="13" /></button>
+        <button class="lb-mini lb-mini-ico" :disabled="!S.undoN" title="撤销（Ctrl+Z）" @click="sat.undo()"><Icon name="undo-2" :size="12" /></button>
+        <button class="lb-mini lb-mini-ico" :disabled="!S.redoN" title="重做（Ctrl+Y）" @click="sat.redo()"><Icon name="redo-2" :size="12" /></button>
+        <button class="lb-mini lb-mini-ico" title="清除该卫星的绑定" @click="clearBinding"><Icon name="trash" :size="12" /></button>
       </div>
       <SatModel />
       <SatAttitude />
@@ -61,6 +61,5 @@ async function clearBinding() {
 .st-top { display: flex; align-items: center; gap: 6px; min-height: 26px; margin: 2px 0 4px; }
 .st-top .sp { flex: 1; }
 .st-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(var(--lb-fs, 11px) + 3px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
-.st-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: st-spin .7s linear infinite; }
-@keyframes st-spin { to { transform: rotate(360deg); } }
+.st-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

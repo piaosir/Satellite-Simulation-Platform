@@ -66,6 +66,35 @@ export function applyChannel(form, plan, channelNo) {
 }
 
 /**
+ * 按各卫星条目引用的计划重新拉取，重套托管字段（C4：频率计划在别的窗口改过，链路预算跟上）。
+ * 只动「仍在引用」的条目（fpId 与 fpNo 都在）；解除过引用的条目（频率交回手工填写）一字不动。
+ * 值没变时 applyChannel 的赋值是同值，不触发响应；真变了才会让「输入已变」亮起（走窗口原有的过期监听）。
+ * 计划取不到（已删 / 读盘失败）或转发器已不在计划里：保留现值，计入 failed，由调用方决定报不报。
+ * @param satConfigs 卫星库条目数组
+ * @param refOf      条目 → 引用容器（默认 c.grd，GSO 卫星条目的 fpId / fpNo 存在那里）
+ * @returns {Promise<{ changed:number, checked:number, failed:Array<{name:string,error:string}> }>}
+ */
+export async function resyncAll(satConfigs, refOf = (c) => c && c.grd) {
+  const plans = new Map()
+  const failed = []
+  let changed = 0, checked = 0
+  for (const c of satConfigs || []) {
+    const ref = refOf(c)
+    if (!ref || !ref.fpId || !ref.fpNo || !c.form) continue
+    checked++
+    if (!plans.has(ref.fpId)) plans.set(ref.fpId, await getPlan(ref.fpId))
+    const plan = plans.get(ref.fpId)
+    const name = c.name || (c.form && c.form.satelliteName) || ''
+    if (!plan) { failed.push({ name, error: '频率计划不可用' }); continue }
+    const before = JSON.stringify(c.form)
+    const r = applyChannel(c.form, plan, ref.fpNo)
+    if (!r.ok) { failed.push({ name, error: r.error }); continue }
+    if (JSON.stringify(c.form) !== before) changed++
+  }
+  return { changed, checked, failed }
+}
+
+/**
  * 校验「这条链路的载波」是否放得进所引用的转发器。只出数值，不下文字结论。
  * @param linkForm 链路行（含 occupiedBandwidth 之类的结果字段）或基带配置
  * @returns [{ code, msg, nums }]

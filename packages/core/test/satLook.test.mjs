@@ -151,7 +151,7 @@ const SUB = 110.5                       // 星下点经度：拿中星 6D 那个
   ok('⑧ 手动来源必须带高度（az/el 是从卫星看的角，只给经纬度算不出来）',
     /GEO_ALT_KM/.test(CRS) && /alt > 0 \? alt : GEO_ALT_KM/.test(CRS) && /label>高度<\/label>/.test(VUE))
   ok('⑧ 光标读数接在 onHoverLL 上，且没设星下点就没有这一项',
-    /cursor\.look = ll \? lookReadout\(ll\) : null/.test(VUE) &&
+    /cursor\.look = lookReadout\(ll\)/.test(VUE) && /cursor\.look = dashOf\(cursor\.look\)/.test(VUE) &&   // 光标离开地图：格子留下、值换「—」（2026-10-15）
     /if \(mapCrs\.lookMode === 'off' \|\| !mapCrs\.subPt\) return null/.test(VUE))
   ok('⑧ 两个量各带自己的名字（az：xx  el：xx），不是光甩两个数',
     /'az' \+ sep \+/.test(VUE) && /el' \+ sep \+/.test(VUE) && /'u' \+ sep \+/.test(VUE) && /v' \+ sep \+/.test(VUE))

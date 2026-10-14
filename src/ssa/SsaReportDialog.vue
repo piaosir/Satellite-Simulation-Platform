@@ -14,8 +14,9 @@
 //     submit 载荷 = { doc: { …五项, logo, fonts }, withFigures, formats: ['docx'] }。
 // ★ 自走那条路上的「模型落成纯数据」不是洁癖：模型在窗口里是 Vue 的响应式代理，结构化克隆过不去，
 //   ipcRenderer.invoke 会抛且静默（memory「IPC 不能收响应式代理」）。
-import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
+import { reactive, ref, computed, watch } from 'vue'
 import Icon from '../components/Icon.vue'
+import AppDialog from '../components/AppDialog.vue'
 import { DOC_FIELDS } from '../shared/lbReport.js'
 // 台标读写走公共件（从 LbReportDialog 搬出来的那份）：全局键 lb/report/logo，与链路预算三窗共用
 // 同一枚台标。svgSize 顺带用来读 chartSvg 出的那幅 SVG 的内在高度（栅格化要按它定 PNG 尺寸）。
@@ -184,24 +185,14 @@ function persist() {
   } catch (e) { /* 存不下不影响导出 */ }
 }
 
-// 关闭只走这一条路：右上角 ✕ / 取消 / Esc。点遮罩不关——在输入框里选中文字拖到框外松手就会
-// 让 click 落在遮罩上，一关就是几栏白填。
+// 关闭只走这一条路：右上角 ✕ / 取消 / Esc（外壳 AppDialog，生成中 closable=false）。点遮罩不关——
+// 在输入框里选中文字拖到框外松手就会让 click 落在遮罩上，一关就是几栏白填。
 function close() {
   if (lock.value) return
   persist()
   emit('close')
 }
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing || lock.value) return   // 组字中的 Esc 是取消组字，不是关窗
-  e.stopPropagation()
-  close()
-}
-const KEY_OPT = { capture: true }
-watch(() => props.open, (v) => {
-  if (v) { loadSaved(); window.addEventListener('keydown', onKey, KEY_OPT) }
-  else window.removeEventListener('keydown', onKey, KEY_OPT)
-}, { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, KEY_OPT))
+watch(() => props.open, (v) => { if (v) loadSaved() }, { immediate: true })
 
 // —— 图件栅格化 ——
 // 印刷档图宽 1200 px，栅格倍率 2（与 useLbReport 的 FIG_SCALE 同口径）：Word 里的图位限宽 82 mm，
@@ -287,16 +278,9 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 </script>
 
 <template>
-  <div v-if="open" class="rd-mask">
-    <div class="rd" role="dialog" aria-modal="true">
-      <div class="rd-hd">
-        <Icon name="file-down" :size="12" />导出空间态势报告
-        <span class="rd-sp"></span>
-        <span v-if="scopeText" class="rd-scheme" data-i18n-skip>{{ scopeText }}</span>
-        <button class="rd-x" :disabled="lock" title="关闭" aria-label="关闭" @click="close">
-          <Icon name="x" :size="12" />
-        </button>
-      </div>
+  <AppDialog :open="open" :width="560" flush :closable="!lock" @close="close">
+      <template #title><span class="rd-t"><Icon name="file-export" :size="12" />导出空间态势报告</span></template>
+      <template #head><span v-if="scopeText" class="rd-scheme" data-i18n-skip>{{ scopeText }}</span></template>
 
       <div class="rd-bd">
         <!-- 元信息：封面与页眉页脚照此写 -->
@@ -325,7 +309,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         <div v-if="logoErr" class="rd-err">{{ logoErr }}</div>
 
         <!-- 报告字体：三档各选一款，按窗口记住 -->
-        <div class="rd-sec" title="Word 只写字体名，排版在打开文档的机器上成形">字体</div>
+        <div class="rd-sec" title="Word 仅写入字体名，排版在打开文档的计算机上生成">字体</div>
         <div class="rd-fonts">
           <label class="rd-f">
             <span class="rd-l">西文</span>
@@ -366,43 +350,22 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         </div>
       </div>
 
-      <div class="rd-ft">
-        <button class="rd-btn" :disabled="lock" @click="close">取消</button>
-        <button class="rd-btn primary" :disabled="!canSubmit" @click="submit">
+      <template #footer>
+        <button class="btn" :disabled="lock" @click="close">取消</button>
+        <button class="btn primary" :disabled="!canSubmit" @click="submit">
           {{ lock ? '生成中…' : '生成报告' }}
         </button>
-      </div>
-    </div>
-  </div>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* .rd-* 这一族与 components/LbReportDialog.vue 同名同值 —— 那份是 <style scoped>（选择器缀了
-   data-v-，别的组件根本吃不到），故照抄一份本窗用得上的规则（改动须与那份同步）。 */
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.rd-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.rd {
-  width: 560px; max-height: 88vh; display: flex; flex-direction: column;
-  font-family: var(--lb-serif, var(--font-serif));
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card, 3px);
-  box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out);
-}
-.rd-hd {
-  display: flex; align-items: center; gap: 6px; padding: 10px 12px;
-  font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted);
-  background: var(--surface-2); border-bottom: 1px solid var(--border);
-}
-.rd-sp { flex: 1; }
-.rd-scheme { letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: var(--fs-2); max-width: 15em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rd-x {
-  display: inline-flex; align-items: center; justify-content: center; margin: -4px -4px -4px 4px;
-  padding: 3px; font: inherit; color: var(--text-faint); cursor: pointer;
-  background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
-}
-.rd-x:hover:not(:disabled) { color: var(--text); background: var(--bg); border-color: var(--border); }
-.rd-x:disabled { opacity: .35; cursor: not-allowed; }
-.rd-bd { padding: 12px; overflow: auto; }
+/* 外壳归 AppDialog（界面字体，这是填表界面不是交付文档）。正文 .rd-* 这一族与 components/LbReportDialog.vue
+   同名同值 —— 那份是 <style scoped>，别的组件吃不到，故照抄一份本窗用得上的规则（改动须与那份同步）。 */
+.rd-t { display: inline-flex; align-items: center; gap: 6px; }
+/* 题条里关闭钮前的范围读数 */
+.rd-scheme { flex: 0 1 auto; min-width: 0; align-self: center; padding: 0 10px; color: var(--text-faint); font-size: var(--fs-2); max-width: 15em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rd-bd { padding: 12px; }
 .rd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
 .rd-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .rd-f.wide { grid-column: 1 / -1; }
@@ -428,7 +391,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 .rd-logo-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .rd-logo-name { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .rd-file { display: none; }
-.rd-err { margin-top: 5px; font-size: var(--fs-2); color: var(--danger, #b00000); }
+.rd-err { margin-top: 5px; font-size: var(--fs-2); color: var(--danger); }
 .rd-opts { display: flex; gap: 16px; flex-wrap: wrap; }
 .rd-ck { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-3); color: var(--text); cursor: pointer; }
 .rd-ck.off { color: var(--text-faint); cursor: not-allowed; }
@@ -438,8 +401,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 .rd-bar { height: 3px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
 .rd-bar i { display: block; height: 100%; background: var(--accent); transition: width .2s linear; }
 .rd-ptext { margin-top: 4px; font-size: var(--fs-2); color: var(--text-muted); }
-.rd-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-/* 定高 --h-ctl（原靠内距撑出 21px）；主钮机位色，悬停压深一档、字色显式 --bg（通用悬停会把字染成 --text） */
+/* 正文里的小钮（台标选择 / 平台标志 / 移除）：定高 --h-ctl */
 .rd-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl);
   font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 12px; cursor: pointer;
@@ -447,6 +409,4 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 }
 .rd-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .rd-btn:disabled { opacity: .45; cursor: not-allowed; }
-.rd-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.rd-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
 </style>

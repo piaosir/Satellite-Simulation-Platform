@@ -50,7 +50,7 @@ const DATASETS = {
     url: 'https://celestrak.org/pub/satcat.csv',
     label: 'SATCAT 卫星编目',
     valid: validSatcat,
-    badWhy: '不是有效的 SATCAT 编目 CSV（表头缺 NORAD_CAT_ID / OPS_STATUS_CODE 等列，或行数不足）——请用 celestrak.org/pub/satcat.csv'
+    badWhy: '不是有效的 SATCAT 编目 CSV（表头缺 NORAD_CAT_ID / OPS_STATUS_CODE 等列，或行数不足）'
   }
 }
 // 本服务认得的键 = GP 分组 ∪ 数据集（三处「未知键」守卫共用）。
@@ -411,7 +411,7 @@ module.exports = function createOmm(getCore) {
   // 写入缓存覆盖，使该星座（或该数据集）改用用户文件。
   function writeCsvRaw(key, text) {
     if (!known(key)) throw new Error('unknown group: ' + key)
-    if (!validOf(key)(text)) throw new Error((DATASETS[key] && DATASETS[key].badWhy) || '不是有效的 OMM CSV（缺 MEAN_MOTION 列）——请用 CelesTrak「FORMAT=csv」导出的文件')
+    if (!validOf(key)(text)) throw new Error((DATASETS[key] && DATASETS[key].badWhy) || '不是有效的 OMM CSV（缺 MEAN_MOTION 列）')
     const cf = csvCacheFile(key)
     fs.writeFileSync(cf, String(text))
     const st = fs.statSync(cf)
@@ -473,7 +473,7 @@ module.exports = function createOmm(getCore) {
     }
     const text = res && (typeof res === 'string' ? res : res.text)
     if (!text) {
-      return { ok: false, count: 0, error: `本地无「${GL(group)}」星历缓存，也没有内置快照 —— 请在主窗口「星座」页加载一次该组，或联网刷新` }
+      return { ok: false, count: 0, error: `本地无「${GL(group)}」星历缓存，也无内置快照。` }
     }
     const recs = parseOMMCsv(text)
     const list = []

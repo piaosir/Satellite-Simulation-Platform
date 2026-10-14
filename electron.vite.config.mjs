@@ -15,9 +15,6 @@ function cmdIndexPlugin() {
   }
 }
 
-// Cesium 运行时资源目录（绝对路径 + 正斜杠，供 fast-glob 在 Windows 下正确匹配）。
-const cesiumBuild = resolve('node_modules/cesium/Build/Cesium').replace(/\\/g, '/')
-
 // three 的 Draco 解码器 / Basis 转码器：DRACOLoader、KTX2Loader 按「目录 + 固定文件名」经 fetch 取，不能被 vite 打哈希。
 // dev 由 static-copy 的 serve 中间件在 /three-libs/* 原样出；build 落 out/renderer/three-libs/*（随 out/** 进 asar，file:// 下 fetch 实测可用）。
 // 只拷 wasm 路径要的四个文件（Electron 恒有 WebAssembly，asm.js 回退与编码器 ~1.5 MB 不要）。渲染端取法见 src/viz/models/loader.js 的 THREE_LIBS。
@@ -82,10 +79,6 @@ export default defineConfig({
       cmdIndexPlugin(),
       viteStaticCopy({
         targets: [
-          { src: cesiumBuild + '/Workers', dest: 'cesium' },
-          { src: cesiumBuild + '/ThirdParty', dest: 'cesium' },
-          { src: cesiumBuild + '/Assets', dest: 'cesium' },
-          { src: cesiumBuild + '/Widgets', dest: 'cesium' },
           { src: [threeLibs + '/draco/gltf/draco_wasm_wrapper.js', threeLibs + '/draco/gltf/draco_decoder.wasm'], dest: 'three-libs/draco/gltf' },
           { src: [threeLibs + '/basis/basis_transcoder.js', threeLibs + '/basis/basis_transcoder.wasm'], dest: 'three-libs/basis' }
         ]

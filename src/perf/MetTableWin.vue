@@ -10,6 +10,8 @@ import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { MET_COL_DEFS, MET_COL_GROUPS, metCellText, PTYPE_ZH } from '../viz/env/useLiveField.js'
 import { sheetModel, exportSheets, importWorkbook, sheetToRecords, pickSheet, safeFileName } from '../shared/gridXlsx.js'
 import { appAlert } from '../stores/alert.js'
+import NoticeLine from '../components/NoticeLine.vue'
+import { useNotice } from '../shared/useNotice.js'
 import { cityName } from '../shared/cityName.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { fmtTzTime, fmtTzTimeOff, parseTzText } from '../shared/tzText.js'
@@ -135,7 +137,7 @@ const cityOpen = ref(false), mkOpen = ref(false)
 const markers = computed(() => st.markers || { pts: [], sts: [], trajs: [] })
 const importItems = computed(() => [
   { key: 'mk', label: '从标记 / 航迹导入…', icon: 'map-pin', title: '勾选地图上的点标记 / 地球站 / 航迹导入为站点（航迹每个航点一行；航迹排得出时刻的，每行带上经过该点的时刻，读数取那一刻）' },
-  { key: 'xlsx', label: '从 Excel 导入…', icon: 'import', title: '按表头匹配 站名 / 经度 / 纬度' },
+  { key: 'xlsx', label: '从 Excel 导入…', icon: 'file-import', title: '按表头匹配 站名 / 经度 / 纬度' },
   { key: 'clip', label: '粘贴剪贴板', icon: 'clipboard', title: '每行至少两列，末两列为经度、纬度，其余作站名' }
 ])
 async function onImport(k) {
@@ -147,7 +149,7 @@ async function onImport(k) {
 function confirmMk(sel) { mkOpen.value = false; act('importMarkers', sel) }
 async function pasteClip() {
   let txt = ''
-  try { txt = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请在表格内按 Ctrl+V'); return }
+  try { txt = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板。'); return }
   const n = pasteAppend(txt)
   if (!n) appAlert('剪贴板中没有可解析的坐标（每行至少两列，末两列为经度、纬度）')
 }
@@ -221,6 +223,13 @@ const xlsxVal = (r, c) => {
   const v = Number(r[c.key]) * (c.mul || 1)
   return Number.isFinite(v) ? v : ''
 }
+// 导出回执（「已导出 · 打开 · 在文件夹中显示」，shared/useNotice + NoticeLine）。这一条兼本窗失败出口。
+const N = useNotice()
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+function exportDone(n, r) {
+  if (r && r.ok) { const fp = outPath(r); n.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
+  else if (r && r.error) appAlert('导出失败：' + r.error)
+}
 async function exportXlsx() {
   if (!cols.value.length) { appAlert('当前未显示任何指标列'); return }
   const m = st.siteMeta
@@ -230,7 +239,7 @@ async function exportXlsx() {
     sheetModel({ name: '站点输入', cols: inCols, rows: sites.value, value: (r, c) => (c.key === 'tMs' ? (Number.isFinite(r.tMs) ? fmtTzTimeOff(r.tMs, tzMode.value) : null) : r[c.key]) })
   ]
   const r = await exportSheets({ defaultName: safeFileName('气象指标表', '气象指标表') + '.xlsx', title: '导出气象指标表', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  exportDone(N, r)
 }
 function toggleCol(k) {
   const on = colKeys.value.includes(k)
@@ -238,7 +247,7 @@ function toggleCol(k) {
   if (!next.length) return            // 至少留一列，否则表整个消失
   act('cols', MET_COL_DEFS.filter((c) => next.includes(c.key)).map((c) => c.key))
 }
-const emptyText = computed(() => (sites.value.length ? (st.hasMeta ? '当前时刻不在已获取的气象时段内。' : '尚未获取气象数据。') : '还没有站点。'))
+const emptyText = computed(() => (sites.value.length ? (st.hasMeta ? '当前时刻不在已获取的气象时段内。' : '尚未获取气象数据。') : '暂无站点。'))
 
 // ===== 中缝 =====
 const inH = persistedRef('met/inH', 160, { min: 72, max: Math.max(72, window.innerHeight - 180) })   // 中缝高度：记住上次
@@ -258,17 +267,17 @@ function dragSplit(e) {
     <section class="pw-in" :style="{ height: inH + 'px' }">
       <div class="pw-bar">
         <span class="pw-t">站点</span>
-        <span class="ptb" title="在末尾增加一行（可直接键入或粘贴；先经度、后纬度）" @click="addRow(null)"><Icon name="plus" :size="12" /> 增加</span>
-        <span class="ptb" title="从城市库选点：城市名 / 省份 / 拼音首字母检索，点一座加一座" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</span>
+        <button type="button" class="ptb btn" title="在末尾增加一行（可直接键入或粘贴；先经度、后纬度）" @click="addRow(null)"><Icon name="plus" :size="12" /> 增加</button>
+        <button type="button" class="ptb btn" title="从城市库选点：城市名 / 省份 / 拼音首字母检索，点一座加一座" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</button>
         <PwMenu label="导入" icon="import" :items="importItems" title="从标记 / 航迹 / Excel / 剪贴板导入站点" @pick="onImport" />
-        <span class="ptb" :class="{ dis: !inGrid.selRowCount.value }" title="删除选中的站点（表内 Ctrl+- 同）" @click="inGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="inGrid.selRowCount.value" class="ptb-n">{{ inGrid.selRowCount.value }}</em></span>
-        <span class="ptb" :class="{ dis: !sites.length }" title="清空站点列表" @click="clearSites"><Icon name="trash" :size="12" /> 清空</span>
+        <button type="button" :disabled="!inGrid.selRowCount.value" class="ptb btn" :class="{ dis: !inGrid.selRowCount.value }" title="删除选中的站点（表内 Ctrl+- 同）" @click="inGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="inGrid.selRowCount.value" class="ptb-n">{{ inGrid.selRowCount.value }}</em></button>
+        <button type="button" :disabled="!sites.length" class="ptb btn" :class="{ dis: !sites.length }" title="清空站点列表" @click="clearSites"><Icon name="trash" :size="12" /> 清空</button>
         <span class="pw-cnt">{{ sites.length }} 站</span>
       </div>
       <ExcelGrid class="pw-grid eg-host" :grid="inGrid" :cols="inCols" :text="inText"
-                 :actions-width="26" empty-text="还没有站点。" add-label="增加一行" @add="addRow(null)">
+                 :actions-width="26" empty-text="暂无站点。" add-label="增加一行" @add="addRow(null)">
         <template #actions="{ row }">
-          <span class="del" title="删除该站" @click="delSite(row.id)"><Icon name="x" :size="12" /></span>
+          <button type="button" class="del ibtn sm danger" title="删除该站" @click="delSite(row.id)"><Icon name="x" :size="12" /></button>
         </template>
       </ExcelGrid>
     </section>
@@ -278,14 +287,15 @@ function dragSplit(e) {
     <section class="pw-res">
       <div class="pw-bar">
         <span class="pw-t" title="只读 · 随时间轴更新">计算结果</span>
-        <span class="ptb" :class="{ dis: fetchDis }" :title="pointOk ? '向和风天气请求各站在时间轴当前时刻的值，写入「和风」列组（逐站各一次请求，按站计费；本小时取实况观测，未来取逐小时预报，无历史数据。取一次即覆盖整条时间轴，之后拖动时间轴不再发请求）' : (st.pointMsg || '和风天气未配置')" @click="fetchObs">
-          <Icon name="cloud-rain" :size="12" /> {{ st.obsBusy ? '获取中…' : `获取和风数据（${sites.length} 站）` }}</span>
+        <button type="button" :disabled="fetchDis" class="ptb btn" :class="{ dis: fetchDis }" :title="pointOk ? '向和风天气请求各站在时间轴当前时刻的值，写入「和风」列组（逐站各一次请求，按站计费；本小时取实况观测，未来取逐小时预报，无历史数据。取一次即覆盖整条时间轴，之后拖动时间轴不再发请求）' : (st.pointMsg || '和风天气未配置')" @click="fetchObs">
+          <Icon name="cloud-rain" :size="12" /> {{ st.obsBusy ? '获取中…' : `获取和风数据（${sites.length} 站）` }}</button>
         <span v-if="obsAtText" class="pw-cnt" title="和风列对应的时刻与口径，与左侧模式列同一时刻"><span>和风</span> <span data-i18n-skip>{{ obsAtText }}</span></span>
         <span v-if="st.msg" class="pw-cnt" data-i18n-skip>{{ st.msg }}</span>
-        <span class="ptb" :class="{ dis: !resGrid.selRowCount.value }" title="删除选中行对应的站点（表内 Delete / Ctrl+- 同）" @click="resGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="resGrid.selRowCount.value" class="ptb-n">{{ resGrid.selRowCount.value }}</em></span>
-        <span class="ptb" title="复制整张结果表（含表头，TSV，可粘贴至 Excel）" @click="copyResult"><Icon name="copy" :size="12" /> 复制全表</span>
-        <span class="ptb" title="导出为 Excel（计算结果 + 站点输入两张工作表；数字列写入数值）" @click="exportXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span class="ptb" :class="{ on: optsOpen }" title="选择显示的气象与链路指标" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 指标…</span>
+        <button type="button" :disabled="!resGrid.selRowCount.value" class="ptb btn" :class="{ dis: !resGrid.selRowCount.value }" title="删除选中行对应的站点（表内 Delete / Ctrl+- 同）" @click="resGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="resGrid.selRowCount.value" class="ptb-n">{{ resGrid.selRowCount.value }}</em></button>
+        <button type="button" class="ptb btn" title="复制整张结果表（含表头，TSV，可粘贴至 Excel）" @click="copyResult"><Icon name="copy" :size="12" /> 复制全表</button>
+        <button type="button" class="ptb btn" title="导出为 Excel（计算结果 + 站点输入两张工作表；数字列写入数值）" @click="exportXlsx"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" :aria-pressed="(optsOpen) ? 'true' : 'false'" class="ptb btn" :class="{ on: optsOpen }" title="选择显示的气象与链路指标" @click="optsOpen = true"><Icon name="sliders-horizontal" :size="12" /> 指标…</button>
+        <NoticeLine :n="N" />
         <span v-if="st.busy" class="pw-cnt">计算中…</span>
         <span v-else class="pw-cnt">{{ rows.length }} 行</span>
       </div>
@@ -319,8 +329,8 @@ function dragSplit(e) {
         </div>
       </section>
       <template #foot>
-        <span class="save ghost po-reset" title="恢复出厂勾选" @click="act('resetCols')">恢复默认</span>
-        <span class="save" @click="optsOpen = false">完成</span>
+        <button type="button" class="po-reset btn" title="恢复出厂勾选" @click="act('resetCols')">恢复默认</button>
+        <button type="button" class="save btn primary" @click="optsOpen = false">完成</button>
       </template>
     </PwDialog>
   </div>

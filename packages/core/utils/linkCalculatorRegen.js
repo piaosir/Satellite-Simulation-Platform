@@ -25,6 +25,9 @@
 // buildRegenParams 提供 NGSO 默认占位值（本模块不重复内置默认，保持职责单一）。
 
 const modeSolver = require('./modeSolver.js');
+// 入参数值键的严格口径（与 GEO / NGSO 引擎同一份）：本模块自己也直接读几项卫星 / 星间入参（干扰 C/I、
+// 激光功率链），先过一遍，非法串按留空取缺省、合法值原样 → 合法输入逐位不变
+const strictNumMod = require('./strictNum.js');
 // 星间链路(ISL)需 islHops=1 走 NGSO 引擎的 RF 星间预算，而 modeSolver.computeLinkModeNGSO 会强制 islHops=0，
 // 故直接引原始 NGSO 引擎（容错加载）。
 let _calcNGSO = null;
@@ -125,12 +128,12 @@ function _reframeUplinkOnly(d, sat) {
 function computeRegenUplinkMode(satParams, inputs, opt) {
   opt = opt || {};
   const mode = opt.mode === 'power' ? 'power' : 'margin';
-  const sp = satParams || {};
-  const inp = inputs || {};
+  const sp = strictNumMod.strictInputs(satParams || {}, strictNumMod.LINK_SAT_NUM_KEYS);
+  const inp = strictNumMod.strictInputs(inputs || {}, strictNumMod.LINK_INPUT_NUM_KEYS);
 
   if (mode === 'power') {
-    const w = parseFloat(opt.powerW);
-    if (!(w > 0)) return { success: false, message: '请输入有效的功放功率(W)' };
+    const w = strictNumMod.strictNum(opt.powerW);
+    if (!(w > 0)) return { success: false, message: '功放功率(W) 无效' };
     const r = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'power', powerW: w });
     if (!r || !r.success) return r;
     const d = _reframeUplinkOnly(r.data, sp);
@@ -307,8 +310,8 @@ function _reframeDownlinkOnly(d, sat, gtEff) {
 // 返回 { success, data, mode, resolvedMargin, resolvedGT } 或 { success:false, message }。
 function computeRegenDownlinkMode(satParams, inputs, opt) {
   opt = opt || {};
-  const sp = satParams || {};
-  const inp = inputs || {};
+  const sp = strictNumMod.strictInputs(satParams || {}, strictNumMod.LINK_SAT_NUM_KEYS);
+  const inp = strictNumMod.strictInputs(inputs || {}, strictNumMod.LINK_INPUT_NUM_KEYS);
 
   // 跑一次 NGSO 引擎拿下行损耗/几何中间量（上行 PA 自动解，不参与）
   const base = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'margin' });
@@ -445,7 +448,7 @@ function computeRegenIslMode(satParams, inputs, opt) {
   opt = opt || {};
   if (!_calcNGSO) return { success: false, message: 'NGSO 引擎不可用（linkCalculatorNGSO 加载失败）' };
   // 强制 ISL RF 单跳（islHopDistance 已由几何最差距离注入 satParams）
-  const sp = Object.assign({}, satParams || {}, { islMode: 'rf', islHops: 1 });
+  const sp = Object.assign({}, strictNumMod.strictInputs(satParams || {}, strictNumMod.LINK_SAT_NUM_KEYS), { islMode: 'rf', islHops: 1 });
   const r = _calcNGSO(sp, inputs || {});
   if (!r || !r.success) return r || { success: false, message: 'ISL 计算失败' };
   const d = _reframeIslOnly(_islIntfMerge(r.data, sp), _num(opt.visibilityPct));
@@ -465,7 +468,8 @@ function computeRegenIslMode(satParams, inputs, opt) {
 // 简化版：软件只套用上式，各输入值由用户给定；不做 C/N₀·Eb/N₀·光子/bit·指向抖动衰落等派生。
 // 可用度（无雨）：系统可用度 = 几何互视占比（唯一稳态中断 = 丢 LOS）。
 
-function _lnum(v, d) { const n = parseFloat(v); return (isFinite(n)) ? n : d; }
+// 激光功率链入参取数：空 / 非法 → d（严格口径，「80 mm」不按前缀读成 80）；合法串取值与 parseFloat 逐位同
+function _lnum(v, d) { const n = strictNumMod.strictNum(v); return (isFinite(n)) ? n : d; }
 
 // 再生式激光星间计算（MathWorks 简化功率链）。params 为扁平激光入参（见 regenParams.buildRegenLaserParams）；
 // params.islHopDistance（km，几何最差距离）由主计算注入。

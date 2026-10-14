@@ -184,7 +184,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
     <section v-for="g in groups" :key="g.key" class="asm-lg">
       <div class="sect acc" @click="toggle(g.key)">
         <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen(g.key) }" :size="12" />
-        <Icon :name="g.icon" :size="13" />
+        <Icon :name="g.icon" :size="12" />
         <span class="sect-t">{{ g.label }}</span>
         <span class="cnt" data-i18n-skip>{{ g.items.length }}</span>
       </div>
@@ -192,7 +192,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
         <!-- 分了族的组（结构与机构 / 天线 / 推进）按族排小组；其余一整块 -->
         <div v-for="b in blocksOf(g)" :key="b.key" class="asm-tg-grp">
           <div v-if="b.label" class="asm-tg-h acc" @click="toggle(b.key)">
-            <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen(b.key) }" :size="11" />
+            <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen(b.key) }" :size="12" />
             <Icon :name="b.icon" :size="12" /><span>{{ b.label }}</span><span class="cnt" data-i18n-skip>{{ b.items.length }}</span>
           </div>
           <div v-show="!b.label || isOpen(b.key)" class="asm-grid">
@@ -202,7 +202,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
               <div class="asm-card-img">
                 <img v-if="st.compThumbs[d.key]" :src="st.compThumbs[d.key]" alt="" draggable="false" decoding="async" />
                 <Icon v-else class="asm-card-ph" :name="roleIcon(d.role)" :size="26" :stroke-width="1.2" />
-                <span v-if="d.badge" class="asm-card-dom" :title="d.badge.tip" :data-dom="d.badge.domain"><Icon :name="d.badge.icon" :size="10" /></span>
+                <span v-if="d.badge" class="asm-card-dom" :title="d.badge.tip" :data-dom="d.badge.domain"><Icon :name="d.badge.icon" :size="12" /></span>
               </div>
               <div class="asm-card-name">{{ d.titleZh || d.title }}</div>
             </div>
@@ -214,7 +214,7 @@ onBeforeUnmount(() => { endPress(); if (io) io.disconnect(); io = null })
     <section v-if="nTpls" class="asm-lg asm-tpls">
       <div class="sect acc" @click="toggle('tpl')">
         <Icon name="chevron-down" class="disc" :class="{ shut: !isOpen('tpl') }" :size="12" />
-        <Icon name="layers" :size="13" />
+        <Icon name="layers" :size="12" />
         <span class="sect-t">从模板新建</span>
         <span class="cnt" data-i18n-skip>{{ nTpls }}</span>
       </div>

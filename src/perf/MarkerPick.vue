@@ -31,7 +31,7 @@ function confirm() { if (!total.value) return; emit('confirm', { pts: [...onPts.
 
 <template>
   <PwDialog title="导入标记" :width="460" @close="emit('close')">
-    <input class="ci bq" v-model="q" placeholder="搜索：序号、名称或坐标" />
+    <input class="ci bq search-field" v-model="q" placeholder="搜索：序号、名称或坐标" />
     <section class="po-card">
       <div class="po-ct">点标记</div>
       <div ref="ptEl" class="bplist mkl" :class="{ painting: P.painting.value }" tabindex="0" title="点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选" @keydown="P.onKey">
@@ -83,8 +83,8 @@ function confirm() { if (!total.value) return; emit('confirm', { pts: [...onPts.
       </div>
     </section>
     <template #foot>
-      <span class="cancel" @click="emit('close')">取消</span>
-      <span class="save" :class="{ dis: !total }" @click="confirm">导入 {{ total }} 项</span>
+      <button type="button" class="cancel btn" @click="emit('close')">取消</button>
+      <button type="button" :disabled="!total" class="save btn primary" :class="{ dis: !total }" @click="confirm">导入 {{ total }} 项</button>
     </template>
   </PwDialog>
 </template>

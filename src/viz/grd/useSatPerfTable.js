@@ -50,15 +50,15 @@ const COL_DEFS = [
   { key: 'tgtName', label: '目标卫星', w: 128 },
   { key: 'noradId', label: 'NORAD', w: 68, num: true, fix: 0 },
   { key: 'group', label: '分组', w: 88 },
-  { key: 'tgtAlt', label: '高度', w: 78, num: true, fix: 1, unit: 'km', tip: '目标星大地高（WGS84 椭球面以上）' },
+  { key: 'tgtAlt', label: '高度', w: 78, num: true, fix: 1, unit: 'km', tip: '目标卫星大地高（WGS84 椭球面以上）' },
   { key: 'shell', label: '壳层', w: 84, tip: '按地心半径就近归入的轨道壳层；未建对应壳层显示 —' },
   { key: 'tgtLon', label: '星下点经度', w: 92, num: true, fix: 2, unit: '°E' },
   { key: 'tgtLat', label: '星下点纬度', w: 92, num: true, fix: 2, unit: '°N' },
   { key: 'state', label: '状态', w: 66, tip: '空=正常取到值；域外=该方向不在方向图网格内；背面=在视轴背后；遮挡=星-星视线被地球挡住。非空即取不到值，性能列一律留空' },
   { key: 'beamNo', label: '波束号', w: 56, num: true, fix: 0, tip: '取到最大方向性的那个波束' },
   { key: 'beamName', label: '波束', w: 110, tip: '取到最大方向性的那个波束' },
-  { key: 'scAz', label: 'S/C Az', w: 66, num: true, fix: 3, unit: '°', tip: '源星天底系下、指向该目标星的方位角（星下点方向为 0）' },
-  { key: 'scEl', label: 'S/C El', w: 66, num: true, fix: 3, unit: '°', tip: '源星天底系下、指向该目标星的俯仰角（星下点方向为 0）' },
+  { key: 'scAz', label: 'S/C Az', w: 66, num: true, fix: 3, unit: '°', tip: '源星天底系下、指向该目标卫星的方位角（星下点方向为 0）' },
+  { key: 'scEl', label: 'S/C El', w: 66, num: true, fix: 3, unit: '°', tip: '源星天底系下、指向该目标卫星的俯仰角（星下点方向为 0）' },
   { key: 'offAxis', label: '离轴角', w: 70, num: true, fix: 3, unit: '°', tip: '目标方向与波束 boresight 的夹角' },
   { key: 'u', label: 'u', w: 62, num: true, fix: 4 },
   { key: 'v', label: 'v', w: 62, num: true, fix: 4 },
@@ -749,7 +749,7 @@ export function useSatPerfTable() {
     s.win.busy = false; s.win.progress = 1; s.winFp.value = winSig(key); s.winPt = pt0
     s.win.msg = ''
     // 读数分两份：瞬时表随手重算会覆盖 note，扫描结果的读数得单独存，否则一刷新就没了
-    s.winNote.value = `${use.length} 目标 · ${s.winInfo.value.nLit} 有窗口 · ${nWin} 个时段 · 取值 ${samples.toLocaleString()} 次 · ${ms} ms`
+    s.winNote.value = `${use.length} 目标 · ${s.winInfo.value.nLit} 有窗口 · ${nWin} 个时段 · 取值 ${samples.toLocaleString('en-US')} 次 · ${ms} ms`
       + (budgetHit ? ' · 已达取值预算（可能漏窗）' : '') + (minStepHit ? ' · 已到步长下限（可能漏窗）' : '')
       + (all.length > MAX_TARGETS ? ` · 已截断至前 ${MAX_TARGETS} 个` : '')
     // 游标落在最早的那次窗口峰值上（没有窗口就落时窗起点）——一扫完表里就是「第一次照到时最好的那一刻」

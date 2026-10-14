@@ -90,7 +90,7 @@ const insCanRelay = computed(() => ins.value.index >= 0 && isSpaceHop(hopType(in
 function doInsert(kind) { const i = ins.value.index; ins.value.open = false; emit('insert', i, kind) }
 
 const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : null }
-const marginCls = (v) => { const n = num(v); return n === null ? '' : (n < 0 ? 'bad' : 'ok') }
+const marginCls = (v) => { const n = num(v); return n !== null && n < 0 ? 'bad' : '' }   // 只有负余量转危险色，正值中性
 // hop 下标的读数：射频跳报本跳 C/N，激光跳没有 C/N（光功率链只出 P_rx / P_req）⇒ 报光链余量
 const hopBot = (i) => {
   const r = hopRes(i)
@@ -102,7 +102,7 @@ const hopBot = (i) => {
 
 <template>
   <div class="cs">
-    <div v-if="!row" class="cs-empty">还没有链路。</div>
+    <div v-if="!row" class="cs-empty">暂无链路。</div>
     <template v-else>
       <!-- ① 链路行 -->
       <div class="cs-scroll">
@@ -189,47 +189,47 @@ const hopBot = (i) => {
     </template>
 
     <!-- 右键菜单 -->
-    <div v-if="ctx.open" class="lb-ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx">
-      <div class="lb-ctx" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @click.stop>
+    <div v-if="ctx.open" class="lb-ctx-mask menu-mask" @click="closeCtx" @contextmenu.prevent="closeCtx">
+      <div class="lb-ctx menu" role="menu" :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }" @click.stop>
         <template v-if="ctx.kind === 'node'">
           <!-- 两条整句而非「切换为{插值}卫星」：界面翻译按整串查表，插值会把中文劈成查不到的碎片 -->
           <template v-if="isEnd(ctx.index)">
-            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind === 'es'" class="lb-ctx-i"
+            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind === 'es'" class="lb-ctx-i menu-item" role="menuitem"
                     @click="ctxDo(() => emit('toggle-endpoint', ctx.index))">端点改为卫星</button>
-            <button v-else class="lb-ctx-i"
+            <button v-else class="lb-ctx-i menu-item" role="menuitem"
                     @click="ctxDo(() => emit('toggle-endpoint', ctx.index))">端点改为地球站</button>
             <!-- 向外延长链：端点是卫星时可以再接一个地球站（落地）或再接一颗星；
                  端点是地球站时只能接卫星——地球站直连地球站不是卫星链路 -->
-            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind !== 'es'" class="lb-ctx-i"
+            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind !== 'es'" class="lb-ctx-i menu-item" role="menuitem"
                     @click="ctxDo(() => emit('extend-end', ctx.index, 'es'))">向外接一个地球站</button>
-            <button class="lb-ctx-i" @click="ctxDo(() => emit('extend-end', ctx.index, 'sat'))">向外接一颗卫星</button>
+            <button class="lb-ctx-i menu-item" role="menuitem" @click="ctxDo(() => emit('extend-end', ctx.index, 'sat'))">向外接一颗卫星</button>
           </template>
           <template v-else>
-            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind === 'txp'" class="lb-ctx-i"
+            <button v-if="nodes[ctx.index] && nodes[ctx.index].kind === 'txp'" class="lb-ctx-i menu-item" role="menuitem"
                     @click="ctxDo(() => emit('toggle-kind', ctx.index))">切换为再生卫星</button>
-            <button v-else-if="nodes[ctx.index] && nodes[ctx.index].kind === 'regen'" class="lb-ctx-i"
+            <button v-else-if="nodes[ctx.index] && nodes[ctx.index].kind === 'regen'" class="lb-ctx-i menu-item" role="menuitem"
                     @click="ctxDo(() => emit('toggle-kind', ctx.index))">切换为透明卫星</button>
           </template>
-          <button class="lb-ctx-i danger" :disabled="nodes.length <= 2"
+          <button class="lb-ctx-i menu-item danger" role="menuitem" :disabled="nodes.length <= 2"
                   @click="ctxDo(() => emit('remove', 'node', ctx.index))">删除节点</button>
         </template>
         <template v-else>
-          <button v-if="isSpaceHop(hopType(ctx.index)) && hops[ctx.index].link === 'laser'" class="lb-ctx-i"
+          <button v-if="isSpaceHop(hopType(ctx.index)) && hops[ctx.index].link === 'laser'" class="lb-ctx-i menu-item" role="menuitem"
                   @click="ctxDo(() => emit('toggle-link', ctx.index))">切换为星间微波</button>
-          <button v-else-if="isSpaceHop(hopType(ctx.index))" class="lb-ctx-i"
+          <button v-else-if="isSpaceHop(hopType(ctx.index))" class="lb-ctx-i menu-item" role="menuitem"
                   @click="ctxDo(() => emit('toggle-link', ctx.index))">切换为星间激光</button>
-          <button class="lb-ctx-i" @click="ctxDo(() => emit('select', { type: 'hop', index: ctx.index }))">编辑本跳参数</button>
+          <button class="lb-ctx-i menu-item" role="menuitem" @click="ctxDo(() => emit('select', { type: 'hop', index: ctx.index }))">编辑本跳参数</button>
         </template>
       </div>
     </div>
 
     <!-- 插入节点：类型选择 -->
-    <div v-if="ins.open" class="lb-ctx-mask" @click="ins.open = false" @contextmenu.prevent="ins.open = false">
-      <div class="lb-ctx" :style="{ left: ins.x + 'px', top: ins.y + 'px' }" @click.stop>
-        <div class="cs-ins-hd">插入节点</div>
-        <button class="lb-ctx-i" @click="doInsert('txp')">透明卫星</button>
-        <button class="lb-ctx-i" @click="doInsert('regen')">再生卫星</button>
-        <button v-if="insCanRelay" class="lb-ctx-i" @click="doInsert('es')">地面转接站</button>
+    <div v-if="ins.open" class="lb-ctx-mask menu-mask" @click="ins.open = false" @contextmenu.prevent="ins.open = false">
+      <div class="lb-ctx menu" role="menu" :style="{ left: ins.x + 'px', top: ins.y + 'px' }" @click.stop>
+        <div class="cs-ins-hd menu-hd">插入节点</div>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="doInsert('txp')">透明卫星</button>
+        <button class="lb-ctx-i menu-item" role="menuitem" @click="doInsert('regen')">再生卫星</button>
+        <button v-if="insCanRelay" class="lb-ctx-i menu-item" role="menuitem" @click="doInsert('es')">地面转接站</button>
       </div>
     </div>
   </div>
@@ -257,7 +257,7 @@ const hopBot = (i) => {
 .cs-n-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; }
 .cs-n-t { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
 .cs-badge { font-size: var(--fs-1); line-height: 1.5; padding: 0 4px; border-radius: var(--r-ctl); white-space: nowrap; }
-.cs-badge.bg-accent { background: var(--accent); color: var(--bg); }
+.cs-badge.bg-accent { background: var(--sel-fill); color: var(--sel-on); }
 .cs-badge.bg-out { background: transparent; color: var(--text-muted); border: 1px solid var(--border-strong); }
 /* 名字最多折两行（超长再省略）：整名比「一行齐平」重要 */
 .cs-n-name {
@@ -323,7 +323,6 @@ const hopBot = (i) => {
 .cs-b-c { font-size: var(--fs-2); color: var(--text-muted); max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
 .cs-b-v, .cs-b-m { font-size: var(--fs-3); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-b-m.bad { color: var(--danger); }
-.cs-b-m.ok { color: var(--ok); }
 .cs-b-v i, .cs-b-m i { font-style: normal; font-size: var(--fs-1); font-weight: 400; color: var(--text-faint); margin-left: 1px; }
 
 /* ③ 端到端汇总条 */
@@ -333,10 +332,9 @@ const hopBot = (i) => {
   border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong);
 }
 .cs-c-l { font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
-.cs-c-v { font-size: var(--fs-6); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-c-v { font-size: calc(var(--lb-fs, 11px) + 4px); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
 .cs-c-v.bad { color: var(--danger); }
-.cs-c-v.ok { color: var(--ok); }
-.cs-c-v i { font-style: normal; font-size: var(--fs-2); font-weight: 400; color: var(--text-faint); margin-left: 2px; }
+/* 汇总卡读数与另三窗「容量汇总」同档：数据区基准 +4px、700 */
+.cs-c-v i { font-style: normal; font-size: var(--lb-fs, 11px); font-weight: 600; color: var(--text-muted); margin-left: 3px; }
 
-.cs-ins-hd { padding: 3px 12px 4px; font-size: var(--fs-2); color: var(--text-faint); letter-spacing: var(--ls-label); }
 </style>

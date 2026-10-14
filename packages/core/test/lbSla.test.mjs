@@ -54,7 +54,8 @@ const kC = splitUnavailability(99.9, 99.9, 99.5).k
 ok('k 随目标档下降而单调增', kA < kB && kB < kC, `${kA.toFixed(4)} < ${kB.toFixed(4)} < ${kC.toFixed(4)}`)
 const s4 = splitUnavailability(99.9, 99.5, 100)
 ok('S = 100 → 两侧 100', s4 && near(s4.up, 100) && near(s4.dn, 100) && near(s4.k, 0))
-ok('两侧已 100% 而 S < 100 → 缩放无解', splitUnavailability(100, 100, 99.9) === null)
+const s5 = splitUnavailability(100, 100, 99.9)
+ok('两侧都 100% 而 S < 100 → 等分（各取 √S）', s5 && near(s5.up, s5.dn, 0) && near(s5.up * s5.dn / 100, 99.9, 1e-9) && s5.k === null, s5 && s5.up.toFixed(6))
 
 // —— ② 取档 ——
 ok('snapDown(AVAIL_TIERS, 99.8001) = 99.8', snapDown(AVAIL_TIERS, 99.8001) === 99.8)

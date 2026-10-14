@@ -213,11 +213,13 @@ export const LB_REPORT_EN = {
   '字体': 'Font', '语言': 'Language',
   // 导出报告对话框「字体」三档
   '西文': 'Latin', '中文正文': 'Chinese Body', '中文标题': 'Chinese Headings',
-  'Excel 与 Word 只写字体名；PDF 用本机字体': 'Excel and Word carry font names only; PDF uses fonts installed on this machine',
+  'Excel 与 Word 仅写入字体名；PDF 用本机字体': 'Excel and Word carry font names only; PDF uses fonts installed on this machine',
   '选择图片': 'Choose image', '更换': 'Replace', '移除': 'Remove',
   '贴在每一页右上角': 'Placed at the top-right of every page and worksheet; remembered across windows',
   '图片读取失败': 'Could not read the image',
   '第一张表为总报告，其后每条链路一张详情表': 'First sheet is the master report; one detail sheet per link follows',
+  '第一张表为总报告，其后为几何关系表与逐链路详情表': 'First sheet is the master report, followed by the geometry sheet(s) and one detail sheet per link',
+  '服务等级指标总表 · 指标定义 · 每条链路一张 · 引用标准': 'Service level metrics summary · metric definitions · one sheet per link · referenced standards',
   '封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向': 'Cover / contents / master report in A4 portrait; per-link details in A4 landscape',
   '图表区已关闭（功能区「视图 → 图表」），本次导出没有图': 'The figure pane is hidden (View → Figures); this export will contain no figures',
   '逐条链路生成地理场图与链路视图（每条链路需重新执行一次网格扫描，链路较多时耗时增加）': 'Renders the geographic field and link view for every link (each re-runs a full grid sweep — slow with many links)',
@@ -429,17 +431,17 @@ export function methodology(scheme, lang) {
 
   if (laser) {
     put(['光学链路口径',
-      '星间激光链路按第一性原理的光功率预算计算：发射光功率经发射光学增益、指向损耗、自由空间衰减与接收光学效率得到接收光功率，'
-      + '与由光子/比特灵敏度导出的所需接收功率相比得到余量；相干多普勒按视向速率与光频折算。'],
+      '星间激光链路按光功率预算计算：发射光功率经收发光学效率、收发望远镜增益、指向损耗、自由空间衰减与其他损耗得到接收光功率，'
+      + '与给定的接收机灵敏度（所需接收功率）相比得到余量；相干多普勒按视向速率与光频折算。'],
     ['Optical link basis',
-      'The optical inter-satellite link is computed as a first-principles optical power budget: transmit optical power through transmit '
-      + 'optical gain, pointing loss, free-space attenuation and receive optical efficiency yields the received power, which is compared '
-      + 'with the required power derived from the photons-per-bit sensitivity; the coherent Doppler shift follows from the range rate and the optical frequency.'])
+      'The optical inter-satellite link is computed as an optical power budget: transmit optical power through transmit and receive '
+      + 'optical efficiency, telescope gains, pointing loss, free-space attenuation and other losses yields the received power, which is compared '
+      + 'with the specified receiver sensitivity (required received power); the coherent Doppler shift follows from the range rate and the optical frequency.'])
   }
 
   put(['数值口径',
     '全篇数值不作合格性判定，仅给出计算结果与其单位；显示单位在同一指标内跨链路统一选档（如 W/mW/kW、kHz/MHz/GHz），'
-    + '级联算式行不作单位换算以保证逐行可手算。'],
+    + '级联算式行不作单位换算以保证逐行可手工验算。'],
   ['Numerical conventions',
     'No pass/fail judgement is made anywhere in this report; only computed values and their units are given. Display units are chosen '
     + 'per quantity consistently across links (e.g. W/mW/kW, kHz/MHz/GHz); cascade rows are never unit-converted so that each line remains hand-checkable.'])

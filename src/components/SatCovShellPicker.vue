@@ -11,6 +11,7 @@
 // 本组件只管筛选 / 排序 / 勾选。高度取【平均轨道高度】(a−RE)，与时刻无关。
 import { ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { shellCandidates } from '../viz/grd/shellProj.js'
 
 const props = defineProps({
@@ -65,20 +66,19 @@ function add() {
 </script>
 
 <template>
-  <div class="sat-mask" @click.self="emit('close')">
+  <AppDialog title="从星座取壳层" :width="880" flush @close="emit('close')">
     <div class="sp-dlg">
-      <div class="sdh"><span>从星座取壳层</span><span class="csx" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></span></div>
 
       <div class="sp-bar">
         <select class="ci src" :value="source" @change="emit('set-source', $event.target.value)">
           <option value="all">全量在轨目录</option>
           <option value="live">当前在场卫星</option>
         </select>
-        <input class="ci q" v-model="q" placeholder="筛选：星座 / 卫星名 / NORAD" />
+        <input class="ci q search-field" v-model="q" placeholder="筛选：星座 / 卫星名 / NORAD" />
         <label class="tolb">归并容差<input class="ci n" type="number" step="10" min="1" v-model.number="tol" /><i>km</i></label>
-        <span class="seg sm">
-          <span class="sg" :class="{ on: sortBy === 'alt' }" @click="sortBy = 'alt'">按高度</span>
-          <span class="sg" :class="{ on: sortBy === 'n' }" @click="sortBy = 'n'">按星数</span>
+        <span role="radiogroup" class="seg sm">
+          <button type="button" role="radio" :aria-checked="!!(sortBy === 'alt')" class="sg" :class="{ on: sortBy === 'alt' }" @click="sortBy = 'alt'">按高度</button>
+          <button type="button" role="radio" :aria-checked="!!(sortBy === 'n')" class="sg" :class="{ on: sortBy === 'n' }" @click="sortBy = 'n'">按星数</button>
         </span>
         <span class="cnt">{{ pool.length }} 星 · {{ rows.length }} 层</span>
       </div>
@@ -88,7 +88,7 @@ function add() {
         <span class="c-inc">倾角</span><span class="c-grp">星座</span>
       </div>
       <div class="sp-body">
-        <div v-if="loading" class="sp-empty">载入中…</div>
+        <div v-if="loading" class="sp-empty">加载中…</div>
         <div v-else-if="!rows.length" class="sp-empty">没有可归并的卫星。</div>
         <template v-for="r in rows" :key="r.altKm">
           <div class="sp-row" :class="{ on: sel.has(r.altKm) }" @click="toggle(r)">
@@ -117,36 +117,19 @@ function add() {
         </template>
       </div>
 
-      <div class="sdfoot">
-        <span class="save ghost" @click="selAll">全选</span>
-        <span class="save ghost" @click="selNone">全不选</span>
-        <span class="cnt sel">已选 {{ sel.size }} 层</span>
-        <span class="save ghost" @click="emit('close')">取消</span>
-        <span class="save" :class="{ dis: !sel.size }" @click="add">加入壳层</span>
-      </div>
     </div>
-  </div>
+    <template #footer>
+      <span class="adlg-ft-l"><button type="button" class="btn ghost" @click="selAll">全选</button><button type="button" class="btn ghost" @click="selNone">全不选</button><span class="cnt sel">已选 {{ sel.size }} 层</span></span>
+      <button type="button" class="btn" @click="emit('close')">取消</button>
+      <button type="button" class="btn primary" :disabled="!sel.size" @click="add">加入壳层</button>
+    </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 弹窗外壳与「对星性能表选项」同源（SatCovWindows.vue 的 .sat-mask/.sdh/.sdfoot 一套）：
-   那份是 scoped 的、进不到本组件，故这里带一份同值副本。改动请两处对照。 */
-/* 遮罩全软件一档 --scrim，瞬时出现（压在画布上的全窗大层不做动画）；框体按对话框口径 120–160ms 上浮入场 */
-.sat-mask { position: absolute; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 70; }
-.sp-dlg { width: 880px; max-width: calc(100% - 32px); height: 620px; max-height: 88%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); font-size: var(--fs-3); color: var(--text); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); }
-.sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); display: inline-flex; }
-.sdh .csx:hover { color: var(--text); }
-.sdfoot { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
-/* 主操作墨色实底走 primary token（深色下压一档）。主钮补了 1px 描边，内距各收 1px：外形尺寸不变，与 ghost 钮同高 */
-.sdfoot .save { border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); background: var(--primary-fill); color: var(--primary-on); padding: 3px 17px; cursor: pointer; font-size: var(--fs-3); transition: var(--t-state); }
-.sdfoot .save:not(.ghost):hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.sdfoot .save.ghost { background: transparent; color: var(--text); border-color: var(--border-strong); padding: 3px 12px; }
-.sdfoot .save.ghost:hover { border-color: var(--line-hover); }
-/* span 不吃全局 <button> 按下罩，就地补一档 */
-.sdfoot .save:active { box-shadow: var(--press); transition-duration: 0s; }
-.sdfoot .save.dis { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; pointer-events: none; }
-.sdfoot .sel { margin-left: auto; }
+/* 外壳（遮罩 / 题条 / 关闭钮 / 页脚）是 AppDialog；正文高度在这里给 */
+.sp-dlg { height: min(560px, 76vh); display: flex; flex-direction: column; min-height: 0; font-size: var(--fs-3); color: var(--text); }
+.adlg-ft-l .cnt { color: var(--text-muted); font-size: var(--fs-2); }
 /* 工具条 */
 .sp-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); flex: none; flex-wrap: wrap; }
 .ci { border: 1px solid var(--field-border); background-color: var(--field-bg); color: var(--text); padding: 3px 6px; font-size: var(--fs-3); outline: none; border-radius: var(--r-box); }
@@ -155,24 +138,13 @@ function add() {
 .ci.n { width: 56px; font-family: var(--font-mono); text-align: right; }
 .tolb { display: flex; align-items: center; gap: 5px; color: var(--text-muted); white-space: nowrap; }
 .tolb i { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
-/* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
-   原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
-.seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-/* 行高钉 16 + 上下 2 + 外框 2 ＝ --h-ctl 22，与同一工具条的输入框齐平 */
-.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg:active:not(.on):not(.dis) { box-shadow: var(--press); transition-duration: 0s; }
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-/* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
 .cnt { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; }
 /* 层列表：表头与行同一套列宽 */
 .sp-head, .sp-row { display: flex; align-items: center; gap: 8px; padding: 3px 14px; }
 .sp-head { flex: none; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-2); padding-top: 6px; padding-bottom: 6px; }
 .sp-head .c-alt { margin-left: 20px; }   /* 对齐行里的展开三角（12px + 8px gap） */
 .c-ck { flex: none; width: 14px; display: inline-flex; }
-.tri { flex: none; width: 12px; font-style: normal; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; transition: transform .12s; }
+.tri { flex: none; width: 12px; font-style: normal; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; transition: transform var(--dur-2); }
 .tri.open { transform: rotate(90deg); }
 .tri:hover { color: var(--text); }
 .c-alt { flex: none; width: 96px; font-family: var(--font-mono); text-align: right; }

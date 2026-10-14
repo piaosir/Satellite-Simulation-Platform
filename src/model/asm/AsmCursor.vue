@@ -25,7 +25,7 @@ const style = computed(() => {
 
 <style scoped>
 .asm-cur {
-  position: fixed; left: 0; top: 0; z-index: 240; pointer-events: none; max-width: 420px;
+  position: fixed; left: 0; top: 0; z-index: var(--z-pop); pointer-events: none; max-width: 420px;
   padding: 2px 8px; font-size: var(--fs-2); line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   font-variant-numeric: tabular-nums; color: var(--text);
   background: color-mix(in srgb, var(--bg) 88%, transparent); border: 1px solid color-mix(in srgb, var(--border-strong) 80%, transparent);

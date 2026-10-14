@@ -154,10 +154,10 @@ const byRole = computed(() => {
     <template v-if="m">
       <div class="md-acts">
         <button class="lb-mini primary" :disabled="ro || !rootOk || busy" title="材质分组 → 节点 → 连通分量 + 平面聚类（太阳翼）→ 抛物面拟合（反射面，自动挂点）；后台线程运行，全精度 lod0" @click="autoSeg">
-          <Icon name="scan-eye" :size="13" />{{ busy ? '识别中…' : '自动识别' }}
+          <Icon name="scan-eye" :size="12" />{{ busy ? '识别中…' : '自动识别' }}
         </button>
-        <button class="lb-mini" :class="{ on: picking }" :disabled="!rootOk || !parts.length" title="在预览中点选模型，选中其所属部件" @click="togglePick">
-          <Icon name="square-dashed-mouse-pointer" :size="13" />在预览中点选
+        <button class="lb-mini" :class="{ on: picking }" :aria-pressed="picking ? 'true' : 'false'" :disabled="!rootOk || !parts.length" title="在预览中点选模型，选中其所属部件" @click="togglePick">
+          <Icon name="square-dashed-mouse-pointer" :size="12" />在预览中点选
         </button>
         <span class="sp"></span>
         <span v-if="segMs != null" class="md-state" data-i18n-skip>{{ segMs }} ms</span>

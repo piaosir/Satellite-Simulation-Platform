@@ -10,7 +10,7 @@
 // 手动模式没有方位这个量（星在动），取最大值与「最差工况」口径一致，也不会比自动几何偏乐观。
 // 换算式见 shared/slantRange.js。
 import { ref, computed, watch } from 'vue'
-import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { wgs84Geometry, altFromSlantWgs84, oneWayDelayMs } from '../shared/slantRange.js'
 import { pf } from '../shared/num.js'
 
@@ -62,13 +62,9 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 </script>
 
 <template>
-  <div v-if="open" class="slt-mask">
-    <div class="slt" role="dialog" aria-modal="true">
-      <div class="slt-hd">
-        斜距工具<span v-if="sideLabel" class="slt-sub">· {{ sideLabel }}</span>
-        <span class="slt-sp"></span>
-        <button class="slt-x" title="关闭" aria-label="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
+  <!-- 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关） -->
+  <AppDialog :open="open" :width="360" flush @close="emit('close')">
+      <template #title>斜距工具<span v-if="sideLabel" class="slt-sub">· {{ sideLabel }}</span></template>
 
       <div class="slt-bd">
         <label class="slt-f"><span class="slt-l">轨道高度</span>
@@ -87,7 +83,7 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
           <span class="slt-aux mono" title="离轴角 η：卫星看该站相对天底的夹角">η {{ fmt(geo && geo.nadirDeg, 2) }}°</span>
           <span class="slt-aux mono" title="地心角 γ：站点相对星下点的地心张角">γ {{ fmt(geo && geo.centralDeg, 2) }}°</span>
           <span class="slt-aux mono" title="单程传播时延">τ {{ fmt(tauOut, 3) }} ms</span>
-          <span class="slt-aux mono" title="绕站一圈中斜距最大的方位（手动几何没有方位这个量，故取最大值）">方位 {{ fmt(geo && geo.azDeg, 0) }}°</span>
+          <span class="slt-aux mono" title="绕站一圈中斜距最大的方位（手动几何无方位量，故取最大值）">方位 {{ fmt(geo && geo.azDeg, 0) }}°</span>
         </div>
 
         <div class="slt-sep"></div>
@@ -111,29 +107,22 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
         </table>
       </div>
 
-      <div class="slt-ft">
-        <button class="slt-btn" :disabled="!canFill || !hasRow"
-                title="按该行自己的纬度/海拔/仰角与上方轨道高度算出斜距，填入当前行" @click="fill('row')">填入当前行</button>
-        <button class="slt-btn" :disabled="!canFill"
-                :title="`按各行自己的纬度/海拔/仰角与上方轨道高度算出斜距，填入全部 ${rowCount} 行`" @click="fill('all')">填入全部行</button>
-        <span class="slt-sp"></span>
-        <button class="slt-btn" @click="emit('close')">关闭</button>
-      </div>
-    </div>
-  </div>
+      <template #footer>
+        <span class="adlg-ft-l">
+          <button class="btn" :disabled="!canFill || !hasRow"
+                  title="按该行自己的纬度/海拔/仰角与上方轨道高度计算斜距，填入当前行" @click="fill('row')">填入当前行</button>
+          <button class="btn" :disabled="!canFill"
+                  :title="`按各行自己的纬度/海拔/仰角与上方轨道高度计算斜距，填入全部 ${rowCount} 行`" @click="fill('all')">填入全部行</button>
+        </span>
+        <button class="btn" @click="emit('close')">关闭</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.slt-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.slt { width: 360px; max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3);
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.slt-hd { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-4); color: var(--text); border-bottom: 1px solid var(--border); }
-.slt-sub { color: var(--text-faint); font-size: var(--fs-3); }
-.slt-sp { flex: 1; }
-.slt-x { display: inline-flex; align-items: center; padding: 2px; background: none; border: none; color: var(--text-muted); cursor: pointer; }
-.slt-x:hover { color: var(--text); }
-.slt-bd { padding: 10px; overflow-y: auto; }
+/* 外壳归 AppDialog */
+.slt-sub { margin-left: 6px; color: var(--text-faint); font-size: var(--fs-3); font-weight: 400; }
+.slt-bd { padding: 10px; }
 .slt-sep { height: 1px; background: var(--border); margin: 9px 0; }
 .slt-f { display: grid; grid-template-columns: 62px 1fr 26px; align-items: center; gap: 6px; }
 .slt-f + .slt-f { margin-top: 5px; }
@@ -153,9 +142,4 @@ function fill(scope) { if (canFill.value) emit('fill', { altKm: hNum.value, scop
 /* 读数可框选复制：全局 user-select:none 是为了拖拽手感，但这些数就是拿来抄走的（口径同卫星名那处）。
    文本光标作可选的提示；只放开读数，标签/按钮仍不可选，免得框选时连带选中一堆字。 */
 .slt-out, .slt-tb td { user-select: text; -webkit-user-select: text; cursor: text; }
-.slt-ft { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); }
-/* 页脚按钮：与工作台 .lb-mini 同款（宿主样式是 scoped，进不到子组件，故本组件自带一份） */
-.slt-btn { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 4px 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
-.slt-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.slt-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

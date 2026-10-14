@@ -6,6 +6,8 @@
 // 因此功能区没有「计算方式」选择器：多跳下反算欠定，「该调哪个旋钮」由逐段余量排序（弱段高亮）承担。
 // 几何全部手填（斜距 / 星间距离），留空即该行报错——不按轨道高度兜底换算。
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
 import CityPicker from '../components/CityPicker.vue'   // 站名旁「典型城市…」：与三窗 / 性能指标表同一份选点对话框
@@ -17,8 +19,8 @@ import { useConfigVersions } from '../shared/useConfigVersions.js'
 import LbVersionsDialog from '../components/LbVersionsDialog.vue'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
-import LbFontCtl from '../components/LbFontCtl.vue'
-import LbUnitCtl from '../components/LbUnitCtl.vue'
+import LbDispCtl from '../components/LbDispCtl.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import LbSlantTool from '../components/LbSlantTool.vue'
 import LbIslRangeTool from '../components/LbIslRangeTool.vue'
@@ -61,8 +63,16 @@ import { esStationType } from '../shared/lbStationType.js'
 import { radomeLossDb } from '../../packages/core/models/mapLinks.mjs'
 import { findPoolByNorad, orbitSpecOf as poolOrbitSpecOf } from '../ngso/satSearchPool.js'   // 别名：e2eParams 另有一个按库条目出 spec 的 orbitSpecOf
 import { isSatNamePlaceholder } from '../shared/lbAutoName.js'
+import { validateRows } from '../shared/lbValidate.js'   // D6：计算前数值预校验（不是数 / 越出字段范围）
+import { useNotice } from '../shared/useNotice.js'
+import { reportError, reportPartial } from '../shared/reportError.js'
+import { LIB_WINDOWS, libCopyTargets, copyLibEntry, externalLibEntries } from '../shared/lbShare.js'
 
 const api = typeof window !== 'undefined' ? window.api : null
+// 通知条（shared/useNotice.js）：toast＝普通回执，toastFile＝导出回执（附「打开 · 在文件夹中显示」），toastError＝常驻错误；
+// 调用即把本窗登记为 reportError 的出口。必须先于下面的 useConfigTree（它要拿 toast）——const 不像函数声明那样提升。
+const N = useNotice()
+const { toast, toastFile, toastError } = N
 const LIB_NS = 'e2e'
 const ORBIT = 'E2E'
 
@@ -123,9 +133,12 @@ function duplicateSatConfig(c) { dupCfg(satConfigs, c, 'sat', () => _satSeq++, {
 async function removeLibEntry(arr, cfg, kind) {
   if (arr.length <= 1) return
   const n = refCount(kind, cfg.id)
-  if (n > 0 && !(await askConfirm(`「${cfg.name}」正被 ${n} 处链路引用，删除后这些引用将回退到库中第一份配置。确定删除？`))) return
+  if (n > 0 && !(await askConfirm(`「${cfg.name}」正被 ${n} 处链路引用，删除后相关引用将回退到库中第一份配置。确定删除？`))) return
   const i = arr.indexOf(cfg); if (i >= 0) arr.splice(i, 1)
+  _libGone.add(cfg.id)   // 获焦并库（mergeLibFromDisk）不许把它从盘上的旧副本里捡回来
 }
+// 本会话删掉的库条目 id（见 mergeLibFromDisk）
+const _libGone = new Set()
 function refCount(kind, id) {
   let n = 0
   const scan = (rows) => {
@@ -156,13 +169,13 @@ function serializeLibrary() {
 function scheduleLibSave() {
   if (!_libLoaded || !api) return
   clearTimeout(_libT)
-  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch((e) => toast('资源库保存失败：' + ((e && e.message) || e))) }, 500)
+  _libT = setTimeout(() => { api.store.saveLibrary(LIB_NS, serializeLibrary()).catch((e) => reportError('资源库保存失败', e)) }, 500)   // 写盘失败常驻通知条
 }
 // 关窗前冲刷挂起的那次防抖写盘：库改动不入场景指纹，guardedLeave 拦不住它，改完 0.5 秒内关窗就丢
 async function flushLibSave() {
   if (!_libLoaded || !api) return
   clearTimeout(_libT)
-  try { await api.store.saveLibrary(LIB_NS, serializeLibrary()) } catch (e) { /* 关窗途中失败不阻断 */ }
+  try { await api.store.saveLibrary(LIB_NS, serializeLibrary()) } catch (e) { reportError('资源库保存失败', e) }   // 关窗途中失败不阻断，但要报出来
 }
 function applyLibrary(lib) {
   if (!lib) return
@@ -319,7 +332,7 @@ function insertNode(hopIdx, kind) {
   const oldType = hopTypeOf(row.nodes[hopIdx], row.nodes[hopIdx + 1], old)
   // 地面转接站的入跳是星地下行、出跳是星地上行 ⇒ 只能插在星间跳上；插在星地跳上会造出
   // 「地球站 → 地球站」这种非卫星链路（引擎会直接拒绝），故这里先挡住。
-  if (kind === 'es' && !isSpaceHop(oldType)) { toast('地面转接站只能插在星间跳上（两端须是卫星）'); return }
+  if (kind === 'es' && !isSpaceHop(oldType)) { toast('地面转接站仅能插在星间跳上（两端须是卫星）'); return }
   const nd = kind === 'es' ? newEsNode(nodeName('relay')) : newSatNode(kind)
   if (kind === 'es') { nd.longitude = '104.0'; nd.latitude = '30.6'; nd.name = nodeName('relay') }
   // 拆出来的两跳里，与原跳同向的那一跳全承接（另一跳必是星间跳，走星间默认）
@@ -785,7 +798,8 @@ async function solveChainGeometry(row, chain) {
       const w = g.worst.up
       chain.hops[i].slantRange = w.slantKm.toFixed(2)
       chain.hops[i].elevation = w.elevDeg.toFixed(2)
-      solved.push({ slantRange: w.slantKm.toFixed(2), elevation: w.elevDeg.toFixed(2), method: g.method || '' })
+      // tISO / win：本跳几何取自的那一刻（典型时刻 t*）与本次搜索时窗，供「在主窗口定位」（C3）
+      solved.push({ slantRange: w.slantKm.toFixed(2), elevation: w.elevDeg.toFixed(2), method: g.method || '', tISO: (g.search && g.search.typicalISO) || '', win: g.search ? { t0ISO: g.search.t0ISO, hours: g.search.horizonHours } : null })
     } else {
       // 手动圆轨道历元钉到本链 t0（pinCircularEpoch）：主进程星间端点缺历元按计算那一刻补，与时间轴上的 t0 不同步
       const orbitA = pinCircularEpoch(satOrbitOf(a), t0ISO), orbitB = pinCircularEpoch(satOrbitOf(b), t0ISO)
@@ -796,7 +810,9 @@ async function solveChainGeometry(row, chain) {
       // 两端解到同一位置（同一颗星 / 同一定点经度）时距离为 0：报因，别把 0 写进引擎再报「缺距离」
       if (!(g.worst.rangeKm > 0)) return { error: `第 ${i + 1} 跳星间距离解得 0 km（两端是同一颗星或同一定点经度）` }
       chain.hops[i].rangeKm = g.worst.rangeKm.toFixed(1)
-      solved.push({ rangeKm: g.worst.rangeKm.toFixed(1), method: g.method || '', visibleFrac: g.visibility ? g.visibility.visibleFrac : null })
+      // 手动圆轨道（representative）的时刻只是示意，不给定位
+      solved.push({ rangeKm: g.worst.rangeKm.toFixed(1), method: g.method || '', visibleFrac: g.visibility ? g.visibility.visibleFrac : null,
+        tISO: (!g.representative && g.worst.worstISO) || '', win: g.search ? { t0ISO: g.search.t0ISO, hours: g.search.horizonHours } : null })
     }
   }
   return { solved }
@@ -807,15 +823,33 @@ const curSolvedHop = computed(() => (cur.value && sel.type === 'hop') ? solvedHo
 
 // ============ 计算 ============
 const computing = ref(false)
-const notice = ref('')
-let _noticeT = null
-function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
 const resultsStale = ref(false)
 // 输入代次：每次 markStale +1（有没有结果都记）。compute 开算时记下、算完比一次 —— 算的途中改了链，
 // 灯就保持亮（早先算完一律熄灯，期间那一笔改动从此不认账）
 let _inGen = 0
 function markStale() { _inGen++; if (Object.keys(results).length) resultsStale.value = true }
 
+// —— 计算前预校验（D6）——
+// 数值格不是数、或越出字段范围（schema 的 min / max，口径见 shared/lbValidate.js）：引擎按前缀解析会静默算出错数，
+// 故开算前逐链查一遍——各跳（按跳的类型取字段表；自动几何下距离不是输入，不查）、地球站节点（站址 / 功放 / 解调）、
+// 卫星节点的行内覆盖值。坏链不送引擎、该链结果清空并写明是哪一格；通知条常驻列出前 3 处与总数。
+function chainBadItems(row) {
+  const items = []
+  const take = (where, fields, obj) => { for (const b of validateRows(fields, [obj || {}])) items.push(`${where} · ${b.label}：${b.msg}`) }
+  ;(row.nodes || []).forEach((nd, k) => {
+    const where = `节点 ${k + 1}`
+    if (nd.kind === 'es') { take(where, NODE_ES_SITE_FIELDS, nd); take(where, NODE_ES_TX_FIELDS, nd) }
+    else take(where, nd.kind === 'regen' ? SAT_REGEN_FIELDS : SAT_TXP_FIELDS, nd.ov)
+    take(where, NODE_DEMOD_FIELDS, nd)
+  })
+  ;(row.hops || []).forEach((h, k) => {
+    const t = hopTypeOf(row.nodes[k], row.nodes[k + 1], h)
+    let fs = t === 'laser' ? HOP_LASER_FIELDS : t === 'isl' ? HOP_ISL_FIELDS : HOP_GS_FIELDS
+    if (!geoManual.value) fs = fs.filter((f) => f.key !== 'slantRange' && f.key !== 'rangeKm')
+    take(`第 ${k + 1} 跳`, fs, h)
+  })
+  return items
+}
 async function compute() {
   if (!api) { toast('计算需在桌面客户端中运行'); return }
   computing.value = true
@@ -826,9 +860,21 @@ async function compute() {
     // 链快照：本批只算开算那一刻的这些链（逐链几何与引擎之间有多次 IPC 往返，期间增删链不许让遍历跳行 / 重行）
     const jobChains = chains.slice()
     const chainOf = {}     // 送进引擎的那份链描述子（自动档已注入解出的几何），SLA 档位扫描要照它重跑
+    // D6：逐链数值预校验（见 chainBadItems）——坏链不送引擎，该链结果清空并写明是哪一格；其余链照算
+    const valItems = []
+    const badChains = new Map()
+    jobChains.forEach((row, ci) => {
+      const items = chainBadItems(row)
+      if (!items.length) return
+      badChains.set(row, items.join('；'))
+      for (const it of items) valItems.push(`第 ${ci + 1} 条链路 · ${it}`)
+    })
+    const valMsg = valItems.length ? valItems.slice(0, 3).join('；') + `；共 ${valItems.length} 处` : ''
+    if (valMsg) toastError(valMsg)
     for (const row of jobChains) {
       const gone = () => !chains.includes(row)   // 期间被删掉的链：不再算、也不往结果表里落
       if (gone()) continue
+      if (badChains.has(row)) { delete results[row._id]; delete geoSolved[row._id]; errors[row._id] = badChains.get(row); continue }
       const chain = buildChain(row, { es: resolveEs, sat: resolveSat })
       // 自动档：先按各跳的星与站解几何，写进这份链描述子（用户单元格不动）
       delete geoSolved[row._id]
@@ -847,7 +893,9 @@ async function compute() {
     resultsStale.value = _inGen !== gen0   // 算的途中输入又变了：这批结果对应的是开算那一刻，灯保持亮
     const done = jobChains.filter((r) => chains.includes(r))
     const bad = done.filter((r) => errors[r._id]).length
-    toast(bad ? `已计算 ${done.length} 条，其中 ${bad} 条报错` : `已计算 ${done.length} 条链路`)
+    // 有校验报错时通知条留着它（常驻），不拿「已计算」回执顶掉
+    if (valMsg) toastError(valMsg)
+    else toast(bad ? `已计算 ${done.length} 条，其中 ${bad} 条报错` : `已计算 ${done.length} 条链路`)
     // SLA 档位扫描只在用得着时跑、且不 await（每链 9 档 = 9 次整链重算，不该跟着每次「计算」全表跑）
     _slaChainOf = chainOf
     invalidateSlaScan()
@@ -1126,7 +1174,8 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       : `端到端链路预算报告_${(n || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
   },
   toast,
-  setError: (m) => toast(m)
+  toastFile,
+  setError: (m) => toastError(m)   // 导出失败等进常驻通知条（不随 4 s 回执消失）
 })
 
 // ============ 工具：斜距 / 星间距离 ============
@@ -1326,10 +1375,6 @@ function cfgLabelOf(st) {
 }
 function blankState() { _blankSt = serializeChainsState([defaultChain()], 'manual', { ...DEFAULT_SLA_PARAMS }); return _blankSt }
 
-const confirmDlg = reactive({ open: false, msg: '' })
-let _confirmResolve = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
 // 离开当前配置（切换 / 新建 / 副本）前：把没落盘的改动写进去；写不进去（盘满 / 文件被占用 / 未激活）才问一句
 async function guardedLeave() {
   if (await autosave.flush()) return true
@@ -1347,7 +1392,7 @@ const rowRefWarn = (row) => {
 }
 const segCountOf = (row) => segmentsOf(row.nodes).length
 const cellNum = (v) => (v === '' || v == null ? '—' : v)
-const marginCls = (v) => { const n = parseFloat(v); return isFinite(n) ? (n < 0 ? 'st-bad' : 'st-ok') : '' }
+const marginCls = (v) => { const n = parseFloat(v); return isFinite(n) && n < 0 ? 'st-bad' : '' }   // 只有负余量转危险色；正值中性（四窗同口径）
 // 注：转发器功率/带宽占比不进这张表——那是【某一颗透明星】的资源账，不是端到端的量，
 // 链上有几颗星就有几份，取个最大值当"链的占比"是编出来的指标。它挂在链路条的星卡片上
 // （见 ChainStrip 的占比条）与详细预算的「透明转发器占用」段里，各归各位。
@@ -1360,12 +1405,41 @@ const refreshing = ref(false)
 async function refreshLatest() {
   if (refreshing.value || !api) return
   refreshing.value = true
+  // 逐项取：某项失败不拦其余各项（取不到的保留原值），但不再一律报「已刷新」——失败的如实列出（A5）
+  const failed = []
+  let ok = 0
+  const step = async (name, fn) => { try { await fn(); ok++ } catch (e) { failed.push({ name, error: e }) } }
   try {
-    try { const c = await api.linkBudget.cities(); if (c) cities.value = c } catch (e) { /* keep */ }
-    try { const b = await api.linkBudget.baseband(); if (b) basebandOpts.value = b } catch (e) { /* keep */ }
+    await step('城市库', async () => { const c = await api.linkBudget.cities(); if (c) cities.value = c })
+    await step('载波信号选项', async () => { const b = await api.linkBudget.baseband(); if (b) basebandOpts.value = b })
     reloadSatTree()
-    toast('已刷新最新设置')
+    if (failed.length) reportPartial('刷新最新设置', ok, failed)
+    else toast('已刷新最新设置')
   } finally { refreshing.value = false }
+}
+onBeforeUnmount(() => { window.removeEventListener('focus', reloadSatTree); window.removeEventListener('focus', mergeLibFromDisk) })
+// 别的链路预算窗口「复制到端到端库」写的是盘上的 library.json；本窗口内存里那份不知道，下次整写会把它冲掉。
+// 故获焦时把盘上有、内存里没有、本会话也没删过的条目并进来（只认新增，见 shared/lbShare.js externalLibEntries）。
+async function mergeLibFromDisk() {
+  if (!_libLoaded || !api) return
+  let lib = null
+  try { lib = await api.store.getLibrary(LIB_NS) } catch (e) { return }   // 读不到就下次获焦再并，不打扰
+  if (!lib) return
+  const fresh = (kind, arr) => externalLibEntries(lib, kind, arr).filter((c) => !_libGone.has(c.id))
+  const es = fresh('es', esConfigs), sat = fresh('sat', satConfigs)
+  for (const c of es) esConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('es', c), form: { ...defaultsFor(ES_FIELDS), ...c.form } })
+  for (const c of sat) satConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('sat', c), form: { ...defaultsFor(SAT_FIELDS), ...c.form }, ngsoSat: normNgsoSat(c.ngsoSat) })
+  const n = es.length + sat.length
+  if (n) toast(`资源库新增 ${n} 条`)
+}
+// 资源库条目「复制到 ▸ 其它窗口的库」（G4）：可否与原因由 shared/lbShare.js 判（字段结构兼容才放行）
+const copyTargetsOf = (kind) => (cfg) => libCopyTargets(kind, LIB_NS, cfg)
+async function copyLibTo(kind, cfg, ns) {
+  try {
+    const made = await copyLibEntry(api, kind, LIB_NS, ns, cfg)
+    const w = LIB_WINDOWS.find((x) => x.ns === ns)
+    toast(`${w ? w.doneLabel : '已复制'}：${made.name || cfg.name}`)
+  } catch (e) { reportError('复制资源库条目', e) }
 }
 // 卫星树来自主窗口「星座3D」页（localStorage 同源共享）：窗口重获焦点即重读，
 // 纳入此后新导入的星。树里暂时没有的节点不清空所选——已存的轨道根数照常参与计算。
@@ -1415,13 +1489,62 @@ async function reloadSatTree() {
 //   节点：链端卫星恒为再生（与引擎端点归一同口径），中间卫星按载荷的转发方式；体制落链首（defaultCarrier），段起点照抄。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()
-function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+// 失败不再静默（A5）：从地图带对象进来没成，通知条常驻报因
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 async function applyToolContext(c) {
   if (c && c.links) await importChains(c.links)   // 本窗只收图上链路
 }
 const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
 onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
+
+// —— 回主窗口（C3）：计算窗 → 主窗口的反向通道（主进程 scene:cmd 中继，主窗被提到前台）——
+// 载荷出 IPC 前现造纯数据（Vue 的 Proxy 过不了结构化克隆）。老主进程没有这条通道时不出这些入口。
+const sceneApi = api && api.scene && api.scene.cmd ? api.scene : null
+function sceneCmd(cmd, payload) {
+  if (!sceneApi) return Promise.resolve(false)
+  return Promise.resolve(sceneApi.cmd(cmd, JSON.parse(JSON.stringify(payload || {})))).catch((e) => { reportError('在主窗口定位', e); return false })
+}
+// 链上卫星节点在主窗口里的身份：GSO 按星名（定点星多在主窗口的编目里）；NGSO 只有取过星的才在主场景里有这颗星
+function satIdentOfNode(nd) {
+  const c = satCfgOf(nd)
+  if (!c) return null
+  const f = c.form || {}
+  if ((f.orbitClass || 'GSO') === 'GSO') {
+    const name = String(f.satelliteName || '').trim()
+    return name && !isSatNamePlaceholder(name) ? { name } : null
+  }
+  const ns = c.ngsoSat
+  if (!ns || ns.mode === 'manual' || !ns.orbit) return null
+  const name = ns.name || f.satelliteName || ''
+  return (name || ns.noradId != null) ? { norad: ns.noradId != null ? ns.noradId : undefined, name } : null
+}
+// 链路列表行「在主窗口定位」：聚焦链上第一颗卫星，画面正对链首地球站
+async function locateChainInMain(i) {
+  const row = chains[i]
+  if (!row) return
+  const satNode = (row.nodes || []).find((n) => n.kind !== 'es')
+  const id = satNode ? satIdentOfNode(satNode) : null
+  if (id) await sceneCmd('focusSat', id)
+  const es = (row.nodes || []).find((n) => n.kind === 'es')
+  const lat = es ? pf(es.latitude) : NaN, lon = es ? pf(es.longitude) : NaN
+  if (Number.isFinite(lat) && Number.isFinite(lon)) await sceneCmd('faceLonLat', { lat, lon, name: String(es.name || '') })
+}
+// 检查器「自动几何」：本跳几何取自的那一刻（星地跳＝典型时刻 t*，星间跳＝最差时刻）。主窗口时间轴拨过去、
+// 聚焦本跳的卫星（星间跳取发端），并在时间轴上标出 t* 与本次搜索时窗（同 src + label 覆盖上一次的标记）
+async function locateHopInMain() {
+  const h = curSolvedHop.value, row = cur.value
+  if (!h || !row) return
+  const t = Date.parse(h.tISO)
+  if (!Number.isFinite(t)) return
+  const s0 = h.win ? Date.parse(h.win.t0ISO) : NaN, hh = h.win ? Number(h.win.hours) : 0
+  if (Number.isFinite(s0) && hh > 0) await sceneCmd('markTime', { t0: s0, t1: s0 + hh * 3600000, label: '搜索时窗', src: 'e2e' })
+  await sceneCmd('markTime', { t0: t, label: 't*', src: 'e2e' })
+  await sceneCmd('seekClock', { tMs: t })
+  const a = row.nodes[sel.index], b = row.nodes[sel.index + 1]
+  const id = satIdentOfNode(a && a.kind !== 'es' ? a : b)
+  if (id) await sceneCmd('focusSat', id)
+}
 const linkImpOpen = ref(false)
 const onLinkImport = (list) => onToolContext({ links: list })
 
@@ -1644,7 +1767,7 @@ onMounted(async () => {
   try { appVersion.value = (api && await api.app.version()) || '' } catch (e) { appVersion.value = '' }
   try { cities.value = (api && await api.linkBudget.cities()) || [] } catch (e) { cities.value = [] }
   try { basebandOpts.value = (api && await api.linkBudget.baseband()) || {} } catch (e) { basebandOpts.value = {} }
-  try { const lib = api && await api.store.getLibrary(LIB_NS); if (lib) applyLibrary(lib) } catch (e) { /* 保持默认库 */ }
+  try { const lib = api && await api.store.getLibrary(LIB_NS); if (lib) applyLibrary(lib) } catch (e) { reportError('读取资源库失败', e) }   // 保持默认库，但得让人知道
   _libLoaded = true
   scheduleLibSave()
   await loadConfigs()
@@ -1681,6 +1804,7 @@ onMounted(async () => {
   stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏 / 刷新前立即写盘
   window.addEventListener('keydown', onGlobalKey)
   window.addEventListener('focus', reloadSatTree)
+  window.addEventListener('focus', mergeLibFromDisk)   // 单例窗口：切回本窗口即并入别的窗口复制来的库条目
   flushToolContext()   // 库与配置已载入：处理开窗时随窗带来的图上链路、以及载入期间对话框排进队的导入
 })
 </script>
@@ -1732,23 +1856,25 @@ onMounted(async () => {
             </span>
           </div>
           <nav class="lb-lib-tabs">
-            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :title="t.tip" @click="libTab = t.key">
+            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
               {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : satConfigs.length }}</span>
             </button>
           </nav>
           <div class="lb-libpane">
             <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-                       auto-tip="天线口径" @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+                       auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
+                       @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="复制此配置" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此配置" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
               </template>
               <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
-                       auto-tip="卫星名称" @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
+                       auto-tip="卫星名称" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
+                       @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
               <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="复制此卫星" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 复制</button>
+                <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此卫星" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
               </template>
               <template #default="{ cfg }"><E2eSatPanel :form="cfg.form" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
@@ -1761,19 +1887,6 @@ onMounted(async () => {
       <!-- ② 主区 -->
       <section class="lb-col lb-build">
         <div class="lbr">
-          <div class="lbr-g">
-            <div class="lbr-items">
-              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
-              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
-              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（城市库 / 载波信号选项）" @click="refreshLatest">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
-                刷新
-              </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
-            </div>
-            <div class="lbr-cap">文件</div>
-          </div>
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
@@ -1802,42 +1915,49 @@ onMounted(async () => {
                 {{ computing ? '计算中…' : '计算' }}
               </button>
             </div>
-            <div class="lbr-cap" title="端到端只有正向电平递推一种算法：多跳下反算欠定（目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 去凑）">计算</div>
+            <div class="lbr-cap" title="端到端仅有正向电平递推一种算法：多跳下反算欠定（目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 补足）">计算</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
-              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具只服务手动档）" @click="slantToolOpen = true"><Icon name="arrow-left-right" :size="16" />斜距</button>
-              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具只服务手动档）" @click="islToolOpen = true"><Icon name="satellite-dish" :size="16" />星间距离</button>
+              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（城市库 / 载波信号选项）" @click="refreshLatest">
+                <Icon name="refresh-cw" :size="16" />
+                刷新
+              </button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :class="{ on: sideView === 'library' }" :aria-pressed="(sideView === 'library') ? 'true' : 'false'" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度计算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具仅服务于手动档）" @click="slantToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />斜距</button>
+              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具仅服务于手动档）" @click="islToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />星间距离</button>
             </div>
             <div class="lbr-cap">视图 / 工具</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="file-text" :size="16" />TSV</button>
-              <button class="lbr-big" :disabled="!chains.length" :title="chains.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '请至少添加一条链路'" @click="openSlaDlg">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M8 1.8 13 3.4v4.2c0 3.1-2.1 5.4-5 6.6-2.9-1.2-5-3.5-5-6.6V3.4z" /><path d="m5.6 7.9 1.7 1.7 3.3-3.3" /></svg>
+              <button class="lbr-big" :disabled="!chains.length" :title="chains.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '暂无链路。'" @click="openSlaDlg">
+                <Icon name="shield-check" :size="16" />
                 SLA
               </button>
-              <button class="lbr-big" :disabled="reportDlg.busy || !chains.length" :title="chains.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '请至少添加一条链路'" @click="openReportDialog"><Icon name="file-down" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="reportDlg.busy || !chains.length" :title="chains.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word（封面 · 目录 · 正文）/ PDF（封面 · 目录 · 总报告 · 逐链路详情）' : '暂无链路。'" @click="openReportDialog"><Icon name="file-export" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
+              <button class="lbr-big" :disabled="!segments.length" title="复制当前详细预算（TSV，可直接粘贴到 Excel）" @click="copyWaterfallTsv"><Icon name="copy" :size="16" />TSV</button>
             </div>
             <div class="lbr-cap">导出</div>
           </div>
-          <LbUnitCtl />
-          <LbFontCtl />
-          <div class="lbr-status">
-            <span v-if="notice" class="lb-note">{{ notice }}</span>
-            <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
-            <span v-if="resultsStale" class="lbx-stale" title="计算输入已被修改，结果对应修改前的参数">输入已变</span>
-          </div>
+          <LbDispCtl />
         </div>
 
-        <div class="lbx-flow lbx-cards">
+        <div class="lbx-flow lbx-cards" :class="{ 'lbx-stale-res': !!(resultsStale) }">
           <!-- 上：链路列表 -->
           <LbSection id="links" title="端到端链路" :count="chains.length">
             <template #actions>
               <button class="lb-mini" title="新增一条链路（站-星-站）" @click="addChain">＋ 链路</button>
-              <button class="lb-mini" title="导入星座 3D 主窗中建立的链路" @click="linkImpOpen = true">导入链路</button>
+              <button class="lb-mini" title="导入主窗口「目标间链路建链」中建立的链路" @click="linkImpOpen = true">导入链路</button>
             </template>
             <div class="e2-tbl-wrap">
               <table class="e2-tbl">
@@ -1845,7 +1965,7 @@ onMounted(async () => {
                   <tr>
                     <th class="c-idx">#</th>
                     <th class="c-nm">名称</th>
-                    <th class="c-n" title="这条链的业务信息速率（kbps）：在链首节点的载波参数里填，穿过各再生节点全程守恒；各段的符号率与占用带宽由它与该段 MODCOD 推出">业务速率 (kbps)</th>
+                    <th class="c-n" title="该链的业务信息速率（kbps）：在链首节点的载波参数中填写，穿过各再生节点全程守恒；各段的符号率与占用带宽由它与该段 MODCOD 推出">业务速率 (kbps)</th>
                     <th class="c-n" title="链上节点数（发信站 + 中继 + 收信站）">节点数</th>
                     <th class="c-n" title="被再生类节点（再生卫星 / 地面转接站）切出的段数">段数</th>
                     <th class="c-n" title="端到端余量 = 最弱段余量（各段独立解调，比特透传）">最弱段余量 (dB)</th>
@@ -1867,12 +1987,13 @@ onMounted(async () => {
                     <td class="c-n">{{ cellNum(chainInfoRate(row)) }}</td>
                     <td class="c-n">{{ row.nodes.length }}</td>
                     <td class="c-n">{{ segCountOf(row) }}</td>
-                    <td class="c-n" :class="marginCls(results[row._id] && results[row._id].e2eMarginResult)">{{ cellNum(results[row._id] && results[row._id].e2eMarginResult) }}</td>
-                    <td class="c-n">{{ cellNum(results[row._id] && results[row._id].systemAvailabilityResult) }}</td>
-                    <td class="c-n">{{ cellNum(results[row._id] && results[row._id].e2eBerResult) }}</td>
-                    <td class="c-n">{{ cellNum(results[row._id] && results[row._id].e2eDelayResult) }}</td>
+                    <td class="c-n c-res" :class="marginCls(results[row._id] && results[row._id].e2eMarginResult)">{{ cellNum(results[row._id] && results[row._id].e2eMarginResult) }}</td>
+                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].systemAvailabilityResult) }}</td>
+                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].e2eBerResult) }}</td>
+                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].e2eDelayResult) }}</td>
                     <td class="c-act">
-                      <span v-if="errors[row._id]" class="e2-err" :title="errors[row._id]">✕</span>
+                      <span v-if="errors[row._id]" class="e2-err" :title="errors[row._id]"><Icon name="alert-triangle" :size="12" /></span>
+                      <button v-if="sceneApi" class="lb-mini lb-mini-ico" title="在主窗口定位" @click.stop="locateChainInMain(i)"><Icon name="locate-fixed" :size="12" /></button>
                       <button class="lb-mini lb-mini-ico" title="复制此链路" @click.stop="duplicateChain(i)"><Icon name="copy" :size="12" /></button>
                       <button class="lb-mini lb-mini-ico" title="删除此链路" :disabled="chains.length <= 1" @click.stop="removeChain(i)"><Icon name="x" :size="12" /></button>
                     </td>
@@ -1902,7 +2023,7 @@ onMounted(async () => {
                   <span class="e2-insp-t">{{ sel.type === 'node' ? '节点' : 'hop' }}</span>
                   <span class="e2-insp-s" data-i18n-skip>{{ sel.type === 'node' ? (selNode && selNode.name) : (selHopType === 'up' ? '星地上行' : selHopType === 'down' ? '星地下行' : selHopType === 'laser' ? '星间激光' : '星间微波') }}</span>
                 </div>
-                <div v-if="!cur" class="e2-insp-none">还没有链路。</div>
+                <div v-if="!cur" class="e2-insp-none">暂无链路。</div>
                 <template v-else-if="sel.type === 'node' && selNode">
                   <!-- 收侧：解调器（按上一段体制解调，实际门限 = 理论门限 + 本机实现损失） -->
                   <template v-if="selEndSegIndex >= 0">
@@ -1921,7 +2042,7 @@ onMounted(async () => {
                   <template v-if="selSegIndex >= 0 && selNode.carrier">
                     <div class="e2-sub">调制（出）</div>
                     <div v-if="sel.index > 0" class="e2-ref">
-                      <span class="e2-ref-l" title="全链同一个业务速率：只在链首节点填，本节点只换调制方式 / 码率">业务速率</span>
+                      <span class="e2-ref-l" title="全链同一个业务速率：仅在链首节点填写，本节点仅更换调制方式 / 码率">业务速率</span>
                       <span class="e2-ro">{{ chainInfoRate(cur) != null ? fmtQtyRate(chainInfoRate(cur)) : '—' }}</span>
                     </div>
                     <BasebandPanel :form="selNode.carrier" :options="basebandOpts" :calc-modes="[]" :rate-locked="sel.index > 0" />
@@ -1946,11 +2067,11 @@ onMounted(async () => {
                                  @focus="cityFocus" @input="cityInput" @blur="cityClose"
                                  @keydown.down.prevent="cityMove(1)" @keydown.up.prevent="cityMove(-1)"
                                  @keydown.enter="cityEnter" @keydown.esc="cityClose" />
-                          <button class="e2-cityb" title="典型城市…" @click="cityDlg = true"><Icon name="globe" :size="12" /></button>
+                          <button class="e2-cityb" title="典型城市…" @click="cityDlg = true"><Icon name="map-pin" :size="12" /></button>
                         </div>
                         <div v-if="cityOpen && cityHits.length" ref="cityPopEl" class="e2-city-pop"
                              :class="{ up: cityUp }" :style="{ maxHeight: cityMaxH + 'px' }">
-                          <button v-for="(c, ci) in cityHits" :key="c.name" class="e2-city-i" :class="{ on: ci === cityAt }"
+                          <button v-for="(c, ci) in cityHits" :key="c.name" class="e2-city-i" :class="{ on: ci === cityAt }" :aria-pressed="(ci === cityAt) ? 'true' : 'false'"
                                   data-i18n-skip @mousedown.prevent="pickCity(c)" @mouseenter="cityAt = ci">
                             <span class="e2-city-n">{{ cityName(c) }}</span>
                             <span class="e2-city-x">{{ citySub(c) }}</span>
@@ -1984,13 +2105,15 @@ onMounted(async () => {
                   <E2eFields :fields="selHopFields" :form="selHop" />
                   <!-- 自动几何：本跳解出来的斜距/仰角（或星间距离）——用户单元格不动，这里报实际送算的那份 -->
                   <div v-if="!geoManual && curSolvedHop" class="e2-auto">
-                    <span class="e2-auto-l" title="按本跳卫星轨道与站址解出的最差工况几何（送进引擎的就是这份；上方单元格是手动档的值，不被覆盖）">自动几何</span>
+                    <span class="e2-auto-l" title="按本跳卫星轨道与站址解出的最差工况几何（送入引擎的即为该几何；上方单元格是手动档的值，不被覆盖）">自动几何</span>
                     <template v-if="curSolvedHop.rangeKm">{{ curSolvedHop.rangeKm }} km</template>
                     <template v-else>{{ curSolvedHop.slantRange }} km · {{ curSolvedHop.elevation }}°</template>
                     <em v-if="curSolvedHop.method">{{ curSolvedHop.method }}</em>
+                    <button v-if="sceneApi && curSolvedHop.tISO" class="lb-mini e2-loc" title="主窗口时间轴拨到本跳几何取自的时刻 t* 并聚焦本跳卫星；时间轴上标出 t* 与搜索时窗"
+                            @click="locateHopInMain"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
                   </div>
                   <div v-if="geoManual" class="e2-tools">
-                    <button v-if="!isSpaceHop(selHopType)" class="lb-mini" title="按站址纬度/海拔/仰角/轨道高度算 WGS-84 最大斜距，填入本跳" @click="slantToolOpen = true">斜距工具</button>
+                    <button v-if="!isSpaceHop(selHopType)" class="lb-mini" title="按站址纬度/海拔/仰角/轨道高度计算 WGS-84 最大斜距，填入本跳" @click="slantToolOpen = true">斜距工具</button>
                     <button v-else class="lb-mini" title="两星轨道在时间轴上的星间距离，填入本跳" @click="islToolOpen = true">距离工具</button>
                   </div>
                 </template>
@@ -1999,7 +2122,11 @@ onMounted(async () => {
           </LbSection>
 
           <!-- 下：结果文档区 -->
-          <LbSection id="detail" title="详细预算" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
+          <LbSection id="detail" title="详细预算" :stale="!!(resultsStale)" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
+            <template #nav>
+              <button class="lb-mini lb-mini-ico" :disabled="curIdx <= 0" title="上一条" @click="curIdx = curIdx - 1"><Icon name="chevron-up" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" :disabled="curIdx >= chains.length - 1" title="下一条" @click="curIdx = curIdx + 1"><Icon name="chevron-down" :size="12" /></button>
+            </template>
             <div v-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
             <div v-else-if="!segments.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else class="lbx-doc e2-doc">
@@ -2041,87 +2168,28 @@ onMounted(async () => {
                     :busy="reportDlg.busy" :progress="reportDlg.progress"
                     @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
-    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">{{ confirmDlg.msg }}</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
-          <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <ConfirmDialog />
+    <WinStatusBar :n="N" :stale="resultsStale" stale-title="计算输入已被修改，结果对应修改前的参数">
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
+    </WinStatusBar>
   </div>
 </template>
 
 <style scoped>
-/* —— 工作台外壳（.lb-* 一族）——
-   这套类是四个链路预算窗口共用的「壳」，但它们从来是各 App 在自己的 <style scoped> 里各写一份
-   （scoped 会给选择器缀上 data-v-，别的组件根本吃不到）。本窗口刚建起来时漏了这一层，后果在
-   深色主题下最刺眼：按钮退回浏览器默认样式——UA 给的是浅灰实底，而字色继承自 .lb-shell 的近白
-   墨色，于是「白底白字」。故照 RegenLinkBudgetApp 的同名规则原样补齐（改动须与另三窗同步）。 */
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col / .lb-side / .lb-mini / .lb-dlg…）在 styles/lbworkbench.css，此处只留本窗的变体 */
 .lb-shell {
-  display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  /* 外壳无衬线、文档面衬线：衬线只留给 .lbx-doc（详细预算），见 lbworkbench.css */
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-  --up: #3f6d8c; --dn: #97672f;
+  /* 上行 / 下行 = lbPlotTheme.js 的 SERIES 蓝 / 赭（与链路视图、图表同一对，四窗一致） */
+  --up: #15619b; --dn: #b8571a;
 }
-html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; --up: #82a9c6; --dn: #c9a26a; }
+html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 
 /* 功能区「文件」组的刷新按钮：取数中图标旋转（按钮本体走公共 .lbr-big） */
-.lbr-big.spin .lbr-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
-@keyframes lb-spin { to { transform: rotate(360deg); } }
-.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
-.lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lbr-big.spin .app-icon { animation: ui-spin .7s linear infinite; transform-origin: 50% 50%; }
+.e2-loc { flex: none; margin-left: auto; align-self: center; }
 
-.lb-body { flex: 1; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
-.lb-col:last-child { border-right: none; }
-/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
-.lb-side { flex: none; position: relative; }
-.lb-side.resizing { user-select: none; }
-/* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
-.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer::after {
-  content: ''; position: absolute; top: 0; bottom: 0; left: calc(50% - 1px); width: 2px;
-  background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear;
-}
-.lb-cfg-resizer:hover::after { opacity: 1; transition-delay: .15s; }
-.lb-side.resizing .lb-cfg-resizer::after { opacity: 1; background: var(--accent-ui); transition: none; }
-/* 滚动条与全软件同款（controls.css 的 ::-webkit-scrollbar；此处原有的标准滚动条宽度属性一写，Chromium 就整条忽略它） */
-.lb-configs .lb-col-bd { padding: 10px 8px; }
-.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-build { flex: 1; min-width: 460px; }
 
-/* 窗头：配置列表与资源库两视图同一套内距（标题 x 一致）；右侧图标钮与主窗 .dock-x 同一语言——无框透明、悬停才浮底 */
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; height: 30px; flex: none; padding: 0 6px 0 10px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-/* 悬停加深一档机位色；字色显式钉 --bg（通用 .lb-mini 悬停会把字染成 --text，蓝底黑字） */
-.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
-.lb-col-hd .lb-mini-ico { background: transparent; border-color: transparent; color: var(--text-faint); }
-.lb-col-hd .lb-mini-ico:hover:not(:disabled) { background: var(--border); border-color: transparent; color: var(--text); }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
-.lb-cfg-acts { display: flex; gap: 4px; }
-/* 右键菜单（.lb-ctx*）不在这儿：它同时被本组件与 ChainStrip 用，scoped 只盖得住自己那半边，
-   故收进公共表 styles/lbworkbench.css（如今四窗都只吃那一份）。 */
-.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.lb-input:focus { outline: none; border-color: var(--accent-ui); }
-.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
-.lb-err { color: var(--danger); font-size: var(--fs-3); padding: 8px; }
 
 /* —— 链路列表：三线表（顶/底粗线 + 列头线），无竖线无底色，与详细预算同一套排版语言 —— */
 .e2-tbl-wrap { overflow-x: auto; }
@@ -2135,7 +2203,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl tbody tr.on { background: var(--surface-2); }
 /* 当前行的序号格整格点亮——与另三窗 StationGrid 的 tr.cur > td.sg-sel 同一枚标记，
    下方「链路构成」「详细预算」节头那两枚 #n 与它同形。tr.on 原有的整行灰底保留。 */
-.e2-tbl tbody tr.on > td.c-idx { background: var(--accent-ui); color: var(--bg); font-weight: 700; }
+.e2-tbl tbody tr.on > td.c-idx { background: var(--accent-fill); color: var(--accent-on); font-weight: 700; }
 .e2-tbl td { padding: 2px 8px; text-align: right; color: var(--text); white-space: nowrap; }
 /* 行号列：--text-faint 在明暗两主题分别只有 2.5 / 3.1，而它是「第几条链路」的定位列，
    不是装饰——退一档到 muted（5.4 / 6.8），全窗其余文本与控件也一律 ≥4.5。 */
@@ -2144,7 +2212,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl th.c-nm, .e2-tbl th.c-lib, .e2-tbl th.c-idx { text-align: left; }
 .e2-tbl .c-lib { text-align: left; min-width: 150px; }
 .e2-tbl .c-n { min-width: 96px; }
-.e2-tbl .c-act { width: 74px; text-align: right; }
+.e2-tbl .c-act { width: 100px; text-align: right; }   /* 定位 / 复制 / 删除 三枚钮 + 报错标记 */
 /* 名称格：让出输入框自身的 1px 边 + 3px 内距，框里的字与列头「名称」左缘对齐 */
 .e2-tbl td.c-nm { padding-left: 4px; }
 /* 行尾动作钮平时无框（一列框墙是噪声），悬停 / 当前行才浮出；按钮自身悬停仍描深一档 */
@@ -2154,7 +2222,8 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tbl tbody tr .c-act .lb-mini-ico:hover:not(:disabled) { border-color: var(--border-strong); }
 .e2-tbl td.st-bad { color: var(--danger); font-weight: 600; }
 .e2-tbl td.st-ok { color: var(--ok); font-weight: 600; }
-.e2-err { color: var(--danger); margin-right: 4px; }
+/* 行内错误标记：与 .e2-refwarn 同一枚三角（危险色），不再用「✕」——那与同格的删除 × 同形同位 */
+.e2-err { color: var(--danger); display: inline-flex; vertical-align: middle; margin-right: 4px; }
 .e2-refwarn { color: var(--warn); display: inline-flex; vertical-align: middle; margin-left: 3px; }
 .e2-in {
   width: 100%; font: inherit; font-size: inherit; padding: 1px 3px; color: var(--text);
@@ -2197,7 +2266,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-insp :deep(.bb-f) { min-height: 21px; padding: 0; gap: 8px; border-bottom: 1px solid var(--lb-rule-soft); }
 .e2-insp :deep(.bb-l) { font-size: var(--fs-3); line-height: 1.25; }
 .e2-insp :deep(.bb-i) { font-size: var(--fs-3); padding: 2px 4px; background-color: transparent; border-color: transparent; }
-.e2-insp :deep(.bb-i:hover) { background-color: var(--bg); border-color: var(--border); }
+.e2-insp :deep(.bb-i:hover) { background-color: var(--wash-hover); border-color: var(--border); }
 .e2-insp :deep(.bb-i:focus) { background-color: var(--bg); border-color: var(--accent-ui); }
 /* 速率链：非锚点＝算出来的，退一档；锁定档（下游段）整列都是读数 */
 .e2-insp :deep(.bb-rt .bb-i) { color: var(--text-muted); }
@@ -2242,7 +2311,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
 .e2-tools { margin-top: 8px; display: flex; gap: 6px; }
 /* 自动几何读数行：解出来的斜距/仰角（送进引擎的那份），与上方手动单元格并存互不覆盖 */
 .e2-auto { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-size: var(--fs-3); color: var(--text); font-variant-numeric: tabular-nums; }
-.e2-auto-l { flex: none; width: 42px; font-size: var(--fs-3); color: var(--text-muted); }
+.e2-auto-l { flex: none; min-width: 4em; font-size: var(--fs-3); color: var(--text-muted); }
 .e2-auto em { font-style: normal; font-size: var(--fs-2); color: var(--text-muted); }
 
 /* 详细预算区的端到端专属排版（.e2-doc）不在这里：PDF 打印页（src/report/ReportApp.vue）

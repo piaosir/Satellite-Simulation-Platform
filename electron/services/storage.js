@@ -63,8 +63,9 @@ function clearHistory() { write('history.json', []); return true }
 // ssa 的 orbitType 写作 'SSA' 只是为了复用 belongsTo 这套归属判定 —— 空间态势报告与轨道体制无关，
 // 而且它是拆库【之后】才有的功能，旧 configs.json 里绝不可能有它的条目，migrateNs 必然拆出空表。
 // sun（日凌预报）同理：'SUN' 也只是归属标记，且同样是拆库之后才有的工作台。
-const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun']
-const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN', ssa: 'SSA', sun: 'SUN' }
+// ci（干扰分析）/ pfd（PFD Mask）2026-10-15 起有配置列表：同样是拆库之后才有，旧库拆出必为空表；'CI' / 'PFD' 只是归属标记。
+const CFG_NS = ['geo', 'ngso', 'regen', 'e2e', 'rain', 'ssa', 'sun', 'ci', 'pfd']
+const NS_ORBIT = { geo: 'GEO', ngso: 'NGSO', regen: 'REGEN', e2e: 'E2E', rain: 'RAIN', ssa: 'SSA', sun: 'SUN', ci: 'CI', pfd: 'PFD' }
 function cfgFile(ns) {
   // 未知命名空间宁可抛错：静默回退到某一份就是把 A 窗的配置写进 B 窗的库，比报错难查得多
   if (!CFG_NS.includes(ns)) throw new TypeError(`[storage] 未知的配置命名空间：${ns}`)
@@ -205,7 +206,12 @@ function deleteFolder(ns, id) {
 // kind：'open' 打开时 / 'auto' 定时 / 'restore' 还原前。hash 由渲染端按场景指纹算：与最新一档相同就不重复留档。
 const VERSION_CAP = 30
 // 配置 id 由 genId 生成（[0-9a-z-]）；旧库 / 导入件万一带了别的字符，一律折成 _，不许拼出目录穿越
-function verFile(ns, cfgId) { cfgFile(ns); return path.join('versions', ns, String(cfgId).replace(/[^A-Za-z0-9_-]/g, '_') + '.json') }   // 借 cfgFile 校验命名空间
+// 历史版本的命名空间 = 配置列表那几个 + 频率计划（频率计划不进 configs.*.json，但照样按计划 id 留档，口径同链路预算）
+const VER_NS = [...CFG_NS, 'freqplan']
+function verFile(ns, cfgId) {
+  if (!VER_NS.includes(ns)) throw new TypeError(`[storage] 未知的版本命名空间：${ns}`)
+  return path.join('versions', ns, String(cfgId).replace(/[^A-Za-z0-9_-]/g, '_') + '.json')
+}
 function readVersions(ns, cfgId) { const v = read(verFile(ns, cfgId), []); return Array.isArray(v) ? v : [] }
 function listVersions(ns, cfgId) {
   return readVersions(ns, cfgId).map((v) => ({ id: v.id, t: v.t, kind: v.kind, name: v.name || '', meta: v.meta || null }))   // 清单不带 state（还原时再取）
@@ -255,7 +261,7 @@ function setSettings(patch) {
 module.exports = {
   listHistory, addHistory, deleteHistory, clearHistory,
   listConfigs, listAllConfigs, saveConfig, updateConfigState, deleteConfig, reorderConfigs, moveItem, deleteFolder,
-  listVersions, getVersion, addVersion,
+  listVersions, getVersion, addVersion, dropVersions,
   getLibrary, saveLibrary,
   getSettings, setSettings,
   _dir: dir

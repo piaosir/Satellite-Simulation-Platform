@@ -125,7 +125,7 @@ export function parseKmlPolys(text) {
     })
   }
 
-  if (!out.length) throw new Error('未识别到多边形（KML 里没有 <Polygon>？）')
+  if (!out.length) throw new Error('未识别到 Polygon（KML 中没有 <Polygon> 元素）')
   return out
 }
 
@@ -245,8 +245,8 @@ export function parseKmlBeams(text) {
 
   const beams = [...buckets.values()].filter((b) => b.contours.length)
   if (!beams.length) {
-    if (stat.polys) throw new Error('只有协调区多边形（用 Polygon 面板导入）')
-    throw new Error(stat.noGain ? `${stat.noGain} 个多边形没有增益档（名称需含「48 dB」一类数值）` : '未识别到等值线（KML 里没有 <Polygon>？）')
+    if (stat.polys) throw new Error('文件中仅有 Polygon。')
+    throw new Error(stat.noGain ? `${stat.noGain} 个 Polygon 无增益档` : '未识别到等值线（KML 中没有 <Polygon> 元素）')
   }
   return { docName, beams, ...stat }
 }

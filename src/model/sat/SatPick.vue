@@ -226,8 +226,8 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
 
 <template>
   <MdSec id="s-pick" title="选择卫星" :summary="S.satKey ? S.label : ''">
-    <div ref="boxEl" class="sp-box" :class="{ open, has: !!S.satKey }" @mousedown="onBoxDown">
-      <Icon name="search" :size="13" />
+    <div ref="boxEl" class="sp-box search-field" :class="{ open, has: !!S.satKey }" @mousedown="onBoxDown">
+      <Icon name="search" :size="12" />
       <input
         ref="inEl" v-model="q" class="sp-q" type="text" spellcheck="false" autocomplete="off" data-i18n-skip
         role="combobox" aria-autocomplete="list" aria-controls="spk-list" :aria-expanded="open ? 'true' : 'false'"
@@ -235,7 +235,7 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
         :placeholder="ph()" :title="tip()" @focus="onFocus" @click="show" @input="show" @keydown="onKey"
       />
       <button v-if="q" type="button" class="sp-ib" tabindex="-1" title="清空" @mousedown.prevent @click="clearQ"><Icon name="x" :size="12" /></button>
-      <button type="button" class="sp-ib sp-chev" tabindex="-1" :title="open ? '收起' : '展开'" @mousedown.prevent @click="toggle"><Icon name="chevron-down" :size="13" /></button>
+      <button type="button" class="sp-ib sp-chev" tabindex="-1" :title="open ? '收起' : '展开'" @mousedown.prevent @click="toggle"><Icon name="chevron-down" :size="12" /></button>
     </div>
     <Teleport to="body">
       <div v-if="open" ref="popEl" class="spk-pop" :class="{ up }" :style="pos" @mousedown.prevent>
@@ -249,7 +249,7 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
             >
               <span class="spk-n" data-i18n-skip>{{ r.name }}</span>
               <span v-if="waitKey === r.key" class="spk-spin"></span>
-              <span v-else-if="r.n != null" class="spk-b" :title="'已绑定 · ' + r.n + ' 个挂点'"><Icon name="locate-fixed" :size="11" /><span data-i18n-skip>{{ r.n }}</span></span>
+              <span v-else-if="r.n != null" class="spk-b" :title="'已绑定 · ' + r.n + ' 个挂点'"><Icon name="locate-fixed" :size="12" /><span data-i18n-skip>{{ r.n }}</span></span>
               <span v-if="r.sub" class="spk-s" data-i18n-skip>{{ r.sub }}</span>
             </div>
           </template>
@@ -268,9 +268,7 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
 <style scoped>
 .sp-box { display: flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 1px 0 6px; color: var(--text-faint); cursor: text;
   background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-/* 焦点环画在整个框上（里头的无框输入框自己不描，免得环缩在框里一截；同 ModelPickPop 的搜索框） */
-.sp-box:focus-within { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
-.sp-box.open { border-color: var(--accent-ui); }
+.sp-box.open { border-color: var(--focus-ring); box-shadow: var(--focus-halo); }
 .sp-q { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; font-size: var(--fs-3); color: var(--text); box-shadow: none !important; }
 .sp-q:focus, .sp-q:focus-visible { outline: none !important; }
 /* 选了星：占位符就是当前值，收起时按正文色读；展开（正在搜）时退成占位色 */
@@ -288,7 +286,7 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
 <style>
 /* 列表 Teleport 出去了：与 TzPicker / ModelPickPop 同一做法写成全局样式，类名一律 spk- 前缀免撞 */
 .spk-pop {
-  position: fixed; z-index: 2401; display: flex; flex-direction: column; overflow: hidden; padding: 3px;
+  position: fixed; z-index: var(--z-dialog-pop); display: flex; flex-direction: column; overflow: hidden; padding: 3px;
   background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-2);
   font-size: var(--fs-3); color: var(--text); animation: ui-float-in var(--dur-2) var(--ease-out);
 }
@@ -312,7 +310,6 @@ const tip = () => [S.satKey, byLang('名称、常用名、NORAD 编号（不区�
 .spk-empty { padding: 8px 7px 6px; color: var(--text-faint); }
 .spk-err { color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spk-busy { display: flex; justify-content: center; padding: 8px 0; }
-.spk-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: spk-spin .7s linear infinite; }
+.spk-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 .spk-row > .spk-spin { align-self: center; width: 10px; height: 10px; }   /* 行内：等候选池算出键（合成号关联星） */
-@keyframes spk-spin { to { transform: rotate(360deg); } }
 </style>

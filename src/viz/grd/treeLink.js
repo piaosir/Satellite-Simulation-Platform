@@ -127,6 +127,23 @@ export function treeSetMembers(nodes, geoIds) {
   return out
 }
 
+// 卫星集「卫星天线树」进地图（渲染集 → 3D 点云：悬停 / 单击聚焦都靠它）的条目，按树序、同号去重（同 treeSetMembers）。
+// 成员一律收，【不看】树上卫星行的小眼睛：那只眼睛管的是覆盖分析里这颗星的图标 + 名称（页面 redrawSats），
+// 这一集上不上图只认卫星集里它自己那只眼睛 —— 与别的卫星集同一口径（别的集也没有「成员各自的眼睛」）。
+//   ★ 早先按小眼睛逐颗过滤：覆盖分析里把卫星名关掉（或「清除绘图」一键全关）之后，点亮这一集，地图上一个点也不出。
+// entryOf(member) → 星座条目 | null（虚拟星 = treeGeo 的活条目；关联星 = 按号现解）；解不出的不收。
+// kind：'virtual' 只要虚拟星 | 'linked' 只要关联星 | 省略 = 全部（宿主分两段加：关联星要等这一版在场集定下来再解）。
+export function treeSetEntries(nodes, geoIds, entryOf, kind) {
+  const out = []
+  if (typeof entryOf !== 'function') return out
+  for (const m of treeSetMembers(nodes, geoIds)) {
+    if ((kind === 'virtual' && !m.virtual) || (kind === 'linked' && m.virtual)) continue
+    const e = entryOf(m)
+    if (e) out.push(e)
+  }
+  return out
+}
+
 // 关联到给定 NORAD 集合的 folder 集（一对多、字符串 / 数字混存都认）。norads：可迭代的号（任意类型）。
 export function foldersForNorads(nodes, norads, geoIds) {
   const want = new Set()
@@ -156,10 +173,10 @@ export function linkMissing(node, poolReady, resolve) {
 // 树卫星行「聚焦 / 跟随」两钮的状态（对地 / 对星两棵树共用）：点亮 / 置灰 / 悬停说明。
 //   有星座身份的星（关联星 / 天线树虚拟星）：聚焦钮单击＝加入 / 移出聚焦集（加入时设主选并正对；亮＝在聚焦集里）；跟随＝并入聚焦集、设为主选后跟随（亮＝正跟随它）。
 //   没有星座身份的星（根数解不出的轨道根数星 / 宿主没给映射）星座里没有条目：聚焦只把地球转到它此刻的星下点（恒不亮），跟随置灰。
-//   关联星不在当前星历（miss）→ 两钮置灰；平面图（flat）里跟随置灰。正跟随着的那颗不灰（留着退出的口）。
-// ctx：{ cur 该行在聚焦集里, miss 关联星缺失, followId 正在跟随的星的 NORAD（'' = 没在跟随）, flat 平面图,
+//   关联星不在当前星历（miss）→ 两钮置灰。正跟随着的那颗不灰（留着退出的口）。跟随 3D / 2D 都有（相机跟随 / 星下点跟随），不按视图置灰。
+// ctx：{ cur 该行在聚焦集里, miss 关联星缺失, followId 正在跟随的星的 NORAD（'' = 没在跟随）,
 //        linkId 该行的星座身份（nodeLinkId；天线树虚拟星给合成号 —— 它在星座里有条目，与关联星同样可聚焦 / 跟随）}
-export function treeNavState(node, { cur = false, miss = false, followId = '', flat = false, linkId } = {}) {
+export function treeNavState(node, { cur = false, miss = false, followId = '', linkId } = {}) {
   const id = node && node.kind !== 'elevline' ? (linkId !== undefined ? idOf(linkId) : idOf(node.noradId)) : ''
   const lost = !!id && !!miss
   const following = !!id && idOf(followId) === id
@@ -169,8 +186,8 @@ export function treeNavState(node, { cur = false, miss = false, followId = '', f
     focusDis: lost,
     focusTip: !id ? '转到该卫星（该星不在星座中）' : lost ? missTip : cur ? '取消聚焦' : '聚焦该卫星',
     followOn: following,
-    followDis: !following && (!id || lost || !!flat),
-    followTip: following ? '退出跟随（Esc）' : !id ? '跟随卫星（该星不在星座中）' : lost ? missTip : flat ? '跟随卫星（仅 3D 球体）' : '跟随卫星'
+    followDis: !following && (!id || lost),
+    followTip: following ? '退出跟随（Esc）' : !id ? '跟随卫星（该星不在星座中）' : lost ? missTip : '跟随卫星'
   }
 }
 

@@ -49,7 +49,7 @@ function onKey(e) {
 
 <template>
   <div class="skp">
-    <label class="skp-in">
+    <label class="skp-in search-field">
       <Icon name="search" :size="12" />
       <input v-model="q" type="text" spellcheck="false" :placeholder="modelValue ? (label || keyLabel(modelValue)) : '搜索目标卫星'" :title="modelValue || '名称 / NORAD'"
              @focus="q.trim() && (open = true)" @blur="onBlur" @keydown="onKey" />
@@ -66,7 +66,6 @@ function onKey(e) {
 <style scoped>
 .skp { position: relative; flex: 1 1 150px; min-width: 0; }
 .skp-in { display: flex; align-items: center; gap: 4px; height: var(--h-ctl); padding: 0 6px; color: var(--text-faint); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.skp-in:focus-within { border-color: var(--accent-ui); }
 .skp-in input { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; font-size: var(--fs-3); color: var(--text); box-shadow: none !important; }
 .skp-in input::placeholder { color: var(--text-muted); }
 .skp-pop { position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 40; max-height: 220px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-2); animation: ui-float-in var(--dur-2) var(--ease-out); }
@@ -74,6 +73,5 @@ function onKey(e) {
 .skp-row:hover { background: var(--wash-hover, var(--surface)); }
 .skp-s { flex: none; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
 .skp-busy { display: flex; justify-content: center; padding: 8px 0; }
-.skp-spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: skp-spin .7s linear infinite; }
-@keyframes skp-spin { to { transform: rotate(360deg); } }
+.skp-spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

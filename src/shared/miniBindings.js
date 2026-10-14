@@ -52,7 +52,7 @@ export async function saveBindings(api, list) {
  */
 export async function addBinding(api, rawCh, name) {
   const ch = normalizeCh(rawCh)
-  if (!isCh(ch)) return { ok: false, list: await loadBindings(api), error: '认证码应为 12 位（小程序「设置 → 仿真平台绑定」里复制）' }
+  if (!isCh(ch)) return { ok: false, list: await loadBindings(api), error: '认证码应为 12 位（小程序「设置 → 仿真平台绑定」中复制）' }
   const list = await loadBindings(api)
   const at = list.findIndex((b) => b.ch === ch)
   const dup = at >= 0

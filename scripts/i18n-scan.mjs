@@ -1,5 +1,6 @@
 // UI 词典覆盖率审计 —— 扫全库可见中文串，对账 src/shared/i18n/uiDict.data.js。
-// 用法：node scripts/i18n-scan.mjs [--misses]   （--misses 逐条列出未覆盖串及出处）
+// 用法：node scripts/i18n-scan.mjs [--misses] [--leaks] [--orphans]
+//   （--misses 逐条列出未覆盖串及出处；--leaks 逐条列出译后仍带中文的运行时串；--orphans 列出全库搜不到的词典键）
 // 新增界面后跑一遍：未覆盖串补进词典（EXACT 或带槽位的 PAT），译法遵循同目录 runtime.js 头注与
 // docs 里的术语基线（WF_DICT / labelEn / LB_DOC_EN 优先）。
 import fs from 'node:fs'
@@ -86,6 +87,7 @@ function isNoise(s) {
 // 有意保持中文的（不是漏译）：写进存档的默认名、控制台日志、导出文件名、生成时已按语言分流的
 const INTENDED = [
   /^\[PDF导出\]/, /^\[ssa\]/,                               // 控制台日志
+  /^\[[A-Za-z][\w-]*\] /,                                   // 控制台日志：console.warn('[modelwb] …') 一类带英文模块标签的
   /^(点|发|收|地球站|点标记|设置|站型|城市组|批次|算例|副本)\s?\$\{/,   // 新建对象的默认名 = 数据
   /^\$\{[^}]*\}dBW·/,                                       // 生成的预设名 = 数据
   /报告_\$\{|曲线_\$\{|图_\$\{/,                            // 导出文件名
@@ -96,13 +98,16 @@ const INTENDED = [
   /预报_\$\{/                                                 // 导出文件名
 ]
 // byLang(中文, English) 已在生成时按平台语言出字，里面的中文不归呈现层管 —— 整个调用挖掉
-function stripByLang(src) {
+function stripCall(src, name) {
   let out = '', i = 0
+  const isId = (c) => !!c && /[\w$]/.test(c)
   for (;;) {
-    const k = src.indexOf('byLang(', i)
+    let k = src.indexOf(name + '(', i)
+    // 词边界：前一字符不能是标识符字符；名字本身不带「.」时也不能是「.」（别把 obj.L(…) 方法调用当双语助手）
+    while (k >= 0 && (isId(src[k - 1]) || (!name.includes('.') && src[k - 1] === '.'))) k = src.indexOf(name + '(', k + 1)
     if (k < 0) { out += src.slice(i); return out }
-    out += src.slice(i, k) + 'byLang()'
-    let d = 1, j = k + 7, q = ''
+    out += src.slice(i, k) + name + '()'
+    let d = 1, j = k + name.length + 1, q = ''
     for (; j < src.length && d > 0; j++) {
       const c = src[j]
       if (q) { if (c === q && src[j - 1] !== '\\') q = ''; continue }
@@ -113,8 +118,45 @@ function stripByLang(src) {
     i = j
   }
 }
+// 本地双语助手：与 byLang 同理（调用点自带英文），整段挖掉。只认签名确凿是 (zh, en) 的：
+//   ① 文件内定义 `const X = (zh, en) => …` / `function X(zh, en)`（zhEn / T / L / G / D / tt …，
+//      同名但签名不同的——lbResultLabels.js 的 G(title, items)、operatingParams.js 的 E(m)——不会被认）；
+//   ② 视频面板的别名 `const T = vx.T`（vx.T 即 useVideoExport.js 的 (zh, en) 助手）与直接写的 vx.T(…)；
+//   ③ 作参数传进来的：hud.js satCard(…, T) 的 T 就是 vx.T。
+const BILINGUAL_DEF = /(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)\s*=?\s*(?:async\s*)?\(\s*(?:zh|z|cn)\s*,\s*(?:en|e)\s*\)/g
+const BILINGUAL_EXTRA = { 'src/viz/video/hud.js': ['T'] }
+function bilingualNames(rel, src) {
+  const names = new Set(['byLang', 'vx.T'])
+  let m
+  BILINGUAL_DEF.lastIndex = 0
+  while ((m = BILINGUAL_DEF.exec(src))) names.add(m[1])
+  for (const a of src.matchAll(/(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*vx\.T\b/g)) names.add(a[1])
+  for (const n of BILINGUAL_EXTRA[rel] || []) names.add(n)
+  return [...names]
+}
+// 同一行里成对写的双语字段：`{ zh: '圆点', en: 'Circle' }`——取值处按 lang 选列，中文那一列不归呈现层管。
+// 只认键名就叫 zh、且同一行有 en: 的；label / labelEn 这类不剥（有的模板只显示 label、靠呈现层翻）
+const PAIR_RE = /\b(zh)\s*:\s*(['"`])((?:\\.|(?!\2)[^\\\n])*)\2(?=[^\n]*?\b(?:en|\1En)\s*:)/g
+// 模型库的两类同理：`titleZh: '小卫星平台', title: 'Small satellite bus'`（键名以 Zh 收尾＝双语数据的中文列），
+// `aliases: ['小卫星', '微小卫星']`（检索/识别关键词，只参与匹配、不显示——同 cmdKeywords.js）
+const ZH_KEY_RE = /\b([A-Za-z_$][\w$]*Zh)\s*:\s*(['"`])((?:\\.|(?!\2)[^\\\n])*)\2/g
+const ALIAS_RE = /\b(aliases|keywords)\s*:\s*\[[^\]\n]*\]/g
+function stripPairs(src) {
+  return src.replace(PAIR_RE, (m, k, q) => `${k}: ${q}${q}`)
+    .replace(ZH_KEY_RE, (m, k, q) => `${k}: ${q}${q}`)
+    .replace(ALIAS_RE, (m, k) => `${k}: []`)
+}
+function stripByLang(src, rel = '') {
+  for (const n of bilingualNames(rel, src)) src = stripCall(src, n)
+  return stripPairs(src)
+}
 
-const SCAN_DIRS = ['src', 'electron', 'packages/core/utils', 'packages/core/data']
+// 自带中英两列、在取名处按 lang 分流的地名/代码表：中文列是数据，呈现层不管，两关都不扫
+//（城市库 cityName()、国名 povResolver.labelSet(lang)、岛链与水域注记各带 en 列、SATCAT ownerName(code, lang)）
+const DATA_TABLES = new Set(['packages/core/utils/cities.js', 'src/viz/geo/countryZh.js', 'src/viz/geo/islandChains.js',
+  'src/viz/geo/waterNames.js', 'src/shared/satcatCodes.js'])
+
+const SCAN_DIRS = ['src', 'electron', 'packages/core/utils', 'packages/core/data', 'packages/core/models']
 const files = []
 for (const d of SCAN_DIRS) {
   const abs = path.join(ROOT, d)
@@ -123,7 +165,7 @@ for (const d of SCAN_DIRS) {
     for (const e of fs.readdirSync(p, { withFileTypes: true })) {
       const fp = path.join(p, e.name)
       if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'test') walk(fp) }
-      else if (['.vue', '.js', '.html'].includes(path.extname(e.name))) files.push(fp)
+      else if (['.vue', '.js', '.mjs', '.html'].includes(path.extname(e.name))) files.push(fp)
     }
   })(abs)
 }
@@ -132,9 +174,10 @@ const found = new Map() // 串 → 首个出处
 for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')
   if (rel === 'src/shared/i18n/uiDict.data.js') continue
+  if (DATA_TABLES.has(rel)) continue
   if (rel === 'src/shared/cmdKeywords.js') continue   // 标题栏搜索框的匹配关键词：只参与检索、不显示，不进词典
   // 与下面那关同一口径：byLang 的整段调用挖掉（已双语的不算缺口，不必进词典）
-  const src = stripByLang(fs.readFileSync(f, 'utf8'))
+  const src = stripByLang(fs.readFileSync(f, 'utf8'), rel)
   const ext = path.extname(f)
   const put = (raw) => { const s = condense(raw); if (s && !isNoise(s) && HAN.test(s) && !found.has(s)) found.set(s, rel) }
   if (ext === '.vue') {
@@ -212,6 +255,15 @@ function translate(s, depth = 0) {
     out = acc; break
   }
   return out
+}
+
+// --probe <串>…：把给定的运行时真串按 runtime 的译法跑一遍，原样打印结果后退出（补词条后逐条验证用）
+{
+  const k = process.argv.indexOf('--probe')
+  if (k >= 0) {
+    for (const s of process.argv.slice(k + 1)) console.log(`${s}\n  → ${translate(condense(s))}`)
+    process.exit(0)
+  }
 }
 
 // —— 运行时真串的三个来源 ——
@@ -321,9 +373,9 @@ function tplTextNodes(tpl) {
 const rt = new Map()
 for (const f of files) {
   const rel = path.relative(ROOT, f).replace(/\\/g, '/')
-  if (rel === 'src/shared/i18n/uiDict.data.js' || rel === 'packages/core/utils/cities.js' || rel === 'src/shared/cmdKeywords.js') continue
+  if (rel === 'src/shared/i18n/uiDict.data.js' || DATA_TABLES.has(rel) || rel === 'src/shared/cmdKeywords.js') continue
   if (path.extname(f) === '.html') continue
-  const src0 = stripByLang(fs.readFileSync(f, 'utf8'))
+  const src0 = stripByLang(fs.readFileSync(f, 'utf8'), rel)
   const body = path.extname(f) === '.vue' ? src0.replace(/<style[\s\S]*?<\/style>/g, '') : src0
   const put = (raw) => { const s = condense(raw); if (s && HAN.test(s) && !rt.has(s)) rt.set(s, rel) }
   for (const tk of tokenize(body)) if (tk.t === 'str' && HAN.test(tk.v)) put(tk.v)
@@ -335,10 +387,13 @@ for (const f of files) {
 }
 const leaks = []
 for (const [s, at] of rt) {
-  if (INTENDED.some((re) => re.test(s))) continue
+  if (INTENDED.some((re) => re.test(s)) || isNoise(s)) continue
   // 两支都试：可选段出现（换成样本值）、不出现（整段拿掉）。任一支译得干净就不算漏
-  const probes = [condense(s.split(OPT).join(SAMPLE).replace(SLOT_RE, SAMPLE)),
-    condense(s.split(OPT).join('').replace(SLOT_RE, SAMPLE))]
+  // 以分隔符起头/收尾的是拼接链的中段（` · 峰值 ${x}dB` 接在别的读数后面）：运行时由组合模式在分隔符处
+  // 切开后再查表，探针也先把首尾分隔符剥掉，否则整段被误报
+  const edge = (x) => condense(x).replace(/^(?:·|；|，|、|\/|→|——|：)\s*/, '').replace(/\s*(?:·|；|，|、|\/|→|——)$/, '')
+  const p1 = s.split(OPT).join(SAMPLE).replace(SLOT_RE, SAMPLE), p2 = s.split(OPT).join('').replace(SLOT_RE, SAMPLE)
+  const probes = [condense(p1), condense(p2), edge(p1), edge(p2)]   // 原样或剥边任一译得干净即可（词典里也有以「· 」起头的键）
   let bad = null
   for (const probe of probes) {
     if (!HAN.test(probe) || /[{}`'"]/.test(probe)) { bad = null; break }  // 抽取残渣，不是运行时真串
@@ -354,4 +409,35 @@ else if (leaks.length) {
   for (const [, at] of leaks) byFile[at] = (byFile[at] || 0) + 1
   console.log('漏译 TOP 出处（--leaks 逐条列出）：')
   Object.entries(byFile).sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([f, n]) => console.log(String(n).padStart(5), f))
+}
+
+// ══ 第三关：孤儿键（--orphans 逐条列出）═══════════════════════════════════════════
+// 词典里全库再也搜不到的键（改文案后旧键没清）。语料比上面两关宽：src / electron / packages / scripts
+// 全部代码文件（含 test、DATA_TABLES、cmdKeywords）+ resources 下的 json/csv/txt（内置数据里的中文名也会上屏），
+// 原文与「空白折叠后」两种形态各查一次。EXACT 键按整串查；PAT 按最长那段字面量查（同 dictops 口径）。
+// ★ 这只是候选：运行时拼出来的串（组合模式切出来的半截、canvas 逐段 fillText）可能字面上搜不到，删前逐条核。
+if (process.argv.includes('--orphans')) {
+  const parts = []
+  const walk = (d, exts) => {
+    if (!fs.existsSync(d)) return
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === 'out' || e.name === 'dist' || e.name === 'imagery') continue
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p, exts)
+      else if (exts.test(e.name) && !p.endsWith('uiDict.data.js') && fs.statSync(p).size < 8e6) parts.push(fs.readFileSync(p, 'utf8'))
+    }
+  }
+  for (const d of ['src', 'electron', 'packages', 'scripts']) walk(path.join(ROOT, d), /\.(vue|js|mjs|cjs|ts|html|json|csv)$/)
+  walk(path.join(ROOT, 'resources'), /\.(json|csv|txt)$/)
+  const raw = parts.join('\n')
+  const flat = condense(raw.replace(/\\n/g, ' '))
+  const has = (x) => raw.includes(x) || flat.includes(condense(x))
+  const oE = Object.keys(dict.EXACT).filter((k) => !has(k))
+  const oP = dict.PAT.map(([zh]) => zh).filter((zh) => {
+    const lits = zh.split(SLOT_RE).filter((l) => l.trim()).sort((a, b) => b.length - a.length)
+    return lits[0] && !has(lits[0])
+  })
+  console.log(`孤儿键 EXACT ${oE.length} ｜ PAT ${oP.length}`)
+  for (const k of oE) console.log(`EXACT\t${k}`)
+  for (const k of oP) console.log(`PAT\t${k}`)
 }

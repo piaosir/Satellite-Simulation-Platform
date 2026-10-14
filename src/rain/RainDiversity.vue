@@ -8,6 +8,7 @@
 //   · 各站中断按相互独立计（纯概率论口径，2026-08-10 重做时相关档已整体移除）
 //   · 切换不进概率模型，只作为独立可加项 U_sw = N_sw × T_sw，与站点中断项相加成合计
 import { computed } from 'vue'
+import Icon from '../components/Icon.vue'
 
 // 纯结果视图：算什么、怎么算全在中间栏底部那条（与单算例共用一个「计算」按钮），本组件只铺数。
 const props = defineProps({
@@ -118,7 +119,7 @@ function siteTitle(s) {
         <div class="rv-ph">尚无多站结果。</div>
       </template>
       <template v-else-if="result.error">
-        <div class="rv-err">✕ {{ result.message }}</div>
+        <div class="rv-err"><Icon name="alert-triangle" :size="12" /> {{ result.message }}</div>
       </template>
       <template v-else-if="!result.activeCount">
         <div class="rv-ph">参与站少于 1 个。</div>
@@ -134,7 +135,7 @@ function siteTitle(s) {
                 <th v-if="!byAvail" :title="TARGET_LABEL[result.target] ? ('当前对标：' + TARGET_LABEL[result.target]) : ''">可承受<br />dB</th>
                 <th :title="byAvail ? '表内填入的站可用度' : '由可承受衰减反解'">可用度<br />%</th>
                 <th>年停时<br />h</th>
-                <th title="该站在自己这个可用度上的纯雨衰">雨衰<br />dB</th>
+                <th title="该站在其自身可用度下的纯雨衰">雨衰<br />dB</th>
                 <th title="气体吸收 + 云衰 + 雨衰">合计<br />dB</th>
                 <th title="雨衰 + 云衰 + 降雨噪声抬升；相对晴空基线，不含气体（仅下行）">下行总劣化<br />dB</th>
               </tr>
@@ -174,14 +175,14 @@ function siteTitle(s) {
                 <td>{{ sys ? (100 - sys.unavail * 100).toFixed(6) : '—' }}</td>
                 <td>{{ sys ? hrs(sys.unavail) + ' ' + hUnit(sys.unavail) : '—' }}</td>
               </tr>
-              <tr v-if="sw && sw.unavail != null" title="切换造成的年不可用度 = 次数 × 单次时长 ÷ 全年分钟数。静态概率模型没有时间轴，切换只能这样作为独立可加项进来">
+              <tr v-if="sw && sw.unavail != null" title="切换造成的年不可用度 = 次数 × 单次时长 ÷ 全年分钟数。静态概率模型没有时间轴，切换仅能以独立可加项计入">
                 <td class="l">切换</td>
                 <td class="l f">{{ fx(sw.nSwPerYear, 0) }} × {{ fx(sw.tSwMin, 0) }} min ÷ 525960</td>
                 <td>{{ pct(sw.unavail, 6) }}</td>
                 <td>{{ (100 - sw.unavail * 100).toFixed(6) }}</td>
                 <td>{{ hrs(sw.unavail) + ' ' + hUnit(sw.unavail) }}</td>
               </tr>
-              <tr v-if="sw && sw.total != null" class="em" title="站点中断 + 切换。已知偏保守：系统已中断的时段里也在计切换，这部分被算了两遍">
+              <tr v-if="sw && sw.total != null" class="em" title="站点中断 + 切换。已知偏保守：系统已中断的时段中仍计入切换，该部分被重复计算">
                 <td class="l">合计</td>
                 <td class="l f">站点中断 + 切换</td>
                 <td>{{ pct(sw.total, 6) }}</td>
@@ -194,7 +195,7 @@ function siteTitle(s) {
 
         <!-- 中断站数分布 -->
         <div v-if="sys" class="rv-sec">
-          <div class="rv-hd">中断站数分布<span class="rv-sub">同时中断 j 个站的时间占比 %</span></div>
+          <div class="rv-hd" title="同时中断 j 个站的时间占比 %">中断站数分布</div>
           <div class="rv-scroll">
             <table class="rv-tb">
               <thead><tr><th class="l">j</th><th v-for="(v, j) in sys.pmf" :key="j" :class="{ tail: j >= sys.L }">{{ j }}</th></tr></thead>
@@ -207,12 +208,12 @@ function siteTitle(s) {
 
         <!-- 切换 -->
         <div v-if="sw" class="rv-sec">
-          <div class="rv-hd">切换<span class="rv-sub">U_sw = 次数 × 时间 ÷ 525960 min</span></div>
+          <div class="rv-hd" title="U_sw = 次数 × 时间 ÷ 525960 min">切换</div>
           <table class="rv-tb">
             <tbody>
               <tr title="单次切换的业务中断时长"><td class="l">切换时间</td><td class="v">{{ fx(sw.tSwMin, 2) }}</td><td class="u">min</td></tr>
               <tr title="一年切换多少次"><td class="l">切换次数</td><td class="v">{{ fx(sw.nSwPerYear, 0) }}</td><td class="u">次/年</td></tr>
-              <tr title="切换造成的年不可用度。它进不了联合概率模型（静态模型没有时间轴），只能作独立可加项与站点中断项相加"><td class="l">切换不可用度</td><td class="v">{{ sw.unavail == null ? '—' : pct(sw.unavail, 6) }}</td><td class="u">%</td></tr>
+              <tr title="切换造成的年不可用度。它进不了联合概率模型（静态模型没有时间轴），仅能作为独立可加项与站点中断项相加"><td class="l">切换不可用度</td><td class="v">{{ sw.unavail == null ? '—' : pct(sw.unavail, 6) }}</td><td class="u">%</td></tr>
               <tr title="切换造成的年中断时长"><td class="l">切换年停时</td><td class="v">{{ sw.unavail == null ? '—' : hrs(sw.unavail) }}</td><td class="u">{{ sw.unavail == null ? '' : hUnit(sw.unavail) }}</td></tr>
             </tbody>
           </table>
@@ -227,7 +228,7 @@ function siteTitle(s) {
 
 .rv-bd { flex: 1 1 auto; overflow: auto; padding: 8px; }
 .rv-ph, .rv-err { padding: 14px 4px; font-size: var(--fs-3); color: var(--text-muted); }
-.rv-err { color: var(--danger, #9c5751); }
+.rv-err { color: var(--danger); }
 
 .rv-sec + .rv-sec { margin-top: 14px; }
 .rv-hd { display: flex; align-items: center; gap: 8px; padding: 0 0 4px; font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
@@ -242,8 +243,8 @@ function siteTitle(s) {
 .rv-tb tbody tr:last-child td { border-bottom: 1.4px solid var(--text); }
 .rv-tb .l { text-align: left; font-family: var(--font-sans, inherit); }
 .rv-tb .u { text-align: left; color: var(--text-muted); font-size: var(--fs-2); }
-.rv-tb tbody tr.bad td { color: var(--danger, #9c5751); }
-.rv-tb tbody tr.clamped td { color: var(--warn, #8a7038); }
+.rv-tb tbody tr.bad td { color: var(--danger); }
+.rv-tb tbody tr.clamped td { color: var(--warn); }
 .rv-tb tbody tr.dimrow td { color: var(--text-muted); }
 .rv-tb tbody tr.em td { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); font-weight: 600; }
 /* 级联算式列：手算路径，弱化不抢数值 */

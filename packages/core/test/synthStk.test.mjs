@@ -568,7 +568,7 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   bs.setSat('')
   const n1 = alerts.length
   bs.hexFill(); bs.assignFreqPlan()
-  ok('真没选卫星：仍是「请先选择卫星」', alerts.slice(n1).join('|') === '请先选择卫星|请先选择卫星', alerts.slice(n1).join('|'))
+  ok('真没选卫星：仍是「未选择卫星。」', alerts.slice(n1).join('|') === '未选择卫星。|未选择卫星。', alerts.slice(n1).join('|'))
 }
 
 // ================= ⑪ 自动同步：无星历重试 / 状态行 =================
@@ -599,7 +599,7 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   // 静默失败（没有波束）：报到状态行，天线不动；撤销回到已同步状态 → 失败那句撤掉
   bs.clearBeams()
   await settle(220)
-  ok('静默失败（没有波束）：激活组状态行一句、不弹窗、天线不动', /^组「高斯波束」还没有波束/.test(bs.status.value) && calls.update.length === 2 && alerts.length === nA, bs.status.value)
+  ok('静默失败（没有波束）：激活组状态行一句、不弹窗、天线不动', /^组「高斯波束」暂无波束/.test(bs.status.value) && calls.update.length === 2 && alerts.length === nA, bs.status.value)
   bs.undo()
   await settle(220)
   ok('撤销 → 与天线重新一致：不重写，失败那句撤掉', calls.update.length === 2 && bs.status.value === '', JSON.stringify(bs.status.value))
@@ -614,7 +614,7 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   ok('非激活组的静默失败不抢状态行', bs.status.value === '已清除频率配色' && calls.update.length === 2, bs.status.value)
   bs.selectGroup(gA)
   await settle(220)
-  ok('… 切回该组 → 失败报在状态行', /^组「高斯波束」还没有波束/.test(bs.status.value) && calls.update.length === 2 && alerts.length === nA, bs.status.value)
+  ok('… 切回该组 → 失败报在状态行', /^组「高斯波束」暂无波束/.test(bs.status.value) && calls.update.length === 2 && alerts.length === nA, bs.status.value)
 }
 
 // ================= ⑫ 覆盖树改天线名：组跟着改，链接不断；组名不撞非合成天线 =================

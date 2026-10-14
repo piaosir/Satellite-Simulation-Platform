@@ -4,20 +4,30 @@
 // 点表格任一行即在右侧细看该算例。算例表与链路预算链路表同一套表格口径（两层表头分区 / 不冻结数据列 / 结果格着色）。
 // 计算在主进程 core.calculateRainAttenuation（复用 ITU-R 传播模型），本组件负责采集/展示/配置持久化。
 import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { askConfirm } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件（Regen 先例：直接复用）
 import ConfigTree from '../components/ConfigTree.vue'
 import Icon from '../components/Icon.vue'
 import RainPlot from './RainPlot.vue'
 import RainDiversity from './RainDiversity.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
+import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import { useConfigTree } from '../shared/useConfigTree.js'
+import { useConfigAutosave } from '../shared/useConfigAutosave.js'
+import { useConfigVersions } from '../shared/useConfigVersions.js'
+import { useNotice } from '../shared/useNotice.js'
+import { reportError } from '../shared/reportError.js'
 import { rainFields, GRID_GROUPS, RESULT_KEYS, RESULT_DIGITS, LEGACY_KEYS, POL_LABEL, defaultRow, effectiveRow, buildRainCase } from './rainParams.js'
 import { stableStringify } from '../shared/configDirty.js'
-import { newCfgName, newFolderName } from '../shared/lbAutoName.js'   // 配置树默认名（按平台语言出字）
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
-import { byLang } from '../shared/i18n/lang.js'
+import { byLang, curLang } from '../shared/i18n/lang.js'
 import { halfStr } from '../shared/num.js'
 
 const api = (typeof window !== 'undefined' && window.api) ? window.api.rainAttenuation : null
+const winApi = (typeof window !== 'undefined' && window.api) || null   // 配置库（store.*）走总桥
 
 // —— 全局选项 ——
 const orbitMode = ref('geo')        // 'geo'（输入 GEO 轨位算仰角）| 'ngso'（轨道三要素 → P.618-14 §8 等效仰角）
@@ -57,9 +67,14 @@ const computing = ref(false)
 const selectedId = ref(cases[0]._id)  // 右侧「单算例分析」当前所分析的算例 _id
 const hasResults = computed(() => cases.some((c) => resultById.value[c._id]))
 
-const notice = ref('')
-let _noticeT = null
-function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
+// 窗内提示（shared/useNotice：普通 4 s · 导出带「打开 · 在文件夹中显示」· 失败常驻）
+const N = useNotice()
+const { toast, toastFile } = N
+// 主进程保存处理器回的实际写入路径（新字段 path / paths；兼容旧的 filePath）
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+// 算例表「导入 / 导出 Excel」的回执（StationGrid emit xlsxDone）
+function onGridXlsx(r) { if (!r) return; if (r.kind === 'export') { if (r.path) toastFile('已导出 Excel', r.path); else toast('已导出 Excel') } else toast(`已导入 ${r.rows || 0} 行`) }
+const baseName = (p) => String(p || '').split(/[\\/]/).pop()
 
 // —— 结果过期提示（与链路预算同口径）：出结果后任何计算输入再变化 → 亮「输入已变」提醒重算 ——
 // 不做「打字防抖自动重算」：轨位打到一半就会被当成完整值跑一遍全表，表里数字乱跳、右上角提示乱弹，
@@ -166,15 +181,15 @@ function cellClassFn(f, row) {
 // 返回是否按当前输入算完了整表（逐例算不出的 ✕ 也算算完）：导出前补算要据此决定导不导（见 exportExcel）
 async function compute() {
   if (!api) { toast('计算需在桌面客户端中运行'); return false }
-  if (!cases.length) { toast('请先添加算例'); return false }
+  if (!cases.length) { toast('暂无算例。'); return false }
   // 全局几何先行校验（缺了会让全表统一报错，不如一句话说清）
   const pf = (v) => parseFloat(halfStr(v))
   if (orbitMode.value === 'ngso') {
     if (!(pf(ngsoOrbit.alt) > 0) || !Number.isFinite(pf(ngsoOrbit.incl)) || !Number.isFinite(pf(ngsoOrbit.minEl))) {
-      toast('请先在工具栏填写轨道高度 / 倾角 / 最低仰角'); return false
+      toast('轨道高度 / 倾角 / 最低仰角未填写。'); return false
     }
   } else if (!Number.isFinite(pf(geoSatLon.value))) {
-    toast('请先在工具栏填写 GEO 轨位'); return false
+    toast('GEO 轨位未填写。'); return false
   }
   computing.value = true
   try {
@@ -196,7 +211,7 @@ async function compute() {
     toast(divMsg || (errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）`
       : `完成，共 ${ids.length} 个算例${divOn.value ? ' · 多站汇总已出' : ''}`))
     return true
-  } catch (e) { toast('计算失败：' + (e && e.message ? e.message : e)); resultById.value = {}; return false }
+  } catch (e) { reportError('计算失败', e); resultById.value = {}; return false }
   finally { computing.value = false }
 }
 // 方向切换：下行/上行影响 G/T 衰减列，已算过则自动重算（单击即定，不存在「打一半」的中间态）
@@ -319,7 +334,8 @@ async function exportExcel() {
     const pf = (v) => { const x = parseFloat(halfStr(v)); return Number.isFinite(x) ? x : null }
     const divOut = (divOn.value && divResult.value && !divResult.value.error) ? JSON.parse(JSON.stringify(divResult.value)) : null
     const payload = {
-      defaultName: divOut ? '多站总可用度.xlsx' : '雨衰计算结果.xlsx',
+      lang: curLang(),     // 导出文件的表头 / 表题 / 表注跟界面语言（report.buildRainAttenuationExcel）
+      defaultName: divOut ? byLang('多站总可用度.xlsx', 'Multi-site Availability.xlsx') : byLang('雨衰计算结果.xlsx', 'Rain Attenuation Results.xlsx'),
       orbitMode: orbitMode.value,
       direction: direction.value,
       rainModel: rainModel.value,
@@ -334,20 +350,16 @@ async function exportExcel() {
       div: divOut
     }
     const r = await api.exportExcel(payload)
-    if (r && r.ok) toast('已导出：' + r.filePath)
-    else if (r && !r.canceled) toast('导出失败：' + (r.error || '未知错误'))
-  } catch (e) { toast('导出失败：' + (e && e.message ? e.message : e)) }
+    if (r && r.ok) { const fp = outPath(r); toastFile('已导出：' + baseName(fp), fp) }
+    else if (r && !r.canceled) reportError('导出失败', r.error || '未知错误')
+  } catch (e) { reportError('导出失败', e) }
 }
 
-// ========================= 配置持久化（与链路预算同口径，orbitType:'RAIN'）=========================
-const STATE_KEY = 'rain/last'
-const EXP_KEY = 'rain/expandedFolders'
-const configs = ref([])
-const activeId = ref(null)
-const expandedFolders = ref(new Set())
-try { const raw = localStorage.getItem(EXP_KEY); if (raw) expandedFolders.value = new Set(JSON.parse(raw)) } catch (e) { /* ignore */ }
-function persistExpanded() { try { localStorage.setItem(EXP_KEY, JSON.stringify([...expandedFolders.value])) } catch (e) { /* ignore */ } }
-function toggleFolder(f) { if (expandedFolders.value.has(f.id)) expandedFolders.value.delete(f.id); else expandedFolders.value.add(f.id); persistExpanded() }
+// ========================= 配置持久化（与链路预算四窗同口径：配置树 + 自动保存 + 历史版本）=========================
+// 2026-10-15 起取消「保存 / 另存」按钮与「是否保存」三选一：工作区恒对应配置列表里的一份配置，改动约 1 s 后写回
+// （shared/useConfigAutosave.js），后悔药是历史版本（shared/useConfigVersions.js + LbVersionsDialog）。
+// 树的增删改移 / 剪贴板 / 右键 / 键盘全在 shared/useConfigTree.js；这里只留本窗的场景序列化。
+const STATE_KEY = 'rain/last'      // 只记「上次打开的是哪一份」；v1.5.1 及以前这里存的是整份场景（见 onMounted 的迁移）
 
 const DROP_KEYS = new Set([...RESULT_KEYS, ...LEGACY_KEYS])
 function serializeState() {
@@ -413,137 +425,87 @@ function applyState(st) {
 }
 function blankState() { return { orbitType: 'RAIN', orbitMode: 'geo', direction: 'down', rainModel: 'auto', satLon: '130.5', orbit: { alt: '550', incl: '53', minEl: '10' }, div: { on: false, inputMode: 'atten', target: 'rainAtten', nMin: '', tSwMin: '', nSwPerYear: '' }, cases: [defaultRow()], selectedIdx: 0 } }
 
-let _stateT = null
-function scheduleSaveState() { clearTimeout(_stateT); _stateT = setTimeout(() => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: activeId.value })) } catch (e) { /* ignore */ } }, 600) }
-watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, selectedId, activeId, divOn, divOpt], scheduleSaveState, { deep: true })
-
-// 指纹（只取内容，不含 selectedIdx 视图态）→ 脏检测（全局几何与多站设置属内容，计入）
+// 指纹（只取内容，不含 selectedIdx 视图态）→ 自动保存据此判断要不要写盘（全局几何与多站设置属内容，计入）
 function fingerprintOf(s) { return stableStringify({ orbitMode: s.orbitMode, direction: s.direction, rainModel: s.rainModel, satLon: s.satLon, orbit: s.orbit, div: s.div, cases: s.cases }) }
-function fingerprint() { return fingerprintOf(serializeState()) }
-let activeBaseline = ''
-function setBaseline() { activeBaseline = fingerprint() }
-function isDirty() { return !!activeId.value && fingerprint() !== activeBaseline }
-function activeName() { const c = configs.value.find((x) => x.id === activeId.value); return c ? c.name : '' }
-
-async function loadConfigs() {
-  try {
-    const all = (window.api && window.api.store ? await window.api.store.listConfigs('rain') : []) || []
-    configs.value = all.filter((it) => (it.type === 'folder') ? (it.orbitType === 'RAIN') : (it.state && it.state.orbitType === 'RAIN'))
-  } catch (e) { configs.value = [] }
-  const ids = new Set(configs.value.filter((c) => c.type === 'folder').map((c) => c.id))
-  for (const id of [...expandedFolders.value]) if (!ids.has(id)) expandedFolders.value.delete(id)
-}
-function uniqueCfgName(base) { const n = new Set(configs.value.map((c) => c.name)); if (!n.has(base)) return base; let i = 2; while (n.has(base + ' ' + i)) i++; return base + ' ' + i }
-function defaultCfgName() { return (cases[0] && cases[0].stationName ? cases[0].stationName + ' ' : '') + byLang(`雨衰 ${cases.length} 例`, `${cases.length} Rain Cases`) }
-
-// 保存 / 更新 / 改名 / 删除
-const cfgDlg = reactive({ open: false, name: '' })
-function openSaveDlg() { if (!api) { toast('保存需在桌面客户端中运行'); return } cfgDlg.name = defaultCfgName(); cfgDlg.open = true }
-async function confirmCfgDlg() {
-  const name = (cfgDlg.name || '').trim(); if (!name) { toast('请输入配置名称'); return }
-  const item = await window.api.store.saveConfig('rain', { name, state: serializeState() })
-  cfgDlg.open = false; await loadConfigs(); if (item && item.id) { activeId.value = item.id; setBaseline() }
-  toast('已保存配置：' + name)
-}
-// 当前工作区直接存成一份新配置并接上（不弹对话框）。带上下文打开时用（见 applyToolContext）；失败返回 null
-async function saveWorkspaceAs(name) {
-  if (!api) return null
-  let item = null
-  try { item = await window.api.store.saveConfig('rain', { name: uniqueCfgName(String(name || '').trim() || defaultCfgName()), state: serializeState() }) }
-  catch (e) { toast('保存失败：' + ((e && e.message) || e)); return null }
-  if (!item || !item.id) return null
-  await loadConfigs()
-  activeId.value = item.id; setBaseline()
-  return configs.value.find((x) => x.id === item.id) || item
-}
 // 出厂空白的内容指纹（与 serializeState 同一口径：行按 applyState 补齐默认列、去掉结果 / 遗留列）
 function blankFingerprint() {
   const b = blankState()
   return fingerprintOf({ ...b, cases: b.cases.map((r) => { const o = { ...defaultRow(), ...r }; for (const k of DROP_KEYS) delete o[k]; return o }) })
 }
-async function updateConfig() {
-  if (!activeId.value) return
-  const c = configs.value.find((x) => x.id === activeId.value); if (!c) return
-  await window.api.store.saveConfig('rain', { id: c.id, name: c.name, state: serializeState() }); setBaseline(); await loadConfigs(); toast('已保存修改到：' + c.name)
+// 自动名（名字随内容的配置用）：「<首站> 雨衰 N 例」，按平台语言出字
+function defaultCfgName() { return (cases[0] && cases[0].stationName ? cases[0].stationName + ' ' : '') + byLang(`雨衰 ${cases.length} 例`, `${cases.length} Rain Cases`) }
+function cfgLabelOf(st) {
+  const cs = (st && Array.isArray(st.cases)) ? st.cases : []
+  return (cs[0] && cs[0].stationName ? cs[0].stationName + ' ' : '') + byLang(`雨衰 ${cs.length} 例`, `${cs.length} Rain Cases`)
 }
-async function saveCurrent() { if (!api) { toast('保存需在桌面客户端中运行'); return } if (activeId.value) await updateConfig(); else openSaveDlg() }
-const editing = reactive({ id: null, name: '' })
-function startRename(c) { editing.id = c.id; editing.name = c.name; nextTick(() => { const el = document.querySelector('.lb-tree-rename'); if (el) { el.focus(); el.select() } }) }
-function cancelRename() { editing.id = null }
-async function commitRename() {
-  const id = editing.id; if (id == null) return
-  const c = configs.value.find((x) => x.id === id); const nm = (editing.name || '').trim(); editing.id = null
-  if (c && nm && nm !== c.name) { await window.api.store.saveConfig('rain', { id: c.id, name: nm }); await loadConfigs(); toast('已改名：' + nm) }
-}
-function applyConfig(c) { if (!c) return; activeId.value = c.id; applyState(c.state); setBaseline() }
-async function selectConfig(c) { if (!c || c.id === activeId.value) return; if (!(await guardedLeave())) return; applyConfig(c) }
-async function removeConfig(id) { if (!api) return; await window.api.store.deleteConfig('rain', id); if (activeId.value === id) { activeId.value = null; activeBaseline = '' } await loadConfigs() }
 
-// 文件夹
-const confirmDlg = reactive({ open: false, msg: '' })
-let _confirmResolve = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-async function addFolder(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  const item = await window.api.store.saveConfig('rain', { type: 'folder', name: uniqueCfgName(newFolderName()), parentId: parentId || null, orbitType: 'RAIN' })
-  if (parentId) expandedFolders.value.add(parentId)
-  if (item && item.id) expandedFolders.value.add(item.id)
-  persistExpanded(); await loadConfigs(); if (item && item.id) startRename(item)
-}
-async function addBlankConfig(parentId = null) {
-  if (!api) { toast('需在桌面客户端中运行'); return }
-  if (!(await guardedLeave())) return
-  const state = blankState()
-  const item = await window.api.store.saveConfig('rain', { name: uniqueCfgName(newCfgName()), state, parentId: parentId || null })
-  if (parentId) { expandedFolders.value.add(parentId); persistExpanded() }
-  await loadConfigs(); if (item && item.id) { activeId.value = item.id; applyState(state); setBaseline() }; toast('已添加空白配置')
-}
-async function onMove(payload) {
-  if (!api || !payload || !payload.dragId) return
-  await window.api.store.moveItem('rain', { id: payload.dragId, parentId: payload.parentId, anchorId: payload.anchorId, position: payload.position })
-  if (payload.position === 'inside' && payload.parentId) { expandedFolders.value.add(payload.parentId); persistExpanded() }
-  await loadConfigs()
-}
-async function removeFolder(folder) {
-  if (!api || !folder) return
-  const hasChildren = configs.value.some((c) => c.parentId === folder.id)
-  if (hasChildren && !(await askConfirm(`删除文件夹「${folder.name}」及其中全部子项？此操作不可撤销。`))) return
-  const removed = (await window.api.store.deleteFolder('rain', folder.id)) || [folder.id]
-  const rset = new Set(removed)
-  if (activeId.value && rset.has(activeId.value)) { activeId.value = null; activeBaseline = '' }
-  for (const id of removed) expandedFolders.value.delete(id)
-  persistExpanded(); await loadConfigs(); toast('已删除文件夹：' + folder.name)
-}
-function onDeleteItem(item) { if (!item) return; if (item.type === 'folder') removeFolder(item); else removeConfig(item.id) }
-
-// 右键菜单
-const ctxMenu = reactive({ open: false, x: 0, y: 0, configId: null })
-const ctxConfig = computed(() => (ctxMenu.configId ? configs.value.find((c) => c.id === ctxMenu.configId) : null))
-const ctxIsFolder = computed(() => !!(ctxConfig.value && ctxConfig.value.type === 'folder'))
-function openCtx(e, c) { e.preventDefault(); ctxMenu.configId = c ? c.id : null; ctxMenu.x = Math.min(e.clientX, window.innerWidth - 180); ctxMenu.y = Math.min(e.clientY, window.innerHeight - 200); ctxMenu.open = true }
-function ctxDo(fn) { ctxMenu.open = false; fn() }
-
-// 离开已改动配置前三选一
-const leaveDlg = reactive({ open: false, name: '' })
-let _leaveResolve = null
-function askLeave(name) { return new Promise((res) => { leaveDlg.name = name; leaveDlg.open = true; _leaveResolve = res }) }
-function leaveAnswer(ans) { leaveDlg.open = false; const r = _leaveResolve; _leaveResolve = null; if (r) r(ans) }
+const cfgTree = useConfigTree({
+  ns: 'rain', orbitType: 'RAIN', api: winApi, storageKey: 'rain/expandedFolders',
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName,
+  autosave: true, onNameAuto: (id) => { if (id === activeId.value) autosave.flush() }
+})
+const {
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, ctxMenu,
+  loadConfigs, uniqueCfgName, activeName, ensureActive, duplicateItem,
+  toggleFolder, expandAll, collapseAll,
+  addFolder, addBlankConfig, onDeleteItem, onMove, moveToRoot,
+  startRename, commitRename, cancelRename, selectConfig,
+  copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, onCfgKey
+} = cfgTree
+const autosave = useConfigAutosave({
+  ns: 'rain', api: winApi, activeId, itemById: cfgTree.itemById, serialize: serializeState, fingerprint: fingerprintOf,
+  autoName: defaultCfgName, uniqueName: uniqueCfgName, summarize: (st) => ({ label: cfgLabelOf(st) }), toast
+})
+const { error: saveError } = autosave
+let stopAutosaveListen = null
+onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.dispose() })
+const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
+  ns: 'rain', api: winApi, tree: cfgTree, autosave, applyState,
+  summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
+})
+// 场景一变就交给自动保存（防抖写回当前配置）；「上次打开的是哪一份」随 activeId 记一笔
+watch([orbitMode, direction, rainModel, geoSatLon, ngsoOrbit, cases, divOn, divOpt], () => autosave.touch(), { deep: true })
+watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* 配额满等忽略 */ } })
+// 一份配置刚载入工作区：以当前内容为已落盘基线（useConfigTree 在载入 / 新建后调）
+function setBaseline() { autosave.attach() }
+// 离开当前配置（切换 / 新建 / 副本）前：把没落盘的改动写进去；写不进去才问一句
 async function guardedLeave() {
-  if (!isDirty()) return true
-  const ans = await askLeave(activeName())
-  if (ans === 'cancel') return false
-  if (ans === 'save') await updateConfig()
-  return true
+  if (await autosave.flush()) return true
+  return await askConfirm(`「${activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要离开？`)
 }
+
+// —— 左侧栏：配置列表（可拖宽 / 可收起；功能区「配置列表」与栏头 × 互为一对）——
+const SIDE_KEY = 'rain/sideView'
+const sideView = ref((() => { try { const v = localStorage.getItem(SIDE_KEY); return (v === 'configs' || v === '') ? v : 'configs' } catch (e) { return 'configs' } })())
+watch(sideView, (v) => { try { localStorage.setItem(SIDE_KEY, v) } catch (e) { /* ignore */ } })
+function toggleSide(v) { sideView.value = sideView.value === v ? '' : v }
+const CFG_W_MIN = 180, CFG_W_MAX = 520
+const configsWidth = ref((() => { try { const n = Number(localStorage.getItem('rain/configsWidth')); return Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, Number.isFinite(n) && n > 0 ? n : 220)) } catch (e) { return 220 } })())
+const sideResizing = ref(false)
+function startResize(e) {
+  const startX = e.clientX, startW = configsWidth.value
+  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  const move = (ev) => { configsWidth.value = Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, startW + ev.clientX - startX)) }
+  const up = () => {
+    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
+    try { localStorage.setItem('rain/configsWidth', String(configsWidth.value)) } catch (e2) { /* ignore */ }
+  }
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+}
+// Ctrl+Enter = 计算（全部计算窗同一个键）
+function onGlobalKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.isComposing && !computing.value) { e.preventDefault(); compute() }
+}
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 // —— 主窗口带上下文打开（地图右键 / 卫星信息栏「分析 ▸ 雨衰计算」）——
-// 几何是全局参数（一份配置一颗星 / 一个星座）：带来的星与当前几何不同 → 新建一份配置承接（当前配置有没存的
-// 改动照常先问），原配置不动；相同或没带星 → 只追加算例。GSO 星填定点轨位，非 GSO 星填近圆轨道高度 / 倾角
+// 几何是全局参数（一份配置一颗星 / 一个星座）：带来的星与当前几何不同 → 新建一份配置承接（当前配置的改动先落盘），
+// 原配置不动；相同或没带星 → 只追加算例。GSO 星填定点轨位，非 GSO 星填近圆轨道高度 / 倾角
 // （主窗口那一拍的值）。站址追加成算例并联动 autoGeo 补降雨 / 海拔；新建配置里那条出厂默认算例由站址顶替。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()
-function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch(() => {}) }
+function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 const r2 = (v) => String(Math.round(v * 100) / 100)
 function isCurGeom(s) {
@@ -558,25 +520,20 @@ async function applyToolContext(c) {
   // 站照常追加到当前配置，只如实报一句——不能拿出厂 550 km / 53° 顶替还说「已载入」
   const geomOk = !!s0 && (s0.geo ? s0.slotLon != null : (s0.altKm != null && s0.inclDeg != null))
   const s = geomOk ? s0 : null, noGeo = !!s0 && !geomOk
-  let fresh = false, kept = null
+  let fresh = false
   if (s && !isCurGeom(s)) {
-    // 带来的星与当前几何不同：换一份新配置承接，原来的内容一律不丢——
-    //   ① 有归属配置且改过：现有三选一（保存 / 不保存 / 取消），取消即不动现场；
-    //   ② 没有归属配置、工作区又不是出厂空白（不存配置直接用是支持的用法）：先原样存成一份配置留底；
-    //   ③ 带来的几何 / 站套到出厂空白上，尾部一次存成新配置并接上 —— 列表里那份就是带来的内容，不是一份空白配置
-    if (!(await guardedLeave())) return
-    if (!activeId.value && fingerprint() !== blankFingerprint()) {
-      kept = await saveWorkspaceAs()
-      if (!kept) return   // 存不进去就不动现场
-    }
-    applyState(blankState())
-    fresh = true
-    if (s.geo) { orbitMode.value = 'geo'; if (s.slotLon != null) geoSatLon.value = r2(s.slotLon) }
+    // 带来的星与当前几何不同：另建一份配置承接（当前配置的改动先落盘），原配置不动；
+    // 新配置的名字随内容（自动命名），带来的几何 / 站直接写进它
+    const st = blankState()
+    if (s.geo) { st.orbitMode = 'geo'; if (s.slotLon != null) st.satLon = r2(s.slotLon) }
     else {
-      orbitMode.value = 'ngso'
-      if (s.altKm != null) ngsoOrbit.alt = String(Math.round(s.altKm))
-      if (s.inclDeg != null) ngsoOrbit.incl = r2(s.inclDeg)
+      st.orbitMode = 'ngso'
+      if (s.altKm != null) st.orbit.alt = String(Math.round(s.altKm))
+      if (s.inclDeg != null) st.orbit.incl = r2(s.inclDeg)
     }
+    const n = await cfgTree.createAndOpen({ state: st, nameAuto: true })
+    if (!n) return
+    fresh = true
   }
   if (sites.length) {
     const rows = sites.map((x) => mkCase({ stationName: x.name || '', longitude: String(x.lon), latitude: String(x.lat) }))
@@ -584,16 +541,12 @@ async function applyToolContext(c) {
     cases.splice(at, fresh ? cases.length : 0, ...rows)
     const fills = []
     for (let i = at; i < at + rows.length; i++) fills.push(autoGeo(cases[i]))   // 取回响应式代理：异步回填才触发重绘
-    // ★ 等海拔 / 降雨率回填落定再往下走：saveWorkspaceAs 同步序列化，不等就把出厂海拔 '0' 存进新配置
-    //   （切走再切回按海平面算，高原站雨衰偏大），而基线是两次 IPC 往返后才设、那时已含回填值 —— 重开窗口还会误判「已修改」。
-    //   autoGeo 自带 try/catch、从不 reject，取不到就原样留着。
+    // 等海拔 / 降雨率回填落定再往下走（autoGeo 自带 try/catch、从不 reject，取不到就原样留着）；回填值随后由自动保存落盘
     await Promise.all(fills)
   }
   const who = s0 ? (s0.name || '') : ''
-  if (fresh) await saveWorkspaceAs(who ? who + ' ' + defaultCfgName() : '')
-  const keptTip = kept ? byLang(`原内容已存为「${kept.name}」；`, `Previous content saved as “${kept.name}”; `) : ''
   const noGeoTip = noGeo ? byLang(`未取到卫星几何：${who}`, `No satellite geometry: ${who}`) : ''
-  toast(keptTip + (sites.length
+  toast((sites.length
     ? (noGeoTip ? noGeoTip + byLang('；', '; ') : '') + byLang(`已添加 ${sites.length} 个算例${who && !noGeo ? '（' + who + '）' : ''}`, `Added ${sites.length} case${sites.length === 1 ? '' : 's'}${who && !noGeo ? ' (' + who + ')' : ''}`)
     : (noGeoTip || byLang(`已载入卫星几何：${who}`, `Satellite geometry loaded: ${who}`))))
 }
@@ -603,16 +556,25 @@ onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
 onMounted(async () => {
   try { cities.value = (api && await api.cities()) || [] } catch (e) { cities.value = [] }
   await loadConfigs()
-  try {
-    const raw = localStorage.getItem(STATE_KEY)
-    if (raw) {
-      const st = JSON.parse(raw)
-      const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
-      else applyState(st)   // 无归属配置：仍恢复上次内容（不聚焦任何配置）
-    }
-  } catch (e) { /* ignore */ }
-  api?.onCloseRequested?.(async () => { if (await guardedLeave()) api.confirmClose() })
+  // 打开上次那份配置；它没了就开树上第一份，一份都没有就新建一份空白配置（工作区恒对应一份配置）。
+  // 迁移：v1.5.1 及以前「上次会话」存的是整份场景（含没点保存的改动）——
+  //   · 对应的配置还在：把那份改动接上，随即由自动保存写盘（写盘前先给它留一档「打开时」）；
+  //   · 不属于任何配置、又不是出厂空白（旧版允许不存配置直接用）：存成一份新配置，免得升级后丢了。
+  let last = null
+  try { last = JSON.parse(localStorage.getItem(STATE_KEY) || 'null') } catch (e) { last = null }
+  const hasScene = !!(last && Array.isArray(last.cases))
+  if (hasScene && !last.activeId && fingerprintOf(last) !== blankFingerprint()) await cfgTree.createAndOpen({ state: last, nameAuto: true })
+  await ensureActive(last && last.activeId)
+  if (hasScene && last.activeId && last.activeId === activeId.value) { applyState(last); autosave.touch() }
+  try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* 配额满等忽略 */ }
+  // 关窗：把挂起的写盘冲掉即放行；只有写不进磁盘时才问一句
+  api?.onCloseRequested?.(async () => {
+    const ok = await autosave.flush()
+    if (!ok && !(await askConfirm(`「${activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要关闭窗口？`))) return
+    api.confirmClose()
+  })
+  stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏时立即写盘
+  window.addEventListener('keydown', onGlobalKey)
   flushToolContext()   // 配置已载入：处理开窗时随窗带来的主窗口上下文
 })
 </script>
@@ -620,42 +582,73 @@ onMounted(async () => {
 <template>
   <div class="lb-shell">
     <ActivationLock />
-    <div class="lb-topbar">
-      <span class="lb-brand">雨衰计算</span>
-      <span class="lb-flex"></span>
-      <span v-if="notice" class="lb-notice">{{ notice }}</span>
-      <span v-if="!api" class="lb-warn">需在桌面客户端中运行</span>
-    </div>
+    <!-- 配置右键菜单（各工作台共用一份，条目与快捷键一致） -->
+    <ConfigTreeMenu
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!winApi" autosave
+      @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
+      @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+      @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
+    />
 
     <div class="lb-body">
-      <!-- ① 配置列表 -->
-      <aside class="lb-col lb-configs">
+      <!-- ① 配置列表（可拖宽 / 可收起） -->
+      <aside v-show="sideView === 'configs'" class="lb-col lb-side lb-configs" :class="{ resizing: sideResizing }" :style="{ width: configsWidth + 'px' }">
         <div class="lb-col-hd">
           <span class="lb-cfg-hd-t">配置列表</span>
           <span class="lb-cfg-acts">
-            <button class="lb-mini" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" :disabled="!api" @click="saveCurrent">保存</button>
-            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
-            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!winApi" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!winApi" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
           </span>
         </div>
-        <div class="lb-col-bd" @contextmenu="openCtx($event, null)">
+        <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
           <ConfigTree
-            :items="configs" :active-id="activeId" :editing-id="editing.id" :editing-name="editing.name" :expanded="expandedFolders"
-            @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove"
+            :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
+            :expanded="expandedFolders"
+            :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+            @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
             @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
             @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
           />
         </div>
+        <div class="lb-cfg-resizer" title="拖动调整栏宽" @mousedown.prevent="startResize($event)"></div>
       </aside>
 
-      <!-- ② Excel 批量算例 -->
+      <!-- ② 功能区 + 参数条 + Excel 批量算例 -->
       <section class="lb-col lb-build">
+        <div class="lbr">
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big primary" :disabled="computing || !cases.length" :title="`计算全部 ${cases.length} 个算例${divOn ? '并汇总多站可用度' : ''}（Ctrl+Enter）`" @click="compute">
+                <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
+                {{ computing ? '计算中…' : '计算' }}
+              </button>
+            </div>
+            <div class="lbr-cap">计算</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="!winApi || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="computing || !cases.length" title="导出批量结果 Excel（输入已变或未算过时先按当前输入补算）" @click="exportExcel"><Icon name="file-export" :size="16" />Excel</button>
+            </div>
+            <div class="lbr-cap">导出</div>
+          </div>
+        </div>
+
         <div class="rain-toolbar">
           <div class="rain-seg-grp">
             <span class="rain-seg-lb">轨道类型</span>
-            <div class="rain-seg">
-              <button :class="{ on: orbitMode === 'geo' }" title="静止轨道：填定点轨位，各站仰角自动换算" @click="orbitMode = 'geo'">GEO</button>
-              <button :class="{ on: orbitMode === 'ngso' }" title="非静止轨道（近圆 LEO/MEO）：填轨道高度/倾角/最低仰角，按 ITU-R P.618-14 §8 仰角加权反解各站等效仰角" @click="orbitMode = 'ngso'">NGSO</button>
+            <div class="seg" role="radiogroup" aria-label="轨道类型">
+              <button type="button" class="sg" role="radio" :aria-checked="orbitMode === 'geo'" :class="{ on: orbitMode === 'geo' }" title="静止轨道：填定点轨位，各站仰角自动换算" @click="orbitMode = 'geo'">GEO</button>
+              <button type="button" class="sg" role="radio" :aria-checked="orbitMode === 'ngso'" :class="{ on: orbitMode === 'ngso' }" title="非静止轨道（近圆 LEO/MEO）：填轨道高度/倾角/最低仰角，按 ITU-R P.618-14 §8 仰角加权反解各站等效仰角" @click="orbitMode = 'ngso'">NGSO</button>
             </div>
           </div>
           <!-- 全局几何：一颗星 / 一个星座对全表地球站，不逐行填 -->
@@ -673,16 +666,16 @@ onMounted(async () => {
           </div>
           <div class="rain-seg-grp">
             <span class="rain-seg-lb">链路方向</span>
-            <div class="rain-seg">
-              <button :class="{ on: direction === 'down' }" @click="direction = 'down'">下行</button>
-              <button :class="{ on: direction === 'up' }" @click="direction = 'up'">上行</button>
+            <div class="seg" role="radiogroup" aria-label="链路方向">
+              <button type="button" class="sg" role="radio" :aria-checked="direction === 'down'" :class="{ on: direction === 'down' }" @click="direction = 'down'">下行</button>
+              <button type="button" class="sg" role="radio" :aria-checked="direction === 'up'" :class="{ on: direction === 'up' }" @click="direction = 'up'">上行</button>
             </div>
           </div>
           <div class="rain-seg-grp">
             <span class="rain-seg-lb">降雨模型</span>
-            <div class="rain-seg">
-              <button :class="{ on: rainModel === 'auto' }" title="经纬度→ITU-R P.837 自动取 R0.01" @click="rainModel = 'auto'">ITU-R 自动</button>
-              <button :class="{ on: rainModel === 'manual' }" title="R0.01 手工填写" @click="rainModel = 'manual'">手动 (mm/h)</button>
+            <div class="seg" role="radiogroup" aria-label="降雨模型">
+              <button type="button" class="sg" role="radio" :aria-checked="rainModel === 'auto'" :class="{ on: rainModel === 'auto' }" title="经纬度→ITU-R P.837 自动取 R0.01" @click="rainModel = 'auto'">ITU-R 自动</button>
+              <button type="button" class="sg" role="radio" :aria-checked="rainModel === 'manual'" :class="{ on: rainModel === 'manual' }" title="R0.01 手工填写" @click="rainModel = 'manual'">手动 (mm/h)</button>
             </div>
           </div>
         </div>
@@ -692,15 +685,15 @@ onMounted(async () => {
                全列随横滚；原先「地球站」列粘性固定，横滚时与其它列错位、和链路表也不一样） -->
           <StationGrid
             ref="caseGridRef" grid-id="rain.cases" :stations="cases" :fields="fields" :groups="GRID_GROUPS" :freeze-keys="false"
+            @xlsx-done="onGridXlsx"
             :cities="cities" :city-search="citySearch" :auto-geo="autoGeo"
             :readonly-keys="readonlyKeys" :extra-values="extraValues" :cell-class="cellClassFn" label="算例"
             @row-focus="onRowFocus"
           />
         </div>
 
-        <!-- 底栏：单算例与多站的全部设置 + 唯一一个「计算」按钮。
-             多站那一组随开关出现/消失（关掉时这一条与改造前一模一样）。 -->
-        <div class="lb-foot rain-foot">
+        <!-- 多站汇总设置条：开关打开时这一条出设置，关掉只剩开关（「计算」在功能区） -->
+        <div class="rain-foot">
           <label class="rain-sw" title="把整张算例表当站表：逐站取可用度（表内直接给，或由「可承受衰减」反解），聚合成系统总可用度；右栏换成汇总结果">
             <input v-model="divOn" type="checkbox" /><span>多站汇总</span>
           </label>
@@ -708,9 +701,9 @@ onMounted(async () => {
           <template v-if="divOn">
             <div class="rain-seg-grp">
               <span class="rain-seg-lb">输入</span>
-              <div class="rain-seg">
-                <button :class="{ on: divOpt.inputMode === 'atten' }" title="表内填「可承受衰减」，由 ITU-R P.618-14 标度式反解各站可用度" @click="divOpt.inputMode = 'atten'">可承受衰减</button>
-                <button :class="{ on: divOpt.inputMode === 'avail' }" title="直接读表内「可用度」列，不走反解 —— 纯概率论入口，零传播模型假设。结果里同时给出该可用度对应的雨衰 / 合计 / 下行总劣化" @click="divOpt.inputMode = 'avail'">站可用度</button>
+              <div class="seg" role="radiogroup" aria-label="输入">
+                <button type="button" class="sg" role="radio" :aria-checked="divOpt.inputMode === 'atten'" :class="{ on: divOpt.inputMode === 'atten' }" title="表内填「可承受衰减」，由 ITU-R P.618-14 标度式反解各站可用度" @click="divOpt.inputMode = 'atten'">可承受衰减</button>
+                <button type="button" class="sg" role="radio" :aria-checked="divOpt.inputMode === 'avail'" :class="{ on: divOpt.inputMode === 'avail' }" title="直接读表内「可用度」列，不走反解 —— 纯概率论入口，零传播模型假设。结果中同时给出该可用度对应的雨衰 / 合计 / 下行总劣化" @click="divOpt.inputMode = 'avail'">站可用度</button>
               </div>
             </div>
             <label class="rain-geom" title="系统可用 = 至少这么多站不处于中断。留空按全部站数（一站倒系统即倒）">
@@ -728,15 +721,9 @@ onMounted(async () => {
             <div class="rain-seg-grp">
               <span class="rain-seg-lb">切换</span>
               <label class="rain-geom" title="单次切换的业务中断时长"><span>时间</span><input v-model="divOpt.tSwMin" spellcheck="false" placeholder="时长" /><i>min</i></label>
-              <label class="rain-geom" title="一年切换多少次。切换进不了联合概率模型（静态模型没有时间轴），只作独立可加项 U_sw = 次数 × 时间 / 525960，与站点中断项相加进年度总账"><span>次数</span><input v-model="divOpt.nSwPerYear" spellcheck="false" placeholder="次/年" /><i>次/年</i></label>
+              <label class="rain-geom" title="一年切换多少次。切换进不了联合概率模型（静态模型没有时间轴），仅作为独立可加项 U_sw = 次数 × 时间 / 525960，与站点中断项相加进年度总账"><span>次数</span><input v-model="divOpt.nSwPerYear" spellcheck="false" placeholder="次/年" /><i>次/年</i></label>
             </div>
           </template>
-
-          <span class="lb-flex"></span>
-          <span v-if="resultsStale && (hasResults || divResult)" class="rain-stale" title="计算输入已被修改，表内结果列与右栏数值对应修改前的参数">输入已变</span>
-          <button class="lb-calc" :disabled="computing || !cases.length" @click="compute">
-            {{ computing ? '计算中…' : ('计算（' + cases.length + ' 个算例）') }}
-          </button>
         </div>
       </section>
 
@@ -744,14 +731,11 @@ onMounted(async () => {
       <section class="lb-col lb-result">
         <div class="lb-col-hd">
           <span class="lb-cfg-hd-t">{{ divOn ? '多站汇总' : '单算例分析' }}</span>
-          <span v-if="resultsStale && (hasResults || divResult)" class="rain-stale" title="计算输入已被修改，以下数值对应修改前的参数">输入已变</span>
-          <span class="lb-flex"></span>
           <template v-if="!divOn">
             <select v-model="selectedId" class="rain-sel" title="选择要细致分析的算例（点表格中的行亦可）">
               <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
             </select>
           </template>
-          <button class="lb-mini" :disabled="computing || !cases.length" title="导出批量结果 Excel" @click="exportExcel">导出 Excel</button>
         </div>
         <RainDiversity v-if="divOn" :result="divResult" />
         <div v-else class="lb-result-bd">
@@ -759,14 +743,14 @@ onMounted(async () => {
             <div class="rain-ph">尚无计算结果。</div>
           </template>
           <template v-else-if="selectedResult && selectedResult.error">
-            <div class="rain-err">✕ {{ selectedResult.message || '该算例无法计算' }}</div>
+            <div class="rain-err"><Icon name="alert-triangle" :size="12" /> {{ selectedResult.message || '该算例无法计算' }}</div>
           </template>
           <template v-else-if="!selectedResult">
             <div class="rain-ph">该算例（{{ selName }}）尚未计入上次计算。</div>
           </template>
           <template v-else-if="detail">
             <!-- 交互式坐标系（在详情上方）-->
-            <RainPlot :params="selectedParams" :result="selectedResult" :station="selName" />
+            <RainPlot :params="selectedParams" :result="selectedResult" :station="selName" @exported="(fp) => (fp ? toastFile('已导出：' + baseName(fp), fp) : toast('已导出'))" />
 
             <!-- SatMaster 版详细结果 -->
             <div class="rain-detail">
@@ -779,9 +763,8 @@ onMounted(async () => {
                 <div class="rd-row" v-for="row in detail.look" :key="row[0]"><span class="rd-k">{{ row[0] }}</span><span class="rd-v">{{ row[1] }}</span></div>
               </div>
               <div class="rd-sec">
-                <div class="rd-hd">传播结果</div>
+                <div class="rd-hd" :title="detail.propNote || null">传播结果</div>
                 <div class="rd-row" :class="{ em: row[2] }" v-for="row in detail.prop" :key="row[0]"><span class="rd-k">{{ row[0] }}</span><span class="rd-v">{{ row[1] }}</span></div>
-                <div v-if="detail.propNote" class="rd-note">{{ detail.propNote }}</div>
               </div>
             </div>
           </template>
@@ -789,94 +772,33 @@ onMounted(async () => {
       </section>
     </div>
 
-    <!-- 保存为新配置 -->
-    <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">保存为新配置</div>
-        <input v-model="cfgDlg.name" class="lb-dlg-inp" placeholder="配置名称" @keyup.enter="confirmCfgDlg" />
-        <div class="lb-dlg-acts"><button class="lb-mini" @click="cfgDlg.open = false">取消</button><button class="lb-mini pri" @click="confirmCfgDlg">保存</button></div>
-      </div>
-    </div>
-    <!-- 离开已改动配置 -->
-    <div v-if="leaveDlg.open" class="lb-mask">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">「{{ leaveDlg.name }}」有未保存的改动</div>
-        <div class="lb-dlg-msg">是否将改动保存回该配置？</div>
-        <div class="lb-dlg-acts"><button class="lb-mini" @click="leaveAnswer('cancel')">取消</button><button class="lb-mini" @click="leaveAnswer('discard')">不保存</button><button class="lb-mini pri" @click="leaveAnswer('save')">保存</button></div>
-      </div>
-    </div>
-    <!-- 通用确认 -->
-    <div v-if="confirmDlg.open" class="lb-mask">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-msg">{{ confirmDlg.msg }}</div>
-        <div class="lb-dlg-acts"><button class="lb-mini" @click="answerConfirm(false)">取消</button><button class="lb-mini pri" @click="answerConfirm(true)">确定</button></div>
-      </div>
-    </div>
-    <!-- 右键菜单 -->
-    <div v-if="ctxMenu.open" class="lb-ctx-mask" @click="ctxMenu.open = false" @contextmenu.prevent="ctxMenu.open = false">
-      <div class="lb-ctx" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @click.stop>
-        <button @click="ctxDo(() => addBlankConfig(ctxIsFolder ? ctxMenu.configId : null))">添加空白配置</button>
-        <button @click="ctxDo(() => addFolder(ctxIsFolder ? ctxMenu.configId : null))">新建文件夹</button>
-        <template v-if="ctxConfig">
-          <div class="lb-ctx-sep"></div>
-          <button @click="ctxDo(() => startRename(ctxConfig))">重命名</button>
-          <button class="del" @click="ctxDo(() => onDeleteItem(ctxConfig))">删除</button>
-        </template>
-      </div>
-    </div>
+    <WinStatusBar :n="N" :busy="computing ? '计算中…' : ''" :stale="!!(resultsStale && (hasResults || divResult))" stale-title="计算输入已被修改，表内结果列与右栏数值对应修改前的参数">
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
+    </WinStatusBar>
+
+    <LbVersionsDialog v-model:open="verDlg.open" ns="rain" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
+    <ConfirmDialog />
   </div>
 </template>
 
 <style scoped>
-/* 浅色精密仪器风（对齐链路预算视觉口径）：小圆角、克制配色、11/12/13 字号 */
-.lb-shell {
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-  display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text);
-  font-size: var(--fs-4); overflow: hidden;
-}
-:root[data-theme="dark"] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col / .lb-side / .lb-mini…）在 styles/lbworkbench.css，此处只留本窗的变体 */
+.lb-shell { font-size: var(--fs-4); overflow: hidden; }
 
-.lb-topbar { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.lb-brand { font-family: var(--font-serif); font-size: var(--fs-5); font-weight: 600; }
-.lb-flex { flex: 1 1 auto; }
-.lb-notice { font-size: var(--fs-3); color: var(--ok); }
-.lb-warn { font-size: var(--fs-3); color: var(--danger); }
-
-.lb-body { flex: 1 1 auto; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; }
-.lb-configs { width: 220px; flex: none; border-right: 1px solid var(--border); background: var(--surface); }
-.lb-build { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.lb-configs { background: var(--surface); }
 .lb-result { width: 468px; flex: none; border-left: 1px solid var(--border); background: var(--surface); }
 
-.lb-col-hd { flex: none; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid var(--border); font-size: var(--fs-2); letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
-.lb-cfg-hd-t { font-weight: 600; }
-.lb-cfg-acts { display: inline-flex; gap: 4px; margin-left: auto; }
-.lb-col-bd { flex: 1 1 auto; overflow: auto; padding: 6px; }
 
-.lb-mini { font: inherit; font-size: var(--fs-3); height: var(--h-ctl); white-space: nowrap; padding: 0 9px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-mini:hover:not(:disabled) { border-color: var(--line-hover); }
-.lb-mini:disabled { opacity: .5; cursor: default; }
-/* 墨色主按钮（P1）：走 --primary-fill，深色下不再是近白块；悬停 / 禁用各有一档 */
-.lb-mini.pri { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); }
-.lb-mini.pri:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
-.lb-mini.pri:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
-.lb-mini-ico { display: inline-flex; align-items: center; height: var(--h-ctl); white-space: nowrap; padding: 0 6px; }
 .rain-sel { font: inherit; font-size: var(--fs-3); padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--surface-2); color: var(--text); max-width: 220px; }
 
-/* 工具栏 */
+/* 参数条（轨道类型 / 几何 / 链路方向 / 降雨模型）：功能区之下、算例表之上 */
 /* 窄栏下按整组换行、组内文字不折断（避免「链路方/向」「ITU-R 自/动」式中途断行） */
-/* 上下 6px：6 + 24（分段 / 几何框）+ 6 + 1 = 37，与左右两栏的栏头同高，三栏的底线落在同一 y */
 .rain-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .rain-seg-grp { flex: none; display: inline-flex; align-items: center; gap: 7px; }
 .rain-seg-lb { flex: none; white-space: nowrap; font-size: var(--fs-2); letter-spacing: var(--ls-label); color: var(--text-muted); text-transform: uppercase; }
-.rain-seg { flex: none; display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-ctl); overflow: hidden; }
-.rain-seg button { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-3); height: var(--h-ctl); padding: 0 12px; border: 0; background: var(--surface-2); color: var(--text-muted); cursor: pointer; }
-.rain-seg button + button { border-left: 1px solid var(--border); }
-.rain-seg button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent-ui); background: var(--surface); }
-.rain-seg button:hover:not(.on):not(:disabled) { color: var(--text); background: var(--surface); }
-/* 全局几何输入（GEO 轨位 / NGSO 轨道三要素）：与分段按钮同高（22 + 描边 2），标签内嵌 + 单位后缀。
+/* 全局几何输入（GEO 轨位 / NGSO 轨道三要素）：与分段控件同高（--h-ctl，含描边），标签内嵌 + 单位后缀。
    它是输入框不是按钮：底色 / 描边 / 悬停 / 焦点跟全局输入框一套（field-*），焦点环描整个框而不是框里的裸 input */
-.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: calc(var(--h-ctl) + 2px); padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
+.rain-geom { flex: none; display: inline-flex; align-items: center; gap: 5px; height: var(--h-ctl); box-sizing: border-box; padding: 0 7px 0 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); }
 .rain-geom:hover { border-color: var(--field-border-hover); }
 .rain-geom:focus-within { border-color: var(--accent-ui); background: var(--field-bg); }
 .rain-geom:has(input:focus-visible) { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
@@ -890,18 +812,9 @@ onMounted(async () => {
 .rain-grid > * { flex: 1 1 auto; min-height: 0; min-width: 0; }
 /* 结果格算不出来时标红：走 lbworkbench.css 的 .sg-cell.st-bad（与链路表同一条规则），此处不再另写 */
 
-/* 「输入已变」小灯：出过结果后又改了计算输入 → 提醒重算（与链路预算同口径） */
-.rain-stale { flex: none; font-size: var(--fs-2); padding: 2px 7px; letter-spacing: 0; text-transform: none; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--r-ctl); background: color-mix(in srgb, var(--warn) 8%, transparent); }
-
-.lb-foot { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-calc { flex: none; white-space: nowrap; font: inherit; font-size: var(--fs-4); font-weight: 600; height: var(--h-ctl-lg); padding: 0 18px; border: 1px solid var(--primary-fill); background: var(--primary-fill); color: var(--primary-on); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-calc:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); color: var(--primary-on); }
-.lb-calc:disabled { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; }
-/* 底栏承载了单算例 + 多站的全部设置：窄窗口下按整组换行（组内不折断，与顶部工具栏同一套办法），
-   「计算」按钮靠 lb-flex 始终推到最右，换行后仍在最后一行右端 */
-.rain-foot { flex-wrap: wrap; gap: 7px 12px; }
-.rain-foot .lb-flex { min-width: 0; }
-/* 多站开关：底栏第一项，关掉时底栏与改造前一模一样 */
+/* 多站汇总设置条：窄窗口下按整组换行（组内不折断，与参数条同一套办法） */
+.rain-foot { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; padding: 6px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+/* 多站开关：设置条第一项 */
 .rain-sw { flex: none; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; white-space: nowrap; }
 .rain-sw input { margin: 0; cursor: pointer; }
 .rain-sw span { font-size: var(--fs-3); font-weight: 600; }
@@ -924,20 +837,4 @@ onMounted(async () => {
 .rd-row.em .rd-k { color: var(--text); font-weight: 600; }
 .rd-row.em .rd-v { color: color-mix(in srgb, var(--accent) 82%, var(--text)); font-weight: 600; }
 .rd-note { padding: 6px 10px 7px; font-size: var(--fs-2); line-height: 1.6; color: var(--text-faint); border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); background: color-mix(in srgb, var(--surface-2) 45%, transparent); }
-
-/* 弹窗 / 菜单 */
-/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
-.lb-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 50; }
-.lb-dlg { background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); padding: 16px; min-width: 300px; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lb-dlg-hd { font-size: var(--fs-4); font-weight: 600; margin-bottom: 10px; }
-.lb-dlg-msg { font-size: var(--fs-3); color: var(--text-muted); margin-bottom: 12px; line-height: 1.6; }
-.lb-dlg-inp { width: 100%; box-sizing: border-box; font: inherit; padding: 6px 8px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); margin-bottom: 12px; }
-.lb-dlg-acts { display: flex; justify-content: flex-end; gap: 8px; }
-.lb-ctx-mask { position: fixed; inset: 0; z-index: 60; }
-/* 命令菜单（P3）：浮层边 --border-strong + --shadow-2，悬停机位色实底（与菜单栏一致），光标处出现故只淡入 */
-.lb-ctx { position: fixed; min-width: 160px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); padding: 4px; display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.lb-ctx button { font: inherit; font-size: var(--fs-3); text-align: left; padding: 6px 10px; border: 0; background: transparent; color: var(--text); border-radius: var(--r-ctl); cursor: pointer; }
-.lb-ctx button:hover { background: var(--accent-ui); color: var(--bg); }
-.lb-ctx button.del:hover { background: var(--danger); color: var(--bg); }
-.lb-ctx-sep { height: 1px; background: var(--border); margin: 3px 6px; }
 </style>

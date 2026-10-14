@@ -203,7 +203,7 @@ defineExpose({ openAt, close })
           <div class="tls-row tls-qk">
             <span class="tls-k"></span>
             <span class="tls-chips">
-              <button v-for="v in QUICK_SPANS" :key="v" type="button" class="tls-chip" :class="{ on: v === spanRound }" data-i18n-skip @click="pickQuick(v)">{{ fmtSpanSec(v) }}</button>
+              <button v-for="v in QUICK_SPANS" :key="v" type="button" class="tls-chip" :class="{ on: v === spanRound }" :aria-pressed="(v === spanRound) ? 'true' : 'false'" data-i18n-skip @click="pickQuick(v)">{{ fmtSpanSec(v) }}</button>
             </span>
           </div>
           <div v-if="fixed" class="tls-row">
@@ -244,9 +244,9 @@ defineExpose({ openAt, close })
 
 <style>
 /* 浮层 Teleport 出去了，scoped 打不到它的节点 */
-.tls-mask { position: fixed; inset: 0; z-index: 2400; }
+.tls-mask { position: fixed; inset: 0; z-index: calc(var(--z-dialog-pop) - 1); }
 .tls-pop {
-  position: fixed; z-index: 2401; width: max-content; padding: 4px 10px 10px;
+  position: fixed; z-index: var(--z-dialog-pop); width: max-content; padding: 4px 10px 10px;
   background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-2);
   font-size: var(--fs-3); color: var(--text);
   animation: ui-fade-in var(--dur-2) var(--ease-out);
@@ -268,7 +268,7 @@ html[lang="en"] .tls-k { width: auto; min-width: 4.8em; }
 .tls-seg > button { padding: 0 10px; border: 0; border-radius: 0; background: transparent; font: inherit; font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; white-space: nowrap; transition: var(--t-state); }
 .tls-seg > button + button { border-left: 1px solid var(--border); }
 .tls-seg > button:hover { background: var(--wash-hover); color: var(--text); }
-.tls-seg > button.on { background: var(--accent-ui); color: var(--bg); }
+.tls-seg > button.on { background: var(--accent-fill); color: var(--accent-on); }
 .tls-seg > button:focus-visible { outline-offset: -2px; }
 /* 常用时长：一排紧凑小键（与刻度标签同一种等宽数字） */
 .tls-qk { margin-top: 4px; }

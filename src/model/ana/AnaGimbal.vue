@@ -170,8 +170,8 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
     <div class="srow">
       <label>目标</label>
       <div class="lbu-seg ag-seg">
-        <button :class="{ on: tk === 'station' }" @click="tk = 'station'">地球站</button>
-        <button :class="{ on: tk === 'sat' }" @click="tk = 'sat'">卫星</button>
+        <button :class="{ on: tk === 'station' }" :aria-pressed="(tk === 'station') ? 'true' : 'false'" @click="tk = 'station'">地球站</button>
+        <button :class="{ on: tk === 'sat' }" :aria-pressed="(tk === 'sat') ? 'true' : 'false'" @click="tk = 'sat'">卫星</button>
       </div>
     </div>
     <template v-if="tk === 'station'">
@@ -180,7 +180,7 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
         <label title="WGS-84 大地经度（东经为正）">经度</label>
         <NumIn :model-value="stn.lonDeg" :min="-360" :max="360" :sig="8" @commit="(v) => setStn('lonDeg', v)" />
         <span class="u">°E</span>
-        <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="13" /></button>
+        <button class="lb-mini lb-mini-ico" title="从城市库选择" @click="cityOpen = true"><Icon name="map-pin" :size="12" /></button>
       </div>
       <div class="srow">
         <label title="WGS-84 大地纬度（北纬为正）">纬度</label>
@@ -205,8 +205,8 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
       <label class="md-chkrow ag-chk" :class="{ dim: !maskRec }" title="视线落入本挂点本体遮挡掩模的时刻记为「遮挡」（需先计算掩模）"><input v-model="useMask" type="checkbox" :disabled="!maskRec" />计入掩模</label>
     </div>
     <div class="md-acts">
-      <button class="lb-mini primary" :disabled="!mnt || busy || ana.tooMany.value" :title="mnt ? GIMBAL_LABEL[(mnt.gimbal && mnt.gimbal.type) || 'none'] : ''" @click="compute"><Icon name="calculator" :size="13" />计算</button>
-      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
+      <button class="lb-mini primary" :disabled="!mnt || busy || ana.tooMany.value" :title="mnt ? GIMBAL_LABEL[(mnt.gimbal && mnt.gimbal.type) || 'none'] : ''" @click="compute"><Icon name="calculator" :size="12" />计算</button>
+      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="12" />取消</button>
       <span v-if="busy" class="md-state"><span class="ag-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
     </div>
     <div v-if="err" class="md-state bad">{{ err }}</div>
@@ -233,7 +233,6 @@ const f = (v, k = 4) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
 .ag-seg > button { flex: 1 1 auto; height: var(--h-ctl); }
 .ag-chk { min-height: 0; margin-left: auto; }
 .ag-name { font-size: var(--fs-2); color: var(--text-muted); }
-.ag-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ag-spin .7s linear infinite; }
-@keyframes ag-spin { to { transform: rotate(360deg); } }
+.ag-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 .srow :deep(.md-num) { flex: 1 1 60px; }
 </style>

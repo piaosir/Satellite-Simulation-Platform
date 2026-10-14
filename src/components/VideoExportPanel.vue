@@ -84,6 +84,8 @@ const RAMP_OPTS = computed(() => [
 // 变速比走对数滑块（1 … 1000）：读数到整数或一位小数
 const ratioLog = computed({ get: () => Math.log10(Math.max(1, Number(S.ramp.ratio) || 1)), set: (v) => { const x = Math.pow(10, Number(v) || 0); S.ramp.ratio = x >= 10 ? Math.round(x) : Math.round(x * 10) / 10 } })
 const ratioTxt = computed(() => { const r = Number(S.ramp.ratio) || 1; return (r >= 10 ? Math.round(r).toLocaleString('en-US') : r.toFixed(1)) + '×' })
+// 读数框里打的是倍速比本身（「20」「20×」），换回滑杆的对数刻度（shared/ui/rangeField.js）
+const RATIO_RNUM = { fromNum: (n) => Math.log10(Math.max(1, n)) }
 
 
 // —— 画面 ——
@@ -109,6 +111,8 @@ function setSec(sec, v) { for (const f of sec.f) satF[f.k] = v }
 // 字段符号：空格分隔多个，「e_x」= e 带下标 x（同 hud.js 的卡片画法）
 const symParts = (s) => String(s).split(' ').map((t) => { const i = t.indexOf('_'); return i > 0 ? [t.slice(0, i), t.slice(i + 1)] : [t, ''] })
 const logoFile = ref(null)
+// ★ 这个 <input ref> 写在 v-for="m in ITEMS" 里：Vue 3 下 v-for 内的 ref 收成数组，模板里直接 logoFile.click() 会抛
+function openLogoFile() { const el = Array.isArray(logoFile.value) ? logoFile.value[0] : logoFile.value; if (el) el.click() }
 function pickLogo(e) {
   const f = e.target.files && e.target.files[0]
   if (!f) return
@@ -132,7 +136,7 @@ const ITEMS = computed(() => [
 const enc = computed(() => vx.encSupport.value)
 const encText = computed(() => {
   const p = vx.encPath.value
-  if (S.format !== 'mp4') return ''
+  if (vx.fmt.value !== 'mp4') return ''
   if (!enc.value) return '…'
   return p === 'hw' ? T('硬件编码', 'Hardware') : p === 'sw' ? T('软件编码', 'Software') : '—'
 })
@@ -191,22 +195,27 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 </script>
 
 <template>
-  <aside class="vxp" data-i18n-skip>
+  <aside class="vxp" data-pane="video" data-i18n-skip>
     <div class="vxp-hd">
-      <Icon name="video" :size="13" />
-      <span class="vxp-tt">{{ T('导出视频', 'Export Video') }}</span>
+      <Icon :name="vx.still.value ? 'image' : 'video'" :size="12" />
+      <span class="vxp-tt">{{ vx.still.value ? T('导出图片', 'Export Image') : T('导出视频', 'Export Video') }}</span>
       <span class="vxp-sp"></span>
-      <span class="vxp-ib" :title="T('关闭', 'Close')" @click="vx.hide()"><Icon name="x" :size="12" /></span>
+      <button type="button" class="ibtn" :title="T('关闭', 'Close')" @click="vx.hide()"><Icon name="x" :size="12" /></button>
     </div>
 
     <div class="vxp-bd">
+      <!-- 单张图片模式：时刻锁在时间轴游标（拖时间轴即改），不出「时间」「节奏」两节 -->
+      <section v-if="vx.still.value" class="vs">
+        <div class="vs-h">{{ T('时刻', 'Time') }}</div>
+        <div class="ro"><b>{{ startTxt.replace('T', ' ') }}</b><span class="ro-sep">·</span>{{ tzTag(tz, rng.startMs) }}</div>
+      </section>
       <!-- 时间 -->
-      <section class="vs">
+      <section v-if="!vx.still.value" class="vs">
         <div class="vs-h">{{ T('时间', 'Time') }}</div>
-        <div class="seg3">
-          <button type="button" :class="{ on: S.rangeMode === 'timeline' }" :title="T('跟随时间轴：固定时段取其起止，滚动档取当前时间窗', 'Follow the timeline: its fixed period, or the current window when rolling')" @click="setRangeMode('timeline')">{{ tlFixed ? T('时间轴时段', 'Timeline period') : T('时间轴', 'Timeline') }}</button>
-          <button type="button" :class="{ on: S.rangeMode === 'window' }" :title="T('时间条当前可见的时间窗', 'The window visible on the time ruler')" @click="setRangeMode('window')">{{ T('当前时间窗', 'Ruler window') }}</button>
-          <button type="button" :class="{ on: S.rangeMode === 'custom' }" @click="setRangeMode('custom')">{{ T('自定义', 'Custom') }}</button>
+        <div role="radiogroup" class="seg seg3">
+          <button type="button" role="radio" :aria-checked="!!(S.rangeMode === 'timeline')" class="sg" :class="{ on: S.rangeMode === 'timeline' }" :title="T('跟随时间轴：固定时段取其起止，滚动档取当前时间窗', 'Follow the timeline: its fixed period, or the current window when rolling')" @click="setRangeMode('timeline')">{{ tlFixed ? T('时间轴时段', 'Timeline period') : T('时间轴', 'Timeline') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(S.rangeMode === 'window')" class="sg" :class="{ on: S.rangeMode === 'window' }" :title="T('时间条当前可见的时间窗', 'The window visible on the time ruler')" @click="setRangeMode('window')">{{ T('当前时间窗', 'Ruler window') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(S.rangeMode === 'custom')" class="sg" :class="{ on: S.rangeMode === 'custom' }" @click="setRangeMode('custom')">{{ T('自定义', 'Custom') }}</button>
         </div>
         <div class="vr"><label>{{ T('起始', 'Start') }}</label><input class="ci dt" type="datetime-local" step="1" :value="startTxt" @change="onStart" /></div>
         <div class="vr"><label>{{ T('终止', 'Stop') }}</label><input class="ci dt" type="datetime-local" step="1" :value="stopTxt" @change="onStop" /></div>
@@ -214,21 +223,21 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
       </section>
 
       <!-- 节奏 -->
-      <section class="vs">
+      <section v-if="!vx.still.value" class="vs">
         <div class="vs-h">{{ T('节奏', 'Pacing') }}</div>
         <div class="vr"><label>{{ T('帧率', 'Frame rate') }}</label>
           <select class="ci" v-model.number="S.fps"><option v-for="f in FPS_LIST" :key="f" :value="f">{{ f }} fps</option></select>
         </div>
-        <div class="seg3">
-          <button type="button" :class="{ on: S.paceMode === 'speed' }" :title="T('每秒视频走过的仿真时间（STK 的 x Real Time）', 'Simulated seconds per second of video')" @click="S.paceMode = 'speed'; paceDraft = null">{{ T('倍速', 'Speed') }}</button>
-          <button type="button" :class="{ on: S.paceMode === 'duration' }" :title="T('成片时长，倍速随之推出', 'Target video length; speed follows')" @click="S.paceMode = 'duration'; paceDraft = null">{{ T('视频时长', 'Duration') }}</button>
-          <button type="button" :class="{ on: S.paceMode === 'step' }" :title="T('相邻两帧之间的仿真时间', 'Simulated time between frames')" @click="S.paceMode = 'step'; paceDraft = null">{{ T('步长', 'Step') }}</button>
+        <div role="radiogroup" class="seg seg3">
+          <button type="button" role="radio" :aria-checked="!!(S.paceMode === 'speed')" class="sg" :class="{ on: S.paceMode === 'speed' }" :title="T('每秒视频走过的仿真时间（STK 的 x Real Time）', 'Simulated seconds per second of video')" @click="S.paceMode = 'speed'; paceDraft = null">{{ T('倍速', 'Speed') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(S.paceMode === 'duration')" class="sg" :class="{ on: S.paceMode === 'duration' }" :title="T('成片时长，倍速随之推出', 'Target video length; speed follows')" @click="S.paceMode = 'duration'; paceDraft = null">{{ T('视频时长', 'Duration') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(S.paceMode === 'step')" class="sg" :class="{ on: S.paceMode === 'step' }" :title="T('相邻两帧之间的仿真时间', 'Simulated time between frames')" @click="S.paceMode = 'step'; paceDraft = null">{{ T('步长', 'Step') }}</button>
         </div>
         <div class="vr">
           <label>{{ S.paceMode === 'speed' ? T('倍速', 'Speed') : S.paceMode === 'duration' ? T('视频时长', 'Duration') : T('每帧步长', 'Step') }}</label>
           <input class="ci" :value="paceVal" @input="paceDraft = $event.target.value" @change="commitPace" @keydown.enter="commitPace" @blur="commitPace" />
           <span class="u">{{ paceUnit }}</span>
-          <span v-if="S.paceMode === 'speed'" class="vxp-ib" :title="T('取时间轴当前倍速', 'Use the timeline speed')" @click="vx.useTimelineSpeed(); paceDraft = null"><Icon name="refresh-cw" :size="11" /></span>
+          <button type="button" v-if="S.paceMode === 'speed'" class="ibtn" :title="T('取时间轴当前倍速', 'Use the timeline speed')" @click="vx.useTimelineSpeed(); paceDraft = null"><Icon name="refresh-cw" :size="12" /></button>
         </div>
         <!-- 变速（时间重映射）：平均倍速仍是上面那一档，剖面只决定怎么分配；停留 = 片头 / 片尾时间静止 -->
         <div class="vr" :title="T('倍速随成片时间的变化；平均倍速不变，片长不变', 'How the playback speed varies over the video; average speed and length unchanged')">
@@ -238,7 +247,7 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
         <template v-if="S.ramp.shape !== 'none'">
           <div class="vr ind" :title="T('最快与最慢倍速之比', 'Fastest ÷ slowest speed')">
             <label>{{ T('变速比', 'Ratio') }}</label>
-            <input class="rg" type="range" min="0" max="3" step="0.01" v-model.number="ratioLog" /><span class="rv">{{ ratioTxt }}</span>
+            <input class="rg" type="range" min="0" max="3" step="0.01" v-model.number="ratioLog" :rnumMap.prop="RATIO_RNUM" /><span class="rv">{{ ratioTxt }}</span>
           </div>
           <div class="vr ind" :title="T('升速 / 降速段占运动部分的比例', 'Share of the motion spent speeding up / slowing down')">
             <label>{{ T('过渡', 'Transition') }}</label>
@@ -261,9 +270,9 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
       <!-- 画面 -->
       <section class="vs">
         <div class="vs-h">{{ T('画面', 'Frame') }}</div>
-        <div class="seg3 two">
-          <button type="button" :class="{ on: !flat }" @click="setView(false)">{{ T('3D 球体', '3D Globe') }}</button>
-          <button type="button" :class="{ on: flat }" @click="setView(true)">{{ T('2D 平面图', '2D Map') }}</button>
+        <div role="radiogroup" class="seg seg3 two">
+          <button type="button" role="radio" :aria-checked="!!(!flat)" class="sg" :class="{ on: !flat }" @click="setView(false)">{{ T('3D 球体', '3D Globe') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(flat)" class="sg" :class="{ on: flat }" @click="setView(true)">{{ T('2D 平面图', '2D Map') }}</button>
         </div>
         <div class="vr"><label>{{ T('分辨率', 'Resolution') }}</label>
           <select class="ci" v-model="S.res">
@@ -277,42 +286,42 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
         </div>
         <div class="vr" :title="T('线宽、地名、图标相对画面的大小（1 = 与屏上同比例）', 'Line widths, labels and icons relative to the frame (1 = as on screen)')">
           <label>{{ T('标注缩放', 'Annotation') }}</label>
-          <input class="rg" type="range" min="0.5" max="2" step="0.05" v-model.number="S.annot" /><span class="rv">{{ S.annot.toFixed(2) }}×</span>
+          <input class="rg" type="range" min="0.5" max="2" step="0.01" v-model.number="S.annot" /><span class="rv">{{ S.annot.toFixed(2) }}×</span>
         </div>
         <div v-if="!flat" class="vr" :title="T('按 2 倍分辨率渲染再缩回（≤ 2560×1440 时生效）', 'Render at 2× and downsample (up to 2560×1440)')">
-          <label>{{ T('超采样', 'Supersampling') }}</label>
-          <span class="layersw" :class="{ on: ssOn, dis: !ssApplies }" role="switch" :aria-checked="ssOn ? 'true' : 'false'" @click="ssOn = !ssOn"><i></i></span><span class="rv">{{ ssOn && ssApplies ? '2×' : '1×' }}</span>
+          <label id="vxl-ss">{{ T('超采样', 'Supersampling') }}</label>
+          <button type="button" class="layersw" :class="{ on: ssOn, dis: !ssApplies }" role="switch" aria-labelledby="vxl-ss" :aria-checked="ssOn ? 'true' : 'false'" @click="ssOn = !ssOn"><i></i></button><span class="rv">{{ ssOn && ssApplies ? '2×' : '1×' }}</span>
         </div>
         <div class="vr" :title="T('屏上拖框边移动、拖四角缩放（Alt：以框心缩放），双击框边复位', 'On the map: drag an edge to move, a corner to resize (Alt: about the center); double-click an edge to reset')">
-          <label>{{ T('取景框', 'Framing') }}</label>
-          <span class="layersw" :class="{ on: S.framing }" role="switch" :aria-checked="S.framing ? 'true' : 'false'" @click="S.framing = !S.framing"><i></i></span>
+          <label id="vxl-frm">{{ T('取景框', 'Framing') }}</label>
+          <button type="button" class="layersw" :class="{ on: S.framing }" role="switch" aria-labelledby="vxl-frm" :aria-checked="S.framing ? 'true' : 'false'" @click="S.framing = !S.framing"><i></i></button>
           <span class="rv">{{ dims.w }} × {{ dims.h }}<template v-if="!vx.frameIsDefault.value"> · {{ Math.round(S.frame.s * 100) }}%</template></span>
-          <span v-if="!vx.frameIsDefault.value" class="vxp-ib" :title="T('复位：最大、居中', 'Reset: largest, centered')" @click="vx.resetFrame()"><Icon name="rotate-ccw" :size="12" /></span>
+          <button type="button" v-if="!vx.frameIsDefault.value" class="ibtn" :title="T('复位：最大、居中', 'Reset: largest, centered')" @click="vx.resetFrame()"><Icon name="rotate-ccw" :size="12" /></button>
         </div>
         <!-- 2D 经纬图框（SATSOFT 式）：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格。
              子项叫法与地图设置 → 2D 投影那一份一致（间隔 / 标注 / 底色 / 网格线；英文同词典） -->
         <template v-if="flat">
-          <div class="vr"><label>{{ T('经纬图框', 'Graticule Frame') }}</label>
-            <span class="layersw" :class="{ on: S.geo.on }" role="switch" :aria-checked="S.geo.on ? 'true' : 'false'" @click="S.geo.on = !S.geo.on"><i></i></span>
+          <div class="vr"><label id="vxl-geo">{{ T('经纬图框', 'Graticule Frame') }}</label>
+            <button type="button" class="layersw" :class="{ on: S.geo.on }" role="switch" aria-labelledby="vxl-geo" :aria-checked="S.geo.on ? 'true' : 'false'" @click="S.geo.on = !S.geo.on"><i></i></button>
           </div>
           <template v-if="S.geo.on">
             <div class="vr ind"><label>{{ T('间隔', 'Spacing') }}</label>
               <select class="ci" v-model.number="S.geo.step"><option :value="0">{{ T('自动', 'Auto') }}</option><option v-for="s in GEO_STEPS" :key="s" :value="s">{{ s }}°</option></select>
             </div>
             <div class="vr ind"><label>{{ T('标注', 'Labels') }}</label>
-              <div class="seg3 two in">
-                <button type="button" :class="{ on: S.geo.fmt !== 'hemi' }" @click="S.geo.fmt = 'num'">−50.00</button>
-                <button type="button" :class="{ on: S.geo.fmt === 'hemi' }" @click="S.geo.fmt = 'hemi'">50°W</button>
+              <div role="radiogroup" class="seg seg3 two in">
+                <button type="button" role="radio" :aria-checked="!!(S.geo.fmt !== 'hemi')" class="sg" :class="{ on: S.geo.fmt !== 'hemi' }" @click="S.geo.fmt = 'num'">−50.00</button>
+                <button type="button" role="radio" :aria-checked="!!(S.geo.fmt === 'hemi')" class="sg" :class="{ on: S.geo.fmt === 'hemi' }" @click="S.geo.fmt = 'hemi'">50°W</button>
               </div>
             </div>
             <div class="vr ind"><label>{{ T('底色', 'Background') }}</label>
-              <div class="seg3 two in">
-                <button type="button" :class="{ on: S.geo.theme !== 'dark' }" @click="S.geo.theme = 'light'">{{ T('浅色', 'Light') }}</button>
-                <button type="button" :class="{ on: S.geo.theme === 'dark' }" @click="S.geo.theme = 'dark'">{{ T('深色', 'Dark') }}</button>
+              <div role="radiogroup" class="seg seg3 two in">
+                <button type="button" role="radio" :aria-checked="!!(S.geo.theme !== 'dark')" class="sg" :class="{ on: S.geo.theme !== 'dark' }" @click="S.geo.theme = 'light'">{{ T('浅色', 'Light') }}</button>
+                <button type="button" role="radio" :aria-checked="!!(S.geo.theme === 'dark')" class="sg" :class="{ on: S.geo.theme === 'dark' }" @click="S.geo.theme = 'dark'">{{ T('深色', 'Dark') }}</button>
               </div>
             </div>
-            <div class="vr ind"><label>{{ T('网格线', 'Grid lines') }}</label>
-              <span class="layersw" :class="{ on: S.geo.lines }" role="switch" :aria-checked="S.geo.lines ? 'true' : 'false'" @click="S.geo.lines = !S.geo.lines"><i></i></span>
+            <div class="vr ind"><label id="vxl-geoln">{{ T('网格线', 'Grid lines') }}</label>
+              <button type="button" class="layersw" :class="{ on: S.geo.lines }" role="switch" aria-labelledby="vxl-geoln" :aria-checked="S.geo.lines ? 'true' : 'false'" @click="S.geo.lines = !S.geo.lines"><i></i></button>
             </div>
           </template>
         </template>
@@ -322,11 +331,13 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
       <section class="vs">
         <div class="vs-h">{{ T('叠加信息', 'Overlays') }}</div>
         <div class="vr"><label>{{ T('字号', 'Size') }}</label>
-          <input class="rg" type="range" min="0.6" max="2" step="0.05" v-model.number="S.hud.size" /><span class="rv">{{ S.hud.size.toFixed(2) }}×</span>
+          <input class="rg" type="range" min="0.6" max="2" step="0.01" v-model.number="S.hud.size" /><span class="rv">{{ S.hud.size.toFixed(2) }}×</span>
         </div>
-        <div class="vr"><label>{{ T('底板', 'Panel') }}</label>
-          <span class="layersw" :class="{ on: S.hud.panel }" role="switch" :aria-checked="S.hud.panel ? 'true' : 'false'" @click="S.hud.panel = !S.hud.panel"><i></i></span>
-          <input v-if="S.hud.panel" class="rg sm" type="range" min="0.2" max="0.95" step="0.05" v-model.number="S.hud.opacity" :title="T('底板不透明度', 'Panel opacity')" />
+        <div class="vr"><label id="vxl-panel">{{ T('底板', 'Panel') }}</label>
+          <button type="button" class="layersw" :class="{ on: S.hud.panel }" role="switch" aria-labelledby="vxl-panel" :aria-checked="S.hud.panel ? 'true' : 'false'" @click="S.hud.panel = !S.hud.panel"><i></i></button>
+          <template v-if="S.hud.panel">
+            <input class="rg sm" type="range" min="0.2" max="0.95" step="0.01" v-model.number="S.hud.opacity" :title="T('底板不透明度', 'Panel opacity')" /><span class="rv">{{ Math.round(S.hud.opacity * 100) }}%</span>
+          </template>
         </div>
         <div class="vr"><label>{{ T('字体', 'Font') }}</label>
           <select class="ci" v-model="S.hud.font"><option value="ui">{{ T('界面字体', 'Interface font') }}</option><option value="doc">{{ T('报告衬线', 'Report serif') }}</option></select>
@@ -334,10 +345,10 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 
         <div v-for="m in ITEMS" :key="m.k" class="hi" :class="{ on: it[m.k].on }">
           <div class="hi-row">
-            <span class="layersw" :class="{ on: it[m.k].on }" role="switch" :aria-checked="it[m.k].on ? 'true' : 'false'" @click="it[m.k].on = !it[m.k].on"><i></i></span>
-            <span class="hi-n" @click="!m.noPos && togOpen(m.k)">{{ m.name }}</span>
+            <button type="button" class="layersw" :class="{ on: it[m.k].on }" role="switch" :aria-checked="it[m.k].on ? 'true' : 'false'" :aria-labelledby="'vxl-hi-' + m.k" @click="it[m.k].on = !it[m.k].on"><i></i></button>
+            <span :id="'vxl-hi-' + m.k" class="hi-n" @click="!m.noPos && togOpen(m.k)">{{ m.name }}</span>
             <select v-if="!m.noPos" class="ci pos" v-model="it[m.k].pos" :title="T('位置', 'Position')"><option v-for="p in POS" :key="p[0]" :value="p[0]">{{ p[1] }}</option></select>
-            <span v-if="!m.noPos" class="hi-x" :class="{ open: open[m.k] }" @click="togOpen(m.k)"><Icon name="chevron-down" :size="11" /></span>
+            <button type="button" v-if="!m.noPos" class="hi-x" :class="{ open: open[m.k] }" :title="open[m.k] ? T('收起', 'Collapse') : T('展开', 'Expand')" :aria-label="open[m.k] ? T('收起', 'Collapse') : T('展开', 'Expand')" :aria-expanded="open[m.k] ? 'true' : 'false'" @click="togOpen(m.k)"><Icon name="chevron-down" :size="12" /></button>
           </div>
           <div v-if="open[m.k] && !m.noPos" class="hi-bd">
             <template v-if="m.k === 'time'">
@@ -352,8 +363,8 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
             </template>
             <template v-else-if="m.k === 'sat'">
               <div class="vr"><label>{{ T('颗数上限', 'Max') }}</label><select class="ci" v-model.number="it.sat.max"><option v-for="n in [1, 2, 3, 4, 6]" :key="n" :value="n">{{ n }}</option></select><span class="rv">{{ (src.sats || []).length }}</span></div>
-              <div class="vr"><label>{{ T('节标题', 'Section titles') }}</label>
-                <span class="layersw" :class="{ on: it.sat.heads }" role="switch" :aria-checked="it.sat.heads ? 'true' : 'false'" @click="it.sat.heads = !it.sat.heads"><i></i></span>
+              <div class="vr"><label id="vxl-heads">{{ T('节标题', 'Section titles') }}</label>
+                <button type="button" class="layersw" :class="{ on: it.sat.heads }" role="switch" aria-labelledby="vxl-heads" :aria-checked="it.sat.heads ? 'true' : 'false'" @click="it.sat.heads = !it.sat.heads"><i></i></button>
               </div>
               <div v-for="sec in SAT_SECS" :key="sec.k" class="fsec">
                 <label class="fsec-h"><input type="checkbox" :checked="secAll(sec)" :indeterminate.prop="secSome(sec) && !secAll(sec)" @change="setSec(sec, !secAll(sec))" /><span>{{ T(sec.zh, sec.en) }}</span></label>
@@ -386,12 +397,13 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
               </div>
             </template>
             <template v-else-if="m.k === 'logo'">
-              <div class="seg3 two">
-                <button type="button" :class="{ on: it.logo.src !== 'custom' }" @click="it.logo.src = 'app'">LinkLab</button>
-                <button type="button" :class="{ on: it.logo.src === 'custom' }" @click="it.logo.dataUrl ? (it.logo.src = 'custom') : logoFile.click()">{{ T('自定义图片…', 'Custom image…') }}</button>
+              <div role="radiogroup" class="seg seg3 two">
+                <button type="button" role="radio" :aria-checked="!!(it.logo.src !== 'custom')" class="sg" :class="{ on: it.logo.src !== 'custom' }" @click="it.logo.src = 'app'">LinkLab</button>
+                <button type="button" role="radio" :aria-checked="!!(it.logo.src === 'custom')" class="sg" :class="{ on: it.logo.src === 'custom' }" @click="it.logo.dataUrl ? (it.logo.src = 'custom') : openLogoFile()">{{ T('自定义图片', 'Custom image') }}</button>
               </div>
               <input ref="logoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden @change="pickLogo" />
-              <div class="vr"><label>{{ T('大小', 'Size') }}</label><input class="rg" type="range" min="1" max="6" step="0.1" v-model.number="it.logo.h" /><span class="rv">{{ it.logo.h.toFixed(1) }}</span></div>
+              <div v-if="it.logo.src === 'custom'" class="vr"><label>{{ T('图片', 'Image') }}</label><button type="button" class="btn" @click="openLogoFile">{{ T('更换…', 'Replace…') }}</button></div>
+              <div class="vr"><label>{{ T('大小', 'Size') }}</label><input class="rg" type="range" min="1" max="6" step="0.01" v-model.number="it.logo.h" /><span class="rv">{{ it.logo.h.toFixed(2) }}</span></div>
             </template>
           </div>
         </div>
@@ -400,12 +412,16 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
       <!-- 输出 -->
       <section class="vs">
         <div class="vs-h">{{ T('输出', 'Output') }}</div>
-        <div class="seg3">
-          <button type="button" :class="{ on: S.format === 'mp4' }" @click="S.format = 'mp4'">MP4</button>
-          <button type="button" :class="{ on: S.format === 'png' }" :title="T('无损逐帧图片', 'Lossless frame images')" @click="S.format = 'png'">{{ T('PNG 序列', 'PNG frames') }}</button>
-          <button type="button" :class="{ on: S.format === 'jpg' }" @click="S.format = 'jpg'">{{ T('JPEG 序列', 'JPEG frames') }}</button>
+        <div role="radiogroup" v-if="vx.still.value" class="seg seg3">
+          <button type="button" role="radio" :aria-checked="!!(vx.stillFmt.value === 'png')" class="sg" :class="{ on: vx.stillFmt.value === 'png' }" :title="T('无损', 'Lossless')" @click="vx.stillFmt.value = 'png'">PNG</button>
+          <button type="button" role="radio" :aria-checked="!!(vx.stillFmt.value === 'jpg')" class="sg" :class="{ on: vx.stillFmt.value === 'jpg' }" @click="vx.stillFmt.value = 'jpg'">JPEG</button>
         </div>
-        <template v-if="S.format === 'mp4'">
+        <div role="radiogroup" v-else class="seg seg3">
+          <button type="button" role="radio" :aria-checked="!!(S.format === 'mp4')" class="sg" :class="{ on: S.format === 'mp4' }" @click="S.format = 'mp4'">MP4</button>
+          <button type="button" role="radio" :aria-checked="!!(S.format === 'png')" class="sg" :class="{ on: S.format === 'png' }" :title="T('无损逐帧图片', 'Lossless frame images')" @click="S.format = 'png'">{{ T('PNG 序列', 'PNG frames') }}</button>
+          <button type="button" role="radio" :aria-checked="!!(S.format === 'jpg')" class="sg" :class="{ on: S.format === 'jpg' }" @click="S.format = 'jpg'">{{ T('JPEG 序列', 'JPEG frames') }}</button>
+        </div>
+        <template v-if="vx.fmt.value === 'mp4'">
           <div class="vr"><label>{{ T('质量', 'Quality') }}</label>
             <select class="ci" v-model="S.q">
               <option value="std">{{ T('标准', 'Standard') }}</option><option value="high">{{ T('高', 'High') }}</option>
@@ -426,16 +442,16 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
             <select class="ci" v-model.number="S.gopSec"><option v-for="g in [0.5, 1, 2, 5]" :key="g" :value="g">{{ g }} s</option></select>
           </div>
         </template>
-        <div v-else-if="S.format === 'jpg'" class="vr"><label>{{ T('质量', 'Quality') }}</label>
+        <div v-else-if="vx.fmt.value === 'jpg'" class="vr"><label>{{ T('质量', 'Quality') }}</label>
           <input class="rg" type="range" min="0.5" max="1" step="0.01" v-model.number="S.jpegQ" /><span class="rv">{{ Math.round(S.jpegQ * 100) }}</span>
         </div>
-        <div class="ro">{{ T('约', 'About') }} <b>{{ fmtBytes(vx.estBytes.value) }}</b><template v-if="S.format !== 'mp4' && pace.ok"><span class="ro-sep">·</span>{{ pace.frames.toLocaleString('en-US') }} {{ T('个文件', pace.frames === 1 ? 'file' : 'files') }}</template></div>
+        <div class="ro">{{ T('约', 'About') }} <b>{{ fmtBytes(vx.estBytes.value) }}</b><template v-if="vx.fmt.value !== 'mp4' && pace.ok && !vx.still.value"><span class="ro-sep">·</span>{{ pace.frames.toLocaleString('en-US') }} {{ T('个文件', pace.frames === 1 ? 'file' : 'files') }}</template></div>
       </section>
     </div>
 
     <div class="vxp-ft">
       <div v-if="issue" class="ft-err">{{ issue }}</div>
-      <button type="button" class="btn primary go" :disabled="!!issue || busy || vx.starting.value" @click="vx.start()"><Icon name="video" :size="13" />{{ T('开始导出', 'Export') }}</button>
+      <button type="button" class="btn primary go" :disabled="!!issue || busy || vx.starting.value" @click="vx.start()"><Icon :name="vx.still.value ? 'image' : 'video'" :size="12" />{{ vx.still.value ? T('导出图片', 'Export image') : T('开始导出', 'Export') }}</button>
     </div>
 
     <!-- 整窗进度卡：逐帧渲染期间盖住一切（菜单 / 地图 / 侧栏），Esc 取消；导出前的覆盖确认、导出后的结果也在这张卡上 -->
@@ -500,21 +516,27 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 </template>
 
 <style scoped>
+/* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button).hi-x { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 .vxp {
   flex: none; width: 300px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
   background: var(--surface); border-left: 1px solid var(--border); font-size: var(--fs-3); color: var(--text);
 }
-.vxp-hd { flex: none; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.vxp-tt { font-weight: 600; color: var(--text); font-size: var(--fs-4); }
+/* 表头与主窗停靠窗格的 .dock-hd 同一规格（26 px、面板头底色、标题 12 px 粗） */
+.vxp-hd { flex: none; display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 5px 0 11px; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.vxp-tt { font-weight: 600; color: var(--text-muted); font-size: var(--fs-3); letter-spacing: var(--ls-label); }
+/* 专业外观：与侧栏 / 信息栏同为面板块 —— 与画面之间留缝、圆角、受光边（data-pane 让焦点面板指示也认它） */
+:root[data-skin="studio"] .vxp { margin-left: var(--pane-gap); border-left: 0; border-radius: var(--r-pane); outline: 1px solid var(--pane-edge); outline-offset: -1px; }
+:root[data-skin="studio"] .vxp > .vxp-hd { border-radius: var(--r-pane) var(--r-pane) 0 0; }
 .vxp-sp { flex: 1; }
-.vxp-ib { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--r-ctl); color: var(--text-muted); cursor: pointer; flex: none; }
-.vxp-ib:hover { background: var(--wash-hover); color: var(--text); }
 .vxp-bd { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 12px 10px 12px; scrollbar-gutter: stable; }
 .vs { padding: 8px 0 10px; border-bottom: 1px solid var(--border); }
 .vs:last-child { border-bottom: none; }
 .vs-h { font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); letter-spacing: .02em; margin: 2px 0 7px; }
-.vr { display: flex; align-items: center; gap: 6px; min-height: var(--h-ctl); margin: 5px 0; }
-.vr > label { flex: none; width: 72px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vr { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-height: var(--h-ctl); margin: 5px 0; }
+/* 标签列宽是下限不是定宽（与 .srow 同口径）：长标签撑开自己，整行装不下时控件掉到下一行；英文下限抬到 96px */
+.vr > label { flex: none; min-width: 72px; max-width: 100%; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html[lang="en"] .vr > label { min-width: 96px; }
 .vr .ci { flex: 1; min-width: 0; }
 .vr .ci.num { flex: 0 1 78px; }
 .vr .ci.dt { font-variant-numeric: tabular-nums; }
@@ -523,20 +545,15 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 .vr .rg.sm { flex: 0 1 110px; margin-left: 8px; }
 .vr .rv { flex: none; min-width: 40px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vr .rv.l { flex: 1; text-align: left; color: var(--text); }
-.vr .layersw.dis { opacity: .45; }
+.vr .layersw.dis { opacity: var(--dis-opacity); }
 .ro { margin: 6px 0 0; color: var(--text-muted); font-size: var(--fs-2); font-variant-numeric: tabular-nums; line-height: 1.5; }
 .ro b { color: var(--text); font-weight: 600; }
 .ro.bad { color: var(--danger); }
 .ro-sep { margin: 0 6px; opacity: .6; }
 
-.seg3 { display: flex; border: 1px solid var(--field-border); border-radius: var(--r-ctl); overflow: hidden; margin: 2px 0 6px; }
-.seg3 > button {
-  flex: 1; min-width: 0; height: var(--h-ctl); padding: 0 4px; border: none; border-right: 1px solid var(--border);
-  background: var(--field-bg); color: var(--text); font: inherit; font-size: var(--fs-2); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.seg3 > button:last-child { border-right: none; }
-.seg3 > button:hover:not(.on) { background: var(--wash-hover); }
-.seg3 > button.on { background: var(--accent-ui); color: var(--bg); }
+/* 分段本体是 controls.css 的 .seg；.seg3 只管铺满与段宽等分（段名过长省略号，悬停看全称） */
+.seg3 { margin: 2px 0 6px; }
+.seg3 > .sg { flex: 1; min-width: 0; padding: 0 4px; font-size: var(--fs-2); overflow: hidden; text-overflow: ellipsis; }
 .vr .seg3.in { flex: 1; min-width: 0; margin: 0; }
 .vr.ind > label { padding-left: 12px; }   /* 从属于上一行开关的子项：只缩标签，控件列照旧对齐 */
 .vr .ci.num.sm { flex: 0 1 58px; }
@@ -568,7 +585,7 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
 .ft-err { color: var(--danger); font-size: var(--fs-2); }
 .btn.go { height: var(--h-ctl-lg); display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: var(--fs-4); }
 
-.vxc-mask { position: fixed; inset: 0; z-index: 9000; background: rgba(8, 10, 14, .86); display: flex; align-items: center; justify-content: center; }
+.vxc-mask { position: fixed; inset: 0; z-index: var(--z-capture); background: rgba(8, 10, 14, .86); display: flex; align-items: center; justify-content: center; }
 /* 卡不超出窗口：内容再高（竖屏缩略图、长报错）就卡内滚动，按钮总够得着 */
 .vxc { width: 480px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow: auto; overscroll-behavior: contain; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-3); padding: 14px 16px 12px; font-size: var(--fs-3); }
 .vxc-hd { font-size: var(--fs-5); font-weight: 600; margin-bottom: 10px; }
@@ -576,7 +593,7 @@ const fmtMs = (ms) => fmtClock((Number(ms) || 0) / 1000)
    object-fit 兜底：万一被拉成别的比例，也是留黑边而不是压扁 */
 .vxc-th { display: block; width: auto; height: auto; max-width: 100%; max-height: 50vh; margin: 0 auto; object-fit: contain; background: #000; border: 1px solid var(--border); border-radius: var(--r-box); }
 .vxc-bar { height: 6px; margin: 12px 0 8px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
-.vxc-bar > i { display: block; height: 100%; background: var(--accent-ui); transition: width 120ms linear; }
+.vxc-bar > i { display: block; height: 100%; background: var(--accent-ui); transition: width var(--dur-2) linear; }
 .vxc-ro { display: flex; justify-content: space-between; gap: 10px; margin: 8px 0 0; font-variant-numeric: tabular-nums; }
 .vxc-ro.sub { color: var(--text-muted); font-size: var(--fs-2); justify-content: flex-start; flex-wrap: wrap; column-gap: 14px; row-gap: 2px; }
 .vxc-ro .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }

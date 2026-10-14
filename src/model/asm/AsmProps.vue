@@ -411,14 +411,14 @@ const massWarnShort = computed(() => { const w = ui.stats.massWarn || ''; return
     <!-- ═══ 单件 ═══ -->
     <template v-if="comp && def">
       <div class="asm-hd">
-        <span class="asm-hd-ic"><Icon :name="roleIcon(def.role)" :size="13" /></span>
+        <span class="asm-hd-ic"><Icon :name="roleIcon(def.role)" :size="12" /></span>
         <span class="asm-hd-t" :title="headTip">{{ def.titleZh || def.title }}</span>
         <span class="asm-hd-id" data-i18n-skip>{{ comp.id }}</span>
         <Icon v-if="baseC" name="link-2" :size="12" class="asm-hd-drv" :title="nOver ? `由总体参数生成；本件已改写 ${nOver} 项` : '由总体参数生成'" />
         <span class="sp"></span>
-        <button v-if="nOver" class="asm-ib" data-act="p-reset-all" :disabled="ro" :title="`恢复驱动值：本件全部 ${nOver} 项改写`" @click="asm.resetBase(comp.id, 'all')"><Icon name="undo-2" :size="13" /></button>
-        <button class="asm-ib" :class="{ on: comp.hidden }" data-act="p-hide" :title="comp.hidden ? '显示' : '隐藏'" :disabled="beingDragged" @click="setHidden(!comp.hidden)"><Icon :name="comp.hidden ? 'eye-off' : 'eye'" :size="13" /></button>
-        <button class="asm-ib" :class="{ on: locked }" data-act="p-lock" :title="locked ? '解锁' : '锁定'" :disabled="beingDragged" @click="setLocked(!locked)"><Icon :name="locked ? 'lock' : 'lock-open'" :size="13" /></button>
+        <button v-if="nOver" class="asm-ib" data-act="p-reset-all" :disabled="ro" :title="`恢复驱动值：本件全部 ${nOver} 项改写`" @click="asm.resetBase(comp.id, 'all')"><Icon name="undo-2" :size="12" /></button>
+        <button class="asm-ib" :class="{ on: comp.hidden }" :aria-pressed="comp.hidden ? 'true' : 'false'" data-act="p-hide" :title="comp.hidden ? '显示' : '隐藏'" :disabled="beingDragged" @click="setHidden(!comp.hidden)"><Icon :name="comp.hidden ? 'eye-off' : 'eye'" :size="12" /></button>
+        <button class="asm-ib" :class="{ on: locked }" :aria-pressed="locked ? 'true' : 'false'" data-act="p-lock" :title="locked ? '解锁' : '锁定'" :disabled="beingDragged" @click="setLocked(!locked)"><Icon :name="locked ? 'lock' : 'lock-open'" :size="12" /></button>
       </div>
       <div class="asm-props" :class="{ 'asm-live': beingDragged }">
         <!-- 安装（非根件：置顶、缺省展开） -->
@@ -437,8 +437,8 @@ const massWarnShort = computed(() => { const w = ui.stats.massWarn || ''; return
             </div>
             <div class="srow">
               <label>方式</label>
-              <div class="seg nseg">
-                <span v-for="m in MODE_UI" :key="m.key" class="sg" :class="{ on: mode === m.key, off: ro }" :data-act="'mode-' + m.key" :title="m.tip" @click="setMode(m.key)">{{ m.label }}</span>
+              <div role="radiogroup" class="seg nseg">
+                <button type="button" v-for="m in MODE_UI" :key="m.key" role="radio" :aria-checked="!!(mode === m.key)" :aria-disabled="!!(ro)" class="sg" :class="{ on: mode === m.key, off: ro }" :data-act="'mode-' + m.key" :title="m.tip" @click="setMode(m.key)">{{ m.label }}</button>
               </div>
             </div>
             <div v-if="modeErr" class="md-state bad" data-act="mode-err"><Icon name="alert-triangle" :size="12" />{{ modeErr }}</div>
@@ -460,7 +460,7 @@ const massWarnShort = computed(() => { const w = ui.stats.massWarn || ''; return
                 <div class="asm-v3 two uvc">
                   <NumIn :key="comp.id + '|u'" :model-value="uvAt(0)" :min="-uvMax(0)" :max="uvMax(0)" :sig="6" :disabled="ro" data-act="p-u" title="u（m）" @commit="(v) => setUv(0, v)" />
                   <NumIn :key="comp.id + '|v'" :model-value="uvAt(1)" :min="-uvMax(1)" :max="uvMax(1)" :sig="6" :disabled="ro" data-act="p-v" title="v（m）" @commit="(v) => setUv(1, v)" />
-                  <button class="asm-ib" type="button" data-act="p-center" :disabled="ro || (uvAt(0) === 0 && uvAt(1) === 0)" title="居中：u = v = 0（面心）" @click="setAttach({ uv: [0, 0] })"><Icon name="crosshair" :size="13" /></button>
+                  <button class="asm-ib" type="button" data-act="p-center" :disabled="ro || (uvAt(0) === 0 && uvAt(1) === 0)" title="居中：u = v = 0（面心）" @click="setAttach({ uv: [0, 0] })"><Icon name="crosshair" :size="12" /></button>
                 </div>
                 <span class="u">m</span>
               </div>
@@ -576,9 +576,9 @@ const massWarnShort = computed(() => { const w = ui.stats.massWarn || ''; return
           <template v-if="isOpen('pose') && rd">
             <div v-if="!isRoot" class="srow">
               <label>坐标系</label>
-              <div class="seg nseg">
-                <span class="sg" :class="{ on: ui.posFrame !== 'body' }" data-act="pos-parent" title="相对父件坐标系" @click="ui.posFrame = 'parent'">相对父件</span>
-                <span class="sg" :class="{ on: ui.posFrame === 'body' }" data-act="pos-body" title="本体系（文档原点 = 根件坐标系）" @click="ui.posFrame = 'body'">本体系</span>
+              <div role="radiogroup" class="seg nseg">
+                <button type="button" role="radio" :aria-checked="!!(ui.posFrame !== 'body')" class="sg" :class="{ on: ui.posFrame !== 'body' }" data-act="pos-parent" title="相对父件坐标系" @click="ui.posFrame = 'parent'">相对父件</button>
+                <button type="button" role="radio" :aria-checked="!!(ui.posFrame === 'body')" class="sg" :class="{ on: ui.posFrame === 'body' }" data-act="pos-body" title="本体系（文档原点 = 根件坐标系）" @click="ui.posFrame = 'body'">本体系</button>
               </div>
             </div>
             <div class="srow">
@@ -744,12 +744,12 @@ const massWarnShort = computed(() => { const w = ui.stats.massWarn || ''; return
             <div v-for="g in overList" :key="g.id" class="asm-ovr">
               <span class="asm-ovr-n" data-i18n-skip :title="g.id" @click="asm.select([g.id])">{{ g.label }}</span>
               <span class="asm-ovr-items">
-                <span v-for="it in g.items" :key="it.what" class="asm-ovr-i" data-i18n-skip>{{ it.label }}<button class="pr-x" :disabled="g.locked" :title="'恢复驱动值：' + it.label" @click="asm.resetBase(g.id, it.what)"><Icon name="undo-2" :size="10" /></button></span>
+                <span v-for="it in g.items" :key="it.what" class="asm-ovr-i" data-i18n-skip>{{ it.label }}<button class="pr-x" :disabled="g.locked" :title="'恢复驱动值：' + it.label" @click="asm.resetBase(g.id, it.what)"><Icon name="undo-2" :size="12" /></button></span>
               </span>
             </div>
             <div class="md-acts">
               <button class="lb-mini" data-act="doc-reset-all" :disabled="!nResettable" title="全部改写恢复为驱动值（附加件、删除、锁定件以及隐藏 / 锁定状态不受影响）" @click="asm.resetAll()"><Icon name="undo-2" :size="12" />全部恢复</button>
-              <button class="lb-mini" data-act="doc-restore" :disabled="!nSuppressed" :title="`找回删除的驱动件（${nSuppressed}）`" @click="asm.restoreDeleted()"><Icon name="history" :size="12" />找回删除件</button>
+              <button class="lb-mini" data-act="doc-restore" :disabled="!nSuppressed" :title="`找回删除的驱动件（${nSuppressed}）`" @click="asm.restoreDeleted()"><Icon name="undo-2" :size="12" />找回删除件</button>
             </div>
           </template>
         </div>

@@ -23,8 +23,8 @@ const labelTip = computed(() => [r.value.title, props.state === 'link' ? '驱动
 <template>
   <div class="srow pr" :class="{ link: state === 'link', over: state === 'over' }" :data-param="r.key">
     <label :class="{ 'md-red': r.bad }" :title="labelTip || null">
-      <button v-if="state === 'over'" type="button" class="pr-rst" data-act="p-reset" :disabled="disabled" :title="'恢复驱动值：' + baseText" @click="emit('reset')"><Icon name="undo-2" :size="11" /></button>
-      <Icon v-else-if="state === 'link'" name="link-2" :size="11" class="pr-ic" />{{ r.label }}
+      <button v-if="state === 'over'" type="button" class="pr-rst" data-act="p-reset" :disabled="disabled" :title="'恢复驱动值：' + baseText" @click="emit('reset')"><Icon name="undo-2" :size="12" /></button>
+      <Icon v-else-if="state === 'link'" name="link-2" :size="12" class="pr-ic" />{{ r.label }}
     </label>
     <NumIn v-if="r.control === 'num'" :model-value="r.value" :min="r.min" :max="r.max" :integer="r.integer" :allow-empty="r.allowEmpty"
            :placeholder="r.placeholder" :bad="r.bad" :title="r.title" :sig="6" :disabled="disabled" @commit="(v) => emit('set', v)" />

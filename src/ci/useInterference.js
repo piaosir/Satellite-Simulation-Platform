@@ -14,11 +14,22 @@ import { generateConstellation, validateWalker } from '../viz/constellation/walk
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import { sceneNowMs } from '../shared/sceneClock.js'   // 「当前时刻」＝主窗口时间轴上的此刻（全软件一条时间线）
+import { reportError, reportPartial } from '../shared/reportError.js'   // 失败进本窗通知条（CiApp 的 useNotice 登记出口）
 
 const KEY = 'ci/panel'
 const minuteIso = (ms) => new Date(Math.floor(ms / 60000) * 60000).toISOString()   // 取整分的 ISO（UTC）
 // NGSO 面板态的版本号。v2 = 「抽样上限」的出厂默认由 200 改成留空（全量），见 load() 里的迁移。
 const NGSO_STATE_V = 2
+
+// 引擎告警上屏只留状态：按「；」「。」分段，去掉操作建议与口径解释段（引擎侧原文不动，导出/日志照旧）
+const ADVICE_SEG = /^(若需|如需|建议|请|需增加|将步长降至|事件表已另按|AP8 为|尾部统计量|历元分散|块数这么少)/
+function stateOnly(w) {
+  const raw = String(w || '')
+  const segs = raw.split(/[；。]/).map((x) => x.trim()).filter(Boolean)
+  const kept = segs.map((x) => x.replace(/，(若需|如需|建议|请|需增加|块数这么少|将步长降至)[\s\S]*$/, '')).filter((x) => !ADVICE_SEG.test(x))
+  if (!kept.length || (kept.length === segs.length && kept.every((x, i) => x === segs[i]))) return raw
+  return kept.join('；') + '。'
+}
 const api = typeof window !== 'undefined' ? window.api : null
 
 export const MODES = [
@@ -167,12 +178,17 @@ export function useInterference() {
 
   async function loadLibraries() {
     if (!api || !api.store) return
-    // 三体制各自独立的命名空间；干扰源取「卫星」那一类，三套都读进来供选
+    // 三体制各自独立的命名空间；干扰源取「卫星」那一类，三套都读进来供选。
+    // ★ 链路预算各窗存库时卫星条目的键是 `sat`（serializeLibrary：{ es, carrier, sat, seq }，同 FileManager /
+    //   model/satSources 的读法）；从前这里读 `satConfigs`（窗口里那个数组的变量名，不是存盘键），来源恒为空。
+    //   老键一并认，免得哪份早期库文件真是那么存的。
     const out = []
     for (const ns of ['geo', 'ngso', 'regen']) {
       try {
         const lib = await api.store.getLibrary(ns)
-        for (const s of ((lib && lib.satConfigs) || [])) {
+        const list = (lib && Array.isArray(lib.sat) ? lib.sat : null) || (lib && Array.isArray(lib.satConfigs) ? lib.satConfigs : [])
+        for (const s of list) {
+          if (!s || !s.id) continue
           out.push({ ns, id: s.id, name: s.name || s.form?.satelliteName || s.id, form: s.form || {}, grd: s.grd || null })
         }
       } catch (e) { /* 该体制尚无库文件 */ }
@@ -205,7 +221,7 @@ export function useInterference() {
       const altKm = lp ? Number(lp.altKm) : (+s.altKm || 35786)
       // 实时星：天线基底也用实时星位（antennaSpec 先认天线记录里的 satLon/satLat/satAlt 快照）
       nodes.push({
-        origin: '星座3D', folder: s.folder, satName: s.satName || s.folder, lon, lat, altKm, live: !!lp || noEph, noEph,
+        origin: '主窗口', folder: s.folder, satName: s.satName || s.folder, lon, lat, altKm, live: !!lp || noEph, noEph,
         antennas: lp ? ants.map((a) => ({ ...a, satLon: lon, satLat: lat, satAlt: altKm })) : ants
       })
     }
@@ -255,6 +271,9 @@ export function useInterference() {
   async function importGrdHere() {
     if (!api || !api.coverageGrd || !api.coverageGrd.import) { msg.value = '需在桌面客户端中运行'; return }
     busy.value = true; msg.value = '选择 GRD 文件…'
+    // 失败的逐个记下、最后一次报「n 成功 / m 失败：文件（原因）」—— 从前读不进的（f.error）直接跳过，
+    // 「解析失败」又被后面那句「已导入」盖掉，用户看不到少了哪几副
+    const failed = []
     try {
       const res = await api.coverageGrd.import()
       if (!res || res.canceled) { msg.value = ''; return }
@@ -268,25 +287,32 @@ export function useInterference() {
       if (!node) { node = { folder: 'ci:analysis', satName: '分析用方向图', lon: 0, lat: 0, altKm: 35786, antennas: [] }; st.sats.push(node) }
       const added = []
       for (const f of (res.files || [])) {
-        if (!f || f.error || !f.file) continue
+        if (!f) continue
+        const fname = String(f.base || f.file || f.name || '')
+        if (f.error || !f.file) { failed.push({ name: fname, error: f.error || '读取失败' }); continue }
         let beams = 1
         try {
           const m = await api.linkBudget.grdMeta(f.file)
           if (m && m.ok && m.beams > 0) beams = m.beams
-          else { msg.value = (f.base || f.file) + '：解析失败'; continue }
-        } catch (e) { msg.value = (f.base || f.file) + '：解析失败'; continue }
+          else { failed.push({ name: fname, error: (m && m.error) || '解析失败' }); continue }
+        } catch (e) { failed.push({ name: fname, error: e }); continue }
         let name = String(f.base || f.file).replace(/\.(grd|pat)$/i, '')
         while (node.antennas.some((a) => a.name === name)) name += '·'
         node.antennas.push({ name, file: f.file, beams, imported: true, satLon: node.lon, satLat: node.lat, satAlt: node.altKm })
         added.push(name)
       }
-      try { localStorage.setItem(KEY_CI, JSON.stringify(st)) } catch (e) { /* 配额 */ }
+      // 这一份就是本窗口导入天线的清单本身（不只是界面偏好）：写不进去，重开窗口这几副就没了
+      try { localStorage.setItem(KEY_CI, JSON.stringify(st)) } catch (e) { reportError('GRD 清单存盘失败', e) }
       loadGrdTree()
       if (added.length) {
         const first = grdAntennas.value.find((a) => a.ant.name === added[0])
         if (first) cci.antennaKey = first.key
         msg.value = `已导入 ${added.length} 副天线：${added.join('、')}`
-      }
+      } else if (msg.value === '选择 GRD 文件…') msg.value = ''
+      if (failed.length) reportPartial('导入 GRD', added.length, failed)
+    } catch (e) {
+      msg.value = ''
+      reportError('导入 GRD', e)
     } finally { busy.value = false }
   }
 
@@ -363,7 +389,7 @@ export function useInterference() {
       asi.result = r
       ranFp.asi = fp
       const warns = [...((r.downlink && r.downlink.warnings) || []), ...((r.uplink && r.uplink.warnings) || [])]
-      msg.value = warns.length ? warns[0] : ''
+      msg.value = warns.length ? stateOnly(warns[0]) : ''
     } finally { busy.value = false }
   }
 
@@ -470,7 +496,7 @@ export function useInterference() {
       }
       ranFp.cci = fp
       const none = cci.result.rows.filter((x) => x.cciDb == null).length
-      if (none === cci.result.rows.length) msg.value = '全部取值点均无有效结果 —— 请核查站址是否落在方向图覆盖内，或该色下无同色波束'
+      if (none === cci.result.rows.length) msg.value = '全部取值点均无有效结果。'
     } finally { busy.value = false }
   }
 
@@ -492,7 +518,7 @@ export function useInterference() {
     const ny = Math.floor((+b.latMax - +b.latMin) / step) + 1
     if (!(nx > 1 && ny > 1)) { msg.value = '经纬范围不合法'; return }
     if (nx * ny > CCI_MAX_CELLS) {
-      msg.value = `网格 ${nx}×${ny} = ${(nx * ny).toLocaleString()} 格过多（上限 ${CCI_MAX_CELLS.toLocaleString()}）——增大步长或缩小范围`
+      msg.value = `网格 ${nx}×${ny} = ${(nx * ny).toLocaleString('en-US')} 格过多（上限 ${CCI_MAX_CELLS.toLocaleString('en-US')}）——增大步长或缩小范围`
       return
     }
     busy.value = true; msg.value = `C/CCI 场计算… ${nx}×${ny} 格`
@@ -516,7 +542,7 @@ export function useInterference() {
       for (let k = 0; k < z.length; k++) { const v = r.cci[k]; z[k] = v == null ? NaN : v; if (v != null) n++ }
       cci.field = { xs, ys, nx, ny, z, coloring: r.coloring, beamIdx: r.beamIdx || [], colors: r.colors, valid: n }
       ranFp.cciField = fp
-      msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '场图全域无有效值 —— 请核查方向图覆盖范围与复用色数（色数≥波束数时无同色波束）'
+      msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '场图全域无有效值。'
     } finally { busy.value = false }
   }
 
@@ -652,7 +678,7 @@ export function useInterference() {
     const sh = st && st.shells && st.shells[0]
     const altKm = sh ? sh.altKmMed : (st ? st.altKmMed : numOr(ngso.wanted.altKm, null))
     const incl = sh ? sh.inclDeg : (st ? st.inclMed : numOr(ngso.wanted.incl, null))
-    if (!(altKm > 0) || !(incl >= 0)) { msg.value = '取雨衰分布需要本星座的轨道高度与倾角，请先选定星座或填写 Walker 参数'; return }
+    if (!(altKm > 0) || !(incl >= 0)) { msg.value = '缺少本星座的轨道高度与倾角。'; return }
     busy.value = true
     try {
       const base = {
@@ -671,7 +697,7 @@ export function useInterference() {
         if (!x || x.error || !Number.isFinite(Number(x.totalAttenItu))) continue
         cdf.push({ pct: RAIN_PCTS[i], attenDb: +Number(x.totalAttenItu).toFixed(4), noiseTempK: Number.isFinite(Number(x.rainNoiseTemp)) ? +Number(x.rainNoiseTemp).toFixed(3) : undefined })
       }
-      if (!cdf.length) { ngso.rain.cdf = null; ngso.rain.cdfInfo = ''; msg.value = '雨衰分布获取失败，请检查站址与频率'; return }
+      if (!cdf.length) { ngso.rain.cdf = null; ngso.rain.cdfInfo = ''; msg.value = '雨衰分布获取失败。'; return }
       ngso.rain.cdf = cdf
       const eq = rows.find((x) => x && x.elevation != null)
       ngso.rain.cdfInfo = `P.618-14 §8 统计口径 · 等效仰角 ${eq ? Number(eq.elevation).toFixed(2) : '—'}° · 轨道 ${Math.round(altKm)} km / ${Number(incl).toFixed(1)}° · ${cdf.length} 档（${cdf[0].pct}%–${cdf[cdf.length - 1].pct}%）`
@@ -715,10 +741,7 @@ export function useInterference() {
       //   减少干扰星数则直接少算干扰源、伪造物理，所以排在最后并写明后果。
       const T = Math.round(+ngso.horizonH * 3600 / +ngso.stepSec)
       const ep = est.epochCount > 1 ? ` × ${est.epochCount} 历元` : ''
-      msg.value = `计算量过大（${est.wantedCount + est.interfererCount} 颗星 × ${T.toLocaleString()} 采样${ep} = ${est.work.toLocaleString()}，`
-        + `超过上限 ${NGSO_MAX_WORK.toLocaleString()}）——`
-        + `建议优先增大步长或缩短时窗（仅影响统计分辨率）；`
-        + `调整「抽样上限」将减少计入的干扰源，使 C/I 系统性偏乐观约 10·lg(抽样倍率) dB，应作为最后手段`
+      msg.value = `计算量过大（${est.wantedCount + est.interfererCount} 颗星 × ${T.toLocaleString('en-US')} 采样${ep} = ${est.work.toLocaleString('en-US')}，超过上限 ${NGSO_MAX_WORK.toLocaleString('en-US')}）。`
       return
     }
     busy.value = true; ngso.result = null; ngso.progress = 0; msg.value = '扫描中…'
@@ -729,7 +752,7 @@ export function useInterference() {
     if (!r || !r.ok) { busy.value = false; msg.value = '启动失败：' + ((r && r.error) || '未知错误'); return }
     _ngsoToken = r.token
     ngso.progressTotal = r.T
-    if (r.warnings && r.warnings.length) msg.value = r.warnings[0]
+    if (r.warnings && r.warnings.length) msg.value = stateOnly(r.warnings[0])
   }
 
   async function cancelNgso() {
@@ -751,7 +774,7 @@ export function useInterference() {
       ngso.result = p.result
       ranFp.ngso = _ngsoFp
       const w = (p.result.warnings || [])[0]
-      msg.value = w || `完成（${p.result.elapsedMs} ms，${p.result.samples} 个有效样本）`
+      msg.value = w ? stateOnly(w) : `完成（${p.result.elapsedMs} ms，${p.result.samples} 个有效样本）`
     })
   }
 
@@ -775,23 +798,23 @@ export function useInterference() {
       satSearch.iso = r.iso || ''
       satSearch.msg = satSearch.hits.length
         ? `本星 ${fmtGeoSlot(Number(carrier.satLonDeg)) || carrier.satLonDeg + '°E'} 两侧 ±${satSearch.spanDeg}° 内 ${r.count} 颗（按经度差排序）`
-        : `两侧 ±${satSearch.spanDeg}° 内没搜到——放宽范围，或先在主窗口「星座」页加载 GEO 组`
+        : `两侧 ±${satSearch.spanDeg}° 内未找到卫星。`
     } finally { satSearch.busy = false }
   }
 
   // 把搜到的星加成干扰源。EIRP 密度星历里没有，留空由用户填——这是唯一必须人工给的量。
   function addNeighbor(s) {
     if (!s) return
-    if (asi.sources.some((x) => x.name === s.name)) { satSearch.msg = `「${s.name}」已在表里`; return }
-    asi.sources.push(blankSource({
+    if (asi.sources.some((x) => x.name === s.name)) { satSearch.msg = `「${s.name}」已在表中`; return }
+    putAt(asi.sources, blankSource({
       name: s.name, lonDeg: s.lonDeg,
       polarization: carrier.dnPolarization,
       diameterM: site.rxDiameterM, powerW: site.txPowerW, bandwidthHz: carrier.bandwidthHz, feederLossDb: site.txFeederLossDb
     }))
     const slotTxt = fmtGeoSlot(Number(s.lonDeg)) || s.lonDeg + '°E'
     satSearch.msg = s.inclined
-      ? `已加入「${s.name}」（${slotTxt}）—— 该星星下点纬度 ${s.latDeg}°，有倾角残余，按赤道面圆轨道近似算 C/ASI 会有偏差`
-      : `已加入「${s.name}」（${slotTxt}）—— 请补它的下行 EIRP 密度`
+      ? `已加入「${s.name}」（${slotTxt}）—— 该星星下点纬度 ${s.latDeg}°，有倾角残余，按赤道面圆轨道近似计算 C/ASI 会有偏差`
+      : `已添加「${s.name}」（${slotTxt}），下行 EIRP 密度未填写。`
   }
 
   // NGSO 星座组 + 各组的实参统计（选了真实星座就不必再填根数，这些数由星历直接给出）
@@ -905,7 +928,7 @@ export function useInterference() {
       if (r && r.ok) {
         if (r.stats) groupStats.value = { ...groupStats.value, [key]: r.stats }
         msg.value = `星座「${groupLabel(key)}」已载入 ${r.count} 颗（来源：${r.source || '缓存'}）`
-          + (r.missing ? ` —— 另有 ${r.missing} 颗在编目与自定义星历里都找不到，已跳过` : '')
+          + (r.missing ? ` —— 另有 ${r.missing} 颗在编目与自定义星历中均未找到，已跳过` : '')
       } else msg.value = '载入失败：' + ((r && r.error) || '未知')
     } catch (e) {
       // 没有这个 catch 的时候，IPC 一抛就没人接，界面永远停在「载入星座…」——错在哪看不出来
@@ -923,18 +946,28 @@ export function useInterference() {
       if (!e || (e.key !== SAT_GROUPS_KEY && e.key !== CUSTOM_CONSTS_KEY)) return
       loadNgsoGroups()
     })
-    window.addEventListener('focus', () => { loadNgsoGroups(); loadGrdTree() })   // GRD 树顺带重读：实时星位跟上主窗口时间轴（同链路预算窗口）
+    // GRD 树顺带重读：实时星位跟上主窗口时间轴（同链路预算窗口）；卫星库也重读 —— 开窗时库还空、之后才在链路预算里
+    // 建了卫星条目的，切回来「从卫星库导入」就出现（从前只在开窗时读一次）
+    window.addEventListener('focus', () => { loadNgsoGroups(); loadGrdTree(); loadLibraries() })
   }
 
   // ---------------------------------------------------------------------------
   // 干扰源表格增删 + 从卫星库带入
   // ---------------------------------------------------------------------------
-  function addSource() { asi.sources.push(blankSource({ name: `邻星 ${asi.sources.length + 1}` })) }
+  // 增行：at 给了就插在该下标处（输入网格的「插入行」），否则追加到表尾；返回新行对象（粘贴续写用）
+  // ★ _id 在表内必须唯一（网格按它定位行）：序号每次开窗从 1 起，而配置里读回的行带着上次的 is3 / p2 / ng4，撞号就顺延
+  const putAt = (arr, row, at) => {
+    const pre = String(row._id).replace(/\d+$/, '')
+    while (arr.some((x) => x._id === row._id)) row._id = pre + (_srcSeq++)
+    if (Number.isInteger(at) && at >= 0 && at < arr.length) arr.splice(at, 0, row); else arr.push(row)
+    return arr.find((x) => x._id === row._id)   // 取回 reactive 代理（直接改 row 不触发更新）
+  }
+  function addSource(at) { return putAt(asi.sources, blankSource({ name: `邻星 ${asi.sources.length + 1}` }), at) }
   function removeSource(id) { const i = asi.sources.findIndex((s) => s._id === id); if (i >= 0) asi.sources.splice(i, 1) }
   function addFromLibrary(entry) {
     if (!entry) return
     const f = entry.form || {}
-    asi.sources.push(blankSource({
+    putAt(asi.sources, blankSource({
       name: entry.name || '库条目',
       lonDeg: f.orbitPosition != null && f.orbitPosition !== '' ? f.orbitPosition : '',
       polarization: f.downlinkPolarization || '',
@@ -942,19 +975,19 @@ export function useInterference() {
     }))
     msg.value = `已从卫星库导入「${entry.name}」；EIRP 密度需另行填写（库中存放的是 SFD 与转发器参数，不含邻网谱密度）`
   }
-  function addCciPoint() { cci.points.push({ _id: 'p' + (_srcSeq++), name: `点${cci.points.length + 1}`, lon: '', lat: '' }) }
+  function addCciPoint(at) { return putAt(cci.points, { _id: 'p' + (_srcSeq++), name: `点${cci.points.length + 1}`, lon: '', lat: '' }, at) }
   function removeCciPoint(id) { const i = cci.points.findIndex((p) => p._id === id); if (i >= 0) cci.points.splice(i, 1) }
-  function addNgsoGroup() {
-    ngso.interferers.push({ _id: 'ng' + (_srcSeq++), enabled: true, source: 'group', group: '', limit: '', name: `干扰星座 ${ngso.interferers.length + 1}`, altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false, group: '' })
+  function addNgsoGroup(at) {
+    return putAt(ngso.interferers, { _id: 'ng' + (_srcSeq++), enabled: true, source: 'group', group: '', limit: '', name: `干扰星座 ${ngso.interferers.length + 1}`, altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false, group: '' }, at)
   }
   function removeNgsoGroup(id) { const i = ngso.interferers.findIndex((g) => g._id === id); if (i >= 0) ngso.interferers.splice(i, 1) }
 
   // ---------------------------------------------------------------------------
   // 持久化（面板态一键存取，仿 useVisibility）
   // ---------------------------------------------------------------------------
-  function persist() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify({
+  // 面板态 = 配置内容（窗口的配置列表与自动保存直接拿它存取；localStorage 那份是「上次工作区」的镜像）
+  function snapshot() {
+    return JSON.parse(JSON.stringify({
         mode: mode.value,
         site: { ...site }, carrier: { ...carrier },
         asi: { applyPolarization: asi.applyPolarization, uplinkMode: asi.uplinkMode, sources: asi.sources, coordLonDeg: asi.coordLonDeg, coordGoverT: asi.coordGoverT, coordRxGain: asi.coordRxGain },
@@ -965,13 +998,18 @@ export function useInterference() {
         },
         cci: { antennaKey: cci.antennaKey, colors: cci.colors, floorDb: cci.floorDb, points: cci.points, coloringOverride: cci.coloringOverride, bounds: cci.bounds, fieldStep: cci.fieldStep },
         ngso: { v: NGSO_STATE_V, minElevDeg: ngso.minElevDeg, horizonH: ngso.horizonH, stepSec: ngso.stepSec, patternKind: ngso.patternKind, applyPolarization: ngso.applyPolarization, thresholdDb: ngso.thresholdDb, inlineGuardDeg: ngso.inlineGuardDeg, satPattern: ngso.satPattern, epochs: ngso.epochs, noise: ngso.noise, criteria: ngso.criteria, rain: { on: ngso.rain.on, thresholdDb: ngso.rain.thresholdDb, applyToInterference: ngso.rain.applyToInterference }, wanted: ngso.wanted, interferers: ngso.interferers }
-      }))
-    } catch (e) { /* 配额/隐私模式 */ }
+    }))
+  }
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(snapshot())) } catch (e) { /* 配额/隐私模式 */ }
   }
   function load() {
     let d = null
     try { d = JSON.parse(localStorage.getItem(KEY) || 'null') } catch (e) { return }
-    if (!d) return
+    applySnapshot(d)
+  }
+  function applySnapshot(d) {
+    if (!d || typeof d !== 'object') return
     if (MODES.some((m) => m.key === d.mode)) mode.value = d.mode
     Object.assign(site, d.site || {})
     Object.assign(carrier, d.carrier || {})
@@ -1010,6 +1048,9 @@ export function useInterference() {
     }
   }
 
+  // 出厂面板态（读盘之前拍下）：配置列表「添加空白配置」用它，切到一份缺字段的旧配置时也先回到它再套
+  const BLANK = snapshot()
+  const blankSnapshot = () => JSON.parse(JSON.stringify(BLANK))
   watch([mode, site, carrier, asi, xpi, cci, ngso], persist, { deep: true })
 
   // 干扰几何两张图的数据：下行 = 本站接收天线方向图；上行 = 干扰站离轴 EIRP 密度 + S.524 掩模。
@@ -1097,6 +1138,6 @@ export function useInterference() {
     computeNgso, cancelNgso, estimateNgso, loadRainCdf, ngsoStartNow,
     addSource, removeSource, addFromLibrary,
     addCciPoint, removeCciPoint, addNgsoGroup, removeNgsoGroup,
-    geoData, hoveredId, setHover, load, persist, stale
+    geoData, hoveredId, setHover, load, persist, snapshot, applySnapshot, blankSnapshot, stale
   }
 }

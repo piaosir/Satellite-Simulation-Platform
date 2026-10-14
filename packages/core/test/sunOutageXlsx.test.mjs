@@ -100,9 +100,9 @@ for (const [ws, season, cn] of [[wsV, 'vernal', '春季'], [wsA, 'autumnal', '�
   ok(`② ${cn} 标题居中`, t.alignment && t.alignment.horizontal === 'center' && t.alignment.vertical === 'middle')
   ok(`② ${cn} 标题行高 34.5`, ws.getRow(1).height === 34.5, String(ws.getRow(1).height))
 
-  // ---- ③ 副标题：A2:I2 合并、16 磅粗、行高 22.5、「卫星名称:… 东经…度」----
+  // ---- ③ 副标题：A2:I2 合并、16 磅粗、行高 22.5、「卫星名称：… 东经…度」----
   const st = ws.getCell(2, 1)
-  ok(`③ ${cn} 副标题文字`, rt(st.value) === '卫星名称:ZHONGXING-6C    东经130.5度', rt(st.value))
+  ok(`③ ${cn} 副标题文字`, rt(st.value) === '卫星名称：ZHONGXING-6C    东经130.5度', rt(st.value))
   ok(`③ ${cn} 副标题 A2:I2 合并`, (ws.model.merges || []).map(String).includes('A2:I2'))
   ok(`③ ${cn} 副标题 16 磅粗`, st.font && st.font.size === 16 && st.font.bold === true && st.font.name === '华文楷体')
   ok(`③ ${cn} 副标题行高 22.5`, ws.getRow(2).height === 22.5, String(ws.getRow(2).height))
@@ -280,6 +280,27 @@ const serialOf = (v) => (v instanceof Date ? (v.getTime() - XL_EPOCH) / 86400000
   ok('ICS 文本可生成且含 VEVENT', /BEGIN:VEVENT/.test(text) && text.split('BEGIN:VEVENT').length - 1 === ev.length)
   ok('ICS 文本里没有「强度」', !/强度/.test(text))
   ok('无事件时事件数为 0', sunOutageIcsEvents({ ...wp, stations: [] }).length === 0)
+  ok('ICS 中文描述用全角冒号', ev.every((e) => /^卫星：/.test(e.description) && !/[一-龥]: /.test(e.description)))
+
+  // 英文档（payload.lang='en'，跟界面语言）：描述 / 摘要无中文字面量（站名等用户数据除外）
+  const evEn = sunOutageIcsEvents({ ...wp, lang: 'en' })
+  const strip = (x) => wp.stations.reduce((acc, st) => acc.split(st.name).join(''), x)
+  ok('ICS 英文档事件数不变', evEn.length === ev.length)
+  ok('ICS 英文档无中文字面量', evEn.every((e) => !/[一-龥]/.test(strip(e.summary + e.description + e.alarms.map((a) => a.description).join('')))), strip(evEn[0].description))
+  const bufWEn = await buildSunOutageWord({ ...wp, lang: 'en' })
+  ok('Word 英文档出得来', bufWEn && bufWEn.length > 4000)
+}
+
+// ---- 英文档 Excel：表名 / 标题 / 副标题 / 表头英文，版式不动 ----
+{
+  const bufEn = await buildSunOutageExcel({ ...payload, lang: 'en' })
+  const wbEn = new ExcelJS.Workbook()
+  await wbEn.xlsx.load(bufEn)
+  ok('英文档表名', wbEn.worksheets.map((w) => w.name).join('|') === 'Spring 2026|Autumn 2026', wbEn.worksheets.map((w) => w.name).join('|'))
+  const w0 = wbEn.worksheets[0]
+  ok('英文档副标题', rt(w0.getCell(2, 1).value) === 'Satellite: ZHONGXING-6C    130.5°E', rt(w0.getCell(2, 1).value))
+  ok('英文档表头', rt(w0.getCell(3, 1).value) === 'No.' && rt(w0.getCell(3, 9).value) === 'Duration (min)')
+  ok('英文档行高不变', w0.getRow(1).height === 34.5 && w0.getRow(3).height === 16.5)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

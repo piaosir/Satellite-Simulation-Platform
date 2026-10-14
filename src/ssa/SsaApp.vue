@@ -9,7 +9,9 @@
 // 数据与报告分家（memory 未记，口径见任务书 §8.2）：后台联网版星历到达【不重排已生成的报告】，
 // 只把功能区读数变成「报告 09:37 · 数据 10:12」，要不要按新数据重出由用户点「生成」决定 ——
 // 一份正在读的报告在眼皮底下自己换一套数字，比数据旧几分钟糟得多。
-import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { askConfirm } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
@@ -17,8 +19,14 @@ import Icon from '../components/Icon.vue'
 import LbFontCtl from '../components/LbFontCtl.vue'
 import SsaDoc from './SsaDoc.vue'
 import SsaReportDialog from './SsaReportDialog.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import { useNotice } from '../shared/useNotice.js'
+import { reportError } from '../shared/reportError.js'
 import { useSsaData, srcLabel } from './ssaData.js'
 import { useConfigTree } from '../shared/useConfigTree.js'
+import { useConfigAutosave } from '../shared/useConfigAutosave.js'
+import { useConfigVersions } from '../shared/useConfigVersions.js'
 import { stableStringify } from '../shared/configDirty.js'
 // 报告名与文件名走 ssaReport 那一份（模型里的 doc.title 也由它兜底）：两处各拼一遍必然漂移
 import { buildSsaModel, ssaReportTitle, ssaReportFileName, filterBrief } from '../shared/ssaReport.js'
@@ -35,9 +43,7 @@ const api = (typeof window !== 'undefined') ? window.api : null
 const langNow = ref(curLang())
 onLangChange(() => { langNow.value = curLang() })
 const ORBIT = 'SSA'
-// 五窗共用的写法：useConfigTree 内部那份 errText 没有导出，各窗自带一份（端到端漏了这一份，
-// 关窗守卫一旦抛错就是 ReferenceError —— 表现为「点了保存，窗口既不关也没动静」）。
-const errText = (e) => (e && e.message) || String(e)
+// 失败一律走 shared/reportError（通知条常驻 + 剥 IPC 英文前缀），不再各窗自带一份 errText。
 
 // ============ 左侧栏：配置列表（可拖宽 / 可收起）============
 const SIDE_KEY = 'ssa/sideView'
@@ -67,10 +73,11 @@ function startResize(which, e) {
   window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
 }
 
-// ============ 窗内提示（唯一出口）============
-const notice = ref('')
-let _noticeT = null
-function toast(msg) { notice.value = msg; clearTimeout(_noticeT); _noticeT = setTimeout(() => (notice.value = ''), 4000) }
+// ============ 窗内提示（唯一出口；shared/useNotice：普通 4 s · 导出带「打开 · 在文件夹中显示」· 失败常驻）============
+const N = useNotice()
+const { toast, toastFile } = N
+// 主进程保存处理器回的实际写入路径（新字段 path / paths；兼容旧的 filePath）
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
 
 // ============ 报告设置（= 配置 state）============
 // 章节 key 与次序＝报告模型的章节表（shared/ssaReport.js 的 §3 契约）。meta 不可关：
@@ -252,9 +259,10 @@ function docInfo() {
   }
 }
 
+// 返回 true = 按当前设置与数据生成成功（导出前的补算据此决定放不放行）
 async function generate() {
-  if (generating.value) return
-  if (!canGenerate.value) { toast(scope.value === 'groups' && !selGroups.value.length ? byLang('请先勾选卫星组', 'Select at least one satellite group') : byLang('尚无编目与星历数据', 'No catalogue or ephemeris data yet')); return }
+  if (generating.value) return false
+  if (!canGenerate.value) { toast(scope.value === 'groups' && !selGroups.value.length ? byLang('未选择卫星组。', 'Select at least one satellite group') : byLang('尚无编目与星历数据', 'No catalogue or ephemeris data yet')); return false }
   generating.value = true
   try {
     // 三步各自先把读数画出来再干活（双 rAF 等一帧真正绘出）：解析 6.6 万行编目约 300 ms，
@@ -267,6 +275,10 @@ async function generate() {
     const asOf = new Date().toISOString()
     const doc = docInfo()
     doc.generatedAt = asOf
+    // 建模那一刻的设置签名与文件名口径（与下面读设置的是同一拍）：之后再改设置，「输入已变」按它比，
+    // 导出的文件名也按它出
+    const sig = curSig.value
+    const snap = { scope: scope.value, groups: scopeGroups.value.map((g) => ({ ...g })), brief: brief.value, lang: langNow.value }
     const m = buildSsaModel({
       satcat: rows,
       gp: data.gpRecords(),
@@ -287,11 +299,15 @@ async function generate() {
     await raf()
     model.value = m
     modelAt.value = asOf
+    modelSig.value = sig
+    genSnap.value = snap
     await nextTick()
     curSec.value = (m.sections && m.sections[0] && m.sections[0].key) || ''
     scrollFlowTop()
+    return true
   } catch (e) {
-    toast(byLang('生成失败：', 'Generation failed: ') + errText(e))
+    reportError(byLang('生成失败', 'Generation failed'), e)
+    return false
   } finally {
     generating.value = false
     genStep.value = ''
@@ -301,6 +317,25 @@ async function generate() {
 // 报告与数据谁新：联网版数据在报告之后落定 → 功能区右缘出一行读数（报告不自动重排，见文件头注）
 const modelAt = ref('')
 const dataNewer = computed(() => !!(model.value && modelAt.value && data.dataAt.value && data.dataAt.value > modelAt.value))
+
+// 报告与设置是否还对得上（D2）：签名 = 决定报告内容的全部设置 —— 报告主体、所选卫星组（组名与成员）、
+// 章节与参数、四道筛选（optsNow 全收）、报告名（模型的 doc.title）、语言、显示时区（报告里的时刻按它印）。
+// 封面元信息 / 台标 / 字体不在其中：它们由导出对话框在导出那一刻覆盖进模型，与生成无关。
+// 生成时记下签名；之后签名一变就亮「输入已变」，导出前自动重新生成（数据更新同此口径，见 dataNewer）。
+const curSig = computed(() => stableStringify({
+  scope: scope.value,
+  groups: scope.value === 'groups'
+    ? selGroups.value.map((g) => ({ id: g.id, name: g.name, sats: (g.sats || []).map((x) => String(x.id) + '|' + (x.name || '')) }))
+    : [],
+  opts: optsNow(),
+  name: (reportName.value || '').trim(),
+  lang: langNow.value,
+  tz: tzMode.value
+}))
+const modelSig = ref('')
+const inputStale = computed(() => !!(model.value && modelSig.value && curSig.value !== modelSig.value))
+// 文件名口径的快照（生成那一刻的范围 / 组 / 筛选摘要 / 语言）：导出的文件名与文档内容是同一次生成
+const genSnap = shallowRef(null)
 
 // ============ 目录导轨（scrollspy）============
 // 章节元素由 SsaDoc 渲染，本组件只按 data-sec 找它们 —— 与链路预算分节（LbSection 渲染
@@ -345,13 +380,23 @@ function onFlowScroll() {
 // 对话框是「自带引擎」的那一类（元信息 / 台标 / 字体 / 含图 → 取图 → report:exportReport 只出 .docx）：
 // 本窗口只负责把模型与缺省文件名交过去，再把它的结果播成一句提示。
 const reportOpen = ref(false)
-function openReportDialog() {
-  if (!model.value) { toast(byLang('请先生成报告', 'Generate the report first')); return }
+// 导出讲【当前设置与数据】（口径同日凌 / 雨衰 / 链路预算的导出前补算）：还没生成、设置已变或有新数据，
+// 先按当前设置重新生成一遍；生不成就不导，原因 generate 已就地报出。
+async function openReportDialog() {
+  if (generating.value) return
+  if (!model.value || inputStale.value || dataNewer.value) {
+    if (!(await generate()) || !model.value) return
+  }
   reportOpen.value = true
 }
-const reportFile = computed(() => ssaReportFileName(scope.value, scopeGroups.value, (model.value && model.value.data && model.value.data.asOf) || '', langNow.value, brief.value))
-function onReportDone(r) { toast(byLang('已生成：', 'Saved: ') + (((r && r.files) || []).join('　') || '')) }
-function onReportError(msg) { toast(byLang('导出失败：', 'Export failed: ') + (msg || '')) }
+const reportFile = computed(() => {
+  const g = genSnap.value
+  const asOf = (model.value && model.value.data && model.value.data.asOf) || ''
+  return g ? ssaReportFileName(g.scope, g.groups, asOf, g.lang, g.brief)
+    : ssaReportFileName(scope.value, scopeGroups.value, asOf, langNow.value, brief.value)
+})
+function onReportDone(r) { toastFile(byLang('已生成：', 'Saved: ') + (((r && r.files) || []).join('　') || ''), outPath(r)) }
+function onReportError(msg) { reportError(byLang('导出失败', 'Export failed'), msg || '') }
 
 // ============ 卫星组多选（功能区下拉）============
 const groupPick = reactive({ open: false, x: 0, y: 0 })
@@ -392,7 +437,7 @@ function toggleGroup(id) {
 const groupBtnText = computed(() => `${selGroups.value.length}/${data.groups.value.length}`)
 
 // ============ 配置持久化（configs.ssa.json，ns='ssa'）============
-const STATE_KEY = 'ssa/last'
+const STATE_KEY = 'ssa/last'   // 只记「上次打开的是哪一份」；v1.5.1 及以前存的是整份设置（见 onMounted 的迁移）
 function serializeState() {
   const o = optsNow()
   return {
@@ -434,6 +479,8 @@ function applyState(st) {
   // 报告不入库：换一份配置就把屏上那份撤掉，免得设置与文档对不上（重新点「生成」即可，秒级）
   model.value = null
   modelAt.value = ''
+  modelSig.value = ''
+  genSnap.value = null
   curSec.value = ''
 }
 function blankState() {
@@ -444,68 +491,49 @@ function blankState() {
   }
 }
 
-// —— 脏态 ——
-function fingerprint() { return stableStringify(serializeState()) }
-let activeBaseline = ''
-const dirtyFlag = ref(false)
-function setBaseline() { activeBaseline = fingerprint(); dirtyFlag.value = false }
-function isDirty() { return !!cfgTree.activeId.value && fingerprint() !== activeBaseline }
-
-// —— 工作状态（与配置无关的「上次看到的样子」）——
-let _stateT = null
-function flushSaveState() {
-  clearTimeout(_stateT)
-  try { localStorage.setItem(STATE_KEY, JSON.stringify({ ...serializeState(), activeId: cfgTree.activeId.value })) } catch (e) { /* ignore */ }
-}
-function scheduleSaveState() {
-  clearTimeout(_stateT)
-  _stateT = setTimeout(() => { flushSaveState(); dirtyFlag.value = isDirty() }, 600)
-}
-// ★ filt 必须在这张表里：serializeState 已经把四道筛选写进指纹，漏了它就会「改了筛选、
-//   保存按钮没脏点、ssa/last 也不落盘」—— 指纹与触发源必须同进同出。
-watch([scope, groupIds, sections, reportName, d, filt], scheduleSaveState, { deep: true })
-
-// —— 三个对话框（保存为新配置 / 离开已改动配置 / 确认）——
-const confirmDlg = reactive({ open: false, msg: '' })
-let _confirmResolve = null
-function askConfirm(msg) { confirmDlg.msg = msg; confirmDlg.open = true; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmDlg.open = false; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-const leaveDlg = reactive({ open: false, name: '' })
-let _leaveResolve = null
-function leaveAnswer(ans) { leaveDlg.open = false; const r = _leaveResolve; _leaveResolve = null; if (r) r(ans) }
+// —— 配置自动保存（与链路预算四窗同口径，2026-10-15 起取消「保存 / 另存」）——
+// 工作区恒对应配置列表里的一份配置，改动约 1 s 后写回；后悔药是历史版本。
+function fingerprintOf(st) { return stableStringify(st) }
+function setBaseline() { autosave.attach() }
 async function guardedLeave() {
-  if (!isDirty()) return true
-  const ans = await new Promise((res) => { leaveDlg.name = cfgTree.activeName(); leaveDlg.open = true; _leaveResolve = res })
-  if (ans === 'cancel') return false
-  // 选了「保存」而没存进去就不放行：改动还在窗口里，用户看到失败提示后可重试或改选「不保存」
-  if (ans === 'save') return await updateConfig()
-  return true
+  if (await autosave.flush()) return true
+  return await askConfirm(`「${cfgTree.activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要离开？`)
 }
-
-// 新配置的出厂名 = 报告名 + 存盘时刻（「空间态势报告 09-16 23:40」/「中国 载荷 空间态势报告 09-16 23:40」）。
-// 不走 lbAutoName.newCfgName() 的序号名（配置 1 / 配置 2…）：这里一份配置就是「一份报告的出法」，
-// 范围与筛选一变报告就换了个东西，序号名在列表里全长一个样，隔天自己都认不出来。
-// 时刻过显示时区档（与功能区读数同一套），只到分 —— 同一分钟里连存两份由配置树自己去重。
-function defaultCfgName() {
-  const t = tzParts(Date.now(), tzMode.value)
-  const stamp = `${p2(t.mo)}-${p2(t.d)} ${p2(t.h)}:${p2(t.mi)}`
-  const title = (reportName.value || '').trim() || autoTitle.value
-  return `${title} ${stamp}`
-}
+// 自动名（名字随内容的配置用）= 报告名：范围与筛选一变报告就换了个东西，名字跟着走
+function defaultCfgName() { return (reportName.value || '').trim() || autoTitle.value }
+function cfgLabelOf(st) { return (st && String(st.reportName || '').trim()) || '' }
 
 const cfgTree = useConfigTree({
   ns: 'ssa', orbitType: ORBIT, api, storageKey: 'ssa/cfgExpanded',
-  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName,
+  autosave: true, onNameAuto: (id) => { if (id === activeId.value) autosave.flush() }
 })
 const {
-  configs, activeId, focusId, expandedFolders, editing, cfgClip, cfgDlg, ctxMenu,
-  loadConfigs, selectConfig,
-  openSaveDlg, confirmCfgDlg, updateConfig, saveCurrent,
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, ctxMenu,
+  loadConfigs, uniqueCfgName, selectConfig, ensureActive, duplicateItem,
   toggleFolder, expandAll, collapseAll,
   addFolder, addBlankConfig, onDeleteItem, onMove, moveToRoot,
   startRename, commitRename, cancelRename,
   copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, onCfgKey
 } = cfgTree
+const autosave = useConfigAutosave({
+  ns: 'ssa', api, activeId, itemById: cfgTree.itemById, serialize: serializeState, fingerprint: fingerprintOf,
+  autoName: defaultCfgName, uniqueName: uniqueCfgName, summarize: (st) => ({ label: cfgLabelOf(st) }), toast
+})
+const { error: saveError } = autosave
+let stopAutosaveListen = null
+onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.dispose() })
+const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
+  ns: 'ssa', api, tree: cfgTree, autosave, applyState, summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
+})
+// ★ filt 必须在这张表里：serializeState 已经把四道筛选写进指纹，漏了它就会「改了筛选、不落盘」—— 指纹与触发源同进同出
+watch([scope, groupIds, sections, reportName, d, filt], () => autosave.touch(), { deep: true })
+watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* 配额满等忽略 */ } })
+// Ctrl+Enter = 生成（全部计算窗同一个键）
+function onGlobalKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.isComposing && !generating.value && canGenerate.value) { e.preventDefault(); generate() }
+}
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
 
 const appVersion = ref('')
 const deviceId = ref('')
@@ -513,27 +541,29 @@ const deviceId = ref('')
 onMounted(async () => {
   try { appVersion.value = (api && await api.app.version()) || '' } catch (e) { appVersion.value = '' }
   await loadConfigs()
-  try {
-    const raw = localStorage.getItem(STATE_KEY)
-    if (raw) {
-      const st = JSON.parse(raw)
-      const c = st.activeId && configs.value.find((x) => x.id === st.activeId)
-      if (c) { activeId.value = c.id; applyState(c.state); setBaseline(); applyState(st) }
-      else applyState(st)                                  // 无归属配置：仍恢复上次的设置，不聚焦任何配置
-      dirtyFlag.value = isDirty()
-    }
-  } catch (e) { /* ignore */ }
+  // 打开上次那份配置；它没了就开树上第一份，一份都没有就新建一份空白配置（工作区恒对应一份配置）。
+  // 迁移：v1.5.1 及以前「上次会话」存的是整份设置——对应的配置还在就接上那份改动；不属于任何配置、
+  // 又不是出厂空白的存成一份新配置，免得升级后丢了。
+  let last = null
+  try { last = JSON.parse(localStorage.getItem(STATE_KEY) || 'null') } catch (e) { last = null }
+  const hasScene = !!(last && typeof last === 'object' && Object.keys(last).some((k) => k !== 'activeId'))
+  if (hasScene && !last.activeId) {
+    const { activeId: _a, ...st } = last
+    if (fingerprintOf(st) !== fingerprintOf(blankState())) await cfgTree.createAndOpen({ state: st, nameAuto: true })
+  }
+  await ensureActive(last && last.activeId)
+  if (hasScene && last.activeId && last.activeId === activeId.value) { const { activeId: _a, ...st } = last; applyState(st); autosave.touch() }
+  try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* 配额满等忽略 */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   data.load()                                              // 缓存先到、联网在后：一律不 await
-  // 关窗序：守卫（可保存 / 取消）→ 冲刷工作状态 → 放行关闭
+  // 关窗：把挂起的写盘冲掉即放行；只有写不进磁盘时才问一句
   api?.ssa?.onCloseRequested?.(async () => {
-    let go = false
-    try { go = await guardedLeave() } catch (e) { toast(byLang('关闭前保存失败：', 'Save before close failed: ') + errText(e)); return }
-    if (!go) return
-    flushSaveState(); api.ssa.confirmClose()
+    const ok = await autosave.flush()
+    if (!ok && !(await askConfirm(`「${cfgTree.activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要关闭窗口？`))) return
+    api.ssa.confirmClose()
   })
-  // 本窗口自己刷新时（开发态）也把工作状态落下
-  window.addEventListener('beforeunload', flushSaveState)
+  stopAutosaveListen = autosave.listen()   // 窗口失焦 / 页面隐藏时立即写盘
+  window.addEventListener('keydown', onGlobalKey)
   // 回到本窗口时重读一次卫星组：3D 页在本窗口没有焦点时改的组，storage 事件已经接了；
   // 同一进程内两窗互不触发 storage，故补这一道。
   window.addEventListener('focus', data.reloadGroups)
@@ -545,10 +575,11 @@ onMounted(async () => {
     <ActivationLock />
     <!-- 配置右键菜单（五窗共用一份，条目与快捷键一致） -->
     <ConfigTreeMenu
-      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api"
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!api" autosave
       @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
-      @save-new="openSaveDlg" @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
       @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+      @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
     />
     <div class="lb-body">
       <!-- ① 左：配置列表 -->
@@ -580,30 +611,34 @@ onMounted(async () => {
         <div class="lbr">
           <div class="lbr-g">
             <div class="lbr-items">
-              <button class="lbr-big primary" :disabled="generating || !canGenerate" :title="canGenerate ? '按当前数据与报告设置生成电子报告' : '尚无编目与星历数据'" @click="generate">
+              <button class="lbr-big primary" :disabled="generating || !canGenerate" :title="canGenerate ? '按当前数据与报告设置生成电子报告（Ctrl+Enter）' : '尚无编目与星历数据'" @click="generate">
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ generating ? '生成中…' : '生成' }}
               </button>
-              <button class="lbr-big" :disabled="!model" :title="model ? '导出 Word（封面 · 目录 · 正文 · 附录）' : '尚无报告'" @click="openReportDialog">
-                <Icon name="file-down" :size="16" />导出 Word
-              </button>
-              <button class="lbr-big" :disabled="!api" :title="activeId ? '保存修改到当前配置' : '保存为新配置'" @click="saveCurrent">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><rect x="5" y="9" width="6" height="4.5" /></svg>
-                保存<span v-if="dirtyFlag" class="lbx-dirty" title="有未保存的修改"></span>
-              </button>
-              <button class="lbr-big" :disabled="!api" title="另存为新配置" @click="openSaveDlg">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M2.5 2.5h8l3 3v8h-11z" /><path d="M5 2.5v4h5v-4" /><path d="M8 8.5v4.5" /><path d="M5.8 10.7 8 8.5l2.2 2.2" /></svg>
-                另存
-              </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
             </div>
-            <div class="lbr-cap">报告</div>
+            <div class="lbr-cap">计算</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :disabled="generating || (!model && !canGenerate)" :title="(model || canGenerate) ? '导出 Word（封面 · 目录 · 正文 · 附录）' : '尚无报告'" @click="openReportDialog">
+                <Icon name="file-export" :size="16" />Word
+              </button>
+            </div>
+            <div class="lbr-cap">导出</div>
           </div>
 
           <div class="lbr-g">
             <div class="lbr-items">
               <button class="lbr-big" :class="{ spin: data.busy.value }" :disabled="!api || data.busy.value" title="重新联网取编目与星历（清熔断、绕过「今天已试过直连」的记账）" @click="data.refresh">
-                <svg viewBox="0 0 16 16" class="lbr-svg"><path d="M13 8a5 5 0 1 1-1.46-3.54" /><path d="M13 2.6v2.6h-2.6" /></svg>
+                <Icon name="refresh-cw" :size="16" />
                 刷新
               </button>
               <div class="ssa-reads">
@@ -625,20 +660,12 @@ onMounted(async () => {
 
           <LbFontCtl />
 
-          <div class="lbr-status">
-            <span v-if="notice" class="lb-note">{{ notice }}</span>
-            <span v-if="data.err.value" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span data-i18n-skip>{{ data.err.value }}</span></span>
-            <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
-            <span v-if="dataNewer" class="lbx-stale" title="联网版数据已到，报告仍是按旧数据排的；点「生成」按新数据重出">
-              <span>报告</span><span data-i18n-skip>{{ fmtHm(modelAt) }}</span><span data-i18n-skip>·</span><span>数据</span><span data-i18n-skip>{{ fmtHm(data.dataAt.value) }}</span>
-            </span>
-          </div>
         </div>
 
         <div class="ssa-main">
           <!-- 目录导轨：点击滚动、滚动高亮（章节锚点由 SsaDoc 打在 data-sec 上） -->
           <nav v-if="toc.length" class="ssa-toc">
-            <button v-for="it in toc" :key="it.key" class="ssa-toc-i" :class="{ on: curSec === it.key }" :title="it.title" @click="gotoSec(it.key)">
+            <button v-for="it in toc" :key="it.key" class="ssa-toc-i" :class="{ on: curSec === it.key }" :aria-pressed="(curSec === it.key) ? 'true' : 'false'" :title="it.title" @click="gotoSec(it.key)">
               <span class="ssa-toc-no" data-i18n-skip>{{ it.no }}</span>
               <span class="ssa-toc-t" data-i18n-skip>{{ it.title }}</span>
             </button>
@@ -655,7 +682,7 @@ onMounted(async () => {
       <aside class="lb-col lb-side lb-insp" :class="{ resizing: inspResizing }" :style="{ width: inspWidth + 'px' }">
         <div class="lb-col-hd"><span class="lb-cfg-hd-t">报告设置</span></div>
         <div class="lb-col-bd">
-          <div class="srow"><label title="留空＝按报告主体与筛选自动命名；导出对话框里还可再改这一次的名字">报告名称</label>
+          <div class="srow"><label title="留空＝按报告主体与筛选自动命名；导出对话框中还可修改本次的名称">报告名称</label>
             <input class="ci" type="text" v-model="reportName" :placeholder="autoTitle" />
           </div>
 
@@ -663,31 +690,31 @@ onMounted(async () => {
             <span>统计范围</span>
             <button v-if="anyFilter" class="lb-mini ssa-cap-btn" title="四道筛选全部清空，回到整份编目；报告主体与卫星组不动" @click="clearFilters">清空筛选</button>
           </div>
-          <div class="srow"><label title="全量编目＝整份编目一份通用统计；卫星组＝只讲勾选的那几个组，每组一章">报告主体</label>
+          <div class="srow"><label title="全量编目＝整份编目一份通用统计；卫星组＝仅包含勾选的卫星组，每组一章">报告主体</label>
             <div class="lbu-seg">
-              <button :class="{ on: scope === 'all' }" title="整份编目：8 章通用统计" @click="scope = 'all'">全量编目</button>
-              <button :class="{ on: scope === 'groups' }" title="只讲勾选的那几个卫星组，一组一章" @click="scope = 'groups'">卫星组</button>
+              <button :class="{ on: scope === 'all' }" :aria-pressed="(scope === 'all') ? 'true' : 'false'" title="整份编目：8 章通用统计" @click="scope = 'all'">全量编目</button>
+              <button :class="{ on: scope === 'groups' }" :aria-pressed="(scope === 'groups') ? 'true' : 'false'" title="仅包含勾选的卫星组，每组一章" @click="scope = 'groups'">卫星组</button>
             </div>
           </div>
-          <div v-if="scope === 'groups' && data.groups.value.length" class="srow ssa-pickrow"><label title="卫星组由「星座 3D」页的组管理器维护，本窗口只读">卫星组</label>
-            <button class="lb-mini ssa-pickbtn" :class="{ on: groupIds.length }" @click="openGroupPick">
-              <span data-i18n-skip>{{ groupBtnText }}</span><Icon name="chevron-down" :size="11" />
+          <div v-if="scope === 'groups' && data.groups.value.length" class="srow ssa-pickrow"><label title="卫星组由主窗口「星座」视图的组管理器维护，本窗口只读">卫星组</label>
+            <button class="lb-mini ssa-pickbtn" :class="{ on: groupIds.length }" :aria-pressed="groupIds.length ? 'true' : 'false'" @click="openGroupPick">
+              <span data-i18n-skip>{{ groupBtnText }}</span><Icon name="chevron-down" :size="12" />
             </button>
           </div>
-          <div v-else-if="scope === 'groups'" class="lb-placeholder">还没有卫星组。</div>
+          <div v-else-if="scope === 'groups'" class="lb-placeholder">暂无卫星组。</div>
           <div class="srow ssa-pickrow"><label title="按卫星名称前缀近似归类（STARLINK / ONEWEB / …），与 CelesTrak 的 GROUP 名单不完全等价">典型星座</label>
-            <button class="lb-mini ssa-pickbtn" :class="{ on: filt.constellations.length }" data-i18n-skip @click="openPick('constellations', $event)">
+            <button class="lb-mini ssa-pickbtn" :class="{ on: filt.constellations.length }" :aria-pressed="filt.constellations.length ? 'true' : 'false'" data-i18n-skip @click="openPick('constellations', $event)">
               {{ filtBtnText('constellations') }}
             </button>
           </div>
           <div class="srow ssa-pickrow"><label title="SATCAT 的 OWNER 代码；与 ITU 申报国、外空物体登记国都不是一回事">所有者</label>
-            <button class="lb-mini ssa-pickbtn" :class="{ on: filt.owners.length }" data-i18n-skip @click="openPick('owners', $event)">
+            <button class="lb-mini ssa-pickbtn" :class="{ on: filt.owners.length }" :aria-pressed="filt.owners.length ? 'true' : 'false'" data-i18n-skip @click="openPick('owners', $event)">
               {{ filtBtnText('owners') }}
             </button>
           </div>
           <div class="srow ssa-chips"><label title="按 classifyOrbit 的结果比对；勾了任一档之后，根数为空、判不出区制的对象一律落选">轨道区制</label>
             <div class="ssa-chipbox">
-              <button class="ssa-chip any" :class="{ on: !filt.regimes.length }" data-i18n-skip @click="filt.regimes.splice(0)">{{ anyText }}</button>
+              <button class="ssa-chip any" :class="{ on: !filt.regimes.length }" :aria-pressed="(!filt.regimes.length) ? 'true' : 'false'" data-i18n-skip @click="filt.regimes.splice(0)">{{ anyText }}</button>
               <label v-for="r in regimeOptions" :key="r.key" class="ssa-chip" :class="{ on: filterOn('regimes', r.key) }">
                 <input type="checkbox" :checked="filterOn('regimes', r.key)" @change="toggleFilter('regimes', r.key)" />
                 <span>{{ r.label }}</span>
@@ -696,7 +723,7 @@ onMounted(async () => {
           </div>
           <div class="srow ssa-chips"><label title="SATCAT 的 OBJECT_TYPE 字段">对象类型</label>
             <div class="ssa-chipbox">
-              <button class="ssa-chip any" :class="{ on: !filt.types.length }" data-i18n-skip @click="filt.types.splice(0)">{{ anyText }}</button>
+              <button class="ssa-chip any" :class="{ on: !filt.types.length }" :aria-pressed="(!filt.types.length) ? 'true' : 'false'" data-i18n-skip @click="filt.types.splice(0)">{{ anyText }}</button>
               <label v-for="t in typeOptions" :key="t.key" class="ssa-chip" :class="{ on: filterOn('types', t.key) }">
                 <input type="checkbox" :checked="filterOn('types', t.key)" @change="toggleFilter('types', t.key)" />
                 <span>{{ t.label }}</span>
@@ -728,7 +755,7 @@ onMounted(async () => {
             <input class="ci" type="number" min="10" max="5000" step="10" v-model="d.rowCap" @change="commitNum('rowCap', { min: 10, max: 5000, def: 500, int: true })" />
             <span class="u">行</span>
           </div>
-          <div class="srow"><label title="GEO 轨道弧的重点区间：报告第 7 章按这一段单列一张卫星清单。输入按东经为正、西经为负，右侧角标即当前值落在东经还是西经">GEO 弧段</label>
+          <div class="srow"><label title="GEO 轨道弧的重点区间：报告第 7 章按该区段单列一张卫星清单。输入按东经为正、西经为负，右侧角标即当前值落在东经还是西经">GEO 弧段</label>
             <input class="ci" type="text" inputmode="decimal" v-model="d.arcLo" @change="commitArc" />
             <span class="u">{{ lonTag(d.arcLo) }}</span>
             <input class="ci" type="text" inputmode="decimal" v-model="d.arcHi" @change="commitArc" />
@@ -740,9 +767,9 @@ onMounted(async () => {
     </div>
 
     <!-- 卫星组多选下拉 -->
-    <div v-if="groupPick.open" class="lb-ctx-mask" @click="groupPick.open = false" @contextmenu.prevent="groupPick.open = false">
-      <div class="lb-ctx ssa-pick" :style="{ left: groupPick.x + 'px', top: groupPick.y + 'px' }" @click.stop>
-        <div v-if="!data.groups.value.length" class="lb-placeholder">还没有卫星组。</div>
+    <div v-if="groupPick.open" class="lb-ctx-mask menu-mask" @click="groupPick.open = false" @contextmenu.prevent="groupPick.open = false">
+      <div class="lb-ctx ssa-pick menu" :style="{ left: groupPick.x + 'px', top: groupPick.y + 'px' }" @click.stop>
+        <div v-if="!data.groups.value.length" class="lb-placeholder">暂无卫星组。</div>
         <label v-for="g in data.groups.value" :key="g.id" class="ssa-chk">
           <input type="checkbox" :checked="groupIds.indexOf(g.id) > -1" @change="toggleGroup(g.id)" />
           <span class="ssa-chk-t" :title="g.name" data-i18n-skip>{{ g.name }}</span>
@@ -752,10 +779,10 @@ onMounted(async () => {
     </div>
 
     <!-- 典型星座 / 所有者 多选浮层（所有者有 136 个代码，带即打即筛的搜索框）-->
-    <div v-if="pick.open" class="lb-ctx-mask" @click="pick.open = false" @contextmenu.prevent="pick.open = false">
-      <div class="lb-ctx ssa-pick" :style="{ left: pick.x + 'px', top: pick.y + 'px' }" @click.stop>
-        <input v-if="pick.dim === 'owners'" ref="pickKwEl" class="ci ssa-pickkw" type="text" v-model="pick.kw" placeholder="代码或名称" />
-        <div v-if="!pickList.length" class="lb-placeholder">没有匹配项。</div>
+    <div v-if="pick.open" class="lb-ctx-mask menu-mask" @click="pick.open = false" @contextmenu.prevent="pick.open = false">
+      <div class="lb-ctx ssa-pick menu" :style="{ left: pick.x + 'px', top: pick.y + 'px' }" @click.stop>
+        <input v-if="pick.dim === 'owners'" ref="pickKwEl" class="ci ssa-pickkw search-field" type="text" v-model="pick.kw" placeholder="代码或名称" />
+        <div v-if="!pickList.length" class="lb-placeholder">无匹配项。</div>
         <label v-for="it in pickList" :key="it.key" class="ssa-chk">
           <input type="checkbox" :checked="filterOn(pick.dim, it.key)" @change="toggleFilter(pick.dim, it.key)" />
           <span class="ssa-chk-t" :title="it.label">{{ it.label }}</span>
@@ -763,109 +790,43 @@ onMounted(async () => {
       </div>
     </div>
 
+    <WinStatusBar :n="N" :busy="generating ? '生成中…' : ''" :stale="inputStale" stale-title="报告设置已被修改，文档对应修改前的设置">
+      <span v-if="data.err.value" class="lb-hint"><Icon name="alert-triangle" :size="12" /> <span data-i18n-skip>{{ data.err.value }}</span></span>
+      <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
+      <span v-if="dataNewer" class="ssa-newer" title="联网版数据已到，报告仍是按旧数据排的；点「生成」按新数据重出">
+        <span>报告</span><span data-i18n-skip>{{ fmtHm(modelAt) }}</span><span data-i18n-skip>·</span><span>数据</span><span data-i18n-skip>{{ fmtHm(data.dataAt.value) }}</span>
+      </span>
+    </WinStatusBar>
+
     <SsaReportDialog
       :open="reportOpen" :model="model" :lang="langNow" store-key="ssa"
       :default-name="reportFile" :busy="generating"
       @close="reportOpen = false" @done="onReportDone" @error="onReportError"
     />
 
-    <div v-if="cfgDlg.open" class="lb-mask" @click="cfgDlg.open = false">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">保存为新配置</div>
-        <div class="lb-dlg-bd"><input v-model="cfgDlg.name" class="lb-input" placeholder="配置名称" @keyup.enter="confirmCfgDlg" /></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="cfgDlg.open = false">取消</button>
-          <button class="lb-mini primary" @click="confirmCfgDlg">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="leaveDlg.open" class="lb-mask" @click="leaveAnswer('cancel')">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">配置已修改</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row">「<b data-i18n-skip>{{ leaveDlg.name }}</b>」有未保存的修改，是否保存？</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="leaveAnswer('cancel')">取消</button>
-          <button class="lb-mini" @click="leaveAnswer('discard')">不保存</button>
-          <button class="lb-mini primary" @click="leaveAnswer('save')">保存</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="confirmDlg.open" class="lb-mask" @click="answerConfirm(false)">
-      <div class="lb-dlg" @click.stop>
-        <div class="lb-dlg-hd">确认</div>
-        <div class="lb-dlg-bd"><div class="lb-share-row" data-i18n-skip>{{ confirmDlg.msg }}</div></div>
-        <div class="lb-dlg-ft">
-          <button class="lb-mini" @click="answerConfirm(false)">取消</button>
-          <button class="lb-mini primary" @click="answerConfirm(true)">确定</button>
-        </div>
-      </div>
-    </div>
+    <LbVersionsDialog v-model:open="verDlg.open" ns="ssa" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
+    <ConfirmDialog />
   </div>
 </template>
 
 <style scoped>
-/* —— 工作台外壳（.lb-* 一族）——
-   这套类是各工作台窗口共用的「壳」，但它们从来是各 App 在自己的 <style scoped> 里各写一份
-   （scoped 会给选择器缀上 data-v-，别的组件根本吃不到）。少了这一层，深色主题下按钮退回浏览器
-   默认样式——UA 给浅灰实底、字色继承 .lb-shell 的近白墨色，于是「白底白字」。
-   故照 E2eLinkBudgetApp 的同名规则原样抄来（改动须与另四窗同步）。 */
-.lb-shell {
-  display: flex; flex-direction: column; height: 100vh;
-  background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  --ok: #4a7a62; --warn: #8a7038; --danger: #9c5751;
-}
-html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c08079; }
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col / .lb-side / .lb-mini / .lb-dlg…）在 styles/lbworkbench.css，此处只留本窗的变体 */
 
 /* 功能区「数据」组的刷新按钮：取数中图标旋转（按钮本体走公共 .lbr-big） */
-.lbr-big.spin .lbr-svg { animation: lb-spin .7s linear infinite; transform-origin: 50% 50%; }
-@keyframes lb-spin { to { transform: rotate(360deg); } }
-.lb-hint { color: var(--warn); font-size: var(--fs-2); display: inline-flex; align-items: center; gap: 4px; }
+.lbr-big.spin .app-icon { animation: ui-spin .7s linear infinite; transform-origin: 50% 50%; }
+/* 状态栏：报告时刻落后于数据时刻（琥珀，与「输入已变」同一色） */
+.ssa-newer { display: inline-flex; gap: 4px; color: var(--warn); }
 .lb-note { color: var(--ok); font-size: var(--fs-2); max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.lb-body { flex: 1; display: flex; min-height: 0; }
-.lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
-.lb-col:last-child { border-right: none; }
-/* 栏宽不过渡：拖宽是逐帧跟手的，过渡只会让栏宽落后指针一截 */
-.lb-side { flex: none; position: relative; }
-.lb-side.resizing { transition: none; user-select: none; }
-.lb-cfg-resizer { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 6; }
-.lb-cfg-resizer:hover, .lb-side.resizing .lb-cfg-resizer { background: var(--accent); opacity: .35; }
 /* 检查器的拖宽缝在【左】缘：它贴在窗口右沿，往右拖是收窄（见 startResize 的取负） */
 .ssa-insp-resizer { right: auto; left: 0; }
 .lb-configs .lb-col-hd { padding: 0 8px; gap: 6px; }
-/* 不写标准的滚动条宽度 / 颜色属性：Chromium 121+ 见到它就整条忽略 ::-webkit-scrollbar，滚动条退回系统粗条 */
-.lb-configs .lb-col-bd { padding: 10px 8px; }
 .lb-insp { border-right: none; border-left: 1px solid var(--border); }
 .lb-insp .lb-col-bd { padding: 10px 10px 16px; display: flex; flex-direction: column; gap: 5px; font-size: var(--fs-3); }
 .lb-insp .lbx-sla-cap { margin-top: 8px; }
-.lb-cfg-hd-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-build { flex: 1; min-width: 460px; }
 
-.lb-col-hd { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 30px; flex: none; padding: 0 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; background: var(--surface-2); border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.lb-col-bd { flex: 1; overflow: auto; padding: 12px; }
-.lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
-.lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-/* 机位色主按钮悬停（P1）：换深一档底色，字色显式写 --bg——半透明悬停会把底下的纸色透上来 */
-.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
-.lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 10px 0; }
-.lb-cfg-acts { display: flex; gap: 4px; }
-.lb-myid { flex: none; display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: var(--fs-2); color: var(--text-muted); border-top: 1px solid var(--border); background: var(--surface); white-space: nowrap; overflow: hidden; }
-.lb-myid b { font-family: var(--font-code); color: var(--text); letter-spacing: var(--ls-tight); overflow: hidden; text-overflow: ellipsis; }
 
-/* 遮罩全软件一档（--scrim），瞬时出现；框体 160ms 入场，出场瞬时 */
-.lb-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.lb-dlg { width: 380px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.lb-dlg-hd { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.lb-dlg-bd { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.lb-dlg-ft { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
-.lb-input { font: inherit; font-size: var(--fs-3); padding: 6px 9px; background: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.lb-input:focus { outline: none; border-color: var(--accent-ui); }
-.lb-share-row { font-size: var(--fs-3); color: var(--text-muted); }
 
 /* —— 功能区「数据」组的两行读数（全是运行时数据）—— */
 .ssa-reads { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 4px; }
@@ -885,7 +846,7 @@ html[data-theme='dark'] .lb-shell { --ok: #6f9d85; --warn: #b59a5e; --danger: #c
   display: flex; align-items: baseline; gap: 6px; padding: 3px 7px; cursor: pointer; text-align: left; font: inherit;
   font-size: var(--fs-2); color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl, 2px);
 }
-.ssa-toc-i:hover { color: var(--text); background: var(--bg); }
+.ssa-toc-i:hover { color: var(--text); background: var(--wash-hover); }
 .ssa-toc-i.on { color: var(--text); background: var(--bg); border-color: var(--border); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .ssa-toc-no { flex: none; min-width: 16px; font-family: var(--font-mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .ssa-toc-i.on .ssa-toc-no { color: var(--text); }

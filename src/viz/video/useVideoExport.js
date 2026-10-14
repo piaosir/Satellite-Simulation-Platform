@@ -144,10 +144,16 @@ export function useVideoExport(host) {
   const ask = shallowRef(null)
   let askResolve = null
 
+  // —— 单张图片模式（「导出 › 图片…」）：同一套取景框 / 叠加信息 / 分辨率，时刻锁在时间轴游标上、只出一帧。
+  // 不改视频那份存档设置（S）：格式另存在 stillFmt，时段直接取游标。面板据 still 收起「时间」「节奏」两节。
+  const still = ref(false)
+  const stillFmt = ref('png')                       // 'png' | 'jpg'
+  const fmt = computed(() => (still.value ? stillFmt.value : S.format))
   // —— 时段 ——
   const tl = () => (host.timeline && host.timeline()) || { fixed: false, startMs: clock.tMs, stopMs: clock.tMs + 3600e3, viewLo: clock.tMs, viewHi: clock.tMs + 3600e3 }
   const range = computed(() => {
     void clock.seq
+    if (still.value) { const t = Math.round(clock.tMs); return { startMs: t, stopMs: t } }
     const t = tl()
     if (S.rangeMode === 'custom' && Number.isFinite(S.startMs) && Number.isFinite(S.stopMs)) return { startMs: S.startMs, stopMs: S.stopMs }
     if (S.rangeMode === 'timeline' && t.fixed) return { startMs: t.startMs, stopMs: t.stopMs }
@@ -163,14 +169,14 @@ export function useVideoExport(host) {
   })
   const bitrate = computed(() => bitrateOf(dims.value.w, dims.value.h, S.fps, S.q, S.mbps))
   const codec = computed(() => h264Codec(dims.value.w, dims.value.h, S.fps, bitrate.value))
-  const estBytes = computed(() => (pace.value.ok ? estimateBytes(S.format, dims.value.w, dims.value.h, pace.value.frames, pace.value.durationSec, bitrate.value, S.jpegQ) : 0))
+  const estBytes = computed(() => (pace.value.ok ? estimateBytes(fmt.value, dims.value.w, dims.value.h, pace.value.frames, pace.value.durationSec, bitrate.value, S.jpegQ) : 0))
 
   // —— 编码器能力（配置一变就问一次 WebCodecs；面板据此出「硬件 / 软件 / 不支持」）——
   const encSupport = ref(null)       // null 未知 | { hw, sw }
   let probeSeq = 0
   async function probe() {
     const my = ++probeSeq
-    if (S.format !== 'mp4') { encSupport.value = null; return }
+    if (fmt.value !== 'mp4') { encSupport.value = null; return }
     const c = codec.value
     if (!c || typeof VideoEncoder === 'undefined') { encSupport.value = { hw: false, sw: false }; return }
     const base = { codec: c.codec, width: dims.value.w, height: dims.value.h, bitrate: bitrate.value, framerate: S.fps, latencyMode: 'quality', bitrateMode: 'variable', avc: { format: 'avc' } }
@@ -178,7 +184,7 @@ export function useVideoExport(host) {
     const [hw, sw] = await Promise.all([ask('prefer-hardware'), ask('prefer-software')])
     if (my === probeSeq) encSupport.value = { hw, sw }
   }
-  watch(() => [open.value, S.format, dims.value.w, dims.value.h, S.fps, bitrate.value], () => { if (open.value) probe() })
+  watch(() => [open.value, fmt.value, dims.value.w, dims.value.h, S.fps, bitrate.value], () => { if (open.value) probe() })
   const encPath = computed(() => {
     const e = encSupport.value
     if (!e) return ''
@@ -205,8 +211,8 @@ export function useVideoExport(host) {
     const rr = normRamp(S.ramp)
     if (S.paceMode === 'duration' && rr.hold0 + rr.hold1 >= Number(S.durationSec)) return T('停留不得超过视频时长', 'Holds must be shorter than the video')
     if (!pace.value.ok) return T('节奏参数无效', 'Invalid pacing')
-    if (S.format === 'mp4' && pace.value.frames < 2) return T('MP4 至少两帧', 'MP4 requires at least two frames')
-    if (S.format === 'mp4') {
+    if (fmt.value === 'mp4' && pace.value.frames < 2) return T('MP4 至少两帧', 'MP4 requires at least two frames')
+    if (fmt.value === 'mp4') {
       if (!codec.value) return T('H.264 不支持该分辨率与帧率组合', 'H.264 does not support this resolution and frame rate')
       if (encSupport.value && !encPath.value) return T('本机 H.264 编码器不支持该设置', 'No H.264 encoder available for these settings')
     }
@@ -347,8 +353,14 @@ export function useVideoExport(host) {
     open.value = true
   }
   // 一路导出没收尾（等保存框 / 覆盖确认 / 出帧中）不许收面板：进度卡挂在面板里，面板一卸，确认框就没人答、这一路悬住
-  function hide() { if (starting.value || phase.value === 'running' || phase.value === 'finishing') return; open.value = false }
-  function toggle() { if (open.value) hide(); else show() }
+  function hide() { if (starting.value || phase.value === 'running' || phase.value === 'finishing') return; open.value = false; still.value = false }
+  function toggle() { if (open.value && !still.value) hide(); else { still.value = false; show() } }
+  // 「导出 › 图片…」：开成单张图片模式（已开着视频面板 → 切过去；已是图片模式 → 收起）
+  function toggleStill() {
+    if (open.value && still.value) { hide(); return }
+    if (starting.value || phase.value === 'running' || phase.value === 'finishing') return
+    still.value = true; show()
+  }
   function useTimelineSpeed() { S.paceMode = 'speed'; S.speed = clock.speed }
 
   // —— 导出 ——
@@ -389,7 +401,7 @@ export function useVideoExport(host) {
     if (issue.value) return
     const api = host.api && host.api.video
     if (!api) { errorMsg.value = T('需在桌面客户端中运行', 'Requires the desktop client'); phase.value = 'error'; return }
-    const fmt = S.format, W = dims.value.w, H = dims.value.h, fps = S.fps
+    const fmt = fmtNow(), W = dims.value.w, H = dims.value.h, fps = S.fps
     const plan = pace.value
     const N = plan.frames, t0 = range.value.startMs, t1 = range.value.stopMs
     const br = bitrate.value
@@ -563,7 +575,9 @@ export function useVideoExport(host) {
     answerAsk(false)   // 覆盖确认还挂着：按取消收掉（主进程那个挂起的会话随之关掉，闸也抬起）
   }
 
+  function fmtNow() { return fmt.value }
   return {
+    still, stillFmt, fmt, toggleStill,
     open, S, T, lang, phase, prog, result, errorMsg, thumbEl, starting, ask,
     stage, cropNow, frameIsDefault, setFrameRect, resetFrame, measureStage,
     range, spanSec, pace, dims, bitrate, codec, estBytes, encSupport, encPath, issue,

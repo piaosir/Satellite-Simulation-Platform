@@ -142,7 +142,7 @@ const childrenOf = (t, id) => t.configs.value.filter((c) => c.parentId === id).m
   // 复制仍只对配置开放
   toasts.length = 0
   t.copyItem(byName(t, a.name))
-  ok(toasts.some((m) => m.includes('只能剪切')), '文件夹不给复制（要连整棵子树克隆，是另一件事）')
+  ok(toasts.some((m) => m.includes('仅能剪切')), '文件夹不给复制（要连整棵子树克隆，是另一件事）')
 }
 
 // ================= ⑤ 复制配置：生成副本、原件不动 =================

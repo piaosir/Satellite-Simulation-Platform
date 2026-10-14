@@ -722,8 +722,7 @@ function serializeTle(records, threeLine) {
   }
   if (dropped.length) {
     throw new Error(`${dropped.length} 颗卫星写不进 TLE 定长卡片（NORAD 编号超出五位栏位上限 339999，` +
-      `或历元无效）：${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? ' 等' : ''}；` +
-      '请改用 OMM 的 CSV / JSON / KVN / XML 导出')
+      `或历元无效）：${dropped.slice(0, 3).join('、')}${dropped.length > 3 ? ' 等' : ''}`)
   }
   return out.join('\n') + '\n'
 }

@@ -2,7 +2,7 @@
 // locked 的口径：有 IPC 通道（Electron 内）且已取到状态且未激活 → 锁。
 // 浏览器直跑（npm run dev 的 renderer 单开、无 preload）没有 api.activation → 永不锁，
 // 开发路径不受影响；打包版 preload 常在，锁由主进程 activation:status 决定。
-import { reactive, computed } from 'vue'
+import { reactive, computed, ref } from 'vue'
 
 export const activation = reactive({
   ready: false,        // 已取到一次状态（ready 前 UI 不上锁，避免启动闪锁；主进程 open 拦截兜底）
@@ -16,6 +16,15 @@ export const activation = reactive({
 })
 
 export const activationLocked = computed(() => activation.ready && !activation.active)
+
+// 受锁动作的统一闸（用户触发的入口用）：锁定时把「未激活」窗请出来（App.vue 监听 lockAsk）并返回 false，调用方就此作罢。
+// 各窗口各持一份 store，故只在主窗口有锁窗；独立窗口另有主进程 open 拦截。
+export const lockAsk = ref(0)
+export function requireActivation() {
+  if (!activationLocked.value) return true
+  lockAsk.value++
+  return false
+}
 
 function apply(st) {
   if (!st || typeof st !== 'object') return

@@ -397,7 +397,7 @@ export function useMaskWorkbench(opts) {
     const n = String(doc.satName || '').length
     if (n < 1 || n > 20) add(`卫星名 ${n} 字符，XSD 要求 1..20`)
     if (!(Number(doc.ntcId) >= 1)) add('Notice ID 须 ≥ 1')
-    if (!activeRows.value.length) add('掩模表里没有启用的行')
+    if (!activeRows.value.length) add('掩模表中没有启用的行')
     if (dupMaskIds.value.size) add(`mask_id 撞号：${Array.from(dupMaskIds.value).join('、')}（三类共享 1..999 编号空间）`)
     for (const r of activeRows.value) {
       const tag = `mask ${r.maskId}`
@@ -405,7 +405,7 @@ export function useMaskWorkbench(opts) {
         add(`${tag}：星间 EIRP 的参考带宽必须是 40 kHz（XSD 的 eirp_mask_ss 无 refbw_khz 属性）`, r.id)
       }
       if (r.direction === 'up' && ![4, 40].includes(Number(r.refBwKhz))) {
-        add(`${tag}：上行 EIRP 的参考带宽只能取 4 或 40 kHz（XSD 枚举不含 1000）`, r.id)
+        add(`${tag}：上行 EIRP 的参考带宽仅可取 4 或 40 kHz（XSD 枚举不含 1000）`, r.id)
       }
       if (!(Number(r.highFreqGhz) > Number(r.lowFreqGhz))) add(`${tag}：最高频率须大于最低频率`, r.id)
       if (!r.shellId) add(`${tag}：未选壳层`, r.id)
@@ -498,7 +498,7 @@ export function useMaskWorkbench(opts) {
    */
   async function saveMasks(withArchive) {
     const list = exportFileList.value
-    if (!list.length) { msg.value = '请先生成'; return }
+    if (!list.length) { msg.value = '尚未生成。'; return }
     try {
       if (list.length === 1 && !withArchive) {
         const r = await window.api.exportFile({
@@ -587,9 +587,9 @@ export function useMaskWorkbench(opts) {
   /** 把星座导成一条【壳层】记录。只导轨道——EIRP/波束数/方向图星座数据里没有。 */
   function importShell(key) {
     const s = constSources.value.find((x) => x.key === key)
-    if (!s) { msg.value = '请先选择星座'; return false }
+    if (!s) { msg.value = '未选择星座。'; return false }
     if (s.shape === 'ellip' && s.apogeeKm !== s.perigeeKm) {
-      msg.value = `「${s.label}」是椭圆轨道（${s.perigeeKm}~${s.apogeeKm} km），本版只支持圆轨道`
+      msg.value = `「${s.label}」是椭圆轨道（${s.perigeeKm}~${s.apogeeKm} km），本版仅支持圆轨道`
       return false
     }
     if (!(s.perigeeKm > 0)) { msg.value = `「${s.label}」没有可用的轨道高度`; return false }

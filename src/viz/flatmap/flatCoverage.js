@@ -4396,9 +4396,12 @@ export function createFlatCoverage(canvas) {
     if (onRotate) onRotate({ lon0: LON0, lat0, live: true })
   }
   let labelDragMode = false, onLabelDrag = null, labelDragging = false   // 拖拽等值线数值标签（沿线滑动，不平移地图）
-  // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（不平移地图）。
-  // 回调 onPolyDraw(lonlat, 'start'|'move'|'end')；右键加点（onRightClick）仍并存。
+  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（onPolyDraw(ll,'click')）、左键拖动照常平移地图；
+  // Shift + 左键按住沿路径拖动 = 徒手画（按屏幕像素阈值连续加点 'start'|'move'|'end'，这一下不平移）。右键加点（onRightClick）仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
+  let drawClickArm = null, lastDrawClick = null   // 绘制态的单击武装 / 上一次单击（双击 = 同一处两下，第二下不重复加点）
+  // 拖波束 / 拖标签的「起拖命中」判定（宿主给）：只在按在视轴 / 标签附近时接管左键，别处照常平移；不给 = 恒接管
+  let beamDragHit = null, labelDragHit = null
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）：按住走一段才落一个点
   // 顶点编辑（Polygon 调整顶点 / 整体拖动）：editVerts={ pts:[[lon,lat],...], px, move }。
   //  - move=false：按下命中半径内的顶点即拖动该点（回调 onVertexDrag(index, lonlat, 'start'|'move'|'end')）；
@@ -4531,7 +4534,14 @@ export function createFlatCoverage(canvas) {
     return best
   }
   function onDown(e) {
-    clickArm = null
+    clickArm = null; drawClickArm = null
+    // 中键：任何工具态下都是平移地图（QGIS 数字化口径）。preventDefault 挡掉中键自动滚动。
+    if (e.button === 1) {
+      e.preventDefault()
+      panSX = e.clientX; panSY = e.clientY
+      dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+      return
+    }
     if (editVerts && e.button === 0) {
       if (editVerts.move) {
         if (pointInEditPoly(e.clientX, e.clientY)) {
@@ -4558,14 +4568,15 @@ export function createFlatCoverage(canvas) {
         return
       }
     }
-    if (polyDrawMode && e.button === 0) {   // 绘制态：左键按住起笔，沿路径连续加点
+    if (polyDrawMode && e.button === 0 && e.shiftKey) {   // 绘制态 + Shift：左键按住起笔，沿路径连续加点（徒手画）
       polyDrawing = true; canvas.setPointerCapture(e.pointerId)
       drawLX = e.clientX; drawLY = e.clientY
       const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start')
       return
     }
-    if (beamDragMode && e.button === 0) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
-    if (labelDragMode && e.button === 0) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
+    const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
+    if (beamDragMode && e.button === 0 && hitOk(beamDragHit)) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
+    if (labelDragMode && e.button === 0 && hitOk(labelDragHit)) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
     if (rotMode && e.button === 0) {   // 转动态：左键拖动改投影中心（不平移）
       rotDragging = true; canvas.setPointerCapture(e.pointerId)
       rotSX = e.clientX; rotSY = e.clientY
@@ -4584,8 +4595,9 @@ export function createFlatCoverage(canvas) {
     // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
     // canvas 截走 → 「画完 Polygon 后输入框不能聚焦」。故非左键直接返回，绝不捕获。
     if (e.button !== 0) return
-    // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑：这两种都不选星
-    if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
+    // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑，绘制态的点击归加点：这三种都不选星
+    if (polyDrawMode) drawClickArm = { x: e.clientX, y: e.clientY }
+    else if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
     panSX = e.clientX; panSY = e.clientY
     dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
   }
@@ -4638,6 +4650,15 @@ export function createFlatCoverage(canvas) {
       } else if (onBoxSelect) onBoxSelect('end', null)
     }
     if (placeArmed) { placeArmed = false; const ll = screenToLonLat(placeSX, placeSY); if (ll && onPlace) onPlace(ll) }   // 原地抬起 = 点击放置
+    // 绘制态原地抬起 = 加一个点；同一处的连击（双击）只算一下
+    const darm = drawClickArm; drawClickArm = null
+    if (darm && e && e.button === 0 && Math.abs(e.clientX - darm.x) + Math.abs(e.clientY - darm.y) <= 6) {
+      const now = performance.now(), lc = lastDrawClick
+      lastDrawClick = { x: e.clientX, y: e.clientY, t: now }
+      if (!(lc && now - lc.t < 400 && Math.abs(e.clientX - lc.x) + Math.abs(e.clientY - lc.y) <= 4)) {
+        const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'click')
+      }
+    }
     // 原地抬起 = 点选：压着星 → 交回 ref；点空白交回 null（宿主决定空白点不改聚焦，与 3D 同口径）
     const arm = clickArm; clickArm = null
     if (arm && e && e.button === 0 && onPick && Math.abs(e.clientX - arm.x) + Math.abs(e.clientY - arm.y) <= 6) {
@@ -4669,7 +4690,10 @@ export function createFlatCoverage(canvas) {
     } catch { /* ignore */ }
   }
   function onLeave() { placeArmed = false; onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数（放置武装作废，避免离屏误落点）
-  function onDbl() { fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT()) }
+  function onDbl() {
+    if (polyDrawMode) return   // 绘制态的双击是两下加点（第二下已去重），不回全图——否则画到一半画面跳走
+    fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT())
+  }
   // 屏幕坐标 -> 经纬度（夹到地图边缘，框选角点用：框拖出地图外也取有效角）
   // 夹紧版：拖出地图边界也要给一个值（拖标记/拖顶点时手滑出去不能当场断掉）。
   // 非等距圆柱下平面不是矩形，没法按轴夹；改成【沿屏幕向图心二分】找回最近的地图内点。
@@ -4964,7 +4988,7 @@ export function createFlatCoverage(canvas) {
     // 缩放进度条接口：getZoom 读当前进度、setZoom 设到进度 t、setOnZoom 注册滚轮缩放回填回调
     getZoom: () => scaleToT(),
     setZoom: (t) => setZoomT(t),
-    setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) },
+    setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p * 10) / 10)) },
     setOnZoom(fn) { onZoom = fn },
     // 覆盖填充用：屏上尺度（1° 纬度占多少【设备像素】），供 useGrdCoverage.autoStride 按屏定三角化步长。
     // ★ 必须是 O(1) 且不碰 DOM：拖拽时每帧都要问一次。早先写成「屏幕探针逐点反算」——26 个采样点
@@ -5078,6 +5102,8 @@ export function createFlatCoverage(canvas) {
     // 协调区多边形 hold-to-draw 模式：开启后左键按住沿路径连续加点
     setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE) },
     setOnPolyDraw(fn) { onPolyDraw = fn },
+    setBeamDragHit(fn) { beamDragHit = typeof fn === 'function' ? fn : null },
+    setLabelDragHit(fn) { labelDragHit = typeof fn === 'function' ? fn : null },
     // Polygon 顶点编辑/整体拖动：v={ pts:[[lon,lat],...], px 顶点半径, move 整体拖动模式 } 开启
     // （pts 传引用，外部改动即时生效）；null 关闭
     setEditVerts(v) {

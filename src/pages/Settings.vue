@@ -35,8 +35,8 @@ onMounted(load)
       <label>外观</label>
       <select :value="theme.mode" @change="setTheme($event.target.value)">
         <option value="system">跟随系统</option>
-        <option value="light">浅色</option>
-        <option value="dark">深色</option>
+        <option value="studio-light">专业浅色</option>
+        <option value="dark">专业深色</option>
       </select>
     </div>
     <div class="row">

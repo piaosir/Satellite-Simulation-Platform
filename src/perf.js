@@ -7,5 +7,8 @@ import './stores/theme'
 import './stores/uiFont'
 import './shared/i18n/runtime'
 import './perf/perfwin.css'
+import { installGlobalErrors } from './shared/reportError.js'
 
-createApp(PerfWinApp).mount('#app')
+const app = createApp(PerfWinApp)
+installGlobalErrors(app)
+app.mount('#app')

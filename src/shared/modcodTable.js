@@ -52,15 +52,15 @@ export const spreadApplies = (r) => !!r && r.noiseRatioMode === 'esno'
 //   各列 = max(表头, 最长内容) + 18 px 内边距，量法同 useGridSelect.autoWidth。
 // align 是 Excel 三线表的对齐（名称列左、数字列右、其余居中，与报告表同款）；屏上对齐另在 modcodGridCols 里给。
 export const MODCOD_COLS = [
-  { key: 'label', label: 'MODCOD', w: 172, align: 'left', tip: '这一档在载波信号面板 MODCOD 下拉里显示的名字。留空＝自动按「调制方式 + FEC 码率」生成并随之变化；填了别的字即为自定义名，清空恢复自动' },
-  { key: 'modulation', label: '调制方式', w: 88, tip: '只能从列表里选，或按制式族 + 星座阶数 M 现造一个；调制因子＝log₂M' },
+  { key: 'label', label: 'MODCOD', w: 172, align: 'left', tip: '该档在载波信号面板 MODCOD 下拉列表中显示的名称。留空＝自动按「调制方式 + FEC 码率」生成并随之变化；填入其他文字即为自定义名称，清空恢复自动' },
+  { key: 'modulation', label: '调制方式', w: 88, tip: '仅可从列表中选择，或按制式族 + 星座阶数 M 新建一个；调制因子＝log₂M' },
   { key: 'fec', label: 'FEC 码率', w: 72, tip: '内码码率，写分数（3/4、120/1024）或小数。NB-IoT 各档 =（TBS + 24 bit CRC）/ 每传输块编码比特数，按 I_SF/I_RU = 0、独立部署、2 个 NRS 端口算（NPDSCH 304 bit、带内部署 208 bit；NPUSCH 多音 288 bit、单音 96×Qm bit）；详细预算里那一行按当前 I_SF/I_RU 与部署模式现算' },
   { key: 'rsCode', label: '帧效率', w: 66, tip: '外码/帧开销效率，写分数（188/204）或小数（0.9）。3GPP 各档不参与计算，写 1 占位' },
   { key: 'bandwidthFactor', label: '滚降系数', unit: '1+α', w: 100, num: true, fix: 2, tip: '载波带宽 / 符号率。3GPP 各档不参与计算，写 1 占位——那条链的信道带宽由频段与 PRB 数查表定，不靠这个系数换算' },
   { key: 'noiseRatioMode', label: '门限口径', w: 70, tip: 'Eb/N₀ / Es/N₀ / SNR —— 决定右侧门限值按哪种口径解读。SNR = 3GPP 的每资源元素信噪比，噪声带宽取占用带宽 N_RB×12×SCS（NB-IoT 上行为音数×SCS），此时帧效率与滚降两列不参与计算' },
   { key: 'threshold', label: '门限', unit: 'dB', w: 72, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' },
-  { key: 'm', label: '扩频增益', w: 70, num: true, fix: 2, tip: '这一档门限所对应的扩频因子（码片率 ÷ 载波速率，无扩频为 1）。只在门限口径为 Es/N₀ 时可填：Es/N₀ 是扩频之后每个传输符号的能量比，同一套调制编码每扩频 ×2 门限低 3.01 dB，故门限与扩频因子必须成对给。Eb/N₀ 口径与扩频无关（扩频是载波自己的参数，在载波面板上填）；3GPP 各档不走这条换算链' },
-  { key: 'idx', label: '索引', w: 52, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制没有这个概念，留空' }
+  { key: 'm', label: '扩频增益', w: 70, num: true, fix: 2, tip: '该档门限所对应的扩频因子（码片率 ÷ 载波速率，无扩频为 1）。仅在门限口径为 Es/N₀ 时可填：Es/N₀ 是扩频之后每个传输符号的能量比，同一套调制编码每扩频 ×2 门限低 3.01 dB，故门限与扩频因子必须成对给。Eb/N₀ 口径与扩频无关（扩频是载波自己的参数，在载波面板上填）；3GPP 各档不经过该换算链' },
+  { key: 'idx', label: '索引', w: 52, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制无此概念，留空' }
 ]
 
 /**

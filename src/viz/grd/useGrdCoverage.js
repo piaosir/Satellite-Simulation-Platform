@@ -2,6 +2,8 @@
 // 选中的天线各成一层渲染到星座3D 的 scene/flat（独立图层）：所有选中天线画等值线；
 // 当前聚焦(active)天线额外画分带填充。计算核心 src/viz/grd/{parse,coverage,colormap}.js。
 import { ref, reactive, watch, nextTick } from 'vue'
+import { reportError } from '../../shared/reportError.js'
+import { errText } from '../../shared/errText.js'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
 import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, attBiasTags, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
@@ -941,7 +943,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     const tgt = sat.antennas.find((a) => a.name === name)
     if (tgt && tgt.imported && tgt.file) { cancelAnWrite(tgt.file); try { window.api.coverageGrd.remove(tgt.file) } catch { /* ignore */ } }
     sat.antennas = sat.antennas.filter((a) => a.name !== name)
-    cache.delete(key); pendingCfgs.delete(key)
+    cache.delete(key); pendingCfgs.delete(key); loadErrors.delete(key)
     selected.value = selected.value.filter((k) => k !== key)
     if (active.value === key) { active.value = selected.value[0] || ''; loadActive() }
     emitTreeKeys({ type: 'remove', keys: [key] })
@@ -998,6 +1000,9 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     _inflight.set(key, p)
     return p
   }
+  // 启动重载失败的天线：key → 原因。树上照列（文件可能只是暂时读不到），但标 ⚠ 并给出原因，勾选不出图时用户知道为什么
+  const loadErrors = reactive(new Map())
+  const loadErrorOf = (folder, name) => loadErrors.get(keyOf(folder, name)) || ''
   async function loadAntenna(folder, a, key) {
     // 导入天线：从存盘的原始 GRD 重建（解析与导入同源）。无 file（旧版仅内存导入）或读盘失败 → 不缓存，
     // 由调用方按 cache 缺失跳过（不抛出，避免中断整体恢复）。
@@ -1016,7 +1021,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         cache.set(key, { meta: ent.meta, beams: ent.beams, settings: st0, ...(rec ? { rec } : {}) })
         if (rec) anRev.value++
         applyPendingCfg(key)   // 套用存档设置（若有）
-      } catch (e) { console.warn('导入 GRD 重载失败', a.file, e) }
+        loadErrors.delete(key)
+      } catch (e) {
+        loadErrors.set(key, errText(e) || '读取失败')
+        reportError(`方向图「${a.name}」载入失败`, e)
+      }
       return key
     }
     const raw = await window.api.coverageGrd.get(a.file)
@@ -1704,9 +1713,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   // 不拦的话连点两下会在等完后先后弹两个文件框、同一文件入两副同名天线。
   let _importBusy = false
   // 返回新建天线的 key 列表（对星覆盖分析的树据此把新天线一并勾进【它自己那份】显示列表）
-  async function importGrd(target) {
+  // preset：拖进来的文件（[{ base, text } | { base, error }]）—— 给了就不再开文件框，其余与文件框导入同一条路
+  async function importGrd(target, preset) {
     const t0 = target || targetSat()
-    if (!t0) { appAlert('请先选择一颗卫星'); return [] }
+    if (!t0) { appAlert('未选择卫星。'); return [] }
     if (_importBusy) return []
     const folder = t0.folder
     let sat = satAt(folder)
@@ -1718,7 +1728,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       sat = satAt(folder)
       if (!sat) { appAlert('目标卫星不存在'); return [] }
       if (!pos) { appAlert('关联卫星当前无星历'); return [] }
-      const res = await window.api.coverageGrd.open()
+      const res = Array.isArray(preset) ? { files: preset } : await window.api.coverageGrd.open()
       if (!res || res.canceled) return []
       sat = satAt(folder)
       if (!sat) { appAlert('目标卫星不存在'); return [] }
@@ -1750,7 +1760,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         const m = ent.meta
         // 原始 GRD 存盘（userData/coverage-grd-imported）；失败则仅本会话内有效，不阻断导入
         let file = null
-        try { const r = await window.api.coverageGrd.save(f.base || name, text); file = r && r.file } catch (e) { console.warn('GRD 持久化失败，仅本会话内有效', e) }
+        try { const r = await window.api.coverageGrd.save(f.base || name, text); file = r && r.file } catch (e) { reportError(`方向图「${name}」存盘失败，仅本次运行有效`, e) }
         // 存盘途中卫星被删：刚存的文件撤掉、不再入树；已入树的几副由 removeSatellite 连同文件清掉 → 一个 key 也不交回
         sat = satAt(folder)
         if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } return [] }
@@ -1805,7 +1815,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       if (sat.antennas.some((a) => a.name === name)) removeAntenna(folder, name)
       const m = ent.meta
       let file = null
-      try { const r = await window.api.coverageGrd.save(name + '.grd', utf8BytesAsLatin1(text)); file = r && r.file } catch (e) { console.warn('合成 GRD 持久化失败，仅本会话内有效', e) }
+      try { const r = await window.api.coverageGrd.save(name + '.grd', utf8BytesAsLatin1(text)); file = r && r.file } catch (e) { reportError(`方向图「${name}」存盘失败，仅本次运行有效`, e) }
       sat = satAt(folder)
       if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } appAlert('目标卫星不存在'); return null }   // 存盘途中卫星被删：刚存的文件撤掉
       let settings
@@ -1860,7 +1870,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     let nm = uniq()
     const ent = importedCacheEntry(sat, g, nm, pos)
     let file = null
-    try { const r = await window.api.coverageGrd.save(nm + AN_FILE_EXT, anRecordText(record)); file = r && r.file } catch (e) { console.warn('解析天线持久化失败，仅本会话内有效', e) }
+    try { const r = await window.api.coverageGrd.save(nm + AN_FILE_EXT, anRecordText(record)); file = r && r.file } catch (e) { reportError(`天线「${nm}」存盘失败，仅本次运行有效`, e) }
     sat = satAt(folder)
     if (!sat) { if (file) { try { window.api.coverageGrd.remove(file) } catch { /* ignore */ } } throw new Error('目标卫星不存在') }   // 存盘途中卫星被删：刚存的文件撤掉
     if (sat.antennas.some((a) => a.name === nm)) { nm = uniq(); ent.meta.name = nm }   // 存盘途中同名的抢先入了树
@@ -2354,7 +2364,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   return {
     sats, expanded, selected, active, loading, s,
-    keyOf, isSelected, isActive, isExpanded, antMeta, activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, buildAxisRays, boreModeOf, setBoreMode,
+    keyOf, isSelected, isActive, isExpanded, loadErrorOf, antMeta,
+    dragLabelAnchors: () => _dragLabels.map((e) => e.anchor), activeName, beamsCount, satState, dragBore, boreGround, boreDir, boreTip, buildAxisRays, boreModeOf, setBoreMode,
     setBoreSat, boreSatResolved, setBorePoint, syncBorePoint, shellDrag, beamBasis,
     setBoreSource, setBoreMount, mountOptions, attLaw, attReadout, setAttEquiv, attReady,
     bodyAttitude, setBodyAttitude, bodyAttSeed, attTargetKey, attKeyLabel, bodyEditorOk, openBodyEditor,

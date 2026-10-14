@@ -24,6 +24,7 @@ import { panelsFromMeta } from '@core/models/power.mjs'
 import { coneHalfOf, fovFullOf, maskSigFor, maskExcludeOf } from '../mountLogic.js'
 import { stateFn } from '../satSources.js'
 import { fmtNum } from '../wbLogic.js'
+import { fineStep } from '../../shared/ui/rangeFieldCore.js'
 
 const wb = inject('wb')
 const sat = inject('sat')
@@ -45,7 +46,7 @@ onBeforeUnmount(() => { if (ctrl) ctrl.abort(); if (pool) pool.dispose(); pool =
 const arts = computed(() => { void cur.rev; return cur.meta && Array.isArray(cur.meta.articulations) ? cur.meta.articulations.filter((a) => a && Array.isArray(a.stages) && a.stages.length) : [] })
 const artVals = sat.art   // 关节名 → 各 stage 值（没动过的不在里面 = 初值）；satStore 持有、换模型清空
 const valOf = (a, s, i) => { const v = artVals[a.name]; return v && Number.isFinite(v[i]) ? v[i] : (Number.isFinite(s.initialValue) ? s.initialValue : 0) }
-const stepOf = (s) => (/Rotate$/.test(s.type) ? 1 : Math.max(1e-3, (s.maximumValue - s.minimumValue) / 200))
+const stepOf = (s) => fineStep(s.minimumValue, s.maximumValue, 1000)   // 与模型页关节同口径（SecArtic）
 function onSlide(a, i, v) {
   const n = Number(v)
   const arr = a.stages.map((s, k) => valOf(a, s, k))
@@ -247,12 +248,12 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
 <template>
   <MdSec id="a-mask" title="本体遮挡掩模" :summary="stats ? pct(stats.blockedFrac) + ' %' : ''" :tip="MASK_CHART_CALIBER">
     <template #actions>
-      <button class="lb-mini" :disabled="!rec" title="导出 CSV（az, el, blocked, clearanceM；逐格）" @click="exportCsv"><Icon name="file-down" :size="12" />CSV</button>
+      <button class="lb-mini" :disabled="!rec" title="导出 CSV（az, el, blocked, clearanceM；逐格）" @click="exportCsv"><Icon name="file-export" :size="12" />CSV</button>
       <button class="lb-mini" :disabled="!rec" title="导出 PNG（白底、报告字体、4 倍）" @click="exportPng"><Icon name="image" :size="12" />PNG</button>
     </template>
     <div class="md-acts">
-      <button class="lb-mini primary" :disabled="!mnt || !cur.meta || busy" title="按当前模型、选中挂点与关节值计算（Worker 池）" @click="compute"><Icon name="calculator" :size="13" />计算</button>
-      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
+      <button class="lb-mini primary" :disabled="!mnt || !cur.meta || busy" title="按当前模型、选中挂点与关节值计算（Worker 池）" @click="compute"><Icon name="calculator" :size="12" />计算</button>
+      <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="12" />取消</button>
       <span v-if="busy" class="md-state"><span class="an-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
       <label v-if="solar.length" class="md-chkrow an-chk" title="按太阳在本体系中的方位量化为 12 档（太阳翼每转 30° 一档）分别计算，查表时取与当前太阳角最接近的一档">
         <input v-model="sunScan" type="checkbox" />对日扫描
@@ -285,8 +286,8 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
       </div>
       <div class="md-acts">
         <div class="lbu-seg an-seg">
-          <button :class="{ on: mode === 'blocked' }" title="遮挡网格实心填充" @click="mode = 'blocked'">遮挡</button>
-          <button :class="{ on: mode === 'clearance' }" title="遮挡网格按最近遮挡距离着色" @click="mode = 'clearance'">净空</button>
+          <button :class="{ on: mode === 'blocked' }" :aria-pressed="(mode === 'blocked') ? 'true' : 'false'" title="遮挡网格实心填充" @click="mode = 'blocked'">遮挡</button>
+          <button :class="{ on: mode === 'clearance' }" :aria-pressed="(mode === 'clearance') ? 'true' : 'false'" title="遮挡网格按最近遮挡距离着色" @click="mode = 'clearance'">净空</button>
         </div>
         <span class="sp"></span>
         <label class="md-chkrow an-chk" title="在预览中绘制掩模球面片（半径 = 2 × 包围球半径，球心 = 射线起点）"><input v-model="satView.maskOn.value" type="checkbox" />球面片</label>
@@ -294,7 +295,7 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
       <ChartBox ref="chartRef" kind="mask" :data="chartData" :overlays="overlays" :mode="mode" />
     </template>
     <div class="srow an-av">
-      <button class="lb-mini" :class="{ on: avOn }" :disabled="!mnt || !cur.meta" title="相机置于挂点并沿视轴观察：本体半透明红色、掩模边界黄线、视场圈青线" @click="toggleAv"><Icon name="scan-eye" :size="13" />天线视角</button>
+      <button class="lb-mini" :class="{ on: avOn }" :aria-pressed="avOn ? 'true' : 'false'" :disabled="!mnt || !cur.meta" title="相机置于挂点并沿视轴观察：本体半透明红色、掩模边界黄线、视场圈青线" @click="toggleAv"><Icon name="scan-eye" :size="12" />天线视角</button>
       <label class="an-l" title="天线视角的竖直视场（全角）；缺省 = 挂点视场，未设置时取方向图 −3 dB 全宽（全向天线 170°），限定在 1°–170°">视场</label>
       <NumIn :model-value="avFov" :min="1" :max="170" :sig="4" allow-empty :placeholder="String(Math.round(avFovDefault * 10) / 10)" @commit="setAvFov" />
       <span class="u">°</span>
@@ -304,8 +305,7 @@ const pct = (v) => (v == null ? '—' : fmtNum(v * 100, 4))
 </template>
 
 <style scoped>
-.an-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: an-spin .7s linear infinite; }
-@keyframes an-spin { to { transform: rotate(360deg); } }
+.an-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 .an-chk { min-height: 0; }
 .an-arts { display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--r-box); }
 .an-art { display: flex; align-items: center; gap: 6px; }

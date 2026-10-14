@@ -116,15 +116,15 @@ const nOn = computed(() => noObs.value.size)
       <div v-if="!layout.length" class="lb-placeholder ob-none">无节点。</div>
       <template v-else>
         <div class="md-acts">
-          <label class="ob-q">
+          <label class="ob-q search-field">
             <Icon name="search" :size="12" />
             <input v-model="q" type="text" spellcheck="false" placeholder="筛选" title="按节点名 / 部件名筛选" />
           </label>
-          <select class="ci ob-role" value="" :disabled="ro || !rolesAvail.length" title="将指定角色部件的全部节点标记为不遮挡" @change="pickRole($event.target.value); $event.target.value = ''">
+          <select class="ci ob-role cmd-sel" value="" :disabled="ro || !rolesAvail.length" title="将指定角色部件的全部节点标记为不遮挡" @change="pickRole($event.target.value); $event.target.value = ''">
             <option value="">按角色勾选</option>
             <option v-for="k in rolesAvail" :key="k" :value="k">{{ ROLE_LABEL[k] }}</option>
           </select>
-          <button class="lb-mini" :class="{ on: onlyOn }" title="仅列出已勾选的节点" @click="onlyOn = !onlyOn"><Icon name="check" :size="12" />已勾选</button>
+          <button class="lb-mini" :class="{ on: onlyOn }" :aria-pressed="onlyOn ? 'true' : 'false'" title="仅列出已勾选的节点" @click="onlyOn = !onlyOn"><Icon name="check" :size="12" />已勾选</button>
         </div>
         <div class="md-grid" @click.capture="chk.onClickCapture" @keydown.capture="chk.onKeyCapture">
           <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :head-tip="(c) => c.tip || c.label" empty-text="无匹配节点。" />
@@ -138,7 +138,6 @@ const nOn = computed(() => noObs.value.size)
 .ob-none { text-align: left; padding: 2px 0; }
 .ob-q { flex: 1 1 120px; min-width: 0; display: flex; align-items: center; gap: 4px; height: var(--h-ctl); padding: 0 6px; color: var(--text-faint);
   background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.ob-q:focus-within { border-color: var(--accent-ui); }
 .ob-q input { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; box-shadow: none !important; font-size: var(--fs-3); color: var(--text); }
 .ob-role { flex: none !important; width: 104px; min-width: 0 !important; }
 </style>

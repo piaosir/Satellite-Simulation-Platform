@@ -92,7 +92,7 @@ module.exports = function createWeather(userDataDir) {
             const why = rs.statusCode === 401 ? '身份认证失败（kid/iss/sub 或公私钥不成对）'
               : rs.statusCode === 403 ? '无权限（控制台未启用「天气预报」，或凭据的 API 限制不允许）'
                 : rs.statusCode === 404 ? '请求路径或 API Host 有误'
-                  : rs.statusCode === 429 ? '已触发限流，请稍后重试' : '';
+                  : rs.statusCode === 429 ? '已触发限流。' : '';
             return reject(new Error(`HTTP ${rs.statusCode}${why ? '：' + why : ''}`));
           }
           try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('返回内容不是 JSON')); }

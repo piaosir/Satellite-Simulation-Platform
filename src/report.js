@@ -9,5 +9,8 @@ import './shared/ui/controls'
 import './styles/lbworkbench.css'
 import './styles/lbreport.css'
 import './shared/i18n/runtime'
+import { installGlobalErrors } from './shared/reportError.js'
 
-createApp(ReportApp).mount('#app')
+const app = createApp(ReportApp)
+installGlobalErrors(app)
+app.mount('#app')

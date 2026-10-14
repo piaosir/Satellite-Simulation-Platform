@@ -7,8 +7,9 @@ import { zoom } from '../stores/zoom'
 import { effective as displayQuality, quality as displayTier } from '../stores/displayQuality'
 import { viewPrefs, FRAME_MODES, VIEW_PREF_RANGE, VIEW_PREFS_REV } from '../stores/viewPrefs'
 import { setGrdBridge, clearGrdBridge, fileBridge, bumpCustomSats } from '../stores/fileBridge'
-import { shellUi, sideCtx, SAT_INFO_W_LIM } from '../stores/shellUi'
-import { isSecOpen, toggleSec, setSecOpen, revealSection } from '../stores/panelSections'
+import { shellUi, sideCtx, SAT_INFO_W_LIM, requestSide } from '../stores/shellUi'
+import { requireActivation } from '../stores/activation'
+import { isSecOpen, toggleSec, setSecOpen, revealSection, revealEl, scrollBehavior } from '../stores/panelSections'
 import { registerCommands } from '../stores/commands'
 import { kwId } from '../shared/cmdKeywords.js'
 import { clock, onTick, goLive, togglePlay, setTime as clockSetTime, stepBy as clockStepBy, setStep as clockSetStep, setSpeed as clockSetSpeed, releaseClock, resumeClock, effective as clockEff, capped as clockCapped, restoreState as clockRestore, setRange as clockSetRange, bootSceneMs } from '../stores/simClock'
@@ -18,6 +19,11 @@ import { computeRuler, LAB_PAD } from '../shared/tlRuler.js'
 import TimelineSettings from '../components/TimelineSettings.vue'
 import { uiFont } from '../stores/uiFont'
 import { logMsg, diagMsg } from '../stores/log'
+import { showStatus, showExported, showUndoable, clearStatusIf } from '../stores/statusMsg'
+import { pushSceneUndo, sceneUndo, sceneRedo, sceneUndoState } from '../stores/sceneUndo'
+import { tlMarks, setMarks, upsertMark, clearMarks, adjacentMarkMs } from '../stores/tlMarks'
+import { reportError, reportPartial } from '../shared/reportError.js'
+import { guardedPersist } from '../shared/persistGuard.js'
 import { alertMsg, appAlert, closeAlert } from '../stores/alert'
 import { displaySatName } from '../viz/satName.js'
 import { serializeGxt } from '../viz/gxt/serialize.js'
@@ -25,6 +31,7 @@ import { parseGxt } from '../viz/gxt/parse.js'
 import { serializeKml } from '../viz/kml/serialize.js'
 import { parseKmlPolys } from '../viz/kml/parse.js'
 import Icon from '../components/Icon.vue'
+import AppDialog from '../components/AppDialog.vue'
 import NumBox from '../components/NumBox.vue'
 import TzPicker from '../components/TzPicker.vue'
 import { tzOffMin, tzTag, tzParts, tzToMs, normTzMode } from '../shared/tz.js'
@@ -94,7 +101,8 @@ import { POV_META, CUSTOM_POV, povTableOf, normMapPov } from '../viz/geo/povList
 import { CUSTOMIZABLE_DISPUTES, OWNER_ZH } from '../viz/geo/frozen.js'
 import { getMapPov, onMapPov, saveMapPov } from '../stores/mapPov.js'
 import { admIndex, loadPack, mergePacks } from '../viz/geo/admPacks.js'
-import { mapCrs, setMapCrs, restoreMapCrs, MAP_CRS_DEF, MAP_CRS_REV, lon0ToCenter, centerToLon0, projOpts, LOOK_MODES } from '../stores/mapCrs.js'
+import { mapCrs, setMapCrs, restoreMapCrs, MAP_CRS_DEF, MAP_CRS_REV, lon0ToCenter, centerToLon0, projOpts, LOOK_MODES, frameThemeOf } from '../stores/mapCrs.js'
+import { theme as uiTheme } from '../stores/theme'
 import { PROJECTIONS, projParams } from '../viz/geo/projection.js'
 import { GEO_STEPS } from '../viz/geo/geoFrame.js'   // 经纬图框的间隔档（地图设置 → 2D 投影）
 import { waterList } from '../viz/geo/waterNames.js'
@@ -109,7 +117,7 @@ import { useEnvField } from '../viz/env/useEnvField.js'
 import { useLiveField } from '../viz/env/useLiveField.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
-import { createNoradResolver, foldersForNorads, linkedNodesOf, linkMissing as treeLinkMissing, followFolder as treeFollowFolder, ephGroupsToLoad, grdLivePayload, createLiveThrottle, focusStale, createFollowGate, synthGroupDrives, treeNavState, nodeLinkId, treeSetMembers } from '../viz/grd/treeLink.js'
+import { createNoradResolver, foldersForNorads, linkedNodesOf, linkMissing as treeLinkMissing, followFolder as treeFollowFolder, ephGroupsToLoad, grdLivePayload, createLiveThrottle, focusStale, createFollowGate, synthGroupDrives, treeNavState, nodeLinkId, treeSetMembers, treeSetEntries } from '../viz/grd/treeLink.js'
 import { syncTreeGeoEntries, isTreeGeoId, TREE_GEO_LABEL, TREE_GEO_GROUP } from '../viz/grd/treeGeo.js'
 import { buildRecord as anBuildRecord, freshModel as anFreshModel } from '../viz/grd/gaussStk.js'   // 树上「新建高斯天线」（别名：波束合成那边也可能直接引这个模块）
 import { useSatPerfTable } from '../viz/grd/useSatPerfTable.js'
@@ -517,11 +525,19 @@ watch(() => envLive.sites.value.map((s) => s.id + ':' + s.lon + ',' + s.lat).joi
 
 // 光标读数：经纬度（状态栏固有）+ 当前环境场值（有图层时才有）
 // 两张场互斥，故谁开着就读谁 —— 状态栏只有一格，不并列。
+// 光标离开地图：图层还开着就把读数格留下、数值换成「—」（状态栏那两格不再一出一消，从地图往下拖缩放条时整排不跳）
+const dashOf = (o) => (o ? { ...o, text: '—', value: null } : null)
 function onHoverLL(ll) {
   cursor.ll = ll
-  cursor.env = ll ? (env.readAt(ll.lat, ll.lon) || envLive.readAt(ll.lat, ll.lon)) : null
-  cursor.look = ll ? lookReadout(ll) : null
+  if (ll) {
+    cursor.env = env.readAt(ll.lat, ll.lon) || envLive.readAt(ll.lat, ll.lon)
+    cursor.look = lookReadout(ll)
+  } else {
+    cursor.env = (env.on.value || envLive.on.value) ? dashOf(cursor.env) : null
+    cursor.look = dashOf(cursor.look)
+  }
 }
+watch(() => env.on.value || envLive.on.value, (v) => { if (!v) cursor.env = null })
 // 光标所在点【相对参考卫星】的视角读数。档位与参考卫星都在 mapCrs 里，几何走 coverage 的 satLookAt。
 // ★ 地平线以外的点照给数值（天线系是纯几何的，那里仍有定义），可见与否连同地心角、斜距一起写进 title
 //   —— 界面上只留数字，判定性的话不写（见 CLAUDE.md）。
@@ -707,7 +723,7 @@ function accScrollTo(nid) {
   const cr = box.getBoundingClientRect(), rr = row.getBoundingClientRect()
   const topGuard = cr.top + (axis ? axis.getBoundingClientRect().height : 0)
   const d = rr.top < topGuard ? rr.top - topGuard : rr.bottom > cr.bottom ? rr.bottom - cr.bottom : 0
-  if (d) box.scrollTo({ top: box.scrollTop + d, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  if (d) box.scrollTo({ top: box.scrollTop + d, behavior: scrollBehavior() })   // 动效只认应用内开关，不跟系统 reduced-motion
 }
 watch(() => vis.accessResults.value, () => { accExpKey.value = ''; accHovKey.value = '' })
 const accRows = computed(() => {
@@ -764,8 +780,8 @@ const visCnt = computed(() => {
 // 覆盖分析 FOM 读数格式化（时间类=整数分钟；≥100 取整；近整数取整；否则一位小数）
 function covFmt(v, leg) {
   if (v == null || !Number.isFinite(v)) return '—'
-  if (leg && leg.time) return Math.round(v).toLocaleString()
-  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString()
+  if (leg && leg.time) return Math.round(v).toLocaleString('en-US')
+  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString('en-US')
   if (Math.abs(v - Math.round(v)) < 1e-6) return String(Math.round(v))
   return v.toFixed(1)
 }
@@ -781,18 +797,21 @@ async function exportAccessExcel() {
   const rows = vis.accessResults.value
   if (!rows || !rows.length) { appAlert('先点「计算过境」生成结果'); return }
   if (!(window.api && window.api.visAccess)) { appAlert('需在桌面客户端中运行'); return }
-  const tk = vis.targetKind.value, tid = vis.targetId.value
-  let tgtName = '目标'
-  if (tk === 'station') tgtName = ((stations.value.find((x) => x.id === tid) || {}).name) || '地球站'
-  else if (tk === 'point') { const p = points.value.find((x) => x.id === tid); tgtName = p ? (p.name || fmtLL(p.lat, p.lon)) : '点标记' }
+  // 目标 / 门限 / 卫星集一律取「计算过境」那一刻的快照（vis.accessMeta），不取界面当前值
+  const meta = vis.accessMeta.value || {}
+  const tk = meta.targetKind != null ? meta.targetKind : vis.targetKind.value, tid = meta.targetId != null ? meta.targetId : vis.targetId.value
+  let tgtName = byLang('目标', 'Target')
+  if (tk === 'station') tgtName = ((stations.value.find((x) => x.id === tid) || {}).name) || byLang('地球站', 'Earth station')
+  else if (tk === 'point') { const p = points.value.find((x) => x.id === tid); tgtName = p ? (p.name || fmtLL(p.lat, p.lon)) : byLang('点标记', 'Point') }
   else if (tk === 'poly') tgtName = ((polys.value.find((x) => x.id === tid) || {}).name) || 'Polygon'
-  const tp = vis.targetPoints()
+  const tp0 = meta.tp0 || (vis.targetPoints()[0] || null)
   const L = satSetLabel.value, base = vis.accessBaseMs.value, k = vis.accessKpi.value
   const payload = {
-    defaultName: '过境窗口_' + String(tgtName).replace(/[\\/:*?"<>|]/g, '_'),
-    target: { name: String(tgtName), kind: tk, lat: tp.length ? tp[0].lat : null, lon: tp.length ? tp[0].lon : null },
-    satSet: (L.kind ? L.kind + ' · ' : '') + L.name, scanned: vis.accessScanned.value,
-    minElevDeg: Number(vis.minElev.value) || 0,
+    lang: curLang(),     // 导出文件的表头 / 表题 / 表注跟界面语言（report.buildVisAccessExcel）
+    defaultName: byLang('过境窗口_', 'Pass Windows_') + String(tgtName).replace(/[\\/:*?"<>|]/g, '_'),
+    target: { name: String(tgtName), kind: tk, lat: tp0 ? tp0.lat : null, lon: tp0 ? tp0.lon : null },
+    satSet: meta.satLabel || ((L.kind ? L.kind + ' · ' : '') + L.name), scanned: vis.accessScanned.value,
+    minElevDeg: meta.minElev != null ? meta.minElev : (Number(vis.minElev.value) || 0),
     baseMs: base, horizonMin: k.horizonMin,
     tzOffsetMin: tzOffMin(visAltTz.value, base), tzTag: visTzTag(base),
     kpi: { pct: k.pct, coveredMin: k.coveredMin, maxGapMin: k.maxGapMin, gapCount: k.gapCount, sats: k.sats, passes: k.passes },
@@ -802,7 +821,13 @@ async function exportAccessExcel() {
     }))
   }
   const r = await window.api.visAccess.exportExcel(payload)
-  if (r && !r.ok && !r.canceled) appAlert('导出失败：' + (r.error || '未知错误'))
+  if (r && r.ok !== false && !r.canceled) { const p = r.path || r.filePath; if (p) showExported(p) }
+  else if (r && !r.ok && !r.canceled) reportError('导出失败', r.error || '未知错误')
+}
+// 「计算过境」：把卫星集名一并钉进快照（导出 Excel 的摘要写它）
+function runAccess() {
+  const L = satSetLabel.value
+  vis.computeAccess({ satLabel: (L.kind ? L.kind + ' · ' : '') + L.name })
 }
 async function toggleGrd() {
   grdOpen.value = !grdOpen.value
@@ -1429,7 +1454,7 @@ async function satcovScanWindows(key) {
   if (ctx.noEph) { status.value = '关联卫星当前无星历'; return }       // 源星解不出：时段扫描会把它当固定星钉在存盘旧位置上
   // 波束内档：目标 = 点「计算」那一刻在波束里的那批星（成员本身随时刻变，扫描得先钉住一份名单）
   const tgts = satcovResolveTargets(ctx, k)
-  if (!tgts.length) { status.value = satPerf.targetModeOf(k) === 'beam' ? '当前波束内没有卫星' : '先加目标星'; return }
+  if (!tgts.length) { status.value = satPerf.targetModeOf(k) === 'beam' ? '当前波束内暂无卫星。' : '暂无目标卫星。'; return }
   // 姿态 + 挂点（att）档：挂点轴随扫描时刻由 bodyRt 解（satcovAttAt；非 att 档为 null）
   await satPerf.computeWindows(ctx, satPerf.getOpts(k), tgts, satcovTimes(), satcov.shells.value, satcov.s.hEx,
     { srcRec: satcovSourceRec(ctx), boreRec: satcovBoreRec(ctx), attAt: satcovAttAt(ctx) })
@@ -1515,8 +1540,10 @@ function satcovDragAlt() {
 const satcovDragOn = () => sideCtx() === 'satcov' && !flatView.value
 // 拖拽回调分派：3D 的对星视图走绕星弧球（shellDrag），其余（含对星视图下的 2D 对地平面图）走原地表拖拽
 function onBeamDragAny(ll, phase) {
+  if (phase === 'start') dragUndoBegin('bore', '已拖拽波束指向')
   if (satcovDragOn()) grd.shellDrag(ll, phase, W.A + satcovDragAlt())
   else grd.beamDrag(ll, phase)
+  if (phase === 'end') dragUndoCommit()   // 松手：beamDrag 已把 azel 收回 geo，这时的快照才是终值
 }
 // 拖拽方式要在【按下之前】就设好（scene 在 pointerdown 当场起算）→ 相关量一变就同步。
 // 对星视图给「源星 + 当前视轴落点」＝绕源星转方向；其余给 null ＝回到地表落点拾取。
@@ -1543,7 +1570,7 @@ function satcovTick(movedKeys) {
 // 时间推进不在这里管——refreshPositions 每帧都会 commitGeometry。
 // 不按视图门控：commitGeometry 是幂等的全量重喂，画不画由 satcov.selected 定（清空即自然收特效）——
 // 加个 side 判据反而会在【清除绘图那一下正好不在该视图】时把特效留在场景里。
-watch(() => [satcov.selected.value.join('|'), grd.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => commitGeometry())// ===== 目标星搜索（对星跟踪的目标星 / 指标表的目标星，两处共用）=====
+watch(() => [satcov.selected.value.join('|'), grd.selected.value.join('|'), grd.active.value, grdS.boreType, grdS.boreSat], () => commitGeometry())// ===== 目标卫星搜索（对星跟踪的目标卫星 / 指标表的目标卫星，两处共用）=====
 // ★【全量】搜索，不限于「在场」：池 = 全量在轨目录（内置各星座分组 ∪ active ∪ 本地自定义卫星库）
 //   ＋ 自定义星座合成星（含隐藏的座）；另按【卫星组】的组名命中该组全部成员（与自定义星座按星座名
 //   命中全部成员同款）。选中的星不必被渲染出来——指向解算与指标表都按同一口径全量解析（satEntryById）。
@@ -1708,17 +1735,17 @@ const borderPick = ref('admin0')     // 主从列表当前选中的那一类
 // ★ 水域两档（大洋 / 海域）与国家名【彻底分开】：原先洋名跟着国名的档位走，想在图上只留洋名做不到。
 //   两档各自还带一张逐条勾选的清单（water: 档位键），故「红海要不要出现」也是可选的。
 const NAME_ROWS = [
-  { k: 'country', zh: '国家名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.05 },
-  { k: 'prov', zh: '一级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.05 },
-  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.05 },
-  { k: 'ocean', zh: '大洋名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.05, water: 'ocean' },
-  { k: 'sea', zh: '海域名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.05, water: 'sea', search: true }
+  { k: 'country', zh: '国家名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.01 },
+  { k: 'prov', zh: '一级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.01 },
+  { k: 'city', zh: '二级行政区名', modes: [['local', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.05, max: 3, step: 0.01 },
+  { k: 'ocean', zh: '大洋名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.01, water: 'ocean' },
+  { k: 'sea', zh: '海域名', modes: [['zh', '中文'], ['en', '英文'], ['off', '不显示']], min: 0.1, max: 3, step: 0.01, water: 'sea', search: true }
 ]
 const namePick = ref('country')
 // 样式预设（一键套整组）：只动五类线的颜色与透明度，线宽/线型这类结构性区分不跟着变
 const PRESET_TIP = '一键套用整组配色（线宽与线型不变）'
 const BORDER_PRESETS = [
-  { k: 'default', zh: '默认', tip: '回到出厂样式' },
+  { k: 'default', zh: '默认', tip: '出厂配色（线宽与线型不变）' },
   { k: 'print', zh: '印刷', tip: PRESET_TIP },
   { k: 'dark', zh: '暗色', tip: PRESET_TIP },
   { k: 'contrast', zh: '高对比', tip: PRESET_TIP },
@@ -2174,7 +2201,7 @@ function draftParams(m) {
 function saveConstWizard() {
   const m = constModal.value; if (!m) return
   const params = draftParams(m)
-  if (!params) { const s = constSolved.value; appAlert((s && s.errs.map((e) => e.msg).join('；')) || '轨道解不出来'); return }
+  if (!params) { const s = constSolved.value; appAlert((s && s.errs.map((e) => e.msg).join('；')) || '轨道无法求解'); return }
   const v = validateWalker(params)
   if (!v.ok) { appAlert(v.errs.join('；')); return }
   const draft = { name: m.name, params, color: m.color, colorByPlane: m.colorByPlane !== false,
@@ -2323,7 +2350,8 @@ const scenarioEpochLocal = computed({
   get: () => { const d = new Date(customConst.scenarioEpoch.value); if (isNaN(d)) return ''; const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}` },
   set: (v) => applyScenarioEpoch(new Date(v))
 })
-function applyScenarioEpoch(d) { if (!d || isNaN(d)) return; customConst.setScenarioEpoch(d.toISOString()); rebindSelection('') }
+// ★ 年份守卫：datetime-local 每改一段就发 change，年份打到一半（0202-…）就会被当成公元 202 年写进库 —— 早于 1000 年一律不收
+function applyScenarioEpoch(d) { if (!d || isNaN(d) || d.getFullYear() < 1000) return; customConst.setScenarioEpoch(d.toISOString()); rebindSelection('') }
 function scenarioEpochNow() { applyScenarioEpoch(new Date(Math.floor(clock.tMs / 1000) * 1000)) }   // 「当前」＝时间轴此刻（与树星历元「此刻」同一口径），不取系统时钟
 // 页面开着跨过本地零点：场景历元按「每天更新」规则换成今天的（别的窗口每次现解，3D 页不跟就两处相位不同）。每分钟 + 窗口获得焦点各核一次
 let dayEpochBeat = null
@@ -2806,11 +2834,12 @@ function rebuildRenderSet() {
   const editId = customConst.previewEditId()
   for (const c of customConst.list.value) if (vis.has('c:' + c.id) && c.id !== editId) add(customConst.satsOf(c.id))
   add(customConst.previewEntries())                                        // 向导「仅预览」关着时：预览叠在别的集之上
-  // 卫星集「卫星天线树」：虚拟星（定点 / 轨道根数，合成号不与目录撞）跟这一集的眼睛，再逐颗跟树上那颗星的小眼睛走。
+  // 卫星集「卫星天线树」：虚拟星（定点 / 轨道根数，合成号不与目录撞）只跟这一集的眼睛 —— 成员一律进点云，不看树上卫星行的小眼睛
+  // （那只眼睛管覆盖分析里的图标 + 名称；口径见 treeLink.treeSetEntries）。
   // 与别的集同一套「仅显示」口径：搜索 / 查找出结果（showSearchHits → soloOn('q')）或 Alt+眼睛仅显示别的集时，这一集也暂隐
   // （星名 / 2D 图标由 redrawSats 照画、pickExtraSats 照样点得中），点「仅显示：X」还原
   const treeOn = vis.has(TREE_SET)
-  if (treeOn) add(treeGeoList.filter((e) => { const n = grdNodeOf(e._grdFolder); return !!n && satVisible(n) }))
+  if (treeOn) add(treeSetEntries(grdSats.value, treeGeoIdMap.value, (m) => treeGeoById.get(m.id) || null, 'virtual'))
   const real = []                                                          // 已加载的真实星（GRD 关联星解算 / 搜索池未就绪时的回退）
   for (const g of importGroups.value) {
     const id = 'i:' + g.id; if (!vis.has(id)) continue
@@ -2826,12 +2855,8 @@ function rebuildRenderSet() {
   entries = real
   // 「卫星天线树」里的关联星排在最后：别的可见集里已有同号对象就用那一份（选中集按对象认星，不能因为多开了这一集换了对象）；
   // 都没有才补 liveEntryOf 那一份（在场 → 全量池 → 点序列 → 自定义星座）。不进 real（它们不是「已加载的那批」）。
-  // 放在 entries = real 之后：解析按这一版在场集来
-  if (treeOn) {
-    const linked = []
-    for (const n of grdSats.value) { if (!isTreeLinkedNode(n) || !satVisible(n)) continue; const e = liveEntryOf(n.noradId); if (e) linked.push(e) }
-    add(linked)
-  }
+  // 放在 entries = real 之后：解析按这一版在场集来。与虚拟星同一口径：不看树上卫星行的小眼睛
+  if (treeOn) add(treeSetEntries(grdSats.value, treeGeoIdMap.value, (m) => liveEntryOf(m.id), 'linked'))
   entSetVer.value++   // 树上「关联星缺失」重判（见 linkMissSet）；本函数只在挂载后（有 scene）走到这里，声明早已就位
   resolverVer.value++   // 关联星解析换了源：依赖星位的 computed 重算
   renderEntries = out
@@ -3153,8 +3178,9 @@ const filterKw = ref('')   // 当前筛选词（独立于 keyword —— pickRes
 // 全部可见集的名字。lit＝这个 name 是界面词（内置组名）而不是用户数据；用户起的名字不翻。
 const satSetLabel = computed(() => {
   void poolTick.value
-  // 「卫星天线树」一颗星都没往图上加（树里没星 / 小眼睛全关）就不算进来：这一行默认开着，不然「星座 · GEO」会读成「混合 · 卫星天线树 + GEO」
-  const treeAdds = () => treeSetMembers(grdSats.value, treeGeoIdMap.value).some((m) => satVisible(m.node))
+  // 「卫星天线树」一颗星都没往图上加（树里没有成员）就不算进来：这一行默认开着，不然「星座 · GEO」会读成「混合 · 卫星天线树 + GEO」。
+  // 成员上不上图不看树上卫星行的小眼睛（与 rebuildRenderSet 同一口径，见 treeLink.treeSetEntries）
+  const treeAdds = () => treeSetMembers(grdSats.value, treeGeoIdMap.value).length > 0
   const ids = [...satSets.visible.value].filter((id) => !!setName(id) && (id !== TREE_SET || treeAdds()))   // 名字与种类取自同一份 id 表
   if (!ids.length) return { kind: '', name: '无', lit: true }
   if (ids.length === 1) {
@@ -3299,13 +3325,15 @@ function pickExtraSats(opts) {
   }
   for (const node of grdSats.value) {
     if (node.kind === 'elevline') continue
-    if (!node.noradId) {   // 天线树虚拟星：「卫星天线树」那一集关着时它不在点云里，但名字照样由 redrawSats 画在球上
+    // 天线树卫星自己的标记（redrawSats）画着就点得中：3D 只画卫星名；2D 图标 + 名，任一开着就画（只开图标的星原来 2D 看得见点不中）
+    const drawn = flat2d ? satVisible(node) : node.labelShow !== false
+    if (!node.noradId) {   // 天线树虚拟星：「卫星天线树」那一集关着时它不在点云里，但标记照样由 redrawSats 画着
       const te = treeGeoCache.get(String(node.folder))
-      if (te && node.labelShow !== false) push(te)
+      if (te && drawn) push(te)
       continue
     }
     const cov = satcov.selected.value.length && satVisible(node) && (node.antennas || []).some((a) => satcov.selected.value.includes(grd.keyOf(node.folder, a.name)))
-    if (node.labelShow !== false || cov) push(liveEntryOf(node.noradId))
+    if (drawn || cov) push(liveEntryOf(node.noradId))
     if (!cov) continue
     for (const a of node.antennas || []) {
       const k = grd.keyOf(node.folder, a.name)
@@ -3462,6 +3490,7 @@ function closeCard() { _userSelTick++; stopFollow(); selEntries = []; selEntry =
 const modelsApi = (typeof window !== 'undefined' && window.api && window.api.models) || null
 let modelLayer = null
 let offModelsChanged = null
+let offSceneCmd = null   // 计算窗口 → 主窗口命令（scene:cmd）的退订
 const modelLib = shallowRef({ list: [], byId: new Map(), prefs: null })
 let modelBinds = { prefs: null, bindings: {} }
 const modelMatchCache = new Map()        // satKey → { id, rule }
@@ -4018,7 +4047,7 @@ function selSatsForGroup() {
 function addSelToGroup(g) {
   let sats = selSatsForGroup()
   if (!sats.length && filterEntries.length) sats = filterEntries.map((e) => ({ noradId: e.noradId, name: e.name }))
-  if (!sats.length) { appAlert('尚未选中卫星。'); return }
+  if (!sats.length) { appAlert('未选择卫星。'); return }
   const n = satGroups.append(g.id, sats)
   const gg = satGroups.find(g.id)
   logMsg(n ? `已加入 ${n} 颗到卫星组「${g.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `所选卫星都已在「${g.name}」中`)
@@ -4027,7 +4056,7 @@ function addSelToGroup(g) {
 // 把当前选中的卫星【移出】某组（一般用于正在显示的组：点该组显示 → Ctrl 选要删的星 → 移出）
 function removeSelFromGroup(g) {
   const ids = selSatsForGroup().map((s) => s.noradId)
-  if (!ids.length) { appAlert('尚未选中要移出的卫星。'); return }
+  if (!ids.length) { appAlert('未选择要移出的卫星。'); return }
   const n = satGroups.removeSats(g.id, ids)
   const gg = satGroups.find(g.id)
   logMsg(n ? `已从卫星组「${g.name}」移出 ${n} 颗（剩 ${gg ? gg.sats.length : '?'} 颗）` : '所选卫星不在该组中')
@@ -4077,7 +4106,7 @@ function satGrpSweep() {
   let rep = []
   try { rep = satGroups.reconcile(probe, universeFetchedMin) } catch { return }
   for (const r of rep) {
-    if (r.skipped) { logMsg(`卫星组「${r.name}」：${r.total} 颗里有 ${r.skipped} 颗不在最新星历中，占比过高，未自动移除`, 'warn'); continue }
+    if (r.skipped) { logMsg(`卫星组「${r.name}」：${r.total} 颗中有 ${r.skipped} 颗不在最新星历中，占比过高，未自动移除`, 'warn'); continue }
     if (!r.removed.length) continue
     const who = r.removed.map((s) => `${s.name || 'NORAD'} (${s.id})`).join('、')
     logMsg(`卫星组「${r.name}」：已移除离轨的 ${r.removed.length} 颗 —— ${who}（剩 ${r.remain} 颗）`)
@@ -4305,13 +4334,13 @@ const expList = computed(() => {
 })
 const expActions = computed(() => {
   const a = [
-    { key: 'focus', label: '聚焦', icon: 'crosshair', title: '地图上只显示选中的这批星，并把地球转到它们那一面（单颗＝与双击一颗相同：选中并转过去）' },
-    { key: 'addto', label: '加入组', icon: 'folder-plus', title: '把选中的卫星加入某个卫星组，或新建一组' }
+    { key: 'focus', label: '聚焦', icon: 'crosshair', title: '地图上仅显示选中的卫星，并将地球转到其所在一面（单颗＝与双击相同：选中并转至该卫星）' },
+    { key: 'addto', label: '加入组', icon: 'folder-input', title: '把选中的卫星加入某个卫星组，或新建一组' }
   ]
   if (expTag.value[0] === 's') a.push({ key: 'rmfrom', label: '移出', icon: 'minus', title: '把选中的卫星从本组移出', tone: 'warn' })
   if (expTag.value[0] === 'g' || expTag.value[0] === 'i') a.push({ key: 'hide', label: '剔除', icon: 'eye-off', title: '把选中的卫星从本集剔除（菜单「恢复剔除」可撤）', tone: 'warn' })
   if (expTag.value === TREE_SET) a.push({ key: 'reveal', label: '在天线树中显示', icon: 'earth', title: '切到对地覆盖分析视图，展开并定位到选中的第一颗星' })
-  a.push({ key: 'export', label: '导出', icon: 'download', title: '把选中的卫星导出为星历文件（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）' })
+  a.push({ key: 'export', label: '导出', icon: 'file-export', title: '把选中的卫星导出为星历文件（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）' })
   return a
 })
 // 把列表里选中的这批星解析成可渲染 entries。
@@ -4411,7 +4440,7 @@ watch(() => satGroups.list.value.length, () => {
   const src = String(vis.satSrc.value || '')
   if (src[0] === 's' && !satGroups.find(src.slice(2))) vis.satSrc.value = ''
 })
-// 聚焦所选：地图只显示这批 → 把它们设为选中星（画轨道/星下点/足迹 + 信息卡逐颗列出）→ 地球转到它们那一面。
+// 聚焦所选：这批所在的卫星集没开就打开（别的集不动）→ 把它们设为选中星（画轨道/星下点/足迹 + 信息卡逐颗列出）→ 地球转到它们那一面。
 // 单颗与双击一颗完全同效；多颗只是把同一套动作施加到一批上，不是另一种行为。
 // 选中集不截断（信息卡、存为组、加入组都按全部算）；画多少细节由 focusLod 分档决定。
 // tagOverride：不经侧栏展开直接聚焦某一行时传该行的展开标记（'g:'/'s:'/'c:'），让 expResolve 走对应的快路径。
@@ -4639,14 +4668,14 @@ const setRows = computed(() => {
     } else if (k === 'g') {
       const g = GROUPS.find((x) => x.key === r); if (!g) continue
       const o = ov[id] || {}
-      rows.push({ id, kind: 'builtin', name: o.name || g.label, lit: !o.name, count: setCount(id), sub: '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，菜单里可重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
+      rows.push({ id, kind: 'builtin', name: o.name || g.label, lit: !o.name, count: setCount(id), sub: '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，可在菜单中重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
     } else if (k === 's') {
       const g = satGroups.find(r); if (!g) continue
       rows.push({ id, kind: 'group', name: g.name, count: g.sats.length, sub: '', color: g.color || '', colorable: true, visible: vis.has(id), renamable: true, icon: 'layers', iconTitle: '卫星组：按 NORAD 记录的成员集', modified: false })
     } else if (k === 'i') {
       const g = importGroups.value.find((x) => x.id === r); if (!g) continue
       const o = ov[id] || {}
-      rows.push({ id, kind: 'import', name: g.name, count: setCount(id), sub: impSub(g), color: g.color || '', colorable: true, visible: vis.has(id), renamable: true, icon: g.kind === 'ephem' ? 'clock' : 'import', iconTitle: g.kind === 'ephem' ? '时间标签位置序列，按插值取位，不做轨道外推' : '导入的平均根数，走 SGP4', modified: !!(o.hidden && o.hidden.length) })
+      rows.push({ id, kind: 'import', name: g.name, count: setCount(id), sub: impSub(g), color: g.color || '', colorable: true, visible: vis.has(id), renamable: true, icon: g.kind === 'ephem' ? 'clock' : 'file-import', iconTitle: g.kind === 'ephem' ? '时间标签位置序列，按插值取位，不做轨道外推' : '导入的平均根数，走 SGP4', modified: !!(o.hidden && o.hidden.length) })
     } else if (k === 'c') {
       const c = customConst.list.value.find((x) => x.id === r); if (!c) continue
       rows.push({ id, kind: 'custom', name: c.name, count: customConst.count(c), sub: ccCode(c), color: c.color, colorable: true, visible: vis.has(id), renamable: true, icon: 'orbit', iconTitle: '自定义星座（轨道向导生成）', modified: false })
@@ -4660,7 +4689,7 @@ const searchRow = computed(() => (filterN.value > 0 ? { id: 'q', kind: 'search',
 const setSummary = computed(() => {
   const vis = satSets.visible.value
   // 「卫星天线树」开着但一颗星都没往图上加：不算一集（与 satSetLabel 同一口径）
-  const treeIdle = vis.has(TREE_SET) && !treeSetMembers(grdSats.value, treeGeoIdMap.value).some((m) => satVisible(m.node))
+  const treeIdle = vis.has(TREE_SET) && !treeSetMembers(grdSats.value, treeGeoIdMap.value).length
   return { shown: shownCount.value, layers: vis.size - (treeIdle ? 1 : 0), dataTime: dataTime.value, status: status.value }
 })
 const soloInfo = computed(() => (satSets.solo.value ? { id: satSets.solo.value.id, name: setName(satSets.solo.value.id), lit: setNameLit(satSets.solo.value.id) } : null))
@@ -4674,7 +4703,7 @@ const addItems = computed(() => {
   const out = [
     { key: 'group', label: '新建卫星组', icon: 'folder-plus' },
     { key: 'wizard', label: '生成卫星或星座…', icon: 'orbit' },
-    { key: 'import', label: '导入星历文件…', icon: 'import' },
+    { key: 'import', label: '导入星历文件…', icon: 'file-import' },
     { key: 'finder', label: '从目录查找…', icon: 'filter' }
   ]
   const removed = BUILTIN_KEYS.filter((k) => satSets.isRemoved('g:' + k))
@@ -4686,11 +4715,11 @@ function setMenuItems(row) {
   const id = row.id, k = row.kind
   const order = satSets.order.value, idx = order.indexOf(id), n = order.length
   const head = [
-    { key: 'solo', label: '仅显示这一集', icon: 'eye' },
+    { key: 'solo', label: '仅显示该集', icon: 'eye' },
     { key: 'focus', label: '聚焦', icon: 'crosshair' },
     { key: 'expand', label: expTag.value === id ? '收起成员' : '展开成员', icon: 'list' }
   ]
-  if (k === 'search') return head.concat([{ sep: true }, { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' }, { key: 'copy', label: '复制卫星', icon: 'copy' }, { key: 'exportEph', label: '导出星历…', icon: 'download' }, { sep: true }, { key: 'close', label: '关闭', icon: 'x' }])
+  if (k === 'search') return head.concat([{ sep: true }, { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' }, { key: 'copy', label: '复制卫星', icon: 'copy' }, { key: 'exportEph', label: '导出星历…', icon: 'file-export' }, { sep: true }, { key: 'close', label: '关闭', icon: 'x' }])
   // 卫星天线树：成员与名字归天线树管 —— 不改名、不粘贴、不删除
   if (k === 'tree') return head.concat([
     { sep: true },
@@ -4699,7 +4728,7 @@ function setMenuItems(row) {
     { sep: true },
     { key: 'copy', label: '复制卫星', icon: 'copy' },
     { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' },
-    { key: 'exportEph', label: '导出星历…', icon: 'download' },
+    { key: 'exportEph', label: '导出星历…', icon: 'file-export' },
     { sep: true },
     { key: 'reveal', label: '在天线树中显示', icon: 'earth' },
     row.color ? { key: 'colorReset', label: '恢复默认颜色', icon: 'undo-2' } : null
@@ -4711,12 +4740,12 @@ function setMenuItems(row) {
     { key: 'up', label: '上移', icon: 'arrow-up', disabled: idx <= 0 },
     { key: 'down', label: '下移', icon: 'arrow-down', disabled: idx < 0 || idx >= n - 1 },
     { sep: true },
-    { key: 'rename', label: '重命名', icon: 'pencil' },
+    { key: 'rename', label: '重命名', icon: 'pencil', hint: 'F2' },
     { key: 'copy', label: '复制卫星', icon: 'copy' },
     clip ? { key: 'paste', label: k === 'group' ? '粘贴（加入本集）' : (k === 'custom' && clip.cfg) ? '粘贴星座副本' : '粘贴为新卫星组', icon: 'clipboard', hint: clip.label } : null,
     { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' },
-    { key: 'send', label: '发送到小程序…', icon: 'smartphone' },
-    { key: 'exportEph', label: '导出星历…', icon: 'download' },
+    { key: 'send', label: '发送到小程序…', icon: 'device-mobile-share' },
+    { key: 'exportEph', label: '导出星历…', icon: 'file-export' },
     { sep: true }
   ])
   const hidden = satSets.hiddenOf(id).size
@@ -4764,7 +4793,7 @@ async function setFocus(row) {
   status.value = `${row.name}：读取卫星名录…`
   const sats = await setSatsOf(row.id)
   if (!sats) { status.value = ''; return }
-  if (!sats.length) { status.value = ''; appAlert(`「${row.name}」还没有卫星。`); return }
+  if (!sats.length) { status.value = ''; appAlert(`「${row.name}」暂无卫星。`); return }
   expFocus(sats, row.name, row.id)
 }
 function pasteAsNewGroup(clip) {
@@ -4777,7 +4806,7 @@ function setPaste(row) {
   if (k === 'group') {
     const n = satGroups.append(r, clip.sats)
     const gg = satGroups.find(r)
-    logMsg(n ? `已粘贴 ${n} 颗到卫星组「${row.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `剪贴板里的卫星都已在「${row.name}」中`)
+    logMsg(n ? `已粘贴 ${n} 颗到卫星组「${row.name}」（去重后共 ${gg ? gg.sats.length : '?'} 颗）` : `剪贴板中的卫星均已在「${row.name}」中`)
     if (n) ensureSatGroupEntries(r)
     return
   }
@@ -4875,7 +4904,7 @@ async function exportSet(row) {
   const sats = await setSatsOf(id)
   status.value = ''
   if (!sats) return
-  if (!sats.length) { appAlert(`「${row.name}」还没有卫星。`); return }
+  if (!sats.length) { appAlert(`「${row.name}」暂无卫星。`); return }
   const ents = await expResolve(sats, id)
   openEphExport({ title: row.name, titleLit: !!row.lit, items: exportItemsOf(ents), group: k === 'g' ? { kind: 'builtin', key: r, hidden: [...satSets.hiddenOf(id)] } : null })
 }
@@ -4979,7 +5008,7 @@ async function setAction(key, row) {
   if (key === 'copy' || key === 'saveGroup') {
     const sats = await setSatsOf(id)
     if (!sats) return
-    if (!sats.length) { appAlert(`「${row.name}」还没有卫星。`); return }
+    if (!sats.length) { appAlert(`「${row.name}」暂无卫星。`); return }
     if (key === 'copy') {
       const c = k === 'custom' ? customConst.list.value.find((x) => x.id === r) : null
       satClip.value = { label: row.name, sats, cfg: c ? { name: c.name, params: { ...c.params }, color: c.color, colorByPlane: c.colorByPlane !== false, design: c.design ? JSON.parse(JSON.stringify(c.design)) : undefined } : null }
@@ -5010,7 +5039,7 @@ async function setColorOf(row, hex) {
 async function setDelete(row) {
   const k = row.kind, id = row.id, r = id.slice(2)
   expDrop(id)
-  if (k === 'builtin') { satSets.drop(id, true); applySetsChanged(); logMsg(`已从卫星集里移除「${row.name}」（「＋」菜单可找回）`); return }
+  if (k === 'builtin') { satSets.drop(id, true); applySetsChanged(); logMsg(`已从卫星集中移除「${row.name}」（「＋」菜单可找回）`); return }
   if (k === 'group') { satSets.drop(id); satGroups.remove(r); registerSets(); applySetsChanged(); logMsg(`已删除卫星组「${row.name}」`); return }
   if (k === 'custom') { satSets.drop(id); customConst.remove(r); registerSets(); applySetsChanged(); logMsg(`已删除自定义星座「${row.name}」`); return }
   if (k === 'import') { const g = importGroups.value.find((x) => x.id === r); if (g) { satSets.drop(id); await impDelete(g) } }
@@ -5073,21 +5102,21 @@ function finderPick(items) {
 }
 function finderShow(items) {
   const hit = finderPick(items)
-  if (!hit.length) { appAlert('没有命中的卫星。'); return }
+  if (!hit.length) { appAlert('无匹配卫星。'); return }
   keyword.value = ''; searchResults.value = []
   showSearchHits(hit, finderLabel())
   finderOpen.value = false
 }
 function finderSave(items) {
   const hit = finderPick(items)
-  if (!hit.length) { appAlert('没有命中的卫星。'); return }
+  if (!hit.length) { appAlert('无匹配卫星。'); return }
   const g = satGroups.add(hit.map((e) => ({ noradId: e.noradId, name: e.name })), finderLabel())
   if (g) { logMsg(`已存为卫星组「${g.name}」：${g.sats.length} 颗`); registerSets(); toggleSet('s:' + g.id) }
   finderOpen.value = false
 }
 function finderAddTo(g, items) {
   const sats = finderPick(items).map((e) => ({ noradId: e.noradId, name: e.name }))
-  if (!sats.length) { appAlert('没有命中的卫星。'); return }
+  if (!sats.length) { appAlert('无匹配卫星。'); return }
   if (!g) { const ng = satGroups.add(sats, finderLabel()); if (ng) { logMsg(`已存为卫星组「${ng.name}」：${ng.sats.length} 颗`); registerSets(); toggleSet('s:' + ng.id) } return }
   const n = satGroups.append(g.id, sats)
   const gg = satGroups.find(g.id)
@@ -5218,6 +5247,8 @@ function sgmToggleMem(id) {
   if (i >= 0) sgmSel.value.splice(i, 1); else sgmSel.value.push(id)
 }
 // 全选/反选：只针对当前过滤后可见的成员
+// 过滤后的组内卫星是否已全选（按钮文字随之在「全选 / 全不选」之间换）
+const sgmMemAllSel = computed(() => { const on = new Set(sgmSel.value); return sgmMembers.value.length > 0 && sgmMembers.value.every((m) => on.has(m.id)) })
 function sgmToggleMemAll() {
   const vis = sgmMembers.value.map((m) => m.id)
   if (!vis.length) return
@@ -5238,7 +5269,7 @@ function sgmRemoveMem(ids) {
 }
 function sgmShow() {
   const g = sgmCur.value; if (!g) return
-  if (!g.sats.length) { appAlert('该组还没有卫星。'); return }
+  if (!g.sats.length) { appAlert('该组暂无卫星。'); return }
   closeSatGrpMgr(); soloSet('s:' + g.id)   // 管理器里「显示该组」= 仅显示这一集（顶部标签可还原叠加）
 }
 
@@ -5385,7 +5416,19 @@ const tlMode = ref('roll')
 const tlStart = ref(null), tlStop = ref(null)   // 固定档起止（UTC ms）
 const tlEnd = ref('stop')                       // 'stop' | 'loop' | 'continue'
 const tlFixed = computed(() => tlMode.value === 'fixed' && Number.isFinite(tlStart.value) && Number.isFinite(tlStop.value) && tlStop.value > tlStart.value)
-watch([tlFixed, tlStart, tlStop, tlEnd], () => clockSetRange(tlFixed.value ? { startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value } : null), { immediate: true })
+// 入点 / 出点（I / O 键打点、Alt+X 清除 —— 剪辑软件口径）：在时间轴上圈出一段分析 / 出片区间。
+//   · 两点都在时，时钟的连播区间换成入出点（到头按时间轴设置的 停止 / 循环 / 继续 处理）—— 时段之内再圈一段反复看
+//   · 视频导出「随时间轴」档的起止取入出点（见 vexp 的 timeline()）
+//   · 只在本次运行内有效，不进存档
+const ioIn = ref(null), ioOut = ref(null)
+const ioOn = computed(() => ioIn.value != null && ioOut.value != null && ioOut.value > ioIn.value)
+watch([tlFixed, tlStart, tlStop, tlEnd, ioIn, ioOut], () => clockSetRange(
+  ioOn.value ? { startMs: ioIn.value, stopMs: ioOut.value, end: tlEnd.value }
+    : tlFixed.value ? { startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value } : null), { immediate: true })
+// 打点在当前游标处；与另一端倒挂（出点打在入点之前 / 反之）就丢掉另一端 —— NLE 同口径
+function markIn() { ioIn.value = Math.round(clock.tMs); if (ioOut.value != null && ioOut.value <= ioIn.value) ioOut.value = null }
+function markOut() { ioOut.value = Math.round(clock.tMs); if (ioIn.value != null && ioIn.value >= ioOut.value) ioIn.value = null }
+function clearIo() { ioIn.value = null; ioOut.value = null }
 // —— 时间轴读数时区：'local'（本机，默认）| 'utc' | 数字（相对 UTC 的固定偏移，分钟）——
 // 只影响【显示】：Date 内部是 UTC 毫秒数，星位/晨昏线全程走 getUTC*，换档不改变任何计算结果。
 // 加它是因为晨昏线、星历历元、过境窗口都是 UTC 口径，对国际时刻时需要直接读 UTC 而不是心算 −8；
@@ -5504,6 +5547,73 @@ const perMark = computed(() => {
     xb: inTrack(xb) ? Math.min(snapX(clamp(xb, 0, W)), snapX(W) - hpPx.value) : null
   }
 })
+// 刻度尺上的入出点：区间带（两点都在且有一段落在窗内）+ 两道边线（窗外为 null）。几何口径同 perMark
+const ioMark = computed(() => {
+  if (ioIn.value == null && ioOut.value == null) return null
+  const W = trackWidthPx.value, lo = viewLoMs.value, span = windowMin.value * 60000
+  const xOf = (ms) => (ms == null ? null : (ms - lo) / span * W)
+  const a = xOf(ioIn.value), b = xOf(ioOut.value)
+  const inTrack = (x) => x != null && x >= -0.5 && x <= W + 0.5
+  let band = null
+  if (ioOn.value && b > 0 && a < W) { const l = snapX(clamp(a, 0, W)), r = snapX(clamp(b, 0, W)); if (r > l) band = { l, w: r - l } }
+  return {
+    band,
+    xa: inTrack(a) ? snapX(clamp(a, 0, W)) : null,
+    xb: inTrack(b) ? Math.min(snapX(clamp(b, 0, W)), snapX(W) - hpPx.value) : null
+  }
+})
+// ---- 时间轴事件层（stores/tlMarks）：过境窗口 / 计算窗口推来的时刻与区间画在刻度尺上 ----
+// 几何口径同 ioMark：按当前可见窗把毫秒换成像素，整段在窗外的不画；区间裁到轨道内
+const TL_SRC_NAME = { vis: '过境', ngso: 'NGSO 链路预算', regen: '再生式链路预算', e2e: '端到端链路预算', suntool: '日凌预报', isl: '星间距离', ci: '干扰分析' }
+const tlMarkBands = computed(() => {
+  const L = tlMarks.list; if (!L.length) return []
+  const W = trackWidthPx.value, lo = viewLoMs.value, span = windowMin.value * 60000
+  if (!(W > 0) || !(span > 0)) return []
+  const out = []
+  for (const m of L) {
+    const a = (m.t0 - lo) / span * W
+    if (m.t1 == null) {
+      if (a < -1 || a > W + 1) continue
+      out.push({ m, pt: true, l: snapX(clamp(a, 0, W)), w: 0 })
+    } else {
+      const b = (m.t1 - lo) / span * W
+      if (b < 0 || a > W) continue
+      const l = snapX(clamp(a, 0, W)), r = snapX(clamp(b, 0, W))
+      out.push({ m, pt: false, l, w: Math.max(2, r - l) })
+    }
+  }
+  return out
+})
+function tlMarkTitle(m) {
+  const f = (ms) => { const d = new Date(ms), p = (n) => String(n).padStart(2, '0'); return `${tYear(d)}-${p(tMon(d) + 1)}-${p(tDay(d))} ${p(tHour(d))}:${p(tMin(d))}:${p(tSec(d))}` }
+  const who = TL_SRC_NAME[m.src] || m.src
+  const span = m.t1 != null ? `${f(m.t0)} — ${f(m.t1)}` : f(m.t0)
+  return `${who} · ${m.label} · ${span} ${tzLabel.value}（单击跳到起点 · Ctrl+← / Ctrl+→ 在标记间跳 · 右键移除该类）`
+}
+function seekToMs(ms) {
+  if (!Number.isFinite(ms)) return
+  if (live.value) toggleLive()                  // 实时档：先停在当前时刻再跳（否则下一拍又被拉回此刻）
+  if (clock.mode === 'play') togglePlay(clock.dir)
+  const [lo, hi] = winMsRange()
+  if (ms < lo || ms > hi) reanchorAt(ms); else clockSetTime(ms)   // 窗内直接拨；窗外换锚点（同「跳到时刻」）
+}
+function seekMark(b) { seekToMs(b.m.t0) }
+// 事件条右键：菜单（跳到起点 / 跳到终点 / 清除此类）。原先右键直接清掉整类，手一偏一整组过境窗口就没了
+const mkMenu = ref(null)   // { x, y, m }
+function openMkMenu(e, b) { mkMenu.value = { x: Math.min(e.clientX, window.innerWidth - 170), y: Math.min(e.clientY, window.innerHeight - 110), m: b.m } }
+function mkDo(fn) { const m = mkMenu.value && mkMenu.value.m; mkMenu.value = null; if (m) fn(m) }
+function jumpMark(dir) { const t = adjacentMarkMs(clock.tMs, dir); if (t != null) seekToMs(t); return t != null }
+// 过境结果 → 时间轴：全部过境窗口并成「至少一颗可见」的区间（大星座上千个窗口逐个画没法看），每段标颗次
+watch(() => vis.accessResults.value, (rows) => {
+  if (!rows || !rows.length) { clearMarks('vis'); return }
+  const ws = []
+  for (const s of rows) for (const w of (s.windows || [])) if (Number.isFinite(w.startMs) && Number.isFinite(w.endMs)) ws.push([w.startMs, w.endMs])
+  ws.sort((a, b) => a[0] - b[0])
+  const merged = []
+  for (const [a, b] of ws) { const last = merged[merged.length - 1]; if (last && a <= last.t1) { last.t1 = Math.max(last.t1, b); last.n++ } else merged.push({ t0: a, t1: b, n: 1 }) }
+  setMarks('vis', merged.slice(0, 400).map((x) => ({ label: `${x.n} 次过境`, t0: x.t0, t1: x.t1 })))
+})
+
 // 对星指标表窗口的时刻读数：取【时间轴游标】calcAt()，不是系统时钟（与晨昏线/可见性同口径）
 const timeText = computed(() => {
   void tzMode.value
@@ -5704,7 +5814,8 @@ function step(min) { applyTimeMs(clock.tMs + min * 60000) }
 // 键盘(role=slider)：←→ 走一个【仿真步长】(Shift ×10)，PageUp/Down ±1h，Home/End 跳窗口两端，空格播放/暂停
 function onTrackKey(e) {
   let h = true
-  if (e.key === 'ArrowLeft') clockStepBy(e.shiftKey ? -10 : -1)
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) jumpMark(e.key === 'ArrowRight' ? 1 : -1)   // 事件标记之间跳
+  else if (e.key === 'ArrowLeft') clockStepBy(e.shiftKey ? -10 : -1)
   else if (e.key === 'ArrowRight') clockStepBy(e.shiftKey ? 10 : 1)
   else if (e.key === 'PageDown') step(-60)
   else if (e.key === 'PageUp') step(60)
@@ -5884,8 +5995,10 @@ function resetCrs() { forgetFlatFollow(); projSpin.value = false; setMapCrs(MAP_
 function setMapProj(k) { setMapCrs({ proj: k }); if (flat) flat.setProjection(mapCrs.proj, projOpts()); if (imageryOn.value) applyImagery(true) }
 // 2D 经纬图框（SATSOFT 式：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格，与视频导出同一支 geo/geoFrame.js）。
 // 档位在 mapCrs.frame（随视图存档）；轴标题按界面语言出，切语言时重推（syncNameLang）
-const mapFrameCfg = () => ({ ...mapCrs.frame, lang: curLang() })
+// 底色「跟随外观」在这里按当前外观解析；换外观时重推
+const mapFrameCfg = () => ({ ...mapCrs.frame, theme: frameThemeOf(mapCrs.frame.theme, uiTheme.resolved), lang: curLang() })
 function setMapFrame(p) { setMapCrs({ frame: p }); if (flat) flat.setMapFrame(mapFrameCfg()) }
+watch(() => uiTheme.resolved, () => { if (flat && mapCrs.frame.theme === 'auto') flat.setMapFrame(mapFrameCfg()) })
 
 // ── 逐投影的可调参数 ───────────────────────────────────────────────────────
 // 哪档摆哪几个控件由 projParams 说了算（见 geo/projection.js 的 PROJ_PARAMS）：
@@ -6009,6 +6122,13 @@ function dropFollow() { if (mapCrs.subFollow) setMapCrs({ subFollow: false }) }
 // 展开「星下点」那一节并跟随（投影中心随星下点走），起手先把星下点平移到画面中心。
 // 退出：再点一次 / Esc / 自己拖动画面（接管）/ 收起那一节或手改投影中心（dropFollow 那几处）。
 const flatFollowing = computed(() => flatView.value && subOpen.value && !!mapCrs.subFollow && !!mapCrs.subPt && mapCrs.subPt.src === 'sat')
+// 2D「跟随卫星」正跟着的那颗星（切回 3D 时交给相机跟随）。星下点参考只存身份 → 按号回认条目，先认聚焦集里那份（同 startFlatFollow 换主选）。
+// 投影设置里手开的星下点跟随（_flatFollowSat 为假）不算。subOpen / subFollow 显式再判：两个复位 watch 是排队跑的，标志可能还没落
+function flatFollowEntry() {
+  const sp = mapCrs.subPt
+  if (!_flatFollowSat || !subOpen.value || !mapCrs.subFollow || !sp || sp.src !== 'sat') return null
+  return selEntries.find((x) => satIdOf(x) === sp.id) || satEntryById(sp.id)
+}
 // 进入 2D 跟随前的星下点参考 / 投影中心 / 视图。跟随借用的是 mapCrs 这几项（会存盘），退出时还回去
 //（同 3D 跟随退出复原相机）——否则投影中心停在那颗星最后的星下点、用户原来的星下点参考被换掉，重启后仍是这样
 let _flatFollowPrev = null
@@ -6144,10 +6264,10 @@ function refreshLook() { cursor.look = cursor.ll ? lookReadout(cursor.ll) : null
 function setLookMode(k) { setMapCrs({ lookMode: k }); refreshLook() }
 const subPtTitle = computed(() => (curLang() === 'en'
   ? 'Marked with a ⊕ on the map; the cursor az/el · u/v readout is measured from it, and the azimuthal-equidistant centre is pinned to it. For a satellite source only the identity is stored — the position is solved at the clock time, so the marker follows the timeline'
-  : '图上画一个 ⊕ 标记，光标的 az/el·u/v 按它算，方位等距的圆心也钉在它上面。卫星来源只记身份，位置每拍按时钟解算，故标记跟着时间轴走'))
+  : '图上画一个 ⊕ 标记，光标的 az/el·u/v 按其计算，方位等距的圆心也钉在它上面。卫星来源只记身份，位置每拍按时钟解算，故标记跟着时间轴走'))
 const lookTitle = computed(() => (curLang() === 'en'
   ? 'Extra cursor readout beside longitude/latitude, relative to the reference satellite: az/el is the antenna frame with boresight at nadir; u/v are the direction cosines of the same direction. Geocentric angle and slant range are in the readout tooltip'
-  : '除经纬度外，光标额外读一项【相对参考卫星】的量：az/el 是 boresight 指星下天底的天线系方位角/仰角，u/v 是同一方向的方向余弦。地心角与斜距在读数的悬停提示里'))
+  : '除经纬度外，光标额外读一项【相对参考卫星】的量：az/el 是 boresight 指星下天底的天线系方位角/仰角，u/v 是同一方向的方向余弦。地心角与斜距在读数的悬停提示中'))
 // ★ 拼接串过不了 DOM 翻译层（它认的是整串），故这一条自己按语言生成
 const projSatTitle = computed(() => {
   const nm = subPtName.value || projSatName.value
@@ -6201,13 +6321,13 @@ const projTitle = computed(() => (curLang() === 'en' ? [
   'Albers: equal-area conic, for regional sheets, both standard parallels adjustable. The central meridian follows the map centre — set it to 105°E for the conventional map of China',
   'Azimuthal Equidistant: the whole Earth inside one circle. Distance from the centre is proportional to the true geocentric angle and the rim is the antipode — put the centre on a sub-satellite point and the radius reads off the geocentric angle'
 ] : [
-  '只作用于 2D 平面图的画法；3D 球体与一切计算 / 导出不受影响。',
+  '仅作用于 2D 平面图的绘制方式；3D 球体与一切计算 / 导出不受影响。',
   '等距圆柱：出厂档。经纬直接当直角坐标，经纬网是两族直线',
   '墨卡托：等角（局部不变形），GIS 与在线瓦片的通用口径。纬度钳到 ±85.05°，高纬面积夹大',
   '等积地球：等积。配覆盖面积读数看，面积不被拉大',
   '罗宾逊：既不等角也不等积的折中画法，出图好看',
   '阿尔伯斯：等积圆锥，区域图用，两条标准纬线可调。中央经线跟随「画面中心」，设成 105°E 即得常规中国全图',
-  '方位等距：整个地球装在一个圆里。到圆心的图上距离正比于真实地心角、圆周即对跖点，圆心放在星下点时半径直接读地心角'
+  '方位等距：整个地球置于一个圆内。到圆心的图上距离正比于真实地心角、圆周即对跖点，圆心放在星下点时半径直接读地心角'
 ]).join('\n'))
 
 // 参考系两档来回切：惯性视角（地球随仿真时钟东转）↔ 相机跟随（地面不动）。套到 scene 的活由 watch 干。
@@ -6369,7 +6489,51 @@ function navTick() {
   saveView()                                // 防抖写盘：运动停止 300ms 后落一次
   navRaf = requestAnimationFrame(navTick)
 }
-function navStop() { navHeld.clear(); if (navRaf) { cancelAnimationFrame(navRaf); navRaf = 0 } }
+function navStop() { navHeld.clear(); kHeld = false; if (navRaf) { cancelAnimationFrame(navRaf); navRaf = 0 } }   // 失焦：按住的 K 也一并松开
+// 空格 = 播放 / 暂停（主窗口全局）。只在焦点不归任何控件时接管：输入框 / 按钮 / 下拉 / 链接 / 带 tabindex 或 role 的自绘控件
+// 自己认空格（时间尺 .tb-track 由 onTrackKey 先处理并 preventDefault）；有弹窗 / 右键菜单遮罩开着时也不接管
+const SPACE_OWNERS = /^(INPUT|TEXTAREA|SELECT|BUTTON|A|SUMMARY|OPTION|LABEL)$/
+function spaceIsPlayKey(e) {
+  if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return false
+  const t = e.target
+  if (t && t !== document.body && t !== document.documentElement && t.tagName !== 'CANVAS' &&
+    (t.isContentEditable || SPACE_OWNERS.test(t.tagName) || t.hasAttribute('tabindex') || t.hasAttribute('role'))) return false
+  for (const el of document.querySelectorAll('.mask, [class*="-mask"]')) if (el.getClientRects().length) return false
+  return true
+}
+// 走带快捷键（剪辑软件口径）：J 反放 / K 停 / L 正放，同向再按一次 = 倍速升一档；按住 K 再点 J / L = 逐步；
+// I / O 在游标处打入点 / 出点，Alt+X 清除。认物理键（e.code）：中文输入法 / 大写锁定下 e.key 会变。
+// 焦点在输入类控件里、或有弹窗遮罩开着时不接管（同空格）。方向键已归 3D 视角（NAV_ARROWS），故逐步走 K+J / K+L
+let kHeld = false
+const TRANSPORT_KEYS = ['KeyJ', 'KeyK', 'KeyL', 'KeyI', 'KeyO', 'KeyX']
+function transportKey(e) {
+  if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey) return false
+  const k = e.code
+  if (!TRANSPORT_KEYS.includes(k) || (k === 'KeyX' ? !e.altKey : e.altKey)) return false
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return false
+  for (const el of document.querySelectorAll('.mask, [class*="-mask"]')) if (el.getClientRects().length) return false
+  e.preventDefault()
+  if (scrubEnd) return true                     // 拖游标中：吞掉，不改走带
+  const faster = () => { const nx = SPEED_PRESETS.find((x) => x > clock.speed); if (nx) setSpeedVal(nx) }
+  if (k === 'KeyK') {
+    kHeld = true
+    if (e.repeat) return true
+    if (live.value) toggleLive()                // 实时中按 K：停在当前时刻
+    else if (clock.mode === 'play') togglePlay(clock.dir)
+  } else if (k === 'KeyJ' || k === 'KeyL') {
+    const dir = k === 'KeyL' ? 1 : -1
+    if (kHeld) clockStepBy(dir)
+    else if (e.repeat) return true
+    else if (clock.mode === 'play' && clock.dir === dir) faster()
+    else togglePlay(dir)
+  } else if (!e.repeat) {
+    if (k === 'KeyI') markIn()
+    else if (k === 'KeyO') markOut()
+    else clearIo()
+  }
+  return true
+}
 function onNavKeyDown(e) {
   // Esc 由里往外退一层（焦点在输入框里的 Esc 归输入框；输入法组字中的归输入法）：
   //   ① 站点栅编辑态（波束合成面板开着时的框选 / 加站，选中的站保留）—— 跟随卫星视角里也能加站，先退跟随就成了外层先拆、工具态还挂着
@@ -6384,6 +6548,14 @@ function onNavKeyDown(e) {
       if (bs.open.value && bs.stSel.value.size) { bs.clearStSel(); return }
     }
   }
+  if (transportKey(e)) return
+  if (renameActiveAntKey(e)) return
+  // Ctrl+← / Ctrl+→：在时间轴事件标记之间跳（方向键本身归 3D 视角；焦点在输入类控件里不接管）
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.defaultPrevented && tlMarks.list.length) {
+    const t = e.target
+    if (!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))) { if (jumpMark(e.key === 'ArrowRight' ? 1 : -1)) e.preventDefault(); return }
+  }
+  if ((e.key === ' ' || e.key === 'Spacebar') && spaceIsPlayKey(e)) { e.preventDefault(); if (!e.repeat && !scrubEnd) togglePlay(1); return }
   if (e.key === 'Shift') { navHeld.add('Shift'); return }
   if (!NAV_ARROWS.includes(e.key)) return
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return   // 已被时间轴/表格等消费，或带修饰键 → 不接管
@@ -6395,6 +6567,7 @@ function onNavKeyDown(e) {
   if (!navRaf) navRaf = requestAnimationFrame(navTick)
 }
 function onNavKeyUp(e) {
+  if (e.code === 'KeyK') kHeld = false
   navHeld.delete(e.key)
   if (e.key === 'Shift') navHeld.delete('Shift')
   if (navRaf && !NAV_ARROWS.some((k) => navHeld.has(k))) { cancelAnimationFrame(navRaf); navRaf = 0 }
@@ -6405,16 +6578,23 @@ watch(() => view.flat, (v) => applyFlat(v))
 // 平面图画布首帧画完才显形：v-show 一翻就露出画布底色（藏青块），而第一帧要等覆盖几何算完。
 // 未就绪时透明且不吃指针，底下的球照常可见可拖；切回 3D 立即复位（快速来回切时不把隐藏的画布标成已就绪）。
 const flatPainted = ref(false)
+// 切视图时交接中的跟随目标：跟随卫星 3D / 2D 各一套实现（相机跟随 / 星下点跟随），切视图＝这边退出、那边就绪后接着跟同一颗星。
+// 记在模块级而不是 applyFlat 的局部：切 2D 要等平面图就绪（几处 await），期间又切回 3D 时由那一趟接走，跟随不丢
+let _followCarry = null
 async function applyFlat(v) {
-  if (v) stopFollow()   // 跟随卫星只在 3D 球体里有：切 2D 先退出（相机回到进入前的位姿）
+  // 切 2D：3D 相机跟随先退（相机回到进入前的位姿，2D 期间 3D 循环停着），平面图就绪后按同一颗星接上 2D 跟随
+  if (v) { const fe = following.value ? followEntry : null; stopFollow(); if (fe) _followCarry = fe }
   flatView.value = v
   // 切回 3D：先恢复 3D 渲染循环（切 2D 时已暂停），再补齐 3D 覆盖层。
   // 编辑电平时只 patch 了当前可见视图（recomputeActive），另一视图需在此一次性重算。
   // 卫星层（含波束合成草图）在 2D 期间挂起未同步 → 这里一次性补建（见 redrawSats 尾注）。
   if (!v) {
     flatPainted.value = false
-    // 2D 跟随卫星只在平面图里有（同上面切 2D 先退 3D 跟随）：切回 3D 走与 Esc 同一套完整还原（投影中心 / 星下点参考 / 视图）——
-    // 不退的话借走的值留在存档里，3D 下星下点跟随还每 250 ms 整份重烘一遍看不见的平面图
+    // 2D 跟随卫星：走与 Esc 同一套完整还原（投影中心 / 星下点参考 / 视图），再在 3D 里接着跟同一颗星 ——
+    // 不退的话借走的值留在存档里，3D 下星下点跟随还每 250 ms 整份重烘一遍看不见的平面图。
+    // 只交接「跟随卫星」发起的那种；投影设置里手开的星下点跟随是平面图的投影口径，不带进 3D
+    const carry = flatFollowEntry() || _followCarry
+    _followCarry = null
     if (_flatFollowPrev || _flatFollowSat) stopFlatFollow()
     scene && scene.resume()
     // 模型图标：2D 期间每拍喂的是空表（iconFeedOn 认 3D），回到 3D 时钟停着就等不到下一拍 —— 当场按此刻喂一次，否则图标一直淡出着
@@ -6425,6 +6605,7 @@ async function applyFlat(v) {
     grd.recompute()
     satcov.recompute()   // 内部 panelOn/_painted 闸自己管：没画过不推
     pushLinksNow()       // 图上链路：2D 期间 3D 循环停着，回来按此刻补一份（停表时等不到下一拍）
+    if (carry) startFollow(carry)   // 场景已恢复、图标已按此刻喂过；跟随的星不是主选时 startFollow 自己设为主选（追加式）
     pushZoom(); return
   }
   await ensureCovIndex(); if (!covCleared.value) redraw()   // 已清除则切平面图不复现覆盖（covGeom 保持为空）
@@ -6434,6 +6615,10 @@ async function applyFlat(v) {
     requestAnimationFrame(() => { if (flatView.value) flatPainted.value = true })
     // 首次进入平面图时恢复上次视图（缩放+平移中心）；之后切换保持当前，不再覆盖
     if (!viewRestoredFlat) { viewRestoredFlat = true; if (savedView.flat) flat.setView(savedView.flat) }
+    // 3D 那边带过来的跟随：视图恢复之后再接（startFlatFollow 记下的「进入前视图」得是恢复后的那一屏）。
+    // 等平面图期间已切回 3D 的，那一趟已把 _followCarry 取走，这里是 null
+    const carry = _followCarry; _followCarry = null
+    if (carry && flatView.value) startFlatFollow(carry)
     pushZoom()
     scene && scene.pause()   // 平面图已就绪并盖住球面 → 暂停 3D 渲染循环，2D 不再被空转的 3D 拖慢
   }
@@ -6450,10 +6635,11 @@ function ensureFlat() {
     flat.setOnPick(onMapPick); flat.setPickExtras(() => pickExtraSats({ flat: true }))
     flat.setOnPanEnd(onFlatPanEnd)   // 跟随卫星中自己拖了画面 = 接管，退出跟随
     flat.setOnLabelDrag(grd.labelDrag); flat.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
+    if (flat.setBeamDragHit) { flat.setBeamDragHit(beamDragHitAt); flat.setLabelDragHit(labelDragHitAt) }   // 拖波束 / 拖标签只在按中目标时接管左键
     flat.setOnVertexDrag(onVertexDrag)   // 拖动单个顶点/标记点（Polygon 调点 或 标记「调整点位置」，分发）
     flat.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽：压在符号上按住即拖（须先进「调整位置」/「调点」，见 markDragKinds）
     flat.setOnPolyMove(onPolyMoveDrag)       // Polygon 整体拖动：按住内部平移全部顶点
-    flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
+    flat.setOnPolyDraw(onPolyDraw); flat.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：单击加点、Shift+按住拖动徒手画
     flat.setOnPlace((ll) => bs.placeAt(ll)); flat.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍平移）
     flat.setOnBoxSelect(bsOnBoxSelect); flat.setBoxSelectMode(bs.stEditOn.value)   // 站点栅框选（拖矩形选站，页面画橡皮筋）
     flat.setOnRotate(onFlatRotate); flat.setRotateMode(projSpin.value)   // 「拖动调整」：左键拖动改投影中心（见地图设置 → 2D 投影）
@@ -6535,8 +6721,11 @@ async function getPdfFonts() {
 async function saveExport(bytes, defaultName, filters) {
   if (!(window.api && window.api.exportFile)) { appAlert('需在桌面客户端中运行'); return }
   const r = await window.api.exportFile({ defaultName, data: bytes, filters })
-  // 成功/取消无需提示（已走系统保存对话框，用户自选路径即知结果）；仅失败弹错。
-  if (r && !r.ok && !r.canceled) { const msg = (r && r.error) || '写入失败'; appAlert('导出失败：' + msg) }
+  // 成功 → 状态栏回执（附「打开 · 在文件夹中显示」）；取消 → 清掉「正在导出…」；失败 → 状态栏红字 + 日志
+  if (r && r.ok) { const p = r.path || r.filePath || ''; if (p) showExported(p); else showStatus('已导出：' + defaultName) }
+  else if (r && r.canceled) clearStatusIf('正在导出…')
+  else reportError('导出失败', (r && r.error) || '写入失败')
+  return r
 }
 // fmt: 'png2' | 'png4' | 'pdf' | 'gxt' | 'kml'。
 // scope: 'world'(整幅世界图，默认) | 'view'(截图，当前视图所见即所得)。
@@ -6544,7 +6733,8 @@ async function saveExport(bytes, defaultName, filters) {
 //   view ：2D 平面图下按屏幕缩放/平移出矢量图；3D 球体下抓球面那一帧（位图，见 exportGlobeShot）。
 // gxt/kml 是数据导出（当前画面绘制的覆盖等值线，GXT+GRD 来源，同 collectGxt），与 scope 无关。
 async function exportMap(fmt, scope) {
-  if (exporting.value) return
+  if (exporting.value) { showStatus('正在导出…', { ms: 3000 }); return }
+  showStatus('正在导出…', { ms: 0 })
   // 数据导出（GXT/KML）统一走 exportDrawn：覆盖等值线 + 协调区多边形一起导（所见即所得），与 scope 无关。
   if (fmt === 'gxt' || fmt === 'kml') { return exportDrawn(fmt) }
   const view = scope === 'view'
@@ -6553,7 +6743,7 @@ async function exportMap(fmt, scope) {
   try {
     await ensureCovIndex(); if (!covCleared.value) redraw()
     await nextTick()
-    if (!ensureFlat()) { appAlert('地图渲染器未就绪，请切到 2D 平面图后重试'); return }
+    if (!ensureFlat()) { appAlert('地图渲染器未就绪。'); return }
     // ★ 必须在 feedFlat 之前置位：导出走 exportRender 的 compat 回放，只认 fillBands；而 compat 是
     //   exportRender 内部才置的，几何层（feedFlat → grd.recompute）比它先跑。置位后 fieldBackend()
     //   恒答 'paths'，这一轮就照旧出分带多边形 → PNG/PDF 与改造前逐字节相同。
@@ -6585,9 +6775,10 @@ async function exportMap(fmt, scope) {
       const lbl = targetW ? `${bytes.outW}px` : `${factor}x`
       await saveExport(bytes, `覆盖图_${tag}_${lbl}.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
-  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
+  } catch (e) { reportError('导出失败', e) }
   finally {
     exporting.value = false; exportFlat.value = false
+    clearStatusIf('正在导出…')   // 早退（渲染器未就绪等）时别让过程态挂着；成功 / 失败已被回执覆盖
     // 复位后再重算一轮：屏上那份换回 GPU 网格（导出期间被换成了分带多边形）
     if (flat) { flat.setExporting(false); grd.recompute() }
   }
@@ -6598,6 +6789,7 @@ async function exportMap(fmt, scope) {
 // PNG 按菜单倍率（2×/4×，见下面封顶那段注释）；PDF 是一页一张位图（球面没有几何可矢量化），固定 4×。
 async function exportGlobeShot(fmt) {
   if (!scene) { appAlert('3D 视图未就绪'); return }
+  showStatus('正在导出…', { ms: 0 })
   exporting.value = true
   try {
     const { renderGlobePNG, renderGlobePDF } = await import('../viz/globe3d/exportGlobe.js')
@@ -6618,8 +6810,8 @@ async function exportGlobeShot(fmt) {
       const lbl = targetW ? `${r.w}px` : `${Math.round(r.factor * 10) / 10}x`
       await saveExport(r.bytes, `覆盖图_${tag}_${lbl}.png`, [{ name: 'PNG 图片', extensions: ['png'] }])
     }
-  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
-  finally { exporting.value = false }
+  } catch (e) { reportError('导出失败', e) }
+  finally { exporting.value = false; clearStatusIf('正在导出…') }
 }
 
 // ===================== 视频导出（H.264 MP4 / PNG · JPEG 图片序列，见 viz/video/useVideoExport.js）=====================
@@ -6788,12 +6980,21 @@ const vexp = useVideoExport({
   prepare2D: async () => { if (!ensureFlat()) throw new Error('2D 平面图未就绪'); flat.setExporting(true); await feedFlat() },
   finish2D: () => { if (flat) { flat.setExporting(false); grd.recompute(); if (sideCtx() === 'satcov') satcov.recompute() } },
   tzMode: () => tzMode.value,
-  timeline: () => ({ fixed: tlFixed.value, startMs: tlStart.value, stopMs: tlStop.value, viewLo: viewLoMs.value, viewHi: viewHiMs.value }),
+  // 入出点优先（圈出的那段就是要出的片），其次固定时段，再次当前时间窗
+  timeline: () => (ioOn.value
+    ? { fixed: true, startMs: ioIn.value, stopMs: ioOut.value, viewLo: viewLoMs.value, viewHi: viewHiMs.value }
+    : { fixed: tlFixed.value, startMs: tlStart.value, stopMs: tlStop.value, viewLo: viewLoMs.value, viewHi: viewHiMs.value }),
   sources: videoSources,
   hudData: videoHudData,
   geoView: () => (flatView.value && flat ? flat.geoView() : null),
   uiFont: () => { try { return getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim() } catch { return '' } },
   log: (m) => logMsg(m)
+})
+// 视频导出面板打开时临时收起右侧信息栏（两栏同在右侧，1366 宽 + 侧栏 340 时画面只剩约 370 px，取景框就在这里面调），关掉还原
+let _vxpInfoWas = null
+watch(() => vexp.open.value, (o) => {
+  if (o) { _vxpInfoWas = shellUi.satInfo; if (shellUi.satInfo) shellUi.satInfo = false }
+  else { if (_vxpInfoWas && !shellUi.satInfo) shellUi.satInfo = true; _vxpInfoWas = null }
 })
 watch(vexpPvEl, (el) => vexp.attachPreview(el))
 // 视频取景期间挂起平面图自己的经纬图框（不动视角）：取景框里看到的就是成片，成片的图框归视频那一档
@@ -6837,7 +7038,11 @@ function addBatch(it) { it.batches.push(newBatch()); redraw() }
 function removeBatch(it, ba) { const i = it.batches.indexOf(ba); if (i >= 0) it.batches.splice(i, 1); redraw() }
 function setBatchName(it, ba, e) { ba.name = e.target.value }
 // 「定位」＝显式摆位：跟随卫星中先退回球面再正对（跟随中 scene 不接 faceLonLat，同树上「聚焦」）
-function focusCovSat(it) { const idx = idxOf(it.folder); if (idx && idx.lon != null) { stopFollow(); scene.faceLonLat(idx.lon, 0) } }
+function focusCovSat(it) {
+  const idx = idxOf(it.folder); if (!idx || idx.lon == null) return
+  if (flatView.value && flat) { flat.centerOn(idx.lon, 0, { ifOffscreen: true }); return }   // 2D：把轨位平移进画面（3D 相机此时看不见）
+  stopFollow(); scene.faceLonLat(idx.lon, 0)
+}
 
 // 批次内设置统一作用于全部波束。增删波束时【保留已选增益档】（新增的波束并入其档，删除的仅去掉失效档）
 function toggleBatchBeam(it, ba, id) {
@@ -6902,9 +7107,19 @@ function toggleBorderFade() { borderStyle.fade = !borderStyle.fade; applyBorderS
 function resetBorderPart(k) { for (const f of (BORDER_PARTS[k] || [])) borderStyle[f] = BORDER_DEF[f]; applyBorderStyle() }
 function resetBorderAll() { Object.assign(borderStyle, BORDER_DEF); applyBorderStyle() }
 // 样式预设：只套颜色，线宽与线型这类结构性区分不跟着变（那是五类线彼此可分的根据）
+// ★「默认」也只回配色：这一排是分段控件（配色几选一，当前那套亮着），每一项都得改同一件事才成立；
+//   连线宽线型一起回的「整节出厂」在分区头的「默认」上。
+const PRESET_COLOR_KEYS = Object.keys(BORDER_PRESET_VAL.print)
+const pickPresetColors = (src) => Object.fromEntries(PRESET_COLOR_KEYS.map((f) => [f, src[f]]))
+// 当前配色落在哪一套上（逐色相等，不分大小写）；手调过任一颜色即一项都不亮
+const borderPresetOn = computed(() => {
+  const same = (v) => PRESET_COLOR_KEYS.every((f) => String(borderStyle[f]).toLowerCase() === String(v[f]).toLowerCase())
+  if (same(BORDER_DEF)) return 'default'
+  for (const k in BORDER_PRESET_VAL) if (same(BORDER_PRESET_VAL[k])) return k
+  return ''
+})
 function applyBorderPreset(k) {
-  if (k === 'default') return resetBorderAll()
-  Object.assign(borderStyle, BORDER_PRESET_VAL[k] || {})
+  Object.assign(borderStyle, k === 'default' ? pickPresetColors(BORDER_DEF) : (BORDER_PRESET_VAL[k] || {}))
   applyBorderStyle()
 }
 // 地名颜色/透明度 → 3D 与平面图。
@@ -7032,7 +7247,7 @@ function resetFocusPart(k) {
 function toggleFocus(k) { focusStyle[k] = !focusStyle[k]; applyFocusStyle() }
 function setFocusVal(k, v) { focusStyle[k] = v; applyFocusStyle() }
 // 信息卡右上角齿轮：切到「聚焦卫星」侧栏视图（三节默认展开的照旧，收着的不强行掰开）
-function openFocusSettings() { shellUi.side = 'focus' }
+function openFocusSettings() { requestSide('focus') }
 // 宇宙空间 → 3D 与平面图。时刻取【时间轴当前值】calcAt()，不是系统时钟：拖时间轴看某历史 / 未来时刻时太阳、星空、晨昏必须跟着走，
 // 否则「那颗星当时在不在阳照区」就读错了。每次 refreshPositions（实时每秒 / 时间轴每次落点）调一次；总开关关着时逐件清层。
 // 七项各走各的通道（setSpace / setNightShade / setTerminator / applyImagery），互不牵连。
@@ -7269,7 +7484,7 @@ function collectGxt() {
       }
     }
   }
-  if (grd && grd.exportContours) { try { out.push(...grd.exportContours()) } catch (e) { console.warn('GRD 导出等值线失败', e) } }
+  if (grd && grd.exportContours) { try { out.push(...grd.exportContours()) } catch (e) { reportError('天线覆盖等值线未能写入导出内容', e) } }
   return out
 }
 
@@ -7294,11 +7509,11 @@ function collectPolyBeams() {
 // 统一数据导出（所见即所得）：把当前画面绘制的一切——覆盖等值线（GXT/GRD 来源）+ 协调区多边形——合成一份 GXT/KML。
 // GXT：覆盖波束 + 多边形组各自一个 diagram，拼接为多 diagram 文件。KML：覆盖等值线按档位渐变、多边形按各自颜色，同一 Document。
 async function exportDrawn(fmt) {
-  if (exporting.value) return
+  if (exporting.value) { showStatus('正在导出…', { ms: 3000 }); return }
   const covBeams = collectGxt()
   const polyList = polys.value.filter((pg) => pg.show !== false && pg.pts && pg.pts.length >= 3)
   const polyBeams = collectPolyBeams()
-  if (!covBeams.length && !polyBeams.length) { appAlert('当前画面没有可导出的覆盖等值线或协调区多边形'); return }
+  if (!covBeams.length && !polyBeams.length) { clearStatusIf('正在导出…'); appAlert('当前画面没有可导出的覆盖等值线或 Polygon'); return }
   exporting.value = true
   try {
     if (fmt === 'gxt') {
@@ -7308,7 +7523,7 @@ async function exportDrawn(fmt) {
       const text = serializeKml(covBeams, { name: '当前绘制', polys: polyList })
       await saveExport(text, '当前绘制.kml', [{ name: 'KML', extensions: ['kml'] }])
     }
-  } catch (e) { console.error('导出失败', e); appAlert('导出失败：' + ((e && e.message) || e)) }
+  } catch (e) { reportError('导出失败', e) }
   finally { exporting.value = false }
 }
 
@@ -7353,7 +7568,7 @@ function buildMiniappSnapshot() {
         if (!contours.length) continue
         beams.push({ satName: b.satName || '', lon: b.lon, band: '', beam: b.name || '', type: 'EIRP', emiRcp: 'E', bore: b.bore || [], contours })
       }
-    } catch (e) { console.warn('GRD 快照采集失败', e) }
+    } catch (e) { reportError('天线覆盖等值线未能写入发送内容', e) }
   }
   const polygons = polys.value.filter((pg) => pg.show !== false && pg.pts && pg.pts.length >= 3).map((pg) => ({
     name: pg.name || '', value: (pg.value != null ? String(pg.value) : ''),
@@ -7364,7 +7579,7 @@ function buildMiniappSnapshot() {
   }))
   // 自动命名：不同卫星名去重拼接（无覆盖层时退化为多边形/默认名），供小程序端列表展示
   const satNames = [...new Set(beams.map((b) => b.satName).filter(Boolean))]
-  const name = satNames.length ? satNames.join('、') : (polygons.length ? '协调区多边形' : '覆盖快照')
+  const name = satNames.length ? satNames.join('、') : (polygons.length ? 'Polygon' : '覆盖快照')
   return { app: 'satsim', kind: 'gxt-snapshot', v: 1, name, createdAt: Date.now(), coverage: { beams }, polygons }
 }
 
@@ -7385,7 +7600,7 @@ async function sendToMiniapp() {
     }
   } catch (e) { miniConfigured.value = true /* configured 本身失败则照常往下走，由上传阶段报错 */ }
   const snap = buildMiniappSnapshot()
-  if (!snap.coverage.beams.length && !snap.polygons.length) { appAlert('当前画面没有可发送的覆盖等值线或多边形'); return }
+  if (!snap.coverage.beams.length && !snap.polygons.length) { appAlert('当前画面没有可发送的覆盖等值线或 Polygon'); return }
   try { miniDeviceId.value = String((await window.api.app.deviceId()) || '') } catch (e) { /* 显示用，取不到无妨 */ }
   // 快照只在这里攒一次：弹窗里改目标星 / 改名每敲一个字都会重攒一次包，而 buildMiniappSnapshot
   // 要把画面上每条等值线过一遍。弹窗是模态的（遮罩盖住整页），打开期间画面不会变。
@@ -7467,7 +7682,7 @@ async function sendSatsToMiniapp() {
   status.value = '整理卫星集…'
   let items = []
   try { items = await buildMiniSatItems() } catch (e) { appAlert('整理失败：' + ((e && e.message) || e)); return } finally { status.value = '' }
-  if (!items.length) { appAlert('没有可发送的内容：还没有卫星组、导入的自定义卫星或自定义星座'); return }
+  if (!items.length) { appAlert('暂无可发送的内容。'); return }
   miniSatItems = items
   try { miniDeviceId.value = String((await window.api.app.deviceId()) || '') } catch (e) { /* 显示用，取不到无妨 */ }
   miniSatOpen.value = true
@@ -7587,7 +7802,7 @@ function togglePolyPanel() {
   polyOpen.value = !polyOpen.value
   if (!polyOpen.value) { polyEditStop(); polyMoveStop() }   // 关面板即退出调整/拖动（绘制态保留：横幅上有完成/取消）
 }
-function persistPolys() { try { localStorage.setItem(POLY_KEY, JSON.stringify({ polys: polys.value, dotSize: polyDotSize.value, offAmt: polyOffAmt.value })) } catch { /* ignore */ } }
+function persistPolys() { guardedPersist(POLY_KEY, 'Polygon', () => localStorage.setItem(POLY_KEY, JSON.stringify({ polys: polys.value, dotSize: polyDotSize.value, offAmt: polyOffAmt.value }))) }
 function loadPolys() {
   try {
     const d = JSON.parse(localStorage.getItem(POLY_KEY) || 'null')
@@ -7628,7 +7843,7 @@ function polyContinue(pg) { endLinkDraw(); mkEditStop(); polyEditStop(); polyMov
 function polyUndo() { const pg = curPoly(); if (pg && pg.pts.length) { pg.pts.pop(); polyRefresh() } }
 function polyDone() {
   const pg = curPoly(); if (!pg) { polyDrawId.value = ''; return }
-  if (pg.pts.length < 3) { appAlert('多边形至少需要 3 个顶点。'); return }
+  if (pg.pts.length < 3) { appAlert('Polygon 至少需要 3 个顶点。'); return }
   polyDrawId.value = ''; polyRefresh()
 }
 function polyCancel() {
@@ -7648,6 +7863,18 @@ function togglePoly(pg) {
   if (!pg.show) { if (polyEditId.value === pg.id) polyEditId.value = ''; if (polyMoveId.value === pg.id) polyMoveId.value = '' }
   polyRefresh()
 }
+// 自动切到平面图的编辑（调整顶点 / 整体拖动 / 调整中心 / 删除波束）：把对象平移进画面（已在画面里就不动）。
+// 平面图可能是刚由 view.flat 翻出来的（applyFlat 异步建渲染器）→ 等两拍再定位
+function centerFlatOnPts(pts) {
+  const ok = (pts || []).filter((q) => q && Number.isFinite(q[0]) && Number.isFinite(q[1]))
+  if (!ok.length) return
+  // 经度按首点展开到 ±180° 内再取平均（跨日期变更线的多边形不被平均到另一面）
+  const l0 = ok[0][0]
+  let sx = 0, sy = 0
+  for (const q of ok) { sx += l0 + (((q[0] - l0 + 540) % 360) - 180); sy += q[1] }
+  const lon = (((sx / ok.length) + 540) % 360) - 180, lat = sy / ok.length
+  nextTick(() => requestAnimationFrame(() => { if (flatView.value && flat && flat.centerOn) flat.centerOn(lon, lat, { ifOffscreen: true }) }))
+}
 // ---- 调整顶点（仿 SATSOFT：选中多边形后直接拖动顶点）。在 2D 平面图进行，进入时自动切换视图 ----
 function polyEditToggle(pg) {
   if (polyEditId.value === pg.id) { polyEditStop(); return }
@@ -7657,6 +7884,7 @@ function polyEditToggle(pg) {
   polyEditId.value = pg.id; pg.show = true
   if (!view.flat) view.flat = true     // 切到平面图（applyFlat→feedFlat 会同步编辑态到渲染器）
   polyRefresh()
+  centerFlatOnPts(pg.pts)
 }
 function polyEditStop() { if (polyEditId.value) { polyEditId.value = ''; polyRefresh() } }
 // ---- 整体拖动（仿 SATSOFT：按住多边形内部整体平移）。同样在 2D 平面图进行 ----
@@ -7668,6 +7896,7 @@ function polyMoveToggle(pg) {
   polyMoveId.value = pg.id; pg.show = true
   if (!view.flat) view.flat = true
   polyRefresh()
+  centerFlatOnPts(pg.pts)
 }
 function polyMoveStop() { if (polyMoveId.value) { polyMoveId.value = ''; polyRefresh() } }
 // 把当前可拖拽的顶点（传引用，拖动实时生效）喂给平面渲染器做命中/拖拽。
@@ -7703,7 +7932,8 @@ function onVertexDrag(vi, ll, phase) {
 // Polygon 顶点拖拽：'move' 只改点+重绘（与平移同频，不写盘），'end' 统一持久化
 function onPolyVertexDrag(vi, ll, phase) {
   const pg = curEditPoly(); if (!pg) return
-  if (phase === 'end') { persistPolys(); return }
+  if (phase === 'start') dragUndoBegin('polys', `已移动「${pg.name}」顶点`)
+  if (phase === 'end') { persistPolys(); dragUndoCommit(); return }
   if (vi == null || !ll || vi < 0 || vi >= pg.pts.length) return
   pg.pts[vi] = [ll.lon, ll.lat]
   redrawSats()
@@ -7711,26 +7941,33 @@ function onPolyVertexDrag(vi, ll, phase) {
 // 整体拖动回调（增量制）：'move' 全顶点平移+重绘，'end' 统一持久化
 function onPolyMoveDrag(dlon, dlat, phase) {
   const pg = curMovePoly(); if (!pg) return
-  if (phase === 'end') { persistPolys(); return }
+  if (phase === 'start') dragUndoBegin('polys', `已拖动「${pg.name}」`)
+  if (phase === 'end') { persistPolys(); dragUndoCommit(); return }
   if (!dlon && !dlat) return
   for (const q of pg.pts) { q[0] += dlon; q[1] = clamp(q[1] + dlat, -89.9, 89.9) }
   redrawSats()
 }
-// hold-to-draw 回调：渲染器已按屏幕像素阈值节流上报（起笔/沿路径/收笔），页面每次追加一个点。
-// 'move' 只实时预览（不落盘，避免高频写 localStorage）；'end' 统一持久化。与右键连续加点并存。
-// Polygon 与航迹共用同一套绘制态（左键按住沿路径连续加点）——两者互斥，按当前活动态分发。
+// 绘制态回调（Polygon 与航迹共用，两者互斥，按当前活动态分发）：
+//   'click'                左键单击加一个点（渲染器已把双击去重），当场落盘
+//   'start'|'move'|'end'   Shift + 左键按住的徒手画：渲染器按屏幕像素阈值节流上报，'move' 只实时预览（不落盘，
+//                          避免高频写 localStorage），'end' 统一持久化
+// 右键连续加点仍并存（onMapRightClick）。
 function onPolyDraw(ll, phase) {
   const pg = curPoly()
   if (pg) {   // Polygon 绘制中
     if (phase === 'end') { if (pg.pts.length) persistPolys(); return }
     if (!ll) return
-    pg.pts.push([ll.lon, ll.lat]); redrawSats(); return
+    pg.pts.push([ll.lon, ll.lat])
+    if (phase === 'click') polyRefresh(); else redrawSats()
+    return
   }
   const t = curTraj()
-  if (t) {   // 航迹描绘中：与 Polygon 同款左键拖动连续加航点
+  if (t) {   // 航迹描绘中
     if (phase === 'end') { persistMarkers(); return }
     if (!ll) return
-    t.pts.push({ lat: ll.lat, lon: ll.lon }); pushMarkers(); return
+    t.pts.push({ lat: ll.lat, lon: ll.lon })
+    if (phase === 'click') syncMarkers(); else pushMarkers()
+    return
   }
 }
 // ---- 复制多边形（仿 SATSOFT Copy）：副本整体偏移一点便于分辨，并直接进入整体拖动模式好摆放 ----
@@ -7778,7 +8015,7 @@ function offsetPolyPts(pts, d) {
 function polyOffset(pg, sign) {
   const amt = Math.abs(Number(polyOffAmt.value))
   if (!amt || !Number.isFinite(amt)) { appAlert('「扩/缩幅度」需大于 0。'); return }
-  if (pg.pts.length < 3) { appAlert('该多边形还未成形（至少 3 个顶点），不能扩/缩'); return }
+  if (pg.pts.length < 3) { appAlert('该 Polygon 还未成形（至少 3 个顶点），不能扩/缩'); return }
   const pts = offsetPolyPts(pg.pts, amt * sign)
   if (!pts) return
   const n = polys.value.length + 1
@@ -7809,13 +8046,13 @@ function polyVertsEdit(pg, e) {
     if (m.length < 2 || !Number.isFinite(m[0]) || !Number.isFinite(m[1]) || Math.abs(m[0]) > 360 || Math.abs(m[1]) > 90) { appAlert('顶点格式有误：每行一个顶点「经度, 纬度」（度），如 116.4, 39.9'); return }
     pts.push([m[0], m[1]])
   }
-  if (pts.length < 3) { appAlert('多边形至少需要 3 个顶点'); return }
+  if (pts.length < 3) { appAlert('Polygon 至少需要 3 个顶点'); return }
   vertsDraft.value = null                 // 写回成功才退出草稿：此后显示跟着库里的顶点走
   pg.pts = pts; polyRefresh()
 }
 // 复制顶点为「两列」：逐行 经度<Tab>纬度——粘到 Excel / 表格会自动落进经度、纬度两个单元格（普通逗号复制只会挤进一格）。
 function copyPolyVerts(pg) {
-  if (!pg.pts.length) { appAlert('该多边形还没有顶点'); return }
+  if (!pg.pts.length) { appAlert('该 Polygon 暂无顶点。'); return }
   const text = pg.pts.map((p) => `${(+p[0]).toFixed(3)}\t${(+p[1]).toFixed(3)}`).join('\n')
   perfWriteClipboard(text)
 }
@@ -7853,10 +8090,14 @@ function makeImportedPoly(r, n) {
 }
 // Polygon 面板「导入」：原生框选 .gxt / .kml → 解析为协调区多边形，追加到列表（不覆盖已有）。
 // GXT：每条等值线 = 一个多边形（值=gain，卫星/轨位取 GeoMain）；KML：每个 <Polygon> = 一个多边形（尽量还原名称/数值/颜色）。
-async function importPolys() {
-  if (!(window.api && window.api.poly && window.api.poly.open)) { appAlert('需在桌面客户端中运行'); return }
+// preset：拖进来的文件（[{ base, ext, text }]）—— 给了就不再开文件框
+async function importPolys(preset) {
   let res
-  try { res = await window.api.poly.open() } catch (e) { appAlert('导入失败：' + ((e && e.message) || e)); return }
+  if (Array.isArray(preset)) res = { files: preset }
+  else {
+    if (!(window.api && window.api.poly && window.api.poly.open)) { appAlert('需在桌面客户端中运行'); return }
+    try { res = await window.api.poly.open() } catch (e) { appAlert('导入失败：' + ((e && e.message) || e)); return }
+  }
   if (!res || res.canceled) return
   const added = [], errs = []
   let seq = polys.value.length
@@ -7876,10 +8117,9 @@ async function importPolys() {
       }
     } catch (e) { errs.push((f.base || '文件') + '：' + ((e && e.message) || e)) }
   }
-  if (!added.length) { appAlert('未能导入多边形：' + (errs[0] || '文件里没有可识别的多边形')); return }
-  polys.value.push(...added)
-  persistPolys(); polyRefresh()
-  appAlert(`已导入 ${added.length} 个多边形` + (errs.length ? `（${errs.length} 个文件失败：${errs[0]}）` : ''))
+  if (!added.length) { reportError('未能导入 Polygon', errs[0] || '文件中没有可识别的 Polygon'); return }
+  undoable('polys', `已导入 ${added.length} 个 Polygon`, () => { polys.value.push(...added); persistPolys(); polyRefresh() })
+  if (errs.length) reportError(`${errs.length} 个文件未能导入`, errs[0], { level: 'warn' })
 }
 
 // ===================== 波束合成（SATSOFT Gaussian Beam Model / Polygon 赋形）独立侧栏视图 =====================
@@ -8046,7 +8286,7 @@ watch(() => shellUi.side, async (side) => {
   if (side === 'beams') {
     await grd.loadIndex(false)   // 卫星下拉需要卫星树；不自动改动覆盖显示
     bs.openFor(grd.active.value ? grd.active.value.split('|')[0] : '')
-  } else if (bs.open.value) { bs.close(); bsTableOpen.value = false }
+  } else if (bs.open.value && sideCtx() !== 'beams') { bs.close(); bsTableOpen.value = false }   // 收起侧栏 ≠ 离开视图：放置 / 调整态与草图留着
   // 可见性分析：进入即打开（懒计算 + 画叠加层），离开即关闭（撤叠加层）。两态均经 commitGeometry 合并提交，
   // 聚焦星几何与可见性叠加层各自存续：进入可见性不再抹掉聚焦星，退出可见性聚焦星（若有）自动恢复。
   if (side === 'vis') { vis.openPanel(); commitGeometry() }
@@ -8090,19 +8330,21 @@ function bsPlaceToggle() {
 // 「调整中心」开关：开启即切平面图 + 清场 + 喂拖拽手柄（与放置互斥）
 function bsAdjustToggle() {
   if (bs.adjusting.value) { bs.adjusting.value = false; syncEdit(); redrawSats(); return }
-  if (!bs.beams.value.length) { appAlert('还没有波束可调整。'); return }
+  if (!bs.beams.value.length) { appAlert('暂无波束。'); return }
   bsStopOtherModes(); bs.placing.value = false; bs.deleting.value = false
   bs.adjusting.value = true
   if (!view.flat) view.flat = true   // 拖动在平面图进行
   syncEdit(); redrawSats()
+  centerFlatOnPts(bs.beams.value.map((b) => [b.lon, b.lat]))
 }
 // 「删除波束」开关：开启即切平面图 + 清场 + 喂手柄；点击命中的波束中心直接删除，可连续点删多个（与放置/调整互斥）
 function bsDeleteToggle() {
   if (bs.deleting.value) { bs.deleting.value = false; syncEdit(); redrawSats(); return }
-  if (!bs.beams.value.length) { appAlert('还没有波束可删除。'); return }
+  if (!bs.beams.value.length) { appAlert('暂无波束。'); return }
   bsStopOtherModes(); bs.placing.value = false; bs.adjusting.value = false
   bs.deleting.value = true
   if (!view.flat) view.flat = true   // 命中检测在平面图进行
+  centerFlatOnPts(bs.beams.value.map((b) => [b.lon, b.lat]))
   syncEdit(); redrawSats()
 }
 async function bsGenerate() {
@@ -8124,13 +8366,11 @@ function bsSelectGroup(g) { bs.selectGroup(g.id); bsFocusSat(g.satFolder) }
 function bsStkUpdate(m) { bs.setStkModel(m) }
 // 新建波束组（多馈源 / 高斯 / 赋形 / 相控阵）
 function bsAddGroup(m) {
-  if (!bsSats.value.length) { appAlert('请先在覆盖分析视图添加卫星'); return }
+  if (!bsSats.value.length) { appAlert('对地覆盖分析视图中暂无卫星。'); return }
   bs.addGroup(m)
 }
 // 删除波束组（直接删，不弹确认——confirm 会抢焦点；已生成的天线不受影响，仍在覆盖分析里可删）
-function bsRemoveGroup(g) {
-  bs.removeGroup(g.id)
-}
+function bsRemoveGroup(g) { bsRemoveGroupUndoable(g) }
 // 波束设置改色（实时重绘草图）
 function bsSetSettingColor(v) { const s = bs.curSetting.value; if (s) { s.color = v; redrawSats() } }
 // 全部生成：当前卫星下每个组各出一根天线
@@ -8213,7 +8453,7 @@ const bsFreqCopied = ref(false)
 let bsFreqCopyTmr = null
 function bsCopyFreqPlan() {
   const rows = bsFreqRows.value
-  if (!rows.length) { appAlert('当前组还没有波束'); return }
+  if (!rows.length) { appAlert('当前组暂无波束。'); return }
   const fx = (v, n) => (Number.isFinite(v) ? v.toFixed(n) : '')
   const head = ['编号', '频率', '经度', '纬度', '3dB-X°', '3dB-Y°', '旋转°'].join('\t')
   const body = rows.map((r) => [r.no, r.fc != null ? 'F' + r.fc : '', fx(r.lon, 4), fx(r.lat, 4), fx(r.thX, 3), fx(r.thY, 3), fx(r.rot, 1)].join('\t')).join('\n')
@@ -8221,7 +8461,7 @@ function bsCopyFreqPlan() {
     bsFreqCopied.value = true
     if (bsFreqCopyTmr) clearTimeout(bsFreqCopyTmr)
     bsFreqCopyTmr = setTimeout(() => { bsFreqCopied.value = false }, 1600)
-  } else appAlert('复制失败，请检查剪贴板权限')
+  } else appAlert('复制失败。')
 }
 // —— 相控阵赋形：星上激励指令表（测控上注 BFN）——
 const bsPamExcitShown = computed(() => { const e = bs.pamExcit.value; return e && e.groupId === bs.activeGroupId.value ? e : null })
@@ -8229,18 +8469,18 @@ const bsPamExcitCopied = ref(false)
 let bsPamExcitTmr = null
 function bsPamExcitCopy() {
   const e = bsPamExcitShown.value
-  if (!e || !e.rows.length) { appAlert('尚无激励指令：请先生成相控阵赋形天线'); return }
+  if (!e || !e.rows.length) { appAlert('暂无激励指令。'); return }
   const head = ['端口#', '指向经度', '指向纬度', '方位az°', '俯仰el°', '幅度dB(rel BFN)', '相位°', '功率占比%'].join('\t')
   const body = e.rows.map((r) => [r.port, r.lon, r.lat, r.az, r.el, r.ampDb, r.phaseDeg, r.powPct].join('\t')).join('\n')
   if (perfWriteClipboard(head + '\n' + body)) {
     bsPamExcitCopied.value = true
     if (bsPamExcitTmr) clearTimeout(bsPamExcitTmr)
     bsPamExcitTmr = setTimeout(() => { bsPamExcitCopied.value = false }, 1600)
-  } else appAlert('复制失败，请检查剪贴板权限')
+  } else appAlert('复制失败。')
 }
 function bsExportPamExcit() {
   const csv = bs.pamExcitCsv()
-  if (!csv) { appAlert('尚无激励指令：请先生成相控阵赋形天线'); return }
+  if (!csv) { appAlert('暂无激励指令。'); return }
   const e = bsPamExcitShown.value
   const nm = (e && e.name ? e.name : '相控阵赋形').replace(/[\\/:*?"<>|]/g, '_')
   saveExport(csv, `星上激励指令_${nm}.csv`, [{ name: 'CSV（Excel 可打开）', extensions: ['csv'] }])
@@ -8283,7 +8523,22 @@ const GEO_ALT = 35786              // GEO 轨道高度 km（一键GEO / 预置�
 // 天线名内联重命名：grdEditAnt 存正在编辑的天线 key（folder|name），grdEditVal 为输入框值
 const grdEditAnt = ref('')
 const grdEditVal = ref('')
-function startRenameAnt(sat, a) { grdEditAnt.value = grd.keyOf(sat.folder, a.name); grdEditVal.value = a.name }
+function startRenameAnt(sat, a) {
+  grdEditAnt.value = grd.keyOf(sat.folder, a.name); grdEditVal.value = a.name
+  nextTick(() => { const el = document.querySelector('#side-view .gant .aname-in'); if (el) { el.focus(); el.select() } })
+}
+// F2 = 重命名正在编辑的天线（对地覆盖分析视图；同资源管理器 / VS Code：双击 = 打开 / 定位，F2 = 改名）
+function renameActiveAntKey(e) {
+  if (e.key !== 'F2' || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey || sideCtx() !== 'antenna' || !shellUi.side) return false
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return false
+  const key = grd.active.value; if (!key) return false
+  const i = key.indexOf('|'), folder = key.slice(0, i), name = key.slice(i + 1)
+  const sat = grdNodeOf(folder), a = sat && (sat.antennas || []).find((x) => x.name === name)
+  if (!a) return false
+  e.preventDefault(); startRenameAnt(sat, a)
+  return true
+}
 function commitRenameAnt(sat, a) {
   if (grdEditAnt.value === '') return   // 已提交（blur 与 ✓/回车可能重复触发）→ 跳过
   if (grd.renameAntenna(sat.folder, a.name, grdEditVal.value) === false) {
@@ -8291,6 +8546,33 @@ function commitRenameAnt(sat, a) {
     return
   }
   grdEditAnt.value = ''
+}
+
+// 天线树的 ×：带 GRD 原件的删除走两步确认（同星座栏「删除」口径：点一下变「确认删除」，5 s 内再点才删）。
+// 原件随之进系统回收站（主进程 coverageGrd.remove → shell.trashItem），树上无撤销，所以必须确认。
+// 没有天线的卫星 / 独立仰角线不碰文件，一点即删（与之前一致）。
+const treeDelArm = ref('')
+let _treeDelT = null
+function armTreeDel(key, run) {
+  if (treeDelArm.value === key) { clearTimeout(_treeDelT); treeDelArm.value = ''; run(); return }
+  treeDelArm.value = key; clearTimeout(_treeDelT); _treeDelT = setTimeout(() => { treeDelArm.value = '' }, 5000)
+}
+function askRemoveSat(sat) {
+  if (!sat.antennas || !sat.antennas.length) { removeSat(sat); return }
+  armTreeDel('sat:' + sat.folder, () => removeSatConfirmed(sat))
+}
+// 确认过的删星（天线树 / 对星覆盖树共用）：删完在状态栏留一句
+function removeSatConfirmed(sat) {
+  const n = (sat.antennas || []).length, nm = sat.satName
+  removeSat(sat)
+  showStatus(n ? `已删除卫星「${nm}」及 ${n} 副天线` : `已删除卫星「${nm}」`)
+}
+function askRemoveAnt(sat, a) {
+  armTreeDel('ant:' + grd.keyOf(sat.folder, a.name), () => {
+    const nm = a.name
+    grd.removeAntenna(sat.folder, nm)
+    showStatus(`已删除天线「${nm}」`)
+  })
 }
 
 // 波束名 / 电平名的内联重命名（草稿缓冲防实时重渲染吞字）随「天线设置」一并搬进 GrdSetSections.vue。
@@ -8444,9 +8726,9 @@ function satPatchFrom(m, alert) {
     else if (!(epoch = normEpoch(el.epoch))) { if (alert) appAlert('历元无效'); return null }
     elements = { altKm: alt, ecc, incl, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, epoch }
     let rec; try { rec = elementsToSatrec(elements) } catch { rec = null }
-    if (!rec || rec.error) { if (alert) appAlert('该组根数无法构造有效轨道（可能已衰减或超界），请调整'); return null }
+    if (!rec || rec.error) { if (alert) appAlert('该组根数无法构造有效轨道。'); return null }
     const now = calcAt(); const pv = posAt(rec, now)
-    if (!pv || !pv.position) { if (alert) appAlert('轨道传播失败，请检查根数'); return null }
+    if (!pv || !pv.position) { if (alert) appAlert('轨道传播失败。'); return null }
     const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
     lon = sat.degreesLong(gd.longitude); lat = sat.degreesLat(gd.latitude); altKm = gd.height
   }
@@ -8544,31 +8826,37 @@ async function onTreeAntClick(sat, a) {
   focusTreeSat(sat)
 }
 // 树 → 星座：跟随一颗关联星 / 虚拟星（卫星行「跟随」钮）。startFollow 是追加式：并入聚焦集、设为主选，不冲掉用户的多选；
-// 已在选中集里按号认那一份（别再并进一份同号对象）。正在跟随它 → 退出。星座里没有它的星 / 平面图不进来（钮置灰）。
+// 已在选中集里按号认那一份（别再并进一份同号对象）。正在跟随它 → 退出。星座里没有它的星不进来（钮置灰）。
+// 3D 相机跟随 / 2D 星下点跟随按当前视图分（同信息栏跟随钮 toggleFollow）
 async function followTreeSat(node) {
   const id = nodeLinkId(node, treeGeoIdMap.value)
-  if (!id || flatView.value) return
-  if (followLinkId.value === id) { stopFollow(); return }
+  if (!id) return
+  if (followLinkId.value === id) { if (flatView.value) stopFlatFollow(); else stopFollow(); return }
   const tick0 = _userSelTick, seq = ++_focusSeq
   const find = () => selEntries.find((x) => String(x.noradId) === id) || satEntryById('n:' + id) || liveEntryOf(id)
   let e = find()
   if (!e && !poolReady && apiOk) {
     await ensureSearchPool()
-    if (focusStale({ tick: tick0, fseq: seq }, _userSelTick, _focusSeq) || flatView.value) return   // 等池期间另选了星 / 切了平面图：作废
+    if (focusStale({ tick: tick0, fseq: seq }, _userSelTick, _focusSeq)) return   // 等池期间另选了星：作废（切了视图不作废，按回来时的视图跟）
     e = find()
   }
   if (!e) { status.value = `关联卫星 NORAD ${id} 不在当前星历中`; return }
-  startFollow(e)
+  if (flatView.value) startFlatFollow(e); else startFollow(e)
   _treeSelVer = selVer.value
-  if (!following.value) status.value = '关联卫星当前无星历'   // followPrep 此刻解不出星位
+  if (!flatView.value && !following.value) status.value = '关联卫星当前无星历'   // followPrep 此刻解不出星位
 }
-// 正在跟随的星的联动身份（NORAD 串，'' = 没在跟随）：两棵树「跟随」钮据此点亮。followEntry 与 following 同进同出
-const followLinkId = computed(() => (following.value ? linkIdOf(followEntry) : ''))
+// 正在跟随的星的联动身份（NORAD 串，'' = 没在跟随）：两棵树「跟随」钮据此点亮。followEntry 与 following 同进同出；
+// 2D 认星下点跟随的那颗（与信息栏跟随钮同口径 flatFollowing；星下点参考只存身份串 'n:号'）
+const followLinkId = computed(() => {
+  if (following.value) return linkIdOf(followEntry)
+  const id = flatFollowing.value ? mapCrs.subPt.id : ''
+  return id && id.startsWith('n:') ? id.slice(2) : ''
+})
 // 两棵树卫星行「聚焦 / 跟随」两钮的状态（点亮 / 置灰 / 悬停说明，口径见 treeLink.treeNavState），按 folder 查
 const treeNavMap = computed(() => {
-  const cur = selFolderSet.value, miss = linkMissSet.value, followId = followLinkId.value, flat = flatView.value, geo = treeGeoIdMap.value
+  const cur = selFolderSet.value, miss = linkMissSet.value, followId = followLinkId.value, geo = treeGeoIdMap.value
   const m = new Map()
-  for (const n of grdSats.value) if (n && n.kind !== 'elevline') m.set(n.folder, treeNavState(n, { cur: cur.has(n.folder), miss: miss.has(n.folder), followId, flat, linkId: nodeLinkId(n, geo) }))
+  for (const n of grdSats.value) if (n && n.kind !== 'elevline') m.set(n.folder, treeNavState(n, { cur: cur.has(n.folder), miss: miss.has(n.folder), followId, linkId: nodeLinkId(n, geo) }))
   return m
 })
 const treeNav = (n) => treeNavMap.value.get(n.folder) || treeNavState(n)
@@ -8638,7 +8926,8 @@ function dropFreshLinked(folder) {
 }
 
 // ---- 天线树虚拟星（定点星 / 轨道根数星）→ 星座条目（viz/grd/treeGeo.js）----
-// 树一变（增删星 / 改经纬度·高度·名字·根数 / 关联上星座 / 小眼睛）就按树重建条目表，渲染集跟着重建（显隐跟「卫星天线树」这一集 + 小眼睛）。
+// 树一变（增删星 / 改经纬度·高度·名字·根数 / 关联上星座）就按树重建条目表，渲染集跟着重建（显隐只跟「卫星天线树」这一集的眼睛；
+// 树上卫星行的小眼睛只管覆盖分析里的图标 + 名称，不进签名 —— 拨它由 redrawSats 重画，不必整份重建渲染集）。
 // 条目对象跨重建复用（就地换 name / rec）：选中集、跟随手里那一份不用重绑。
 // 掉了的条目（节点删了 / 关联上了真星 / 根数解不出）若还在选中集里 → 移出（正跟随它 → 先退出跟随）；
 // 仍在集里的某颗换了合成号（号段撞号顺延，极少）→ 补发一次联动信号，树上高亮 / 信息卡天线节跟上。
@@ -8662,15 +8951,16 @@ function syncTreeGeo() {
   } else if (idsBefore !== selEntries.filter((e) => e._grdFolder).map((e) => String(e.noradId)).join()) bumpSelSignal()
   rebuildRenderSet()
 }
-watch(() => grdSats.value.map((n) => (n && n.kind !== 'elevline' && !n.noradId ? `${n.folder}|${n.satName}|${n.lon}|${n.lat}|${n.altKm}|${_elSig(n.elements)}|${satVisible(n) ? 1 : 0}` : '')).join('\n'), syncTreeGeo, { immediate: true })
+watch(() => grdSats.value.map((n) => (n && n.kind !== 'elevline' && !n.noradId ? `${n.folder}|${n.satName}|${n.lon}|${n.lat}|${n.altKm}|${_elSig(n.elements)}` : '')).join('\n'), syncTreeGeo, { immediate: true })
 // 「卫星天线树」一集里的关联星（有号）：rebuildRenderSet 按 liveEntryOf 现解（在场 → 全量池 → 点序列 → 自定义星座）。
-// 关联关系 / 小眼睛一变，或星历源换了（换池 / 隐藏点序列组的表载入，见 onPoolSwapped / ensureLinkedEphTables）→ 这一集开着就重建渲染集
+// 关联关系一变，或星历源换了（换池 / 隐藏点序列组的表载入，见 onPoolSwapped / ensureLinkedEphTables）→ 这一集开着就重建渲染集
+// （树上卫星行的小眼睛不进签名：它不决定这一集上不上图，见 rebuildRenderSet）
 const isTreeLinkedNode = (n) => !!(n && n.kind !== 'elevline' && n.noradId != null && n.noradId !== '')
 function treeLinkedRebuild() {
   if (!scene || !satSets.isVisible(TREE_SET) || !grdSats.value.some(isTreeLinkedNode)) return
   rebuildRenderSet(); redrawSats()
 }
-watch(() => grdSats.value.map((n) => (isTreeLinkedNode(n) ? `${n.folder}|${n.noradId}|${satVisible(n) ? 1 : 0}` : '')).join('\n'), () => {
+watch(() => grdSats.value.map((n) => (isTreeLinkedNode(n) ? `${n.folder}|${n.noradId}` : '')).join('\n'), () => {
   if (scene && satSets.isVisible(TREE_SET)) { rebuildRenderSet(); redrawSats() }
 })
 
@@ -8721,7 +9011,7 @@ function revealTreeFolder(folder, tries = 3) {
 // 「在天线树中显示」（星座侧栏「卫星天线树」一集）：切到对地覆盖分析视图、展开「卫星 / 天线」节；给了 folder 就把那颗星的行展开并滚进视野。
 // 视图第一次打开要先载树（watch(shellUi.side) → toggleGrd），多给几帧去找那一行
 function revealInTree(folder) {
-  if (shellUi.side !== 'antenna') shellUi.side = 'antenna'
+  if (shellUi.side !== 'antenna' && !requestSide('antenna')) return
   setSecOpen('grd-tree', true)
   if (folder) revealTreeFolder(folder, 12)
 }
@@ -8779,7 +9069,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onAntAddEsc, true))
 watch(() => shellUi.side, () => { if (antAddMenu.value) antAddMenu.value = null })
 async function antAddPick(kind) {
   const m = antAddMenu.value; antAddMenu.value = null
-  if (!m) return
+  if (!m || !requireActivation()) return   // 信息卡「＋」也走这里：未激活不建天线、不切视图
   const g = { tick: _userSelTick, fseq: _focusSeq }   // 在 ensureLinkedFolder 可能的等待之前捕获（见 createGaussFor 的 guard）
   let node = null, fresh = false
   if (m.src === 'tree') node = grdNodeOf(m.folder)
@@ -8809,6 +9099,7 @@ function onTreeAddAnt(node, kind) { if (kind === 'gauss') createGaussFor(node) }
 // 进视图的 watcher 会先 openFor（恢复「上次的组」），必须等它落了再选我们要的组 / 星，否则被它盖掉
 function openBeamsWith(fn) {
   if (shellUi.side === 'beams' && bs.open.value) { fn(); return Promise.resolve() }
+  if (!requireActivation()) return Promise.resolve()
   return new Promise((resolve) => {
     let stop = null, t = 0
     const done = () => { if (stop) stop(); if (t) clearTimeout(t); stop = null; t = 0; fn(); resolve() }
@@ -9042,6 +9333,7 @@ function onMapPick(en, additive) {
   // 点空白不改聚焦（原为清空，是「鼠标误操作失焦」的根因）。清空只走显式入口：信息栏「取消聚焦 / 全部取消」、
   // 右键菜单、移出最后一颗；误清 / 误换星可从右键「上一聚焦」找回
   if (!en) return
+  _satPickAt = performance.now()   // 告诉 onStagePointerUp：这一下点中的是卫星，别再按站 / 点 / Polygon 选一遍
   if (!additive && !(selEntries.length === 1 && selEntries[0] === en)) notePrevFocus()   // 裸点换星：旧聚焦集进「上一聚焦」
   selectSat(en, false, additive)   // 裸点=替换聚焦；Ctrl/Cmd/Shift 点=加入/移出多选
 }
@@ -9098,7 +9390,7 @@ function rdkSplitReset() { rdkKeepViewOnce(); shellUi.satInfoW = 300 }   // 双�
 // 点天线名：落到覆盖视图编辑它（已在对星视图就留在对星）；不转镜头（主选星就是它，已正对）
 async function cardEditAnt(row) {
   const inShell = shellUi.side === 'satcov'
-  if (!inShell) shellUi.side = 'antenna'
+  if (!inShell && !requestSide('antenna')) return
   if (inShell) await satcov.setActive(row.sat, row.a, { face: false })
   else await grd.setActive(row.sat, row.a, { face: false })
   revealTreeFolder(row.sat.folder)
@@ -9117,7 +9409,7 @@ function ctxSatEntry() {
 }
 async function ctxNewGauss() {
   const e = ctxSatEntry(); closeCtx()
-  if (!e) return
+  if (!e || !requireActivation()) return
   const g = { tick: _userSelTick, fseq: _focusSeq }   // 在 ensureLinkedFolder 可能的等待之前捕获（见 createGaussFor 的 guard）
   const r = await ensureLinkedFolder(e)
   if (!r) return
@@ -9128,7 +9420,7 @@ async function ctxShowAntCov() {
   if (!e) return
   const nodes = linkedNodesOf(grdSats.value, e.noradId, treeGeoIdMap.value).filter((n) => n.antennas.length)
   if (!nodes.length) return
-  if (shellUi.side !== 'antenna') shellUi.side = 'antenna'   // 树已载入（天线只来自索引 / 快照），进视图的 toggleGrd 不会再重载
+  if (shellUi.side !== 'antenna' && !requestSide('antenna')) return   // 树已载入（天线只来自索引 / 快照），进视图的 toggleGrd 不会再重载
   for (const n of nodes) if (grd.satState(n) === 'none') await grd.toggleSatAll(n)
   revealTreeFolder(nodes[0].folder)
 }
@@ -9479,6 +9771,56 @@ function ctxFollow() {
 }
 function ctxStopFollow() { closeCtx(); if (flatView.value) stopFlatFollow(); else stopFollow() }
 
+// ---- 右键菜单的「对象段」：菜单头写压着的是谁，下面给这个对象自己的操作（SATSOFT：对象上右键 = 该对象的操作）----
+const ctxPoly = computed(() => { const m = ctxMenu.value; return m && m.area && m.area.k === 'pg' && !m.sid ? (polys.value.find((p) => p.id === m.area.id) || null) : null })
+const ctxTraj = computed(() => {
+  const m = ctxMenu.value; if (!m || m.sid) return null
+  const id = m.ent && m.ent.kind === 'traj' ? m.ent.id : (m.area && m.area.k === 'tj' ? m.area.id : null)
+  return id ? (trajectories.value.find((t) => t.id === id) || null) : null
+})
+const ctxObjName = computed(() => {
+  const m = ctxMenu.value; if (!m || m.anaOnly) return ''
+  if (m.sid) { const e = satEntryById(m.sid); return e ? String(e.name || e.noradId || '') : '' }
+  if (m.ent && (m.ent.kind === 'station' || m.ent.kind === 'point')) { const o = entObjOf(m.ent.kind, m.ent.id); return o ? ((o.name || '').trim() || fmtLL(o.lat, o.lon)) : '' }
+  if (ctxTraj.value) return (ctxTraj.value.name || '').trim() || '航迹'
+  if (ctxPoly.value) return (ctxPoly.value.name || '').trim() || 'Polygon'
+  return ''
+})
+// 压着的星是否已在聚焦集里（决定给「聚焦 / 加入聚焦」还是「移出聚焦」）
+const ctxSatFocused = computed(() => { const m = ctxMenu.value; if (!m || !m.sid) return false; return selList.value.some((x) => x && satIdOf(x) === m.sid) })
+function ctxFocusSat(mode) {
+  const e = ctxSatEntry(); closeCtx(); if (!e) return
+  if (mode === 'only') { if (!(selEntries.length === 1 && selEntries[0] === e)) notePrevFocus(); selectSat(e, false, false) }
+  else selectSat(e, false, true)   // 加入 / 移出：同 Ctrl+单击
+}
+function ctxMkAct(act) {
+  const m = ctxMenu.value; closeCtx()
+  const e = m && m.ent; if (!e || (e.kind !== 'station' && e.kind !== 'point')) return
+  if (act === 'move') mkEditToggle(e.kind === 'station' ? 'stations' : 'points')
+  else if (act === 'reveal') revealMapObj({ kind: e.kind, id: e.id })
+  else if (act === 'hide') { const o = entObjOf(e.kind, e.id); if (o && mkShown(o)) toggleMkItem(o) }
+}
+function ctxTrajAct(act) {
+  const t = ctxTraj.value; closeCtx(); if (!t) return
+  if (act === 'time') revealTrajTime(t.id)
+  else if (act === 'draw') editTraj(t)
+  else if (act === 'pts') mkEditToggle(t.id)
+  else if (act === 'reveal') revealMapObj({ kind: 'traj', id: t.id })
+}
+function ctxPolyAct(act) {
+  const pg = ctxPoly.value; closeCtx(); if (!pg) return
+  if (act === 'edit') polyEditToggle(pg)
+  else if (act === 'move') polyMoveToggle(pg)
+  else if (act === 'cont') polyContinue(pg)
+  else if (act === 'hide') { if (pg.show !== false) togglePoly(pg) }
+  else if (act === 'reveal') revealMapObj({ kind: 'poly', id: pg.id })
+}
+// 全局段按有没有数据裁剪：没有可隐藏的就不给「隐藏所有…」
+const ctxHave = computed(() => {
+  const vis = (L) => L.some((x) => x && x.show !== false)
+  return { pt: vis(points.value), st: vis(stations.value), tj: vis(trajectories.value), pg: vis(polys.value), lk: vis(links.value) }
+})
+
 // ---- 右键「分析 ▸」：带上下文打开计算窗（主进程 tool:open，各窗 onContext 接收）----
 // 压着卫星：按轨道区制给出 GSO 链路预算 / 日凌 / C/I（GSO）或 NGSO 链路预算，外加雨衰（几何随星）。
 // 压着地球站 / 点标记：站址进计算窗——链路预算分发 / 收 / 收发同站三种落法，卫星取当前主选星（GSO 星进 GSO 窗、
@@ -9786,9 +10128,8 @@ function linkSatNode(e) {
   if (inf) n.info = inf
   return n
 }
-const lnkMsg = ref('')   // 建链横幅上的一句话（不追加的原因），2.5 s 后收
-let _lnkMsgT = 0
-function lnkSay(m) { lnkMsg.value = m; clearTimeout(_lnkMsgT); _lnkMsgT = setTimeout(() => { lnkMsg.value = '' }, 2500) }
+const lnkMsg = ref('')   // 建链横幅上的一句话（不追加的原因）：留到节点真改动了（追加 / 撤销 / 替换成功）或退出建链才收
+function lnkSay(m) { lnkMsg.value = m }
 const lnk = useMapLinks({
   links, stations, points, newId,
   polygons: polys, trajectories,
@@ -9997,17 +10338,19 @@ function onLinkKey(e) {
   } else if (k === 'Escape') { e.preventDefault(); lnkCancel() }
   else { e.preventDefault(); if (!e.repeat) lnk.undoNode() }
 }
-function lnkEnterDraw() {   // 与 Polygon 绘制 / 航迹描绘 / 标记调整 / 波束合成放置互斥（同 newTraj）
+function lnkEnterDraw() {   // 与 Polygon 绘制 / 航迹描绘 / 标记调整 / 波束合成放置互斥（同 newTraj）；未激活返回 false（不进绘制态）
+  if (!requestSide('links')) return false
   mkEditStop(); polyEditStop(); polyMoveStop(); if (polyDrawId.value) polyCancel(); stopSynthPlacement(); if (activeTraj.value) endTraj()
-  shellUi.side = 'links'
+  return true
 }
 // fromPanel：视图里点的（「新建」/「添加节点」/ 跳行的「＋」）→ 插入光标那一位的检索框接着拿焦点，直接打字挑节点；
 // 图上右键发起的不抢焦点（人还在图上点）
-function lnkNew(first, fromPanel) { lnkEnterDraw(); lnkRep.value = -1; lnk.startNew(first || null); if (fromPanel) lnkFocusSlot() }
-function lnkAddAt(id, at) { lnkEnterDraw(); lnkRep.value = -1; lnk.startAt(id, at); lnkFocusSlot() }
+function lnkNew(first, fromPanel) { if (!lnkEnterDraw()) return; lnkRep.value = -1; lnk.startNew(first || null); if (fromPanel) lnkFocusSlot() }
+function lnkAddAt(id, at) { if (!lnkEnterDraw()) return; lnkRep.value = -1; lnk.startAt(id, at); lnkFocusSlot() }
 function lnkFinish() { lnk.finish(); lnk.preview.value = null }
 function lnkCancel() { lnk.cancel(); lnk.preview.value = null }
 const lnkDrawN = computed(() => { const d = lnk.draw.value; const l = d ? lnk.linkOf(d.id) : null; return l ? l.nodes.length : 0 })
+watch([lnkDrawN, () => lnk.draw.value && lnk.draw.value.id], () => { lnkMsg.value = '' })
 // 有没有本次插进去、可撤销的节点（横幅「撤销」/ 右键「撤销上一节点」没有就置灰；进入插入态前就有的节点不撤）
 const lnkCanUndo = computed(() => lnk.canUndo())
 // 右键：压着站「从此站新建链路」/ 压着星「从此卫星新建链路」/ 压着航迹「从此航迹新建链路」/ 压在 Polygon 里「从此 Polygon 新建链路」；
@@ -10382,7 +10725,7 @@ function lnkPickRep(i, it) {
   const node = lnkItemNode(it)
   if (!node) return
   const why = lnk.replaceNode(l.id, i, node)
-  if (why) lnkSay(why)
+  lnkMsg.value = why || ''
 }
 // 悬停 / 键盘停留的候选：图上预览它放进去之后的两跳（虚线），地球站 / 点标记再套一枚高亮环（同拖放落点那一枚）
 function lnkPickHover(it, at, rep) {
@@ -10408,7 +10751,7 @@ const lnkNodeBad = (n) => (n.k === 'st' && !stations.value.some((s) => s.id === 
 function lnkNodeIcon(n) {
   if (n.k === 'st') return 'satellite-dish'
   if (n.k === 'pt') return 'map-pin'
-  if (n.k === 'pg') return 'hexagon'
+  if (n.k === 'pg') return 'polygon'
   if (n.k === 'tj') { const o = lnkNodeObj(n); return o && o.kind === 'flight' ? 'plane' : 'ship' }
   return 'satellite'
 }
@@ -10592,11 +10935,11 @@ function ctxSetLandColor() {
   if (!ll) return
   const c = countryAt(ll.lon, ll.lat)
   if (!c || !c.zh) { appAlert('该位置不在陆地国家范围内'); return }
-  shellUi.side = 'geo'
+  if (!requestSide('geo')) return
   pickLandCountry(c)
 }
 // 直达侧栏视图（地图综合设置 / 卫星聚焦特效设置）：与活动栏同一个 side；已停在该视图不收起，侧栏收着则随之展开
-function ctxOpenSide(view) { closeCtx(); shellUi.side = view }
+function ctxOpenSide(view) { closeCtx(); requestSide(view) }
 // 推给两个渲染器的整层样式（渲染器只认屏幕 px 与 CSS 色串；逐条覆盖在载荷里逐条带）
 const markSizes = () => ({
   ptShape: markStyle.ptShape, ptColor: markStyle.ptColor, ptOpacity: markStyle.ptOpacity, ptDot: markStyle.ptDot,
@@ -11037,7 +11380,8 @@ function mkEditStop() { if (mkEditId.value) { mkEditId.value = ''; mkRefresh() }
 // 标记直接拖拽（渲染器命中后回调）：'move' 改坐标 + 实时重绘（不写盘），'end' 统一持久化。
 // target = { kind:'point'|'station'|'waypoint', id, tid }；按 id 找对象 —— 载荷是过滤过的，下标对不上原数组。
 function onMarkerDragged(target, ll, phase) {
-  if (phase === 'end') { persistMarkers(); return }
+  if (phase === 'start') dragUndoBegin('markers', '已移动标记')
+  if (phase === 'end') { persistMarkers(); dragUndoCommit(); return }
   if (!target || !ll) return
   let obj = null
   if (target.kind === 'point') obj = points.value.find((p) => p.id === target.id)
@@ -11051,7 +11395,7 @@ function onMarkerDragged(target, ll, phase) {
   pushMarkers(); redrawSats()   // redrawSats：可见性叠加层等以标记为目标的图元跟着走
 }
 function persistMarkers() {
-  try { localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value, links: links.value })) } catch { /* ignore */ }
+  guardedPersist(MK_KEY, '地图标记与链路', () => localStorage.setItem(MK_KEY, JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value, links: links.value })))
 }
 function loadMarkers() {
   try {
@@ -11117,6 +11461,17 @@ function removeWaypoint(t, i) { t.pts.splice(i, 1); syncMarkers() }
 function setTrajName(id, v) { const t = trajectories.value.find((x) => x.id === id); if (t) { t.name = v; persistMarkers(); if (markStyle.tjNameOn) pushMarkers() } }
 function removeTraj(id) { if (mkEditId.value === id) mkEditId.value = ''; if (mkTrajId.value === id) mkTrajId.value = ''; trajectories.value = trajectories.value.filter((t) => t.id !== id); if (activeTraj.value === id) activeTraj.value = ''; syncMarkers() }
 function clearAllMarkers() { mkEditId.value = ''; points.value = []; stations.value = []; trajectories.value = []; activeTraj.value = ''; mkTrajId.value = ''; syncMarkers() }
+// 「清空全部」两步确认（同星座栏删除）：一键清掉点 / 站 / 航迹且没有撤销，引用它们的链路节点也随之失效。
+// 第一下只把按钮变成「确认清空」，5 s 内再点才清
+const mkClrArm = ref(false)
+let _mkClrT = 0
+function onClearAllMarkers() {
+  clearTimeout(_mkClrT)
+  if (!mkClrArm.value) { mkClrArm.value = true; _mkClrT = setTimeout(() => { mkClrArm.value = false }, 5000); return }
+  mkClrArm.value = false
+  undoable('markers', '已清空全部标记', clearAllMarkers)   // 两步确认之外再给一条撤销（引用它们的链路节点一并回来）
+}
+onBeforeUnmount(() => clearTimeout(_mkClrT))
 
 // ===================== 标记批量表格（Excel 模块，仿链路预算性能表：独立浮窗 + Excel 网格 + 批量粘贴/导入）=====================
 // 航迹表格「时间」列按显示时区读写（本机 / UTC / UTC±N）；只敲时分时日期沿用该航点原来那天
@@ -11189,11 +11544,11 @@ function mkWpTip(r, c) {
 }
 const WP_HEAD_TIP = {
   altM: ['该航点的实际高度（飞行剖面：起降 0 m、按爬升率爬升、巡航、3° 下滑）；手填即钉住该点高度，清空回推算', 'Actual altitude at the waypoint (climb / cruise / 3° descent profile); type to pin, clear to recompute'],
-  tMs: ['到达该航点的时刻（显示时区）；手填即钉住（首行即起始时刻），只敲时分沿用原日期，清空回推算。相邻两个定了时刻的航点之间按距离 ÷ 时差定地速', 'Time at the waypoint (display time zone); type to pin (first row = start), clear to recompute. Legs between timed waypoints take distance ÷ time as ground speed'],
+  tMs: ['到达该航点的时刻（显示时区）；手填即钉住（首行即起始时刻），仅输入时分则沿用原日期，清空回推算。相邻两个定了时刻的航点之间按距离 ÷ 时差定地速', 'Time at the waypoint (display time zone); type to pin (first row = start), clear to recompute. Legs between timed waypoints take distance ÷ time as ground speed'],
   legKm: ['上一航点到本航点的测地线段长（WGS-84）', 'Geodesic length of the leg from the previous waypoint (WGS-84)'],
   cumKm: ['自首航点起的累计里程', 'Cumulative distance from the first waypoint'],
   crs: ['上一航点出发时的大圆航向（正北起顺时针）', 'Great-circle course when leaving the previous waypoint (clockwise from north)'],
-  gs: ['到达本航点这一段的地速', 'Ground speed of the leg arriving at this waypoint']
+  gs: ['到达本航点所在航段的地速', 'Ground speed of the leg arriving at this waypoint']
 }
 function mkWpHeadTip(c) { const t = WP_HEAD_TIP[c.key]; return t ? byLang(t[0], t[1]) : c.label }
 // 表格参数栏改运动参数：进表格自己的撤销栈（没改动就把刚压的快照丢掉）。
@@ -11294,7 +11649,7 @@ function mkAddRow() {
   const at = ri >= 0 ? ri + 1 : listLen()
   mkTable.pushUndo()
   if (mkTab.value === 'traj') {
-    if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return }
+    if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('未选择航迹。'); return }
     mkTable.wpAddRow(mkTrajId.value, at)
   } else {
     (mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer).addRow(at)
@@ -11305,10 +11660,10 @@ function mkAddRow() {
 // 「粘贴」：读剪贴板批量追加（约定末两列 = 经度、纬度，前面文本列依次为 名称等）
 async function mkPaste() {
   let text = ''
-  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板，请检查剪贴板权限'); return }
+  try { text = await navigator.clipboard.readText() } catch { appAlert('无法读取剪贴板。'); return }
   mkTable.pushUndo()
   let n = 0
-  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return } n = mkTable.wpPasteAppend(mkTrajId.value, text) }
+  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('未选择航迹。'); return } n = mkTable.wpPasteAppend(mkTrajId.value, text) }
   else if (mkTab.value === 'stations') n = mkTable.stLayer.pasteAppend(text)
   else n = mkTable.ptLayer.pasteAppend(text)
   if (n) syncMarkers(); else { mkTable.dropUndo(); appAlert('剪贴板没有可识别的经纬度数据（约定末两列为 经度、纬度）') }
@@ -11332,7 +11687,7 @@ function mkAddRowEnd() {
   const g = mkCurGrid()
   const at = mkCount.value
   mkTable.pushUndo()
-  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('请先选择或新建一条航迹'); return } mkTable.wpAddRow(mkTrajId.value, at) }
+  if (mkTab.value === 'traj') { if (!mkCurTraj()) { mkTable.dropUndo(); appAlert('未选择航迹。'); return } mkTable.wpAddRow(mkTrajId.value, at) }
   else (mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer).addRow(at)
   syncMarkers()
   nextTick(() => { g.sel.value = { ar: at, ac: 0, ri: at, ci: 0 }; g.focusGrid() })
@@ -11346,7 +11701,8 @@ async function mkExportXlsx() {
   if (!p || !p.rows.length) { appAlert('当前分页没有数据'); return }
   const sheets = [sheetModel({ name: mkPaneName(), cols: p.cols, rows: p.rows, value: (r, c) => (c.key === 'radome' ? (r.radome === true ? '有' : '') : r[c.key]) })]
   const r = await exportSheets({ defaultName: safeFileName(mkPaneName(), '标记') + '.xlsx', title: '导出标记表格', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  if (r && r.error) reportError('导出失败', r.error)
+  else if (r && r.ok && (r.path || r.filePath)) showExported(r.path || r.filePath)
 }
 async function mkImportXlsx() {
   if (mkTab.value === 'traj') return mkImportTrajXlsx()
@@ -11355,7 +11711,7 @@ async function mkImportXlsx() {
   if (!res || res.canceled) return
   if (!res.ok) { appAlert('导入失败：' + (res.error || '无法读取该文件')); return }
   const sheet = pickSheet(res.sheets, p.cols)
-  if (!sheet) { appAlert('这份工作簿里没有数据'); return }
+  if (!sheet) { appAlert('该工作簿中没有数据'); return }
   const { records } = sheetToRecords(sheet, p.cols)
   const layer = mkTab.value === 'stations' ? mkTable.stLayer : mkTable.ptLayer
   mkTable.pushUndo()
@@ -11373,7 +11729,7 @@ async function mkImportXlsx() {
 // ===== 航迹 ⇄ Excel（按工作表批量：一条航迹一张表，表名即航迹名；解析口径见 useMarkerTable.trajsFromSheets）=====
 async function mkExportTrajXlsx() {
   const list = trajectories.value.filter((t) => (t.pts || []).length)
-  if (!list.length) { appAlert('没有可导出的航迹（航迹都还没有航点）'); return }
+  if (!list.length) { appAlert('暂无可导出的航迹。'); return }
   const tz = tzMode.value
   const sheets = list.map((t) => {
     // 与网格同列同值：高度 / 时间写实际值（推算的也写），时间带时区偏移（换台机器 / 换显示时区导回来不走样）；另带四列推算读数
@@ -11393,7 +11749,8 @@ async function mkExportTrajXlsx() {
     })
   })
   const r = await exportSheets({ defaultName: safeFileName('航迹', '航迹') + '.xlsx', title: '导出航迹', sheets })
-  if (r && r.error) appAlert('导出失败：' + r.error)
+  if (r && r.error) reportError('导出失败', r.error)
+  else if (r && r.ok && (r.path || r.filePath)) showExported(r.path || r.filePath)
 }
 async function mkImportTrajXlsx() {
   const res = await importWorkbook({ title: '导入航迹（一张工作表一条）' })
@@ -11437,7 +11794,7 @@ function mkRenameCommit() {
   if (!v || v === t.name) return
   mkTable.pushUndo(); t.name = v; syncMarkers()
 }
-function mkToggleKind(t) { mkTable.pushUndo(); t.kind = t.kind === 'flight' ? 'sea' : 'flight'; syncMarkers() }
+function mkSetKind(t, k) { if ((t.kind === 'flight' ? 'flight' : 'sea') === k) return; mkTable.pushUndo(); t.kind = k; syncMarkers() }
 // 删航迹：选中落到相邻一条（删完不至于右边空着）；误删走工具条的撤销
 function mkDelTraj(t) {
   const i = trajectories.value.findIndex((x) => x.id === t.id); if (i < 0) return
@@ -11603,7 +11960,7 @@ function snapshot() {
     }
   }
 }
-function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(snapshot())) } catch { /* ignore */ } }
+function saveSettings() { guardedPersist(SETTINGS_KEY, '地图与天线树设置', () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(snapshot()))) }
 async function restoreSettings() {
   let s; try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null') } catch { s = null }
   if (!s) return
@@ -11755,7 +12112,7 @@ async function restoreSettings() {
   if (s.viewRev >= VIEW_PREFS_REV && FRAME_MODES.includes(s.frame)) viewPrefs.frame = s.frame
   for (const k of ['dragDamping', 'wheelStep3d', 'wheelStep2d']) {
     const r = VIEW_PREF_RANGE[k]
-    if (Number.isFinite(s[k])) viewPrefs[k] = Math.max(r.min, Math.min(r.max, Math.round(s[k])))
+    if (Number.isFinite(s[k])) viewPrefs[k] = Math.max(r.min, Math.min(r.max, Number((Math.round(s[k] / r.step) * r.step).toPrecision(12))))
   }
   // 聚焦卫星显示样式：逐字段按类型合并（旧存档没这一项时全留出厂值），随后一次性推给两个渲染器
   if (s.focusStyle && typeof s.focusStyle === 'object') {
@@ -11915,7 +12272,7 @@ function afterImport(r) {
   if (r.groups) parts.push(`${r.groups} 组 / ${r.sats} 颗`)
   if (r.replaced) parts.push(`替换 ${r.replaced}`)
   if (r.invalid) parts.push(`无效 ${r.invalid}`)
-  if (r.ephem) parts.push(`星历 ${r.ephem}`)
+  if (r.ephem) parts.push(zhEn(`星历 ${r.ephem}`, `ephemerides ${r.ephem}`))
   if (r.bound) parts.push(`对应已有卫星 ${r.bound}`)
   const errs = (r.errors || []).filter(Boolean)
   logMsg(`导入星历：${parts.length ? parts.join(' · ') : '无变化'}${errs.length ? `；${errs.length} 条失败：${errs[0]}` : ''}`, errs.length ? 'warn' : 'info')
@@ -12013,14 +12370,65 @@ function impDragLeave(e) {
   impDragOver.value = false
 }
 const impHasFiles = (e) => !!(e && e.dataTransfer && Array.from(e.dataTransfer.types || []).indexOf('Files') >= 0)
+// ---- 文件拖入分流：按扩展名送到各自的导入口（过去一律当星历解析，.grd / .kml 拖上来只报「星历解析失败」）----
+//   .grd .pat .ant .pattern → 天线方向图（落到哪颗星：拖在天线树卫星行上 = 那颗；拖在地图上 = 正在编辑的天线所属的星 / 树里唯一的星）
+//   .kml .gxt               → Polygon（协调区）导入
+//   .xlsx .lbcfg 与模型文件 → 这里不收，状态栏报一句
+//   其余（OMM / TLE / 3LE / 年历 / .e / OEM / SP3 / .eph / .txt / .json…）→ 原来的星历导入
+const DROP_GRD = /\.(grd|pat|ant|pattern)$/i, DROP_POLY = /\.(kml|gxt)$/i
+const DROP_NO = /\.(xlsx|xls|csv\.xlsx|lbcfg|glb|gltf|obj|stl|fbx|step|stp|iges|igs|brep|png|jpe?g|pdf|docx)$/i
+async function readLatin1(f) {
+  const b = new Uint8Array(await f.arrayBuffer())
+  let s = ''
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000))
+  return s
+}
+async function dropGrdFiles(files, folder) {
+  let node = folder ? grdNodeOf(folder) : null
+  if (!node && grd.active.value) node = grdNodeOf(grd.active.value.split('|')[0])
+  if (!node) { const ns = grdSats.value.filter((s) => s.kind !== 'elevline'); if (ns.length === 1) node = ns[0] }
+  if (!node) { showStatus('方向图文件需拖到「对地覆盖分析」天线树的卫星行上', { level: 'warn' }); return }
+  const preset = []
+  for (const f of files) {
+    try { preset.push({ base: f.name, text: await readLatin1(f) }) } catch (err) { preset.push({ base: f.name, error: (err && err.message) || String(err) }) }
+  }
+  const keys = await grd.importGrd(node, preset)
+  if (keys && keys.length) showStatus(`已导入 ${keys.length} 副方向图到「${node.satName}」`)
+}
+async function dropPolyFiles(files) {
+  const preset = []
+  for (const f of files) {
+    const ext = (f.name.split('.').pop() || '').toLowerCase()
+    try { preset.push({ base: f.name, ext, text: ext === 'kml' ? await f.text() : await readLatin1(f) }) } catch (err) { preset.push({ base: f.name, ext, error: (err && err.message) || String(err) }) }
+  }
+  await importPolys(preset)
+}
+// 天线树上的拖放：落在哪颗星的行（或它展开的天线行）上就导到哪颗
+function onTreeDragOver(e) { if (!impHasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' }
+function onTreeDrop(e) {
+  if (!impHasFiles(e)) return
+  e.preventDefault(); e.stopPropagation()
+  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+  const row = e.target && e.target.closest ? e.target.closest('[data-folder]') : null
+  const grdF = files.filter((f) => !DROP_POLY.test(f.name) && !DROP_NO.test(f.name))
+  if (grdF.length) dropGrdFiles(grdF, row ? row.getAttribute('data-folder') : '')
+  const rest = files.filter((f) => !grdF.includes(f))
+  if (rest.length) showStatus(`不支持在此导入：${rest.map((f) => f.name).join('、')}`, { level: 'warn' })
+}
+
 async function onImpDrop(e) {
   impDragOver.value = false
   if (mdlHas(e)) { onModelDrop(e); return }
   if (!impHasFiles(e)) return
   e.preventDefault(); e.stopPropagation()
-  if (!apiOk || !window.api.omm.importPreview) { status.value = '需在桌面客户端中运行'; return }
-  const files = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+  const all = Array.from((e.dataTransfer && e.dataTransfer.files) || [])
+  const grdF = all.filter((f) => DROP_GRD.test(f.name)), polyF = all.filter((f) => DROP_POLY.test(f.name)), noF = all.filter((f) => DROP_NO.test(f.name))
+  if (grdF.length) dropGrdFiles(grdF, '')
+  if (polyF.length) dropPolyFiles(polyF)
+  if (noF.length) showStatus(`不支持在此导入：${noF.map((f) => f.name).join('、')}`, { level: 'warn' })
+  const files = all.filter((f) => !grdF.includes(f) && !polyF.includes(f) && !noF.includes(f))
   if (!files.length) return
+  if (!apiOk || !window.api.omm.importPreview) { status.value = '需在桌面客户端中运行'; return }
   const MAX = 64 * 1024 * 1024
   const payload = []
   for (const f of files) {
@@ -12257,13 +12665,13 @@ function trajLocate(t) {
 // 地图右键压着载具「航迹时间…」：切到标记侧栏、展开这条航迹的「时间」、滚到卡片并把焦点交给「出发」
 function revealTrajTime(id) {
   if (!trajectories.value.some((t) => t.id === id)) return
+  if (!requestSide('markers')) return
   openMot(id)
-  shellUi.side = 'markers'
   setSecOpen('mk-traj', true)
   nextTick(() => {
     const card = [...document.querySelectorAll('#side-view .tcard[data-tid]')].find((e) => e.dataset.tid === String(id))
     if (!card) return
-    card.scrollIntoView({ block: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+    card.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() })   // 动效只认应用内开关，不跟系统 reduced-motion
     const inp = card.querySelector('.ttf input')
     if (inp) inp.focus({ preventScroll: true })
   })
@@ -12383,10 +12791,10 @@ function pageCommands() {
     { id: 'const.frame', label: '地球自转', icon: 'rotate-cw', group: '星座', keywords: kwId('const.frame'), lock: true, check: viewPrefs.frame === 'inertial', run: toggleFrame },
     { id: 'const.live', label: '实时时钟', icon: 'clock', group: '星座', keywords: kwId('const.live'), lock: true, check: live.value, run: toggleLive },
     { id: 'const.sendMini', label: '发送卫星到小程序…', icon: 'external-link', group: '星座', keywords: kwId('const.sendMini'), lock: true, run: () => { shellUi.side = 'constellation'; sendSatsToMiniapp() } },
-    { id: 'const.import', label: '导入星历…', icon: 'import', group: '星座', keywords: kwId('const.import'), lock: true, run: () => { shellUi.side = 'constellation'; importTleToLibrary() } },
+    { id: 'const.import', label: '导入星历…', icon: 'file-import', group: '星座', keywords: kwId('const.import'), lock: true, run: () => { shellUi.side = 'constellation'; importTleToLibrary() } },
     { id: 'const.finder', label: '查找卫星…', icon: 'filter', group: '星座', keywords: kwId('const.finder'), lock: true, run: () => { shellUi.side = 'constellation'; openFinder() } },
-    { id: 'poly.draw', label: '绘制多边形', icon: 'hexagon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
-    { id: 'poly.import', label: '导入多边形…', icon: 'import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
+    { id: 'poly.draw', label: '绘制 Polygon', icon: 'polygon', group: 'Polygon（协调区）', keywords: kwId('poly.draw'), lock: true, run: () => { shellUi.side = 'poly'; polyStartDraw() } },
+    { id: 'poly.import', label: '导入 Polygon…', icon: 'file-import', group: 'Polygon（协调区）', keywords: kwId('poly.import'), lock: true, run: () => { shellUi.side = 'poly'; importPolys() } },
     { id: 'grd.addSat', label: '添加卫星…', icon: 'plus', group: '对地覆盖分析', keywords: kwId('grd.addSat'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddSat() } },
     { id: 'grd.addElev', label: '添加仰角线…', icon: 'angle', group: '对地覆盖分析', keywords: kwId('grd.addElev'), lock: true, disabled: !covNav.grdAvail, run: () => { shellUi.side = 'antenna'; openAddElevLine() } },
     { id: 'mk.pointsTable', label: '点标记表格', icon: 'table', group: '地图标记设置', keywords: kwId('mk.pointsTable'), lock: true, run: () => { shellUi.side = 'markers'; openMkTable('points') } },
@@ -12430,6 +12838,362 @@ function revealStage() {
   clearTimeout(revealT)
   requestAnimationFrame(() => requestAnimationFrame(() => { stageShown.value = true }))
 }
+// ===================== 计算窗口 → 主窗口（scene:cmd）：拨时间轴 / 聚焦卫星 / 正对某点 / 时间轴标记 =====================
+// 白名单与参数清洗在主进程（electron/ipc：scene:cmd）；这里只按 cmd 分派。找不到对象只报状态，不弹窗。
+function onSceneCmd(cmd, p) {
+  p = p || {}
+  if (cmd === 'seekClock') { if (Number.isFinite(p.tMs)) { seekToMs(p.tMs); showStatus('已跳到计算窗口给出的时刻') } return }
+  if (cmd === 'markTime') { if (Number.isFinite(p.t0)) upsertMark(p.src || 'ext', p.label || '', p.t0, Number.isFinite(p.t1) ? p.t1 : null); return }
+  if (cmd === 'focusSat') {
+    const id = p.norad != null && String(p.norad) !== '' ? 'n:' + String(p.norad) : (p.name ? 'm:' + String(p.name) : '')
+    const e = satEntryById(id)
+    if (!e) { showStatus(`当前星历中没有「${p.name || p.norad || ''}」`, { level: 'warn' }); return }
+    if (!(selEntries.length === 1 && selEntries[0] === e)) notePrevFocus()
+    selectSat(e, true, false)
+    return
+  }
+  if (cmd === 'faceLonLat') {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) return
+    if (flatView.value && flat) flat.centerOn(p.lon, p.lat)
+    else if (scene) { if (following.value) stopFollow(); scene.faceLonLat(p.lon, p.lat) }
+  }
+}
+
+// ===================== 场景级撤销（Ctrl+Z / Ctrl+Y，状态栏「撤销」） =====================
+// 侧栏 × 一点即删、图上拖动改位置 / 顶点 / 指向，过去都撤不回来（只有表格浮窗和波束组内有自己的栈）。
+// 现在按「域快照」压进 stores/sceneUndo：markers（站 / 点 / 航迹 / 链路，一份存档键）、polys、bore（聚焦天线的指向字段）。
+// 波束组内的编辑仍走组内栈（bs.undo）；Ctrl+Z 在两者之间按谁更近分派。
+const BORE_UNDO_KEYS = ['boreType', 'boreAz', 'boreEl', 'boreLon', 'boreLat', 'borePtLon', 'borePtLat', 'borePtAlt', 'boreOffAz', 'boreOffEl', 'boreSat', 'boreSatName', 'boreLock', 'boreManual']
+const jclone = (x) => JSON.parse(JSON.stringify(x))
+const UNDO_DOM = {
+  markers: {
+    snap: () => jclone({ points: points.value, stations: stations.value, trajectories: trajectories.value, links: links.value }),
+    apply(s) {
+      const c = jclone(s)
+      points.value = c.points; stations.value = c.stations; trajectories.value = c.trajectories; links.value = c.links
+      if (activeTraj.value && !trajectories.value.some((t) => t.id === activeTraj.value)) activeTraj.value = ''
+      if (mkEditId.value && mkEditId.value !== 'points' && mkEditId.value !== 'stations' && !trajectories.value.some((t) => t.id === mkEditId.value)) mkEditId.value = ''
+      syncMarkers(); pushLinks()
+    }
+  },
+  polys: {
+    snap: () => jclone(polys.value),
+    apply(s) {
+      polys.value = jclone(s)
+      const has = (id) => !!id && polys.value.some((p) => p.id === id)
+      if (polyDrawId.value && !has(polyDrawId.value)) polyDrawId.value = ''
+      if (polyEditId.value && !has(polyEditId.value)) polyEditId.value = ''
+      if (polyMoveId.value && !has(polyMoveId.value)) polyMoveId.value = ''
+      polyRefresh()
+    }
+  },
+  bore: {
+    snap: () => { const v = {}; for (const k of BORE_UNDO_KEYS) v[k] = grdS[k]; return { key: grd.active.value, v: jclone(v) } },
+    async apply(s) {
+      if (!s || !s.key) return
+      if (grd.active.value !== s.key && grd.setActiveKey) await grd.setActiveKey(s.key)
+      if (grd.active.value !== s.key) return
+      for (const k of BORE_UNDO_KEYS) grdS[k] = s.v[k]
+      grd.recompute()
+    }
+  }
+}
+const sameSnap = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+// 包一层：fn 前后各拍一份快照，有变化就压栈；label 同时作状态栏回执（带「撤销」）
+function undoable(dom, label, fn) {
+  const D = UNDO_DOM[dom], before = D.snap()
+  const r = fn()
+  const after = D.snap()
+  if (sameSnap(before, after)) return r
+  pushSceneUndo({ label, undo: () => D.apply(before), redo: () => D.apply(after) })
+  if (label) showUndoable(label, doSceneUndo)
+  return r
+}
+// 分区头 ↺「恢复本节默认」：复位前后各拍一份本节状态，有变化就压进场景撤销栈，状态栏出「已恢复默认 · 撤销」。
+// 状态都在本页的几个 reactive 样式对象 / ref 里，按节点名取；套回时整组赋值后走各节原有的 apply（与手改同一条推图路径）。
+const objSnap = (o) => jclone({ ...o })
+// 色条旁的 hex 框：#rgb / rgb / #rrggbb / rrggbb → '#rrggbb'；读不懂就把框复原成原值（返回 null，不落值）
+function hexIn(e, cur) {
+  const el = e && e.target; if (!el) return null
+  const t = String(el.value || '').trim().replace(/^#/, '')
+  let h = /^[0-9a-f]{6}$/i.test(t) ? t : (/^[0-9a-f]{3}$/i.test(t) ? t.replace(/./g, (c) => c + c) : '')
+  if (!h) { el.value = cur == null ? '' : String(cur); return null }
+  h = '#' + h.toLowerCase(); el.value = h
+  return h
+}
+function objPut(o, v) { for (const k of Object.keys(o)) if (!(k in v)) delete o[k]; Object.assign(o, jclone(v)) }
+const RESET_SECS = {
+  lnk: { snap: () => objSnap(lnkStyle), put: (v) => { objPut(lnkStyle, v); pushLinks() }, run: lnkResetStyle },
+  ...Object.fromEntries(['orb', 'trk', 'fp', 'cone', 'ric', 'mk'].map((p) => ['foc-' + p, {
+    snap: () => objSnap(focusStyle), put: (v) => { objPut(focusStyle, v); applyFocusGeom() }, run: () => resetFocusPart(p)
+  }])),
+  model: { snap: () => objSnap(focusStyle), put: (v) => { objPut(focusStyle, v); applyModelStyle() }, run: resetModelStyle },
+  space: {
+    snap: () => ({ space: objSnap(space), key: imageryKey.value, bright: imageryBright.value }),
+    put: (v) => { spaceCmdSnap = null; objPut(space, v.space); setImageryKey(v.key); setImageryBright(v.bright); applySpaceStyle() },
+    run: resetSpace
+  },
+  border: { snap: () => objSnap(borderStyle), put: (v) => { objPut(borderStyle, v); applyBorderStyle() }, run: resetBorderAll },
+  'border-part': { snap: () => objSnap(borderStyle), put: (v) => { objPut(borderStyle, v); applyBorderStyle() }, run: (k) => resetBorderPart(k) },
+  name: {
+    snap: () => ({ sz: [countryNameSize.value, provNameSize.value, cityNameSize.value, oceanNameSize.value, seaNameSize.value], label: objSnap(labelStyle), water: objSnap(waterOff), om: oceanNameMode.value, sm: seaNameMode.value, nm: nameMode.value }),
+    put: (v) => {
+      [countryNameSize.value, provNameSize.value, cityNameSize.value, oceanNameSize.value, seaNameSize.value] = v.sz
+      objPut(labelStyle, v.label); objPut(waterOff, v.water); oceanNameMode.value = v.om; seaNameMode.value = v.sm; setNameMode(v.nm)
+      applyWaterMode(); applyWaterOff(); applyNameScale(); applyLabelStyle()
+    },
+    run: resetNameAll
+  },
+  crs: {
+    snap: () => ({ crs: objSnap(mapCrs), axes: objSnap(refAxes) }),
+    put: (v) => {
+      setMapCrs(v.crs); crsCenterShown.value = lon0ToCenter(mapCrs.lon0)
+      if (flat) { flat.setLon0(mapCrs.lon0); flat.setProjection(mapCrs.proj, projOpts()); flat.setMapFrame(mapFrameCfg()) }
+      if (imageryOn.value) applyImagery(true)
+      objPut(refAxes, v.axes); applyRefAxes()
+    },
+    run: resetCrsSec
+  },
+  ...Object.fromEntries([['mk-pt', 'pt'], ['mk-st', 'st'], ['mk-tj', 'tj']].map(([k, p]) => [k, {
+    snap: () => objSnap(markStyle), put: (v) => { objPut(markStyle, v); applyMarkStyle() }, run: () => resetMarkPart(p)
+  }])),
+  land: { snap: () => objSnap(landOverrides), put: (v) => { objPut(landOverrides, v); applyLandColors(true) }, run: clearLandOverrides },
+  chains: { snap: () => ({ st: objSnap(chainStyle), off: objSnap(chainOff) }), put: (v) => { objPut(chainStyle, v.st); objPut(chainOff, v.off); applyChains() }, run: resetChains }
+}
+function resetSec(key, arg) {
+  const D = RESET_SECS[key]; if (!D) return
+  const before = D.snap()
+  D.run(arg)
+  const after = D.snap()
+  if (sameSnap(before, after)) { showStatus('已是默认'); return }
+  pushSceneUndo({ label: '已恢复默认', undo: () => D.put(before), redo: () => D.put(after) })
+  showUndoable('已恢复默认', doSceneUndo)
+}
+// 拖动：按下拍快照、松手比对后压栈（拖动中逐帧改的是同一份数据，不逐帧压）
+let _dragUndo = null
+function dragUndoBegin(dom, label) { _dragUndo = { dom, label, before: UNDO_DOM[dom].snap() } }
+function dragUndoCommit() {
+  const d = _dragUndo; _dragUndo = null
+  if (!d) return
+  const D = UNDO_DOM[d.dom], after = D.snap()
+  if (sameSnap(d.before, after)) return
+  pushSceneUndo({ label: d.label, undo: () => D.apply(d.before), redo: () => D.apply(after) })
+}
+// 删波束组：组对象 + 原位置 + 组内撤销栈原样留着，撤销即放回
+function bsRemoveGroupUndoable(g) {
+  const payload = bs.removeGroup(g.id)
+  if (!payload) return
+  const nm = g.name || ''
+  pushSceneUndo({ label: `已删除波束组「${nm}」`, undo: () => { bs.restoreGroup(payload); redrawSats() }, redo: () => { bs.removeGroup(payload.g.id); redrawSats() } })
+  showUndoable(`已删除波束组「${nm}」`, doSceneUndo)
+}
+// Ctrl+Z 分派：波束合成视图里组内栈比场景栈更近 → 组内撤销；否则场景撤销
+function doSceneUndo() {
+  const bsNewer = sideCtx() === 'beams' && bs.canUndo.value && bs.lastEditAt.value > sceneUndoState.undoAt
+  if (bsNewer) { bs.undo(); redrawSats(); syncEdit(); showStatus('已撤销'); return true }
+  const e = sceneUndo()
+  if (e) { showStatus('已撤销：' + e.label.replace(/^已/, ''), { actions: [{ label: '重做', run: doSceneRedo }] }); return true }
+  if (sideCtx() === 'beams' && bs.canUndo.value) { bs.undo(); redrawSats(); syncEdit(); showStatus('已撤销'); return true }
+  return false
+}
+function doSceneRedo() {
+  const bsNewer = sideCtx() === 'beams' && bs.canRedo.value && bs.lastUndoAt.value > sceneUndoState.redoAt
+  if (bsNewer) { bs.redo(); redrawSats(); syncEdit(); showStatus('已重做'); return true }
+  const e = sceneRedo()
+  if (e) { showStatus('已重做：' + e.label.replace(/^已/, '')); return true }
+  if (sideCtx() === 'beams' && bs.canRedo.value) { bs.redo(); redrawSats(); syncEdit(); showStatus('已重做'); return true }
+  return false
+}
+// 主窗口 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z：输入框里归输入框；浮层 / 对话框开着、事件已被表格等消费 → 不接。
+// 绘制 Polygon / 航迹时 Ctrl+Z = 撤销上一点（同 Backspace）
+function onSceneUndoKey(e) {
+  if (e.isComposing || e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey) return
+  const z = e.code === 'KeyZ', y = e.code === 'KeyY'
+  if (!z && !y) return
+  const t = e.target
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+  if (document.querySelector(LNK_KEY_BLOCKERS)) return
+  const redo = y || (z && e.shiftKey)
+  if (!redo && mapTool.value === 'polyDraw') { e.preventDefault(); polyUndo(); return }
+  if (!redo && mapTool.value === 'traj') { e.preventDefault(); trajUndo(); return }
+  if (redo ? doSceneRedo() : doSceneUndo()) e.preventDefault()
+}
+
+// ===================== 地图对象：悬停反馈 + 左键选中 =====================
+// 过去图上只有卫星能被左键点中，站 / 点 / 航迹 / Polygon 单击没有任何反应，悬停也没有反馈。
+// 现在：悬停在可点的对象上 → 手形光标 + 光标旁名字签（运行时数据）；单击站 / 点 / 航迹 / Polygon →
+// 高亮环（站 / 点 / 载具）+ 状态栏一句「地球站「X」· 经纬度」，附「属性… / 在列表中定位」。卫星仍走 onMapPick（聚焦）。
+// 工具态（绘制 / 建链 / 拖拽…）与跟随视角里都不接：那时左键归工具 / 局部相机。
+const hoverTag = ref(null)          // { x, y, text }
+const mapSel = ref(null)            // { kind, id }
+let _hovRaf = 0, _hovEv = null, _hovAt = 0, _satPickAt = 0, _stgDown = null
+function satNameAt(x, y) {
+  let e = null
+  if (flatView.value) { const r = flat && flat.satAtScreen ? flat.satAtScreen(x, y) : null; e = r ? r.ref : null }
+  else if (scene) {
+    const i = scene.pickSatAt ? scene.pickSatAt(x, y) : -1
+    if (i >= 0) e = renderEntries[i] || null
+    if (!e && scene.pickExtraAt) { const r = scene.pickExtraAt(x, y); e = r ? r.ref : null }
+  }
+  return e ? String(e.name || e.noradId || '') : ''
+}
+function mapObjAt(x, y) {
+  const h = entHitAt(x, y, ['station', 'point', 'vehicle'])
+  if (h && h.kind === 'station') { const s = stations.value.find((q) => q.id === h.id); if (s) return { kind: 'station', id: s.id, name: (s.name || '').trim() || '地球站', lat: s.lat, lon: s.lon, hit: h } }
+  if (h && h.kind === 'point') { const p = points.value.find((q) => q.id === h.id); if (p) return { kind: 'point', id: p.id, name: (p.name || '').trim() || fmtLL(p.lat, p.lon), lat: p.lat, lon: p.lon, hit: h } }
+  const a = h && h.kind === 'vehicle' ? { k: 'tj', id: h.id } : lnkAreaAt(x, y)
+  if (a && a.k === 'tj') { const t = trajectories.value.find((q) => q.id === a.id); if (t) return { kind: 'traj', id: t.id, name: (t.name || '').trim() || '航迹', hit: h && h.kind === 'vehicle' ? h : null } }
+  if (a && a.k === 'pg') { const pg = polys.value.find((q) => q.id === a.id); if (pg) return { kind: 'poly', id: pg.id, name: (pg.name || '').trim() || 'Polygon' } }
+  return null
+}
+const mapToolBusy = () => !!(mapTool.value || following.value || flatFollowing.value || (lnk.pickEd && lnk.pickEd.value) || ctxMenu.value)
+function onStageHover(e) {
+  if (e.buttons || e.pointerType === 'touch') { if (hoverTag.value) hoverTag.value = null; return }
+  _hovEv = { x: e.clientX, y: e.clientY }
+  if (!_hovRaf) _hovRaf = requestAnimationFrame(hoverStep)
+}
+function hoverStep() {
+  _hovRaf = 0
+  const p = _hovEv
+  if (!p || mapToolBusy()) { if (hoverTag.value) hoverTag.value = null; return }
+  // 拾取在大星座里不算便宜（点云射线逐点测）：一帧最多测一次，且 40 ms 内不重测（光标停住时名字签保持）
+  const now = performance.now()
+  if (now - _hovAt < 40) { _hovRaf = requestAnimationFrame(hoverStep); return }
+  _hovAt = now
+  let text = satNameAt(p.x, p.y)
+  if (!text) { const o = mapObjAt(p.x, p.y); text = o ? o.name : '' }
+  hoverTag.value = text ? { x: p.x, y: p.y, text } : null
+}
+function onStageLeave() { _hovEv = null; if (hoverTag.value) hoverTag.value = null }
+function onStagePointerDown(e) { _stgDown = e.button === 0 ? { x: e.clientX, y: e.clientY } : null }
+function onStagePointerUp(e) {
+  const d = _stgDown; _stgDown = null
+  if (!d || e.button !== 0 || Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 6) return
+  if (mapToolBusy() || performance.now() - _winFocusAt < 250) return
+  if (performance.now() - _satPickAt < 80) { clearMapSel(); return }   // 这一下点中的是卫星（onMapPick 已聚焦）
+  const o = mapObjAt(e.clientX, e.clientY)
+  if (o) selectMapObj(o); else clearMapSel()
+}
+function mapSelRing(h) {
+  const o = { color: mdlAccent() }
+  if (scene && scene.setDropHighlight) scene.setDropHighlight(!flatView.value ? h : null, o)
+  if (flat && flat.setDropHighlight) flat.setDropHighlight(flatView.value ? h : null, o)
+}
+function clearMapSel() { if (mapSel.value) { mapSel.value = null; mapSelRing(null) } }
+const MAP_OBJ_WORD = { station: '地球站', point: '点标记', traj: '航迹', poly: 'Polygon' }
+function selectMapObj(o) {
+  mapSel.value = { kind: o.kind, id: o.id }
+  mapSelRing(o.hit || null)
+  const ll = Number.isFinite(o.lat) && Number.isFinite(o.lon) ? ' · ' + fmtLL(o.lat, o.lon) : ''
+  const acts = [{ label: '在列表中定位', run: () => revealMapObj(o) }]
+  if (o.kind === 'station') acts.unshift({ label: '属性…', run: () => openStationDlg({ id: o.id, lat: o.lat, lon: o.lon }) })
+  showStatus(`${MAP_OBJ_WORD[o.kind] || ''}「${o.name}」${ll}`, { actions: acts, ms: 10000 })
+}
+function revealMapObj(o) {
+  if (o.kind === 'station') revealEl('markers', ['mk-stations'], `[data-mk="s:${o.id}"]`)
+  else if (o.kind === 'point') revealEl('markers', ['mk-points'], `[data-mk="p:${o.id}"]`)
+  else if (o.kind === 'traj') revealEl('markers', ['mk-traj'], `.tcard[data-tid="${o.id}"]`)
+  else if (o.kind === 'poly') revealEl('poly', ['poly-list'], `.plg[data-pg="${o.id}"]`)
+}
+// 选中的对象被删了 / 隐藏了 → 收掉高亮环
+watch(() => { const s = mapSel.value; if (!s) return true
+  const L = s.kind === 'station' ? stations.value : s.kind === 'point' ? points.value : s.kind === 'traj' ? trajectories.value : polys.value
+  const x = L.find((q) => q.id === s.id); return !!x && x.show !== false }, (ok) => { if (!ok) clearMapSel() })
+
+// 绘制横幅上的「Shift + 拖动 = 徒手画」提示：按住 Shift 时点亮（窗口失焦时复位，免得松键事件丢在别处）
+const shiftDown = ref(false)
+function onShiftKey(e) { if (e.key === 'Shift') shiftDown.value = e.type === 'keydown' }
+function onShiftBlur() { shiftDown.value = false }
+
+// ===================== 地图工具态：同一时刻只有一种（QGIS「Map Tool」口径） =====================
+// 十一种：建链 / Polygon 绘制 / 航迹描绘 / 标记调整位置 / Polygon 调整顶点 / Polygon 整体拖动 /
+// 波束合成放置·调整中心·删除波束 / 站点栅编辑 / 拖拽波束 / 拖动标签 / 拖动调整投影中心。
+// 过去各入口各写一段清场，清的范围各不相同（航迹「编辑」只结束建链 → 与 Polygon 绘制并存时右键点全落进 Polygon）。
+// 现在：任何一种被打开（不论从侧栏、右键菜单、命令搜索还是信息栏）→ 同步把其余的全部收掉。
+const MAP_TOOLS = [
+  ['link', () => !!lnk.draw.value],
+  ['polyDraw', () => !!polyDrawId.value],
+  ['traj', () => !!activeTraj.value],
+  ['mkEdit', () => !!mkEditId.value],
+  ['polyEdit', () => !!polyEditId.value],
+  ['polyMove', () => !!polyMoveId.value],
+  // ★ 站点栅「加站」也借 placing（toggleStPick：stPick + placing 一起开）—— 那一下算站点栅这件工具，不算波束放置，
+  //   否则波束放置的闸会立刻把加站关掉
+  ['synth', () => synthToolOn()],
+  ['stEdit', () => !!(bs.stEditOn.value || bs.stPick.value)],
+  ['dragBore', () => !!grd.dragBore.value],
+  ['dragLabel', () => !!grd.dragLabel.value],
+  ['projSpin', () => !!projSpin.value]
+]
+function synthToolOn() { return !!((bs.placing.value && !bs.stPick.value) || bs.adjusting.value || bs.deleting.value) }
+function exitMapTools(keep) {
+  if (keep !== 'link') endLinkDraw()
+  if (keep !== 'polyDraw' && polyDrawId.value) polyCancel()
+  if (keep !== 'traj' && activeTraj.value) endTraj()
+  if (keep !== 'mkEdit') mkEditStop()
+  if (keep !== 'polyEdit') polyEditStop()
+  if (keep !== 'polyMove') polyMoveStop()
+  if (keep !== 'synth' && synthToolOn()) { stopSynthPlacement(); redrawSats() }
+  if (keep !== 'stEdit') { if (bs.stEditOn.value) bs.toggleStEdit(); if (bs.stPick.value) bs.toggleStPick() }
+  if (keep !== 'dragBore' && grd.dragBore.value) grd.setDragBore(false)
+  if (keep !== 'dragLabel' && grd.dragLabel.value) grd.setDragLabel(false)
+  if (keep !== 'projSpin' && projSpin.value) toggleProjSpin()
+}
+for (const [k, on] of MAP_TOOLS) watch(on, (v) => { if (v) exitMapTools(k) }, { flush: 'sync' })
+const mapTool = computed(() => { for (const [k, on] of MAP_TOOLS) if (on()) return k; return '' })
+// 键盘（建链另有 onLinkKey，口径相同；站点栅的 Esc 在 onNavKeyDown 那一层）：
+//   Esc 退出（未成形的 Polygon 丢弃）· Enter 完成 · Backspace 撤销上一点（Polygon / 航迹）
+// 让位规则与建链同一套：输入框里打字、浮层 / 菜单 / 对话框开着、焦点在自带 Enter 动作的控件上 → 不接。
+function onMapToolKey(e) {
+  if (e.isComposing || e.defaultPrevented) return
+  const k = e.key
+  if (k !== 'Enter' && k !== 'Escape' && k !== 'Backspace') return
+  const tool = mapTool.value
+  if (!tool || tool === 'link' || tool === 'stEdit') return
+  const t = e.target, typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)
+  if (typing || document.querySelector(LNK_KEY_BLOCKERS)) return
+  if (k === 'Enter' && (e.repeat || (t && t.closest && t.closest(LNK_ENTER_OWNERS)))) return
+  if (k === 'Backspace') {
+    if (tool === 'polyDraw') { e.preventDefault(); if (!e.repeat) polyUndo() }
+    else if (tool === 'traj') { e.preventDefault(); if (!e.repeat) trajUndo() }
+    return
+  }
+  e.preventDefault()
+  if (tool === 'polyDraw') { if (k === 'Enter') polyDone(); else polyCancel() }
+  else if (tool === 'traj') endTraj()
+  else exitMapTools('')
+}
+// 离开视图（sideCtx 口径：收起侧栏不算离开）：「拖动调整」投影中心是地图综合设置里的模态，
+// 带着它切走，2D 左拖会悄悄从平移变成改投影中心 —— 离开即关
+watch(() => sideCtx(), (cur) => { if (cur !== 'geo' && projSpin.value) toggleProjSpin() })
+// 切回 3D：只在平面图里成立的编辑态（调整顶点 / 整体拖动 / 调整中心 / 删除波束 / 站点栅框选）一并退出 ——
+// 留着的话 3D 上画着手柄却拖不动
+watch(() => view.flat, (v) => {
+  if (v) return
+  polyEditStop(); polyMoveStop()
+  if (bs.adjusting.value || bs.deleting.value) { bs.adjusting.value = false; bs.deleting.value = false; syncEdit(); redrawSats() }
+  if (bs.stEditOn.value) bs.toggleStEdit()
+})
+// 拖波束 / 拖标签的起拖命中：按在视轴落点 / 某个数值标签附近才接管左键，别处照常导航（转地球 / 平移）
+const BORE_HIT_PX = 80, LABEL_HIT_PX = 24
+function screenOfLLNow(lat, lon) {
+  if (flatView.value) return flat && flat.screenOfLL ? flat.screenOfLL(lat, lon) : null
+  return scene && scene.screenOfLL ? scene.screenOfLL(lat, lon, 0) : null
+}
+function beamDragHitAt(x, y) {
+  if (sideCtx() === 'satcov') return true          // 对星覆盖：绕源星转视轴（增量式），按哪都行
+  const g = grd.boreGround ? grd.boreGround() : null
+  if (!g) return true                               // 视轴不落地表 → 没有可按的点，照旧恒接管
+  const s = screenOfLLNow(g.lat, g.lon)
+  if (!s) return true
+  return Math.hypot(s.x - x, s.y - y) <= BORE_HIT_PX
+}
+function labelDragHitAt(x, y) {
+  const as = grd.dragLabelAnchors ? grd.dragLabelAnchors() : []
+  for (const a of as) { const s = a ? screenOfLLNow(a[1], a[0]) : null; if (s && Math.hypot(s.x - x, s.y - y) <= LABEL_HIT_PX) return true }
+  return false
+}
+
 onMounted(async () => {
   perfHost.attach()   // 性能指标表窗口：收弹窗操作 / 关窗通知，认领主窗口重载前就开着的窗
   // 顶栏「视图」按钮右侧的覆盖图入口：注册可用性与切换回调（按钮渲染在 App.vue，状态走 covNav store）
@@ -12438,6 +13202,7 @@ onMounted(async () => {
   covNav.polyAvail = true; covNav.togglePoly = togglePolyPanel   // Polygon 面板（纯本地功能，不依赖 IPC）
   covNav.exportAvail = true; covNav.exportMap = exportMap   // 顶栏「导出图」入口（高清 PNG / 矢量 PDF）
   covNav.exportVideo = () => vexp.toggle()                   // 「导出视频…」：开 / 关视频导出面板
+  covNav.exportImage = () => vexp.toggleStill()              // 「导出图片…」：同一块面板的单张图片模式（时刻 = 游标，带取景框与叠加信息）
   covNav.sendMiniapp = sendToMiniapp   // 顶栏「导出」菜单「发送到小程序」入口（覆盖层 + 多边形一份快照）
   covNav.sendTrajMiniapp = sendTrajsToMiniapp   // 同一菜单「发送航迹到小程序」（标记层航迹，一条一件）
   covNav.importTle = importTleToLibrary   // 「文件」菜单「导入星历文件」入口 → 落库自定义卫星（贯通文件管理/搜索池）
@@ -12498,7 +13263,8 @@ onMounted(async () => {
   scene.setOnBeamDrag(onBeamDragAny)   // 拖拽波束（GRD boresight）：对地拖地表落点、对星绕源星转方向
   satcovSyncDragSphere()
   scene.setOnLabelDrag(grd.labelDrag); scene.setLabelDragMode(grd.dragLabel.value)   // 拖拽等值线数值标签（沿线滑动）
-  scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：左键按住沿路径连续加点
+  scene.setOnPolyDraw(onPolyDraw); scene.setPolyDrawMode(!!(polyDrawId.value || activeTraj.value))   // Polygon/航迹绘制：单击加点、Shift+按住拖动徒手画
+  if (scene.setBeamDragHit) { scene.setBeamDragHit(beamDragHitAt); scene.setLabelDragHit(labelDragHitAt) }   // 拖波束 / 拖标签只在按中目标时接管左键
   scene.setOnPlace((ll) => bs.placeAt(ll)); scene.setPlaceMode(bs.placing.value)   // 波束合成放置：左键点击落波束（拖动仍旋转）
   scene.setOnMarkerDrag(onMarkerDragged)   // 标记拖拽（2D 那侧在 flat 创建处注册）
   // 缩放进度条（底部状态栏）：注册当前页缩放能力，球体滚轮缩放回填进度条 + 记忆
@@ -12537,6 +13303,7 @@ onMounted(async () => {
   applyModelStyle()
   loadModelLib(); loadModelBindings()
   if (modelsApi && modelsApi.onChanged) offModelsChanged = modelsApi.onChanged(onModelsChanged)
+  if (window.api && window.api.scene && window.api.scene.onCmd) offSceneCmd = window.api.scene.onCmd(onSceneCmd)
   // 平移/旋转结束也保存视图（滚轮已由 onZoom 覆盖；拖拽无回调，故监听 pointerup）
   el.value.addEventListener('pointerup', saveView)
   // 方向键导航（3D 旋转 / 2D 平移视窗中心）：全局监听，失焦清键防卡键
@@ -12566,6 +13333,9 @@ onMounted(async () => {
   window.addEventListener('pointerdown', onLinkPickDown, true); window.addEventListener('pointerup', onLinkPickUp, true)   // 建链态点选 / 取点编辑器图上点选
   window.addEventListener('pointermove', onLinkHoverMove, { passive: true })   // 取点编辑器：图上悬停候选点
   window.addEventListener('keydown', onLinkKey, true)
+  window.addEventListener('keydown', onMapToolKey, true)
+  window.addEventListener('keydown', onSceneUndoKey)
+  window.addEventListener('keydown', onShiftKey); window.addEventListener('keyup', onShiftKey); window.addEventListener('blur', onShiftBlur)
   window.addEventListener('focus', onWinFocus)
   if (track.value) { measureTrack(); trackRo = new ResizeObserver(measureTrack); trackRo.observe(track.value) }   // 轨道宽 / 位置 / dpr → 刻度自适应
   window.addEventListener('resize', onHairDpr)   // 换显示器 / 改缩放：dpr 变了轨道宽不一定变，单靠 trackRo 接不住
@@ -12688,7 +13458,7 @@ onBeforeUnmount(() => {
   covNav.grdAvail = false; covNav.covAvail = false; covNav.toggleGrd = null; covNav.toggleCov = null
   covNav.polyAvail = false; covNav.togglePoly = null
   covNav.exportAvail = false; covNav.exportMap = null; covNav.importTle = null; covNav.exportEphem = null; covNav.sendMiniapp = null; covNav.sendTrajMiniapp = null
-  covNav.exportVideo = null; vexp.dispose()
+  covNav.exportVideo = null; covNav.exportImage = null; vexp.dispose()
   covNav.searchSats = null; if (offCmds) { offCmds(); offCmds = null }
   covNav.grdOpen = false; covNav.covOpen = false; covNav.polyOpen = false
   zoom.avail = false; zoom.apply = null   // 复位底部状态栏缩放进度条
@@ -12725,6 +13495,7 @@ onBeforeUnmount(() => {
   offPovTick(); offMapPov()   // 退订主权解算层与视角状态源
   // 模型层先于场景拆：退出跟随（相机归位、摘局部控件监听）→ 断开叠加层 → 释放模型实例与本 renderer 的 GPU 副本
   if (offModelsChanged) { offModelsChanged(); offModelsChanged = null }
+  if (offSceneCmd) { try { offSceneCmd() } catch { /* ignore */ } offSceneCmd = null }
   clearTimeout(_libT); clearTimeout(_bodyRtT)
   stopFollow()
   // 实体层先于模型层拆（它借用模型层的 source：先把借的实例还回去，模型层再整体释放）
@@ -12746,7 +13517,7 @@ onBeforeUnmount(() => {
   if (rdkRo) { rdkRo.disconnect(); rdkRo = null }; if (_rdkUp) _rdkUp(); clearTimeout(_rdkCopyT); clearTimeout(_rdkSvCopyT)
   if (_rdkPlotRo) { _rdkPlotRo.disconnect(); _rdkPlotRo = null }
   window.removeEventListener('pointerdown', onPickArmDown, true); window.removeEventListener('focus', onWinFocus)
-  window.removeEventListener('pointerdown', onLinkPickDown, true); window.removeEventListener('pointerup', onLinkPickUp, true); window.removeEventListener('keydown', onLinkKey, true)
+  window.removeEventListener('pointerdown', onLinkPickDown, true); window.removeEventListener('pointerup', onLinkPickUp, true); window.removeEventListener('keydown', onLinkKey, true); window.removeEventListener('keydown', onMapToolKey, true); window.removeEventListener('keydown', onSceneUndoKey); window.removeEventListener('keydown', onShiftKey); window.removeEventListener('keyup', onShiftKey); window.removeEventListener('blur', onShiftBlur)
   window.removeEventListener('pointermove', onLinkHoverMove); if (_lnkHovRaf) cancelAnimationFrame(_lnkHovRaf)
   cursor.ll = null; cursor.env = null; if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (geomPool) { geomPool.dispose(); geomPool = null }; if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
@@ -12756,9 +13527,12 @@ onBeforeUnmount(() => {
   <div class="g3" :class="{ 'rdk-drag': rdkDrag }" ref="g3el">
     <div class="body">
       <div
-        ref="stageWrapEl" class="stage-wrap" :class="{ dragon: impDragOver, shown: stageShown, 'lnk-hov': lnkCandHov }"
+        ref="stageWrapEl" class="stage-wrap" data-pane="stage" :class="{ dragon: impDragOver, shown: stageShown, 'lnk-hov': lnkCandHov, 'obj-hov': !!hoverTag }"
         @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
+        @pointermove="onStageHover" @pointerleave="onStageLeave" @pointerdown="onStagePointerDown" @pointerup="onStagePointerUp"
       >
+        <!-- 悬停名字签：光标压在卫星 / 站 / 点 / 航迹 / Polygon 上时显示它的名字（运行时数据，不吃指针） -->
+        <div v-if="hoverTag" class="hov-tag" :style="{ left: (hoverTag.x + 14) + 'px', top: (hoverTag.y + 12) + 'px' }" data-i18n-skip>{{ hoverTag.text }}</div>
         <div ref="el" class="stage"></div>
         <canvas v-show="flatView" ref="flatCanvas" class="flat" :class="{ rdy: flatPainted }"></canvas>
         <!-- 视频导出的取景预览：框外压暗 + 叠加信息按成片比例画（面板开着才有，不吃指针） -->
@@ -12774,11 +13548,11 @@ onBeforeUnmount(() => {
 
         <!-- 信息栏「天线」节的「＋」：与侧栏卫星行「＋」同一套条目，外加「电磁波束仿真」。菜单 position:fixed、取视口坐标，留在这里与所在容器无关 -->
         <template v-if="antAddMenu && antAddMenu.src === 'card'">
-          <div class="lmenu-bd" @mousedown="antAddMenu = null" @contextmenu.prevent="antAddMenu = null"></div>
-          <div ref="antMenuEl" class="lmenu antm" :style="{ left: antAddMenu.x + 'px', top: antAddMenu.y + 'px' }">
-            <div class="lmi" @click="antAddPick('gauss')"><Icon name="waves" :size="12" /><span>高斯天线</span></div>
-            <div class="lmi" @click="antAddPick('grd')"><Icon name="import" :size="12" /><span>导入 GRD…</span></div>
-            <div class="lmi" @click="antAddPick('synth')"><Icon name="satellite-dish" :size="12" /><span>电磁波束仿真</span></div>
+          <div class="lmenu-bd menu-mask" @mousedown="antAddMenu = null" @contextmenu.prevent="antAddMenu = null"></div>
+          <div ref="antMenuEl" class="lmenu antm menu" role="menu" :style="{ left: antAddMenu.x + 'px', top: antAddMenu.y + 'px' }">
+            <button type="button" class="lmi menu-item" role="menuitem" @click="antAddPick('gauss')"><span class="menu-ico"><Icon name="chart-bell-curve" :size="12" /></span><span>高斯天线</span></button>
+            <button type="button" class="lmi menu-item" role="menuitem" @click="antAddPick('grd')"><span class="menu-ico"><Icon name="file-import" :size="12" /></span><span>导入 GRD…</span></button>
+            <button type="button" class="lmi menu-item" role="menuitem" @click="antAddPick('synth')"><span class="menu-ico"><Icon name="satellite-dish" :size="12" /></span><span>电磁波束仿真</span></button>
           </div>
         </template>
       </div>
@@ -12791,10 +13565,10 @@ onBeforeUnmount(() => {
           <!-- 生成/编辑器内联面板：编辑器打开时侧栏切为此面板，地图保持可见 + 实时预览（仿 KeepTrack 停靠式） -->
           <div v-if="constModal" class="cedit">
             <div class="cehd">
-              <span class="ceback" @click="closeConstWizard"><Icon name="chevron-left" :size="12" /> 返回</span>
+              <button type="button" class="ceback" @click="closeConstWizard"><Icon name="chevron-left" :size="12" /> 返回</button>
               <span class="cetitle">{{ constModal.id ? '编辑星座' : '生成卫星或星座' }}</span>
-              <span class="cesolo" :title="constModal.pvSolo !== false ? '地图上只显示正在生成的星座；关掉则叠加在当前显示的卫星上' : '叠加在当前显示的卫星上；打开则只显示正在生成的星座'"><button type="button" class="layersw" :class="{ on: constModal.pvSolo !== false }" role="switch" :aria-checked="constModal.pvSolo !== false ? 'true' : 'false'" @click="constModal.pvSolo = constModal.pvSolo === false"><i></i></button><span>仅预览</span></span>
-              <span class="celive" title="改动实时预览到地球">● 实时</span>
+              <span class="cesolo" :title="constModal.pvSolo !== false ? '地图上仅显示正在生成的星座；关闭则叠加在当前显示的卫星上' : '叠加在当前显示的卫星上；打开则仅显示正在生成的星座'"><button type="button" class="layersw" :class="{ on: constModal.pvSolo !== false }" role="switch" :aria-checked="constModal.pvSolo !== false ? 'true' : 'false'" aria-labelledby="cm-sw-pvsolo" @click="constModal.pvSolo = constModal.pvSolo === false"><i></i></button><span id="cm-sw-pvsolo">仅预览</span></span>
+              <span class="celive" title="改动实时预览到地球"><i class="celive-dot"></i>实时</span>
             </div>
             <div class="cebody">
               <div class="cef"><label>轨道类型</label>
@@ -12804,11 +13578,11 @@ onBeforeUnmount(() => {
                 </select>
               </div>
               <div class="cef"><label>布局</label>
-                <span class="seg3">
-                  <span :class="{ on: constModal.pattern === 'single' }" @click="constModal.pattern = 'single'">单星</span>
-                  <span :class="{ on: constModal.pattern === 'delta' }" @click="constModal.pattern = 'delta'">Delta</span>
-                  <span :class="{ on: constModal.pattern === 'star' }" @click="constModal.pattern = 'star'">Star</span>
-                  <span :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单轨道面</span>
+                <span role="radiogroup" class="seg seg3">
+                  <button type="button" role="radio" :aria-checked="!!(constModal.pattern === 'single')" class="sg" :class="{ on: constModal.pattern === 'single' }" @click="constModal.pattern = 'single'">单星</button>
+                  <button type="button" role="radio" :aria-checked="!!(constModal.pattern === 'delta')" class="sg" :class="{ on: constModal.pattern === 'delta' }" @click="constModal.pattern = 'delta'">Delta</button>
+                  <button type="button" role="radio" :aria-checked="!!(constModal.pattern === 'star')" class="sg" :class="{ on: constModal.pattern === 'star' }" @click="constModal.pattern = 'star'">Star</button>
+                  <button type="button" role="radio" :aria-checked="!!(constModal.pattern === 'plane')" class="sg" :class="{ on: constModal.pattern === 'plane' }" @click="constModal.pattern = 'plane'">单轨道面</button>
                 </span>
               </div>
               <div class="cef"><label>星座名称</label><input class="ci" v-model="constModal.name" placeholder="星座名称" /></div>
@@ -12823,9 +13597,9 @@ onBeforeUnmount(() => {
                 </template>
                 <template v-else-if="constModal.orbitType === 'critical'">
                   <div class="cef"><label>方向</label>
-                    <span class="seg3">
-                      <span :class="{ on: constModal.design.direction !== 'retro' }" title="顺行 63.4349°" @click="setDesign('direction', 'pro')">顺行</span>
-                      <span :class="{ on: constModal.design.direction === 'retro' }" title="逆行 116.5651°" @click="setDesign('direction', 'retro')">逆行</span>
+                    <span role="radiogroup" class="seg seg3">
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.direction !== 'retro')" class="sg" :class="{ on: constModal.design.direction !== 'retro' }" title="顺行 63.4349°" @click="setDesign('direction', 'pro')">顺行</button>
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.direction === 'retro')" class="sg" :class="{ on: constModal.design.direction === 'retro' }" title="逆行 116.5651°" @click="setDesign('direction', 'retro')">逆行</button>
                     </span>
                   </div>
                   <div class="cefv"><label>远地点高度 hₐ</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('apogeeKm') }" :model-value="constModal.design.apogeeKm" :step="10" @commit="v => setDesign('apogeeKm', v)" /><span class="u">km</span></div></div>
@@ -12862,26 +13636,26 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="cefv"><label>升交点经度 λ</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.design.anLonDeg" :min="-180" :max="180" :step="1" @commit="v => setDesign('anLonDeg', v)" /><span class="u">°</span></div></div>
                   <div class="cef"><label>地方时</label>
-                    <span class="seg3">
-                      <span :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</span>
-                      <span :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</span>
+                    <span role="radiogroup" class="seg seg3">
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.localMode !== 'ltdn')" class="sg" :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</button>
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.localMode === 'ltdn')" class="sg" :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</button>
                     </span>
                   </div>
                   <div class="cefv"><label>{{ constModal.design.localMode === 'ltdn' ? 'LTDN' : 'LTAN' }}</label><div class="ceinp"><input class="ci" :class="{ bad: constFieldBad('localTime') }" :value="constModal.design.localTime" placeholder="hh:mm" title="平太阳时，与视太阳相差时差 ≤16 min" @change="e => setDesign('localTime', e.target.value)" @keyup.enter="e => setDesign('localTime', e.target.value)" /><span class="u"></span></div></div>
                 </template>
                 <template v-else-if="constModal.orbitType === 'sunSync'">
                   <div class="cef"><label>由谁定</label>
-                    <span class="seg3">
-                      <span :class="{ on: constModal.design.driver !== 'incl' }" @click="setDesign('driver', 'alt')">高度</span>
-                      <span :class="{ on: constModal.design.driver === 'incl' }" @click="setDesign('driver', 'incl')">倾角</span>
+                    <span role="radiogroup" class="seg seg3">
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.driver !== 'incl')" class="sg" :class="{ on: constModal.design.driver !== 'incl' }" @click="setDesign('driver', 'alt')">高度</button>
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.driver === 'incl')" class="sg" :class="{ on: constModal.design.driver === 'incl' }" @click="setDesign('driver', 'incl')">倾角</button>
                     </span>
                   </div>
                   <div v-if="constModal.design.driver !== 'incl'" class="cefv"><label>轨道高度 h</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('altKm') }" :model-value="constModal.design.altKm" :min="80" :step="10" @commit="v => setDesign('altKm', v)" /><span class="u">km</span></div></div>
                   <div v-else class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :class="{ bad: constFieldBad('inclDeg') }" :model-value="constModal.design.inclDeg" :min="90" :max="180" :step="0.01" @commit="v => setDesign('inclDeg', v)" /><span class="u">°</span></div></div>
                   <div class="cef"><label>地方时</label>
-                    <span class="seg3">
-                      <span :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</span>
-                      <span :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</span>
+                    <span role="radiogroup" class="seg seg3">
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.localMode !== 'ltdn')" class="sg" :class="{ on: constModal.design.localMode !== 'ltdn' }" @click="setDesign('localMode', 'ltan')">升交点</button>
+                      <button type="button" role="radio" :aria-checked="!!(constModal.design.localMode === 'ltdn')" class="sg" :class="{ on: constModal.design.localMode === 'ltdn' }" @click="setDesign('localMode', 'ltdn')">降交点</button>
                     </span>
                   </div>
                   <div class="cefv"><label>{{ constModal.design.localMode === 'ltdn' ? 'LTDN' : 'LTAN' }}</label><div class="ceinp"><input class="ci" :class="{ bad: constFieldBad('localTime') }" :value="constModal.design.localTime" placeholder="hh:mm" title="平太阳时，与视太阳相差时差 ≤16 min" @change="e => setDesign('localTime', e.target.value)" @keyup.enter="e => setDesign('localTime', e.target.value)" /><span class="u"></span></div></div>
@@ -12892,9 +13666,9 @@ onBeforeUnmount(() => {
               <template v-else>
                 <div class="cesec">轨道尺寸与形状</div>
                 <div class="cef"><label>轨道形状</label>
-                  <span class="seg3">
-                    <span :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆轨道</span>
-                    <span :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆轨道</span>
+                  <span role="radiogroup" class="seg seg3">
+                    <button type="button" role="radio" :aria-checked="!!(constModal.shape === 'circ')" class="sg" :class="{ on: constModal.shape === 'circ' }" @click="constModal.shape = 'circ'">圆轨道</button>
+                    <button type="button" role="radio" :aria-checked="!!(constModal.shape === 'ellip')" class="sg" :class="{ on: constModal.shape === 'ellip' }" @click="constModal.shape = 'ellip'">椭圆轨道</button>
                   </span>
                 </div>
                 <div class="cefv"><label>轨道倾角 i</label><div class="ceinp"><NumBox class="ci" :model-value="constModal.incl" :min="0" :max="180" :step="0.1" @commit="v => constModal.incl = v" /><span class="u">°</span></div></div>
@@ -12932,20 +13706,20 @@ onBeforeUnmount(() => {
                 <span class="pvsw"><button type="button" class="layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click="toggleFocus('coneOn')"><i></i></button><span>覆盖锥</span></span>
               </div>
               <div class="cef"><label>聚焦</label>
-                <span class="seg3">
-                  <span :class="{ on: !constModal.pvAll }" title="只把预览星座的种子星（第 1 面第 1 颗）放进选中集" @click="constModal.pvAll = false">种子星</span>
-                  <span :class="{ on: constModal.pvAll }" title="预览星座每一颗都进选中集，轨道线 / 星下点轨迹 / 覆盖圈逐颗画" @click="constModal.pvAll = true">全部</span>
+                <span role="radiogroup" class="seg seg3">
+                  <button type="button" role="radio" :aria-checked="!!(!constModal.pvAll)" class="sg" :class="{ on: !constModal.pvAll }" title="仅将预览星座的种子星（第 1 面第 1 颗）放入选中集" @click="constModal.pvAll = false">种子星</button>
+                  <button type="button" role="radio" :aria-checked="!!(constModal.pvAll)" class="sg" :class="{ on: constModal.pvAll }" title="预览星座每一颗都进选中集，轨道线 / 星下点轨迹 / 覆盖圈逐颗画" @click="constModal.pvAll = true">全部</button>
                 </span>
               </div>
               <div class="cef"><label>轨迹长度</label>
-                <span class="seg3">
-                  <span :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</span>
-                  <span :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</span>
+                <span role="radiogroup" class="seg seg3">
+                  <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode !== 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</button>
+                  <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode === 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</button>
                 </span>
               </div>
               <div v-if="focusStyle.trkSpanMode !== 'time'" class="cefv"><label>轨迹圈数</label><div class="ceinp"><input class="ci" :value="trkVal('rev')" placeholder="1" @input="e => trkInput('rev', e)" @change="trkCommit('rev')" @blur="trkCommit('rev')" @keyup.enter="trkCommit('rev')" /><span class="u">圈</span></div></div>
               <div v-else class="cefv"><label>轨迹周期</label><div class="ceinp"><input class="ci" :value="trkVal('time')" placeholder="0" @input="e => trkInput('time', e)" @change="trkCommit('time')" @blur="trkCommit('time')" @keyup.enter="trkCommit('time')" /><span class="u">min</span></div></div>
-              <div class="cef ceset"><span class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与卫星聚焦特效设置同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 卫星聚焦特效设置…</span></div>
+              <div class="cef ceset"><button type="button" class="lnk" title="颜色 / 线粗 / 线型 / 覆盖圈口径等全部显示设置（与卫星聚焦特效设置同一份）" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /> 卫星聚焦特效设置…</button></div>
 
               <div v-if="constDerived" class="ceread" title="场景历元 t0">
                 <div class="crcode">{{ constDerived.code }}</div>
@@ -12964,8 +13738,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div class="cefoot">
-              <span class="cancel" @click="closeConstWizard">取消</span>
-              <span class="save" @click="saveConstWizard">{{ constModal.id ? '更新' : '生成' }}</span>
+              <button type="button" class="cancel btn" @click="closeConstWizard">取消</button>
+              <button type="button" class="save btn primary" @click="saveConstWizard">{{ constModal.id ? '更新' : '生成' }}</button>
             </div>
           </div>
           <template v-else>
@@ -12975,7 +13749,7 @@ onBeforeUnmount(() => {
               :exp-items="expList" :exp-loading="expLoading" :exp-error="expErr" :exp-actions="expActions"
               :search="setSearch" :menu-items="setMenuItems" :add-items="addItems" :epoch="customList.length ? scenarioEpochLocal : null" :default-color="DEFAULT_SAT_HEX"
               @toggle="r => toggleSet(r.id)" @solo="r => soloSet(r.id)" @restore="restoreSets"
-              @expand="r => expToggle(r.id, r.name)" @activate="setFocus" @action="setAction" @add="onAdd" @reorder="reorderSet"
+              @expand="r => expToggle(r.id, r.name)" @action="setAction" @add="onAdd" @reorder="reorderSet"
               @color="setColorOf" @color-reset="r => setColorOf(r, '')" @rename="setRename"
               @search-input="v => onSearch({ target: { value: v } })" @search-clear="clearSearch" @search-pick="pickResult" @search-toggle-pick="toggleResultSel" @open-finder="openFinder"
               @epoch="v => applyScenarioEpoch(new Date(v))" @epoch-now="scenarioEpochNow"
@@ -12988,11 +13762,11 @@ onBeforeUnmount(() => {
             />
           <!-- 「加入组」弹出菜单：锚在成员表操作条按钮下沿；点遮罩关闭 -->
           <template v-if="expMenu">
-            <div class="lmenu-bd" @mousedown="expMenu = null" @contextmenu.prevent="expMenu = null"></div>
-            <div class="lmenu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
-              <div class="lmh">加入 {{ expMenu.sats.length }} 颗</div>
-              <div class="lmi new" @click="expMenuNew"><Icon name="folder-plus" :size="12" /><span>新建组</span></div>
-              <div v-for="g in satGroups.list.value" :key="g.id" class="lmi" :title="g.name" @click="expMenuTo(g)"><Icon name="layers" :size="12" /><span data-i18n-skip>{{ g.name }}</span><em>{{ g.sats.length }}</em></div>
+            <div class="lmenu-bd menu-mask" @mousedown="expMenu = null" @contextmenu.prevent="expMenu = null"></div>
+            <div class="lmenu menu" role="menu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
+              <div class="lmh menu-hd">加入 {{ expMenu.sats.length }} 颗</div>
+              <button type="button" class="lmi menu-item new" role="menuitem" @click="expMenuNew"><span class="menu-ico"><Icon name="folder-plus" :size="12" /></span><span>新建组</span></button><div class="menu-sep" role="separator"></div>
+              <button type="button" v-for="g in satGroups.list.value" :key="g.id" class="lmi menu-item" role="menuitem" :title="g.name" @click="expMenuTo(g)"><span class="menu-ico"><Icon name="layers" :size="12" /></span><span data-i18n-skip>{{ g.name }}</span><em class="menu-kbd">{{ g.sats.length }}</em></button>
             </div>
           </template>
           </template>
@@ -13002,26 +13776,27 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'gxt'" class="sview">
         <div v-if="covOpen" class="cov-side docked">
         <div class="sec">
+          <div class="sect" data-sec="gxt-sats"><span>覆盖卫星</span></div>
           <div class="srow"><label>添加卫星</label>
-            <select :value="covAddSel" @change="e => { covAddSel = e.target.value; addCovSat() }">
+            <select class="cmd-sel" :value="covAddSel" @change="e => { covAddSel = e.target.value; addCovSat() }">
               <option value="" disabled>选择卫星…</option>
               <option v-for="s in covSats" :key="s.folder" :value="s.folder"
                       :disabled="covItems.some(i => i.folder === s.folder)">{{ s.displayName }}{{ s.lon != null ? `（${s.lon}°）` : '' }}</option>
             </select>
           </div>
-          <div v-if="!covItems.length" class="tip">还没有卫星。</div>
+          <div v-if="!covItems.length" class="tip">暂无卫星。</div>
         </div>
 
         <!-- 每颗已添加卫星 -->
         <div v-for="it in covItems" :key="it.id" class="sec satcard">
           <div class="sath">
             <span class="satn">{{ idxOf(it.folder)?.displayName }} <em v-if="idxOf(it.folder)?.lon != null">{{ idxOf(it.folder)?.lon }}°</em></span>
-            <span class="seg sm">
-              <span class="sg" :class="{ on: it.type === 'EIRP' }" @click="setItemType(it, 'EIRP')">EIRP</span>
-              <span class="sg" :class="{ on: it.type === 'GT' }" @click="setItemType(it, 'GT')">G/T</span>
+            <span role="radiogroup" class="seg sm">
+              <button type="button" role="radio" :aria-checked="!!(it.type === 'EIRP')" class="sg" :class="{ on: it.type === 'EIRP' }" @click="setItemType(it, 'EIRP')">EIRP</button>
+              <button type="button" role="radio" :aria-checked="!!(it.type === 'GT')" class="sg" :class="{ on: it.type === 'GT' }" @click="setItemType(it, 'GT')">G/T</button>
             </span>
-            <span class="ic" title="定位" @click="focusCovSat(it)"><Icon name="crosshair" :size="12" /></span>
-            <span class="ic del" title="移除该星" @click="removeCovSat(it)"><Icon name="x" :size="12" /></span>
+            <button type="button" class="ibtn sm" title="定位" @click="focusCovSat(it)"><Icon name="crosshair" :size="12" /></button>
+            <button type="button" class="ibtn sm danger" title="移除该星" @click="removeCovSat(it)"><Icon name="x" :size="12" /></button>
           </div>
           <div class="srow"><label>频段</label>
             <select :value="it.band" @change="e => onItemBand(it, e)">
@@ -13034,15 +13809,15 @@ onBeforeUnmount(() => {
           <div v-for="(ba, bi) in it.batches" :key="ba.id" class="batch">
             <div class="bah">
               <input class="bnm" :value="ba.name" :placeholder="'批次' + (bi + 1)" @input="e => setBatchName(it, ba, e)" />
-              <span class="ic del" title="删除批次" @click="removeBatch(it, ba)"><Icon name="x" :size="12" /></span>
+              <button type="button" class="ibtn sm danger" title="删除批次" @click="removeBatch(it, ba)"><Icon name="x" :size="12" /></button>
             </div>
 
             <div class="bsub">波束
-              <span class="lnk" @click="allBatchBeams(it, ba, !allFilteredOn(it, ba))">{{ allFilteredOn(it, ba) ? '取消' : '全选' }}</span>
-              <span class="lnk" @click="invertBatchBeams(it, ba)">反选</span>
+              <button type="button" class="lnk" @click="allBatchBeams(it, ba, !allFilteredOn(it, ba))">{{ allFilteredOn(it, ba) ? '取消' : '全选' }}</button>
+              <button type="button" class="lnk" @click="invertBatchBeams(it, ba)">反选</button>
               <span class="cnt2">已选 {{ ba.beams.length }}</span>
             </div>
-            <input class="ci bq" :value="ba.q" placeholder="搜索：拉萨 / Beam 3，或序号 1-62、1,3,5" @input="e => onBatchQuery(it, ba, e)" />
+            <input class="ci bq search-field" :value="ba.q" placeholder="搜索：拉萨 / Beam 3，或序号 1-62、1,3,5" @input="e => onBatchQuery(it, ba, e)" />
             <div class="list">
               <label v-for="r in filteredBeamRows(it, ba)" :key="r.id" class="chk">
                 <input type="checkbox" :checked="ba.beams.includes(r.id)" @change="toggleBatchBeam(it, ba, r.id)" />
@@ -13054,23 +13829,23 @@ onBeforeUnmount(() => {
             <template v-if="ba.beams.length">
               <!-- 增益档（批次统一） -->
               <div class="bsub">增益档
-                <span class="lnk" @click="allBatchGains(it, ba, ba.gains.length !== batchGains(it, ba).length)">{{ ba.gains.length === batchGains(it, ba).length && batchGains(it, ba).length ? '取消' : '全选' }}</span>
+                <button type="button" class="lnk" @click="allBatchGains(it, ba, ba.gains.length !== batchGains(it, ba).length)">{{ ba.gains.length === batchGains(it, ba).length && batchGains(it, ba).length ? '取消' : '全选' }}</button>
               </div>
               <div class="chips">
-                <span v-for="g in batchGains(it, ba)" :key="g" class="chip" :class="{ on: ba.gains.includes(g) }"
+                <button type="button" :aria-pressed="(ba.gains.includes(g)) ? 'true' : 'false'" v-for="g in batchGains(it, ba)" :key="g" class="chip" :class="{ on: ba.gains.includes(g) }"
                       :style="ba.gains.includes(g) ? { borderColor: gainSwatchCss(ba, g), color: gainSwatchCss(ba, g) } : {}"
                       @click="toggleBatchGain(it, ba, g)">
                   <span v-if="ba.mode === 'perGain' && ba.gains.includes(g)" class="dot" :style="{ background: gainSwatchCss(ba, g) }"></span>{{ g }}
-                </span>
+                </button>
               </div>
               <div class="srow"><label>自定义</label><input class="ci" :value="ba.custom" placeholder="如 48,52" @input="e => onBatchCustom(it, ba, e)" /></div>
 
               <!-- 配色（批次统一） -->
               <div class="bsub">配色
-                <span class="seg sm">
-                  <span class="sg" :class="{ on: ba.mode === 'gradient' }" @click="setBatchMode(it, ba, 'gradient')">渐变</span>
-                  <span class="sg" :class="{ on: ba.mode === 'solid' }" @click="setBatchMode(it, ba, 'solid')">纯色</span>
-                  <span class="sg" :class="{ on: ba.mode === 'perGain' }" @click="setBatchMode(it, ba, 'perGain')">逐档</span>
+                <span role="radiogroup" class="seg sm">
+                  <button type="button" role="radio" :aria-checked="!!(ba.mode === 'gradient')" class="sg" :class="{ on: ba.mode === 'gradient' }" @click="setBatchMode(it, ba, 'gradient')">渐变</button>
+                  <button type="button" role="radio" :aria-checked="!!(ba.mode === 'solid')" class="sg" :class="{ on: ba.mode === 'solid' }" @click="setBatchMode(it, ba, 'solid')">纯色</button>
+                  <button type="button" role="radio" :aria-checked="!!(ba.mode === 'perGain')" class="sg" :class="{ on: ba.mode === 'perGain' }" @click="setBatchMode(it, ba, 'perGain')">逐档</button>
                 </span>
                 <input v-if="ba.mode === 'solid'" class="clr" type="color" :value="ba.solid" @input="e => onBatchSolid(it, ba, e)" />
               </div>
@@ -13082,22 +13857,22 @@ onBeforeUnmount(() => {
               </div>
 
               <!-- 线粗细（批次统一） -->
-              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ ba.width }}</span></div>
+              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" :value="ba.width" @input="e => onBatchWidth(it, ba, e)" /><span class="u">{{ Number(ba.width).toFixed(2) }}</span></div>
             </template>
           </div>
-          <div class="addbatch" @click="addBatch(it)"><Icon name="plus" :size="12" /> 新建批次</div>
+          <button type="button" class="addbatch" @click="addBatch(it)"><Icon name="plus" :size="12" /> 新建批次</button>
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="gxt-disp" :class="{ open: isSecOpen('gxt-disp', false) }" @click="toggleSec('gxt-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('gxt-disp', false) }" :size="12" /><span>显示选项</span></div>
+          <div class="sect acc" data-sec="gxt-disp" :class="{ open: isSecOpen('gxt-disp', false) }" @click="toggleSec('gxt-disp', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('gxt-disp', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('gxt-disp', false)" @keydown.space.self.prevent="toggleSec('gxt-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('gxt-disp', false) }" :size="12" /><span>显示选项</span></div>
           <template v-if="isSecOpen('gxt-disp', false)">
           <label class="chk2"><input type="checkbox" :checked="showBeamLabels" @change="toggleBeamLabels" /><span>显示波束名</span></label>
-          <div v-if="showBeamLabels" class="srow"><label>字号</label><input class="rng" type="range" min="6" max="32" step="1" :value="beamLabelSize" @input="setBeamFont" /><span class="u">{{ beamLabelSize }}</span></div>
+          <div v-if="showBeamLabels" class="srow"><label>字号</label><input class="rng" type="range" min="6" max="32" step="0.1" :value="beamLabelSize" @input="setBeamFont" /><span class="u">{{ beamLabelSize.toFixed(1) }}</span></div>
           <label v-if="showBeamLabels" class="chk2"><input type="checkbox" v-model="beamLabelBold" @change="redraw" /><span>粗体</span></label>
           <label class="chk2"><input type="checkbox" :checked="showBore" @change="toggleBore" /><span>显示波束中心</span></label>
-          <div v-if="showBore" class="srow"><label>大小</label><input class="rng" type="range" min="1" max="12" step="1" :value="boreSize" @input="setBoreSize" /><span class="u">{{ boreSize }}</span></div>
+          <div v-if="showBore" class="srow"><label>大小</label><input class="rng" type="range" min="1" max="12" step="0.1" :value="boreSize" @input="setBoreSize" /><span class="u">{{ boreSize.toFixed(1) }}</span></div>
           <label class="chk2"><input type="checkbox" :checked="showContourLabels" @change="toggleContourLabels" /><span>显示数值标签</span></label>
-          <div v-if="showContourLabels" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="20" step="1" :value="contourLabelSize" @input="setContourSize" /><span class="u">{{ contourLabelSize }}</span></div>
+          <div v-if="showContourLabels" class="srow"><label>字号</label><input class="rng" type="range" min="2" max="20" step="0.1" :value="contourLabelSize" @input="setContourSize" /><span class="u">{{ contourLabelSize.toFixed(1) }}</span></div>
           <label v-if="showContourLabels" class="chk2"><input type="checkbox" v-model="contourLabelBold" @change="redraw" /><span>粗体</span></label>
           </template>
         </div>
@@ -13112,7 +13887,7 @@ onBeforeUnmount(() => {
 
         <div class="csfoot">
           <span v-if="covStatus" class="cst">{{ covStatus }}</span>
-          <span class="cclr" @click="clearCoverage">清除绘制</span>
+          <button type="button" class="cclr btn" @click="clearCoverage">清除绘制</button>
         </div>
         </div>
         </div>
@@ -13124,19 +13899,19 @@ onBeforeUnmount(() => {
              导致侧栏有「Polygon（协调区）」标题却空白（偶发）。side==='poly' 即应显示，二者本就等价。 -->
         <div v-if="shellUi.side === 'poly'" class="cov-side poly-side docked">
         <div class="sec">
-          <div class="sect acc" data-sec="poly-list" :class="{ open: isSecOpen('poly-list') }" @click="toggleSec('poly-list')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('poly-list') }" :size="12" /><span>协调区多边形</span><span class="lnk" title="从标准 GXT / KML 文件导入多边形（追加到列表，不影响已有；可多选）" @click.stop="importPolys"><Icon name="import" :size="12" /> 导入</span><span class="lnk" @click.stop="polyStartDraw"><Icon name="plus" :size="12" /> 绘制</span></div>
+          <div class="sect acc" data-sec="poly-list" :class="{ open: isSecOpen('poly-list') }" @click="toggleSec('poly-list')" role="button" tabindex="0" :aria-expanded="isSecOpen('poly-list') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('poly-list')" @keydown.space.self.prevent="toggleSec('poly-list')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('poly-list') }" :size="12" /><span>Polygon</span><button type="button" class="lnk" title="从标准 GXT / KML 文件导入 Polygon（追加到列表，不影响已有；可多选）" @click.stop="importPolys"><Icon name="file-import" :size="12" /> 导入</button><button type="button" class="lnk" @click.stop="polyStartDraw"><Icon name="plus" :size="12" /> 绘制</button></div>
           <template v-if="isSecOpen('poly-list')">
-          <div v-if="!polys.length && !polyDrawId" class="tip">暂无多边形。</div>
-          <div v-for="pg in polys" :key="pg.id" class="plg" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id, hid: pg.show === false }">
+          <div v-if="!polys.length && !polyDrawId" class="tip">暂无 Polygon。</div>
+          <div v-for="pg in polys" :key="pg.id" class="plg" :data-pg="pg.id" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id, hid: pg.show === false }">
             <div class="plgh">
-              <button type="button" class="layersw" :class="{ on: pg.show !== false }" role="switch" :aria-checked="pg.show !== false ? 'true' : 'false'" :title="pg.show !== false ? '隐藏该多边形（数据保留）' : '显示该多边形'" @click="togglePoly(pg)"><i></i></button>
+              <button type="button" class="layersw" :class="{ on: pg.show !== false }" role="switch" :aria-checked="pg.show !== false ? 'true' : 'false'" :title="pg.show !== false ? '隐藏该 Polygon（数据保留）' : '显示该 Polygon'" @click="togglePoly(pg)"><i></i></button>
               <input class="clr plgc" type="color" :value="pg.color" title="线条颜色（填充色未单独调过时跟随线色）" @input="polySetColor(pg, $event.target.value)" />
               <input class="plgn plgnm" v-model="pg.name" placeholder="名称" @change="polyRefresh" />
               <span class="plgi">{{ pg.pts.length }} 点</span>
-              <span class="ic del" title="删除该多边形" @click="removePoly(pg)"><Icon name="x" :size="12" /></span>
+              <button type="button" class="ibtn sm danger" title="删除该 Polygon（Ctrl+Z 撤销）" @click="undoable('polys', `已删除 Polygon「${pg.name}」`, () => removePoly(pg))"><Icon name="x" :size="12" /></button>
             </div>
             <div class="plgg">
-              <label class="plgf"><span class="plgl">数值</span><input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该多边形等值线的值" @change="polyRefresh" /></label>
+              <label class="plgf"><span class="plgl">数值</span><input class="plgv" v-model="pg.value" placeholder="如 -50" title="该区域标注的数值（如谱密度，单位不做定义）；导出 GXT 时作为该 Polygon 等值线的值" @change="polyRefresh" /></label>
               <label class="plgf"><span class="plgl">轨位</span><input class="plgv" v-model="pg.satLon" placeholder="如 110.5" title="关联卫星轨道位置（东经为正，如 110.5 / -30）：导出 GXT 时写入 long_nom（GXT 必要信息）" @change="polyRefresh" /><span class="plgu">°E</span></label>
               <label class="plgf w2"><span class="plgl">卫星</span><input class="plgn" v-model="pg.satName" placeholder="关联卫星名称" title="关联卫星名称：导出 GXT 时写入 sat_name（GXT 必要信息）" @change="polyRefresh" /></label>
             </div>
@@ -13144,48 +13919,48 @@ onBeforeUnmount(() => {
               <span class="plgl">填充</span>
               <input type="checkbox" :checked="pg.fillOn !== false" title="显示 / 隐藏区域填充" @change="pg.fillOn = !(pg.fillOn !== false); polyRefresh()" />
               <input class="clr plgc" type="color" :value="pg.fillColor || pg.color" title="填充颜色（默认跟随线色，单独调整后两者独立）" @input="pg.fillColor = $event.target.value; polyRefresh()" />
-              <input class="rng" type="range" min="0" max="1" step="0.01" :value="pg.fillOp != null ? pg.fillOp : 0.18" title="填充不透明度（0%＝透明）。与 GRD 覆盖重叠处只显示覆盖颜色，Polygon 在该处仅保留边线" @input="e => { pg.fillOp = Number(e.target.value); polyRefresh() }" />
+              <input class="rng" type="range" min="0" max="1" step="0.01" :value="pg.fillOp != null ? pg.fillOp : 0.18" title="填充不透明度（0%＝透明）。与 GRD 覆盖重叠处仅显示覆盖颜色，Polygon 在该处仅保留边线" @input="e => { pg.fillOp = Number(e.target.value); polyRefresh() }" />
               <span class="u pct">{{ Math.round((pg.fillOp != null ? pg.fillOp : 0.18) * 100) }}%</span>
             </div>
             <div class="plgr sub">
               <span class="plgl">线粗</span>
-              <input class="rng" type="range" min="0.1" max="8" step="0.1" :value="pg.width" @input="e => { pg.width = Number(e.target.value); polyRefresh() }" />
-              <span class="u">{{ pg.width }}</span>
+              <input class="rng" type="range" min="0.1" max="8" step="0.01" :value="pg.width" @input="e => { pg.width = Number(e.target.value); polyRefresh() }" />
+              <span class="u">{{ Number(pg.width).toFixed(2) }}</span>
               <span class="plgl">字号</span>
-              <input class="rng" type="range" min="2" max="40" step="1" :value="pg.labelSize || 16" title="中央「名称 数值」标注字号（3D / 平面图同步）" @input="e => { pg.labelSize = Number(e.target.value); polyRefresh() }" />
-              <span class="u">{{ pg.labelSize || 16 }}</span>
+              <input class="rng" type="range" min="2" max="40" step="0.1" :value="pg.labelSize || 16" title="中央「名称 数值」标注字号（3D / 平面图同步）" @input="e => { pg.labelSize = Number(e.target.value); polyRefresh() }" />
+              <span class="u">{{ (pg.labelSize || 16).toFixed(1) }}</span>
               <label class="chk-in" title="中央「名称 数值」标注粗体（3D / 平面图同步）"><input type="checkbox" :checked="!!pg.labelBold" @change="e => { pg.labelBold = e.target.checked; polyRefresh() }" /><span>粗体</span></label>
             </div>
             <div class="plgops">
-              <span class="opb" :class="{ on: polyEditId === pg.id }" title="在平面图上直接拖动顶点调整位置" @click="polyEditToggle(pg)">{{ polyEditId === pg.id ? '完成调整' : '调整顶点' }}</span>
-              <span class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住多边形内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</span>
-              <span class="opb" :class="{ on: polyDrawId === pg.id }" title="继续在地图上右键加顶点" @click="polyDrawId === pg.id ? null : polyContinue(pg)">{{ polyDrawId === pg.id ? '绘制中…' : '继续绘制' }}</span>
-              <span class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="vertsDraft = null; polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</span>
-              <span class="opb" title="复制出一个相同的多边形（整体略作偏移以便分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</span>
-              <span class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, 1)">扩大</span>
-              <span class="opb" title="按下方「扩/缩幅度」内收一圈，生成新多边形（原多边形保留）" @click="polyOffset(pg, -1)">缩小</span>
+              <button type="button" :aria-pressed="(polyEditId === pg.id) ? 'true' : 'false'" class="opb" :class="{ on: polyEditId === pg.id }" title="在平面图上直接拖动顶点调整位置" @click="polyEditToggle(pg)">调整顶点</button>
+              <button type="button" :aria-pressed="(polyMoveId === pg.id) ? 'true' : 'false'" class="opb" :class="{ on: polyMoveId === pg.id }" title="在平面图上按住 Polygon 内部整体平移" @click="polyMoveToggle(pg)">{{ polyMoveId === pg.id ? '完成拖动' : '整体拖动' }}</button>
+              <button type="button" :aria-pressed="(polyDrawId === pg.id) ? 'true' : 'false'" class="opb" :class="{ on: polyDrawId === pg.id }" title="继续在地图上右键加顶点" @click="polyDrawId === pg.id ? null : polyContinue(pg)">{{ polyDrawId === pg.id ? '绘制中…' : '继续绘制' }}</button>
+              <button type="button" :aria-pressed="(polyVertsOpen === pg.id) ? 'true' : 'false'" class="opb" :class="{ on: polyVertsOpen === pg.id }" title="按坐标查看 / 编辑顶点" @click="vertsDraft = null; polyVertsOpen = polyVertsOpen === pg.id ? '' : pg.id">顶点表格</button>
+              <button type="button" class="opb" title="复制出一个相同的 Polygon（整体略作偏移以便分辨），并直接进入整体拖动模式摆放" @click="polyCopy(pg)">复制</button>
+              <button type="button" class="opb" title="按下方「扩/缩幅度」外扩一圈，生成新 Polygon（原 Polygon 保留）" @click="polyOffset(pg, 1)">扩大</button>
+              <button type="button" class="opb" title="按下方「扩/缩幅度」内收一圈，生成新 Polygon（原 Polygon 保留）" @click="polyOffset(pg, -1)">缩小</button>
             </div>
             <div v-if="polyVertsOpen === pg.id" class="plgvt">
               <textarea class="plgta" :value="polyVertsVal(pg)" spellcheck="false" placeholder="每行一个顶点：经度, 纬度" @copy="onVertsCopy"
                         @input="vertsDraft = { id: pg.id, text: $event.target.value }" @change="polyVertsEdit(pg, $event)"></textarea>
-              <span class="plgcp" title="复制全部顶点为两列（经度 ⇥ 纬度）：粘贴至 Excel / 表格自动分为经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="12" /> 复制两列</span>
+              <button type="button" class="plgcp btn sm" title="复制全部顶点为两列（经度 ⇥ 纬度）：粘贴至 Excel / 表格自动分为经度、纬度两列" @click="copyPolyVerts(pg)"><Icon name="copy" :size="12" /> 复制两列</button>
             </div>
           </div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="poly-disp" :class="{ open: isSecOpen('poly-disp', false) }" @click="toggleSec('poly-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('poly-disp', false) }" :size="12" /><span>显示与操作</span></div>
+          <div class="sect acc" data-sec="poly-disp" :class="{ open: isSecOpen('poly-disp', false) }" @click="toggleSec('poly-disp', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('poly-disp', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('poly-disp', false)" @keydown.space.self.prevent="toggleSec('poly-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('poly-disp', false) }" :size="12" /><span>显示与操作</span></div>
           <template v-if="isSecOpen('poly-disp', false)">
-          <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="12" step="0.5" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize }}</span></div>
+          <div class="srow"><label>顶点大小</label><input class="rng" type="range" min="1" max="12" step="0.1" :value="polyDotSize" @input="e => { polyDotSize = Number(e.target.value); polyRefresh() }" /><span class="u">{{ polyDotSize.toFixed(1) }}</span></div>
           <div class="srow"><label>扩/缩幅度</label><input class="ci" v-model="polyOffAmt" placeholder="如 0.5" @change="persistPolys" /><span class="u">°</span></div>
           </template>
         </div>
 
         <div class="csfoot">
-          <span class="expb2" title="将当前绘制的覆盖等值线 + 协调区多边形一并导出为 GXT（所见即所得；多边形每个一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT</span>
-          <span class="expb2" title="将当前绘制的覆盖等值线 + 协调区多边形一并导出为 KML（所见即所得；覆盖按档位渐变，多边形保留各自名称/数值/颜色）" @click="exportPolys('kml')">导出 KML</span>
-          <span class="expb2" title="将当前绘制内容（覆盖等值线 + 显示中的多边形）作为一份快照发送到小程序，生成导入密钥" @click="sendToMiniapp">发送到小程序</span>
+          <button type="button" class="expb2" title="将当前绘制的覆盖等值线 + Polygon 一并导出为 GXT（所见即所得；Polygon 每个一条闭合等值线，值=数值栏）" @click="exportPolys('gxt')">导出 GXT（对地）</button>
+          <button type="button" class="expb2" title="将当前绘制的覆盖等值线 + Polygon 一并导出为 KML（所见即所得；覆盖按档位渐变，Polygon 保留各自名称/数值/颜色）" @click="exportPolys('kml')">导出 KML（对地）</button>
+          <button type="button" class="expb2" title="将当前绘制内容（覆盖等值线 + 显示中的 Polygon）作为一份快照发送到小程序，生成导入密钥" @click="sendToMiniapp">发送到小程序</button>
         </div>
         </div>
         </div>
@@ -13194,23 +13969,23 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'antenna'" class="sview">
         <div v-if="grdOpen" class="cov-side grd-side docked">
         <div class="sec">
-          <div class="sect acc" data-sec="grd-tree" :class="{ open: isSecOpen('grd-tree') }" @click="toggleSec('grd-tree')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-tree') }" :size="12" /><span>卫星 / 天线</span><span class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="openAddSat"><Icon name="plus" :size="12" /> 卫星</span><span class="lnk" title="只画等仰角线：填经纬度/轨道高度 + 仰角值即可，不建卫星图标/天线" @click.stop="openAddElevLine"><Icon name="plus" :size="12" /> 仰角线</span></div>
+          <div class="sect acc" data-sec="grd-tree" :class="{ open: isSecOpen('grd-tree') }" @click="toggleSec('grd-tree')" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-tree') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-tree')" @keydown.space.self.prevent="toggleSec('grd-tree')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-tree') }" :size="12" /><span>卫星 / 天线</span><button type="button" class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="openAddSat"><Icon name="plus" :size="12" /> 卫星</button><button type="button" class="lnk" title="仅绘制等仰角线：填经纬度/轨道高度 + 仰角值即可，不建卫星图标/天线" @click.stop="openAddElevLine"><Icon name="plus" :size="12" /> 仰角线</button></div>
           <template v-if="isSecOpen('grd-tree')">
-          <div class="gtree">
+          <div class="gtree" @dragover="onTreeDragOver" @drop="onTreeDrop">
             <template v-for="sat in grdSats" :key="sat.folder">
               <div v-if="sat.kind === 'elevline'" class="gsat gsat-el">
                 <Icon class="gsvg" name="angle" :size="16" />
                 <span class="gsname" :title="sat.satName">{{ sat.satName }}</span>
                 <span class="sdisp">
-                  <span class="ic" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏该仰角线" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></span>
+                  <button type="button" :aria-pressed="(sat.elevShow) ? 'true' : 'false'" class="ibtn sm tint" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏该仰角线" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></button>
                 </span>
                 <span class="sacts">
-                  <span class="ic" title="编辑仰角线" @click.stop="editElevLine(sat)"><Icon name="pencil" :size="12" /></span>
-                  <span class="ic del" title="删除仰角线" @click.stop="removeSat(sat)"><Icon name="x" :size="12" /></span>
+                  <button type="button" class="ibtn sm" title="编辑仰角线" @click.stop="editElevLine(sat)"><Icon name="pencil" :size="12" /></button>
+                  <button type="button" class="del ibtn sm danger" title="删除仰角线" @click.stop="removeSat(sat)"><Icon name="x" :size="12" /></button>
                 </span>
               </div>
               <div v-else class="gsat" :class="{ exp: grd.isExpanded(sat.folder), cur: selFolderSet.has(sat.folder) }" :data-folder="sat.folder">
-                <i class="tri" :class="{ open: grd.isExpanded(sat.folder) }" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="12" /></i>
+                <button type="button" class="tri" :class="{ open: grd.isExpanded(sat.folder) }" :title="grd.isExpanded(sat.folder) ? '收起' : '展开'" :aria-label="grd.isExpanded(sat.folder) ? '收起' : '展开'" :aria-expanded="grd.isExpanded(sat.folder) ? 'true' : 'false'" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="12" /></button>
                 <input type="checkbox" class="gck" :checked="grd.satState(sat) === 'all'" :indeterminate="grd.satState(sat) === 'some'" :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="grd.toggleSatAll(sat)" />
                 <!-- 卫星：与链路预算工作台模块图标同款几何（两翼 3×2 太阳能板 + 中央星体，整体 -20°） -->
                 <svg class="gsvg sat-svg" viewBox="0 0 120 120" fill="currentColor" aria-hidden="true">
@@ -13226,40 +14001,41 @@ onBeforeUnmount(() => {
                 <span v-if="linkMissSet.has(sat.folder)" class="lmiss" :title="`关联卫星 NORAD ${sat.noradId} 不在当前星历中`"><Icon name="alert-triangle" :size="12" /></span>
                 <!-- 视图开关：聚焦 / 跟随该星（对星树同款）＋ 显示卫星名 / 仰角线（色随该星颜色，在「✎」里改）；图标按钮，与右侧操作图标以竖线分组 -->
                 <span class="sdisp">
-                  <span class="ic" :class="{ on: treeNav(sat).focusOn, dis: treeNav(sat).focusDis }" :title="treeNav(sat).focusTip" @click.stop="onTreeFocusBtn(sat)"><Icon name="crosshair" :size="12" /></span>
-                  <span class="ic" :class="{ on: treeNav(sat).followOn, dis: treeNav(sat).followDis }" :title="treeNav(sat).followTip" @click.stop="onTreeFollowBtn(sat)"><Icon name="locate-fixed" :size="12" /></span>
-                  <span class="ic" :class="{ on: satVisible(sat) }" title="显示/隐藏该卫星（图标 + 名称）；如需只隐藏图标或只隐藏名称，在「卫星设置」里单独勾选" @click.stop="toggleSatLabel(sat)"><Icon :name="satVisible(sat) ? 'eye' : 'eye-off'" :size="12" /></span>
-                  <span class="ic" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏等仰角线（需先在「✎」里填仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></span>
+                  <button type="button" :aria-disabled="(treeNav(sat).focusDis) ? 'true' : null" :aria-pressed="(treeNav(sat).focusOn) ? 'true' : 'false'" class="ibtn sm" :class="{ on: treeNav(sat).focusOn, dis: treeNav(sat).focusDis }" :title="treeNav(sat).focusTip" @click.stop="onTreeFocusBtn(sat)"><Icon name="crosshair" :size="12" /></button>
+                  <button type="button" :aria-disabled="(treeNav(sat).followDis) ? 'true' : null" :aria-pressed="(treeNav(sat).followOn) ? 'true' : 'false'" class="ibtn sm" :class="{ on: treeNav(sat).followOn, dis: treeNav(sat).followDis }" :title="treeNav(sat).followTip" @click.stop="onTreeFollowBtn(sat)"><Icon name="locate-fixed" :size="12" /></button>
+                  <button type="button" :aria-pressed="(satVisible(sat)) ? 'true' : 'false'" class="ibtn sm" :class="{ on: satVisible(sat) }" title="显示/隐藏该卫星（图标 + 名称）；如需仅隐藏图标或名称，在「卫星设置」中单独勾选" @click.stop="toggleSatLabel(sat)"><Icon :name="satVisible(sat) ? 'eye' : 'eye-off'" :size="12" /></button>
+                  <button type="button" :aria-pressed="(sat.elevShow) ? 'true' : 'false'" class="ibtn sm tint" :class="{ on: sat.elevShow }" :style="sat.elevShow ? { color: sat.elevColor } : {}" title="显示/隐藏等仰角线（需先在「✎」中填写仰角值，如 5,10）" @click.stop="toggleSatElev(sat)"><Icon name="angle" :size="12" /></button>
                 </span>
                 <span class="sacts">
-                  <span class="ic" title="在该星下新建天线" @click.stop="openAntAddMenu($event, 'tree', { folder: sat.folder })"><Icon name="plus" :size="12" /></span>
-                  <span class="ic" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)"><Icon name="pencil" :size="12" /></span>
-                  <span class="ic del" title="删除卫星（含其天线）" @click.stop="removeSat(sat)"><Icon name="x" :size="12" /></span>
+                  <button type="button" class="ibtn sm" title="在该星下新建天线" @click.stop="openAntAddMenu($event, 'tree', { folder: sat.folder })"><Icon name="plus" :size="12" /></button>
+                  <button type="button" class="ibtn sm" title="编辑卫星 / 仰角线 / 颜色" @click.stop="editSat(sat)"><Icon name="pencil" :size="12" /></button>
+                  <button type="button" class="del ibtn sm danger" :class="{ arm: treeDelArm === 'sat:' + sat.folder }" :title="treeDelArm === 'sat:' + sat.folder ? '再点一次删除（GRD 原件移入回收站）' : '删除卫星（含其天线）'" @click.stop="askRemoveSat(sat)"><Icon v-if="treeDelArm !== 'sat:' + sat.folder" name="x" :size="12" /><template v-else>确认删除</template></button>
                 </span>
               </div>
-              <div v-if="sat.kind !== 'elevline' && grd.isExpanded(sat.folder)" class="gbody">
+              <div v-if="sat.kind !== 'elevline' && grd.isExpanded(sat.folder)" class="gbody" :data-folder="sat.folder">
                 <div v-if="!sat.antennas.length" class="gant noant">暂无天线。</div>
                 <template v-for="a in sat.antennas" :key="a.name">
                 <div class="gant" :class="{ on: grd.isSelected(sat.folder, a.name), foc: grd.isActive(sat.folder, a.name) }" title="点击编辑该天线参数（不影响是否显示）" @click="onTreeAntClick(sat, a)">
                   <input type="checkbox" class="gck" title="勾选＝在地图上显示该天线覆盖范围" :checked="grd.isSelected(sat.folder, a.name)" @click.stop @change="grd.toggleAnt(sat, a)" />
-                  <span class="ant-btn" :class="{ on: grd.isSelected(sat.folder, a.name) }" :title="grd.isSelected(sat.folder, a.name) ? '点击隐藏该天线覆盖范围' : '点击在地图上显示该天线覆盖范围'" @click.stop="grd.toggleAnt(sat, a)">
+                  <button type="button" :aria-pressed="(grd.isSelected(sat.folder, a.name)) ? 'true' : 'false'" class="ant-btn" :class="{ on: grd.isSelected(sat.folder, a.name) }" :title="grd.isSelected(sat.folder, a.name) ? '点击隐藏该天线覆盖范围' : '点击在地图上显示该天线覆盖范围'" @click.stop="grd.toggleAnt(sat, a)">
                     <svg v-if="grd.isSelected(sat.folder, a.name)" class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
                     </svg>
                     <svg v-else class="gsvg ant-svg ant-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" />
                     </svg>
-                  </span>
+                  </button>
                   <template v-if="grdEditAnt === grd.keyOf(sat.folder, a.name)">
-                    <input class="aname-in" v-model="grdEditVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @blur="commitRenameAnt(sat, a)" />
-                    <span class="ic ok" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="12" /></span>
+                    <input class="aname-in" v-model="grdEditVal" @click.stop @keydown.enter="commitRenameAnt(sat, a)" @keydown.esc.stop="grdEditAnt = ''" @blur="commitRenameAnt(sat, a)" />
+                    <button type="button" class="ok ibtn sm" title="确认重命名" @mousedown.prevent @click.stop="commitRenameAnt(sat, a)"><Icon name="check" :size="12" /></button>
                   </template>
                   <template v-else>
-                    <span class="aname" title="双击重命名" @dblclick.stop="startRenameAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
+                    <span class="aname" title="双击定位到卫星 · F2 / ✎ 重命名" @dblclick.stop="focusTreeSat(sat, { force: true })" data-i18n-skip>{{ a.name }}</span>
+                    <span v-if="grd.loadErrorOf(sat.folder, a.name)" class="lmiss" :title="'载入失败：' + grd.loadErrorOf(sat.folder, a.name)"><Icon name="alert-triangle" :size="12" /></span>
                     <span v-if="grd.isActive(sat.folder, a.name)" class="afoc">编辑中</span>
                     <span class="sacts">
-                      <span class="ic" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="12" /></span>
-                      <span class="ic del" title="删除天线" @click.stop="grd.removeAntenna(sat.folder, a.name)"><Icon name="x" :size="12" /></span>
+                      <button type="button" class="ibtn sm" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="12" /></button>
+                      <button type="button" class="del ibtn sm danger" :class="{ arm: treeDelArm === 'ant:' + grd.keyOf(sat.folder, a.name) }" :title="treeDelArm === 'ant:' + grd.keyOf(sat.folder, a.name) ? '再点一次删除（GRD 原件移入回收站）' : '删除天线'" @click.stop="askRemoveAnt(sat, a)"><Icon v-if="treeDelArm !== 'ant:' + grd.keyOf(sat.folder, a.name)" name="x" :size="12" /><template v-else>确认删除</template></button>
                     </span>
                   </template>
                 </div>
@@ -13270,7 +14046,7 @@ onBeforeUnmount(() => {
                   <span class="gperfn">性能指标表</span>
                   <!-- 眼睛：这张表的城市在地图上的标记与标签（总开关，随选项存盘；与表窗口开没开无关，关窗标记还在） -->
                   <span class="sdisp">
-                    <span class="ic" :class="{ on: perf.cityShowOf(grd.keyOf(sat.folder, a.name)) }" title="显示/隐藏该表城市在地图上的标记与标签；只隐藏其一，在表窗口「城市设置」里勾选" @click.stop="togglePerfCity(sat, a)"><Icon :name="perf.cityShowOf(grd.keyOf(sat.folder, a.name)) ? 'eye' : 'eye-off'" :size="12" /></span>
+                    <button type="button" :aria-pressed="(perf.cityShowOf(grd.keyOf(sat.folder, a.name))) ? 'true' : 'false'" class="ibtn sm" :class="{ on: perf.cityShowOf(grd.keyOf(sat.folder, a.name)) }" title="显示/隐藏该表城市在地图上的标记与标签；仅隐藏其一时，在表窗口「城市设置」中勾选" @click.stop="togglePerfCity(sat, a)"><Icon :name="perf.cityShowOf(grd.keyOf(sat.folder, a.name)) ? 'eye' : 'eye-off'" :size="12" /></button>
                   </span>
                 </div>
                 </template>
@@ -13284,16 +14060,16 @@ onBeforeUnmount(() => {
         <GrdSetSections :grd="grd" variant="ground" :sat-search="satcovSearch" @open-synth="openSynthGroup" />
 
         <div class="csfoot">
-          <span v-if="grdLoading" class="cst">载入中…</span>
-          <span class="cclr" title="清空地图上的填充/等值线/仰角线，保留各天线设置与卫星列表" @click="grdClearDrawing">清除绘图</span>
+          <span v-if="grdLoading" class="cst">加载中…</span>
+          <button type="button" class="cclr btn" title="清空地图上的填充/等值线/仰角线，保留各天线设置与卫星列表" @click="grdClearDrawing">清除绘图</button>
         </div>
         </div>
         <!-- 卫星行「＋」：新建天线的两条路（与 .lmenu 同一层级与视觉，锚在按钮下沿） -->
         <template v-if="antAddMenu && antAddMenu.src === 'tree'">
-          <div class="lmenu-bd" @mousedown="antAddMenu = null" @contextmenu.prevent="antAddMenu = null"></div>
-          <div class="lmenu antm" :style="{ left: antAddMenu.x + 'px', top: antAddMenu.y + 'px' }">
-            <div class="lmi" @click="antAddPick('gauss')"><Icon name="waves" :size="12" /><span>高斯天线</span></div>
-            <div class="lmi" @click="antAddPick('grd')"><Icon name="import" :size="12" /><span>导入 GRD…</span></div>
+          <div class="lmenu-bd menu-mask" @mousedown="antAddMenu = null" @contextmenu.prevent="antAddMenu = null"></div>
+          <div class="lmenu antm menu" role="menu" :style="{ left: antAddMenu.x + 'px', top: antAddMenu.y + 'px' }">
+            <button type="button" class="lmi menu-item" role="menuitem" @click="antAddPick('gauss')"><span class="menu-ico"><Icon name="chart-bell-curve" :size="12" /></span><span>高斯天线</span></button>
+            <button type="button" class="lmi menu-item" role="menuitem" @click="antAddPick('grd')"><span class="menu-ico"><Icon name="file-import" :size="12" /></span><span>导入 GRD…</span></button>
           </div>
         </template>
         </div>
@@ -13304,9 +14080,9 @@ onBeforeUnmount(() => {
           <SatCovPanel
             v-if="shellUi.side === 'satcov'"
             :sc="satcov" :grd="grd" :sat-count="shownCount" :sat-search="satcovSearch"
-            :table-open-keys="shellOpenSet" :sat-vis="satVisible" :sel-folders="selFolderSet" :link-miss="linkMissSet" :follow-id="followLinkId" :flat="flatView" :geo-ids="treeGeoIdMap"
+            :table-open-keys="shellOpenSet" :sat-vis="satVisible" :sel-folders="selFolderSet" :link-miss="linkMissSet" :follow-id="followLinkId" :geo-ids="treeGeoIdMap"
             @open-table="satcovOpenTable" @pick-shells="satcovOpenPick" @toggle-eye="toggleSatLabel"
-            @add-sat="openAddSat()" @edit-sat="editSat" @remove-sat="removeSat"
+            @add-sat="openAddSat()" @edit-sat="editSat" @remove-sat="removeSatConfirmed"
             @focus-sat="(n, f, add) => focusTreeSat(n, { force: f, additive: !!add })" @follow-sat="followTreeSat" @add-ant="onTreeAddAnt" @open-synth="openSynthGroup" />
         </div>
 
@@ -13317,35 +14093,39 @@ onBeforeUnmount(() => {
 
         <!-- ===== 导航器：卫星 + 波束组列表 ===== -->
         <div class="sec">
+          <div class="sect" data-sec="bs-nav"><span>卫星与波束组</span></div>
           <div class="srow"><label>卫星</label>
             <select :value="bs.satFolder.value" title="卫星来自「对地覆盖分析」视图" @change="e => bsSetSat(e.target.value)">
               <option v-if="!bsSats.length" value="">（暂无卫星）</option>
               <option v-for="st in bsSats" :key="st.folder" :value="st.folder">{{ st.satName }}</option>
             </select>
           </div>
-          <div v-if="bs.satPos()" class="tip">星下点 {{ fmtGeoSlot(bs.satPos().lon) }}{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString() }} km</div>
+          <template v-if="bsSats.length && bs.satFolder.value">
+          <div v-if="bs.satPos()" class="tip">星下点 {{ fmtGeoSlot(bs.satPos().lon) }}{{ Math.abs(bs.satPos().lat || 0) > 0.05 ? ', ' + bs.satPos().lat.toFixed(2) + '°N' : '' }} · 高度 {{ Math.round(bs.satPos().altKm).toLocaleString('en-US') }} km</div>
           <div class="bs-grps">
             <div v-for="g in bs.groupsForSat.value" :key="g.id" class="bs-grow" :class="{ on: g.id === bs.activeGroupId.value, hid: !g.pinned && g.id !== bs.activeGroupId.value }" @click="bsSelectGroup(g)">
               <span class="bs-gk" :class="g.mode">{{ g.mode === 'stk' ? '高斯' : g.mode === 'pam' ? '相控阵' : g.mode === 'gauss' ? '多馈源' : '赋形' }}</span>
               <span class="bs-gname" :title="g.name" data-i18n-skip>{{ g.name }}</span>
               <span class="bs-gcnt">{{ bs.groupStat(g).n }}{{ bs.groupStat(g).unit }}</span>
-              <span class="gic" :title="g.pinned ? '取消常显（切换到其它组编辑时自动隐藏本组草图）' : (g.id === bs.activeGroupId.value ? '常显本组（切换到其它组编辑后仍保留显示，用于比对）' : '仅显示编辑中的组；点击常显本组草图以便和其它组比对')" @click.stop="bs.toggleGroupVisible(g.id)"><Icon :name="(g.pinned || g.id === bs.activeGroupId.value) ? 'eye' : 'eye-off'" :size="12" /></span>
-              <span class="gic" title="复制该组" @click.stop="bs.duplicateGroup(g.id)"><Icon name="copy" :size="12" /></span>
-              <span class="gic del" title="删除该组（不影响已生成的天线）" @click.stop="bsRemoveGroup(g)"><Icon name="x" :size="12" /></span>
+              <button type="button" class="gic pin ibtn sm" :class="{ on: g.pinned }" :aria-pressed="g.pinned ? 'true' : 'false'" :title="g.pinned ? '取消常显（切换到其它组编辑时自动隐藏本组草图）' : (g.id === bs.activeGroupId.value ? '常显本组（切换到其它组编辑后仍保留显示，用于比对）' : '仅显示编辑中的组；点击常显本组草图以便和其它组比对')" @click.stop="bs.toggleGroupVisible(g.id)"><Icon name="pin" :size="12" /></button>
+              <button type="button" class="gic ibtn sm" title="复制该组" @click.stop="bs.duplicateGroup(g.id)"><Icon name="copy" :size="12" /></button>
+              <button type="button" class="gic del ibtn sm danger" title="删除该组（不影响已生成的天线）" @click.stop="bsRemoveGroup(g)"><Icon name="x" :size="12" /></button>
             </div>
-            <div v-if="!bs.groupsForSat.value.length" class="bs-empty">还没有波束组。</div>
+            <div v-if="!bs.groupsForSat.value.length" class="bs-empty">暂无波束组。</div>
           </div>
           <div class="bs-addrow">
-            <span class="opb" :class="{ dis: !bsSats.length }" title="新建高斯波束组（STK Gaussian 天线模型：按真实离轴角的解析高斯方向图；口径 / 波束宽 / 峰值增益三选一驱动；生成后本组改动自动同步到天线）" @click="bsAddGroup('stk')">＋高斯组</span>
-            <span class="opb" :class="{ dis: !bsSats.length }" title="新建多馈源反射面（点/椭圆波束群；一组内可多设置混合宽度，如 0.8+0.9+1.6°）" @click="bsAddGroup('gauss')">＋多馈源组</span>
-            <span class="opb" :class="{ dis: !bsSats.length }" title="新建赋形反射面（Polygon 覆盖区并集，馈源阵赋形合成）" @click="bsAddGroup('shaped')">＋赋形组</span>
-            <span class="opb" :class="{ dis: !bsSats.length }" title="新建相控阵（SATSOFT §6.5 PAM：矩形阵 + Butler 矩阵，sinc 波束群，可电扫到任意指向）" @click="bsAddGroup('pam')">＋相控阵组</span>
+            <button type="button" :disabled="!bsSats.length" class="opb" :class="{ dis: !bsSats.length }" title="新建高斯波束组（STK Gaussian 天线模型：按真实离轴角的解析高斯方向图；口径 / 波束宽 / 峰值增益三选一驱动；生成后本组改动自动同步到天线）" @click="bsAddGroup('stk')">＋高斯组</button>
+            <button type="button" :disabled="!bsSats.length" class="opb" :class="{ dis: !bsSats.length }" title="新建多馈源反射面（点/椭圆波束群；一组内可多设置混合宽度，如 0.8+0.9+1.6°）" @click="bsAddGroup('gauss')">＋多馈源组</button>
+            <button type="button" :disabled="!bsSats.length" class="opb" :class="{ dis: !bsSats.length }" title="新建赋形反射面（Polygon 覆盖区并集，馈源阵赋形合成）" @click="bsAddGroup('shaped')">＋赋形组</button>
+            <button type="button" :disabled="!bsSats.length" class="opb" :class="{ dis: !bsSats.length }" title="新建相控阵（SATSOFT §6.5 PAM：矩形阵 + Butler 矩阵，sinc 波束群，可电扫到任意指向）" @click="bsAddGroup('pam')">＋相控阵组</button>
           </div>
           <div class="bs-navops">
-            <span class="opb sm" :class="{ dis: !bs.groupsForSat.value.length }" title="当前卫星下每个组各生成一副天线" @click="bsGenerateAll"><Icon name="check" :size="12" /> 全部生成</span>
-            <span class="opb sm" :class="{ dis: !bs.canUndo.value }" title="撤销（当前组）" @click="bs.undo"><Icon name="undo-2" :size="12" /> 撤销</span>
-            <span class="opb sm" :class="{ dis: !bs.canRedo.value }" title="重做（当前组）" @click="bs.redo"><Icon name="redo-2" :size="12" /> 重做</span>
+            <button type="button" :disabled="!bs.groupsForSat.value.length" class="opb sm" :class="{ dis: !bs.groupsForSat.value.length }" title="当前卫星下每个组各生成一副天线" @click="bsGenerateAll"><Icon name="check" :size="12" /> 全部生成</button>
+            <button type="button" :disabled="!bs.canUndo.value" class="opb sm" :class="{ dis: !bs.canUndo.value }" title="撤销（当前组）" @click="bs.undo"><Icon name="undo-2" :size="12" /> 撤销</button>
+            <button type="button" :disabled="!bs.canRedo.value" class="opb sm" :class="{ dis: !bs.canRedo.value }" title="重做（当前组）" @click="bs.redo"><Icon name="redo-2" :size="12" /> 重做</button>
           </div>
+          </template>
+          <div v-else class="bs-empty2">{{ bsSats.length ? '未选择卫星。' : '暂无卫星。' }}</div>
         </div>
 
         <!-- ===== 检查器：选中组的编辑器（类型由节点决定，不再切 tab） ===== -->
@@ -13359,21 +14139,21 @@ onBeforeUnmount(() => {
         <!-- 波束设置（波束类型选择器，上提）：每个设置 = 一种波束类型（= 一套独立反射面）；下面「天线参数」编辑当前设置的反射面 -->
         <!-- 高斯组（stk）共用这一块：每个设置 = 一个命名方向图模型，徽标上的宽度 = 模型 θ3 -->
         <div v-if="bs.mode.value === 'gauss' || bs.mode.value === 'stk'" class="sec">
-          <div class="sect acc" data-sec="bs-settings" :class="{ open: isSecOpen('bs-settings') }" @click="toggleSec('bs-settings')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-settings') }" :size="12" /><span>波束设置</span><span class="bs-cnt">{{ bs.settings.value.length }} 种波束</span></div>
+          <div class="sect acc" data-sec="bs-settings" :class="{ open: isSecOpen('bs-settings') }" @click="toggleSec('bs-settings')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-settings') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-settings')" @keydown.space.self.prevent="toggleSec('bs-settings')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-settings') }" :size="12" /><span>波束设置</span><span class="bs-cnt">{{ bs.settings.value.length }} 种波束</span></div>
           <template v-if="isSecOpen('bs-settings')">
           <div class="bs-chips">
-            <span v-for="s in bs.settings.value" :key="s.id" class="bs-chip" :class="{ on: s.id === bs.activeSettingId.value }" :title="'激活并按此波束类型放置：' + s.name" @click="bs.selectSetting(s.id)"><i :style="{ background: s.color }"></i>{{ s.name }}<em>{{ Number(s.thX).toFixed(2) }}°</em></span>
-            <span class="bs-chip add" :title="bs.mode.value === 'stk' ? '新增一种波束类型（复制当前方向图参数，再改口径 / 波束宽 / 峰值增益）' : '新增一种波束类型（复制当前反射面，再改口径/馈源做出不同波束宽）'" @click="bs.addSetting()">＋</span>
+            <button type="button" :aria-pressed="(s.id === bs.activeSettingId.value) ? 'true' : 'false'" v-for="s in bs.settings.value" :key="s.id" class="bs-chip" :class="{ on: s.id === bs.activeSettingId.value }" :title="'激活并按此波束类型放置：' + s.name" @click="bs.selectSetting(s.id)"><i :style="{ background: s.color }"></i>{{ s.name }}<em>{{ Number(s.thX).toFixed(2) }}°</em></button>
+            <button type="button" class="bs-chip add" :title="bs.mode.value === 'stk' ? '新增一种波束类型（复制当前方向图参数，再改口径 / 波束宽 / 峰值增益）' : '新增一种波束类型（复制当前反射面，再改口径/馈源做出不同波束宽）'" @click="bs.addSetting()">＋</button>
           </div>
           <template v-if="bs.curSetting.value">
-            <div class="srow"><label>设置名</label><input class="ci" :value="bs.curSetting.value.name" @input="e => bs.renameSetting(bs.curSetting.value.id, e.target.value)" /><input class="clr" type="color" :value="bs.curSetting.value.color" title="该波束类型轮廓/中心点颜色" @input="e => bsSetSettingColor(e.target.value)" /><span class="opb sm" :class="{ dis: bs.settings.value.length <= 1 }" title="删除本波束类型" @click="bs.removeSetting(bs.curSetting.value.id)">删除</span></div>
+            <div class="srow"><label>设置名</label><input class="ci" :value="bs.curSetting.value.name" @input="e => bs.renameSetting(bs.curSetting.value.id, e.target.value)" /><input class="clr" type="color" :value="bs.curSetting.value.color" title="该波束类型轮廓/中心点颜色" @input="e => bsSetSettingColor(e.target.value)" /><button type="button" :disabled="bs.settings.value.length <= 1" class="sm btn" :class="{ dis: bs.settings.value.length <= 1 }" title="删除本波束类型" @click="bs.removeSetting(bs.curSetting.value.id)">删除</button></div>
           </template>
           </template>
         </div>
 
         <!-- 高斯组方向图 = 当前波束设置的 STK Gaussian 模型（口径 / 波束宽 / 峰值增益三选一驱动；与覆盖分析「方向图」同一组参数行） -->
         <div v-if="bs.mode.value === 'stk' && bs.curSetting.value" class="sec">
-          <div class="sect acc" data-sec="bs-stk" :class="{ open: isSecOpen('bs-stk') }" @click="toggleSec('bs-stk')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-stk') }" :size="12" /><span>方向图</span><span class="bs-cnt" data-i18n-skip>{{ bs.curSetting.value.name }}</span></div>
+          <div class="sect acc" data-sec="bs-stk" :class="{ open: isSecOpen('bs-stk') }" @click="toggleSec('bs-stk')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-stk') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-stk')" @keydown.space.self.prevent="toggleSec('bs-stk')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-stk') }" :size="12" /><span>方向图</span><span class="bs-cnt" data-i18n-skip>{{ bs.curSetting.value.name }}</span></div>
           <template v-if="isSecOpen('bs-stk')">
             <GaussModelFields :model="bs.curSetting.value" @update="bsStkUpdate" />
           </template>
@@ -13381,7 +14161,7 @@ onBeforeUnmount(() => {
 
         <!-- 天线参数 = 当前波束设置的反射面（每设置一套独立反射面） -->
         <div v-if="bs.mode.value === 'gauss' && bs.curSetting.value" class="sec">
-          <div class="sect acc" data-sec="bs-antp" :class="{ open: isSecOpen('bs-antp') }" @click="toggleSec('bs-antp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-antp') }" :size="12" /><span>天线参数</span><span class="bs-cnt">{{ bs.curSetting.value.name }} · 解析反射面</span></div>
+          <div class="sect acc" data-sec="bs-antp" :class="{ open: isSecOpen('bs-antp') }" @click="toggleSec('bs-antp')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-antp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-antp')" @keydown.space.self.prevent="toggleSec('bs-antp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-antp') }" :size="12" /><span>天线参数</span><span class="bs-cnt">{{ bs.curSetting.value.name }} · 解析反射面</span></div>
           <template v-if="isSecOpen('bs-antp')">
           <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.curSetting.value.fGHz" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.refl.value && bs.refl.value.lamDesignCm, 2) }} cm</span></div>
           <div class="srow"><label>仿真频率</label>
@@ -13391,24 +14171,24 @@ onBeforeUnmount(() => {
           </div>
           <!-- 口径 ⟷ 3dB 波束宽：二选一驱动（选中者填、另一者只读自动算，对齐 SATSOFT 单选按钮） -->
           <div class="srow bs-drv" :class="{ act: bs.curSetting.value.apDriver === 'aperture' }">
-            <span class="rdo" :class="{ on: bs.curSetting.value.apDriver === 'aperture' }" @click="bs.curSetting.value.apDriver = 'aperture'" title="选此＝填口径，波束宽自动算"></span>
+            <span class="rdo" :class="{ on: bs.curSetting.value.apDriver === 'aperture' }" @click="bs.curSetting.value.apDriver = 'aperture'" title="选此＝填口径，波束宽自动计算"></span>
             <label @click="bs.curSetting.value.apDriver = 'aperture'">天线口径</label>
             <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.apDriver !== 'aperture'" v-model.number="bs.curSetting.value.antD" /><span class="u">m</span>
           </div>
           <div class="srow bs-drv" :class="{ act: bs.curSetting.value.apDriver === 'beamwidth' }">
-            <span class="rdo" :class="{ on: bs.curSetting.value.apDriver === 'beamwidth' }" @click="bs.curSetting.value.apDriver = 'beamwidth'" title="选此＝填 3dB 波束宽，口径自动算"></span>
-            <label @click="bs.curSetting.value.apDriver = 'beamwidth'">3dB 宽</label>
+            <span class="rdo" :class="{ on: bs.curSetting.value.apDriver === 'beamwidth' }" @click="bs.curSetting.value.apDriver = 'beamwidth'" title="选此＝填 3dB 波束宽，口径自动计算"></span>
+            <label @click="bs.curSetting.value.apDriver = 'beamwidth'">3 dB 宽</label>
             <input class="ci" type="number" step="0.01" :disabled="bs.curSetting.value.apDriver !== 'beamwidth'" v-model.number="bs.curSetting.value.bw3" /><span class="u">°</span>
           </div>
           <div class="bs-read"><span>口径 circular · F/D <b>{{ bsFmt(bs.refl.value && bs.refl.value.fd, 2) }}</b></span></div>
           <!-- 焦距 ⟷ 馈源间距：二选一驱动 -->
           <div class="srow bs-drv" :class="{ act: bs.curSetting.value.fdDriver === 'focal' }">
-            <span class="rdo" :class="{ on: bs.curSetting.value.fdDriver === 'focal' }" @click="bs.curSetting.value.fdDriver = 'focal'" title="选此＝填焦距，馈源间距自动算"></span>
+            <span class="rdo" :class="{ on: bs.curSetting.value.fdDriver === 'focal' }" @click="bs.curSetting.value.fdDriver = 'focal'" title="选此＝填焦距，馈源间距自动计算"></span>
             <label @click="bs.curSetting.value.fdDriver = 'focal'">焦距</label>
             <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.fdDriver !== 'focal'" v-model.number="bs.curSetting.value.foc" /><span class="u">m</span>
           </div>
           <div class="srow bs-drv" :class="{ act: bs.curSetting.value.fdDriver === 'feedspacing' }">
-            <span class="rdo" :class="{ on: bs.curSetting.value.fdDriver === 'feedspacing' }" @click="bs.curSetting.value.fdDriver = 'feedspacing'" title="选此＝填馈源间距，焦距自动算"></span>
+            <span class="rdo" :class="{ on: bs.curSetting.value.fdDriver === 'feedspacing' }" @click="bs.curSetting.value.fdDriver = 'feedspacing'" title="选此＝填馈源间距，焦距自动计算"></span>
             <label @click="bs.curSetting.value.fdDriver = 'feedspacing'">馈源间距</label>
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.fdDriver !== 'feedspacing'" v-model.number="bs.curSetting.value.feedSpacingWl" /><span class="u">WL</span>
           </div>
@@ -13416,7 +14196,7 @@ onBeforeUnmount(() => {
             <label class="chk-in" title="Auto＝馈源直径 = 馈源间距（多馈源恰好相接不交叠）；取消可手动输入——馈源直径是控制口径效率的核心：越大→边缘照射越低（更聚焦）→溢出越小、效率越高"><input type="checkbox" :checked="bs.curSetting.value.feedDiaAuto !== false" @change="bs.curSetting.value.feedDiaAuto = $event.target.checked" /><span>Auto</span></label>
             <input class="ci" type="number" step="0.05" :disabled="bs.curSetting.value.feedDiaAuto !== false" v-model.number="bs.curSetting.value.feedDiaWl" /><span class="u">WL</span>
           </div>
-          <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn" title="单波束效率读数仍有效；多波束需加大波束间距或减小馈源直径">⚠ 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）：多馈源会交叠。</div>
+          <div v-if="bs.curSetting.value.feedDiaAuto === false && bs.refl.value && bs.refl.value.ok && Number(bs.curSetting.value.feedDiaWl) > bs.refl.value.feedSpacingWl + 1e-4" class="tip warn" title="单波束效率读数仍有效；多波束需加大波束间距或减小馈源直径"><Icon name="alert-triangle" :size="12" /> 馈源直径 &gt; 馈源间距（{{ bsFmt(bs.refl.value.feedSpacingWl, 2) }} WL）。</div>
           <div class="srow"><label>馈源模型</label>
             <select v-model="bs.curSetting.value.feedModel">
               <option value="te11">circular TE11</option>
@@ -13435,12 +14215,12 @@ onBeforeUnmount(() => {
             <span>方向性 <b>{{ bsFmt(bs.refl.value && bs.refl.value.dirDbi, 2) }}</b> dBi</span>
             <span title="馈源在反射面边缘的照射电平（相对中心）：馈源直径决定它，它决定效率与波束宽">边缘照射 <b>{{ bsFmt(bs.refl.value && bs.refl.value.edgeDb, 2) }}</b> dB</span>
           </div>
-          <div class="bs-read"><span title="仿真频率下的 3dB 波束宽（同设计时即设计波束宽）">波束宽 <b>{{ bsFmt(bs.refl.value && bs.refl.value.th3Sim, 3) }}</b>°</span><span>馈源 <b>{{ bsFmt(bs.refl.value && bs.refl.value.feedCm, 2) }}</b> cm</span><span>波束间距 <b>{{ bsFmt(bs.refl.value && bs.refl.value.beamSpacingDeg, 3) }}</b>° · 交叉 <b>{{ bsFmt(bs.crossX.value, 2) }}</b> dB</span></div>
+          <div class="bs-read"><span title="仿真频率下的 3 dB 波束宽（同设计时即设计波束宽）">波束宽 <b>{{ bsFmt(bs.refl.value && bs.refl.value.th3Sim, 3) }}</b>°</span><span>馈源 <b>{{ bsFmt(bs.refl.value && bs.refl.value.feedCm, 2) }}</b> cm</span><span>波束间距 <b>{{ bsFmt(bs.refl.value && bs.refl.value.beamSpacingDeg, 3) }}</b>° · 交叉 <b>{{ bsFmt(bs.crossX.value, 2) }}</b> dB</span></div>
           <div class="bs-refl" v-html="bsReflSvg"></div>
           <div class="bs-reflbar">
-            <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
+            <button type="button" class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1" aria-label="上一页"><Icon name="chevron-left" :size="12" /></button>
             <span class="bs-reflpg">{{ bsReflView }}/2</span>
-            <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">▶</span>
+            <button type="button" class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1" aria-label="下一页"><Icon name="chevron-right" :size="12" /></button>
             <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '反射面侧视图' }}</span>
           </div>
           </template>
@@ -13449,25 +14229,25 @@ onBeforeUnmount(() => {
         <!-- 相控阵覆盖方式：点波束群（放置电扫波束）/ 赋形覆盖（Butler beamlet minimax → 星上激励指令） -->
         <div v-if="bs.mode.value === 'pam'" class="sec">
           <div class="srow"><label>覆盖方式</label>
-            <span class="seg sm">
-              <span class="sg" :class="{ on: bs.p.pamCover !== 'shaped' }" title="点/多波束群：在地图上放置电扫波束（每波束由阵面 Butler 电扫到该指向，sinc 旁瓣/栅瓣/扫描损失内建）" @click="bs.p.pamCover = 'spot'">点波束群</span>
-              <span class="sg" :class="{ on: bs.p.pamCover === 'shaped' }" title="赋形覆盖：Polygon 覆盖区 → Butler beamlet minimax 合成赋形等值线，产出测控上注星上波束成形网络（BFN）的激励指令（SATSOFT §6.5 + §8/§9/§10）" @click="bs.p.pamCover = 'shaped'">赋形覆盖</span>
+            <span role="radiogroup" class="seg sm">
+              <button type="button" role="radio" :aria-checked="!!(bs.p.pamCover !== 'shaped')" class="sg" :class="{ on: bs.p.pamCover !== 'shaped' }" title="点/多波束群：在地图上放置电扫波束（每波束由阵面 Butler 电扫到该指向，sinc 旁瓣/栅瓣/扫描损失内建）" @click="bs.p.pamCover = 'spot'">点波束群</button>
+              <button type="button" role="radio" :aria-checked="!!(bs.p.pamCover === 'shaped')" class="sg" :class="{ on: bs.p.pamCover === 'shaped' }" title="赋形覆盖：Polygon 覆盖区 → Butler beamlet minimax 合成赋形等值线，产出测控上注星上波束成形网络（BFN）的激励指令（SATSOFT §6.5 + §8/§9/§10）" @click="bs.p.pamCover = 'shaped'">赋形覆盖</button>
             </span>
           </div>
         </div>
 
         <!-- 相控阵天线参数（对齐 SATSOFT §6.5 / §6.5.1 对话框）：阵元数 / 间距 / 单元因子 / 晶格 → 波束宽·间距·交叉·栅瓣·方向性 -->
         <div v-if="bs.mode.value === 'pam'" class="sec">
-          <div class="sect acc" data-sec="bs-pam" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-pam') }" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
+          <div class="sect acc" data-sec="bs-pam" :class="{ open: isSecOpen('bs-pam') }" @click="toggleSec('bs-pam')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-pam') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-pam')" @keydown.space.self.prevent="toggleSec('bs-pam')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-pam') }" :size="12" /><span>天线参数</span><span class="bs-cnt">相控阵 · Butler 矩阵</span></div>
           <template v-if="isSecOpen('bs-pam')">
           <div class="srow"><label>辐射单元数</label><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNx" title="X 向（方位）单元数 Nx" /><span class="u">×</span><input class="ci" type="number" step="1" min="1" v-model.number="bs.p.pamNy" title="Y 向（俯仰）单元数 Ny" /></div>
           <div class="srow"><label>单元间距</label><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDx" title="X 向单元间距 dx（波长）" /><span class="u">×</span><input class="ci" type="number" step="0.05" min="0.1" v-model.number="bs.p.pamDy" title="Y 向单元间距 dy（波长）" /><span class="u">λ</span></div>
           <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.pamFGHz" /><span class="u">GHz</span></div>
           <div class="srow"><label>口径效率</label><input class="ci" type="number" step="1" min="1" max="100" v-model.number="bs.p.pamEff" title="口径效率（%）：50% ≈ 相对满口径 −3dB；补偿阵列损耗等" /><span class="u">%</span></div>
           <div class="srow"><label>单元因子 R</label><input class="ci" type="number" step="0.1" min="0" v-model.number="bs.p.pamR" title="单元功率方向图 cos^R(θ) 指数（典型 1.0–1.5）：越大扫描增益滚降越快" /><span class="u">cos^R θ</span></div>
-          <label class="chk2"><input type="checkbox" v-model="bs.p.pamTri" /><span>三角晶格（等边 dx=√3/2·dy；Nx 需偶）</span></label>
-          <div v-if="bs.p.pamTri && Math.round(Number(bs.p.pamNx)) % 2 !== 0" class="tip warn" title="SATSOFT 手册 §6.5.1">⚠ 三角晶格要求 X 向单元数 Nx 为偶数；当前 Nx={{ Math.round(Number(bs.p.pamNx)) }} 为奇数，已按矩形晶格计算。</div>
-          <label class="chk2"><input type="checkbox" v-model="bs.p.pamElem" /><span>应用单元因子（关闭＝仅看阵因子 / 栅瓣）</span></label>
+          <label class="chk2" title="等边 dx=√3/2·dy；Nx 需偶"><input type="checkbox" v-model="bs.p.pamTri" /><span>三角晶格</span></label>
+          <div v-if="bs.p.pamTri && Math.round(Number(bs.p.pamNx)) % 2 !== 0" class="tip warn" title="SATSOFT 手册 §6.5.1"><Icon name="alert-triangle" :size="12" /> Nx={{ Math.round(Number(bs.p.pamNx)) }} 为奇数，已按矩形晶格计算。</div>
+          <label class="chk2" title="关闭＝仅看阵因子 / 栅瓣"><input type="checkbox" v-model="bs.p.pamElem" /><span>应用单元因子</span></label>
           <div class="bs-read2">
             <span>波束宽 <b>{{ bsFmt(bs.pam.value && bs.pam.value.th3xDeg, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.th3yDeg, 2) }}</b>°</span>
             <span>方向性 <b :title="bs.pam.value && bs.pam.value.dirCorrDb < -0.05 ? '已按栅瓣分能修正 ' + bsFmt(bs.pam.value.dirCorrDb, 2) + ' dB（Hannon 公式原值 ' + bsFmt(bs.pam.value.dirDbi, 2) + ' dBi）' : ''">{{ bsFmt(bs.pam.value && (bs.pam.value.dirDbiCorr != null ? bs.pam.value.dirDbiCorr : bs.pam.value.dirDbi), 2) }}</b> dBi</span>
@@ -13477,13 +14257,13 @@ onBeforeUnmount(() => {
             <span>阵尺寸 <b>{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimXm, 2) }}×{{ bsFmt(bs.pam.value && bs.pam.value.arrayDimYm, 2) }}</b> m</span>
           </div>
           <div class="bs-read"><span title="第一栅瓣距原点的波束宽数（手册 §6.5.1：distance from origin in beamwidths；合成赋形时可填入 Beamlet Grid 的 Range 字段）。电扫超过无栅瓣可扫界 asin(1/d−1) 时栅瓣即进入实空间">第一栅瓣 <b>{{ bsFmt(bs.pam.value && bs.pam.value.gratingLobeBw, 1) }}</b> 波束宽{{ bs.pam.value && bs.pam.value.gratingInReal ? '（±' + bsFmt(bs.pam.value.gratingLobeDeg, 1) + '° 进实空间）' : '（天底圈外 · 无栅瓣可扫 ±' + bsFmt(bs.pam.value && bs.pam.value.scanMaxDeg, 1) + '°）' }}</span></div>
-          <div v-if="bs.pam.value && bs.pam.value.gratingInReal" class="tip warn" title="栅瓣会形成重复波束；单元间距减至 &lt;1λ 可消除">⚠ 单元间距 ≥ 1λ：栅瓣进入实空间（±{{ bsFmt(bs.pam.value.gratingLobeDeg, 1) }}°），方向性读数已按分能修正。</div>
-          <div v-else-if="bs.pamScanStat.value && bs.pamScanStat.value.over" class="tip warn">⚠ {{ bs.pamScanStat.value.over }} 个波束超无栅瓣可扫界 ±{{ bsFmt(bs.pamScanStat.value.scanMaxDeg, 1) }}°（最大离轴 {{ bsFmt(bs.pamScanStat.value.maxOffDeg, 1) }}°）——栅瓣进实空间，生成时峰值按分能修正。</div>
+          <div v-if="bs.pam.value && bs.pam.value.gratingInReal" class="tip warn" title="栅瓣会形成重复波束；单元间距减至 &lt;1λ 可消除"><Icon name="alert-triangle" :size="12" /> 单元间距 ≥ 1λ：栅瓣进入实空间（±{{ bsFmt(bs.pam.value.gratingLobeDeg, 1) }}°），方向性读数已按分能修正。</div>
+          <div v-else-if="bs.pamScanStat.value && bs.pamScanStat.value.over" class="tip warn"><Icon name="alert-triangle" :size="12" /> {{ bs.pamScanStat.value.over }} 个波束超无栅瓣可扫界 ±{{ bsFmt(bs.pamScanStat.value.scanMaxDeg, 1) }}°（最大离轴 {{ bsFmt(bs.pamScanStat.value.maxOffDeg, 1) }}°）——栅瓣进实空间，生成时峰值按分能修正。</div>
           <div class="bs-refl" v-html="bsPamSvg"></div>
           <div class="bs-reflbar">
-            <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">◀</span>
+            <button type="button" class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1" aria-label="上一页"><Icon name="chevron-left" :size="12" /></button>
             <span class="bs-reflpg">{{ bsPamView }}/2</span>
-            <span class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1">▶</span>
+            <button type="button" class="pgb" @click="bsPamView = bsPamView === 1 ? 2 : 1" aria-label="下一页"><Icon name="chevron-right" :size="12" /></button>
             <span class="bs-reflcap">{{ bsPamView === 1 ? '阵面正视：单元排布' : 'sin 空间：Butler 波束栅' }}</span>
           </div>
           </template>
@@ -13492,14 +14272,14 @@ onBeforeUnmount(() => {
         <!-- —— 放置波束 → 轮廓编号 / 频率计划（多馈源 + 高斯组 + 相控阵点波束群共用；后两者折叠） —— -->
         <template v-if="bs.mode.value === 'gauss' || bs.mode.value === 'stk' || (bs.mode.value === 'pam' && bs.p.pamCover !== 'shaped')">
           <div class="sec">
-            <div class="sect acc" data-sec="bs-place" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-place') }" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
+            <div class="sect acc" data-sec="bs-place" :class="{ open: isSecOpen('bs-place') }" @click="toggleSec('bs-place')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-place') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-place')" @keydown.space.self.prevent="toggleSec('bs-place')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-place') }" :size="12" /><span>放置波束</span><span class="bs-cnt">{{ bs.beams.value.length }} 个{{ bs.curSetting.value ? ' · 设置 ' + bs.curSetting.value.name : '' }}</span></div>
             <template v-if="isSecOpen('bs-place')">
             <div class="bs-ops">
-              <span class="opb" :class="{ on: bs.placing.value }" title="开启后在地图上左键点击放置波束轮廓（拖动仍为旋转/平移，右键亦可放置；再次点击关闭）" @click="bsPlaceToggle">{{ bs.placing.value ? '放置中…点击地图' : '地图放置' }}</span>
-              <span class="opb" :class="{ on: bs.adjusting.value }" title="在平面图上拖动波束中心调整位置：轮廓实时跟随指针，经过相切位置时自动吸附（可随时拖离）" @click="bsAdjustToggle">{{ bs.adjusting.value ? '完成调整' : '调整中心' }}</span>
-              <span class="opb" title="打开波束批量表格：Excel 式框选/粘贴，从表格批量成群" @click="openBsTable">批量表格</span>
-              <span class="opb" title="清空本组所有已放置波束（可撤销：批量表格 Ctrl+Z）" @click="bs.clearBeams">清空</span>
-              <span class="opb danger" :class="{ on: bs.deleting.value }" title="开启后点击地图上的波束中心即可删除该波束，支持连续删除（误删可用上方「撤销」）；再次点击关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</span>
+              <button type="button" :aria-pressed="(bs.placing.value) ? 'true' : 'false'" class="opb" :class="{ on: bs.placing.value }" title="开启后在地图上左键点击放置波束轮廓（拖动仍为旋转/平移，右键亦可放置；再次点击关闭）" @click="bsPlaceToggle">{{ bs.placing.value ? '放置中…点击地图' : '地图放置' }}</button>
+              <button type="button" :aria-pressed="(bs.adjusting.value) ? 'true' : 'false'" class="opb" :class="{ on: bs.adjusting.value }" title="在平面图上拖动波束中心调整位置：轮廓实时跟随指针，经过相切位置时自动吸附（可随时拖离）" @click="bsAdjustToggle">调整中心</button>
+              <button type="button" class="opb" title="打开波束批量表格：Excel 式框选/粘贴，从表格批量成群" @click="openBsTable">批量表格</button>
+              <button type="button" class="opb" title="清空本组所有已放置波束（可撤销：批量表格 Ctrl+Z）" @click="bs.clearBeams">清空</button>
+              <button type="button" :aria-pressed="(bs.deleting.value) ? 'true' : 'false'" class="opb danger" :class="{ on: bs.deleting.value }" title="开启后点击地图上的波束中心即可删除该波束，支持连续删除（误删可用上方「撤销」）；再次点击关闭" @click="bsDeleteToggle">{{ bs.deleting.value ? '删除中…点击波束' : '删除波束' }}</button>
             </div>
             <label class="chk2" title="点击或拖动至边界附近自动相切"><input type="checkbox" v-model="bs.p.snapTangent" /><span>相切吸附</span></label>
             <div class="bs-hex">
@@ -13508,10 +14288,10 @@ onBeforeUnmount(() => {
                 <option value="">选 Polygon…</option>
                 <option v-for="pg in polys" :key="pg.id" :value="pg.id">{{ pg.name || 'Polygon' }}（{{ pg.pts.length }}点）</option>
               </select>
-              <span class="opb sm" title="在所选 Polygon 内按间距六角布满（用激活设置的宽度）" @click="bs.hexFill">布满</span>
+              <button type="button" class="sm btn" title="在所选 Polygon 内按间距六角布满（用激活设置的宽度）" @click="bs.hexFill">布满</button>
             </div>
             <div class="srow" v-if="bs.curSetting.value"><label>波束间距</label>
-              <label class="chk-in" title="Auto＝波束间距 = 该设置的波束宽度 θ3dB（相邻波束 −3.01 dB 交叠）；取消可手动输入。间距下沉到每个波束设置（随其口径/波束宽变），故此处读写激活设置、Auto 显示实时算出值"><input type="checkbox" :checked="bs.curSetting.value.autoSpacing !== false" @change="bs.curSetting.value.autoSpacing = $event.target.checked" /><span>Auto</span></label>
+              <label class="chk-in" title="Auto＝波束间距 = 该设置的波束宽度 θ3dB（相邻波束 −3.01 dB 交叠）；取消可手动输入。间距下沉到每个波束设置（随其口径/波束宽变），故此处读写激活设置、Auto 显示实时计算值"><input type="checkbox" :checked="bs.curSetting.value.autoSpacing !== false" @change="bs.curSetting.value.autoSpacing = $event.target.checked" /><span>Auto</span></label>
               <input class="ci" type="number" step="0.1" :disabled="bs.curSetting.value.autoSpacing !== false" v-model.number="bs.curSetting.value.spacing" /><span class="u">°</span>
             </div>
             <div v-if="bs.beams.value.length > 60" class="tip">共 <b>{{ bs.beams.value.length }}</b> 个波束，列表过长已折叠。</div>
@@ -13520,7 +14300,7 @@ onBeforeUnmount(() => {
                 <span class="bs-bi">{{ bs.beamNumOffset.value + i + 1 }}</span>
                 <span class="bs-bll">{{ Number(b.lon).toFixed(2) }}, {{ Number(b.lat).toFixed(2) }}</span>
                 <span class="bs-bth">{{ Number(b.thX).toFixed(1) }}×{{ Number(b.thY).toFixed(1) }}°<em v-if="b.rot"> ∠{{ b.rot }}</em></span>
-                <span class="ic del" title="删除该波束" @click="bs.removeBeam(b.id)"><Icon name="x" :size="12" /></span>
+                <button type="button" class="ibtn sm danger" title="删除该波束" @click="bs.removeBeam(b.id)"><Icon name="x" :size="12" /></button>
               </div>
             </div>
             </template>
@@ -13528,23 +14308,23 @@ onBeforeUnmount(() => {
 
           <!-- 轮廓与编号（折叠） -->
           <div class="sec">
-            <div class="sect acc" data-sec="bs-style" :class="{ open: isSecOpen('bs-style', false) }" @click="toggleSec('bs-style', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-style', false) }" :size="12" /><span>轮廓与编号</span></div>
+            <div class="sect acc" data-sec="bs-style" :class="{ open: isSecOpen('bs-style', false) }" @click="toggleSec('bs-style', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-style', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-style', false)" @keydown.space.self.prevent="toggleSec('bs-style', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-style', false) }" :size="12" /><span>轮廓与编号</span></div>
             <template v-if="isSecOpen('bs-style', false)">
               <div class="srow"><label>轮廓颜色</label><input class="clr" type="color" v-model="bs.p.skColor" title="草图轮廓与中心点基础色（各波束设置色 / 频率配色开启后被其覆盖）" />
                 <span class="uw"><label class="lb2">线宽</label><input class="ci sm" type="number" step="0.1" min="0.1" max="5" v-model.number="bs.p.skWidth" /><span class="u">px</span></span>
               </div>
               <div class="srow"><label>线型</label>
-                <span class="seg sm">
-                  <span class="sg" :class="{ on: !bs.p.skDash }" @click="bs.p.skDash = false">实线</span>
-                  <span class="sg" :class="{ on: bs.p.skDash }" title="虚线轮廓（2D/3D 一致；波束超过 300 个时自动改用实线以保证性能）" @click="bs.p.skDash = true">虚线</span>
+                <span role="radiogroup" class="seg sm">
+                  <button type="button" role="radio" :aria-checked="!!(!bs.p.skDash)" class="sg" :class="{ on: !bs.p.skDash }" @click="bs.p.skDash = false">实线</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.skDash)" class="sg" :class="{ on: bs.p.skDash }" title="虚线轮廓（2D/3D 一致；波束超过 300 个时自动改用实线以保证性能）" @click="bs.p.skDash = true">虚线</button>
                 </span>
               </div>
               <label class="chk2"><input type="checkbox" v-model="bs.p.skNumShow" /><span>显示波束编号</span></label>
               <template v-if="bs.p.skNumShow">
                 <div class="srow"><label>编号字号</label>
-                  <span class="seg sm">
-                    <span class="sg" :class="{ on: bs.p.skNumMode === 'auto' }" title="随各波束在图上的大小自动取字号：编号始终装在波束里，缩放联动，过小自动隐藏（避免相互重叠）" @click="bs.p.skNumMode = 'auto'">自适应</span>
-                    <span class="sg" :class="{ on: bs.p.skNumMode === 'fixed' }" title="固定基准字号（世界尺寸，随地图缩放联动；与 Polygon 标签同口径）" @click="bs.p.skNumMode = 'fixed'">固定</span>
+                  <span role="radiogroup" class="seg sm">
+                    <button type="button" role="radio" :aria-checked="!!(bs.p.skNumMode === 'auto')" class="sg" :class="{ on: bs.p.skNumMode === 'auto' }" title="随各波束在图上的大小自动取字号：编号始终置于波束内，缩放联动，过小自动隐藏（避免相互重叠）" @click="bs.p.skNumMode = 'auto'">自适应</button>
+                    <button type="button" role="radio" :aria-checked="!!(bs.p.skNumMode === 'fixed')" class="sg" :class="{ on: bs.p.skNumMode === 'fixed' }" title="固定基准字号（世界尺寸，随地图缩放联动；与 Polygon 标签同口径）" @click="bs.p.skNumMode = 'fixed'">固定</button>
                   </span>
                   <input v-if="bs.p.skNumMode === 'auto'" class="ci sm" type="number" step="10" min="30" max="300" v-model.number="bs.p.skNumScale" /><span v-if="bs.p.skNumMode === 'auto'" class="u">%</span>
                   <input v-if="bs.p.skNumMode === 'fixed'" class="ci sm" type="number" step="1" min="4" max="64" v-model.number="bs.p.skNumSize" /><span v-if="bs.p.skNumMode === 'fixed'" class="u">px</span>
@@ -13557,7 +14337,7 @@ onBeforeUnmount(() => {
 
           <!-- 频率计划（折叠） -->
           <div class="sec">
-            <div class="sect acc" data-sec="bs-freq" :class="{ open: isSecOpen('bs-freq', false) }" @click="toggleSec('bs-freq', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-freq', false) }" :size="12" /><span>频率计划</span><span v-if="bs.fcStats.value.length" class="bs-cnt">{{ bs.fcStats.value.reduce((s, x) => s + x.count, 0) }} 已配色</span></div>
+            <div class="sect acc" data-sec="bs-freq" :class="{ open: isSecOpen('bs-freq', false) }" @click="toggleSec('bs-freq', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-freq', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-freq', false)" @keydown.space.self.prevent="toggleSec('bs-freq', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-freq', false) }" :size="12" /><span>频率计划</span><span v-if="bs.fcStats.value.length" class="bs-cnt">{{ bs.fcStats.value.reduce((s, x) => s + x.count, 0) }} 已配色</span></div>
             <template v-if="isSecOpen('bs-freq', false)">
               <!-- 颜色数：七档写成纯数字（七个「N 色」在这条窄栏里放不下），含义与可达间距进 title。
                    ★ 档位取的是【有效前沿】而不是「凡复用因子都列」：同一个可达间距上只留最省频率的
@@ -13567,22 +14347,22 @@ onBeforeUnmount(() => {
                      2.65d 这一档最省频率的】：4 频段 × 2 极化，每波束拿 1/4 频段，而七色只有 1/7。
                      10 被 8 支配（同样 2.65d 却要切 5 段频率），故不列 —— 这也正是上一轮撤掉它的理由。 -->
               <div class="srow"><label>颜色数</label>
-                <span class="seg sm">
-                  <span class="sg" :class="{ on: bs.p.fcN === 3 }" title="三色复用：同色最小间距 1.73× 波束间距（3 频段 × 单极化，每波束 1/3 频段）" @click="bs.p.fcN = 3">3</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 4 }" title="四色复用：同色最小间距 2.00× 波束间距（2 频段 × 2 极化，每波束 1/2 频段 —— 单波束带宽最大的一档，SATSOFT 四色填充）" @click="bs.p.fcN = 4">4</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 7 }" title="七色复用：同色最小间距 2.65× 波束间距（7 频段 × 单极化，每波束 1/7 频段；经典蜂窝 reuse-7）" @click="bs.p.fcN = 7">7</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 8 }" title="八色复用：同色最小间距 2.65× 波束间距（4 频段 × 2 极化，每波束 1/4 频段）。8 不是复用因子（无法取到 √8 的晶格间距），间距与七色相同——但同样的间距下它只切 4 段频率，每波束带宽是七色的近两倍，故双极化系统用八色而不是七色" @click="bs.p.fcN = 8">8</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 9 }" title="九色复用：同色最小间距 3.00× 波束间距（9 频段 × 单极化；经典 reuse-9，蜂窝格上的严格图案）" @click="bs.p.fcN = 9">9</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 12 }" title="十二色复用：同色最小间距 3.46× 波束间距（6 频段 × 2 极化，每波束 1/6 频段）" @click="bs.p.fcN = 12">12</span>
-                  <span class="sg" :class="{ on: bs.p.fcN === 16 }" title="十六色复用：同色最小间距 4.00× 波束间距（8 频段 × 2 极化，每波束 1/8 频段；中星26 小波束那族即此格局）。配色板上 F1~F8 与 F9~F16 两两同色相分深浅，正好读成同一段频率的两个极化" @click="bs.p.fcN = 16">16</span>
+                <span role="radiogroup" class="seg sm">
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 3)" class="sg" :class="{ on: bs.p.fcN === 3 }" title="三色复用：同色最小间距 1.73× 波束间距（3 频段 × 单极化，每波束 1/3 频段）" @click="bs.p.fcN = 3">3</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 4)" class="sg" :class="{ on: bs.p.fcN === 4 }" title="四色复用：同色最小间距 2.00× 波束间距（2 频段 × 2 极化，每波束 1/2 频段 —— 单波束带宽最大的一档，SATSOFT 四色填充）" @click="bs.p.fcN = 4">4</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 7)" class="sg" :class="{ on: bs.p.fcN === 7 }" title="七色复用：同色最小间距 2.65× 波束间距（7 频段 × 单极化，每波束 1/7 频段；经典蜂窝 reuse-7）" @click="bs.p.fcN = 7">7</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 8)" class="sg" :class="{ on: bs.p.fcN === 8 }" title="八色复用：同色最小间距 2.65× 波束间距（4 频段 × 2 极化，每波束 1/4 频段）。8 不是复用因子（无法取到 √8 的晶格间距），间距与七色相同——但同样的间距下它仅切分 4 段频率，每波束带宽是七色的近两倍，故双极化系统用八色而不是七色" @click="bs.p.fcN = 8">8</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 9)" class="sg" :class="{ on: bs.p.fcN === 9 }" title="九色复用：同色最小间距 3.00× 波束间距（9 频段 × 单极化；经典 reuse-9，蜂窝格上的严格图案）" @click="bs.p.fcN = 9">9</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 12)" class="sg" :class="{ on: bs.p.fcN === 12 }" title="十二色复用：同色最小间距 3.46× 波束间距（6 频段 × 2 极化，每波束 1/6 频段）" @click="bs.p.fcN = 12">12</button>
+                  <button type="button" role="radio" :aria-checked="!!(bs.p.fcN === 16)" class="sg" :class="{ on: bs.p.fcN === 16 }" title="十六色复用：同色最小间距 4.00× 波束间距（8 频段 × 2 极化，每波束 1/8 频段；中星26 小波束那族即此格局）。配色板上 F1~F8 与 F9~F16 两两同色相分深浅，正好读成同一段频率的两个极化" @click="bs.p.fcN = 16">16</button>
                 </span>
               </div>
               <div class="bs-ops">
-                <span class="opb" title="按当前布局自动分配：同色波束的间距不小于 √N × 波束间距（N = 颜色数，即正六边形晶格的复用距离），蜂窝布局呈规则复用图案；拖拽微调后可重新分配（可撤销）" @click="bs.assignFreqPlan">自动分配</span>
-                <span class="opb" title="清除本组所有波束的频率配色（可撤销）" @click="bs.clearFreqPlan">清除配色</span>
+                <button type="button" class="opb" title="按当前布局自动分配：同色波束的间距不小于 √N × 波束间距（N = 颜色数，即正六边形晶格的复用距离），蜂窝布局呈规则复用图案；拖拽微调后可重新分配（可撤销）" @click="bs.assignFreqPlan">自动分配</button>
+                <button type="button" class="opb" title="清除本组所有波束的频率配色（可撤销）" @click="bs.clearFreqPlan">清除配色</button>
               </div>
               <label class="chk2"><input type="checkbox" v-model="bs.p.fcShow" /><span>显示配色（波束填充 + 轮廓着色）</span></label>
-              <div v-if="bs.p.fcShow" class="srow"><label>填充透明</label><input class="ci sm" type="number" step="0.05" min="0" max="1" v-model.number="bs.p.fcOpacity" /><span class="u">0–1</span></div>
+              <div v-if="bs.p.fcShow" class="srow"><label>填充不透明度</label><input class="ci sm" type="number" step="0.05" min="0" max="1" v-model.number="bs.p.fcOpacity" /><span class="u">0–1</span></div>
               <div v-if="bs.fcStats.value.length" class="bs-fcleg">
                 <span v-for="s in bs.fcStats.value" :key="s.i" class="bs-fchip"><i :style="{ background: s.css }"></i>F{{ s.i + 1 }} <em>×{{ s.count }}</em></span>
               </div>
@@ -13590,7 +14370,7 @@ onBeforeUnmount(() => {
               <div v-if="bsFreqRows.length" class="bs-fplist">
                 <div class="bs-fphd">
                   <span>波束信息 <em>{{ bsFreqRows.length }}</em></span>
-                  <span class="bs-fpcp" :class="{ ok: bsFreqCopied }" title="复制全部波束为多列表格（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转，Tab 分隔）：粘贴至 Excel 自动分为 7 列" @click="bsCopyFreqPlan"><Icon :name="bsFreqCopied ? 'check' : 'copy'" :size="12" /> {{ bsFreqCopied ? '已复制 ✓' : '复制表格' }}</span>
+                  <button type="button" class="bs-fpcp btn sm" :class="{ ok: bsFreqCopied }" title="复制全部波束为多列表格（编号 / 频率 / 经度 / 纬度 / 3dB-X / 3dB-Y / 旋转，Tab 分隔）：粘贴至 Excel 自动分为 7 列" @click="bsCopyFreqPlan"><Icon :name="bsFreqCopied ? 'check' : 'copy'" :size="12" /> <Icon v-if="bsFreqCopied" name="check" :size="12" />{{ bsFreqCopied ? '已复制' : '复制表格' }}</button>
                 </div>
                 <div class="bs-fptbl">
                   <div class="bs-fpr bs-fph"><span class="c-no">#</span><span class="c-fc">频率</span><span class="c-ll">经度, 纬度</span><span class="c-th">3dB°</span></div>
@@ -13609,7 +14389,7 @@ onBeforeUnmount(() => {
         <!-- —— 相控阵赋形：覆盖区域（Polygon + Use Polygon Labels）→ 生成后出星上激励指令（测控上注 BFN） —— -->
         <template v-if="bs.mode.value === 'pam' && bs.p.pamCover === 'shaped'">
           <div class="sec">
-            <div class="sect acc" data-sec="bs-pcov" :class="{ open: isSecOpen('bs-pcov') }" @click="toggleSec('bs-pcov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-pcov') }" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
+            <div class="sect acc" data-sec="bs-pcov" :class="{ open: isSecOpen('bs-pcov') }" @click="toggleSec('bs-pcov')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-pcov') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-pcov')" @keydown.space.self.prevent="toggleSec('bs-pcov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-pcov') }" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
             <template v-if="isSecOpen('bs-pcov')">
             <div v-if="polys.length" class="bs-plist">
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
@@ -13626,41 +14406,43 @@ onBeforeUnmount(() => {
 
           <!-- 站点栅（与反射面赋形档同一份交互的镜像——改动须两处同步；θ3=阵面波束宽，站点/修正机制全同） -->
           <div class="sec">
-            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-st') }" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
+            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-st') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-st')" @keydown.space.self.prevent="toggleSec('bs-st')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-st') }" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
               <label class="chk-in" title="在站点上标注序号（SATSOFT Plot Station Number）"><input type="checkbox" :checked="bs.p.stNum === true" @change="bs.p.stNum = $event.target.checked" /><span>编号</span></label>
-              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
+              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站仅以颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
             <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
             <label class="chk2"><input type="checkbox" v-model="bs.p.stNumBold" /><span>粗体</span></label>
-            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/阵面波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），只有 50 万站的兜底会拦下并报出数目" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/阵面波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），仅在超过 50 万站时拦截并报出数目" /><span class="u">/θ3</span></div>
             <div class="srow"><label>栅类型</label><select v-model="bs.p.stType" title="站点栅晶格类型（SATSOFT Type）"><option value="tri">三角栅</option><option value="rect">矩形栅</option></select></div>
             <div class="srow"><label>旋转</label><input class="ci" type="number" step="5" v-model.number="bs.p.stRot" title="站点栅朝向（SATSOFT Rotation）" /><span class="u">°</span></div>
             <div class="srow"><label>中心偏移</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.stXOff" title="中心站相对 boresight（＝覆盖区质心，SATSOFT Auto Position Boresight）的 X 位移" /><span class="u">,</span><input class="ci" type="number" step="0.1" v-model.number="bs.p.stYOff" title="中心站相对 boresight 的 Y 位移（SATSOFT Y Offset）" /><span class="u">°</span></div>
             <div class="srow"><label>生成</label>
-              <label class="chk-in" title="在覆盖区多边形的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由多边形顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
+              <label class="chk-in" title="在 Polygon 的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由 Polygon 顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
               <label class="chk-in" title="覆盖区外自动铺一圈抑制站（本引擎附加档）：SATSOFT 生成站点栅时站点全为 Contour，Sidelobe 站须手工指定"><input type="checkbox" :checked="bs.p.stSup === true" @change="bs.p.stSup = $event.target.checked" /><span>界外抑制</span></label>
             </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%阵面波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
-              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选里减掉；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="crosshair" :size="12" /> 框选</span>
-              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
-              <span class="opb sm" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</span>
+              <button type="button" :aria-pressed="(bs.stEditOn.value) ? 'true' : 'false'" class="sm btn" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选中减去；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="square-dashed-mouse-pointer" :size="12" /> 框选</button>
+              <button type="button" :aria-pressed="(bs.stPick.value) ? 'true' : 'false'" class="sm btn" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续添加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 添加站点</button>
+              <button type="button" class="sm btn" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</button>
             </div>
             <div v-if="bs.stEditOn.value || bs.stSel.value.size" class="bs-strow">
-              <span class="opb sm" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</span>
-              <span class="opb sm" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</span>
-              <span class="opb sm" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</span>
+              <button type="button" class="sm btn" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</button>
+              <button type="button" class="sm btn" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</button>
+              <button type="button" :disabled="!bs.stSel.value.size" class="sm btn" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</button>
             </div>
             <template v-if="bs.stSel.value.size">
             <div class="srow"><label>类型</label>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点都是这一类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</span>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</span>
+              <span class="seg nseg" role="radiogroup" aria-label="站点类型">
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'cov')" class="sg" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点均为该类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</button>
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'sup')" class="sg" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</button>
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'ex')" class="sg" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</button>
+              </span>
             </div>
-            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
+            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标仅考虑相对权重（SATSOFT §10.2）" /><span class="u">dB</span><button type="button" class="sm btn" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</button></div>
             </template>
             <div v-if="bs.stSel.value.size || (bs.p.stOv || []).length || (bs.p.stAdd || []).length" class="bs-read"><span>选中 <b>{{ bs.stSel.value.size }}</b></span><span>修正 <b>{{ (bs.p.stOv || []).length }}</b></span><span>手工 <b>{{ (bs.p.stAdd || []).length }}</b></span><span v-if="bs.stSelOne.value"><template v-if="bs.stSelOne.value.add">手工 </template>{{ bs.stSelOne.value.type === 'sup' ? '抑制' : bs.stSelOne.value.type === 'ex' ? '排除' : 'Contour' }}<b v-if="bs.stSelOne.value.g"> {{ (bs.stSelOne.value.g > 0 ? '+' : '') + bs.stSelOne.value.g }} dB</b></span></div>
             </template>
@@ -13668,7 +14450,7 @@ onBeforeUnmount(() => {
 
           <!-- 星上激励指令表（测控上注）：生成后可见 -->
           <div class="sec" v-if="bsPamExcitShown">
-            <div class="sect acc" data-sec="bs-excit" :class="{ open: isSecOpen('bs-excit') }" @click="toggleSec('bs-excit')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-excit') }" :size="12" /><span>星上激励指令</span><span class="bs-cnt">{{ bsPamExcitShown.rows.length }} 端口</span></div>
+            <div class="sect acc" data-sec="bs-excit" :class="{ open: isSecOpen('bs-excit') }" @click="toggleSec('bs-excit')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-excit') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-excit')" @keydown.space.self.prevent="toggleSec('bs-excit')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-excit') }" :size="12" /><span>星上激励指令</span><span class="bs-cnt">{{ bsPamExcitShown.rows.length }} 端口</span></div>
             <template v-if="isSecOpen('bs-excit')">
               <div class="bs-read2">
                 <span>峰值 <b>{{ bsFmt(bsPamExcitShown.peakDbi, 2) }}</b> dBi</span>
@@ -13677,8 +14459,8 @@ onBeforeUnmount(() => {
               </div>
               <div class="bs-read"><span>边缘 <b>{{ bsFmt(bsPamExcitShown.value, 1) }}</b> dBi</span><span v-if="bsPamExcitShown.hotReport && bsPamExcitShown.hotReport.length" title="各峰值点实测抬升 / 请求增量（相控阵宽波束有物理上限，欠额见状态栏告警）">峰值点实现 <b>{{ bsPamExcitShown.hotReport.map(x => '+' + x.got + '/' + x.req).join(' · ') }}</b> dB</span></div>
               <div class="bs-excbar">
-                <span class="bs-fpcp" :class="{ ok: bsPamExcitCopied }" title="复制激励指令表（Tab 分隔，粘贴至 Excel 自动分列）" @click="bsPamExcitCopy"><Icon :name="bsPamExcitCopied ? 'check' : 'copy'" :size="12" /> {{ bsPamExcitCopied ? '已复制 ✓' : '复制表格' }}</span>
-                <span class="opb sm" title="导出 CSV（UTF-8 BOM，Excel 直接打开）供测控上注星上 BFN" @click="bsExportPamExcit"><Icon name="download" :size="12" /> 导出 CSV</span>
+                <button type="button" class="bs-fpcp btn sm" :class="{ ok: bsPamExcitCopied }" title="复制激励指令表（Tab 分隔，粘贴至 Excel 自动分列）" @click="bsPamExcitCopy"><Icon :name="bsPamExcitCopied ? 'check' : 'copy'" :size="12" /> <Icon v-if="bsPamExcitCopied" name="check" :size="12" />{{ bsPamExcitCopied ? '已复制' : '复制表格' }}</button>
+                <button type="button" class="sm btn" title="导出 CSV（UTF-8 BOM，Excel 直接打开）供测控上注星上 BFN" @click="bsExportPamExcit"><Icon name="file-export" :size="12" /> 导出 CSV</button>
               </div>
               <!-- 真 <table>：可直接鼠标框选任意行列 → Ctrl+C，浏览器按 TSV 复制，粘进 Excel 自动分列 -->
               <div class="bs-exctbl">
@@ -13705,13 +14487,13 @@ onBeforeUnmount(() => {
         <!-- —— Polygon 赋形：反射面模型（对齐 SATSOFT Shaped Reflector Model 对话框）→ 覆盖区域 → 波束中心 —— -->
         <template v-if="bs.mode.value === 'shaped'">
           <div class="sec">
-            <div class="sect acc" data-sec="bs-refl" :class="{ open: isSecOpen('bs-refl') }" @click="toggleSec('bs-refl')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-refl') }" :size="12" /><span>反射面模型</span><span class="bs-cnt">单偏置反射面</span></div>
+            <div class="sect acc" data-sec="bs-refl" :class="{ open: isSecOpen('bs-refl') }" @click="toggleSec('bs-refl')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-refl') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-refl')" @keydown.space.self.prevent="toggleSec('bs-refl')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-refl') }" :size="12" /><span>反射面模型</span><span class="bs-cnt">单偏置反射面</span></div>
             <template v-if="isSecOpen('bs-refl')">
             <div class="srow"><label>口径直径</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.antD" /><span class="u">m</span></div>
             <div class="srow"><label>焦距</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.foc" /><span class="u">m</span></div>
             <!-- SATSOFT 三行制读数：Aperture circular · F/D ｜ 3 dB Beamwidth ｜ Feed Mode -->
             <div class="bs-read"><span>圆口径 F/D <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.fd, 2) }}</b></span></div>
-            <div class="bs-read"><span>均匀口径 3dB <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.thetaUniDeg, 2) }}</b>°</span></div>
+            <div class="bs-read"><span>均匀口径 3 dB <b>{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.thetaUniDeg, 2) }}</b>°</span></div>
             <div class="srow"><label>馈电方式</label><span class="bs-ro">高斯波束馈源</span></div>
             <div class="srow"><label>馈源锥度</label><input class="ci" type="number" step="1" max="-1" v-model.number="bs.p.taper" title="馈源朝反射面边缘的照射锥度（dB，负值）：决定成分波束宽与馈源直径读数" /><span class="u">dB</span></div>
             <div class="srow"><label>设计频率</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.fGHz" /><span class="u">GHz</span><span class="bs-wl">{{ bsFmt(bs.shapedRefl.value && bs.shapedRefl.value.lamDesignCm, 2) }} cm</span></div>
@@ -13731,16 +14513,16 @@ onBeforeUnmount(() => {
             <div class="bs-read"><span title="口径效率＝照射锥度效率×溢出效率，由馈源锥度决定（不可手动输入）；欧姆/表面残差按理想计≈1">口径效率 <b>{{ bsFmt(bs.shapedEff.value, 1) }}</b>%</span><span>成分波束 3dB 宽 <b>{{ bsFmt(bs.shapedTheta3.value, 3) }}</b>°</span></div>
             <div class="bs-refl" v-html="bsReflSvg"></div>
             <div class="bs-reflbar">
-              <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">◀</span>
+              <button type="button" class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1" aria-label="上一页"><Icon name="chevron-left" :size="12" /></button>
               <span class="bs-reflpg">{{ bsReflView }}/2</span>
-              <span class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1">▶</span>
+              <button type="button" class="pgb" @click="bsReflView = bsReflView === 1 ? 2 : 1" aria-label="下一页"><Icon name="chevron-right" :size="12" /></button>
               <span class="bs-reflcap">{{ bsReflView === 1 ? '从反射面背后朝地球方向看' : '反射面侧视图' }}</span>
             </div>
             </template>
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="bs-cov" :class="{ open: isSecOpen('bs-cov') }" @click="toggleSec('bs-cov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-cov') }" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
+            <div class="sect acc" data-sec="bs-cov" :class="{ open: isSecOpen('bs-cov') }" @click="toggleSec('bs-cov')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-cov') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-cov')" @keydown.space.self.prevent="toggleSec('bs-cov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-cov') }" :size="12" /><span>覆盖区域</span><span v-if="bs.p.polyIds.length" class="bs-cnt">{{ bs.p.polyIds.length }} 个</span></div>
             <template v-if="isSecOpen('bs-cov')">
             <div v-if="polys.length" class="bs-plist">
               <div v-for="pg in polys" :key="pg.id" class="bs-prow">
@@ -13758,41 +14540,43 @@ onBeforeUnmount(() => {
           <!-- 站点栅（SATSOFT Station Grid §9.1 / Edit Stations §9.12）：黄方块=优化目标站（靶子），中心=精确控制点；
                与生成共用同一 buildStations（栅参数/外扩一致，所见即所用）。框选仅平面图（Ctrl=累加）；界外抑制带（开了也）不画。 -->
           <div class="sec">
-            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-st') }" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
+            <div class="sect acc" data-sec="bs-st" :class="{ open: isSecOpen('bs-st') }" @click="toggleSec('bs-st')" role="button" tabindex="0" :aria-expanded="isSecOpen('bs-st') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('bs-st')" @keydown.space.self.prevent="toggleSec('bs-st')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('bs-st') }" :size="12" /><span>站点栅</span><span v-if="bs.stInfo.value" class="bs-cnt">{{ bs.stInfo.value.over ? '约 ' + bs.stInfo.value.over + ' 站 · 超上限' : (bs.stInfo.value.counts.c0 + bs.stInfo.value.counts.c1) + ' 站' }}</span></div>
             <template v-if="isSecOpen('bs-st')">
             <div class="srow"><label>显示</label>
               <label class="chk-in" title="在地图上显示站点栅（优化目标点阵）"><input type="checkbox" :checked="bs.p.stShow !== false" @change="bs.p.stShow = $event.target.checked" /><span>站点</span></label>
               <label class="chk-in" title="在站点上标注序号（SATSOFT Plot Station Number）"><input type="checkbox" :checked="bs.p.stNum === true" @change="bs.p.stNum = $event.target.checked" /><span>编号</span></label>
-              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站只靠颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
+              <label class="chk-in" title="在偏置站上标注 ±dB 数值（默认关：偏置站仅以颜色区分，绿=抬高、紫=压低）"><input type="checkbox" :checked="bs.p.stGNum === true" @change="bs.p.stGNum = $event.target.checked" /><span>数值</span></label>
             </div>
             <div class="srow"><label>数字大小</label><input class="ci" type="number" step="1" min="5" max="24" v-model.number="bs.p.stNumSize" title="站点数字字号（px）：编号与偏置数值共用" /><span class="u">px</span></div>
             <label class="chk2"><input type="checkbox" v-model="bs.p.stNumBold" /><span>粗体</span></label>
-            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/成分波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），只有 50 万站的兜底会拦下并报出数目" /><span class="u">/θ3</span></div>
+            <div class="srow"><label>栅密度</label><input class="ci" type="number" step="0.5" min="0" v-model.number="bs.p.stDens" title="站点密度（站/成分波束宽，SATSOFT Grid Density）：区内步距=θ3/密度，密度翻倍站点数变四倍；0＝每个 Polygon 在质心生成单站。手册 §9.1：1.7~2 足够，教程用 3~4；不设上限（§1.1.2 站点数 unlimited），仅在超过 50 万站时拦截并报出数目" /><span class="u">/θ3</span></div>
             <div class="srow"><label>栅类型</label><select v-model="bs.p.stType" title="站点栅晶格类型（SATSOFT Type）"><option value="tri">三角栅</option><option value="rect">矩形栅</option></select></div>
             <div class="srow"><label>旋转</label><input class="ci" type="number" step="5" v-model.number="bs.p.stRot" title="站点栅朝向（SATSOFT Rotation）" /><span class="u">°</span></div>
             <div class="srow"><label>中心偏移</label><input class="ci" type="number" step="0.1" v-model.number="bs.p.stXOff" title="中心站相对 boresight（＝覆盖区质心，SATSOFT Auto Position Boresight）的 X 位移" /><span class="u">,</span><input class="ci" type="number" step="0.1" v-model.number="bs.p.stYOff" title="中心站相对 boresight 的 Y 位移（SATSOFT Y Offset）" /><span class="u">°</span></div>
             <div class="srow"><label>生成</label>
-              <label class="chk-in" title="在覆盖区多边形的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由多边形顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
+              <label class="chk-in" title="在 Polygon 的顶点上生成边界站点（SATSOFT Add Border Points）：与栅密度无关——边界形状分辨率由 Polygon 顶点密度决定"><input type="checkbox" :checked="bs.p.stBorder !== false" @change="bs.p.stBorder = $event.target.checked" /><span>边界点</span></label>
               <label class="chk-in" title="覆盖区外自动铺一圈抑制站（本引擎附加档）：SATSOFT 生成站点栅时站点全为 Contour，Sidelobe 站须手工指定"><input type="checkbox" :checked="bs.p.stSup === true" @change="bs.p.stSup = $event.target.checked" /><span>界外抑制</span></label>
             </div>
             <div class="srow"><label>站点大小</label><input class="ci" type="number" step="1" min="2" max="30" v-model.number="bs.p.stSizePct" title="站点符号大小（%成分波束宽，SATSOFT Station Size）：仅显示符号，非物理量" /><span class="u">%</span></div>
             <div class="bs-strow">
-              <span class="opb sm" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选里减掉；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="crosshair" :size="12" /> 框选</span>
-              <span class="opb sm" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 加站</span>
-              <span class="opb sm" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</span>
+              <button type="button" :aria-pressed="(bs.stEditOn.value) ? 'true' : 'false'" class="sm btn" :class="{ on: bs.stEditOn.value }" title="平面图上拖矩形框选站点（Ctrl+拖=并入已选；Alt+拖=从已选中减去；点站点=选中该站、Ctrl+点=增减选、Alt+点=取消该站；点空处=清选）。Esc 或再点本钮退出框选，选中的站保留" @click="bsStEditToggle"><Icon name="square-dashed-mouse-pointer" :size="12" /> 框选</button>
+              <button type="button" :aria-pressed="(bs.stPick.value) ? 'true' : 'false'" class="sm btn" :class="{ on: bs.stPick.value }" title="地图点击添加 Contour 站点（可连续添加；Esc 或再点本钮退出）" @click="bs.toggleStPick()"><Icon name="plus" :size="12" /> 添加站点</button>
+              <button type="button" class="sm btn" title="清除全部站点修正与手工站，回到自动站点栅（可撤销）" @click="bs.resetStations()">重置</button>
             </div>
             <div v-if="bs.stEditOn.value || bs.stSel.value.size" class="bs-strow">
-              <span class="opb sm" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</span>
-              <span class="opb sm" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</span>
-              <span class="opb sm" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</span>
+              <button type="button" class="sm btn" title="选中全部站点（SATSOFT Select All Stations）" @click="bs.selectAllSt()">全选</button>
+              <button type="button" class="sm btn" title="反转选中状态（SATSOFT Invert Selected State）" @click="bs.invertStSel()">反选</button>
+              <button type="button" :disabled="!bs.stSel.value.size" class="sm btn" :class="{ dis: !bs.stSel.value.size }" title="清空选中（Esc）" @click="bs.clearStSel()">清选</button>
             </div>
             <template v-if="bs.stSel.value.size">
             <div class="srow"><label>类型</label>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点都是这一类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</span>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</span>
-              <span class="opb sm" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</span>
+              <span class="seg nseg" role="radiogroup" aria-label="站点类型">
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'cov')" class="sg" :class="{ on: bs.stSelType.value === 'cov' }" title="Contour：把该处增益抬到目标以上（生成站点栅时全部站点均为该类；保留目标偏置）" @click="bs.applyStType('cov')">Contour</button>
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'sup')" class="sg" :class="{ on: bs.stSelType.value === 'sup' }" title="抑制（SATSOFT Sidelobe）：把该处增益压到目标以下，用来在覆盖区外或邻区挖低旁瓣" @click="bs.applyStType('sup')">抑制</button>
+                <button type="button" role="radio" :aria-checked="!!(bs.stSelType.value === 'ex')" class="sg" :class="{ on: bs.stSelType.value === 'ex' }" title="排除（SATSOFT Excluded）：该站不进优化，画为灰空心；手工站=直接删除" @click="bs.applyStType('ex')">排除</button>
+              </span>
             </div>
-            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标只看相对权重（SATSOFT §10.2）" /><span class="u">dB</span><span class="opb sm" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</span></div>
+            <div class="srow"><label>目标偏置</label><input class="ci" type="number" step="0.5" v-model.number="bsStGoal" title="对选中站点的目标偏置（dB，叠加在该处区域目标上）：正=局部抬高、负=压低、0=清除偏置。目标仅考虑相对权重（SATSOFT §10.2）" /><span class="u">dB</span><button type="button" class="sm btn" @click="bs.applyStGoal(Number(bsStGoal) || 0)">应用</button></div>
             </template>
             <div v-if="bs.stSel.value.size || (bs.p.stOv || []).length || (bs.p.stAdd || []).length" class="bs-read"><span>选中 <b>{{ bs.stSel.value.size }}</b></span><span>修正 <b>{{ (bs.p.stOv || []).length }}</b></span><span>手工 <b>{{ (bs.p.stAdd || []).length }}</b></span><span v-if="bs.stSelOne.value"><template v-if="bs.stSelOne.value.add">手工 </template>{{ bs.stSelOne.value.type === 'sup' ? '抑制' : bs.stSelOne.value.type === 'ex' ? '排除' : 'Contour' }}<b v-if="bs.stSelOne.value.g"> {{ (bs.stSelOne.value.g > 0 ? '+' : '') + bs.stSelOne.value.g }} dB</b></span></div>
             </template>
@@ -13800,15 +14584,16 @@ onBeforeUnmount(() => {
 
         </template>
 
-        <div class="sec">
-          <div class="sect" data-sec="bs-gen"><span>生成天线</span></div>
-          <span v-if="bs.mode.value === 'stk'" class="bs-gen" title="按本组波束与方向图参数在所选卫星下生成解析天线；生成后本组改动自动同步到该天线" @click="bsGenerate"><Icon name="check" :size="12" /> {{ bs.genAntExists.value ? '生成 / 更新此组' : '生成天线' }}</span>
-          <span v-else class="bs-gen" title="按本组草图计算方向图（GRD），在所选卫星下生成/更新此组天线" @click="bsGenerate"><Icon name="check" :size="12" /> 生成 / 更新此组</span>
+        <!-- 生成 / 更新此组 +「输入已变」吸底（照星座向导的 sticky 头尾）：改完参数不必滚到长视图底部 -->
+        <div class="sec bs-genfoot" data-sec="bs-gen">
+          <button type="button" v-if="bs.mode.value === 'stk'" class="bs-gen btn primary" title="按本组波束与方向图参数在所选卫星下生成解析天线；生成后本组改动自动同步到该天线" @click="bsGenerate"><Icon name="check" :size="12" /> {{ bs.genAntExists.value ? '生成 / 更新此组' : '生成天线' }}</button>
+          <button type="button" v-else class="bs-gen btn primary" title="按本组草图计算方向图（GRD），在所选卫星下生成/更新此组天线" @click="bsGenerate"><Icon name="check" :size="12" /> 生成 / 更新此组</button>
+          <div v-if="bs.genStale.value" class="vis-stale bs-stale" title="组参数、波束或覆盖 Polygon 已改，地图上的天线仍是上次生成的">输入已变</div>
           <div v-if="bs.status.value" class="bs-status">{{ bs.status.value }}</div>
         </div>
         </template>
 
-        <div v-else class="sec">
+        <div v-else-if="bsSats.length && bs.satFolder.value" class="sec">
           <div class="bs-empty2">未选择波束组。</div>
         </div>
 
@@ -13822,7 +14607,8 @@ onBeforeUnmount(() => {
 
           <!-- 分析目标 + 参数 -->
           <div class="sec">
-            <div class="sect" data-sec="vis-target"><span>分析目标</span></div>
+            <div class="sect acc" data-sec="vis-target" :class="{ open: isSecOpen('vis-target') }" @click="toggleSec('vis-target')" role="button" tabindex="0" :aria-expanded="isSecOpen('vis-target') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('vis-target')" @keydown.space.self.prevent="toggleSec('vis-target')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('vis-target') }" :size="12" /><span>分析目标</span></div>
+            <template v-if="isSecOpen('vis-target')">
             <!-- 卫星集来源可选：当前显示（跟随星座视图，悬停可见具体是谁）/ 默认卫星组（内置分组）/ 卫星组 / 自定义卫星。
                  三模式（瞬时/过境/覆盖）共用本集；非「当前显示」的来源异步解析成缓存（visSatResolve）。 -->
             <div class="srow vis-satset"><label>卫星集</label>
@@ -13837,7 +14623,7 @@ onBeforeUnmount(() => {
                 </optgroup>
                 <option value="g:custom">自定义卫星</option>
               </select>
-              <s class="vis-satn">{{ visSatBusy ? '解析中' : ((vis.satCount.value || 0).toLocaleString() + ' 颗') }}</s>
+              <s class="vis-satn">{{ visSatBusy ? '解析中' : ((vis.satCount.value || 0).toLocaleString('en-US') + ' 颗') }}</s>
             </div>
             <div v-if="visSatErr" class="tip">{{ visSatErr }}</div>
             <!-- 目标下拉恒占整行：选项是「地球站 / 点 / 航迹 / Polygon」的名字（用户自命名，长度不设限），
@@ -13857,31 +14643,33 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div v-if="vis.mode.value !== 'coverage' && !stations.length && !points.length && !polys.length" class="tip">暂无可选目标。</div>
-            <div class="srow" title="仰角 ≥ 该值判为可见 / 被覆盖"><label>仰角门限</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span></div>
+            <div class="srow" title="仰角 ≥ 该值判为可见 / 被覆盖"><label>最低仰角</label><input class="ci vis-elev" type="number" step="1" min="0" max="89" :value="vis.minElev.value" @input="e => visSetElev(e.target.value)" /><span class="u">°</span></div>
+            </template>
           </div>
 
           <!-- 可见卫星 / 覆盖：瞬时可见（now）/ 时段过境（access）/ 覆盖（coverage）三模式（复刻 STK Access / Coverage）-->
           <div class="sec">
-            <div class="sect" data-sec="vis-list"><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt" :class="{ on: visCnt.on }" :title="visCnt.title">{{ visCnt.text }}</span></div>
-            <div class="seg sm vis-mode">
-              <span class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</span>
-              <span class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</span>
-              <span class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="区域布设网格 → 逐胞元计算覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</span>
+            <div class="sect acc" data-sec="vis-list" :class="{ open: isSecOpen('vis-list') }" @click="toggleSec('vis-list')" role="button" tabindex="0" :aria-expanded="isSecOpen('vis-list') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('vis-list')" @keydown.space.self.prevent="toggleSec('vis-list')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('vis-list') }" :size="12" /><span>{{ vis.mode.value === 'coverage' ? '覆盖网格' : '可见卫星' }}</span><span class="vis-cnt" :class="{ on: visCnt.on }" :title="visCnt.title">{{ visCnt.text }}</span></div>
+            <template v-if="isSecOpen('vis-list')">
+            <div role="radiogroup" class="seg sm vis-mode">
+              <button type="button" role="radio" :aria-checked="!!(vis.mode.value === 'now')" class="sg" :class="{ on: vis.mode.value === 'now' }" @click="vis.setMode('now')">瞬时可见</button>
+              <button type="button" role="radio" :aria-checked="!!(vis.mode.value === 'access')" class="sg" :class="{ on: vis.mode.value === 'access' }" title="未来一段时间内每颗星对目标的过境窗口（Access）" @click="vis.setMode('access')">时段过境</button>
+              <button type="button" role="radio" :aria-checked="!!(vis.mode.value === 'coverage')" class="sg" :class="{ on: vis.mode.value === 'coverage' }" title="区域布设网格 → 逐胞元计算覆盖性能指标(FOM) → 热力图" @click="vis.setMode('coverage')">覆盖</button>
             </div>
 
             <!-- 瞬时可见（now）：KPI + 极坐标 sky 图 + 结果表 -->
             <template v-if="vis.mode.value === 'now'">
-              <div v-if="!vis.hasTarget.value" class="tip">尚未选择分析目标。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">未选择分析目标。</div>
               <template v-else>
                 <div class="vis-sum">
-                  <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString() }}</s></span>
+                  <span>可见 <b>{{ vis.kpi.value.count }}</b> <s>/ {{ vis.satCount.value.toLocaleString('en-US') }}</s></span>
                   <span v-if="vis.kpi.value.top">最高 <b>{{ vis.kpi.value.top.elevDeg.toFixed(1) }}°</b> <em :title="vis.kpi.value.top.name" data-i18n-skip>{{ vis.kpi.value.top.name }}</em></span>
                   <span v-if="vis.kpi.value.classes.length" class="vis-sumcls"><i v-for="c in vis.kpi.value.classes" :key="c.c">{{ c.c }} {{ c.n }}</i></span>
                 </div>
                 <div v-if="!vis.results.value.length" class="tip">当前时刻门限 {{ vis.minElev.value || 0 }}° 以上没有可见卫星。</div>
                 <template v-else>
                   <div class="srow vis-icrow"><label>图标</label><input class="ci vis-elev" type="number" step="1" min="1" max="64" :value="vis.iconSize.value" @input="e => visSetIcon(e.target.value)" title="星下点图标大小（1–64）" /><input class="vis-clr" type="color" :value="vis.iconColor.value" @input="e => vis.iconColor.value = e.target.value" title="星下点图标 / 名字颜色（3D 与 2D 一致）" /><label class="chk-in" title="目标与各可见卫星之间的视线连线（卫星较多时建议关闭）"><input type="checkbox" :checked="vis.showLines.value" @change="vis.showLines.value = $event.target.checked" /><span>连线</span></label><label class="chk-in" title="卫星较多时建议关闭，避免名称相互重叠"><input type="checkbox" :checked="vis.showName.value" @change="vis.showName.value = $event.target.checked" /><span>名字</span></label></div>
-                  <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ vis.nameSize.value }}</span></div>
+                  <div v-if="vis.showName.value" class="srow vis-icrow"><label>名字大小</label><input class="vis-slider" type="range" min="1" max="12" step="0.1" :value="vis.nameSize.value" @input="e => vis.nameSize.value = Number(e.target.value)" /><span class="u">{{ Number(vis.nameSize.value).toFixed(1) }}</span></div>
                   <label v-if="vis.showName.value" class="chk2"><input type="checkbox" :checked="vis.nameBold.value" @change="vis.nameBold.value = $event.target.checked" /><span>粗体</span></label>
                   <!-- 极坐标 sky 图：一点＝一颗可见星，角向＝方位（正北在上、顺时针），离心＝仰角（天顶在圆心、地平在外圈）；青虚线＝仰角门限 -->
                   <svg class="vis-sky" viewBox="0 0 100 100" aria-label="天空极坐标图">
@@ -13906,11 +14694,11 @@ onBeforeUnmount(() => {
                     <span class="sortable" :class="{ on: vis.sortKey.value === 'range' }" @click="vis.setSort('range')">斜距km</span>
                   </div>
                   <div class="vis-list">
-                    <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + (r.slot ? ' · ' + r.slot : '') + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString() + ' km'">
+                    <div v-for="r in vis.sortedResults.value" :key="r.noradId" class="vis-lrow" :class="{ hi: r.elevDeg >= 45, hov: String(vis.hoveredId.value) === String(r.noradId) }" @mouseenter="vis.setHover(r.noradId)" @mouseleave="vis.setHover('')" :title="r.name + (r.slot ? ' · ' + r.slot : '') + ' · #' + r.noradId + ' · 方位 ' + r.azDeg.toFixed(0) + '° ' + visCompass(r.azDeg) + ' · 高度 ' + Math.round(r.altKm).toLocaleString('en-US') + ' km'">
                       <span class="vis-lname" data-i18n-skip>{{ r.name }}</span>
                       <span class="vis-lc" :class="'oc-' + orbitClass(r.altKm)" data-i18n-skip>{{ r.slot || orbitClass(r.altKm) }}</span>
                       <span class="vis-lel">{{ r.elevDeg.toFixed(1) }}<i v-if="r.rising === true" class="vis-ud up" title="上升中">↑</i><i v-else-if="r.rising === false" class="vis-ud dn" title="下降中">↓</i></span>
-                      <span>{{ Math.round(r.rangeKm).toLocaleString() }}</span>
+                      <span>{{ Math.round(r.rangeKm).toLocaleString('en-US') }}</span>
                     </div>
                   </div>
                 </template>
@@ -13919,23 +14707,23 @@ onBeforeUnmount(() => {
 
             <!-- 时段过境（access）：时窗 + 计算 + 甘特 + 过境列表 -->
             <template v-else-if="vis.mode.value === 'access'">
-              <div v-if="!vis.hasTarget.value" class="tip">尚未选择分析目标。</div>
+              <div v-if="!vis.hasTarget.value" class="tip">未选择分析目标。</div>
               <template v-else>
-                <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><span class="opb sm" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 400 颗）" @click="vis.computeAccess()">计算过境</span></div>
-                <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><span class="opb sm" title="按《三线表模板》导出 .xlsx：摘要 / 过境明细 / 逐星汇总，AOS·LOS·峰值均含 UTC 与本地两套时刻" @click="exportAccessExcel()">导出 Excel</span><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境</span></div>
-                <div v-if="vis.accessBusy.value" class="tip">扫描过境窗口…</div>
+                <div class="srow"><label>时窗</label><input class="ci vis-elev" type="number" step="1" min="0.5" max="168" :value="vis.horizonH.value" @input="e => vis.horizonH.value = e.target.value" /><span class="u nw">小时</span><button type="button" :disabled="vis.accessBusy.value" class="sm btn" :class="{ dis: vis.accessBusy.value }" title="扫描卫星集在此时窗内对目标的全部过境（卫星越多越慢；上限 20000 颗）" @click="runAccess()">计算过境</button><span v-if="vis.accessStale.value" class="vis-stale" title="目标、门限、时窗或卫星集已改，过境结果仍是上次计算的">输入已变</span></div>
+                <div v-if="vis.accessResults.value.length && !vis.accessBusy.value" class="srow acc-exp"><button type="button" class="sm btn" title="按《三线表模板》导出 .xlsx：摘要 / 过境明细 / 逐星汇总，AOS·LOS·峰值均含 UTC 与本地两套时刻" @click="exportAccessExcel()">导出 Excel</button><span class="tip inl">{{ vis.accessResults.value.reduce((n, s) => n + s.windows.length, 0) }} 次过境</span></div>
+                <div v-if="vis.accessBusy.value" class="tip">{{ vis.accessMsg.value || '扫描过境窗口…' }}</div>
                 <div v-else-if="vis.accessMsg.value" class="tip">{{ vis.accessMsg.value }}</div>
                 <template v-else-if="vis.accessResults.value.length">
                   <!-- 时间覆盖（严口径）：全部窗口合并去重后的可见时长 ÷ 实际时窗；最长中断含时窗首尾 -->
                   <div class="vis-sum">
                     <span :title="visCnt.title">时间覆盖 <b>{{ vis.accessKpi.value.pct.toFixed(1) }}%</b> <s>/ {{ visDur(vis.accessKpi.value.horizonMin) }}</s></span>
-                    <span title="合并重叠后的可见总时长（多星同时可见只计一次，非各次时长求和）">合计可视 <b>{{ visDur(vis.accessKpi.value.coveredMin) }}</b></span>
+                    <span title="合并重叠后的可见总时长（多星同时可见仅计一次，非各次时长求和）">合计可视 <b>{{ visDur(vis.accessKpi.value.coveredMin) }}</b></span>
                     <span :title="'时窗内共 ' + vis.accessKpi.value.gapCount + ' 段无星可见（含时窗首尾）'">最长中断 <b>{{ visDur(vis.accessKpi.value.maxGapMin) }}</b></span>
                   </div>
                   <!-- 时基行：UTC/本地显示切换（导出恒双时区，此开关只管屏上）+ 本次时窗的绝对起止 -->
                   <div class="vis-tbase">
                     <TzPicker class="vis-tzp" :model-value="vis.accessTz.value" :ms="vis.accessBaseMs.value"
-                              title="过境时刻的显示时区：本机 / UTC / UTC±N（导出 Excel 恒双时区，此档位只管屏上）"
+                              title="过境时刻的显示时区：本机 / UTC / UTC±N（导出 Excel 恒双时区，此档位仅作用于屏幕显示）"
                               @update:model-value="v => vis.accessTz.value = v">{{ visTzNow }}</TzPicker>
                     <span class="vis-tspan" data-i18n-skip :title="'时窗起点 ' + visBoth(vis.accessBaseMs.value) + '\n时窗终点 ' + visBoth(accEndMs)">{{ visYmdHm(vis.accessBaseMs.value) }} → {{ visYmdHm(accEndMs) }}</span>
                   </div>
@@ -13963,7 +14751,7 @@ onBeforeUnmount(() => {
                       <div v-if="row.type === 'day'" class="vis-acc-day" data-i18n-skip>{{ visYmd(row.ms) }}<s v-if="row.d > 0">D+{{ row.d }}</s></div>
                       <template v-else>
                         <div class="vis-acc-row" :class="{ hov: String(vis.hoveredId.value) === String(row.s.noradId), exp: accExpKey === row.key }" @mouseenter="vis.setHover(row.s.noradId); accHovKey = row.key" @mouseleave="vis.setHover(''); accHovKey = ''" @click="accToggle(row.key); accScrollTo(row.s.noradId)" :title="row.title">
-                          <span class="vis-lname" data-i18n-skip><i class="vis-cw">▸</i>{{ row.s.name }}<s v-if="row.s.slot" class="vis-slot">{{ row.s.slot }}</s></span>
+                          <span class="vis-lname" data-i18n-skip><Icon class="vis-cw" name="chevron-right" :size="12" />{{ row.s.name }}<s v-if="row.s.slot" class="vis-slot">{{ row.s.slot }}</s></span>
                           <span>{{ row.t1 }}<s v-if="row.sup1" class="vis-dsup">+{{ row.sup1 }}</s></span>
                           <span>{{ row.t2 }}<s v-if="row.sup2" class="vis-dsup">+{{ row.sup2 }}</s></span>
                           <span :class="{ 'oc-hi': row.w.peakEl >= 45 }">{{ row.w.peakEl.toFixed(0) }}</span>
@@ -14007,7 +14795,7 @@ onBeforeUnmount(() => {
               <div class="srow"><label>网格步长</label><input class="ci cov-num" type="number" step="0.5" min="0.5" max="30" title="网格胞元间隔（度）：越小越细，耗时越长" :value="vis.covStep.value" @input="e => vis.covStep.value = e.target.value" /><span class="u">°</span></div>
               <div class="srow"><label>时窗</label><input class="ci cov-num" type="number" step="1" min="0.5" max="168" :value="vis.covHorizonH.value" @input="e => vis.covHorizonH.value = e.target.value" /><span class="u">小时</span></div>
               <div class="srow"><label>采样</label><input class="ci cov-num" type="number" step="10" min="10" max="600" title="时间步长（秒）：采样数=时窗÷步长，越大越快；覆盖统计 30–120s 足够" :value="vis.covSample.value" @input="e => vis.covSample.value = e.target.value" /><span class="u">秒</span></div>
-              <div class="srow"><span class="opb sm" :title="vis.covBusy.value ? '点击取消当前计算' : '布设网格 → 逐胞元计算资产集（当前显示的卫星）覆盖 → FOM 热力图（网格越细、卫星越多耗时越长）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</span><span v-if="vis.covData.value && !vis.covBusy.value" class="opb sm" title="清除覆盖热力图（保留区域/网格/时窗等参数，可重新计算）" @click="vis.clearCoverage()">清除覆盖</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
+              <div class="srow"><button type="button" class="sm btn" :title="vis.covBusy.value ? '点击取消当前计算' : '布设网格 → 逐胞元计算资产集（当前显示的卫星）覆盖 → FOM 热力图（网格越细、卫星越多耗时越长）'" @click="vis.covBusy.value ? vis.cancelCoverage() : vis.computeCoverage()">{{ vis.covBusy.value ? '取消' : '计算覆盖' }}</button><button type="button" v-if="vis.covData.value && !vis.covBusy.value" class="sm btn" title="清除覆盖热力图（保留区域/网格/时窗等参数，可重新计算）" @click="vis.clearCoverage()">清除覆盖</button><span v-if="vis.covStale.value" class="vis-stale" title="区域、网格、时窗、采样、门限或卫星集已改，热力图仍是上次计算的">输入已变</span><span v-if="vis.covMsg.value" class="tip inl cov-msg">{{ vis.covMsg.value }}</span></div>
               <template v-if="vis.covData.value">
                 <div class="srow"><label>指标</label>
                   <select :value="vis.covFom.value" @change="e => vis.covFom.value = e.target.value">
@@ -14023,18 +14811,19 @@ onBeforeUnmount(() => {
                     <option value="gray">Gray</option>
                   </select>
                 </div>
-                <div class="srow"><label>透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.02" :value="vis.covAlpha.value" @input="e => vis.covAlpha.value = Number(e.target.value)" title="覆盖网格透明度（拖动即时生效）" /><span class="u">{{ Math.round(vis.covAlpha.value * 100) }}%</span></div>
+                <div class="srow"><label>不透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.01" :value="vis.covAlpha.value" @input="e => vis.covAlpha.value = Number(e.target.value)" title="覆盖网格不透明度（拖动即时生效）" /><span class="u">{{ vis.covAlpha.value.toFixed(2) }}</span></div>
                 <div v-if="vis.covLegend.value" class="cov-legend">
                   <div class="cov-legbar"><i v-for="(c, ci) in vis.covLegend.value.colors" :key="ci" :style="{ background: 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')' }" :title="covBandLabel(ci, vis.covLegend.value)"></i></div>
                   <div class="cov-legsc"><span>{{ covFmt(vis.covLegend.value.lo, vis.covLegend.value) }}</span><b :title="vis.covLegend.value.label">{{ vis.covLegend.value.label }}{{ vis.covLegend.value.unit ? ' · ' + vis.covLegend.value.unit : '' }}</b><span>{{ covFmt(vis.covLegend.value.hi, vis.covLegend.value) }}</span></div>
                 </div>
                 <div v-if="vis.covKpi.value" class="vis-sum cov-kpi">
                   <span :title="visCnt.title">时间覆盖 <b>{{ vis.covKpi.value.timePct.toFixed(1) }}%</b> <s>（面积加权 · 最差格 {{ vis.covKpi.value.worstPct.toFixed(1) }}%）</s></span>
-                  <span title="时窗内曾被覆盖过的面积占比（松口径：一格只覆盖 1 个采样也算满，恒 ≥ 时间覆盖）">覆盖面积 <b>{{ vis.covKpi.value.coverPct.toFixed(1) }}%</b></span>
+                  <span title="时窗内曾被覆盖过的面积占比（松口径：一格仅覆盖 1 个采样也计为满，恒 ≥ 时间覆盖）">覆盖面积 <b>{{ vis.covKpi.value.coverPct.toFixed(1) }}%</b></span>
                   <span>{{ vis.covKpi.value.label }} 极值 <b>{{ covFmt(vis.covKpi.value.min, vis.covLegend.value) }}</b> ~ <b>{{ covFmt(vis.covKpi.value.max, vis.covLegend.value) }}</b> {{ vis.covLegend.value ? vis.covLegend.value.unit : '' }}</span>
-                  <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString() }} 点</s></span>
+                  <span class="vis-sumcls"><s>网格 {{ vis.covKpi.value.cells.toLocaleString('en-US') }} 点</s></span>
                 </div>
               </template>
+            </template>
             </template>
           </div>
 
@@ -14044,10 +14833,10 @@ onBeforeUnmount(() => {
         <!-- 链路（STK Chain 范式）：图上依次点选地球站 / 卫星建立单向链路 → 导入链路预算 -->
         <div v-show="shellUi.side === 'links'" class="sview lnkv">
           <div class="sec">
-            <div class="sect acc" data-sec="lk-list" :class="{ open: isSecOpen('lk-list') }" @click="toggleSec('lk-list')">
+            <div class="sect acc" data-sec="lk-list" :class="{ open: isSecOpen('lk-list') }" @click="toggleSec('lk-list')" role="button" tabindex="0" :aria-expanded="isSecOpen('lk-list') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lk-list')" @keydown.space.self.prevent="toggleSec('lk-list')">
               <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-list') }" :size="12" /><span>链路</span>
-              <span class="lnk" :class="{ on: !!lnk.draw.value }" title="新建链路：在链路详情中检索添加，或在 3D / 平面图上依次单击地球站 / 卫星（Enter 完成 · Esc 取消 · Backspace 撤销）" @click.stop="lnk.draw.value ? lnkFinish() : lnkNew(null, true)"><Icon name="plus" :size="12" />{{ lnk.draw.value ? '完成' : '新建' }}</span>
-              <span class="lnk" :class="{ dis: !lnkCheckedN }" title="把勾选的链路导入链路预算" @click.stop="openLnkImpMenu($event)">导入链路预算<Icon name="chevron-down" :size="12" /></span>
+              <button type="button" class="btn sm sect-tg" :class="{ on: !!lnk.draw.value }" :aria-pressed="lnk.draw.value ? 'true' : 'false'" title="新建链路：在链路详情中检索添加，或在 3D / 平面图上依次单击地球站 / 卫星（Enter 完成 · Esc 取消 · Backspace 撤销；再点一次结束）" @click.stop="lnk.draw.value ? lnkFinish() : lnkNew(null, true)"><Icon name="plus" :size="12" />新建</button>
+              <button type="button" :aria-disabled="(!lnkCheckedN) ? 'true' : null" class="lnk" :class="{ dis: !lnkCheckedN }" title="把勾选的链路导入链路预算" @click.stop="openLnkImpMenu($event)">导入链路预算<Icon name="chevron-down" :size="12" /></button>
             </div>
             <template v-if="isSecOpen('lk-list')">
               <div v-if="!links.length" class="lk-empty">暂无链路。</div>
@@ -14060,7 +14849,7 @@ onBeforeUnmount(() => {
                     <input class="clr mkc" type="color" :value="l.color || '#3d8bff'" title="链路颜色" @click.stop @input="e => lnk.setColor(l.id, e.target.value)" />
                     <span class="lk-nm" :title="lnkName(l)" data-i18n-skip>{{ lnkName(l) }}</span>
                     <LinkStateDot :id="l.id" />
-                    <span class="del" title="删除该链路" @click.stop="lnk.remove(l.id)"><Icon name="x" :size="12" /></span>
+                    <button type="button" class="ibtn sm danger" title="删除该链路（Ctrl+Z 撤销）" @click.stop="undoable('markers', `已删除链路「${l.name || ''}」`, () => lnk.remove(l.id))"><Icon name="x" :size="12" /></button>
                   </div>
                 </div>
               </template>
@@ -14068,9 +14857,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="lnkSel" class="sec">
-            <div class="sect acc" data-sec="lk-insp" :class="{ open: isSecOpen('lk-insp') }" @click="toggleSec('lk-insp')">
+            <div class="sect acc" data-sec="lk-insp" :class="{ open: isSecOpen('lk-insp') }" @click="toggleSec('lk-insp')" role="button" tabindex="0" :aria-expanded="isSecOpen('lk-insp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lk-insp')" @keydown.space.self.prevent="toggleSec('lk-insp')">
               <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-insp') }" :size="12" /><span>链路详情</span>
-              <span class="lnk" title="按相反信号流向复制一条独立链路" @click.stop="lnkReverse">生成反向链路</span>
+              <button type="button" class="lnk" title="按相反信号流向复制一条独立链路" @click.stop="lnkReverse">生成反向链路</button>
             </div>
             <template v-if="isSecOpen('lk-insp')">
               <div class="srow"><label>名称</label><input class="ci" :value="lnkSel.nameAuto === false ? lnkSel.name : ''" :placeholder="lnkName(lnkSel)" title="留空 = 按节点自动命名" @change="e => lnk.rename(lnkSel.id, e.target.value)" /></div>
@@ -14080,29 +14869,29 @@ onBeforeUnmount(() => {
                   <div v-if="r.t === 'node'" class="lk-node" :class="{ bad: lnkNodeBad(lnkSel.nodes[r.i]), rep: lnkRep === r.i, pko: lnkPickOpenAt(r.i) }">
                     <span class="lk-no">{{ r.i + 1 }}</span>
                     <Icon :name="lnkNodeIcon(lnkSel.nodes[r.i])" :size="12" class="lk-ty" />
-                    <span class="lk-nn pk" :title="lnkNodeName(lnkSel.nodes[r.i]) + ' · ' + byLang('更换节点…', 'Change node…')" data-i18n-skip @mousedown.prevent @click="lnkRepToggle(r.i)">{{ lnkNodeName(lnkSel.nodes[r.i]) }}</span>
-                    <span v-if="lnkSel.nodes[r.i].k === 'st'" class="lk-at pk" title="地球站属性…" @click="lnkStProps(lnkSel.nodes[r.i])">{{ lnkStAttr(lnkSel.nodes[r.i]) || '—' }}</span>
+                    <button type="button" class="lk-nn pk" :title="lnkNodeName(lnkSel.nodes[r.i]) + ' · ' + byLang('更换节点…', 'Change node…')" data-i18n-skip @mousedown.prevent @click="lnkRepToggle(r.i)">{{ lnkNodeName(lnkSel.nodes[r.i]) }}</button>
+                    <button type="button" v-if="lnkSel.nodes[r.i].k === 'st'" class="lk-at pk" title="地球站属性…" @click="lnkStProps(lnkSel.nodes[r.i])">{{ lnkStAttr(lnkSel.nodes[r.i]) || '—' }}</button>
                     <span v-else-if="lnkSel.nodes[r.i].k === 'pt'" class="lk-at"></span>
                     <!-- Polygon / 航迹：取点钮（摘要 = 取了哪些点），点开 = 节点行下展开取点编辑器 -->
                     <button
                       v-else-if="lnkSel.nodes[r.i].k === 'pg' || lnkSel.nodes[r.i].k === 'tj'" type="button" class="lk-pkb"
                       :class="{ on: lnkPickOpenAt(r.i), none: !lnkNodeBad(lnkSel.nodes[r.i]) && !lnkPickN(lnkSel.nodes[r.i]) }"
                       :aria-expanded="lnkPickOpenAt(r.i) ? 'true' : 'false'" :title="byLang('取点…', 'Points…')" data-i18n-skip @click="lnkPickToggle(r.i)"
-                    ><span class="lk-pkt">{{ lnkPickSummary(lnkSel.nodes[r.i]) }}</span><Icon name="chevron-down" :size="11" class="lk-pkc" /></button>
-                    <span v-else class="seg nseg lk-seg" role="group" aria-label="转发方式" :title="lnkEnd(lnkSel, r.i) ? '链端卫星按再生（星上发起 / 终结）' : satLaserAt(lnkSel, r.i) ? '激光星间跳两端卫星按再生' : '透明 = 弯管转发；再生 = 星上解调再调制'">
-                      <span class="sg" :class="{ on: !satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, false)">透明</span>
-                      <span class="sg" :class="{ on: satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, true)">再生</span>
+                    ><span class="lk-pkt">{{ lnkPickSummary(lnkSel.nodes[r.i]) }}</span><Icon name="chevron-down" :size="12" class="lk-pkc" /></button>
+                    <span v-else class="seg nseg lk-seg" role="radiogroup" aria-label="转发方式" :title="lnkEnd(lnkSel, r.i) ? '链端卫星按再生（星上发起 / 终结）' : satLaserAt(lnkSel, r.i) ? '激光星间跳两端卫星按再生' : '透明 = 弯管转发；再生 = 星上解调再调制'">
+                      <button type="button" role="radio" :aria-checked="!!(!satRegenAt(lnkSel, r.i))" :aria-disabled="!!(lnkRegenLock(lnkSel, r.i))" class="sg" :class="{ on: !satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, false)">透明</button>
+                      <button type="button" role="radio" :aria-checked="!!(satRegenAt(lnkSel, r.i))" :aria-disabled="!!(lnkRegenLock(lnkSel, r.i))" class="sg" :class="{ on: satRegenAt(lnkSel, r.i), dis: lnkRegenLock(lnkSel, r.i) }" @click="!lnkRegenLock(lnkSel, r.i) && lnk.setRegen(lnkSel.id, r.i, true)">再生</button>
                     </span>
-                    <span class="lk-ic" :class="{ dis: r.i === 0 }" title="上移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, -1)"><Icon name="chevron-up" :size="12" /></span>
-                    <span class="lk-ic" :class="{ dis: r.i === lnkSel.nodes.length - 1 }" title="下移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, 1)"><Icon name="chevron-down" :size="12" /></span>
-                    <span class="del" title="删除该节点" @click="lnkRep = -1; lnk.removeNode(lnkSel.id, r.i)"><Icon name="x" :size="12" /></span>
+                    <button type="button" :disabled="r.i === 0" class="ibtn sm" :class="{ dis: r.i === 0 }" title="上移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, -1)"><Icon name="chevron-up" :size="12" /></button>
+                    <button type="button" :disabled="r.i === lnkSel.nodes.length - 1" class="ibtn sm" :class="{ dis: r.i === lnkSel.nodes.length - 1 }" title="下移" @click="lnkRep = -1; lnk.moveNode(lnkSel.id, r.i, 1)"><Icon name="chevron-down" :size="12" /></button>
+                    <button type="button" class="ibtn sm danger" title="删除该节点（Ctrl+Z 撤销）" @click="lnkRep = -1; undoable('markers', '已删除链路节点', () => lnk.removeNode(lnkSel.id, r.i))"><Icon name="x" :size="12" /></button>
                   </div>
                   <div v-else-if="r.t === 'hop'" class="lk-hop">
-                    <span class="lk-ins" title="在此插入节点" @click="lnkAddAt(lnkSel.id, r.i + 1)"><Icon name="plus" :size="11" /></span>
+                    <button type="button" class="lk-ins" title="在此插入节点" @click="lnkAddAt(lnkSel.id, r.i + 1)"><Icon name="plus" :size="12" /></button>
                     <span class="lk-hk">{{ lnkHopText(lnkSel, r.i) }}</span>
-                    <span v-if="lnkIsl(lnkSel, r.i)" class="seg nseg lk-seg" role="group" aria-label="星间链路">
-                      <span class="sg" :class="{ on: !lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, false)">微波</span>
-                      <span class="sg" :class="{ on: !!lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, true)">激光</span>
+                    <span v-if="lnkIsl(lnkSel, r.i)" class="seg nseg lk-seg" role="radiogroup" aria-label="星间链路">
+                      <button type="button" role="radio" :aria-checked="!!(!lnkSel.nodes[r.i].laser)" class="sg" :class="{ on: !lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, false)">微波</button>
+                      <button type="button" role="radio" :aria-checked="!!(!!lnkSel.nodes[r.i].laser)" class="sg" :class="{ on: !!lnkSel.nodes[r.i].laser }" @click="lnk.setLaser(lnkSel.id, r.i, true)">激光</button>
                     </span>
                     <LinkHopTxt :id="lnkSel.id" :i="r.i" />
                   </div>
@@ -14126,7 +14915,7 @@ onBeforeUnmount(() => {
                     />
                   </div>
                 </template>
-                <div v-if="lnkCurSel < 0" class="lk-add" @click="lnkAddAt(lnkSel.id)"><Icon name="plus" :size="12" /><span>添加节点</span></div>
+                <button type="button" v-if="lnkCurSel < 0" class="lk-add" @click="lnkAddAt(lnkSel.id)"><Icon name="plus" :size="12" /><span>添加节点</span></button>
               </div>
               <div class="srow lk-tg"><label>可导入</label><span class="u">{{ lnkTargetsText(lnkSel) }}</span></div>
               <div v-if="lnkStrands(lnkSel) > 1" class="srow lk-tg2" title="Polygon / 航迹节点的代表点逐一组合成的具体路径条数；导入链路预算时一条支路成一行（一条链）"><label>支路</label><span class="u" data-i18n-skip>{{ lnkStrands(lnkSel) }}</span></div>
@@ -14134,24 +14923,23 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="lk-style" :class="{ open: isSecOpen('lk-style') }" @click="toggleSec('lk-style')">
+            <div class="sect acc" data-sec="lk-style" :class="{ open: isSecOpen('lk-style') }" @click="toggleSec('lk-style')" role="button" tabindex="0" :aria-expanded="isSecOpen('lk-style') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lk-style')" @keydown.space.self.prevent="toggleSec('lk-style')">
               <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-style') }" :size="12" /><span>显示</span>
-              <span class="lnk" title="本节恢复出厂样式" @click.stop="lnkResetStyle">默认</span>
-            </div>
+            <button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('lnk')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
             <template v-if="isSecOpen('lk-style')">
-              <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="6" step="0.1" v-model.number="lnkStyle.width" @input="pushLinks" /><span class="u">{{ Number(lnkStyle.width).toFixed(1) }}</span></div>
-              <div class="srow" title="地球站 ↔ 卫星的跳：仰角不低于此值才算可见"><label>仰角门限</label><input class="ci" v-model.number="lnkStyle.minEl" @change="pushLinks" /><span class="u">°</span></div>
+              <div class="srow"><label>线宽</label><input class="rng" type="range" min="0.5" max="6" step="0.01" v-model.number="lnkStyle.width" @input="pushLinks" /><span class="u">{{ Number(lnkStyle.width).toFixed(2) }}</span></div>
+              <div class="srow" title="地球站 ↔ 卫星的跳：仰角不低于此值方视为可见"><label>最低仰角</label><input class="ci" v-model.number="lnkStyle.minEl" @change="pushLinks" /><span class="u">°</span></div>
               <div class="srow"><label>不可见跳</label>
-                <span class="seg nseg" role="group" aria-label="不可见跳">
-                  <span class="sg" :class="{ on: lnkStyle.blocked === 'dash' }" @click="lnkStyle.blocked = 'dash'; pushLinks()">虚线</span>
-                  <span class="sg" :class="{ on: lnkStyle.blocked === 'hide' }" @click="lnkStyle.blocked = 'hide'; pushLinks()">隐藏</span>
+                <span class="seg nseg" role="radiogroup" aria-label="不可见跳">
+                  <button type="button" role="radio" :aria-checked="!!(lnkStyle.blocked === 'dash')" class="sg" :class="{ on: lnkStyle.blocked === 'dash' }" @click="lnkStyle.blocked = 'dash'; pushLinks()">虚线</button>
+                  <button type="button" role="radio" :aria-checked="!!(lnkStyle.blocked === 'hide')" class="sg" :class="{ on: lnkStyle.blocked === 'hide' }" @click="lnkStyle.blocked = 'hide'; pushLinks()">隐藏</button>
                 </span>
               </div>
               <div class="srow"><label>方向</label>
-                <span class="seg nseg" role="group" aria-label="方向标记">
-                  <span class="sg" :class="{ on: lnkStyle.dir === 'static' }" title="每跳一枚末端箭头" @click="lnkStyle.dir = 'static'; pushLinks()">静止</span>
-                  <span class="sg" :class="{ on: lnkStyle.dir === 'flow' }" title="末端箭头 + 沿信号方向流动的虚线" @click="lnkStyle.dir = 'flow'; pushLinks()">流动</span>
-                  <span class="sg" :class="{ on: lnkStyle.dir === 'off' }" @click="lnkStyle.dir = 'off'; pushLinks()">关</span>
+                <span class="seg nseg" role="radiogroup" aria-label="方向标记">
+                  <button type="button" role="radio" :aria-checked="!!(lnkStyle.dir === 'static')" class="sg" :class="{ on: lnkStyle.dir === 'static' }" title="每跳一枚末端箭头" @click="lnkStyle.dir = 'static'; pushLinks()">静止</button>
+                  <button type="button" role="radio" :aria-checked="!!(lnkStyle.dir === 'flow')" class="sg" :class="{ on: lnkStyle.dir === 'flow' }" title="末端箭头 + 沿信号方向流动的虚线" @click="lnkStyle.dir = 'flow'; pushLinks()">流动</button>
+                  <button type="button" role="radio" :aria-checked="!!(lnkStyle.dir === 'off')" class="sg" :class="{ on: lnkStyle.dir === 'off' }" @click="lnkStyle.dir = 'off'; pushLinks()">关</button>
                 </span>
               </div>
             </template>
@@ -14174,7 +14962,7 @@ onBeforeUnmount(() => {
             <span class="layersw" :class="{ on: env.on.value }" aria-hidden="true"><i></i></span>
           </button>
           <div class="sec">
-            <div class="sect acc" data-sec="env-src" :class="{ open: isSecOpen('env-src') }" @click="toggleSec('env-src')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-src') }" :size="12" /><span>数据场</span></div>
+            <div class="sect acc" data-sec="env-src" :class="{ open: isSecOpen('env-src') }" @click="toggleSec('env-src')" role="button" tabindex="0" :aria-expanded="isSecOpen('env-src') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('env-src')" @keydown.space.self.prevent="toggleSec('env-src')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-src') }" :size="12" /><span>数据场</span></div>
             <template v-if="isSecOpen('env-src')">
               <div class="srow"><label>字段</label>
                 <select :value="env.key.value" @change="e => env.key.value = e.target.value">
@@ -14194,13 +14982,13 @@ onBeforeUnmount(() => {
                   <option v-for="s in env.STEPS" :key="s.v" :value="s.v">{{ s.label }}</option>
                 </select>
               </div>
-              <div class="srow env-src"><span class="tip inl">{{ env.busy.value ? '取数中…' : env.srcNote.value }}</span></div>
+              <div class="srow env-src"><span class="tip inl">{{ env.busy.value ? '加载中…' : env.srcNote.value }}</span></div>
               <div v-if="env.msg.value" class="srow"><span class="tip inl" :class="{ 'cov-msg': env.field.value && (!env.field.value.ready || env.field.value.fallback) }">{{ env.msg.value }}</span></div>
             </template>
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="env-style" :class="{ open: isSecOpen('env-style') }" @click="toggleSec('env-style')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-style') }" :size="12" /><span>配色与值域</span></div>
+            <div class="sect acc" data-sec="env-style" :class="{ open: isSecOpen('env-style') }" @click="toggleSec('env-style')" role="button" tabindex="0" :aria-expanded="isSecOpen('env-style') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('env-style')" @keydown.space.self.prevent="toggleSec('env-style')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-style') }" :size="12" /><span>配色与值域</span></div>
             <template v-if="isSecOpen('env-style')">
               <div class="srow"><label>配色</label>
                 <select class="cov-scheme" :value="env.scheme.value" @change="e => env.scheme.value = e.target.value">
@@ -14209,25 +14997,25 @@ onBeforeUnmount(() => {
                 <label class="chk-in" title="色标反向（低值取暖端）"><input type="checkbox" v-model="env.invert.value" /><span>反相</span></label>
               </div>
               <div class="srow"><label>填色</label>
-                <span class="seg">
-                  <span class="sg" :class="{ on: env.bands.value === 0 }" title="连续渐变" @click="env.bands.value = 0">连续</span>
-                  <span class="sg" :class="{ on: env.bands.value > 0 }" title="分级填色：档与档之间是硬边界，边界即等值线（工程读图）" @click="env.bands.value = env.bands.value > 0 ? env.bands.value : 8">分级</span>
+                <span role="radiogroup" class="seg">
+                  <button type="button" role="radio" :aria-checked="!!(env.bands.value === 0)" class="sg" :class="{ on: env.bands.value === 0 }" title="连续渐变" @click="env.bands.value = 0">连续</button>
+                  <button type="button" role="radio" :aria-checked="!!(env.bands.value > 0)" class="sg" :class="{ on: env.bands.value > 0 }" title="分级填色：档与档之间是硬边界，边界即等值线（工程读图）" @click="env.bands.value = env.bands.value > 0 ? env.bands.value : 8">分级</button>
                 </span>
                 <NumBox v-if="env.bands.value > 0" class="ci cov-num" :min="2" :max="24" :step="1" :model-value="env.bands.value" @commit="v => env.bands.value = v" /><span v-if="env.bands.value > 0" class="u">档</span>
               </div>
               <div class="srow"><label>值域</label>
-                <span class="seg">
-                  <span class="sg" :class="{ on: env.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：长尾场（降雨率）以极值定域会使主区色差不可分辨" @click="env.domainMode.value = 'p2p98'">分位</span>
-                  <span class="sg" :class="{ on: env.domainMode.value === 'minmax' }" title="全域极值" @click="env.domainMode.value = 'minmax'">极值</span>
-                  <span class="sg" :class="{ on: env.domainMode.value === 'manual' }" title="手动指定上下限" @click="envManualInit()">手动</span>
+                <span role="radiogroup" class="seg">
+                  <button type="button" role="radio" :aria-checked="!!(env.domainMode.value === 'p2p98')" class="sg" :class="{ on: env.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：长尾场（降雨率）以极值定域会使主区色差不可分辨" @click="env.domainMode.value = 'p2p98'">分位</button>
+                  <button type="button" role="radio" :aria-checked="!!(env.domainMode.value === 'minmax')" class="sg" :class="{ on: env.domainMode.value === 'minmax' }" title="全域极值" @click="env.domainMode.value = 'minmax'">极值</button>
+                  <button type="button" role="radio" :aria-checked="!!(env.domainMode.value === 'manual')" class="sg" :class="{ on: env.domainMode.value === 'manual' }" title="手动指定上下限" @click="envManualInit()">手动</button>
                 </span>
               </div>
               <div v-if="env.domainMode.value === 'manual'" class="srow"><label>上下限</label>
                 <input class="ci cov-b" type="number" :value="env.manualLo.value" @input="e => env.manualLo.value = e.target.value" /><span class="u">~</span>
                 <input class="ci cov-b" type="number" :value="env.manualHi.value" @input="e => env.manualHi.value = e.target.value" /><span class="u">{{ env.field.value ? env.field.value.unit : '' }}</span>
               </div>
-              <div class="srow"><label>透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.02" :value="env.alpha.value" @input="e => env.alpha.value = Number(e.target.value)" title="环境场透明度（拖动即时生效）" /><span class="u">{{ Math.round(env.alpha.value * 100) }}%</span></div>
-              <label class="chk2" :class="{ dis: !envMaskAvail }"><input type="checkbox" :disabled="!envMaskAvail" v-model="env.landOnly.value" /><span>海洋透明（按 P.1511 地形 ≤0 判海）</span></label>
+              <div class="srow"><label>不透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.01" :value="env.alpha.value" @input="e => env.alpha.value = Number(e.target.value)" title="环境场不透明度（拖动即时生效）" /><span class="u">{{ env.alpha.value.toFixed(2) }}</span></div>
+              <label class="chk2" :class="{ dis: !envMaskAvail }" title="ITU-R P.1511 高程 ≤ 0 判为海域"><input type="checkbox" :disabled="!envMaskAvail" v-model="env.landOnly.value" /><span>海洋透明</span></label>
               <div v-if="env.legend.value" class="cov-legend">
                 <div class="cov-legbar"><i v-for="(s, si) in env.legend.value.stops" :key="si" :style="{ background: s.css }" :title="envLegTitle(si)"></i></div>
                 <div class="cov-legsc"><span>{{ env.fmt(env.legend.value.lo) }}</span><b :title="env.legend.value.label">{{ env.legend.value.label }}{{ env.legend.value.unit ? ' · ' + env.legend.value.unit : '' }}</b><span>{{ env.fmt(env.legend.value.hi) }}</span></div>
@@ -14240,7 +15028,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="env-contour" :class="{ open: isSecOpen('env-contour', false) }" @click="toggleSec('env-contour', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-contour', false) }" :size="12" /><span>等值线</span></div>
+            <div class="sect acc" data-sec="env-contour" :class="{ open: isSecOpen('env-contour', false) }" @click="toggleSec('env-contour', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('env-contour', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('env-contour', false)" @keydown.space.self.prevent="toggleSec('env-contour', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('env-contour', false) }" :size="12" /><span>等值线</span></div>
             <template v-if="isSecOpen('env-contour', false)">
               <label class="chk2"><input type="checkbox" v-model="env.contourOn.value" /><span>画等值线</span></label>
               <template v-if="env.contourOn.value">
@@ -14274,7 +15062,7 @@ onBeforeUnmount(() => {
           </button>
 
           <div class="sec">
-            <div class="sect acc" data-sec="lv-fetch" :class="{ open: isSecOpen('lv-fetch') }" @click="toggleSec('lv-fetch')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-fetch') }" :size="12" /><span>数据获取</span></div>
+            <div class="sect acc" data-sec="lv-fetch" :class="{ open: isSecOpen('lv-fetch') }" @click="toggleSec('lv-fetch')" role="button" tabindex="0" :aria-expanded="isSecOpen('lv-fetch') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lv-fetch')" @keydown.space.self.prevent="toggleSec('lv-fetch')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-fetch') }" :size="12" /><span>数据获取</span></div>
             <template v-if="isSecOpen('lv-fetch')">
               <div v-if="envLive.providers.value && !envLive.providers.value.field.ok" class="srow"><span class="tip inl cov-msg">{{ envLive.providers.value.field.message }}</span></div>
               <div class="srow"><label>区域</label>
@@ -14284,13 +15072,13 @@ onBeforeUnmount(() => {
               </div>
               <!-- Polygon 档：取数窗仍是外接矩形（子集服务只吃 bbox），出图裁到多边形内 -->
               <template v-if="envLive.region.value === 'poly'">
-                <div class="srow"><label>多边形</label>
-                  <select :value="envLive.polyId.value" @change="e => envLive.polyId.value = e.target.value" title="取数窗为该多边形的外接矩形并各外扩一格；成图裁剪至多边形内，多边形外的格不计算">
+                <div class="srow"><label>Polygon</label>
+                  <select :value="envLive.polyId.value" @change="e => envLive.polyId.value = e.target.value" title="取数窗为该 Polygon 的外接矩形并各外扩一格；成图裁剪至 Polygon 内，Polygon 外的格不计算">
                     <option value="">未选择</option>
                     <option v-for="p in envLive.polyList.value" :key="p.id" :value="p.id" data-i18n-skip>{{ p.name }}</option>
                   </select>
                 </div>
-                <div v-if="!envLive.polyList.value.length" class="srow"><span class="tip inl cov-msg">地图上还没有 Polygon</span></div>
+                <div v-if="!envLive.polyList.value.length" class="srow"><span class="tip inl cov-msg">暂无 Polygon。</span></div>
               </template>
               <template v-if="envLive.region.value === 'cst'">
                 <div class="srow"><label>纬度</label>
@@ -14326,15 +15114,15 @@ onBeforeUnmount(() => {
               <div class="srow">
                 <!-- 播放三角＝「开跑」：与对星覆盖窗口的「计算」按钮同一个记号（那处也是 play + 动词）。
                      取数是本面板唯一一个要等几十秒的动作，图标只给它，另两个保持纯文字。 -->
-                <span class="mini act" :class="{ dis: envLive.loading.value }" @click="envLive.loading.value ? null : envLive.loadCube()"><Icon name="play" :size="12" /> {{ envLive.loading.value ? '获取中…' : '获取数据' }}</span>
-                <span class="mini" title="请求一次栅格源，检验网络连通与起报时次" @click="envLive.testConn()">连通测试</span>
-                <span class="mini" title="清除本地气象缓存分片" @click="envLive.clearCache()">清除缓存</span>
+                <button type="button" :disabled="envLive.loading.value" class="btn" :class="{ dis: envLive.loading.value }" @click="envLive.loading.value ? null : envLive.loadCube()"><Icon name="play" :size="12" /> {{ envLive.loading.value ? '获取中…' : '获取数据' }}</button>
+                <button type="button" class="btn" title="请求一次栅格源，检验网络连通与起报时次" @click="envLive.testConn()">连通测试</button>
+                <button type="button" class="btn" title="清除本地气象缓存分片" @click="envLive.clearCache()">清除缓存</button>
               </div>
               <div v-if="envLive.loading.value && envLive.progress.total" class="srow"><span class="tip inl">{{ envLive.progress.done }} / {{ envLive.progress.total }} 帧</span></div>
               <div v-if="envLive.usage.value && envLive.usage.value.files" class="srow"><span class="tip inl">本地缓存 {{ envLive.usage.value.files }} 帧 · {{ lvMB(envLive.usage.value.bytes) }}</span></div>
               <div v-if="envLive.msg.value" class="srow"><span class="tip inl">{{ envLive.msg.value }}</span></div>
               <div class="srow">
-                <span class="mini" title="多站读数，随时间轴更新；指标可选、列可冻结；站点在表内增删与导入" @click="openMetTable()"><Icon name="table" :size="12" /> 气象指标表…</span>
+                <button type="button" class="btn" title="多站读数，随时间轴更新；指标可选、列可冻结；站点在表内增删与导入" @click="openMetTable()"><Icon name="table" :size="12" /> 气象指标表…</button>
               </div>
             </template>
           </div>
@@ -14343,9 +15131,9 @@ onBeforeUnmount(() => {
                ★ 独立成节而不是挂在「数据场」下：这一组同时决定**衰减场**与**气象指标表**里的链路列，
                  摆在数据场里读起来像「只管这张图」。也不并进「数据获取」—— 那一节的全部读数都是
                  网络代价（请求数 / 下载量 / 缓存），而这一组一个请求都不花，只影响本地怎么算。
-               ★ 目标星三档是本模块「普适性」的入口：只认 GEO 轨位等于只对静止轨道成立。 -->
+               ★ 目标卫星三档是本模块「普适性」的入口：只认 GEO 轨位等于只对静止轨道成立。 -->
           <div class="sec">
-            <div class="sect acc" data-sec="lv-link" :class="{ open: isSecOpen('lv-link') }" @click="toggleSec('lv-link')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-link') }" :size="12" /><span>链路参数</span></div>
+            <div class="sect acc" data-sec="lv-link" :class="{ open: isSecOpen('lv-link') }" @click="toggleSec('lv-link')" role="button" tabindex="0" :aria-expanded="isSecOpen('lv-link') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lv-link')" @keydown.space.self.prevent="toggleSec('lv-link')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-link') }" :size="12" /><span>链路参数</span></div>
             <template v-if="isSecOpen('lv-link')">
               <div class="srow"><label>目标</label>
                 <select :value="envLive.satMode.value" @change="e => envLive.satMode.value = e.target.value" title="衰减逐点依赖几何。静止轨道位置走球面闭式（与链路预算 GSO 同源）；在轨卫星与手动星下点走 WGS-84 通用几何（与 NGSO 链路预算、可见性分析同源），故 LEO / MEO / HEO 与倾斜同步轨道同样适用">
@@ -14360,12 +15148,12 @@ onBeforeUnmount(() => {
               <template v-else-if="envLive.satMode.value === 'sat'">
                 <div class="srow"><label>卫星</label>
                   <span class="tgtnm" :class="{ bad: envLive.satUnresolved.value }" :title="envLive.satName.value" data-i18n-skip>{{ envLive.satName.value || '未选择' }}</span>
-                  <span v-if="envLive.satId.value" class="ic del" title="清除目标星" @click="lvClearSat()"><Icon name="x" :size="12" /></span>
+                  <button type="button" v-if="envLive.satId.value" class="ibtn sm danger" title="清除目标卫星" @click="lvClearSat()"><Icon name="x" :size="12" /></button>
                 </div>
-                <div class="srow"><input class="ci" v-model="lvSatQ" placeholder="搜索目标星：卫星名 / NORAD / 星座 / 卫星组" /></div>
+                <div class="srow"><input class="ci search-field" v-model="lvSatQ" placeholder="搜索目标卫星：卫星名 / NORAD / 星座 / 卫星组" /></div>
                 <div v-if="lvSatQ.trim()" class="sres lv-sres">
                   <div v-if="lvSatBusy" class="sres-e">搜索中…</div>
-                  <div v-else-if="!lvSatCand.length" class="sres-e">没有匹配的卫星。</div>
+                  <div v-else-if="!lvSatCand.length" class="sres-e">无匹配卫星。</div>
                   <template v-else>
                     <div class="sres-list">
                       <div v-for="e in lvSatCand" :key="e.noradId || e.name" class="sitem" @click="lvPickSat(e)">
@@ -14376,7 +15164,7 @@ onBeforeUnmount(() => {
                     <div class="sres-n">{{ lvSatTotal > lvSatCand.length ? ('命中 ' + lvSatTotal + ' 颗 · 列出前 ' + lvSatCand.length) : (lvSatTotal + ' 颗') }}</div>
                   </template>
                 </div>
-                <div v-if="envLive.satUnresolved.value" class="srow"><span class="tip inl cov-msg">目标星星历未载入</span></div>
+                <div v-if="envLive.satUnresolved.value" class="srow"><span class="tip inl cov-msg">目标卫星星历未载入</span></div>
               </template>
               <template v-else>
                 <div class="srow"><label>星下点</label>
@@ -14411,7 +15199,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="lv-src" :class="{ open: isSecOpen('lv-src') }" @click="toggleSec('lv-src')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-src') }" :size="12" /><span>数据场</span></div>
+            <div class="sect acc" data-sec="lv-src" :class="{ open: isSecOpen('lv-src') }" @click="toggleSec('lv-src')" role="button" tabindex="0" :aria-expanded="isSecOpen('lv-src') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lv-src')" @keydown.space.self.prevent="toggleSec('lv-src')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-src') }" :size="12" /><span>数据场</span></div>
             <template v-if="isSecOpen('lv-src')">
               <div class="srow"><label>字段</label>
                 <select :value="envLive.key.value" @change="e => envLive.key.value = e.target.value" title="切换字段不产生请求：单次获取已包含全部要素">
@@ -14436,7 +15224,7 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sec">
-            <div class="sect acc" data-sec="lv-style" :class="{ open: isSecOpen('lv-style') }" @click="toggleSec('lv-style')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-style') }" :size="12" /><span>配色与值域</span></div>
+            <div class="sect acc" data-sec="lv-style" :class="{ open: isSecOpen('lv-style') }" @click="toggleSec('lv-style')" role="button" tabindex="0" :aria-expanded="isSecOpen('lv-style') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lv-style')" @keydown.space.self.prevent="toggleSec('lv-style')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lv-style') }" :size="12" /><span>配色与值域</span></div>
             <template v-if="isSecOpen('lv-style')">
               <div class="srow"><label>配色</label>
                 <select class="cov-scheme" :value="envLive.scheme.value" @change="e => envLive.scheme.value = e.target.value" title="前四档为气象业务色阶：低值透明、按业务档位分色，叠加于影像底图即为常规云图效果。后五档为连续科学色图，全不透明">
@@ -14450,26 +15238,26 @@ onBeforeUnmount(() => {
                 <label class="chk-in" title="色标反向（低值取暖端）"><input type="checkbox" v-model="envLive.invert.value" /><span>反相</span></label>
               </div>
               <div class="srow"><label>填色</label>
-                <span class="seg">
-                  <span class="sg" :class="{ on: envLive.bands.value === 0 }" title="连续渐变" @click="envLive.bands.value = 0">连续</span>
-                  <span class="sg" :class="{ on: envLive.bands.value > 0 }" title="分级填色：档间为硬边界，边界即等值线" @click="envLive.bands.value = envLive.bands.value > 0 ? envLive.bands.value : 8">分级</span>
+                <span role="radiogroup" class="seg">
+                  <button type="button" role="radio" :aria-checked="!!(envLive.bands.value === 0)" class="sg" :class="{ on: envLive.bands.value === 0 }" title="连续渐变" @click="envLive.bands.value = 0">连续</button>
+                  <button type="button" role="radio" :aria-checked="!!(envLive.bands.value > 0)" class="sg" :class="{ on: envLive.bands.value > 0 }" title="分级填色：档间为硬边界，边界即等值线" @click="envLive.bands.value = envLive.bands.value > 0 ? envLive.bands.value : 8">分级</button>
                 </span>
                 <NumBox v-if="envLive.bands.value > 0" class="ci cov-num" :min="2" :max="24" :step="1" :model-value="envLive.bands.value" @commit="v => envLive.bands.value = v" /><span v-if="envLive.bands.value > 0" class="u">档</span>
               </div>
               <div class="srow"><label>值域</label>
-                <span class="seg">
-                  <span class="sg" :class="{ on: envLive.domainMode.value === 'levels', dis: !envLive.hasLevels.value }" title="业务档位：值轴不等距、色轴等距，锚点由字段自带。同一数值在各帧恒为同一颜色，可跨帧比较" @click="envLive.hasLevels.value ? envLive.domainMode.value = 'levels' : null">档位</span>
-                  <span class="sg" :class="{ on: envLive.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：颜色随各帧数据分布变化，不可跨帧比较" @click="envLive.domainMode.value = 'p2p98'">分位</span>
-                  <span class="sg" :class="{ on: envLive.domainMode.value === 'minmax' }" title="全域极值" @click="envLive.domainMode.value = 'minmax'">极值</span>
-                  <span class="sg" :class="{ on: envLive.domainMode.value === 'manual' }" title="手动指定上下限" @click="liveManualInit()">手动</span>
+                <span role="radiogroup" class="seg">
+                  <button type="button" role="radio" :aria-checked="!!(envLive.domainMode.value === 'levels')" :aria-disabled="!!(!envLive.hasLevels.value)" class="sg" :class="{ on: envLive.domainMode.value === 'levels', dis: !envLive.hasLevels.value }" title="业务档位：值轴不等距、色轴等距，锚点由字段自带。同一数值在各帧恒为同一颜色，可跨帧比较" @click="envLive.hasLevels.value ? envLive.domainMode.value = 'levels' : null">档位</button>
+                  <button type="button" role="radio" :aria-checked="!!(envLive.domainMode.value === 'p2p98')" class="sg" :class="{ on: envLive.domainMode.value === 'p2p98' }" title="按 2%–98% 分位拉伸：颜色随各帧数据分布变化，不可跨帧比较" @click="envLive.domainMode.value = 'p2p98'">分位</button>
+                  <button type="button" role="radio" :aria-checked="!!(envLive.domainMode.value === 'minmax')" class="sg" :class="{ on: envLive.domainMode.value === 'minmax' }" title="全域极值" @click="envLive.domainMode.value = 'minmax'">极值</button>
+                  <button type="button" role="radio" :aria-checked="!!(envLive.domainMode.value === 'manual')" class="sg" :class="{ on: envLive.domainMode.value === 'manual' }" title="手动指定上下限" @click="liveManualInit()">手动</button>
                 </span>
               </div>
               <div v-if="envLive.domainMode.value === 'manual'" class="srow"><label>上下限</label>
                 <input class="ci cov-b" type="number" :value="envLive.manualLo.value" @input="e => envLive.manualLo.value = e.target.value" /><span class="u">~</span>
                 <input class="ci cov-b" type="number" :value="envLive.manualHi.value" @input="e => envLive.manualHi.value = e.target.value" /><span class="u">{{ envLive.field.value ? envLive.field.value.unit : '' }}</span>
               </div>
-              <div class="srow"><label>透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.02" :value="envLive.alpha.value" @input="e => envLive.alpha.value = Number(e.target.value)" title="整层不透明度；与气象色阶自带的逐像素透明度相乘" /><span class="u">{{ Math.round(envLive.alpha.value * 100) }}%</span></div>
-              <label class="chk2" :class="{ dis: !envMaskAvail }"><input type="checkbox" :disabled="!envMaskAvail" v-model="envLive.landOnly.value" /><span>海洋透明（ITU-R P.1511 高程 ≤ 0 判为海域）</span></label>
+              <div class="srow"><label>不透明度</label><input class="vis-slider cov-alpha" type="range" min="0.1" max="1" step="0.01" :value="envLive.alpha.value" @input="e => envLive.alpha.value = Number(e.target.value)" title="整层不透明度；与气象色阶自带的逐像素透明度相乘" /><span class="u">{{ envLive.alpha.value.toFixed(2) }}</span></div>
+              <label class="chk2" :class="{ dis: !envMaskAvail }" title="ITU-R P.1511 高程 ≤ 0 判为海域"><input type="checkbox" :disabled="!envMaskAvail" v-model="envLive.landOnly.value" /><span>海洋透明</span></label>
               <div v-if="envLive.legend.value" class="cov-legend">
                 <div class="cov-legbar" :class="{ stepped: envLive.legend.value.stepped }"><i v-for="(o, oi) in envLive.legend.value.stops" :key="oi" :style="{ background: o.css }"></i></div>
                 <div v-if="envLive.legend.value.ticks" class="lv-legtick" :style="{ gridTemplateColumns: 'repeat(' + envLive.legend.value.ticks.length + ', 1fr)' }">
@@ -14492,44 +15280,44 @@ onBeforeUnmount(() => {
         <div class="cov-side focus-side docked">
 
         <div class="sec" :class="{ hid: !focusStyle.orbOn }">
-          <div class="sect acc" data-sec="foc-orb" :class="{ open: isSecOpen('foc-orb') }" @click="toggleSec('foc-orb')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-orb') }" :size="12" /><span>轨道线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('orb')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.orbOn }" role="switch" :aria-checked="focusStyle.orbOn ? 'true' : 'false'" :title="focusStyle.orbOn ? '隐藏轨道线' : '显示轨道线'" @click.stop="toggleFocus('orbOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-orb" :class="{ open: isSecOpen('foc-orb') }" @click="toggleSec('foc-orb')" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-orb') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-orb')" @keydown.space.self.prevent="toggleSec('foc-orb')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-orb') }" :size="12" /><span>轨道线</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-orb')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.orbOn }" role="switch" :aria-checked="focusStyle.orbOn ? 'true' : 'false'" :title="focusStyle.orbOn ? '隐藏轨道线' : '显示轨道线'" @click.stop="toggleFocus('orbOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-orb')">
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.orbColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbColor }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.orbWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="focusStyle.orbOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.orbColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.orbColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.orbColor); if (v) { focusStyle.orbColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="focusStyle.orbWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="focusStyle.orbOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.orbOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>线型</label>
-            <span class="seg nseg" role="group" aria-label="轨道线线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: focusStyle.orbDash === d.k }" @click="setFocusVal('orbDash', d.k)">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="轨道线线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(focusStyle.orbDash === d.k)" class="sg" :class="{ on: focusStyle.orbDash === d.k }" @click="setFocusVal('orbDash', d.k)">{{ d.label }}</button>
             </span>
           </div>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.trkOn }">
-          <div class="sect acc" data-sec="foc-trk" :class="{ open: isSecOpen('foc-trk') }" @click="toggleSec('foc-trk')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-trk') }" :size="12" /><span>星下点轨迹</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('trk')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click.stop="toggleFocus('trkOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-trk" :class="{ open: isSecOpen('foc-trk') }" @click="toggleSec('foc-trk')" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-trk') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-trk')" @keydown.space.self.prevent="toggleSec('foc-trk')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-trk') }" :size="12" /><span>星下点轨迹</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-trk')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.trkOn }" role="switch" :aria-checked="focusStyle.trkOn ? 'true' : 'false'" :title="focusStyle.trkOn ? '隐藏星下点轨迹' : '显示星下点轨迹'" @click.stop="toggleFocus('trkOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-trk')">
           <div class="srow"><label>形式</label>
-            <span class="seg nseg" role="group" aria-label="星下点轨迹形式">
-              <span class="sg" :class="{ on: focusStyle.trkMode !== 'swath' }" title="只画星下点轨迹线" @click="setFocusVal('trkMode', 'line')">轨迹线</span>
-              <span class="sg" :class="{ on: focusStyle.trkMode === 'swath' }" title="按覆盖圈口径沿轨迹扫过的覆盖带（轨迹面）" @click="setFocusVal('trkMode', 'swath')">轨迹面</span>
+            <span class="seg nseg" role="radiogroup" aria-label="星下点轨迹形式">
+              <button type="button" role="radio" :aria-checked="!!(focusStyle.trkMode !== 'swath')" class="sg" :class="{ on: focusStyle.trkMode !== 'swath' }" title="仅绘制星下点轨迹线" @click="setFocusVal('trkMode', 'line')">轨迹线</button>
+              <button type="button" role="radio" :aria-checked="!!(focusStyle.trkMode === 'swath')" class="sg" :class="{ on: focusStyle.trkMode === 'swath' }" title="按覆盖圈口径沿轨迹扫过的覆盖带（轨迹面）" @click="setFocusVal('trkMode', 'swath')">轨迹面</button>
             </span>
           </div>
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.trkColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkColor }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.trkWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="focusStyle.trkOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.trkColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.trkColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.trkColor); if (v) { focusStyle.trkColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="focusStyle.trkWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="focusStyle.trkOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>线型</label>
-            <span class="seg nseg" role="group" aria-label="星下点轨迹线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: focusStyle.trkDash === d.k }" @click="setFocusVal('trkDash', d.k)">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="星下点轨迹线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(focusStyle.trkDash === d.k)" class="sg" :class="{ on: focusStyle.trkDash === d.k }" @click="setFocusVal('trkDash', d.k)">{{ d.label }}</button>
             </span>
           </div>
           <template v-if="focusStyle.trkMode === 'swath'">
-          <div class="srow" title="带内填色；0＝不填"><label>区域填充</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="focusStyle.trkFillOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkFillOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>填充颜色</label><input class="clr" type="color" v-model="focusStyle.trkFillColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkFillColor }}</span></div>
+          <div class="srow" title="带内填色；0＝不填"><label>区域填充</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="focusStyle.trkFillOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.trkFillOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>填充颜色</label><input class="clr" type="color" v-model="focusStyle.trkFillColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.trkFillColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.trkFillColor); if (v) { focusStyle.trkFillColor = v; applyFocusStyle() } }" /></div>
           </template>
           <div class="srow"><label>轨迹长度</label>
-            <span class="seg nseg" role="group" aria-label="星下点轨迹长度口径">
-              <span class="sg" :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</span>
-              <span class="sg" :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</span>
+            <span class="seg nseg" role="radiogroup" aria-label="星下点轨迹长度口径">
+              <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode !== 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</button>
+              <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode === 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</button>
             </span>
           </div>
           <div v-if="focusStyle.trkSpanMode !== 'time'" class="srow" title="从当前时刻起画几个轨道周期的星下点轨迹"><label>轨迹圈数</label><input class="ci" :value="trkVal('rev')" placeholder="1" @input="e => trkInput('rev', e)" @change="trkCommit('rev')" @blur="trkCommit('rev')" @keyup.enter="trkCommit('rev')" /><span class="u">圈</span></div>
@@ -14538,68 +15326,68 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.fpOn }">
-          <div class="sect acc" data-sec="foc-fp" :class="{ open: isSecOpen('foc-fp') }" @click="toggleSec('foc-fp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-fp') }" :size="12" /><span>覆盖圈</span><span class="lnk" title="本节恢复出厂样式（不动口径）" @click.stop="resetFocusPart('fp')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click.stop="toggleFocus('fpOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-fp" :class="{ open: isSecOpen('foc-fp') }" @click="toggleSec('foc-fp')" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-fp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-fp')" @keydown.space.self.prevent="toggleSec('foc-fp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-fp') }" :size="12" /><span>覆盖圈</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-fp')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.fpOn }" role="switch" :aria-checked="focusStyle.fpOn ? 'true' : 'false'" :title="focusStyle.fpOn ? '隐藏覆盖圈' : '显示覆盖圈'" @click.stop="toggleFocus('fpOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-fp')">
           <div class="srow"><label>口径</label>
-            <span class="seg nseg" role="group" aria-label="覆盖圈定义">
-              <span class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</span>
-              <span class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</span>
+            <span class="seg nseg" role="radiogroup" aria-label="覆盖圈定义">
+              <button type="button" role="radio" :aria-checked="!!(fpMode === 'beam')" class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</button>
+              <button type="button" role="radio" :aria-checked="!!(fpMode === 'elev')" class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</button>
             </span>
           </div>
-          <div v-if="fpMode === 'beam'" class="srow"><label>波束全锥角</label><input class="ci" :value="fpVal('beam')" :placeholder="beamAuto || '自动'" title="波束全锥角，空=对地全视场（失焦或回车生效）" @input="e => fpInput('beam', e)" @change="fpCommit('beam')" @blur="fpCommit('beam')" @keyup.enter="fpCommit('beam')" /><span class="u">°</span><span class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不截断' : '锁定：超出该星上限时不回写截断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></span></div>
+          <div v-if="fpMode === 'beam'" class="srow"><label>波束全锥角</label><input class="ci" :value="fpVal('beam')" :placeholder="beamAuto || '自动'" title="波束全锥角，空=对地全视场（失焦或回车生效）" @input="e => fpInput('beam', e)" @change="fpCommit('beam')" @blur="fpCommit('beam')" @keyup.enter="fpCommit('beam')" /><span class="u">°</span><button type="button" :aria-pressed="(beamLock) ? 'true' : 'false'" class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不截断' : '锁定：超出该星上限时不回写截断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></button></div>
           <div v-else class="srow"><label>最低仰角</label><input class="ci" :value="fpVal('elev')" placeholder="0" title="最低仰角，0°=地平线（失焦或回车生效）" @input="e => fpInput('elev', e)" @change="fpCommit('elev')" @blur="fpCommit('elev')" @keyup.enter="fpCommit('elev')" /><span class="u">°</span></div>
-          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="focusStyle.fpColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpColor }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.fpWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="focusStyle.fpOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>线颜色</label><input class="clr" type="color" v-model="focusStyle.fpColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.fpColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.fpColor); if (v) { focusStyle.fpColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="focusStyle.fpWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="focusStyle.fpOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>线型</label>
-            <span class="seg nseg" role="group" aria-label="覆盖圈线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: focusStyle.fpDash === d.k }" @click="setFocusVal('fpDash', d.k)">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="覆盖圈线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(focusStyle.fpDash === d.k)" class="sg" :class="{ on: focusStyle.fpDash === d.k }" @click="setFocusVal('fpDash', d.k)">{{ d.label }}</button>
             </span>
           </div>
-          <div class="srow" title="圈内填色（画在 GRD 覆盖场之下，叠加区仍以覆盖图为准）；0＝不填"><label>区域填充</label><input class="rng" type="range" min="0" max="1" step="0.02" v-model.number="focusStyle.fpFillOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpFillOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>填充颜色</label><input class="clr" type="color" v-model="focusStyle.fpFillColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpFillColor }}</span></div>
+          <div class="srow" title="圈内填色（画在 GRD 覆盖场之下，叠加区仍以覆盖图为准）；0＝不填"><label>区域填充</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="focusStyle.fpFillOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.fpFillOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>填充颜色</label><input class="clr" type="color" v-model="focusStyle.fpFillColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.fpFillColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.fpFillColor); if (v) { focusStyle.fpFillColor = v; applyFocusStyle() } }" /></div>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.coneOn }">
-          <div class="sect acc" data-sec="foc-cone" :class="{ open: isSecOpen('foc-cone', false) }" @click="toggleSec('foc-cone', false)" title="卫星本体到覆盖圈边界的锥体（锥面＋母线），张角随上面的口径走；仅 3D 球体绘制"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-cone', false) }" :size="12" /><span>覆盖锥</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('cone')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click.stop="toggleFocus('coneOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-cone" :class="{ open: isSecOpen('foc-cone', false) }" @click="toggleSec('foc-cone', false)" title="卫星本体到覆盖圈边界的锥体（锥面＋母线），张角随上面的口径走；仅 3D 球体绘制" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-cone', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-cone', false)" @keydown.space.self.prevent="toggleSec('foc-cone', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-cone', false) }" :size="12" /><span>覆盖锥</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-cone')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.coneOn }" role="switch" :aria-checked="focusStyle.coneOn ? 'true' : 'false'" :title="focusStyle.coneOn ? '隐藏覆盖锥' : '显示覆盖锥'" @click.stop="toggleFocus('coneOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-cone', false)">
-          <div class="srow" title="锥侧面填色，0＝只留母线"><label>锥面</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="focusStyle.coneFaceOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneFaceOpacity.toFixed(2) }}</span></div>
-          <div class="srow"><label>锥面颜色</label><input class="clr" type="color" v-model="focusStyle.coneFaceColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneFaceColor }}</span></div>
-          <div class="srow" title="沿方位等分画几条母线，0＝只留锥面"><label>母线根数</label><input class="rng" type="range" min="0" max="36" step="1" v-model.number="focusStyle.coneGenCount" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenCount }}</span></div>
-          <div class="srow"><label>母线颜色</label><input class="clr" type="color" v-model="focusStyle.coneGenColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenColor }}</span></div>
-          <div class="srow"><label>母线线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="focusStyle.coneGenWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenWidth.toFixed(1) }}</span></div>
-          <div class="srow"><label>母线透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="focusStyle.coneGenOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenOpacity.toFixed(2) }}</span></div>
+          <div class="srow" title="锥侧面填色，0＝仅保留母线"><label>锥面</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="focusStyle.coneFaceOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneFaceOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>锥面颜色</label><input class="clr" type="color" v-model="focusStyle.coneFaceColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.coneFaceColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.coneFaceColor); if (v) { focusStyle.coneFaceColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow" title="沿方位等分画几条母线，0＝仅保留锥面"><label>母线根数</label><input class="rng" type="range" min="0" max="36" step="1" v-model.number="focusStyle.coneGenCount" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenCount }}</span></div>
+          <div class="srow"><label>母线颜色</label><input class="clr" type="color" v-model="focusStyle.coneGenColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.coneGenColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.coneGenColor); if (v) { focusStyle.coneGenColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow"><label>母线线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="focusStyle.coneGenWidth" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenWidth.toFixed(2) }}</span></div>
+          <div class="srow"><label>母线不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="focusStyle.coneGenOpacity" @input="applyFocusStyle" /><span class="u">{{ focusStyle.coneGenOpacity.toFixed(2) }}</span></div>
           <div class="srow"><label>母线线型</label>
-            <span class="seg nseg" role="group" aria-label="母线线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: focusStyle.coneGenDash === d.k }" @click="setFocusVal('coneGenDash', d.k)">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="母线线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(focusStyle.coneGenDash === d.k)" class="sg" :class="{ on: focusStyle.coneGenDash === d.k }" @click="setFocusVal('coneGenDash', d.k)">{{ d.label }}</button>
             </span>
           </div>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !focusStyle.ricOn }">
-          <div class="sect acc" data-sec="foc-ric" :class="{ open: isSecOpen('foc-ric', false) }" @click="toggleSec('foc-ric', false)" title="主选卫星本体处的轨道坐标系三轴：R 径向（地心指向卫星）、I 沿迹（轨道面内沿运动方向）、C 轨道面法向（r × v）；仅 3D 球体"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-ric', false) }" :size="12" /><span>轨道坐标系</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('ric')">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.ricOn }" role="switch" :aria-checked="focusStyle.ricOn ? 'true' : 'false'" :title="focusStyle.ricOn ? '隐藏轨道坐标系' : '显示轨道坐标系'" @click.stop="toggleFocus('ricOn')"><i></i></button></div>
+          <div class="sect acc" data-sec="foc-ric" :class="{ open: isSecOpen('foc-ric', false) }" @click="toggleSec('foc-ric', false)" title="主选卫星本体处的轨道坐标系三轴：R 径向（地心指向卫星）、I 沿迹（轨道面内沿运动方向）、C 轨道面法向（r × v）；仅 3D 球体" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-ric', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-ric', false)" @keydown.space.self.prevent="toggleSec('foc-ric', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-ric', false) }" :size="12" /><span>轨道坐标系</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-ric')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: focusStyle.ricOn }" role="switch" :aria-checked="focusStyle.ricOn ? 'true' : 'false'" :title="focusStyle.ricOn ? '隐藏轨道坐标系' : '显示轨道坐标系'" @click.stop="toggleFocus('ricOn')"><i></i></button></div>
           <template v-if="isSecOpen('foc-ric', false)">
           <div class="srow" title="三轴在屏幕上的长度（像素）"><label>轴长</label><input class="rng" type="range" :min="SAT_TRIAD_PX[0]" :max="SAT_TRIAD_PX[1]" step="1" v-model.number="focusStyle.ricPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.ricPx }}</span></div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="foc-mk" :class="{ open: isSecOpen('foc-mk', false) }" @click="toggleSec('foc-mk', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-mk', false) }" :size="12" /><span>卫星标记</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetFocusPart('mk')">默认</span></div>
+          <div class="sect acc" data-sec="foc-mk" :class="{ open: isSecOpen('foc-mk', false) }" @click="toggleSec('foc-mk', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('foc-mk', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('foc-mk', false)" @keydown.space.self.prevent="toggleSec('foc-mk', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('foc-mk', false) }" :size="12" /><span>卫星标记</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('foc-mk')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
           <template v-if="isSecOpen('foc-mk', false)">
-          <label class="chk2" title="整个星座的星点（仅 3D 球体）。关掉后地图上只剩聚焦星的标记，星点也不再可点选"><input type="checkbox" v-model="focusStyle.cloudOn" @change="applyFocusStyle" /><span>星座点云</span></label>
-          <label class="chk2" title="卫星真实在轨位置上的大号圆点，颜色跟随该星在星座里的配色"><input type="checkbox" v-model="focusStyle.dotOn" @change="applyFocusStyle" /><span>在轨点</span></label>
-          <div v-if="focusStyle.dotOn" class="srow sub"><label>大小</label><input class="rng" type="range" min="4" max="24" step="1" v-model.number="focusStyle.dotPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.dotPx }}</span></div>
+          <label class="chk2" title="整个星座的星点（仅 3D 球体）。关闭后地图上仅保留聚焦星的标记，星点也不再可点选"><input type="checkbox" v-model="focusStyle.cloudOn" @change="applyFocusStyle" /><span>星座点云</span></label>
+          <label class="chk2" title="卫星真实在轨位置上的大号圆点，颜色跟随该星在星座中的配色"><input type="checkbox" v-model="focusStyle.dotOn" @change="applyFocusStyle" /><span>在轨点</span></label>
+          <div v-if="focusStyle.dotOn" class="srow sub"><label>大小</label><input class="rng" type="range" min="4" max="24" step="0.1" v-model.number="focusStyle.dotPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.dotPx.toFixed(1) }}</span></div>
           <label class="chk2"><input type="checkbox" v-model="focusStyle.subOn" @change="applyFocusStyle" /><span>星下点图标</span></label>
           <template v-if="focusStyle.subOn">
-          <div class="srow sub"><label>大小</label><input class="rng" type="range" min="8" max="64" step="1" v-model.number="focusStyle.subPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.subPx }}</span></div>
-          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.subColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.subColor }}</span></div>
+          <div class="srow sub"><label>大小</label><input class="rng" type="range" min="8" max="64" step="0.1" v-model.number="focusStyle.subPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.subPx.toFixed(1) }}</span></div>
+          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.subColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.subColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.subColor); if (v) { focusStyle.subColor = v; applyFocusStyle() } }" /></div>
           </template>
           <label class="chk2" title="套在聚焦星本体上的圆环（在轨高度，不是星下点）"><input type="checkbox" v-model="focusStyle.ringOn" @change="applyFocusStyle" /><span>高亮环</span></label>
           <template v-if="focusStyle.ringOn">
-          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.ringColor" @input="applyFocusStyle" /><span class="u">{{ focusStyle.ringColor }}</span></div>
-          <div class="srow sub"><label>大小</label><input class="rng" type="range" min="10" max="60" step="1" v-model.number="focusStyle.ringPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.ringPx }}</span></div>
+          <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="focusStyle.ringColor" @input="applyFocusStyle" /><input class="ci hex" :value="focusStyle.ringColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, focusStyle.ringColor); if (v) { focusStyle.ringColor = v; applyFocusStyle() } }" /></div>
+          <div class="srow sub"><label>大小</label><input class="rng" type="range" min="10" max="60" step="0.1" v-model.number="focusStyle.ringPx" @input="applyFocusStyle" /><span class="u">{{ focusStyle.ringPx.toFixed(1) }}</span></div>
           </template>
           </template>
         </div>
@@ -14610,8 +15398,8 @@ onBeforeUnmount(() => {
         <!-- 仿真对象模型：当前卫星的模型绑定 / 显示 / 模型库（独立组件，见 ModelSidePanel.vue） -->
         <div v-show="shellUi.side === 'model'" class="sview">
           <ModelSidePanel
-            :sat="selSat" :model="selModel" :lib="modelLib.list" :following="!!following" :can-follow="!flatView" :st="focusStyle"
-            @toggle-follow="toggleFollow" @bind="bindModel" @set-style="setModelStyle" @reset-style="resetModelStyle" @open-wb="openModelWorkbench"
+            :sat="selSat" :model="selModel" :lib="modelLib.list" :following="!!following || flatFollowing" :st="focusStyle"
+            @toggle-follow="toggleFollow" @bind="bindModel" @set-style="setModelStyle" @reset-style="resetSec('model')" @open-wb="openModelWorkbench"
           />
         </div>
 
@@ -14619,7 +15407,7 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'geo'" class="sview">
         <div class="cov-side geo-side docked">
         <div class="sec">
-          <div class="sect acc" data-sec="geo-proj" :class="{ open: isSecOpen('geo-proj', false) }" @click="toggleSec('geo-proj', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-proj', false) }" :size="12" /><span>2D 投影</span></div>
+          <div class="sect acc" data-sec="geo-proj" :class="{ open: isSecOpen('geo-proj', false) }" @click="toggleSec('geo-proj', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-proj', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-proj', false)" @keydown.space.self.prevent="toggleSec('geo-proj', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-proj', false) }" :size="12" /><span>2D 投影</span></div>
           <template v-if="isSecOpen('geo-proj', false)">
           <div class="srow"><label>投影</label>
             <select :value="mapCrs.proj" :title="projTitle" @change="setMapProj($event.target.value)">
@@ -14633,26 +15421,26 @@ onBeforeUnmount(() => {
             <NumBox class="ci cov-b" :min="-89.5" :max="89.5" :step="0.5" :model-value="mapCrs.par2" title="圆锥与球面相割的两条纬线，其上无变形。常规中国全图取 25°N / 47°N" @commit="(v) => setProjPar(2, v)" />
           </div>
           <div class="srow stack"><label>常用</label>
-            <span class="seg nseg" role="group" aria-label="常用画面中心">
-              <span v-for="c in CENTER_PRESETS" :key="c.v" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="常用画面中心">
+              <button type="button" v-for="c in CENTER_PRESETS" :key="c.v" role="radio" :aria-checked="!!(Math.abs(crsCenter - c.v) < 0.25)" class="sg" :class="{ on: Math.abs(crsCenter - c.v) < 0.25 }" @click="setCrsCenter(c.v)">{{ c.zh }}</button>
             </span>
           </div>
+          <!-- 两颗切换钮而不是分段控件：两种口径互斥但可以都不开（见 toggleProjSpin / projCenterToSat），
+               连成一条的分段读作「必选其一」，都不开时就成了一条没有选中项的空页签 -->
           <div class="srow"><label>投影中心</label>
-            <span class="seg nseg" role="group" aria-label="投影中心">
-              <span class="sg" :class="{ on: projSpin }" title="开着之后在图上左键拖动改的是投影中心，不再平移画面；拖动过程中底图降到简版、覆盖场与影像暂不画，松手补全" @click="toggleProjSpin">拖动调整</span>
-              <span class="sg" :class="{ on: subOpen }" :title="projSatTitle" @click="projCenterToSat">星下点</span>
-            </span>
+            <button type="button" class="btn fill" :class="{ on: projSpin }" :aria-pressed="projSpin ? 'true' : 'false'" title="开着之后在图上左键拖动改的是投影中心，不再平移画面；拖动过程中底图降到简版、覆盖场与影像暂不画，松手补全" @click="toggleProjSpin"><Icon name="move" :size="12" /><span>拖动调整</span></button>
+            <button type="button" class="btn fill" :class="{ on: subOpen }" :aria-pressed="subOpen ? 'true' : 'false'" :title="projSatTitle" @click="projCenterToSat"><Icon name="crosshair" :size="12" /><span>星下点</span></button>
           </div>
           <template v-if="subOpen">
           <div class="srow"><label>星下点</label>
-            <span class="seg nseg" role="group" aria-label="星下点来源">
-              <span v-for="ss in SUB_SRCS" :key="ss.k" class="sg" :class="{ on: subSrc === ss.k }" :title="subPtTitle" @click="setSubSrc(ss.k)">{{ byLang(ss.zh, ss.en) }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="星下点来源">
+              <button type="button" v-for="ss in SUB_SRCS" :key="ss.k" role="radio" :aria-checked="!!(subSrc === ss.k)" class="sg" :class="{ on: subSrc === ss.k }" :title="subPtTitle" @click="setSubSrc(ss.k)">{{ byLang(ss.zh, ss.en) }}</button>
             </span>
           </div>
           <template v-if="subSrc === 'manual'">
             <div class="srow sub"><label>经度</label><NumBox class="ci cov-b" :min="-180" :max="180" :step="0.5" :model-value="manLon" title="星下点经度（东正西负）" @commit="(v) => { manLon = v; applyManual() }" /><span class="u">°E</span></div>
             <div class="srow sub"><label>纬度</label><NumBox class="ci cov-b" :min="-90" :max="90" :step="0.5" :model-value="manLat" title="星下点纬度（北正南负）" @commit="(v) => { manLat = v; applyManual() }" /><span class="u">°N</span></div>
-            <div class="srow sub"><label>高度</label><NumBox class="ci cov-b" :min="100" :max="500000" :step="100" :model-value="manAlt" title="卫星轨道高度。az/el 与 u/v 是【从卫星看】的角，只给经纬度算不出来；留空按 GEO 35786 km" @commit="(v) => { manAlt = v; applyManual() }" /><span class="u">km</span></div>
+            <div class="srow sub"><label>高度</label><NumBox class="ci cov-b" :min="100" :max="500000" :step="100" :model-value="manAlt" title="卫星轨道高度。az/el 与 u/v 是【从卫星看】的角，仅给定经纬度无法计算；留空按 GEO 35786 km" @commit="(v) => { manAlt = v; applyManual() }" /><span class="u">km</span></div>
           </template>
           <template v-else-if="subSrc === 'tree'">
             <div class="srow sub"><label>卫星</label>
@@ -14664,8 +15452,8 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <div class="srow sub"><label>搜索</label>
-              <input class="ci" :value="refQ" placeholder="卫星名 / NORAD" :title="subPtTitle" @input="onRefSearch" />
-              <span v-if="projSatName" class="seg nseg"><span class="sg" :title="'用地图上选中的 ' + projSatName" @click="useSelectedAsRef">选中的</span></span>
+              <input class="ci search-field" :value="refQ" placeholder="卫星名 / NORAD" :title="subPtTitle" @input="onRefSearch" />
+              <button v-if="projSatName" type="button" class="btn" :title="'用地图上选中的 ' + projSatName" @click="useSelectedAsRef">选中的</button>
             </div>
             <div v-if="refResults.length" class="ref-list">
               <div v-for="r in refResults" :key="r.id" class="ref-it" @click="pickRefSat(r)">
@@ -14675,19 +15463,18 @@ onBeforeUnmount(() => {
           </template>
           <div v-if="mapCrs.subPt" class="srow sub"><label>当前</label>
             <span class="ci ro" :title="subPtTitle">{{ subPtRead }}</span>
-            <span class="seg nseg">
-              <span class="sg" :class="{ on: mapCrs.subFollow, dis: mapCrs.subPt.src === 'manual' }" title="星下点一动，画面跟着走。自己拖过画面就自动关掉；再按「星下点」按钮可以重新跟上" @click="setMapCrs({ subFollow: !mapCrs.subFollow })">跟随</span>
-              <span class="sg" title="取消星下点（标记与光标读数一并停掉）" @click="clearSubPt">清除</span>
-            </span>
+            <!-- 跟随是开关（切换钮）、清除是一次性动作（图标钮），两种东西不能连成一条分段 -->
+            <button type="button" class="btn" :class="{ on: mapCrs.subFollow && mapCrs.subPt.src !== 'manual' }" :aria-pressed="mapCrs.subFollow && mapCrs.subPt.src !== 'manual' ? 'true' : 'false'" :disabled="mapCrs.subPt.src === 'manual'" title="星下点一动，画面跟着走。自己拖过画面就自动关掉；再按「星下点」按钮可以重新跟上" @click="setMapCrs({ subFollow: !mapCrs.subFollow })">跟随</button>
+            <button type="button" class="btn icon" title="取消星下点（标记与光标读数一并停掉）" aria-label="清除" @click="clearSubPt"><Icon name="x" :size="12" /></button>
           </div>
           <div class="srow"><label>光标读数</label>
-            <span class="seg nseg" role="group" aria-label="光标读数">
-              <span v-for="m in LOOK_MODES" :key="m.k" class="sg" :class="{ on: mapCrs.lookMode === m.k, dis: m.k !== 'off' && !mapCrs.subPt }" :title="lookTitle" @click="setLookMode(m.k)">{{ byLang(m.zh, m.en) }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="光标读数">
+              <button type="button" v-for="m in LOOK_MODES" :key="m.k" role="radio" :aria-checked="!!(mapCrs.lookMode === m.k)" :aria-disabled="!!(m.k !== 'off' && !mapCrs.subPt)" class="sg" :class="{ on: mapCrs.lookMode === m.k, dis: m.k !== 'off' && !mapCrs.subPt }" :title="lookTitle" @click="setLookMode(m.k)">{{ byLang(m.zh, m.en) }}</button>
             </span>
           </div>
           </template>
           <!-- 经纬图框（SATSOFT 式，与视频导出同一支 geo/geoFrame.js）：留白 + 四边刻度 + 度数标注 + 轴标题 + 点线网格 -->
-          <div class="swrow" title="图框外留白、四边刻度、度数标注与轴标题；仅 2D 平面图，PNG / PDF 导出一并带上"><span>经纬图框</span><button type="button" class="layersw" :class="{ on: mapCrs.frame.on }" role="switch" :aria-checked="mapCrs.frame.on ? 'true' : 'false'" @click="setMapFrame({ on: !mapCrs.frame.on })"><i></i></button></div>
+          <div class="swrow" title="图框外留白、四边刻度、度数标注与轴标题；仅 2D 平面图，PNG / PDF 导出一并带上"><span id="cm-sw-geoframe">经纬图框</span><button type="button" class="layersw" :class="{ on: mapCrs.frame.on }" role="switch" aria-labelledby="cm-sw-geoframe" :aria-checked="mapCrs.frame.on ? 'true' : 'false'" @click="setMapFrame({ on: !mapCrs.frame.on })"><i></i></button></div>
           <template v-if="mapCrs.frame.on">
             <div class="srow sub"><label>间隔</label>
               <select :value="mapCrs.frame.step" @change="setMapFrame({ step: Number($event.target.value) })">
@@ -14696,15 +15483,16 @@ onBeforeUnmount(() => {
               </select>
             </div>
             <div class="srow sub"><label>标注</label>
-              <span class="seg nseg" role="group" aria-label="标注">
-                <span class="sg" :class="{ on: mapCrs.frame.fmt !== 'hemi' }" @click="setMapFrame({ fmt: 'num' })">−50.00</span>
-                <span class="sg" :class="{ on: mapCrs.frame.fmt === 'hemi' }" @click="setMapFrame({ fmt: 'hemi' })">50°W</span>
+              <span class="seg nseg" role="radiogroup" aria-label="标注">
+                <button type="button" role="radio" :aria-checked="!!(mapCrs.frame.fmt !== 'hemi')" class="sg" :class="{ on: mapCrs.frame.fmt !== 'hemi' }" @click="setMapFrame({ fmt: 'num' })">−50.00</button>
+                <button type="button" role="radio" :aria-checked="!!(mapCrs.frame.fmt === 'hemi')" class="sg" :class="{ on: mapCrs.frame.fmt === 'hemi' }" @click="setMapFrame({ fmt: 'hemi' })">50°W</button>
               </span>
             </div>
             <div class="srow sub"><label>底色</label>
-              <span class="seg nseg" role="group" aria-label="底色">
-                <span class="sg" :class="{ on: mapCrs.frame.theme !== 'dark' }" @click="setMapFrame({ theme: 'light' })">浅色</span>
-                <span class="sg" :class="{ on: mapCrs.frame.theme === 'dark' }" @click="setMapFrame({ theme: 'dark' })">深色</span>
+              <span class="seg nseg" role="radiogroup" aria-label="底色">
+                <button type="button" role="radio" :aria-checked="!!(mapCrs.frame.theme === 'auto')" class="sg" :class="{ on: mapCrs.frame.theme === 'auto' }" @click="setMapFrame({ theme: 'auto' })">跟随外观</button>
+                <button type="button" role="radio" :aria-checked="!!(mapCrs.frame.theme === 'light')" class="sg" :class="{ on: mapCrs.frame.theme === 'light' }" @click="setMapFrame({ theme: 'light' })">浅色</button>
+                <button type="button" role="radio" :aria-checked="!!(mapCrs.frame.theme === 'dark')" class="sg" :class="{ on: mapCrs.frame.theme === 'dark' }" @click="setMapFrame({ theme: 'dark' })">深色</button>
               </span>
             </div>
             <label class="chk2 sub"><input type="checkbox" :checked="mapCrs.frame.lines" @change="setMapFrame({ lines: $event.target.checked })" /><span>网格线</span></label>
@@ -14712,40 +15500,40 @@ onBeforeUnmount(() => {
           </template>
         </div>
         <div class="sec" :class="{ hid: !spaceOn }">
-          <div class="sect acc" data-sec="geo-space" :class="{ open: isSecOpen('geo-space', false) }" @click="toggleSec('geo-space', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-space', false) }" :size="12" /><span>宇宙空间</span><span class="lnk" title="本节恢复出厂样式（不动总开关）" @click.stop="resetSpace">默认</span><button type="button" class="layersw sect-layersw" :class="{ on: spaceOn }" role="switch" :aria-checked="spaceOn ? 'true' : 'false'" :title="spaceOn ? '关闭宇宙空间' : '开启宇宙空间'" @click.stop="toggleSpace"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-space" :class="{ open: isSecOpen('geo-space', false) }" @click="toggleSec('geo-space', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-space', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-space', false)" @keydown.space.self.prevent="toggleSec('geo-space', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-space', false) }" :size="12" /><span>宇宙空间</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('space')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: spaceOn }" role="switch" :aria-checked="spaceOn ? 'true' : 'false'" :title="spaceOn ? '关闭宇宙空间' : '开启宇宙空间'" @click.stop="toggleSpace"><i></i></button></div>
           <template v-if="isSecOpen('geo-space', false)">
-          <label class="chk2" title="耶鲁亮星表 9096 颗亮星（真实位置、星等、颜色）+ NASA 星图的银河（Gaia 等 17 亿颗星汇成的光）；画面里受光的地球越大星空越暗（人眼适应）；随恒星时转动，计入岁差章动；仅 3D 球体"><input type="checkbox" :checked="space.stars" @change="setSpaceItem('stars', $event.target.checked)" /><span>星空</span></label>
-          <div v-if="space.stars" class="srow sub"><label>星空亮度</label><input class="rng" type="range" min="0.2" max="2" step="0.05" v-model.number="space.starGain" @input="applySpace" /><span class="u">{{ space.starGain.toFixed(2) }}</span></div>
+          <label class="chk2" title="耶鲁亮星表 9096 颗亮星（真实位置、星等、颜色）+ NASA 星图的银河（Gaia 等 17 亿颗星汇成的光）；画面中受光的地球越大星空越暗（人眼适应）；随恒星时转动，计入岁差章动；仅 3D 球体"><input type="checkbox" :checked="space.stars" @change="setSpaceItem('stars', $event.target.checked)" /><span>星空</span></label>
+          <div v-if="space.stars" class="srow sub"><label>星空亮度</label><input class="rng" type="range" min="0.2" max="2" step="0.01" v-model.number="space.starGain" @input="applySpace" /><span class="u">{{ space.starGain.toFixed(2) }}</span></div>
           <label class="chk2" title="地球临边的大气散射：昼侧亮蓝、夜侧几乎不见、晨昏线附近偏暖，与晨昏效果同一个太阳方向；仅 3D 球体"><input type="checkbox" :checked="space.atmo" @change="setSpaceItem('atmo', $event.target.checked)" /><span>大气辉光</span></label>
-          <div v-if="space.atmo" class="srow sub"><label>辉光强度</label><input class="rng" type="range" min="0.2" max="2" step="0.05" v-model.number="space.atmoGain" @input="applySpace" /><span class="u">{{ space.atmoGain.toFixed(2) }}</span></div>
+          <div v-if="space.atmo" class="srow sub"><label>辉光强度</label><input class="rng" type="range" min="0.2" max="2" step="0.01" v-model.number="space.atmoGain" @input="applySpace" /><span class="u">{{ space.atmoGain.toFixed(2) }}</span></div>
           <label class="chk2" title="日面 + 柔和眩光，沉到地球背后时淡出；仅 3D 球体"><input type="checkbox" :checked="space.sun" @change="setSpaceItem('sun', $event.target.checked)" /><span>太阳</span></label>
-          <div v-if="space.sun" class="srow sub"><label>眩光强度</label><input class="rng" type="range" min="0" max="2" step="0.05" v-model.number="space.sunGlare" @input="applySpace" /><span class="u">{{ space.sunGlare.toFixed(2) }}</span></div>
+          <div v-if="space.sun" class="srow sub"><label>眩光强度</label><input class="rng" type="range" min="0" max="2" step="0.01" v-model.number="space.sunGlare" @input="applySpace" /><span class="u">{{ space.sunGlare.toFixed(2) }}</span></div>
           <label class="chk2" title="NASA LRO 月面贴图（LROC 彩色镶嵌 + LOLA 地形），按真实地心位置、月相与天平动绘制，含地照与月食地影；仅 3D 球体"><input type="checkbox" :checked="space.moon" @change="setSpaceItem('moon', $event.target.checked)" /><span>月球</span></label>
-          <div v-if="space.moon" class="srow sub" title="显示半径的放大倍数，1× 为真实大小；仅放大显示，位置、月相与食象仍按真实几何计算"><label>大小</label><input class="rng" type="range" min="1" max="10" step="0.1" v-model.number="space.moonScale" @input="applySpace" /><span class="u">{{ space.moonScale.toFixed(1) }}×</span></div>
-          <label class="chk2" title="水星、金星、火星、木星、土星、天王星：VSOP87 行星理论算真实地心位置（对 JPL 星历误差 < 2″），视星等含相位与土星环倾角，亮度跟随星空亮度；仅 3D 球体"><input type="checkbox" :checked="space.planets" @change="setSpaceItem('planets', $event.target.checked)" /><span>行星</span></label>
+          <div v-if="space.moon" class="srow sub" title="显示半径的放大倍数，1× 为真实大小；仅放大显示，位置、月相与食象仍按真实几何计算"><label>大小</label><input class="rng" type="range" min="1" max="10" step="0.01" v-model.number="space.moonScale" @input="applySpace" /><span class="u">{{ space.moonScale.toFixed(2) }}×</span></div>
+          <label class="chk2" title="水星、金星、火星、木星、土星、天王星：VSOP87 行星理论计算真实地心位置（对 JPL 星历误差 < 2″），视星等含相位与土星环倾角，亮度跟随星空亮度；仅 3D 球体"><input type="checkbox" :checked="space.planets" @change="setSpaceItem('planets', $event.target.checked)" /><span>行星</span></label>
           <label class="chk2" title="真彩卫星影像，3D 球体与平面图同一份；「高精」档平面图用瓦片金字塔、3D 球体用 16K 整幅（显卡纹理上限不足 16384 时自动落到 8K）"><input type="checkbox" :checked="space.img" @change="setSpaceItem('img', $event.target.checked)" /><span>地球影像</span></label>
           <div v-if="space.img" class="srow sub"><label>分辨率</label>
-            <span class="seg nseg" role="group" aria-label="影像分辨率">
-              <span v-for="im in IMAGERY_SOURCES" :key="im.k" class="sg" :class="{ on: imageryKey === im.k }" :title="imageryTitle(im)" @click="setImageryKey(im.k)">{{ im.zh }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="影像分辨率">
+              <button type="button" v-for="im in IMAGERY_SOURCES" :key="im.k" role="radio" :aria-checked="!!(imageryKey === im.k)" class="sg" :class="{ on: imageryKey === im.k }" :title="imageryTitle(im)" @click="setImageryKey(im.k)">{{ im.zh }}</button>
             </span>
           </div>
-          <div v-if="space.img" class="srow sub"><label>亮度</label><input class="rng" type="range" min="0.3" max="1.2" step="0.05" :value="imageryBright" title="压暗影像，让边界线与覆盖场看得清；100% 为原图" @input="setImageryBright" /><span class="u">{{ Math.round(imageryBright * 100) }}%</span></div>
+          <div v-if="space.img" class="srow sub"><label>亮度</label><input class="rng" type="range" min="0.3" max="1.2" step="0.01" :value="imageryBright" title="压暗影像，让边界线与覆盖场看得清；100% 为原图" @input="setImageryBright" /><span class="u">{{ Math.round(imageryBright * 100) }}%</span></div>
           <label class="chk2" title="夜半球按太阳高度角从 0° 到 −18° 平滑压暗（民用 −6° / 航海 −12° / 天文 −18° 曙暮光），卫星模型按太阳方向受光、进入地影时变暗；不勾选时地球与卫星均为全亮。适用于 3D 球体与平面图"><input type="checkbox" :checked="space.night" @change="setSpaceItem('night', $event.target.checked)" /><span>晨昏效果</span></label>
-          <div v-if="space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.nightColor" @input="applySpace" /><span class="u">{{ space.nightColor }}</span></div>
+          <div v-if="space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.nightColor" @input="applySpace" /><input class="ci hex" :value="space.nightColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, space.nightColor); if (v) { space.nightColor = v; applySpace() } }" /></div>
           <div class="srow sub" v-if="space.night" title="太阳高度角 −18° 以下（全黑夜）的不透明度"><label>夜区强度</label><input class="rng" type="range" min="0" max="0.95" step="0.01" v-model.number="space.nightOpacity" @input="applySpace" /><span class="u">{{ space.nightOpacity.toFixed(2) }}</span></div>
           <label class="chk2" title="太阳中心高度角 0° 的昼夜分界线；晨昏效果不勾时自带一层夜区阴影（勾着时夜区归晨昏效果）。3D 球体与平面图"><input type="checkbox" :checked="space.line" @change="setSpaceItem('line', $event.target.checked)" /><span>晨昏线</span></label>
-          <div v-if="space.line" class="srow sub"><label>线颜色</label><input class="clr" type="color" v-model="space.lineColor" @input="applySpace" /><span class="u">{{ space.lineColor }}</span></div>
-          <div v-if="space.line" class="srow sub"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.1" v-model.number="space.lineWidth" @input="applySpace" /><span class="u">{{ space.lineWidth.toFixed(1) }}</span></div>
-          <div v-if="space.line" class="srow sub"><label>线透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="space.lineOpacity" @input="applySpace" /><span class="u">{{ space.lineOpacity.toFixed(2) }}</span></div>
-          <div v-if="space.line && !space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.shadeColor" @input="applySpace" /><span class="u">{{ space.shadeColor }}</span></div>
-          <div v-if="space.line && !space.night" class="srow sub" title="整个夜半球的不透明度；0 = 只画线"><label>夜区强度</label><input class="rng" type="range" min="0" max="0.95" step="0.01" v-model.number="space.shadeOpacity" @input="applySpace" /><span class="u">{{ space.shadeOpacity.toFixed(2) }}</span></div>
+          <div v-if="space.line" class="srow sub"><label>线颜色</label><input class="clr" type="color" v-model="space.lineColor" @input="applySpace" /><input class="ci hex" :value="space.lineColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, space.lineColor); if (v) { space.lineColor = v; applySpace() } }" /></div>
+          <div v-if="space.line" class="srow sub"><label>线粗</label><input class="rng" type="range" min="0.1" max="4" step="0.01" v-model.number="space.lineWidth" @input="applySpace" /><span class="u">{{ space.lineWidth.toFixed(2) }}</span></div>
+          <div v-if="space.line" class="srow sub"><label>线不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="space.lineOpacity" @input="applySpace" /><span class="u">{{ space.lineOpacity.toFixed(2) }}</span></div>
+          <div v-if="space.line && !space.night" class="srow sub"><label>夜区颜色</label><input class="clr" type="color" v-model="space.shadeColor" @input="applySpace" /><input class="ci hex" :value="space.shadeColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, space.shadeColor); if (v) { space.shadeColor = v; applySpace() } }" /></div>
+          <div v-if="space.line && !space.night" class="srow sub" title="整个夜半球的不透明度；0 = 仅绘制线"><label>夜区强度</label><input class="rng" type="range" min="0" max="0.95" step="0.01" v-model.number="space.shadeOpacity" @input="applySpace" /><span class="u">{{ space.shadeOpacity.toFixed(2) }}</span></div>
           <div class="srow" v-if="spaceSub" title="太阳直射点（时间轴当前时刻）"><label>日下点</label><span class="u">{{ fmtSlot(spaceSub.lon) + ' · ' + Math.abs(spaceSub.lat).toFixed(2) + '°' + (spaceSub.lat >= 0 ? 'N' : 'S') }}</span></div>
           <div class="srow" v-if="spaceMoon" title="月球位于天顶的地面点（时间轴当前时刻）"><label>月下点</label><span class="u">{{ fmtSlot(spaceMoon.sub.lon) + ' · ' + Math.abs(spaceMoon.sub.lat).toFixed(2) + '°' + (spaceMoon.sub.lat >= 0 ? 'N' : 'S') }}</span></div>
           <div class="srow" v-if="spaceMoon" title="月面被照亮部分占月盘的比例（地心视角，时间轴当前时刻）"><label>月相</label><span class="u">{{ (spaceMoon.illum * 100).toFixed(1) }}%</span></div>
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" data-sec="geo-ocean" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-ocean') }" :size="12" /><span>配色</span></div>
+          <div class="sect acc" data-sec="geo-ocean" :class="{ open: isSecOpen('geo-ocean') }" @click="toggleSec('geo-ocean')" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-ocean') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-ocean')" @keydown.space.self.prevent="toggleSec('geo-ocean')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-ocean') }" :size="12" /><span>配色</span></div>
           <template v-if="isSecOpen('geo-ocean')">
           <div class="bsub"><span>大海</span></div>
           <div class="swatches">
@@ -14753,35 +15541,35 @@ onBeforeUnmount(() => {
           </div>
           <div class="bsub"><span>大地</span></div>
           <div class="swatches">
-            <span class="sw swmix" :class="{ on: landScheme === 'morandi' }" title="莫兰迪杂色（默认）" @click="setLandScheme('morandi')"></span>
+            <span class="sw swmix" :class="{ on: landScheme === 'morandi' }" title="莫兰迪杂色" @click="setLandScheme('morandi')"></span>
             <span v-for="c in LAND_UNIFORMS" :key="c" class="sw" :class="{ on: landScheme === c }" :style="{ background: c }" :title="c" @click="setLandScheme(c)"></span>
           </div>
-          <div class="srow"><label>自定义底色</label><input class="clr" type="color" :value="landScheme === 'morandi' ? '#e4eccf' : landScheme" @change="setLandScheme($event.target.value)" /><span class="u">{{ landScheme === 'morandi' ? '杂色' : landScheme }}</span></div>
+          <div class="srow"><label>自定义底色</label><input class="clr" type="color" :value="landScheme === 'morandi' ? '#e4eccf' : landScheme" @change="setLandScheme($event.target.value)" /><input class="ci hex" :value="landScheme === 'morandi' ? '' : landScheme" :placeholder="landScheme === 'morandi' ? '杂色' : ''" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, landScheme === 'morandi' ? '' : landScheme); if (v) setLandScheme(v) }" /></div>
           <div class="bsub"><span>逐国设色</span></div>
-          <div class="srow"><label>国家</label><input class="ci" v-model="landQuery" placeholder="输入中文名搜索" /></div>
+          <div class="srow"><label>国家</label><input class="ci search-field" v-model="landQuery" placeholder="输入中文名搜索" /></div>
           <div class="mlist" v-if="landHits.length">
             <div v-for="c in landHits" :key="c.id" class="mrow rowlk" @click="pickLandCountry(c)"><span class="mc">{{ c.zh }}</span></div>
           </div>
           <template v-if="landPick">
-            <div class="srow"><label>{{ landPick.zh }}</label><input class="clr" type="color" :value="landPickColor" @input="setLandCountryColor(landPick.id, $event.target.value)" /><span class="u">{{ landPickColor }}</span></div>
+            <div class="srow"><label>{{ landPick.zh }}</label><input class="clr" type="color" :value="landPickColor" @input="setLandCountryColor(landPick.id, $event.target.value)" /><input class="ci hex" :value="landPickColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, landPickColor); if (v) { setLandCountryColor(landPick.id, v) } }" /></div>
             <div class="swatches">
               <span v-for="c in LAND_MORANDI" :key="c" class="sw" :class="{ on: landOverrides[landPick.id] === c }" :style="{ background: c }" :title="c" @click="setLandCountryColor(landPick.id, c)"></span>
             </div>
           </template>
           <template v-if="landOvList.length">
             <div class="mlist">
-              <div v-for="o in landOvList" :key="o.id" class="mrow"><span class="swd" :style="{ background: o.color }"></span><span class="mc rowlk" @click="pickLandCountry(o)">{{ o.zh }}</span><span class="del" @click="removeLandCountryColor(o.id)"><Icon name="x" :size="12" /></span></div>
+              <div v-for="o in landOvList" :key="o.id" class="mrow"><span class="swd" :style="{ background: o.color }"></span><span class="mc rowlk" @click="pickLandCountry(o)">{{ o.zh }}</span><button type="button" class="ibtn sm danger" title="移除该国家" aria-label="移除该国家" @click="removeLandCountryColor(o.id)"><Icon name="x" :size="12" /></button></div>
             </div>
-            <div class="bsub"><span class="lnk" @click="clearLandOverrides">全部恢复默认</span></div>
+            <div class="bsub"><button type="button" class="lnk" title="清除全部逐国设色" @click="resetSec('land')">全部恢复默认</button></div>
           </template>
           </template>
         </div>
         <div class="sec">
-          <div class="sect acc" data-sec="geo-border" :class="{ open: isSecOpen('geo-border', false) }" @click="toggleSec('geo-border', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-border', false) }" :size="12" /><span>边界线</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetBorderAll">默认</span></div>
+          <div class="sect acc" data-sec="geo-border" :class="{ open: isSecOpen('geo-border', false) }" @click="toggleSec('geo-border', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-border', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-border', false)" @keydown.space.self.prevent="toggleSec('geo-border', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-border', false) }" :size="12" /><span>边界线</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('border')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
           <template v-if="isSecOpen('geo-border', false)">
           <div class="srow stack"><label>预设</label>
-            <span class="seg nseg" role="group" aria-label="边界线样式预设">
-              <span v-for="pr in BORDER_PRESETS" :key="pr.k" class="sg" :title="pr.tip" @click="applyBorderPreset(pr.k)">{{ pr.zh }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="边界线样式预设">
+              <button type="button" v-for="pr in BORDER_PRESETS" :key="pr.k" role="radio" :aria-checked="!!(borderPresetOn === pr.k)" class="sg" :class="{ on: borderPresetOn === pr.k }" :title="pr.tip" @click="applyBorderPreset(pr.k)">{{ pr.zh }}</button>
             </span>
           </div>
           <div class="mlist pick">
@@ -14791,21 +15579,21 @@ onBeforeUnmount(() => {
           </div>
           <template v-for="r in BORDER_ROWS" :key="'d' + r.k">
             <template v-if="borderPick === r.k">
-              <div v-if="r.vis" class="swrow"><span>显示</span><button type="button" class="layersw" :class="{ on: borderStyle.gridOn !== false }" role="switch" :aria-checked="borderStyle.gridOn !== false ? 'true' : 'false'" @click="setBorderVal('gridOn', borderStyle.gridOn === false)"><i></i></button></div>
+              <div v-if="r.vis" class="swrow"><span :id="'cm-sw-bd-' + r.k">显示</span><button type="button" class="layersw" :class="{ on: borderStyle.gridOn !== false }" role="switch" :aria-labelledby="'cm-sw-bd-' + r.k" :aria-checked="borderStyle.gridOn !== false ? 'true' : 'false'" @click="setBorderVal('gridOn', borderStyle.gridOn === false)"><i></i></button></div>
               <div v-if="r.step" class="srow"><label>间隔</label>
-                <span class="seg nseg" role="group" aria-label="经纬网间隔">
-                  <span v-for="g in GRID_STEPS" :key="g" class="sg" :class="{ on: borderStyle.gridStep === g }" @click="setBorderVal('gridStep', g)">{{ g }}°</span>
+                <span class="seg nseg" role="radiogroup" aria-label="经纬网间隔">
+                  <button type="button" v-for="g in GRID_STEPS" :key="g" role="radio" :aria-checked="!!(borderStyle.gridStep === g)" class="sg" :class="{ on: borderStyle.gridStep === g }" @click="setBorderVal('gridStep', g)">{{ g }}°</button>
                 </span>
               </div>
-              <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="borderStyle[r.k + 'Color']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Color'] }}</span></div>
-              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="borderStyle[r.k + 'Width']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Width'].toFixed(1) }}</span></div>
-              <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="borderStyle[r.k + 'Opacity']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
+              <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="borderStyle[r.k + 'Color']" @input="applyBorderStyle" /><input class="ci hex" :value="borderStyle[r.k + 'Color']" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, borderStyle[r.k + 'Color']); if (v) { borderStyle[r.k + 'Color'] = v; applyBorderStyle() } }" /></div>
+              <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="borderStyle[r.k + 'Width']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Width'].toFixed(2) }}</span></div>
+              <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="borderStyle[r.k + 'Opacity']" @input="applyBorderStyle" /><span class="u">{{ borderStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
               <div v-if="!r.nodash" class="srow stack"><label>线型</label>
-                <span class="seg nseg" role="group" :aria-label="r.zh + '线型'">
-                  <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: borderStyle[r.k + 'Dash'] === d.k }" @click="setBorderVal(r.k + 'Dash', d.k)">{{ d.label }}</span>
+                <span class="seg nseg" role="radiogroup" :aria-label="r.zh + '线型'">
+                  <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(borderStyle[r.k + 'Dash'] === d.k)" class="sg" :class="{ on: borderStyle[r.k + 'Dash'] === d.k }" @click="setBorderVal(r.k + 'Dash', d.k)">{{ d.label }}</button>
                 </span>
               </div>
-              <div class="srow"><label></label><span class="lnk" title="本类恢复出厂样式" @click="resetBorderPart(r.k)">恢复本类默认</span></div>
+              <div class="srow"><label></label><button type="button" class="lnk" title="本类恢复出厂样式" @click="resetSec('border-part', r.k)">恢复默认</button></div>
             </template>
           </template>
           <label class="chk2" title="全球视角下二级行政区界完全淡出、一级降到 0.3，拉近后线性恢复；国界与海岸线不参与"><input type="checkbox" :checked="borderStyle.fade" @change="toggleBorderFade" /><span>行政区界按缩放淡出</span></label>
@@ -14813,7 +15601,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="geo-name" :class="{ open: isSecOpen('geo-name', false) }" @click="toggleSec('geo-name', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-name', false) }" :size="12" /><span>地名</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetNameAll">默认</span></div>
+          <div class="sect acc" data-sec="geo-name" :class="{ open: isSecOpen('geo-name', false) }" @click="toggleSec('geo-name', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-name', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-name', false)" @keydown.space.self.prevent="toggleSec('geo-name', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-name', false) }" :size="12" /><span>地名</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('name')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
           <template v-if="isSecOpen('geo-name', false)">
           <div class="mlist pick">
             <div v-for="r in NAME_ROWS" :key="r.k" class="mrow rowlk" :class="{ active: namePick === r.k }" @click="pickNameRow(r.k)">
@@ -14823,22 +15611,22 @@ onBeforeUnmount(() => {
           <template v-for="r in NAME_ROWS" :key="'n' + r.k">
             <template v-if="namePick === r.k">
               <div class="srow"><label>名称</label>
-                <span class="seg nseg" role="group" :aria-label="r.zh + '档位'">
-                  <span v-for="m in r.modes" :key="m[0]" class="sg" :class="{ on: nameRowMode(r.k) === m[0] }" :title="m[0] === 'local' ? '数据源自带的中文名；没有中文名的单元回落英文' : ''" @click="setNameRowMode(r.k, m[0])">{{ m[1] }}</span>
+                <span class="seg nseg" role="radiogroup" :aria-label="r.zh + '档位'">
+                  <button type="button" v-for="m in r.modes" :key="m[0]" role="radio" :aria-checked="!!(nameRowMode(r.k) === m[0])" class="sg" :class="{ on: nameRowMode(r.k) === m[0] }" :title="m[0] === 'local' ? '数据源自带的中文名；没有中文名的单元回落英文' : ''" @click="setNameRowMode(r.k, m[0])">{{ m[1] }}</button>
                 </span>
               </div>
               <div class="srow"><label>字号</label><input class="rng" type="range" :min="r.min" :max="r.max" :step="r.step" :value="nameRowSize(r.k)" @input="setNameRowSize(r.k, $event.target.value)" /><span class="u">{{ nameRowSize(r.k).toFixed(2) }}</span></div>
-              <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="labelStyle[r.k + 'Color']" @input="applyLabelStyle" /><span class="u">{{ labelStyle[r.k + 'Color'] }}</span></div>
-              <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="labelStyle[r.k + 'Opacity']" @input="applyLabelStyle" /><span class="u">{{ labelStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
+              <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="labelStyle[r.k + 'Color']" @input="applyLabelStyle" /><input class="ci hex" :value="labelStyle[r.k + 'Color']" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, labelStyle[r.k + 'Color']); if (v) { labelStyle[r.k + 'Color'] = v; applyLabelStyle() } }" /></div>
+              <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="labelStyle[r.k + 'Opacity']" @input="applyLabelStyle" /><span class="u">{{ labelStyle[r.k + 'Opacity'].toFixed(2) }}</span></div>
               <label class="chk2"><input type="checkbox" v-model="labelStyle[r.k + 'Bold']" @change="applyLabelStyle" /><span>粗体</span></label>
               <template v-if="r.water">
-                <div v-if="r.search" class="srow"><label>搜索</label><input class="ci" v-model="waterQuery" placeholder="中文 / English" /></div>
+                <div v-if="r.search" class="srow"><label>搜索</label><input class="ci search-field" v-model="waterQuery" placeholder="中文 / English" /></div>
                 <div class="mlist tall">
                   <div v-for="w in waterRows(r.water)" :key="w.id" class="mrow rowlk" @click="toggleWater(w.id)">
                     <input type="checkbox" :checked="waterOn(w.id)" @click.stop="toggleWater(w.id)" /><span class="mc">{{ byLang(w.zh, w.en) }}</span>
                   </div>
                 </div>
-                <div class="bsub"><span class="lnk" @click="setWaterAll(r.water, true)">全选</span><span class="lnk" @click="setWaterAll(r.water, false)">全不选</span></div>
+                <div class="bsub"><button type="button" class="lnk" @click="setWaterAll(r.water, true)">全选</button><button type="button" class="lnk" @click="setWaterAll(r.water, false)">全不选</button></div>
               </template>
             </template>
           </template>
@@ -14846,29 +15634,29 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !showProvinces }">
-          <div class="sect acc" data-sec="geo-adm" :class="{ open: isSecOpen('geo-adm', false) }" @click="toggleSec('geo-adm', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-adm', false) }" :size="12" /><span>行政区</span><button type="button" class="layersw sect-layersw" :class="{ on: showProvinces }" role="switch" :aria-checked="showProvinces ? 'true' : 'false'" :title="showProvinces ? '隐藏行政区界 / 名称' : '显示行政区界 / 名称'" @click.stop="toggleProvinces"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-adm" :class="{ open: isSecOpen('geo-adm', false) }" @click="toggleSec('geo-adm', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-adm', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-adm', false)" @keydown.space.self.prevent="toggleSec('geo-adm', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-adm', false) }" :size="12" /><span>行政区</span><button type="button" class="layersw sect-layersw" :class="{ on: showProvinces }" role="switch" :aria-checked="showProvinces ? 'true' : 'false'" :title="showProvinces ? '隐藏行政区界 / 名称' : '显示行政区界 / 名称'" @click.stop="toggleProvinces"><i></i></button></div>
           <template v-if="isSecOpen('geo-adm', false)">
-          <div class="srow"><label>国家</label><input class="ci" v-model="admQuery1" placeholder="搜索国家（中文 / English / ISO3）" /></div>
+          <div class="srow"><label>国家</label><input class="ci search-field" v-model="admQuery1" placeholder="搜索国家（中文名 / 英文名 / ISO3）" /></div>
           <div class="mlist tall">
             <div v-for="c in admHits" :key="c.id" class="mrow rowlk" @click="admToggleCountry(c.id)">
               <input type="checkbox" :checked="admSel1.includes(c.id)" @click.stop="admToggleCountry(c.id)" /><span class="mc">{{ byLang(c.zh, c.en) }}</span><span class="cnt2">{{ c.id }}</span>
             </div>
           </div>
           <div v-if="admChips.length" class="mlist">
-            <div v-for="o in admChips" :key="o.id" class="mrow"><span class="mc">{{ byLang(o.zh, o.en) }}</span><span class="del" @click="admToggleCountry(o.id)"><Icon name="x" :size="12" /></span></div>
+            <div v-for="o in admChips" :key="o.id" class="mrow"><span class="mc">{{ byLang(o.zh, o.en) }}</span><button type="button" class="ibtn sm danger" title="移除该国家" aria-label="移除该国家" @click="admToggleCountry(o.id)"><Icon name="x" :size="12" /></button></div>
           </div>
           <template v-if="admHasCN">
             <div class="bsub"><span>中国</span></div>
             <div class="swrow" title="民政部口径的 332 个地级行政区（市 / 自治州 / 盟 / 地区）；其余国家暂无二级行政区数据">
-              <span>地级市</span>
-              <button type="button" class="layersw" :class="{ on: showCities }" role="switch" :aria-checked="showCities ? 'true' : 'false'" @click="toggleCities"><i></i></button>
+              <span id="cm-sw-cities">地级市</span>
+              <button type="button" class="layersw" :class="{ on: showCities }" role="switch" aria-labelledby="cm-sw-cities" :aria-checked="showCities ? 'true' : 'false'" @click="toggleCities"><i></i></button>
             </div>
           </template>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !chainOn }">
-          <div class="sect acc" data-sec="geo-chain" :class="{ open: isSecOpen('geo-chain', false) }" @click="toggleSec('geo-chain', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-chain', false) }" :size="12" /><span>岛链</span><button type="button" class="layersw sect-layersw" :class="{ on: chainOn }" role="switch" :aria-checked="chainOn ? 'true' : 'false'" :title="chainOn ? '隐藏岛链' : '显示岛链'" @click.stop="toggleChains"><i></i></button></div>
+          <div class="sect acc" data-sec="geo-chain" :class="{ open: isSecOpen('geo-chain', false) }" @click="toggleSec('geo-chain', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-chain', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-chain', false)" @keydown.space.self.prevent="toggleSec('geo-chain', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-chain', false) }" :size="12" /><span>岛链</span><button type="button" class="layersw sect-layersw" :class="{ on: chainOn }" role="switch" :aria-checked="chainOn ? 'true' : 'false'" :title="chainOn ? '隐藏岛链' : '显示岛链'" @click.stop="toggleChains"><i></i></button></div>
           <template v-if="isSecOpen('geo-chain', false)">
           <div class="mlist">
             <div v-for="c in CHAINS" :key="c.id" class="mrow rowlk" @click="toggleChain(c.id)">
@@ -14876,50 +15664,50 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="srow"><label>名称</label>
-            <span class="seg nseg" role="group" aria-label="岛链名档位">
-              <span v-for="m in [['zh', '中文'], ['en', '英文'], ['off', '不显示']]" :key="m[0]" class="sg" :class="{ on: chainStyle.name === m[0] }" @click="setChainName(m[0])">{{ m[1] }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="岛链名档位">
+              <button type="button" v-for="m in [['zh', '中文'], ['en', '英文'], ['off', '不显示']]" :key="m[0]" role="radio" :aria-checked="!!(chainStyle.name === m[0])" class="sg" :class="{ on: chainStyle.name === m[0] }" @click="setChainName(m[0])">{{ m[1] }}</button>
             </span>
           </div>
-          <div v-if="chainStyle.name !== 'off'" class="srow"><label>字号</label><input class="rng" type="range" min="0.1" max="3" step="0.05" v-model.number="chainStyle.nameSize" @input="applyChains" /><span class="u">{{ chainStyle.nameSize.toFixed(2) }}</span></div>
+          <div v-if="chainStyle.name !== 'off'" class="srow"><label>字号</label><input class="rng" type="range" min="0.1" max="3" step="0.01" v-model.number="chainStyle.nameSize" @input="applyChains" /><span class="u">{{ chainStyle.nameSize.toFixed(2) }}</span></div>
           <label v-if="chainStyle.name !== 'off'" class="chk2"><input type="checkbox" v-model="chainStyle.nameBold" @change="applyChains" /><span>粗体</span></label>
-          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="chainStyle.color" @input="applyChains" /><span class="u">{{ chainStyle.color }}</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="chainStyle.width" @input="applyChains" /><span class="u">{{ chainStyle.width.toFixed(1) }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0" max="1" step="0.05" v-model.number="chainStyle.opacity" @input="applyChains" /><span class="u">{{ chainStyle.opacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="chainStyle.color" @input="applyChains" /><input class="ci hex" :value="chainStyle.color" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, chainStyle.color); if (v) { chainStyle.color = v; applyChains() } }" /></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="chainStyle.width" @input="applyChains" /><span class="u">{{ chainStyle.width.toFixed(2) }}</span></div>
+          <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="chainStyle.opacity" @input="applyChains" /><span class="u">{{ chainStyle.opacity.toFixed(2) }}</span></div>
           <div class="srow stack"><label>线型</label>
-            <span class="seg nseg" role="group" aria-label="岛链线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: chainStyle.dash === d.k }" @click="chainStyle.dash = d.k; applyChains()">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="岛链线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(chainStyle.dash === d.k)" class="sg" :class="{ on: chainStyle.dash === d.k }" @click="chainStyle.dash = d.k; applyChains()">{{ d.label }}</button>
             </span>
           </div>
-          <div class="srow"><label></label><span class="lnk" title="本节恢复出厂设置" @click="resetChains">恢复默认</span></div>
+          <div class="srow"><label></label><button type="button" class="lnk" title="本节恢复出厂设置（含逐条显隐）" @click="resetSec('chains')">恢复默认</button></div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="geo-crs" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-crs', false) }" :size="12" /><span>坐标系</span><span class="lnk" title="本节恢复出厂设置" @click.stop="resetCrsSec">默认</span></div>
+          <div class="sect acc" data-sec="geo-crs" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-crs', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-crs', false)" @keydown.space.self.prevent="toggleSec('geo-crs', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-crs', false) }" :size="12" /><span>坐标系</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('crs')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
           <template v-if="isSecOpen('geo-crs', false)">
           <div class="srow"><label>大地基准</label>
-            <select :value="mapCrs.datum" title="只作用于读数与输入。CGCS2000 与 WGS-84 的差在厘米量级，低于任何一处显示精度，故不做几何变换、只标口径；GCJ-02 是真实非线性偏移，仅中国境内生效。任何存储、计算与导出都不受影响" @change="setCrsDatum($event.target.value)">
+            <select :value="mapCrs.datum" title="仅作用于读数与输入。CGCS2000 与 WGS-84 的差在厘米量级，低于任何一处显示精度，故不做几何变换、仅标注口径；GCJ-02 是真实非线性偏移，仅中国境内生效。任何存储、计算与导出都不受影响" @change="setCrsDatum($event.target.value)">
               <option v-for="d in DATUMS" :key="d.k" :value="d.k">{{ byLang(d.zh, d.en) }}</option>
             </select>
           </div>
           <div class="srow"><label>坐标格式</label>
-            <select :value="mapCrs.fmt" title="只作用于地图内的坐标读数与输入框；内部照存十进制度。地心直角 ECEF：地图上的点取椭球面（高度 0），单位 km" @change="setCrsFmt($event.target.value)">
+            <select :value="mapCrs.fmt" title="仅作用于地图内的坐标读数与输入框；内部照存十进制度。地心直角 ECEF：地图上的点取椭球面（高度 0），单位 km" @change="setCrsFmt($event.target.value)">
               <option v-for="f in FORMATS" :key="f.k" :value="f.k">{{ byLang(f.zh, f.en) }}</option>
             </select>
           </div>
           <!-- 参考系轴（仅 3D）：ECEF 三轴静态、J2000 三轴随时刻相对地球转动（惯性视角下反过来：J2000 不动、地球与 ECEF 一起转） -->
           <div class="bsub"><span>参考系</span></div>
-          <div class="swrow" title="地心地固系三轴：X 指向本初子午线与赤道的交点，Y 指向东经 90°，Z 指向北极；仅 3D 球体"><span>ECEF 坐标轴</span><button type="button" class="layersw" :class="{ on: refAxes.ecef }" role="switch" :aria-checked="refAxes.ecef ? 'true' : 'false'" @click="toggleRefAxis('ecef')"><i></i></button></div>
-          <div v-if="refAxes.ecef" class="srow sub" title="ECEF 三轴的颜色（三根同色，靠轴端字标认轴）"><label>颜色</label><input class="clr" type="color" :value="refAxes.ecefColor" @input="setRefColor('ecefColor', $event.target.value)" /><span class="u">{{ refAxes.ecefColor }}</span></div>
-          <div class="swrow" title="J2000 地心惯性系三轴：X 指向 J2000.0 平春分点，Z 指向 J2000.0 平天极；随时间相对地球转动；仅 3D 球体"><span>J2000 坐标轴</span><button type="button" class="layersw" :class="{ on: refAxes.j2000 }" role="switch" :aria-checked="refAxes.j2000 ? 'true' : 'false'" @click="toggleRefAxis('j2000')"><i></i></button></div>
-          <div v-if="refAxes.j2000" class="srow sub" title="J2000 三轴的颜色（三根同色，靠轴端字标认轴）"><label>颜色</label><input class="clr" type="color" :value="refAxes.j2000Color" @input="setRefColor('j2000Color', $event.target.value)" /><span class="u">{{ refAxes.j2000Color }}</span></div>
-          <div class="swrow" title="地球赤道平面：极坐标网格，辐条每 30°（0° 辐条 = ECEF X 轴方向）；仅 3D 球体"><span>赤道面</span><button type="button" class="layersw" :class="{ on: refAxes.equator }" role="switch" :aria-checked="refAxes.equator ? 'true' : 'false'" @click="toggleRefAxis('equator')"><i></i></button></div>
-          <div v-if="refAxes.ecef || refAxes.j2000 || refAxes.equator" class="srow sub" title="自地心量起，以地球赤道半径为单位；赤道面外缘同此半径"><label>轴长</label><input class="rng" type="range" :min="REF_LEN_RANGE[0]" :max="REF_LEN_RANGE[1]" step="0.1" :value="refAxes.len" @input="setRefLen($event.target.value)" /><span class="u">{{ refAxes.len.toFixed(1) }} R⊕</span></div>
+          <div class="swrow" title="地心地固系三轴：X 指向本初子午线与赤道的交点，Y 指向东经 90°，Z 指向北极；仅 3D 球体"><span id="cm-sw-ecef">ECEF 坐标轴</span><button type="button" class="layersw" :class="{ on: refAxes.ecef }" role="switch" aria-labelledby="cm-sw-ecef" :aria-checked="refAxes.ecef ? 'true' : 'false'" @click="toggleRefAxis('ecef')"><i></i></button></div>
+          <div v-if="refAxes.ecef" class="srow sub" title="ECEF 三轴的颜色（三根同色，靠轴端字标认轴）"><label>颜色</label><input class="clr" type="color" :value="refAxes.ecefColor" @input="setRefColor('ecefColor', $event.target.value)" /><input class="ci hex" :value="refAxes.ecefColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, refAxes.ecefColor); if (v) { setRefColor('ecefColor', v) } }" /></div>
+          <div class="swrow" title="J2000 地心惯性系三轴：X 指向 J2000.0 平春分点，Z 指向 J2000.0 平天极；随时间相对地球转动；仅 3D 球体"><span id="cm-sw-j2000">J2000 坐标轴</span><button type="button" class="layersw" :class="{ on: refAxes.j2000 }" role="switch" aria-labelledby="cm-sw-j2000" :aria-checked="refAxes.j2000 ? 'true' : 'false'" @click="toggleRefAxis('j2000')"><i></i></button></div>
+          <div v-if="refAxes.j2000" class="srow sub" title="J2000 三轴的颜色（三根同色，靠轴端字标认轴）"><label>颜色</label><input class="clr" type="color" :value="refAxes.j2000Color" @input="setRefColor('j2000Color', $event.target.value)" /><input class="ci hex" :value="refAxes.j2000Color" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, refAxes.j2000Color); if (v) { setRefColor('j2000Color', v) } }" /></div>
+          <div class="swrow" title="地球赤道平面：极坐标网格，辐条每 30°（0° 辐条 = ECEF X 轴方向）；仅 3D 球体"><span id="cm-sw-equator">赤道面</span><button type="button" class="layersw" :class="{ on: refAxes.equator }" role="switch" aria-labelledby="cm-sw-equator" :aria-checked="refAxes.equator ? 'true' : 'false'" @click="toggleRefAxis('equator')"><i></i></button></div>
+          <div v-if="refAxes.ecef || refAxes.j2000 || refAxes.equator" class="srow sub" title="自地心量起，以地球赤道半径为单位；赤道面外缘同此半径"><label>轴长</label><input class="rng" type="range" :min="REF_LEN_RANGE[0]" :max="REF_LEN_RANGE[1]" step="0.01" :value="refAxes.len" @input="setRefLen($event.target.value)" /><span class="u">{{ refAxes.len.toFixed(2) }} R⊕</span></div>
           </template>
         </div>
 
         <div class="sec">
-          <div class="sect acc" data-sec="geo-pov" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-pov') }" :size="12" /><span>地图视角</span></div>
+          <div class="sect acc" data-sec="geo-pov" :class="{ open: isSecOpen('geo-pov') }" @click="toggleSec('geo-pov')" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-pov') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-pov')" @keydown.space.self.prevent="toggleSec('geo-pov')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-pov') }" :size="12" /><span>地图视角</span></div>
           <template v-if="isSecOpen('geo-pov')">
           <div class="srow"><label>视角</label>
             <select :value="povCfg.id" title="底图的国界、陆地着色、点选与国名全部按该视角的归属表解算；「自定义」以中国视角为底再逐项覆写。台湾、香港、澳门、南海诸岛与钓鱼岛恒属中国，不随视角变" @change="setPovId($event.target.value)">
@@ -14939,8 +15727,8 @@ onBeforeUnmount(() => {
           </template>
           <div class="bsub"><span>附加线</span></div>
           <div v-for="L in POV_LAYERS" :key="L.k" class="swrow" :class="{ dis: L.k === 'claim' && !povClaimAvail }" :title="L.tip">
-            <span>{{ L.zh }}</span>
-            <button type="button" class="layersw" :class="{ on: povCfg.layers[L.k] }" role="switch" :aria-checked="povCfg.layers[L.k] ? 'true' : 'false'" :disabled="L.k === 'claim' && !povClaimAvail" @click="togglePovLayer(L.k)"><i></i></button>
+            <span :id="'cm-sw-pov-' + L.k">{{ L.zh }}</span>
+            <button type="button" class="layersw" :class="{ on: povCfg.layers[L.k] }" role="switch" :aria-labelledby="'cm-sw-pov-' + L.k" :aria-checked="povCfg.layers[L.k] ? 'true' : 'false'" :disabled="L.k === 'claim' && !povClaimAvail" @click="togglePovLayer(L.k)"><i></i></button>
           </div>
           </template>
         </div>
@@ -14951,17 +15739,23 @@ onBeforeUnmount(() => {
         <div v-show="shellUi.side === 'markers'" class="sview">
         <div class="cov-side mk-side docked">
         <div class="sec" :class="{ hid: !showPtLayer }">
-          <div class="sect acc" data-sec="mk-points" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-points') }" :size="12" /><span>点标记</span><span class="lnk tbl" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')"><Icon name="table" :size="12" />表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('pt')">默认</span><span v-if="points.length" class="lnk" :class="{ on: mkEditId === 'points' }" :title="mkEditId === 'points' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖标记改坐标'" @click.stop="mkEditToggle('points')">{{ mkEditId === 'points' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
+          <div class="sect acc" data-sec="mk-points" :class="{ open: isSecOpen('mk-points') }" @click="toggleSec('mk-points')" role="button" tabindex="0" :aria-expanded="isSecOpen('mk-points') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mk-points')" @keydown.space.self.prevent="toggleSec('mk-points')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-points') }" :size="12" /><span>点标记</span><button type="button" class="btn sm sect-tbl" title="打开点标记批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('points')"><Icon name="table" :size="12" />表格</button><button v-if="points.length" type="button" class="btn sm sect-tg" :class="{ on: mkEditId === 'points' }" :aria-pressed="mkEditId === 'points' ? 'true' : 'false'" title="解锁鼠标拖动：在图上直接拖标记改坐标（再点一次退出）" @click.stop="mkEditToggle('points')">调整位置</button><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('mk-pt')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: showPtLayer }" role="switch" :aria-checked="showPtLayer ? 'true' : 'false'" :title="showPtLayer ? '隐藏点标记（数据保留）' : '显示点标记'" @click.stop="togglePtLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-points')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="ptLat" placeholder="-90 ~ 90" /></div>
-          <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><span class="addb" @click="addPointInput">添加</span></div>
-          <label class="chk2" title="点标记画成带序号的圈（圈 1、圈 2）；序号即下方列表与点标记表格的行号"><input type="checkbox" v-model="markStyle.ptIdxOn" @change="applyMarkStyle" /><span>显示序号</span></label>
+          <div class="srow"><label>经度</label><input class="ci" v-model="ptLon" placeholder="-180 ~ 180" /><button type="button" class="btn" @click="addPointInput">添加</button></div>
+          <!-- 符号与序号圈是两种互斥画法（下面两套参数 v-if / v-else 整块互换），用分段控件；原「显示序号」复选框读作「符号上再加个号」 -->
+          <div class="srow"><label>样式</label>
+            <span class="seg nseg" role="radiogroup" aria-label="点标记样式">
+              <button type="button" role="radio" :aria-checked="!!(!markStyle.ptIdxOn)" class="sg" :class="{ on: !markStyle.ptIdxOn }" @click="setMarkVal('ptIdxOn', false)">符号</button>
+              <button type="button" role="radio" :aria-checked="!!(markStyle.ptIdxOn)" class="sg" :class="{ on: markStyle.ptIdxOn }" title="点标记画成带序号的圈（圈 1、圈 2）；序号即下方列表与点标记表格的行号" @click="setMarkVal('ptIdxOn', true)">序号圈</button>
+            </span>
+          </div>
           <template v-if="markStyle.ptIdxOn">
-            <div class="srow sub" :title="byLang('序号圈直径（默认视角下的像素）；已配置模型的点标记，模型按相同大小显示', 'Badge diameter at the default view; attached models use the same size')"><label>圈大小</label><input class="rng" type="range" min="1" max="40" step="1" v-model.number="markStyle.ptIdx" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptIdx }}</span></div>
-            <div class="srow sub"><label>盘颜色</label><input class="clr" type="color" v-model="markStyle.idxFill" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFill }}</span></div>
-            <div class="srow sub"><label>盘透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.02" v-model.number="markStyle.idxFillOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFillOpacity.toFixed(2) }}</span></div>
-            <div class="srow sub"><label>圈颜色</label><input class="clr" type="color" v-model="markStyle.idxRing" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxRing }}</span></div>
-            <div class="srow sub"><label>数字颜色</label><input class="clr" type="color" v-model="markStyle.idxInk" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxInk }}</span></div>
+            <div class="srow" :title="byLang('序号圈直径（默认视角下的像素）；已配置模型的点标记，模型按相同大小显示', 'Badge diameter at the default view; attached models use the same size')"><label>圈大小</label><input class="rng" type="range" min="1" max="40" step="0.1" v-model.number="markStyle.ptIdx" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptIdx.toFixed(1) }}</span></div>
+            <div class="srow"><label>盘颜色</label><input class="clr" type="color" v-model="markStyle.idxFill" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.idxFill" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.idxFill); if (v) { markStyle.idxFill = v; applyMarkStyle() } }" /></div>
+            <div class="srow"><label>盘不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.idxFillOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.idxFillOpacity.toFixed(2) }}</span></div>
+            <div class="srow"><label>圈颜色</label><input class="clr" type="color" v-model="markStyle.idxRing" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.idxRing" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.idxRing); if (v) { markStyle.idxRing = v; applyMarkStyle() } }" /></div>
+            <div class="srow"><label>数字颜色</label><input class="clr" type="color" v-model="markStyle.idxInk" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.idxInk" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.idxInk); if (v) { markStyle.idxInk = v; applyMarkStyle() } }" /></div>
           </template>
           <template v-else>
             <div class="srow"><label>符号</label>
@@ -14969,70 +15763,70 @@ onBeforeUnmount(() => {
                 <option v-for="sp in MARK_SHAPES" :key="sp.k" :value="sp.k">{{ byLang(sp.zh, sp.en) }}</option>
               </select>
             </div>
-            <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptColor }}</span></div>
-            <div class="srow" :title="byLang('符号大小；已配置模型的点标记，模型按相同大小显示', 'Symbol size; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="20" step="0.5" v-model.number="markStyle.ptDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptDot }}</span></div>
-            <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.ptOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptOpacity.toFixed(2) }}</span></div>
-            <div class="srow" title="描边宽 ÷ 符号直径，0＝不描边"><label>描边</label><input class="rng" type="range" min="0" max="0.4" step="0.02" v-model.number="markStyle.ptEdge" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdge.toFixed(2) }}</span></div>
-            <div v-if="markStyle.ptEdge > 0" class="srow"><label>描边颜色</label><input class="clr" type="color" v-model="markStyle.ptEdgeColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdgeColor }}</span></div>
+            <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptColor" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.ptColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.ptColor); if (v) { markStyle.ptColor = v; applyMarkStyle() } }" /></div>
+            <div class="srow" :title="byLang('符号大小；已配置模型的点标记，模型按相同大小显示', 'Symbol size; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="20" step="0.1" v-model.number="markStyle.ptDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptDot.toFixed(1) }}</span></div>
+            <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.ptOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptOpacity.toFixed(2) }}</span></div>
+            <div class="srow" title="描边宽 ÷ 符号直径，0＝不描边"><label>描边</label><input class="rng" type="range" min="0" max="0.4" step="0.001" v-model.number="markStyle.ptEdge" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptEdge.toFixed(3) }}</span></div>
+            <div v-if="markStyle.ptEdge > 0" class="srow"><label>描边颜色</label><input class="clr" type="color" v-model="markStyle.ptEdgeColor" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.ptEdgeColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.ptEdgeColor); if (v) { markStyle.ptEdgeColor = v; applyMarkStyle() } }" /></div>
           </template>
           <label class="chk2"><input type="checkbox" v-model="markStyle.ptNameOn" @change="applyMarkStyle" /><span>显示名称</span></label>
           <label class="chk2"><input type="checkbox" v-model="markStyle.ptLabelOn" @change="applyMarkStyle" /><span>显示坐标</span></label>
           <template v-if="markStyle.ptNameOn || markStyle.ptLabelOn">
-            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.ptFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptFont }}</span></div>
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="0.1" v-model.number="markStyle.ptFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptFont.toFixed(1) }}</span></div>
             <label class="chk2 sub"><input type="checkbox" v-model="markStyle.ptBold" @change="applyMarkStyle" /><span>粗体</span></label>
-            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptLabelColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptLabelColor }}</span></div>
-            <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.ptLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptLabelOpacity.toFixed(2) }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.ptLabelColor" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.ptLabelColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.ptLabelColor); if (v) { markStyle.ptLabelColor = v; applyMarkStyle() } }" /></div>
+            <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.ptLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.ptLabelOpacity.toFixed(2) }}</span></div>
             <div class="srow sub"><label>位置</label>
-              <span class="seg nseg" role="group" aria-label="坐标标注位置">
-                <span v-for="o in LABEL_POS" :key="o.k" class="sg" :class="{ on: markStyle.ptLabelPos === o.k }" @click="setMarkVal('ptLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</span>
+              <span class="seg nseg" role="radiogroup" aria-label="坐标标注位置">
+                <button type="button" v-for="o in LABEL_POS" :key="o.k" role="radio" :aria-checked="!!(markStyle.ptLabelPos === o.k)" class="sg" :class="{ on: markStyle.ptLabelPos === o.k }" @click="setMarkVal('ptLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</button>
               </span>
             </div>
           </template>
           <div class="mlist">
-            <div v-for="(p, i) in points" :key="p.id" class="mrow" :class="{ hid: p.show === false }"><button type="button" class="layersw" :class="{ on: p.show !== false }" role="switch" :aria-checked="p.show !== false ? 'true' : 'false'" :title="p.show !== false ? '隐藏该点标记（数据保留）' : '显示该点标记'" @click="toggleMkItem(p)"><i></i></button><span class="mno">{{ i + 1 }}</span><input class="sni" :value="p.name || ''" placeholder="名称" @change="e => setPointName(p.id, e.target.value.trim())" /><span class="mc2">{{ fmtLL(p.lat, p.lon) }}</span><input class="clr mkc" :class="{ ov: !!p.color }" type="color" :value="p.color || markStyle.ptColor" :title="p.color ? '该点自己的颜色（右键清除，回到整层设置）' : '只给这一个点设颜色（右键清除）'" @input="e => setPointColor(p.id, e.target.value)" @contextmenu.prevent="setPointColor(p.id, '')" /><span class="mchip" :class="{ on: !!p.model }" :title="chipTitle(p)" @click.stop="openPickPop($event, 'point', p)" @contextmenu.prevent.stop="setEntityModel('point', p.id, null)"><img v-if="p.model && mdlThumb(p.model.id)" :src="mdlThumb(p.model.id)" alt="" draggable="false" /><Icon v-else :name="chipIcon(p)" :size="12" /></span><span class="del" @click="removePoint(p.id)"><Icon name="x" :size="12" /></span></div>
+            <div v-for="(p, i) in points" :key="p.id" class="mrow" :data-mk="'p:' + p.id" :class="{ hid: p.show === false }"><button type="button" class="layersw" :class="{ on: p.show !== false }" role="switch" :aria-checked="p.show !== false ? 'true' : 'false'" :title="p.show !== false ? '隐藏该点标记（数据保留）' : '显示该点标记'" @click="toggleMkItem(p)"><i></i></button><span class="mno">{{ i + 1 }}</span><input class="sni" :value="p.name || ''" placeholder="名称" @change="e => setPointName(p.id, e.target.value.trim())" /><span class="mc2">{{ fmtLL(p.lat, p.lon) }}</span><input class="clr mkc" :class="{ ov: !!p.color }" type="color" :value="p.color || markStyle.ptColor" :title="p.color ? '该点自己的颜色（右键清除，回到整层设置）' : '仅为该点设置颜色（右键清除）'" @input="e => setPointColor(p.id, e.target.value)" @contextmenu.prevent="setPointColor(p.id, '')" /><button type="button" class="mchip" :class="{ on: !!p.model }" :title="chipTitle(p)" @click.stop="openPickPop($event, 'point', p)" @contextmenu.prevent.stop="setEntityModel('point', p.id, null)"><img v-if="p.model && mdlThumb(p.model.id)" :src="mdlThumb(p.model.id)" alt="" draggable="false" /><Icon v-else :name="chipIcon(p)" :size="12" /></button><button type="button" class="ibtn sm danger" title="删除（Ctrl+Z 撤销）" @click="undoable('markers', `已删除点标记「${p.name || fmtLL(p.lat, p.lon)}」`, () => removePoint(p.id))"><Icon name="x" :size="12" /></button></div>
           </div>
           </template>
         </div>
 
         <div class="sec" :class="{ hid: !showStLayer }">
-          <div class="sect acc" data-sec="mk-stations" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-stations') }" :size="12" /><span>地球站</span><span class="lnk tbl" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')"><Icon name="table" :size="12" />表格</span><span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('st')">默认</span><span v-if="stations.length" class="lnk" :class="{ on: mkEditId === 'stations' }" :title="mkEditId === 'stations' ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖图标改坐标'" @click.stop="mkEditToggle('stations')">{{ mkEditId === 'stations' ? '完成调整' : '调整位置' }}</span><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
+          <div class="sect acc" data-sec="mk-stations" :class="{ open: isSecOpen('mk-stations') }" @click="toggleSec('mk-stations')" role="button" tabindex="0" :aria-expanded="isSecOpen('mk-stations') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mk-stations')" @keydown.space.self.prevent="toggleSec('mk-stations')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-stations') }" :size="12" /><span>地球站</span><button type="button" class="btn sm sect-tbl" title="打开地球站批量表格（Excel：增删改 / 批量粘贴导入）" @click.stop="openMkTable('stations')"><Icon name="table" :size="12" />表格</button><button v-if="stations.length" type="button" class="btn sm sect-tg" :class="{ on: mkEditId === 'stations' }" :aria-pressed="mkEditId === 'stations' ? 'true' : 'false'" title="解锁鼠标拖动：在图上直接拖图标改坐标（再点一次退出）" @click.stop="mkEditToggle('stations')">调整位置</button><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('mk-st')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: showStLayer }" role="switch" :aria-checked="showStLayer ? 'true' : 'false'" :title="showStLayer ? '隐藏地球站（数据保留）' : '显示地球站'" @click.stop="toggleStLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-stations')">
           <div class="srow"><label>纬度</label><input class="ci" v-model="stLat" placeholder="-90 ~ 90" /></div>
           <div class="srow"><label>经度</label><input class="ci" v-model="stLon" placeholder="-180 ~ 180" /></div>
-          <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><span class="addb" @click="addStation">添加</span></div>
-          <div class="srow" :title="byLang('地球站图标大小（默认视角下的像素）；已配置模型的地球站，模型按相同大小显示', 'Station icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="5" max="60" step="1" v-model.number="markStyle.stIcon" @input="applyMarkStyle" /><span class="u">{{ markStyle.stIcon }}</span></div>
-          <div class="srow"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.stOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stOpacity.toFixed(2) }}</span></div>
+          <div class="srow"><label>名称</label><input class="ci" v-model="stName" placeholder="如 北京站" /><button type="button" class="btn" @click="addStation">添加</button></div>
+          <div class="srow" :title="byLang('地球站图标大小（默认视角下的像素）；已配置模型的地球站，模型按相同大小显示', 'Station icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="5" max="60" step="0.1" v-model.number="markStyle.stIcon" @input="applyMarkStyle" /><span class="u">{{ markStyle.stIcon.toFixed(1) }}</span></div>
+          <div class="srow"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.stOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stOpacity.toFixed(2) }}</span></div>
           <label class="chk2"><input type="checkbox" v-model="markStyle.stLabelOn" @change="applyMarkStyle" /><span>显示名称</span></label>
           <template v-if="markStyle.stLabelOn">
-            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.stFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.stFont }}</span></div>
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="0.1" v-model.number="markStyle.stFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.stFont.toFixed(1) }}</span></div>
             <label class="chk2 sub"><input type="checkbox" v-model="markStyle.stBold" @change="applyMarkStyle" /><span>粗体</span></label>
-            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.stLabelColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.stLabelColor }}</span></div>
-            <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.stLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stLabelOpacity.toFixed(2) }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.stLabelColor" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.stLabelColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.stLabelColor); if (v) { markStyle.stLabelColor = v; applyMarkStyle() } }" /></div>
+            <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.stLabelOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.stLabelOpacity.toFixed(2) }}</span></div>
             <div class="srow sub"><label>位置</label>
-              <span class="seg nseg" role="group" aria-label="名称位置">
-                <span v-for="o in LABEL_POS" :key="o.k" class="sg" :class="{ on: markStyle.stLabelPos === o.k }" @click="setMarkVal('stLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</span>
+              <span class="seg nseg" role="radiogroup" aria-label="名称位置">
+                <button type="button" v-for="o in LABEL_POS" :key="o.k" role="radio" :aria-checked="!!(markStyle.stLabelPos === o.k)" class="sg" :class="{ on: markStyle.stLabelPos === o.k }" @click="setMarkVal('stLabelPos', o.k)">{{ byLang(o.zh, o.en) }}</button>
               </span>
             </div>
           </template>
           <div class="mlist">
             <template v-for="s in stations" :key="s.id">
-              <div class="mrow" :class="{ hid: s.show === false }">
+              <div class="mrow" :data-mk="'s:' + s.id" :class="{ hid: s.show === false }">
                 <button type="button" class="layersw" :class="{ on: s.show !== false }" role="switch" :aria-checked="s.show !== false ? 'true' : 'false'" :title="s.show !== false ? '隐藏该地球站（数据保留）' : '显示该地球站'" @click="toggleMkItem(s)"><i></i></button>
                 <input class="sni" :value="s.name" @input="e => setStationName(s.id, e.target.value)" />
                 <span class="mc2 stll" :title="[lnkStAttr({ k: 'st', id: s.id }), '地球站属性…'].filter(Boolean).join(' · ')" @click="openStationDlg({ id: s.id, lat: s.lat, lon: s.lon })">{{ fmtLL(s.lat, s.lon) }}</span>
-                <span class="mchip" :class="{ on: !!s.model }" :title="chipTitle(s)" @click.stop="openPickPop($event, 'station', s)" @contextmenu.prevent.stop="setEntityModel('station', s.id, null)"><img v-if="s.model && mdlThumb(s.model.id)" :src="mdlThumb(s.model.id)" alt="" draggable="false" /><Icon v-else :name="s.model ? chipIcon(s) : 'box'" :size="12" /></span>
-                <span class="del" @click="removeStation(s.id)"><Icon name="x" :size="12" /></span>
+                <button type="button" class="mchip" :class="{ on: !!s.model }" :title="chipTitle(s)" @click.stop="openPickPop($event, 'station', s)" @contextmenu.prevent.stop="setEntityModel('station', s.id, null)"><img v-if="s.model && mdlThumb(s.model.id)" :src="mdlThumb(s.model.id)" alt="" draggable="false" /><Icon v-else :name="s.model ? chipIcon(s) : 'box'" :size="12" /></button>
+                <button type="button" class="ibtn sm danger" title="删除（Ctrl+Z 撤销）" @click="undoable('markers', `已删除地球站「${s.name || fmtLL(s.lat, s.lon)}」`, () => removeStation(s.id))"><Icon name="x" :size="12" /></button>
               </div>
               <!-- 挂了模型的站：天线跟踪哪颗星（缺省主选星 = 聚焦集里此刻仰角最高的一颗）+ WGS-84 方位 / 仰角读数 -->
               <div v-if="s.model" class="srow sub mtrk">
                 <label>跟踪</label>
-                <span class="trksel" :class="{ open: trkOpenId === s.id }" title="天线指向的卫星；主选星＝聚焦集里此刻仰角最高的一颗（仰角低于 0° 时停放）" @click="trkToggle(s)"><span class="nm" :data-i18n-skip="s.track && s.track.satKey ? '' : null">{{ trkName(s) }}</span><Icon name="chevron-down" :size="12" /></span>
+                <button type="button" class="trksel" :class="{ open: trkOpenId === s.id }" title="天线指向的卫星；主选星＝聚焦集中此刻仰角最高的一颗（仰角低于 0° 时停放）" @click="trkToggle(s)"><span class="nm" :data-i18n-skip="s.track && s.track.satKey ? '' : null">{{ trkName(s) }}</span><Icon name="chevron-down" :size="12" /></button>
                 <label v-if="s.track && s.track.satKey" class="chk2 trkel" title="站标签的仰角改为对该星的仰角（不勾＝聚焦集最高仰角）"><input type="checkbox" :checked="!!(s.track.el || s.track.az)" :disabled="!!s.track.az" @change="setTrackElOn(s, $event.target.checked)" /><span>仰角</span></label>
                 <label v-if="s.track && s.track.satKey" class="chk2 trkel" title="站标签加对该星的方位角（WGS-84，正北起顺时针）"><input type="checkbox" :checked="!!s.track.az" @change="setTrackAzOn(s, $event.target.checked)" /><span>方位角</span></label>
                 <StReadTxt :id="s.id" />
               </div>
               <div v-if="s.model && trkOpenId === s.id" class="mtrkpop">
-                <input class="ci" v-model="trkQ" placeholder="搜索卫星：卫星名 / NORAD / 星座 / 卫星组" @keydown.esc="trkClose" v-focus />
+                <input class="ci search-field" v-model="trkQ" placeholder="搜索卫星：卫星名 / NORAD / 星座 / 卫星组" @keydown.esc="trkClose" v-focus />
                 <div class="sres lv-sres">
                   <template v-if="!trkQ.trim()">
                     <div class="sres-list">
@@ -15041,7 +15835,7 @@ onBeforeUnmount(() => {
                     </div>
                   </template>
                   <div v-else-if="trkBusy" class="sres-e">搜索中…</div>
-                  <div v-else-if="!trkCand.length" class="sres-e">没有匹配的卫星。</div>
+                  <div v-else-if="!trkCand.length" class="sres-e">无匹配卫星。</div>
                   <template v-else>
                     <div class="sres-list">
                       <div v-for="e in trkCand" :key="e.noradId || e.name" class="sitem" @click="trkPickItem(s, e)">
@@ -15059,58 +15853,57 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="sec" :class="{ hid: !showTrajLayer }">
-          <div class="sect acc" data-sec="mk-traj" :class="{ open: isSecOpen('mk-traj') }" @click="toggleSec('mk-traj')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-traj') }" :size="12" /><span>轨迹</span>
-            <span class="lnk tbl" title="打开航迹批量表格：逐航迹增删改航点，航点的高度 / 时刻 / 段长 / 航向 / 地速，Excel 批量导入导出" @click.stop="openMkTable('traj')"><Icon name="table" :size="12" />表格</span>
-            <span class="lnk" title="本节恢复出厂样式" @click.stop="resetMarkPart('tj')">默认</span>
-            <span class="lnk" @click.stop="newTraj('sea')">+航行</span>
-            <span class="lnk" @click.stop="newTraj('flight')">+飞行</span>
-            <span v-if="trajectories.length" class="lnk" title="发送航迹到小程序：逐条勾选，绑定账号直投或生成一次性密钥" @click.stop="sendTrajsToMiniapp">发送</span>
-          <button type="button" class="layersw sect-layersw" :class="{ on: showTrajLayer }" role="switch" :aria-checked="showTrajLayer ? 'true' : 'false'" :title="showTrajLayer ? '隐藏航迹（数据保留）' : '显示航迹'" @click.stop="toggleTrajLayer"><i></i></button></div>
+          <div class="sect acc" data-sec="mk-traj" :class="{ open: isSecOpen('mk-traj') }" @click="toggleSec('mk-traj')" role="button" tabindex="0" :aria-expanded="isSecOpen('mk-traj') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mk-traj')" @keydown.space.self.prevent="toggleSec('mk-traj')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mk-traj') }" :size="12" /><span>轨迹</span>
+            <button type="button" class="btn sm sect-tbl" title="打开航迹批量表格：逐航迹增删改航点，航点的高度 / 时刻 / 段长 / 航向 / 地速，Excel 批量导入导出" @click.stop="openMkTable('traj')"><Icon name="table" :size="12" />表格</button>
+            <button type="button" class="lnk" @click.stop="newTraj('sea')">+航行</button>
+            <button type="button" class="lnk" @click.stop="newTraj('flight')">+飞行</button>
+            <button type="button" v-if="trajectories.length" class="lnk" title="发送航迹到小程序：逐条勾选，绑定账号直投或生成一次性密钥" @click.stop="sendTrajsToMiniapp">发送</button>
+          <button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('mk-tj')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: showTrajLayer }" role="switch" :aria-checked="showTrajLayer ? 'true' : 'false'" :title="showTrajLayer ? '隐藏航迹（数据保留）' : '显示航迹'" @click.stop="toggleTrajLayer"><i></i></button></div>
           <template v-if="isSecOpen('mk-traj')">
           <div class="bsub"><span>航迹线</span></div>
-          <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjSea }}</span></div>
-          <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjFlight }}</span></div>
-          <div class="srow sub"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="markStyle.tjWidth" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjWidth.toFixed(1) }}</span></div>
-          <div class="srow sub"><label>透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.05" v-model.number="markStyle.tjOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjOpacity.toFixed(2) }}</span></div>
+          <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjSea" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjSea" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjSea); if (v) { markStyle.tjSea = v; applyMarkStyle() } }" /></div>
+          <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjFlight" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjFlight" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjFlight); if (v) { markStyle.tjFlight = v; applyMarkStyle() } }" /></div>
+          <div class="srow sub"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="markStyle.tjWidth" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjWidth.toFixed(2) }}</span></div>
+          <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="markStyle.tjOpacity" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjOpacity.toFixed(2) }}</span></div>
           <div class="srow sub"><label>线型</label>
-            <span class="seg nseg" role="group" aria-label="航迹线线型">
-              <span v-for="d in DASH_OPTS" :key="d.k" class="sg" :class="{ on: markStyle.tjDash === d.k }" @click="setMarkVal('tjDash', d.k)">{{ d.label }}</span>
+            <span class="seg nseg" role="radiogroup" aria-label="航迹线线型">
+              <button type="button" v-for="d in DASH_OPTS" :key="d.k" role="radio" :aria-checked="!!(markStyle.tjDash === d.k)" class="sg" :class="{ on: markStyle.tjDash === d.k }" @click="setMarkVal('tjDash', d.k)">{{ d.label }}</button>
             </span>
           </div>
           <label class="chk2" title="飞行航迹在 3D 球面上按实际高度画；勾上后航迹线与地面之间加一道半透明垂幕"><input type="checkbox" v-model="markStyle.tjCurtain" @change="applyMarkStyle" /><span>延伸到地面</span></label>
           <div class="bsub"><span>航点圆点</span></div>
-          <div class="srow sub" title="0＝不画航点圆点"><label>大小</label><input class="rng" type="range" min="0" max="60" step="1" v-model.number="markStyle.tjDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDot }}</span></div>
+          <div class="srow sub" title="0＝不画航点圆点"><label>大小</label><input class="rng" type="range" min="0" max="60" step="0.1" v-model.number="markStyle.tjDot" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDot.toFixed(1) }}</span></div>
           <template v-if="markStyle.tjDot > 0">
-            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjDotSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDotSea }}</span></div>
-            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjDotFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjDotFlight }}</span></div>
+            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjDotSea" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjDotSea" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjDotSea); if (v) { markStyle.tjDotSea = v; applyMarkStyle() } }" /></div>
+            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjDotFlight" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjDotFlight" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjDotFlight); if (v) { markStyle.tjDotFlight = v; applyMarkStyle() } }" /></div>
           </template>
           <label class="chk2" title="航迹头（末航点）上画一枚俯视矢量图标：航行＝船舶、飞行＝飞机，朝向取末段走向"><input type="checkbox" v-model="markStyle.tjIconOn" @change="applyMarkStyle" /><span>显示图标</span></label>
           <template v-if="markStyle.tjIconOn">
-            <div class="srow sub" :title="byLang('载具图标大小（默认视角下的像素）；已配置模型的航迹，模型按相同大小显示', 'Vehicle icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="60" step="1" v-model.number="markStyle.tjIconPx" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconPx }}</span></div>
-            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjIconSea" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconSea }}</span></div>
-            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjIconFlight" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconFlight }}</span></div>
+            <div class="srow sub" :title="byLang('载具图标大小（默认视角下的像素）；已配置模型的航迹，模型按相同大小显示', 'Vehicle icon size at the default view; attached models use the same size')"><label>大小</label><input class="rng" type="range" min="1" max="60" step="0.1" v-model.number="markStyle.tjIconPx" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjIconPx.toFixed(1) }}</span></div>
+            <div class="srow sub"><label>航行色</label><input class="clr" type="color" v-model="markStyle.tjIconSea" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjIconSea" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjIconSea); if (v) { markStyle.tjIconSea = v; applyMarkStyle() } }" /></div>
+            <div class="srow sub"><label>飞行色</label><input class="clr" type="color" v-model="markStyle.tjIconFlight" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjIconFlight" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjIconFlight); if (v) { markStyle.tjIconFlight = v; applyMarkStyle() } }" /></div>
           </template>
           <label class="chk2" title="在航迹头旁标出航迹名"><input type="checkbox" v-model="markStyle.tjNameOn" @change="applyMarkStyle" /><span>显示航迹名</span></label>
           <template v-if="markStyle.tjNameOn">
-            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="1" v-model.number="markStyle.tjNameFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameFont }}</span></div>
+            <div class="srow sub"><label>字号</label><input class="rng" type="range" min="1" max="32" step="0.1" v-model.number="markStyle.tjNameFont" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameFont.toFixed(1) }}</span></div>
             <label class="chk2 sub"><input type="checkbox" v-model="markStyle.tjNameBold" @change="applyMarkStyle" /><span>粗体</span></label>
-            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.tjNameColor" @input="applyMarkStyle" /><span class="u">{{ markStyle.tjNameColor }}</span></div>
+            <div class="srow sub"><label>颜色</label><input class="clr" type="color" v-model="markStyle.tjNameColor" @input="applyMarkStyle" /><input class="ci hex" :value="markStyle.tjNameColor" spellcheck="false" maxlength="7" aria-label="颜色值" @change="e => { const v = hexIn(e, markStyle.tjNameColor); if (v) { markStyle.tjNameColor = v; applyMarkStyle() } }" /></div>
           </template>
           <div v-for="t in trajectories" :key="t.id" class="tcard" :data-tid="t.id" :class="{ act: activeTraj === t.id, hid: t.show === false }">
             <div class="trow">
               <button type="button" class="layersw" :class="{ on: t.show !== false }" role="switch" :aria-checked="t.show !== false ? 'true' : 'false'" :title="t.show !== false ? '隐藏该航迹（数据保留）' : '显示该航迹'" @click="toggleMkItem(t)"><i></i></button>
               <span class="tk" :class="t.kind" :style="t.color ? { background: t.color } : null"></span>
               <input class="tni" :value="t.name" @input="e => setTrajName(t.id, e.target.value)" />
-              <input class="clr mkc" :class="{ ov: !!t.color }" type="color" :value="t.color || (t.kind === 'flight' ? markStyle.tjFlight : markStyle.tjSea)" :title="t.color ? '这条航迹自己的颜色（右键清除，回到整层设置）' : '只给这一条航迹设颜色（右键清除）'" @input="e => setTrajColor(t.id, e.target.value)" @contextmenu.prevent="setTrajColor(t.id, '')" />
-              <span class="mchip" :class="{ on: !!t.model }" :title="chipTitle(t)" @click.stop="openPickPop($event, 'traj', t)" @contextmenu.prevent.stop="setEntityModel('traj', t.id, null)"><img v-if="t.model && mdlThumb(t.model.id)" :src="mdlThumb(t.model.id)" alt="" draggable="false" /><Icon v-else :name="t.model ? chipIcon(t) : 'box'" :size="12" /></span>
-              <span class="tsel" :class="{ on: activeTraj === t.id }" @click="editTraj(t)">{{ activeTraj === t.id ? '编辑中' : '编辑' }}</span>
-              <span v-if="t.pts.length" class="tsel" :class="{ on: mkEditId === t.id }" :title="mkEditId === t.id ? '完成，退出拖动' : '解锁鼠标拖动：在图上直接拖航点改坐标'" @click="mkEditToggle(t.id)">{{ mkEditId === t.id ? '完成' : '调点' }}</span>
-              <span class="del" @click="removeTraj(t.id)"><Icon name="x" :size="12" /></span>
+              <input class="clr mkc" :class="{ ov: !!t.color }" type="color" :value="t.color || (t.kind === 'flight' ? markStyle.tjFlight : markStyle.tjSea)" :title="t.color ? '该航迹的独立颜色（右键清除，恢复整层设置）' : '仅为该航迹设置颜色（右键清除）'" @input="e => setTrajColor(t.id, e.target.value)" @contextmenu.prevent="setTrajColor(t.id, '')" />
+              <button type="button" class="mchip" :class="{ on: !!t.model }" :title="chipTitle(t)" @click.stop="openPickPop($event, 'traj', t)" @contextmenu.prevent.stop="setEntityModel('traj', t.id, null)"><img v-if="t.model && mdlThumb(t.model.id)" :src="mdlThumb(t.model.id)" alt="" draggable="false" /><Icon v-else :name="t.model ? chipIcon(t) : 'box'" :size="12" /></button>
+              <button type="button" class="btn sm tsel" :class="{ on: activeTraj === t.id }" :aria-pressed="activeTraj === t.id ? 'true' : 'false'" @click="editTraj(t)">编辑</button>
+              <button v-if="t.pts.length" type="button" class="btn sm tsel" :class="{ on: mkEditId === t.id }" :aria-pressed="mkEditId === t.id ? 'true' : 'false'" title="解锁鼠标拖动：在图上直接拖航点改坐标（再点一次退出）" @click="mkEditToggle(t.id)">调点</button>
+              <button type="button" class="ibtn sm danger" title="删除（Ctrl+Z 撤销）" @click="undoable('markers', `已删除航迹「${t.name || ''}」`, () => removeTraj(t.id))"><Icon name="x" :size="12" /></button>
             </div>
             <!-- 时间：标题行 = 摘要（出发 → 到达 · 历时；未排程「未设定」）+ 定位钮；展开区 = 出发 / 到达 / 历时 / 速度 四项联动
                  （TrajTimeFields，口径见 core/models/trajTiming.mjs）+ 飞行的巡航高度 + 运动档读数。没排程 = 载具钉在航迹头 -->
             <div class="tmot" :class="{ open: motOpen.has(t.id) }">
-              <div class="tmh" :title="motOpen.has(t.id) ? '收起' : '时间：出发 / 到达 / 历时 / 速度'" @click="toggleMot(t.id)"><Icon name="chevron-down" class="disc" :class="{ shut: !motOpen.has(t.id) }" :size="12" /><span class="tml">时间</span><span class="tms" :class="{ on: vehOn.has(t.id), nil: !tmOf(t).moving }">{{ motSummary(t) }}</span><span v-if="tmOf(t).moving" class="tloc" title="时间轴定位到该航迹：游标落在出发时刻，时间窗框住全程" @click.stop="trajLocate(t)"><Icon name="locate-fixed" :size="12" /></span></div>
+              <div class="tmh" :title="motOpen.has(t.id) ? '收起' : '时间：出发 / 到达 / 历时 / 速度'" @click="toggleMot(t.id)"><Icon name="chevron-down" class="disc" :class="{ shut: !motOpen.has(t.id) }" :size="12" /><span class="tml">时间</span><span class="tms" :class="{ on: vehOn.has(t.id), nil: !tmOf(t).moving }">{{ motSummary(t) }}</span><button type="button" v-if="tmOf(t).moving" class="tloc" title="时间轴定位到该航迹：游标落在出发时刻，时间窗框住全程" @click.stop="trajLocate(t)"><Icon name="locate-fixed" :size="12" /></button></div>
               <template v-if="motOpen.has(t.id)">
                 <TrajTimeFields :t="t" :tz="tzMode" :def-speed="trajDefSpeedKmh(t)" :apply="(e) => applyTrajRetime(t.id, e)" />
                 <div v-if="t.kind === 'flight'" class="srow sub"><label>巡航高度</label><NumIn :model-value="Number.isFinite(t.cruiseAltM) ? t.cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(t))" :title="cruiseTip(t)" @commit="(v) => setTrajMotion(t.id, { cruiseAltM: v })" /><span class="u">m</span></div>
@@ -15118,7 +15911,7 @@ onBeforeUnmount(() => {
               </template>
             </div>
             <div class="twp">
-              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat == null ? '—' : p.lat.toFixed(1) }},{{ p.lon == null ? '—' : p.lon.toFixed(1) }}<span class="wdel" @click="removeWaypoint(t, i)"><Icon name="x" :size="12" /></span></span>
+              <span v-for="(p, i) in t.pts" :key="i" class="wp">{{ p.lat == null ? '—' : p.lat.toFixed(1) }},{{ p.lon == null ? '—' : p.lon.toFixed(1) }}<button type="button" class="wdel ibtn sm danger" title="删除该航点" aria-label="删除该航点" @click="removeWaypoint(t, i)"><Icon name="x" :size="12" /></button></span>
               <span v-if="!t.pts.length" class="empty">无航点</span>
             </div>
           </div>
@@ -15126,13 +15919,13 @@ onBeforeUnmount(() => {
             <label>航点</label>
             <input class="ci nrw" v-model="wpLat" placeholder="纬" />
             <input class="ci nrw" v-model="wpLon" placeholder="经" />
-            <span class="addb" @click="addWaypoint">加点</span>
+            <button type="button" class="btn" @click="addWaypoint">添加点</button>
           </div>
           <div v-if="!trajectories.length" class="tip">暂无轨迹。</div>
           </template>
         </div>
 
-        <div class="csfoot"><span class="cclr" @click="clearAllMarkers">清空全部</span></div>
+        <div class="csfoot"><button type="button" class="cclr btn" :class="{ arm: mkClrArm }" @click="onClearAllMarkers">{{ mkClrArm ? '确认清空' : '清空全部' }}</button></div>
         </div>
         </div>
       </Teleport>
@@ -15142,19 +15935,19 @@ onBeforeUnmount(() => {
            栏及其祖先禁 transform / filter / contain / container-type / will-change（「＋」菜单与右键菜单是 position:fixed） -->
       <div v-show="shellUi.satInfo" class="rdk-split" :class="{ on: rdkDrag }" title="拖动调整宽度（双击恢复）" @mousedown.prevent="rdkSplitDown" @dblclick="rdkSplitReset"></div>
       <aside
-        v-show="shellUi.satInfo" ref="rdkEl" class="rdk" :class="{ narrow: rdkNarrow }" data-rdk="panel"
+        v-show="shellUi.satInfo" ref="rdkEl" class="rdk" :class="{ narrow: rdkNarrow }" data-rdk="panel" data-pane="info"
         :style="{ '--rdk-w': shellUi.satInfoW + 'px' }"
         @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
       >
         <div class="rdk-hd">
           <span class="rdk-tt">卫星信息</span>
-          <span class="rdk-ib" :class="{ dis: !selected }" data-rdk="analyze" :title="byLang('分析：带主选星打开计算窗', 'Analyze: open a calculation window with the primary satellite')" @click="selected && rdkAnalyze($event)"><Icon name="calculator" :size="12" /></span>
-          <span v-if="following || flatFollowing" class="rdk-ib on" data-rdk="follow" title="退出跟随（Esc）" @click="toggleFollow"><Icon name="locate-fixed" :size="12" /></span>
-          <span v-else class="rdk-ib" :class="{ dis: !selected }" data-rdk="follow" title="跟随卫星" @click="selected && toggleFollow()"><Icon name="locate-fixed" :size="12" /></span>
-          <span class="rdk-ib" title="卫星聚焦特效设置：轨道线 / 星下点轨迹 / 覆盖圈 / 卫星标记" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /></span>
-          <span class="rdk-ib" :class="{ dis: !selected }" data-rdk="export" title="导出聚焦卫星的星历（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）" @click="selected && exportFocused()"><Icon name="download" :size="12" /></span>
+          <button type="button" :aria-disabled="(!selected) ? 'true' : null" class="rdk-ib ibtn sm" :class="{ dis: !selected }" data-rdk="analyze" :title="byLang('分析：带主选星打开计算窗', 'Analyze: open a calculation window with the primary satellite')" @click="selected && rdkAnalyze($event)"><Icon name="calculator" :size="12" /></button>
+          <button type="button" v-if="following || flatFollowing" class="rdk-ib on ibtn sm" data-rdk="follow" title="退出跟随（Esc）" @click="toggleFollow"><Icon name="locate-fixed" :size="12" /></button>
+          <button type="button" :aria-disabled="(!selected) ? 'true' : null" v-else class="rdk-ib ibtn sm" :class="{ dis: !selected }" data-rdk="follow" title="跟随卫星" @click="selected && toggleFollow()"><Icon name="locate-fixed" :size="12" /></button>
+          <button type="button" class="rdk-ib ibtn sm" title="卫星聚焦特效设置：轨道线 / 星下点轨迹 / 覆盖圈 / 卫星标记" @click="openFocusSettings"><Icon name="sliders-horizontal" :size="12" /></button>
+          <button type="button" :aria-disabled="(!selected) ? 'true' : null" class="rdk-ib ibtn sm" :class="{ dis: !selected }" data-rdk="export" title="导出聚焦卫星的星历（OMM / TLE / CCSDS OEM / STK .e / 中国卫通 .eph）" @click="selected && exportFocused()"><Icon name="file-export" :size="12" /></button>
           <span class="rdk-vr"></span>
-          <span class="rdk-ib" title="收起信息栏（Ctrl+Alt+B）" @click="shellUi.satInfo = false"><Icon name="x" :size="12" /></span>
+          <button type="button" class="rdk-ib ibtn sm" title="收起信息栏（Ctrl+Alt+B）" @click="shellUi.satInfo = false"><Icon name="x" :size="12" /></button>
         </div>
 
         <div v-if="!selected" class="rdk-bd"><div class="rdk-empty">未聚焦卫星。</div></div>
@@ -15165,7 +15958,7 @@ onBeforeUnmount(() => {
               <div class="rdk-sh" @click="rdkSec('rdk-sel', $event)">
                 <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-sel') }" :size="12" />
                 <span class="rdk-st"><b>{{ selList.length }}</b><span>颗聚焦</span></span>
-                <span class="rdk-sa"><span class="rdk-btn" data-rdk="unfocus" title="清空聚焦集" @click.stop="rdkClear">全部取消</span></span>
+                <span class="rdk-sa"><button type="button" class="btn sm" data-rdk="unfocus" title="清空聚焦集" @click.stop="rdkClear">全部取消</button></span>
               </div>
               <div v-if="isSecOpen('rdk-sel')" ref="rdkListEl" class="rdk-list" tabindex="0" @keydown="rdkListKey">
                 <div class="rdk-lr rdk-lh"><span class="no">#</span><span class="nm">卫星</span><span class="kd">区制</span><span class="al">高度<i>km</i></span><span></span></div>
@@ -15174,7 +15967,7 @@ onBeforeUnmount(() => {
                   <span class="nm" data-i18n-skip><span class="h">{{ rdkName(s.name)[0] }}</span><span v-if="rdkName(s.name)[1]" class="t">{{ rdkName(s.name)[1] }}</span></span>
                   <span class="kd">{{ s.kind }}</span>
                   <span class="al">{{ s.alt }}</span>
-                  <span class="x" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="12" /></span>
+                  <button type="button" class="x ibtn sm danger" title="移出该星" @click.stop="removeSel(s)"><Icon name="x" :size="12" /></button>
                 </div>
               </div>
             </div>
@@ -15182,10 +15975,10 @@ onBeforeUnmount(() => {
               <div class="rdk-nr">
                 <span v-if="selList.length > 1" class="rdk-no">#{{ rdkPriNo }}</span>
                 <span class="rdk-nm" data-i18n-skip>{{ selected.name }}</span>
-                <span v-if="selList.length <= 1" class="rdk-btn" data-rdk="unfocus" title="取消聚焦" @click="rdkClear">取消聚焦</span>
+                <button type="button" v-if="selList.length <= 1" class="btn sm" data-rdk="unfocus" title="取消聚焦" @click="rdkClear">取消聚焦</button>
               </div>
               <div class="rdk-meta">
-                <span v-if="selected.noradId" class="rdk-bdg cp" :class="{ ok: rdkCopied }" :title="rdkCopied ? '已复制' : '点击复制 NORAD 编号'" @click="rdkCopyNorad"><b>NORAD</b>{{ selected.noradId }}</span>
+                <button type="button" v-if="selected.noradId" class="rdk-bdg cp" :class="{ ok: rdkCopied }" :title="rdkCopied ? '已复制' : '点击复制 NORAD 编号'" @click="rdkCopyNorad"><b>NORAD</b>{{ selected.noradId }}</button>
                 <span v-if="selected.kind" class="rdk-bdg kind" title="轨道区制">{{ selected.kind }}</span>
                 <!-- skip 挂在内层：挂外层会连 title 一起跳过翻译（运行时跳过 skip 元素自身的属性） -->
                 <span v-if="selected.group && selected.group !== selected.kind" class="rdk-bdg" title="所属卫星组"><span :data-i18n-skip="rdkGroupLit ? null : ''">{{ selected.group }}</span></span>
@@ -15218,10 +16011,10 @@ onBeforeUnmount(() => {
                 <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-sv') }" :size="12" />
                 <span class="rdk-st">状态矢量</span>
                 <span class="rdk-sa">
-                  <span class="seg sm rdk-seg" role="group" aria-label="状态矢量参考系" @click.stop>
-                    <span v-for="f in SV_FRAME_OPTS" :key="f.k" class="sg" :class="{ on: satReadout.sv === f.k }" :title="f.k === 'FIXED' ? '地心地固系（WGS-84）' : f.k === 'J2000' ? '地心惯性系 J2000（平赤道、平春分点 of J2000.0）' : '真赤道、平春分点系（TLE / SGP4 原生）'" @click="satReadout.sv = f.k">{{ f.t }}</span>
+                  <span class="seg sm rdk-seg" role="radiogroup" aria-label="状态矢量参考系" @click.stop>
+                    <button type="button" v-for="f in SV_FRAME_OPTS" :key="f.k" role="radio" :aria-checked="!!(satReadout.sv === f.k)" class="sg" :class="{ on: satReadout.sv === f.k }" :title="f.k === 'FIXED' ? '地心地固系（WGS-84）' : f.k === 'J2000' ? '地心惯性系 J2000（平赤道、平春分点 of J2000.0）' : '真赤道、平春分点系（TLE / SGP4 原生）'" @click="satReadout.sv = f.k">{{ f.t }}</button>
                   </span>
-                  <span class="rdk-ib" :class="{ ok: rdkSvCopied }" :title="rdkSvCopied ? '已复制' : '复制状态矢量（UTC 时刻、参考系、位置、速度，全精度）'" @click.stop="rdkCopySv"><Icon :name="rdkSvCopied ? 'check' : 'copy'" :size="12" /></span>
+                  <button type="button" class="rdk-ib ibtn sm" :class="{ ok: rdkSvCopied }" :title="rdkSvCopied ? '已复制' : '复制状态矢量（UTC 时刻、参考系、位置、速度，全精度）'" @click.stop="rdkCopySv"><Icon :name="rdkSvCopied ? 'check' : 'copy'" :size="12" /></button>
                 </span>
               </div>
               <div v-if="isSecOpen('rdk-sv') && rdkSv" class="rdk-kv">
@@ -15242,8 +16035,8 @@ onBeforeUnmount(() => {
                 <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-osc') }" :size="12" />
                 <span class="rdk-st">密切根数</span>
                 <span class="rdk-sa">
-                  <span class="seg sm rdk-seg" role="group" aria-label="密切根数参考系" @click.stop>
-                    <span v-for="f in OSC_FRAME_OPTS" :key="f.k" class="sg" :class="{ on: satReadout.osc === f.k }" :title="f.k === 'J2000' ? '地心惯性系 J2000' : '真赤道、平春分点系（of date）'" @click="satReadout.osc = f.k">{{ f.t }}</span>
+                  <span class="seg sm rdk-seg" role="radiogroup" aria-label="密切根数参考系" @click.stop>
+                    <button type="button" v-for="f in OSC_FRAME_OPTS" :key="f.k" role="radio" :aria-checked="!!(satReadout.osc === f.k)" class="sg" :class="{ on: satReadout.osc === f.k }" :title="f.k === 'J2000' ? '地心惯性系 J2000' : '真赤道、平春分点系（of date）'" @click="satReadout.osc = f.k">{{ f.t }}</button>
                   </span>
                 </span>
               </div>
@@ -15266,7 +16059,7 @@ onBeforeUnmount(() => {
               <div class="rdk-sh" @click="rdkSec('rdk-geo', $event)">
                 <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-geo') }" :size="12" />
                 <span class="rdk-st">同步轨道</span>
-                <span class="rdk-sa"><span class="rdk-ib" :class="{ on: rdkGeoEdit }" title="标称经度与位置保持范围" @click.stop="rdkGeoEdit = !rdkGeoEdit; setSecOpen('rdk-geo', true)"><Icon name="settings" :size="12" /></span></span>
+                <span class="rdk-sa"><button type="button" :aria-pressed="(rdkGeoEdit) ? 'true' : 'false'" class="rdk-ib ibtn sm" :class="{ on: rdkGeoEdit }" title="标称经度与位置保持范围" @click.stop="rdkGeoEdit = !rdkGeoEdit; setSecOpen('rdk-geo', true)"><Icon name="settings" :size="12" /></button></span>
               </div>
               <template v-if="isSecOpen('rdk-geo')">
                 <div v-if="rdkGeoEdit" class="rdk-ins">
@@ -15378,14 +16171,14 @@ onBeforeUnmount(() => {
               <div class="rdk-sh" @click="rdkSec('rdk-ant', $event)">
                 <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-ant') }" :size="12" />
                 <span class="rdk-st">天线</span>
-                <span class="rdk-sa"><span class="rdk-ib" title="为该星新建天线" @click.stop="rdkAntAdd"><Icon name="plus" :size="12" /></span></span>
+                <span class="rdk-sa"><button type="button" class="rdk-ib ibtn sm" title="为该星新建天线" @click.stop="rdkAntAdd"><Icon name="plus" :size="12" /></button></span>
               </div>
               <template v-if="isSecOpen('rdk-ant')">
                 <div v-if="!cardAntRows.length" class="rdk-none">暂无天线。</div>
                 <div v-else class="rdk-ants">
                   <div v-for="r in cardAntRows" :key="r.key" class="rdk-ar" :class="{ foc: grd.isActive(r.sat.folder, r.a.name) }">
                     <label class="rdk-ck" title="在地图上显示该天线覆盖范围" @mousedown.prevent><input type="checkbox" class="gck" :checked="grd.isSelected(r.sat.folder, r.a.name)" @click.stop @change="grd.toggleAnt(r.sat, r.a)" /></label>
-                    <span class="rdk-an" :title="r.satName ? r.satName + ' · ' + r.a.name : r.a.name" @click="cardEditAnt(r)"><span data-i18n-skip>{{ r.a.name }}</span><em v-if="r.satName" data-i18n-skip>{{ r.satName }}</em></span>
+                    <button type="button" class="rdk-an" :title="r.satName ? r.satName + ' · ' + r.a.name : r.a.name" @click="cardEditAnt(r)"><span data-i18n-skip>{{ r.a.name }}</span><em v-if="r.satName" data-i18n-skip>{{ r.satName }}</em></button>
                     <span class="rdk-v">{{ fmtPeakDb(r.a.peakDb) }}</span><span class="rdk-u">dBi</span>
                   </div>
                 </div>
@@ -15401,7 +16194,7 @@ onBeforeUnmount(() => {
                   <span class="rdk-ok" :class="{ ok: selModel.sizeVerified }" :title="selModel.sizeVerified ? '尺寸已核定（有出处）' : '尺寸未核定'"><Icon name="ruler" :size="12" /></span>
                   <span class="rdk-ok" :class="{ ok: selModel.frameVerified }" :title="selModel.frameVerified ? '本体轴已核定' : '本体轴未核定'"><Icon name="axis-3d" :size="12" /></span>
                 </template>
-                <span class="rdk-sa"><span class="rdk-lnk" title="在仿真对象模型中编辑" @click.stop="rdkModelEdit">编辑…</span></span>
+                <span class="rdk-sa"><button type="button" class="rdk-lnk" title="在仿真对象模型中编辑" @click.stop="rdkModelEdit">编辑…</button></span>
               </div>
               <div v-if="isSecOpen('rdk-mdl')" class="rdk-kv nosym">
                 <div class="rdk-r"><span class="rdk-k">名称</span><span v-if="selModel.id" class="rdk-v txt" data-rdk="model-name" :title="selModel.title || selModel.name" data-i18n-skip>{{ selModel.name }}</span><span v-else class="rdk-v txt" data-rdk="model-name">无</span></div>
@@ -15418,7 +16211,7 @@ onBeforeUnmount(() => {
 
     <!-- 时间控制条：地图时间轴 + 实时徽标 + 覆盖圈定义（归属地图，置于地图正下方） -->
     <!-- 交互范式（YouTube LIVE / Cesium SYSTEM_CLOCK）：实时中时间轴与步进照常可用，操作即静默退出实时；徽标一键回实时 -->
-    <div class="tl bottom">
+    <div class="tl bottom" data-pane="timeline">
       <!-- 两层：.tl-ruler 尺子通栏 / .tl-row 控件三组（左 实时·跨度｜中 读数·走带 真居中｜右 步长·倍速）；.tl 自己是 container query 的容器，所以间距写在子层上 -->
       <div class="tl-ruler">
         <div class="tb-track" :class="{ kbf: trackKb }" :style="trackStyle" ref="track" tabindex="0" role="slider" aria-label="仿真时间游标"
@@ -15441,6 +16234,19 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="perMark && perMark.xa != null" class="tb-pb l" :style="{ left: perMark.xa + 'px' }"></div>
           <div v-if="perMark && perMark.xb != null" class="tb-pb r" :style="{ left: perMark.xb + 'px' }"></div>
+          <div v-if="ioMark && ioMark.band" class="tb-io" :style="{ left: ioMark.band.l + 'px', width: ioMark.band.w + 'px' }"></div>
+          <div v-if="ioMark && ioMark.xa != null" class="tb-iob l" :style="{ left: ioMark.xa + 'px' }"></div>
+          <div v-if="ioMark && ioMark.xb != null" class="tb-iob r" :style="{ left: ioMark.xb + 'px' }"></div>
+          <!-- 事件层：过境窗口 / 计算窗口推来的时刻与区间（单击跳到起点，右键出菜单） -->
+          <div v-for="b in tlMarkBands" :key="b.m.id" class="tb-mk" :class="[b.pt ? 'pt' : 'band', 'src-' + b.m.src]" :style="b.pt ? { left: b.l + 'px' } : { left: b.l + 'px', width: b.w + 'px' }"
+               :title="tlMarkTitle(b.m)" data-i18n-skip @pointerdown.stop @click.stop="seekMark(b)" @contextmenu.prevent.stop="openMkMenu($event, b)"></div>
+          <Teleport to="body"><template v-if="mkMenu"><div class="menu-mask" @mousedown.self="mkMenu = null" @contextmenu.prevent="mkMenu = null"></div>
+            <div class="menu mk-menu" role="menu" :style="{ left: mkMenu.x + 'px', top: mkMenu.y + 'px' }">
+              <button type="button" class="menu-item" role="menuitem" @click="mkDo((m) => seekToMs(m.t0))">跳到起点</button>
+              <button v-if="mkMenu.m.t1 != null" type="button" class="menu-item" role="menuitem" @click="mkDo((m) => seekToMs(m.t1))">跳到终点</button>
+              <div class="menu-sep" role="separator"></div>
+              <button type="button" class="menu-item danger" role="menuitem" @click="mkDo((m) => clearMarks(m.src))">清除此类</button>
+            </div></template></Teleport>
           <div v-if="showSpan" class="tb-span"></div>
           <div v-if="nowInWin" class="tb-now" :class="{ flip: ruler.tag === 'l' }"><span v-if="ruler.tag" class="tag" :class="{ ko: tipHide.has('t') }">此刻</span></div>
           <div v-show="hoverShow && !scrubbing" class="tb-ghost" :style="{ left: hoverX + 'px' }"></div>
@@ -15470,19 +16276,18 @@ onBeforeUnmount(() => {
                3px 让面板压住基线与色带，底边只剩一道灰边，面板外与基线接齐 -->
           <TzPicker ref="roEl" class="tlab2 tzsw" :class="{ scrub: scrubbing }" :style="roStyle" :model-value="tzMode" :ms="tzRefMs" align="right" :gap="3"
                     tabindex="0" role="button" aria-haspopup="dialog" :aria-expanded="roOpen ? 'true' : 'false'"
-                    title="跳到指定时刻 / 时刻显示时区（本机 / UTC / UTC±N；只改显示，星位与过境一律按 UTC 计算）"
+                    title="跳到指定时刻 / 时刻显示时区（本机 / UTC / UTC±N；仅改变显示，星位与过境一律按 UTC 计算）"
                     @update:model-value="setTzMode" @open="onRoOpen" @close="roOpen = false"
                     @keydown.enter.prevent="$event.currentTarget.click()" @keydown.space.prevent="$event.currentTarget.click()"><span class="t1" data-i18n-skip>{{ timeParts.m }}</span><span class="t2"><span class="d" data-i18n-skip>{{ timeParts.d }}</span><span class="o" :class="{ lv: live }">{{ timeParts.o }}</span><span class="z" data-i18n-skip>{{ timeParts.z }}</span></span>
             <template #head><span class="rogo"><input ref="gotoInp" class="ci" type="datetime-local" step="1" v-model="gotoVal" @input="noteGoto($event.target.value)" @keydown.enter="applyGoto" /><button type="button" class="btn" @click="applyGoto">跳转</button></span></template>
           </TzPicker>
-          <!-- 仿真时钟走带：反向连播 / 步退 / 播放·暂停 / 步进 ｜ 回到此刻 -->
+          <!-- 仿真时钟走带：反向连播 / 步退 / 播放·暂停 / 步进 ｜ 回到此刻（「导出视频」不是走带动作，在右组） -->
           <span class="stg" role="group" aria-label="仿真时钟">
             <button type="button" class="st tic" :class="{ act: revPlaying }" :aria-pressed="revPlaying ? 'true' : 'false'" :title="revPlaying ? '暂停' : '反向播放'" @click="togglePlay(-1)"><Icon name="rewind" :size="12" /></button>
             <button type="button" class="st tic" title="后退一个步长" @click="clockStepBy(-1)"><Icon name="step-back" :size="12" /></button>
-            <button type="button" class="st tic play" :class="{ act: fwdPlaying }" :aria-pressed="fwdPlaying ? 'true' : 'false'" :title="fwdPlaying ? '暂停' : '播放（空格）'" @click="togglePlay(1)"><Icon :name="fwdPlaying ? 'pause' : 'play'" :size="12" /></button>
+            <button type="button" class="st tic play" :class="{ act: fwdPlaying }" :aria-pressed="fwdPlaying ? 'true' : 'false'" :title="fwdPlaying ? '暂停（空格）' : '播放（空格）'" @click="togglePlay(1)"><Icon :name="fwdPlaying ? 'pause' : 'play'" :size="12" /></button>
             <button type="button" class="st tic" title="前进一个步长" @click="clockStepBy(1)"><Icon name="step-forward" :size="12" /></button>
             <button type="button" class="st now" :class="{ dis: !live && atNow }" :disabled="!live && atNow" title="回到当前时刻" @click="resetTime">此刻</button>
-            <button type="button" class="st tic" :class="{ act: vexp.open.value }" :aria-pressed="vexp.open.value ? 'true' : 'false'" title="导出视频" @click="vexp.toggle()"><Icon name="video" :size="12" /></button>
           </span>
         </div>
         <div class="tl-grp r">
@@ -15501,6 +16306,7 @@ onBeforeUnmount(() => {
               <option value="custom">自定义…</option>
             </select>
           </span>
+          <button type="button" class="ibtn tl-vexp" :class="{ on: vexp.open.value }" :aria-pressed="vexp.open.value ? 'true' : 'false'" title="导出视频" @click="vexp.toggle()"><Icon name="video" :size="12" /></button>
         </div>
       </div>
     </div>
@@ -15515,16 +16321,16 @@ onBeforeUnmount(() => {
           <div class="sdiv">卫星（图标 / 卫星名）</div>
           <div class="srow"><label>名称</label><input class="ci" v-model="satModal.name" placeholder="卫星名称" @change="applySatLive" @keyup.enter="applySatLive" /></div>
           <div v-if="!satModal.noradId" class="srow"><label>定位方式</label>
-            <span class="pmode" :class="{ on: satModal.posMode !== 'orbit' }" @click="satModal.posMode = 'fixed'; applySatLive()">固定经纬度</span>
-            <span class="pmode" :class="{ on: satModal.posMode === 'orbit' }" @click="satModal.posMode = 'orbit'; applySatLive()">轨道根数</span>
+            <button type="button" :aria-pressed="(satModal.posMode !== 'orbit') ? 'true' : 'false'" class="pmode" :class="{ on: satModal.posMode !== 'orbit' }" @click="satModal.posMode = 'fixed'; applySatLive()">固定经纬度</button>
+            <button type="button" :aria-pressed="(satModal.posMode === 'orbit') ? 'true' : 'false'" class="pmode" :class="{ on: satModal.posMode === 'orbit' }" @click="satModal.posMode = 'orbit'; applySatLive()">轨道根数</button>
           </div>
           <template v-if="satModal.posMode !== 'orbit' || satModal.noradId">
             <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" :value="satPosVal('lon')" @input="satPosInput('lon', $event)" @change="satPosDone" @blur="satPosDone" @keyup.enter="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°E</span></div>
             <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="satPosVal('lat')" @input="satPosInput('lat', $event)" @change="satPosDone" @blur="satPosDone" @keyup.enter="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">°N</span></div>
-            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satPosVal('altKm')" @input="satPosInput('altKm', $event)" @change="satPosDone" @blur="satPosDone" @keyup.enter="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><span v-if="!satModal.noradId" class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</span></div>
+            <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" :value="satPosVal('altKm')" @input="satPosInput('altKm', $event)" @change="satPosDone" @blur="satPosDone" @keyup.enter="satPosDone" :disabled="!!satModal.noradId" :title="satModal.noradId ? '已关联星座卫星，位置随星历实时解算，不可手动输入' : ''" /><span class="u">km</span><button type="button" v-if="!satModal.noradId" class="btn sm" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyGeoAlt">一键GEO</button></div>
           </template>
           <template v-else>
-            <div class="srow stack"><label>历元</label><input class="ci" type="datetime-local" step="1" :value="satEpochVal()" @input="satEpochEdit = $event.target.value" @blur="satEpochDone" @keyup.enter="satEpochDone" /><span class="u">{{ satEpochTz() }}</span><span class="geobtn" title="设为时间轴当前时刻" @click="satEpochNow">此刻</span></div>
+            <div class="srow stack"><label>历元</label><input class="ci" type="datetime-local" step="1" :value="satEpochVal()" @input="satEpochEdit = $event.target.value" @blur="satEpochDone" @keyup.enter="satEpochDone" /><span class="u">{{ satEpochTz() }}</span><button type="button" class="btn sm" title="设为时间轴当前时刻" @click="satEpochNow">此刻</button></div>
             <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="50" v-model.number="satModal.elements.altKm" @change="applySatLive" @keyup.enter="applySatLive" /><span class="u">km</span></div>
             <div class="srow"><label>偏心率</label><input class="ci" type="number" step="0.001" min="0" max="0.999" v-model.number="satModal.elements.ecc" @change="applySatLive" @keyup.enter="applySatLive" /></div>
             <div class="srow"><label>倾角</label><input class="ci" type="number" step="0.1" v-model.number="satModal.elements.incl" @change="applySatLive" @keyup.enter="applySatLive" /><span class="u">°</span></div>
@@ -15534,91 +16340,83 @@ onBeforeUnmount(() => {
           </template>
           <template v-if="!satModal.hideViz">
             <label class="chk2"><input type="checkbox" v-model="satModal.iconShow" @change="applySatLive" /><span>显示图标</span></label>
-            <div v-if="satModal.iconShow !== false" class="srow"><label>图标大小</label><input class="rng" type="range" min="1" max="64" step="1" v-model.number="satModal.iconSize" @input="applySatLive" /><span class="u">{{ satModal.iconSize }}</span></div>
+            <div v-if="satModal.iconShow !== false" class="srow"><label>图标大小</label><input class="rng" type="range" min="1" max="64" step="0.1" v-model.number="satModal.iconSize" @input="applySatLive" /><span class="u">{{ Number(satModal.iconSize).toFixed(1) }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="satModal.labelShow" @change="applySatLive" /><span>显示卫星名</span></label>
-            <div v-if="satModal.labelShow !== false" class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="1" v-model.number="satModal.labelSize" @input="applySatLive" /><span class="u">{{ satModal.labelSize }}</span></div>
+            <div v-if="satModal.labelShow !== false" class="srow"><label>卫星名字号</label><input class="rng" type="range" min="1" max="30" step="0.1" v-model.number="satModal.labelSize" @input="applySatLive" /><span class="u">{{ Number(satModal.labelSize).toFixed(1) }}</span></div>
             <label v-if="satModal.labelShow !== false" class="chk2"><input type="checkbox" v-model="satModal.labelBold" @change="applySatLive" /><span>卫星名粗体</span></label>
 
-            <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
+            <div class="sdiv" title="等仰角环 / 角度标注">仰角线</div>
             <div class="srow"><label>仰角值</label><input class="ci" v-model="satModal.els" placeholder="如 5,10,20（0=地平）" @change="applySatLive" @keyup.enter="applySatLive" /><span class="u">°</span></div>
-            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="satModal.elevWidth" @input="applySatLive" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(1) }}</span></div>
-            <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="1" v-model.number="satModal.elevLabelSize" @input="applySatLive" /><span class="u">{{ satModal.elevLabelSize || 18 }}</span></div>
+            <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="satModal.elevWidth" @input="applySatLive" /><span class="u">{{ (satModal.elevWidth || 1.3).toFixed(2) }}</span></div>
+            <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="0.1" v-model.number="satModal.elevLabelSize" @input="applySatLive" /><span class="u">{{ (satModal.elevLabelSize || 18).toFixed(1) }}</span></div>
             <label class="chk2"><input type="checkbox" v-model="satModal.elevLabelBold" @change="applySatLive" /><span>标注粗体</span></label>
 
-            <div class="sdiv">颜色（仰角线与卫星名共用）</div>
+            <div class="sdiv" title="仰角线与卫星名共用">颜色</div>
             <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="satModal.color" @input="applySatLive" /></div>
           </template>
 
-          <div class="sdiv">从星座选取（可选）</div>
-          <div class="srow"><span class="pickbtn" @click="toggleSatPick">在地图上点选卫星</span></div>
-          <div class="srow"><input class="ci" :value="satSearchKw" placeholder="或搜索卫星名 / 编号" @input="onSatSearch" /></div>
+          <div class="sdiv">从星座选取</div>
+          <div class="srow"><button type="button" class="pickbtn btn" @click="toggleSatPick">在地图上点选卫星</button></div>
+          <div class="srow"><input class="ci search-field" :value="satSearchKw" placeholder="搜索卫星名 / 编号" @input="onSatSearch" /></div>
           <div v-if="satSearchRes.length" class="sres">
             <div v-for="r in satSearchRes" :key="r.noradId" class="sresi" @click="pickSatSearch(r)">
               <span class="srn" data-i18n-skip>{{ r.name }}</span><em>{{ r.groupLabel }} · {{ r.noradId }}<template v-if="r.slot"> · {{ r.slot }}</template></em>
             </div>
           </div>
-          <div v-if="satModal.noradId" class="tip2">已关联星座卫星 NORAD {{ satModal.noradId }}（仰角线随时间轴 / 实时跟踪）<span class="lnk" @click="satModal.noradId = null; applySatLive()">取消关联</span></div>
+          <div v-if="satModal.noradId" class="tip2">已关联星座卫星 NORAD {{ satModal.noradId }}<button type="button" class="lnk" @click="satModal.noradId = null; applySatLive()">取消关联</button></div>
         </div>
       </div>
     </div>
 
     <!-- 独立仰角线弹窗：与「添加/编辑卫星」弹窗脱钩，只填位置 + 仰角线参数，不涉及图标/卫星名/星座关联 -->
-    <div v-if="elevModal" class="sat-mask">
-      <div class="sat-dlg el-dlg">
-        <div class="sdh"><span>{{ elevModal.folder ? '编辑仰角线' : '添加仰角线' }}</span><span class="csx" @click="closeElevModal"><Icon name="x" :size="12" /></span></div>
+    <AppDialog v-if="elevModal" :title="elevModal.folder ? '编辑仰角线' : '添加仰角线'" :width="320" flush dialog-class="el-dlg" @close="closeElevModal">
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="elevModal.name" placeholder="如 5°仰角参考" /></div>
           <div class="srow"><label>经度</label><input class="ci" type="number" step="0.1" v-model.number="elevModal.lon" /><span class="u">°E</span></div>
           <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" v-model.number="elevModal.lat" /><span class="u">°N</span></div>
-          <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" v-model.number="elevModal.altKm" /><span class="u">km</span><span class="geobtn" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyElevGeoAlt">一键GEO</span></div>
+          <div class="srow"><label>轨道高度</label><input class="ci" type="number" step="100" v-model.number="elevModal.altKm" /><span class="u">km</span><button type="button" class="btn sm" title="设为标准 GEO 轨道高度 35786km（NASA 标称值）" @click="applyElevGeoAlt">一键GEO</button></div>
 
-          <div class="sdiv">仰角线（等仰角环 / 角度标注）</div>
+          <div class="sdiv" title="等仰角环 / 角度标注">仰角线</div>
           <div class="srow"><label>仰角值</label><input class="ci" v-model="elevModal.els" placeholder="如 5,10,20（0=地平）" /><span class="u">°</span></div>
-          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.1" v-model.number="elevModal.elevWidth" /><span class="u">{{ (elevModal.elevWidth || 1.3).toFixed(1) }}</span></div>
-          <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="1" v-model.number="elevModal.elevLabelSize" /><span class="u">{{ elevModal.elevLabelSize || 18 }}</span></div>
+          <div class="srow"><label>线粗</label><input class="rng" type="range" min="0.1" max="8" step="0.01" v-model.number="elevModal.elevWidth" /><span class="u">{{ (elevModal.elevWidth || 1.3).toFixed(2) }}</span></div>
+          <div class="srow"><label>标注字号</label><input class="rng" type="range" min="1" max="35" step="0.1" v-model.number="elevModal.elevLabelSize" /><span class="u">{{ (elevModal.elevLabelSize || 18).toFixed(1) }}</span></div>
           <label class="chk2"><input type="checkbox" v-model="elevModal.elevLabelBold" /><span>标注粗体</span></label>
           <div class="srow"><label>颜色</label><input class="clr" type="color" v-model="elevModal.color" /></div>
         </div>
-        <div class="sdfoot"><span class="cancel" @click="closeElevModal">取消</span><span class="save" @click="saveElevModal">保存</span></div>
-      </div>
-    </div>
+        <template #footer><button type="button" class="btn" @click="closeElevModal">取消</button><button type="button" class="btn primary" @click="saveElevModal">保存</button></template>
+    </AppDialog>
     <!-- 星座生成/编辑器已内联到左侧「星座」侧栏（见 .cedit），不再用居中弹窗（可对着地图实时调整） -->
     <!-- 模式横幅只报状态；怎么操作挂在 title 上（界面不写教学文字） -->
     <div v-if="satModal && satPick" class="sat-banner" title="点击地图上的卫星填入位置">
       点选模式<template v-if="flatView"> · 平面图无星点</template>
-      <span class="lnk" @click="satPick = false">完成 / 取消</span>
+      <button type="button" class="lnk" @click="satPick = false">完成 / 取消</button>
     </div>
 
     <!-- 添加 / 编辑地球站对话框（右键「添加地球站」位置取右键处；右键已有站「地球站属性…」） -->
-    <div v-if="stPrompt" class="sat-mask">
-      <div class="sat-dlg st-dlg">
-        <div class="sdh"><span>{{ stPrompt.id ? '地球站属性' : '添加地球站' }}</span><span class="csx" @click="cancelStation"><Icon name="x" :size="12" /></span></div>
+    <AppDialog v-if="stPrompt" :title="stPrompt.id ? '地球站属性' : '添加地球站'" :width="320" flush dialog-class="st-dlg" @close="cancelStation">
         <div class="sdbody">
           <div class="srow"><label>名称</label><input class="ci" v-model="stPromptName" placeholder="如 北京站" autofocus @keyup.enter="confirmStation" /></div>
-          <div class="srow"><label>模型</label><span class="stmdl" :class="{ on: !!stPromptModel }" @click="openStModelPick($event)"><img v-if="stPromptModel && mdlThumb(stPromptModel)" :src="mdlThumb(stPromptModel)" alt="" draggable="false" /><Icon v-else name="satellite-dish" :size="12" /><span class="nm" data-i18n-skip>{{ stPromptModel ? mdlName(stPromptModel) : byLang('无', 'None') }}</span><Icon name="chevron-down" :size="12" /></span></div>
+          <div class="srow"><label>模型</label><button type="button" class="stmdl" :class="{ on: !!stPromptModel }" @click="openStModelPick($event)"><img v-if="stPromptModel && mdlThumb(stPromptModel)" :src="mdlThumb(stPromptModel)" alt="" draggable="false" /><Icon v-else name="satellite-dish" :size="12" /><span class="nm" data-i18n-skip>{{ stPromptModel ? mdlName(stPromptModel) : byLang('无', 'None') }}</span><Icon name="chevron-down" :size="12" /></button></div>
           <div class="srow" title="天线口径；留空 = 模型标称口径"><label>天线口径</label><input class="ci" v-model="stPromptDia" :placeholder="stNominal.diaM != null ? String(stNominal.diaM) : ''" @keyup.enter="confirmStation" /><span class="u">m</span></div>
           <label class="chk2" title="导入链路预算时，罩损计入地球站其他损耗"><input type="checkbox" :checked="stRadomeEff" @change="stPromptRadome = $event.target.checked" /><span>天线罩</span></label>
           <div class="srow" title="发射链功放输出功率；导入链路预算时写入发端地球站的功放功率预设，留空 = 沿用库条目"><label>功放功率</label><input class="ci" v-model="stPromptPwr" @keyup.enter="confirmStation" /><span class="u">W</span></div>
           <div class="srow"><label>位置</label><span class="u">{{ fmtLL(stPrompt.lat, stPrompt.lon) }}</span></div>
         </div>
-        <div class="sdfoot"><span class="cancel" @click="cancelStation">取消</span><span class="save" @click="confirmStation">{{ stPrompt.id ? '确定' : '添加' }}</span></div>
-      </div>
-      <ModelPickPop v-if="stPick" :anchor="stPick" :lib="modelLib.list" domain="ground" :value="stPromptModel" @pick="(id) => { stPromptModel = id }" @clear="stPromptModel = ''" @close="stPick = null" />
-    </div>
+        <template #footer><button type="button" class="btn" @click="cancelStation">取消</button><button type="button" class="btn primary" @click="confirmStation">{{ stPrompt.id ? '确定' : '添加' }}</button></template>
+    </AppDialog>
+    <ModelPickPop v-if="stPrompt && stPick" :anchor="stPick" :lib="modelLib.list" domain="ground" :value="stPromptModel" @pick="(id) => { stPromptModel = id }" @clear="stPromptModel = ''" @close="stPick = null" />
 
     <!-- 卫星组管理器：左＝组列表（新建/复制/删除），右＝当前组（改名 + 搜索添加 + 成员表移出）。
          与地图渲染态解耦：不必先把卫星显示出来，直接搜全量目录勾选入组；组成员是 {NORAD,名称} 快照，
          即使卫星已不在当前星历也列得出来、删得掉。 -->
-    <div v-if="sgmOpen" class="sat-mask sat-overlay" @click.self="closeSatGrpMgr">
-      <div class="sat-dlg sgm-dlg">
-        <div class="sdh"><span>卫星组管理</span><span class="csx" @click="closeSatGrpMgr"><Icon name="x" :size="12" /></span></div>
+    <AppDialog v-if="sgmOpen" title="卫星组管理" :width="780" flush dialog-class="sgm-dlg" @close="closeSatGrpMgr">
         <div class="sgm-body">
           <div class="sgm-left">
             <div class="sgm-lt">全部组 <em>{{ satGroups.list.value.length }}</em>
-              <span class="lnk" title="新建一个空组" @click="sgmNew"><Icon name="plus" :size="12" /> 新建</span>
+              <button type="button" class="lnk" title="新建一个空组" @click="sgmNew"><Icon name="plus" :size="12" /> 新建</button>
             </div>
             <div class="sgm-glist">
-              <div v-if="!satGroups.list.value.length" class="sgm-empty">还没有卫星组。</div>
+              <div v-if="!satGroups.list.value.length" class="sgm-empty">暂无卫星组。</div>
               <div
                 v-for="g in satGroups.list.value" :key="g.id"
                 class="sgm-grow" :class="{ cur: g.id === sgmId }"
@@ -15627,8 +16425,8 @@ onBeforeUnmount(() => {
                 <span class="gdot" :class="{ off: !g.color }" :style="g.color ? { background: g.color } : null"></span>
                 <span class="gnm" :title="g.name" data-i18n-skip>{{ g.name }}</span>
                 <span class="gcnt">{{ g.sats.length }}</span>
-                <span class="gic" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="12" /></span>
-                <span class="gic del" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="12" /></span>
+                <button type="button" class="gic ibtn sm" title="复制该组（含成员）" @click.stop="sgmDup(g)"><Icon name="copy" :size="12" /></button>
+                <button type="button" class="gic del ibtn sm danger" :class="{ warn: sgmDelId === g.id }" :title="sgmDelId === g.id ? '再次点击确认删除' : '删除该组'" @click.stop="sgmDel(g)"><Icon name="trash" :size="12" /></button>
               </div>
             </div>
           </div>
@@ -15638,7 +16436,7 @@ onBeforeUnmount(() => {
               <div class="sgm-name">
                 <label>组名</label>
                 <input class="ci" ref="sgmNameEl" v-model="sgmNameVal" placeholder="卫星组名称" @input="sgmCommitName" @blur="sgmNameVal = (sgmCur ? sgmCur.name : '')" />
-                <span class="gbtn" title="在地图上显示该组的卫星" @click="sgmShow"><Icon name="eye" :size="12" /> 显示</span>
+                <button type="button" class="gbtn" title="在地图上仅显示该组的卫星" @click="sgmShow">仅显示该组</button>
               </div>
 
               <div class="sgm-clr">
@@ -15649,13 +16447,13 @@ onBeforeUnmount(() => {
                   <input type="color" :value="sgmCur.color || DEFAULT_SAT_HEX" @input="e => satGrpSetColor(sgmCur, e.target.value)" />
                 </label>
                 <span class="hexv">{{ sgmCur.color || '—' }}</span>
-                <span class="gbtn" :class="{ dis: !sgmHasAnyColor }" title="清除组色与全部逐颗颜色，回到随所属星座" @click="sgmResetAllColor"><Icon name="x" :size="12" /> 恢复默认</span>
+                <button type="button" :disabled="!sgmHasAnyColor" class="gbtn" :class="{ dis: !sgmHasAnyColor }" title="清除组色与全部逐颗颜色，回到随所属星座" @click="sgmResetAllColor"><Icon name="x" :size="12" /> 恢复默认</button>
               </div>
 
               <div class="sgm-sec" title="更换关键词可继续检索，勾选结果累计保留">搜索添加</div>
               <div class="sgm-srch">
-                <input class="ci" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
-                <span v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</span>
+                <input class="ci search-field" v-model="sgmKw" placeholder="卫星名 / NORAD 编号 / 星座名，如 starlink、48274" @input="sgmOnSearch" />
+                <button type="button" v-if="sgmRes.length" class="gbtn" title="将当前结果中未入组的全部勾选" @click="sgmPickAllRes">全选结果</button>
               </div>
               <SatFilterBar
                 :model-value="satFilters" :satcat="satcatIdx" :pool="satPoolForFilter" :matched="-1"
@@ -15663,8 +16461,8 @@ onBeforeUnmount(() => {
               />
               <div class="sgm-reslist">
                 <div v-if="sgmBusy" class="sgm-empty">搜索中…</div>
-                <div v-else-if="!sgmKw.trim()" class="sgm-empty">输入关键词搜索。</div>
-                <div v-else-if="!sgmRes.length" class="sgm-empty">没有匹配的卫星。</div>
+                <div v-else-if="!sgmKw.trim()" class="sgm-empty">未输入关键词。</div>
+                <div v-else-if="!sgmRes.length" class="sgm-empty">无匹配卫星。</div>
                 <label v-for="it in sgmRes" :key="it.id" class="sgm-ck" :class="{ dim: sgmMemIds.has(it.id) }">
                   <!-- 已在组内 → 禁用且不显勾（勾选集是跨组暂存的，切组后可能含本组已有星，避免显示成「已勾选」误导） -->
                   <input type="checkbox" :checked="!sgmMemIds.has(it.id) && sgmPickIds.has(it.id)" :disabled="sgmMemIds.has(it.id)" @change="sgmTogglePick(it)" />
@@ -15675,24 +16473,24 @@ onBeforeUnmount(() => {
               </div>
               <div class="sgm-pickbar">
                 <span>已勾选 <b>{{ sgmPick.length }}</b> 颗</span>
-                <span v-if="sgmPick.length" class="lnk" @click="sgmPick = []">清空勾选</span>
-                <span class="save" :class="{ dis: !sgmPick.length }" @click="sgmAddPick"><Icon name="plus" :size="12" /> 加入本组</span>
+                <button type="button" v-if="sgmPick.length" class="lnk" @click="sgmPick = []">清空勾选</button>
+                <button type="button" :disabled="!sgmPick.length" class="save btn primary" :class="{ dis: !sgmPick.length }" @click="sgmAddPick"><Icon name="plus" :size="12" /> 加入本组</button>
               </div>
 
               <div class="sgm-sec">组内卫星 <em>{{ sgmCur.sats.length }} 颗</em></div>
               <div class="sgm-memtool">
-                <input class="ci" v-model="sgmMemKw" placeholder="在组内过滤…" />
-                <span class="gbtn" @click="sgmToggleMemAll">全选 / 反选</span>
+                <input class="ci search-field" v-model="sgmMemKw" placeholder="在组内过滤…" />
+                <button type="button" class="gbtn" @click="sgmToggleMemAll">{{ sgmMemAllSel ? '全不选' : '全选' }}</button>
                 <label class="gbtn clr" :class="{ dis: !sgmSel.length }" :title="'为所选 ' + sgmSel.length + ' 颗单独指定颜色（优先于组色）'">
                   <Icon name="droplets" :size="12" /> 着色所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}
                   <input type="color" :value="sgmCur.color || DEFAULT_SAT_HEX" @input="e => satGrpColorSats(sgmCur, sgmSel, e.target.value)" />
                 </label>
-                <span class="gbtn" :class="{ dis: !sgmSel.length }" title="清除所选卫星的单独颜色，回到组色" @click="satGrpColorSats(sgmCur, sgmSel, '')">清除着色</span>
-                <span class="gbtn danger" :class="{ dis: !sgmSel.length }" @click="sgmRemoveMem(sgmSel)"><Icon name="minus" :size="12" /> 移出所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}</span>
+                <button type="button" :disabled="!sgmSel.length" class="gbtn" :class="{ dis: !sgmSel.length }" title="清除所选卫星的单独颜色，回到组色" @click="satGrpColorSats(sgmCur, sgmSel, '')">清除着色</button>
+                <button type="button" :disabled="!sgmSel.length" class="gbtn danger" :class="{ dis: !sgmSel.length }" @click="sgmRemoveMem(sgmSel)"><Icon name="minus" :size="12" /> 移出所选{{ sgmSel.length ? (' ' + sgmSel.length) : '' }}</button>
               </div>
               <div class="sgm-memlist">
-                <div v-if="!sgmCur.sats.length" class="sgm-empty">该组还没有卫星。</div>
-                <div v-else-if="!sgmMembers.length" class="sgm-empty">没有匹配的成员。</div>
+                <div v-if="!sgmCur.sats.length" class="sgm-empty">该组暂无卫星。</div>
+                <div v-else-if="!sgmMembers.length" class="sgm-empty">无匹配成员。</div>
                 <label v-for="m in sgmMembers" :key="m.id" class="sgm-ck">
                   <input type="checkbox" :checked="sgmSelIds.has(m.id)" @change="sgmToggleMem(m.id)" />
                   <span class="pgclr" :title="m.color ? ('单独颜色（' + m.color + '）') : (sgmCur.color ? ('随组色（' + sgmCur.color + '）') : '未着色（随所属星座）')" @click.stop>
@@ -15701,26 +16499,22 @@ onBeforeUnmount(() => {
                   </span>
                   <span class="cn" :title="m.name" data-i18n-skip>{{ m.name }}</span>
                   <em :class="{ miss: !m.inPool }">{{ m.inPool ? m.groupLabel : '未在当前星历' }} · {{ m.id }}<template v-if="m.slot"> · {{ m.slot }}</template></em>
-                  <span v-if="m.color" class="gic" title="清除单独颜色，回到组色" @click.stop.prevent="satGrpColorSats(sgmCur, [m.id], '')"><Icon name="droplets" :size="12" /></span>
-                  <span class="gic del" title="从本组移出" @click.stop.prevent="sgmRemoveMem([m.id])"><Icon name="x" :size="12" /></span>
+                  <button type="button" v-if="m.color" class="gic ibtn sm" title="清除单独颜色，回到组色" @click.stop.prevent="satGrpColorSats(sgmCur, [m.id], '')"><Icon name="droplets" :size="12" /></button>
+                  <button type="button" class="gic del ibtn sm danger" title="从本组移出" @click.stop.prevent="sgmRemoveMem([m.id])"><Icon name="x" :size="12" /></button>
                 </label>
               </div>
             </template>
-            <div v-else class="sgm-empty big">还没有卫星组。</div>
+            <div v-else class="sgm-empty big">暂无卫星组。</div>
           </div>
         </div>
-        <div class="sdfoot"><span class="save" @click="closeSatGrpMgr">完成</span></div>
-      </div>
-    </div>
+        <template #footer><button type="button" class="btn primary" @click="closeSatGrpMgr">完成</button></template>
+    </AppDialog>
 
     <!-- 应用内提示弹窗（替代 Electron 原生 alert，避免关闭后输入框无法聚焦） -->
-    <div v-if="alertMsg" class="sat-mask sat-overlay" @click.self="closeAlert">
-      <div class="sat-dlg al-dlg">
-        <div class="sdh"><span>提示</span><span class="csx" @click="closeAlert"><Icon name="x" :size="12" /></span></div>
-        <div class="sdbody"><p class="al-msg">{{ alertMsg }}</p></div>
-        <div class="sdfoot"><span class="save" @click="closeAlert">确定</span></div>
-      </div>
-    </div>
+    <AppDialog v-if="alertMsg" title="提示" :width="360" @close="closeAlert">
+        <p class="al-msg">{{ alertMsg }}</p>
+        <template #footer><button type="button" class="btn primary" @click="closeAlert">确定</button></template>
+    </AppDialog>
 
     <!-- 发送到小程序：与链路预算三窗、文件区共用同一个弹窗（绑定账号直投 / 生成密钥） -->
     <MiniSendDialog
@@ -15766,145 +16560,188 @@ onBeforeUnmount(() => {
     <div v-if="lnk.draw.value" class="traj-banner" title="依次单击地球站 / 卫星追加节点 · Enter 完成 · Esc 取消 · Backspace 撤销">
       <template v-if="lnkMsg"><span class="lk-bmsg">{{ lnkMsg }}</span></template>
       <template v-else><span>{{ lnk.draw.value.isNew ? '新建链路' : '编辑链路' }}</span> · {{ lnkDrawN }} <span>个节点</span></template>
-      <span class="lnk" :class="{ dis: !lnkCanUndo }" @click="lnkCanUndo && lnk.undoNode()">撤销</span>
-      <span class="lnk" @click="lnkFinish">完成</span>
-      <span class="lnk" @click="lnkCancel">取消</span>
+      <button type="button" :aria-disabled="(!lnkCanUndo) ? 'true' : null" class="lnk" :class="{ dis: !lnkCanUndo }" @click="lnkCanUndo && lnk.undoNode()">撤销</button>
+      <button type="button" class="lnk" @click="lnkFinish">完成</button>
+      <button type="button" class="lnk" @click="lnkCancel">取消</button>
     </div>
     <!-- 「导入链路预算」下拉：四个目标，行尾为勾选里能导入该模块的条数 -->
     <template v-if="lnkImpMenu">
-      <div class="ctx-mask" @click="lnkImpMenu = null" @contextmenu.prevent="lnkImpMenu = null"></div>
-      <div class="ctx-menu" :style="{ left: lnkImpMenu.x + 'px', top: lnkImpMenu.y + 'px' }">
-        <div class="ctx-item" :class="{ dis: !lnkImpCounts.linkbudget }" @click="lnkImpCounts.linkbudget && lnkImport('linkbudget')">GSO 链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('linkbudget') }}</span></div>
-        <div class="ctx-item" :class="{ dis: !lnkImpCounts.ngso }" @click="lnkImpCounts.ngso && lnkImport('ngso')">NGSO 链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('ngso') }}</span></div>
-        <div class="ctx-item" :class="{ dis: !lnkImpCounts.regen }" @click="lnkImpCounts.regen && lnkImport('regen')">再生式链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('regen') }}</span></div>
-        <div class="ctx-item" :class="{ dis: !lnkImpCounts.e2e }" @click="lnkImpCounts.e2e && lnkImport('e2e')">端到端链路预算<span class="ctx-kb" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('e2e') }}</span></div>
+      <div class="ctx-mask menu-mask" @click="lnkImpMenu = null" @contextmenu.prevent="lnkImpMenu = null"></div>
+      <div class="ctx-menu menu" role="menu" :style="{ left: lnkImpMenu.x + 'px', top: lnkImpMenu.y + 'px' }">
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !lnkImpCounts.linkbudget }" @click="lnkImpCounts.linkbudget && lnkImport('linkbudget')">GSO 链路预算<span class="ctx-kb menu-kbd" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('linkbudget') }}</span></button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !lnkImpCounts.ngso }" @click="lnkImpCounts.ngso && lnkImport('ngso')">NGSO 链路预算<span class="ctx-kb menu-kbd" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('ngso') }}</span></button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !lnkImpCounts.regen }" @click="lnkImpCounts.regen && lnkImport('regen')">再生式链路预算<span class="ctx-kb menu-kbd" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('regen') }}</span></button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !lnkImpCounts.e2e }" @click="lnkImpCounts.e2e && lnkImport('e2e')">端到端链路预算<span class="ctx-kb menu-kbd" data-i18n-skip :title="lnkImpTitle">{{ lnkImpTxt('e2e') }}</span></button>
       </div>
     </template>
 
     <!-- 轨迹描绘横幅：有正在编辑的轨迹时显示；与 Polygon 同款：右键逐点 / 左键沿路径拖动连续加点 -->
-    <div v-if="activeTraj" class="traj-banner" title="右键地图连续加点，或按住左键沿路径拖动连续加点">
+    <div v-if="activeTraj" class="traj-banner" title="单击或右键添加点 · Shift + 按住拖动连续添加点 · Backspace 撤销上点 · Enter / Esc 结束">
       正在描绘{{ curTraj() && curTraj().kind === 'flight' ? '飞行' : '航行' }}轨迹
-      <span class="lnk" @click="trajUndo">撤销上点</span>
-      <span class="lnk" @click="endTraj">结束</span>
+      <span class="bn-hint" :class="{ on: shiftDown }"><kbd class="bn-kbd">Shift</kbd><span class="bn-plus">+</span><span>拖动连续绘制</span></span>
+      <button type="button" class="lnk" @click="trajUndo">撤销上点</button>
+      <button type="button" class="lnk" @click="endTraj">结束</button>
     </div>
 
     <!-- Polygon 绘制横幅：绘制中提示右键加顶点，「完成」闭合成多边形 -->
-    <div v-if="polyDrawId" class="traj-banner" title="右键地图连续加顶点，或按住左键沿路径拖动连续加点（至少 3 点）">
+    <div v-if="polyDrawId" class="traj-banner" title="单击或右键添加顶点 · Shift + 按住拖动连续添加点 · Backspace 撤销上点 · Enter 完成 · Esc 取消（至少 3 点）">
       正在绘制 Polygon「{{ curPoly() ? curPoly().name : '' }}」
-      <span class="lnk" @click="polyUndo">撤销上点</span>
-      <span class="lnk" @click="polyDone">完成</span>
-      <span class="lnk" @click="polyCancel">取消</span>
+      <span class="bn-hint" :class="{ on: shiftDown }"><kbd class="bn-kbd">Shift</kbd><span class="bn-plus">+</span><span>拖动连续绘制</span></span>
+      <button type="button" class="lnk" @click="polyUndo">撤销上点</button>
+      <button type="button" class="lnk" @click="polyDone">完成</button>
+      <button type="button" class="lnk" @click="polyCancel">取消</button>
     </div>
 
     <!-- 覆盖分析两种拖拽模式的横幅（与 Polygon 绘制同款）：开着就常显，「完成」退出该模式 -->
-    <div v-if="grd.dragLabel.value" class="traj-banner" title="在地图上按住标签沿等值线拖动">
+    <div v-if="grd.dragLabel.value" class="traj-banner" title="按住标签沿等值线拖动（别处拖动照常导航）· Enter / Esc 完成">
       正在拖动数值标签
-      <span class="lnk" @click="grd.setDragLabel(false)">完成</span>
+      <button type="button" class="lnk" @click="grd.setDragLabel(false)">完成</button>
     </div>
-    <div v-if="grd.dragBore.value" class="traj-banner" title="在地图上按住左键拖动改指向">
+    <div v-if="grd.dragBore.value" class="traj-banner" title="按住波束中心附近拖动改指向（别处拖动照常导航）· Enter / Esc 完成">
       正在拖拽波束「{{ grd.activeName() }}」
-      <span class="lnk" @click="grd.setDragBore(false)">完成</span>
+      <button type="button" class="lnk" @click="grd.setDragBore(false)">完成</button>
     </div>
 
     <!-- Polygon 调整顶点横幅：拖动地图上的顶点圆点调整位置 -->
-    <div v-if="polyEditId" class="traj-banner" title="在平面图上拖动圆点改位置">
+    <div v-if="polyEditId" class="traj-banner" title="在平面图上拖动圆点改位置 · Enter / Esc 完成">
       正在调整「{{ curEditPoly() ? curEditPoly().name : '' }}」顶点
-      <span class="lnk" @click="polyEditStop">完成</span>
+      <button type="button" class="lnk" @click="polyEditStop">完成</button>
     </div>
 
     <!-- Polygon 整体拖动横幅：按住多边形内部平移整个多边形 -->
-    <div v-if="polyMoveId" class="traj-banner" title="在平面图上按住多边形内部拖动">
+    <div v-if="polyMoveId" class="traj-banner" title="在平面图上按住 Polygon 内部拖动 · Enter / Esc 完成">
       正在整体拖动「{{ curMovePoly() ? curMovePoly().name : '' }}」
-      <span class="lnk" @click="polyMoveStop">完成</span>
+      <button type="button" class="lnk" @click="polyMoveStop">完成</button>
+    </div>
+
+    <!-- 波束合成三种图上操作 / 站点栅编辑 / 拖动调整投影中心：原先只有按钮文字变化，没有横幅，Esc 也退不出 -->
+    <div v-if="(bs.placing.value && !bs.stPick.value) || bs.adjusting.value || bs.deleting.value" class="traj-banner" title="Enter / Esc 完成">
+      {{ bs.placing.value ? '正在放置波束' : (bs.adjusting.value ? '正在调整波束中心' : '正在删除波束') }}
+      <button type="button" class="lnk" @click="exitMapTools('')">完成</button>
+    </div>
+    <div v-if="bs.open.value && (bs.stEditOn.value || bs.stPick.value)" class="traj-banner" title="Esc 完成">
+      正在编辑站点栅
+      <button type="button" class="lnk" @click="exitMapTools('')">完成</button>
+    </div>
+    <div v-if="projSpin" class="traj-banner" title="Enter / Esc 完成">
+      正在拖动调整投影中心
+      <button type="button" class="lnk" @click="exitMapTools('')">完成</button>
     </div>
 
     <!-- 标记「调整点位置」横幅：本态下该类标记才可用鼠标拖（点标记 / 地球站 / 航迹航点共用） -->
-    <div v-if="mkEditId" class="traj-banner">
+    <div v-if="mkEditId" class="traj-banner" title="Enter / Esc 完成">
       正在调整{{ mkEditLabel }}位置
-      <span class="lnk" @click="mkEditStop">完成</span>
+      <button type="button" class="lnk" @click="mkEditStop">完成</button>
     </div>
 
     <!-- 地图右键上下文菜单（3D / 平面图共用）；点击空白处或再次右键关闭 -->
     <template v-if="ctxMenu">
-      <div class="ctx-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
-      <div ref="ctxMenuEl" class="ctx-menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @mouseover="onCtxOver">
+      <div class="ctx-mask menu-mask" @click="closeCtx" @contextmenu.prevent="closeCtx"></div>
+      <div ref="ctxMenuEl" class="ctx-menu menu" role="menu" :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }" @mouseover="onCtxOver">
         <!-- 卫星信息栏「分析」按钮：同一张菜单只列分析项（不套二级） -->
         <template v-if="ctxMenu.anaOnly">
           <template v-for="(a, i) in ctxAna.items" :key="i">
-            <div v-if="a.sep" class="ctx-sep"></div>
-            <div v-else class="ctx-item" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</div>
+            <div v-if="a.sep" class="ctx-sep menu-sep" role="separator"></div>
+            <button type="button" v-else class="ctx-item menu-item" role="menuitem" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</button>
           </template>
         </template>
         <template v-else>
         <!-- 建链中：压着站 / 星可直接追加；完成 / 撤销 / 取消 -->
         <template v-if="lnk.draw.value">
-          <div v-if="(ctxMenu.ent && (ctxMenu.ent.kind === 'station' || ctxMenu.ent.kind === 'point')) || ctxMenu.sid || ctxMenu.area" class="ctx-item" @click="ctxLinkAppend">追加到链路</div>
-          <div class="ctx-item" @click="ctxLinkFinish">完成链路<span class="ctx-kb">Enter</span></div>
-          <div class="ctx-item" :class="{ dis: !lnkCanUndo }" @click="ctxLinkUndo">撤销上一节点<span class="ctx-kb">Backspace</span></div>
-          <div class="ctx-item" @click="ctxLinkCancel">取消建链<span class="ctx-kb">Esc</span></div>
-          <div class="ctx-sep"></div>
+          <button type="button" v-if="(ctxMenu.ent && (ctxMenu.ent.kind === 'station' || ctxMenu.ent.kind === 'point')) || ctxMenu.sid || ctxMenu.area" class="ctx-item menu-item" role="menuitem" @click="ctxLinkAppend">追加到链路</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFinish">完成链路<span class="ctx-kb menu-kbd">Enter</span></button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !lnkCanUndo }" @click="ctxLinkUndo">撤销上一节点<span class="ctx-kb menu-kbd">Backspace</span></button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxLinkCancel">取消建链<span class="ctx-kb menu-kbd">Esc</span></button>
+          <div class="ctx-sep menu-sep" role="separator"></div>
+        </template>
+        <!-- 菜单头：压着的对象名（运行时数据） -->
+        <div v-if="ctxObjName" class="ctx-hd menu-hd" data-i18n-skip :title="ctxObjName">{{ ctxObjName }}</div>
+        <!-- 压在一颗星上：聚焦 / 加入 / 移出（右键里原先没有「聚焦」） -->
+        <template v-if="ctxMenu.sid && !lnk.draw.value">
+          <button type="button" v-if="!ctxSatFocused" class="ctx-item menu-item" role="menuitem" @click="ctxFocusSat('only')">聚焦</button>
+          <button type="button" v-if="!ctxSatFocused && selected" class="ctx-item menu-item" role="menuitem" @click="ctxFocusSat('add')">加入聚焦<span class="ctx-kb menu-kbd">Ctrl+单击</span></button>
+          <button type="button" v-if="ctxSatFocused && selList.length > 1" class="ctx-item menu-item" role="menuitem" @click="ctxFocusSat('remove')">移出聚焦<span class="ctx-kb menu-kbd">Ctrl+单击</span></button>
         </template>
         <!-- 跟随卫星（3D 相机跟随 / 2D 星下点跟随）：跟随中首项是退出；否则右键压在一颗星上时首项是跟随它 -->
-        <div v-if="following || flatFollowing" class="ctx-item" @click="ctxStopFollow">退出跟随<span class="ctx-kb">Esc</span></div>
-        <div v-else-if="ctxMenu.sid" class="ctx-item" @click="ctxFollow">跟随卫星</div>
+        <button type="button" v-if="following || flatFollowing" class="ctx-item menu-item" role="menuitem" @click="ctxStopFollow">退出跟随<span class="ctx-kb menu-kbd">Esc</span></button>
+        <button type="button" v-else-if="ctxMenu.sid" class="ctx-item menu-item" role="menuitem" @click="ctxFollow">跟随卫星</button>
         <!-- 压在一颗星上：为它新建高斯天线（没有关联树节点就先建一颗关联星）/ 把它已有天线的覆盖显示出来 -->
         <template v-if="ctxMenu.sid && grdApiOk">
-          <div v-if="!ctxMenu.enPv" class="ctx-item" @click="ctxNewGauss">新建高斯天线</div>
-          <div v-if="ctxHasAnts" class="ctx-item" @click="ctxShowAntCov">显示天线覆盖</div>
+          <button type="button" v-if="!ctxMenu.enPv" class="ctx-item menu-item" role="menuitem" @click="ctxNewGauss">新建高斯天线</button>
+          <button type="button" v-if="ctxHasAnts" class="ctx-item menu-item" role="menuitem" @click="ctxShowAntCov">显示天线覆盖</button>
         </template>
-        <div v-if="ctxMenu.sid && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('sat')">从此卫星新建链路</div>
+        <button type="button" v-if="ctxMenu.sid && !lnk.draw.value" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('sat')">从此卫星新建链路</button>
         <template v-if="ctxMenu.area && !ctxMenu.sid && !lnk.draw.value">
-          <div v-if="ctxMenu.area.k === 'pg'" class="ctx-item" @click="ctxLinkFrom('area')">从此 Polygon 新建链路</div>
-          <div v-else class="ctx-item" @click="ctxLinkFrom('area')">从此航迹新建链路</div>
+          <button type="button" v-if="ctxMenu.area.k === 'pg'" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('area')">从此 Polygon 新建链路</button>
+          <button type="button" v-else class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('area')">从此航迹新建链路</button>
+        </template>
+        <!-- 压着 Polygon：它自己的编辑操作（与 Polygon 侧栏同一组函数） -->
+        <template v-if="ctxPoly && !lnk.draw.value">
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('edit')">调整顶点</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('move')">整体拖动</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('cont')">继续绘制</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('hide')">隐藏</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('reveal')">在列表中定位</button>
+        </template>
+        <!-- 压着航迹（载具头 / 航迹线）：航迹时间、继续描绘、调整航点 -->
+        <template v-if="ctxTraj && !lnk.draw.value">
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('time')">航迹时间…</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('draw')">继续描绘</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('pts')">调整航点</button>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('reveal')">在列表中定位</button>
         </template>
         <!-- 压着卫星 / 地球站 / 点标记：带上下文打开计算窗（二级菜单）；行尾是将带进去的那颗星 -->
-        <div v-if="ctxAna.items.length" class="ctx-item ctx-subp" :class="{ on: !!ctxSub }" @mouseenter="openCtxSub" @click="openCtxSub">
-          <span>{{ byLang('分析', 'Analyze') }}</span><span class="ctx-kb"><span class="ctx-subn" data-i18n-skip>{{ ctxAna.satName }}</span>▸</span>
-        </div>
-        <div v-if="following || flatFollowing || ctxMenu.sid || ctxAna.items.length || (ctxMenu.area && !lnk.draw.value)" class="ctx-sep"></div>
+        <button type="button" v-if="ctxAna.items.length" class="ctx-item menu-item ctx-subp" role="menuitem" :class="{ on: !!ctxSub, hi: !!ctxSub }" @mouseenter="openCtxSub" @click="openCtxSub">
+          <span>{{ byLang('分析', 'Analyze') }}</span><span class="ctx-kb menu-kbd"><span class="ctx-subn" data-i18n-skip>{{ ctxAna.satName }}</span><Icon name="chevron-right" :size="12" /></span>
+        </button>
+        <div v-if="following || flatFollowing || ctxMenu.sid || ctxAna.items.length || (ctxMenu.area && !lnk.draw.value) || ctxPoly || ctxTraj" class="ctx-sep menu-sep" role="separator"></div>
         <!-- 压着地球站 / 点标记 / 载具头：挂 / 换 / 卸模型 -->
         <template v-if="ctxMenu.ent">
-          <div v-if="ctxMenu.ent.kind === 'station'" class="ctx-item" @click="ctxStationProps">地球站属性…</div>
-          <div v-if="ctxMenu.ent.kind === 'station' && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('st')">从此站新建链路</div>
-          <div v-if="ctxMenu.ent.kind === 'point' && !lnk.draw.value" class="ctx-item" @click="ctxLinkFrom('st')">从此点新建链路</div>
-          <div v-if="ctxMenu.ent.kind === 'traj'" class="ctx-item" @click="ctxTrajTime">航迹时间…</div>
-          <div class="ctx-item" @click="ctxEntModel">模型…</div>
-          <div v-if="ctxMenu.ent.has" class="ctx-item" @click="ctxEntUnmount">移除模型</div>
-          <div class="ctx-sep"></div>
+          <button type="button" v-if="ctxMenu.ent.kind === 'station'" class="ctx-item menu-item" role="menuitem" @click="ctxStationProps">地球站属性…</button>
+          <button type="button" v-if="ctxMenu.ent.kind === 'station' && !lnk.draw.value" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('st')">从此站新建链路</button>
+          <button type="button" v-if="ctxMenu.ent.kind === 'point' && !lnk.draw.value" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('st')">从此点新建链路</button>
+          <template v-if="(ctxMenu.ent.kind === 'station' || ctxMenu.ent.kind === 'point') && !lnk.draw.value">
+            <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('move')">调整位置</button>
+            <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('hide')">隐藏</button>
+            <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('reveal')">在列表中定位</button>
+          </template>
+          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxEntModel">模型…</button>
+          <button type="button" v-if="ctxMenu.ent.has" class="ctx-item menu-item" role="menuitem" @click="ctxEntUnmount">移除模型</button>
+          <div class="ctx-sep menu-sep" role="separator"></div>
         </template>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddPoint">添加点标记（当前经纬度）</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地球站（当前经纬度）</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('sea')">添加航行轨迹</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('flight')">添加飞行轨迹</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxStartPoly">绘制 Polygon（协调区）</div>
-        <div class="ctx-item" :class="{ dis: !ctxMenu.ll }" @click="ctxSetLandColor">设置此国大地颜色</div>
-        <div class="ctx-sep"></div>
-        <div class="ctx-item" @click="ctxHidePoints">隐藏所有点标记</div>
-        <div class="ctx-item" @click="ctxHideStations">隐藏所有地球站</div>
-        <div class="ctx-item" @click="ctxHideTrajs">隐藏所有航迹</div>
-        <div class="ctx-item" @click="ctxHideAllMk">隐藏所有标记</div>
-        <div class="ctx-item" @click="ctxClearPolys">隐藏所有 Polygon</div>
-        <div class="ctx-item" @click="ctxHideLinks">隐藏所有链路</div>
-        <div v-if="grdApiOk || covApiOk" class="ctx-item" @click="clearAllCoverage">清除所有覆盖图</div>
-        <div v-if="grdApiOk" class="ctx-item" @click="ctxClearShellCov">清除壳层覆盖</div>
-        <div v-if="grdApiOk" class="ctx-item" @click="ctxHideShellGuides">隐藏壳层参照网</div>
-        <div class="ctx-sep"></div>
-        <div class="ctx-item" @click="ctxOpenSide('geo')">地图综合设置</div>
-        <div class="ctx-item" @click="ctxOpenSide('focus')">卫星聚焦特效设置</div>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxAddPoint">添加点标记（当前经纬度）</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxAddStation">添加地球站（当前经纬度）</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('sea')">添加航行轨迹</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxStartTraj('flight')">添加飞行轨迹</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxStartPoly">绘制 Polygon（协调区）</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxSetLandColor">设置此国大地颜色</button>
+        <div class="ctx-sep menu-sep" role="separator"></div>
+        <button type="button" v-if="ctxHave.pt" class="ctx-item menu-item" role="menuitem" @click="ctxHidePoints">隐藏所有点标记</button>
+        <button type="button" v-if="ctxHave.st" class="ctx-item menu-item" role="menuitem" @click="ctxHideStations">隐藏所有地球站</button>
+        <button type="button" v-if="ctxHave.tj" class="ctx-item menu-item" role="menuitem" @click="ctxHideTrajs">隐藏所有航迹</button>
+        <button type="button" v-if="(ctxHave.pt ? 1 : 0) + (ctxHave.st ? 1 : 0) + (ctxHave.tj ? 1 : 0) > 1" class="ctx-item menu-item" role="menuitem" @click="ctxHideAllMk">隐藏所有标记</button>
+        <button type="button" v-if="ctxHave.pg" class="ctx-item menu-item" role="menuitem" @click="ctxClearPolys">隐藏所有 Polygon</button>
+        <button type="button" v-if="ctxHave.lk" class="ctx-item menu-item" role="menuitem" @click="ctxHideLinks">隐藏所有链路</button>
+        <button type="button" v-if="grdApiOk || covApiOk" class="ctx-item menu-item" role="menuitem" @click="clearAllCoverage">清除所有覆盖图</button>
+        <button type="button" v-if="grdApiOk" class="ctx-item menu-item" role="menuitem" @click="ctxClearShellCov">清除壳层覆盖</button>
+        <button type="button" v-if="grdApiOk" class="ctx-item menu-item" role="menuitem" @click="ctxHideShellGuides">隐藏壳层参照网</button>
+        <div class="ctx-sep menu-sep" role="separator"></div>
+        <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxOpenSide('geo')">地图综合设置</button>
+        <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxOpenSide('focus')">卫星聚焦特效设置</button>
         <!-- 聚焦组放在菜单最末：破坏性项离弹出点（指针）最远，与首项「跟随卫星」隔开整张菜单 -->
         <template v-if="selected || prevFocusTag">
-          <div class="ctx-sep"></div>
-          <div v-if="prevFocusTag" class="ctx-item" @click="ctxPrevFocus">上一聚焦<span class="ctx-kb rdk-pf" data-i18n-skip>{{ prevFocusTag }}</span></div>
-          <div v-if="selected && selList.length > 1" class="ctx-item" @click="ctxClearFocus">全部取消聚焦</div>
-          <div v-else-if="selected" class="ctx-item" @click="ctxClearFocus">取消聚焦</div>
+          <div class="ctx-sep menu-sep" role="separator"></div>
+          <button type="button" v-if="prevFocusTag" class="ctx-item menu-item" role="menuitem" @click="ctxPrevFocus">上一聚焦<span class="ctx-kb menu-kbd rdk-pf" data-i18n-skip>{{ prevFocusTag }}</span></button>
+          <button type="button" v-if="selected && selList.length > 1" class="ctx-item menu-item" role="menuitem" @click="ctxClearFocus">全部取消聚焦</button>
+          <button type="button" v-else-if="selected" class="ctx-item menu-item" role="menuitem" @click="ctxClearFocus">取消聚焦</button>
         </template>
         </template>
       </div>
       <!-- 「分析 ▸」二级菜单：fixed 定位挂在主菜单外（主菜单 overflow:auto 会裁掉内嵌的浮层） -->
-      <div v-if="ctxSub && ctxAna.items.length" ref="ctxSubEl" class="ctx-menu ctx-sub" :style="{ left: ctxSub.x + 'px', top: ctxSub.y + 'px' }">
+      <div v-if="ctxSub && ctxAna.items.length" ref="ctxSubEl" class="ctx-menu ctx-sub menu" role="menu" :style="{ left: ctxSub.x + 'px', top: ctxSub.y + 'px' }">
         <template v-for="(a, i) in ctxAna.items" :key="i">
-          <div v-if="a.sep" class="ctx-sep"></div>
-          <div v-else class="ctx-item" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</div>
+          <div v-if="a.sep" class="ctx-sep menu-sep" role="separator"></div>
+          <button type="button" v-else class="ctx-item menu-item" role="menuitem" data-i18n-skip @click="runCtxAna(a)">{{ a.label }}</button>
         </template>
       </div>
     </template>
@@ -15932,18 +16769,18 @@ onBeforeUnmount(() => {
           <span class="mk-tab" :class="{ on: mkTab === 'stations' }" @click="mkSetTab('stations')">地球站</span>
           <span class="mk-tab" :class="{ on: mkTab === 'traj' }" @click="mkSetTab('traj')">航迹</span>
         </span>
-        <span class="csx" @click="closeMkTable"><Icon name="x" :size="12" /></span>
+        <button type="button" class="csx ibtn" title="关闭" aria-label="关闭" @click="closeMkTable"><Icon name="x" :size="12" /></button>
       </div>
 
       <!-- 工具栏：撤销/重做/增加/粘贴/导入导出/清空。恒作用于右侧网格（航迹分页即当前那条航迹的航点），航迹本身的增删改在左栏 -->
       <div class="pin-h mk-toolbar">
-        <span class="ptb" :class="{ dis: !mkTable.canUndo.value }" title="撤销 (Ctrl+Z)" @click="mkUndo"><Icon name="undo-2" :size="12" /></span>
-        <span class="ptb" :class="{ dis: !mkTable.canRedo.value }" title="重做 (Ctrl+Y)" @click="mkRedo"><Icon name="redo-2" :size="12" /></span>
-        <span class="ptb" :title="mkTab === 'traj' ? '在选中航点下方增加一行（直接键入或粘贴）' : '在选中行下方增加一行（直接键入或粘贴）'" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</span>
-        <span class="ptb" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地球站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
-        <span class="ptb" :title="mkTab === 'traj' ? '从 Excel 批量导入航迹：一张工作表一条航迹，表名即航迹名' : '从 Excel 追加到当前分页（按表头匹配列；无表头时末两列作经纬度）'" @click="mkImportXlsx"><Icon name="import" :size="12" /> 导入 Excel</span>
-        <span class="ptb" :class="{ dis: !mkXlsxRows }" :title="mkTab === 'traj' ? '把全部航迹导出为 Excel：一条航迹一张工作表' : '把当前分页导出为 Excel'" @click="mkExportXlsx"><Icon name="download" :size="12" /> 导出 Excel</span>
-        <span class="ptb" :title="mkTab === 'traj' ? '清空当前航迹的航点（航迹本身保留）' : '清空当前分页列表'" @click="mkClear">清空</span>
+        <button type="button" :disabled="!mkTable.canUndo.value" class="ptb btn" :class="{ dis: !mkTable.canUndo.value }" title="撤销 (Ctrl+Z)" @click="mkUndo"><Icon name="undo-2" :size="12" /></button>
+        <button type="button" :disabled="!mkTable.canRedo.value" class="ptb btn" :class="{ dis: !mkTable.canRedo.value }" title="重做 (Ctrl+Y)" @click="mkRedo"><Icon name="redo-2" :size="12" /></button>
+        <button type="button" class="ptb btn" :title="mkTab === 'traj' ? '在选中航点下方增加一行（直接键入或粘贴）' : '在选中行下方增加一行（直接键入或粘贴）'" @click="mkAddRow"><Icon name="plus" :size="12" /> 增加</button>
+        <button type="button" class="ptb btn" title="从剪贴板批量追加（约定末两列 = 经度、纬度；地球站首列可为名称）" @click="mkPaste"><Icon name="clipboard" :size="12" /> 粘贴</button>
+        <button type="button" class="ptb btn" :title="mkTab === 'traj' ? '从 Excel 批量导入航迹：一张工作表一条航迹，表名即航迹名' : '从 Excel 追加到当前分页（按表头匹配列；无表头时末两列作经纬度）'" @click="mkImportXlsx"><Icon name="file-import" :size="12" /> 导入 Excel</button>
+        <button type="button" :disabled="!mkXlsxRows" class="ptb btn" :class="{ dis: !mkXlsxRows }" :title="mkTab === 'traj' ? '把全部航迹导出为 Excel：一条航迹一张工作表' : '把当前分页导出为 Excel'" @click="mkExportXlsx"><Icon name="file-export" :size="12" /> 导出 Excel</button>
+        <button type="button" class="ptb btn" :title="mkTab === 'traj' ? '清空当前航迹的航点（航迹本身保留）' : '清空当前分页列表'" @click="mkClear">清空</button>
         <span class="perf-cnt">{{ mkCount }} 行</span>
       </div>
 
@@ -15952,30 +16789,36 @@ onBeforeUnmount(() => {
         <aside v-if="mkTab === 'traj'" class="mk-trajs">
           <div class="mtj-h">
             <span class="mtj-ht">航迹</span>
-            <span class="mtj-add" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="12" />航行</span>
-            <span class="mtj-add" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="12" />飞行</span>
+            <button type="button" class="btn sm" title="新建航行航迹" @click="mkNewTraj('sea')"><Icon name="plus" :size="12" />航行</button>
+            <button type="button" class="btn sm" title="新建飞行航迹" @click="mkNewTraj('flight')"><Icon name="plus" :size="12" />飞行</button>
           </div>
           <div class="mtj-list">
             <div v-for="t in trajectories" :key="t.id" class="mtj-row" :class="{ on: mkTrajId === t.id }"
                  @click="mkTrajId = t.id" @dblclick="mkRenameStart(t)">
               <span class="mtj-k" :class="t.kind === 'flight' ? 'flight' : 'sea'"
-                    :title="t.kind === 'flight' ? '飞行航迹，点击改为航行' : '航行航迹，点击改为飞行'" @click.stop="mkToggleKind(t)"></span>
+                    :title="t.kind === 'flight' ? '飞行航迹' : '航行航迹'"></span>
               <input v-if="mkRenameId === t.id" class="mtj-ren" :value="mkRenameVal" @click.stop @dblclick.stop
                      @input="e => mkRenameVal = e.target.value" @keyup.enter="mkRenameCommit" @keyup.esc="mkRenameCancel" @blur="mkRenameCommit" />
               <template v-else>
                 <!-- 名字位打了 skip（用户自命名不翻），连带 title 也翻不到 → 后半句自己按语言出字 -->
                 <span class="mtj-n" :title="(t.name || byLang('航迹', 'Track')) + byLang(' · 双击改名', ' · double-click to rename')" data-i18n-skip>{{ t.name || byLang('航迹', 'Track') }}</span>
                 <span class="mtj-c">{{ (t.pts || []).length }}</span>
-                <span class="mtj-x" title="删除该航迹" @click.stop="mkDelTraj(t)"><Icon name="x" :size="12" /></span>
+                <button type="button" class="mtj-x ibtn sm danger" title="删除该航迹" @click.stop="mkDelTraj(t)"><Icon name="x" :size="12" /></button>
               </template>
             </div>
-            <div v-if="!trajectories.length" class="mtj-empty">还没有航迹。</div>
+            <div v-if="!trajectories.length" class="mtj-empty">暂无航迹。</div>
           </div>
         </aside>
 
         <div class="mk-col">
           <!-- 航迹页：当前航迹的巡航高度 + 时间四项联动（与侧栏卡片「时间」同一个件，改动进表格的撤销栈）+ 全程读数 -->
           <div v-if="mkTab === 'traj' && mkCurTraj()" class="mk-tjbar">
+            <!-- 航迹类型：原先只能点左栏那枚 8px 色块翻转（隐藏开关），现在色块只当指示，改类型在这里 -->
+            <label>类型</label>
+            <span class="seg nseg" role="radiogroup" aria-label="航迹类型">
+              <button type="button" role="radio" :aria-checked="!!(mkCurTraj().kind !== 'flight')" class="sg" :class="{ on: mkCurTraj().kind !== 'flight' }" @click="mkSetKind(mkCurTraj(), 'sea')">航行</button>
+              <button type="button" role="radio" :aria-checked="!!(mkCurTraj().kind === 'flight')" class="sg" :class="{ on: mkCurTraj().kind === 'flight' }" @click="mkSetKind(mkCurTraj(), 'flight')">飞行</button>
+            </span>
             <template v-if="mkCurTraj().kind === 'flight'">
               <label>巡航高度</label><NumIn class="mkp-n" :model-value="Number.isFinite(mkCurTraj().cruiseAltM) ? mkCurTraj().cruiseAltM : null" allow-empty :min="0" :max="30000" :placeholder="String(trajDefaultCruiseAltM(mkCurTraj()))" :title="cruiseTip(mkCurTraj())" @commit="(v) => mkMotEdit(mkCurTraj(), () => setTrajMotion(mkTrajId, { cruiseAltM: v }))" /><span class="u">m</span>
             </template>
@@ -15987,10 +16830,10 @@ onBeforeUnmount(() => {
             <ExcelGrid v-show="mkTab === p.tab" class="pin-body mk-body eg-host" :grid="p.grid" :cols="p.cols"
                        :text="p.text" :cell-class="p.cellClass || null" :cell-tip="p.cellTip || null"
                        :head-tip="p.tab === 'traj' ? mkWpHeadTip : null" :actions-width="26"
-                       :empty-text="p.tab === 'traj' && !mkCurTraj() ? '尚未选择航迹。' : '暂无数据。'"
+                       :empty-text="p.tab === 'traj' && !mkCurTraj() ? '未选择航迹。' : '暂无数据。'"
                        add-label="增加一行" @add="mkAddRowEnd">
               <template #actions="{ row }">
-                <span class="del" title="删除该行" @click="mkDelRow(row.id)"><Icon name="x" :size="12" /></span>
+                <button type="button" class="del ibtn sm danger" title="删除该行" @click="mkDelRow(row.id)"><Icon name="x" :size="12" /></button>
               </template>
             </ExcelGrid>
           </template>
@@ -16014,21 +16857,21 @@ onBeforeUnmount(() => {
     <div v-if="bsTableOpen" class="perf-win mk-win" :style="{ left: bsTblWin.x + 'px', top: bsTblWin.y + 'px', width: bsTblWin.w + 'px', height: bsTblWin.h + 'px' }">
       <div class="perf-h" @mousedown="bsTblDragMove">
         <span class="perf-t">波束批量表格</span>
-        <span class="csx" @click="bsTableOpen = false"><Icon name="x" :size="12" /></span>
+        <button type="button" class="csx ibtn" title="关闭" aria-label="关闭" @click="bsTableOpen = false"><Icon name="x" :size="12" /></button>
       </div>
       <div class="pin-h mk-toolbar">
-        <span class="ptb" :class="{ dis: !bs.canUndo.value }" title="撤销 (Ctrl+Z)" @click="bs.undo"><Icon name="undo-2" :size="12" /></span>
-        <span class="ptb" :class="{ dis: !bs.canRedo.value }" title="重做 (Ctrl+Y)" @click="bs.redo"><Icon name="redo-2" :size="12" /></span>
-        <span class="ptb" title="在选中行下方增加一行" @click="bsTblAddRow"><Icon name="plus" :size="12" /> 增加</span>
-        <span class="ptb" title="从剪贴板批量追加（每行：经度 纬度 [宽X 宽Y 旋转]）" @click="bsTblPaste"><Icon name="clipboard" :size="12" /> 粘贴</span>
-        <span class="ptb" title="清空全部波束" @click="bsTblClear">清空</span>
+        <button type="button" :disabled="!bs.canUndo.value" class="ptb btn" :class="{ dis: !bs.canUndo.value }" title="撤销 (Ctrl+Z)" @click="bs.undo"><Icon name="undo-2" :size="12" /></button>
+        <button type="button" :disabled="!bs.canRedo.value" class="ptb btn" :class="{ dis: !bs.canRedo.value }" title="重做 (Ctrl+Y)" @click="bs.redo"><Icon name="redo-2" :size="12" /></button>
+        <button type="button" class="ptb btn" title="在选中行下方增加一行" @click="bsTblAddRow"><Icon name="plus" :size="12" /> 增加</button>
+        <button type="button" class="ptb btn" title="从剪贴板批量追加（每行：经度 纬度 [宽X 宽Y 旋转]）" @click="bsTblPaste"><Icon name="clipboard" :size="12" /> 粘贴</button>
+        <button type="button" class="ptb btn" title="清空全部波束" @click="bsTblClear">清空</button>
         <span class="perf-cnt">{{ bs.beams.value.length }} 波束</span>
       </div>
       <ExcelGrid class="pin-body mk-body eg-host" :grid="bsGrid" :cols="bsTblCols"
                  :text="bsCellText" :actions-width="26"
                  empty-text="暂无波束。" add-label="增加一行" @add="bsTblAddRowEnd">
         <template #actions="{ row }">
-          <span class="del" title="删除该行" @click="bsTblDelRow(row.id)"><Icon name="x" :size="12" /></span>
+          <button type="button" class="del ibtn sm danger" title="删除该行" @click="bsTblDelRow(row.id)"><Icon name="x" :size="12" /></button>
         </template>
       </ExcelGrid>
       <div class="prh prh-n" @mousedown="bsTblDragResize($event, 'n')"></div>
@@ -16046,6 +16889,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* span / div / i 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
+:where(button):is(.tri, .ant-btn, .opb, .expb2, .chip, .bs-chip, .addbatch, .ceback, .pgb, .covlock, .lk-nn, .lk-at, .lk-ins, .lk-add, .tloc, .trksel, .rdk-bdg, .rdk-an, .rdk-lnk, .stmdl, .mchip, .pmode, .gbtn, .lnk) { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
+/* 行内图标钮 .ibtn.sm（controls.css）：负外边距让 20px 命中框不撑高所在行 */
+.ibtn.sm { margin-top: -2px; margin-bottom: -2px; }
+/* 带自定义色的显隐钮（仰角线按线色着色）：开着时只着色、不铺选中实底 */
+.ibtn.on.tint { background: none; }
 .g3 { display: flex; flex-direction: column; height: 100%; position: relative; }
 .bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--border); flex: none; font-size: var(--fs-4); }
 .bar .t { font-family: var(--font-serif); font-size: var(--fs-5); }
@@ -16086,6 +16935,7 @@ onBeforeUnmount(() => {
 .tl-grp.c { gap: 12px; }
 .tl-grp.l { justify-self: start; }
 .tl-grp.r { justify-self: end; }
+.tl-grp.r .tl-vexp { margin-left: 6px; }
 
 /* —— 实时键：灭 = 灰点；亮 = 红点 + 红字 + 红框（无填充、无脉冲）—— */
 .tl .live-btn { display: inline-flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 8px 0 7px; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: transparent; font: inherit; font-size: var(--fs-2); line-height: 1; cursor: pointer; color: var(--text-muted); flex: none; white-space: nowrap; user-select: none; transition: var(--t-state); }
@@ -16248,8 +17098,6 @@ onBeforeUnmount(() => {
   .tl .stg .st.now { padding: 0 3px; }
   .tlab2 { column-gap: 4px; }
 }
-.mini { padding: 3px 10px; border: 1px solid var(--border); cursor: pointer; color: var(--text-muted); font-size: var(--fs-3); }
-.mini.on { color: var(--text); border-color: var(--accent); }
 .body { flex: 1; min-height: 0; display: flex; }
 .stage-wrap { flex: 1; min-width: 0; position: relative; }
 .vexp-pv { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
@@ -16291,7 +17139,7 @@ onBeforeUnmount(() => {
 /* 分隔条：镜像 App.vue 的 .vsplit —— 命中 5px、负外边距吃回净宽 0；悬停 150ms 后淡入细线，拖动中机位色 */
 .rdk-split { position: relative; width: 5px; margin: 0 -2px 0 -3px; cursor: col-resize; flex: none; z-index: 5; }
 .rdk-split::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: var(--border-strong); opacity: 0; transition: opacity var(--dur-2) linear; }
-.rdk-split:hover::after { opacity: 1; transition-delay: .15s; }
+.rdk-split:hover::after { opacity: 1; transition-delay: var(--dur-3); }
 .rdk-split.on::after { opacity: 1; background: var(--accent-ui); transition: none; }
 .g3.rdk-drag .stage-wrap { pointer-events: none; }   /* 拖分隔条：画布不接指针（不刷光标经纬度、松手不被当成点选） */
 
@@ -16313,18 +17161,8 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* 栏头：逐值照抄 App.vue .dock-hd / .dock-tt / .dock-x（换前缀，值不变） */
 .rdk-hd { display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 5px 0 11px; flex: none; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .rdk-tt { flex: 1; min-width: 0; font-size: var(--fs-3); font-weight: 600; letter-spacing: var(--ls-label); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rdk-ib { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); cursor: pointer; border-radius: var(--r-ctl); transition: var(--t-state); }
-.rdk-ib:hover { background: var(--border); color: var(--text); }
-.rdk-ib:active { box-shadow: var(--press); transition-duration: 0s; }
-.rdk-ib.on { color: var(--accent-ui); background: var(--accent-ui-weak); }
-.rdk-ib.on:hover { color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 22%, transparent); }
-.rdk-ib.dis, .rdk-ib.dis:hover { background: transparent; color: var(--text-faint); opacity: .45; cursor: default; box-shadow: none; }
 .rdk-vr { width: 1px; height: 12px; margin: 0 4px; flex: none; background: color-mix(in srgb, var(--border-strong) 50%, var(--border)); }
 
-/* 描边文字钮（取消聚焦 / 全部取消）：与左栏栏脚「清除绘图」.cclr 同形，与栏头 × 形态、位置都分开 */
-.rdk-btn { flex: none; height: 20px; padding: 0 8px; display: inline-flex; align-items: center; font-size: var(--fs-3); font-weight: 400; line-height: 1; color: var(--text-muted); white-space: nowrap; border: 1px solid var(--border); cursor: pointer; transition: var(--t-state); }
-.rdk-btn:hover { border-color: var(--line-hover); color: var(--text); }
-.rdk-btn:active { box-shadow: var(--press); transition-duration: 0s; }
 
 /* 钉住区：聚焦集 + 对象身份（不随滚动） */
 .rdk-top { flex: none; border-bottom: 1px solid var(--border); }
@@ -16333,7 +17171,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .rdk-id { padding: 9px var(--rdk-pl) 10px; }
 .rdk-nr { display: flex; align-items: flex-start; gap: 8px; }
 .rdk-nm { flex: 1; min-width: 0; font-family: var(--font-serif); font-size: var(--fs-5); line-height: 20px; color: var(--text); overflow-wrap: anywhere; text-wrap: balance; }
-.rdk-no { flex: none; margin-top: 2px; font-size: var(--fs-2); font-weight: 700; line-height: 16px; padding: 0 5px; border-radius: var(--r-ctl); background: var(--accent-ui); color: var(--bg); font-variant-numeric: tabular-nums; }
+.rdk-no { flex: none; margin-top: 2px; font-size: var(--fs-2); font-weight: 700; line-height: 16px; padding: 0 5px; border-radius: var(--r-ctl); background: var(--accent-fill); color: var(--accent-on); font-variant-numeric: tabular-nums; }
 .rdk-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .rdk-bdg { font-size: var(--fs-2); line-height: 16px; padding: 0 5px; white-space: nowrap; border: 1px solid var(--border-strong); color: var(--text); font-variant-numeric: tabular-nums; }
 .rdk-bdg b { font-weight: 400; color: var(--text-faint); margin-right: 4px; }
@@ -16358,8 +17196,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .rdk-ok.ok { color: var(--ok); }
 .rdk-st + .rdk-ok { margin-left: 2px; }
 .rdk-sa { margin-left: auto; display: flex; align-items: center; gap: 2px; }
-.rdk-sa .rdk-ib { margin-right: -3px; }          /* 18px 框里 12px 字形：外移 3px，字形右沿对齐内容右沿 */
-.rdk-sa .rdk-ib:hover { background: var(--wash-hover); }
+.rdk-sa .rdk-ib { margin-right: -4px; }          /* 20px 框里 12px 字形：外移 4px，字形右沿对齐内容右沿 */
 .rdk-ts { margin-left: auto; font-size: var(--fs-2); color: var(--text-faint); font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rdk-lnk { color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .rdk-lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
@@ -16444,7 +17281,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .rdk-lr:not(.rdk-lh):hover { background: var(--wash-hover); }
 .rdk-lr > span { min-width: 0; white-space: nowrap; }
 .rdk-lr .no { align-self: stretch; display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); font-size: var(--fs-1); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.rdk-lr.pri .no { background: var(--accent-ui); border-right-color: var(--accent-ui); color: var(--bg); font-weight: 700; }
+.rdk-lr.pri .no { background: var(--accent-fill); border-right-color: var(--accent-fill); color: var(--accent-on); font-weight: 700; }
 .rdk-lr .nm { display: flex; padding-left: 7px; color: var(--text); }
 .rdk-lh .nm { color: var(--text-muted); }
 .rdk-lr .nm .h { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -16453,15 +17290,14 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .rdk-lr .al { text-align: right; padding-right: 2px; font-variant-numeric: tabular-nums; color: var(--text); }
 .rdk-lh .al { color: var(--text-muted); }
 .rdk-lh .al i { font-style: normal; color: var(--text-faint); margin-left: 3px; }
-.rdk-lr .x { justify-self: center; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); opacity: .6; border-radius: var(--r-ctl); cursor: pointer; }
-.rdk-lr:hover .x { opacity: 1; }
-.rdk-lr .x:hover { color: var(--danger); background: var(--wash-hover); }
+.rdk-lr .x { justify-self: center; opacity: .6; }
+.rdk-lr:hover .x, .rdk-lr .x:focus-visible { opacity: 1; }
 .rdk-list:focus-visible { outline-offset: -2px; }
 
 /* 空态：一句陈述 */
 .rdk-empty { padding: 11px var(--rdk-pl); color: var(--text-faint); }
 /* 覆盖圈口径行的锁（聚焦卫星面板）：锁住后超出该星上限也不回写截断值 */
-.covlock { cursor: pointer; display: inline-flex; align-items: center; color: var(--text-faint); transition: color .12s ease; }
+.covlock { cursor: pointer; display: inline-flex; align-items: center; color: var(--text-faint); transition: color var(--dur-2) ease; }
 .covlock:hover { color: var(--text-muted); }
 .covlock.on { color: var(--accent); }
 
@@ -16480,24 +17316,19 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* .pgclr/.pgsw/.pgrst 是通用件：内置分组行 / 卫星组行 / 组管理器（着色区、成员行）共用 */
 .pgclr { position: relative; flex: none; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .pgclr input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
-.pgsw { width: 11px; height: 11px; border-radius: var(--r-box); box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); box-shadow: 0 0 0 1px rgba(255,255,255,.35); }
+.pgsw { width: 11px; height: 11px; border-radius: var(--r-box); box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); }
 /* 未设置=斜线空块（随所属星座）；inh=随组色（成员行虚线描边，与单独色区分） */
 .pgsw.unset { background: linear-gradient(135deg, transparent 44%, var(--text-faint) 44%, var(--text-faint) 56%, transparent 56%); box-shadow: none; border-color: var(--text-faint); }
-.pgsw.inh { box-shadow: none; border: 1px dashed rgba(0,0,0,.45); }
+.pgsw.inh { box-shadow: none; border: 1px dashed color-mix(in srgb, var(--text) 45%, transparent); }
 /* 行首展开箭头（内置组 / 卫星组 / 自定义星座 三处同一枚）：只管展开卫星列表，与行本身的点击语义分开 */
 /* 「加入组」弹出菜单：fixed 锚在操作条按钮下沿（侧栏祖先无 transform，不会被 overflow 裁掉） */
-.lmenu-bd { position: fixed; inset: 0; z-index: 2190; }
-/* 命令菜单口径：外框内距 3px、项圆角与外框同心（6 − 3 = 3）、机位色实底悬停；项左右内距各减 3px，文字 x 不动 */
-.lmenu { position: fixed; z-index: 2200; width: 200px; max-height: 280px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow-2); padding: 3px; border-radius: var(--r-float); animation: ui-float-in var(--dur-2) var(--ease-out); }
-.lmh { margin: -3px -3px 3px; padding: 3px 10px 5px; font-size: var(--fs-1); color: var(--text-faint); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
-.lmi { display: flex; align-items: center; gap: 7px; padding: 4px 7px; font-size: var(--fs-3); color: var(--text); cursor: pointer; border-radius: var(--r-box); }
-.lmi > svg { flex: none; color: var(--text-muted); }
-.lmi:hover { background: var(--accent-ui); color: var(--bg); }
-.lmi:hover > svg, .lmi:hover em { color: inherit; }
-.lmi > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lmi > em { flex: none; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.lmi.new { color: var(--accent); border-bottom: 1px solid var(--border); }
-.lmi.new:hover { color: var(--bg); }          /* 必须写在 .lmi.new 之后，否则「新建组」蓝底墨字 */
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-hd / .menu-ico / .menu-kbd / .menu-sep / .menu-mask）；
+   这里只留挂在按钮下的定位与宽高、组标题的通栏底线、组名省略号、「新建组」机位色字（悬停让给基线蓝块） */
+.lmenu { position: fixed; width: 200px; min-width: 0; max-height: 280px; animation-name: ui-float-in; }
+.lmh { margin: -4px -4px 4px; padding: 6px 14px 5px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.lmi > span:not(.menu-ico) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lmi > em { font-style: normal; font-variant-numeric: tabular-nums; }
+.lmi.new { color: var(--accent); }
 /* 「＋」新建天线菜单（卫星行 / 信息卡）：条目少，宽度随内容 */
 .lmenu.antm { width: auto; min-width: 150px; }
 /* 行右键菜单（内置星座 / 卫星组 / 自定义星座三类行共用）：与 .lmenu 同一层级与视觉，条目带图标 */
@@ -16512,7 +17343,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .cef.ceset .lnk { color: var(--accent); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-3); }
 .cef.ceset .lnk:hover { text-decoration: underline; }
 /* 解不出来的那一项：红框（诊断文字在读数区的 .crwarn 里） */
-.cebody .ci.bad, .cebody .ci.bad input { border-color: var(--danger, #c0392b) !important; }
+.cebody .ci.bad, .cebody .ci.bad input { border-color: var(--danger) !important; }
 /* 地图上的放置高亮：墨色虚线压在深色球面上读不出，改机位色提亮一档 + 整幅淡罩（只在拖入期间存在，不吃指针） */
 .stage-wrap.dragon { outline: 2px dashed color-mix(in srgb, var(--accent-ui) 55%, #fff); outline-offset: -6px; }
 .stage-wrap.dragon::after { content: ''; position: absolute; inset: 0; z-index: 5; pointer-events: none; background: var(--accent-ui-weak); }
@@ -16530,11 +17361,14 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .cehd .ceback:hover { color: var(--text); }
 .cehd .cetitle { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
 .cehd .cesolo { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
-.cehd .celive { flex: none; font-size: var(--fs-1); color: var(--accent); letter-spacing: var(--ls-tight); }
+.cehd .celive { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-1); color: var(--accent); letter-spacing: var(--ls-tight); }
+.celive-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }   /* 状态点（原文字符号 ●） */
 .cebody { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
 .cesec { margin: 13px 0 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-2); }
-.cef { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.cef > label { width: 68px; flex: none; color: var(--text-muted); font-size: var(--fs-3); }
+.cef { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 8px; }
+/* 标签列宽是下限不是定宽（与 .srow 同口径）：长标签撑开自己，整行装不下时控件掉到下一行；英文下限 96px */
+.cef > label { min-width: 68px; max-width: 100%; flex: none; color: var(--text-muted); font-size: var(--fs-3); }
+html[lang="en"] .cef > label { min-width: 96px; }
 .cef > .ci { flex: 1; min-width: 0; border: 1px solid var(--field-border); background: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); color: var(--text); outline: none; }
 .cef > .u { flex: none; width: 16px; color: var(--text-muted); font-size: var(--fs-2); }
 .cef > .clr { flex: 1; height: var(--h-ctl); }
@@ -16547,16 +17381,9 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .cetpf > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .cetpf small { color: var(--text-muted); font-size: var(--fs-2); }
 .cetpf .ci { width: 100%; box-sizing: border-box; border: 1px solid var(--field-border); background: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); color: var(--text); outline: none; }
-/* 向导分段：与侧栏 .seg 同一种几何（连体外框 + 段间细线、--h-ctl 高、选中 --sel-fill、选中切换瞬时） */
-/* 高度用 min-height + 段内 padding/line-height 撑（单行 16+4+2=22）：段名折行时整排长高，不被 overflow 裁掉 */
-.seg3 { display: flex; flex: 1; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.seg3 > span { flex: 1; display: flex; align-items: center; justify-content: center; padding: 2px 4px; line-height: 16px; text-align: center; border: 0; cursor: pointer;
-               font-size: var(--fs-3); color: var(--text-muted); transition: var(--t-state); }
-.seg3 > span + span { border-left: 1px solid var(--border); }
-.seg3 > span:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg3 > span:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.seg3 > span.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.seg3 > span.on, .seg3 > span.on + span { border-left-color: transparent; }
+/* 向导分段：本体是 controls.css 的 .seg（.seg3 只管铺满与段宽等分；段名折行时整排长高） */
+.seg3 { flex: 1; }
+.seg3 > .sg { flex: 1; padding: 2px 4px; font-size: var(--fs-3); white-space: normal; text-align: center; }
 .ceread { margin-top: 13px; padding: 8px 10px; background: var(--surface-2); }
 .ceread .crcode { color: var(--accent); font-weight: 600; font-size: var(--fs-4); font-variant-numeric: tabular-nums; }
 .ceread .crsub { color: var(--text-muted); font-size: var(--fs-2); margin-top: 3px; line-height: 1.5; }
@@ -16565,15 +17392,8 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* 向导头尾钉住：侧栏整体滚动时「返回」与「生成 / 取消」始终够得着。页脚按钮落 --h-ctl-lg 主操作档；主按钮保持墨色（primary token） */
 .cehd { position: sticky; top: 0; z-index: 2; background: var(--surface); }
 .cefoot { position: sticky; bottom: 0; z-index: 2; background: var(--surface); }
-.cefoot .cancel { margin-left: auto; display: inline-flex; align-items: center; height: var(--h-ctl-lg); box-sizing: border-box; padding: 0 14px;
-                  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text);
-                  cursor: pointer; font-size: var(--fs-3); transition: var(--t-state); }
-.cefoot .cancel:hover { border-color: var(--line-hover); }
-.cefoot .save { display: inline-flex; align-items: center; height: var(--h-ctl-lg); box-sizing: border-box; padding: 0 18px;
-                border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); background: var(--primary-fill); color: var(--primary-on);
-                cursor: pointer; font-size: var(--fs-3); transition: var(--t-state); }
-.cefoot .save:hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.cefoot .cancel:active, .cefoot .save:active { box-shadow: var(--press); transition-duration: 0s; }
+.cefoot .btn, .sdfoot .btn { height: var(--h-ctl-lg); padding: 0 16px; }
+.cefoot .cancel { margin-left: auto; }
 /* 面板停靠形态：占满侧栏宽度、去左缘边框，滚动交给侧栏整体 */
 .cov-side.docked { width: auto; border-left: 0; overflow: visible; }
 .csh { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); }
@@ -16582,7 +17402,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .flatbtn:hover { border-color: var(--line-hover); color: var(--text); }
 .flatbtn.on { background: var(--sel-fill); color: var(--sel-on); border-color: var(--sel-fill); }
 /* 关闭按钮：与「文件管理」一致——Windows 风矩形热区，悬停变红 */
-.winx { width: 44px; margin-left: auto; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .12s, color .12s; }
+.winx { width: 44px; margin-left: auto; align-self: stretch; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background var(--dur-2), color var(--dur-2); }
 .winx:hover { background: #c42b1c; color: #fff; }
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 /* —— 竖向节奏：与 GrdSetSections.vue / SatCovPanel.vue 同一结果 ——
@@ -16622,40 +17442,20 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 /* 取色框后的色号读数：钉到最宽的小写 hex（约 47px，ch 随用户所选字体伸缩）——色条终点排成一条竖线，拖取色器时不再伸缩 */
 .srow > .clr + .u { min-width: 7.5ch; }
+/* 色条旁的 hex 值：可编辑框（等宽、定宽 7 字，回车 / 失焦落值） */
+.srow > .clr + .ci.hex { flex: none; width: calc(7ch + 16px); padding: 0 6px; font-family: var(--font-code); font-size: var(--fs-2); text-align: left; }
 /* 输入框后的尾随单位贴着值（仍占 34px 列，输入框右缘不动） */
 .srow > .ci + .u:last-child { text-align: left; }
 /* 行中分隔符（~、×、GHz、° 后面还跟着东西，如锁）收成自身宽，不占读数列 */
 .srow > .ci + .u:not(:last-child) { min-width: 0; }
-/* 分段控件：连体框 + 段间细线，选中段填墨。全库四处（主窗 / GRD 设置 / 壳层选择 / 对星窗口）
-   原来各写各的——有的没圆角、有的没段间线、段内距 10 与 12 两种；此处收成一份口径，四处逐字一致。 */
-/* 外框是按钮组的结构线（--border-strong，同 .btn），段间细线仍 --border；段高 16 + 2×2 + 2 = 22 = --h-ctl，
-   另用 min-height 钉住：150% 缩放下 1px 边框只画 1 个设备像素，不钉就比同列的下拉框矮一像素。
-   选中段走 --sel-fill：浅色下逐字节仍是墨，深色下压一档，不再是全屏最亮的近白块；选中切换瞬时 */
-.seg { display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg:active:not(.on):not(.dis) { box-shadow: var(--press); transition-duration: 0s; }
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-/* 选中段是实底，两侧的分隔线压在墨块边上反而脏，去掉 */
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
 /* 参考卫星：已选时那一格只显示名字（不可编辑），与输入框同高同框以免整行跳动 */
 .srow .ci.ro { display: flex; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: default; }
 /* 选星候选：贴在那一行下面的一小段列表，最多 12 条，超出滚动 */
 .ref-list { max-height: 168px; overflow: auto; margin: -4px 0 8px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface); }
 .ref-it { display: flex; align-items: center; gap: 8px; padding: 3px 8px; cursor: pointer; font-size: var(--fs-3); }
-.ref-it:hover { background: var(--surface-2); }
+.ref-it:hover { background: var(--wash-hover); }
 .ref-it .rn { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .ref-it .ru { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* 条件不成立的那一格（如没选中卫星时的「星下点」）：压暗并停掉点击，不从版面上消失 —— 一忽隐忽现按钮就会跳位 */
-.seg .sg.dis, .seg .sg.dis:hover { color: var(--text-faint); opacity: .45; cursor: default; background: none; pointer-events: none; }
-.nseg { font-size: var(--fs-3); }
-.nseg .sg { padding: 2px 8px; }
-/* 参数行里的分段控件：铺满它所在的那一行、段内等分；实在挤不下时段文字折行。
-   连体件本身 nowrap 又不收缩，装不下时既不换行也不缩 —— 只会直接顶出侧栏被裁掉半个字
-   （四条「线型」行的最后一档「点划线 / Dash-Dot」就是这么没的）。 */
-.srow > .seg { flex: 1 1 auto; }
-.srow > .seg > .sg { flex: 1 1 auto; text-align: center; padding-left: 4px; padding-right: 4px; white-space: normal; }
 /* 层级：分区标题是墨色（不加粗），行尾动作（默认 / 表格 / 导入…）退一档浅灰，悬停才回墨 + 下划线；
    「调整位置」这类开关态动作点亮时走机位色 */
 .sect { display: flex; align-items: center; margin: 12px 0 6px; color: var(--text); }
@@ -16665,29 +17465,38 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .sect .lnk.on { color: var(--accent-ui); font-weight: 600; text-decoration: none; }
 /* 标记三节（点标记 / 地球站 / 轨迹）标题上的「表格」：批量表格是这三节的主入口，做成主题色小按钮（其余 .lnk 仍是灰字链接）；
    悬停转实底，实底上的字色走 var(--bg)（accent 实底控件的统一口径） */
-.sect .lnk.tbl { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; line-height: 16px; border-radius: var(--r-ctl);
-  color: var(--accent-ui); font-weight: 600; background: color-mix(in srgb, var(--accent-ui) 13%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent-ui) 50%, transparent); transition: color var(--dur-1) linear, background-color var(--dur-1) linear; }
-.sect .lnk.tbl:hover { color: var(--bg); background: var(--accent-ui); border-color: var(--accent-ui); text-decoration: none; }
+/* 分区头行尾的按钮件：⊞ 表格（打开批量表格，一次性动作）静止态是中性抬起钮（.btn.sm），只在悬停 / 按下走机位色 ——
+   原来静止就是机位色淡底 + 机位色字 + 描边，与工具栏开态 .tbtn.on 同形，读作「已打开」。
+   调整位置 / 新建（工具态开关）是切换钮 .btn.sm + .on，文字不随状态变。 */
+.sect > :is(.sect-tbl, .sect-tg) { flex: none; gap: 3px; padding: 0 7px; }
+.sect > .sect-tbl:hover:not(:disabled) { color: var(--accent-on); background: var(--accent-fill); border-color: var(--accent-fill); }
+.sect > :is(.sect-tbl, .sect-tg):first-of-type { margin-left: auto; }
+.sect > :is(.sect-tbl, .sect-tg) ~ :is(.sect-tbl, .sect-tg, .lnk) { margin-left: 6px; }
+.sect > :is(.sect-tbl, .sect-tg, .lnk) ~ .sect-rst { margin-left: 8px; }
 .sect.acc .lnk .app-icon { color: inherit; }   /* 动作里的小图标跟字走，不吃 .sect.acc 给箭头的淡灰 */
 /* 标记三节的标题行链子最多（表格 / 默认 / 调整位置 / ＋航行 / ＋飞行 + 拨杆）：侧栏拖窄时换行，
    不许把哪一个挤出视野（同 .srow 那条「整行可换行」的处置，见 sidebar-no-truncation） */
 .mk-side .sect { flex-wrap: wrap; row-gap: 3px; }
-/* 标记三节的节名（点标记 / 地球站 / 轨迹）：一节＝一层，节名比行尾动作大一档、加粗，三节在侧栏里一眼分得开 */
-.mk-side .sect.acc > .disc + span { font-size: var(--fs-5); font-weight: 600; }
+/* 分区头全侧栏一种规格：节名与聚焦特效 / 地图设置同为 13 px 常规（原标记三节单独 15 px 粗体，2026-10-15 收成一种） */
 /* 拨杆 .layersw 的画法在 styles/controls.css（设置窗也用同一件，只是大一号）；这里只放主窗的就位规则 */
 /* 分区标题里的那颗：钉在行尾右对齐（与环境场开关条的拨杆落在同一条竖线上）。
    不能跟在分区名后面——「点标记/地球站/轨迹」名字不等长，拨杆会逐行左右错开。 */
 /* 行尾动作靠右排成一列：只有第一个吃 auto 把整串推到右端，其后各隔 12px。
    原来每个 .lnk 都是 margin-left:auto —— 剩余空间被几个 auto 均分，「表格 / 默认 / 调整位置」在标题行里散开 */
 .sect-layersw { margin-left: auto; }
+/* ↺「恢复本节默认」：紧挨行尾拨杆之前；没有拨杆的分区头由 .sect-sw-ph 占住拨杆那一格，↺ 永远落在同一条竖线上 */
+.sect > .sect-rst { margin-left: auto; color: var(--text-faint); }
+.sect > .sect-rst:hover { color: var(--text); }
+.sect .lnk ~ .sect-rst { margin-left: 8px; }
+.sect > .sect-rst + .sect-layersw.sect-layersw { margin-left: 6px; }   /* 双类：压过下面「.lnk ~ .sect-layersw」的 12px */
+.sect-sw-ph { flex: none; width: 26px; margin-left: 6px; }
 .sect .lnk ~ .lnk, .sect .lnk ~ .sect-layersw { margin-left: 12px; }
 .bsub .lnk ~ .lnk, .bsub .lnk ~ .cnt2 { margin-left: 12px; }
 /* 一行一个图层开关：名字占满、拨杆贴右（与分区标题上的 .sect-layersw 同一手感，只是降一级） */
 .swrow { display: flex; align-items: center; gap: 8px; margin: 8px 0; color: var(--text); }
 .swrow > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .swrow.dis { color: var(--text-faint); }
-.swrow.dis .layersw { opacity: .45; cursor: default; }
+.swrow.dis .layersw { opacity: var(--dis-opacity); cursor: default; }
 /* 图层关掉后分区体退到后景：参数照旧可改，只是当前不出图——因果落在同一屏里 */
 .mk-side .sec > :not(.sect) { transition: opacity var(--dur-2) linear; }
 .mk-side .sec.hid > :not(.sect) { opacity: .5; }
@@ -16709,9 +17518,9 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .chk2 { display: flex; align-items: center; gap: 6px; margin: 8px 0; cursor: pointer; }
 /* 整行是 <label>、点字也能勾：悬停字的时候框也要给出同一档悬停反馈（与直接悬停框一致） */
 .chk2:hover > input[type=checkbox]:not(:checked):not(:disabled), .chk-in:hover > input[type=checkbox]:not(:checked):not(:disabled) { border-color: var(--field-border-hover); }
-.chk2:hover > input[type=checkbox]:checked:not(:disabled), .chk-in:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.chk2:hover > input[type=checkbox]:checked:not(:disabled), .chk-in:hover > input[type=checkbox]:checked:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 .tip { color: var(--text-faint); font-size: var(--fs-2); margin-top: 4px; line-height: 1.5; }
-.tip.warn { color: var(--warn, #d98a2b); }
+.tip.warn { color: var(--warn); }
 /* 提示行贴着它说明的那一行（行距 8 收到 4），与下一行之间留回 8：归属一眼可辨 */
 .sec > .srow + .tip, .sec > .chk2 + .tip { margin-top: -4px; }
 .sec > .tip:not(:last-child) { margin-bottom: 8px; }
@@ -16720,7 +17529,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* 卫星行（节点头） */
 .gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: var(--fs-4); border-radius: var(--r-box); }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: var(--fs-1); cursor: pointer; transition: transform .12s; }
+.gsat .tri { font-style: normal; flex: none; width: 12px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); font-size: var(--fs-1); cursor: pointer; transition: transform var(--dur-2); }
 .gsat .tri.open { transform: rotate(90deg); }
 .gsat .gsname { flex: 1; min-width: 0; white-space: normal; overflow-wrap: break-word; line-height: 1.3; cursor: pointer; }
 .gsat .gsname:hover { color: var(--accent); }
@@ -16736,18 +17545,13 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .gsat .lmiss { flex: none; display: inline-flex; align-items: center; color: var(--warn); }
 /* 卫星行显示开关（卫星名 / 仰角线）：图标按钮，与 .sacts 操作图标以竖线分组，语汇同 .gant .ant-btn（hover 底色淡入） */
 .sdisp { flex: none; display: flex; align-items: center; gap: 1px; margin-left: 4px; padding-left: 6px; border-left: 1px solid var(--border); }
-.sdisp .ic { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: var(--r-box); color: var(--text-faint); opacity: .55; cursor: pointer; transition: opacity .12s, color .12s, background .12s; }
-.sdisp .ic:hover { opacity: 1; color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
-.sdisp .ic.on { opacity: 1; color: var(--accent); }
-/* 置灰（聚焦 / 跟随用不了：非关联星 / 关联星缺失 / 平面图）：不响应悬停，原因在 title */
-.sdisp .ic.dis, .sdisp .ic.dis:hover { opacity: .22; color: var(--text-faint); background: none; cursor: default; }
-.gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: var(--r-box); transition: background .12s; }
+.gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 18px; height: 18px; margin: -2px 0; border-radius: var(--r-box); transition: background var(--dur-2); }
 .gant .ant-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-.gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color .12s; }
+.gant .ant-svg { width: 13px; height: 13px; color: var(--text-faint); transition: color var(--dur-2); }
 .gant .ant-btn.on .ant-svg { color: var(--accent); }
 .gant .ant-svg.ant-off { color: var(--text-faint); opacity: .7; }
 .gant.foc .ant-svg { color: var(--accent); }
-.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: var(--fs-2); border-radius: var(--r-box); transition: background .12s, color .12s; }
+.gperf { display: flex; align-items: center; gap: 6px; margin: 0 0 2px 22px; padding: 2px 6px; color: var(--text-faint); cursor: pointer; font-size: var(--fs-2); border-radius: var(--r-box); transition: background var(--dur-2), color var(--dur-2); }
 .gperf:hover { color: var(--text-muted); background: color-mix(in srgb, var(--text) 5%, transparent); }
 .gperf .perf-svg { width: 12px; height: 12px; flex: none; }
 .gperf .gperfn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -16755,20 +17559,15 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .gperf.on .perf-svg { color: var(--accent); }
 /* 行尾的眼睛（城市标记总开关）：与卫星行 .sdisp 同一件，贴右；负外边距抵掉 18px 的按钮高，行高不变 */
 .gperf .sdisp { margin-left: auto; }
-.gperf .sdisp .ic { margin: -2px 0; }
 
 /* 性能指标表浮窗（几何由 JS 控制：可拖拽移动 / 右下角缩放 / 中缝分隔） */
 .perf-win { position: absolute; left: 24px; top: 64px; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-3); z-index: 60; overflow: hidden; }
 .perf-h { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; cursor: move; user-select: none; }
 .perf-t { flex: 1; font-family: var(--font-serif); font-size: var(--fs-4); color: var(--text); }
 .perf-t em { font-style: normal; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); }
-.perf-h .csx { cursor: pointer; color: var(--text-faint); padding: 0 4px; position: relative; z-index: 5; }   /* 高于 NE 缩放角，保证可点关闭 */
-.perf-h .csx:hover { color: var(--text); }
-.ptb { font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-card); padding: 2px 8px; cursor: pointer; white-space: nowrap; }
-.ptb:hover { color: var(--text); border-color: var(--line-hover); }
-.ptb.add { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
-.ptb.dis { opacity: .38; pointer-events: none; }
-.ptb.on { color: var(--accent); border-color: var(--accent); }
+.perf-h .csx { position: relative; z-index: 5; }   /* 高于 NE 缩放角，保证可点关闭 */
+/* 浮窗工具条钮：外观走 .btn（禁用 / 切换在基线里），.ptb 只留密排内距 */
+.btn.ptb { padding: 0 8px; font-size: var(--fs-3); }
 .perf-q { flex: 1; min-width: 110px; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 8px; font-size: var(--fs-3); color: var(--text); border-radius: var(--r-card); outline: none; }
 .perf-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
 
@@ -16796,7 +17595,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 /* 自绘单选点与 controls.css 的原生单选同一副：13px 框、字段描边、选中机位色实底 + 3px 字段底内圈（留 5px 圆点） */
 .rdo { flex: none; width: var(--ctl-box); height: var(--ctl-box); border-radius: 50%; border: 1px solid var(--field-border); background: var(--field-bg); box-sizing: border-box; cursor: pointer; transition: border-color var(--dur-1) linear; }
 .rdo:hover { border-color: var(--field-border-hover); }
-.rdo.on { border-color: var(--accent-ui); background: var(--accent-ui); box-shadow: inset 0 0 0 3px var(--field-bg); }
+.rdo.on { border-color: var(--accent-fill); background: var(--accent-fill); box-shadow: inset 0 0 0 3px var(--field-bg); }
 .bs-prow { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .bs-pchk { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; cursor: pointer; }
 .bs-pchk input { margin: 0; flex: none; }
@@ -16807,11 +17606,11 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .bs-hshead, .bs-hsrow { display: grid; grid-template-columns: 21px 1fr 1fr 1fr 1fr 18px 16px; gap: 4px; align-items: center; padding: 2px 0; }
 .bs-hshead { font-size: var(--fs-1); color: var(--text-faint); padding: 3px 0 0; }
 .bs-hshead span { text-align: center; }
-.bs-hsn { font-size: var(--fs-2); color: #ff9a3c; font-family: var(--font-mono); }
+.bs-hsn { font-size: var(--fs-2); color: var(--warn); font-family: var(--font-mono); }
 .bs-hsrow .ci { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--field-border); background: var(--field-bg); padding: 0 7px; font-size: var(--fs-2); color: var(--text); border-radius: var(--r-ctl); outline: none; text-align: right; }
 .bs-hsrow .hic { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text-faint); border: 1px solid transparent; border-radius: var(--r-box); padding: 2px; }
 .bs-hsrow .hic:hover { color: var(--text); }
-.bs-hsrow .hic.on { color: #ff9a3c; border-color: #ff9a3c; }
+.bs-hsrow .hic.on { color: var(--warn); border-color: var(--warn); }
 .bs-hsrow .hic.hdel:hover { color: var(--danger); }
 .bs-ops { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-bottom: 5px; }
 .bs-hex { display: flex; align-items: center; gap: 5px; margin: 5px 0; }
@@ -16832,10 +17631,9 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .bs-bth { color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); white-space: nowrap; }
 .bs-bth em { color: var(--text-faint); font-style: normal; }
 .bs-status { font-size: var(--fs-2); color: var(--accent); line-height: 1.5; margin-top: 5px; }
-.bs-gen { display: flex; justify-content: center; align-items: center; gap: 5px; width: 100%; box-sizing: border-box; margin-top: 4px; background: var(--primary-fill); color: var(--primary-on); font-size: var(--fs-3); font-weight: 600; padding: 5px 0; border-radius: var(--r-ctl); cursor: pointer; user-select: none; transition: var(--t-state); }
-/* 悬停走 token 而不是提亮滤镜 —— 后者在浅色墨底上几乎不变、深色近白底上还会冲出界 */
-.bs-gen:hover { background: var(--primary-fill-hover); }
-.bs-gen:active { box-shadow: var(--press); transition-duration: 0s; }
+.bs-gen { width: 100%; margin-top: 4px; height: var(--h-ctl-lg); font-weight: 600; }
+.bs-genfoot { position: sticky; bottom: 0; z-index: 2; margin-top: 10px; padding: 8px 0 10px; background: var(--surface); border-top: 1px solid var(--border); }
+.bs-genfoot > .bs-gen { margin-top: 0; }
 .ci.wide { width: 100%; }
 /* 轮廓与编号样式行：同一行放两组「标签+短输入」；lb2=行内第二个标签 */
 /* 允许换行 + 把「线宽/字号 + 输入 + 单位」打包成不可分割的 .uw 组：窄面板下整组整体折到次行，
@@ -16851,7 +17649,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .bs-wl { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
 /* 站点栅编辑：操作按钮行 + 平面图框选橡皮筋（fixed 屏幕像素，指针事件穿透） */
 .bs-strow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.bs-boxsel { position: fixed; z-index: 900; border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent-ui) 10%, transparent); pointer-events: none; }
+.bs-boxsel { position: fixed; z-index: var(--z-pop); border: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent-ui) 10%, transparent); pointer-events: none; }
 .bs-refl { margin: 6px 0 2px; border: 1px solid var(--border); border-radius: var(--r-card); padding: 3px; background: color-mix(in srgb, var(--text) 3%, transparent); }
 .bs-refl svg { width: 100%; display: block; }
 .bs-reflbar { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 2px 0 0; }
@@ -16869,8 +17667,6 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .bs-fphd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .bs-fphd > span:first-child { font-size: var(--fs-2); color: var(--text-muted); }
 .bs-fphd em { font-style: normal; color: var(--text-faint); font-family: var(--font-mono); }
-.bs-fpcp { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border: 1px solid var(--border); border-radius: var(--r-ctl); color: var(--text-muted); font-size: var(--fs-2); cursor: pointer; white-space: nowrap; transition: color .12s, border-color .12s; }
-.bs-fpcp:hover { border-color: var(--line-hover); color: var(--text); }
 .bs-fpcp.ok { border-color: color-mix(in srgb, var(--ok) 60%, transparent); color: var(--ok); }
 .bs-fptbl { max-height: 176px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .bs-fpr { display: flex; align-items: center; gap: 6px; padding: 2px 6px; font-size: var(--fs-2); font-family: var(--font-mono); border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
@@ -16899,24 +17695,26 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .bs-grow:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 .bs-grow.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent-ui) 10%, transparent); }
 .bs-grow.hid { opacity: .5; }
-.bs-gk { flex: none; font-size: var(--fs-1); padding: 1px 5px; border-radius: var(--r-box); color: #fff; letter-spacing: var(--ls-tight); }
-.bs-gk.gauss { background: #4f8fe8; }
-.bs-gk.shaped { background: #3fb77f; }
-.bs-gk.pam { background: #a06fdc; }
-.bs-gk.stk { background: #f08a3c; }
+.bs-gk { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-1); padding: 0 5px; border-radius: var(--r-box); color: var(--text-muted); border: 1px solid var(--border-strong); letter-spacing: var(--ls-tight); }
+.bs-gk::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--gk); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent); }
+.bs-gk.gauss { --gk: #4f8fe8; }
+.bs-gk.shaped { --gk: #3fb77f; }
+.bs-gk.pam { --gk: #a06fdc; }
+.bs-gk.stk { --gk: #f08a3c; }
 .bs-gname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .bs-grow.on .bs-gname { color: var(--accent); font-weight: 600; }
 .bs-gcnt { flex: none; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
-.bs-grow .gic { flex: none; display: inline-flex; color: var(--text-faint); opacity: 0; cursor: pointer; }
-.bs-grow:hover .gic, .bs-grow.on .gic { opacity: .75; }
-.bs-grow .gic:hover { color: var(--text); opacity: 1; }
-.bs-grow .gic.del:hover { color: var(--danger); }
-.bs-empty { padding: 10px 6px; text-align: center; color: var(--text-faint); font-size: var(--fs-2); border: 1px dashed var(--border); border-radius: var(--r-box); }
+.bs-grow .gic { opacity: 0; }
+.bs-grow:hover .gic, .bs-grow.on .gic, .bs-grow .gic:focus-visible { opacity: .75; }
+.bs-grow .gic:hover { opacity: 1; }
+/* 钉住的组：图钉常亮（不靠悬停才现形），一眼看出哪几组是常显的 */
+.bs-grow .gic.pin.on { opacity: 1; }
+.bs-empty { padding: 6px 2px; color: var(--text-faint); font-size: var(--fs-3); }   /* 空态一句陈述，与其它侧栏空态同一写法（不再画虚线框） */
 .bs-empty2 { padding: 6px 2px; color: var(--text-faint); font-size: var(--fs-3); line-height: 1.6; }
 .bs-addrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-bottom: 5px; }   /* 四种组 → 2×2 */
 .bs-navops { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
 .bs-navops .opb { display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
-.opb.dis { opacity: .4; pointer-events: none; }
+.opb:disabled { opacity: var(--dis-opacity); cursor: not-allowed; }
 /* —— 波束设置 chip 条 —— */
 .bs-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 4px 0 6px; }
 .bs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--border); border-radius: var(--r-box); font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
@@ -16964,7 +17762,7 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .cov-legbar.stepped i + i { box-shadow: inset 1px 0 0 var(--surface); }   /* 原先引用的面板色变量未定义且无兜底，整条失效 */
 /* 站点实况读数 */
 .lv-nm { flex: 1; min-width: 0; }
-.lv-obs { margin: 6px 8px 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--bg-soft, transparent); }
+.lv-obs { margin: 6px 8px 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--r-box); background: var(--surface-2); }
 .lv-obsh { font-size: var(--fs-2); color: var(--text-muted); margin-bottom: 4px; }
 .lv-obsh + .lv-obsg { margin-bottom: 2px; }
 .lv-obsg { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 2px 6px; align-items: baseline; font-size: var(--fs-2); }
@@ -17023,14 +17821,14 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .vis-sumcls { display: inline-flex; gap: 9px; }
 .vis-sumcls i { font-style: normal; color: var(--text-muted); font-family: var(--font-mono); }
 /* 轨道类别配色（低饱和，纯文字着色、不加边框——去卡通） */
-.oc-LEO { color: #6fb3e0; } .oc-MEO { color: #7fc4a0; } .oc-GEO { color: #d8a73a; } .oc-HEO { color: #c08fd0; }
+.oc-LEO { color: var(--rg-leo); } .oc-MEO { color: var(--rg-meo); } .oc-GEO { color: var(--rg-geo); } .oc-HEO { color: var(--rg-heo); }   /* 与链路预算三窗卫星面板同一套区制色（global.css） */
 /* 极坐标 sky 图：方位=角向、仰角=离心（天顶在圆心、地平在外圈） */
 .vis-sky { display: block; width: 100%; max-width: 188px; margin: 4px auto 8px; }
 .vis-sky-grid { fill: none; stroke: var(--border); stroke-width: 0.4; }
 .vis-sky-thr { fill: none; stroke: var(--ok); stroke-width: 0.5; stroke-dasharray: 2 1.6; opacity: 0.65; }
 .vis-sky-lbl { fill: var(--text-muted); font-size: 5px; text-anchor: middle; dominant-baseline: middle; }
 .vis-sky-el { fill: var(--text-faint); font-size: 3.6px; text-anchor: start; dominant-baseline: middle; }
-.vis-sky-dot { fill: color-mix(in srgb, var(--ok) 78%, transparent); cursor: pointer; transition: fill .1s; }
+.vis-sky-dot { fill: color-mix(in srgb, var(--ok) 78%, transparent); cursor: pointer; transition: fill var(--dur-1); }
 .vis-sky-dot.hi { fill: var(--ok); }
 .vis-sky-dot.hov { fill: #efeae0; stroke: var(--ok); stroke-width: 0.6; }
 /* 结果表：4 列（卫星 / 类别 / 仰角 / 斜距）——去方位列(交给 sky 图)、去仰角条(去卡通)，卫星名更宽 */
@@ -17056,18 +17854,8 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .vis-ud.up { color: var(--ok); } .vis-ud.dn { color: var(--text-faint); }
 /* ACCESS 时段过境：mode 切换 + 甘特 + 过境列表 */
 .vis-mode { margin: 8px 0; }
-/* 三模式切换（瞬时可见 / 时段过境 / 覆盖）：等宽分段控件——锐边仪器风 + 凹槽轨道 + 活动段实色填充。
-   ① 等宽 flex:1 铺满面板宽度（原为内容宽、左侧挤成一坨）；② 轨道给 --surface 凹槽感、活动段 --sel-fill 实填（浅色即墨，深色压一档）；
-   ③ 活动段文字用 var(--bg) 而非写死 #fff——深色主题 accent≈白，写死白字=白底白字看不见；
-   ④ 非活动段悬停给反馈；⑤ 段间加 1px 分隔线，紧邻活动块的分隔线转透明使实色边缘干净。
-   仅作用于本控件：.seg.sm 复用面广，用 .seg.sm.vis-mode 提高特指度收窄作用域，不动通用 .seg。 */
-.seg.sm.vis-mode { background: var(--surface); border-color: var(--border-strong); }
-/* white-space: normal —— 三档挤不下时档名折行，而不是把最后一档顶出侧栏裁掉 */
-.seg.sm.vis-mode .sg { flex: 1; min-width: 0; text-align: center; padding: 4px; font-size: var(--fs-3); line-height: 1.25; white-space: normal; color: var(--text-muted); transition: var(--t-state); }
-.seg.sm.vis-mode .sg + .sg { border-left: 1px solid var(--border); }
-.seg.sm.vis-mode .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg.sm.vis-mode .sg.on { background: var(--sel-fill); color: var(--sel-on); font-weight: 600; transition-duration: 0s; }
-.seg.sm.vis-mode .sg.on, .seg.sm.vis-mode .sg.on + .sg { border-left-color: transparent; }
+/* 三模式切换（瞬时可见 / 时段过境 / 覆盖）：本体是 controls.css 的 .seg；这里只管等宽铺满、挤不下时档名折行 */
+.seg.sm.vis-mode > .sg { flex: 1; min-width: 0; padding: 4px; font-size: var(--fs-3); line-height: 1.25; white-space: normal; text-align: center; }
 .vis-side .u.nw { flex: none; white-space: nowrap; }        /* 「小时」等单位不换行 */
 .acc-exp { margin-top: -3px; }                              /* 导出行紧跟时窗行 */
 .vis-gantt { margin: 6px 0 4px; display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; }
@@ -17104,7 +17892,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .vis-acc-row { cursor: pointer; }
 .vis-acc-row.exp { background: color-mix(in srgb, var(--accent-ui) 8%, transparent); border-bottom-color: transparent; }
 .vis-dsup { text-decoration: none; font-size: 8px; vertical-align: super; color: var(--warn); margin-left: 1px; }
-.vis-cw { font-style: normal; display: inline-block; margin-right: 3px; font-size: 8px; color: var(--text-faint); transition: transform .15s; transform-origin: 45% 50%; }
+.vis-cw { font-style: normal; display: inline-block; margin-right: 3px; font-size: 8px; color: var(--text-faint); transition: transform var(--dur-3); transform-origin: 45% 50%; }
 .vis-acc-row.exp .vis-cw { transform: rotate(90deg); }
 .vis-acc-det { padding: 4px 8px 7px 15px; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); background: color-mix(in srgb, var(--accent-ui) 5%, transparent); }
 .vexp-grid { display: grid; grid-template-columns: 32px 1fr 1fr; gap: 1px 8px; font-size: var(--fs-2); align-items: baseline; }
@@ -17124,6 +17912,9 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .srow .cov-scheme { min-width: 96px; }
 .cov-alpha { flex: 1; min-width: 40px; }
 .cov-msg { color: var(--warn); }
+/* 「输入已变」：结果仍是上次计算的（同计算窗 .lbx-stale 口径：琥珀色小字，不抢按钮） */
+.vis-stale { flex: none; margin-left: 6px; color: var(--warn); font-size: var(--fs-1); white-space: nowrap; }
+.bs-stale { margin: 3px 0 0; text-align: center; }
 .cov-legend { margin: 7px 0 6px; }
 .cov-legbar { display: flex; height: 11px; border-radius: var(--r-box); overflow: hidden; border: 1px solid var(--border); }
 .cov-legbar i { flex: 1 1 0; cursor: help; }
@@ -17160,23 +17951,19 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .mk-trajs { flex: none; width: 156px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 55%, transparent); }
 .mtj-h { flex: none; display: flex; align-items: center; gap: 4px; padding: 5px 6px 5px 9px; border-bottom: 1px solid var(--border); }
 .mtj-ht { flex: 1; font-size: var(--fs-2); color: var(--text-faint); }
-.mtj-add { display: inline-flex; align-items: center; gap: 1px; font-size: var(--fs-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-box); padding: 1px 5px 1px 3px; cursor: pointer; white-space: nowrap; }
-.mtj-add:hover { color: var(--accent); border-color: var(--line-hover); }
 .mtj-list { flex: 1; min-height: 0; overflow-y: auto; padding: 3px 0; }
 .mtj-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 9px; cursor: pointer; user-select: none; border-left: 2px solid transparent; }
 .mtj-row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
 .mtj-row.on { background: color-mix(in srgb, var(--accent-ui) 14%, transparent); border-left-color: var(--accent-ui); }
 /* 类型点：航行=橙、飞行=蓝（与图上的航迹线同色），点一下换类型 */
-.mtj-k { flex: none; width: 8px; height: 8px; border-radius: var(--r-ctl); cursor: pointer; }
+.mtj-k { flex: none; width: 8px; height: 8px; border-radius: var(--r-ctl); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent); }
 .mtj-k.sea { background: #ff6a4a; }
 .mtj-k.flight { background: #5ad1ff; }
-.mtj-k:hover { outline: 2px solid color-mix(in srgb, var(--text) 35%, transparent); outline-offset: 1px; }
 .mtj-n { flex: 1; min-width: 0; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mtj-row.on .mtj-n { color: var(--text); }
 .mtj-c { flex: none; font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.mtj-x { flex: none; display: inline-flex; color: var(--text-faint); opacity: 0; cursor: pointer; }
-.mtj-row:hover .mtj-x { opacity: .8; }
-.mtj-x:hover { color: var(--danger); }
+.mtj-x { opacity: 0; }
+.mtj-row:hover .mtj-x, .mtj-x:focus-visible { opacity: 1; }
 .mtj-ren { flex: 1; min-width: 0; font: inherit; font-size: var(--fs-3); padding: 1px 4px; background: var(--field-bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--r-box); outline: none; }
 .mtj-empty { padding: 8px 9px; font-size: var(--fs-2); color: var(--text-faint); }
 
@@ -17215,9 +18002,8 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 /* —— Excel 网格 —— 表体（序号列/列头/单元格/填充柄/右键菜单）全在 src/components/ExcelGrid.vue，
    本页四张表（城市输入 / 性能结果 / 标记三分页 / 波束批量）共用那一份。这里只补插槽里的操作列图标：
    子组件渲染的节点带的是它自己的 scoped 标记，故一律走 :deep()。 */
-.eg-host :deep(.eg-act .del) { cursor: pointer; color: var(--text-faint); opacity: 0; display: inline-flex; vertical-align: middle; }
-.eg-host :deep(tbody tr:hover .del) { opacity: .8; }
-.eg-host :deep(.eg-act .del:hover) { color: var(--danger); }
+.eg-host :deep(.eg-act .ibtn) { opacity: 0; vertical-align: middle; }
+.eg-host :deep(tbody tr:hover .ibtn), .eg-host :deep(.eg-act .ibtn:focus-visible) { opacity: 1; }
 .eg-host :deep(tr.out td) { color: var(--text-faint); }
 
 /* 性能表选项弹窗 */
@@ -17287,7 +18073,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 /* 展开后的子级容器：左侧一条淡引导线统辖「卫星显示开关 + 天线列表」，缩进统一 */
 .gbody { margin-left: 9px; padding-left: 12px; border-left: 1px solid var(--border); margin-bottom: 2px; }
 /* 天线行（叶子节点） */
-.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-box); transition: background .12s, color .12s, box-shadow .12s; }
+.gant { display: flex; align-items: center; gap: 6px; padding: 3px 6px; margin: 1px 0; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-radius: var(--r-box); transition: background var(--dur-2), color var(--dur-2), box-shadow var(--dur-2); }
 .gant:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
 .gant.on { color: var(--text); }                                                                          /* 已选中=绘制中 */
 .gant.foc { color: var(--text); background: color-mix(in srgb, var(--accent-ui) 14%, transparent); box-shadow: inset 2px 0 0 var(--accent-ui); font-weight: 600; }   /* 聚焦=编辑中 */
@@ -17297,11 +18083,12 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .gant.noant { color: var(--text-faint); font-style: italic; cursor: default; padding-left: 6px; }
 .gant.noant:hover { background: none; color: var(--text-faint); }
 /* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
-.sacts { flex: none; display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 4px; }
-.sacts .ic { font-size: var(--fs-2); color: var(--text-faint); opacity: .5; cursor: pointer; padding: 0; transition: opacity .12s, color .12s; }
-.gsat:hover .sacts .ic, .gant:hover .sacts .ic { opacity: .9; }
-.sacts .ic:hover { color: var(--text); opacity: 1; }
-.sacts .ic.del:hover { color: var(--danger); }
+/* 命中框走 .ibtn.sm（20×20），图标仍 12；间距 2 让命中框不重叠 */
+.sacts { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; padding-left: 4px; }
+.sacts .ibtn { opacity: .6; }
+.gsat:hover .sacts .ibtn, .gant:hover .sacts .ibtn, .sacts .ibtn:hover, .sacts .ibtn:focus-visible { opacity: 1; }
+/* 两步删除的第二步：× 换成红字「确认删除」，常亮不随行悬停变淡 */
+.sacts .ibtn.del.arm { width: auto; padding: 0 4px; color: var(--danger); opacity: 1; font-size: var(--fs-1); font-weight: 600; white-space: nowrap; }
 /* 设置面板：当前编辑对象提示 */
 .grd-side .sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 1px 6px; }
 /* GRD 电平表 */
@@ -17317,10 +18104,8 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .glvrow .lvname:hover { border-color: var(--border); }
 .glvrow .lvname:focus { border-color: var(--accent-ui); background: var(--bg); color: var(--text); }
 .glvrow .lvname.named { color: var(--text); }
-.glvrow .ic.del { cursor: pointer; color: var(--text-faint); }
-.glvrow .ic.del:hover { color: var(--danger); }
 .glvadd { padding: 4px 7px; text-align: center; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); border-top: 1px solid var(--border); }
-.glvadd:hover { color: var(--accent); background: var(--bg); }
+.glvadd:hover { color: var(--accent); background: var(--wash-hover); }
 /* Beams To Plot 多波束多选列表（SATSOFT 风格） */
 /* 列表高度：原 132px 只露 ~5 行，几十个波束时勾选/改名要一直小幅滚动，难操作 → 放到 300px（~12 行）。
    仍是 max-height：波束少时照常按内容收缩，不留空框；右下角可竖向拖拽压扁，给下方「电平」等设置让位。
@@ -17331,7 +18116,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
 .brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); user-select: none; }
 .brow + .brow { border-top: 1px solid var(--border); }
-.brow:hover { background: var(--bg); }
+.brow:hover { background: var(--wash-hover); }
 .brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
 .brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
 .brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
@@ -17351,12 +18136,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sath { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .satn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .satn em { color: var(--text-muted); font-style: normal; font-weight: 400; font-size: var(--fs-2); }
-.seg.sm .sg { padding: 2px 7px; font-size: var(--fs-2); }
-.ic { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 1px; }
-.ic:hover { color: var(--text); }
-.ic.del:hover { color: var(--danger); }
-.ic.ok { color: var(--ok); font-weight: 700; }
-.ic.ok:hover { color: color-mix(in srgb, var(--ok) 75%, var(--text)); }
+.ibtn.ok, .ibtn.ok:hover:not(:disabled) { color: var(--ok); }
 .batch { border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 7px 8px; margin-top: 8px; }
 .bah { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
 .bnm { flex: 1; min-width: 0; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); color: var(--text); outline: none; }
@@ -17390,7 +18170,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .pglist { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .pgrow { display: flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; }
-.addbatch { margin-top: 8px; text-align: center; border: 1px dashed var(--border); padding: 4px; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
+.addbatch { display: block; width: 100%; margin-top: 8px; text-align: center; border: 1px dashed var(--border); padding: 4px; color: var(--accent); cursor: pointer; font-size: var(--fs-3); }
 .addbatch:hover { border-color: var(--line-hover); background: var(--surface); }
 .legend { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .legend .lrow { display: flex; align-items: center; gap: 6px; }
@@ -17403,7 +18183,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .plg { border: 1px solid var(--border); border-radius: var(--r-card); margin-top: 8px; padding: 0 9px 9px; background: color-mix(in srgb, var(--surface) 55%, transparent); }
 .plg.act { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent-ui); }
 /* 隐藏的多边形：卡身退到后景，卡头（拨杆/配色/名字/删除）留亮 —— 与标记分区、环境场同一套因果反馈 */
-.plg > :not(.plgh) { transition: opacity .15s; }
+.plg > :not(.plgh) { transition: opacity var(--dur-3); }
 .plg.hid > :not(.plgh) { opacity: .5; }
 .plgh { display: flex; align-items: center; gap: 6px; margin: 0 -9px 8px; padding: 6px 9px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 60%, transparent); border-radius: var(--r-box) var(--r-box) 0 0; }
 .plgh .plgnm { border-color: transparent; background: transparent; font-weight: 600; font-size: var(--fs-3); }
@@ -17418,7 +18198,9 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .plgr.sub { color: var(--text-muted); font-size: var(--fs-3); }
 .plgr.sub .u { flex: none; color: var(--text-faint); font-size: var(--fs-2); min-width: 20px; text-align: right; font-family: var(--font-mono); }
 .plgr.sub .u.pct { min-width: 30px; }
-.plgl { flex: none; width: 26px; color: var(--text-muted); font-size: var(--fs-2); text-align: justify; text-align-last: justify; }
+.plgl { flex: none; min-width: 26px; color: var(--text-muted); font-size: var(--fs-2); text-align: justify; text-align-last: justify; }
+/* 英文栏名长（Orbital Position）：下限加宽、取消两端对齐，超过卡片半宽时栏名自身折行而不是把输入框挤没 */
+html[lang="en"] .plgl { flex: 0 1 auto; min-width: 52px; max-width: 45%; white-space: normal; overflow-wrap: anywhere; line-height: 1.2; text-align: left; text-align-last: auto; }
 .plgu { flex: none; color: var(--text-faint); font-size: var(--fs-2); }
 .plgn { flex: 1; min-width: 0; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); color: var(--text); outline: none; border-radius: var(--r-ctl); }
 .plgv { flex: 1; min-width: 0; border: 1px solid var(--field-border); background: var(--field-bg); padding: 2px 6px; font-size: var(--fs-3); color: var(--text); outline: none; font-family: var(--font-mono); border-radius: var(--r-ctl); }
@@ -17426,7 +18208,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .plgc { flex: none; width: 26px; }
 /* 操作按钮组：4 列等宽网格（上排编辑态、下排生成类），整齐对位 */
 .plgops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
-.opb { text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: var(--fs-2); border-radius: var(--r-ctl); white-space: nowrap; transition: color .12s, border-color .12s, background .12s; }
+.opb { text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; font-size: var(--fs-2); border-radius: var(--r-ctl); white-space: nowrap; transition: color var(--dur-2), border-color var(--dur-2), background var(--dur-2); }
 .opb:hover { border-color: var(--line-hover); color: var(--text); }
 .opb.on { border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent); background: color-mix(in srgb, var(--accent-ui) 10%, transparent); font-weight: 600; }
 .opb.danger:hover { border-color: var(--danger); color: var(--danger); }
@@ -17439,31 +18221,25 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 /* 顶点表：文本框 + 右下「复制两列」按钮（Tab 分隔，粘到 Excel 自动分成经度/纬度两列） */
 .plgvt { margin-top: 6px; display: flex; flex-direction: column; }
 .plgvt .plgta { margin-top: 0; }
-.plgcp { align-self: flex-end; display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; padding: 2px 9px; border: 1px solid var(--border); border-radius: var(--r-ctl); color: var(--text-muted); font-size: var(--fs-2); cursor: pointer; white-space: nowrap; }
-.plgcp:hover { border-color: var(--line-hover); color: var(--text); }
+.plgcp { align-self: flex-end; margin-top: 5px; }
 .expb2 { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 3px 0; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); }
 .expb2:hover { border-color: var(--line-hover); color: var(--text); }
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }   /* 左右 16 = .sec，与分区内容同一条起跑线 */
 /* 紧跟在分区后面时，上一节的 border-bottom 就是这条分隔线，自己不再画，否则叠成两像素粗线（侧栏停靠即按内容高，页脚恒贴着上一节） */
 .sec + .csfoot { border-top: 0; }
 .cst { font-size: var(--fs-2); color: var(--text-faint); }
-.cclr { margin-left: auto; font-size: var(--fs-3); color: var(--text-muted); border: 1px solid var(--border); padding: 3px 10px; cursor: pointer; }
-.cclr:hover { border-color: var(--line-hover); color: var(--text); }
+.cclr { margin-left: auto; }
+.cclr.arm, .cclr.arm:hover { border-color: var(--danger); color: var(--danger); }
 
 /* 标记面板 */
-.addb { flex: none; border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; cursor: pointer; border-radius: var(--r-ctl); font-size: var(--fs-3); }
-.addb:hover { background: var(--primary-fill); border-color: var(--primary-fill); color: var(--primary-on); }
-/* 侧栏小按钮家族（.mini / .expb2 / .cclr / .opb 都是 span）：同一种结构线、同高 --h-ctl、同一套悬停 / 按下 */
-.mini, .expb2, .cclr { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: var(--h-ctl);
+/* 侧栏小按钮家族：.cclr / .mini 已走 .btn；.expb2（三等分可折行）与 .opb（网格里可折行）仍是本地外观，同一种结构线、同高 --h-ctl */
+.expb2 { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: var(--h-ctl);
                        padding-top: 0; padding-bottom: 0; border: 1px solid var(--border-strong); border-radius: var(--r-ctl);
                        color: var(--text-muted); white-space: nowrap; cursor: pointer; transition: var(--t-state); }
 .opb { border-color: var(--border-strong); transition: var(--t-state); }
 /* .expb2 在 .csfoot 里是 flex:1 三等分：放开折行、高度改下限，窄侧栏 / 英文长钮名折成两行而不顶出右沿（单行仍 16+4+2=22） */
 .expb2 { white-space: normal; height: auto; min-height: var(--h-ctl); line-height: 16px; padding-top: 2px; padding-bottom: 2px; text-align: center; }
-.mini:hover, .expb2:hover, .cclr:hover { border-color: var(--line-hover); color: var(--text); }
-.mini:active, .expb2:active, .cclr:active, .opb:active { box-shadow: var(--press); transition-duration: 0s; }
-.mini.dis { opacity: .45; pointer-events: none; }
-.addb { transition: var(--t-state); }
+.expb2:hover { border-color: var(--line-hover); color: var(--text); }
 .ci.nrw { width: 0; }
 .mlist { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
 /* 连体表：一圈外框 + 行间淡线，不再是一摞各自带框的小卡片（行无过渡） */
@@ -17497,23 +18273,19 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
    右键＝清除覆盖（回到整层设置）；这一层没有「留空」这种状态可供色轮表达，故靠右键。 */
 .mrow .clr.mkc, .trow .clr.mkc { flex: none; width: 22px; height: 16px; min-width: 0; }
 .mrow .clr.mkc.ov, .trow .clr.mkc.ov { border-color: var(--accent-ui); box-shadow: 0 0 0 1px var(--accent-ui); }
-.del { flex: none; cursor: pointer; color: var(--text-faint); padding: 0 2px; }
-.del:hover { color: var(--danger); }
 /* 隐藏的点 / 站 / 航迹：拨杆留亮，其余退到后景（同 .plg.hid） */
 .mrow.hid > :not(.layersw), .tcard.hid > :not(.trow), .tcard.hid > .trow > :not(.layersw) { opacity: .5; }
 .tcard { border: 1px solid var(--border); padding: 6px; margin-bottom: 6px; border-radius: var(--r-card); }
 .tcard.act { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .trow { display: flex; align-items: center; gap: 6px; }
-.trow .tk { width: 10px; height: 10px; flex: none; border-radius: var(--r-ctl); }
+.trow .tk { width: 10px; height: 10px; flex: none; border-radius: var(--r-ctl); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent); }
 .trow .tk.sea { background: #ff6a4a; }
 .trow .tk.flight { background: #5ad1ff; }
 .trow .tni { flex: 1; min-width: 0; border: 0; border-bottom: 1px solid var(--field-border); background: transparent; outline: none; color: var(--text); font-size: var(--fs-3); }
-.trow .tsel { flex: none; font-size: var(--fs-2); color: var(--text-muted); border: 1px solid var(--border); padding: 1px 7px; cursor: pointer; border-radius: var(--r-ctl); }
-.trow .tsel.on { color: var(--accent); border-color: var(--accent); }
+.trow .tsel { flex: none; padding: 0 7px; }   /* 外观走 .btn.sm（开着 = .on 实底）；文字不随状态变 */
 .twp { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .twp .wp { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 1px 5px; }
-.twp .wdel { margin-left: 4px; cursor: pointer; color: var(--text-faint); }
-.twp .wdel:hover { color: var(--danger); }
+.twp .wdel { margin-left: 2px; }
 /* 「模型」小块（点 / 站行、航迹卡）：没挂 = 淡色立方体；挂了 = 16 px 缩略图 + 机位色描边（与逐条色块「设过了」同一语言）。
    点开选模型，右键卸下 */
 .mchip { flex: none; box-sizing: border-box; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
@@ -17572,11 +18344,11 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sdh.sdh-win { align-items: stretch; padding: 0; }
 .sdh.sdh-win .sdt { padding: 11px 14px; align-self: center; }
 /* 从文件管理器（z2000 浮层）调起时，提升到其上方并改 fixed，以便两个弹窗共存 */
-.sat-mask.sat-overlay { position: fixed; z-index: 2100; }
+.sat-mask.sat-overlay { position: fixed; z-index: var(--z-dialog); }
 /* 对话框框体：全软件一档（--r-card + --shadow-3 + 160ms 上浮入场）；遮罩走 --scrim、瞬时出现，出场瞬时 */
 .sat-dlg { width: 320px; max-height: 86%; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); display: flex; flex-direction: column; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); }
-.sdh .csx { margin-left: auto; cursor: pointer; color: var(--text-faint); }
+.sdh .csx { margin: -4px -6px -4px auto; }
 .sdbody { padding: 12px 14px; }
 .sdbody .srow { --srow-lab: 64px; }
 /* 地球站对话框的模型选择钮：缩略图 + 模型名 + 下拉箭头，外观同输入框 */
@@ -17594,13 +18366,13 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .lnkv .lk-row .lk-ck { flex: none; margin: 0; }
 .lnkv .lk-row .lk-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-3); color: var(--text); }
 .lk-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
-.lk-dot.ok { background: var(--ok, #3fb950); }
-.lk-dot.part { background: var(--warn, #d29922); }
-.lk-dot.bad { background: var(--danger, #f85149); }
+.lk-dot.ok { background: var(--ok); }
+.lk-dot.part { background: var(--warn); }
+.lk-dot.bad { background: var(--danger); }
 .lnkv .lk-chain { margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-ctl); }
 .lnkv .lk-node { display: flex; align-items: center; gap: 6px; padding: 5px 8px; font-size: var(--fs-3); }
 .lnkv .lk-chain > * + * { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
-.lnkv .lk-node.bad .lk-nn { color: var(--danger, #f85149); }
+.lnkv .lk-node.bad .lk-nn { color: var(--danger); }
 .lnkv .lk-node.rep { background: var(--accent-ui-weak); }
 /* 节点名 = 「更换节点」的触发处：悬停下划线；站的属性读数 = 「地球站属性」 */
 .lnkv .lk-nn.pk, .lnkv .lk-at.pk { cursor: pointer; }
@@ -17609,7 +18381,7 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 /* 插入光标（检索框）/ 就地替换：淡机位色底，一眼看出「下一个节点放这里」 */
 .lnkv .lk-slot { padding: 5px 8px; background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
 .lnkv .lk-slot.rep { padding-left: 26px; }
-.lnkv .lk-add { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
+.lnkv .lk-add { display: flex; width: 100%; align-items: center; gap: 6px; height: 26px; padding: 0 8px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
 .lnkv .lk-add:hover { color: var(--accent-ui); background: var(--accent-ui-weak); }
 /* 跳行左侧的「＋」：悬停该跳才露出，点了光标落到这一跳中间 */
 .lnkv .lk-hop { position: relative; }
@@ -17623,25 +18395,22 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .lnkv .lk-seg { flex: none; }
 .lnkv .lk-seg .sg { padding: 0 6px; }
 .lnkv .lk-seg .sg.dis { cursor: default; }
-.lnkv .lk-ic { flex: none; display: inline-flex; cursor: pointer; color: var(--text-faint); }
-.lnkv .lk-ic:hover { color: var(--text); }
-.lnkv .lk-ic.dis { opacity: .35; pointer-events: none; }
 .lnkv .lk-hop { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 26px; background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
 .lnkv .lk-hk { flex: none; font-size: var(--fs-2); color: var(--text-muted); }
 .lnkv .lk-rd { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.lnkv .lk-rd.off { color: var(--warn, #d29922); }
+.lnkv .lk-rd.off { color: var(--warn); }
 .lnkv .lk-tg { margin-top: 8px; }
 /* Polygon / 航迹节点的取点钮（摘要 + ▾）：开着 = 机位色；一个点都没取 = 告警色 */
 .lnkv .lk-pkb {
   flex: 0 1 auto; min-width: 0; max-width: 58%; display: inline-flex; align-items: center; gap: 2px; height: 18px; padding: 0 3px 0 6px; margin: 0;
-  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--bg); color: var(--text-muted);
+  border: 1px solid var(--border-strong); border-radius: var(--r-ctl); background: var(--raised); color: var(--text-muted);
   font: inherit; font-size: var(--fs-2); cursor: pointer;
 }
-.lnkv .lk-pkb:hover { color: var(--text); }
+.lnkv .lk-pkb:hover { color: var(--text); background: var(--raised-hover); }
 .lnkv .lk-pkb.on { background: var(--accent-ui-weak); border-color: color-mix(in srgb, var(--accent-ui) 55%, transparent); color: var(--accent-ui); }
-.lnkv .lk-pkb.none { color: var(--warn, #d29922); border-color: color-mix(in srgb, var(--warn, #d29922) 55%, transparent); }
+.lnkv .lk-pkb.none { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
 .lnkv .lk-pkt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lnkv .lk-pkc { flex: none; transition: transform var(--dur-2, .12s); }
+.lnkv .lk-pkc { flex: none; transition: transform var(--dur-2); }
 .lnkv .lk-pkb.on .lk-pkc { transform: rotate(180deg); }
 .lnkv .lk-node.pko { background: color-mix(in srgb, var(--accent-ui) 6%, transparent); }
 /* 取点编辑器：节点行下就地展开，缩进与跳行对齐 */
@@ -17649,19 +18418,22 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .lnkv .lk-tg2 { margin-top: 2px; }
 /* 取点编辑器开着时图上悬停候选点：手形（压过渲染器自己设的光标） */
 .stage-wrap.lnk-hov :deep(canvas) { cursor: pointer !important; }
-.traj-banner .lk-bmsg { color: var(--warn, #d29922); }
-.geobtn { flex: none; border: 1px solid var(--accent); color: var(--accent); padding: 2px 8px; cursor: pointer; font-size: var(--fs-2); }
-.geobtn:hover { background: var(--primary-fill); border-color: var(--primary-fill); color: var(--primary-on); }
+.stage-wrap.obj-hov :deep(canvas) { cursor: pointer !important; }
+.hov-tag {
+  position: fixed; z-index: 60; pointer-events: none; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 2px 7px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--surface); color: var(--text);
+  font-size: var(--fs-2); box-shadow: var(--shadow-1, 0 1px 3px rgba(0,0,0,.18));
+}
+.traj-banner .lk-bmsg { color: var(--warn); }
 .sdiv { margin: 12px 0 8px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-3); }
 .sdbody .sdiv:first-child { margin-top: 0; padding-top: 0; border-top: none; }
-.pickbtn { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: var(--fs-3); }
-.pickbtn:hover { border-color: var(--line-hover); color: var(--text); }
+.pickbtn { flex: 1; }
 .pmode { flex: 1; text-align: center; border: 1px solid var(--border); color: var(--text-muted); padding: 4px 8px; cursor: pointer; font-size: var(--fs-3); }
 .pmode:hover { border-color: var(--line-hover); color: var(--text); }
 .pmode.on { border-color: var(--sel-fill); background: var(--sel-fill); color: var(--sel-on); }
 .sres { border: 1px solid var(--border); max-height: 150px; overflow-y: auto; margin-bottom: 8px; }
 .sresi { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: var(--fs-3); }
-.sresi:hover { background: var(--bg); }
+.sresi:hover { background: var(--wash-hover); }
 .sresi .srn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .sresi em { flex: none; font-style: normal; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
 /* 实时气象「链路参数」的目标星选择：与对星跟踪（GrdSetSections）同款——一行一颗、星名 +
@@ -17680,39 +18452,32 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .lv-sres .sres-e { padding: 6px 8px; font-size: var(--fs-3); color: var(--text-faint); }
 .lv-sres .sres-n { padding: 3px 8px; border-top: 1px solid var(--border); font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-mono); }
 .sdfoot { display: flex; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); }
-.sdfoot .cancel { margin-left: auto; color: var(--text-muted); border: 1px solid var(--border); padding: 4px 14px; cursor: pointer; font-size: var(--fs-3); }
-.sdfoot .cancel:hover { color: var(--text); }
-/* 墨色主按钮走 primary token：浅色逐字节仍是墨，深色压一档；悬停 / 禁用各有一档（span 充当按钮，按下罩就地写） */
-.sdfoot .save { background: var(--primary-fill); color: var(--primary-on); padding: 4px 18px; cursor: pointer; font-size: var(--fs-3); transition: var(--t-state); }
-.sdfoot .save:not(.ghost):hover { background: var(--primary-fill-hover); }
-.sdfoot .save:active { box-shadow: var(--press); transition-duration: 0s; }
+.sdfoot .cancel { margin-left: auto; }
 /* —— 卫星组管理器：左＝组列表，右＝改名 + 搜索添加 + 成员表 —— */
-.sgm-dlg { width: 780px; max-width: calc(100% - 32px); height: 76vh; max-height: 660px; overflow: hidden; }
-.sgm-body { flex: 1; min-height: 0; display: flex; }
+.sgm-body { flex: 1; min-height: 0; display: flex; height: min(76vh, 600px); }
 .sgm-left { flex: 0 0 200px; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
 .sgm-lt { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: var(--fs-3); color: var(--text-muted); border-bottom: 1px solid var(--border); flex: none; }
 .sgm-lt em { font-style: normal; color: var(--text-faint); font-family: var(--font-mono); }
 .sgm-lt .lnk { margin-left: auto; display: inline-flex; align-items: center; gap: 2px; color: var(--accent); cursor: pointer; }
 .sgm-glist { flex: 1; min-height: 0; overflow-y: auto; }
 .sgm-grow { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
-.sgm-grow:hover { background: var(--surface-2); color: var(--text); }
+.sgm-grow:hover { background: var(--wash-hover); color: var(--text); }
 .sgm-grow.cur { background: color-mix(in srgb, var(--accent-ui) 14%, transparent); color: var(--text); }
 .sgm-grow .gnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgm-grow .gcnt { flex: none; font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
 /* 组色点：恒占位保持名字列对齐；未着色=空心圈 */
 .sgm-grow .gdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .sgm-grow .gdot.off { box-shadow: inset 0 0 0 1px var(--text-faint); opacity: .45; }
-.sgm-grow .gic { flex: none; display: inline-flex; color: var(--text-faint); cursor: pointer; padding: 1px; opacity: 0; }
-.sgm-grow:hover .gic, .sgm-grow.cur .gic { opacity: 1; }
-.sgm-grow .gic:hover { color: var(--text); }
-.sgm-grow .gic.del:hover, .sgm-grow .gic.del.warn { color: var(--danger); }
+.sgm-grow .gic { opacity: 0; }
+.sgm-grow:hover .gic, .sgm-grow.cur .gic, .sgm-grow .gic:focus-visible { opacity: 1; }
+.sgm-grow .gic.del.warn { color: var(--danger); }
 .sgm-right { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px 12px; overflow: hidden; }
 .sgm-name { display: flex; align-items: center; gap: 8px; flex: none; }
 .sgm-name > label { flex: none; font-size: var(--fs-3); color: var(--text-muted); }
 /* 着色行：十色快捷板 + 取色器 + 色号读数 + 恢复默认 */
 .sgm-clr { display: flex; align-items: center; gap: 5px; flex: none; margin-top: 8px; }
 .sgm-clr > label:first-child { flex: none; font-size: var(--fs-3); color: var(--text-muted); margin-right: 3px; }
-.sgm-clr .pz { flex: none; width: 13px; height: 13px; border-radius: var(--r-box); cursor: pointer; box-sizing: border-box; border: 1px solid rgba(0,0,0,.3); }
+.sgm-clr .pz { flex: none; width: 13px; height: 13px; border-radius: var(--r-box); cursor: pointer; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--text) 30%, transparent); }
 .sgm-clr .pz:hover { box-shadow: 0 0 0 1px var(--text-muted); }
 .sgm-clr .pz.on { box-shadow: 0 0 0 1.5px var(--accent); }
 .sgm-clr .pgclr.lg { width: 18px; height: 18px; margin-left: 3px; }
@@ -17730,39 +18495,37 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sgm-right .gbtn { flex: none; font-size: var(--fs-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 3px 8px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
 .sgm-right .gbtn:hover { color: var(--text); border-color: var(--line-hover); }
 .sgm-right .gbtn.danger:hover { color: var(--danger); border-color: var(--danger); }
-.sgm-right .gbtn.dis { opacity: .4; pointer-events: none; }
-.sgm-pickbar .save.dis { opacity: 1; background: var(--primary-fill-disabled); border-color: transparent; color: var(--primary-on); cursor: default; pointer-events: none; }
+.sgm-right .gbtn:is(.dis, :disabled) { opacity: var(--dis-opacity); pointer-events: none; }
 .sgm-reslist { flex: 1 1 42%; min-height: 76px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-card); }
 .sgm-memlist { flex: 1 1 58%; min-height: 76px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--border); border-radius: var(--r-card); }
 .sgm-ck { display: flex; align-items: center; gap: 7px; padding: 4px 8px; font-size: var(--fs-3); color: var(--text); cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent); }
-.sgm-ck:hover { background: var(--surface-2); }
+.sgm-ck:hover { background: var(--wash-hover); }
 .sgm-ck input { flex: none; }
 .sgm-ck .cn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sgm-ck em { flex: none; font-style: normal; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
-.sgm-ck em.miss { color: #d9a441; }
+.sgm-ck em.miss { color: var(--warn); }
 .sgm-ck b { flex: none; font-weight: 400; font-size: var(--fs-1); color: var(--accent); }
 .sgm-ck.dim { color: var(--text-faint); }
-.sgm-ck .gic { flex: none; display: inline-flex; color: var(--text-faint); cursor: pointer; padding: 1px; }
-.sgm-ck .gic.del:hover { color: var(--danger); }
 .sgm-pickbar { display: flex; align-items: center; gap: 10px; flex: none; margin-top: 6px; font-size: var(--fs-3); color: var(--text-muted); }
 .sgm-pickbar b { color: var(--text); }
 .sgm-pickbar .lnk { color: var(--accent); cursor: pointer; }
-.sgm-pickbar .save { margin-left: auto; display: inline-flex; align-items: center; gap: 3px; background: var(--primary-fill); color: var(--primary-on); padding: 3px 12px; border-radius: var(--r-card); cursor: pointer; font-size: var(--fs-3); transition: var(--t-state); }
-.sgm-pickbar .save:hover { background: var(--primary-fill-hover); }
-.sgm-pickbar .save:active { box-shadow: var(--press); transition-duration: 0s; }
+.sgm-pickbar .save { margin-left: auto; }
 .sgm-empty { padding: 12px 10px; font-size: var(--fs-2); color: var(--text-faint); line-height: 1.6; }
 .sgm-empty.big { margin: auto; text-align: center; max-width: 300px; }
-.sgm-dlg .sdfoot { justify-content: flex-end; flex: none; }
 /* 应用内提示弹窗：消息文本 + 右对齐「确定」 */
-.al-dlg { width: 360px; }
 .al-msg { margin: 0; font-size: var(--fs-4); line-height: 1.65; color: var(--text); }
-.al-dlg .sdfoot { justify-content: flex-end; }
 /* 发送到小程序：密钥展示 */
-.sdfoot .save.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
 .sat-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: var(--fs-3); color: var(--text); box-shadow: var(--shadow-2); }
 .sat-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
 .traj-banner { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); z-index: 40; background: var(--surface); border: 1px solid var(--accent); padding: 7px 14px; font-size: var(--fs-3); color: var(--text); box-shadow: var(--shadow-2); }
 .traj-banner .lnk { margin-left: 10px; color: var(--accent); cursor: pointer; }
+/* 绘制横幅里的按键提示（连续绘制要按住 Shift）：竖发丝线与标题隔开，按键画成键帽（VS Code / Figma 快捷键提示同款）；
+   按住 Shift 时键帽「按下」（实底 + 下沉 1px）、文字点亮，表示这一下拖动是连续绘制 */
+.traj-banner .bn-hint { display: inline-flex; align-items: center; gap: 5px; margin-left: 12px; padding-left: 12px; border-left: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-2); white-space: nowrap; vertical-align: 1px; transition: color var(--dur-1); }
+.traj-banner .bn-kbd { display: inline-block; height: 16px; padding: 0 5px; box-sizing: border-box; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 3px; background: var(--bg); color: var(--text); font: 600 var(--fs-1)/13px var(--font-ui); letter-spacing: .02em; transition: background var(--dur-1), color var(--dur-1), border-color var(--dur-1), transform var(--dur-1); }
+.traj-banner .bn-plus { color: var(--text-faint); }
+.traj-banner .bn-hint.on { color: var(--text); }
+.traj-banner .bn-hint.on .bn-kbd { background: var(--sel-fill); border-color: var(--sel-fill); color: var(--sel-on); border-bottom-width: 1px; transform: translateY(1px); }
 .traj-banner .lnk.dis, .traj-banner .lnk.dis:hover { color: var(--text-faint); cursor: default; text-decoration: none; }
 /* 入场走独立的 translate 属性，不会冲掉横幅自身 transform: translateX(-50%) 的居中 */
 .sat-banner, .traj-banner { animation: ui-float-in var(--dur-2) var(--ease-out); }
@@ -17771,22 +18534,48 @@ html:not([lang="en"]) .env-side .srow:not(.sub) { --srow-lab: 72px; }
 .sat-banner, .traj-banner { left: calc((100% - var(--rdk-eff, 0px)) / 2); }
 
 /* 地图右键上下文菜单 */
-.ctx-mask { position: fixed; inset: 0; z-index: 60; }
-/* 命令菜单口径（与菜单栏下拉同一套）：机位色实底悬停、项圆角与外框同心（外框 6 − 内距 3 = 3）；
-   入场只淡入（光标处弹出、位置会翻转），不动 transform —— JS 对 ctxMenuEl 的量测不受影响 */
-.ctx-menu { position: fixed; z-index: 61; min-width: 190px; max-height: calc(100vh - 8px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); padding: 3px; font-size: var(--fs-4); color: var(--text); animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.ctx-item { padding: 5px 12px; border-radius: var(--r-box); cursor: pointer; white-space: nowrap; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.ctx-item:hover { background: var(--accent-ui); color: var(--bg); }
-.ctx-item.dis, .ctx-item.dis:hover { color: var(--text-faint); opacity: 1; cursor: default; background: none; }
-.ctx-sep { height: 1px; background: var(--border); margin: 3px 6px; }
-.ctx-kb { color: var(--text-faint); font-size: var(--fs-2); }
-.ctx-item:hover .ctx-kb { color: inherit; opacity: .75; }
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-hd / .menu-kbd / .menu-sep / .menu-mask，层级 --z-menu）。
+   这里只留定位、宽高、菜单头（对象名）的底线与省略号、行尾数据的省略号；「分析 ▸」展开时挂 .hi 与悬停同一高亮。
+   入场只淡入（基线即是），不动 transform —— JS 对 ctxMenuEl 的量测不受影响 */
+.ctx-menu { position: fixed; min-width: 190px; max-height: calc(100vh - 8px); }
+/* 菜单头：压着的对象名（不可点，弱化灰字；与下面的操作项拉开一条发丝线） */
+.ctx-hd { margin-bottom: 4px; border-bottom: 1px solid var(--border); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ctx-kb.rdk-pf { max-width: 12em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* 右键「上一聚焦」行尾：主选名是数据，可省略 */
-/* 「分析 ▸」：行尾星名是数据（可省略），展开时保持与悬停同一高亮；二级菜单压在主菜单之上 */
 .ctx-subn { display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; margin-right: 6px; }
-.ctx-item.ctx-subp.on { background: var(--accent-ui); color: var(--bg); }
-.ctx-item.ctx-subp.on .ctx-kb { color: inherit; opacity: .75; }
-.ctx-menu.ctx-sub { z-index: 62; min-width: 170px; }
+/* 二级菜单压在主菜单之上 */
+.ctx-menu.ctx-sub { z-index: calc(var(--z-menu) + 1); min-width: 170px; }
 
 
+/* ===== 专业浅色 / 专业深色：画面 / 信息栏 / 时间轴三块（与 App.vue 外壳同口径）=====
+   三块各自 --r-pane 圆角，块间 --pane-gap 缝（缝色 = 台面 --pane-well），不画 1px 分隔线；信息栏分隔条就是那道缝。
+   受光边 --pane-edge 在 global.css（与侧栏 / 日志同一条规则）。
+   只在 data-skin="studio" 下生效。画面块 overflow 裁圆角：画布 / 叠加层都在块内，弹出菜单是 fixed、不受裁切。 */
+:root[data-skin='studio'] .g3 { gap: var(--pane-gap); }
+:root[data-skin='studio'] .stage-wrap { border-radius: var(--r-pane); overflow: hidden; }
+:root[data-skin='studio'] .rdk-split { width: var(--pane-gap); margin: 0; }
+:root[data-skin='studio'] .rdk-split::before { content: ''; position: absolute; top: 0; bottom: 0; left: -2px; right: -2px; }
+:root[data-skin='studio'] .rdk-split::after { left: calc(50% - 1px); }
+:root[data-skin='studio'] .rdk { border-left: 0; border-radius: var(--r-pane); }
+:root[data-skin='studio'] .tl.bottom { border-top: 0; border-radius: var(--r-pane); }
+/* 入出点：刻度区内的淡机位色区间带 + 两道全高边线，底端一只朝区间内的 5px 短脚 —— 时段括线的脚在顶端，两者一眼分得开 */
+.tb-io { position: absolute; top: var(--y-zone); height: calc(var(--y-base) - var(--y-zone)); background: color-mix(in srgb, var(--accent-ui) 20%, transparent); pointer-events: none; }
+.tb-iob { position: absolute; z-index: 2; top: var(--y-cap); height: calc(var(--y-base) - var(--y-cap) + var(--hp)); width: var(--hp); background: var(--accent-ui); pointer-events: none; }
+.tb-iob::before { content: ''; position: absolute; bottom: 0; width: 5px; height: calc(var(--hp) * 2); background: var(--accent-ui); }
+.tb-iob.l::before { left: 0; }
+.tb-iob.r::before { right: 0; }
+/* 时间轴事件层：贴着刻度尺底边的一条细带（区间）/ 一道竖线（时刻）。吃指针：单击跳过去、右键移除这一类 */
+.tb-mk { position: absolute; z-index: 3; bottom: 0; height: 4px; cursor: pointer; background: color-mix(in srgb, var(--warn) 70%, transparent); }
+.tb-mk.band { border-radius: 1px; }
+/* 命中区 ≥ 8 px：条本身 4 px 高 / 点 2 px 宽，四周扩一圈透明的可点区 */
+.tb-mk::before { content: ''; position: absolute; left: -3px; right: -3px; top: -4px; bottom: 0; }
+.mk-menu { position: fixed; min-width: 150px; }
+.tb-mk.pt { width: 2px; height: calc(var(--y-base) - var(--y-cap)); bottom: 0; margin-left: -1px; background: var(--warn); }
+.tb-mk.src-vis { background: color-mix(in srgb, var(--ok) 65%, transparent); }
+.tb-mk:hover { filter: brightness(1.15); height: 6px; }
+.tb-mk.pt:hover { width: 3px; height: calc(var(--y-base) - var(--y-cap)); }
+/* 专业浅色 / 专业深色：时码放大一档（15 → 18px，剪辑软件的大号时码）。读数列宽按 em 量（--ro-c1），放大约多占 12px：
+   容器在原首档阈值 + 12px 之内先退回 15px，再窄照原档位走（原 732 档的 13px 规则特异度低于下面这条，须在这里重申） */
+:root[data-skin='studio'] .tlab2 { --ro-fs: var(--fs-6); }
+@container (max-width: 744px) { :root[data-skin='studio'] .tlab2 { --ro-fs: var(--fs-5); } }
+@container (max-width: 732px) { :root[data-skin='studio'] .tlab2 { --ro-fs: var(--fs-4); } }
 </style>

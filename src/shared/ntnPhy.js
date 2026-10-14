@@ -24,6 +24,8 @@
 //   而载波面板要在渲染端实时算占用带宽/信息速率/TBS，走 IPC 问一次不现实。两份必须逐值一致，
 //   packages/core/test/ntnPhy.test.mjs 拿同一组向量逐条对拍，改一处必须改另一处。
 
+import { byLang } from './i18n/lang.js'
+
 // ===== 子载波间隔 → numerology μ（时隙长度 = 1 ms / 2^μ）=====
 export const MU_OF = { 15: 0, 30: 1, 60: 2, 120: 3 }
 
@@ -589,8 +591,10 @@ export function resolve(rawPhy, Qm, R) {
       // I_SF / I_RU 这个下标一个字都不出现，照抄下标等于没说。
       const ul = phy.dir === 'ul'
       const mx = nbMaxSfIdx(phy)
-      error = 'NB-IoT I_TBS=' + phy.iTbs + ' 的' + (ul ? ' RU 数' : '子帧数') + '上限 ' +
-        (mx >= 0 ? NB_SF_COUNT[mx] : 0) + '，当前 ' + NB_SF_COUNT[ul ? phy.iRu : phy.iSf]
+      const cap = (mx >= 0 ? NB_SF_COUNT[mx] : 0), cur = NB_SF_COUNT[ul ? phy.iRu : phy.iSf]
+      // 以英文开头的整句进不了词典（PAT 尾槽开放须有 2 个汉字的头），故在生成时按语言出字；Node 下 byLang 回落中文，与主进程副本逐字一致
+      error = byLang('NB-IoT I_TBS=' + phy.iTbs + ' 的' + (ul ? ' RU 数' : '子帧数') + '上限 ' + cap + '，当前 ' + cur,
+        'For NB-IoT I_TBS=' + phy.iTbs + ' the maximum ' + (ul ? 'RU' : 'subframe') + ' count is ' + cap + '; current ' + cur)
     }
   } else if (!(rate > 0)) error = '信息速率为零'
   // NB-IoT 的有效码率由当前 I_SF / I_RU 与部署模式现算（MODCOD 表那一列只是 I_SF/I_RU = 0 的值）；

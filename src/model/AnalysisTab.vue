@@ -52,10 +52,10 @@ onActivated(() => { if (!S.orbit && S.satKey) sat.ensureOrbit() })
         <div class="srow">
           <label title="时段起点（按显示时区）">起点</label>
           <input class="ci ana-t0" type="datetime-local" :value="t0Text" @change="setT0($event.target.value)" @blur="$event.target.value = t0Text" />
-          <button class="lb-mini lb-mini-ico" title="设为当前时刻" @click="nowT0"><Icon name="clock" :size="13" /></button>
+          <button class="lb-mini lb-mini-ico" title="设为当前时刻" @click="nowT0"><Icon name="clock" :size="12" /></button>
           <div class="lbu-seg ana-tz">
-            <button :class="{ on: W.tz === 'local' }" title="本机时区" @click="setTz('local')">本机</button>
-            <button :class="{ on: W.tz === 'utc' }" title="UTC" @click="setTz('utc')">UTC</button>
+            <button :class="{ on: W.tz === 'local' }" :aria-pressed="(W.tz === 'local') ? 'true' : 'false'" title="本机时区" @click="setTz('local')">本机</button>
+            <button :class="{ on: W.tz === 'utc' }" :aria-pressed="(W.tz === 'utc') ? 'true' : 'false'" title="UTC" @click="setTz('utc')">UTC</button>
           </div>
         </div>
         <div class="srow">

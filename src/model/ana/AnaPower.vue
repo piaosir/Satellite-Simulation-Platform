@@ -121,8 +121,8 @@ const f = (v, k = 5) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
       <!-- 取板时的告警（关节无转轴按固定法向算、部件无法向未计入）：有电池板时同样要看得到，不只进空态的 title -->
       <div v-for="(w, i) in pm.warnings" :key="i" class="md-state warn"><Icon name="alert-triangle" :size="12" />{{ w }}</div>
       <div class="md-acts">
-        <button class="lb-mini primary" :disabled="busy || !S.binding || ana.tooMany.value" title="按时段逐步计算（姿态律 × 太阳方向 × 地影）" @click="compute"><Icon name="calculator" :size="13" />计算</button>
-        <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="13" />取消</button>
+        <button class="lb-mini primary" :disabled="busy || !S.binding || ana.tooMany.value" title="按时段逐步计算（姿态律 × 太阳方向 × 地影）" @click="compute"><Icon name="calculator" :size="12" />计算</button>
+        <button v-if="busy" class="lb-mini" title="取消" @click="cancel"><Icon name="x" :size="12" />取消</button>
         <span v-if="busy" class="md-state"><span class="ap-spin"></span><span data-i18n-skip>{{ prog }}</span></span>
       </div>
       <div v-if="err" class="md-state bad">{{ err }}</div>
@@ -146,6 +146,5 @@ const f = (v, k = 5) => (v == null || !Number.isFinite(v) ? '—' : fmtNum(v, k)
 
 <style scoped>
 .an-l { text-align: left; padding: 2px 0; }
-.ap-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ap-spin .7s linear infinite; }
-@keyframes ap-spin { to { transform: rotate(360deg); } }
+.ap-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--text) 18%, transparent); border-top-color: var(--accent-ui); animation: ui-spin .7s linear infinite; }
 </style>

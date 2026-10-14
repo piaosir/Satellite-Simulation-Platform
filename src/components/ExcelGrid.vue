@@ -305,7 +305,7 @@ onBeforeUnmount(onResizeUp)
             <!-- 枚举列：格右侧一枚 ▾（只在活动格与悬停行露出，免得整列挂满箭头）。
                  单击即开列表——这类格没有「自由文本」这一层，点开就是它唯一的编辑动作。 -->
             <span v-if="g.colOptions(c) && g.cellEditable(r, c)" class="eg-dd" title="从列表中选择"
-                  @mousedown.left.stop.prevent="g.openPick(ri, ci, '')"><Icon name="chevron-down" :size="11" /></span>
+                  @mousedown.left.stop.prevent="g.openPick(ri, ci, '')"><Icon name="chevron-down" :size="12" /></span>
           </td>
           <td v-if="actionsWidth > 0" class="eg-act"><slot name="actions" :row="r" :ri="ri" /></td>
           <td class="eg-pad"></td>
@@ -349,40 +349,40 @@ onBeforeUnmount(onResizeUp)
 
     <!-- 右键菜单：Teleport 到 body —— 浮窗本体 overflow:hidden，菜单留在窗内会被裁掉 -->
     <Teleport to="body">
-      <div v-if="g.menu.open" class="eg-ctx-mask" @mousedown="g.closeMenu()" @contextmenu.prevent="g.closeMenu()">
-        <div class="eg-ctx" :style="{ left: g.menu.x + 'px', top: g.menu.y + 'px' }" @mousedown.stop @contextmenu.stop.prevent>
+      <div v-if="g.menu.open" class="eg-ctx-mask menu-mask" @mousedown="g.closeMenu()" @contextmenu.prevent="g.closeMenu()">
+        <div class="eg-ctx menu" role="menu" :style="{ left: g.menu.x + 'px', top: g.menu.y + 'px' }" @mousedown.stop @contextmenu.stop.prevent>
           <template v-if="extraMenu.length">
-            <button v-for="it in extraMenu" :key="it.key" class="eg-ctx-i" :disabled="!!it.dis" @click="g.menuDo(it.run)"><span>{{ it.label }}</span><kbd v-if="it.kbd">{{ it.kbd }}</kbd></button>
-            <div class="eg-ctx-sep"></div>
+            <button v-for="it in extraMenu" :key="it.key" class="eg-ctx-i menu-item" role="menuitem" :disabled="!!it.dis" @click="g.menuDo(it.run)"><span>{{ it.label }}</span><kbd class="menu-kbd" v-if="it.kbd">{{ it.kbd }}</kbd></button>
+            <div class="eg-ctx-sep menu-sep" role="separator"></div>
           </template>
-          <button class="eg-ctx-i" @click="g.menuDo(() => g.copySel(false))"><span>复制</span><kbd>Ctrl+C</kbd></button>
-          <button class="eg-ctx-i" @click="g.menuDo(() => g.copySel(true))"><span>复制（含表头）</span><kbd>Ctrl+Shift+C</kbd></button>
+          <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(() => g.copySel(false))"><span>复制</span><kbd class="menu-kbd">Ctrl+C</kbd></button>
+          <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(() => g.copySel(true))"><span>复制（含表头）</span><kbd class="menu-kbd">Ctrl+Shift+C</kbd></button>
           <template v-if="!g.readOnly">
-            <button class="eg-ctx-i" @click="g.menuDo(g.cutSel)"><span>剪切</span><kbd>Ctrl+X</kbd></button>
-            <button class="eg-ctx-i" @click="g.menuDo(g.doPaste)"><span>粘贴</span><kbd>Ctrl+V</kbd></button>
-            <button class="eg-ctx-i" @click="g.menuDo(g.clearRange)"><span>清除内容</span><kbd>Del</kbd></button>
-            <button class="eg-ctx-i" :disabled="menuRow < 2" @click="g.menuDo(g.fillDown)"><span>向下填充</span><kbd>Ctrl+D</kbd></button>
+            <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(g.cutSel)"><span>剪切</span><kbd class="menu-kbd">Ctrl+X</kbd></button>
+            <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(g.doPaste)"><span>粘贴</span><kbd class="menu-kbd">Ctrl+V</kbd></button>
+            <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(g.clearRange)"><span>清除内容</span><kbd class="menu-kbd">Del</kbd></button>
+            <button class="eg-ctx-i menu-item" role="menuitem" :disabled="menuRow < 2" @click="g.menuDo(g.fillDown)"><span>向下填充</span><kbd class="menu-kbd">Ctrl+D</kbd></button>
           </template>
           <template v-if="g.canInsert.value || g.canDelete.value">
-            <div class="eg-ctx-sep"></div>
-            <button v-if="g.canInsert.value" class="eg-ctx-i" @click="g.menuDo(() => g.insertRows(false))">在上方插入 {{ menuRow }} 行</button>
-            <button v-if="g.canInsert.value" class="eg-ctx-i" @click="g.menuDo(() => g.insertRows(true))"><span>在下方插入 {{ menuRow }} 行</span><kbd>Ctrl+Shift++</kbd></button>
-            <button v-if="g.canDelete.value" class="eg-ctx-i danger" @click="g.menuDo(g.deleteRows)"><span>删除 {{ menuRow }} 行</span><kbd>Ctrl+-</kbd></button>
+            <div class="eg-ctx-sep menu-sep" role="separator"></div>
+            <button v-if="g.canInsert.value" class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(() => g.insertRows(false))">在上方插入 {{ menuRow }} 行</button>
+            <button v-if="g.canInsert.value" class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(() => g.insertRows(true))"><span>在下方插入 {{ menuRow }} 行</span><kbd class="menu-kbd">Ctrl+Shift++</kbd></button>
+            <button v-if="g.canDelete.value" class="eg-ctx-i menu-item danger" role="menuitem" @click="g.menuDo(g.deleteRows)"><span>删除 {{ menuRow }} 行</span><kbd class="menu-kbd">Ctrl+-</kbd></button>
           </template>
           <template v-if="g.sortable && g.menu.col">
-            <div class="eg-ctx-sep"></div>
-            <button class="eg-ctx-i" :class="{ on: g.sortDirOf(g.menu.col.key) > 0 }" @click="g.menuDo(() => g.setSort(g.menu.col, 1))">升序</button>
-            <button class="eg-ctx-i" :class="{ on: g.sortDirOf(g.menu.col.key) < 0 }" @click="g.menuDo(() => g.setSort(g.menu.col, -1))">降序</button>
-            <button class="eg-ctx-i" :disabled="!g.sort.value.dir" @click="g.menuDo(g.clearSort)">取消排序</button>
+            <div class="eg-ctx-sep menu-sep" role="separator"></div>
+            <button class="eg-ctx-i menu-item" role="menuitem" :class="{ on: g.sortDirOf(g.menu.col.key) > 0 }" :aria-pressed="(g.sortDirOf(g.menu.col.key) > 0) ? 'true' : 'false'" @click="g.menuDo(() => g.setSort(g.menu.col, 1))">升序</button>
+            <button class="eg-ctx-i menu-item" role="menuitem" :class="{ on: g.sortDirOf(g.menu.col.key) < 0 }" :aria-pressed="(g.sortDirOf(g.menu.col.key) < 0) ? 'true' : 'false'" @click="g.menuDo(() => g.setSort(g.menu.col, -1))">降序</button>
+            <button class="eg-ctx-i menu-item" role="menuitem" :disabled="!g.sort.value.dir" @click="g.menuDo(g.clearSort)">取消排序</button>
           </template>
-          <div class="eg-ctx-sep"></div>
-          <button class="eg-ctx-i" :disabled="!g.canPin.value"
+          <div class="eg-ctx-sep menu-sep" role="separator"></div>
+          <button class="eg-ctx-i menu-item" role="menuitem" :disabled="!g.canPin.value"
                   :title="g.pinAllOn.value ? '取消冻结所选列' : '把所选列钉在最左，横滚时不动'"
                   @click="g.menuDo(() => g.togglePin())">{{ g.pinAllOn.value ? '取消冻结此列' : '冻结此列' }}</button>
-          <button class="eg-ctx-i" :disabled="!g.frozenCount.value" @click="g.menuDo(g.unfreeze)">取消全部冻结</button>
-          <div class="eg-ctx-sep"></div>
-          <button v-if="g.menu.col" class="eg-ctx-i" @click="g.menuDo(() => g.autoFitCol(g.menu.col))">自动列宽</button>
-          <button class="eg-ctx-i" @click="g.menuDo(g.autoFitAll)">全部列自适应</button>
+          <button class="eg-ctx-i menu-item" role="menuitem" :disabled="!g.frozenCount.value" @click="g.menuDo(g.unfreeze)">取消全部冻结</button>
+          <div class="eg-ctx-sep menu-sep" role="separator"></div>
+          <button v-if="g.menu.col" class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(() => g.autoFitCol(g.menu.col))">自动列宽</button>
+          <button class="eg-ctx-i menu-item" role="menuitem" @click="g.menuDo(g.autoFitAll)">全部列自适应</button>
         </div>
       </div>
     </Teleport>
@@ -451,7 +451,7 @@ onBeforeUnmount(onResizeUp)
 .eg-fzbar > i::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px; background: var(--border-strong, var(--border)); }
 .eg-fzbar:hover > i::before, .eg-fzbar.drag > i::before { background: var(--accent); }
 /* 投影：横滚起来才现，表明线下面压着内容（Excel 同款） */
-.eg-fzbar > i::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity .12s;
+.eg-fzbar > i::after { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 8px; pointer-events: none; opacity: 0; transition: opacity var(--dur-2);
   background: linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent); }
 .eg-fzbar.scrolled > i::after { opacity: 1; }
 /* 单元格：relative + overflow 放开，让捕获输入框/填充柄在格内定位且不被裁；文本省略号交给 .eg-v */
@@ -491,21 +491,14 @@ onBeforeUnmount(onResizeUp)
 .eg-addlbl.del:hover:not(:disabled) { color: var(--danger); }
 .eg-addlbl:disabled { opacity: .4; cursor: default; }
 .eg-addn { font-style: normal; margin-left: 5px; font-family: var(--font-mono); color: var(--text-faint); }
-.eg-ctx-mask { position: fixed; inset: 0; z-index: 3000; }
-/* 命令菜单（P3）：菜单级投影 --shadow-2（--shadow-3 只给模态框），光标处出现故只淡入；
-   外框内距 4px → 项圆角 --r-ctl 同心；悬停机位色实底（与菜单栏一致），快捷键跟着反白、压一档 */
-.eg-ctx { position: fixed; min-width: 176px; padding: 4px; background: var(--bg); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float); box-shadow: var(--shadow-2); display: flex; flex-direction: column; animation: ui-fade-in var(--dur-2) var(--ease-out); }
-.eg-ctx-i { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: var(--fs-3); text-align: left; padding: 4px 9px; cursor: pointer; background: transparent; color: var(--text); border: 0; border-radius: var(--r-ctl); white-space: nowrap; }
-.eg-ctx-i > span { flex: 1; }
-.eg-ctx-i kbd { font-family: var(--font-code); font-size: var(--fs-1); color: var(--text-faint); }
-.eg-ctx-i:hover:not(:disabled) { background: var(--accent-ui); color: var(--bg); }
-.eg-ctx-i:hover:not(:disabled) kbd { color: inherit; opacity: .7; }
-.eg-ctx-i:disabled { opacity: .4; cursor: default; }
-.eg-ctx-i.danger:hover:not(:disabled) { background: var(--danger); color: var(--bg); }
+/* 右键菜单外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-kbd / .menu-sep / .menu-mask），这里只留定位、宽度、
+   快捷键等宽字，以及当前排序方向那一项的机位色字（悬停时让给基线蓝块） */
+.eg-ctx { position: fixed; min-width: 176px; }
+.eg-ctx-i kbd { font-family: var(--font-code); }
 .eg-ctx-i.on { color: var(--accent-ui); }
 /* 枚举列下拉浮层 */
-.eg-pick-mask { position: fixed; inset: 0; z-index: 3000; }
-.eg-pick { position: fixed; z-index: 3001; max-height: 260px; max-width: 340px; overflow: hidden; display: flex; flex-direction: column;
+.eg-pick-mask { position: fixed; inset: 0; z-index: calc(var(--z-dialog-pop) - 1); }
+.eg-pick { position: fixed; z-index: var(--z-dialog-pop); max-height: 260px; max-width: 340px; overflow: hidden; display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: var(--shadow-2); }
 .eg-pick-f { flex: none; padding: 3px 8px; font-size: var(--fs-2); color: var(--text-faint); border-bottom: 1px solid var(--border); font-family: var(--font-mono); }
 .eg-pick-l { flex: 1; min-height: 0; overflow: auto; padding: 3px 0; }
@@ -515,5 +508,4 @@ onBeforeUnmount(onResizeUp)
 .eg-pick-i.on { color: var(--accent); }
 .eg-pick-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .eg-pick-n { flex: none; font-style: normal; font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }
-.eg-ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 </style>

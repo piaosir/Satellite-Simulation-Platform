@@ -159,12 +159,12 @@ module.exports = function createGrd(saveDir) {
     const beamCount = (loaded.beams || []).length;
     const pick = Number.isInteger(beamIndex) ? beamIndex : null;
     if (pick != null && (pick < 0 || pick >= beamCount)) {
-      throw new Error(`方向图只有 ${beamCount} 个波束，指定的波束序号 ${pick + 1} 越界`);
+      throw new Error(`方向图仅有 ${beamCount} 个波束，指定的波束序号 ${pick + 1} 越界`);
     }
     // 指定了波束就覆盖 keptSets（它本就是「原始 set 序号」的口径，见 grdSampler.makeSampleCtx）
     const c = pick == null ? base : { ...base, keptSets: [pick] };
     const peak = sampler.peakDb(loaded, c);
-    if (!Number.isFinite(peak)) throw new Error('方向图里取不到峰值（文件可能是空的或全为零场）');
+    if (!Number.isFinite(peak)) throw new Error('方向图中无法取得峰值（文件可能为空或全为零场）');
     return {
       peakDbi: peak,
       beamCount,

@@ -13,8 +13,9 @@
 //   ② 纵轴锚在峰值：右侧副刻度直接标**鉴别度**（峰值 − 增益），读图不必心算。
 //   ③ 干扰星画在曲线上并向下引垂线到横轴：一眼看到它踩在方向图的哪一段
 //      （主瓣 / φ₁ 拐点 / 29−25lgφ 斜坡 / 远场底板），这决定了鉴别度是几 dB。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { layoutLabels } from './ciPlotLabels.js'
+import { PLOT_FS as FS, usePlotWidth, usePlotSeriesVars } from './ciPlotKit.js'
 
 const props = defineProps({
   curve: { type: Array, default: () => [] },        // [{deg, gainDbi}]，对数角度轴采样
@@ -25,9 +26,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['hover'])
 
-const W = 460, H = 250
-const M = { l: 46, r: 46, t: 14, b: 34 }
-const PW = W - M.l - M.r, PH = H - M.t - M.b
+// 排版：viewBox 宽 = 容器实宽，字号恒 11 px（见 ciPlotKit）
+const wrapEl = ref(null), svgEl = ref(null)
+const W = usePlotWidth(wrapEl, 460)
+const serVars = usePlotSeriesVars()
+const H = 290
+const M = { l: 56, r: 56, t: 16, b: 42 }
+const PW = computed(() => W.value - M.l - M.r)
+const PH = H - M.t - M.b
 
 const live = computed(() => (props.sources || []).filter((s) => !s.skipped && Number.isFinite(Number(s.thetaDeg))))
 
@@ -45,7 +51,7 @@ const xDomain = computed(() => {
 const xOf = (deg) => {
   const [lo, hi] = xDomain.value
   const d = Math.max(lo, Math.min(hi, Number(deg) || lo))
-  return M.l + PW * (Math.log10(d) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))
+  return M.l + PW.value * (Math.log10(d) - Math.log10(lo)) / (Math.log10(hi) - Math.log10(lo))
 }
 
 // 纵轴：增益 dBi
@@ -99,10 +105,10 @@ const pts = computed(() => {
     id: String(s.id || s.name || ''), name: s.name || s.id,
     deg: Number(s.thetaDeg), gainDbi: Number(s.offAxisGainDbi),
     discrimDb: Number(s.discrimDb), ciDb: Number(s.ciDb), sharePct: Number(s.sharePct),
-    text: `${s.name || s.id} · ${fmtAng(s.thetaDeg)}° · 鉴别 ${fmt(s.discrimDb, 1)}dB`,
+    text: `${s.name || s.id} · ${fmtAng(s.thetaDeg)}° · 鉴别 ${fmt(s.discrimDb, 1)} dB`,
     x: xOf(s.thetaDeg), y: yOf(s.offAxisGainDbi)
   }))
-  return layoutLabels(arr, { top: M.t + 5, bottom: M.t + PH - 6, left: M.l, right: M.l + PW })
+  return layoutLabels(arr, { top: M.t + 5, bottom: M.t + PH - 6, left: M.l, right: M.l + PW.value }, { fontSize: FS, lineH: FS + 4, gap: 10 })
 })
 
 const fmt = (v, n = 2) => (Number.isFinite(Number(v)) ? Number(v).toFixed(n) : '—')
@@ -112,35 +118,36 @@ const fmtAng = (v) => {
   if (!Number.isFinite(d)) return '—'
   return d >= 10 ? d.toFixed(1) : d >= 1 ? d.toFixed(2) : d >= 0.1 ? d.toFixed(3) : d.toFixed(4)
 }
+defineExpose({ svg: svgEl })
 </script>
 
 <template>
-  <div class="ci-pat">
-    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet">
+  <div ref="wrapEl" class="ci-pat" :style="serVars">
+    <svg ref="svgEl" :viewBox="`0 0 ${W} ${H}`" :width="W" :height="H">
       <rect :x="M.l" :y="M.t" :width="PW" :height="PH" class="bg" />
 
       <!-- 网格 -->
       <g v-for="v in xTicks" :key="'x' + v">
         <line :x1="xOf(v)" :y1="M.t" :x2="xOf(v)" :y2="M.t + PH" class="grid" />
-        <text :x="xOf(v)" :y="M.t + PH + 11" class="tick" text-anchor="middle">{{ fmtDeg(v) }}</text>
+        <text :x="xOf(v)" :y="M.t + PH + FS + 4" class="tick" text-anchor="middle">{{ fmtDeg(v) }}</text>
       </g>
       <g v-for="v in yTicks" :key="'y' + v">
         <line :x1="M.l" :y1="yOf(v)" :x2="M.l + PW" :y2="yOf(v)" class="grid" />
         <text :x="M.l - 4" :y="yOf(v)" class="tick" text-anchor="end" dominant-baseline="middle">{{ v }}</text>
         <!-- 右侧副刻度 = 鉴别度（峰值 − 增益），读图不必心算 -->
-        <text v-if="Number.isFinite(Number(peakGainDbi))" :x="M.l + PW + 4" :y="yOf(v)" class="tick dim" dominant-baseline="middle">{{ fmt(peakGainDbi - v, 0) }}</text>
+        <text v-if="Number.isFinite(Number(peakGainDbi))" :x="M.l + PW + 5" :y="yOf(v)" class="tick dim" dominant-baseline="middle">{{ fmt(peakGainDbi - v, 0) }}</text>
       </g>
 
       <!-- AP8 结构角：竖线 + 顶部标签 -->
       <g v-for="(m, i) in marks" :key="'m' + m.key">
         <line :x1="xOf(m.deg)" :y1="M.t" :x2="xOf(m.deg)" :y2="M.t + PH" class="mark" :class="m.key" />
-        <text :x="xOf(m.deg) + 2" :y="M.t + 8 + (i % 2) * 8" class="mark-lab" :class="m.key">{{ m.label }}</text>
+        <text :x="xOf(m.deg) + 2" :y="M.t + FS + (i % 2) * (FS + 2)" class="mark-lab" :class="m.key">{{ m.label }}</text>
       </g>
 
       <!-- 峰值参考线 -->
       <template v-if="Number.isFinite(Number(peakGainDbi))">
         <line :x1="M.l" :y1="yOf(peakGainDbi)" :x2="M.l + PW" :y2="yOf(peakGainDbi)" class="peak" />
-        <text :x="M.l + 3" :y="yOf(peakGainDbi) - 2.5" class="peak-lab">峰值 {{ fmt(peakGainDbi, 1) }} dBi</text>
+        <text :x="M.l + 3" :y="yOf(peakGainDbi) - 4" class="peak-lab">峰值 {{ fmt(peakGainDbi, 1) }} dBi</text>
       </template>
 
       <!-- 方向图曲线 -->
@@ -152,7 +159,7 @@ const fmtAng = (v) => {
         class="src" :class="{ hot: hoveredId && p.id === hoveredId }"
         @mouseenter="emit('hover', p.id)" @mouseleave="emit('hover', '')">
         <line :x1="p.x" :y1="p.y" :x2="p.x" :y2="M.t + PH" class="drop" />
-        <circle :cx="p.x" :cy="p.y" r="3.2" />
+        <circle :cx="p.x" :cy="p.y" r="3.6" />
         <line
           v-if="p.displaced"
           :x1="p.x + (p.anchor === 'end' ? -4 : 4)" :y1="p.y"
@@ -167,42 +174,43 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
       </g>
 
       <!-- 轴名 -->
-      <text :x="M.l + PW / 2" :y="H - 4" class="axis" text-anchor="middle">离轴角 φ（度，对数轴）</text>
-      <text :x="11" :y="M.t + PH / 2" class="axis" text-anchor="middle" :transform="`rotate(-90 11 ${M.t + PH / 2})`">增益（dBi）</text>
-      <text :x="W - 9" :y="M.t + PH / 2" class="axis dim" text-anchor="middle" :transform="`rotate(90 ${W - 9} ${M.t + PH / 2})`">鉴别度（dB）</text>
+      <text :x="M.l + PW / 2" :y="H - 6" class="axis" text-anchor="middle">离轴角 φ (°)</text>
+      <text :x="14" :y="M.t + PH / 2" class="axis" text-anchor="middle" :transform="`rotate(-90 14 ${M.t + PH / 2})`">增益 (dBi)</text>
+      <text :x="W - 12" :y="M.t + PH / 2" class="axis dim" text-anchor="middle" :transform="`rotate(90 ${W - 12} ${M.t + PH / 2})`">鉴别度 (dB)</text>
     </svg>
     <p v-if="!curve.length" class="empty">尚未计算。</p>
   </div>
 </template>
 
 <style scoped>
-.ci-pat { width: 100%; }
-.ci-pat svg { width: 100%; height: auto; display: block; }
+.ci-pat { width: 100%; min-width: 0; }
+.ci-pat svg { display: block; max-width: 100%; }
+/* 字号恒 11 px（viewBox 单位 = CSS px），线宽按 px 给 */
 
-.bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 0.7; }
-.grid { stroke: var(--border); stroke-width: 0.4; }
-.tick { font-size: 7.5px; fill: var(--text-muted); }
-.tick.dim { opacity: 0.65; }
-.axis { font-size: 8px; fill: var(--text-muted); font-weight: 600; }
+.bg { fill: var(--surface-2); stroke: var(--border-strong); stroke-width: 1; }
+.grid { stroke: var(--border); stroke-width: 1; }
+.tick { font-size: 11px; fill: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tick.dim { opacity: 0.75; }
+.axis { font-size: 11px; fill: var(--text-muted); font-weight: 600; }
 .axis.dim { opacity: 0.7; font-weight: 500; }
 
-.curve { fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linejoin: round; }
-.peak { stroke: var(--text-muted); stroke-width: 0.6; stroke-dasharray: 3 2; }
-.peak-lab { font-size: 7px; fill: var(--text-muted); }
+.curve { fill: none; stroke: var(--plot-s0); stroke-width: 1.8; stroke-linejoin: round; }
+.peak { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.peak-lab { font-size: 11px; fill: var(--text-muted); }
 
 /* 结构角：主瓣边界与远场底板用不同虚线密度区分层级，不另加颜色 */
-.mark { stroke: var(--text-muted); stroke-width: 0.5; stroke-dasharray: 2 2.5; opacity: 0.55; }
-.mark.hpbw, .mark.phi1 { stroke-dasharray: 3.5 1.5; opacity: 0.8; }
-.mark-lab { font-size: 6.6px; fill: var(--text-muted); opacity: 0.85; }
+.mark { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.55; }
+.mark.hpbw, .mark.phi1 { stroke-dasharray: 5 2; opacity: 0.8; }
+.mark-lab { font-size: 11px; fill: var(--text-muted); opacity: 0.85; }
 .mark-lab.hpbw, .mark-lab.phi1 { font-weight: 600; opacity: 1; }
 
-.drop { stroke: var(--warn, #d08a2e); stroke-width: 0.5; stroke-dasharray: 1.5 1.5; opacity: 0.5; }
-.lead { stroke: var(--warn, #d08a2e); stroke-width: 0.5; opacity: 0.7; }
-.src circle { fill: var(--warn, #d08a2e); stroke: var(--surface); stroke-width: 0.9; cursor: pointer; }
-.src:hover circle, .src.hot circle { r: 4.2; stroke: var(--text); }
-.src-lab { font-size: 7.4px; fill: var(--text); pointer-events: none; }
+.drop { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.5; }
+.lead { stroke: var(--warn); stroke-width: 1; opacity: 0.7; }
+.src circle { fill: var(--warn); stroke: var(--surface-2); stroke-width: 1.2; cursor: pointer; }
+.src:hover circle, .src.hot circle { r: 4.8; stroke: var(--text); }
+.src-lab { font-size: 11px; fill: var(--text); pointer-events: none; }
 .src:hover .src-lab, .src.hot .src-lab { font-weight: 700; }
-.src:hover .drop, .src.hot .drop { opacity: 1; stroke-width: 0.8; }
+.src:hover .drop, .src.hot .drop { opacity: 1; stroke-width: 1.4; }
 
 .empty { margin: 8px 0 0; text-align: center; font-size: var(--fs-3); color: var(--text-muted); }
 </style>

@@ -11,6 +11,9 @@ import './stores/uiFont'
 import './shared/i18n/runtime'
 // 数据区字号与三个链路预算窗口共享（localStorage + storage 事件跨窗同步）
 import { initLbFontSize } from './shared/lbFont.js'
+import { installGlobalErrors } from './shared/reportError.js'
 
 initLbFontSize()
-createApp(RainApp).use(createPinia()).mount('#app')
+const app = createApp(RainApp).use(createPinia())
+installGlobalErrors(app)
+app.mount('#app')

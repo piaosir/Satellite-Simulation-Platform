@@ -13,6 +13,7 @@ import { ref } from 'vue'
 import LbSpacePane from './LbSpacePane.vue'
 import LbLinkPane from './LbLinkPane.vue'
 
+const emit = defineEmits(['exported'])   // 两张图「出图」成功的回执（msg, path）原样上交宿主窗口
 defineProps({
   engine: { type: String, default: 'geo' },
   params: { type: Object, default: null },
@@ -70,8 +71,10 @@ defineExpose({ captureFigures })
          plot-height 只是「非地理图」的图框高，地理图不走它 -->
     <LbSpacePane v-if="showGeo" ref="geoRef" :engine="engine" :params="params" :sweep2D="sweep2D"
       :output-defs="outputDefs" :store-key="storeKey" :lang="lang" :unavailable="sweepUnavailable"
-      :fixed-site="geoSite" :scene="linkScene" :geo-link="geoLink" :plot-height="320" />
-    <LbLinkPane ref="linkRef" :scene="linkScene" :store-key="storeKey" :lang="lang" :height="230" />
+      :fixed-site="geoSite" :scene="linkScene" :geo-link="geoLink" :plot-height="320"
+      @exported="(m, p) => emit('exported', m, p)" />
+    <LbLinkPane ref="linkRef" :scene="linkScene" :store-key="storeKey" :lang="lang" :height="230"
+      @exported="(m, p) => emit('exported', m, p)" />
   </aside>
 </template>
 

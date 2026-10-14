@@ -2008,7 +2008,7 @@ export function createModelLayer(o = {}) {
     /** 模型元数据变了（工作台存盘 / 清单更新）：见 refreshModel；id 缺省 = 全部在用的模型 */
     refreshModel,
     setDragDamping(p) { followTau = tauFor(p) },
-    setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) },
+    setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p * 10) / 10)) },
     setFollowZoom,
     getFollowZoom: () => distToT(zoomTarget),
     /** 跟随视角直切（不做相机飞行）：dir = 从主星指向相机的方向（L 系），dist = 距离（米，夹在 1.2 倍包围半径 … 5 km） */

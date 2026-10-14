@@ -419,7 +419,7 @@ export function createGlobeScene(container, quality = {}) {
   // 一格滚轮走几个百分点（＝底部状态栏那条缩放读数的百分点数，与 ± 按钮的 0.01 同刻度）。
   // 改成在【t 空间】等步进而不是「距离乘一个固定倍率」：读数才是用户看得见、能跟设置值对上的那把尺子。
   let wheelPct = 3
-  function setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p))) }
+  function setWheelStep(p) { if (Number.isFinite(p)) wheelPct = Math.max(1, Math.min(20, Math.round(p * 10) / 10)) }
   // 跟随卫星驱动（见 setFollowDriver）：有它时地球相机的位姿由它每帧写，本文件的缩放 / 旋转 / 点选星一律让路（工具态照常）。
   // ★ 声明提到滚轮监听之前：监听器闭包在建场期就注册了，读它的是后面的事件，但 let 必须先于任何读取点初始化。
   let followDriver = null
@@ -3181,8 +3181,13 @@ export function createGlobeScene(container, quality = {}) {
   let beamDragMode = false, onBeamDrag = null, beamDragging = false
   // 拖拽数值标签模式：左键拖动地球时不旋转，改为回调经纬度（拖动等值线数值标签沿线滑动）
   let labelDragMode = false, onLabelDrag = null, labelDragging = false
-  // 协调区多边形 hold-to-draw：绘制态下左键按住沿路径拖动，按屏幕像素阈值连续加点（同样不旋转地球）。右键加点仍并存。
+  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点、左键拖动照常转地球（同 QGIS 数字化 / SATSOFT §5.2）；
+  // Shift + 左键按住沿路径拖动 = 徒手画（按屏幕像素阈值连续加点，这一下不转地球）。右键加点仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
+  let lastDrawClick = null   // 绘制态上一次单击 {x,y,t}：双击 = 两次单击落在同一处，第二下不重复加点
+  // 工具态的「起拖命中」判定（宿主给）：拖波束 / 拖标签只在按在视轴 / 标签附近时接管左键，别处照常转地球。
+  // 不给 = 恒接管（旧口径）。pressLock：这一下按住被工具接管了 → 本次按压期间停旋转（OrbitControls 在 move 时才查 enableRotate）
+  let beamDragHit = null, labelDragHit = null, pressLock = false
   // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)；拖动仍旋转地球
   let placeMode = false, onPlace = null
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
@@ -3202,7 +3207,7 @@ export function createGlobeScene(container, quality = {}) {
   // 拖波束/拖标签/绘制态/拖标记均停旋转。跟随卫星时左键转的是驱动的局部相机（地球控件已整个停用），同一把闸一并给它 ——
   // 不给的话工具态压住左键，局部相机照转、工具那头却收不到拖动
   const updateRotate = () => {
-    const lock = !!(beamDragMode || labelDragMode || polyDrawMode || markerDragging)
+    const lock = !!(pressLock || markerDragging)
     controls.enableRotate = !lock
     if (followDriver && followDriver.setRotate) followDriver.setRotate(!lock)
   }
@@ -4061,11 +4066,13 @@ export function createGlobeScene(container, quality = {}) {
         return
       }
     }
-    if (beamDragMode && e.button === 0) { beamDragging = true; const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
-    else if (labelDragMode && e.button === 0) { labelDragging = true; const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
-    else if (polyDrawMode && e.button === 0) { polyDrawing = true; drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
+    const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
+    if (beamDragMode && e.button === 0 && hitOk(beamDragHit)) { beamDragging = true; pressLock = true; updateRotate(); const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
+    else if (labelDragMode && e.button === 0 && hitOk(labelDragHit)) { labelDragging = true; pressLock = true; updateRotate(); const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
+    else if (polyDrawMode && e.button === 0 && e.shiftKey) { polyDrawing = true; pressLock = true; updateRotate(); drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
+    if (pressLock) { pressLock = false; updateRotate() }
     if (markerDragging) { try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } endMarkerDrag(); return }   // 拖标记结束，不当作选星
     if (polyDrawing) { polyDrawing = false; try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束（显式释放捕获，勿只靠隐式）；不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
@@ -4073,6 +4080,14 @@ export function createGlobeScene(container, quality = {}) {
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) return
+    // 绘制态：左键单击 = 加一个点（不选星）；同一处的连击（双击）只算一下
+    if (polyDrawMode) {
+      const now = performance.now(), lc = lastDrawClick
+      lastDrawClick = { x: e.clientX, y: e.clientY, t: now }
+      if (lc && now - lc.t < 400 && Math.abs(e.clientX - lc.x) + Math.abs(e.clientY - lc.y) <= 4) return
+      const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'click')
+      return
+    }
     // 放置模式：左键点击 = 在球面落点放置（波束合成），不当作选星。跟随卫星期间同样生效（排在下面那道闸之前）
     if (placeMode) { const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPlace) onPlace(ll); return }
     if (followDriver) return     // 跟随卫星期间左键点选停用（点空白会清聚焦，等于把跟随目标撤掉）
@@ -4096,6 +4111,7 @@ export function createGlobeScene(container, quality = {}) {
   })
   // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
   renderer.domElement.addEventListener('pointercancel', (e) => {
+    if (pressLock) { pressLock = false; updateRotate() }
     if (markerDragging) endMarkerDrag()
     if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end') }
     try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
@@ -4774,6 +4790,7 @@ export function createGlobeScene(container, quality = {}) {
       if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
     },
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    setBeamDragHit: (fn) => { beamDragHit = typeof fn === 'function' ? fn : null }, setLabelDragHit: (fn) => { labelDragHit = typeof fn === 'function' ? fn : null },
     faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
     beginCapture, captureFrame, endCapture, isCapturing: () => !!capture,
     // 显卡上限（视频取景框「只出一块」时视口按整舞台铺开，不能超过 MAX_VIEWPORT_DIMS）

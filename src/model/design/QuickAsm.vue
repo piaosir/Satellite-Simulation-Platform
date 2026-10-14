@@ -46,10 +46,10 @@ const selSet = computed(() => new Set(ui.selIds))
     <div v-if="!blocks.length" class="asm-empty">暂无组件。</div>
     <div v-for="b in blocks" :key="b.id" class="sec qk-blk" :class="{ on: selSet.has(b.id) }" :data-comp="b.id">
       <div class="sect qk-bh" :style="{ paddingLeft: Math.min(b.depth, 4) * 10 + 'px' }" :title="b.id" @click="sel(b.id)">
-        <Icon :name="b.icon" :size="13" />
+        <Icon :name="b.icon" :size="12" />
         <span class="sect-t" data-i18n-skip>{{ b.label }}</span>
         <span v-if="b.sym" class="qk-sym" :title="b.sym.tip">×{{ b.sym.n }}</span>
-        <Icon v-if="b.locked" name="lock" :size="11" class="qk-lk" />
+        <Icon v-if="b.locked" name="lock" :size="12" class="qk-lk" />
       </div>
       <div v-for="r in b.rows" :key="r.key" class="srow">
         <label :class="{ 'md-red': r.bad }" :title="r.title">{{ r.label }}</label>

@@ -35,10 +35,10 @@ function setDrv(d) { if (props.readonly || d === drv.value) return; emit('update
       <NumBox class="ci" :model-value="model.fGHz" :min="0.001" :step="0.1" :disabled="readonly" @commit="(v) => put({ fGHz: v })" /><span class="u">GHz</span>
     </div>
     <div class="srow"><label>输入量</label>
-      <div class="seg" :class="{ ro: readonly }">
-        <span class="sg" :class="{ on: drv === 'D' }" title="给定口径，算出波束宽与峰值增益" @click="setDrv('D')">口径</span>
-        <span class="sg" :class="{ on: drv === 'bw' }" title="给定 3 dB 波束宽，算出口径与峰值增益（峰值增益 = π²/θ3²，与效率无关）" @click="setDrv('bw')">波束宽</span>
-        <span class="sg" :class="{ on: drv === 'G' }" title="给定峰值增益，算出波束宽与口径" @click="setDrv('G')">峰值增益</span>
+      <div role="radiogroup" class="seg" :class="{ ro: readonly }">
+        <button type="button" role="radio" :aria-checked="!!(drv === 'D')" class="sg" :class="{ on: drv === 'D' }" title="给定口径，计算波束宽与峰值增益" @click="setDrv('D')">口径</button>
+        <button type="button" role="radio" :aria-checked="!!(drv === 'bw')" class="sg" :class="{ on: drv === 'bw' }" title="给定 3 dB 波束宽，计算口径与峰值增益（峰值增益 = π²/θ3²，与效率无关）" @click="setDrv('bw')">波束宽</button>
+        <button type="button" role="radio" :aria-checked="!!(drv === 'G')" class="sg" :class="{ on: drv === 'G' }" title="给定峰值增益，计算波束宽与口径" @click="setDrv('G')">峰值增益</button>
       </div>
     </div>
     <div class="srow"><label>口径</label>
@@ -72,13 +72,4 @@ function setDrv(d) { if (props.readonly || d === drv.value) return; emit('update
 .srow select { min-width: 116px; }
 .srow .ci:disabled, .srow select:disabled { background: var(--surface); color: var(--text-muted); cursor: not-allowed; border-style: dashed; }
 .srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.seg .sg { padding: 2px 12px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.seg .sg + .sg { border-left: 1px solid var(--border); }
-.seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.seg .sg:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.seg .sg.on, .seg .sg.on + .sg { border-left-color: transparent; }
-.seg.ro .sg { cursor: default; }
-.seg.ro .sg:hover:not(.on) { background: none; color: var(--text-muted); }
 </style>

@@ -75,16 +75,17 @@ const shown = computed(() => (
 }
 /* 章节号：退一档墨色、常规字重——它是定位用的路标，不与段名争标题的分量 */
 .wf-no { font-weight: 400; color: var(--text-faint); margin-right: .5em; font-variant-numeric: tabular-nums; }
-.wf-row { display: grid; align-items: baseline; gap: 8px; padding: 1px 2px; line-height: 1.5; }
+.wf-row { display: grid; align-items: baseline; gap: .7em; padding: 1px 2px; line-height: 1.5; }
 .wf-row:not(.wf-head):hover { background: var(--surface); }
 /* 列宽：标签列吃剩余宽度（minmax(0,3fr) 保证它先长、被挤时先让），数值列按内容需要钉死下限
    —— 4.9em ≈ 「−112.422」这类最长值的宽度（TNR 数字半角 0.5em），用 em 随 --lb-fs 同步缩放。
    数值列不用裸 1fr：窄栏下 fr 会把数值压到 min-content，而每行各自成 grid（列宽逐行独算），
    一旦触到 min-content 就逐行不等宽、数值列排成锯齿；minmax 下限是定值，逐行必然对齐。
-   标签仍放不下时靠 .wf-l 折行显示全，不再切字（原 1.4fr + 省略号会把长标签截成「Recommended P…」）。 */
-.wf-row.cols1 { grid-template-columns: 13px 1fr auto 48px; }
-.wf-row.cols2 { grid-template-columns: 13px minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 48px; }
-.wf-row.cols3 { grid-template-columns: 13px minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 48px; }
+   标签仍放不下时靠 .wf-l 折行显示全，不再切字（原 1.4fr + 省略号会把长标签截成「Recommended P…」）。
+   符号列 / 单位列 / 列距同样用 em（原 13px / 48px / 8px 写死：--lb-fs 调到 16 / 20 时单位列装不下「dBW/Hz」而溢出）。 */
+.wf-row.cols1 { grid-template-columns: 1.2em 1fr auto 4.4em; }
+.wf-row.cols2 { grid-template-columns: 1.2em minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 4.4em; }
+.wf-row.cols3 { grid-template-columns: 1.2em minmax(0, 3fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) minmax(4.9em, 1fr) 4.4em; }
 .wf-sign { color: var(--text-faint); text-align: center; }
 /* 标签一律显示全：折行而非省略号（align-items:baseline → 数值与首行基线对齐，仍逐行可读）。
    break-word 兜底「ACI/ASI/XPI/IM」这类无空格长串。 */
@@ -96,9 +97,10 @@ const shown = computed(() => (
 .wf-head { border-bottom: 1px solid var(--lb-rule); }
 .wf-head .wf-c { color: var(--text-muted); font-size: calc(var(--lb-fs, 11px) - 1px); font-weight: 600; }
 
-/* 行类型：增益/损耗只染符号列（数值守中性墨色，纯数字口径）；小节行细线分层 */
-.k-gain .wf-sign { color: var(--ok); font-weight: 700; }
-.k-loss .wf-sign { color: var(--danger); font-weight: 700; }
+/* 行类型：增益/损耗只在符号列以墨色深浅区分（+ 正文墨、− 次级墨；数值守中性墨色，纯数字口径）——
+   红绿只留给状态（负余量 / 超占用），加减项本身不是好坏。小节行细线分层 */
+.k-gain .wf-sign { color: var(--text); font-weight: 700; }
+.k-loss .wf-sign { color: var(--text-muted); font-weight: 700; }
 .k-sub, .k-chk { font-weight: 600; border-top: 1px solid var(--lb-rule-soft); }
 .k-sub .wf-l, .k-chk .wf-l { color: var(--text); font-weight: 600; }
 .k-kpi { font-weight: 600; border-top: 1px solid var(--lb-rule-soft); }

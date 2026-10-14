@@ -186,7 +186,7 @@ function makeSatPattern(p) {
     if (!(bw1 > 0) || !(bw2 > 0)) throw new RangeError('satPatterns/two-level: 需要 beamwidth1Deg 与 beamwidth2Deg');
     if (!Number.isFinite(f1) || !Number.isFinite(f2)) throw new TypeError('satPatterns/two-level: 需要两级底电平');
     if (!(bw2 > bw1)) warnings.push(`第二级宽度 ${bw2}° 不大于第一级 ${bw1}°，第一级平台为空。`);
-    if (f2 > f1) warnings.push(`第二级底电平 ${f2} dB 高于第一级 ${f1} dB，方向图在外层反而抬升，请核对。`);
+    if (f2 > f1) warnings.push(`第二级底电平 ${f2} dB 高于第一级 ${f1} dB，方向图在外层反而抬升。`);
     // 主瓣按 3 dB 全宽的抛物线，落到第一级底为止（取 max 保证连续且不低于底电平）
     return {
       kind, steerable: true, fixedRangeIsAltitude: false, peakGainDbi: gm, warnings,

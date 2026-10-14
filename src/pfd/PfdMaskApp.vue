@@ -3,15 +3,27 @@
 //
 // 三种掩模各占一个页签，各自独立的参数界面；第四个页签是系统运行参数（进 SRS，不进掩模文件）。
 // 术语一律用申报口径，不用内部代号。
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
+import WinStatusBar from '../components/WinStatusBar.vue'
+import ConfigTree from '../components/ConfigTree.vue'
+import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
+import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { askConfirm } from '../shared/ui/useConfirm.js'
+import { useConfigTree } from '../shared/useConfigTree.js'
+import { useConfigAutosave } from '../shared/useConfigAutosave.js'
+import { useConfigVersions } from '../shared/useConfigVersions.js'
+import { stableStringify } from '../shared/configDirty.js'
+import { byLang } from '../shared/i18n/lang.js'
+import { useNotice } from '../shared/useNotice.js'
 import {
   DIRECTIONS, REF_BW, PATTERN_SECTIONS, LN_VALUES, BEAM_LAYOUTS, ES_PATTERNS, EXPORT_MODES, SAT_PATTERNS
 } from '../viz/pfd/useMaskWorkbench.js'
 import { CONST_PRESETS } from '../viz/constellation/walker.js'
 
-const STORE_KEY = 'pfd-mask-window-v1'
+const STORE_KEY = 'pfd-mask-window-v1'   // 上次工作区的镜像；2026-10-15 起内容归配置列表（见文末「配置列表」）
 
 /** 四个页签。前三个各产出一份掩模文件，第四个产出运行参数文件。 */
 const TABS = [
@@ -73,18 +85,20 @@ const op = reactive({
 const exportMode = ref('per-mask')
 const constPick = ref('')
 
-// 持久化
-try {
-  const s = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
-  if (s && typeof s === 'object') {
-    for (const [k, v] of [['g', g], ['down', down], ['is', is], ['up', up], ['op', op]]) {
-      if (s[k]) for (const kk of Object.keys(v)) if (s[k][kk] !== undefined) v[kk] = s[k][kk]
-    }
-    if (s.exportMode) exportMode.value = s.exportMode
+// 持久化：面板态 = 配置内容（g / down / is / up / op / 文件划分）。localStorage 那份是「上次工作区」的镜像。
+const PARTS = () => [['g', g], ['down', down], ['is', is], ['up', up], ['op', op]]
+function snapshot() { return JSON.parse(JSON.stringify({ g, down, is, up, op, exportMode: exportMode.value })) }
+function applySnapshot(st) {
+  if (!st || typeof st !== 'object') return
+  for (const [k, v] of PARTS()) {
+    if (st[k]) for (const kk of Object.keys(v)) if (st[k][kk] !== undefined) v[kk] = st[k][kk]
   }
-} catch { /* ignore */ }
+  if (st.exportMode) exportMode.value = st.exportMode
+}
+const BLANK = snapshot()   // 出厂面板态（读盘之前拍下）
+try { applySnapshot(JSON.parse(localStorage.getItem(STORE_KEY) || 'null')) } catch { /* ignore */ }
 watch([g, down, is, up, op, exportMode], () => {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ g, down, is, up, op, exportMode: exportMode.value })) } catch { /* ignore */ }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(snapshot())) } catch { /* ignore */ }
 }, { deep: true })
 
 // ---------------------------------------------------------------------------
@@ -93,11 +107,22 @@ watch([g, down, is, up, op, exportMode], () => {
 const busy = ref(false)
 const msg = ref('')
 const msgBad = ref(false)
+// 输出回执（「打开 · 在文件夹中显示」）与全局异常的出口；msg 那一格照旧是计算 / 校验的过程读数
+const N = useNotice()
 const problems = ref([])
 const warns = ref([])
 const results = reactive({ down: null, is: null, up: null })
-const files = ref([])
+// 主进程一次把三种「文件划分」都切好（{ single, 'per-kind', 'per-mask' }，成本只是字符串拼接），
+// 整份留着、按当前划分现取：改「文件划分」下拉即换列表，不必重算
+const filesByMode = ref(null)
+const files = computed(() => (filesByMode.value && filesByMode.value[exportMode.value]) || [])
 const opFiles = ref([])
+const hasResults = computed(() => files.value.length > 0 || opFiles.value.length > 0)
+
+// —— 结果过期提示（口径同雨衰 / 日凌 / 链路预算）：出结果后任何计算输入再变 → 亮「输入已变」，手动点「计算」重算 ——
+// 「文件划分」不算输入（三种划分都在手里）。计算进行中的改动同样记下：结果回来时它对应的是改动前的参数。
+const resultsStale = ref(false)
+watch([g, down, is, up, op], () => { if (hasResults.value || busy.value) resultsStale.value = true }, { deep: true })
 
 const latMax = computed(() => {
   const i = Math.abs(Number(g.inclDeg)) % 360
@@ -149,9 +174,9 @@ function check() {
     ids.push(id)
   }
   if (up.on && ![4, 40].includes(Number(up.refBwKhz))) {
-    bad.push('上行 EIRP 掩模的参考带宽只能取 4 kHz 或 40 kHz（ITU 掩模格式未提供 1 MHz 选项）')
+    bad.push('上行 EIRP 掩模的参考带宽仅可取 4 kHz 或 40 kHz（ITU 掩模格式未提供 1 MHz 选项）')
   }
-  if (!down.on && !is.on && !up.on && !op.on) bad.push('请至少启用一项输出')
+  if (!down.on && !is.on && !up.on && !op.on) bad.push('未启用任何输出。')
   return bad
 }
 
@@ -245,13 +270,22 @@ function opParams() {
   }
 }
 
+// 底栏「共 N 个文件待输出」随「文件划分」重出（文件数按划分变；只改还停在这句成功读数上的，别的消息不碰）
+let _okMs = null, _okText = ''
+function okMsg() {
+  const nf = files.value.length + opFiles.value.length, r = { elapsedMs: _okMs }   // 槽位名与词典那条 PAT 一致
+  return (_okText = `计算完成，已通过 ITU 官方格式校验，共 ${nf} 个文件待输出（${r.elapsedMs} ms）`)
+}
+watch(exportMode, () => { if (_okMs !== null && msg.value === _okText) msg.value = okMsg() })
+/** 返回 true = 按当前输入算成（全部启用项都出了结果）；输出前的自动补算据此决定放不放行。 */
 async function generate() {
   const bad = check()
   problems.value = bad
-  if (bad.length) { msg.value = `${bad.length} 处参数需先修正`; msgBad.value = true; return }
+  if (bad.length) { msg.value = `${bad.length} 处参数需先修正`; msgBad.value = true; return false }
   busy.value = true; msg.value = '正在计算…'; msgBad.value = false
   results.down = results.is = results.up = null
-  files.value = []; opFiles.value = []; warns.value = []
+  filesByMode.value = null; opFiles.value = []; warns.value = []
+  resultsStale.value = false    // 本轮按此刻的输入算；await 期间再改，watch 会重新亮灯
   try {
     const list = jobs()
     const req = JSON.parse(JSON.stringify({
@@ -263,31 +297,38 @@ async function generate() {
       msg.value = (r && r.error) || '计算失败'; msgBad.value = true
       problems.value = (r && r.errors ? r.errors.map((e) => `${e.path}：${e.message}`) : [])
         .concat((r && r.jobErrors ? r.jobErrors.filter(Boolean) : []))
-      return
+      return false
     }
     // 回填：jobs 顺序与启用顺序一致
     let k = 0
     if (down.on) results.down = r.metas[k++]
     if (is.on) results.is = r.metas[k++]
     if (up.on) results.up = r.metas[k++]
-    files.value = (r.files && r.files[exportMode.value]) || []
+    filesByMode.value = r.files || null
     opFiles.value = r.opFiles || []
     warns.value = (r.warnings || []).map((w) => (typeof w === 'string' ? w : `${w.path}：${w.message}`))
       .concat(r.opProblems || [])
     const failed = (r.jobErrors || []).filter(Boolean)
     problems.value = failed
     msgBad.value = failed.length > 0
-    const nf = files.value.length + opFiles.value.length
+    _okMs = failed.length ? null : r.elapsedMs
     msg.value = failed.length
       ? `完成 ${list.length - failed.length}/${list.length} 项，${failed.length} 项失败`
-      : `计算完成，已通过 ITU 官方格式校验，共 ${nf} 个文件待输出（${r.elapsedMs} ms）`
+      : okMsg()
+    return failed.length === 0
   } catch (e) {
     msg.value = (e && e.message) || '计算失败'; msgBad.value = true
+    return false
   } finally { busy.value = false }
 }
 
 async function exportPackage(withRecord) {
-  if (!files.value.length && !opFiles.value.length) { msg.value = '请先计算'; msgBad.value = true; return }
+  if (busy.value) return
+  // 输出讲【当前输入】（口径同雨衰 / 日凌 / 链路预算的导出前补算）：输入已变或还没算过，先按当前输入算一遍；
+  // 算不成（参数待修正 / 有启用项失败）就不输出 —— 文件里不许是新参数配旧掩模。原因已落在底栏与问题条上。
+  if (resultsStale.value || !hasResults.value) {
+    if (!(await generate()) || !hasResults.value || resultsStale.value) return   // 末项：补算途中又改了输入
+  }
   const out = files.value.map((f) => ({ filename: `Masks/${f.filename}`, text: f.xml }))
   for (const f of opFiles.value) out.push({ filename: `Masks/${f.filename}`, text: f.xml })
   if (withRecord) {
@@ -304,7 +345,12 @@ async function exportPackage(withRecord) {
   }
   try {
     const r = await window.api.exportFiles({ dirLabel: '选择输出目录', files: out })
-    if (r && r.ok) { msg.value = `已输出 ${r.written.length} 个文件到 ${r.dir}`; msgBad.value = false }
+    if (r && r.ok) {
+      // 回执落在通知条上（带「打开 · 在文件夹中显示」；目录类输出给目录），底栏读数让位，不说两遍
+      const dir = r.dir || (Array.isArray(r.paths) && r.paths[0]) || (Array.isArray(r.written) && r.written[0]) || ''
+      msg.value = ''; msgBad.value = false
+      N.toastFile(`已输出 ${r.written.length} 个文件到 ${r.dir}`, dir)
+    }
     else if (r && r.canceled) msg.value = '已取消'
     else { msg.value = (r && r.error) || '输出失败'; msgBad.value = true }
   } catch (e) { msg.value = (e && e.message) || '输出失败'; msgBad.value = true }
@@ -428,7 +474,7 @@ function applyShell(i) {
   const s = shells.value[i]
   if (!s) return
   shellPick.value = i
-  const more = shells.value.length > 1 ? ' 一份掩模只对应一个壳层，其余壳层需各自单独出一份。' : ''
+  const more = shells.value.length > 1 ? ' 每份掩模仅对应一个壳层，其余壳层需分别单独输出。' : ''
   applyOrbit(s.altKmMed, s.inclDeg,
     `${constSrcNote.value}本次取第 ${i + 1} 层：倾角 ${s.inclDeg}°、高度中位 ${s.altKmMed} km（实测 ${s.altKmMin}–${s.altKmMax} km，${s.count} 星）。${more}`)
 }
@@ -439,7 +485,7 @@ async function importConstellation() {
   constBusy.value = true
   try {
     const key = constPick.value
-    if (!key) { msg.value = '请先选择星座'; msgBad.value = true; return }
+    if (!key) { msg.value = '未选择星座。'; msgBad.value = true; return }
     constNote.value = ''
     shells.value = []; shellPick.value = 0; constSrcNote.value = ''
 
@@ -457,7 +503,7 @@ async function importConstellation() {
     // ② 自定义星座：localStorage 里存的就是 Walker 参数，不必解算星历
     if (key.startsWith('cc:')) {
       const it = localSrc.value.cc.find((x) => `cc:${x.id}` === key)
-      if (!it || !it.params) { msg.value = '该自定义星座已不存在，请点「刷新来源」'; msgBad.value = true; return }
+      if (!it || !it.params) { msg.value = '该自定义星座已不存在。'; msgBad.value = true; return }
       const p = it.params
       if (p.shape === 'ellip' && p.apogeeKm !== p.perigeeKm) {
         msg.value = `「${it.name}」为椭圆轨道（${p.perigeeKm}–${p.apogeeKm} km），本版仅支持圆轨道`; msgBad.value = true; return
@@ -474,7 +520,7 @@ async function importConstellation() {
     let satIds = null
     if (key.startsWith('sg:')) {
       const it = localSrc.value.sg.find((x) => `sg:${x.id}` === key)
-      if (!it) { msg.value = '该卫星组已不存在，请点「刷新来源」'; msgBad.value = true; return }
+      if (!it) { msg.value = '该卫星组已不存在。'; msgBad.value = true; return }
       satIds = (it.sats || []).map((s) => s && s.id).filter((x) => x != null).map(String)
       if (!satIds.length) { msg.value = `「${it.name}」为空组`; msgBad.value = true; return }
     }
@@ -488,7 +534,7 @@ async function importConstellation() {
     //   壳层的倾角也是【实测中位数】而非取整箱号（OneWeb 87.9° 曾被报成 88°）。
     const list = (st.shells || []).filter((s) => s && Number(s.altKmMed) > 0)
     if (!list.length) { msg.value = '该组未能分出可用的轨道壳层'; msgBad.value = true; return }
-    const miss = r.missing ? `另有 ${r.missing} 颗在编目与自定义星历里都找不到，未参与统计。` : ''
+    const miss = r.missing ? `另有 ${r.missing} 颗在编目与自定义星历中均未找到，未参与统计。` : ''
     const rest = st.count - list.reduce((a, s) => a + s.count, 0)
     const other = rest > 0 ? `另有 ${rest} 颗未归入任何一层（高度散布，多为抬轨 / 离轨在途或已退役）。` : ''
     shells.value = list
@@ -504,14 +550,157 @@ async function importConstellation() {
 const curResult = computed(() => results[tab.value] || null)
 /** 结果区跟着「算这一份时用的」带宽走，不跟输入走——改了下拉还没重算时，数值与单位才不会对不上。 */
 const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBwKhz) : ''))
+// ---------------------------------------------------------------------------
+// 配置列表（2026-10-15 起，与链路预算四窗 / 雨衰 / 日凌同一套：配置树 + 自动保存 + 历史版本）
+// 旧版只有一份隐式面板态：首次打开且一份配置都没有时，把它存成第一份配置，旧数据不丢。
+// ---------------------------------------------------------------------------
+const winApi = (typeof window !== 'undefined' && window.api) || null
+const ORBIT_TYPE = 'PFD'
+function serializeState() { return { orbitType: ORBIT_TYPE, ...snapshot() } }
+function clearResults() { filesByMode.value = null; opFiles.value = []; warns.value = []; problems.value = []; msg.value = ''; msgBad.value = false; resultsStale.value = false }
+function applyState(st) { applySnapshot(BLANK); applySnapshot(st); clearResults() }
+function blankState() { return { orbitType: ORBIT_TYPE, ...JSON.parse(JSON.stringify(BLANK)) } }
+function fingerprintOf(st) { return stableStringify(st) }
+// 自动名（名字随内容的配置用）：「<卫星名> PFD Mask」
+function defaultCfgName() { const nm = String(g.satName || '').trim(); return (nm ? nm + ' ' : '') + byLang('PFD Mask', 'PFD Mask') }
+function cfgLabelOf(st) { return String((st && st.g && st.g.satName) || '').trim() }
+function setBaseline() { autosave.attach() }
+async function guardedLeave() {
+  if (await autosave.flush()) return true
+  return await askConfirm(`「${cfgTree.activeName()}」的改动未能写入磁盘（${saveError.value}）。仍要离开？`)
+}
+const toast = (m) => N.toast(m)
+const cfgTree = useConfigTree({
+  ns: 'pfd', orbitType: ORBIT_TYPE, api: winApi, storageKey: 'pfd/cfgExpanded',
+  toast, blankState, serializeState, applyState, setBaseline, guardedLeave, askConfirm, defaultCfgName,
+  autosave: true, onNameAuto: (id) => { if (id === activeId.value) autosave.flush() }
+})
+const {
+  configs, activeId, focusId, expandedFolders, editing, cfgClip, ctxMenu,
+  loadConfigs, uniqueCfgName, selectConfig, ensureActive, duplicateItem, createAndOpen,
+  toggleFolder, expandAll, collapseAll,
+  addFolder, addBlankConfig, onDeleteItem, onMove, moveToRoot,
+  startRename, commitRename, cancelRename,
+  copyItem, cutItem, pasteConfig, ctxItem, ctxIsFolder, openCtx, closeCtx, onCfgKey
+} = cfgTree
+const autosave = useConfigAutosave({
+  ns: 'pfd', api: winApi, activeId, itemById: cfgTree.itemById, serialize: serializeState, fingerprint: fingerprintOf,
+  autoName: defaultCfgName, uniqueName: uniqueCfgName, summarize: (st) => ({ label: cfgLabelOf(st) }), toast
+})
+const { error: saveError } = autosave
+let stopAutosaveListen = null
+onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.dispose() })
+const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
+  ns: 'pfd', api: winApi, tree: cfgTree, autosave, applyState, summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
+})
+watch([g, down, is, up, op, exportMode], () => autosave.touch(), { deep: true })
+const LAST_KEY = 'pfd/lastConfig'
+watch(activeId, (id) => { try { localStorage.setItem(LAST_KEY, String(id || '')) } catch (e) { /* ignore */ } })
+
+// 左侧栏：配置列表（可拖宽 / 可收起）
+const SIDE_KEY = 'pfd/sideView'
+const sideView = ref((() => { try { const v = localStorage.getItem(SIDE_KEY); return (v === 'configs' || v === '') ? v : 'configs' } catch (e) { return 'configs' } })())
+watch(sideView, (v) => { try { localStorage.setItem(SIDE_KEY, v) } catch (e) { /* ignore */ } })
+function toggleSide(v) { sideView.value = sideView.value === v ? '' : v }
+const CFG_W_MIN = 180, CFG_W_MAX = 520
+const configsWidth = ref((() => { try { const n = Number(localStorage.getItem('pfd/configsWidth')); return Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, Number.isFinite(n) && n > 0 ? n : 220)) } catch (e) { return 220 } })())
+const sideResizing = ref(false)
+function startResize(e) {
+  const startX = e.clientX, startW = configsWidth.value
+  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  const move = (ev) => { configsWidth.value = Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, startW + ev.clientX - startX)) }
+  const up2 = () => {
+    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up2)
+    try { localStorage.setItem('pfd/configsWidth', String(configsWidth.value)) } catch (e2) { /* ignore */ }
+  }
+  window.addEventListener('mousemove', move); window.addEventListener('mouseup', up2)
+}
+// 状态栏里的「问题 / 告警」：条数常驻，点开看全文（原先是一条压在底栏之下、一出一消整页上下跳的告警带）
+const issuesOpen = ref(false)
+watch(() => problems.value.length + warns.value.length, (n) => { if (!n) issuesOpen.value = false })
+// Ctrl+Enter = 计算（全部计算窗同一个键）
+function onGlobalKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !e.isComposing && !busy.value) { e.preventDefault(); generate() }
+}
+onBeforeUnmount(() => window.removeEventListener('keydown', onGlobalKey))
+onMounted(async () => {
+  await loadConfigs()
+  if (winApi && !configs.value.some((c) => c.type !== 'folder')) await createAndOpen({ state: serializeState(), nameAuto: true })
+  else {
+    let last = null
+    try { last = localStorage.getItem(LAST_KEY) || null } catch (e) { last = null }
+    await ensureActive(last)
+  }
+  stopAutosaveListen = autosave.listen()
+  window.addEventListener('keydown', onGlobalKey)
+})
 </script>
 
 <template>
-  <div class="pw">
+  <div class="lb-shell pw">
     <ActivationLock />
-    <!-- 顶部：申报标识 + 通用参数 -->
+    <!-- 配置右键菜单（各工作台共用一份，条目与快捷键一致） -->
+    <ConfigTreeMenu
+      :menu="ctxMenu" :item="ctxItem" :is-folder="ctxIsFolder" :clip="cfgClip" :has-api="!!winApi" autosave
+      @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
+      @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+      @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
+    />
+    <div class="lb-body">
+    <aside v-show="sideView === 'configs'" class="lb-col lb-side lb-configs" :class="{ resizing: sideResizing }" :style="{ width: configsWidth + 'px' }">
+      <div class="lb-col-hd">
+        <span class="lb-cfg-hd-t">配置列表</span>
+        <span class="lb-cfg-acts">
+          <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!winApi" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+          <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!winApi" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+          <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
+        </span>
+      </div>
+      <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
+        <ConfigTree
+          :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
+          :expanded="expandedFolders"
+          :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+          @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
+          @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
+          @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
+        />
+      </div>
+      <div class="lb-cfg-resizer" title="拖动调整栏宽" @mousedown.prevent="startResize($event)"></div>
+    </aside>
+    <section class="lb-col lb-build pw-build">
+    <!-- 功能区：计算 | 文件 | 导出（规范号 ITU-R S.1503 是有用的读数，留在功能区右端） -->
+    <div class="lbr">
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <button class="lbr-big primary" :disabled="busy" title="生成启用的掩模（Ctrl+Enter）" @click="generate">
+            <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
+            {{ busy ? '计算中…' : '计算' }}
+          </button>
+        </div>
+        <div class="lbr-cap">计算</div>
+      </div>
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <button class="lbr-big" :disabled="!winApi || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+          <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+          <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" title="左侧栏显示「配置列表」" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+        </div>
+        <div class="lbr-cap">文件</div>
+      </div>
+      <div class="lbr-g">
+        <div class="lbr-items">
+          <button class="lbr-big" :disabled="busy || !hasResults" title="把掩模文件（XML）输出到所选目录" @click="exportPackage(false)"><Icon name="file-export" :size="16" />掩模文件</button>
+          <button class="lbr-big" :disabled="busy || !hasResults" title="按 S.1503 §E3，申报时须连同生成软件、软件说明与参数一并提交" @click="exportPackage(true)"><Icon name="folder-open" :size="16" />提交包</button>
+        </div>
+        <div class="lbr-cap">导出</div>
+      </div>
+      <span class="pw-spec" data-i18n-skip>ITU-R S.1503</span>
+    </div>
+    <!-- 申报标识 + 通用参数 -->
     <header class="pw-hd">
-      <div class="pw-title"><Icon name="table" :size="16" /><span>PFD EIRP Mask 生成器</span><s>ITU-R S.1503</s></div>
       <div class="pw-gf">
         <label>卫星名称</label>
         <input class="pi w120" type="text" v-model="g.satName" :class="{ bad: String(g.satName || '').length > 20 || !String(g.satName || '').length }" />
@@ -533,8 +722,8 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <option v-for="c in grp.items" :key="c.key" :value="c.key" :disabled="c.disabled">{{ c.text }}</option>
           </optgroup>
         </select>
-        <button class="pb sm" :disabled="!constPick || constBusy" @click="importConstellation">{{ constBusy ? '读取中…' : '取用轨道' }}</button>
-        <button class="pb sm" :disabled="constBusy" title="重新读取主窗口里的自定义星座与卫星组" @click="refreshSources">刷新来源</button>
+        <button class="pb sm" :disabled="!constPick || constBusy" @click="importConstellation">{{ constBusy ? '加载中…' : '取用轨道' }}</button>
+        <button class="pb sm" :disabled="constBusy" title="重新读取主窗口中的自定义星座与卫星组" @click="refreshSources">刷新来源</button>
       </div>
       <p class="pw-src" :class="{ bad: localSrc.err || ommErr }">{{ srcDiag }}</p>
       <!-- 多壳星座：一份掩模只对应一个壳层，选哪一层由用户定，不替他挑 -->
@@ -556,10 +745,8 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
     </section>
 
     <!-- 页签 -->
-    <nav class="pw-tabs">
-      <button v-for="t in TABS" :key="t.v" class="pw-tab" :class="{ on: tab === t.v }" :title="t.hint" @click="tab = t.v">
-        {{ t.label }}<code>{{ t.el }}</code>
-      </button>
+    <nav class="lbx-tabs" role="tablist" aria-label="掩模类型">
+      <button v-for="t in TABS" :key="t.v" type="button" role="tab" :aria-selected="tab === t.v" class="lbx-tab" :class="{ on: tab === t.v }" :title="t.hint + '（' + t.el + '）'" @click="tab = t.v">{{ t.label }}</button>
     </nav>
 
     <div class="pw-body">
@@ -628,7 +815,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
           <div class="pw-grp"><h3>上行功率控制</h3>
             <label class="pw-en"><input type="checkbox" v-model="down.powerControl" /><span>启用功率控制</span></label>
             <div class="pw-r" v-if="down.powerControl"><label>补偿系数</label>
-              <input type="range" min="0" max="1" step="0.05" v-model.number="down.powerControlKappa" /><span class="pu">{{ Number(down.powerControlKappa).toFixed(2) }}</span></div>
+              <input type="range" min="0" max="1" step="0.01" v-model.number="down.powerControlKappa" /><span class="pu">{{ Number(down.powerControlKappa).toFixed(2) }}</span></div>
           </div>
 
           <div class="pw-grp"><h3>GSO 弧规避</h3>
@@ -636,7 +823,7 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
           </div>
 
           <div class="pw-grp"><h3>计算设置</h3>
-            <div class="pw-r"><label>方位 / 仰角采样点数</label><input class="pi w80" type="number" min="2" max="200" step="1" v-model.number="down.gridPoints" /><span class="pu">点/轴</span><em>共 {{ latCount }} 张纬度切片，{{ cellCount.toLocaleString() }} 个网格点</em></div>
+            <div class="pw-r"><label>方位 / 仰角采样点数</label><input class="pi w80" type="number" min="2" max="200" step="1" v-model.number="down.gridPoints" /><span class="pu">点/轴</span><em>共 {{ latCount }} 张纬度切片，{{ cellCount.toLocaleString('en-US') }} 个网格点</em></div>
             <div class="pw-r"><label>保守余量</label><input class="pi w80" type="number" min="0" step="any" v-model.number="down.marginDb" /><span class="pu">dB</span></div>
             <div class="pw-r"><label>不发射区填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.noEmissionDb" /><span class="pu">dBW/m²/{{ downBw }}</span></div>
             <div class="pw-r"><label>几何无解填充值</label><input class="pi w90" type="number" step="any" v-model.number="down.unresolvedDb" /><span class="pu">dBW/m²/{{ downBw }}</span></div>
@@ -728,10 +915,10 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
             <dt>星下点纬度范围</dt><dd>±{{ curResult.latMaxDeg.toFixed(1) }}°</dd>
             <dt>星下视场半张角</dt><dd>{{ curResult.rho0Deg.toFixed(2) }}°</dd>
             <template v-if="tab === 'down' && curResult.stat">
-              <dt>实算网格</dt><dd>{{ curResult.stat.computed.toLocaleString() }} / {{ curResult.stat.cells.toLocaleString() }}</dd>
-              <dt>不发射（低仰角）</dt><dd>{{ curResult.stat.sentinelLowElev.toLocaleString() }}</dd>
-              <dt>不发射（GSO 弧规避）</dt><dd>{{ curResult.stat.sentinelAlpha.toLocaleString() }}</dd>
-              <dt>几何无解</dt><dd>{{ curResult.stat.sentinelOutOfView.toLocaleString() }}</dd>
+              <dt>计算网格</dt><dd>{{ curResult.stat.computed.toLocaleString('en-US') }} / {{ curResult.stat.cells.toLocaleString('en-US') }}</dd>
+              <dt>不发射（低仰角）</dt><dd>{{ curResult.stat.sentinelLowElev.toLocaleString('en-US') }}</dd>
+              <dt>不发射（GSO 弧规避）</dt><dd>{{ curResult.stat.sentinelAlpha.toLocaleString('en-US') }}</dd>
+              <dt>几何无解</dt><dd>{{ curResult.stat.sentinelOutOfView.toLocaleString('en-US') }}</dd>
               <dt>PFD 范围</dt><dd v-if="curResult.minValueDb !== null">{{ curResult.minValueDb.toFixed(2) }} … {{ curResult.maxValueDb.toFixed(2) }} dBW/m²/{{ resultBw }}</dd><dd v-else>—</dd>
               <dt>多波束聚合增益</dt><dd>+{{ curResult.aggregateGainOverPeakDb.toFixed(2) }} dB</dd>
               <dt>功率控制跨度</dt><dd>{{ curResult.powerControlSpanDb.toFixed(2) }} dB</dd>
@@ -770,31 +957,39 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
       </aside>
     </div>
 
-    <!-- 底栏 -->
-    <footer class="pw-ft">
-      <button class="pb main" :disabled="busy" @click="generate">{{ busy ? '计算中…' : '计算' }}</button>
-      <button class="pb" :disabled="!files.length && !opFiles.length" @click="exportPackage(false)">输出掩模文件…</button>
-      <button class="pb" :disabled="!files.length && !opFiles.length" @click="exportPackage(true)"
-              title="按 S.1503 §E3，申报时须连同生成软件、软件说明与参数一并提交">输出完整提交包…</button>
-      <span class="pw-msg" :class="{ bad: msgBad }">{{ msg }}</span>
-    </footer>
+    </section>
+    </div>
 
-    <div v-if="problems.length" class="pw-prob">
-      <div class="pw-prob-t"><Icon name="alert-triangle" :size="12" /> {{ problems.length }} 处需要处理</div>
-      <div v-for="(p, i) in problems" :key="i">{{ p }}</div>
+    <!-- 问题 / 告警全文：从状态栏的条数点开，贴在状态栏上方 -->
+    <div v-if="issuesOpen && (problems.length || warns.length)" class="pw-issues">
+      <div v-if="problems.length" class="pw-prob">
+        <div class="pw-prob-t"><Icon name="alert-triangle" :size="12" /> {{ problems.length }} 处需要处理</div>
+        <div v-for="(p, i) in problems" :key="i">{{ p }}</div>
+      </div>
+      <div v-if="warns.length" class="pw-warn">
+        <div v-for="(w, i) in warns" :key="i">{{ w }}</div>
+      </div>
     </div>
-    <div v-if="warns.length" class="pw-warn">
-      <div v-for="(w, i) in warns" :key="i">{{ w }}</div>
-    </div>
+    <WinStatusBar :n="N" :busy="busy ? '计算中…' : ''" :stale="!!(resultsStale && hasResults)">
+      <button v-if="problems.length || warns.length" type="button" class="pw-iss-btn" :class="{ bad: problems.length }" :aria-expanded="issuesOpen ? 'true' : 'false'" @click="issuesOpen = !issuesOpen">
+        <Icon name="alert-triangle" :size="12" />{{ problems.length ? problems.length + ' 处需要处理' : warns.length + ' 条提示' }}
+      </button>
+      <span v-if="msg" class="pw-msg" :class="{ bad: msgBad }" :title="msg">{{ msg }}</span>
+    </WinStatusBar>
+    <LbVersionsDialog v-model:open="verDlg.open" ns="pfd" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
+    <ConfirmDialog />
   </div>
 </template>
 
 <style scoped>
-.pw { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); font-size: var(--fs-4); }
-/* 顶栏 / 底栏落在 --surface 上、顶栏底线用 --border-strong：与其余工具窗的功能条同一层级 */
+/* 窗口骨架（.lb-shell / .lb-body / .lb-col…）、功能区 .lbr、页签 .lbx-tabs 都在 styles/lbworkbench.css */
+.pw { font-size: var(--fs-4); }
+.pw .lb-configs { background: var(--surface); }
+.pw-build { flex: 1; min-width: 0; }
+/* 功能区右端的规范号：有用的读数，不是窗名 */
+.pw-spec { align-self: center; margin-left: auto; padding: 0 8px; font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; }
+/* 申报标识条：功能区之下 */
 .pw-hd { display: flex; align-items: center; gap: 18px; padding: 8px 14px; border-bottom: 1px solid var(--border-strong); flex: none; flex-wrap: wrap; background: var(--surface); }
-.pw-title { display: flex; align-items: center; gap: 6px; font-size: var(--fs-5); font-weight: 600; color: var(--accent); }
-.pw-title s { text-decoration: none; font-size: var(--fs-2); font-weight: 400; color: var(--text-faint); }
 .pw-gf { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pw-gf label { color: var(--text-muted); font-size: var(--fs-3); margin-left: 8px; }
 
@@ -806,17 +1001,10 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 .pw-common .pw-r > label ~ label { margin-left: 14px; }
 .pw-common .pw-note { margin-top: 5px; }
 .pw-src { margin: -3px 0 3px; font-size: var(--fs-2); color: var(--text-faint); }
-.pw-src.bad { color: var(--danger, #c0392b); }
+.pw-src.bad { color: var(--danger); }
 .w280 { width: 280px }
 .w360 { width: 360px }
 
-.pw-tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--border); flex: none; }
-.pw-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 7px 14px 6px; cursor: pointer;
-  background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); font-size: var(--fs-4);
-  margin-bottom: -1px; }   /* 下划线压住条带底线，而不是叠在它上面（P5） */
-.pw-tab code { font-size: var(--fs-1); color: var(--text-faint); font-family: var(--font-code); }
-.pw-tab:hover { color: var(--text); }
-.pw-tab.on { color: var(--text); border-bottom-color: var(--accent-ui); font-weight: 600; }
 
 .pw-body { flex: 1; display: grid; grid-template-columns: minmax(560px, 1fr) minmax(330px, 400px); min-height: 0; }
 .pw-main { overflow-y: auto; padding: 14px 18px 20px; }
@@ -832,13 +1020,13 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 .pw-r em { font-style: normal; font-size: var(--fs-2); color: var(--text-faint); }
 .pw-en { display: inline-flex; align-items: center; gap: 5px; margin-bottom: 12px; font-size: var(--fs-4); cursor: pointer; }
 .pw-note { font-size: var(--fs-3); line-height: 1.65; color: var(--text-faint); margin: 6px 0 0; padding-left: 8px; border-left: 2px solid var(--border); }
-.pw-note.bad { border-left-color: var(--danger, #c0392b); color: var(--text-muted); }
+.pw-note.bad { border-left-color: var(--danger); color: var(--text-muted); }
 .pw-note b { color: var(--text-muted); }
 
 .pi { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text);
   font-family: var(--font-mono); font-size: var(--fs-3); font-variant-numeric: tabular-nums; }
 .pi:disabled { opacity: 0.55; }
-.pi.bad { border-color: var(--danger, #c0392b); }
+.pi.bad { border-color: var(--danger); }
 .w70 { width: 70px } .w80 { width: 80px } .w90 { width: 90px } .w110 { width: 110px }
 .w120 { width: 120px } .w180 { width: 180px } .w220 { width: 220px } .w240 { width: 240px } .w260 { width: 260px }
 select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background-color: var(--field-bg); color: var(--text); font-size: var(--fs-3); }
@@ -875,11 +1063,15 @@ select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius:
 .pw-files li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pw-files li b { margin-left: auto; color: var(--text-faint); font-weight: 400; white-space: nowrap; }
 
-.pw-ft { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--border); flex: none; background: var(--surface); }
-.pw-msg { font-size: var(--fs-3); color: var(--text-muted); }
-.pw-msg.bad { color: var(--danger, #c0392b); }
-.pw-prob, .pw-warn { flex: none; max-height: 130px; overflow-y: auto; padding: 7px 14px; font-size: var(--fs-3); line-height: 1.6; }
-.pw-prob { color: var(--danger, #c0392b); background: color-mix(in srgb, var(--danger, #c0392b) 7%, transparent); border-top: 1px solid var(--danger, #c0392b); }
+.pw-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+.pw-msg.bad { color: var(--danger); }
+/* 问题 / 告警全文：贴在状态栏上方的浮层（不进文档流，打开关闭页面不跳） */
+.pw-issues { position: fixed; left: 8px; bottom: 26px; z-index: var(--z-pop); width: min(640px, calc(100vw - 16px)); max-height: 40vh; overflow-y: auto; background: var(--float-bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); }
+.pw-iss-btn { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px; font: inherit; color: var(--warn); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); cursor: pointer; }
+.pw-iss-btn.bad { color: var(--danger); }
+.pw-iss-btn:hover { background: var(--wash-hover); }
+.pw-prob, .pw-warn { flex: none; overflow-y: auto; padding: 7px 14px; font-size: var(--fs-3); line-height: 1.6; }
+.pw-prob { color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, transparent); border-top: 1px solid var(--danger); }
 .pw-prob-t { font-weight: 600; display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
 .pw-warn { color: var(--text-muted); background: color-mix(in srgb, var(--warn) 8%, transparent); border-top: 1px solid var(--warn); }
 </style>

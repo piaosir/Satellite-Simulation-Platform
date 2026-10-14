@@ -15,8 +15,9 @@
 //
 // 密钥 8 位、字母表 31 个字符（A-Z2-9，去掉易混的 I L O 0 1，见 electron/services/share.js）。
 // 对象匿名公读、不可列举 —— 密钥即凭证。链路配置里含站址与工程参数，知晓即可。
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import MiniBindingsPanel from './MiniBindingsPanel.vue'
 import { makePack, sendPack, sendUnitsToBoxes, unitsOfPack, unitOfRaw, estimateBytes, fmtBytes, SIZE_WARN, TTL_DAYS } from '../shared/miniPack.js'
 import { loadBindings, markSent } from '../shared/miniBindings.js'
@@ -181,16 +182,7 @@ function reset() {
 // 那种情况下只监听后续变化就永远不会攒包，弹窗打开是空的。
 watch(() => props.open, (v) => { if (v) reset() }, { immediate: true })
 
-// 捕获阶段收 Esc（与 LbReportDialog 同一套）：这一层在最上面，Esc 就该是它的，不漏给下面的分享窗 / 文件管理。
-// 组字中的 Esc 是取消组字；投递中不关（结果还没回来，关了就看不到密钥 / 失败原因）
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
-  if (busy.value) return
-  e.stopPropagation()
-  close()
-}
-watch(() => props.open, (v) => (v ? window.addEventListener('keydown', onKey, true) : window.removeEventListener('keydown', onKey, true)), { immediate: true })
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关）。投递中 closable=false：结果还没回来，关了就看不到密钥 / 失败原因
 
 const rows = computed(() => allUnits.value)                                   // 清单显示全量（含未勾选的）
 const units = computed(() => allUnits.value.filter((u, i) => on.value[i]))    // 绑定模式逐件投的，只投勾选的
@@ -280,19 +272,14 @@ const doneAny = computed(() => sentTo.value.length > 0 || !!key.value)
 async function copyKey() {
   if (!key.value) return
   try { await navigator.clipboard.writeText(key.value); emit('toast', '密钥已复制') }
-  catch (e) { emit('toast', '复制失败，请手动选择文本复制') }
+  catch (e) { emit('toast', '复制失败。') }
 }
 </script>
 
 <template>
-  <div v-if="open" class="ms-mask" @click="close">
-    <div class="ms-dlg" @click.stop>
-      <div class="ms-hd">
-        <Icon name="external-link" :size="12" />
-        <span class="ms-hd-t">发送到小程序</span>
-        <span class="ms-sp"></span>
-        <span v-if="deviceId" class="ms-id">本机标识：<b>{{ deviceId }}</b></span>
-      </div>
+  <AppDialog :open="open" :width="460" flush :closable="!busy" @close="close">
+      <template #title><span class="ms-hd-t"><Icon name="device-mobile-share" :size="12" />发送到小程序</span></template>
+      <template #head><span v-if="deviceId" class="ms-id">本机标识：<b>{{ deviceId }}</b></span></template>
 
       <div class="ms-bd">
         <template v-if="!doneAny">
@@ -397,24 +384,18 @@ async function copyKey() {
         </template>
       </div>
 
-      <div class="ms-ft"><button class="ms-btn" @click="close">关闭</button></div>
-    </div>
-  </div>
+      <template #footer><button class="btn" @click="close">关闭</button></template>
+  </AppDialog>
 </template>
 
 <style scoped>
-/* 视觉语言与 LbShareDialog 一致（同一套 CSS 变量）；类名 ms- 前缀，不与任何 App 内的类冲突 */
-/* 遮罩瞬时出现（全软件一档 --scrim）；框体 160ms 升入，出场瞬时 */
-.ms-mask { position: fixed; inset: 0; z-index: 320; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.ms-dlg { width: 460px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-card, 4px); box-shadow: var(--shadow-3); overflow: hidden;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.ms-hd { display: flex; align-items: center; gap: 7px; padding: 10px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.ms-hd-t { font-size: var(--fs-2); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text-muted); }
+/* 外壳归 AppDialog；类名 ms- 前缀，不与任何 App 内的类冲突 */
+.ms-hd-t { display: inline-flex; align-items: center; gap: 7px; }
 .ms-sp { flex: 1; }
-.ms-id { font-size: var(--fs-2); color: var(--text-muted); }
+/* 题条里关闭钮前的读数 */
+.ms-id { flex: none; align-self: center; padding: 0 10px; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; }
 .ms-id b { font-family: var(--font-code); color: var(--text); }
-.ms-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
-.ms-ft { display: flex; justify-content: flex-end; padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.ms-bd { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 7px; }
 .ms-sec { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); letter-spacing: var(--ls-tight); }
 .ms-src { font-weight: 400; font-size: var(--fs-2); color: var(--text-faint); }
 .ms-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-box, 3px); background: var(--bg); }
@@ -428,7 +409,7 @@ async function copyKey() {
   color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }
 .ms-tag { flex: none; font-family: var(--font-mono); font-size: var(--fs-1); line-height: 15px; padding: 0 5px; color: var(--text-faint); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); }
 .ms-pick { cursor: pointer; user-select: none; }
-.ms-pick:hover { background: var(--surface-2); }
+.ms-pick:hover { background: var(--wash-hover); }
 .ms-pick input[type="checkbox"] { flex: none; margin: 0; cursor: pointer; }
 /* 未勾选的行压暗但仍可读：清单是「这份配置里有哪些链路」的全貌，不是只列要发的那几条 */
 .ms-pick.off .ms-k, .ms-pick.off .ms-nm, .ms-pick.off .ms-nmi, .ms-pick.off .ms-tag { opacity: .42; }
@@ -459,7 +440,7 @@ async function copyKey() {
 .ms-btn { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--h-ctl); font: inherit; font-size: var(--fs-2); line-height: 1; padding: 0 9px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .ms-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .ms-btn:disabled { opacity: .45; cursor: not-allowed; }
-.ms-btn.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.ms-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.ms-btn.primary { background: var(--accent-fill); color: var(--accent-on); border-color: var(--accent-fill); }
+.ms-btn.primary:hover:not(:disabled) { opacity: 1; color: var(--accent-on); background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 .ms-warnbox { font-size: var(--fs-3); line-height: 1.6; color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: var(--r-ctl, 2px); padding: 6px 8px; }
 </style>

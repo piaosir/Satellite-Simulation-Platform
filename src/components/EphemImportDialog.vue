@@ -5,9 +5,10 @@
 //   · 「其它卫星…」：用宿主给的 searchSats(q) 在全量目录里挑任意一颗。
 //   · 平均根数文件（OMM / TLE / 年历）按编号认星，没有对应关系可选，只列读数。
 //   · mode='rebind'：给已导入的点序列组改对应关系（预览来自 omm:rebindPreview，提交由宿主逐星 ephemRebind）。
-// 对话框壳自带（ephi- 前缀、z 300），不依赖宿主窗口的 CSS（同 LinkImportDialog 的做法）。
-import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+// 外壳是 AppDialog；正文样式 ephi- 前缀，不依赖宿主窗口的 CSS（同 LinkImportDialog 的做法）。
+import { ref, reactive, computed, onBeforeUnmount, nextTick } from 'vue'
 import Icon from './Icon.vue'
+import AppDialog from './AppDialog.vue'
 import { byLang } from '../shared/i18n/lang.js'
 
 const props = defineProps({
@@ -118,27 +119,20 @@ function commit() {
 // 缺口 / 机动读数：列出拆段的与 > 1.5 倍步长的
 const gapText = (g) => `${utcS(g.t0)} → ${utcS(g.t1)}（${fmtStep(Math.round(g.dtS))}）`
 
-function onKey(e) {
-  if (e.key !== 'Escape' || e.isComposing) return
-  e.preventDefault(); e.stopPropagation()
-  if (searchKey.value) { closeSearch(); return }
-  emit('close')
+// 外壳是 AppDialog（Esc / 关闭钮关、点遮罩不关）。检索行展开时正文里的 Esc 先收检索行（标 defaultPrevented，AppDialog 就不关框）
+function onBodyKey(e) {
+  if (e.key !== 'Escape' || e.isComposing || !searchKey.value) return
+  e.preventDefault(); closeSearch()
 }
-onMounted(() => document.addEventListener('keydown', onKey, true))
-onBeforeUnmount(() => { document.removeEventListener('keydown', onKey, true); clearTimeout(searchT) })
+onBeforeUnmount(() => clearTimeout(searchT))
 </script>
 
 <template>
-  <div class="ephi-mask" :style="{ zIndex: z }" @mousedown.self="emit('close')">
-    <div class="ephi-dlg" role="dialog" aria-modal="true">
-      <div class="ephi-hd">
-        <span>{{ rebind ? '对应已有卫星' : '导入星历' }}</span>
-        <button type="button" class="ephi-x" aria-label="关闭" title="关闭" @click="emit('close')"><Icon name="x" :size="12" /></button>
-      </div>
-      <div class="ephi-body">
+  <AppDialog :title="rebind ? '对应已有卫星' : '导入星历'" :width="860" flush :layer="z > 2000 ? 'pop' : 'dialog'" @close="emit('close')">
+      <div class="ephi-body" @keydown="onBodyKey">
         <section v-for="p in files" :key="p.token || p.fileName" class="ephi-file" :class="{ bad: !p.ok }">
           <div class="ephi-fh">
-            <Icon :name="p.kind === 'ephem' ? 'clock' : 'import'" :size="13" />
+            <Icon :name="p.kind === 'ephem' ? 'clock' : 'file-import'" :size="12" />
             <span class="ephi-fn" data-i18n-skip :title="p.fileName">{{ p.fileName }}</span>
             <span v-if="p.formatLabel" class="ephi-tag">{{ p.formatLabel }}</span>
             <span v-if="p.encoding && ENC_TXT[p.encoding]" class="ephi-tag dim" title="文件编码">{{ ENC_TXT[p.encoding] }}</span>
@@ -173,8 +167,8 @@ onBeforeUnmount(() => { document.removeEventListener('keydown', onKey, true); cl
                     <td colspan="6">
                       <div class="ephi-search">
                         <Icon name="search" :size="12" />
-                        <input ref="searchEl" v-model="searchQ" type="search" class="ephi-in" placeholder="名称 / NORAD" spellcheck="false" @input="onSearch" />
-                        <button type="button" class="ephi-x" title="关闭" @click="closeSearch"><Icon name="x" :size="11" /></button>
+                        <input ref="searchEl" v-model="searchQ" type="search" class="ephi-in search-field" placeholder="名称 / NORAD" spellcheck="false" @input="onSearch" />
+                        <button type="button" class="ephi-x" title="关闭" @click="closeSearch"><Icon name="x" :size="12" /></button>
                       </div>
                       <div v-if="searchHits.length" class="ephi-hits">
                         <div v-for="h in searchHits" :key="h.noradId" class="ephi-hit" @click="pickHit(h)">
@@ -200,20 +194,16 @@ onBeforeUnmount(() => { document.removeEventListener('keydown', onKey, true); cl
         </section>
         <div v-if="!files.length" class="ephi-dim pad">未选择文件。</div>
       </div>
-      <div class="ephi-ft">
+      <template #footer>
         <span class="ephi-cnt"><span>文件</span> {{ okFiles.length }}/{{ files.length }}<span class="sep">·</span><span>卫星</span> {{ satCount }}<template v-if="boundCount"><span class="sep">·</span><span>对应已有卫星</span> {{ boundCount }}</template></span>
-        <button type="button" class="ephi-btn ghost" @click="emit('close')">取消</button>
-        <button type="button" class="ephi-btn" :disabled="!okFiles.length" @click="commit">{{ rebind ? '确定' : '导入' }}</button>
-      </div>
-    </div>
-  </div>
+        <button type="button" class="btn" @click="emit('close')">取消</button>
+        <button type="button" class="btn primary" :disabled="!okFiles.length" @click="commit">{{ rebind ? '确定' : '导入' }}</button>
+      </template>
+  </AppDialog>
 </template>
 
 <style>
-/* 壳与 LinkImportDialog 同一套（lki- → ephi-）：遮罩 + 标题条 + 页脚，不吃宿主窗口的 CSS */
-.ephi-mask { position: fixed; inset: 0; z-index: 300; display: flex; align-items: center; justify-content: center; background: var(--scrim); }
-.ephi-dlg { width: 860px; max-width: calc(100% - 32px); max-height: 86%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); overflow: hidden; box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.ephi-hd { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
+/* 外壳归 AppDialog；正文 flush，内距在 .ephi-body。ephi- 前缀不 scoped（不吃宿主窗口的 CSS） */
 .ephi-x { margin-left: auto; cursor: pointer; display: inline-flex; border: 0; background: transparent; padding: 2px; border-radius: var(--r-ctl); color: var(--text-faint); }
 .ephi-x:hover { color: var(--text); background: var(--wash-hover); }
 .ephi-body { padding: 10px 14px; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
@@ -251,13 +241,5 @@ onBeforeUnmount(() => { document.removeEventListener('keydown', onKey, true); cl
 .ephi-err { font-size: var(--fs-3); color: var(--danger); }
 .ephi-dim { color: var(--text-faint); font-size: var(--fs-2); }
 .ephi-dim.pad { padding: 8px 2px; }
-.ephi-ft { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
 .ephi-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; margin-right: auto; }
-.ephi-btn { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl-lg); padding: 0 18px;
-            font-size: var(--fs-3); white-space: nowrap; cursor: pointer; user-select: none; color: var(--primary-on);
-            background: var(--primary-fill); border: 1px solid var(--primary-fill); border-radius: var(--r-ctl); }
-.ephi-btn:hover:not(:disabled) { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
-.ephi-btn.ghost { color: var(--text); background: var(--bg); border-color: var(--border-strong); }
-.ephi-btn.ghost:hover:not(:disabled) { background: var(--bg); border-color: var(--line-hover); }
-.ephi-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

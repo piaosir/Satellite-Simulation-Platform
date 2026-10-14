@@ -254,7 +254,7 @@ export function planImport(bundle, ctx) {
   const stMod = (b.configs.find((c) => c.state && c.state.orbitType) || { state: {} }).state.orbitType || ''
   plan.mod = b.mod || stMod
   if (plan.mod && ctx.mod && plan.mod !== ctx.mod) {
-    plan.reject = `这是「${MOD_LABEL[plan.mod] || plan.mod}」体制的分享包，请在对应的链路预算窗口导入。`
+    plan.reject = `该分享包为「${MOD_LABEL[plan.mod] || plan.mod}」体制。`
     return plan
   }
 
@@ -375,4 +375,95 @@ export function pathOf(item, items) {
     p = f.parentId
   }
   return out
+}
+
+// —— 资源库跨窗口复制（G4：同一个地球站不必在四个窗口各建一遍）——
+// 四个链路预算窗口各有一套资源库（userData/library.json 的 geo / ngso / regen / e2e 四个命名空间），
+// 字段结构不尽相同。这里只做一件事：判断一条条目能不能原样搬到另一个库，能就深拷一份新 id 写进去。
+//   · 地球站：四库通用。唯一差别是功放功率预设的键名（GSO / NGSO 叫 paPowerW，再生式 / 端到端叫 opPowerW），照名搬过去。
+//     其余字段各窗按自己的字段表取，多出的键引擎不读（入参按 schema 组装）、少的键载入时补缺省。
+//   · 载波：GSO ↔ NGSO 字段相同；再生式少一个「超发量」、计算方式只有 设置功放功率 / 设置余量 两种，
+//     故 GSO / NGSO 的载波只在计算方式属于这两种时能搬过去；端到端没有载波库（体制在链上节点里）。
+//   · 卫星：NGSO ↔ 再生式同为「轨道来源 ngsoSat + 频率 / 干扰」；GSO（轨位 + 方向图）与端到端（轨道类别 + 转发器组）
+//     各自一套结构，不互搬。
+// 目标窗口若开着，它在获得焦点时把盘上多出来的条目并进自己的库（见各窗 mergeLibFromDisk），
+// 不然它下一次整写资源库就把这条冲掉了。新 id 带时间戳，与目标窗口内存里的序号（es1 / sat3…）永不相撞。
+export const LIB_WINDOWS = [
+  { ns: 'geo', label: 'GSO', copyLabel: '复制到 GSO 库', doneLabel: '已复制到 GSO 库' },
+  { ns: 'ngso', label: 'NGSO', copyLabel: '复制到 NGSO 库', doneLabel: '已复制到 NGSO 库' },
+  { ns: 'regen', label: '再生式', copyLabel: '复制到再生式库', doneLabel: '已复制到再生式库' },
+  { ns: 'e2e', label: '端到端', copyLabel: '复制到端到端库', doneLabel: '已复制到端到端库' }
+]
+const LIB_POWER_KEY = { geo: 'paPowerW', ngso: 'paPowerW', regen: 'opPowerW', e2e: 'opPowerW' }
+const LIB_ID_PREFIX = { es: 'es', carrier: 'bb', sat: 'sat' }
+const REGEN_CALC_MODES = ['power', 'margin']
+
+// 不能搬时返回原因（悬停 title 用），能搬返回 ''
+export function libCopyBlock(kind, fromNs, toNs, entry) {
+  if (!LIB_POWER_KEY[toNs]) return '未知的资源库'
+  if (kind === 'es') return ''
+  if (kind === 'carrier') {
+    if (toNs === 'e2e' || fromNs === 'e2e') return '端到端没有载波库'
+    if (toNs === 'regen' && fromNs !== 'regen') {
+      const m = entry && entry.form && entry.form.calcMode
+      return (!m || REGEN_CALC_MODES.includes(m)) ? '' : '计算方式不适用于再生式'
+    }
+    return ''
+  }
+  if (kind === 'sat') {
+    const pair = [fromNs, toNs].sort().join('|')
+    return pair === 'ngso|regen' ? '' : '卫星字段结构不同'
+  }
+  return '未知的条目类型'
+}
+
+// 本窗口（fromNs）某条目的「复制到」菜单项：其余三个库，各带可否与原因
+export function libCopyTargets(kind, fromNs, entry) {
+  return LIB_WINDOWS.filter((w) => w.ns !== fromNs).map((w) => {
+    const reason = libCopyBlock(kind, fromNs, w.ns, entry)
+    return { ns: w.ns, label: w.copyLabel, disabled: !!reason, reason }
+  })
+}
+
+// 造一份适合目标库的新条目（纯数据）。takenNames：目标库已有的名字（自定义名撞名加序号）
+export function makeLibCopy(kind, fromNs, toNs, entry, takenNames) {
+  const src = normEntry(entry)
+  if (!src) return null
+  const form = src.form
+  if (kind === 'es') {
+    const a = LIB_POWER_KEY[fromNs], b = LIB_POWER_KEY[toNs]
+    if (a && b && a !== b && form[a] !== undefined) { if (form[b] === undefined || form[b] === '') form[b] = form[a]; delete form[a] }
+  }
+  const id = (LIB_ID_PREFIX[kind] || 'x') + 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  const out = { id, name: src.name, nameAuto: src.nameAuto, form }
+  if (kind === 'sat' && src.ngsoSat) out.ngsoSat = src.ngsoSat   // NGSO ↔ 再生式：轨道来源同构，原样带（同一台机器，树节点照样认得）
+  if (!out.nameAuto) {
+    const taken = new Set(asArr(takenNames))
+    let nm = out.name || '配置'
+    if (taken.has(nm)) { let i = 2; while (taken.has(nm + ' ' + i)) i++; nm = nm + ' ' + i }
+    out.name = nm
+  }
+  return out
+}
+
+// 读目标库 → 追加 → 写回。返回新条目（含最终名字）；不能搬 / 写盘失败抛错（调用方 reportError）
+export async function copyLibEntry(api, kind, fromNs, toNs, entry) {
+  const why = libCopyBlock(kind, fromNs, toNs, entry)
+  if (why) throw new Error(why)
+  if (!api || !api.store || !api.store.getLibrary || !api.store.saveLibrary) throw new Error('需在桌面客户端中运行')
+  const lib = (await api.store.getLibrary(toNs)) || {}
+  const arr = asArr(lib[kind]).slice()
+  const made = makeLibCopy(kind, fromNs, toNs, entry, arr.map((c) => c && c.name))
+  if (!made) throw new Error('条目内容不完整')
+  arr.push(made)
+  const ok = await api.store.saveLibrary(toNs, { ...lib, [kind]: arr })
+  if (ok === false) throw new Error('资源库写盘失败')
+  return made
+}
+
+// 目标窗口获焦时用：盘上有、内存里没有的条目（别的窗口「复制到」进来的）挑出来。
+// 只认新增，不认删改——删改只会出自本窗口自己，内存里那份就是真值。
+export function externalLibEntries(lib, kind, arr) {
+  const have = new Set(asArr(arr).map((c) => c && c.id))
+  return asArr(lib && lib[kind]).filter((c) => c && c.id && c.form && !have.has(c.id))
 }

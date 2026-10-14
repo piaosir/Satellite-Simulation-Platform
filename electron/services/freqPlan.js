@@ -10,7 +10,10 @@
 const fs = require('fs')
 const path = require('path')
 
-module.exports = function createFreqPlan(baseDirIn) {
+// opts.trash(absPath) → Promise：删计划时把计划文件先送进系统回收站（main.js 注入 shell.trashItem；交互调研 A1）。
+// 回收站里的 <id>.json 就是一份完整计划，「导入 JSON」能原样导回。
+module.exports = function createFreqPlan(baseDirIn, opts) {
+  const trashFn = opts && typeof opts.trash === 'function' ? opts.trash : null
   let baseDir = baseDirIn
   function dir() {
     if (!baseDir) {
@@ -95,13 +98,22 @@ module.exports = function createFreqPlan(baseDirIn) {
     return { ok: true, id: p.id, entry: indexEntry(p) }
   }
 
+  // 注入了 opts.trash 时返回 Promise（计划文件进回收站之后才 resolve），否则同步返回。
+  // 先从索引摘掉再动文件：编辑窗「只更新已有」的自动存盘此后被拒，不会在回收站那一步完成前把文件写回来。
+  // .bak 同步删掉 —— readJson 在主文件缺失时会退到 .bak，留着它 get(id) 还读得到删掉的计划。
   function remove(id) {
     const sid = safeId(id)
-    for (const n of [sid + '.json', sid + '.json.bak']) {
-      try { fs.unlinkSync(file(n)) } catch { /* 不存在即已达成目的 */ }
-    }
     writeJson('index.json', listIndex().filter((e) => e.id !== sid))
-    return { ok: true }
+    try { fs.unlinkSync(file(sid + '.json.bak')) } catch { /* 不存在即已达成目的 */ }
+    const main = file(sid + '.json')
+    if (!trashFn || !fs.existsSync(main)) {
+      try { fs.unlinkSync(main) } catch { /* 不存在即已达成目的 */ }
+      return trashFn ? Promise.resolve({ ok: true }) : { ok: true }
+    }
+    return Promise.resolve()
+      .then(() => trashFn(main))
+      .catch(() => { try { fs.unlinkSync(main) } catch { /* 已不在 */ } })
+      .then(() => ({ ok: true }))
   }
 
   function rename(id, name) {

@@ -156,7 +156,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
           </select>
         </label>
         <div class="beams">
-          <button v-for="b in beamList()" :key="keyOf(b)" class="beam" :class="{ on: activeKey === keyOf(b) }" @click="selectBeam(b)">
+          <button v-for="b in beamList()" :key="keyOf(b)" class="beam" :class="{ on: activeKey === keyOf(b) }" :aria-pressed="(activeKey === keyOf(b)) ? 'true' : 'false'" @click="selectBeam(b)">
             <span class="bn">{{ b.beam }}</span><span class="bt" :class="b.type">{{ b.type }}</span>
             <span class="bp">{{ b.peakDb }}dB</span>
           </button>
@@ -168,8 +168,8 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <div class="title">填充面</div>
         <label class="row"><span>显示</span><input type="checkbox" v-model="s.fill" /></label>
         <label class="row"><span>配色</span><select v-model="s.scheme"><option v-for="n in SCHEME_NAMES" :key="n" :value="n">{{ n }}</option></select></label>
-        <label class="row"><span>透明度</span><input type="range" min="0.2" max="1" step="0.02" v-model.number="s.alpha" /><b>{{ s.alpha.toFixed(2) }}</b></label>
-        <label class="row"><span>动态范围</span><input type="range" min="3" max="25" step="1" v-model.number="s.range" /><b>{{ s.range }}dB</b></label>
+        <label class="row"><span>不透明度</span><input type="range" min="0.2" max="1" step="0.01" v-model.number="s.alpha" /><b>{{ s.alpha.toFixed(2) }}</b></label>
+        <label class="row"><span>动态范围</span><input type="range" min="3" max="25" step="0.1" v-model.number="s.range" /><b>{{ s.range.toFixed(1) }}dB</b></label>
       </div>
 
       <div class="sec">
@@ -180,7 +180,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         </label>
         <label class="row" v-if="s.ctype === 'rel'"><span>电平（dB）</span><input v-model="s.relText" /></label>
         <label class="row" v-else><span>电平（dB）</span><input v-model="s.absText" /></label>
-        <label class="row"><span>线宽</span><input type="range" min="0.1" max="8" step="0.1" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(1) }}</b></label>
+        <label class="row"><span>线宽</span><input type="range" min="0.1" max="8" step="0.01" v-model.number="s.lineWidth" /><b>{{ s.lineWidth.toFixed(2) }}</b></label>
       </div>
 
       <div class="sec">
@@ -197,7 +197,7 @@ watch(() => [s.boreLon, s.boreLat, s.yaw], () => { reproject(); recompute() })
         <label class="row"><span>偏航</span><input type="number" step="1" v-model.number="s.yaw" /></label>
         <div class="meta">改指向触发重投影。星下点 = {{ beam ? (fmtGeoSlot(Number(beam.meta.satLon)) || beam.meta.satLon + '°E') : '-' }}</div>
       </div>
-      <div v-if="loading" class="loading">载入中…</div>
+      <div v-if="loading" class="loading">加载中…</div>
     </aside>
   </div>
 </template>

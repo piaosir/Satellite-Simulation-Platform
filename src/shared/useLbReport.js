@@ -34,7 +34,7 @@ export function useLbReport(o) {
   // 有没有东西可报：分节窗口按「有链路行」算（导出前 beforeReport 会把没算过的模块补算），
   // 其余窗口按已有结果算（没算过就没有数）。
   const hasWork = () => (o.canReport ? !!o.canReport() : o.links().length > 0)
-  const emptyHint = () => (o.canReport ? '没有可报告的链路' : '请先执行「计算」生成结果')
+  const emptyHint = () => (o.canReport ? '没有可报告的链路' : '尚无计算结果。')
 
   function open() {
     if (!hasWork()) { o.toast(emptyHint()); return }
@@ -45,7 +45,7 @@ export function useLbReport(o) {
 
   function openSla() {
     if (!hasWork()) { o.toast(emptyHint()); return }
-    if (!o.slaCount || !o.slaCount()) { o.toast('请先在「SLA 建议」里勾选要列入的条款'); return }
+    if (!o.slaCount || !o.slaCount()) { o.toast('未选择 SLA 条款。'); return }
     variant.value = 'sla'
     dlg.progress = null
     dlg.open = true
@@ -62,10 +62,15 @@ export function useLbReport(o) {
     ? secs.map((s) => ({ key: s.key, regenMode: s.regenMode, title: regenModeName(s.regenMode, lang), count: s.links.length }))
     : null)
   const stepper = () => (text, done, total) => { dlg.progress = { text, done, total } }
+  // 导出回执（E3）：主进程保存处理器在返回值里带实际写入的路径（path / paths，旧版只有 filePath / files），
+  // 有路径就走带「打开 · 在文件夹中显示」的那一档（宿主给了 toastFile 时），拿不到退回普通回执
+  const savedPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath || (Array.isArray(r.files) && r.files[0]))) || ''
+  const done = (msg, r) => { const p = savedPath(r); if (p && o.toastFile) o.toastFile(msg, p); else o.toast(msg) }
 
   // 逐条链路取图。切节 → 切链路 → 等图就绪 → 取图；任何一条取不到就跳过。
   // 结束时把「详细预算」还回用户原来看的那一节那条链路（导出不该改变他的现场）。
-  async function harvestFigures(flat, onStep) {
+  // missing：取图抛错的那几条（「没有就是没有」只认画不出来的图；渲染路径抛错是故障，要报出来，见 run 末尾）
+  async function harvestFigures(flat, onStep, missing) {
     const out = {}
     const viz = o.vizRef()
     if (!o.showViz() || !viz) return out
@@ -82,7 +87,10 @@ export function useLbReport(o) {
         await o.nextTick()
         // 图表区跟着 selected 走：切完先让它把新入参吃进去，再等它算完
         await wait(30)
-        try { out[i] = await viz.captureFigures({ scale: FIG_SCALE }) } catch (e) { out[i] = [] }
+        try { out[i] = await viz.captureFigures({ scale: FIG_SCALE }) } catch (e) {
+          out[i] = []
+          if (missing) missing.push({ name: '#' + (i + 1) + ' ' + (l.txName || '') + ' → ' + (l.rxName || ''), error: e })
+        }
       }
     } finally {
       if (o.activateSection && keepSec && keepSec !== curSec) { await o.activateSection(keepSec); await o.nextTick() }
@@ -111,13 +119,14 @@ export function useLbReport(o) {
       const calc = o.calc()
 
       let figures = {}
+      const missing = []
       if (opts.withFigures) {
         figures = await harvestFigures(flat, (i, l) => {
           dlg.progress = {
             text: (en ? 'Rendering figures: ' : '取图：') + (l ? (l.txName || '') + ' → ' + (l.rxName || '') : ''),
             done: i, total
           }
-        })
+        }, missing)
       }
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: total, total }
 
@@ -163,8 +172,13 @@ export function useLbReport(o) {
       })
 
       const r = await api.report.exportReport({ model, formats: opts.formats, defaultName: o.defaultName(en) })
-      if (r && r.ok) { o.toast('已生成：' + (r.files || []).join('　')); dlg.open = false }
-      else if (r && !r.canceled) o.setError('导出失败：' + (r.error || '未知错误'))
+      if (r && r.ok) {
+        // 缺图不算失败（文件已写出），但不能当没发生：并进同一句回执，「打开 · 在文件夹中显示」照留
+        const lack = missing.length ? '；报告缺少图件：' + missing.map((m) => m.name).join('、') : ''
+        if (missing.length) console.warn('[useLbReport] figures', missing)
+        done('已生成：' + (r.files || []).join('　') + lack, r)
+        dlg.open = false
+      } else if (r && !r.canceled) o.setError('导出失败：' + (r.error || '未知错误'))
     } catch (e) {
       o.setError('导出失败：' + ((e && e.message) || String(e)))
     } finally {
@@ -226,7 +240,7 @@ export function useLbReport(o) {
         model: JSON.parse(JSON.stringify(model)), formats: opts.formats,
         defaultName: (o.slaDefaultName ? o.slaDefaultName(en) : o.defaultName(en))
       })
-      if (r && r.ok) { o.toast('已生成：' + (r.files || []).join('　')); dlg.open = false }
+      if (r && r.ok) { done('已生成：' + (r.files || []).join('　'), r); dlg.open = false }
       else if (r && !r.canceled) o.setError('导出失败：' + (r.error || '未知错误'))
     } catch (e) {
       o.setError('导出失败：' + ((e && e.message) || String(e)))

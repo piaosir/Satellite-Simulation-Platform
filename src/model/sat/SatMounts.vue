@@ -173,22 +173,22 @@ watch(() => S.satKey, () => { jsonMsg.value = ''; jsonBad.value = false; attKept
   <MdSec id="s-mounts" title="挂点" :count="rows.length || null" tip="天线安装位置（本体系：+X 速度方向、+Z 天底）。视轴 az / el 与掩模图定义一致；滚转 = 上向相对缺省上向（本体 −Y 投影）绕视轴的右手角">
     <template v-if="S.binding">
       <div class="md-acts">
-        <button class="lb-mini" title="新增空白挂点（位于原点、视轴指向天底）" @click="addBlank"><Icon name="plus" :size="13" />新增</button>
-        <select class="ci sm-ap" value="" :disabled="!aps.length" title="从模型的 attach point 创建（位置 / 视轴 / 上向取自该挂点）" @change="addFromAp($event.target.value); $event.target.value = ''">
+        <button class="lb-mini" title="新增空白挂点（位于原点、视轴指向天底）" @click="addBlank"><Icon name="plus" :size="12" />新增</button>
+        <select class="ci sm-ap cmd-sel" value="" :disabled="!aps.length" title="从模型的 attach point 创建（位置 / 视轴 / 上向取自该挂点）" @change="addFromAp($event.target.value); $event.target.value = ''">
           <option value="">从 attach point…</option>
           <option v-if="aps.length > 1" value="*">全部（{{ aps.length }}）</option>
           <option v-for="a in aps" :key="a.name" :value="a.name" data-i18n-skip>{{ a.name }}</option>
         </select>
-        <button class="lb-mini" :class="{ on: picking }" :disabled="!cur.meta" title="在预览中点击模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
-          <Icon name="locate-fixed" :size="13" />表面拾取
+        <button class="lb-mini" :class="{ on: picking }" :aria-pressed="picking ? 'true' : 'false'" :disabled="!cur.meta" title="在预览中点击模型表面新增挂点：命中点为位置、面法向为视轴" @click="togglePick">
+          <Icon name="mouse-pointer-click" :size="12" />表面拾取
         </button>
       </div>
       <div class="md-acts">
-        <select class="ci sm-tpl" value="" title="从模板应用（示意挂点：TDRS / GOES / SSL-1300 / 默认卫星 / Landsat 8 / 3U 立方星；同名 attach point 的位姿以当前模型为准），追加至表尾" @change="addTemplate($event.target.value, 'append'); $event.target.value = ''">
+        <select class="ci sm-tpl cmd-sel" value="" title="从模板应用（示意挂点：TDRS / GOES / SSL-1300 / 默认卫星 / Landsat 8 / 3U 立方星；同名 attach point 的位姿以当前模型为准），追加至表尾" @change="addTemplate($event.target.value, 'append'); $event.target.value = ''">
           <option value="">从模板应用…</option>
           <option v-for="t in tplOpts" :key="t.id" :value="t.id">{{ t.label }}</option>
         </select>
-        <select class="ci sm-tpl" value="" title="用模板替换全部挂点" @change="addTemplate($event.target.value, 'replace'); $event.target.value = ''">
+        <select class="ci sm-tpl cmd-sel" value="" title="用模板替换全部挂点" @change="addTemplate($event.target.value, 'replace'); $event.target.value = ''">
           <option value="">替换为模板…</option>
           <option v-for="t in tplOpts" :key="t.id" :value="t.id">{{ t.label }}</option>
         </select>
@@ -198,11 +198,11 @@ watch(() => S.satKey, () => { jsonMsg.value = ''; jsonBad.value = false; attKept
         <ExcelGrid :grid="g" :cols="COLS" :text="text" :cell-class="cellClass" :cell-tip="cellTip" :menu-items="menuItems" :head-tip="(c) => c.tip || c.label" empty-text="暂无挂点。" />
       </div>
       <div class="md-acts">
-        <button class="lb-mini" :disabled="g.rect.value.r0 < 0" title="复制所选挂点" @click="duplicate"><Icon name="copy" :size="13" />复制</button>
-        <button class="lb-mini" :disabled="!g.canDelete.value || g.rect.value.r0 < 0" title="删除所选挂点" @click="g.deleteRows()"><Icon name="trash" :size="13" />删除</button>
+        <button class="lb-mini" :disabled="g.rect.value.r0 < 0" title="复制所选挂点" @click="duplicate"><Icon name="copy" :size="12" />复制</button>
+        <button class="lb-mini" :disabled="!g.canDelete.value || g.rect.value.r0 < 0" title="删除所选挂点" @click="g.deleteRows()"><Icon name="trash" :size="12" />删除</button>
         <span class="sp"></span>
-        <button class="lb-mini" title="从 JSON 追加挂点（支持 {mounts:[…]}、纯数组、完整绑定记录）" @click="importJson"><Icon name="upload" :size="13" />JSON</button>
-        <button class="lb-mini" :disabled="!rows.length || !api" title="挂点表导出为 JSON" @click="exportJson"><Icon name="download" :size="13" />JSON</button>
+        <button class="lb-mini" title="从 JSON 追加挂点（支持 {mounts:[…]}、纯数组、完整绑定记录）" @click="importJson"><Icon name="file-import" :size="12" />JSON</button>
+        <button class="lb-mini" :disabled="!rows.length || !api" title="挂点表导出为 JSON" @click="exportJson"><Icon name="file-export" :size="12" />JSON</button>
         <input ref="fileEl" type="file" accept=".json,application/json" hidden @change="onFile" />
       </div>
       <div v-if="jsonMsg" class="md-state" :class="{ bad: jsonBad, ok: !jsonBad }">{{ jsonMsg }}</div>

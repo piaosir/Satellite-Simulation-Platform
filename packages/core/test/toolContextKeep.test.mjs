@@ -1,9 +1,8 @@
 // 主窗口「分析 ▸」带上下文打开日凌 / 雨衰：没存成配置的工作区不许被冲掉（2026-10-07 相对 v1.4.13 审查 P0 #1）。
 // 运行：node packages/core/test/toolContextKeep.test.mjs
 //   ① useConfigTree.saveWorkspaceAs：当前工作区原样存成新配置并接上（真 storage）；名字缺省走 defaultCfgName、重名加序号
-//   ② 日凌 / 雨衰的 applyToolContext（源码钉）：先 guardedLeave；没有归属配置且不是出厂空白 → 先留底；
-//      不再走 addBlankConfig（那条先存一份空白配置、带来的内容只在工作区）；带来的内容尾部一次存成新配置
-//   ②b 雨衰带站新建配置：先 await 全部 autoGeo 再存（不等就把出厂海拔 0 存进去，v1.5.0 上线前排查 #2）
+//   ② 日凌 / 雨衰的 applyToolContext（源码钉）：2026-10-15 起自动保存，换星时 createAndOpen 另建一份配置承接
+//   ②b 雨衰带站：先 await 全部 autoGeo 再回执（v1.5.0 上线前排查 #2）
 //   ②c 日凌 / 雨衰导出前补算：输入已变 / 未算先 compute()，算不成就不导（排查 #7）
 //   ③ 主窗口右键「分析 ▸」：无名点标记 / 地球站补「点标记N / 地球站N」（否则日凌 / 雨衰站名显示并导出成缺省「北京」）
 import { mkdtempSync, readFileSync } from 'node:fs'
@@ -44,19 +43,18 @@ const src = (p) => readFileSync(new URL('../../../' + p, import.meta.url), 'utf8
 }
 
 // ② 日凌 / 雨衰接收端（源码钉）
-for (const [f, blankFp, save] of [
-  ['src/suntool/SunOutageApp.vue', 'fingerprint() !== stableStringify(normState(blankState()))', 'cfgTree.saveWorkspaceAs()'],
-  ['src/rain/RainApp.vue', 'fingerprint() !== blankFingerprint()', 'saveWorkspaceAs()']
-]) {
+// 2026-10-15 起两窗改自动保存：工作区恒对应一份配置，「没存成配置的工作区」不复存在，留底那一步随之取消。
+// 换星时改为 cfgTree.createAndOpen（内部先 guardedLeave = 把当前配置的改动写盘）另建一份配置承接，原配置不动；
+// 建不成（未激活 / 写盘失败）就不动现场。
+for (const f of ['src/suntool/SunOutageApp.vue', 'src/rain/RainApp.vue']) {
   const s = src(f)
   const i = s.indexOf('async function applyToolContext(c) {'), j = s.indexOf('\n}\n', i)
   const body = i >= 0 && j > i ? s.slice(i, j) : ''
   ok(!!body, f + '：找到 applyToolContext')
-  ok(!body.includes('addBlankConfig('), f + '：带上下文不再走 addBlankConfig（先存空白配置、带来的内容只在工作区）')
-  const g = body.indexOf('await guardedLeave()'), k = body.indexOf(blankFp), ap = body.indexOf('applyState(blankState())')
-  ok(g > 0 && k > g && ap > k, f + '：先 guardedLeave → 无归属且非出厂空白先留底 → 再套出厂空白')
-  ok(body.includes('if (!activeId.value && ' + blankFp + ')') && /kept = await (cfgTree\.)?saveWorkspaceAs\(\)\s*\n\s*if \(!kept\) return/.test(body), f + '：留底存不进去就不动现场')
-  ok(body.lastIndexOf('if (fresh) await ' + save.replace('()', '(')) > ap, f + '：带来的内容尾部一次存成新配置')
+  ok(!body.includes('addBlankConfig('), f + '：带上下文不走 addBlankConfig')
+  ok(!body.includes('saveWorkspaceAs('), f + '：自动保存下不再「留底 + 尾部另存」')
+  ok(/const n = await cfgTree\.createAndOpen\(\{ state: [^}]*nameAuto: true \}\)\s*\n\s*if \(!n\) return/.test(body), f + '：换星另建一份配置承接，建不成就不动现场')
+  ok(/createAndOpen\(\{ state: blankState\(\)|const st = blankState\(\)/.test(body), f + '：新配置从出厂空白起')
 }
 
 // ②b 雨衰：带站新建的配置要等海拔 / 降雨率回填落定再存（v1.5.0 上线前排查 #2：不等就把出厂海拔 '0' 存进配置，
@@ -65,8 +63,9 @@ for (const [f, blankFp, save] of [
   const s = src('src/rain/RainApp.vue')
   const i = s.indexOf('async function applyToolContext(c) {'), j = s.indexOf('\n}\n', i)
   const body = i >= 0 && j > i ? s.slice(i, j) : ''
-  const push = body.indexOf('fills.push(autoGeo(cases[i]))'), wait = body.indexOf('await Promise.all(fills)'), save = body.lastIndexOf('if (fresh) await saveWorkspaceAs(')
-  ok(push > 0 && wait > push && save > wait, 'src/rain/RainApp.vue：带站新建配置先 await 全部 autoGeo，再 saveWorkspaceAs')
+  // 自动保存下回填值随写盘落盘；仍要等回填落定再回执，免得「已添加」时表里还是出厂海拔
+  const push = body.indexOf('fills.push(autoGeo(cases[i]))'), wait = body.indexOf('await Promise.all(fills)'), tip = body.lastIndexOf('toast(')
+  ok(push > 0 && wait > push && tip > wait, 'src/rain/RainApp.vue：带站先 await 全部 autoGeo，再回执')
   ok(!/\n\s*for \([^)]*\) autoGeo\(cases\[i\]\)/.test(body), 'src/rain/RainApp.vue：不再有不等结果的 autoGeo 循环')
 }
 

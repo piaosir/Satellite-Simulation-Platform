@@ -233,7 +233,7 @@ export function createLinkPickSource(host) {
       }
     }
     area('tj', host.trajectories ? host.trajectories() : [], tj, (t) => (host.trajSub ? host.trajSub(t) : ''), (t) => (t.kind === 'flight' ? 'plane' : 'ship'))
-    area('pg', host.polygons ? host.polygons() : [], pg, (p) => { const n = Array.isArray(p.pts) ? p.pts.length : 0; return byLang(`${n} 个顶点`, `${n} vertices`) }, () => 'hexagon')
+    area('pg', host.polygons ? host.polygons() : [], pg, (p) => { const n = Array.isArray(p.pts) ? p.pts.length : 0; return byLang(`${n} 个顶点`, `${n} vertices`) }, () => 'polygon')
     const by = (a, b) => cmpFit(a.fit, b.fit)
     const srt = (arr) => cap(nb ? stableSort(arr, by) : arr)
     return { st: srt(st), pt: srt(pt), tj: srt(tj), pg: srt(pg) }

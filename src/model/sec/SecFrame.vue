@@ -100,5 +100,5 @@ const AXC = { x: 'fr-x', y: 'fr-y', z: 'fr-z' }
 .fr-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 3px; }
 .fr-step { height: var(--h-ctl-lg); padding: 0 2px !important; gap: 2px !important; font-family: var(--font-mono); font-size: var(--fs-2) !important; }
 .fr-step b { font-weight: 700; }
-.fr-x b { color: #e5484d; } .fr-y b { color: #30a46c; } .fr-z b { color: #3e63dd; }
+.fr-x b { color: var(--axis-x); } .fr-y b { color: var(--axis-y); } .fr-z b { color: var(--axis-z); }   /* 取值见 shared/axisColors.js */
 </style>

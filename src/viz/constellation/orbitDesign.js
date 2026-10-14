@@ -16,6 +16,8 @@
 // 【地方时一律平太阳时】LTAN / LTDN 用太阳【平黄经】L0（Meeus 25.2 的一次式），
 // 与视太阳相差时差方程（≤16 min）。界面 title 里写明了这一条。
 
+import { byLang } from '../../shared/i18n/lang.js'   // 报错文案按平台语言出字（零依赖，Node 测试下回退中文）
+
 const RE = 6378.137              // km
 const MU = 398600.4418           // km³/s²
 const J2 = 1.08262668e-3
@@ -124,14 +126,14 @@ export function repeatSunSyncSolve(k, m, e) {
   const tOmega = m * SOLAR_DAY / k
   let a = Math.cbrt(MU * (tOmega / TWO_PI) * (tOmega / TWO_PI))    // 无摄动初值
   let incl = sunSyncInclination(a, ecc)
-  if (!Number.isFinite(incl)) return { ok: false, reason: '该回归比下无太阳同步解' }
+  if (!Number.isFinite(incl)) return { ok: false, reason: byLang('该回归比下无太阳同步解', 'No sun-synchronous solution for this repeat ratio') }
   for (let it = 0; it < 60; it++) {
     // 给定 i，由 T_Omega 反解 a（含 J2）
     const f = (x) => nodalPeriodSec(x, ecc, incl) - tOmega
     const na = solveRoot(f, Math.max(RE + 80, a * 0.7), a * 1.4, { guess: a })
-    if (!Number.isFinite(na)) return { ok: false, reason: '交点周期反解半长轴失败' }
+    if (!Number.isFinite(na)) return { ok: false, reason: byLang('交点周期反解半长轴失败', 'Failed to solve the semi-major axis from the nodal period') }
     const ni = sunSyncInclination(na, ecc)
-    if (!Number.isFinite(ni)) return { ok: false, reason: '该高度下无太阳同步解（高度超上限）' }
+    if (!Number.isFinite(ni)) return { ok: false, reason: byLang('该高度下无太阳同步解（高度超上限）', 'No sun-synchronous solution at this altitude (altitude above the upper limit)') }
     const da = Math.abs(na - a)
     a = na; incl = ni
     if (da < 1e-3) break      // 1 m
@@ -278,8 +280,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     case 'circular': {
       inclDeg = num(inp.inclDeg)
       const h = num(inp.altKm, NaN)
-      if (!(h > 0)) bad('高度需 > 0 km', 'altKm')
-      if (!(inclDeg >= 0 && inclDeg <= 180)) bad('倾角需在 0…180°', 'inclDeg')
+      if (!(h > 0)) bad(byLang('高度需 > 0 km', 'Altitude must be > 0 km'), 'altKm')
+      if (!(inclDeg >= 0 && inclDeg <= 180)) bad(byLang('倾角需在 0…180°', 'Inclination must be within 0…180°'), 'inclDeg')
       aKm = RE + h; e = 0; argpDeg = 0; m0Deg = 0
       raanDeg = norm360(num(inp.raanDeg))
       break
@@ -287,8 +289,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     case 'critical': {
       inclDeg = inp.direction === 'retro' ? CRIT_RETRO : CRIT_PRO
       const hp = num(inp.perigeeKm, NaN), ha = num(inp.apogeeKm, NaN)
-      if (!(hp > 0)) bad('近地点高度需 > 0 km', 'perigeeKm')
-      if (!(ha >= hp)) bad('远地点高度需 ≥ 近地点高度', 'apogeeKm')
+      if (!(hp > 0)) bad(byLang('近地点高度需 > 0 km', 'Perigee altitude must be > 0 km'), 'perigeeKm')
+      if (!(ha >= hp)) bad(byLang('远地点高度需 ≥ 近地点高度', 'Apogee altitude must be ≥ perigee altitude'), 'apogeeKm')
       const s = fromHeights(hp, ha)
       aKm = s.aKm; e = s.e
       argpDeg = norm360(num(inp.argpDeg, 270))
@@ -301,13 +303,13 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       // 故这一类只能取逆行的 116.5651°（界面 title 里写明了）。
       inclDeg = CRIT_RETRO
       const hp = num(inp.perigeeKm, NaN)
-      if (!(hp > 0)) bad('近地点高度需 > 0 km', 'perigeeKm')
+      if (!(hp > 0)) bad(byLang('近地点高度需 > 0 km', 'Perigee altitude must be > 0 km'), 'perigeeKm')
       else {
         // 固定 hp 与 i，解 e 使 Omega_dot = Omega_dot_ss。rp 固定 => a = rp/(1−e)
         const rp = RE + hp
         const f = (ecc) => raanRate(rp / (1 - ecc), ecc, inclDeg) - OMEGA_DOT_SS
         const ecc = solveRoot(f, 1e-6, 0.95, { guess: 0.3 })
-        if (!Number.isFinite(ecc)) bad('该近地点高度下解不出太阳同步的偏心率', 'perigeeKm')
+        if (!Number.isFinite(ecc)) bad(byLang('该近地点高度下解不出太阳同步的偏心率', 'No sun-synchronous eccentricity for this perigee altitude'), 'perigeeKm')
         else { e = ecc; aKm = rp / (1 - ecc) }
       }
       argpDeg = norm360(num(inp.argpDeg, 270))
@@ -318,7 +320,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     case 'geosync': {
       aKm = geosyncSma(); e = 0; argpDeg = 0; m0Deg = 0
       inclDeg = num(inp.inclDeg, 0)
-      if (!(inclDeg >= 0 && inclDeg <= 180)) bad('倾角需在 0…180°', 'inclDeg')
+      if (!(inclDeg >= 0 && inclDeg <= 180)) bad(byLang('倾角需在 0…180°', 'Inclination must be within 0…180°'), 'inclDeg')
       // 圆轨道：星下点经度 lambda = (RAAN + argp + M0) − GMST，argp = M0 = 0 => RAAN = lambda + GMST
       raanDeg = lonToRaan(num(inp.subLonDeg), gmst)
       break
@@ -326,7 +328,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     case 'molniya': {
       inclDeg = CRIT_PRO
       const hp = num(inp.perigeeKm, NaN)
-      if (!(hp > 0)) bad('近地点高度需 > 0 km', 'perigeeKm')
+      if (!(hp > 0)) bad(byLang('近地点高度需 > 0 km', 'Perigee altitude must be > 0 km'), 'perigeeKm')
       // T = 半个恒星日 -> a（附录 E 的口径是【开普勒】关系，不含 J2：
       // a = (mu·(T/2π)²)^{1/3} = 26561.76 km，与它给的 e=0.741、远地点 39870 km 三者自洽。
       // 若改用交点周期（含 J2）会得到 26560.67 km，与那三个数就对不上了。）
@@ -334,7 +336,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       const rp = RE + hp
       aKm = Math.cbrt(MU * (half / TWO_PI) * (half / TWO_PI))
       e = Math.max(0, 1 - rp / aKm)
-      if (!(e < 1)) bad('近地点高度过高，构不成 Molniya 椭圆', 'perigeeKm')
+      if (!(e < 1)) bad(byLang('近地点高度过高，构不成 Molniya 椭圆', 'Perigee altitude too high to form a Molniya ellipse'), 'perigeeKm')
       argpDeg = norm360(num(inp.argpDeg, 270))
       m0Deg = 180            // t0 落在远地点
       // 远地点经度 lambda_a：u = argp + 180°，Omega = lambda_a + GMST(t0) − atan2(sin u·cos i, cos u)
@@ -346,14 +348,14 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     case 'repeat': {
       inclDeg = num(inp.inclDeg)
       const k = Math.round(num(inp.k)), m = Math.round(num(inp.m))
-      if (!(k >= 1)) bad('回归圈数 k 需 ≥ 1', 'k')
-      if (!(m >= 1)) bad('回归天数 m 需 ≥ 1', 'm')
-      if (!(inclDeg >= 0 && inclDeg <= 180)) bad('倾角需在 0…180°', 'inclDeg')
-      if (k >= 1 && m >= 1 && gcd(k, m) !== 1) warns.push('k=' + k + ' 与 m=' + m + ' 不互质，实际回归比是 ' + (k / gcd(k, m)) + '/' + (m / gcd(k, m)))
+      if (!(k >= 1)) bad(byLang('回归圈数 k 需 ≥ 1', 'Repeat revolutions k must be ≥ 1'), 'k')
+      if (!(m >= 1)) bad(byLang('回归天数 m 需 ≥ 1', 'Repeat days m must be ≥ 1'), 'm')
+      if (!(inclDeg >= 0 && inclDeg <= 180)) bad(byLang('倾角需在 0…180°', 'Inclination must be within 0…180°'), 'inclDeg')
+      if (k >= 1 && m >= 1 && gcd(k, m) !== 1) warns.push(byLang('k=' + k + ' 与 m=' + m + ' 不互质，实际回归比是 ', 'k=' + k + ' and m=' + m + ' are not coprime; effective repeat ratio ') + (k / gcd(k, m)) + '/' + (m / gcd(k, m)))
       if (!errs.length) {
         aKm = repeatSma(inclDeg, k, m, 0)
-        if (!Number.isFinite(aKm)) bad('该倾角与回归比下解不出半长轴', 'k')
-        else if (aKm - RE < 80) bad('解出的高度低于 80 km（回归比不合理）', 'k')
+        if (!Number.isFinite(aKm)) bad(byLang('该倾角与回归比下解不出半长轴', 'No semi-major axis for this inclination and repeat ratio'), 'k')
+        else if (aKm - RE < 80) bad(byLang('解出的高度低于 80 km（回归比不合理）', 'Solved altitude is below 80 km (unreasonable repeat ratio)'), 'k')
       }
       e = 0; argpDeg = 0; m0Deg = 0
       raanDeg = lonToRaan(num(inp.anLonDeg), gmst)
@@ -362,9 +364,9 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
     }
     case 'repeatSunSync': {
       const k = Math.round(num(inp.k)), m = Math.round(num(inp.m))
-      if (!(k >= 1)) bad('回归圈数 k 需 ≥ 1', 'k')
-      if (!(m >= 1)) bad('回归天数 m 需 ≥ 1', 'm')
-      if (k >= 1 && m >= 1 && gcd(k, m) !== 1) warns.push('k=' + k + ' 与 m=' + m + ' 不互质，实际回归比是 ' + (k / gcd(k, m)) + '/' + (m / gcd(k, m)))
+      if (!(k >= 1)) bad(byLang('回归圈数 k 需 ≥ 1', 'Repeat revolutions k must be ≥ 1'), 'k')
+      if (!(m >= 1)) bad(byLang('回归天数 m 需 ≥ 1', 'Repeat days m must be ≥ 1'), 'm')
+      if (k >= 1 && m >= 1 && gcd(k, m) !== 1) warns.push(byLang('k=' + k + ' 与 m=' + m + ' 不互质，实际回归比是 ', 'k=' + k + ' and m=' + m + ' are not coprime; effective repeat ratio ') + (k / gcd(k, m)) + '/' + (m / gcd(k, m)))
       if (!errs.length) {
         const r = repeatSunSyncSolve(k, m, 0)
         if (!r.ok) bad(r.reason, 'k')
@@ -372,7 +374,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       }
       e = 0; argpDeg = 0; m0Deg = 0
       const lt = parseHm(inp.localTime)
-      if (!Number.isFinite(lt)) bad('地方时格式应为 hh:mm', 'localTime')
+      if (!Number.isFinite(lt)) bad(byLang('地方时格式应为 hh:mm', 'Local time must be in hh:mm format'), 'localTime')
       else {
         raanDeg = inp.localMode === 'ltdn' ? ltdnToRaan(lt, t0Ms) : ltanToRaan(lt, t0Ms)
       }
@@ -383,31 +385,31 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       e = 0; argpDeg = 0; m0Deg = 0
       if (inp.driver === 'incl') {
         inclDeg = num(inp.inclDeg, NaN)
-        if (!(inclDeg > 90 && inclDeg <= 180)) bad('太阳同步倾角需 > 90°（节点要东进）', 'inclDeg')
+        if (!(inclDeg > 90 && inclDeg <= 180)) bad(byLang('太阳同步倾角需 > 90°（节点要东进）', 'Sun-synchronous inclination must be > 90° (the node must precess eastward)'), 'inclDeg')
         else {
           aKm = sunSyncSma(inclDeg, 0)
-          if (!Number.isFinite(aKm)) bad('该倾角下解不出太阳同步半长轴', 'inclDeg')
-          else if (aKm - RE < 80) bad('解出的高度低于 80 km', 'inclDeg')
+          if (!Number.isFinite(aKm)) bad(byLang('该倾角下解不出太阳同步半长轴', 'No sun-synchronous semi-major axis for this inclination'), 'inclDeg')
+          else if (aKm - RE < 80) bad(byLang('解出的高度低于 80 km', 'Solved altitude is below 80 km'), 'inclDeg')
         }
       } else {
         const h = num(inp.altKm, NaN)
-        if (!(h > 0)) bad('高度需 > 0 km', 'altKm')
+        if (!(h > 0)) bad(byLang('高度需 > 0 km', 'Altitude must be > 0 km'), 'altKm')
         else {
           aKm = RE + h
           inclDeg = sunSyncInclination(aKm, 0)
-          if (!Number.isFinite(inclDeg)) bad('太阳同步倾角无解：高度超上限（约 ' + Math.round(sunSyncMaxAltKm()) + ' km）', 'altKm')
+          if (!Number.isFinite(inclDeg)) bad(byLang('太阳同步倾角无解：高度超上限（约 ' + Math.round(sunSyncMaxAltKm()) + ' km）', 'No sun-synchronous inclination: altitude above the upper limit (about ' + Math.round(sunSyncMaxAltKm()) + ' km)'), 'altKm')
         }
       }
       const lt = parseHm(inp.localTime)
-      if (!Number.isFinite(lt)) bad('地方时格式应为 hh:mm', 'localTime')
+      if (!Number.isFinite(lt)) bad(byLang('地方时格式应为 hh:mm', 'Local time must be in hh:mm format'), 'localTime')
       else raanDeg = inp.localMode === 'ltdn' ? ltdnToRaan(lt, t0Ms) : ltanToRaan(lt, t0Ms)
       break
     }
     case 'custom': {
       const hp = num(inp.perigeeKm, NaN)
       const ha = inp.shape === 'ellip' ? num(inp.apogeeKm, hp) : hp
-      if (!(hp > 0)) bad('近地点高度需 > 0 km', 'perigeeKm')
-      if (inp.shape === 'ellip' && !(ha >= hp)) bad('远地点高度需 ≥ 近地点高度', 'apogeeKm')
+      if (!(hp > 0)) bad(byLang('近地点高度需 > 0 km', 'Perigee altitude must be > 0 km'), 'perigeeKm')
+      if (inp.shape === 'ellip' && !(ha >= hp)) bad(byLang('远地点高度需 ≥ 近地点高度', 'Apogee altitude must be ≥ perigee altitude'), 'apogeeKm')
       const s = fromHeights(hp, ha)
       aKm = s.aKm; e = s.e
       inclDeg = num(inp.inclDeg)
@@ -417,18 +419,18 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       break
     }
     default:
-      bad('未知轨道类型：' + type)
+      bad(byLang('未知轨道类型：', 'Unknown orbit type: ') + type)
   }
 
   if (errs.length || !Number.isFinite(aKm) || !(aKm > RE + 79)) {
-    if (!errs.length) bad('解不出有效轨道')
+    if (!errs.length) bad(byLang('解不出有效轨道', 'No valid orbit solution'))
     return { ok: false, errs, warns, seed: null, derived: null }
   }
-  if (!(e >= 0 && e < 1)) { bad('偏心率解出 ' + e + '，不在 [0,1)'); return { ok: false, errs, warns, seed: null, derived: null } }
+  if (!(e >= 0 && e < 1)) { bad(byLang('偏心率解出 ' + e + '，不在 [0,1)', 'Solved eccentricity ' + e + ' is outside [0,1)')); return { ok: false, errs, warns, seed: null, derived: null } }
 
   const seed = { aKm, e, inclDeg, raanDeg: norm360(raanDeg), argpDeg: norm360(argpDeg), m0Deg: norm360(m0Deg) }
   const h = heights(aKm, e)
-  if (h.perigeeKm < 80) warns.push('近地点高度仅 ' + h.perigeeKm.toFixed(0) + ' km，已在大气层内')
+  if (h.perigeeKm < 80) warns.push(byLang('近地点高度仅 ' + h.perigeeKm.toFixed(0) + ' km，已在大气层内', 'Perigee altitude only ' + h.perigeeKm.toFixed(0) + ' km, inside the atmosphere'))
   ltanHours = raanToLtan(seed.raanDeg, t0Ms)
   const derived = {
     periodMin: keplerPeriodSec(aKm) / 60,

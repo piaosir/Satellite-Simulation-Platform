@@ -16,10 +16,10 @@ onBeforeUnmount(() => { if (off) off() })
   <div class="lbr-g">
     <div class="lbr-items">
       <div class="lbu-seg">
-        <button :class="{ on: !adaptive }"
+        <button :class="{ on: !adaptive }" :aria-pressed="(!adaptive) ? 'true' : 'false'"
           title="锁定：结果一律按引擎基准单位显示（W / kHz / kbps / dBW），不随数值大小换单位"
           @click="setUnitAdaptive(false)">锁定</button>
-        <button :class="{ on: adaptive }"
+        <button :class="{ on: adaptive }" :aria-pressed="adaptive ? 'true' : 'false'"
           title="自适应：按数值大小换档（0.5 W → 500 mW、2457.6 kHz → 2.4576 MHz、整组 &lt;0 dBW → dBm），同一列跨行共选一档"
           @click="setUnitAdaptive(true)">自适应</button>
       </div>

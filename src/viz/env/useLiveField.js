@@ -46,7 +46,7 @@ const REGIONS = [
   { v: 'cst', label: '自定义', bbox: null },
   // Polygon：取数窗仍是它的外接矩形（子集服务只吃 bbox），但**出图裁到多边形内**。
   // 故这一档与「自定义」的差别不在取多少数，在看哪一片 —— 服务区 / 协调区的形状不是矩形。
-  { v: 'poly', label: 'Polygon（地图多边形）', bbox: null }
+  { v: 'poly', label: 'Polygon', bbox: null }
 ]
 // 格距 = 换数据集，不是抽稀。全球 0.25° 一帧要下 38 MB，1° 只要 2.3 MB —— 全球图跑不跑得动全看这一项。
 const RES = [
@@ -422,7 +422,7 @@ export function useLiveField(host) {
   async function loadCube() {
     if (!window.api?.weather?.load) { msg.value = '气象数据通道不可用'; return }
     if (region.value === 'poly' && !polyPts.value) { msg.value = '未选择 Polygon'; return }
-    if (est.value && est.value.overHard) { msg.value = est.value.error || '本次数据体超过内存上限，请缩小范围或放粗格距'; return }
+    if (est.value && est.value.overHard) { msg.value = est.value.error || '本次数据体超过内存上限。'; return }
     loading.value = true; progress.done = 0; progress.total = est.value ? est.value.nt : 0
     msg.value = '获取中…'
     try {

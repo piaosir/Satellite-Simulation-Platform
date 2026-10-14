@@ -132,6 +132,8 @@ const CONSTANTS = {
 // 致其静默回退 QPSK，符号率/带宽错 3 倍）
 const { modFactorOf } = require('./modulation.js');
 const ntnPhy = require('./ntnPhy.js'); // 3GPP NTN 物理层口径（占用带宽 / TBS / 信息速率 / 含重复的门限）
+const { DEFAULT_SITE } = require('./defaultSite.js'); // 站址经纬度留空时的默认站址（渲染端按同一组数查降雨率 / 海拔）
+const strictNumMod = require('./strictNum.js'); // 数值入参严格口径（「36 MHz」「12,5」不再按前缀读成 36 / 12）
 
 // ITU-R P.838 降雨衰减系数表 (完全按照 index.html)
 const P838_TABLE = {
@@ -249,10 +251,14 @@ function calculateLinkBudget(satParams, linkParams) {
  * 主计算函数 - 严格遵循 index.html 的 performCalculations 算法
  */
 function performCalculations(satParams, inputs) {
+  // 数值入参先过严格口径：非法串（「36 MHz」「12,5」「1.2.3」）按留空取该项缺省，全角数字转半角；
+  // 合法值原样放行（连对象都不换），下游 parseFloat 读到的仍是同一个串 → 合法输入逐位不变。见 strictNum.js
+  satParams = strictNumMod.strictInputs(satParams, strictNumMod.LINK_SAT_NUM_KEYS);
+  inputs = strictNumMod.strictInputs(inputs, strictNumMod.LINK_INPUT_NUM_KEYS);
   const results = {};
-  // 取数助手：仅当为空('' / null / undefined)时回退默认；输入了什么(含 0、含非法字符)就如实 parseFloat，
+  // 取数助手：仅当为空('' / null / undefined)或非法时回退默认；输入了什么合法数(含 0)就如实取值，
   // 不再用 `parseFloat(x) || 默认` 的二次兜底（那会把用户输入的 0 当成默认值，导致输入与计算结果对不上）
-  const pickNum = (v, def) => (v !== '' && v !== null && v !== undefined) ? parseFloat(v) : def;
+  const pickNum = strictNumMod.pickNum;
 
   // ============ 基础参数提取 ============
   const satelliteName = satParams.satelliteName || satParams.name || "未命名卫星";
@@ -297,9 +303,9 @@ function performCalculations(satParams, inputs) {
   
   // ============ 上行站参数 ============
   const earthLon = (inputs.longitude !== '' && inputs.longitude !== null && inputs.longitude !== undefined)
-    ? parseFloat(inputs.longitude) : 116.4074;
+    ? parseFloat(inputs.longitude) : DEFAULT_SITE.lon;
   const earthLat = (inputs.latitude !== '' && inputs.latitude !== null && inputs.latitude !== undefined)
-    ? parseFloat(inputs.latitude) : 39.9042;
+    ? parseFloat(inputs.latitude) : DEFAULT_SITE.lat;
   const antennaDiameter = pickNum(inputs.antennaDiameter, 6.2); // meters（空回退对齐字段默认 6.2）
   const antennaEfficiency = pickNum(inputs.antennaEfficiency, 65) / 100;
   const feederLoss = inputs.feederLoss !== undefined && inputs.feederLoss !== '' && inputs.feederLoss !== null
@@ -313,9 +319,9 @@ function performCalculations(satParams, inputs) {
   
   // ============ 接收站参数 ============
   const rxLongitude = (inputs.rxLongitude !== '' && inputs.rxLongitude !== null && inputs.rxLongitude !== undefined)
-    ? parseFloat(inputs.rxLongitude) : 116.4074;
+    ? parseFloat(inputs.rxLongitude) : DEFAULT_SITE.lon;
   const rxLatitude = (inputs.rxLatitude !== '' && inputs.rxLatitude !== null && inputs.rxLatitude !== undefined)
-    ? parseFloat(inputs.rxLatitude) : 39.9042;
+    ? parseFloat(inputs.rxLatitude) : DEFAULT_SITE.lat;
   const rxAntennaDiameter = pickNum(inputs.rxAntennaDiameter, 3.7); // meters（空回退对齐字段默认 3.7）
   const rxAntennaEfficiency = pickNum(inputs.rxAntennaEfficiency, 65) / 100;
   const rxFeederLoss = inputs.rxFeederLoss !== undefined && inputs.rxFeederLoss !== '' && inputs.rxFeederLoss !== null

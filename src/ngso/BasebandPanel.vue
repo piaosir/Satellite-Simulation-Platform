@@ -1,10 +1,11 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, reactive, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { checkNtnBandwidth } from '../shared/ntnLimits.js'
 import { modFactorOf, parseFrac, rateChain, rateDisplays, infoRateFrom, anchorOf } from '../shared/carrierRate.js'
 // 3GPP NTN：载波按物理层参数描述（PRB 数 / 子载波间隔 / MCS / 重复），占用带宽与信息速率由此算
 import { normalizePhy, occupiedBwKHz, channelBwKHz, infoRateKbps, tbsOf, nrBwSteps, NTN_BANDS, nbSingleToneMcs, nbMaxSfIdx, NB_SF_COUNT, resolve as resolvePhy } from '../shared/ntnPhy.js'
+import { numStrict } from '../shared/num.js'   // 严格数值语法（与链路表校验 / 引擎同一口径）
 
 // 载波信号参数面板 —— 严格照搬小程序载波信号卡片：DVB/MODCOD 快选、Eb/N₀⇄Es/N₀ 切换（带换算）、
 // 频谱效率⇄帧效率切换、速率换算链（信息速率/码片速率/符号率/载波带宽，编辑任一个反算其余）。
@@ -228,8 +229,40 @@ const phyMeta = computed(() => (props.options.meta || {})[props.form.dvbStandard
 function setPhy(patch) {
   const cur = (props.form.phy && typeof props.form.phy === 'object') ? props.form.phy : {}
   props.form.phy = { ...cur, ...patch }
+  for (const k of Object.keys(patch)) delete phyBad[k]   // 这一格有了新值（含别处联动写入）：标红随之撤掉
 }
 const numAttr = (e, d) => { const n = Number(e.target.value); return isFinite(n) ? n : d }
+// 物理层手填数值格（PRB 数 / 重复次数 / 合并损失 / 符号数 / DMRS / xOverhead / 开销 OH / 层数）：
+//   · 清空＝恢复缺省：从 phy 里拿掉这个键，归一化与引擎按缺省取（normalizePhy 同一份），格里随即显示缺省值——
+//     与平台「清空＝缺省」同口径。开销 OH 的缺省本就是 null（按方向取），清空写 null。
+//   · 不是合法数（严格语法：「25 PRB」「1,5」不收）、该取整的不是整数、越界 → 不落值，该格标红并留着用户打的原文
+//     （phyBad[key] = 原文；格的 :value 走 pv() 先取它——否则标红那一下重绘就把原文刷回旧值，看不出哪里错了），
+//     改对或清空即消。曾经 Number($event.target.value)：清空得 0、乱填得 NaN，直接写进载波。
+const phyBad = reactive({})
+const pv = (key, v) => (Object.prototype.hasOwnProperty.call(phyBad, key) ? phyBad[key] : v)
+const pb = (key) => Object.prototype.hasOwnProperty.call(phyBad, key)
+const PHY_NUM = {
+  nRb: { int: true, min: 1 }, nRep: { int: true, min: 1 }, combLossDb: { min: 0 },
+  nSymb: { int: true, min: 1, max: 14 }, nDmrs: { int: true, min: 0 }, nOh: { int: true, min: 0 },
+  oh: { min: 0, max: 1, blankNull: true }, layers: { int: true, min: 1, max: 8 }
+}
+function setPhyNum(key, e) {
+  const spec = PHY_NUM[key] || {}
+  const n = numStrict(e.target.value)
+  if (n === null) {
+    if (spec.blankNull) { setPhy({ [key]: null }); return }
+    const cur = (props.form.phy && typeof props.form.phy === 'object') ? { ...props.form.phy } : {}
+    delete cur[key]
+    props.form.phy = cur
+    delete phyBad[key]
+    return
+  }
+  const good = !Number.isNaN(n) && (!spec.int || Number.isInteger(n)) && (spec.min == null || n >= spec.min) && (spec.max == null || n <= spec.max)
+  if (!good) { phyBad[key] = String(e.target.value); return }
+  setPhy({ [key]: n })
+}
+// 换了体制 / 换了一份载波配置：残留的标红作废（格里的值已随之重绘）
+watch(() => [props.form, props.form.dvbStandard, props.form.noiseRatioMode], () => { for (const k of Object.keys(phyBad)) delete phyBad[k] })
 // 变换预编码表只用于 PUSCH（TS 38.214 §6.1.4.1）：选了它，方向就不再是用户能改的东西
 const phyDirLocked = computed(() => !!phy.value && phy.value.kind === 'nr' &&
   (phy.value.mcsTable === 'tp1' || phy.value.mcsTable === 'tp2'))
@@ -422,9 +455,9 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       <!-- 带口径钮的行用 div 而非 label：label 会把行内任意位置的点击转发给它的第一个可关联控件，
            而那正是这枚 button（button 也是 labelable）——点标签文字、单位括注甚至行内空白都会误切口径。 -->
       <div class="bb-f bb-f-tg"><span class="bb-l">
-          <span v-if="phyOn" class="bb-tg bb-tg-fix">SNR</span>
+          <span v-if="phyOn" class="bb-tg-fix">SNR</span>
           <button v-else type="button" class="bb-tg" :title="`当前 ${form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀'} 口径，点击换算为 ${form.noiseRatioMode === 'ebno' ? 'Es/N₀' : 'Eb/N₀'}（门限值同步换算）`"
-                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="12" /></button><i>(dB)</i>
+                  @click.prevent="toggleEbno">{{ form.noiseRatioMode === 'ebno' ? 'Eb/N₀' : 'Es/N₀' }}<Icon name="arrow-left-right" :size="12" /></button>门限<i>(dB)</i>
         </span>
         <input v-model="form.ebno" class="bb-i mono" :title="thrTip" placeholder="5.50" />
       </div>
@@ -441,7 +474,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         <input :value="rsCodeDisplay" class="bb-i mono" :class="{ 'bb-over': rsAlert && rsAlert.level === 'over' }"
                :placeholder="form.rsCodeMode === 'spectral' ? '1.1520' : '188/204'" @input="onRsInput" @change="onRsChange" />
       </div>
-      <label v-if="!phyOn" class="bb-f" :title="form.noiseRatioMode === 'esno' ? '码片率 ÷ 载波速率，无扩频为 1。Es/N₀ 口径下门限与它成对：套用 MODCOD 时随表取值；单独改它须同步改门限（每 ×2 门限低 3.01 dB）' : '码片率 ÷ 载波速率，无扩频为 1。Eb/N₀ 口径下门限与它无关，只改符号率 / 带宽与门限 C/N'"><span class="bb-l">扩频增益</span>
+      <label v-if="!phyOn" class="bb-f" :title="form.noiseRatioMode === 'esno' ? '码片率 ÷ 载波速率，无扩频为 1。Es/N₀ 口径下门限与它成对：套用 MODCOD 时随表取值；单独改它须同步改门限（每 ×2 门限低 3.01 dB）' : '码片率 ÷ 载波速率，无扩频为 1。Eb/N₀ 口径下门限与它无关，仅改变符号率 / 带宽与门限 C/N'"><span class="bb-l">扩频增益</span>
         <input v-model="form.m" class="bb-i mono" placeholder="1.00" />
       </label>
     </div>
@@ -457,7 +490,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
          占用带宽 = PRB 数 × 12 × 子载波间隔（NB-IoT 上行 = 子载波数 × 子载波间隔），它就是 SNR 的噪声带宽。
          口径说明一律进 title，版面上不写字（见仓库 CLAUDE.md）。 -->
     <div v-if="phyOn" class="bb-grid bb-phy">
-      <label class="bb-f" :title="!phyIsNr ? 'NB-IoT 的方向由信道决定：NPDSCH 只在下行、NPUSCH 只在上行，随所选标准走，不单独改' : (phyDirLocked ? '变换预编码表只用于 PUSCH（TS 38.214 §6.1.4.1），PDSCH 没有这两张表' : '下行 = 一条载波就是整个 NR 载波；上行 = 一个终端本次的分配。NR 的 MCS 表 1/2/3 收发共用。切换方向会按该方向的缺省重铺信道带宽 / PRB 数 / 符号数')"><span class="bb-l">方向</span>
+      <label class="bb-f" :title="!phyIsNr ? 'NB-IoT 的方向由信道决定：NPDSCH 仅在下行、NPUSCH 仅在上行，随所选标准走，不单独改' : (phyDirLocked ? '变换预编码表仅用于 PUSCH（TS 38.214 §6.1.4.1），PDSCH 没有这两张表' : '下行 = 一条载波就是整个 NR 载波；上行 = 一个终端本次的分配。NR 的 MCS 表 1/2/3 收发共用。切换方向会按该方向的缺省重铺信道带宽 / PRB 数 / 符号数')"><span class="bb-l">方向</span>
         <select :value="phy.dir" class="bb-i" :disabled="!phyIsNr || phyDirLocked" @change="onDir">
           <option value="dl">下行</option>
           <option value="ul">上行</option>
@@ -469,7 +502,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
           <option v-for="b in bandOptions" :key="b.value" :value="b.value">{{ b.label }}</option>
         </select>
       </label>
-      <label v-if="phyIsNr || phy.dir === 'ul'" class="bb-f" :title="phyIsNr ? '' : 'NPUSCH 的子载波间隔；3.75 kHz 只有单子载波一种配置（TS 36.211 §10.1.2）'"><span class="bb-l">子载波间隔 <i>(kHz)</i></span>
+      <label v-if="phyIsNr || phy.dir === 'ul'" class="bb-f" :title="phyIsNr ? '' : 'NPUSCH 的子载波间隔；3.75 kHz 仅有单子载波一种配置（TS 36.211 §10.1.2）'"><span class="bb-l">子载波间隔 <i>(kHz)</i></span>
         <select v-if="phyIsNr" :value="String(phy.scs)" class="bb-i" @change="onScs">
           <option v-for="s in [15, 30, 60, 120]" :key="s" :value="String(s)">{{ s }}</option>
         </select>
@@ -478,22 +511,22 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
           <option v-for="s in nbScsOptions" :key="s" :value="String(s)">{{ s }}</option>
         </select>
       </label>
-      <label v-if="phyIsNr" class="bb-f" title="该频段在这个子载波间隔下允许的信道带宽档（TS 38.101-5 V19.5.0 Table 5.3.5-1 / 5.3.5-2）；下拉里列的就是全部合法档，选定即查表填 PRB 数。选「按 PRB 数」则直接填 PRB 数"><span class="bb-l">信道带宽 <i>(MHz)</i></span>
+      <label v-if="phyIsNr" class="bb-f" title="该频段在该子载波间隔下允许的信道带宽档（TS 38.101-5 V19.5.0 Table 5.3.5-1 / 5.3.5-2）；下拉列表中列出的即全部合法档，选定即查表填 PRB 数。选「按 PRB 数」则直接填 PRB 数"><span class="bb-l">信道带宽 <i>(MHz)</i></span>
         <select :value="phy.chBwMHz == null ? '' : String(phy.chBwMHz)" class="bb-i" @change="onChBw">
           <option value="">按 PRB 数</option>
           <option v-for="b in chBwOptions" :key="b" :value="String(b)">{{ b }}</option>
         </select>
       </label>
       <label v-if="phyIsNr" class="bb-f" title="本次分配的资源块数；占用带宽 = N_RB × 12 × 子载波间隔"><span class="bb-l">PRB 数</span>
-        <input :value="phy.nRb" class="bb-i mono" @change="setPhy({ nRb: Number($event.target.value) })" />
+        <input :value="pv('nRb', phy.nRb)" class="bb-i mono" :class="{ 'bb-bad': pb('nRb') }" @change="setPhyNum('nRb', $event)" />
       </label>
-      <label v-if="!phyIsNr && phy.dir === 'ul'" class="bb-f" :title="phy.st === true ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；单音表锁死 1 个子载波——门限那一列是按单音给的，表里的行号也是 I_MCS（TS 36.213 Table 16.5.1.2-1）。占用带宽 = 子载波数 × 子载波间隔，单子载波 15 kHz 比 12 子载波低 10.8 dB、3.75 kHz 低 16.8 dB' : (phy.st === false ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；多音表只有 3 / 6 / 12——TS 36.213 §16.5.1.2 规定 N_sc^RU > 1 时恒 QPSK，且门限比单音低 1.6~3.8 dB。占用带宽 = 子载波数 × 子载波间隔' : 'NPUSCH 每资源单元的子载波数 N_sc^RU（TS 36.211 §10.1.2 的 single-tone / multi-tone）；自建标准不锁死——表里的行号按 I_MCS 还是 I_TBS 读，随当前子载波数判。占用带宽 = 子载波数 × 子载波间隔')"><span class="bb-l">子载波数</span>
+      <label v-if="!phyIsNr && phy.dir === 'ul'" class="bb-f" :title="phy.st === true ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；单音表锁死 1 个子载波——门限那一列是按单音给的，表中的行号也是 I_MCS（TS 36.213 Table 16.5.1.2-1）。占用带宽 = 子载波数 × 子载波间隔，单子载波 15 kHz 比 12 子载波低 10.8 dB、3.75 kHz 低 16.8 dB' : (phy.st === false ? 'NPUSCH 每资源单元的子载波数 N_sc^RU；多音表仅有 3 / 6 / 12——TS 36.213 §16.5.1.2 规定 N_sc^RU > 1 时恒 QPSK，且门限比单音低 1.6~3.8 dB。占用带宽 = 子载波数 × 子载波间隔' : 'NPUSCH 每资源单元的子载波数 N_sc^RU（TS 36.211 §10.1.2 的 single-tone / multi-tone）；自建标准不锁死——表中的行号按 I_MCS 还是 I_TBS 读，随当前子载波数判。占用带宽 = 子载波数 × 子载波间隔')"><span class="bb-l">子载波数</span>
         <select :value="String(phy.nTones)" class="bb-i" :disabled="nbToneOptions.length < 2"
                 @change="setPhy({ nTones: Number($event.target.value) })">
           <option v-for="t in nbToneOptions" :key="t" :value="String(t)">{{ t }}</option>
         </select>
       </label>
-      <label v-if="!phyIsNr" class="bb-f" title="NB-IoT 载波怎么落在频谱上（TS 36.102 §5.4B）：独立部署走 200 kHz 栅格、保护带落在 LTE 载波的保护带内、带内部署嵌在 LTE 载波里。只影响下行 NPDSCH——带内部署前 3 个符号让给 LTE 控制区并被 CRS 打孔，每传输块编码比特数由 304 掉到 208、I_TBS 只到 10（TS 36.213 §16.4.1.4 / §16.4.1.5.1）。NPUSCH 不受影响"><span class="bb-l">部署模式</span>
+      <label v-if="!phyIsNr" class="bb-f" title="NB-IoT 载波怎么落在频谱上（TS 36.102 §5.4B）：独立部署走 200 kHz 栅格、保护带落在 LTE 载波的保护带内、带内部署嵌在 LTE 载波中。仅影响下行 NPDSCH——带内部署前 3 个符号让给 LTE 控制区并被 CRS 打孔，每传输块编码比特数由 304 掉到 208、I_TBS 最高到 10（TS 36.213 §16.4.1.4 / §16.4.1.5.1）。NPUSCH 不受影响"><span class="bb-l">部署模式</span>
         <select :value="phy.opMode || 'standalone'" class="bb-i" @change="setPhy({ opMode: $event.target.value })">
           <option value="standalone">独立</option>
           <option value="guardband">保护带</option>
@@ -508,34 +541,34 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
         </select>
       </label>
       <label class="bb-f" title="重复次数 N_rep：有效门限 = 表值 − 10·lg(N_rep) + 合并损失，信息速率同时除以 N_rep"><span class="bb-l">重复次数</span>
-        <input :value="phy.nRep" class="bb-i mono" @change="setPhy({ nRep: Number($event.target.value) })" />
+        <input :value="pv('nRep', phy.nRep)" class="bb-i mono" :class="{ 'bb-bad': pb('nRep') }" @change="setPhyNum('nRep', $event)" />
       </label>
       <label class="bb-f" title="非理想信道估计下的合并损失，理想合并为 0；实测通常 0.5~1.5 dB"><span class="bb-l">合并损失 <i>(dB)</i></span>
-        <input :value="phy.combLossDb" class="bb-i mono" @change="setPhy({ combLossDb: Number($event.target.value) })" />
+        <input :value="pv('combLossDb', phy.combLossDb)" class="bb-i mono" :class="{ 'bb-bad': pb('combLossDb') }" @change="setPhyNum('combLossDb', $event)" />
       </label>
-      <label v-if="phyIsNr" class="bb-f" title="TBS = 按 TS 38.214 §5.1.3.2 算每时隙传输块（厂家口径）；TS 38.306 = §4.1.2 的近似式，含 PDCCH/SSB/CSI-RS 的平均系统开销"><span class="bb-l">速率模型</span>
+      <label v-if="phyIsNr" class="bb-f" title="TBS = 按 TS 38.214 §5.1.3.2 计算每时隙传输块（厂家口径）；TS 38.306 = §4.1.2 的近似式，含 PDCCH/SSB/CSI-RS 的平均系统开销"><span class="bb-l">速率模型</span>
         <select :value="phy.rateModel" class="bb-i" @change="setPhy({ rateModel: $event.target.value })">
           <option value="tbs">TBS</option>
           <option value="oh38306">TS 38.306</option>
         </select>
       </label>
       <template v-if="phyIsNr && phy.rateModel === 'tbs'">
-        <label class="bb-f" title="一个时隙里分给这条载波的 OFDM 符号数（下行留 2 个给 PDCCH 即填 12）"><span class="bb-l">符号数</span>
-          <input :value="phy.nSymb" class="bb-i mono" @change="setPhy({ nSymb: Number($event.target.value) })" />
+        <label class="bb-f" title="一个时隙中分配给该载波的 OFDM 符号数（下行留 2 个给 PDCCH 即填 12）"><span class="bb-l">符号数</span>
+          <input :value="pv('nSymb', phy.nSymb)" class="bb-i mono" :class="{ 'bb-bad': pb('nSymb') }" @change="setPhyNum('nSymb', $event)" />
         </label>
         <label class="bb-f" title="每 PRB 被 DMRS 占掉的资源元素数"><span class="bb-l">DMRS <i>(RE/PRB)</i></span>
-          <input :value="phy.nDmrs" class="bb-i mono" @change="setPhy({ nDmrs: Number($event.target.value) })" />
+          <input :value="pv('nDmrs', phy.nDmrs)" class="bb-i mono" :class="{ 'bb-bad': pb('nDmrs') }" @change="setPhyNum('nDmrs', $event)" />
         </label>
         <label class="bb-f" title="TS 38.214 的 xOverhead：0 / 6 / 12 / 18"><span class="bb-l">xOverhead</span>
-          <input :value="phy.nOh" class="bb-i mono" @change="setPhy({ nOh: Number($event.target.value) })" />
+          <input :value="pv('nOh', phy.nOh)" class="bb-i mono" :class="{ 'bb-bad': pb('nOh') }" @change="setPhyNum('nOh', $event)" />
         </label>
       </template>
       <label v-if="phyIsNr && phy.rateModel === 'oh38306'" class="bb-f" title="TS 38.306 的开销系数；留空按方向取缺省（FR1 下行 0.14 / 上行 0.08，FR2 下行 0.18 / 上行 0.10）"><span class="bb-l">开销 OH</span>
-        <input :value="phy.oh == null ? '' : phy.oh" class="bb-i mono" placeholder="缺省"
-               @change="setPhy({ oh: $event.target.value === '' ? null : Number($event.target.value) })" />
+        <input :value="pv('oh', phy.oh == null ? '' : phy.oh)" class="bb-i mono" :class="{ 'bb-bad': pb('oh') }" placeholder="缺省"
+               @change="setPhyNum('oh', $event)" />
       </label>
       <label v-if="phyIsNr" class="bb-f" title="MIMO 层数 ν"><span class="bb-l">层数</span>
-        <input :value="phy.layers" class="bb-i mono" @change="setPhy({ layers: Number($event.target.value) })" />
+        <input :value="pv('layers', phy.layers)" class="bb-i mono" :class="{ 'bb-bad': pb('layers') }" @change="setPhyNum('layers', $event)" />
       </label>
     </div>
 
@@ -544,10 +577,10 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
       <label class="bb-f" title="B_occ = N_RB × 12 × 子载波间隔（NB-IoT 上行 = 子载波数 × 子载波间隔）——SNR 的噪声带宽"><span class="bb-l">占用带宽 <i>(kHz)</i></span>
         <input :value="fmtRo(phyOut.bOcc)" class="bb-i mono" readonly />
       </label>
-      <label class="bb-f" title="含保护带的信道带宽；只用于档位核对与转发器占用比，不当噪声带宽"><span class="bb-l">信道带宽 <i>(kHz)</i></span>
+      <label class="bb-f" title="含保护带的信道带宽；仅用于档位核对与转发器占用比，不当噪声带宽"><span class="bb-l">信道带宽 <i>(kHz)</i></span>
         <input :value="fmtRo(phyOut.bCh)" class="bb-i mono" readonly />
       </label>
-      <label class="bb-f" title="由 TBS 与时隙/RU 时长算出，已除以重复次数"><span class="bb-l">信息速率 <i>(kbps)</i></span>
+      <label class="bb-f" title="由 TBS 与时隙/RU 时长计算得出，已除以重复次数"><span class="bb-l">信息速率 <i>(kbps)</i></span>
         <input :value="fmtRo(phyOut.rate)" class="bb-i mono" readonly />
       </label>
       <label class="bb-f" :title="phyIsNr ? '每时隙传输块大小（TS 38.214 §5.1.3.2）' : '每传输块大小（TS 36.213）'"><span class="bb-l">TBS <i>(bit)</i></span>
@@ -624,7 +657,7 @@ function onBwInput(e) { setAnchor('bw', e.target.value) }
 .bb-rt .bb-i { background-color: var(--surface); color: var(--text-muted); }
 .bb-rt .bb-i.bb-anch { color: var(--text); }
 /* 3GPP NTN 信道带宽提示 / 帧效率越界：正常灰字说明，超限转红并给输入框描红边 */
-.bb-rt .bb-i.bb-over, .bb-grid .bb-i.bb-over { color: var(--danger); border-color: var(--danger); }
+.bb-rt .bb-i.bb-over, .bb-grid .bb-i.bb-over, .bb-grid .bb-i.bb-bad { color: var(--danger); border-color: var(--danger); }
 .bb-ntn { display: flex; align-items: flex-start; gap: 5px; margin: -4px 0 0; font-size: var(--fs-2); line-height: 1.55; color: var(--text-faint); }
 .bb-ntn.bb-rs { margin: -6px 0 10px; }   /* 帧效率提示夹在两组之间，上下都要留白 */
 .bb-ntn.over { color: var(--danger); }

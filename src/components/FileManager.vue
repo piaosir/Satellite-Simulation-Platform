@@ -1,5 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { askConfirm, confirmState, answerConfirm } from '../shared/ui/useConfirm.js'
 import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
@@ -14,6 +15,7 @@ import { repackGrdCommonGridParts } from '../viz/grd/synth.js'
 import { isAnalyticText, parseRecord as parseAnRecord, toGrdText as anToGrdText } from '../viz/grd/gaussStk.js'
 import { displaySatName } from '../viz/satName.js'
 import { logMsg } from '../stores/log'
+import { errText } from '../shared/errText.js'
 import Icon from './Icon.vue'
 import ExcelGrid from './ExcelGrid.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
@@ -42,18 +44,27 @@ const writePref = (k, v) => { try { localStorage.setItem(k, String(v == null ? '
 const tab = ref(TABS.includes(props.tab) ? props.tab : (TABS.includes(readPref(TAB_KEY)) ? readPref(TAB_KEY) : 'omm'))
 watch(tab, (t) => writePref(TAB_KEY, t))
 const msg = ref('')
+// 导出回执：本条提示对应的已写出文件（页脚附「打开 · 在文件夹中显示」，口径同计算窗 NoticeLine：带文件的停 8 s）。
+// 打开 / 显示走主进程白名单（只认本会话写过的文件）；旧主进程没有 api.files 时链接不出现。
+const msgFile = ref('')
+const hasFilesApi = !!(api && api.files)
+let _msgT = null
 // 面板内瞬时提示 + 落底部日志窗格（两者共用同一份文案，覆盖本文件全部 30 处导入/导出/删除反馈，无需逐处补记）
-function flash(t) { msg.value = t; logMsg(`文件管理：${t}`, /失败/.test(t) ? 'warn' : 'info'); setTimeout(() => { if (msg.value === t) msg.value = '' }, 4000) }
+function flash(t, file) {
+  clearTimeout(_msgT)
+  msg.value = t; msgFile.value = file || ''
+  logMsg(`文件管理：${t}`, /失败/.test(t) ? 'warn' : 'info')
+  _msgT = setTimeout(() => { msg.value = ''; msgFile.value = '' }, file ? 8000 : 4000)
+}
+// 主进程保存处理器回的实际写入路径：path / paths（多文件取第一个），兼容旧字段 filePath
+const outPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+// 导出成功的统一回执：「<前缀>：<路径>」+ 打开 / 在文件夹中显示
+function flashSaved(r, head) { const p = outPath(r); flash((head || '已导出：') + p, p) }
+function openOut() { const f = api && api.files; if (f && f.open && msgFile.value) Promise.resolve(f.open(msgFile.value)).catch(() => {}) }
+function revealOut() { const f = api && api.files; if (f && f.reveal && msgFile.value) Promise.resolve(f.reveal(msgFile.value)).catch(() => {}) }
 
-// 应用内确认弹窗（替代原生 confirm）：Electron 的原生 confirm/alert 关闭后会打断渲染进程焦点，
-// 导致之后输入框点击聚焦失灵（最小化再恢复才好）。改用 Promise 化的内嵌弹窗，彻底规避。
-const confirmMsg = ref('')
-let _confirmResolve = null
-function ask(message) { confirmMsg.value = message; return new Promise((res) => { _confirmResolve = res }) }
-function answerConfirm(ok) { confirmMsg.value = ''; const r = _confirmResolve; _confirmResolve = null; if (r) r(ok) }
-// 确认框一出来焦点就落在「确定」上：回车即确定（靠焦点触发，不另挂全局 Enter）
-const cOk = ref(null)
-watch(confirmMsg, (v) => v && nextTick(() => cOk.value?.focus({ preventScroll: true })))
+// 确认框：全平台一份（shared/ui/useConfirm.js，主窗 App.vue 挂 ConfirmDialog）。Esc 仍由本窗口的捕获阶段 onKey 先收、按「取消」了结
+const ask = askConfirm
 
 // latin1 字符串 → 原始字节（保真导出 GRD/GXT 二进制原文）
 // ★ 不许写成 Uint8Array.from(s, fn)：带 mapfn 的 %TypedArray%.from 对可迭代源先走 IterableToList，
@@ -119,7 +130,7 @@ async function exportOmm(row) {
   if (!api?.omm?.export) return
   const r = await api.omm.export(row.key, 'omm-csv')
   if (r && r.canceled) return
-  if (r && r.ok) flash('已导出：' + r.filePath)
+  if (r && r.ok) flashSaved(r)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
 }
 
@@ -260,7 +271,7 @@ function exportConstellation(c) {
 }
 function onExportDone(r) {
   if (!r) return
-  if (r.ok) flash(`已导出 ${r.written} 颗：` + (r.files || []).map((f) => f.path).join('；'))
+  if (r.ok) flash(`已导出 ${r.written} 颗：` + (r.files || []).map((f) => f.path).join('；'), outPath(r) || ((r.files || [])[0] || {}).path || '')
   else flash('导出失败：' + (r.error || '未知错误'))
 }
 // 导入组读数：颗数 · 格式 · 导入时间；点序列组另报对应到了哪颗已有卫星
@@ -270,33 +281,70 @@ const fmtGroupMeta = (g) => {
   return `${g.count} 颗 · ${EPH_FMT[g.format] || g.formatLabel || 'OMM'} · ${fmtTime(g.importedAt)}${tail}`
 }
 
-// —— 逐条改名（自建星座 + 导入组，点名称/「改名」进入编辑，✓/回车提交，Esc 取消）——
-const custEdit = ref('')   // 正在改名的行键：'k'+星座id / 'g'+组id
-const custVal = ref('')
-const custInput = ref(null)
-const setCustInput = (el) => { custInput.value = el }
-async function startRenameCust(key, name) {
-  custEdit.value = key; custVal.value = name
-  await nextTick(); if (custInput.value && custInput.value.focus) { custInput.value.focus(); custInput.value.select && custInput.value.select() }
+// —— 选中行 + 改名（与 Windows 资源管理器 / VS Code 同口径）——
+// 单击行 = 选中；行尾 ✎ 或选中后按 F2 = 改名；改名框 Enter 提交、Esc 取消、失焦提交。
+// 名字本身不再「一点就进改名」：单击是最常见的误触手势，点一下想选中却掉进编辑框。
+// 行键同时作选中键与改名键：'k:'+自建星座id / 'g:'+导入组id / 'a:'+folder|天线名 / 'f:'+频率计划id / 'x:'+库键|folder|天线名（只选不改名）
+const sel = ref('')
+const ren = ref('')          // 正在改名的行键（同上）
+const renVal = ref('')
+let renOrig = ''
+let renEl = null
+const setRenEl = (el) => { if (el) renEl = el }   // 只收挂载：换行改名时旧框的卸载（传 null）可能排在新框挂载之后
+function startRen(key, name) {
+  ren.value = key; renVal.value = String(name == null ? '' : name); renOrig = renVal.value; sel.value = key
+  nextTick(() => { try { if (renEl && renEl.isConnected) { renEl.focus(); renEl.select() } } catch { /* ignore */ } })
 }
-function cancelRenameCust() { custEdit.value = '' }
-async function commitRenameCust() {
-  const key = custEdit.value, name = custVal.value.trim()
+function cancelRen() { ren.value = '' }
+// how：'enter' | 'blur'。名字为空 / 未改 → 原样退出。天线重名：回车留在框里重输，失焦则放弃本次改名。
+async function commitRen(how) {
+  const key = ren.value, name = renVal.value.trim()
   if (!key) return
-  if (!name) { flash('名称不能为空'); return }
-  if (key[0] === 'k') {          // 自建星座：优先走活实例（失效缓存+重渲染），否则回退改 localStorage
-    const id = key.slice(1)
+  if (!name || name === renOrig) { ren.value = ''; return }
+  const kind = key[0], id = key.slice(2)
+  if (kind === 'a') {
+    const hit = grdAntOfKey(id)
+    if (!hit) { ren.value = ''; return }
+    if (fileBridge.grd.renameAntenna(hit.sat.folder, hit.ant.name, name) === false) {
+      flash('天线名为空或与同星其他天线重名')
+      if (how === 'blur') ren.value = ''
+      return
+    }
+    ren.value = ''; sel.value = 'a:' + hit.sat.folder + '|' + name
+    grdRedraw(); return
+  }
+  ren.value = ''   // 先收起：下面是异步改名，期间再来一次失焦不能重复提交
+  if (kind === 'k') {          // 自建星座：优先走活实例（失效缓存+重渲染），否则回退改 localStorage
     const cc = fileBridge.customConst
     if (cc && cc.update) cc.update(id, { name }); else renameCustomConstellation(id, name)
     loadCustomConsts(); bumpCustomSats()
-  } else if (key[0] === 'g') {   // 导入组
-    const id = key.slice(1)
+  } else if (kind === 'g') {   // 导入组
     const r = await api.omm.customRename(id, name)
     if (!(r && r.ok)) { flash('改名失败：' + ((r && r.error) || '未知')); return }
     await loadCustomGroups(); bumpCustomSats()
-  }
-  custEdit.value = ''
+  } else if (kind === 'f') {   // 频率计划
+    await api.freqPlan.rename(id, name)
+    await loadFreqPlans()
+  } else return
   flash('已改名为「' + name + '」')
+}
+function onRenKey(e) {
+  if (e.isComposing) return
+  if (e.key === 'Enter') { e.preventDefault(); commitRen('enter') }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelRen() }
+  e.stopPropagation()   // 这儿是打字：不冒到背后页面的快捷键上
+}
+// F2：改选中的那一行（只认当前页签里的行）
+function renameSelected() {
+  if (tab.value === 'modcod') { if (mcCur.value) { mcRename(mcCur.value); return true } return false }   // MODCOD 页：改当前标准
+  const k = sel.value
+  if (!k) return false
+  const kind = k[0], id = k.slice(2)
+  if (tab.value === 'omm' && kind === 'k') { const c = customConsts.value.find((x) => String(x.id) === id); if (c) { startRen(k, c.name); return true } }
+  if (tab.value === 'omm' && kind === 'g') { const g = customGroups.value.find((x) => String(x.id) === id); if (g) { startRen(k, g.name); return true } }
+  if (tab.value === 'grd' && kind === 'a') { const h = grdAntOfKey(id); if (h) { startRen(k, h.ant.name); return true } }
+  if (tab.value === 'freqplan' && kind === 'f') { const e = fpRows.value.find((x) => String(x.id) === id); if (e) { startRen(k, e.name); return true } }
+  return false
 }
 
 /* ===================== ② GRD（镜像 3D 页活树）===================== */
@@ -316,19 +364,116 @@ function grdLonText(sat) {
 function grdRedraw() { const a = fileBridge.grdActions; if (a && a.redraw) a.redraw() }
 const grdKeyOf = (sat, a) => `${sat.folder}|${a.name}`
 async function importGrd(sat) { if (fileBridge.grd) await fileBridge.grd.importGrd(sat) }
-async function removeGrdAnt(sat, a) { if (fileBridge.grd && await ask(`删除天线「${a.name}」？`)) { fileBridge.grd.removeAntenna(sat.folder, a.name); grdRedraw() } }
-async function removeGrdSat(sat) { if (fileBridge.grd && await ask(`删除卫星「${sat.satName}」及其全部天线？`)) { fileBridge.grd.removeSatellite(sat.folder); grdRedraw() } }
+async function removeGrdAnt(sat, a) {
+  if (!fileBridge.grd) return
+  const n = await lbRefCount((c) => antRefHit(c, sat.folder + '|' + a.name))
+  if (await ask(n ? `删除天线「${a.name}」？正被 ${n} 个链路预算卫星条目引用。` : `删除天线「${a.name}」？`)) { fileBridge.grd.removeAntenna(sat.folder, a.name); grdRedraw() }
+}
+async function removeGrdSat(sat) {
+  if (!fileBridge.grd) return
+  const n = await lbRefCount((c) => satRefHit(c, sat.folder))
+  if (await ask(n ? `删除卫星「${sat.satName}」及其全部天线？正被 ${n} 个链路预算卫星条目引用。` : `删除卫星「${sat.satName}」及其全部天线？`)) { fileBridge.grd.removeSatellite(sat.folder); grdRedraw() }
+}
+
+// —— 链路预算资源库里的卫星条目（userData/library.json 的 geo / ngso / regen / e2e 分区，经 store.getLibrary 只读）——
+// 只用来在删除确认里报「被几个卫星条目引用」：删之前现读一次（链路预算窗口随改随存，缓存的会旧）。读不到按 0 计。
+// 引用口径：GSO 条目的方向图匹配 grd.eirpKey / grd.gtKey（'<folder>|<天线名>'）与树选星 grd.satFolder、频率计划 grd.fpId；
+// NGSO / 再生式 / 端到端条目的取星 ngsoSat.folder（v1.4.5 起这三窗只从树取轨道，不带方向图）。
+const LB_LIB_NS = ['geo', 'ngso', 'regen', 'e2e']
+async function lbSatEntries() {
+  if (!api?.store?.getLibrary) return []
+  const libs = await Promise.all(LB_LIB_NS.map(async (ns) => { try { return await api.store.getLibrary(ns) } catch { return null } }))
+  const out = []
+  libs.forEach((lib, i) => { for (const c of ((lib && lib.sat) || [])) if (c) out.push({ ns: LB_LIB_NS[i], c }) })
+  return out
+}
+async function lbRefCount(pred) {
+  try { return (await lbSatEntries()).filter((e) => pred(e.c, e.ns)).length } catch { return 0 }
+}
+const antRefHit = (c, key) => !!(c.grd && (c.grd.eirpKey === key || c.grd.gtKey === key))
+const satRefHit = (c, folder) => {
+  const g = c.grd
+  if (g && (g.satFolder === folder || [g.eirpKey, g.gtKey].some((k) => String(k || '').startsWith(folder + '|')))) return true
+  return !!(c.ngsoSat && c.ngsoSat.folder === folder)
+}
+// 确认文案里的引用数是运行时读数：0 不写。整串写死、不拼尾巴（词典按整串匹配，拼出来的串翻不了）
+
+/* ===================== ②c 计算窗自存的方向图（链路预算 lb/grdSats · 干扰分析 ci/grdSats）=====================
+   这两份库不进 3D 页天线树（3D 页整份快照式保存会抹掉外部写入，见 shared/lbGrdImport.js 文件头），
+   过去在哪儿都看不见：卫星条目删了，盘上的 GRD 就成了孤儿。这里列出来、可导出、可删除。
+   与链路预算 / 干扰分析窗口同源（同一份 localStorage）：写回后它们获焦即重读（LinkBudgetApp.reloadSatTree、
+   useInterference.loadGrdTree 都挂在 window focus 上）；它们写入时本页经 storage 事件跟上。 */
+const EXT_GRD_STORES = [{ key: 'lb/grdSats', label: '链路预算导入' }, { key: 'ci/grdSats', label: '干扰分析导入' }]
+const extGrdRaw = ref({})        // 库键 → sats[]（原样）
+const lbSatNames = ref(null)     // GSO 卫星库条目 id → 名称（null = 库读不到，不判「条目已删除」）
+function readExtStore(key) {
+  try {
+    const st = JSON.parse(localStorage.getItem(key) || 'null')
+    return (st && Array.isArray(st.sats) ? st.sats : []).filter((s) => s && s.folder)
+  } catch { return [] }
+}
+function writeExtStore(key, sats) {
+  try { localStorage.setItem(key, JSON.stringify({ sats })); return true } catch { return false }
+}
+async function loadExtGrd() {
+  const o = {}
+  for (const s of EXT_GRD_STORES) o[s.key] = readExtStore(s.key)
+  extGrdRaw.value = o
+  let lib = null
+  try { lib = api?.store?.getLibrary ? await api.store.getLibrary('geo') : null } catch { lib = null }
+  const names = {}
+  for (const c of ((lib && lib.sat) || [])) if (c && c.id) names[c.id] = c.name || (c.form && c.form.satelliteName) || c.id
+  lbSatNames.value = lib && Array.isArray(lib.sat) ? names : null
+}
+// 分组（只列有天线的节点；空库整组不出）
+const extGrdGroups = computed(() => EXT_GRD_STORES.map((st) => ({
+  ...st,
+  nodes: (extGrdRaw.value[st.key] || []).map((s) => {
+    const isLb = st.key === 'lb/grdSats' && String(s.folder).startsWith('lb:')
+    const entryName = isLb && lbSatNames.value ? lbSatNames.value[String(s.folder).slice(3)] : undefined
+    const satName = s.satName || s.folder
+    const orphan = isLb && lbSatNames.value != null && entryName === undefined   // 挂靠的卫星条目已不在库里
+    return {
+      folder: s.folder, satName, orphan,
+      // 卫星条目名：库里查得到就用条目名（链路预算资源库里看到的那个），否则用节点自带的星名
+      label: orphan ? `（卫星条目已删除：${satName}）` : (entryName || satName),
+      antennas: (s.antennas || []).filter((a) => a && a.file).map((a) => ({ name: a.name, file: a.file, beams: Number(a.beams) || 1, imported: true }))
+    }
+  }).filter((n) => n.antennas.length)
+})).filter((g) => g.nodes.length))
+const extKeyOf = (store, node, a) => 'x:' + store + '|' + node.folder + '|' + a.name
+const fileBase = (f) => String(f || '').split(/[\\/]/).pop()
+// 删除：确认 → 原始文件进回收站（主进程 coverageGrd.remove）→ 从库里摘掉这副天线（空节点不留）并写回。
+// 文件删不掉就不动库，免得记录没了、文件还在盘上成了看不见的孤儿；别处还引用同一文件时只摘记录不删文件。
+async function removeExtAnt(store, node, a) {
+  const n = store === 'lb/grdSats' ? await lbRefCount((c, ns) => ns === 'geo' && antRefHit(c, node.folder + '|' + a.name)) : 0
+  if (!(await ask(n ? `删除方向图「${a.name}」（${node.satName}）？正被 ${n} 个链路预算卫星条目引用。` : `删除方向图「${a.name}」（${node.satName}）？`))) return
+  const sats = readExtStore(store)   // 现读：链路预算窗口可能刚写过
+  const shared = (grdSats.value || []).some((s) => (s.antennas || []).some((x) => x && x.file === a.file)) ||
+    EXT_GRD_STORES.some((st) => readExtStore(st.key).some((s) => (s.antennas || []).some((x) => x && x.file === a.file && !(st.key === store && s.folder === node.folder && x.name === a.name))))
+  if (!shared && api?.coverageGrd?.remove) {
+    let r
+    try { r = await api.coverageGrd.remove(a.file) } catch (e) { flash(`删除失败：${errText(e)}`); return }
+    if (r && r.ok === false && r.error) { flash(`删除失败：${r.error}`); return }
+  }
+  const nd = sats.find((s) => s.folder === node.folder)
+  if (nd && Array.isArray(nd.antennas)) nd.antennas = nd.antennas.filter((x) => !(x && x.name === a.name))
+  if (!writeExtStore(store, sats.filter((s) => s.folder !== node.folder || (s.antennas || []).length))) { flash('删除失败：本地存储写入失败'); return }
+  await loadExtGrd()
+  flash(`已删除方向图「${a.name}」`)
+}
+function onStorage(e) { if (!e || !e.key || EXT_GRD_STORES.some((s) => s.key === e.key)) loadExtGrd() }
 
 // —— 添加 / 编辑卫星：直接复用覆盖分析「原版」卫星弹窗（含定位方式 / 星座关联，仅隐藏图标·字号·仰角线·颜色
 //    等可视化项）。弹窗浮在文件管理器之上、与之共存（不关闭文件管理）。两处完全同一弹窗，行为一致。
 function openAddGrdSat() {
   const a = fileBridge.grdActions
-  if (!a || !a.openAddSat) { flash('请在「星座地图 3D」页操作'); return }
+  if (!a || !a.openAddSat) { flash('主窗口未打开。'); return }
   a.openAddSat()
 }
 function openEditGrdSat(sat) {
   const a = fileBridge.grdActions
-  if (!a || !a.openEditSat) { flash('请在「星座地图 3D」页操作'); return }
+  if (!a || !a.openEditSat) { flash('主窗口未打开。'); return }
   a.openEditSat(sat.folder)
 }
 
@@ -379,7 +524,8 @@ async function addFreqPlan(g) {
   } finally { fpBusy.value = false }
 }
 async function removeFreqPlan(e) {
-  if (!(await ask(`删除频率计划「${e.name}」？此操作不可撤销。`))) return
+  const n = await lbRefCount((c) => !!(c.grd && c.grd.fpId === e.id))
+  if (!(await ask(n ? `删除频率计划「${e.name}」？此操作不可撤销。正被 ${n} 个链路预算卫星条目引用。` : `删除频率计划「${e.name}」？此操作不可撤销。`))) return
   await api.freqPlan.remove(e.id)
   await loadFreqPlans()
   flash(`已删除「${e.name}」`)
@@ -389,7 +535,8 @@ async function exportFreqPlan(e) {
   if (!p) { flash('计划不存在'); return }
   const r = await api.freqPlan.exportFile('json', JSON.stringify(p, null, 2), p.name || '频率计划')
   if (r?.canceled) return
-  flash(r?.ok ? '已导出：' + r.filePath : '导出失败：' + (r?.error || '未知错误'))
+  if (r?.ok) flashSaved(r)
+  else flash('导出失败：' + (r?.error || '未知错误'))
 }
 async function importFreqPlanJson() {
   const r = await api?.freqPlan?.importJson?.()
@@ -422,29 +569,11 @@ async function sendFreqPlanToMini(e) {
   } finally { fpBusy.value = false }
 }
 
-const fpEdit = ref('')
-const fpVal = ref('')
-function startRenameFp(e) { fpEdit.value = e.id; fpVal.value = e.name }
-async function commitRenameFp(e) {
-  const name = fpVal.value.trim()
-  if (!name) { flash('名称不能为空'); return }
-  await api.freqPlan.rename(e.id, name)
-  fpEdit.value = ''
-  await loadFreqPlans()
-  flash('已改名为「' + name + '」')
+// 行键里的 folder|天线名 → 天线树里的那颗星与那副天线（改名 / F2 用）
+function grdAntOfKey(k) {
+  for (const sat of grdSats.value) for (const a of (sat.antennas || [])) if (grdKeyOf(sat, a) === k) return { sat, ant: a }
+  return null
 }
-function cancelRenameFp() { fpEdit.value = '' }
-
-// —— 天线重命名（点名称或「改名」进入编辑，✓/回车提交）——
-const grdAntEdit = ref('')   // 正在重命名的天线 key（folder|name）
-const grdAntVal = ref('')
-function startRenameGrdAnt(sat, a) { grdAntEdit.value = grdKeyOf(sat, a); grdAntVal.value = a.name }
-function commitRenameGrdAnt(sat, a) {
-  if (grdAntEdit.value === '') return
-  if (fileBridge.grd.renameAntenna(sat.folder, a.name, grdAntVal.value) === false) { flash('天线名为空或与同星其他天线重名'); return }
-  grdAntEdit.value = ''; grdRedraw()
-}
-function cancelRenameGrdAnt() { grdAntEdit.value = '' }
 // ── 方向图导出：GRASP GRD / STK / ACP4 / Eutelsat 四选一 ──
 // 四条路都从落盘的原始 GRD 文本出发（外部格式在导入时已转成 GRASP，见 useGrdCoverage.importGrd）。
 // 菜单用 position:fixed 落点 —— .tnode 有 overflow:hidden，行内绝对定位会被裁掉。
@@ -466,7 +595,7 @@ function toggleExpMenu(ev, sat, a) {
 // 与旧的 toBytes 逐字符取低 8 位逐字节等价），大文本不在渲染端转字节、也不必拼成整串。
 async function saveOut(text, defaultName, filters, msg) {
   const save = await api.exportFile({ defaultName, data: text, encoding: 'latin1', filters: [...filters, { name: '所有文件', extensions: ['*'] }] })
-  if (save && save.ok) flash(msg + '：' + save.filePath)
+  if (save && save.ok) flashSaved(save, msg + '：')
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 // 解析天线（*.gauss.json）盘上只有参数记录：导出前按参数现铺 GRASP 文本（带 SYNTHMETA，下面照合成件原路走）；其余原样
@@ -484,7 +613,7 @@ async function doExport(fmt) {
       if (!/\.gauss\.json$/i.test(a.file)) {
         const cp = await api.coverageGrd.exportRaw(a.file, `${a.name}.grd`)
         if (!cp || !cp.synth) {                     // 只有「这是合成件」才继续往下；取消/出错/未激活都到此为止
-          if (cp && cp.ok) flash('已导出：' + cp.filePath)
+          if (cp && cp.ok) flashSaved(cp)
           else if (cp && cp.error) flash('导出失败：' + cp.error)
           return
         }
@@ -518,8 +647,8 @@ const SRC_LABEL = { acp4: 'ACP4', eutelsat: 'Eutelsat' }
 const srcLabel = (a) => (a.imported ? (SRC_LABEL[a.src] || '导入') : '预置')
 // 整串写死不拼接 —— 词典按整串精确匹配，拼出来的串翻不了（见 uiDict.data.js 的约定）
 const SRC_TITLE = {
-  acp4: '由 ACP4 转入：该格式只有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用',
-  eutelsat: '由 Eutelsat 转入：该格式只有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用'
+  acp4: '由 ACP4 转入：该格式仅有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用',
+  eutelsat: '由 Eutelsat 转入：该格式仅有标量幅度，无相位与交叉极化分量，轴比 AR 与 XPD 对本天线不适用'
 }
 const srcTitle = (a) => SRC_TITLE[a.src] || ''
 
@@ -535,7 +664,7 @@ async function exportPresetBeam(satName, beam) {
     const j = await api.coverage.get(beam.file)
     const text = serializeGxt({ lon: j.lon != null ? j.lon : beam.lon, satName: j.sat || satName, bore: j.bore || [], contours: j.contours || [], beamId: beam.beam, emiRcp: 'E' })
     const save = await api.exportFile({ defaultName: `${j.sat || satName}_${beam.band}_${beam.beam}_${beam.type}.gxt`, data: text, filters: [{ name: 'GXT 等值线', extensions: ['gxt'] }] })
-    if (save && save.ok) flash('已导出：' + save.filePath)
+    if (save && save.ok) flashSaved(save)
     else if (save && save.error) flash('导出失败：' + save.error)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
 }
@@ -591,7 +720,7 @@ async function exportBeamKml(sat, beam) {
       { name: `${sat.name} ${beam.name}` }
     )
     const save = await api.exportFile({ defaultName: `${sat.name}_${beam.name}.kml`, data: text, filters: [{ name: 'KML', extensions: ['kml'] }] })
-    if (save && save.ok) flash('已导出：' + save.filePath)
+    if (save && save.ok) flashSaved(save)
     else if (save && save.error) flash('导出失败：' + save.error)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
 }
@@ -644,11 +773,11 @@ async function importGxtBatch() {
   const exp = { ...gxtExpanded.value }
   for (const it of items) exp['g:' + String(it.satName || '').toLowerCase()] = true
   gxtExpanded.value = exp
-  const extra = [errs.length ? `${errs.length} 个失败` : '', noGain ? `${noGain} 个多边形无增益档` : '', skipPolys ? `${skipPolys} 个协调区多边形已跳过` : ''].filter(Boolean)
+  const extra = [errs.length ? `${errs.length} 个失败` : '', noGain ? `${noGain} 个 Polygon 无增益档` : '', skipPolys ? `${skipPolys} 个 Polygon 已跳过` : ''].filter(Boolean)
   flash(`导入 ${files.length} 个文件 → ${items.length} 个波束，新增 ${r.sats} 卫星 / ${r.beams} 波束` + (extra.length ? `（${extra.join('，')}）` : ''))
 }
 async function addGxtSat() {
-  const name = newSat.value.name.trim(); if (!name) { flash('请填写卫星名'); return }
+  const name = newSat.value.name.trim(); if (!name) { flash('卫星名为空。'); return }
   const lon = newSat.value.lon === '' ? null : Number(newSat.value.lon)
   await api.coverageGxt.addSat(name, Number.isFinite(lon) ? lon : null)
   newSat.value = { name: '', lon: '' }; await loadGxt(); bumpLibrary()
@@ -697,7 +826,7 @@ async function importGxtToBeam(node, beam) {
   const r = await api.coverageGxt.attach(node.userSatId, beam.id, {
     rawText: kml ? null : f.text, sourceName: f.base, sourceFormat: kml ? 'kml' : 'gxt', json, type: json.type, band: json.band
   })
-  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线${rest > 0 ? `；文件里另有 ${rest} 个波束未收，用「导入 GXT / KML…」批量导` : ''}）`); await loadGxt(); bumpLibrary() }
+  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线${rest > 0 ? `；文件中另有 ${rest} 个波束未收，用「导入 GXT / KML…」批量导` : ''}）`); await loadGxt(); bumpLibrary() }
   else flash('导入失败：' + ((r && r.error) || '未知'))
 }
 async function exportGxtBeam(beam) {
@@ -707,7 +836,7 @@ async function exportGxtBeam(beam) {
     if (beam.rawFile) { const r = await api.coverageGxt.raw(beam.rawFile); text = r.text }
     else { const j = await api.coverageGxt.get(beam.file); text = serializeGxt({ lon: j.lon, satName: j.sat, bore: j.bore, contours: j.contours, beamId: beam.name }) }
     const save = await api.exportFile({ defaultName: `${beam.name || 'beam'}.gxt`, data: beam.rawFile ? toBytes(text) : text, filters: [{ name: 'GXT 等值线', extensions: ['gxt'] }] })
-    if (save && save.ok) flash('已导出：' + save.filePath)
+    if (save && save.ok) flashSaved(save)
     else if (save && save.error) flash('导出失败：' + save.error)
   } catch (e) { flash('导出失败：' + (e.message || e)) }
 }
@@ -731,14 +860,14 @@ async function removeGxtBeam(node, beam) {
 // 导出当前画面绘制的覆盖（GXT+GRD 来源）为 GXT 文件
 const canExportCurrent = computed(() => !!fileBridge.collectGxt)
 async function exportCurrentGxt() {
-  if (!fileBridge.collectGxt) { flash('请先在「星座地图 3D」绘制覆盖'); return }
+  if (!fileBridge.collectGxt) { flash('暂无覆盖。'); return }
   const beams = fileBridge.collectGxt()
   if (!beams || !beams.length) { flash('当前画面没有可导出的覆盖等值线'); return }
   // 多波束合并为一个多 diagram GXT：逐波束 serialize 后拼接（每波束独立 COHeader 区块）
   const blocks = beams.map((b, i) => serializeGxt({ ...b, beamId: b.name || (i + 1) }))
   const text = blocks.join('\r\n')
   const save = await api.exportFile({ defaultName: '当前覆盖.gxt', data: text, filters: [{ name: 'GXT 等值线', extensions: ['gxt'] }] })
-  if (save && save.ok) flash('已导出：' + save.filePath)
+  if (save && save.ok) flashSaved(save)
   else if (save && save.error) flash('导出失败：' + save.error)
 }
 
@@ -923,7 +1052,7 @@ function mcAddStd() {
 }
 async function mcRemoveStd(s) {
   if (!s || s.builtin) return
-  if (!(await ask(`删除标准「${s.label}」（${s.rows.length} 条 MODCOD）？已引用它的载波配置会失去这一档快选，配置里已填好的值不受影响。`))) return
+  if (!(await ask(`删除标准「${s.label}」（${s.rows.length} 条 MODCOD）？已引用它的载波配置会失去该档快选，配置中已填好的值不受影响。`))) return
   mcPushUndo()
   mcStds.value = mcStds.value.filter((x) => x.key !== s.key)
   if (mcSel.value === s.key) mcSel.value = mcStds.value[0]?.key || ''
@@ -987,7 +1116,7 @@ async function mcExport() {
     style: 'report', sheets: modcodSheets(mcStds.value)
   })
   if (r && r.canceled) return
-  if (r && r.ok) flash('已导出：' + r.filePath)
+  if (r && r.ok) flashSaved(r)
   else flash('导出失败：' + ((r && r.error) || '未知错误'))
 }
 async function mcImport() {
@@ -996,7 +1125,7 @@ async function mcImport() {
   if (!r || r.canceled) return
   if (!r.ok) { flash('导入失败：' + (r.error || '未知错误')); return }
   const incoming = standardsFromSheets(r.sheets)
-  if (!incoming.length) { flash('这份工作簿里没读到 MODCOD 数据'); return }
+  if (!incoming.length) { flash('该工作簿中未读取到 MODCOD 数据'); return }
   // 按标准名对号入座：对得上的整表替换，对不上的新建为自定义标准。
   // ★ 两把尺子都要试 —— Excel 的表名不许超 31 字符、不许带 `: \ / ? * [ ]`，故长名/带这些字符的
   //   自定义标准导出时表名必被改写。只比字面量的话，「导出→原样导回」会凭空多出一个重名标准而不是
@@ -1027,23 +1156,40 @@ async function mcImport() {
 
 const fpMiniDeviceId = ref('')
 onMounted(() => {
-  loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans(); loadModcod()
+  loadOmm(); loadCustomGroups(); loadCustomConsts(); loadGxt(); loadPreset(); loadFreqPlans(); loadModcod(); loadExtGrd()
   // 「发送到小程序」的凭证与本机ID（缺凭证时按钮仍在，点开即说明原因，不静默失效）
   api?.share?.configured?.().then((v) => { fpMiniConfigured.value = !!v }).catch(() => {})
   api?.app?.deviceId?.().then((v) => { fpMiniDeviceId.value = String(v || '') }).catch(() => {})
+  window.addEventListener('storage', onStorage)
 })
+onBeforeUnmount(() => { window.removeEventListener('storage', onStorage); clearTimeout(_msgT) })
 // 频率计划在独立窗口编辑，改动不会回推本页 —— 切回本页签时重新拉一次索引，
-// 免得用户编辑完回来看到的还是旧的转发器数/更新时间。
-watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans() })
+// 免得用户编辑完回来看到的还是旧的转发器数/更新时间。链路预算导入的方向图同理（卫星条目名在那边改）。
+watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans(); else if (t === 'grd') loadExtGrd() })
+
+// F2 = 改名选中行（资源管理器口径）。捕获阶段收：文件管理开着时 F2 一律不漏给背后页面（星座栏的 F2 改名）。
+// 例外：MODCOD 表格里的 F2 是「编辑单元格」，放给表格自己收，冒泡到 .dlg 再截停（onDlgKey）。
+function onF2(e) {
+  const t = e.target
+  if (tab.value === 'modcod' && t && t.closest && t.closest('.mcgrid')) return
+  e.stopPropagation()
+  if (e.isComposing || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+  if (t && t.matches && t.matches('input, textarea, select')) return
+  if (confirmState.open || expMenu.value.key || fpMiniOpen.value || fmImport.value || fmExport.value) return   // 上面压着别的框
+  if (renameSelected()) e.preventDefault()
+}
+function onDlgKey(e) { if (e.key === 'F2') e.stopPropagation() }
 
 // Esc 由内到外逐层关：删除确认 → 导出菜单 → 发送到小程序 → 文件管理本身。捕获阶段先收，不漏给下面的画布；
 // 输入法组字中的 Esc 是取消组字。发送到小程序开着时只拦住冒泡，关它交给它自己的 Esc（上传中它不关）；
 // MODCOD 表格开着下拉 / 右键菜单时留给表格自己收；输入框里的 Esc 留给行内改名的「取消」。
 function onKey(e) {
+  if (e.key === 'F2') { onF2(e); return }
   if (e.key !== 'Escape' || e.isComposing) return
-  if (confirmMsg.value) { e.stopPropagation(); e.preventDefault(); answerConfirm(false); return }
+  if (confirmState.open) { e.stopPropagation(); e.preventDefault(); answerConfirm(false); return }
   if (expMenu.value.key) { e.stopPropagation(); expMenu.value = { key: '', x: 0, y: 0, ant: null }; return }
-  if (fpMiniOpen.value) { e.stopPropagation(); return }
+  // 上面压着 AppDialog 外壳的框（发送到小程序 / 导入星历 / 导出星历）：Esc 归它（AppDialog 在冒泡段收），这里不拦也不关自己
+  if (fpMiniOpen.value || fmImport.value || fmExport.value) return
   if (mcGrid.pick.open || mcGrid.menu.open) return
   if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return
   e.stopPropagation()
@@ -1055,7 +1201,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
 <template>
   <div class="mask">
-    <div class="dlg" role="dialog" aria-modal="true">
+    <div class="dlg" role="dialog" aria-modal="true" @keydown="onDlgKey">
       <header class="dhd">
         <span class="dt">文件管理</span>
         <button class="winx" type="button" aria-label="关闭" title="关闭" @click="emit('close')">
@@ -1065,11 +1211,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
       <div class="wrap">
         <nav class="rail">
-          <button class="rb" :class="{ on: tab === 'omm' }" @click="tab = 'omm'">轨道星历</button>
-          <button class="rb" :class="{ on: tab === 'grd' }" @click="tab = 'grd'">天线方向图</button>
-          <button class="rb" :class="{ on: tab === 'freqplan' }" @click="tab = 'freqplan'">频率计划</button>
-          <button class="rb" :class="{ on: tab === 'modcod' }" @click="tab = 'modcod'">MODCOD 表</button>
-          <button class="rb" :class="{ on: tab === 'gxt' }" @click="tab = 'gxt'">GXT/KML 管理</button>
+          <button class="rb" :class="{ on: tab === 'omm' }" :aria-pressed="(tab === 'omm') ? 'true' : 'false'" @click="tab = 'omm'">轨道星历</button>
+          <button class="rb" :class="{ on: tab === 'grd' }" :aria-pressed="(tab === 'grd') ? 'true' : 'false'" @click="tab = 'grd'">天线方向图</button>
+          <button class="rb" :class="{ on: tab === 'freqplan' }" :aria-pressed="(tab === 'freqplan') ? 'true' : 'false'" @click="tab = 'freqplan'">频率计划</button>
+          <button class="rb" :class="{ on: tab === 'modcod' }" :aria-pressed="(tab === 'modcod') ? 'true' : 'false'" @click="tab = 'modcod'">MODCOD 表</button>
+          <button class="rb" :class="{ on: tab === 'gxt' }" :aria-pressed="(tab === 'gxt') ? 'true' : 'false'" @click="tab = 'gxt'">GXT/KML 管理</button>
         </nav>
 
         <div class="pane" :class="{ fill: tab === 'modcod' }">
@@ -1084,39 +1230,29 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
             <div class="clist">
               <!-- ① 自建星座（Walker，历元=场景历元）：只读镜像，在「星座3D」增删；可逐座导出/改名 -->
               <div v-if="customConsts.length" class="csub">自建星座 · {{ customConsts.length }} 座 · 场景历元</div>
-              <div v-for="c in customConsts" :key="'k' + c.id" class="crow">
+              <div v-for="c in customConsts" :key="'k' + c.id" class="crow" :class="{ on: sel === 'k:' + c.id }" @click="sel = 'k:' + c.id">
                 <span class="cdot" :style="{ background: c.color }"></span>
-                <template v-if="custEdit === 'k' + c.id">
-                  <input class="ci cnmedit" :ref="setCustInput" v-model="custVal" @keydown.enter="commitRenameCust" @keydown.esc="cancelRenameCust" />
-                  <span class="cops">
-                    <button class="mini imp" @mousedown.prevent @click="commitRenameCust">确定</button>
-                    <button class="mini ghost" @click="cancelRenameCust">取消</button>
-                  </span>
-                </template>
+                <input v-if="ren === 'k:' + c.id" class="ci cnmedit" :ref="setRenEl" v-model="renVal" @keydown="onRenKey" @blur="commitRen('blur')" />
                 <template v-else>
-                  <span class="cnm rn" title="点击改名" @click="startRenameCust('k' + c.id, c.name)" data-i18n-skip>{{ c.name }}</span>
-                  <span class="cmeta" title="在「星座3D」管理">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
+                  <span class="cnm" data-i18n-skip>{{ c.name }}</span>
+                  <span class="cmeta" title="在主窗口「星座」视图中管理">{{ c.incl.toFixed(1) }}° · {{ c.count }} 颗</span>
                   <span class="cops">
+                    <button class="mini ghost icn" title="重命名（F2）" @click="startRen('k:' + c.id, c.name)"><Icon name="pencil" :size="12" /></button>
                     <button class="mini ghost" @click="exportConstellation(c)">导出</button>
                   </span>
                 </template>
               </div>
               <!-- ② 导入组（每个 OMM/TLE 文件一组，历元=文件内）：逐组导出/删除/改名 -->
               <div v-if="customGroups.length" class="csub">导入组 · {{ customGroups.length }} 组 · 文件历元</div>
-              <div v-for="g in customGroups" :key="'g' + g.id" class="crow">
+              <div v-for="g in customGroups" :key="'g' + g.id" class="crow" :class="{ on: sel === 'g:' + g.id }" @click="sel = 'g:' + g.id">
                 <span class="cdot imp"></span>
-                <template v-if="custEdit === 'g' + g.id">
-                  <input class="ci cnmedit" :ref="setCustInput" v-model="custVal" @keydown.enter="commitRenameCust" @keydown.esc="cancelRenameCust" />
-                  <span class="cops">
-                    <button class="mini imp" @mousedown.prevent @click="commitRenameCust">确定</button>
-                    <button class="mini ghost" @click="cancelRenameCust">取消</button>
-                  </span>
-                </template>
+                <input v-if="ren === 'g:' + g.id" class="ci cnmedit" :ref="setRenEl" v-model="renVal" @keydown="onRenKey" @blur="commitRen('blur')" />
                 <template v-else>
-                  <span class="cnm rn" title="点击改名" @click="startRenameCust('g' + g.id, g.name)" data-i18n-skip>{{ g.name }}</span>
+                  <span class="cnm" data-i18n-skip>{{ g.name }}</span>
                   <span class="cmeta">{{ fmtGroupMeta(g) }}</span>
                   <span class="cops">
-                    <button v-if="g.kind === 'ephem'" class="mini ghost" title="把组里的星对应到已有卫星（编目 / 自定义 / 别的导入星），或取消对应" @click="rebindGroup(g)">对应…</button>
+                    <button class="mini ghost icn" title="重命名（F2）" @click="startRen('g:' + g.id, g.name)"><Icon name="pencil" :size="12" /></button>
+                    <button v-if="g.kind === 'ephem'" class="mini ghost" title="把组中的星对应到已有卫星（编目 / 自定义 / 别的导入星），或取消对应" @click="rebindGroup(g)">对应…</button>
                     <button class="mini ghost" @click="exportGroup(g)">导出</button>
                     <button class="mini del" @click="removeCustomGroup(g)">删除</button>
                   </span>
@@ -1180,19 +1316,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                       <button class="mini del" @click="removeGrdSat(sat)">删除卫星</button>
                     </span>
                   </div>
-                  <div v-for="a in sat.antennas" :key="a.name" class="trow ant">
-                    <template v-if="grdAntEdit === grdKeyOf(sat, a)">
-                      <input class="ci wide" v-model="grdAntVal" @keydown.enter="commitRenameGrdAnt(sat, a)" @keydown.esc="cancelRenameGrdAnt" />
-                      <span class="trops">
-                        <button class="mini imp" @mousedown.prevent @click="commitRenameGrdAnt(sat, a)"><Icon name="check" :size="12" /> 确定</button>
-                        <button class="mini ghost" @click="cancelRenameGrdAnt">取消</button>
-                      </span>
-                    </template>
+                  <div v-for="a in sat.antennas" :key="a.name" class="trow ant" :class="{ on: sel === 'a:' + grdKeyOf(sat, a) }" @click="sel = 'a:' + grdKeyOf(sat, a)">
+                    <input v-if="ren === 'a:' + grdKeyOf(sat, a)" class="ci wide" :ref="setRenEl" v-model="renVal" @keydown="onRenKey" @blur="commitRen('blur')" />
                     <template v-else>
-                      <span class="tname rn" title="点击重命名" @click="startRenameGrdAnt(sat, a)" data-i18n-skip>{{ a.name }}</span>
+                      <span class="tname" data-i18n-skip>{{ a.name }}</span>
                       <span class="tmeta" :title="srcTitle(a)">{{ a.beams }} 波束 · {{ srcLabel(a) }}<template v-if="a.peakDb != null"> · 峰值 {{ Number(a.peakDb).toFixed(1) }} dB</template></span>
                       <span class="trops">
-                        <button class="mini ghost" @click="startRenameGrdAnt(sat, a)">改名</button>
+                        <button class="mini ghost icn" title="重命名（F2）" @click="startRen('a:' + grdKeyOf(sat, a), a.name)"><Icon name="pencil" :size="12" /></button>
                         <button class="mini ghost" :disabled="!a.imported" title="导出为 GRASP GRD / STK / ACP4 / Eutelsat" @click="toggleExpMenu($event, sat, a)">导出</button>
                         <button class="mini del" @click="removeGrdAnt(sat, a)">删除</button>
                       </span>
@@ -1202,13 +1332,34 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                 </div>
               </div>
             </template>
+            <!-- 计算窗自存的方向图（链路预算 / 干扰分析导入）：不在天线树里，单列；可导出 / 删除。
+                 不给改名：链路预算按「条目 folder|天线名」引用，改名即断匹配。 -->
+            <template v-for="xg in extGrdGroups" :key="xg.key">
+              <div class="secbar top"><span class="sect">{{ xg.label }}</span></div>
+              <div class="tree">
+                <div v-for="nd in xg.nodes" :key="nd.folder" class="tnode">
+                  <div class="trow sat">
+                    <span class="tname" :class="{ orphanname: nd.orphan }">{{ nd.label }}</span>
+                    <span class="tcount">{{ nd.antennas.length }} 天线</span>
+                  </div>
+                  <div v-for="a in nd.antennas" :key="a.name" class="trow ant" :class="{ on: sel === extKeyOf(xg.key, nd, a) }" @click="sel = extKeyOf(xg.key, nd, a)">
+                    <span class="tname" data-i18n-skip>{{ a.name }}</span>
+                    <span class="tmeta">{{ a.beams }} 波束 · {{ fileBase(a.file) }}</span>
+                    <span class="trops">
+                      <button class="mini ghost" title="导出为 GRASP GRD / STK / ACP4 / Eutelsat" @click="toggleExpMenu($event, nd, a)">导出</button>
+                      <button class="mini del" @click="removeExtAnt(xg.key, nd, a)">删除</button>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </template>
           </section>
 
           <!-- ②b 频率计划 -->
           <section v-else-if="tab === 'freqplan'">
             <div class="addbar">
               <button class="mini imp" @click="openFreqPlanWin('')"><Icon name="layers" :size="12" /> 打开频率计划工作台</button>
-              <button class="mini ghost" @click="importFreqPlanJson"><Icon name="import" :size="12" /> 导入 JSON…</button>
+              <button class="mini ghost" @click="importFreqPlanJson"><Icon name="file-import" :size="12" /> 导入 JSON…</button>
             </div>
 
             <div v-if="!fpSats.length && !fpRows.length" class="empty-hint">暂无卫星。</div>
@@ -1221,20 +1372,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                     <button v-if="!g.orphan" class="mini" :disabled="fpBusy" @click="addFreqPlan(g)"><Icon name="plus" :size="12" /> 新建计划</button>
                   </span>
                 </div>
-                <div v-for="e in g.plans" :key="e.id" class="trow ant">
-                  <template v-if="fpEdit === e.id">
-                    <input class="ci wide" v-model="fpVal" @keydown.enter="commitRenameFp(e)" @keydown.esc="cancelRenameFp" />
-                    <span class="trops">
-                      <button class="mini imp" @mousedown.prevent @click="commitRenameFp(e)"><Icon name="check" :size="12" /> 确定</button>
-                      <button class="mini ghost" @click="cancelRenameFp">取消</button>
-                    </span>
-                  </template>
+                <div v-for="e in g.plans" :key="e.id" class="trow ant" :class="{ on: sel === 'f:' + e.id }" @click="sel = 'f:' + e.id" @dblclick="ren !== 'f:' + e.id && openFreqPlanWin(e.id)">
+                  <input v-if="ren === 'f:' + e.id" class="ci wide" :ref="setRenEl" v-model="renVal" @keydown="onRenKey" @blur="commitRen('blur')" />
                   <template v-else>
-                    <span class="tname rn" title="点击重命名" @click="startRenameFp(e)" data-i18n-skip>{{ e.name }}</span>
+                    <span class="tname" data-i18n-skip>{{ e.name }}</span>
                     <span class="tmeta">{{ fmtFpMeta(e) }}</span>
-                    <span class="trops">
+                    <span class="trops" @dblclick.stop>
                       <button class="mini" @click="openFreqPlanWin(e.id)">打开</button>
-                      <button class="mini ghost" @click="startRenameFp(e)">改名</button>
+                      <button class="mini ghost icn" title="重命名（F2）" @click="startRen('f:' + e.id, e.name)"><Icon name="pencil" :size="12" /></button>
                       <button class="mini ghost" title="导出为 JSON（可交换 / 备份）" @click="exportFreqPlan(e)">导出</button>
                       <button class="mini ghost" :disabled="fpBusy" title="生成只读快照并上传，返回 8 位密钥；在小程序「工具栏 · 频率计划」输入该密钥即可查看。快照对应当前版式，计划变更后需重新发送" @click="sendFreqPlanToMini(e)">发送到小程序</button>
                       <button class="mini del" @click="removeFreqPlan(e)">删除</button>
@@ -1251,25 +1396,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
             <div class="addbar">
               <button class="mini imp" @click="mcAddStd"><Icon name="plus" :size="12" /> 新建标准</button>
               <span class="spacer"></span>
-              <button class="mini ghost" title="一个标准一张工作表，表名即标准名：名字对得上的整表替换，对不上的新建为自定义标准" @click="mcImport"><Icon name="import" :size="12" /> 导入 Excel…</button>
+              <button class="mini ghost" title="一个标准一张工作表，表名即标准名：名字对得上的整表替换，对不上的新建为自定义标准" @click="mcImport"><Icon name="file-import" :size="12" /> 导入 Excel…</button>
               <button class="mini ghost" :disabled="!mcStds.length" @click="mcExport">导出 Excel</button>
             </div>
 
             <div class="mctabs">
-              <button v-for="s in mcStds" :key="s.key" class="mctab" :class="{ on: s.key === mcSel }"
+              <button v-for="s in mcStds" :key="s.key" class="mctab" :class="{ on: s.key === mcSel }" :aria-pressed="(s.key === mcSel) ? 'true' : 'false'"
                       :title="s.rows.length + ' 条 MODCOD'" @click="mcSel = s.key">
                 <span data-i18n-skip>{{ s.label }}</span><i class="mcn">{{ s.rows.length }}</i>
                 <em v-if="s.modified" class="mcmod" title="已改写"></em>
               </button>
             </div>
 
-            <div v-if="!mcCur" class="empty-hint">还没有标准。</div>
+            <div v-if="!mcCur" class="empty-hint">暂无标准。</div>
             <template v-else>
               <div class="mcbar">
                 <input v-if="mcEdit === mcCur.key" class="ci wide" :ref="setMcInput" v-model="mcVal"
                        @keydown.enter="mcCommitRename" @keydown.esc="mcCancelRename" @blur="mcCommitRename" />
                 <template v-else>
-                  <span class="mcname rn" title="点击改名" data-i18n-skip @click="mcRename(mcCur)">{{ mcCur.label }}</span>
+                  <span class="mcname" data-i18n-skip>{{ mcCur.label }}</span>
+                  <button class="mini ghost icn" title="重命名（F2）" @click="mcRename(mcCur)"><Icon name="pencil" :size="12" /></button>
                   <span v-if="mcCur.builtin" class="badge">内置</span>
                 </template>
                 <span class="spacer"></span>
@@ -1280,7 +1426,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                    占用带宽），门限条件是厂家给表时随表附的那几项，只进 title 与报表，不参与计算。
                    内置标准的这两项是标准属性、跟着版本走，故只读。 -->
               <div class="mcstd">
-                <label class="mcstd-f" title="这张表的门限按哪种物理层口径用：NR / NB-IoT 走每资源元素 SNR（噪声带宽 = 占用带宽），无 = 走 DVB 那条换算链">
+                <label class="mcstd-f" title="该表门限采用的物理层口径：NR / NB-IoT 走每资源元素 SNR（噪声带宽 = 占用带宽），无 = 走 DVB 那条换算链">
                   <span class="mcstd-l">体制</span>
                   <select class="ci" :value="mcCur.phy ? mcCur.phy.kind : ''" :disabled="mcCur.builtin" @change="mcSetPhy($event.target.value)">
                     <option v-for="k in PHY_KINDS" :key="k.value" :value="k.value">{{ k.label }}</option>
@@ -1304,13 +1450,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                 </label>
               </div>
               <ExcelGrid class="mcgrid" :grid="mcGrid" :cols="MC_GRID_COLS" :text="mcCellText" :cell-tip="mcCellTip" :cell-class="mcCellClass"
-                         :head-tip="(c) => c.tip || c.label" empty-text="还没有 MODCOD。"
+                         :head-tip="(c) => c.tip || c.label" empty-text="暂无 MODCOD。"
                          add-label="添加 MODCOD" del-label="删除所选行" @add="mcAddRow">
                 <template #pick-foot="{ col, apply }">
                   <div v-if="col && col.key === 'modulation'" class="mcgen">
                     <div class="mcgen-r">
                       <button v-for="f in MOD_FAMILIES" :key="f.key" type="button" class="mcgen-f"
-                              :class="{ on: mcGenFam === f.key }" @click="mcSetGenFam(f.key)">{{ f.label }}</button>
+                              :class="{ on: mcGenFam === f.key }" :aria-pressed="(mcGenFam === f.key) ? 'true' : 'false'" @click="mcSetGenFam(f.key)">{{ f.label }}</button>
                     </div>
                     <div class="mcgen-r">
                       <label class="mcgen-m">M<input class="ci" v-model="mcGenOrder" @keydown.enter="mcGenName && apply(mcGenName)" /></label>
@@ -1381,19 +1527,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
         </div>
       </div>
 
-      <div v-if="confirmMsg" class="cmask">
-        <div class="cbox">
-          <div class="cmsg">{{ confirmMsg }}</div>
-          <div class="cbtns">
-            <button class="mini ghost" @click="answerConfirm(false)">取消</button>
-            <button ref="cOk" class="mini imp" @click="answerConfirm(true)">确定</button>
-          </div>
-        </div>
-      </div>
-
       <footer class="dft">
-        <span class="msg">{{ msg }}</span>
-        <button class="ok" @click="emit('close')">完成</button>
+        <span class="msg" :title="msg">
+          <span class="msg-t">{{ msg }}</span>
+          <template v-if="msg && msgFile && hasFilesApi">
+            <a class="msg-a" @click="openOut">打开</a><a class="msg-a" @click="revealOut">在文件夹中显示</a>
+          </template>
+        </span>
+        <button class="ok" @click="emit('close')">关闭</button>
       </footer>
     </div>
     <EphemImportDialog v-if="fmImport" :previews="fmImport.previews" :mode="fmImport.mode" :search-sats="searchSats" :z="2200"
@@ -1403,9 +1544,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
     <MiniSendDialog v-model:open="fpMiniOpen" :build="() => fpMiniPack || { name: '', items: [] }"
       :device-id="fpMiniDeviceId" :configured="fpMiniConfigured" @toast="flash" />
     <template v-if="expMenu.key">
-      <div class="expback" @click="expMenu = { key: '', x: 0, y: 0, ant: null }"></div>
-      <div class="expmenu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
-        <button v-for="f in EXP_FMTS" :key="f.id" @click="doExport(f.id)">{{ f.label }}</button>
+      <div class="expback menu-mask" @click="expMenu = { key: '', x: 0, y: 0, ant: null }"></div>
+      <div class="expmenu menu" role="menu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">
+        <button v-for="f in EXP_FMTS" :key="f.id" type="button" class="menu-item" role="menuitem" @click="doExport(f.id)">{{ f.label }}</button>
       </div>
     </template>
   </div>
@@ -1413,7 +1554,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 
 <style scoped>
 /* 遮罩瞬时出现（压在画布上不做淡入）；框体 160ms 升入，出场瞬时 */
-.mask { position: fixed; inset: 0; z-index: 2000; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
+.mask { position: fixed; inset: 0; z-index: var(--z-dialog); background: var(--scrim); display: flex; align-items: center; justify-content: center; }
 .dlg { position: relative; width: 980px; max-width: calc(100vw - 32px); height: 680px; max-height: calc(100vh - 64px); display: flex; flex-direction: column;
   background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); overflow: hidden;
   animation: ui-dlg-in var(--dur-3) var(--ease-out); }
@@ -1428,7 +1569,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 /* 左栏：悬停 = 灰底，选中 = 纸底 + 贴左缘 2px 机位色竖条（内阴影画，不占盒宽；左内距 13 = 原 2px 边 + 11，文字不动） */
 .rb { display: flex; align-items: center; padding: 8px 11px 8px 13px; border: 0; background: transparent; color: var(--text-muted);
   text-align: left; cursor: pointer; border-radius: 0 var(--r-ctl) var(--r-ctl) 0; font-size: var(--fs-4); }
-.rb:hover { background: var(--surface-2); color: var(--text); }
+.rb:hover { background: var(--wash-hover); color: var(--text); }
 .rb.on { background: var(--bg); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); transition-duration: 0s; }
 /* 右内距 6 + 常驻滚动槽 10 = 16：换页签时内容不因滚动条出没而横跳 */
 .pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 6px 14px 16px; scrollbar-gutter: stable; }
@@ -1471,15 +1612,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .tcount, .tmeta { font-size: var(--fs-3); color: var(--text-faint); }
 .trops { margin-left: auto; white-space: nowrap; display: flex; }
 /* 导出格式菜单：定位用 fixed —— .tnode 的 overflow:hidden 会裁掉行内绝对定位的浮层 */
-.expback { position: fixed; inset: 0; z-index: 2100; }
-/* 命令菜单口径：结构描边 + 浮层圆角 + 四周 3px 内距，项圆角与外框同心（6 − 3 = --r-box）；
+/* 外观走 controls.css 的菜单基线（.menu / .menu-item / .menu-mask）；这里只留定位与宽度。
    入场只动 opacity / translate，不碰定位用的 transform: translateX(-100%) */
-.expmenu { position: fixed; z-index: 2101; transform: translateX(-100%); min-width: 148px; padding: 3px;
-  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2);
-  display: flex; flex-direction: column; animation: ui-float-in var(--dur-2) var(--ease-out); }
-.expmenu button { appearance: none; border: 0; background: none; color: var(--text); text-align: left;
-  padding: 5px 12px; font-size: var(--fs-3); cursor: pointer; white-space: nowrap; border-radius: var(--r-box); }
-.expmenu button:hover { background: var(--accent-ui); color: var(--bg); }
+.expmenu { position: fixed; transform: translateX(-100%); min-width: 148px; animation-name: ui-float-in; }
 .noant { padding: 8px 22px; font-size: var(--fs-3); color: var(--text-faint); }
 .trow.sat.clk { cursor: pointer; }
 .trow.sat.clk:hover { background: var(--surface); }
@@ -1501,25 +1636,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .ci.wide { width: 150px; flex: none; }
 /* MODCOD 改名框：与标准名（.mcname 左内距 4px）同起点 */
 .mcbar .ci.wide { margin-left: 4px; }
-/* 天线名可点重命名：悬停提示可交互 */
-.tname.rn { cursor: pointer; }
-.tname.rn:hover { color: var(--accent); }
+/* 选中行（单击选中，F2 改名）：与配置树 / 左栏同一套——灰底 + 贴左缘 2px 机位色竖条（内阴影画，不占盒宽） */
+.crow.on, .trow.ant.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
+/* 行尾 ✎：方形图标钮，与同行 .mini 等高 */
+.mini.icn { width: var(--h-ctl); padding: 0; }
 /* 宿主卫星已不在树中的频率计划：标黄而不隐藏——条目还在，只是需要重新指定卫星 */
 .tname.orphanname { color: var(--warn); font-weight: 500; }
 .addbar .ci:first-child { width: 180px; flex: none; }
 .spacer { flex: 1; }
 /* 应用内确认弹窗（覆盖在文件管理器之上，居中） */
-.cmask { position: absolute; inset: 0; z-index: 10; background: var(--scrim); display: flex; align-items: center; justify-content: center; }
-.cbox { width: 340px; max-width: calc(100% - 48px); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); padding: 18px 18px 14px;
-  animation: ui-dlg-in var(--dur-3) var(--ease-out); }
-.cmsg { font-size: var(--fs-4); color: var(--text); line-height: 1.6; margin-bottom: 16px; }
-.cbtns { display: flex; justify-content: flex-end; gap: 8px; }
-.cbtns .mini { margin-left: 0; height: var(--h-ctl-lg); padding: 0 16px; }
-/* 确认框的「确定」是这一步的主操作：墨色实底（与页脚「完成」同一套 token） */
-.cbtns .mini.imp { background: var(--primary-fill); color: var(--primary-on); border-color: var(--primary-fill); font-weight: 600; }
-.cbtns .mini.imp:hover { background: var(--primary-fill-hover); border-color: var(--primary-fill-hover); }
 .dft { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.dft .msg { flex: 1; font-size: var(--fs-3); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dft .msg { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
+.dft .msg-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 导出回执的「打开 · 在文件夹中显示」：与计算窗通知条（NoticeLine .nl-a）同款链接 */
+.dft .msg-a { flex: none; color: var(--accent-ui, var(--accent)); cursor: pointer; text-decoration: none; }
+.dft .msg-a:hover { text-decoration: underline; }
 .dft button { height: var(--h-ctl-lg); white-space: nowrap; padding: 0 18px; cursor: pointer; border-radius: var(--r-box); font-size: var(--fs-4); }
 /* 主钮：墨色实底（走 token，深色压一档）；字色跟 --primary-on，禁写死 #fff。按下由全局按下罩提供 */
 .ok { background: var(--primary-fill); border: 1px solid var(--primary-fill); color: var(--primary-on); font-weight: 600; }
@@ -1538,11 +1669,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .csub { font-size: var(--fs-2); color: var(--text-faint); padding: 8px 4px 4px; letter-spacing: var(--ls-tight); }
 .crow { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--border); }
 .crow:last-child { border-bottom: 0; }
-.cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; opacity: .85; }
+.cdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-ui); flex: none; }
 .cdot.imp { background: var(--text-muted); }
 .cnm { font-size: var(--fs-4); color: var(--text); font-weight: 500; flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cnm.rn { cursor: pointer; }
-.cnm.rn:hover { color: var(--accent); }
 .ci.cnmedit { width: 200px; flex: none; padding: 3px 8px; }
 .cmeta { font-size: var(--fs-3); color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cops { margin-left: auto; flex: none; display: flex; align-items: center; gap: 2px; }
@@ -1568,12 +1697,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
 .mctab:hover { color: var(--text); border-color: var(--accent-ui); }
 .mctab.on { color: var(--text); border-color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 12%, transparent); }
 .mctab .mcn { font-style: normal; color: var(--text-faint); font-size: var(--fs-2); }
-.mctab .mcmod { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.mctab .mcmod { width: 5px; height: 5px; border-radius: 50%; background: var(--accent-ui); }
 .mcbar { display: flex; align-items: center; gap: 8px; padding-bottom: 6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); flex: none; }
 .mcbar .mini { margin-left: 0; }
 .mcname { font-size: var(--fs-4); color: var(--text); font-weight: 600; }
-.mcname.rn { cursor: pointer; }
-.mcname.rn:hover { color: var(--accent); }
 .mcgrid { flex: 1; min-height: 0; overflow: auto; outline: none; border: 1px solid var(--border); border-radius: var(--r-ctl); }
 /* 名称列：自动名（随调制 + 码率现拼）退一档墨色，自定义名正常色 —— 与载波面板速率链里「由锚点算出来的」那几格同一套语言；
    扩频增益列：非 Es/N₀ 行不适用，「—」再退一档 */

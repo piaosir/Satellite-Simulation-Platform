@@ -11,21 +11,22 @@
 .md-grid td.eg-c.md-warn .eg-v { color: var(--warn); }
 .md-grid td.eg-c.md-mono .eg-v { font-family: var(--font-mono); }
 
-/* 勾选列（checkCol.js）：格内画一个复选框；勾上＝机位色实底 + 背景色的勾（accent 实底字色一律 var(--bg)） */
+/* 勾选列（checkCol.js）：格内画一个复选框；勾上＝机位色实底 + --accent-on 的勾（蓝块上的字色一律取 -on） */
 .md-grid td.eg-c.md-chk { cursor: pointer; text-align: center; }
 .md-grid td.eg-c.md-chk .eg-v {
   display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; box-sizing: border-box; vertical-align: -2px;
   border: 1px solid var(--field-border); border-radius: 2px; background: var(--field-bg); color: var(--bg); font-size: 10px; line-height: 1; font-weight: 700;
 }
 .md-grid td.eg-c.md-chk:hover .eg-v { border-color: var(--field-border-hover, var(--border-strong)); }
-.md-grid td.eg-c.md-chk.on .eg-v { background: var(--accent-ui); border-color: var(--accent-ui); }
+.md-grid td.eg-c.md-chk.on .eg-v { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-on); }
 .md-grid th.eg-h[data-k="chk"], .md-grid th.eg-h[data-k="ok"] { cursor: pointer; }
 
 /* 按钮行 */
 .md-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .md-acts .sp { flex: 1; }
 .md-acts .lb-mini, .md-sec-acts .lb-mini { height: var(--h-ctl); padding: 0 8px; font-size: var(--fs-2); }
-.md-acts .lb-mini.on { color: var(--accent-ui); border-color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 8%, var(--bg)); }
+/* 切换钮（点选 / 天线视角 / 仅已勾选 …）的按下态：原先只在 .md-acts 里有，同样的钮放进 .srow / .ar-row 就开着也看不出 */
+.lb-mini.on, .lb-mini.on:hover:not(:disabled) { color: var(--accent-ui); border-color: var(--accent-ui); background: color-mix(in srgb, var(--accent-ui) 8%, var(--bg)); }
 
 /* 只读读数行：标签 … 数值 单位（结果区只出数字） */
 .md-kvs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px 14px; }
@@ -63,15 +64,15 @@
 .lb-mini { font: inherit; font-size: var(--fs-2); line-height: 1; padding: 3px 8px; cursor: pointer; background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl); display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
 .lb-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lb-mini:disabled { opacity: .45; cursor: not-allowed; }
-.lb-mini.primary { background: var(--accent-ui); color: var(--bg); border-color: var(--accent-ui); }
-.lb-mini.primary:hover:not(:disabled) { color: var(--bg); background: var(--accent-ui-hover); border-color: var(--accent-ui-hover); }
+.lb-mini.primary { background: var(--accent-fill); color: var(--accent-on); border-color: var(--accent-fill); }
+.lb-mini.primary:hover:not(:disabled) { color: var(--accent-on); background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 .lb-mini-ico { display: inline-flex; align-items: center; justify-content: center; height: var(--h-ctl); white-space: nowrap; padding: 0 5px; }
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; padding: 10px 0; }
 
 /* ═════════════════════ 装配页（P3，契约 scratchpad p3/CONTRACT.md §6）═════════════════════
    全部挂在 .asm 作用域下（组件库左栏 / 右侧结构树 + 属性 dock 的根都带 .asm）；功能区的小拨钮 .asm-tg 在 .lbr 里。 */
 
-/* 侧栏分区 / 参数行 / 分段：照 src/components/ModelSidePanel.vue 的 .sec/.sect/.seg/.sg/.srow（逐字同源，那份是 scoped 的进不来；改动请两边一起改） */
+/* 侧栏分区 / 参数行 / 分段：照 src/components/ModelSidePanel.vue 的 .sec/.sect/.srow（逐字同源；分段本体在 controls.css，那份是 scoped 的进不来；改动请两边一起改） */
 .asm .sec { padding: 10px 12px; border-bottom: 1px solid var(--border); }
 .asm .sec > * + * { margin-top: 8px; }
 .asm .sec > .sect + * { margin-top: 6px; }
@@ -88,14 +89,7 @@
 .asm .sec > .sect.acc:last-child { margin-bottom: -3px; }
 .asm .sect .cnt { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: var(--fs-2); }
 .asm .sect-t { font-weight: 600; letter-spacing: var(--ls-tight); }
-.asm .seg { display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.asm .seg .sg { flex: 1 1 auto; text-align: center; padding: 2px 4px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.asm .seg .sg + .sg { border-left: 1px solid var(--border); }
-.asm .seg .sg:hover:not(.on):not(.off) { background: var(--surface-2); color: var(--text); }
-.asm .seg .sg:active:not(.on):not(.off) { box-shadow: var(--press); transition-duration: 0s; }
-.asm .seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.asm .seg .sg.on, .asm .seg .sg.on + .sg { border-left-color: transparent; }
-.asm .seg .sg.off { color: var(--text-faint); cursor: not-allowed; }
+.asm .seg > .sg { flex: 1 1 auto; padding: 2px 4px; }
 .asm .seg.nseg { flex: 1; min-width: 0; }
 .asm .srow > .seg { flex: 1; }
 /* 行内数字框（NumIn）/ 文本框占满标签与单位之间 */
@@ -126,7 +120,6 @@
 
 /* 搜索框（照库页 .lib-search；那份是 scoped 的） */
 .asm .asm-search { flex: none; display: flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 6px; color: var(--text-faint); background: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl); }
-.asm .asm-search:focus-within { border-color: var(--accent-ui); }
 .asm .asm-search > input { flex: 1; min-width: 0; height: 100%; border: 0 !important; background: transparent !important; outline: none; padding: 0 !important; font-size: var(--fs-3); color: var(--text); box-shadow: none !important; }
 .asm .asm-search > button { display: inline-flex; padding: 0; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; }
 .asm .asm-search > button:hover { color: var(--text); }
@@ -134,7 +127,7 @@
 /* 功能区小拨钮（照 ModelApp scoped 的 .md-tg；开 = 机位色底缘条 + 底色抬一档）与装配页各组的排版 */
 .asm-tg { position: relative; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; font: inherit; font-size: var(--fs-2); line-height: 1; cursor: pointer; white-space: nowrap;
   color: var(--text-muted); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); transition: var(--t-state); }
-.asm-tg:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--bg); }
+.asm-tg:hover:not(:disabled) { color: var(--text); border-color: var(--border); background: var(--wash-hover); }
 .asm-tg:active:not(:disabled) { box-shadow: var(--press); transition-duration: 0s; }
 .asm-tg.on { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); box-shadow: inset 0 -2px 0 var(--accent-ui); transition-duration: 0s; }
 .asm-tg:disabled { opacity: .42; cursor: not-allowed; }
@@ -156,7 +149,5 @@
 /* 行标签用图标（坐标系）：只占图标宽，口径进 title */
 .asm-rb .lbr-form label > span.asm-rb-ic { min-width: 0; color: var(--text-faint); }
 
-/* 右键菜单里的快捷键列（与菜单栏同一口径：右对齐、弱一档；悬停实底时跟着反白） */
-.lb-ctx .asm-kbd { margin-left: 18px; float: right; color: var(--text-faint); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
-.lb-ctx .lb-ctx-i:hover:not(:disabled) .asm-kbd { color: color-mix(in srgb, var(--bg) 78%, transparent); }
-.lb-ctx .lb-ctx-i .app-icon { margin-right: 7px; vertical-align: -2px; }
+/* 右键菜单里的快捷键列：外观走菜单基线 .menu-kbd，这里只补等宽数字 */
+.lb-ctx .asm-kbd { font-variant-numeric: tabular-nums; }

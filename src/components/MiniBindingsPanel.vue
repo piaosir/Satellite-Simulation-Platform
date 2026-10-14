@@ -53,7 +53,7 @@ function onChInput(e) {
 async function add() {
   if (busy.value) return
   err.value = ''
-  if (!isCh(chIn.value)) { err.value = '认证码应为 12 位（在小程序「设置 → 仿真平台绑定」里长按复制）'; return }
+  if (!isCh(chIn.value)) { err.value = '认证码应为 12 位（在小程序「设置 → 仿真平台绑定」中长按复制）'; return }
   busy.value = true
   const r = await addBinding(api, chIn.value, nameIn.value)
   busy.value = false

@@ -479,7 +479,7 @@ export function createAsmSession({ wb, getVp }) {
   function onKey(e) {
     if (!wb.designAsm() || !editor || !ui.active) return
     if (e.defaultPrevented || e.isComposing || editing(e.target)) return
-    if (document.querySelector('.lb-mask')) return   // 应用内确认框开着
+    if (document.querySelector('.lb-mask, .adlg-mask')) return   // 应用内对话框 / 确认框开着
     const k = String(e.key || '').toLowerCase()
     const mod = e.ctrlKey || e.metaKey
     if (mod && !e.altKey) {

@@ -187,7 +187,7 @@ export function targetReason(link, kind, ctx) {
   const ns = link.nodes
   const bent = ns.length === 3 && isSt(ns[0]) && isSat(ns[1]) && isSt(ns[2])
   if (kind === 'linkbudget') return !bent ? '仅支持 地球站 → 卫星 → 地球站' : ns[1].regen === true ? '卫星为再生转发' : '卫星不是地球静止轨道'
-  if (kind === 'ngso') return !bent ? '仅支持 地球站 → 卫星 → 地球站' : ns[1].regen === true ? '卫星为再生转发' : '地球静止轨道卫星请导入 GSO 链路预算'
+  if (kind === 'ngso') return !bent ? '仅支持 地球站 → 卫星 → 地球站' : ns[1].regen === true ? '卫星为再生转发' : '卫星为地球静止轨道'
   if (kind === 'regen') return '链路中有透明转发卫星'
   return ''
 }

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch, ref, onMounted } from 'vue'
+import { computed, watch, ref, onMounted, onBeforeUnmount } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { listPlans, getPlan, transponderOptions, applyChannel, MANAGED_KEYS } from '../shared/lbFreqPlanRef.js'
 import { antennaGroups, staleAntOption, folderOfKey } from '../shared/lbGrdImport.js'
@@ -110,7 +110,13 @@ function clearFp() {
 onMounted(async () => { await loadFpIndex(); await loadFpPlan() })
 // 换库条目时（同一组件实例复用于不同 cfg）重新解引用
 watch(() => props.sel.fpId, loadFpPlan)
-// 引用生效期间计划本身可能在另一个窗口被改过 —— 每次选转发器都按当前计划重取值，不缓存结果
+// 引用生效期间计划本身可能在另一个窗口被改过 —— 每次选转发器都按当前计划重取值，不缓存结果；
+// 频率计划窗口改了 / 删了 / 改名了（主进程广播 freqPlan:changed）：下拉清单与转发器选项跟着重取。
+// 托管字段的重套由父窗口的 resyncAll 统管（所有引用了计划的卫星条目，不只是正打开的这一条）。
+const _offFp = (typeof window !== 'undefined' && window.api && window.api.freqPlan && window.api.freqPlan.onChanged)
+  ? window.api.freqPlan.onChanged(() => { loadFpIndex(); loadFpPlan() })
+  : null
+onBeforeUnmount(() => { if (typeof _offFp === 'function') _offFp() })
 </script>
 
 <template>
@@ -119,7 +125,7 @@ watch(() => props.sel.fpId, loadFpPlan)
          写入本条目的 grd 属性；工作台卫星分区第三行只做只读速览。 -->
     <div class="sp-grd">
       <div class="sp-gmain">
-        <label class="sp-gf" title="从「星座3D」页导入的 GRD 天线树选星（星名/轨位随之回填本卫星配置）">
+        <label class="sp-gf" title="从主窗口「对地覆盖分析」视图导入的 GRD 天线树选星（星名/轨位随之回填本卫星配置）">
           <span class="sp-gl">卫星方向图</span>
           <select v-model="sel.satFolder" class="sp-gi" :class="{ unset: !sel.satFolder }" @change="onPickSat">
             <!-- 空值可选＝不从树取星（方向图仍可用本条目导入的那几副）——库条目的取星得能撤 -->
@@ -156,10 +162,10 @@ watch(() => props.sel.fpId, loadFpPlan)
                 @click.prevent="onImport()">
           <Icon name="folder-plus" :size="12" /><span>{{ importing ? '导入中…' : '导入方向图' }}</span>
         </button>
-        <button v-if="onRemoveAnt && localAnts.length" class="sp-gbtn" :disabled="importing"
+        <button v-if="onRemoveAnt && localAnts.length" class="sp-gbtn danger" :disabled="importing"
                 :title="'删除本条目导入的方向图：' + localAnts.map((a) => a.name).join('、')"
                 @click.prevent="onRemoveAnt()">
-          <Icon name="eye-off" :size="12" /><span>删除方向图</span>
+          <Icon name="trash" :size="12" /><span>删除方向图</span>
         </button>
         <span v-if="staleFolder" class="sp-tip">本机卫星树中没有该 GRD 卫星，匹配已保留。</span>
         <span v-else-if="!satTree.length" class="sp-tip">卫星树为空。</span>
@@ -191,8 +197,8 @@ watch(() => props.sel.fpId, loadFpPlan)
         <button v-if="sel.fpId" class="sp-gbtn" title="解除引用，六项频率参数交回手工填写" @click.prevent="clearFp">
           <Icon name="lock-open" :size="12" /><span>解除引用</span>
         </button>
-        <span v-if="fpLoading" class="sp-tip">载入中…</span>
-        <span v-else-if="fpActive" class="sp-tip">已锁定 → 工作频段 · 上/下行频率 · 上/下行极化 · 转发器带宽</span>
+        <span v-if="fpLoading" class="sp-tip">加载中…</span>
+        <span v-else-if="fpActive" class="sp-tip" title="工作频段 · 上/下行频率 · 上/下行极化 · 转发器带宽">已锁定</span>
         <span v-else-if="!fpIndex.length" class="sp-tip">尚无频率计划。</span>
       </div>
     </div>
@@ -232,6 +238,8 @@ watch(() => props.sel.fpId, loadFpPlan)
 .sp-gbtn { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: var(--fs-3); padding: 3px 8px; cursor: pointer; white-space: nowrap; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .sp-gbtn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .sp-gbtn:disabled { opacity: .55; cursor: default; }
+/* 删除钮：删的是本机方向图文件（确认后不可撤），悬停转危险色；原先挂的是「眼睛-关」，读作「隐藏」 */
+.sp-gbtn.danger:hover:not(:disabled) { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 
 .sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 7px 11px; }
 /* 整行占位：令下一字段另起一行（上/下行干扰分行用）；零高度，仅靠栅格行距形成一点间隔，不加边框/底色（不做成分区块） */

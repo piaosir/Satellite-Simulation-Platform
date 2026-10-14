@@ -108,7 +108,7 @@ try { parseKmlBeams(noneKml) } catch (e) { threw = e.message || String(e) }
 ok('全无增益档 → 抛错并说明原因', /增益档/.test(threw), threw)
 let threw2 = ''
 try { parseKmlBeams(serializeKml([], { name: '空', polys })) } catch (e) { threw2 = e.message || String(e) }
-ok('只有协调区多边形 → 提示改用 Polygon 面板', /协调区/.test(threw2), threw2)
+ok('只有协调区 Polygon → 报「文件中仅有 Polygon」', /仅有 Polygon/.test(threw2), threw2)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

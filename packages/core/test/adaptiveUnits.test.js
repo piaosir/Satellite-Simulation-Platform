@@ -151,14 +151,14 @@ console.log('=== 显示单位自适应测试 ===\n');
     ok('工况对照段存在且为双列', !!w && w.cols === 2 && w.heads.join('/') === '晴空/降雨',
       w && w.cols + ' 列 ' + (w.heads || []).join('/'));
     const up = row('上行 C/(N+I)'), dn = row('下行 C/(N+I)'), tot = row('合成 C/(N+I)');
-    ok('上行晴空 = 降雨 + 上行雨衰', up && up.up === '15.5' && up.down === '12',
+    ok('上行晴空 = 降雨 + 上行雨衰', up && up.up === '15.50' && up.down === '12.00',   // 2026-10-14 起级联 / 对照行定两位小数
       up && `${up.up} / ${up.down}`);
-    ok('下行晴空 = 降雨 + 下行雨衰 + G/T 劣化', dn && dn.up === '20.5' && dn.down === '10',
+    ok('下行晴空 = 降雨 + 下行雨衰 + G/T 劣化', dn && dn.up === '20.50' && dn.down === '10.00',
       dn && `${dn.up} / ${dn.down}`);
     // 代价明细行落在「降雨」列
     const cost = (label) => { const x = row(label); return x ? x.down : null; };
     ok('代价明细逐条列出（上行雨衰 / 下行雨衰 / G-T 劣化）',
-      cost('上行雨衰') === '3.5' && cost('下行雨衰') === '7.6' && cost('G/T 劣化（降雨）') === '2.9',
+      cost('上行雨衰') === '3.50' && cost('下行雨衰') === '7.60' && cost('G/T 劣化（降雨）') === '2.90',
       `${cost('上行雨衰')} / ${cost('下行雨衰')} / ${cost('G/T 劣化（降雨）')}`);
     const expClear = Math.round((7.5 + (par(15.5, 20.5) - par(12, 10))) * 100) / 100;
     ok('合成晴空以引擎值为锚 + 并联增量', tot && Math.abs(parseFloat(tot.up) - expClear) < 0.011,

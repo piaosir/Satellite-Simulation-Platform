@@ -8,9 +8,11 @@
     <script>
       try {
         var m = localStorage.getItem('ui-theme')
-        var dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
+        var sys = m !== 'dark' && m !== 'studio' && m !== 'light' && m !== 'studio-light'   // 没存过 / 跟随系统 / 认不出：出厂跟随系统
+        var dark = m === 'dark' || m === 'studio' || (sys && matchMedia('(prefers-color-scheme: dark)').matches)
         document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-        if (dark) document.documentElement.style.background = '#1c1c1a'
+        document.documentElement.dataset.skin = 'studio'   // 外观只剩专业浅色 / 专业深色，两档都带面板块结构
+        if (dark) document.documentElement.style.background = '#111111'
       } catch (e) { /* ignore */ }
     </script>
   </head>

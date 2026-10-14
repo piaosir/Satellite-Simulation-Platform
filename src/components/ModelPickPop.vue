@@ -90,9 +90,9 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <div class="mpp-mask" @mousedown="emit('close')" @contextmenu.prevent="emit('close')" @wheel.prevent>
       <div ref="box" class="mpp" role="dialog" :style="pos" @mousedown.stop @wheel.stop @contextmenu.stop>
-        <div class="mpp-srch"><Icon name="search" :size="12" /><input ref="qEl" v-model="q" type="text" placeholder="搜索" spellcheck="false" @keydown.enter.prevent="onEnter" /><span v-if="q" class="clr" title="清除" @click="q = ''"><Icon name="x" :size="12" /></span></div>
-        <div class="seg nseg mpp-seg" role="group" aria-label="领域">
-          <span v-for="d in DOMAINS" :key="d.k" class="sg" :class="{ on: dom === d.k }" @click="dom = d.k">{{ d.t }}</span>
+        <div class="mpp-srch search-field"><Icon name="search" :size="12" /><input ref="qEl" v-model="q" type="text" placeholder="搜索" spellcheck="false" @keydown.enter.prevent="onEnter" /><span v-if="q" class="clr" title="清除" @click="q = ''"><Icon name="x" :size="12" /></span></div>
+        <div class="seg nseg mpp-seg" role="radiogroup" aria-label="领域">
+          <button type="button" v-for="d in DOMAINS" :key="d.k" role="radio" :aria-checked="!!(dom === d.k)" class="sg" :class="{ on: dom === d.k }" @click="dom = d.k">{{ d.t }}</button>
         </div>
         <div v-if="!shown.length" class="mpp-empty">无匹配模型。</div>
         <div v-else class="mpp-grid">
@@ -117,27 +117,19 @@ onBeforeUnmount(() => {
 
 <style>
 /* Teleport 出去了，scoped 打不到（同 TzPicker）；类名一律 mpp- 前缀免撞 */
-.mpp-mask { position: fixed; inset: 0; z-index: 2400; }
+.mpp-mask { position: fixed; inset: 0; z-index: calc(var(--z-dialog-pop) - 1); }
 .mpp {
-  position: fixed; z-index: 2401; width: 340px; max-height: 452px; display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  position: fixed; z-index: var(--z-dialog-pop); width: 340px; max-height: 452px; display: flex; flex-direction: column; gap: 8px; padding: 10px;
   background: var(--surface, var(--bg)); border: 1px solid var(--border-strong, var(--border)); border-radius: var(--r-float, 6px); box-shadow: var(--shadow-2);
   font-size: var(--fs-3); color: var(--text); animation: ui-fade-in var(--dur-2) var(--ease-out);
 }
 .mpp-srch { flex: none; display: flex; align-items: center; gap: 6px; height: var(--h-ctl); padding: 0 8px; border: 1px solid var(--field-border); background: var(--field-bg); color: var(--text-faint); border-radius: var(--r-ctl); }
 .mpp-srch input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; color: var(--text); font-size: var(--fs-3); padding: 0; height: 100%; }
-/* 焦点环画在整个搜索框上（里头的无框输入框自己不描，免得环缩在框里一截） */
-.mpp-srch:focus-within { outline: 2px solid var(--accent-ui); outline-offset: -1px; }
-.mpp-srch input:focus-visible { outline: none !important; }
 .mpp-srch .clr { display: inline-flex; cursor: pointer; }
 .mpp-srch .clr:hover { color: var(--text); }
 /* 分段控件：与 3D 页 / ModelSidePanel 的 .seg 同一口径（那两份是 scoped 的，逐字照抄；改动请几处一起改） */
-.mpp-seg { flex: none; display: flex; box-sizing: border-box; min-height: var(--h-ctl); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); overflow: hidden; }
-.mpp-seg .sg { flex: 1 1 auto; text-align: center; padding: 2px 4px; line-height: 16px; cursor: pointer; color: var(--text-muted); user-select: none; white-space: nowrap; transition: var(--t-state); }
-.mpp-seg .sg + .sg { border-left: 1px solid var(--border); }
-.mpp-seg .sg:hover:not(.on) { background: var(--surface-2); color: var(--text); }
-.mpp-seg .sg:active:not(.on) { box-shadow: var(--press); transition-duration: 0s; }
-.mpp-seg .sg.on { background: var(--sel-fill); color: var(--sel-on); transition-duration: 0s; }
-.mpp-seg .sg.on, .mpp-seg .sg.on + .sg { border-left-color: transparent; }
+.mpp-seg { flex: none; }
+.mpp-seg > .sg { flex: 1 1 auto; padding: 2px 4px; }
 .mpp-empty { color: var(--text-faint); padding: 18px 0; text-align: center; }
 /* 行高按内容（grid-auto-rows: max-content）：网格被弹层 max-height 压着时，auto 行会按 overflow:hidden 卡片的最小尺寸 0 往下收、把名字裁掉 */
 .mpp-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 6px; padding-right: 2px; }

@@ -50,19 +50,62 @@ export function sheetModel({ name, cols, rows, value, unitOf, note }) {
   }
 }
 
+// ---- 英文表头 ----
+// 英文界面下导出的首行 = 该列表头在 uiDict EXACT 中的译文（整串查不到再按「标签 (单位)」拆开查）；
+// 导回时中英两套表头都认（findHeader 把每列标签的英文也挂上）。直接查 EXACT 而不走 runtime 的 t()：
+// 导出与导回用同一张表才对得上，且导回时不管当前是什么语言都要认得英文表头。
+// 词典是动态 import（~1 MB）：中文档导出不加载；导入时加载一次（中文档也要认英文文件）。
+let EN_OF = null
+async function loadHeaderDict() {
+  if (EN_OF) return EN_OF
+  try { EN_OF = (await import('./i18n/uiDict.data.js')).EXACT || null } catch { EN_OF = null }
+  return EN_OF
+}
+// 测试 / 调用方可直接注入一张 { 中文: 英文 } 表
+export function setHeaderDict(exact) { EN_OF = exact || null }
+// 表头 → 英文；查不到返回 null
+export function headerEn(h) {
+  if (!EN_OF || h == null) return null
+  const k = String(h).replace(/\s+/g, ' ').trim()
+  if (!k) return null
+  if (Object.prototype.hasOwnProperty.call(EN_OF, k)) return EN_OF[k]
+  const m = /^(.*?)\s*[(（]([^()（）]*)[)）]$/.exec(k)
+  if (!m) return null
+  const lab = m[1].trim()
+  if (!Object.prototype.hasOwnProperty.call(EN_OF, lab)) return null
+  const unit = Object.prototype.hasOwnProperty.call(EN_OF, m[2]) ? EN_OF[m[2]] : m[2]
+  return EN_OF[lab] + ' (' + unit + ')'
+}
+const uiLangEn = () => { try { return localStorage.getItem('ui-lang') === 'en' } catch { return false } }
+// 对话框标题：英文档按 EXACT 翻（主进程那边再按对话框对照表兜一次），查不到原样
+const titleOf = (t) => (t && EN_OF && Object.prototype.hasOwnProperty.call(EN_OF, String(t).trim()) ? EN_OF[String(t).trim()] : t)
+
 // 一次导出（走主进程保存框）。sheets = sheetModel() 的结果数组。返回 IPC 结果。
 // style：'plain'（缺省，灰底表头+竖线+筛选器，供随手改数）| 'report'（三线表，与链路预算报告同款版式）
 export async function exportSheets({ defaultName, title, sheets, style }) {
   const api = typeof window !== 'undefined' && window.api && window.api.gridXlsx
   if (!api) return { ok: false, error: '当前环境不支持导出 Excel' }
-  return api.export({ defaultName, title, style, sheets: (sheets || []).filter(Boolean) })
+  let list = (sheets || []).filter(Boolean)
+  const en = uiLangEn()
+  if (en && await loadHeaderDict()) {
+    list = list.map((sh) => (Array.isArray(sh.header)
+      ? Object.assign({}, sh, { header: sh.header.map((h) => headerEn(h) || h) })
+      : sh))
+    title = titleOf(title)
+  }
+  return api.export({ defaultName, title, style, sheets: list, lang: en ? 'en' : 'zh' })
 }
 
 // 一次导入（走主进程打开框）。返回 { ok, canceled?, error?, filePath, sheets:[{name, rows}] }
 export async function importWorkbook(opt) {
   const api = typeof window !== 'undefined' && window.api && window.api.gridXlsx
   if (!api) return { ok: false, error: '当前环境不支持导入 Excel' }
-  return api.import(opt || {})
+  await loadHeaderDict()     // 导回时认英文表头要用（findHeader 是同步的，先把表备好）
+  const o = Object.assign({}, opt || {})
+  const en = uiLangEn()
+  if (en && o.title) o.title = titleOf(o.title)
+  o.lang = en ? 'en' : 'zh'
+  return api.import(o)
 }
 
 /**
@@ -75,7 +118,9 @@ export function findHeader(rows, cols) {
   const list = (cols || []).filter(Boolean)
   const byName = new Map()
   for (const c of list) {
-    for (const k of [c.key, c.label, colLabel(c), ...(c.alias || [])]) {
+    const enLab = c.label != null ? headerEn(c.label) : null
+    const enCol = headerEn(colLabel(c))
+    for (const k of [c.key, c.label, colLabel(c), ...(c.alias || []), enLab, enCol]) {
       const n = normKey(k)
       if (n && !byName.has(n)) byName.set(n, c.key)
     }

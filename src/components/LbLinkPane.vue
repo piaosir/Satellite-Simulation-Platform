@@ -26,6 +26,12 @@ const props = defineProps({
   height: { type: Number, default: 330 }
 })
 const t = computed(() => lbDocT(props.lang))
+
+// 导出成功的回执交给宿主窗口的通知条（带「打开 · 在文件夹中显示」）：路径取主进程保存处理器回传的 path（旧版 filePath）
+const emit = defineEmits(['exported'])
+const savedPath = (r) => (r && (r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath)) || ''
+const baseName = (p) => String(p || '').split(/[\/]/).pop()
+function exported(r) { const p = savedPath(r); emit('exported', '已导出：' + (baseName(p) || ''), p) }
 // 有没有真几何可画。空场景与「算了但缺料」要分开说：后者若也报「先计算链路」，
 // 读者会以为自己没点计算，而其实是某个几何输入是空的（引擎有默认值兜底，图没有）。
 const hasGeom = computed(() => !!(props.scene && Array.isArray(props.scene.nodes) && props.scene.nodes.length))
@@ -60,7 +66,7 @@ onMounted(async () => {
   }
   // 主题是行内写在 <html> 上的 data-theme，computed 读不到后续变化 → 盯 attribute
   mo = new MutationObserver(() => { if (globe) globe.applyTheme(isDark()) })
-  mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-skin'] })
 })
 onBeforeUnmount(() => {
   destroyed = true
@@ -101,21 +107,22 @@ function resetView() { if (globe) globe.resetView() }
 const exportFile = (typeof window !== 'undefined' && window.api) ? window.api.exportFile : null
 // 取一帧 = 一个 data:image/png URL（snapshot 内部先 syncSprites 再渲染，见 linkGlobe）。
 // 与 exportPng 同一条路径，报告里的图即用户手动导出的那张图。
-function pngDataUrl(scale) {
+async function pngDataUrl(scale) {
   if (!globe || !hasGeom.value) return ''
-  try { return globe.snapshot(scale || 4) } catch (e) { return '' }
+  try { return await globe.snapshot(scale || 4) } catch (e) { return '' }
 }
 // file:save 写失败（文件被占用等）不抛、只回 {ok:false,error}；取消回 canceled。失败就在按钮旁出错误本身
 const expErr = ref('')
 async function exportPng() {
   if (!exportFile) return
   expErr.value = ''
-  const url = pngDataUrl(4)
+  const url = await pngDataUrl(4)
   if (!url) { expErr.value = t.value('导出失败'); return }
   try {
     const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
     const r = await exportFile({ defaultName: t.value('链路视图') + '.png', data, filters: [{ name: t.value('PNG 图片'), extensions: ['png'] }] })
     if (r && !r.ok && !r.canceled) expErr.value = t.value('导出失败') + '：' + (r.error || '')
+    else if (r && r.ok) exported(r)
   } catch (e) { expErr.value = t.value('导出失败') + '：' + ((e && e.message) || e) }
 }
 
@@ -127,7 +134,7 @@ defineExpose({
   ready: computed(() => true),
   hasFigure: hasGeom,
   figTitle: computed(() => t.value('链路视图')),
-  pngDataUrl: async (s) => pngDataUrl(s)
+  pngDataUrl: (s) => pngDataUrl(s)
 })
 </script>
 

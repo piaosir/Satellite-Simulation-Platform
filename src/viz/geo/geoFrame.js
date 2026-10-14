@@ -421,6 +421,17 @@ export function traceGraticule(ctx, G, a, b, c, P, per, pad) {
  * T(zh, en) 出轴标题。返回图框内区 { x, y, w, h }；取景里没有地图时返回 null 且什么都不画。
  * ★ 只用 svgcanvas 录得下来的调用（矩形 / 文字 / 平移旋转 / 虚线 / 裁剪），文字基线一律 middle —— 平面图的 PDF 导出也走这一支
  */
+// 矩形四边按 ctx 当前变换落到整设备像素（只认缩放 + 平移；取不到变换的上下文（矢量导出、单测桩）原样返回）
+function devSnapRect(ctx, R) {
+  let t = null
+  try { t = typeof ctx.getTransform === 'function' ? ctx.getTransform() : null } catch { t = null }
+  if (!t || !(t.a > 0) || !(t.d > 0) || t.b || t.c) return R
+  const sx = (v) => (Math.round(v * t.a + t.e) - t.e) / t.a
+  const sy = (v) => (Math.round(v * t.d + t.f) - t.f) / t.d
+  const x0 = sx(R.x), y0 = sy(R.y), x1 = sx(R.x + R.w), y1 = sy(R.y + R.h)
+  return { ...R, x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
 export function drawGeoFrame(ctx, W, H, view, opt, st, T) {
   const o = opt || {}, s = st || {}
   const fsA = s.fsA > 0 ? s.fsA : Math.max(8, H * 0.02) * 0.78
@@ -435,7 +446,10 @@ export function drawGeoFrame(ctx, W, H, view, opt, st, T) {
   if (!L) return null
   const th = THEME[o.theme === 'dark' ? 'dark' : 'light']
   const lw = s.lw > 0 ? s.lw : Math.max(1, Math.round(H / 1080))
-  const P = L.plot
+  // 图框矩形的四条边落到整设备像素上：125% / 150% / 175% 下 P.y 落在半个设备像素里，留白、图框线、底下的地图
+  // 三者在同一行设备像素上各盖一部分（抗锯齿的覆盖率相加 < 1），漏出底图的一行 —— 横穿整幅画面的那条灰细线。
+  // 标注、返回值（屏上命中判定）一并跟着这块落笔后的矩形走，与原值差不到 1 设备像素。
+  const P = devSnapRect(ctx, L.plot)
   const snap = (v) => Math.round(v) + (lw % 2 ? 0.5 : 0)
   ctx.save()
   const skip0 = ctx.__i18nSkip
@@ -458,10 +472,13 @@ export function drawGeoFrame(ctx, W, H, view, opt, st, T) {
     ctx.stroke()
     ctx.restore()
   }
-  // ② 留白：图框外四条，不透明
+  // ② 留白：图框外一整圈，不透明。一条路径一次填完 —— 原先四个 fillRect 在相接处各自抗锯齿，拼缝漏底图。
+  //    内框逆时针走，nonzero 规则下就是洞，不依赖 fill('evenodd')（矢量 PDF 那支 svgcanvas 不认这个入参）
   ctx.fillStyle = th.bg
-  ctx.fillRect(0, 0, W, P.y); ctx.fillRect(0, P.y + P.h, W, H - P.y - P.h)
-  ctx.fillRect(0, P.y, P.x, P.h); ctx.fillRect(P.x + P.w, P.y, W - P.x - P.w, P.h)
+  ctx.beginPath()
+  ctx.moveTo(0, 0); ctx.lineTo(W, 0); ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath()
+  ctx.moveTo(P.x, P.y); ctx.lineTo(P.x, P.y + P.h); ctx.lineTo(P.x + P.w, P.y + P.h); ctx.lineTo(P.x + P.w, P.y); ctx.closePath()
+  ctx.fill()
   // ③ 图框 + 四边内向刻度（主刻度长、次刻度短；实心矩形画，像素对齐）
   ctx.setLineDash([])
   ctx.strokeStyle = th.frame; ctx.lineWidth = lw

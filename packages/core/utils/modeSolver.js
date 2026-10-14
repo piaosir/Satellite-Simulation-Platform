@@ -7,6 +7,8 @@
 //   overbalance 超发功带平衡：平衡余量 + 超发 x dB（功放超发 x dB ⇒ 余量同抬 x dB，自动）
 
 const { calculateLinkBudget } = require('./linkCalculator.js');
+// 求解器自己读的几项入参（目标余量 / 功放功率 / 超发量）与引擎同一严格口径：「40 W」不按前缀读成 40
+const { strictNum } = require('./strictNum.js');
 // NGSO 引擎独立加载并容错（其依赖在个别环境可能加载异常，不应连累 GEO 主链路）
 let calculateLinkBudgetNGSO = null;
 try { calculateLinkBudgetNGSO = require('./linkCalculatorNGSO.js').calculateLinkBudget; }
@@ -57,7 +59,7 @@ function findBalanceMargin(satParams, inputs) {
 
 // 设置瓦数：解析反推余量（只需 2 次计算，全程高精度）
 function findMarginByPower(satParams, inputs, targetPaPowerW) {
-  const currentMargin = parseFloat(inputs.margin);
+  const currentMargin = strictNum(inputs.margin);
   const baseMargin = isNaN(currentMargin) ? 3 : currentMargin;
   const base = calcWithMargin(satParams, inputs, baseMargin);
   if (!base.success) return { success: false, message: base.message || '基准计算失败' };
@@ -79,7 +81,7 @@ function computeLinkMode(satParams, inputs, opt) {
     // data.marginResult 回读——那是显示值（toFixed(2)），4.567 会读成 4.57。高级计算拿它做
     // 归一功率带宽 A = 功率带宽 / 10^(余量/10) 的基准，0.005 dB 的截断会让配平结果整体偏同样的量，
     // 反复应用还会在两个值之间来回跳。空余量走引擎默认（3 dB），此时才回读。
-    const m = parseFloat(inputs && inputs.margin);
+    const m = strictNum(inputs && inputs.margin);
     return {
       success: true, data: final.data, mode,
       resolvedMargin: isFinite(m) ? m : parseFloat(final.data.marginResult)
@@ -88,8 +90,8 @@ function computeLinkMode(satParams, inputs, opt) {
 
   let resolvedMargin;
   if (mode === 'power') {
-    const w = parseFloat(opt.powerW);
-    if (!(w > 0)) return { success: false, message: '请输入有效的功放功率(W)' };
+    const w = strictNum(opt.powerW);
+    if (!(w > 0)) return { success: false, message: '功放功率(W) 无效' };
     const s = findMarginByPower(satParams, inputs, w);
     if (!s.success) return s;
     resolvedMargin = s.margin;
@@ -98,12 +100,12 @@ function computeLinkMode(satParams, inputs, opt) {
     if (!s.success) return s;
     resolvedMargin = s.margin;
   } else if (mode === 'overbalance') {
-    const x = parseFloat(opt.overDb) || 0;
+    const x = strictNum(opt.overDb) || 0;
     const s = findBalanceMargin(satParams, inputs);
     if (!s.success) return s;
     resolvedMargin = s.margin + x;
   } else {
-    return { success: false, message: '未知计算方式: ' + mode };
+    return { success: false, message: '未知计算方式：' + mode };
   }
 
   const final = calcWithMargin(satParams, inputs, resolvedMargin);

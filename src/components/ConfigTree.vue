@@ -183,12 +183,12 @@ function onRowClick(row) {
       <!-- 层级导引线：每层一根，绝对定位贯通整行高度（含 padding），相邻行连成一条竖线 -->
       <span v-for="d in row.depth" :key="'g' + d" class="lb-tree-guide" :style="{ left: (13 + (d - 1) * 14) + 'px' }"></span>
 
-      <span v-if="row.isFolder" class="lb-tree-chev" @click.stop="emit('toggle', row.item)">
+      <span v-if="row.isFolder" class="lb-tree-chev" :title="expanded.has(row.item.id) ? '收起' : '展开'" :aria-label="expanded.has(row.item.id) ? '收起' : '展开'" :aria-expanded="expanded.has(row.item.id) ? 'true' : 'false'" @click.stop="emit('toggle', row.item)">
         <Icon name="chevron-down" class="disc" :class="{ shut: !(expanded.has(row.item.id)) }" :size="12" />
       </span>
       <span v-else class="lb-tree-chev empty"></span>
       <!-- ★ 两类行都占这个图标位：名称起点因此与深度严格单调（见文件头注） -->
-      <span class="lb-tree-fi" :class="{ cfg: !row.isFolder }">
+      <span class="lb-tree-fi" :class="{ cfg: !row.isFolder }" aria-hidden="true">
         <Icon :name="row.isFolder ? (expanded.has(row.item.id) ? 'folder-open' : 'folder') : 'file-text'" :size="12" />
       </span>
 
@@ -222,7 +222,7 @@ function onRowClick(row) {
   padding: 5px 6px; font-size: var(--fs-3); cursor: pointer;
   border-radius: var(--r-ctl); color: var(--text-muted);
 }
-.lb-tree-row:hover { background: var(--surface-2); color: var(--text); }
+.lb-tree-row:hover { background: var(--wash-hover); color: var(--text); }
 .lb-tree-row.on { background: var(--surface-2); color: var(--text); box-shadow: inset 2px 0 0 var(--accent-ui); }
 .lb-tree-row.folder { color: var(--text); }
 /* 焦点项＝键盘与右键的落点，与「已载入」（.on）分开：右键时看得出在对哪一行操作 */
@@ -241,7 +241,7 @@ function onRowClick(row) {
 
 /* 图标在第一行文本的高度内居中（行是 flex-start，名称可能换行） */
 .lb-tree-chev { flex: none; width: 14px; height: 1.35em; display: inline-flex; align-items: center; justify-content: center; color: var(--text-faint); border-radius: var(--r-box); }
-.lb-tree-chev:not(.empty):hover { color: var(--text); background: var(--bg); }
+.lb-tree-chev:not(.empty):hover { color: var(--text); background: var(--wash-hover); }
 /* 文件夹＝骨架（accent），配置＝内容（弱一档）：类型一眼可分，又不喧宾夺主 */
 .lb-tree-fi { flex: none; height: 1.35em; display: inline-flex; align-items: center; color: var(--accent); }
 .lb-tree-fi.cfg { color: var(--text-faint); }

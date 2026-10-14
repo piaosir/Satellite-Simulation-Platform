@@ -107,11 +107,11 @@ const compTip = computed(() => (monthly.value
 // 「基带/骨干网」带一个勾选闸：只卖空间段的场景不该把回传算进承诺，勾上才乘进去。
 const PARAMS = [
   { key: 'monthly', gateOnly: true, label: '按月考核', tip: '勾选＝可用度按最坏月考核（ITU-R P.841 年→最坏月折算），中断上限改按月给；不勾＝年平均' },
-  { key: 'loopback', gateOnly: true, label: '同站回环', tip: '勾选＝发信站与收信站是同一个站址（回环 / 自环测试），上下行是同一场雨，传播可用度取 min(上行, 下行)；不勾＝相乘。只对发收站坐标相同的链路起作用' },
+  { key: 'loopback', gateOnly: true, label: '同站回环', tip: '勾选＝发信站与收信站是同一个站址（回环 / 自环测试），上下行是同一场雨，传播可用度取 min(上行, 下行)；不勾＝相乘。仅对发收站坐标相同的链路起作用' },
   { key: 'esTxAvail', avail: true, label: '发信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '发端地球站功放 / 上变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'esRxAvail', avail: true, label: '收信射频可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '收端地球站 LNB / 下变频 / 天线一路的可用度：按设备冗余配置或运营商承诺填；100 = 不计入' },
   { key: 'spaceAvail', avail: true, label: '卫星与载荷可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '卫星平台与转发器载荷的可用度，链上逐颗计入；100 = 不计入' },
-  { key: 'groundAvail', avail: true, label: '基带/骨干网可用度', unit: '%', min: 0, max: 100, step: 0.01, gate: 'groundOn', tip: '调制解调 / 回传 / 骨干的可用度：只卖空间段不勾，卖网络服务才勾' },
+  { key: 'groundAvail', avail: true, label: '基带/骨干网可用度', unit: '%', min: 0, max: 100, step: 0.01, gate: 'groundOn', tip: '调制解调 / 回传 / 骨干的可用度：仅销售空间段时不勾选，销售网络服务时勾选' },
   { key: 'pktBytes', needs: ['loss'], label: 'IP 包长', unit: 'B', min: 1, max: 65535, step: 1, tip: '丢包率换算用的 IP 包长：一个包跨几个 FEC 帧就有几次被丢掉的机会' },
   { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: 'DVB 家族的帧差错率指数：DVB-S2/S2X/RCS2 的门限按 QEF 定义，约合 10⁻⁷。3GPP NTN 载波的门限是首传 BLER 目标、不出丢包率，本项不生效；未选标准时也不生效' },
   { key: 'procMsPerEnd', needs: ['rtt'], label: '处理时延预留', unit: 'ms/单程', min: 0, max: 1000, step: 1, tip: '发端调制 + 收端解调的单程处理时延预留，计入往返时延上限（往返穿两趟）' },

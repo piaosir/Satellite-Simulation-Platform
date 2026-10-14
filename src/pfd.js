@@ -9,6 +9,9 @@ import './stores/theme'
 import './stores/uiFont'
 import './shared/i18n/runtime'
 import { initLbFontSize } from './shared/lbFont.js'
+import { installGlobalErrors } from './shared/reportError.js'
 
 initLbFontSize()
-createApp(PfdMaskApp).use(createPinia()).mount('#app')
+const app = createApp(PfdMaskApp).use(createPinia())
+installGlobalErrors(app)
+app.mount('#app')

@@ -375,7 +375,7 @@ module.exports = function createEphemExport({ customSats, omm, getCore }) {
         let rec = null
         if (it.t === 'gp' && it.rec) rec = find(it.rec, it.src)
         else if (it.t === 'norad') rec = byNorad(it.noradId, it.src)
-        if (!rec) { skipped.push({ name: it.name || ('NORAD ' + it.noradId), reason: '本机星历缓存中没有这颗星' }); continue }
+        if (!rec) { skipped.push({ name: it.name || ('NORAD ' + it.noradId), reason: '本机星历缓存中没有该卫星' }); continue }
         const id = OP.normId(rec.noradId)
         if ((fmt === 'tle' || fmt === '3le') && Number(id) > TLE_MAX_NORAD) { skipped.push({ name: rec.name, reason: '编号 ' + rec.noradId + ' 超出 TLE 编号栏上限（Alpha-5 ≤ 339999）' }); continue }
         if (seen.has(id)) continue
@@ -430,7 +430,7 @@ module.exports = function createEphemExport({ customSats, omm, getCore }) {
         try {
           if (it.t === 'gp' || it.t === 'norad') {
             const rec = it.t === 'gp' ? find(it.rec, it.src) : byNorad(it.noradId, it.src)
-            if (!rec) { skipped.push({ name: it.name || ('NORAD ' + it.noradId), reason: '本机星历缓存中没有这颗星' }); continue }
+            if (!rec) { skipped.push({ name: it.name || ('NORAD ' + it.noradId), reason: '本机星历缓存中没有该卫星' }); continue }
             s = sampleGp(rec, times)
             if (!s) { skipped.push({ name: rec.name, reason: 'SGP4 初始化失败或时段内无有效位置' }); continue }
           } else if (it.t === 'fix') {

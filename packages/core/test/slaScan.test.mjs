@@ -34,7 +34,7 @@ console.log('=== SLA 档位扫描 ===\n')
 
 // —— ①②③⑦ GSO 算例 ——
 // 用有雨的一组入参：出厂默认降雨率为 0，各档雨衰恒 0、余量恒等，单调性那几条会退化成空转。
-// 可用度显式给 99.9（2026-09-16 起引擎缺省改 100%＝晴天：两侧 100% 时 splitUnavailability 无解、slaSamplesFor 出 0 样本）
+// 可用度显式给 99.9（2026-09-16 起引擎缺省改 100%＝晴天；两侧 100% 时按等分拆，见下文「出厂 100%」那组）
 const GEO_LP = { rainRate: '40', rxRainRate: '60', uplinkAvailability: '99.9', rxDownlinkAvailability: '99.9' }
 const base = modeSolver.computeLinkMode({}, GEO_LP, { mode: 'margin' })
 ok('GSO 算例可算', !!(base && base.success))
@@ -159,6 +159,23 @@ ok('端到端余量随档位单调不增', (() => {
   return true
 })(), cScan.rows.map((r) => r.data.linkmargin.toFixed(2)).join(' / '))
 ok('原 chain 未被就地改写（逐样本深拷）', CHAIN.nodes[0].availability === '99.90' && CHAIN.nodes[2].availability === '99.70')
+
+// —— 出厂 100%（晴天）：没有分配比例可保 → 等分（三窗各取 √S；端到端每跳 S^(1/n)），档位表照常出 ——
+{
+  const s100 = slaSamplesFor({ up: 100, dn: 100 })
+  ok('三窗两侧 100%：样本 = 9 档 + 晴空', s100.length === AVAIL_TIERS.length + 1, String(s100.length))
+  ok('三窗两侧 100%：两侧等分且乘积恰为该档',
+    s100.filter((x) => x.tag !== 'clear').every((x) => near(x.up, x.dn, 0) && near(x.up * x.dn / 100, x.tier, 1e-9)))
+  const C100 = JSON.parse(JSON.stringify(CHAIN))
+  for (const nd of C100.nodes) if (nd.kind === 'es') nd.availability = '100'
+  const c100 = slaChainSamplesFor(['100', '100'])
+  ok('端到端全部 100%：样本 = 9 档（等分）', c100.length === AVAIL_TIERS.length && c100.every((x) => x.avail > 0 && x.k === undefined), String(c100.length))
+  const scan100 = scanSlaTiers({ engine: 'chain', chain: C100, samples: c100 })
+  ok('端到端等分后 systemAvailabilityResult = 档位（±1e-5）',
+    scan100.rows.length === AVAIL_TIERS.length && scan100.rows.every((r) => r.ok && near(r.data.systemAvailabilityResult, r.tier, 1e-5)),
+    scan100.rows.map((r) => r.data && r.data.systemAvailabilityResult).join(' / '))
+  ok('端到端部分节点 100% 仍走缩放（不等分）', slaChainSamplesFor(['100', '99.70']).every((x) => x.k !== undefined && x.avail === undefined))
+}
 
 // —— ⑥ 算不出的样本不把整批带崩 ——
 // 负仰角（卫星在地平线下）：GEO 引擎照样算得完，但那是穿过地球的弦长 → 与链路表同口径拦下

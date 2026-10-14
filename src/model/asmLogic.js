@@ -35,13 +35,13 @@ export const FAMILY_LABELS = Object.freeze({
 export const FAMILY_ICONS = Object.freeze({
   body: 'box', aero: 'plane', truss: 'ruler', facility: 'package', dock: 'link-2',
   reflector: 'satellite-dish', array: 'grid-3x3', horn: 'radio-tower', wire: 'waves', mount: 'rotate-3d', radome: 'hexagon',
-  thruster: 'arrow-down', powerplant: 'rotate-cw'
+  thruster: 'flame', powerplant: 'rotate-cw'
 })
 
 /** 部件角色 → 图标（结构树行首、组件卡片占位） */
 export const ROLE_ICONS = Object.freeze({
-  bus: 'box', solarArray: 'sun', reflector: 'satellite-dish', feed: 'radio-tower', boom: 'ruler',
-  radiator: 'grid-3x3', thruster: 'arrow-down', sensor: 'scan-eye', other: 'hexagon'
+  bus: 'box', solarArray: 'solar-panel', reflector: 'satellite-dish', feed: 'radio-tower', boom: 'ruler',
+  radiator: 'grid-3x3', thruster: 'flame', sensor: 'scan-eye', other: 'hexagon'
 })
 export const roleIcon = (role) => ROLE_ICONS[role] || 'hexagon'
 

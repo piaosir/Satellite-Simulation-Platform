@@ -103,8 +103,8 @@ module.exports = function createCoverage(baseDir, saveDir) {
   // 旁边的 .grdbin 当场删掉：主进程下次取值按新参数重铺，不押在 mtime 比较上（同一时间片内改写也不会读到旧网格）。
   function overwrite(file, text) {
     const fp = resolveSaved(file)
-    if (!isAnFile(fp) || path.dirname(fp) !== saveDir) throw new Error('只能改写解析天线记录')
-    if (!fs.statSync(fp).isFile()) throw new Error('只能改写解析天线记录')   // 不在 → statSync 抛 ENOENT
+    if (!isAnFile(fp) || path.dirname(fp) !== saveDir) throw new Error('仅可改写解析天线记录')
+    if (!fs.statSync(fp).isFile()) throw new Error('仅可改写解析天线记录')   // 不在 → statSync 抛 ENOENT
     const body = anText(text)
     const tmp = fp + '.tmp'
     fs.writeFileSync(tmp, body, 'latin1')
@@ -137,5 +137,6 @@ module.exports = function createCoverage(baseDir, saveDir) {
     try { fs.unlinkSync(fp) } catch { /* 已不在 */ }
     return { ok: true }
   }
-  return { index, get, save, copyIn, raw, overwrite, exportSrc, remove, sniffHead }
+  // savedPath：saveDir 内的绝对路径（防穿越，非法路径抛错）—— coverageGrd:remove 据此把原件送进系统回收站
+  return { index, get, save, copyIn, raw, overwrite, exportSrc, remove, sniffHead, savedPath: resolveSaved }
 }

@@ -140,7 +140,7 @@ async function autoSeg() {
 
 <template>
   <div class="asm qk" data-quick="model">
-    <div v-if="!m" class="asm-empty">未选中模型。</div>
+    <div v-if="!m" class="asm-empty">未选择模型。</div>
     <template v-else>
       <div class="sec qk-head">
         <div class="srow"><label>名称</label>
@@ -158,7 +158,7 @@ async function autoSeg() {
         <div class="md-kvs qk-kvs3">
           <div v-for="(a, k) in ['X', 'Y', 'Z']" :key="a" class="md-kv"><span class="k">{{ a }}</span><span class="v" data-i18n-skip>{{ dims ? fmtNum(dims[k], 4) : '—' }}</span><span class="u">m</span></div>
         </div>
-        <div class="srow"><label title="用一项已知尺寸反算模型比例（本体系里的挂点、部件、质量特性一并缩放）">已知尺寸</label>
+        <div class="srow"><label title="用一项已知尺寸反算模型比例（本体系中的挂点、部件、质量特性一并缩放）">已知尺寸</label>
           <select v-model="dimKey" class="ci qk-dim" :disabled="ro"><option v-for="d in DIMS" :key="d.key" :value="d.key" :title="d.tip">{{ d.label }}</option></select>
           <NumIn v-model="known" :min="1e-4" :max="1e5" :sig="6" :disabled="ro" placeholder="米" />
           <button class="lb-mini" data-act="q-scale" :disabled="ro || !(known > 0) || !(measured > 0)" title="按已知尺寸缩放" @click="scaleNow">缩放</button>
@@ -211,10 +211,8 @@ async function autoSeg() {
 .qk-dim { flex: 0 1 96px; min-width: 84px; }
 .qk-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
 .qk-steps > .lb-mini { height: var(--h-ctl); font-family: var(--font-mono); }
-.qk-steps .fr-x { color: #c4453f; }
-.qk-steps .fr-y { color: #2f8a55; }
-.qk-steps .fr-z { color: #3d5fc4; }
-html[data-theme='dark'] .qk-steps .fr-x { color: #e5736d; }
-html[data-theme='dark'] .qk-steps .fr-y { color: #5fbf86; }
-html[data-theme='dark'] .qk-steps .fr-z { color: #7f9cf0; }
+/* 轴色唯一取值在 shared/axisColors.js（stores/theme.js 换肤时写成 --axis-*） */
+.qk-steps .fr-x { color: var(--axis-x); }
+.qk-steps .fr-y { color: var(--axis-y); }
+.qk-steps .fr-z { color: var(--axis-z); }
 </style>

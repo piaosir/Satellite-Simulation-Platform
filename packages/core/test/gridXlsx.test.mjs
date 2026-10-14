@@ -118,6 +118,24 @@ const longName = '这是一个非常非常非常非常长的工作表名字超�
 const buf2 = await buildGridWorkbook({ sheets: [sheetModel({ name: longName, cols: [{ key: 'a', label: 'A' }], rows: [] }), sheetModel({ name: 'a/b:c', cols: [{ key: 'a', label: 'A' }], rows: [] })] })
 ok('超长/非法表名不炸', buf2 && buf2.byteLength > 0)
 
+// ---- 英文表头：导出首行查 uiDict EXACT（整串查不到按「标签 (单位)」拆开查），导回中英两套都认 ----
+{
+  const { setHeaderDict, headerEn } = await import('../../../src/shared/gridXlsx.js')
+  const { EXACT } = await import('../../../src/shared/i18n/uiDict.data.js')
+  const D = { '国家': EXACT['国家'] || 'Country', '城市': EXACT['城市'] || 'City', '经度': EXACT['经度'] || 'Longitude', '纬度': EXACT['纬度'] || 'Latitude' }
+  setHeaderDict(D)
+  ok('英文表头：带单位拆开查', headerEn('经度 (°E)') === D['经度'] + ' (°E)', headerEn('经度 (°E)'))
+  ok('英文表头：查不到回 null', headerEn('代号') === null)
+  const enHead = COLS.map((c) => headerEn(colLabel(c)) || colLabel(c))
+  const hEn = findHeader([enHead], COLS)
+  ok('导回认英文表头', hEn && hEn.keys.join() === 'country,city,desig,lon,lat', hEn && hEn.keys.join())
+  const hZh = findHeader([COLS.map((c) => colLabel(c))], COLS)
+  ok('装了词典后中文表头照认', hZh && hZh.keys.join() === 'country,city,desig,lon,lat', hZh && hZh.keys.join())
+  const recEn = sheetToRecords({ rows: [enHead, ['中国', '北京', 'BJ', 116.4, 39.9]] }, COLS)
+  ok('英文表头往返取值', recEn.records && recEn.records[0].lon === '116.4' && recEn.records[0].lat === '39.9', JSON.stringify(recEn.records))
+  setHeaderDict(null)
+}
+
 try { fs.unlinkSync(tmp) } catch { /* 清理失败不影响判定 */ }
 
 console.log(`gridXlsx: ${pass} passed, ${fail} failed`)

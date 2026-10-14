@@ -44,9 +44,9 @@ const normPbw = (pbwKHz, marginDb) => pbwKHz / lin(marginDb)
 
 // 选中集合是否够条件求解；返回空串表示可解，否则是拦下来的原因
 export function validateAdv(picked) {
-  if (!picked || !picked.length) return '请至少勾选 1 条链路'
+  if (!picked || !picked.length) return '未选择链路。'
   const bad = picked.find((p) => !isFinite(p.bwKHz) || !isFinite(p.pbwKHz) || !isFinite(p.marginDb))
-  if (bad) return `链路 #${bad.no} 无可用计算结果（${bad.error || '未计算'}）：请先计算，或取消勾选该行`
+  if (bad) return `链路 #${bad.no} 无可用计算结果（${bad.error || '未计算'}）。`
   return ''
 }
 

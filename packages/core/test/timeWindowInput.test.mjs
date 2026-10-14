@@ -64,9 +64,9 @@ ok(ISL.includes("if (!(hours.value > 0) || hours.value > MAX_HOURS) { err.value 
 ok(ISL.includes('const t0ISO = computed(() => new Date(t0Ms()).toISOString())'), '星间距离工具：起始框读不出按时间轴此刻')
 
 const CI = src('src/ci/CiApp.vue'), CIJ = src('src/ci/useInterference.js')
-ok(/起始时刻 UTC<input type="datetime-local" :value="ngsoStartText" @change="setNgsoStart\(\$event\.target\.value\)" @blur="\$event\.target\.value = ngsoStartText" \/>/.test(CI), '干扰分析：起始时刻框（UTC）')
+ok(/<label>起始时刻<\/label><input class="ci" type="datetime-local" :value="ngsoStartText" @change="setNgsoStart\(\$event\.target\.value\)" @blur="\$event\.target\.value = ngsoStartText" \/><span class="u">UTC<\/span>/.test(CI), '干扰分析：起始时刻框（UTC）')
 ok(/<button class="ci-btn" title="起始时刻取时间轴当前时刻" @click="I\.ngsoStartNow\(\)">此刻<\/button>/.test(CI), '干扰分析：「此刻」')
-ok(/<label v-if="\(ngso\.epochs\.mode \|\| 'single'\) === 'single'" class="wide"[^>]*>结束时刻 UTC<input type="datetime-local" :value="ngsoEndText" @change="setNgsoEnd\(\$event\.target\.value\)" @blur="\$event\.target\.value = ngsoEndText" \/>/.test(CI), '干扰分析：结束时刻框只在单历元档出现（多历元每个历元各开一窗、回归周期档时窗另定）')
+ok(/<div v-if="\(ngso\.epochs\.mode \|\| 'single'\) === 'single'" class="srow wide"[^>]*><label>结束时刻<\/label><input class="ci" type="datetime-local" :value="ngsoEndText" @change="setNgsoEnd\(\$event\.target\.value\)" @blur="\$event\.target\.value = ngsoEndText" \/>/.test(CI), '干扰分析：结束时刻框只在单历元档出现（多历元每个历元各开一窗、回归周期档时窗另定）')
 ok(CI.includes("function setNgsoEnd(v) { const h = hoursFromEnd(ngsoT0(), parseInput(v, 'utc')); if (Number.isFinite(h)) ngso.horizonH = +h.toFixed(6) }"), '干扰分析：改结束时刻＝改时窗')
 ok(CIJ.includes('startIso: minuteIso(sceneNowMs()),') && CIJ.includes('function ngsoStartNow() { ngso.startIso = minuteIso(sceneNowMs()) }') && /computeNgso, cancelNgso, estimateNgso, loadRainCdf, ngsoStartNow,/.test(CIJ), '干扰分析：起始缺省取时间轴此刻（取整分），「此刻」再取一次')
 ok(!/startIso: ngso\.startIso/.test(CIJ) && !/ngso: \{[^}\n]*startIso/.test(CIJ), '干扰分析：起始时刻不随配置存盘（每次打开取时间轴此刻）')
