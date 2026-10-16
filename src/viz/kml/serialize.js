@@ -83,8 +83,17 @@ export function serializePolysKml(polys = [], opts = {}) {
   ].join('\r\n')
 }
 
+// opts（缺省即历来的写法，菜单导出逐字节不变；可编程波束地图的 kml() 透传）：
+//   name          文档名（缺省「覆盖图」）           polys        协调区多边形（见 polyFragment）
+//   colors        'gradient' 按增益渐变（缺省）| 'drawn' 用等值线自带的 color（屏上那一档的颜色）
+//   lineWidth     线宽（缺省 2）    fillOpacity  填充不透明度 0–1（缺省 0.2）    fill  是否填充（缺省 true）
+//   contourName(c, b) / peakName(b)   自定义等值线 / 波束中心的 Placemark 名称
+const HEX6 = /^#?[0-9a-fA-F]{6}$/
 export function serializeKml(beams = [], opts = {}) {
   const docName = opts.name || '覆盖图'
+  const lw = Number.isFinite(opts.lineWidth) && opts.lineWidth >= 0 ? opts.lineWidth : 2
+  const fa = Number.isFinite(opts.fillOpacity) ? Math.round(clamp01(opts.fillOpacity) * 255).toString(16).padStart(2, '0') : '33'
+  const fillOn = opts.fill === false ? 0 : 1
   const styleDefs = []
   const styleSeen = new Set()
   const satFolders = []
@@ -111,7 +120,7 @@ export function serializeKml(beams = [], opts = {}) {
         if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
         placemarks.push(
           '<Placemark>',
-          `<name>${esc(b.name || '波束')} 波束中心</name>`,
+          `<name>${esc(typeof opts.peakName === 'function' ? opts.peakName(b) : `${b.name || '波束'} 波束中心`)}</name>`,
           '<styleUrl>#boreStyle</styleUrl>',
           '<Point>',
           `<coordinates>${lon.toFixed(6)},${lat.toFixed(6)},0</coordinates>`,
@@ -122,20 +131,20 @@ export function serializeKml(beams = [], opts = {}) {
 
       for (const c of contours) {
         const t = gmax > gmin ? (Number(c.g) - gmin) / (gmax - gmin) : 1
-        const rgb = gainRgb(t)
+        const rgb = (opts.colors === 'drawn' && HEX6.test(String(c.color || ''))) ? String(c.color).replace('#', '').toLowerCase() : gainRgb(t)
         const sid = 'g' + rgb
         if (!styleSeen.has(sid)) {
           styleSeen.add(sid)
           styleDefs.push(
             `<Style id="${sid}">`,
-            `<LineStyle><color>${kmlColor(rgb, 'ff')}</color><width>2</width></LineStyle>`,
-            `<PolyStyle><color>${kmlColor(rgb, '33')}</color><fill>1</fill><outline>1</outline></PolyStyle>`,
+            `<LineStyle><color>${kmlColor(rgb, 'ff')}</color><width>${lw}</width></LineStyle>`,
+            `<PolyStyle><color>${kmlColor(rgb, fa)}</color><fill>${fillOn}</fill><outline>1</outline></PolyStyle>`,
             '</Style>'
           )
         }
         placemarks.push(
           '<Placemark>',
-          `<name>${esc(c.g)} dB</name>`,
+          `<name>${esc(typeof opts.contourName === 'function' ? opts.contourName(c, b) : `${c.g} dB`)}</name>`,
           `<styleUrl>#${sid}</styleUrl>`,
           ...extDataXml([['gain', c.g]]),
           '<Polygon>',

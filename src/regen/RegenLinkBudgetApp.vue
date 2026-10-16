@@ -1040,6 +1040,8 @@ const laserGridFields = computed(() => [..._geoCols(LASER_FIELDS).map(_tagGroup(
 // 计算列取值映射 { 行_id: { _键: 值 } }：结果不写行数据 → 写回不惊动存档/脏检/过期 watcher
 const computedVals = ref({})
 function setVals(id, patch) { computedVals.value = { ...computedVals.value, [id]: { ...(computedVals.value[id] || null), ...patch } } }
+// 多行一次合并（结果回填用）：逐行 setVals 每次都整份复制 computedVals，千行表就是 O(N²)
+function patchVals(m) { const next = { ...computedVals.value }; for (const id in m) next[id] = { ...(next[id] || null), ...m[id] }; computedVals.value = next }
 // 结果单元格着色：负余量标红（纯数字口径，不设文字判定列）
 function cellClassFn(f, row) {
   if (!f.ro) return null
@@ -1050,8 +1052,9 @@ function cellClassFn(f, row) {
 }
 // MODCOD 列：本行载波从 MODCOD 库里选的那一档（名字可自定义），且与引擎回显的调制 / 码率仍一致才用它；
 // 否则（自定义体制、或选完又手改过调制 / 码率）按「调制方式 + FEC 码率」拼出来
-function modcodNameOf(rowId, d, mode) {
-  const row = rowsOf(mode).find((r) => r._id === rowId)
+// rowOf：批量回填时传进来的「行 id → 行」查表（取第一个同 id 的行，同 find 口径）；单条调用照旧线性找
+function modcodNameOf(rowId, d, mode, rowOf) {
+  const row = rowOf ? rowOf.get(rowId) : rowsOf(mode).find((r) => r._id === rowId)
   const f = row && row.basebandId !== undefined ? resolveBaseband(row.basebandId).form : null
   const same = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
   const mc = f && f.modcodLabel ? ((basebandOpts.value.modcod || {})[f.dvbStandard] || []).find((r) => r.label === f.modcodLabel) : null
@@ -1073,6 +1076,11 @@ function writeResultVals(out, mode) {
   const raw = { ...rawDataByRow.value }   // 引擎结果按行留底，供自定义列即时求值
   for (const l of out) raw[l.rowId] = l.data
   rawDataByRow.value = raw
+  // 原来逐行 setVals（每行整份复制 computedVals）+ 逐行 rowsOf(mode).find —— 两处都是 O(N²)，千行表回填一秒多。
+  // 改成先查表、各行补丁攒成一份（同 id 多次照序合并），末尾一次 patchVals：结果与逐行写逐字节相同
+  const rowOf = new Map()
+  for (const r of rowsOf(mode)) if (!rowOf.has(r._id)) rowOf.set(r._id, r)
+  const batch = {}
   for (const l of out) {
     const d = l.data
     const patch = {}
@@ -1083,7 +1091,7 @@ function writeResultVals(out, mode) {
         const mbps = colVal(d, def)
         patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
       } else if (def.key === 'modcodResult') {
-        patch._modcodResult = modcodNameOf(l.rowId, d, mode)
+        patch._modcodResult = modcodNameOf(l.rowId, d, mode, rowOf)
       } else {
         const v = d[def.key]
         const n = parseFloat(v)
@@ -1092,8 +1100,9 @@ function writeResultVals(out, mode) {
     }
     // _paW＝该站算出的功放功率原值（上行独有；不随列档位换算——尾标自己按 fmtQty 换 mW 档，见 cellTagFn）
     if (mode === 'uplink') patch._paW = d ? d.paRecommendation : ''
-    setVals(l.rowId, patch)
+    batch[l.rowId] = { ...(batch[l.rowId] || null), ...patch }
   }
+  patchVals(batch)
 }
 // 表格聚焦行变化 → 表脚「本行读数」跟随（无结果的新行也跟）；有结果时详细预算一并切到该行链路
 // 「详细预算」节头上一条 / 下一条、序号格右键「查看详细预算」：切到第 i 条链路的详细预算，聚焦行一并跟过去

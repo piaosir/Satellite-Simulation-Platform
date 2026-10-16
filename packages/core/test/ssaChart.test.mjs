@@ -13,8 +13,12 @@ import assert from 'node:assert/strict'
 const { chartSvg, svgSizeOf } = await import('../../../src/shared/ssaChartSvg.js')
 
 let pass = 0
-const ok = (c, m) => { assert.ok(c, m); pass++ }
-const eq = (a, b, m) => { assert.deepEqual(a, b, m); pass++ }
+// SSA_SOFT=1：失败只记下不中断（补丁前逐条确认新断言是红的用）
+const SOFT = !!process.env.SSA_SOFT
+let fail = 0
+const soft = (f, m) => { try { f(); pass++ } catch (e) { if (!SOFT) throw e; fail++; console.log('✗ ' + m) } }
+const ok = (c, m) => soft(() => assert.ok(c, m), m)
+const eq = (a, b, m) => soft(() => assert.deepEqual(a, b, m), m)
 
 const count = (s, re) => (String(s).match(re) || []).length
 const PATHS = /<path\b/g
@@ -136,7 +140,8 @@ for (const k of KINDS) {
   eq(count(s, PATHS), 5, '④ hbar：5 条')
   eq(count(s, /fill="var\(--ssa-s2\)"/g), 1, '④ hbar：只有 emphasis 那条用强调色')
   eq(count(s, /fill="var\(--ssa-s1\)"/g), 4, '④ hbar：其余四条同一色槽')
-  ok(s.includes('>8,800<') && s.includes('>1,200<'), '④ hbar：条端直接标值且带千分位')
+  // 2026-10-15 起分组用细空（U+2009）、四位数不分（样式规范 §E.3）
+  ok(s.includes('>8800<') && s.includes('>1200<'), '④ hbar：条端直接标值（四位数不分组）')
   // 条数多的图更高（高度随条数长，不是 16:9）
   const h5 = +/height="(\d+)"/.exec(s)[1]
   const h12 = +/height="(\d+)"/.exec(chartSvg({ type: 'hbar', items: SPECS.hbar.items.concat(SPECS.hbar.items).concat(SPECS.hbar.items.slice(0, 2)) }, SCREEN))[1]
@@ -150,7 +155,7 @@ for (const k of KINDS) {
   const s = chartSvg(SPECS.stack, SCREEN)
   eq(count(s, RECTS), 8, '④ stack：4 段 + 4 个图例色块')
   for (let i = 1; i <= 4; i++) eq(count(s, new RegExp(`fill="var\\(--ssa-r${i}\\)"`, 'g')), 2, `④ stack：第 ${i} 档明度用在段与图例各一次`)
-  ok(s.includes('>70,667 个<'), '④ stack：总数读数带千分位与单位')
+  ok(s.includes('>70 667 个<'), '④ stack：总数读数按细空分组、带单位')
   ok(s.includes('50.8%'), '④ stack：图例带各段占比（35888 / 70667）')
 }
 {
@@ -170,7 +175,7 @@ for (const k of KINDS) {
   // 直方：6 箱 = 6 根，且刻度落在箱边界上
   const s = chartSvg(SPECS.hist, SCREEN)
   eq(count(s, PATHS), 6, '④ hist：6 箱')
-  ok(s.includes('>0<') && s.includes('>1,200<'), '④ hist：首尾箱边界都出得来')
+  ok(s.includes('>0<') && s.includes('>1200<'), '④ hist：首尾箱边界都出得来')
 }
 {
   // 条带：5 个非空桶 = 5 个 <rect>，再加 1 块底纹；marks 出一根竖标
@@ -187,7 +192,7 @@ for (const k of KINDS) {
   const s = chartSvg(SPECS.heat, SCREEN)
   eq(count(s, RECTS), 6 + 7 + 2, '④ heat：6 个非零格 + 7 档色标 + 两个框')
   ok(s.includes('fill="var(--ssa-q7)"'), '④ heat：最热的那格落在色阶顶档')
-  ok(s.includes('>1,200<'), '④ heat：色标顶端标到实际最大计数')
+  ok(s.includes('>1200<'), '④ heat：色标顶端标到实际最大计数')
   ok(s.includes('>数量<'), '④ heat：色标轴名出得来')
   // 对数色阶：12 与 1200 相差一百倍，线性色阶会把 12 压进最底一档
   ok(/fill="var\(--ssa-q[2-5]\)"/.test(s), '④ heat：小计数没有被压进最底一档（对数色阶）')
@@ -196,8 +201,8 @@ for (const k of KINDS) {
   // 散点：20 个点 = 20 个 <circle>
   const s = chartSvg(SPECS.scatter, SCREEN)
   eq(count(s, CIRCLES), 20, '④ scatter：20 个点')
-  ok(s.includes('抽样 20 / 27,718'), '④ scatter：capped 出读数行')
-  ok(chartSvg(SPECS.scatter, { ...SCREEN, lang: 'en' }).includes('Sampled 20 / 27,718'), '④ scatter：英文档读数行跟着走')
+  ok(s.includes('抽样 20 / 27 718'), '④ scatter：capped 出读数行（细空分组）')
+  ok(chartSvg(SPECS.scatter, { ...SCREEN, lang: 'en' }).includes('Sampled 20 / 27 718'), '④ scatter：英文档读数行跟着走')
 }
 
 // ③ 文字防重叠：放不下的标签截断 + <title> 挂全名（口径说明只进 title，不占版面）
@@ -326,4 +331,58 @@ ok(!/Math\.random|Date\.now/.test(await (await import('node:fs/promises')).readF
   ok(xs.every((x) => x >= -2 && x <= 702), `刻度都在画幅内（实得 ${xs.map((x) => x.toFixed(0)).join(',')}）`)
 }
 
+// —— 计数轴只出整数刻度（2026-10-15）——
+// 卫星组 / GEO 筛选报告里计数都很小（最高 1–3），1/2/5 取整会给出 0.5、0.2 步长，
+// 于是「颗数」轴上印着 0.5 颗。全零的折线也不许为了撑开量程而印出负刻度。
+{
+  const yTicks = (svg) => [...svg.matchAll(/<text[^>]*text-anchor="end"[^>]*>([^<]*)</g)].map((m) => m[1].replace(/,/g, ''))
+  const isInt = (s) => /^-?\d+$/.test(s)
+  const hist = chartSvg({ type: 'hist', bins: [{ x0: 0, x1: 5, n: 1 }, { x0: 5, x1: 10, n: 2 }], yLabel: '颗数' }, PRINT)
+  const ht = yTicks(hist)
+  ok(ht.length >= 2 && ht.every(isInt), `★ 直方图计数轴全是整数刻度（实得 ${ht.join(' ')}）`)
+  const strip = chartSvg({ type: 'strip', bins: [{ lon: 10, n: 1 }, { lon: 11, n: 0 }] }, PRINT)
+  ok(yTicks(strip).every(isInt), `★ 条带计数轴全是整数刻度（实得 ${yTicks(strip).join(' ')}）`)
+  const ln = chartSvg({ type: 'line', x: [2020, 2021, 2022], series: [{ name: 'a', data: [0, 1, 2] }], xIsYear: true }, PRINT)
+  ok(yTicks(ln).every(isInt), `★ 整数序列的折线纵轴全是整数刻度（实得 ${yTicks(ln).join(' ')}）`)
+  const zero = chartSvg({ type: 'line', x: [2020, 2021, 2022], series: [{ name: 'a', data: [0, 0, 0] }], xIsYear: true }, PRINT)
+  ok(yTicks(zero).every((s) => Number(s) >= 0), `★ 全零折线不出负刻度（实得 ${yTicks(zero).join(' ')}）`)
+  // 末年不完整：最后一段线与末点另画（淡一档 + 空心），整段实线读起来像是「今年骤降」
+  const part = chartSvg({ type: 'line', x: [2024, 2025, 2026], series: [{ name: 'a', data: [300, 320, 200] }], xIsYear: true, partialLast: true }, PRINT)
+  ok(/data-partial="1"/.test(part), '★ partialLast：末段单独成一条、带 data-partial 标记')
+}
+
+// —— 纸面档（theme: 'paper'，样式规范 2026-10-15 §F）——
+{
+  const PAPER = { theme: 'paper', widthMm: 160, heightMm: 80, lang: 'zh' }
+  const fsOf = (svg) => [...svg.matchAll(/<text\b[^>]*font-size="([\d.]+)"/g)].map((m) => +m[1])
+  const col = { type: 'col', x: [2022, 2023, 2024], xIsYear: true, partialLast: true,
+    series: [{ key: 'PAY', name: '载荷', data: [10, 20, 30] }, { key: 'R/B', name: '火箭体', data: [1, 2, 3] }] }
+  const sh = { type: 'stackhist', bins: [{ x0: 200, x1: 250 }, { x0: 250, x1: 300 }],
+    series: [{ key: 'PAY', name: '载荷', data: [1.5, 2] }, { key: 'DEB', name: '碎片', data: [0.5, 1] }] }
+  const all = { ...SPECS, col, stackhist: sh }
+  for (const [k, spec] of Object.entries(all)) {
+    const svg = chartSvg(spec, PAPER)
+    shell(svg, '纸面 ' + k)
+    const sizes = [...new Set(fsOf(svg))]
+    eq(sizes, [10.67], `★ 纸面 ${k}：全图文字一律 8 pt（10.67 px @ 96 dpi）`)
+    ok(/font-family="Arial, DengXian, '等线', sans-serif"/.test(svg), `纸面 ${k}：图内字体固定 Arial + 等线`)
+  }
+  const s1 = chartSvg(col, PAPER)
+  eq(svgSizeOf(s1), { width: 605, height: 302 }, '★ 160 × 80 mm 按 96 dpi 成图（605 × 302 px）')
+  eq(svgSizeOf(chartSvg(col, { ...PAPER, scale: 1.5 })).width, 907, '屏上纸面缩放：scale 1.5 → 907 px')
+  ok(s1.includes('fill="#15619B"') && s1.includes('fill="#D8960E"'), '★ 类型色：载荷 #15619B、火箭体 #D8960E')
+  const swapped = chartSvg({ ...col, series: [col.series[1], col.series[0]] }, PAPER)
+  ok(swapped.includes('fill="#15619B"') && swapped.includes('fill="#D8960E"'), '★ 换段序不换色（颜色跟类型码走）')
+  ok(/data-partial="1"/.test(s1), '★ 竖柱末期不完整：末柱单独标记')
+  ok(!/stroke="#D9D9D9"/.test(chartSvg(SPECS.hist, PAPER)), '★ 纸面档不画背景网格')
+  const sh1 = chartSvg(sh, PAPER)
+  ok(sh1.includes('fill="#15619B"') && sh1.includes('fill="#B8333D"'), '堆叠直方按类型着色（载荷 / 碎片）')
+  // 条带：纸面档横轴印 °W / °E，竖标放不下改编号引注
+  const strip = chartSvg({ type: 'strip', bins: [{ lon: 0, n: 1 }], marks: [{ lon: 110, label: 'BEIDOU-2 G1 A LONG NAME' }, { lon: 110.5, label: 'BEIDOU-2 G3 ANOTHER NAME' }] }, { ...PAPER, heightMm: 50 })
+  ok(strip.includes('>150°W<') && strip.includes('>150°E<'), '★ 条带横轴印 150°W / 150°E')
+  ok(strip.includes('>①<') && strip.includes('① BEIDOU-2 G1 A LONG NAME'), '★ 竖标挤在一起时改编号引注，图底列全名（不截断）')
+  ok(!/…/.test(strip), '条带竖标不截断')
+}
+
+if (fail) { console.log('FAIL  ' + fail + ' 项'); process.exit(1) }
 console.log(`ssaChart: ${pass} 项断言全过`)

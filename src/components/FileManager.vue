@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, nextTick, watch, defineAsyncComponent } from 'vue'
 import { askConfirm, confirmState, answerConfirm } from '../shared/ui/useConfirm.js'
 import { fileBridge, bumpLibrary, bumpCustomSats } from '../stores/fileBridge'
 import { readCustomConstellationSummary, customConstellationsToOmmRecords, renameCustomConstellation } from '../viz/constellation/useCustomConstellations.js'
 import { parseGxt, metaFromName } from '../viz/gxt/parse.js'
+import { parseGxtJson, isGxtJsonText } from '../viz/gxt/json.js'
 import { parseKmlBeams } from '../viz/kml/parse.js'
 import { loadSatNodes } from '../shared/freqPlanSats.js'
 import { fmtGeoSlot } from '../shared/orbitClass.js'
@@ -21,9 +22,13 @@ import ExcelGrid from './ExcelGrid.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
 import EphemImportDialog from './EphemImportDialog.vue'
 import EphemExportDialog from './EphemExportDialog.vue'
+// 可编程波束地图：对话框连同 Monaco 编辑器 / 脚本引擎只在打开时才拉取
+const BeamScriptDialog = defineAsyncComponent(() => import('./BeamScriptDialog.vue'))
 import { ensureSearchPool } from '../ngso/satSearchPool.js'
 import { clock } from '../stores/simClock'
-import { byLang } from '../shared/i18n/lang.js'
+import { byLang, curLang } from '../shared/i18n/lang.js'
+import { buildBeamMap } from '../shared/beamScript/model.js'
+import { libraryBeamMapRaw } from '../shared/beamScript/coverageLib.js'
 import { fpMiniItem } from '../shared/fpMiniExport.js'
 import { useGridSelect } from '../viz/grd/useGridSelect.js'
 import { exportSheets, importWorkbook } from '../shared/gridXlsx.js'
@@ -730,9 +735,24 @@ const newBeam = ref({ name: '', type: 'EIRP', band: '' })
 async function loadGxt() { try { gxtIndex.value = api?.coverageGxt ? await api.coverageGxt.index() : { satellites: [] }; if (gxtIndex.value?.corrupt) flash('覆盖库索引损坏') } catch { gxtIndex.value = { satellites: [] } } }
 // 扩展名兜底：老版 IPC 不返回 ext，且用户可能把 KML 存成别的后缀 —— 认文件头
 const isKmlFile = (f) => String(f.ext || '').toLowerCase() === 'kml' || /^\s*(<\?xml|<kml)/i.test(f.text || '')
-// 批量导入：多选 .gxt / .kml → 自动归类建星/建波束并导入，一次完成。
+const isJsonFile = (f) => String(f.ext || '').toLowerCase() === 'json' || isGxtJsonText(f.text)
+// GXT 结构 JSON（LinkLab 小程序云数据同款，见 viz/gxt/json.js）→ 导入条目的元信息。
+// 卫星 / 频段 / 波束 / 类型先按文件名四段拆（云数据就是这么命名的，同一颗星的文件名前缀一致）；拆不出四段时
+// 卫星名取文件里的 geoMain.satName，类型按 emiRcp（R = 接收 → G/T）。不留原文：再导出 GXT 由归一化数据重建。
+function jsonMeta(f, parsed) {
+  const meta = metaFromName(String(f.base || '').replace(/\.json$/i, ''))
+  const four = !!meta.sat
+  return {
+    satName: (four && meta.sat) || parsed.satName || meta.name || '卫星',
+    beamName: (four && meta.beam) || meta.name || '波束',
+    band: (four && meta.band) || '',
+    type: (four && (meta.type === 'EIRP' || meta.type === 'GT') && meta.type) || (parsed.emiRcp === 'R' ? 'GT' : 'EIRP')
+  }
+}
+// 批量导入：多选 .gxt / .kml / .json → 自动归类建星/建波束并导入，一次完成。
 // GXT：一个文件 = 一个波束，卫星/频段/波束/类型按文件名（卫星_频段_波束_类型）拆，留原文供原样再导出。
 // KML：一个文件可含多卫星多波束（文件夹树即层级），逐个建；不留原文，再导出由归一化数据重建。
+// JSON：GXT 结构 JSON，一个文件 = 一个波束，归类口径见 jsonMeta。
 async function importGxtBatch() {
   const res = await api.coverageGxt.open()
   if (!res || res.canceled) return
@@ -757,6 +777,17 @@ async function importGxtBatch() {
       }
       continue
     }
+    if (isJsonFile(f)) {
+      let parsed
+      try { parsed = parseGxtJson(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + (e.message || e)); continue }
+      const m = jsonMeta(f, parsed)
+      items.push({
+        satName: m.satName, lon: parsed.lon, beamName: m.beamName, type: m.type, band: m.band,
+        rawText: null, sourceName: f.base, sourceFormat: 'json',
+        json: { sat: m.satName, band: m.band, beam: m.beamName, type: m.type, lon: parsed.lon, bore: parsed.bore, contours: parsed.contours }
+      })
+      continue
+    }
     let parsed
     try { parsed = parseGxt(f.text) } catch (e) { errs.push((f.base || '文件') + '：解析失败 ' + (e.message || e)); continue }
     const meta = metaFromName(f.base)
@@ -766,7 +797,7 @@ async function importGxtBatch() {
       json: { sat: meta.sat, band: meta.band, beam: meta.beam, type: meta.type || 'EIRP', lon: parsed.lon, bore: parsed.bore, contours: parsed.contours }
     })
   }
-  if (!items.length) { flash('未能导入：' + (errs[0] || '没有有效的 GXT / KML 文件')); return }
+  if (!items.length) { flash('未能导入：' + (errs[0] || '没有有效的 GXT / KML / JSON 文件')); return }
   const r = await api.coverageGxt.importBatch(items)
   await loadGxt(); bumpLibrary()
   // 自动展开本次涉及的卫星，便于查看（节点按名合并，key = 'g:'+小写名）
@@ -808,12 +839,16 @@ async function importGxtToBeam(node, beam) {
   const f = files[0]
   if (!f || f.error || !f.text) { flash('读取失败：' + ((f && f.error) || '空文件')); return }
   const kml = isKmlFile(f)
+  const asJson = !kml && isJsonFile(f)
   let parsed, rest = 0
   if (kml) {
     let r
     try { r = parseKmlBeams(f.text) } catch (e) { flash('KML 解析失败：' + (e.message || e)); return }
     const b = r.beams[0]; rest = r.beams.length - 1
     parsed = { lon: b.lon, bore: b.bore, contours: b.contours, band: b.band, type: b.type }
+  } else if (asJson) {
+    try { parsed = parseGxtJson(f.text) } catch (e) { flash('JSON 解析失败：' + (e.message || e)); return }
+    parsed.type = jsonMeta(f, parsed).type
   } else {
     try { parsed = parseGxt(f.text) } catch (e) { flash('GXT 解析失败：' + (e.message || e)); return }
   }
@@ -824,9 +859,9 @@ async function importGxtToBeam(node, beam) {
     lon: parsed.lon, bore: parsed.bore, contours: parsed.contours
   }
   const r = await api.coverageGxt.attach(node.userSatId, beam.id, {
-    rawText: kml ? null : f.text, sourceName: f.base, sourceFormat: kml ? 'kml' : 'gxt', json, type: json.type, band: json.band
+    rawText: (kml || asJson) ? null : f.text, sourceName: f.base, sourceFormat: kml ? 'kml' : (asJson ? 'json' : 'gxt'), json, type: json.type, band: json.band
   })
-  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线${rest > 0 ? `；文件中另有 ${rest} 个波束未收，用「导入 GXT / KML…」批量导` : ''}）`); await loadGxt(); bumpLibrary() }
+  if (r && r.ok) { flash(`已导入 ${f.base}（${parsed.contours.length} 条等值线${rest > 0 ? `；文件中另有 ${rest} 个波束未收，用「导入 GXT / KML / JSON…」批量导` : ''}）`); await loadGxt(); bumpLibrary() }
   else flash('导入失败：' + ((r && r.error) || '未知'))
 }
 async function exportGxtBeam(beam) {
@@ -869,6 +904,63 @@ async function exportCurrentGxt() {
   const save = await api.exportFile({ defaultName: '当前覆盖.gxt', data: text, filters: [{ name: 'GXT 等值线', extensions: ['gxt'] }] })
   if (save && save.ok) flashSaved(save)
   else if (save && save.error) flash('导出失败：' + save.error)
+}
+
+// 可编程波束地图（components/BeamScriptDialog.vue）：库里的波束交给用户脚本，按自定义格式导出。
+// 范围四档：整库（工具栏）/ 一颗卫星（卫星行）/ 一个波束（波束行）读覆盖库；「当前覆盖」走 3D 页同一份采集
+//（fileBridge.collectBeamMap，与菜单「导出可编程波束地图…」一致）。库里的卫星名 / 频段 / 波束名 / 类型以树为准，
+// 与本页「导出 GXT / KML」同口径；数据只读归一化件（GXT 原文不进脚本，gxt(data) 由归一化数据重建）。
+const bsSnap = shallowRef(null)
+const bsRecollect = shallowRef(null)
+const bsBusy = ref(false)
+const bsAnyData = computed(() => allSats.value.some((n) => n.beams.some((b) => b.file)))
+const canScriptCurrent = computed(() => !!fileBridge.collectBeamMap)
+let _appVer = ''
+async function appVersion() {
+  if (!_appVer) { try { _appVer = String((api && api.app && api.app.version ? await api.app.version() : '') || '') } catch { /* 浏览器直跑无 IPC */ } }
+  return _appVer
+}
+const firstLon = (...vs) => { for (const v of vs) { if (v == null || v === '') continue; const n = Number(v); if (Number.isFinite(n)) return n } return null }
+// 范围 → 树上的卫星节点与波束。按键找：重新读取时树可能已变（重新导入 / 删除），以当时的树为准
+function bsPick(scope) {
+  const sats = allSats.value
+  if (scope.kind === 'all') return { title: byLang('覆盖库', 'Coverage library'), list: sats.flatMap((n) => n.beams.map((b) => ({ n, b }))) }
+  const n = sats.find((x) => x.key === scope.sat)
+  if (!n) return { title: '', list: [] }
+  if (scope.kind === 'sat') return { title: n.name, list: n.beams.map((b) => ({ n, b })) }
+  const b = n.beams.find((x) => x.key === scope.beam)
+  return { title: `${n.name}_${b ? b.name : ''}`, list: b ? [{ n, b }] : [] }
+}
+async function bsCollect(scope) {
+  const { title, list } = bsPick(scope)
+  const todo = list.filter(({ b }) => b.file)
+  const beams = new Array(todo.length).fill(null)
+  let failed = 0
+  // 每个波束一次 IPC；整库可能上百个，分批并发
+  for (let i = 0; i < todo.length; i += 16) {
+    await Promise.all(todo.slice(i, i + 16).map(async ({ n, b }, j) => {
+      try {
+        const d = b.source === 'preset' ? await api.coverage.get(b.file) : await api.coverageGxt.get(b.file)
+        if (!d || !Array.isArray(d.contours)) { failed++; return }
+        beams[i + j] = { satName: n.name, lon: firstLon(d.lon, b.lon, n.lon), band: b.band || '', beam: b.name || '', type: b.type || 'EIRP', bore: d.bore || [], contours: d.contours }
+      } catch { failed++ }
+    }))
+  }
+  if (failed) flash(`${failed} 个波束读取失败`)
+  return buildBeamMap(libraryBeamMapRaw(beams.filter(Boolean), { title, version: await appVersion(), simTime: clock.tMs, lang: curLang() }))
+}
+async function openBeamScript(scope) {
+  if (bsSnap.value || bsBusy.value) return
+  const re = scope.kind === 'drawing' ? fileBridge.collectBeamMap : () => bsCollect(scope)
+  if (!re) { flash('暂无覆盖。'); return }
+  bsBusy.value = true
+  try {
+    const snap = await re()
+    if (scope.kind !== 'drawing' && !snap.beams.length) { flash('暂无波束数据。'); return }
+    bsRecollect.value = re
+    bsSnap.value = snap
+  } catch (e) { flash('读取失败：' + ((e && e.message) || e)) }
+  finally { bsBusy.value = false }
 }
 
 /* ===================== ④ MODCOD 表（调制编码标准库）=====================
@@ -1172,6 +1264,7 @@ watch(tab, (t) => { if (t === 'freqplan') loadFreqPlans(); else if (t === 'grd')
 function onF2(e) {
   const t = e.target
   if (tab.value === 'modcod' && t && t.closest && t.closest('.mcgrid')) return
+  if (bsSnap.value) return   // 可编程波束地图开着：F2 归它（脚本改名 / 编辑器重命名符号）
   e.stopPropagation()
   if (e.isComposing || e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
   if (t && t.matches && t.matches('input, textarea, select')) return
@@ -1189,7 +1282,7 @@ function onKey(e) {
   if (confirmState.open) { e.stopPropagation(); e.preventDefault(); answerConfirm(false); return }
   if (expMenu.value.key) { e.stopPropagation(); expMenu.value = { key: '', x: 0, y: 0, ant: null }; return }
   // 上面压着 AppDialog 外壳的框（发送到小程序 / 导入星历 / 导出星历）：Esc 归它（AppDialog 在冒泡段收），这里不拦也不关自己
-  if (fpMiniOpen.value || fmImport.value || fmExport.value) return
+  if (fpMiniOpen.value || fmImport.value || fmExport.value || bsSnap.value) return
   if (mcGrid.pick.open || mcGrid.menu.open) return
   if (e.target && e.target.matches && e.target.matches('input, textarea, select')) return
   e.stopPropagation()
@@ -1474,9 +1567,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
           <section v-else-if="tab === 'gxt'">
 
             <div class="addbar">
-              <button class="mini imp" title="GXT：一个文件一个波束，按文件名「卫星_频段_波束_类型」归类；KML：按文件夹树还原卫星 → 波束 → 等值线" @click="importGxtBatch">导入 GXT / KML…</button>
+              <button class="mini imp" title="GXT：一个文件一个波束，按文件名「卫星_频段_波束_类型」归类；KML：按文件夹树还原卫星 → 波束 → 等值线；JSON：GXT 结构的 JSON（LinkLab 小程序云数据同款），一个文件一个波束，按文件名归类" @click="importGxtBatch">导入 GXT / KML / JSON…</button>
               <span class="spacer"></span>
+              <button class="mini ghost" :disabled="!bsAnyData || bsBusy" title="以脚本处理覆盖库中全部已导入数据的波束，按自定义格式导出" @click="openBeamScript({ kind: 'all' })">可编程导出…</button>
               <button class="mini ghost" :disabled="!canExportCurrent" title="将 3D 页当前绘制的覆盖（GXT/GRD 来源）转为 GXT 文件导出" @click="exportCurrentGxt">当前覆盖转为 GXT 导出</button>
+              <button class="mini ghost" :disabled="!canScriptCurrent || bsBusy" title="以脚本处理 3D 页当前绘制的覆盖等值线、波束中心、Polygon 与标记，按自定义格式导出" @click="openBeamScript({ kind: 'drawing' })">当前覆盖可编程导出…</button>
             </div>
             <div class="addbar sub">
               <span class="dimnote">或手动新建：</span>
@@ -1494,6 +1589,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                   <span class="tcount">{{ (sat.lon != null ? (fmtGeoSlot(Number(sat.lon)) || sat.lon + '°') + ' · ' : '') }}{{ sat.beams.length }} 波束</span>
                   <span class="trops" @click.stop>
                     <button class="mini" @click="openAddBeam(sat)"><Icon name="plus" :size="12" /> 波束</button>
+                    <button class="mini ghost" :disabled="!sat.beams.some((b) => b.file) || bsBusy" title="以脚本处理该卫星全部已导入数据的波束，按自定义格式导出" @click="openBeamScript({ kind: 'sat', sat: sat.key })">可编程导出…</button>
                     <button class="mini del" @click="removeGxtSat(sat)">删除卫星</button>
                   </span>
                 </div>
@@ -1513,9 +1609,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                       <template v-else><span class="dim">未导入数据</span></template>
                     </span>
                     <span class="trops">
-                      <button v-if="beam.source === 'user'" class="mini" @click="importGxtToBeam(sat, beam)">{{ beam.file ? '重新导入' : '导入 GXT / KML' }}</button>
+                      <button v-if="beam.source === 'user'" class="mini" @click="importGxtToBeam(sat, beam)">{{ beam.file ? '重新导入' : '导入 GXT / KML / JSON' }}</button>
                       <button class="mini ghost" :disabled="beam.source === 'user' && !beam.file" @click="exportBeam(sat, beam)">导出 GXT</button>
                       <button class="mini ghost" :disabled="!beam.file" @click="exportBeamKml(sat, beam)">导出 KML</button>
+                      <button class="mini ghost" :disabled="!beam.file || bsBusy" @click="openBeamScript({ kind: 'beam', sat: sat.key, beam: beam.key })">可编程导出…</button>
                       <button class="mini del" @click="removeGxtBeam(sat, beam)">删除</button>
                     </span>
                   </div>
@@ -1543,6 +1640,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
       :defaults="fmExport.defaults" :z="2200" @done="onExportDone" @close="fmExport = null" />
     <MiniSendDialog v-model:open="fpMiniOpen" :build="() => fpMiniPack || { name: '', items: [] }"
       :device-id="fpMiniDeviceId" :configured="fpMiniConfigured" @toast="flash" />
+    <BeamScriptDialog v-if="bsSnap" :snapshot="bsSnap" :recollect="bsRecollect" layer="pop" @close="bsSnap = null" />
     <template v-if="expMenu.key">
       <div class="expback menu-mask" @click="expMenu = { key: '', x: 0, y: 0, ant: null }"></div>
       <div class="expmenu menu" role="menu" :style="{ left: expMenu.x + 'px', top: expMenu.y + 'px' }">

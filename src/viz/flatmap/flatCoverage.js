@@ -7,6 +7,7 @@ import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '.
 import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, hasDetail, onPovChange } from '../geo/povResolver.js'
 // 五类边界线的渲染次序 / 出厂样式 / 屏幕像素虚线图案 / 缩放淡出档位：与 3D 球体共用同一份常量
 import { BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_DRAW, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
+import { SEL_MARK_COLOR, selHalf, strokeSelBrackets } from '../selMark.js'
 import { terminatorFlat, solarGeometry, nightRamp } from '../terminator.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 3D 球体共用同一份
 import { TILE, span as tileSpan, tileRange, pickZoom, getTileOrParent, getTileFallback, ancestorHit, prefetchParents, tileStats, tileGutter, tileImgSize, loadTiles, warm as warmTiles, MISS_TTL } from '../imageryTiles.js'
@@ -18,7 +19,7 @@ import { paintNumBadge, BADGE_R } from '../markers/numBadge.js'
 import { paintMarkSymbol, symbolUp, symbolDown, PT_DOT_K } from '../markers/markSymbols.js'   // PT_DOT_K：点标记滑块值 → 视觉直径（3D / 页面同一份）
 // 地球站符号：与 3D 球体共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
-import { drawVehicle, flatHeading } from '../vehicleSymbol.js'
+import { drawVehicle, flatHeading, vehicleBox } from '../vehicleSymbol.js'
 // 运动档载具的屏幕朝向（沿大圆前进一小步投到图上）：P4 标记实体
 import { aheadPoint } from '../../../packages/core/models/entityRuntime.mjs'
 // 注记描边色/粗细随底色现算：与 3D 球体共用单一来源
@@ -387,6 +388,8 @@ export function createFlatCoverage(canvas) {
   // 模型图的标注让位 / 命中几何（CSS px，相对锚点）：{ up, down, half } 与 stExtent 同形；cx / cy = 形体中心偏移，d = 直径
   const sprExt = (sp) => ({ up: sp.u, down: sp.d, half: Math.max(sp.l, sp.r) })
   const sprHit = (sp) => ({ cx: (sp.r - sp.l) * 0.5, cy: (sp.d - sp.u) * 0.5, d: Math.max(sp.l + sp.r, sp.u + sp.d) })
+  // 选中括号贴的外接框（绝对屏幕坐标，宽高各算）
+  const sprBox = (sp, x, y) => ({ cx: x + (sp.r - sp.l) * 0.5, cy: y + (sp.d - sp.u) * 0.5, w: sp.l + sp.r, h: sp.u + sp.d })
 
   // 预处理底图：陆地多边形（按国家配色）+ 国家名 + 大洋名。可经 setMapDetail 换源(10m/50m)重建。
   // 边界抽稀（thin>0，单位度）：与 3D 一致地稀疏化各环顶点，低画质档减少 Path2D 顶点。
@@ -3605,7 +3608,8 @@ export function createFlatCoverage(canvas) {
     }
     return null
   }
-  // 一类实体的屏幕几何（命中与高亮环共用）：逐个回调 fn(x, y, 直径, kind, id)；only = {kind, id} 时只回调那一个
+  // 一类实体的屏幕几何（命中与高亮共用）：逐个回调 fn(x, y, 直径, kind, id, box)；only = {kind, id} 时只回调那一个。
+  // box = { cx, cy, w, h }：符号画出来的外接框（宽高各算，选中括号贴它；命中仍按 x / y / 直径）
   function entityGeom(kind, fn, only) {
     const iz = izNow()
     const pick = (id) => !only || String(only.id) === String(id)   // 链路终点按字符串 id 来查（标记层的 id 可能是数字）
@@ -3615,18 +3619,19 @@ export function createFlatCoverage(canvas) {
       for (const s of mk.stations) if (s.id != null && pick(s.id) && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
         const x = PX(s.lon, s.lat), y = PY(s.lat, s.lon)
         const sp = s.m2d ? sprAt('station', 'st:' + s.id, s, northRot(s.lat, s.lon, x, y), iz, 'peek') : null
-        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'station', s.id) }
-        else fn(x, y - (ext.up - ext.down) * 0.5, d, 'station', s.id)
+        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'station', s.id, sprBox(sp, x, y)) }
+        else { const cy = y - (ext.up - ext.down) * 0.5; fn(x, cy, d, 'station', s.id, { cx: x, cy, w: ext.half * 2, h: ext.up + ext.down }) }
       }
     } else if (kind === 'point') {
       const ptD = ptDiam(iz), idxD = idxDiam(iz), sh = markCfg.ptShape
       for (const p of mk.points) if (p.id != null && pick(p.id) && Number.isFinite(p.lat) && Number.isFinite(p.lon)) {
         const x = PX(p.lon, p.lat), y = PY(p.lat, p.lon)
         const sp = p.m2d ? sprAt('point', 'pt:' + p.id, p, northRot(p.lat, p.lon, x, y), iz, 'peek') : null
-        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'point', p.id); continue }
+        if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'point', p.id, sprBox(sp, x, y)); continue }
         const d = p.idx ? idxD : ptD
         const up = p.idx ? d * BADGE_R : symbolUp(sh) * d, dn = p.idx ? d * BADGE_R : symbolDown(sh) * d
-        fn(x, y - (up - dn) * 0.5, Math.max(up + dn, d), 'point', p.id)
+        const cy = y - (up - dn) * 0.5
+        fn(x, cy, Math.max(up + dn, d), 'point', p.id, { cx: x, cy, w: p.idx ? up + dn : d, h: up + dn })
       }
     } else if (kind === 'vehicle') {
       const vi = (markCfg.tjIconOn !== false ? (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) : 0) * iz * ST_ICON_K
@@ -3635,28 +3640,24 @@ export function createFlatCoverage(canvas) {
         const ll = vehLL(t)
         if (!ll || !Number.isFinite(ll.lat) || !Number.isFinite(ll.lon)) continue
         const x = PX(ll.lon, ll.lat), y = PY(ll.lat, ll.lon)
+        const vs = vehStates.size ? vehStates.get(t.id) : null, tp = t.pts || []
+        const rot = vs ? vehScreenRot(vs, x, y) : flatHeading(tp[tp.length - 2], ll)
         if (t.m2d && markCfg.tjIconOn !== false) {
-          const vs = vehStates.size ? vehStates.get(t.id) : null, tp = t.pts || []
-          const rot = vs ? vehScreenRot(vs, x, y) : flatHeading(tp[tp.length - 2], ll)
           const sp = sprAt(vehKind(t), 'tr:' + t.id, t, rot, iz, 'peek')
-          if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'vehicle', t.id); continue }
+          if (sp) { const h = sprHit(sp); fn(x + h.cx, y + h.cy, h.d, 'vehicle', t.id, sprBox(sp, x, y)); continue }
         }
-        fn(x, y, vi, 'vehicle', t.id)
+        const vb = vehicleBox(t.kind, vi, rot)
+        fn(x, y, vi, 'vehicle', t.id, { cx: x + vb.cx, cy: y + vb.cy, w: vb.w, h: vb.h })
       }
     }
   }
-  // 落点高亮环：实时层（所有快照之后），按目标实体【当前】屏幕位置；直径 max(px, 24) + 12、线宽 2，外垫一道深色描边（浅底也认得出）
+  // 落点 / 选中高亮（四角括号）：实时层（所有快照之后），按目标实体【当前】屏幕位置；画法见 viz/selMark.js（两视图同一副）
   function drawDropRing() {
     if (!dropHl) return
     let at = null
-    entityGeom(dropHl.kind, (x, y, d) => { if (!at) at = { x, y, d } }, dropHl)
+    entityGeom(dropHl.kind, (x, y, d, k, id, b) => { if (!at) at = b || { cx: x, cy: y, w: d, h: d } }, dropHl)
     if (!at) return
-    const R = (Math.max(at.d, 24) + 12) / 2
-    ctx.save()
-    ctx.beginPath(); ctx.arc(at.x, at.y, R, 0, Math.PI * 2)
-    ctx.lineWidth = 4.5; ctx.strokeStyle = 'rgba(6,11,18,0.55)'; ctx.stroke()
-    ctx.lineWidth = 2; ctx.strokeStyle = dropHl.color || '#4da3ff'; ctx.stroke()
-    ctx.restore()
+    strokeSelBrackets(ctx, Math.round(at.cx), Math.round(at.cy), Math.round(selHalf(at.w)), Math.round(selHalf(at.h)), dropHl.color)
   }
   // 性能指标表的城市层：指向误差框 + 城市标签。椭圆（it.ring，卫星视角下的 Az/El 误差投到地面的闭合环）走 drawPolyline；
   // ★ 矩形（it.rect = 半宽 / 半高，度）＝屏幕矩形：以城市的屏幕位置为中心、半宽半高 = 度 × k()。全部投影档的平面都归一到
@@ -5171,9 +5172,9 @@ export function createFlatCoverage(canvas) {
     },
     // 拖放命中（不受「调整位置」门控）：{ kind: 'station'|'point'|'vehicle', id, x, y, px } | null；kinds 里的 'sat' 忽略（2D 没有卫星拾取）
     entityAtScreen,
-    // 拖放落点高亮：hit = entityAtScreen 的结果或 null；o.color 缺省 #4da3ff（页面传 accent）
+    // 拖放落点高亮：hit = entityAtScreen 的结果或 null；o.color 缺省 SEL_MARK_COLOR
     setDropHighlight(hit, o) {
-      const next = hit && hit.kind && hit.id != null ? { kind: hit.kind, id: hit.id, px: Number(hit.px) > 0 ? Number(hit.px) : 24, color: (o && o.color) || '#4da3ff' } : null
+      const next = hit && hit.kind && hit.id != null ? { kind: hit.kind, id: hit.id, px: Number(hit.px) > 0 ? Number(hit.px) : 24, color: (o && o.color) || SEL_MARK_COLOR } : null
       if (!next && !dropHl) return
       dropHl = next
       requestDraw()

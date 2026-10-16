@@ -29,6 +29,14 @@ export function setSecOpen(key, open = true) {
   state[key] = !!open
 }
 
+// 分区「打开」不只是展开态的视图（如地图标记面板：分区 = 属性检查器里某个图层的样式页，打开 = 在对象树里选中该图层）：
+// 宿主为这些 key 登记一只开启钩子，revealSection 展开时一并调用。返回注销函数。
+const openers = new Map()
+export function registerSecOpener(key, fn) {
+  openers.set(key, fn)
+  return () => { if (openers.get(key) === fn) openers.delete(key) }
+}
+
 // 定位到侧栏 / 设置窗的某个分区（顶部搜索框「定位」用）：切到所在视图（view 为空不切，如设置窗由调用方先打开）
 // → 展开 → 滚到它并闪一下。keys 可给多个：同一分区在不同模式下用不同 key（波束合成的「覆盖区域」bs-cov / bs-pcov），
 // 谁在 DOM 里就滚谁。分区标题元素靠 data-sec="<key>" 找（3D 页 / SatCovPanel / SettingsModal 的分区标题都打了）。
@@ -36,7 +44,7 @@ export function setSecOpen(key, open = true) {
 export async function revealSection(view, keys) {
   const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean)
   if (view && !requestSide(view)) return null   // 未激活：受锁视图不切（requestSide 已请出锁窗）
-  for (const k of list) setSecOpen(k, true)
+  for (const k of list) { setSecOpen(k, true); const op = openers.get(k); if (op) op() }
   await settle()
   const el = findHeading(list)
   if (!el) return null

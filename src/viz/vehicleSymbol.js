@@ -84,6 +84,28 @@ export function vehicleCanvas(kind, ink, px) {
 }
 
 /**
+ * 符号在屏幕上的外接框（与 drawVehicle 同参：边长 size、顺时针转 rot）→ { cx, cy, w, h }（CSS px；cx / cy = 框心相对锚点的偏移）。
+ * 取外形命令里的全部坐标（含曲线控制点 —— 两枚外形的控制点都在轮廓内侧，不外凸）转过 rot 再加描边半宽：选中括号贴框用。
+ */
+export function vehicleBox(kind, size, rot) {
+  const { body } = shapeOf(kind)
+  const c = Math.cos(rot || 0), s = Math.sin(rot || 0), k = size / VEHICLE_VB, pad = VEHICLE_CASE_W / 2
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const cmd of body) {
+    for (let i = 1; i + 1 < cmd.length; i += 2) {
+      const px = cmd[i] - VEHICLE_VB / 2, py = cmd[i + 1] - VEHICLE_VB / 2
+      const x = px * c - py * s, y = px * s + py * c
+      if (x < x0) x0 = x
+      if (x > x1) x1 = x
+      if (y < y0) y0 = y
+      if (y > y1) y1 = y
+    }
+  }
+  x0 = (x0 - pad) * k; x1 = (x1 + pad) * k; y0 = (y0 - pad) * k; y1 = (y1 + pad) * k
+  return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0 }
+}
+
+/**
  * 航迹末段在【等经纬平面】上的走向（弧度，0＝正北，顺时针为正），供 2D 旋转图标用。
  * 刻意不取大圆真方位：2D 的航迹折线就是按经纬度直连画的，图标要与画出来的那条线贴合；
  * 高纬度上真方位与图上走向能差出几十度，按真方位摆图标会明显歪出线外。3D 那边线是大圆，

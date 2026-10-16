@@ -32,7 +32,7 @@ export function createFocusGeomPool(want) {
     if (!(want < 0) && typeof Worker !== 'undefined') {
       for (let i = 0; i < N; i++) {
         const w = new Worker(new URL('./focusGeomWorker.js', import.meta.url), { type: 'module' })
-        shards.push({ w, pend: null, seen: new Map() })
+        shards.push({ w, pend: null, busy: 0, next: null, seen: new Map() })
       }
       ok = true
     }
@@ -45,7 +45,14 @@ export function createFocusGeomPool(want) {
 
   function bind(s) {
     if (!s.w) return
-    s.w.onmessage = (ev) => { const p = s.pend; if (p && ev.data.seq === p.seq) { s.pend = null; p.res(ev.data) } }
+    s.w.onmessage = (ev) => {
+      if (ev.data.t !== 'tick') return   // sync 的回执不占「在途」
+      s.busy = 0
+      const p = s.pend; if (p && ev.data.seq === p.seq) { s.pend = null; p.res(ev.data) }
+      // 在途期间又来了更新的一拍：这时才发（只发最新的那一拍，中间被顶掉的不再算）
+      const nx = s.next
+      if (nx) { s.next = null; post(s, nx.seq, nx.p) }
+    }
     // ★ Worker 起不来 / 中途崩：construct 不抛（模块脚本是异步取的），错误只从这里出来。不接的话
     //   那一片的 pend 永远没人 resolve —— 而调用方是 await 着它才出帧的（见 scene.holdFrames），
     //   结果是整个球面连相机都不再刷新、时钟也停在那一拍。故当场收摊退回就地同步跑。
@@ -56,7 +63,7 @@ export function createFocusGeomPool(want) {
     if (!shards.some((s) => s.w)) return                     // 已经是就地档了（多个 worker 同时报错只收一次）
     if (typeof console !== 'undefined') console.warn('聚焦几何 Worker 失效，已退回主线程同步计算', err && (err.message || err))
     const pend = shards.map((s) => s.pend).filter(Boolean)   // 挂起的那次先攒下来，收摊后统一作废
-    for (const s of shards) { s.pend = null; if (s.w) { try { s.w.terminate() } catch { /* 已经没了就算了 */ } } }
+    for (const s of shards) { s.pend = null; s.next = null; if (s.w) { try { s.w.terminate() } catch { /* 已经没了就算了 */ } } }
     shards.length = 0
     shards.push({ w: null, st: createShard(), seen: new Map() })
     nShard = 1
@@ -100,7 +107,10 @@ export function createFocusGeomPool(want) {
   // 返回 Promise<[分片结果...] | null>；调用方必须等它 resolve 再出帧。
   // ★ 同一时刻只认最新那一次：新的一拍进来就把旧的那次就地 resolve(null)，让它的 await 立刻走掉、并且不画。
   //   否则「时钟拍」与「UI 动作触发的重算」一撞，先来那次的 Promise 永远没人 resolve —— 时钟会卡死在 await 上。
-  //   Worker 按序处理消息，旧那次的回包带着旧 seq 到达时会被 onmessage 丢掉，不会串到新那次头上。
+  // ★ 逐分片「最新者胜」：分片手上有一拍在算（busy）时，新来的一拍先不发，只记下参数（next，再来就覆盖）；
+  //   在算的那拍回包后才把记下的最新一拍发出去。拖时间轴 / 按住方向键时每 16–30 ms 一拍，原来逐拍都发、Worker 逐条算完，
+  //   松手后还要把积压的旧拍算完才轮到最后那一拍（7000 颗实测 4.4 s 画面冻结）；被顶掉的那些拍结果本来就作废不画。
+  //   选中集同步（sync）照旧当场发：Worker 按序处理，发出去的那一拍恒在它之前的 sync 之后算
   function compute(p) {
     const s0 = ++seq
     return Promise.all(shards.map((s) => {
@@ -108,15 +118,20 @@ export function createFocusGeomPool(want) {
       return new Promise((res) => {
         if (s.pend) { const old = s.pend; s.pend = null; old.res(null) }
         s.pend = { seq: s0, res }
-        try { s.w.postMessage({ t: 'tick', seq: s0, p }) } catch (err) { fallbackToLocal(err) }   // 同 setSats：克隆失败退回就地档（本拍作废，下一拍就地算）
+        if (s.busy) s.next = { seq: s0, p }
+        else post(s, s0, p)
       })
     })).then((rs) => (rs.some((r) => !r) ? null : rs))
+  }
+  function post(s, s0, p) {
+    s.busy = s0
+    try { s.w.postMessage({ t: 'tick', seq: s0, p }) } catch (err) { s.busy = 0; fallbackToLocal(err) }   // 同 setSats：克隆失败退回就地档（本拍作废，下一拍就地算）
   }
   // 收摊：挂起的那次也要 resolve 掉。同 fallbackToLocal 的理由——Worker 一 terminate 回包就再也不来了，
   // 而调用方还 await 在那儿（出帧闸也还压着），不给个了断就是卸载途中卡死最后一帧。
   function dispose() {
     for (const s of shards) {
-      const p = s.pend; s.pend = null
+      const p = s.pend; s.pend = null; s.next = null
       if (s.w) { try { s.w.terminate() } catch { /* 已经没了就算了 */ } }
       if (p) p.res(null)
     }

@@ -1829,7 +1829,11 @@ function eciToGeodetic(eci, gmst) {
   let C;
   while (k++ < kmax) {
     C = 1 / Math.sqrt(1 - e2 * (Math.sin(latitude) * Math.sin(latitude)));
-    latitude = Math.atan2(eci.z + a * C * e2 * Math.sin(latitude), R);
+    const next = Math.atan2(eci.z + a * C * e2 * Math.sin(latitude), R);
+    // 本地补丁（性能）：已到不动点就停 —— 再迭代纬度与 C 都逐位不变（C 只由纬度定），结果与跑满 20 次逐位相同；
+    // 实际 3–9 次即到。Object.is 而非 ===：±0 / NaN 也按位判，不动点之外一律照旧跑满
+    if (Object.is(next, latitude)) break;
+    latitude = next;
   }
   const height = R / Math.cos(latitude) - a * C;
   return { longitude, latitude, height };

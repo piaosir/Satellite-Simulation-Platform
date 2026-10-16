@@ -14,7 +14,7 @@
 //     submit 载荷 = { doc: { …五项, logo, fonts }, withFigures, formats: ['docx'] }。
 // ★ 自走那条路上的「模型落成纯数据」不是洁癖：模型在窗口里是 Vue 的响应式代理，结构化克隆过不去，
 //   ipcRenderer.invoke 会抛且静默（memory「IPC 不能收响应式代理」）。
-import { reactive, ref, computed, watch } from 'vue'
+import { reactive, ref, computed, watch, nextTick } from 'vue'
 import Icon from '../components/Icon.vue'
 import AppDialog from '../components/AppDialog.vue'
 import { DOC_FIELDS } from '../shared/lbReport.js'
@@ -45,9 +45,13 @@ const props = defineProps({
   // ★ 给了它就是「自己走完全程」（栅格化 + 发 IPC），见文件头。SsaApp 不传。
   model: { type: Object, default: null },
   // 自走时的缺省文件名（任务书 §7.2）；不给按模型自带的、再不行按报告名 + 日期兜底
-  defaultName: { type: String, default: '' }
+  defaultName: { type: String, default: '' },
+  // 抬头五项的当前值（留空项已换成自动值）。给了它，五个输入框就是窗口壳那份抬头的另一处编辑口：
+  // 打开时照它填、改一项发一次 head 事件，不再各存一份（SsaApp 现在走这条，抬头随配置存）。
+  // 不给时仍按旧口径读写 <storeKey>/report/doc 与 /report/title。
+  head: { type: Object, default: null }
 })
-const emit = defineEmits(['close', 'submit', 'done', 'error'])
+const emit = defineEmits(['close', 'submit', 'done', 'error', 'head'])
 
 const errText = (e) => (e && e.message) || String(e)
 const L = (zh, en) => (props.lang === 'en' ? en : zh)
@@ -138,14 +142,28 @@ const useAppLogo = async () => {
 // 本次打开时认下的「出厂名」（落盘时原样写回，见 loadSaved 里那段 ★）
 let titleDefAtLoad = ''
 
+// 抬头由窗口壳握着时：五个框照它的当前值填
+function fillFromHead() {
+  for (const f of DOC_FIELDS) doc[f.key] = String(props.head[f.key] || '')
+}
+// 改了一项：交给窗口壳落值（标题 / 日期清空＝回到自动值），落完按它推下来的值重填这一格
+function onField(key) {
+  if (!props.head) return
+  emit('head', { key, value: doc[key] })
+  nextTick(() => { if (props.head) doc[key] = String(props.head[key] || '') })
+}
+
 function loadSaved() {
-  let saved = null
-  try { saved = JSON.parse(localStorage.getItem(KEY.value) || 'null') } catch (e) { saved = null }
-  for (const f of DOC_FIELDS) {
-    // 日期每次取今天；编号 / 密级 / 单位沿用上次填的
-    if (f.key === 'title') doc.title = defTitle()
-    else if (f.key === 'date') doc.date = today()
-    else doc[f.key] = (saved && saved[f.key]) || ''
+  if (props.head) fillFromHead()
+  else {
+    let saved = null
+    try { saved = JSON.parse(localStorage.getItem(KEY.value) || 'null') } catch (e) { saved = null }
+    for (const f of DOC_FIELDS) {
+      // 日期每次取今天；编号 / 密级 / 单位沿用上次填的
+      if (f.key === 'title') doc.title = defTitle()
+      else if (f.key === 'date') doc.date = today()
+      else doc[f.key] = (saved && saved[f.key]) || ''
+    }
   }
   // 报告名按「自动命名」的规矩走（同资源库条目名）：用户没改过就随当前范围重算，改过一次就钉死。
   // 存的时候一并存下「当时的出厂名」，据此判断改没改过。
@@ -153,11 +171,13 @@ function loadSaved() {
   //   而模型的报告名本身又可能是从这个钉住的名读来的（窗口建模型时会把钉住的名填进 doc.title）。
   //   一来一回两者就相等了，下次打开会被判成「没改过」，用户起的名当场丢。故一旦认出是钉住的，
   //   原样留着当时存下的那个出厂名。
-  let ttl = null
-  try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
-  const pinned = !!(ttl && ttl.title && ttl.titleDefault && ttl.title !== ttl.titleDefault)
-  titleDefAtLoad = pinned ? ttl.titleDefault : defTitle()
-  if (ttl && ttl.title) doc.title = (ttl.title === ttl.titleDefault) ? defTitle() : ttl.title
+  if (!props.head) {
+    let ttl = null
+    try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
+    const pinned = !!(ttl && ttl.title && ttl.titleDefault && ttl.title !== ttl.titleDefault)
+    titleDefAtLoad = pinned ? ttl.titleDefault : defTitle()
+    if (ttl && ttl.title) doc.title = (ttl.title === ttl.titleDefault) ? defTitle() : ttl.title
+  }
   const lg = loadLogo()
   doc.logo = lg.logo
   logoName.value = lg.name
@@ -177,9 +197,12 @@ function loadSaved() {
 // 元信息落盘。提交时要存，关闭时也要存——填完手一滑关掉了，再打开还在。
 function persist() {
   try {
-    // 台标不进这一份（它在全局键里，见 reportLogo.saveLogo）；标题另存（自动命名要认出厂名）
-    localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
-    localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: titleDefAtLoad || defTitle() }))
+    // 台标不进这一份（它在全局键里，见 reportLogo.saveLogo）；标题另存（自动命名要认出厂名）。
+    // 抬头由窗口壳握着时这两份都不写 —— 那边随配置存，这里再存一份就又成了两个家。
+    if (!props.head) {
+      localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
+      localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: titleDefAtLoad || defTitle() }))
+    }
     localStorage.setItem(OPT_KEY.value, JSON.stringify({ figures: opt.figures }))
     localStorage.setItem(FONT_KEY.value, JSON.stringify(normReportFontSel(font)))
   } catch (e) { /* 存不下不影响导出 */ }
@@ -195,16 +218,13 @@ function close() {
 watch(() => props.open, (v) => { if (v) loadSaved() }, { immediate: true })
 
 // —— 图件栅格化 ——
-// 印刷档图宽 1200 px，栅格倍率 2（与 useLbReport 的 FIG_SCALE 同口径）：Word 里的图位限宽 82 mm，
-// 2400 px 已合 700 dpi 以上，再往上只是把模型撑大几十兆过 IPC，印不出任何差别。
-const FIG_W = 1200
-const FIG_SCALE = 2
+// ★ 2026-10-15 起图走纸面档（docs/空间态势报告样式规范_2026-10-15.md §F）：按模型给的成图物理尺寸（mm）
+//   以 96 dpi 画 SVG，再按 6.25 倍栅格化 = 600 dpi（剑桥大学出版社插图指南：组合图 ≥ 600 dpi），
+//   Word 里按原物理尺寸放、不缩放 —— 图内 8 pt 字放进去仍是 8 pt。与屏上纸面那张是同一个函数、同一档、同一尺寸。
+//   图内字体固定 Arial + 等线（§F.2），不随本对话框的报告字体三档走（那三档只管正文）。
+const FIG_DPI_SCALE = 600 / 96
 async function renderFigures(m) {
   const ids = Object.keys(m.figures || {})
-  const cf = composeReportFonts(font)
-  // chartSvg 的 print 档要两个**字体族名**（写进每个 <text> 的 font-family）：出厂档给 null，
-  // 由它自己落到 Times New Roman / 宋体
-  const fonts = cf ? { latin: cf.latin, cjkBody: cf.cjkBody } : null
   prog.total = ids.length
   for (let i = 0; i < ids.length; i++) {
     const f = m.figures[ids[i]]
@@ -213,11 +233,12 @@ async function renderFigures(m) {
     if (!f) continue
     if (!f.spec) { f.png = null; continue }
     try {
-      const svg = chartSvg(f.spec, { theme: 'print', width: FIG_W, fonts, lang: m.lang })
+      const mm = (Array.isArray(f.mm) && f.mm.length === 2) ? f.mm : [160, 80]
+      const svg = chartSvg(f.spec, { theme: 'paper', widthMm: mm[0], heightMm: mm[1], lang: m.lang })
       const size = svgSize(svg)
-      const w = (size && size.w) || FIG_W
-      const h = (size && size.h) || Math.round(FIG_W * 0.6)
-      f.png = await svgToPngDataUrl(svg, Math.round(w * FIG_SCALE), Math.round(h * FIG_SCALE))
+      const w = (size && size.w) || Math.round(mm[0] * 96 / 25.4)
+      const h = (size && size.h) || Math.round(mm[1] * 96 / 25.4)
+      f.png = await svgToPngDataUrl(svg, Math.round(w * FIG_DPI_SCALE), Math.round(h * FIG_DPI_SCALE))
     } catch (e) {
       // 一幅图出不来只少这一幅：Word 端见 png 为 null 整块跳过，不该连累整份报告
       f.png = null
@@ -242,7 +263,9 @@ async function runSelf() {
     // 深拷一份再改：模型是屏上那篇报告正在用的那份，png 不该写回它（也过不了 IPC，见文件头）
     const m = JSON.parse(JSON.stringify(props.model))
     // 元信息以对话框里填的为准，但 appVersion / generatedAt 是建模时写进去的，整份覆盖会把它们抹掉
-    m.doc = Object.assign({}, m.doc, JSON.parse(JSON.stringify(doc)), { fonts: composeReportFonts(font) })
+    // 抬头由窗口壳握着时取它的值（留空项已换成自动值），框里那份可能是个刚清空、还没回填的空串
+    const headNow = props.head ? Object.fromEntries(DOC_FIELDS.map((f) => [f.key, String(props.head[f.key] || '')])) : null
+    m.doc = Object.assign({}, m.doc, JSON.parse(JSON.stringify(doc)), headNow || {}, { fonts: composeReportFonts(font) })
     if (opt.figures) await renderFigures(m)
     else for (const k of Object.keys(m.figures || {})) { if (m.figures[k]) m.figures[k].png = null }
     prog.text = L('排版与写盘…', 'Laying out and writing files…'); prog.done = 1; prog.total = 1
@@ -287,7 +310,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         <div class="rd-grid">
           <label v-for="f in DOC_FIELDS" :key="f.key" class="rd-f" :class="{ wide: f.wide }">
             <span class="rd-l">{{ labelOf(f) }}</span>
-            <input v-model="doc[f.key]" class="rd-in" type="text" :disabled="lock" />
+            <input v-model="doc[f.key]" class="rd-in" type="text" :disabled="lock" @change="onField(f.key)" />
           </label>
         </div>
 

@@ -600,17 +600,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGxt:removeBeam', (_e, satId, beamId) => coverageGxt.removeBeam(satId, beamId))
     ipcMain.handle('coverageGxt:attach', (_e, satId, beamId, payload) => coverageGxt.attach(satId, beamId, payload))
     ipcMain.handle('coverageGxt:importBatch', (_e, items) => coverageGxt.importBatch(items))
-    // 用户导入：原生框选 .gxt / .kml（多选）→ 逐个读原文返回渲染进程解析（gxt/parse.js、kml/parse.js）。
-    // KML 是 UTF-8 XML，GXT 是 latin1 定长文本，编码按扩展名分派（读错编码 → 中文名乱码）。
+    // 用户导入：原生框选 .gxt / .kml / .json（多选）→ 逐个读原文返回渲染进程解析（gxt/parse.js、kml/parse.js、gxt/json.js）。
+    // KML 与 GXT 结构 JSON 是 UTF-8，GXT 是 latin1 定长文本，编码按扩展名分派（读错编码 → 中文名乱码）。
     ipcMain.handle('coverageGxt:open', async (e) => {
       const win = BrowserWindow.fromWebContents(e.sender)
       const lang = await senderLang(e)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: dt('导入覆盖等值线（GXT / KML，可多选）', lang), properties: ['openFile', 'multiSelections'],
+        title: dt('导入覆盖等值线（GXT / KML / JSON，可多选）', lang), properties: ['openFile', 'multiSelections'],
         filters: dtFilters([
-          { name: '覆盖等值线 (*.gxt, *.kml)', extensions: ['gxt', 'kml'] },
+          { name: '覆盖等值线 (*.gxt, *.kml, *.json)', extensions: ['gxt', 'kml', 'json'] },
           { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
           { name: 'KML (*.kml)', extensions: ['kml'] },
+          { name: 'GXT 结构 JSON (*.json)', extensions: ['json'] },
           { name: '所有文件', extensions: ['*'] }
         ], lang)
       })
@@ -618,7 +619,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const path = require('path')
       const files = filePaths.map((fp) => {
         const ext = path.extname(fp).slice(1).toLowerCase()
-        try { return { base: path.basename(fp), ext, text: fs.readFileSync(fp, ext === 'kml' ? 'utf8' : 'latin1') } }
+        try { return { base: path.basename(fp), ext, text: fs.readFileSync(fp, ext === 'kml' || ext === 'json' ? 'utf8' : 'latin1') } }
         catch (err) { return { base: path.basename(fp), ext, error: err.message } }
       })
       return { canceled: false, files }
@@ -2042,8 +2043,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // ---- 视频导出（H.264 MP4 / 图片序列）：开会话、按位置流式写、收尾（见 services/videoFile.js）。全部在授权锁内 ----
   require('../services/videoFile').registerVideoIpc(ipcMain, { dialog, BrowserWindow, shell: require('electron').shell, safeSaveName, writeErrText })
 
-  // ---- 批量落盘到一个目录：mask 分文件导出 + §E3 的参数存档一起出 ----
-  // payload: { dirLabel?, files:[{filename, text}] }
+  // ---- 批量落盘到一个目录：mask 分文件导出 + §E3 的参数存档一起出；可编程波束地图的多文件输出 ----
+  // payload: { dirLabel?, files:[{filename, text} | {filename, data:Uint8Array}] }（text 按 UTF-8 写；data 原样写字节）
   ipcMain.handle('file:saveMany', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
@@ -2057,21 +2058,22 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       // 先把全部目标路径定下来（非法路径在一个字节都没写之前就报）
       const jobs = []
       for (const f of (payload.files || [])) {
-        // 放行【一层】子目录（出包要 Masks/ 这一层），其余非法字符照旧替换。
+        // 放行至多三层子目录（PFD 出包要 Masks/ 这一层；可编程波束地图的脚本可按卫星 / 波束分目录），其余非法字符照旧替换。
         // 白名单式而非黑名单式：分段清洗 + 段数上限 + 显式拒绝 ..，避免路径穿越。
         const rel = String(f.filename).split('/').filter(Boolean)
           .map((s) => s.replace(/[\\:*?"<>|]/g, '_'))
-        if (!rel.length || rel.length > 2 || rel.some((s) => s === '..' || s === '.')) {
+        if (!rel.length || rel.length > 4 || rel.some((s) => s === '..' || s === '.')) {
           throw new RangeError(`非法输出路径：${f.filename}`)
         }
-        jobs.push({ p: path.join(dir, ...rel), text: f.text })
+        jobs.push({ p: path.join(dir, ...rel), text: f.text, data: f.data })
       }
       // 覆盖核对（交互调研 D5）：选目录不像保存框会问覆盖 —— 已有同名文件就先列出来问一次，取消则一个都不写
       const clash = exportedPaths.pendingOverwrites(jobs.map((j) => j.p), null)
       if (clash.length && !(await exportedPaths.confirmOverwrites(dialog, win, clash, payload.lang))) return { ok: false, canceled: true }
       for (const j of jobs) {
         fs.mkdirSync(path.dirname(j.p), { recursive: true })
-        fs.writeFileSync(j.p, j.text, 'utf8')
+        if (j.data != null) fs.writeFileSync(j.p, Buffer.from(j.data))
+        else fs.writeFileSync(j.p, j.text == null ? '' : String(j.text), 'utf8')
         written.push(j.p)
       }
       exportedPaths.markExported(dir)

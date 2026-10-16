@@ -88,9 +88,13 @@ function prep(topo) {
   }))
   return { topo, units, lines, byU, arcs, adj: topo.adj, lineCls: topo.lineCls || {}, lat, meta: topo.meta || {} }
 }
-const bundles = { '10m': prep(topo10) }
-export function hasDetail(d) { return !!bundles[d] }
+// 10m 档的 prep（拓扑解码 + 逐 arc 展开，约 60 ms、常驻 45 MB）推到第一次用到时再做：只用 50m 档、又不走 10m 归属判据
+// （见 resolvedLines 的 touchesOwner）的窗口就省掉了。同一个函数、同一份 topo，早做晚做结果逐位相同。
+const bundles = {}
+const bundle10 = () => bundles['10m'] || (bundles['10m'] = prep(topo10))
+export function hasDetail(d) { return d === '10m' || !!bundles[d] }
 export async function ensureDetail(detail) {
+  if (detail === '10m') return bundle10()
   if (bundles[detail]) return bundles[detail]
   // 字面量 import() 让 Vite 各自打成独立 chunk（变量路径无法分析、构建后会失效）
   // ★ 动态 import 不许带 with { type: 'json' }：dev 期 Vite 把 .json 转成 JS 模块再吐，
@@ -105,7 +109,7 @@ export async function ensureDetail(detail) {
 // Node 侧换档入口（单测 / 构建脚本）：上面那句 import() 在 Node 里带不了导入属性，
 // 调用方自己 fs.readFileSync 之后把 topo 喂进来，得到的与浏览器里 ensureDetail 是同一份 bundle。
 export function registerDetail(detail, topo) { bundles[detail] = prep(topo); return bundles[detail] }
-const B = (d) => bundles[d] || bundles['10m']
+const B = (d) => bundles[d] || bundle10()
 
 // 订阅轻量状态源：设置页改视角 → stores/mapPov 广播 → 这里重算 → 两个渲染器整份重建。
 // bootMapPov 把「设置」里存的视角读进来，只读一次；没有 window.api 时静默保持默认。

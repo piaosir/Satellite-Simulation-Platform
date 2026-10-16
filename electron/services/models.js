@@ -418,19 +418,36 @@ function createModels(opts = {}) {
   }
 
   /* ─────────────── 本机就绪状态与 URL ─────────────── */
+  // 「某目录下这个文件在不在」：manifest 一次要问几千次（几百个模型 × 每档 + 缩略图，逐个 statSync，机械盘 + 杀软下秒级）。
+  // manifest 算本机状态的那一段里按目录各 readdir 一次、查表（_fx）；其余时候（取档 / 协议）照旧当场 stat。
+  // 判据与 isFile 同：普通文件算、目录不算、符号链接跟过去看；Windows 文件名不分大小写，查表也不分
+  let _fx = null
+  const fxKey = process.platform === 'win32' ? (s) => s.toLowerCase() : (s) => s
+  function fileIn(d, name) {
+    if (!_fx) return isFile(path.join(d, name))
+    let s = _fx.get(d)
+    if (!s) {
+      s = new Set()
+      let ents = []
+      try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { ents = [] }
+      for (const e of ents) if (e.isFile() || (e.isSymbolicLink() && isFile(path.join(d, e.name)))) s.add(fxKey(e.name))
+      _fx.set(d, s)
+    }
+    return s.has(fxKey(name))
+  }
   // 某档从哪来（已就绪才返回）：本机导入 → user/；随包 → builtin/；远端缓存 → blobs/
   function lodSource(cat, m, lod) {
     const u = cat.userFiles.get(m.id)
     const f = m.files && m.files[lod]
     if (u) {
-      if (f && L.SHA_RE.test(String(f.sha256 || '')) && isFile(path.join(dir.user, f.sha256 + '.glb'))) return { host: 'user', sha: f.sha256 }
+      if (f && L.SHA_RE.test(String(f.sha256 || '')) && fileIn(dir.user, f.sha256 + '.glb')) return { host: 'user', sha: f.sha256 }
       return null
     }
     const b = cat.builtinLods.get(m.id)
-    const hasB = !!(b && b[lod] && isFile(path.join(bundleDir, 'builtin', b[lod] + '.glb')))
+    const hasB = !!(b && b[lod] && fileIn(path.join(bundleDir, 'builtin'), b[lod] + '.glb'))
     const cur = f && L.SHA_RE.test(String(f.sha256 || '')) ? f.sha256 : null
     if (hasB && b[lod] === cur) return { host: 'builtin', sha: cur }
-    if (cur && isFile(path.join(dir.blobs, cur + '.glb'))) return { host: 'blobs', sha: cur }
+    if (cur && fileIn(dir.blobs, cur + '.glb')) return { host: 'blobs', sha: cur }
     // 远端重建过、sha 变了且新版还没下：随包那份仍可顶着用（契约 §3.3「内置文件仍可作为 lod2 来源」）
     if (hasB) return { host: 'builtin', sha: b[lod] }
     return null
@@ -439,8 +456,8 @@ function createModels(opts = {}) {
   function thumbSource(m) {
     const t = m && m.files && m.files.thumb
     if (!t || !L.SHA_RE.test(String(t.sha256 || ''))) return null
-    if (isFile(path.join(dir.thumbs, t.sha256 + '.webp')) || isFile(path.join(bundleDir, 'thumbs', t.sha256 + '.webp'))) return { host: 'thumbs', sha: t.sha256 }
-    if (isFile(path.join(dir.blobs, t.sha256 + '.webp'))) return { host: 'blobs', sha: t.sha256 }
+    if (fileIn(dir.thumbs, t.sha256 + '.webp') || fileIn(path.join(bundleDir, 'thumbs'), t.sha256 + '.webp')) return { host: 'thumbs', sha: t.sha256 }
+    if (fileIn(dir.blobs, t.sha256 + '.webp')) return { host: 'blobs', sha: t.sha256 }
     return null
   }
   function localStatus(cat, m) {
@@ -449,7 +466,7 @@ function createModels(opts = {}) {
       if (lodSource(cat, m, l)) st[l] = 'ready'
       else {
         const f = m.files && m.files[l]
-        if (f && L.SHA_RE.test(String(f.sha256 || '')) && isFile(path.join(dir.blobs, f.sha256 + '.glb.part'))) st[l] = 'partial'
+        if (f && L.SHA_RE.test(String(f.sha256 || '')) && fileIn(dir.blobs, f.sha256 + '.glb.part')) st[l] = 'partial'
       }
     }
     if (thumbSource(m)) st.thumb = 'ready'
@@ -461,7 +478,9 @@ function createModels(opts = {}) {
   /* ─────────────── manifest / cacheInfo ─────────────── */
   async function manifest() {
     const cat = await catalog()
-    const models = cat.list.map((m) => ({ ...plain(m), local: localStatus(cat, m) }))
+    let models
+    _fx = new Map()   // 这一段同步跑完：期间按目录查表（见 fileIn），出了这段立刻作废，不会拿旧表回答后来的问题
+    try { models = cat.list.map((m) => ({ ...plain(m), local: localStatus(cat, m) })) } finally { _fx = null }
     const info = cacheInfo()
     return { models, prefs: (await bindingsGet()).prefs, cache: { bytes: info.bytes, cap: info.cap } }
   }
@@ -861,8 +880,13 @@ function createModels(opts = {}) {
   let _refreshTimers = []
   let _refreshing = null
   async function refreshManifest() {
-    if (offline()) return manifest()
-    if (_refreshing) { await _refreshing.catch(() => {}); return manifest() }
+    await refreshRemote()
+    return manifest()
+  }
+  // 只刷远端清单、不算 manifest：定时刷新（start）用它 —— 结果没人接，原来白算一遍几千次 stat 的本机状态
+  async function refreshRemote() {
+    if (offline()) return
+    if (_refreshing) { await _refreshing.catch(() => {}); return }
     _refreshing = (async () => {
       const { M } = await core()
       const st = state()
@@ -890,12 +914,11 @@ function createModels(opts = {}) {
       emit({ type: 'manifest' })
     })()
     try { await _refreshing } catch (e) { log.warn(`[models] 刷新远端 manifest 失败：${errText(e)}`) } finally { _refreshing = null }
-    return manifest()
   }
   function start() {
     stopTimers()
-    const t1 = setTimeout(() => { refreshManifest().catch(() => {}) }, REFRESH_FIRST_MS)
-    const t2 = setInterval(() => { refreshManifest().catch(() => {}) }, REFRESH_EVERY_MS)
+    const t1 = setTimeout(() => { refreshRemote().catch(() => {}) }, REFRESH_FIRST_MS)
+    const t2 = setInterval(() => { refreshRemote().catch(() => {}) }, REFRESH_EVERY_MS)
     if (t1.unref) t1.unref()
     if (t2.unref) t2.unref()
     _refreshTimers = [t1, t2]

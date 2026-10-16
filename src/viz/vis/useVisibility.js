@@ -52,7 +52,7 @@ export function useVisibility({
   // ACCESS 时段过境（P2）
   const mode = ref('now')            // 'now'=瞬时可见 | 'access'=时段过境
   const horizonH = ref(24)           // 时段时窗（小时）
-  const accessResults = ref([])      // 过境窗口 [{noradId,name,group,windows}]
+  const accessResults = shallowRef([])   // 过境窗口 [{noradId,name,group,windows}]：只整份替换、从不就地改 —— 不深度代理（几千颗 × 每颗几个窗口，每次读都穿代理）
   const accessBusy = ref(false)
   const accessMsg = ref('')
   const accessHorizonMin = ref(24 * 60)   // 上次计算【实际使用】的时窗（分）——clamp 后的真值，供时间覆盖分母与甘特横轴（不随输入框漂移）

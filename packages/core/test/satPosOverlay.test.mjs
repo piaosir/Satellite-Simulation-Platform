@@ -146,7 +146,7 @@ const fnText = (text, head) => {
   const got = fmtBytes ? [fmtBytes(200), fmtBytes(0), fmtBytes(null), fmtBytes(1536), fmtBytes(5 * 1048576)] : []
   ok(got.join('|') === '1 KB|0 KB|—|2 KB|5.0 MB', '导出对话框：体积读数 KB 档按 1 KB 起（单颗 OMM 不再显示 0 KB）', got.join('|'))
   const FM = rd('../../../src/components/FileManager.vue')
-  ok(FM.includes("import { byLang } from '../shared/i18n/lang.js'") && FM.includes("byLang('对应失败：', 'Mapping failed: ')"), '文件管理：对应失败提示按语言出字')
+  ok(/import\s*\{[^}]*\bbyLang\b[^}]*\}\s*from\s*'\.\.\/shared\/i18n\/lang\.js'/.test(FM) && FM.includes("byLang('对应失败：', 'Mapping failed: ')"), '文件管理：对应失败提示按语言出字')
 }
 
 console.log('\nsatPosOverlay: 通过 ' + pass + '，失败 ' + fail)

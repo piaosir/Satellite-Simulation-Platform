@@ -206,9 +206,13 @@ module.exports = (share, storage) => {
   function setAnchor(t) { _aBase = Number(t); _aMono = monoMs() }
   function bumpAnchor(t) { if (Number(t) > anchorNow()) setAnchor(t) }                 // 本地源：只升不降
   function setAnchorAuthoritative(t) { if (Number(t) > 0) { setAnchor(t); persistAnchor(true) } }  // 服务器时间：升降皆从
+  // 落盘节流 10 分钟（跨重启粒度 10 分钟足够：时钟回拨的判据是 24 h）。原来每分钟至少整份重写一次 settings.json，
+  // 服务器时间那一路（force）还每分钟再写一次，次次惊动杀软。force 只在【往回纠】（高锚被服务器时间纠回）时立即落盘，
+  // 往前走同样按节流 —— 断电重启后锚至多落后 10 分钟，只会让「锚」更保守地低一点，不会误判时钟异常
+  const ANCHOR_SAVE_MS = 10 * 60_000
   function persistAnchor(force) {
     const t = Math.round(anchorNow())
-    if (!force && t - _aSavedT < 60_000) return          // 节流：跨重启粒度 1 分钟足够
+    if (t >= _aSavedT ? t - _aSavedT < ANCHOR_SAVE_MS : !force) return
     _aSavedT = t
     storage.setSettings({ mgrClockAnchor: { t, mac: anchorMac(t, deviceId()) } })
   }

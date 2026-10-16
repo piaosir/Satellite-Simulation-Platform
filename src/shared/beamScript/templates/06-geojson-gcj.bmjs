@@ -1,0 +1,14 @@
+//! id: geojson-gcj
+//! name: ⟪GeoJSON · GCJ-02 / BD-09 坐标|GeoJSON · GCJ-02 / BD-09 coordinates⟫
+//! ext: geojson
+//zh 高德 / 腾讯地图采用 GCJ-02，百度地图采用 BD-09：境内偏移量约数百米；GCJ-02 在境外不做偏移。
+//en AMap / Tencent use GCJ-02 and Baidu uses BD-09: offsets of a few hundred metres inside China; GCJ-02 leaves other areas unchanged.
+
+const TARGET = /** @type {'GCJ-02' | 'BD-09'} */ ('GCJ-02')
+const conv = TARGET === 'BD-09' ? geo.toBD09 : geo.toGCJ02
+
+const feats = features(data, { trajectories: true })
+const shift = (c) => (typeof c[0] === 'number' ? conv(c).map((v) => +v.toFixed(6)) : c.map(shift))
+for (const f of feats) f.geometry.coordinates = shift(f.geometry.coordinates)
+
+return file(`${data.meta.title}_${TARGET}.geojson`, geojson(feats))

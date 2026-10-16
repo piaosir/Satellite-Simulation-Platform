@@ -1,6 +1,6 @@
 <script setup>
 // 航迹时间：出发 / 到达 / 历时 / 速度 四项联动。两处共用 ——
-//   layout="rows"  侧栏航迹卡片「时间」展开区：逐行，标签列与同区的「巡航高度」行对齐
+//   layout="form"  地图标记属性检查器（选中航迹）：逐行，标签列与检查器里的 .srow 对齐
 //   layout="bar"   航迹表格参数栏：根节点与行都是 display: contents，各件并进外层 flex 行
 // 这里只出读数与草稿；改动交 apply(edit) 落（页面套撤销栈、推图、落盘），口径全在 core/models/trajTiming.mjs：
 //   改出发 = 整条平移（历时不变）；改到达 / 历时 / 速度 = 出发不动；静止档改任一项都补齐成能动的排程
@@ -19,7 +19,7 @@ import { clock } from '../stores/simClock'
 const props = defineProps({
   t: { type: Object, required: true },               // 航迹（响应式对象：读数经代理建立依赖）
   tz: { type: [String, Number], default: 'local' },  // 显示时区档位（与时间轴同一个开关）
-  layout: { type: String, default: 'rows' },         // 'rows' | 'bar'
+  layout: { type: String, default: 'form' },         // 'form' | 'bar'
   defSpeed: { type: Number, default: NaN },          // 缺省地速（km/h）：速度框占位，静止档补齐时写进航迹
   apply: { type: Function, required: true },         // (edit) => {ok, err}
   locate: { type: Function, default: null }          // 给了就出「定位」（侧栏卡片的定位钮在标题行，不传）
@@ -158,25 +158,24 @@ function esc(k, e) { draft[k] = null; if (e && e.target) e.target.blur() }
 .ttr > label { flex: none; color: var(--text-muted); white-space: nowrap; }
 .ttdt { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .u { flex: none; min-width: 30px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-/* 时区角标：次要读数，小一号、淡一档 —— 「UTC+8」恰好落在 30px 槽里，到达框右沿仍与出发 / 巡航高度各框对齐 */
+/* 时区角标：次要读数，小一号、淡一档 —— 「UTC+8」落在行尾单位槽里，到达框右沿仍与出发 / 巡航高度各框对齐 */
 .u.tz { font-size: var(--fs-1); color: var(--text-faint); white-space: nowrap; }
-/* 文字钮（此刻 / 定位 / 清除）：与卡片里的链接同一种轻量画法 */
+/* 文字钮（此刻 / 定位 / 清除）：链接式的轻量画法 */
 .ttb { flex: none; height: auto; padding: 0 2px; border: 0; background: transparent; font: inherit; font-size: var(--fs-2); color: var(--text-muted); cursor: pointer; }
 .ttb:hover:not(:disabled) { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .ttb:disabled { color: var(--text-faint); cursor: default; }
 .tterr { color: var(--danger); font-size: var(--fs-2); }
 
-/* 侧栏卡片：缩进与标签列宽同卡片里的「巡航高度」行（.tmot .srow.sub：17px / 56px）；
-   每行尾都留一格 30px（此刻 / 单位 / 空位），各框右沿对齐到同一条线，与巡航高度行的「m」一列。
-   时刻框装不下时整件折到下一行，不裁字 */
-.rows .ttr { padding-left: 17px; margin-bottom: 6px; }
-.rows .ttr > label { min-width: 56px; }
-:global(html[lang="en"]) .rows .ttr > label { min-width: 64px; }
-.rows .ttdt { flex: 1 1 0; min-width: 172px; }
-.rows .ttin, .rows .ttsp { flex: 1 1 0; min-width: 72px; }
-.rows .ttr > .ttb { min-width: 30px; padding: 0; text-align: right; }
-.rows .tta { display: flex; align-items: center; justify-content: flex-end; gap: 4px 10px; padding-left: 17px; margin: -2px 0 6px; }
-.rows .tta .tterr { margin-right: auto; }
+/* 地图标记属性检查器：标签列与同区的 .srow 对齐（宿主给 --srow-lab，英文档更宽），不缩进；行距、尾格宽同 .srow（8px / 34px）。
+   每行尾都留一格（此刻 / 单位 / 空位），各框右沿对齐到同一条线，与巡航高度行的「m」一列；时刻框装不下时整件折到下一行，不裁字 */
+.form .ttr { margin-bottom: 8px; }
+.form .ttr > label { min-width: var(--srow-lab, 70px); }
+.form .ttdt { flex: 1 1 0; min-width: 160px; }
+.form .ttin, .form .ttsp { flex: 1 1 0; min-width: 72px; }
+.form .u, .form .ttr > .ttb { min-width: 34px; }
+.form .ttr > .ttb { padding: 0; text-align: right; }
+.form .tta { display: flex; align-items: center; justify-content: flex-end; gap: 4px 10px; margin: -2px 0 8px; }
+.form .tta .tterr { margin-right: auto; }
 
 /* 表格参数栏：整件并进外层 flex 行（外层负责换行与间距） */
 .bar, .bar .ttr, .bar .tta { display: contents; }

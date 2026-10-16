@@ -136,21 +136,23 @@ function initAutoUpdate() {
   started = true
   const log = getLogger()
 
-  // 延迟 require：仅在打包环境加载，避免 dev 下找不到模块
-  const { autoUpdater } = require('electron-updater')
-  autoUpdater.logger = log
-  // 发现即后台静默下载
-  autoUpdater.autoDownload = true
-  // 正常退出时静默装上已下载的更新（app 'quit' 事件；Windows 关机 / 注销不触发，由启动时补装兜底）
-  autoUpdater.autoInstallOnAppQuit = true
-  // 不用 web installer（分包下载），关掉省一条每次检查都打的警告
-  autoUpdater.disableWebInstaller = true
+  // 延迟 require：仅在打包环境加载，避免 dev 下找不到模块。
+  // ★ 再往后推到【第一次检查】时（启动后 FIRST_CHECK_MS，或用户先点了「检查更新」）：同步 require 约 70 ms，
+  //   原来压在建窗之后的启动高峰里。首检时刻不变；更新是首检之后才下载的，退出时安装的口子在那之前用不上
+  let autoUpdater = null
+  const ensure = () => {
+    if (autoUpdater) return autoUpdater
+    autoUpdater = require('electron-updater').autoUpdater
+    setup(autoUpdater)
+    return autoUpdater
+  }
 
   let timer = null
   // 返回 checkForUpdates 的 promise：checkNow() 靠它等到检查结束。已有检查在飞时 electron-updater
   // 自己去重（返回同一个 promise），手动 / 例行撞在一起也只发一次请求
   const check = () => {
-    const p = autoUpdater.checkForUpdates()
+    let p
+    try { p = ensure().checkForUpdates() } catch (e) { log.warn('[updater] 加载更新模块失败：' + (e && e.message ? e.message : e)); p = Promise.reject(e) }   // 在定时器里抛出会成为主进程未捕获异常
     p.then(
       () => schedule(RECHECK_OK_MS, '例行'),
       () => schedule(RECHECK_ERR_MS, '检查失败')
@@ -164,37 +166,47 @@ function initAutoUpdate() {
     log.info(`[updater] 下次检查 ${Math.round(ms / 60000)} min 后（${why}）`)
   }
 
-  autoUpdater.on('checking-for-update', () => dispatch({ type: 'checking' }))
-  autoUpdater.on('error', (err) => {
-    // 离线 / 源不可达 / 下载中断：记日志、稍后重试，不打扰用户。检查失败时 then 的拒绝分支也会排一次，
-    // 两次 schedule 同一间隔，后者覆盖前者
-    log.warn('[updater] ' + (err && err.message ? err.message : err))
-    dispatch({ type: 'error', message: err && err.message ? err.message : String(err) })
-    schedule(RECHECK_ERR_MS, '出错重试')
-  })
-  autoUpdater.on('update-available', (info) => {
-    log.info('[updater] 发现新版本：' + (info && info.version))
-    dispatch({ type: 'available', version: info && info.version })
-  })
-  autoUpdater.on('update-not-available', (info) => {
-    log.info('[updater] 已是最新（源上 ' + (info && info.version) + '）')
-    dispatch({ type: 'not-available', version: info && info.version })
-  })
-  let lastPct = -1
-  autoUpdater.on('download-progress', (p) => {
-    const pct = Math.floor((p && p.percent ? p.percent : 0) / 10) * 10
-    if (pct !== lastPct) { lastPct = pct; log.info(`[updater] 下载 ${pct}%`) }
-    dispatch({ type: 'progress', percent: p && p.percent, transferred: p && p.transferred, total: p && p.total })
-  })
-  autoUpdater.on('update-downloaded', (info) => {
-    // 快照先于标记：标记写失败只影响「直接关机后的补装」，包本身已在，仍可立即重启安装 / 退出时安装
-    dispatch({ type: 'downloaded', version: info && info.version })
-    const file = markerFile()
-    const m = P.markerFromDownloaded(info, P.readMarker(file), Date.now())
-    if (!m) { log.warn('[updater] 下载完成但事件缺版本 / 路径 / sha512，不落标记'); return }
-    try { P.writeMarker(file, m) } catch (e) { log.warn('[updater] 写标记失败：' + (e && e.message ? e.message : e)); return }
-    log.info(`[updater] 新版本 ${m.version} 已下载：${m.file}。正常关闭时安装；直接关机则下次启动补装（已尝试 ${m.attempts} 次）`)
-  })
+  function setup(autoUpdater) {
+    autoUpdater.logger = log
+    // 发现即后台静默下载
+    autoUpdater.autoDownload = true
+    // 正常退出时静默装上已下载的更新（app 'quit' 事件；Windows 关机 / 注销不触发，由启动时补装兜底）
+    autoUpdater.autoInstallOnAppQuit = true
+    // 不用 web installer（分包下载），关掉省一条每次检查都打的警告
+    autoUpdater.disableWebInstaller = true
+
+    autoUpdater.on('checking-for-update', () => dispatch({ type: 'checking' }))
+    autoUpdater.on('error', (err) => {
+      // 离线 / 源不可达 / 下载中断：记日志、稍后重试，不打扰用户。检查失败时 then 的拒绝分支也会排一次，
+      // 两次 schedule 同一间隔，后者覆盖前者
+      log.warn('[updater] ' + (err && err.message ? err.message : err))
+      dispatch({ type: 'error', message: err && err.message ? err.message : String(err) })
+      schedule(RECHECK_ERR_MS, '出错重试')
+    })
+    autoUpdater.on('update-available', (info) => {
+      log.info('[updater] 发现新版本：' + (info && info.version))
+      dispatch({ type: 'available', version: info && info.version })
+    })
+    autoUpdater.on('update-not-available', (info) => {
+      log.info('[updater] 已是最新（源上 ' + (info && info.version) + '）')
+      dispatch({ type: 'not-available', version: info && info.version })
+    })
+    let lastPct = -1
+    autoUpdater.on('download-progress', (p) => {
+      const pct = Math.floor((p && p.percent ? p.percent : 0) / 10) * 10
+      if (pct !== lastPct) { lastPct = pct; log.info(`[updater] 下载 ${pct}%`) }
+      dispatch({ type: 'progress', percent: p && p.percent, transferred: p && p.transferred, total: p && p.total })
+    })
+    autoUpdater.on('update-downloaded', (info) => {
+      // 快照先于标记：标记写失败只影响「直接关机后的补装」，包本身已在，仍可立即重启安装 / 退出时安装
+      dispatch({ type: 'downloaded', version: info && info.version })
+      const file = markerFile()
+      const m = P.markerFromDownloaded(info, P.readMarker(file), Date.now())
+      if (!m) { log.warn('[updater] 下载完成但事件缺版本 / 路径 / sha512，不落标记'); return }
+      try { P.writeMarker(file, m) } catch (e) { log.warn('[updater] 写标记失败：' + (e && e.message ? e.message : e)); return }
+      log.info(`[updater] 新版本 ${m.version} 已下载：${m.file}。正常关闭时安装；直接关机则下次启动补装（已尝试 ${m.attempts} 次）`)
+    })
+  }
 
   // 睡眠唤醒：网络通常要几秒到几十秒才回来，等一会儿再查
   powerMonitor.on('resume', () => schedule(RESUME_DELAY_MS, '唤醒'))

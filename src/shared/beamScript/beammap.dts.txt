@@ -1,0 +1,399 @@
+// ⟪可编程波束地图 · 脚本 API 类型声明（供编辑器智能提示使用，脚本中无需也不可 import）|Programmable beam map · script API declarations (for editor IntelliSense; nothing to import)⟫
+
+/** ⟪经纬度 [经度, 纬度]，WGS-84 十进制度|[longitude, latitude] in WGS-84 decimal degrees⟫ */
+type LonLat = [lon: number, lat: number]
+
+interface Contour {
+  /** ⟪等值线电平。单位见所属波束的 unit（EIRP → dBW，G/T → dB/K，天线方向图 → dBi 或 dB）|Contour level; unit given by the beam's unit (EIRP → dBW, G/T → dB/K, antenna pattern → dBi or dB)⟫ */
+  level: number
+  /** ⟪顶点 [lon, lat]，按原始数据给出（不增删闭合点）|Vertices [lon, lat] as drawn (closing point neither added nor removed)⟫ */
+  points: LonLat[]
+  /** ⟪首尾点是否重合|Whether the first and last vertices coincide⟫ */
+  closed: boolean
+  /** ⟪该档的显示颜色 #rrggbb|Displayed color of this level, #rrggbb⟫ */
+  color: string
+  /** ⟪档位名称（天线方向图档位可命名）|Level name (antenna pattern levels may be named)⟫ */
+  name?: string
+}
+
+interface Peak {
+  /** ⟪经度（°）|Longitude (°)⟫ */
+  lon: number
+  /** ⟪纬度（°）|Latitude (°)⟫ */
+  lat: number
+  /** ⟪波束中心电平，与等值线同单位：覆盖库来源取源文件中的 gain（源文件未给出时缺省），天线方向图来源取峰值（按等值线类型折算）|Level at the beam centre, same unit as the contours: the source file's gain for library beams (when present), the peak for antenna patterns (in the contour type's terms)⟫ */
+  value?: number
+}
+
+interface AntennaInfo {
+  /** ⟪天线名称|Antenna name⟫ */
+  name: string
+  /** ⟪等值线类型：abs 绝对、rel 相对峰值、relInput 相对输入值|Contour type: abs absolute, rel relative to peak, relInput relative to an input value⟫ */
+  contourType: 'abs' | 'rel' | 'relInput'
+  /** ⟪relInput 的参考电平（dB）|Reference level for relInput (dB)⟫ */
+  refLevel: number | null
+  /** ⟪峰值电平（dB）|Peak level (dB)⟫ */
+  peak: number | null
+  /** ⟪极化分量|Polarization component⟫ */
+  polarization: string
+  /** ⟪增益偏置（dB）|Gain offset (dB)⟫ */
+  gainOffset: number
+  /** ⟪路径损耗：none / relative / absolute|Path loss: none / relative / absolute⟫ */
+  pathLoss: string
+}
+
+interface Beam {
+  /** ⟪本次快照内的编号|Identifier within this snapshot⟫ */
+  id: string
+  /** ⟪来源：library 覆盖库（GXT / KML），antenna 天线方向图（GRD）|Source: library = coverage library (GXT / KML), antenna = antenna pattern (GRD)⟫ */
+  source: 'library' | 'antenna'
+  /** ⟪卫星名称|Satellite name⟫ */
+  satellite: string
+  /** ⟪轨道位置（°，东经为正、西经为负）|Orbital position (°, east positive, west negative)⟫ */
+  orbitLon: number | null
+  /** ⟪波束名称|Beam name⟫ */
+  name: string
+  /** ⟪频段（覆盖库来源；天线方向图来源为空）|Frequency band (library beams; empty for antenna patterns)⟫ */
+  band: string
+  /** ⟪物理量类型：EIRP、GT；天线方向图来源为空|Quantity: EIRP or GT; empty for antenna patterns⟫ */
+  type: string
+  /** ⟪电平单位：dBW、dB/K、dBi 或 dB|Level unit: dBW, dB/K, dBi or dB⟫ */
+  unit: string
+  /** ⟪波束中心 / 峰值点|Beam centre / peak points⟫ */
+  peaks: Peak[]
+  /** ⟪等值线|Contours⟫ */
+  contours: Contour[]
+  /** ⟪天线方向图来源的设置（仅 antenna）|Antenna pattern settings (antenna beams only)⟫ */
+  antenna?: AntennaInfo
+}
+
+interface PolygonArea {
+  id: string
+  /** ⟪名称|Name⟫ */
+  name: string
+  /** ⟪数值字段原始文本|Value field as typed⟫ */
+  value: string
+  /** ⟪数值字段的数值（非数值时为 null）|Numeric value of the value field (null if not a number)⟫ */
+  level: number | null
+  /** ⟪线色 #rrggbb|Line color #rrggbb⟫ */
+  color: string
+  /** ⟪线宽|Line width⟫ */
+  width: number
+  /** ⟪填充|Fill⟫ */
+  fill: { on: boolean; color: string; opacity: number }
+  /** ⟪关联卫星名称|Associated satellite⟫ */
+  satellite: string
+  /** ⟪关联轨道位置（°E）|Associated orbital position (°E)⟫ */
+  orbitLon: number | null
+  /** ⟪顶点（不含闭合重复点）|Vertices (no duplicated closing point)⟫ */
+  points: LonLat[]
+}
+
+interface Marker {
+  id: string
+  /** ⟪名称|Name⟫ */
+  name: string
+  /** ⟪经度（°）|Longitude (°)⟫ */
+  lon: number
+  /** ⟪纬度（°）|Latitude (°)⟫ */
+  lat: number
+  /** ⟪海拔高度（m，地球站）|Altitude (m, earth stations)⟫ */
+  alt?: number
+  /** ⟪单独设置的颜色|Per-marker color⟫ */
+  color?: string
+}
+
+interface TrajectoryPoint {
+  lon: number
+  lat: number
+  /** ⟪高度（m）|Altitude (m)⟫ */
+  alt?: number
+  /** ⟪时刻（ISO 8601，UTC）|Time (ISO 8601, UTC)⟫ */
+  time?: string
+}
+
+interface Trajectory {
+  id: string
+  /** ⟪航迹名称|Track name⟫ */
+  name: string
+  /** ⟪类型：sea 航行、flight 飞行|Kind: sea or flight⟫ */
+  kind: string
+  points: TrajectoryPoint[]
+}
+
+interface BeamMapMeta {
+  /** ⟪软件名称|Application name⟫ */
+  app: string
+  /** ⟪软件版本|Application version⟫ */
+  appVersion: string
+  /** ⟪采集时的仿真时刻（ISO 8601，UTC）|Simulation time at capture (ISO 8601, UTC)⟫ */
+  simTime: string | null
+  /** ⟪采集时刻（ISO 8601，UTC）|Capture time (ISO 8601, UTC)⟫ */
+  createdAt: string
+  /** ⟪界面语言|UI language⟫ */
+  lang: 'zh' | 'en'
+  /** ⟪坐标基准，恒为 WGS-84|Datum, always WGS-84⟫ */
+  datum: 'WGS-84'
+  /** ⟪数据来源：drawing = 3D 页当前绘制；library = 文件管理「GXT/KML 管理」中的覆盖库（仅含覆盖库波束，无 Polygon / 标记）|Data source: drawing = the 3D page as drawn; library = the coverage library in File Manager › GXT/KML Management (library beams only, no polygons / markers)⟫ */
+  scope: 'drawing' | 'library'
+  /** ⟪输出命名所用标题，可直接用作文件名（如「当前绘制」、卫星名、「卫星_波束」）|Title for naming outputs, safe as a file name (e.g. "Current drawing", a satellite name, "satellite_beam")⟫ */
+  title: string
+}
+
+interface BeamMap {
+  version: number
+  /** ⟪覆盖波束（覆盖库在前、天线方向图在后）|Coverage beams (library first, then antenna patterns)⟫ */
+  beams: Beam[]
+  /** ⟪Polygon（协调区多边形）|Polygons (coordination areas)⟫ */
+  polygons: PolygonArea[]
+  /** ⟪点标记|Point markers⟫ */
+  points: Marker[]
+  /** ⟪地球站|Earth stations⟫ */
+  stations: Marker[]
+  /** ⟪航迹|Tracks⟫ */
+  trajectories: Trajectory[]
+  /** ⟪采集信息|Capture information⟫ */
+  meta: BeamMapMeta
+}
+
+/** ⟪波束地图：3D 页当前绘制或文件管理中选定的覆盖库波束（打开对话框时采集的快照，来源见 meta.scope；每次运行获得独立副本，可自由修改）|The beam map: the 3D page as drawn, or library beams chosen in File Manager (snapshot taken when the dialog opened, see meta.scope; every run gets its own copy, free to modify)⟫ */
+declare const data: BeamMap
+/** ⟪界面语言|UI language⟫ */
+declare const lang: 'zh' | 'en'
+
+type Encoding = 'utf-8' | 'utf-8-bom' | 'gbk' | 'latin1' | 'utf-16le'
+interface FileOptions {
+  /** ⟪输出编码（缺省 utf-8）。utf-8-bom 适用于在 Excel 中打开含中文的 CSV，gbk 适用于仅支持 ANSI 编码的旧版软件|Output encoding (default utf-8). utf-8-bom for Excel CSV with Chinese, gbk for legacy ANSI software⟫ */
+  encoding?: Encoding
+  /** ⟪换行统一为 CRLF 或 LF（缺省不改）|Normalize line endings to CRLF or LF (default: unchanged)⟫ */
+  eol?: 'crlf' | 'lf'
+}
+interface OutputFile {
+  readonly name: string
+  readonly content: string | Uint8Array
+  readonly encoding: Encoding
+  readonly eol: 'crlf' | 'lf' | null
+}
+/**
+ * ⟪声明一个输出文件；脚本返回该对象（或其数组）即导出。内容可为文本、字节或对象（对象序列化为 JSON）。名称可含一级或多级子目录（a/b.gxt）。|Declare an output file. Return it (or an array of them) to export. Content may be text, bytes or an object (written as JSON). Names may contain sub-folders (a/b.gxt).⟫
+ * @example return file('⟪覆盖|coverage⟫.csv', csv(rows), { encoding: 'utf-8-bom' })
+ */
+declare function file(name: string, content: string | Uint8Array | ArrayBuffer | object, options?: FileOptions): OutputFile
+/**
+ * ⟪将多个文件打包为一个 ZIP（KMZ 即内含 doc.kml 的 ZIP 包）|Pack files into one ZIP (a KMZ is a ZIP holding doc.kml)⟫
+ * @example return zip('⟪覆盖|coverage⟫.kmz', [file('doc.kml', kml(data))])
+ */
+declare function zip(name: string, files: OutputFile[] | Record<string, string | Uint8Array>, options?: { level?: number }): OutputFile
+/**
+ * ⟪在 2D 画布上绘制位图（PNG / JPEG / WebP）|Draw a raster image (PNG / JPEG / WebP) on a 2D canvas⟫
+ * @example const img = await png('a.png', 1024, 512, (ctx) => { ctx.fillStyle = '#f00'; ctx.fillRect(0, 0, 10, 10) })
+ */
+declare function png(name: string, width: number, height: number, draw: (ctx: Canvas2D, size: { width: number; height: number }) => void | Promise<void>, options?: { type?: 'png' | 'jpeg' | 'webp'; quality?: number }): Promise<OutputFile>
+
+interface GxtOptions {
+  /** ⟪主管部门代码（定宽 3 字符，缺省 'G'）|Administration code (3 characters, default 'G')⟫ */
+  adm?: string
+  /** ⟪坐标小数位（缺省 3）|Coordinate decimals (default 3)⟫ */
+  digits?: number
+  /** ⟪是否附带 Polygon（缺省 true）|Include polygons (default true)⟫ */
+  polygons?: boolean
+  /** ⟪emi_rcp 字段（缺省 'E'）|emi_rcp field (default 'E')⟫ */
+  emiRcp?: string
+  /** ⟪polar_disc 字段（缺省 'X'）|polar_disc field (default 'X')⟫ */
+  polarDisc?: string
+  /** ⟪reason 字段（缺省 'C'）|reason field (default 'C')⟫ */
+  reason?: string
+  /** ⟪自定义 beam_id（缺省波束名，无名用序号）。Polygon 组收到 { name: 'Polygon', satellite, orbitLon, polygons }|Custom beam_id (default: beam name, else index). Polygon groups receive { name: 'Polygon', satellite, orbitLon, polygons }⟫ */
+  beamId?: (beam: Beam | { name: string; satellite: string; orbitLon: number | null; polygons: PolygonArea[] }, index: number) => string | number
+}
+/** ⟪生成 GXT 文本：每个波束对应一个 diagram，Polygon 按卫星分组附于其后。gxt(data) 与菜单「导出 GXT（对地）」逐字节一致|Write GXT text: one diagram per beam, polygons grouped by satellite. gxt(data) is byte-identical to the menu's Export GXT (ground)⟫ */
+declare function gxt(input: BeamMap | Beam | Beam[], options?: GxtOptions): string
+
+interface GxtJsonOptions {
+  /** ⟪beamId（缺省 1）|beamId (default 1)⟫ */
+  beamId?: number | string
+  /** ⟪emiRcp：缺省 G/T 波束为 R（接收），其余 E（发射）|emiRcp: R (receive) for G/T beams, E (emit) otherwise by default⟫ */
+  emiRcp?: string
+  /** ⟪polarization 字段（即 GXT 的 polar_disc，缺省 'X'）|polarization field (GXT polar_disc, default 'X')⟫ */
+  polarization?: string
+  /** ⟪reason 字段（缺省 'C'）|reason field (default 'C')⟫ */
+  reason?: string
+  /** ⟪adm 字段（缺省 'G'）|adm field (default 'G')⟫ */
+  adm?: string
+  /** ⟪format_ver（缺省 '1'）|format_ver (default '1')⟫ */
+  formatVer?: string
+  /** ⟪坐标小数位（缺省 3）|Coordinate decimals (default 3)⟫ */
+  digits?: number
+  /** ⟪缩进（缺省 0 = 单行）|Indent (default 0 = single line)⟫ */
+  indent?: number
+}
+/** ⟪生成 GXT 结构 JSON（formatInfo / geoMain / coHeader / borePoints / contours，每个波束一份文档），格式与 LinkLab 小程序云数据一致，可导回「GXT/KML 管理」|Write GXT-structured JSON (formatInfo / geoMain / coHeader / borePoints / contours, one beam per document), the LinkLab mini-program cloud-data format; importable back into the GXT/KML library⟫ */
+declare function gxtJson(beam: Beam | { satellite: string; orbitLon: number | null; peaks: Peak[]; contours: { level: number; points: LonLat[] }[]; type?: string }, options?: GxtJsonOptions): string
+
+interface KmlOptions {
+  /** ⟪文档名（缺省 data.meta.title）|Document name (default data.meta.title)⟫ */
+  name?: string
+  /** ⟪gradient 按增益渐变（缺省），drawn 采用当前显示配色|gradient by level (default) or drawn = displayed colors⟫ */
+  colors?: 'gradient' | 'drawn'
+  /** ⟪线宽（缺省 2）|Line width (default 2)⟫ */
+  lineWidth?: number
+  /** ⟪填充不透明度 0–1（缺省 0.2）|Fill opacity 0–1 (default 0.2)⟫ */
+  fillOpacity?: number
+  /** ⟪是否填充（缺省 true）|Fill polygons (default true)⟫ */
+  fill?: boolean
+  /** ⟪是否附带 Polygon（缺省 true）|Include polygons (default true)⟫ */
+  polygons?: boolean
+  /** ⟪等值线 Placemark 名称|Contour placemark name⟫ */
+  contourName?: (contour: Contour, beam: Beam) => string
+  /** ⟪波束中心 Placemark 名称|Peak placemark name⟫ */
+  peakName?: (beam: Beam) => string
+}
+/** ⟪生成 KML 文本（OGC KML 2.2）。kml(data, { name: '当前绘制' }) 与菜单「导出 KML（对地）」逐字节一致|Write KML text (OGC KML 2.2). kml(data, { name: '当前绘制' }) is byte-identical to the menu's Export KML (ground)⟫ */
+declare function kml(input: BeamMap | Beam | Beam[], options?: KmlOptions): string
+
+interface Feature {
+  type: 'Feature'
+  geometry: { type: 'Point' | 'LineString' | 'Polygon' | 'MultiLineString' | 'MultiPolygon'; coordinates: any }
+  properties: Record<string, any>
+}
+interface FeatureOptions {
+  /** ⟪等值线（缺省 true）|Contours (default true)⟫ */
+  contours?: boolean
+  /** ⟪波束中心（缺省 true）|Peaks (default true)⟫ */
+  peaks?: boolean
+  /** ⟪Polygon（缺省 true）|Polygons (default true)⟫ */
+  polygons?: boolean
+  /** ⟪点标记与地球站（缺省 true）|Point markers and stations (default true)⟫ */
+  markers?: boolean
+  /** ⟪航迹（缺省 false）|Tracks (default false)⟫ */
+  trajectories?: boolean
+  /** ⟪坐标小数位（缺省 6）|Coordinate decimals (default 6)⟫ */
+  digits?: number
+}
+/** ⟪转换为 GeoJSON 要素数组（RFC 7946：外环逆时针、环闭合）|Convert to GeoJSON features (RFC 7946: counter-clockwise exterior, closed rings)⟫ */
+declare function features(input: BeamMap | Beam | Beam[], options?: FeatureOptions): Feature[]
+/** ⟪生成 GeoJSON 文本（每行一个要素；indent 为数值时整体缩进输出）|Write GeoJSON text (one feature per line; a numeric indent pretty-prints)⟫ */
+declare function geojson(input: BeamMap | Beam | Beam[] | Feature[], options?: FeatureOptions & { indent?: number }): string
+/**
+ * ⟪生成 CSV 文本（RFC 4180 引号规则，缺省 CRLF）。rows 为二维数组或对象数组|Write CSV text (RFC 4180 quoting, CRLF by default). rows: arrays or objects⟫
+ * @example csv([{ a: 1, b: 'x' }]) // "a,b\r\n1,x\r\n"
+ */
+declare function csv(rows: any[][] | Record<string, any>[], options?: { header?: string[] | false; sep?: string; eol?: 'crlf' | 'lf' }): string
+/** ⟪生成 Shapefile（.shp .shx .dbf .prj .cpg）。每份仅含一种几何类型；属性字段名限 10 个 ASCII 字符|Write a shapefile (.shp .shx .dbf .prj .cpg). One geometry kind per set; field names up to 10 ASCII characters⟫ */
+declare function shapefile(baseName: string, features: Feature[] | BeamMap, options?: { encoding?: 'utf-8' | 'gbk' } & FeatureOptions): OutputFile[]
+
+type Ring = LonLat[] | { points: LonLat[] }
+declare const geo: {
+  /** ⟪两点大地线距离（km，WGS-84 椭球，Vincenty）|Geodesic distance (km, WGS-84 ellipsoid, Vincenty)⟫ */
+  distance(a: LonLat, b: LonLat): number
+  /** ⟪折线长度（km）|Polyline length (km)⟫ */
+  length(points: Ring): number
+  /** ⟪环周长（km，自动闭合）|Ring perimeter (km, closed automatically)⟫ */
+  perimeter(ring: Ring): number
+  /** ⟪环面积（km²，WGS-84 等积球）|Ring area (km², WGS-84 authalic sphere)⟫ */
+  area(ring: Ring): number
+  /** ⟪外包框 [西, 南, 东, 北]；参数可为点列、等值线、波束或整个 data。经度取最短连续区间，跨日界线时东 > 180|Bounding box [west, south, east, north]; accepts points, contours, beams or the whole data. Longitude is the shortest continuous span; east exceeds 180 across the antimeridian⟫ */
+  bbox(v: any): [number, number, number, number] | null
+  /** ⟪环的形心 [lon, lat]|Ring centroid [lon, lat]⟫ */
+  centroid(ring: Ring): LonLat | null
+  /** ⟪点是否在环内（支持跨日界线）|Point-in-ring test (antimeridian-safe)⟫ */
+  contains(ring: Ring, point: LonLat): boolean
+  /** ⟪包含该点的最高一档电平；位于全部等值线之外时为 null|Highest level whose contour encloses the point; null if outside all⟫ */
+  levelAt(beam: Beam, lon: number, lat: number): number | null
+  /** ⟪Douglas–Peucker 抽稀，容差 km（闭合环保持闭合）|Douglas–Peucker simplification, tolerance in km (rings stay closed)⟫ */
+  simplify(points: Ring, toleranceKm?: number): LonLat[]
+  /** ⟪沿大圆加密，最大步长 km|Densify along great circles, maximum step in km⟫ */
+  densify(points: Ring, maxStepKm?: number): LonLat[]
+  /** ⟪补全闭合点（首尾已重合时不变）|Append the closing vertex if missing⟫ */
+  close(points: Ring): LonLat[]
+  /** ⟪去除闭合重复点|Drop the duplicated closing vertex⟫ */
+  open(points: Ring): LonLat[]
+  /** ⟪首尾是否重合|Whether first and last vertices coincide⟫ */
+  isClosed(points: Ring): boolean
+  /** ⟪调整环方向：ccw 逆时针 / cw 顺时针|Orient a ring: ccw or cw⟫ */
+  orient(points: Ring, dir?: 'ccw' | 'cw'): LonLat[]
+  /** ⟪坐标四舍五入到指定小数位|Round coordinates to the given decimals⟫ */
+  round(points: Ring, digits?: number): LonLat[]
+  /** ⟪经度归入 [-180, 180)|Wrap longitude into [-180, 180)⟫ */
+  wrapLon(lon: number): number
+  /** ⟪度分秒文本，如 116°23′27.6″E|Degrees-minutes-seconds text, e.g. 116°23′27.6″E⟫ */
+  dms(value: number, axis?: 'lat' | 'lon', digits?: number): string
+  /** ⟪WGS-84 → GCJ-02（境外不变）|WGS-84 → GCJ-02 (unchanged outside China)⟫ */
+  toGCJ02(lon: number | LonLat, lat?: number): LonLat
+  /** ⟪GCJ-02 → WGS-84|GCJ-02 → WGS-84⟫ */
+  fromGCJ02(lon: number | LonLat, lat?: number): LonLat
+  /** ⟪WGS-84 → BD-09|WGS-84 → BD-09⟫ */
+  toBD09(lon: number | LonLat, lat?: number): LonLat
+  /** ⟪BD-09 → WGS-84|BD-09 → WGS-84⟫ */
+  fromBD09(lon: number | LonLat, lat?: number): LonLat
+  /** ⟪等经纬度投影适配画布：返回 x(lon) / y(lat) / point([lon, lat]) 与比例尺（像素/度）；经度按取景中心 ±180° 换算|Fit a plate-carrée projection to a canvas: returns x(lon) / y(lat) / point([lon, lat]) and scale (px per degree); longitudes are taken within ±180° of the view centre⟫ */
+  fit(bbox: [number, number, number, number] | any, width: number, height: number, padding?: number): { x(lon: number): number; y(lat: number): number; point(p: LonLat): [number, number]; scale: number; bbox: [number, number, number, number] }
+}
+
+declare const color: {
+  /** ⟪'#rrggbb' → { r, g, b }|'#rrggbb' → { r, g, b }⟫ */
+  rgb(c: string): { r: number; g: number; b: number }
+  /** ⟪r, g, b（或 { r, g, b }）→ '#rrggbb'|r, g, b (or { r, g, b }) → '#rrggbb'⟫ */
+  hex(r: number | { r: number; g: number; b: number }, g?: number, b?: number): string
+  /** ⟪KML 颜色 aabbggrr|KML color aabbggrr⟫ */
+  kml(c: string, opacity?: number): string
+  /** ⟪CSS 颜色（不透明度 < 1 时为 rgba()）|CSS color (rgba() when opacity < 1)⟫ */
+  css(c: string, opacity?: number): string
+  /** ⟪按比例 t 混合两种颜色|Mix two colors by t⟫ */
+  mix(a: string, b: string, t?: number): string
+  /** ⟪色带取色，t∈[0,1]：gain 覆盖图蓝→红（缺省）、jet、gray|Color ramp, t∈[0,1]: gain (coverage blue→red, default), jet, gray⟫ */
+  ramp(t: number, scheme?: 'gain' | 'jet' | 'gray'): string
+}
+
+/** ⟪定点小数文本（非数值返回空串，不输出 -0）|Fixed-point text (empty for non-numbers, never -0)⟫ */
+declare function fmt(value: number, digits?: number): string
+
+declare const xml: {
+  /** ⟪XML 转义 & < > " '|Escape & < > " ' for XML⟫ */
+  esc(s: any): string
+  /** ⟪封装为 CDATA 段|Wrap in a CDATA section⟫ */
+  cdata(s: any): string
+}
+
+/** ⟪输出到「控制台」页签|Write to the Console tab⟫ */
+declare const console: {
+  log(...args: any[]): void
+  info(...args: any[]): void
+  warn(...args: any[]): void
+  error(...args: any[]): void
+  debug(...args: any[]): void
+  table(rows: any): void
+  assert(condition: any, ...args: any[]): void
+}
+
+interface Canvas2D {
+  fillStyle: string
+  strokeStyle: string
+  lineWidth: number
+  lineJoin: 'bevel' | 'miter' | 'round'
+  lineCap: 'butt' | 'round' | 'square'
+  globalAlpha: number
+  font: string
+  textAlign: 'left' | 'right' | 'center' | 'start' | 'end'
+  textBaseline: 'top' | 'hanging' | 'middle' | 'alphabetic' | 'ideographic' | 'bottom'
+  beginPath(): void
+  closePath(): void
+  moveTo(x: number, y: number): void
+  lineTo(x: number, y: number): void
+  arc(x: number, y: number, r: number, start: number, end: number, ccw?: boolean): void
+  rect(x: number, y: number, w: number, h: number): void
+  fill(rule?: 'nonzero' | 'evenodd'): void
+  stroke(): void
+  fillRect(x: number, y: number, w: number, h: number): void
+  strokeRect(x: number, y: number, w: number, h: number): void
+  clearRect(x: number, y: number, w: number, h: number): void
+  fillText(text: string, x: number, y: number, maxWidth?: number): void
+  strokeText(text: string, x: number, y: number, maxWidth?: number): void
+  measureText(text: string): { width: number }
+  setLineDash(segments: number[]): void
+  save(): void
+  restore(): void
+  translate(x: number, y: number): void
+  rotate(angle: number): void
+  scale(x: number, y: number): void
+}

@@ -512,6 +512,49 @@ export function projectGrid(set, igrid, basis, box = null, out = null, limbOutsi
   return { lon, lat, slant, vis, NX, NY, box }
 }
 
+// 同网格同指向的多个波束共用一份投影（GRD 多波束文件各波束往往是同一张 (u,v) 网格；投影只与网格点方向和天线基架有关，与波束无关）。
+// share = projShare() 造的共享表（全网格大小 + 逐点「已算」标记），key = 基架签名 + 网格签名；key 一变整表作废重来。
+// 用法同 projectGrid：只把 box 内还没算过的格点按行分段交给 projectGrid 写进共享表，再把 box 那一块拷进 out（盒外照旧不写）。
+// 逐点同一个函数、同一组输入（网格方向取共享表登记的那张网格，与本波束网格同参数 → 方向逐位相同），拷出来的与各自现算逐位相同。
+export function projShare() { return { key: null, set: null, lon: null, lat: null, slant: null, vis: null, done: null } }
+export function projectGridShared(share, key, set, igrid, basis, box = null, out = null, limbOutside = false) {
+  const { NX, NY } = set
+  const N = NX * NY
+  if (share.key !== key || !share.lon || share.lon.length !== N) {
+    if (!share.lon || share.lon.length !== N) {
+      share.lon = new Float32Array(N); share.lat = new Float32Array(N); share.slant = new Float32Array(N); share.vis = new Float32Array(N); share.done = new Uint8Array(N)
+    } else share.done.fill(0)
+    share.key = key; share.set = set
+  }
+  const r0 = box ? box.r0 : 0, r1 = box ? box.r1 : NY - 1, c0 = box ? box.c0 : 0, c1 = box ? box.c1 : NX - 1
+  const done = share.done
+  for (let row = r0; row <= r1; row++) {
+    const rb = row * NX
+    let col = c0
+    while (col <= c1) {
+      if (done[rb + col]) { col++; continue }
+      let e = col
+      while (e + 1 <= c1 && !done[rb + e + 1]) e++
+      projectGrid(share.set, igrid, basis, { r0: row, r1: row, c0: col, c1: e }, share, limbOutside)
+      done.fill(1, rb + col, rb + e + 1)
+      col = e + 1
+    }
+  }
+  const reuse = out && out.lon && out.lon.length === N
+  const lon = reuse ? out.lon : new Float32Array(N)
+  const lat = reuse ? out.lat : new Float32Array(N)
+  const slant = reuse ? out.slant : new Float32Array(N)
+  const vis = reuse ? out.vis : new Float32Array(N)
+  if (c1 >= c0) {
+    for (let row = r0; row <= r1; row++) {
+      const a = row * NX + c0, b = row * NX + c1 + 1
+      lon.set(share.lon.subarray(a, b), a); lat.set(share.lat.subarray(a, b), a)
+      slant.set(share.slant.subarray(a, b), a); vis.set(share.vis.subarray(a, b), a)
+    }
+  }
+  return { lon, lat, slant, vis, NX, NY, box }
+}
+
 // L1：极化取值 + 增益偏置 + 路径损耗 → dB 网格。pol: P1|P2|RSS|P1/P2|P2/P1。
 // pathLoss: 'none' | 'relative'(h/Rs)² | 'absolute' 1/(4πRs²)；hNadir=星地最近距离(=H 近似)。
 export function fieldDb(set, proj, { pol = 'P1', gainOffset = 0, pathLoss = 'none', hNadir = H } = {}) {

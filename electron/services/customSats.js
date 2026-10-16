@@ -163,18 +163,34 @@ function packSat(rec) {
   return o
 }
 function unpackSat(o) {
-  if (!o || !o.f) return o
+  if (!o || !o.f) return o && typeof o === 'object' ? Object.assign({}, o) : o   // 拷一层：解析结果有缓存（见 readStoreJson），不外借
   const rec = eph.recordFromFields(o.f)
-  if (!rec) return o
+  if (!rec) return Object.assign({}, o)
   for (const k of EXTRA_KEYS) if (o[k] != null) rec[k] = o[k]
   return rec
 }
 // ephem 组的 sats 是元数据（key/name/起止/点数/插值口径），不是 OMM 记录，不走 packSat/unpackSat。
 const packGroups = (groups) => groups.map((g) => Object.assign({}, g, { sats: g.kind === 'ephem' ? (g.sats || []) : (g.sats || []).map(packSat) }))
-const unpackGroups = (groups) => groups.map((g) => normGroup(Object.assign({}, g, { sats: g.kind === 'ephem' ? (g.sats || []) : (g.sats || []).map(unpackSat) })))
+// 组 / 卫星对象每次现造（ephem 组的元数据也拷一层）：底下那份解析结果是缓存（见 readStoreJson），调用方改了组
+// （改名 / 显隐 / 绑定）在写盘之前不能改到缓存本体 —— 写失败时缓存就与磁盘对不上了
+const unpackGroups = (groups) => groups.map((g) => normGroup(Object.assign({}, g, { sats: g.kind === 'ephem' ? (g.sats || []).map((s) => Object.assign({}, s)) : (g.sats || []).map(unpackSat) })))
+
+// custom.json 的解析缓存：2.8 万颗时 12.6 MB，读盘 + JSON.parse 约 55 ms，而 3D 启动、文件管理、干扰 / 星历导出
+// 各自都要整库读一遍。按文件身份（mtime + 大小 + inode；写盘走 tmp + rename，每写一次身份必变）缓存解析结果，
+// 文件一变下次读就重新解析。只缓存「主文件在」时的结果（库清空时主文件被删，自然落空）
+let _parsed = null
+function readStoreJson() {
+  const f = storeFile()
+  let key = ''
+  try { const st = fs.statSync(f); key = st.mtimeMs + ':' + st.size + ':' + st.ino } catch { key = '' }
+  if (key && _parsed && _parsed.key === key) return { value: _parsed.value, corrupt: false }
+  const r = readJsonSafe(f, null)
+  _parsed = key && r.value && !r.corrupt ? { key, value: r.value } : null
+  return r
+}
 
 function readStore() {
-  const r = readJsonSafe(storeFile(), null)
+  const r = readStoreJson()
   if (r.value && Array.isArray(r.value.groups)) return { groups: unpackGroups(r.value.groups) }
   // custom.json 与它的 .bak 都解析不出来：不当空库使——空库上的下一次写会把坏文件整份覆盖，
   // 导入过的星历再也找不回来。标出来让写侧拒写、上层显示状态。

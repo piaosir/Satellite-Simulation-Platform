@@ -1,0 +1,17 @@
+//! id: kml
+//! name: ⟪KML · 增益分级着色|KML · Gain-graded colors⟫
+//! ext: kml
+//zh 除文档名取 data.meta.title 外，与「导出 → 导出 KML（对地）」逐字节一致：文件夹层级为卫星 → 波束，等值线按增益渐变着色，Polygon 保留各自颜色。
+//en Byte-identical to Export → Export KML (ground) apart from the document name (data.meta.title): satellite → beam folders, contours colored by level, polygons keep their colors.
+//zh kml(data, 选项) 的可选项：
+//en Options of kml(data, options):
+//zh   name: '…'                       文档名
+//en   name: '…'                       document name
+//zh   colors: 'drawn'                 采用当前显示的电平配色（缺省 'gradient'，按增益渐变）
+//en   colors: 'drawn'                 use the displayed level colors (default 'gradient')
+//zh   lineWidth / fillOpacity / fill  线宽 / 填充不透明度（0–1）/ 填充开关
+//en   lineWidth / fillOpacity / fill  line width / fill opacity 0–1 / fill on-off
+//zh   contourName: (c, b) => …        等值线名称；peakName: (b) => … 波束中心名称
+//en   contourName: (c, b) => …        contour name; peakName: (b) => … peak name
+
+return file(`${data.meta.title}.kml`, kml(data, { name: data.meta.title }))

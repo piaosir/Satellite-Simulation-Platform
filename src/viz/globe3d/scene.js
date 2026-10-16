@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { SEL_MARK_COLOR, SEL_MARK_PAD, selHalf, strokeSelBrackets } from '../selMark.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { Line2 } from 'three/addons/lines/Line2.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
@@ -12,7 +13,7 @@ import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '.
 // 注记描边色/粗细随底色现算：与 2D 平面图共用单一来源
 import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
 // 底图不再是「一份画好的国界」：面/线/标注/点选全部由主权解算层按归属实时算出（视角 = 一张归属表）
-import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, onPovChange } from '../geo/povResolver.js'
+import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, hasDetail, onPovChange } from '../geo/povResolver.js'
 // 边界线显示规范（渲染次序 / 出厂样式 / 线型的屏幕像素图案 / 缩放淡出）：与 2D 平面图共用同一份
 import { ORDER, BORDER_DEF, DASH_PX, DASH_SCALE, BORDER_CLASSES, CFG_KEY, fadeFactor, admFade } from '../geo/borderStyle.js'
 // 水域注记（大洋 + 海域）：与 2D 平面图共用同一份表
@@ -31,7 +32,7 @@ import { paintNumBadge, BADGE_TEX_FILL, BADGE_R } from '../markers/numBadge.js'
 import { markSymbolCanvas, texCenterY, symbolUp, symbolDown, MARK_TEX_FILL, PT_DOT_K } from '../markers/markSymbols.js'
 // 地球站符号：与 2D 平面图共用同一份定义（原来两处各存一份逐字符相同的副本）
 import { stationSvg, STATION_ANCHOR_X, STATION_ANCHOR_Y } from '../stationSymbol.js'
-import { vehicleCanvas } from '../vehicleSymbol.js'
+import { vehicleCanvas, vehicleBox } from '../vehicleSymbol.js'
 // 影像瓦片金字塔（EPSG:4326 / GIBS 网格）：网格数学与取片缓存，与 2D 平面图共用同一份
 import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile, isMissing, warm as warmTiles, tileGutter, tileImgSize } from '../imageryTiles.js'
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
@@ -42,6 +43,7 @@ import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
 import { emitSwath3D } from '../constellation/focusSwath.js'
 import { createAxesLayer } from './refAxes.js'   // 参考系轴（ECEF / J2000 / 赤道面）+ 聚焦卫星 RIC 三轴
+import { onRedraw } from './redraw.js'   // 按需出帧：叠加层 / 宇宙空间异步到货的重画请求
 
 
 // 画布文字（地名/大洋/波束标签）：无衬线，独立一档，【不跟】界面字体走
@@ -92,27 +94,53 @@ function unwrapRing(ring) {
 
 // 陆地填色：矢量几何（earcut 三角化 + 投影到球面），任何缩放级别都无限锐利、零虚化。
 // 大三角形投影后会塌陷成弦切入球内，故按经纬度自适应细分到 ≤MAXSEG° 再投影，紧贴球面。
+// ★ 索引网格：同一个多边形里相邻三角形共用顶点（earcut 的原顶点按序号、细分出来的中点按「两端点序号」各只建一次）。
+//   原来逐三角形各推三个顶点，50m 档 143 万顶点；共用后顶点数与显存都降到约三分之一。
+//   三角形的先后、每个三角形的顶点次序原样不变，共用的顶点就是原来那几份逐位相同的副本（同一组经纬、同一个式子）——
+//   展开成非索引网格与改前逐位相同，画面逐像素不变。
+//   顶点色仍是 Float32：改 Uint8 会把线性空间的颜色量化到 1/255，暗色输出到屏上差一两级，不是逐像素不变
 function buildLandMesh(features) {
   const MAXSEG = 3            // 三角形最长边超过该度数就细分
-  const positions = [], colors = []
+  const positions = [], colors = [], index = []
   const col = new THREE.Color()
   // 争议叠加面（f.over）抬高 0.002%：它盖在宿主面上、等高会 z-fight。这个高差 ≈ 0.13 km，
   // 肉眼与视差都看不出，却足够让深度测试分出先后。
   let R = 1
+  // 当前多边形的顶点表：pts[id] = [lon, lat]（earcut 原顶点 id = 序号，中点续在后面），out[id] = 输出顶点号，mids = 「a,b」→ 中点 id
+  let pts = null, out = null, mids = null
 
-  function pushVert(lon, lat) {
-    const v = llaToVec(lat, lon, 0).multiplyScalar(R)   // 半径 1，贴在海洋球(0.999)之上
-    positions.push(v.x, v.y, v.z)
-    colors.push(col.r, col.g, col.b)   // 颜色按「多边形」决定（北极岛屿整块冰白），不再逐顶点纬度渐变
+  function vert(id) {
+    let v = out[id]
+    if (v === undefined) {
+      const p = pts[id]
+      const q = llaToVec(p[1], p[0], 0).multiplyScalar(R)   // 半径 1，贴在海洋球(0.999)之上
+      v = positions.length / 3
+      positions.push(q.x, q.y, q.z)
+      colors.push(col.r, col.g, col.b)   // 颜色按「多边形」决定（北极岛屿整块冰白），不再逐顶点纬度渐变
+      out[id] = v
+    }
+    return v
   }
   const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1])
-  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]
+  // 边中点：两端点谁先谁后都是同一个点（加法可交换，逐位相同），按无序端点对只建一次
+  function mid(a, b) {
+    const k = a < b ? a + ',' + b : b + ',' + a
+    let m = mids.get(k)
+    if (m === undefined) {
+      const p = pts[a], q = pts[b]
+      m = pts.length
+      pts.push([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2])
+      mids.set(k, m)
+    }
+    return m
+  }
   // 细分到每条边 ≤MAXSEG° 再投影。关键：是否切分由「边自身长度」决定（而非三角形），
   // 相邻三角形共享边的端点/长度完全相同 -> 切分点一致 -> 无 T 形接缝（裂纹）。
   function emitTri(a, b, c, depth) {
-    const sAB = dist(a, b) > MAXSEG, sBC = dist(b, c) > MAXSEG, sCA = dist(c, a) > MAXSEG
+    const A = pts[a], B = pts[b], C = pts[c]
+    const sAB = dist(A, B) > MAXSEG, sBC = dist(B, C) > MAXSEG, sCA = dist(C, A) > MAXSEG
     const n = (sAB ? 1 : 0) + (sBC ? 1 : 0) + (sCA ? 1 : 0)
-    if (n === 0 || depth >= 14) { pushVert(a[0], a[1]); pushVert(b[0], b[1]); pushVert(c[0], c[1]); return }
+    if (n === 0 || depth >= 14) { index.push(vert(a), vert(b), vert(c)); return }
     const d = depth + 1
     if (n === 3) {
       const mAB = mid(a, b), mBC = mid(b, c), mCA = mid(c, a)
@@ -130,6 +158,12 @@ function buildLandMesh(features) {
     else if (!sAB) { const m1 = mid(b, c), m2 = mid(c, a); emitTri(b, m1, m2, d); emitTri(b, m2, a, d); emitTri(m1, c, m2, d) }
     else { const m1 = mid(c, a), m2 = mid(a, b); emitTri(c, m1, m2, d); emitTri(c, m2, b, d); emitTri(m1, a, m2, d) }
   }
+  // 一个平铺坐标串（[lon, lat, lon, lat, …]）+ earcut 三角 → 一个多边形的顶点表，逐三角形细分输出
+  function emitFlat(flat, tri) {
+    pts = new Array(flat.length / 2); out = []; mids = new Map()
+    for (let k = 0; k < pts.length; k++) pts[k] = [flat[k * 2], flat[k * 2 + 1]]
+    for (let t = 0; t < tri.length; t += 3) emitTri(tri[t], tri[t + 1], tri[t + 2], 0)
+  }
   // 三角化一个多边形（rings = [外环, 洞...]），先解缠并把洞对齐到外环窗口
   function addPolygon(rings) {
     const uw = rings.map(unwrapRing)
@@ -144,11 +178,7 @@ function buildLandMesh(features) {
       if (r > 0) holeIdx.push(flat.length / 2)
       for (const p of uw[r]) { flat.push(p[0], p[1]) }
     }
-    const tri = earcut(flat, holeIdx)
-    for (let t = 0; t < tri.length; t += 3) {
-      const i0 = tri[t] * 2, i1 = tri[t + 1] * 2, i2 = tri[t + 2] * 2
-      emitTri([flat[i0], flat[i0 + 1]], [flat[i1], flat[i1 + 1]], [flat[i2], flat[i2 + 1]], 0)
-    }
+    emitFlat(flat, earcut(flat, holeIdx))
   }
 
   features.forEach((f, i) => {
@@ -164,11 +194,7 @@ function buildLandMesh(features) {
       for (const ring of antarcticaFillRings(f)) {
         const flat = []
         for (const p of ring) { flat.push(p[0], p[1]) }
-        const tri = earcut(flat, [])
-        for (let t = 0; t < tri.length; t += 3) {
-          const i0 = tri[t] * 2, i1 = tri[t + 1] * 2, i2 = tri[t + 2] * 2
-          emitTri([flat[i0], flat[i0 + 1]], [flat[i1], flat[i1 + 1]], [flat[i2], flat[i2 + 1]], 0)
-        }
+        emitFlat(flat, earcut(flat, []))
       }
       return
     }
@@ -187,6 +213,7 @@ function buildLandMesh(features) {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(index), 1))
   return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }))
 }
 
@@ -358,6 +385,23 @@ export function createGlobeScene(container, quality = {}) {
   // 逐帧时间基准：与 rAF 回调的时间戳同一时间原点（loop 拿不到 now 时兜底）
   const nowMs = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
 
+  // ===================== 按需出帧（脏标记）=====================
+  // 空闲时不再逐帧整帧重画，只在「画面可能变了」时出帧：对外接口的调用（文件尾统一包一层）、出帧闸放行、
+  // 指针 / 滚轮 / 相机变动、异步到货（贴图解码、影像底层、模型图标，见 redraw.js）都置脏；
+  // 缩放缓动 / 拖动阻尼 / 跟随 / 流动虚线 / 瓦片补片 / 叠加层淡入淡出期间照旧连续出帧（见 loop）。
+  // 另留 1 Hz 兜底：漏挂的异步到货最多晚一秒补上。
+  let needsRender = true, lastRenderT = 0
+  // 切到 2D 平面图（pause）时帧缓冲缩到 1×1：2× 档 + MSAA 的默认帧缓冲有上百 MB，被平面图盖着时白占显存。resume 时复原
+  let shrunk = false
+  function invalidate() { needsRender = true }
+  const offRedraw = onRedraw(invalidate)
+  // 窗口失焦（在别的工作台窗口里操作）：除本窗相机交互外，帧率压到 ≤ BLUR_FPS，不与前台窗口抢 GPU
+  const BLUR_FPS = 10
+  let winBlur = typeof document !== 'undefined' && typeof document.hasFocus === 'function' ? !document.hasFocus() : false
+  const onWinBlur = () => { winBlur = true }
+  const onWinFocus = () => { winBlur = false; invalidate() }
+  if (typeof window !== 'undefined') { window.addEventListener('blur', onWinBlur); window.addEventListener('focus', onWinFocus) }
+
   const controls = new OrbitControls(camera, renderer.domElement)
   // 粘滞跟随（仪器手感，见 dragFollow.js）：借 OrbitControls 自己的 damping 递推，但 dampingFactor 不是常数 ——
   // loop 里每帧按真实经过时间取 1 − e^{−dt/τ}，τ 由「拖拽阻尼」定（出厂 42 ms）。相机只逼近、不越过指针命令，
@@ -380,8 +424,9 @@ export function createGlobeScene(container, quality = {}) {
   // 拖动中（OrbitControls 的 'start' → 'end'，只有真在转的拖动才发）：loop 据此临时解除帧率上限 ——
   // 仪器手感要的是「手一动画面就跟」，省电档的 30 fps 留给静止时。
   let dragging = false
-  controls.addEventListener('start', () => { dragging = true })
-  controls.addEventListener('end', () => { dragging = false })
+  controls.addEventListener('start', () => { dragging = true; invalidate() })
+  controls.addEventListener('end', () => { dragging = false; invalidate() })
+  controls.addEventListener('change', invalidate)
   // 清掉 OrbitControls 里还没施加完的拖动命令（搜索定位 / 恢复视图这种【绝对】摆位之后，欠着的那一小段
   // 不该再往新姿态上加）。_sphericalDelta 是它的私有量，缺席就跳过 —— 残余最多几千分之一度，无害。
   function clearFollow() { const d = controls._sphericalDelta; if (d && typeof d.set === 'function') d.set(0, 0, 0) }
@@ -504,6 +549,12 @@ export function createGlobeScene(container, quality = {}) {
     zoomTarget = Math.max(controls.minDistance, Math.min(controls.maxDistance, tToDist(t1)))
     reportZoom()
   }, { passive: false })
+  // 按需出帧：按下 / 松开 / 按着拖动都置脏（工具态拖波束、拖标记等由页面回调再推几何，那条路走接口置脏；这里兜指针本身）。
+  // 跟随时滚轮交给驱动（局部相机），跟随期间本来就连续出帧
+  renderer.domElement.addEventListener('wheel', invalidate, { passive: true })
+  renderer.domElement.addEventListener('pointerdown', invalidate)
+  renderer.domElement.addEventListener('pointerup', invalidate)
+  renderer.domElement.addEventListener('pointermove', (e) => { if (e.buttons) invalidate() })
 
   let curW = w, curH = h
 
@@ -556,8 +607,13 @@ export function createGlobeScene(container, quality = {}) {
     const o = new Line2(g, m); o.renderOrder = order || 0; return o
   }
 
-  let mapDetail0 = '10m'        // 创建时恒以静态 10m 构建；切到 50m/110m 由 setMapDetail 异步换源
-  let features = resolvedFeatures(mapDetail0)
+  // 创建时直接按画质档的精度建：原来恒以 10m 建、再由 setMapDetail 异步换成 50m —— 进 3D 页白建一遍 10m 陆地网格
+  // （老机约 1.3 s、峰值多三四百 MB）。那一档还没载进来（50m 是懒加载的独立 chunk）：陆地 / 边界线 / 国名先不建、也不出帧
+  // （basemapPending，画布先清成背景色），载进来后由 rebuildBasemap 一次建成终态（见构造末尾）—— 与原来换档那一趟同一个函数
+  const wantDetail0 = quality.mapDetail || '10m'
+  let mapDetail0 = wantDetail0
+  let basemapPending = !hasDetail(wantDetail0)
+  let features = basemapPending ? [] : resolvedFeatures(mapDetail0)
   let mapThin = quality.mapThin != null ? quality.mapThin : 0.025
   let curLines = null           // 解算出的五组线缓存（换视角/换精度档时作废）
   let dashRefWpp = 0            // 上次建虚线时用的「每像素多少世界单位」，变化超过一档才重建
@@ -806,6 +862,7 @@ export function createGlobeScene(container, quality = {}) {
       if (!m) continue
       m.material.polygonOffset = false          // 底层不偏移，细节层压在它上面
       baseGroup.add(m); baseGroup.userData[key] = m
+      invalidate()   // 底层片多是取片回调里异步补上的
     }
   }
   function clearImageryTiles() {
@@ -859,31 +916,43 @@ export function createGlobeScene(container, quality = {}) {
   const borderLines = {}     // cls → LineSegments2（首次构建在 offPov 之后 —— classPos 依赖的几个 const 还没初始化）
 
 
+  // ★ 地名懒烘：国名 / 水域名 / 岛链名三组只在【要显示】时才把字烘进画布纹理。出厂地名关着，原来启动时照样烘 600 多张、
+  //   换底色 / 换精度档再整份重烘两三轮。关着时的重建只记一笔欠账（lazy*，连同那一刻的套边色 —— 套边是烘进纹理的，
+  //   按欠账里的那一份烘，与当场烘出来的逐像素相同），显示时补烘。字号 / 颜色 / 字重 / 逐条显隐在补烘时按当前设置套上，
+  //   它们一改本来就会触发重建或就地改材质，终态与当场烘的一致。
   // 国名：中、英两套（按需切换显隐），初始全隐
-  let labelsZh = buildLabels('zh', mapDetail0, curHalo(), curHaloK()); scene.add(labelsZh)
-  let labelsEn = buildLabels('en', mapDetail0, curHalo(), curHaloK()); scene.add(labelsEn)
+  let labelsZh = new THREE.Group(), labelsEn = new THREE.Group()
+  labelsZh.visible = false; labelsEn.visible = false
+  scene.add(labelsZh); scene.add(labelsEn)
+  let lazyCountry = { halo: curHalo(), haloK: curHaloK() }
   // 水域注记：大洋 / 海域两档，各自中、英两套。档位与国名【分开】——用户可以只要洋名不要国名。
   // waterOff = { id: true } 逐条关掉的那些：它决定造哪几个精灵，故改它要整份重建这四组。
   let waterOff = {}
-  let oceanZh = buildWaterLabels('ocean', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanZh)
-  let oceanEn = buildWaterLabels('ocean', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(oceanEn)
-  let seaZh = buildWaterLabels('sea', 'zh', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaZh)
-  let seaEn = buildWaterLabels('sea', 'en', oceanHalo(), oceanHaloK(), waterOff); scene.add(seaEn)
+  let oceanZh = new THREE.Group(), oceanEn = new THREE.Group(), seaZh = new THREE.Group(), seaEn = new THREE.Group()
+  for (const g of [oceanZh, oceanEn, seaZh, seaEn]) { g.visible = false; scene.add(g) }
+  let lazyWater = { halo: oceanHalo(), haloK: oceanHaloK() }
   let waterMode = { ocean: 'off', sea: 'off' }
   // 岛链参考线：一条 LineSegments2（三条链共用一份几何）+ 一组名字精灵。默认整层不画。
   const chainCfg = { on: false, ...CHAIN_DEF }
-  let chainOff = {}, chainLine = null, chainLabels = null
+  let chainOff = {}, chainLine = null, chainLabels = null, lazyChain = null
   haloNow = haloKey()
   function setLabelMode(mode) {   // 'zh' | 'en' | 'off'
+    if ((mode === 'zh' || mode === 'en') && !basemapPending) { const L = lazyCountry; if (L) bakeCountryLabels(L.halo, L.haloK) }   // 底图档未到时由 rebuildBasemap 按档位烘
     labelsZh.visible = mode === 'zh'
     labelsEn.visible = mode === 'en'
   }
+  const waterShown = () => waterMode.ocean === 'zh' || waterMode.ocean === 'en' || waterMode.sea === 'zh' || waterMode.sea === 'en'
   function applyWaterMode() {
     oceanZh.visible = waterMode.ocean === 'zh'; oceanEn.visible = waterMode.ocean === 'en'
     seaZh.visible = waterMode.sea === 'zh'; seaEn.visible = waterMode.sea === 'en'
   }
   // 水域注记档位：{ ocean, sea } 各自 'zh' | 'en' | 'off'（只给一个就只改那一个）
-  function setWaterMode(m) { if (!m) return; if (m.ocean != null) waterMode.ocean = m.ocean; if (m.sea != null) waterMode.sea = m.sea; applyWaterMode() }
+  function setWaterMode(m) {
+    if (!m) return
+    if (m.ocean != null) waterMode.ocean = m.ocean; if (m.sea != null) waterMode.sea = m.sea
+    if (lazyWater && waterShown()) bakeWaterLabels(lazyWater.halo, lazyWater.haloK)   // 末尾自带 applyWaterMode
+    else applyWaterMode()
+  }
   // 水域注记逐条显隐：改的是「造不造这个精灵」，故整份重建（77 条，代价与一次换语言相当）
   function setWaterOff(o) { waterOff = { ...(o || {}) }; rebuildWaterLabels() }
   // 地名字号缩放：国家名(cf) 与 省名(pf) 与 地级市名(cityf) 与 大洋名(of) 与 海域名(sf) 分开
@@ -931,7 +1000,6 @@ export function createGlobeScene(container, quality = {}) {
     if (reW) rebuildWaterLabels()
     else if (s.oceanColor != null || s.oceanOpacity != null || s.seaColor != null || s.seaOpacity != null) applyWaterStyle()
   }
-  applyWaterStyle()   // 四组水域注记刚造出来是白的，先套上出厂色
   // 大海颜色（限蓝色系）：直接改海洋球材质色
   function setOceanColor(c) { if (c) { oceanMat.color.set(c); refreshHalo() } }
   // 底图三层的互斥可见性。★ 陆地网格在 rebuildBasemap / setLandColors 里是「整份重建」的，
@@ -1019,7 +1087,7 @@ export function createGlobeScene(container, quality = {}) {
     pixelRatio = Math.max(0.25, Math.min(n, 4))   // 保留「用户请求值」备查
     if (capture) { capture.prevPR = capPixelRatio(pixelRatio); return }   // 视频出帧中：记下，endCapture 时生效
     renderer.setPixelRatio(capPixelRatio(pixelRatio))   // 实际渲染倍率按物理像素封顶
-    renderer.setSize(curW, curH, false)          // 重设尺寸使新 DPR 生效；false：不写内联样式，见构造处注释
+    if (!shrunk) renderer.setSize(curW, curH, false)    // 重设尺寸使新 DPR 生效；false：不写内联样式，见构造处注释（2D 期间缓冲留 1×1，resume 时按新倍率复原）
     for (const m of lineMats) m.resolution.set(curW, curH)
   }
   // 渲染帧率上限（0=每帧不限；30/60=节流省电）。在 loop 中据此跳帧。
@@ -1079,6 +1147,7 @@ export function createGlobeScene(container, quality = {}) {
     return sink.view()
   }
   function buildBorderLines() {
+    if (basemapPending) return   // 底图档还没到：到了由 rebuildBasemap 建（这时问线会退到 10m 白算一遍）
     const wpp = worldPerPx()
     dashRefWpp = wpp
     const L = linesNow()
@@ -1095,10 +1164,11 @@ export function createGlobeScene(container, quality = {}) {
     const wpp = worldPerPx()
     if (dashRefWpp > 0 && Math.abs(wpp - dashRefWpp) / dashRefWpp < 0.06) return
     dashRefWpp = wpp
-    const L = linesNow()
+    let L = null   // 有虚线类的边界线才取线（底图档未到时一条都没有，不去问解算器）
     for (const cls of BORDER_CLASSES) {
       const o = borderLines[cls]
       if (!o || !DASH_PX[borderCfg[CFG_KEY[cls] + 'Dash'] || 'solid']) continue
+      if (!L) L = linesNow()
       o.geometry.dispose()
       const g = new LineSegmentsGeometry(); g.setPositions(classPos(cls, L[cls], wpp))
       o.geometry = g
@@ -1136,13 +1206,20 @@ export function createGlobeScene(container, quality = {}) {
     chainLine.visible = !!chainCfg.on
     scene.add(chainLine)
   }
-  // 名字：与水域注记同一支画笔（斜体 + 按海色现算的套边），故换底色时跟着 rebuildLabels 一起重烘
+  // 名字：与水域注记同一支画笔（斜体 + 按海色现算的套边），故换底色时跟着 rebuildLabels 一起重烘。
+  // 名字不显示（整层关 / 名字关）时只记欠账（懒烘，见国名那段），setChains 显示时按欠账补烘
+  const chainNamesShown = () => !!chainCfg.on && chainCfg.name !== 'off'
   function rebuildChainLabels() {
+    if (!chainNamesShown()) { lazyChain = { halo: oceanHalo(), haloK: oceanHaloK() }; if (chainLabels) chainLabels.visible = false; return }
+    bakeChainLabels(oceanHalo(), oceanHaloK())
+  }
+  function bakeChainLabels(halo, haloK) {
+    lazyChain = null
     if (chainLabels) disposeLabelGroup(chainLabels)
     chainLabels = new THREE.Group()
     const en = chainCfg.name === 'en'
     for (const c of chainList(chainOff)) {
-      const spr = makeWaterLabel(en ? c.en : c.zh, oceanHalo(), oceanHaloK(), CHAIN_LABEL_PX, !!chainCfg.nameBold)
+      const spr = makeWaterLabel(en ? c.en : c.zh, halo, haloK, CHAIN_LABEL_PX, !!chainCfg.nameBold)
       spr.position.copy(llaToVec(c.label[1], c.label[0], 25))
       spr._dir = spr.position.clone().normalize()
       spr._pri = 1e9
@@ -1181,6 +1258,7 @@ export function createGlobeScene(container, quality = {}) {
       }
       chainLabels.visible = !!chainCfg.on && chainCfg.name !== 'off'
     }
+    if (lazyChain && chainNamesShown()) bakeChainLabels(lazyChain.halo, lazyChain.haloK)
   }
   // 缩放分级（1.6b 三）：全球视角下二级行政区完全淡出、一级降到 0.3，拉近后线性恢复。
   // 政治五类不参与 —— 国界在任何尺度都在。线淡出时名字跟着淡，否则会剩一地孤字。
@@ -1197,6 +1275,7 @@ export function createGlobeScene(container, quality = {}) {
   }
   // 换精度档 / 换视角 / 改用户覆写 走同一条重建通道：陆地三角网 + 五类边界线 + 国名标注
   function rebuildBasemap() {
+    if (basemapPending) return   // 构造时的底图档还没到：到了统一建（见构造末尾），这期间的换视角 / 换档一并以那时的状态为准
     curLines = null
     features = resolvedFeatures(mapDetail0)
     scene.remove(landMesh); landMesh.geometry.dispose(); landMesh.material.dispose()
@@ -1205,33 +1284,47 @@ export function createGlobeScene(container, quality = {}) {
     rebuildLabels()
     applyBaseLayers()   // 陆地是新建的 mesh，恒 visible → 影像模式下须重新压回去
     fadeApplied = -1
+    invalidate()        // 换视角广播 / 异步换精度档都从这里进来，不经对外接口
   }
   const disposeLabelGroup = (g) => {
     scene.remove(g)
     g.traverse((c) => { if (c.material) { if (c.material.map) c.material.map.dispose(); c.material.dispose() } })
   }
-  // 四组水域注记整份重烘（换套边色 / 换逐条显隐都走这里），重建后把字号、颜色、档位原样套回去
+  // 四组水域注记整份重烘（换套边色 / 换逐条显隐都走这里），重建后把字号、颜色、档位原样套回去。
+  // 两档都关着：只记欠账（懒烘，见国名那段），显示时由 setWaterMode 按欠账补烘
   function rebuildWaterLabels() {
+    if (!waterShown()) { lazyWater = { halo: oceanHalo(), haloK: oceanHaloK() }; return }
+    bakeWaterLabels(oceanHalo(), oceanHaloK())
+  }
+  function bakeWaterLabels(halo, haloK) {
+    lazyWater = null
     for (const g of [oceanZh, oceanEn, seaZh, seaEn]) disposeLabelGroup(g)
-    oceanZh = buildWaterLabels('ocean', 'zh', oceanHalo(), oceanHaloK(), waterOff, labelCfg.oceanBold); scene.add(oceanZh)
-    oceanEn = buildWaterLabels('ocean', 'en', oceanHalo(), oceanHaloK(), waterOff, labelCfg.oceanBold); scene.add(oceanEn)
-    seaZh = buildWaterLabels('sea', 'zh', oceanHalo(), oceanHaloK(), waterOff, labelCfg.seaBold); scene.add(seaZh)
-    seaEn = buildWaterLabels('sea', 'en', oceanHalo(), oceanHaloK(), waterOff, labelCfg.seaBold); scene.add(seaEn)
+    oceanZh = buildWaterLabels('ocean', 'zh', halo, haloK, waterOff, labelCfg.oceanBold); scene.add(oceanZh)
+    oceanEn = buildWaterLabels('ocean', 'en', halo, haloK, waterOff, labelCfg.oceanBold); scene.add(oceanEn)
+    seaZh = buildWaterLabels('sea', 'zh', halo, haloK, waterOff, labelCfg.seaBold); scene.add(seaZh)
+    seaEn = buildWaterLabels('sea', 'en', halo, haloK, waterOff, labelCfg.seaBold); scene.add(seaEn)
     applyNameScale(oceanZh, nameScaleO); applyNameScale(oceanEn, nameScaleO)
     applyNameScale(seaZh, nameScaleS); applyNameScale(seaEn, nameScaleS)
     applyWaterStyle()
     applyWaterMode()
   }
-  // 国名两组整份重烘（换套边色 / 换字重都走这里），重建后把字号、颜色、档位原样套回去
+  // 国名两组整份重烘（换套边色 / 换字重都走这里），重建后把字号、颜色、档位原样套回去。
+  // 国名关着：只记欠账（懒烘），显示时由 setLabelMode 按欠账补烘
   function rebuildCountryLabels() {
     const mode = labelsZh.visible ? 'zh' : labelsEn.visible ? 'en' : 'off'
+    if (mode === 'off' || basemapPending) { lazyCountry = { halo: curHalo(), haloK: curHaloK() }; return }   // 底图档未到同理：到了由 rebuildBasemap 再烘
+    bakeCountryLabels(curHalo(), curHaloK())
+    setLabelMode(mode)
+  }
+  // 只烘不定显隐（两组烘完都是隐藏的，由调用方 setLabelMode 定档）
+  function bakeCountryLabels(halo, haloK) {
+    lazyCountry = null
     for (const g of [labelsZh, labelsEn]) disposeLabelGroup(g)
-    labelsZh = buildLabels('zh', mapDetail0, curHalo(), curHaloK(), labelCfg.countryBold); scene.add(labelsZh)
-    labelsEn = buildLabels('en', mapDetail0, curHalo(), curHaloK(), labelCfg.countryBold); scene.add(labelsEn)
+    labelsZh = buildLabels('zh', mapDetail0, halo, haloK, labelCfg.countryBold); scene.add(labelsZh)
+    labelsEn = buildLabels('en', mapDetail0, halo, haloK, labelCfg.countryBold); scene.add(labelsEn)
     applyNameScale(labelsZh, nameScaleC); applyNameScale(labelsEn, nameScaleC)
     applyLabelStyle(labelsZh, labelCfg.countryColor, labelCfg.countryOpacity)
     applyLabelStyle(labelsEn, labelCfg.countryColor, labelCfg.countryOpacity)
-    setLabelMode(mode)
   }
   function rebuildLabels() {
     rebuildCountryLabels()
@@ -1905,14 +1998,14 @@ export function createGlobeScene(container, quality = {}) {
   // 每轮 setMarkers 末尾放掉本轮没用到的。画法与 makeCovLabel 同一段 covLabelCanvas（画面逐像素不变）；别的调用方照旧每次现画。
   const mkLabelCache = new Map(), texUsedMkL = new Set()
   let mkLabelCaching = false
-  function cachedCovLabel(text, hpx, color, bold) {
+  function cachedCovLabel(text, hpx, color, bold, cache = mkLabelCache, used = texUsedMkL) {
     const key = text + '|' + (color || '#ffffff') + '|' + (bold ? 1 : 0) + '|' + curHalo() + '|' + curHaloK()
-    texUsedMkL.add(key)
-    let t = mkLabelCache.get(key)
+    used.add(key)
+    let t = cache.get(key)
     if (!t) {
       const c = covLabelCanvas(text, color, bold)
       t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true; t._lar = c.width / c.height
-      mkLabelCache.set(key, t)
+      cache.set(key, t)
     }
     const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, depthWrite: false, transparent: true }))
     const s = hpx || 0.03; spr.scale.set(t._lar * s, s, 1)
@@ -3011,14 +3104,19 @@ export function createGlobeScene(container, quality = {}) {
   //         labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,lat,altKm,name,color?}],
   //         fills:[{p:[[lon,lat]...]（未闭合外环）, color, opacity}]（Polygon 区域填充） }
   let satLayerGroup = null
+  // 卫星层的标注（关联星仰角线的角度 / 星名，每拍随星位整层重建）：贴图走与标记层同一套缓存（cachedCovLabel，
+  // 另开一份表），不再每拍每个标签现画一张画布、上传一次纹理 —— 画法同 makeCovLabel（covLabelCanvas），画面逐像素不变。
+  // 贴图打 _shared，整层拆掉时不随精灵释放；本轮没用到的在 setSatLayer 末尾放掉，层清空时整表放掉
+  const satLabelCache = new Map(), texUsedSat = new Set()
   function clearSatLayer() {
     if (!satLayerGroup) return
-    satLayerGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map) o.material.map.dispose(); o.material.dispose() } })
+    satLayerGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared) o.material.map.dispose(); o.material.dispose() } })
     scene.remove(satLayerGroup); satLayerGroup = null
   }
   function setSatLayer(spec) {
     clearSatLayer()
-    if (!spec) return
+    texUsedSat.clear()
+    if (!spec) { sweepTexCache(satLabelCache, texUsedSat, 0); return }
     const g = new THREE.Group()
     // Polygon 区域填充：lon/lat 平面 earcut 三角化，再按最长边二分递归细分贴球——大三角形的平面弦
     // 会切入地球内部被深度测试吃掉（与折线 densify 同一问题）。细分中点取 lon/lat 线性中点，与边界线
@@ -3070,7 +3168,7 @@ export function createGlobeScene(container, quality = {}) {
       dot.position.copy(llaToVec(d.lat, d.lon, 0).multiplyScalar(1.002)); dot.renderOrder = 11; g.add(dot)   // 1.002：抬离陆地面(1.0004)，斜视角不被地表吃掉
     }
     for (const l of (spec.labels || [])) {
-      const spr = makeCovLabel(l.text, l.hpx, l.color, !!l.bold)
+      const spr = cachedCovLabel(l.text, l.hpx, l.color, !!l.bold, satLabelCache, texUsedSat)
       spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12
       // top：关深度测试（不被球面裁切/遮挡）+ _dir 半球剔除（转到背面由 updateLabels 淡出隐藏），
       // 与国家名/标记文字同一套策略；未标 top 的（如仰角线角度标注）维持原有开深度测试行为。
@@ -3080,10 +3178,11 @@ export function createGlobeScene(container, quality = {}) {
     // 卫星名：显示仰角线的卫星，在其真实位置（轨道高度处）画名称（颜色随该星仰角线色）；不画星点本体
     for (const s of (spec.sats || [])) {
       if (s.lon == null || !Number.isFinite(s.lat) || !s.name || s.labelShow === false) continue
-      const spr = makeCovLabel(s.name, (s.labelSize || 9) / 533, s.nameColor, !!s.labelBold)
+      const spr = cachedCovLabel(s.name, (s.labelSize || 9) / 533, s.nameColor, !!s.labelBold, satLabelCache, texUsedSat)
       spr.position.copy(llaToVec(s.lat, s.lon, s.altKm != null ? s.altKm : 35786)); spr.renderOrder = 14; g.add(spr)
     }
     satLayerGroup = g; scene.add(g)
+    sweepTexCache(satLabelCache, texUsedSat, 0)
   }
 
   // 把视角转到某经纬度正对（覆盖加载后定位用）
@@ -3312,7 +3411,7 @@ export function createGlobeScene(container, quality = {}) {
       const c = document.createElement('canvas'); c.width = c.height = STATION_TEX
       const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t._shared = true
       const img = new Image()
-      img.onload = () => { c.getContext('2d').drawImage(img, 0, 0, STATION_TEX, STATION_TEX); t.needsUpdate = true }
+      img.onload = () => { c.getContext('2d').drawImage(img, 0, 0, STATION_TEX, STATION_TEX); t.needsUpdate = true; invalidate() }
       img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(stationSvg())))
       stationTex = t
     }
@@ -3331,7 +3430,7 @@ export function createGlobeScene(container, quality = {}) {
   function focusSatTexture() {
     if (focusSatTex) return focusSatTex
     focusSatTex = new THREE.Texture(); focusSatTex.colorSpace = THREE.SRGBColorSpace
-    const img = new Image(); img.onload = () => { focusSatTex.image = img; focusSatTex.needsUpdate = true }
+    const img = new Image(); img.onload = () => { focusSatTex.image = img; focusSatTex.needsUpdate = true; invalidate() }
     img.src = 'data:image/svg+xml;base64,' + btoa(FOCUS_SAT_SVG)
     return focusSatTex
   }
@@ -3565,13 +3664,15 @@ export function createGlobeScene(container, quality = {}) {
       mark._dir = pos.clone().normalize()   // 关了 depthTest，背面靠半球剔除隐藏（见 makeNumBadge）
       if (p.id) mark._mk = 'pt:' + p.id     // 挂了模型：按实体层权重与模型图标交叉淡化（见 rescaleMarkers）
       g.add(mark)
-      if (p.id) markerHits.push({ kind: 'point', id: p.id, pos, lat: p.lat, lon: p.lon, px: p.idx ? idxD : ptD })
+      // 符号外廓（与 2D entityGeom 同式）：off = 形体中心在锚点上方多少（图钉＝针尖锚，形心在上），w / h 选中括号宽高各算
+      const eUp0 = p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD, eDn0 = p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD
+      if (p.id) markerHits.push({ kind: 'point', id: p.id, pos, lat: p.lat, lon: p.lon, px: p.idx ? idxD : ptD,
+        off: (eUp0 - eDn0) * 0.5, w: p.idx ? eUp0 + eDn0 : ptD, h: eUp0 + eDn0 })
       // 文字锚点让位：center.y 以精灵自身高度（＝其 _px）为单位，故把字心距离折回该单位。
       // 0.5−0.85=−0.35 就是原来圆点那档；换成大件符号时按其外沿外推，与 2D 同一条公式。
       // iconPx（有模型且模型层此刻会画它时页面才给）：按模型图标的有效外廓让位（没给时一次多余的运算都不做）。
       // 模型底贴锚点：斜视时向上长（上沿 ≤ iconPx）；正俯视时图标以锚点为心（下沿 ≈ iconPx / 2）—— 两头都让开
       const ip = p.iconPx > 0 ? p.iconPx : 0
-      const eUp0 = p.idx ? idxD * BADGE_R : symbolUp(sh) * ptD, eDn0 = p.idx ? idxD * BADGE_R : symbolDown(sh) * ptD
       const eUp = ip ? Math.max(eUp0, ip) : eUp0, eDn = ip ? Math.max(eDn0, 0.5 * ip) : eDn0
       const hD = ptFont * 0.9
       const dU = Math.max(0.85 * ptFont, eUp + ptFont * MK_FONT_K * 0.7)
@@ -3605,7 +3706,7 @@ export function createGlobeScene(container, quality = {}) {
       st.position.copy(pos); st._ar = 1; st._dir = pos.clone().normalize(); st.renderOrder = 15
       if (s.id) st._mk = 'st:' + s.id   // 挂了模型：按实体层权重与模型图标交叉淡化（见 rescaleMarkers）
       g.add(st)
-      if (s.id) markerHits.push({ kind: 'station', id: s.id, pos, lat: s.lat, lon: s.lon, px: Math.max(up0 + down0, half0 * 2), off: (up0 - down0) * 0.5 })
+      if (s.id) markerHits.push({ kind: 'station', id: s.id, pos, lat: s.lat, lon: s.lon, px: Math.max(up0 + down0, half0 * 2), off: (up0 - down0) * 0.5, w: half0 * 2, h: up0 + down0 })
       // 字要让开「符号落在锚点下方的那一截」（址点圆的下半），换算成各自字号的倍数加到 centerY 上
       const eF = stFont * 0.9
       if (s.name) {
@@ -3718,7 +3819,7 @@ export function createGlobeScene(container, quality = {}) {
         }
         // 登记：运动档由 updateVehicles 挪到当前位置；挂了模型时按实体层权重与模型图标交叉淡化（_mk）；拖放命中（entityAtScreen）
         if (tr.id) {
-          spr._tid = tr.id; spr._veh = true; spr._mk = 'tr:' + tr.id
+          spr._tid = tr.id; spr._veh = true; spr._mk = 'tr:' + tr.id; spr._vkind = tr.kind === 'flight' ? 'flight' : 'sea'
           vehSprites.set(tr.id, { spr, name: null })
         }
         g.add(spr)
@@ -4225,7 +4326,7 @@ export function createGlobeScene(container, quality = {}) {
   //   于是「拖游标」与「定时器那一拍」会并发跑两趟 refreshPositions，各自持一次闸。用布尔的话先算完
   //   的那趟一放行，另一趟还在算，出的正是这道闸要防的半拍画面。计数则要等最后一趟收工才放行。
   //   下限钳到 0：万一有不成对的 release，也只是提早放行，不会把闸永久压死。
-  function holdFrames(on) { frameHold = on ? frameHold + 1 : Math.max(0, frameHold - 1) }
+  function holdFrames(on) { frameHold = on ? frameHold + 1 : Math.max(0, frameHold - 1); if (!frameHold) invalidate() }
   function loop(now) {
     if (!running) return   // 已暂停（切到 2D 平面图）：停掉 rAF 链，不再空转渲染被盖住的球面
     raf = requestAnimationFrame(loop)
@@ -4234,9 +4335,11 @@ export function createGlobeScene(container, quality = {}) {
     // 手一动画面就跟，30 fps 的省电档不该让拖动一顿一顿）。未到间隔则跳过本帧（留 1ms 余量避免临界抖动）。
     // 叠加层（模型图标淡入淡出 / 跟随视图里拖局部相机）在动也算 busy。跟随时相机不再以地心为靶，
     // 「半径 vs zoomTarget」那一项没有意义，只看叠加层自己报的。不接叠加层时与改动前逐字相同。
-    const busy = followDriver ? (!!(overlay && overlay.busy()) || !!(entOverlay && entOverlay.busy()))
-      : (dragging || camMoved || Math.abs(camera.position.distanceTo(controls.target) - zoomTarget) > 1e-4 || !!(overlay && overlay.busy()) || !!(entOverlay && entOverlay.busy()))
-    if (fpsCap > 0 && !busy && now && (now - lastFrameT) < (1000 / fpsCap - 1)) return
+    const camBusy = !followDriver && (dragging || camMoved || Math.abs(camera.position.distanceTo(controls.target) - zoomTarget) > 1e-4)
+    const busy = camBusy || !!(overlay && overlay.busy()) || !!(entOverlay && entOverlay.busy())
+    // 窗口失焦：本窗相机交互之外一律按 ≤ BLUR_FPS 节流（叠加层淡入、跟随、流动虚线、时钟每拍都算在内）
+    if (winBlur && !camBusy) { if (now && (now - lastFrameT) < (1000 / (fpsCap > 0 ? Math.min(fpsCap, BLUR_FPS) : BLUR_FPS) - 1)) return }
+    else if (fpsCap > 0 && !busy && now && (now - lastFrameT) < (1000 / fpsCap - 1)) return
     lastFrameT = now || 0
     // dt 取【真正出帧】之间的间隔并钳到 100 ms —— 掉帧不该补出一大跳
     const tNow = now || nowMs()
@@ -4269,6 +4372,12 @@ export function createGlobeScene(container, quality = {}) {
       }
       syncNear(cur)   // 每帧无条件跟一次（内部等值即返回）：恢复视图/直接 setZoom 落在贴地档时也不会漏
     }
+    // 按需出帧：上面的相机递推照每帧走（阻尼残量、dt 序列与连续出帧时逐帧相同），下面的整帧更新 + 绘制只在
+    // 置脏 / 相机在动 / 有连续动画（跟随、流动虚线、瓦片补片、叠加层淡入淡出）/ 1 Hz 兜底到点时才做
+    const live = busy || camMoved || !!followDriver || linkFlowMats.length > 0 ||
+      (pendingTiles && !!imgSet && imageryOn && !!tileGroup) || (tNow - lastRenderT) >= 1000
+    if (!needsRender && !live) return
+    needsRender = false
     // 卫星点随缩放联动：基准距离上 SAT_POINT_PX，拉近变大、拉远变小；下限 0.5×/上限 4× 钳制保证可见且不过大
     if (satPoints) satPoints.material.size = SAT_POINT_PX * Math.max(0.5, Math.min(4, LABEL_REF_DIST / cur))
     // 高亮环：贴图点层本身就是固定屏幕像素 + 深度测试遮挡，逐帧无事可做（原来是每颗一次反缩放 + 遮挡射线）
@@ -4411,47 +4520,66 @@ export function createGlobeScene(container, quality = {}) {
     }
     return null
   }
-  // ---- 拖放落点高亮：屏幕恒定的环（精灵常驻复用；每帧按目标实体【当前】屏幕位置摆，见 placeDropRing）----
-  let dropHl = null, dropRing = null
-  function dropRingTexture() {
-    const c = document.createElement('canvas'); c.width = c.height = 128
+  // ---- 拖放落点 / 选中高亮（四角括号）：屏幕恒定大小（精灵常驻复用；每帧按目标实体【当前】屏幕位置摆，见 placeDropRing）----
+  // 贴图按【实际屏幕尺寸 × DPR】现画（画法与 2D 同一副，见 viz/selMark.js）：描边是 1–2px 的细线，
+  // 固定贴图再缩放会糊、粗细随大小飘；框大小 / 颜色 / DPR 变了才重画（框半边长取整像素，重画很少）
+  let dropHl = null, dropRing = null, dropRingKey = '', dropRingW = 0, dropRingH = 0
+  function dropRingTexture(hw, hh, color) {
+    const dpr = Math.min(3, Math.max(1, window.devicePixelRatio || 1))
+    const cw = 2 * (hw + SEL_MARK_PAD), ch = 2 * (hh + SEL_MARK_PAD)
+    const key = hw + '|' + hh + '|' + color + '|' + dpr
+    if (key === dropRingKey) return
+    const c = document.createElement('canvas'); c.width = Math.ceil(cw * dpr); c.height = Math.ceil(ch * dpr)
     const x = c.getContext('2d')
-    // 外晕 + 实环 + 内细环：浅底 / 深底上都认得出（颜色由材质染：贴图白色）
-    const g = x.createRadialGradient(64, 64, 44, 64, 64, 63)
-    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.55, 'rgba(255,255,255,0.28)'); g.addColorStop(1, 'rgba(255,255,255,0)')
-    x.fillStyle = g; x.beginPath(); x.arc(64, 64, 63, 0, Math.PI * 2); x.fill()
-    x.lineWidth = 7; x.strokeStyle = '#ffffff'; x.beginPath(); x.arc(64, 64, 52, 0, Math.PI * 2); x.stroke()
-    x.lineWidth = 2; x.strokeStyle = 'rgba(255,255,255,0.7)'; x.beginPath(); x.arc(64, 64, 43, 0, Math.PI * 2); x.stroke()
+    x.scale(c.width / cw, c.height / ch)
+    strokeSelBrackets(x, cw / 2, ch / 2, hw, hh, color)
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace
-    return t
+    if (dropRing.material.map) dropRing.material.map.dispose()
+    dropRing.material.map = t; dropRing.material.needsUpdate = true
+    dropRingKey = key; dropRingW = cw; dropRingH = ch
   }
-  // hit = entityAtScreen 的结果或 null；o.color = 描边色（缺省 #4da3ff，页面传 accent）
+  // hit = entityAtScreen 的结果或 null；o.color = 括号色（缺省 SEL_MARK_COLOR）
   function setDropHighlight(hit, o) {
     if (!hit) { dropHl = null; if (dropRing) dropRing.visible = false; return }
-    dropHl = { kind: hit.kind, id: hit.id, idx: hit.idx, px: Number(hit.px) > 0 ? Number(hit.px) : 24, pos: Array.isArray(hit.pos) ? hit.pos.slice() : null }
+    dropHl = { kind: hit.kind, id: hit.id, idx: hit.idx, px: Number(hit.px) > 0 ? Number(hit.px) : 24, pos: Array.isArray(hit.pos) ? hit.pos.slice() : null, color: (o && o.color) || SEL_MARK_COLOR }
     if (!dropRing) {
-      dropRing = new THREE.Sprite(new THREE.SpriteMaterial({ map: dropRingTexture(), depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false }))
+      dropRing = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false }))
       dropRing.renderOrder = 20; dropRing.frustumCulled = false; dropRing.visible = false
       scene.add(dropRing)
     }
-    dropRing.material.color.set((o && o.color) || '#4da3ff')
     placeDropRing()
   }
-  // 目标实体此刻的屏幕中心与像素直径：模型图标画着就按图标（实体层屏幕缓存），否则按精灵（站符号抓形体中心）
+  // 目标实体此刻的屏幕外接框（中心 cx / cy + 宽高 w / h，宽高各算 —— 括号贴它）：模型图标画着就按模型包围盒八角投影
+  // （实体层 screenBoxOf；取不到回落包围圆直径），否则按精灵（站符号按外廓、载具剪影按转角后的外接框）
   function dropTargetScreen(r) {
     const h = dropHl, zoomK = LABEL_REF_DIST / zoomDist()
     const key = h.kind === 'station' ? 'st:' + h.id : (h.kind === 'point' ? 'pt:' + h.id : (h.kind === 'vehicle' ? 'tr:' + h.id : ''))
     const so = key && entOverlay && entOverlay.screenOf ? entOverlay.screenOf(key) : null
-    let P = null, cx = 0, cy = 0, px = h.px
-    if (h.kind === 'vehicle') { const e = vehSprites.get(h.id); if (e && e.spr) P = e.spr.position }
+    let P = null, spr = null, cx = 0, cy = 0, w = h.px, hgt = h.px
+    if (h.kind === 'vehicle') { const e = vehSprites.get(h.id); if (e && e.spr) { spr = e.spr; P = spr.position } }
     else if (h.kind === 'station' || h.kind === 'point') {
-      for (const m of markerHits) if (m.kind === h.kind && m.id === h.id) { P = m.pos; if (!so) { const s = projPx(P, r); cx = s.x; cy = s.y - (m.off || 0) * zoomK; px = (m.px || 6) * zoomK } break }
+      for (const m of markerHits) {
+        if (m.kind !== h.kind || m.id !== h.id) continue
+        P = m.pos
+        if (!so) { const s = projPx(P, r); cx = s.x; cy = s.y - (m.off || 0) * zoomK; w = (m.w || m.px || 6) * zoomK; hgt = (m.h || m.px || 6) * zoomK }
+        break
+      }
     }
     if (!P && h.pos) P = _ep.set(h.pos[0], h.pos[1], h.pos[2]).clone()
     if (!P) return null
-    if (so) { cx = so[0]; cy = so[1]; px = so[2] * 2 }
-    else if (h.kind === 'vehicle' || h.kind === 'sat') { const s = projPx(P, r); cx = s.x; cy = s.y; if (h.kind === 'vehicle') px = (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) * zoomK }
-    return { P, cx, cy, px }
+    if (so) {
+      const b = entOverlay.screenBoxOf ? entOverlay.screenBoxOf(key) : null
+      if (b) { cx = (b[0] + b[2]) / 2; cy = (b[1] + b[3]) / 2; w = b[2] - b[0]; hgt = b[3] - b[1] }
+      else { cx = so[0]; cy = so[1]; w = hgt = so[2] * 2 }
+    } else if (h.kind === 'vehicle' || h.kind === 'sat') {
+      const s = projPx(P, r); cx = s.x; cy = s.y
+      if (h.kind === 'vehicle') {
+        // 精灵 material.rotation 逆时针为正，剪影外接框按顺时针口径（与 2D drawVehicle 同参）
+        const vb = vehicleBox(spr && spr._vkind, (markCfg.tjIconPx != null ? markCfg.tjIconPx : 26) * zoomK, spr ? -spr.material.rotation : 0)
+        cx += vb.cx; cy += vb.cy; w = vb.w; hgt = vb.h
+      }
+    }
+    return { P, cx, cy, w, h: hgt }
   }
   function placeDropRing() {
     if (!dropRing) return
@@ -4463,10 +4591,10 @@ export function createGlobeScene(container, quality = {}) {
     _ep.copy(t.P).project(camera)
     _ep.set(t.cx / curW * 2 - 1, 1 - t.cy / curH * 2, _ep.z).unproject(camera)
     dropRing.position.copy(_ep)
-    // sizeAttenuation:false 的精灵：屏幕像素 = scale · P11 · H / 2；贴图里的实环直径占整张 104 / 128
-    const d = (Math.max(t.px, 24) + 12) * (128 / 104)
-    const s = d * 2 * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, curH)
-    dropRing.scale.set(s, s, 1)
+    dropRingTexture(Math.round(selHalf(t.w)), Math.round(selHalf(t.h)), dropHl.color)
+    // sizeAttenuation:false 的精灵：屏幕像素 = scale · P11 · H / 2；整张贴图 = dropRingW × dropRingH 个 CSS 像素
+    const k = 2 * Math.tan(camera.fov * Math.PI / 360) / Math.max(1, curH)
+    dropRing.scale.set(dropRingW * k, dropRingH * k, 1)
     dropRing.visible = true
   }
   // 跟随锚点变了、本拍里又没被页面重推的那几路（见 followA 那段）：出帧前按上次的入参、新锚点补建一次
@@ -4477,6 +4605,7 @@ export function createGlobeScene(container, quality = {}) {
     if (anchoredDirty.shell) setShellRays(shellRayList)
   }
   function renderFrame() {
+    lastRenderT = nowMs()
     if (anchoredDirty.links || anchoredDirty.sel || anchoredDirty.cov || anchoredDirty.shell) syncAnchored()
     if (linkIconEnds.length && linkIconEdge) syncLinkIcons()   // 图上链路：画着模型图标的星端，箭头让图标此刻的轮廓（叠加层本帧 update 之后）
     const ov = overlay && !overlay.isEmpty() ? overlay : null
@@ -4551,22 +4680,77 @@ export function createGlobeScene(container, quality = {}) {
       reportZoom()
     }
   }
+  // 构造时的底图档还没载进来（见 basemapPending）：出帧闸多压一道、画布先清成背景色（与舞台底色同色，不露黑），
+  // 那一档到了按它一次建成陆地 / 边界线 / 国名再放行。载入失败按 10m 建（同原来 setMapDetail 失败时「保持 10m」的口径）
+  let destroyed = false
+  function clearToBg() {
+    const c0 = renderer.getClearColor(new THREE.Color()), a0 = renderer.getClearAlpha()
+    renderer.setClearColor(scene.background, 1); renderer.clear(true, true, true); renderer.setClearColor(c0, a0)
+  }
+  if (basemapPending) {
+    frameHold++
+    clearToBg()
+    ensureDetail(wantDetail0).catch((e) => {
+      console.warn(wantDetail0 + ' 底图加载失败，按 10m 建', e)
+      if (mapDetail0 === wantDetail0) mapDetail0 = '10m'
+    }).then(() => {
+      if (destroyed || !basemapPending) return
+      basemapPending = false
+      rebuildBasemap()
+      frameHold = Math.max(0, frameHold - 1)
+      invalidate()
+    })
+  }
   loop()
   // 渲染循环暂停/恢复（切 2D/3D 时由页面调用）：切到 2D 平面图后 3D 画布被盖住，仍每帧渲染整球
   // + 覆盖大网格纯属浪费主线程/GPU，还拖慢 2D。pause 停掉 rAF 链；resume 立即补画一帧并续帧。
-  function pause() { if (!running) return; running = false; cancelAnimationFrame(raf); raf = 0 }
-  function resume() { if (running) return; running = true; loop() }
+  // 暂停时帧缓冲缩到 1×1（平面图画布不透明、整个盖住球面，看不见；视频出帧期间不缩），resume 先复原尺寸再同步补画一帧。
+  // pause(shrinkAfterMs)：省略 / ≤0 = 当场缩缓冲；>0 = 只停 rAF，缩缓冲推迟到 shrinkAfterMs 之后再隔一帧 ——
+  //   setSize 会当场清空画布，盖在上面的平面图若还在淡入（opacity 过渡），缩早了就从黑里淡入。推迟期间 resume 则取消。
+  // resume：缓冲刚复原（setSize 已清空画布）而出帧闸正压着（播放某拍在等聚焦几何 / 底图档未到）时，loop 不会出帧 →
+  //   当场补一帧（底图档未到则同 resize 清成背景色），不让切回 3D 黑一段。
+  let shrinkTimer = 0, shrinkRaf = 0
+  function cancelDeferredShrink() {
+    if (shrinkTimer) { clearTimeout(shrinkTimer); shrinkTimer = 0 }
+    if (shrinkRaf) { cancelAnimationFrame(shrinkRaf); shrinkRaf = 0 }
+  }
+  function pause(shrinkAfterMs) {
+    if (!running) return
+    running = false; cancelAnimationFrame(raf); raf = 0
+    cancelDeferredShrink()
+    const ms = Number(shrinkAfterMs)
+    if (!(ms > 0)) { shrinkBuffers(); return }
+    shrinkTimer = setTimeout(() => {
+      shrinkTimer = 0
+      shrinkRaf = requestAnimationFrame(() => { shrinkRaf = 0; if (!running && !destroyed) shrinkBuffers() })
+    }, ms)
+  }
+  function resume() {
+    if (running) return
+    running = true
+    cancelDeferredShrink()
+    const wasShrunk = shrunk
+    unshrinkBuffers(); invalidate()
+    if (wasShrunk && frameHold && !capture) { if (basemapPending) clearToBg(); else renderFrame() }
+    loop()
+  }
+  function shrinkBuffers() { if (shrunk || capture) return; shrunk = true; renderer.setSize(1, 1, false) }
+  function unshrinkBuffers() { if (!shrunk) return; shrunk = false; renderer.setSize(curW, curH, false) }
 
   function resize() {
     if (capture) return   // 视频出帧中：尺寸由 beginCapture 定死，容器尺寸变了等 endCapture 时一并补上
     const ww = container.clientWidth, hh = container.clientHeight
     if (!ww || !hh) return
     curW = ww; curH = hh
-    camera.aspect = ww / hh; camera.updateProjectionMatrix(); renderer.setSize(ww, hh, false)   // false：不写内联样式，见构造处注释
+    camera.aspect = ww / hh; camera.updateProjectionMatrix()
+    if (!shrunk) renderer.setSize(ww, hh, false)   // false：不写内联样式，见构造处注释（2D 期间缓冲留 1×1，resume 时按新尺寸复原）
     for (const m of lineMats) m.resolution.set(ww, hh)   // 粗线宽度依赖分辨率
     if (overlay) overlay.update(0, camera, curW, curH)   // 局部相机的 aspect / 叠加层线宽分辨率跟着换
     if (entOverlay) entOverlay.update(0, camera, curW, curH, zoomDist())   // 实体图标按像素定尺：画布高变了跟着重算
     axesLayer.update(camera, curH, !!followDriver)   // 坐标轴同理（箭头像素尺度 / 字标排位按新的 curH）
+    invalidate()
+    if (shrunk) return
+    if (basemapPending) { clearToBg(); return }   // 底图档未到：不出缺陆地的帧，清成背景色等它
     renderFrame()   // 立即补画一帧，避免 setSize 清空缓冲后等到下帧才重绘 → 黑一下
   }
   // 出图：把渲染分辨率临时抬到 factor 倍取一帧，返回 PNG 字节。机位/图层/主题一概不动 → 所见即所得。
@@ -4585,6 +4769,7 @@ export function createGlobeScene(container, quality = {}) {
   async function snapshot(factor, targetW) {
     const cv = renderer.domElement
     const gl = renderer.getContext()
+    unshrinkBuffers()   // 2D 期间（缓冲缩成 1×1）也能出 3D 图：先复原，出完若仍暂停再缩回去（见 finally）
     // 先按驱动的帧缓冲上限收一道：超过 MAX_RENDERBUFFER_SIZE / MAX_TEXTURE_SIZE 必然分配失败
     const maxDim = Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 8192, gl.getParameter(gl.MAX_TEXTURE_SIZE) || 8192)
     const req = targetW > 0 ? targetW / Math.max(1, curW) : (factor || 4)
@@ -4636,7 +4821,8 @@ export function createGlobeScene(container, quality = {}) {
     } finally {
       renderer.setPixelRatio(prev)
       if (overlay && overlay.setLodScale) overlay.setLodScale(1)
-      renderFrame()   // 改倍率会清空缓冲：立刻补画一帧，避免屏幕闪一下黑
+      if (running) renderFrame()   // 改倍率会清空缓冲：立刻补画一帧，避免屏幕闪一下黑
+      else shrinkBuffers()
     }
     const blob = await cap
     return { bytes: new Uint8Array(await blob.arrayBuffer()), w, h, factor: s }
@@ -4659,6 +4845,7 @@ export function createGlobeScene(container, quality = {}) {
   let capture = null
   function beginCapture(o) {
     if (capture) endCapture()
+    shrunk = false   // 出帧期间尺寸由下面定死（2D 期间缩成 1×1 的缓冲随之放开），endCapture 若仍暂停再缩回去
     const cssW = Math.max(1, Number(o.cssW) || curW), cssH = Math.max(1, Number(o.cssH) || curH), pr = Math.max(0.25, Number(o.pixelRatio) || 1)
     const v = o.view && o.view.w > 0 && o.view.h > 0 ? o.view : null
     capture = { prevPR: renderer.getPixelRatio(), scissor0: null }
@@ -4726,11 +4913,16 @@ export function createGlobeScene(container, quality = {}) {
     renderer.setPixelRatio(c.prevPR)
     if (overlay && overlay.setLodScale) overlay.setLodScale(1)
     frameHold = Math.max(0, frameHold - 1)
+    invalidate()
     resize()
+    if (!running) shrinkBuffers()
   }
 
   function destroy() {
+    destroyed = true
     offPov()            // 退订主权解算层的广播：不退的话卸载后的场景仍会被换视角触发重建
+    offRedraw()         // 同理：退订按需出帧的重画总线、摘掉窗口焦点监听
+    if (typeof window !== 'undefined') { window.removeEventListener('blur', onWinBlur); window.removeEventListener('focus', onWinFocus) }
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走
@@ -4747,12 +4939,12 @@ export function createGlobeScene(container, quality = {}) {
     followSaved = null; overlay = null
     // 实体模型层同理归页面所有（页面先 dispose）；这里断开引用、收掉落点高亮环
     entOverlay = null; entProvider = null; dropHl = null; vehSprites.clear()
-    if (dropRing) { scene.remove(dropRing); if (dropRing.material.map) dropRing.material.map.dispose(); dropRing.material.dispose(); dropRing = null }
-    cancelAnimationFrame(raf); controls.dispose(); flushRetiredMats(); for (const t of mkLabelCache.values()) t.dispose(); mkLabelCache.clear(); renderer.dispose()
+    if (dropRing) { scene.remove(dropRing); if (dropRing.material.map) dropRing.material.map.dispose(); dropRing.material.dispose(); dropRing = null; dropRingKey = '' }
+    cancelAnimationFrame(raf); controls.dispose(); flushRetiredMats(); for (const t of mkLabelCache.values()) t.dispose(); mkLabelCache.clear(); for (const t of satLabelCache.values()) t.dispose(); satLabelCache.clear(); renderer.dispose()
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
 
-  return {
+  const api = {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, setFollowOrbit, setFollowAnchor, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCoverageLineAlpha, restyleCoverageLines, setCovGrid, clearCovGrid, setCovGridAlpha,
@@ -4792,6 +4984,9 @@ export function createGlobeScene(container, quality = {}) {
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     setBeamDragHit: (fn) => { beamDragHit = typeof fn === 'function' ? fn : null }, setLabelDragHit: (fn) => { labelDragHit = typeof fn === 'function' ? fn : null },
     faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
+    isPaused: () => !running,   // 切到 2D 平面图后暂停着：页面据此省掉只给 3D 用的每拍计算（点云星位）
+    // 覆盖层标注（波束名 / 数值 / 峰值）烘进贴图的套边签名：变了说明已画着的标注该重烘（GRD 层「只重建动了的天线」据此判能不能留旧层）
+    covLabelStyle: () => curHalo() + '|' + curHaloK(),
     beginCapture, captureFrame, endCapture, isCapturing: () => !!capture,
     // 显卡上限（视频取景框「只出一块」时视口按整舞台铺开，不能超过 MAX_VIEWPORT_DIMS）
     glLimits: () => { const gl = renderer.getContext(), v = gl.getParameter(gl.MAX_VIEWPORT_DIMS); return { maxViewport: v ? [v[0], v[1]] : [16384, 16384] } },
@@ -4821,6 +5016,18 @@ export function createGlobeScene(container, quality = {}) {
         camera.position.set(v.x / d * zoomTarget, v.y / d * zoomTarget, v.z / d * zoomTarget)
         controls.update()
       }
-    }
+    },
+    invalidate   // 按需出帧：页面 / 验证台自己动了场景之外的东西、要求补画一帧
   }
+  // 按需出帧：对外接口一调用就置脏 —— 页面改了什么，下一帧就画出来，不必逐个函数记「这个改了画面」。
+  // 只读 / 拾取 / 自己出帧的成员除外：它们不改画面，有的还会被高频调用（每次都逼出一帧就失去了按需的意义）。
+  const NO_DIRTY = new Set(['lonLatAt', 'screenOfLL', 'imageryStats', 'viewMetrics', 'glLimits', 'getZoom', 'getView', '_spaceFx',
+    'isFollowing', 'getCamera', 'getRenderInfo', 'pickSatAt', 'pickExtraAt', 'entityAtScreen', 'isCapturing',
+    'snapshot', 'captureFrame', 'pause', 'resume', 'destroy', 'invalidate', 'isPaused', 'covLabelStyle'])
+  for (const k of Object.keys(api)) {
+    const f = api[k]
+    if (typeof f !== 'function' || NO_DIRTY.has(k)) continue
+    api[k] = function (...args) { needsRender = true; return f.apply(this, args) }
+  }
+  return api
 }

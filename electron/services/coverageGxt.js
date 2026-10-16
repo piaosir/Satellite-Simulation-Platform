@@ -149,7 +149,7 @@ module.exports = function createCoverageGxt(saveDirFn, opts) {
   }
 
   // 批量导入：items=[{ satName, lon, beamName, type, band, rawText, sourceName, json }]。
-  // 按 satName 自动找/建卫星，按 (beamName,type) 找/建波束（同名同类型则覆盖重导），一次写盘。返回 { sats, beams, total }。
+  // 按 satName 自动找/建卫星，按 (beamName,type,band) 找/建波束（同名同类型同频段则覆盖重导），一次写盘。返回 { sats, beams, total }。
   function importBatch(items) {
     const idx = readIndex()
     const byName = new Map()
@@ -162,7 +162,10 @@ module.exports = function createCoverageGxt(saveDirFn, opts) {
       else if (sat.lon == null && Number.isFinite(it.lon)) sat.lon = it.lon
       const beamNm = (it.beamName || '波束').toString().trim() || '波束'
       const type = it.type || 'EIRP'
-      let beam = sat.beams.find((b) => b.name === beamNm && (b.type || '') === type)
+      // 认波束 = 名 + 类型 + 频段：同星 C / Ku 同名波束各自成条；任一侧频段为空时按通配（老库无频段的照旧覆盖重导），频段精确相等的优先
+      const band = it.band || ''
+      const same = (b) => b.name === beamNm && (b.type || '') === type
+      let beam = (band && sat.beams.find((b) => same(b) && b.band === band)) || sat.beams.find((b) => same(b) && (!band || !b.band || b.band === band))
       if (!beam) { beam = { id: genId(), name: beamNm, type, band: it.band || '' }; sat.beams.push(beam); beamCount++ }
       const sub = path.join(dir(), clean(sat.id)); fs.mkdirSync(sub, { recursive: true })
       const jsonRel = `${clean(sat.id)}/${clean(beam.id)}.json`
@@ -175,7 +178,7 @@ module.exports = function createCoverageGxt(saveDirFn, opts) {
       beam.contours = it.json && it.json.contours ? it.json.contours.length : 0
       beam.gains = it.json && it.json.contours ? [...new Set(it.json.contours.map((c) => c.g))].sort((a, b) => a - b) : []
       beam.lon = it.json && Number.isFinite(it.json.lon) ? it.json.lon : beam.lon
-      beam.band = it.band != null ? it.band : beam.band
+      beam.band = band || beam.band || ''   // 无频段来源按通配认到的波束：不抹掉已有频段
       beam.type = type
       beam.sourceName = it.sourceName || null
       beam.sourceFormat = it.sourceFormat || (it.rawText != null ? 'gxt' : null)

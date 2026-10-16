@@ -1,0 +1,9 @@
+//! id: geojson
+//! name: ⟪GeoJSON · WGS-84|GeoJSON · WGS-84⟫
+//! ext: geojson
+//zh GeoJSON（RFC 7946）：等值线 → Polygon（外环逆时针），波束中心 / 标记 → Point，属性含卫星、波束、电平与颜色。
+//en GeoJSON (RFC 7946): contours → Polygon (counter-clockwise exterior), peaks / markers → Point, with satellite, beam, level and color properties.
+//zh 选项：contours / peaks / polygons / markers / trajectories 分别控制各类要素是否输出，digits 为坐标小数位（缺省 6）。
+//en Options: contours / peaks / polygons / markers / trajectories toggle each kind, digits = coordinate decimals (default 6).
+
+return file(`${data.meta.title}.geojson`, geojson(data, { digits: 6, trajectories: true }))

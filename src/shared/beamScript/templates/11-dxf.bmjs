@@ -1,0 +1,40 @@
+//! id: dxf
+//! name: ⟪DXF · AutoCAD R12|DXF · AutoCAD R12⟫
+//! ext: dxf
+//zh AutoCAD R12 ASCII DXF：每档等值线输出为一条闭合多段线，按「卫星_波束_电平」分图层，电平值标注于环的最北点。
+//en AutoCAD R12 ASCII DXF: one closed polyline per contour, layered by "satellite_beam_level", level text at each ring's northernmost vertex.
+//zh LOCAL_PLANE = true 时以覆盖中心为原点转换为局部平面坐标（m）；false 时直接输出经纬度（°）。
+//en LOCAL_PLANE = true converts to a local plane in metres centred on the coverage; false writes degrees.
+
+const LOCAL_PLANE = false
+const bb = geo.bbox(data)
+if (!bb) return console.warn('⟪暂无可导出的内容|Nothing to export⟫')
+const lon0 = (bb[0] + bb[2]) / 2, lat0 = (bb[1] + bb[3]) / 2
+const kx = 111320 * Math.cos(lat0 * Math.PI / 180), ky = 110574
+const P = ([lon, lat]) => (LOCAL_PLANE ? [(lon - lon0) * kx, (lat - lat0) * ky] : [lon, lat])
+const D = LOCAL_PLANE ? 2 : 6
+const TEXT_H = LOCAL_PLANE ? 20000 : 0.2
+
+// ⟪R12 图层名仅支持 ASCII 字母、数字及 _ - $，最长 31 个字符|R12 layer names allow only ASCII letters, digits and _ - $, up to 31 characters⟫
+const layerName = (...parts) => parts.join('_').replace(/[^A-Za-z0-9_$-]+/g, '_').replace(/_+/g, '_').slice(0, 31) || 'LAYER'
+const out = ['0', 'SECTION', '2', 'ENTITIES']
+const polyline = (layer, pts) => {
+  out.push('0', 'POLYLINE', '8', layer, '66', '1', '70', '1')
+  for (const q of pts) { const [x, y] = P(q); out.push('0', 'VERTEX', '8', layer, '10', fmt(x, D), '20', fmt(y, D), '30', '0') }
+  out.push('0', 'SEQEND', '8', layer)
+}
+const text = (layer, q, s) => { const [x, y] = P(q); out.push('0', 'TEXT', '8', layer, '10', fmt(x, D), '20', fmt(y, D), '30', '0', '40', String(TEXT_H), '1', s) }
+
+data.beams.forEach((b, bi) => {
+  for (const c of b.contours) {
+    const layer = layerName(b.satellite || 'SAT', b.name || `B${bi + 1}`, String(c.level))
+    const ring = geo.open(c.points)
+    polyline(layer, ring)
+    const top = ring.reduce((m, q) => (q[1] > m[1] ? q : m), ring[0])
+    text(layer, top, String(c.level))
+  }
+})
+for (const pg of data.polygons) polyline(layerName('POLYGON', pg.name), pg.points)
+
+out.push('0', 'ENDSEC', '0', 'EOF')
+return file(`${data.meta.title}.dxf`, out.join('\n') + '\n', { eol: 'crlf' })

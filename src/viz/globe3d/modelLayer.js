@@ -68,6 +68,7 @@ import { byLang, curLang } from '../../shared/i18n/lang.js'
 import { isSoftwareRenderer } from './spaceFx.js'
 import { createIconBatch, EARTH_R } from './iconBatch.js'
 import { FOLLOW_ICON_K } from './zoomScale.js'
+import { requestRedraw, redrawOnCall } from './redraw.js'   // 地球场景按需出帧：页面直接调本层 / 模型异步挂上时请它补画
 
 const RE_M = 6371000              // 场景 1 单位 = 6371 km（与 focusLanes.RE 同值）
 const FADE_S = 0.3
@@ -1170,6 +1171,7 @@ export function createModelLayer(o = {}) {
       if (gpu) gpu.track(slot.mount.holder)
       followRoot.add(slot.mount.holder)
       fitFollow()
+      requestRedraw()
       return true
     }
     const go = async () => {
@@ -1307,6 +1309,7 @@ export function createModelLayer(o = {}) {
       trackSun(s.mount, s.q, sunL)
       if (gpu) gpu.track(s.mount.holder)
       othersRoot.add(s.mount.holder)
+      requestRedraw()
     })
   }
   // 某个模型刚下载好：当时没有任何可用档、只画了点的槽位重取一次
@@ -2071,5 +2074,7 @@ export function createModelLayer(o = {}) {
       lineMats.clear()
     }
   }
-  return api
+  // 按需出帧：页面直接调本层（喂图标、改样式、跟随）时地球场景收不到置脏 —— 改画面的接口调用后请求补画一帧。
+  // 读数 / 每帧被场景问的那几个（iconEdgePx 在出帧中途被问）不算，否则每帧都逼出下一帧
+  return redrawOnCall(api, new Set(['followDriver', 'iconEdgePx', '_iconEdgeState', 'isFollowing', 'followKey', 'getFollowZoom', 'stats', '_localCamera', '_nearLinks', '_sunL', 'dispose']))
 }

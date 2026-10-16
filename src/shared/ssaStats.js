@@ -33,12 +33,17 @@ export const REGIME_ORDER = ['LEO', 'MEO', 'GEO', 'IGSO', 'HEO', '—']
 // GROUP 由 CelesTrak 人工维护（含改名星、含不按前缀命名的星），这里只认名字，
 // 因此「在轨 / 活跃」列与官方 GROUP 计数可能差几颗；报告里这几列的口径就是名称前缀。
 // 顺序即匹配序，一颗星只归第一个命中的星座（防重复计数）。
+// ★ 星座成员只认【载荷】（见 constKeyOfRow）：编目里「IRIDIUM 33 DEB」这类名字带星座前缀的碎片
+//   有 684 条（2009 年碰撞），按名字全计的话铱星「累计发射」印成 859。
+// ★ 星历一侧按【编目名】归类（见 constKeyOfGp）：GLONASS 的星历名是「COSMOS 2433 (720)」，
+//   编目名才是「COSMOS 2433 [GLONASS-M]」，按星历名归类星历颗数恒为 0。
+// ★ Galileo 只认 GSAT0nnn：印度的 GSAT-7 / GSAT-30 一族同样以 GSAT 起头（真编目 22 颗）。
 export const CONST_PATTERNS = [
   { key: 'starlink', re: /^STARLINK/ },
   { key: 'oneweb', re: /^ONEWEB/ },
   { key: 'kuiper', re: /^KUIPER/ },
   { key: 'qianfan', re: /^QIANFAN/ },
-  { key: 'guowang', re: /^HULIANWANG/ },
+  { key: 'guowang', re: /^(HULIANWANG|GUOWANG)/ },
   { key: 'iridium', re: /^IRIDIUM/ },
   { key: 'globalstar', re: /^GLOBALSTAR/ },
   { key: 'planet', re: /^(FLOCK|SKYSAT|PELICAN)/ },
@@ -46,7 +51,7 @@ export const CONST_PATTERNS = [
   { key: 'o3b', re: /^O3B/ },
   { key: 'gps', re: /^(NAVSTAR|GPS)/ },
   { key: 'beidou', re: /^BEIDOU/ },
-  { key: 'galileo', re: /^GSAT/ },
+  { key: 'galileo', re: /^GSAT0\d{3}/ },
   { key: 'glonass', re: /^COSMOS.*GLONASS|^GLONASS/ }
 ]
 
@@ -73,6 +78,16 @@ export function asOfMs(asOf) {
   if (fin(asOf)) return asOf
   const t = Date.parse(String(asOf || ''))
   return Number.isFinite(t) ? t : NaN
+}
+
+/** 「近 N 天」窗口的起点（毫秒）：基准时刻先归到它所在的 UTC 零点再往前数 N 天。
+ *  ★ 全模块只此一处（近期明细、星座表的近 N 天 / 近 365 天、卫星组的近期入轨）：
+ *    直接 t − N×24h 会落在当天某个钟点上，同一天上午与下午生成的报告差出好几条，
+ *    而且第 5 章与第 6 章各算各的就会一边 19 一边 0（真编目 2026-10-15：千帆）。 */
+export function windowStartMs(t, days) {
+  if (!fin(t)) return NaN
+  const d = new Date(t)
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - days * DAY_MS
 }
 
 // 月序号：以 1957-01 为 0 的连续月编号（发射 / 陨落序列、在轨累计都按它对齐）
@@ -159,6 +174,49 @@ export function parseSatcatCsv(text) {
     })
   }
   return out
+}
+
+/**
+ * 把编目倒推到基准时刻 t（ms）：之后才发射的行、以及编号 ≥ catalogCutNorad 的碎片去掉（那一刻还不存在 /
+ * 尚未编目）；之后才陨落的行按在轨计 ——
+ * 清掉 DECAY_DATE、IMP 改回 ORB、状态码 D（已陨落）改成 ?（那一刻的运行状态编目里查不到）。
+ * 其余字段（类型 / 所有者 / 根数）取最新编目值。基准时刻就是「现在」时没有任何行要改，【原样返回同一个数组】
+ * （下游按数组身份做的缓存因此照常命中）。星历侧（GP）不在这里：历史星历取不到，按最新的用，判据表写明。
+ */
+export function backdateRows(rows, t) {
+  const list = Array.isArray(rows) ? rows : []
+  if (!fin(t)) return list
+  // ★ 碎片的 LAUNCH_DATE 是母体发射日，按它去留会把基准之后才解体 / 编目的碎片留下（2026-09 YAOGAN-50 02
+  //   解体的 72 条在回溯到 08-31 时全进了「近 30 天新编目碎片」）。编目时刻用 NORAD 近似（同 recentDebris）：
+  //   基准之后首个发射对象的编号即截断，编号不小于它的 DEB 当时尚未编目。
+  const cut = catalogCutNorad(list, t)
+  let out = null
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i]
+    const lm = dayMs(r.launchDate)
+    const dm = dayMs(r.decayDate)
+    const late = (fin(lm) && lm > t) || (r.type === 'DEB' && Number(r.norad) >= cut)
+    const alive = !late && fin(dm) && dm > t
+    if (!late && !alive) { if (out) out.push(r); continue }
+    if (!out) out = list.slice(0, i)
+    if (alive) out.push(Object.assign({}, r, { decayDate: '', orbitType: r.orbitType === 'IMP' ? 'ORB' : r.orbitType, status: r.status === 'D' ? '?' : r.status }))
+  }
+  return out || list
+}
+
+/**
+ * 编目截断号：LAUNCH_DATE 晚于 t 的首个发射对象（载荷 / 火箭体）的最小 NORAD；没有则 Infinity。
+ * 编号不小于它的对象视为 t 之后才编目（backdateRows / recentDebris / debrisCataloguedBetween 同一近似）。
+ */
+export function catalogCutNorad(rows, t) {
+  let cut = Infinity
+  if (!fin(t)) return cut
+  for (const r of (rows || [])) {
+    if (!isPayRb(r)) continue
+    const ms = dayMs(r.launchDate), n = Number(r.norad)
+    if (fin(ms) && ms > t && Number.isFinite(n) && n < cut) cut = n
+  }
+  return cut
 }
 
 /** NORAD（字符串）→ 行 */
@@ -266,7 +324,9 @@ export function catalogOverview(rows) {
     if (isActiveInOrbit(r)) { o.active++; active++ }
     if (r.orbitType === 'DOC') docked++
     else if (r.orbitType === 'LAN') landed++
-    else if (r.orbitType === 'IMP') impacted++
+    // 只数地球轨道上的再入 / 撞击：月面 / 行星撞击体（ORBIT_CENTER ≠ EA）归深空，
+    // 算进来会让这一项大于「已陨落」（真编目 35262 > 35183），而它本是已陨落的子集
+    else if (r.orbitType === 'IMP' && isDecayed(r)) impacted++
   }
   // 固定序在前，上游万一冒出新类型码接在后面按字典序（行序确定）
   const known = new Set(TYPE_ORDER)
@@ -320,7 +380,8 @@ export function ownerTable(rows, opts) {
   for (const r of rows) {
     if (isDeepSpace(r)) continue
     const o = get(r.owner || 'UNK')
-    o.launched++
+    // 累计·发射只计载荷 + 火箭体（附录判据「发射」口径；碎片的 LAUNCH_DATE 是母体发射日）
+    if (isPayRb(r)) o.launched++
     if (isDecayed(r)) o.decayed++
     if (isInOrbit(r)) {
       o.inOrbit++
@@ -330,9 +391,15 @@ export function ownerTable(rows, opts) {
   }
   const all = [...acc.values()].sort((a, b) => (b.payloads - a.payloads) || (b.inOrbit - a.inOrbit) || (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0))
   const top = all.slice(0, topN)
-  const total ={ owner: '', active: 0, payloads: 0, rockets: 0, debris: 0, inOrbit: 0, launched: 0, decayed: 0 }
-  for (const o of all) for (const k of ['active', 'payloads', 'rockets', 'debris', 'inOrbit', 'launched', 'decayed']) total[k] += o[k]
-  return { rows: top, total, ownerCount: all.length, topN }
+  const KEYS = ['active', 'payloads', 'rockets', 'debris', 'inOrbit', 'launched', 'decayed']
+  const zero = () => ({ owner: '', active: 0, payloads: 0, rockets: 0, debris: 0, inOrbit: 0, launched: 0, decayed: 0 })
+  const total = zero()
+  for (const o of all) for (const k of KEYS) total[k] += o[k]
+  // 榜外各家并成一行「其余 N 家」：合计行是全表口径，不给这一行的话合计 ≠ 表内各行之和，读者对不上账
+  const rest = zero()
+  rest.count = all.length - top.length
+  for (const o of all.slice(topN)) for (const k of KEYS) rest[k] += o[k]
+  return { rows: top, rest, total, ownerCount: all.length, topN }
 }
 
 // ===================================================================================
@@ -353,11 +420,16 @@ function yearRange(rows, asOf, field) {
   return years
 }
 
-function yearSeries(rows, asOf, field, keep) {
+// 发射序列只数载荷与火箭体：碎片的 LAUNCH_DATE 是【母体】的发射日，FY-1C 2007 年解体的
+// 2000 多条碎片会全部记成 1999 年的「发射」（真编目：1999 年印 4299）。陨落序列不受此限 ——
+// 碎片的 DECAY_DATE 是它自己的再入日，是真事件。
+const isPayRb = (r) => r.type === 'PAY' || r.type === 'R/B'
+
+function yearSeries(rows, asOf, field, keep, second) {
   rows = rows || []
   const years = yearRange(rows, asOf, field)
   const base = years[0]
-  const all = new Array(years.length).fill(0)
+  const sec = new Array(years.length).fill(0)
   const payload = new Array(years.length).fill(0)
   for (const r of rows) {
     if (keep && !keep(r)) continue
@@ -365,20 +437,26 @@ function yearSeries(rows, asOf, field, keep) {
     if (!fin(ms)) continue
     const i = new Date(ms).getUTCFullYear() - base
     if (i < 0 || i >= years.length) continue
-    all[i]++
+    if (!second || second(r)) sec[i]++
     if (r.type === 'PAY') payload[i]++
   }
-  return { years, payload, all }
+  return { years, payload, sec }
 }
 
-/** 逐年发射：{ years, payload, all }。发射就是发射，深空探测器也算一次，故不过滤。 */
-export function launchSeries(rows, opts) { return yearSeries(rows, opts && opts.asOf, 'launchDate') }
+/** 逐年发射：{ years, payload, payRb }（payRb = 载荷与火箭体）。深空探测器也算一次发射，故不按状态过滤。 */
+export function launchSeries(rows, opts) {
+  const s = yearSeries(rows, opts && opts.asOf, 'launchDate', null, isPayRb)
+  return { years: s.years, payload: s.payload, payRb: s.sec }
+}
 
 /** 逐年陨落：{ years, payload, all }。
  *  ★ 只数 isDecayed 的行，不是「凡有 DECAY_DATE 就算」：航天飞机一类 ORBIT_TYPE = R/T 的行也带
  *  返回日期，但它归深空 / 着陆一类，总览里不计入已陨落 —— 两处口径必须一致，否则报告里
  *  「逐年陨落」的总和会比「已陨落」多出几条，读者对不上账。 */
-export function decaySeries(rows, opts) { return yearSeries(rows, opts && opts.asOf, 'decayDate', isDecayed) }
+export function decaySeries(rows, opts) {
+  const s = yearSeries(rows, opts && opts.asOf, 'decayDate', isDecayed)
+  return { years: s.years, payload: s.payload, all: s.sec }
+}
 
 /**
  * 近 months 个月逐月：发射（载荷 / 全部）与陨落（载荷 / 全部）。
@@ -396,15 +474,19 @@ export function monthlySeries(rows, opts) {
     if (!fin(endIdx)) endIdx = 0
   }
   const startIdx = endIdx - months + 1
-  const labels = [], launchAll = [], launchPay = [], decayAll = [], decayPay = []
-  for (let i = 0; i < months; i++) { labels.push(monthLabel(startIdx + i)); launchAll.push(0); launchPay.push(0); decayAll.push(0); decayPay.push(0) }
+  const labels = [], launchPayRb = [], launchPay = [], decayAll = [], decayPay = []
+  for (let i = 0; i < months; i++) { labels.push(monthLabel(startIdx + i)); launchPayRb.push(0); launchPay.push(0); decayAll.push(0); decayPay.push(0) }
   for (const r of rows) {
-    const lm = dayMs(r.launchDate)
-    if (fin(lm)) { const i = monthIdxOfMs(lm) - startIdx; if (i >= 0 && i < months) { launchAll[i]++; if (r.type === 'PAY') launchPay[i]++ } }
+    // 发射只数载荷与火箭体（与 launchSeries 同口径，见 isPayRb 的注释）
+    const lm = isPayRb(r) ? dayMs(r.launchDate) : NaN
+    if (fin(lm)) { const i = monthIdxOfMs(lm) - startIdx; if (i >= 0 && i < months) { launchPayRb[i]++; if (r.type === 'PAY') launchPay[i]++ } }
     const dm = isDecayed(r) ? dayMs(r.decayDate) : NaN   // 与 decaySeries 同口径，见那里的注释
     if (fin(dm)) { const i = monthIdxOfMs(dm) - startIdx; if (i >= 0 && i < months) { decayAll[i]++; if (r.type === 'PAY') decayPay[i]++ } }
   }
-  return { months: labels, launchAll, launchPay, decayAll, decayPay }
+  // 逐月发射次数（发射编号去重，与 launchCountSeries 同口径）
+  const launches = new Array(months).fill(0)
+  for (const e of launchEvents(rows)) { const ms = dayMs(e.date); if (!fin(ms)) continue; const i = monthIdxOfMs(ms) - startIdx; if (i >= 0 && i < months) launches[i]++ }
+  return { months: labels, launches, launchPayRb, launchPay, decayAll, decayPay }
 }
 
 /**
@@ -452,12 +534,8 @@ function recentDetail(rows, opts, field, keep) {
   const payloads = [], rockets = []
   let debris = 0, other = 0
   if (!fin(t)) return { days, from: '', payloads, rockets, debris, other, total: 0 }
-  // ★ 先把基准时刻归到它所在的 UTC 零点再往前数：判据（报告附录原文）写的是「按 UTC 日历日比较，
-  //   不是 24 小时的整数倍」。直接 t − days×DAY_MS 会落在当天某个钟点上，于是同一天上午生成与
-  //   下午生成的两份报告「近 30 天」差出好几条，而两份都印着同一个窗口起点。
-  const dt = new Date(t)
-  const t0 = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate())
-  const fromMs = t0 - days * DAY_MS
+  // 窗口起点按 UTC 日历日（windowStartMs，全模块一处）
+  const fromMs = windowStartMs(t, days)
   for (const r of rows) {
     if (keep && !keep(r)) continue
     const ms = dayMs(r[field])
@@ -487,6 +565,351 @@ export function recentLaunches(rows, opts) { return recentDetail(rows, opts, 'la
 export function recentDecays(rows, opts) { return recentDetail(rows, opts, 'decayDate', isDecayed) }
 
 // ===================================================================================
+// 4b. 发射按「次」（国际编号）
+// ===================================================================================
+
+// 国际编号 YYYY-NNNP → 发射编号 YYYY-NNN（一次入轨发射一个编号，同一次发射的载荷 / 火箭体 / 碎片共用）
+const LAUNCH_KEY_RE = /^(\d{4}-\d{3})/
+export const launchKeyOf = (row) => { const m = LAUNCH_KEY_RE.exec(String((row && row.objectId) || '')); return m ? m[1] : '' }
+
+// 出现次数最多的值（并列取字典序最小 —— 确定性）
+function modeOf(list) {
+  const m = new Map()
+  for (const v of list) if (v) m.set(v, (m.get(v) || 0) + 1)
+  let best = '', n = 0
+  for (const [v, c] of m) if (c > n || (c === n && v < best)) { best = v; n = c }
+  return best
+}
+
+/**
+ * 发射事件表：按发射编号归并。每次发射 = { key, date, year, site, vehicle, payloads, rocketBodies, owners[], payloadNames[] }。
+ * · date = 该编号下最早的 LAUNCH_DATE（同一次发射的对象本应同日，取最早防个别录入偏差）；
+ * · vehicle = 火箭体名去掉「R/B」尾巴（编目里一次发射的末级就叫「CZ-2D R/B」「FALCON 9 R/B」）；
+ * · 碎片只认它属于哪次发射，不算发射本身的产物计数。
+ * 编目里查不到发射编号的行（极少数早期 / 不规范的国际编号）不进本表。
+ */
+// 同一份 rows 在一次建模里会被关键指标、逐年 / 逐月、近 N 天各问一遍：按数组身份缓存（WeakMap，数组没了缓存跟着走）。
+// ★ 出参只读：调用方 filter / map 出新数组，不许就地改。
+const _evCache = new WeakMap()
+export function launchEvents(rows) {
+  if (Array.isArray(rows)) { const c = _evCache.get(rows); if (c) return c }
+  const out = launchEventsRaw(rows)
+  if (Array.isArray(rows)) _evCache.set(rows, out)
+  return out
+}
+function launchEventsRaw(rows) {
+  const acc = new Map()
+  for (const r of (rows || [])) {
+    // 碎片不立发射事件：只按碎片筛出来的范围（对象类型＝碎片）里不该冒出「发射」来
+    if (r.type === 'DEB') continue
+    const k = launchKeyOf(r)
+    if (!k) continue
+    let e = acc.get(k)
+    if (!e) acc.set(k, (e = { key: k, date: '', sites: [], vehicles: [], payloads: 0, rocketBodies: 0, owners: [], payloadNames: [] }))
+    const d = r.launchDate
+    if (d && (!e.date || d < e.date)) e.date = d
+    if (r.launchSite) e.sites.push(r.launchSite)
+    if (r.type === 'PAY') { e.payloads++; e.owners.push(r.owner || ''); e.payloadNames.push({ norad: r.norad, name: r.name }) }
+    else if (r.type === 'R/B') { e.rocketBodies++; e.vehicles.push(String(r.name || '').replace(/\s*R\/B.*$/, '').trim()) }
+  }
+  const out = []
+  for (const e of acc.values()) {
+    if (!e.date) continue
+    e.payloadNames.sort((a, b) => byNorad(a.norad, b.norad))
+    const owners = [...new Set(e.owners.filter(Boolean))].sort()
+    out.push({
+      key: e.key, date: e.date, year: Number(e.date.slice(0, 4)), site: modeOf(e.sites), vehicle: modeOf(e.vehicles),
+      payloads: e.payloads, rocketBodies: e.rocketBodies, owners, payloadNames: e.payloadNames.map((p) => p.name)
+    })
+  }
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.key < b.key ? 1 : -1)))
+  return out
+}
+
+/** 逐年发射次数（与 launchSeries 同一条年轴，1957 起至 asOf 年）。 */
+export function launchCountSeries(rows, opts) {
+  const years = yearRange(rows || [], opts && opts.asOf, 'launchDate')
+  const base = years[0]
+  const counts = new Array(years.length).fill(0)
+  for (const e of launchEvents(rows)) {
+    const i = e.year - base
+    if (i >= 0 && i < years.length) counts[i]++
+  }
+  return { years, counts }
+}
+
+/**
+ * 本年至今与去年同期：发射次数 / 入轨载荷 / 陨落对象。「同期」= 去年 1 月 1 日至与基准日同月同日（UTC）。
+ * 返回 { year, md, cur: {launches, payloads, decays}, prev: {…} }。asOf 不合法返回 null。
+ */
+export function yearToDate(rows, opts) {
+  const t = asOfMs(opts && opts.asOf)
+  if (!fin(t)) return null
+  const d = new Date(t)
+  const y = d.getUTCFullYear()
+  const p2 = (x) => (x < 10 ? '0' + x : String(x))
+  const md = p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate())
+  const inYtd = (date, yy) => !!date && date.slice(0, 4) === String(yy) && date.slice(5, 10) <= md
+  const tally = (yy) => {
+    let launches = 0, payloads = 0, decays = 0
+    for (const e of launchEvents(rows)) if (inYtd(e.date, yy)) launches++
+    for (const r of (rows || [])) {
+      if (r.type === 'PAY' && inYtd(r.launchDate, yy)) payloads++
+      if (isDecayed(r) && inYtd(r.decayDate, yy)) decays++
+    }
+    return { launches, payloads, decays }
+  }
+  return { year: y, md, cur: tally(y), prev: tally(y - 1) }
+}
+
+/**
+ * 某一时刻的在轨存量（倒推）：发射日 ≤ D、且此刻仍在轨或陨落日 > D 的对象数。与 inOrbitCumulative 同一口径
+ * （编目里被删掉的条目看不见，所以是「此刻这份编目眼里的那一天」）。type 给了就只数该类型。
+ */
+export function inOrbitAt(rows, ms, type) {
+  if (!fin(ms)) return null
+  let n = 0
+  for (const r of (rows || [])) {
+    if (type && r.type !== type) continue
+    if (isDeepSpace(r)) continue
+    const lm = dayMs(r.launchDate)
+    if (!fin(lm) || lm > ms) continue
+    if (isInOrbit(r)) { n++; continue }
+    if (isDecayed(r)) { const dm = dayMs(r.decayDate); if (fin(dm) && dm > ms) n++ }
+  }
+  return n
+}
+
+/**
+ * 一个时间窗 [fromMs, toMs]（UTC 日历日，两端含）里的流量：发射次数 / 入轨载荷 / 陨落对象 / 陨落载荷。
+ * 关键指标页「近 N 天 vs 前 N 天」「本年至今 vs 去年同期」都走它。
+ */
+export function windowFlows(rows, fromMs, toMs) {
+  const inW = (s) => { const ms = dayMs(s); return fin(ms) && ms >= fromMs && ms <= toMs }
+  let launches = 0, payloads = 0, decays = 0, decaysPay = 0
+  for (const e of launchEvents(rows)) if (inW(e.date)) launches++
+  for (const r of (rows || [])) {
+    if (r.type === 'PAY' && inW(r.launchDate)) payloads++
+    if (isDecayed(r) && inW(r.decayDate)) { decays++; if (r.type === 'PAY') decaysPay++ }
+  }
+  return { launches, payloads, decays, decaysPay }
+}
+
+/**
+ * 窗口 [fromMs, toMs] 内新编目的碎片数（NORAD 近似编目时间，口径同 recentDebris）：编号 ≥ 窗口内首个新发射
+ * 对象的编号、且 < 窗口之后首个新发射对象的编号（窗口之后没有发射就不设上限）。窗口内无发射返回 null。
+ * opts.boundRows：定界用的编目（缺省 = rows）—— 按所有者 / 类型筛后的 rows 里可能没有发射对象，界须取全量；
+ * opts.hiNorad：外加的上界（回溯时 rows 已不含基准之后的发射，传 catalogCutNorad(原始编目, t)）。
+ */
+export function debrisCataloguedBetween(rows, fromMs, toMs, opts) {
+  let lo = Infinity, hi = (opts && Number.isFinite(opts.hiNorad)) ? opts.hiNorad : Infinity
+  for (const r of ((opts && opts.boundRows) || rows || [])) {
+    if (!isPayRb(r)) continue
+    const ms = dayMs(r.launchDate), n = Number(r.norad)
+    if (!fin(ms) || !Number.isFinite(n)) continue
+    if (ms >= fromMs && ms <= toMs) { if (n < lo) lo = n } else if (ms > toMs) { if (n < hi) hi = n }
+  }
+  if (!fin(lo)) return null
+  let c = 0
+  for (const r of (rows || [])) {
+    if (r.type !== 'DEB' || isDeepSpace(r)) continue
+    const n = Number(r.norad)
+    if (Number.isFinite(n) && n >= lo && n < hi) c++
+  }
+  return c
+}
+
+/** 逐年按对象类型分列（堆叠柱图用）：field = 'launchDate' | 'decayDate'；keep 过滤行。
+ *  返回 { years, byType: { PAY, 'R/B', DEB, UNK } }，年轴与 launchSeries 同一条。 */
+export function yearByType(rows, opts, field, keep) {
+  const years = yearRange(rows || [], opts && opts.asOf, field)
+  const base = years[0]
+  const byType = {}
+  for (const ty of TYPE_ORDER) byType[ty] = new Array(years.length).fill(0)
+  for (const r of (rows || [])) {
+    if (keep && !keep(r)) continue
+    const ms = dayMs(r[field])
+    if (!fin(ms)) continue
+    const i = new Date(ms).getUTCFullYear() - base
+    if (i < 0 || i >= years.length) continue
+    byType[TYPE_ORDER.indexOf(r.type) >= 0 ? r.type : 'UNK'][i]++
+  }
+  return { years, byType }
+}
+
+/** 近 N 天的发射事件（窗口与近期明细同一条，按 UTC 日历日）。 */
+export function recentLaunchEvents(rows, opts) {
+  const days = (opts && fin(opts.days) && opts.days > 0) ? Math.floor(opts.days) : 30
+  const t = asOfMs(opts && opts.asOf)
+  if (!fin(t)) return []
+  const from = windowStartMs(t, days)
+  return launchEvents(rows).filter((e) => { const ms = dayMs(e.date); return fin(ms) && ms >= from && ms <= t })
+}
+
+// ===================================================================================
+// 4c. 碎片与解体
+// ===================================================================================
+
+// 碎片名 → 母体名：「FENGYUN 1C DEB」→「FENGYUN 1C」；「COSMOS 2251 DEB」→「COSMOS 2251」
+const parentNameOf = (name) => String(name || '').replace(/\s*\bDEB\b.*$/, '').trim()
+
+/**
+ * 碎片按母体（发射编号）归并：{ key, parent, owner, year, total, inOrbit, decayed }，按在轨碎片降序。
+ * 母体名取该编号下碎片名去掉「DEB」后的众数（同一次发射可能有载荷与末级两个母体，取碎片最多的那个名）。
+ * 返回 { rows（全部，调用方取前 N）, debrisInOrbit, debrisTotal, parents }。
+ */
+const _dbCache = new WeakMap()
+export function debrisByParent(rows) {
+  if (Array.isArray(rows)) { const c = _dbCache.get(rows); if (c) return c }
+  const out = debrisByParentRaw(rows)
+  if (Array.isArray(rows)) _dbCache.set(rows, out)
+  return out
+}
+function debrisByParentRaw(rows) {
+  const acc = new Map()
+  let debrisInOrbit = 0, debrisTotal = 0
+  for (const r of (rows || [])) {
+    if (r.type !== 'DEB' || isDeepSpace(r)) continue
+    debrisTotal++
+    const io = isInOrbit(r)
+    if (io) debrisInOrbit++
+    const k = launchKeyOf(r) || ('?' + parentNameOf(r.name))
+    let e = acc.get(k)
+    if (!e) acc.set(k, (e = { key: launchKeyOf(r), names: [], owners: [], dates: [], total: 0, inOrbit: 0, decayed: 0 }))
+    e.names.push(parentNameOf(r.name)); e.owners.push(r.owner || ''); e.dates.push(r.launchDate || '')
+    e.total++
+    if (io) e.inOrbit++
+    else if (isDecayed(r)) e.decayed++
+  }
+  const out = [...acc.values()].map((e) => ({
+    key: e.key, parent: modeOf(e.names), owner: modeOf(e.owners),
+    year: (modeOf(e.dates) || '').slice(0, 4), total: e.total, inOrbit: e.inOrbit, decayed: e.decayed
+  }))
+  out.sort((a, b) => (b.inOrbit - a.inOrbit) || (b.total - a.total) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  return { rows: out, debrisInOrbit, debrisTotal, parents: out.length }
+}
+
+/**
+ * 近 N 天新编目的碎片（按母体归并）。SATCAT 不带编目日期，这里用 NORAD 编号近似：编号按编目先后分配，
+ * 窗口内首个新发射对象（载荷 / 火箭体，LAUNCH_DATE 落在窗口内）拿到的最小编号即窗口起点，编号不小于它的
+ * 碎片即近期编目。窗口内没有发射时无从定界，返回空表。判据写进报告附录。
+ * 上界：基准之后首个发射对象的编号（与 debrisCataloguedBetween 同口径），opts.hiNorad 可再收紧。
+ * opts.boundRows：定界用的编目（缺省 = rows），计数仍按 rows。
+ * 返回 { fromNorad, rows: [{ key, parent, owner, year, n, inOrbit }], total }。
+ */
+export function recentDebris(rows, opts) {
+  const days = (opts && fin(opts.days) && opts.days > 0) ? Math.floor(opts.days) : 30
+  const t = asOfMs(opts && opts.asOf)
+  const empty = { fromNorad: null, rows: [], total: 0 }
+  if (!fin(t)) return empty
+  const from = windowStartMs(t, days)
+  let minNo = Infinity
+  let maxNo = (opts && Number.isFinite(opts.hiNorad)) ? opts.hiNorad : Infinity
+  for (const r of ((opts && opts.boundRows) || rows || [])) {
+    if (!isPayRb(r)) continue
+    const ms = dayMs(r.launchDate)
+    const n = Number(r.norad)
+    if (!fin(ms) || !Number.isFinite(n)) continue
+    if (ms > t) { if (n < maxNo) maxNo = n; continue }
+    if (ms >= from && n < minNo) minNo = n
+  }
+  if (!fin(minNo)) return empty
+  const acc = new Map()
+  let total = 0
+  for (const r of (rows || [])) {
+    if (r.type !== 'DEB' || isDeepSpace(r)) continue
+    const n = Number(r.norad)
+    if (!Number.isFinite(n) || n < minNo || n >= maxNo) continue
+    total++
+    const k = launchKeyOf(r) || ('?' + parentNameOf(r.name))
+    let e = acc.get(k)
+    if (!e) acc.set(k, (e = { key: launchKeyOf(r), names: [], owners: [], dates: [], n: 0, inOrbit: 0 }))
+    e.names.push(parentNameOf(r.name)); e.owners.push(r.owner || ''); e.dates.push(r.launchDate || '')
+    e.n++
+    if (isInOrbit(r)) e.inOrbit++
+  }
+  const out = [...acc.values()].map((e) => ({ key: e.key, parent: modeOf(e.names), owner: modeOf(e.owners), year: (modeOf(e.dates) || '').slice(0, 4), n: e.n, inOrbit: e.inOrbit }))
+  out.sort((a, b) => (b.n - a.n) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  return { fromNorad: minNo, rows: out, total }
+}
+
+// ===================================================================================
+// 4d. 低轨空间密度剖面
+// ===================================================================================
+
+/**
+ * 空间密度（个 / km³）随高度的剖面，按对象类型分列 —— 每个在轨对象按开普勒轨道在各高度壳层里的
+ * 【停留时间比例】摊开（近圆轨道整颗落在一层，椭圆轨道按时间摊到近地点—远地点之间各层），
+ * 再除以壳层体积 4/3·π·(R₂³ − R₁³)。这是 ESA《Space Environment Report》空间密度图的同一算法口径。
+ *   时间比例：r = a(1 − e·cosE)，M = E − e·sinE，r ≤ R 的时间比例 F(R) = (E_R − e·sin E_R) / π，
+ *   E_R = arccos((1 − R/a) / e)；壳层 [R₁, R₂) 的比例 = F(R₂) − F(R₁)。
+ * 近 / 远地点取 SATCAT 的 PERIGEE / APOGEE（km，整数）。缺任一即不计。
+ * 返回 { lo, hi, step, bins: [{ h0, h1 }], types, density: { PAY: [...], 'R/B': [...], DEB: [...], UNK: [...] }, n }。
+ */
+export function spatialDensity(rows, opts) {
+  const lo = (opts && fin(opts.lo)) ? opts.lo : 200
+  const hi = (opts && fin(opts.hi)) ? opts.hi : 2000
+  const step = (opts && fin(opts.step) && opts.step > 0) ? opts.step : 20
+  const nb = Math.max(1, Math.round((hi - lo) / step))
+  const bins = []
+  for (let i = 0; i < nb; i++) bins.push({ h0: lo + i * step, h1: lo + (i + 1) * step })
+  const types = TYPE_ORDER.slice()
+  const density = {}
+  for (const ty of types) density[ty] = new Array(nb).fill(0)
+  const vol = bins.map((b) => (4 / 3) * Math.PI * (Math.pow(RE_KM + b.h1, 3) - Math.pow(RE_KM + b.h0, 3)))
+  let n = 0
+  for (const r of (rows || [])) {
+    if (!isInOrbit(r) || !fin(r.perigeeKm) || !fin(r.apogeeKm)) continue
+    const hp = Math.min(r.perigeeKm, r.apogeeKm), ha = Math.max(r.perigeeKm, r.apogeeKm)
+    if (hp >= hi || ha < lo) continue
+    const ty = types.indexOf(r.type) >= 0 ? r.type : 'UNK'
+    const rp = RE_KM + hp, ra = RE_KM + ha
+    const a = (rp + ra) / 2, e = (ra - rp) / (ra + rp)
+    const F = (h) => {
+      const R = RE_KM + h
+      if (R <= rp) return 0
+      if (R >= ra) return 1
+      if (e < 1e-9) return R >= a ? 1 : 0
+      const c = Math.max(-1, Math.min(1, (1 - R / a) / e))
+      const E = Math.acos(c)
+      return (E - e * Math.sin(E)) / Math.PI
+    }
+    let counted = false
+    for (let i = 0; i < nb; i++) {
+      const b = bins[i]
+      if (b.h1 <= hp || b.h0 > ha) continue
+      // 近圆轨道（近远地点同一层）整颗落进该层
+      const frac = (hp >= b.h0 && ha < b.h1) ? 1 : F(b.h1) - F(b.h0)
+      if (frac > 0) { density[ty][i] += frac / vol[i]; counted = true }
+    }
+    if (counted) n++
+  }
+  return { lo, hi, step, bins, types, density, n }
+}
+
+// ===================================================================================
+// 4e. GEO 经度段
+// ===================================================================================
+
+/** GEO 定点按 step°（缺省 10°）经度段计数：全程 −180…180，每段 { from, to, n, active }。
+ *  sats = geoOccupancy().sats（已带 status）。active = 状态码属活跃（与 isActive 同一张码表）。 */
+export function geoSegments(sats, step) {
+  const s = (fin(step) && step > 0) ? step : 10
+  const nb = Math.round(360 / s)
+  const out = []
+  for (let i = 0; i < nb; i++) out.push({ from: -180 + i * s, to: -180 + (i + 1) * s, n: 0, active: 0 })
+  for (const x of (sats || [])) {
+    if (!fin(x.lon)) continue
+    let i = Math.floor((x.lon + 180) / s)
+    if (i < 0) i = 0
+    if (i >= nb) i = nb - 1
+    out[i].n++
+    if (ACTIVE_STATUS.indexOf(x.status) >= 0) out[i].active++
+  }
+  return out
+}
+
+// ===================================================================================
 // 5. 大型星座部署
 // ===================================================================================
 
@@ -495,6 +918,28 @@ export const constKeyOf = (name) => {
   const s = String(name || '')
   for (let i = 0; i < CONST_PATTERNS.length; i++) if (CONST_PATTERNS[i].re.test(s)) return CONST_PATTERNS[i].key
   return ''
+}
+
+/** 编目行 → 星座 key：名称前缀 + 必须是载荷（星座成员是卫星，不是名字带前缀的碎片 / 火箭体）。 */
+export const constKeyOfRow = (row) => (row && row.type === 'PAY' ? constKeyOf(row.name) : '')
+
+/** 星历记录 → 星座 key。编目里查得到：按那一行（名称 + 类型；编目名不中再试星历名）；
+ *  查不到：只能按星历名。index = 全量编目索引（NORAD 字符串 → 行）。 */
+export function constKeyOfGp(g, index) {
+  if (!g) return ''
+  const row = index instanceof Map ? index.get(String(g.noradId)) : null
+  if (row) return row.type === 'PAY' ? (constKeyOf(row.name) || constKeyOf(g.name)) : ''
+  return constKeyOf(g.name)
+}
+
+/** 前 n 位，并列的同进同出：第 n 位与其后取值相同的一律留下（按 key 降序已排好的数组）。 */
+export function topWithTies(sorted, n, key) {
+  const list = sorted || []
+  if (list.length <= n) return list.slice()
+  const cut = key(list[n - 1])
+  let end = n
+  while (end < list.length && key(list[end]) === cut) end++
+  return list.slice(0, end)
 }
 
 // ===================================================================================
@@ -531,7 +976,7 @@ export const hasFilters = (f) => FILTER_KEYS.some((k) => (f && f[k] || []).lengt
 /** 逐行判定：全部生效维度都命中才留下。 */
 export function rowPassesFilters (row, f) {
   if (!row || !f) return true
-  if (f.constellations && f.constellations.length && f.constellations.indexOf(constKeyOf(row.name)) < 0) return false
+  if (f.constellations && f.constellations.length && f.constellations.indexOf(constKeyOfRow(row)) < 0) return false
   if (f.owners && f.owners.length && f.owners.indexOf(String(row.owner || '').trim()) < 0) return false
   if (f.types && f.types.length && f.types.indexOf(String(row.type || '').trim()) < 0) return false
   if (f.regimes && f.regimes.length && f.regimes.indexOf(regimeOf(row)) < 0) return false
@@ -558,12 +1003,13 @@ export function ownerOptions (rows) {
   return [...m.values()].sort((a, b) => (b.payloads - a.payloads) || (b.inOrbit - a.inOrbit) || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0))
 }
 
-/** GP 记录数组 → 过筛后的数组：只按星座名称前缀筛（GP 里没有所有者 / 类型，区制另算）。 */
-export function filterGp (gp, f) {
+/** GP 记录数组 → 过筛后的数组：只按星座筛（GP 里没有所有者 / 类型，区制另算）。
+ *  星座归属走 constKeyOfGp（编目名优先），index 不给就只能按星历名。 */
+export function filterGp (gp, f, index) {
   const list = Array.isArray(gp) ? gp : []
   const keys = (f && f.constellations) || []
   if (!keys.length) return list
-  return list.filter((g) => keys.indexOf(constKeyOf(g.name)) >= 0)
+  return list.filter((g) => keys.indexOf(constKeyOfGp(g, index)) >= 0)
 }
 
 /** GP 记录 → 半长轴 km（由平均运动反推），不合法返回 NaN。 */
@@ -575,20 +1021,24 @@ export function gpSemiMajorKm(rec) {
 }
 
 /**
- * 星座部署：SATCAT 里数 {累计发射, 在轨, 活跃, 近 30 天新增, 近 365 天新增, 累计陨落}，
- * GP 里数 {星历颗数} 并做壳层聚类（高度 25 km × 倾角 1° 的桶，取前 3）。
+ * 星座部署：SATCAT 里数 {累计发射, 在轨, 活跃, 近 N 天新增, 近 365 天新增, 累计陨落}（只数载荷，
+ * 见 constKeyOfRow），GP 里数 {星历颗数} 并做壳层聚类（高度 25 km × 倾角 1° 的桶，取前 3）。
  * 壳层的 altKm / incDeg 是【桶的下边界】，不是均值 —— 报告里当分档读数用。
+ * opts.days = 近期窗口天数（与第 5 章「近期明细」同一个参数，缺省 30；字段名 recent30 是历史名）；
+ * 两个窗口都按 UTC 日历日（windowStartMs）。opts.index = 全量编目索引，星历按编目名归类用。
  */
 export function constellationDeploy(rows, gpUnion, opts) {
   rows = rows || []
   gpUnion = gpUnion || []
   const t = asOfMs(opts && opts.asOf)
-  const d30 = fin(t) ? t - 30 * DAY_MS : NaN
-  const d365 = fin(t) ? t - 365 * DAY_MS : NaN
+  const days = (opts && fin(opts.days) && opts.days > 0) ? Math.floor(opts.days) : 30
+  const index = (opts && opts.index instanceof Map) ? opts.index : buildIndex(rows)
+  const d30 = windowStartMs(t, days)
+  const d365 = windowStartMs(t, 365)
   const acc = new Map()
   for (const p of CONST_PATTERNS) acc.set(p.key, { key: p.key, launched: 0, inOrbit: 0, active: 0, recent30: 0, recent365: 0, decayed: 0, gpCount: 0, shells: [] })
   for (const r of rows) {
-    const k = constKeyOf(r.name)
+    const k = constKeyOfRow(r)
     if (!k) continue
     const o = acc.get(k)
     o.launched++
@@ -600,7 +1050,7 @@ export function constellationDeploy(rows, gpUnion, opts) {
   }
   const shellAcc = new Map()   // key → Map<'alt|inc', n>
   for (const g of gpUnion) {
-    const k = constKeyOf(g.name)
+    const k = constKeyOfGp(g, index)
     if (!k) continue
     const o = acc.get(k)
     o.gpCount++
@@ -648,7 +1098,7 @@ function ageSummary(ages) {
  * 中位数 / P90 都用最近秩法（sorted[ceil(p·n)−1]），不做插值 —— 报告里给的是「第 90 个百分位那一颗
  * 的历元龄」，插值出来的数在目录里找不到对应的星。
  */
-export function epochAgeStats(gpRecs, asOf) {
+export function epochAgeStats(gpRecs, asOf, index) {
   gpRecs = gpRecs || []
   const t = asOfMs(asOf)
   const all = []
@@ -658,7 +1108,7 @@ export function epochAgeStats(gpRecs, asOf) {
     if (!Number.isFinite(e) || !fin(t)) continue
     const age = (t - e) / DAY_MS
     all.push(age)
-    const k = constKeyOf(g.name)
+    const k = constKeyOfGp(g, index)
     if (!k) continue
     let arr = byKey.get(k)
     if (!arr) byKey.set(k, (arr = []))
@@ -668,6 +1118,53 @@ export function epochAgeStats(gpRecs, asOf) {
   for (const p of CONST_PATTERNS) { const arr = byKey.get(p.key); if (arr && arr.length) byConst.push({ key: p.key, ...ageSummary(arr) }) }
   byConst.sort((a, b) => (b.n - a.n) || (a.key < b.key ? -1 : 1))
   return { overall: ageSummary(all), byConst, ages: all }
+}
+
+/**
+ * 星历的在轨覆盖率：分子 = 星历里、编目判为在轨的条目数；分母 = 编目在轨对象数（rows 即本报告范围）。
+ * 星座行分子分母都只计该星座的载荷。GP 并集几乎只有活跃载荷（碎片覆盖率接近 0），不给这个比值的话
+ * 第 8 章的颗数（真编目 16717）会被读成「全部在轨对象」（35026）。
+ * index = 全量编目索引（星座归类按编目名）；在轨判定只认 rows 里的行（范围外的不算分子）。
+ */
+export function ephemerisCoverage(rows, gpRecs, index) {
+  const inScope = new Map()
+  const den = new Map()
+  let denAll = 0
+  for (const r of (rows || [])) {
+    if (!isInOrbit(r)) continue
+    inScope.set(r.norad, r)
+    denAll++
+    const k = constKeyOfRow(r)
+    if (k) den.set(k, (den.get(k) || 0) + 1)
+  }
+  const num = new Map()
+  let numAll = 0
+  const seen = new Set()
+  for (const g of (gpRecs || [])) {
+    const id = String(g && g.noradId)
+    if (seen.has(id) || !inScope.has(id)) continue
+    seen.add(id)
+    numAll++
+    const k = constKeyOfGp(g, index)
+    if (k) num.set(k, (num.get(k) || 0) + 1)
+  }
+  const ratio = (n, d) => (d > 0 ? n / d : null)
+  const byConst = {}
+  for (const p of CONST_PATTERNS) byConst[p.key] = { num: num.get(p.key) || 0, den: den.get(p.key) || 0, ratio: ratio(num.get(p.key) || 0, den.get(p.key) || 0) }
+  return { overall: { num: numAll, den: denAll, ratio: ratio(numAll, denAll) }, byConst }
+}
+
+/** 编目侧的 GEO 对账：在轨且编目根数判为 GEO 的对象数，以及其中有星历的条数（gpRecs = 本报告范围的星历）。 */
+export function geoCatalogTally(rows, gpRecs) {
+  const ids = new Set()
+  for (const g of (gpRecs || [])) ids.add(String(g && g.noradId))
+  let catalog = 0, withEphem = 0
+  for (const r of (rows || [])) {
+    if (!isInOrbit(r) || regimeOf(r) !== 'GEO') continue
+    catalog++
+    if (ids.has(r.norad)) withEphem++
+  }
+  return { catalog, withEphem }
 }
 
 // ===================================================================================
@@ -739,7 +1236,8 @@ export function geoOccupancy(geoGpRecs, satcatIndex, opts) {
     if (i >= nBins) i = nBins - 1
     bins[i].n++
   }
-  const top = bins.filter((b) => b.n > 0).slice().sort((a, b) => (b.n - a.n) || (a.lon - b.lon)).slice(0, topN)
+  // 前 N 位并列的同进同出（真编目：17 个桶并列 4 颗，按 slice 截只出其中 8 个，哪 8 个全凭经度序）
+  const top = topWithTies(bins.filter((b) => b.n > 0).sort((a, b) => (b.n - a.n) || (a.lon - b.lon)), topN, (b) => b.n)
 
   // 共位簇（线性切分 → 环向闭合）
   const comps = []
@@ -759,7 +1257,7 @@ export function geoOccupancy(geoGpRecs, satcatIndex, opts) {
   clusters.sort((a, b) => (b.n - a.n) || (a.lonFrom - b.lonFrom))
 
   const arcSats = sats.filter((s) => inArc(s.lon, arcIn[0], arcIn[1]))
-  return { sats, bins, top, clusters, arc: { from: arcIn[0], to: arcIn[1], sats: arcSats, n: arcSats.length }, total: sats.length, binDeg, coloTol }
+  return { sats, bins, top, topN, clusters, arc: { from: arcIn[0], to: arcIn[1], sats: arcSats, n: arcSats.length }, total: sats.length, binDeg, coloTol }
 }
 
 /**
@@ -829,6 +1327,8 @@ export function groupMembers(group, gpIndex, satcatIndex, opts) {
   const gp = gpIndex instanceof Map ? gpIndex : new Map()
   const cat = satcatIndex instanceof Map ? satcatIndex : new Map()
   const t = asOfMs(opts && opts.asOf)
+  // 历元龄基准：缺省 = asOf；回溯时调用方传星历数据时间（星历是最新的那份，拿过去的基准去减得负龄）
+  const tEp = (opts && opts.epochAt != null) ? asOfMs(opts.epochAt) : t
   const res = groupResolve(group, gp, cat)
   const cls = new Map()
   for (const k of ['inGp', 'absent', 'decayed', 'unknown']) for (const e of res[k]) cls.set(e.id, { cls: k, missAt: e.missAt, name: e.name })
@@ -844,7 +1344,13 @@ export function groupMembers(group, gpIndex, satcatIndex, opts) {
       epoch: g ? g.epoch : '', epochAgeDays: null, rcsM2: row ? row.rcsM2 : null,
       geoSlot: '', source: '—', cls: meta.cls, missAt: meta.missAt
     }
-    if (fin(t) && row && row.launchDate) { const ms = dayMs(row.launchDate); if (fin(ms)) m.ageDays = Math.floor((t - ms) / DAY_MS) }
+    // 在轨天数止于陨落日：已陨落成员按基准时刻算，2020 年再入的星会印成在轨 2701 天；
+    // 判为已陨落却没有 DECAY_DATE（IMP 缺日期）的记空
+    if (fin(t) && row && row.launchDate) {
+      const ms = dayMs(row.launchDate)
+      const end = isDecayed(row) ? dayMs(row.decayDate) : t
+      if (fin(ms) && fin(end)) m.ageDays = Math.floor((Math.min(end, t) - ms) / DAY_MS)
+    }
     if (g) {
       const a = gpSemiMajorKm(g)
       const e = Number(g.ecc)
@@ -855,7 +1361,7 @@ export function groupMembers(group, gpIndex, satcatIndex, opts) {
       if (mm > 0) m.periodMin = r2(1440 / mm)
       m.regime = classifyOrbit({ e: Number.isFinite(e) ? e : 0, inclDeg: Number.isFinite(inc) ? inc : 0, periodMin: mm > 0 ? 1440 / mm : undefined })
       const ep = epochMs(g.epoch)
-      if (Number.isFinite(ep) && fin(t)) m.epochAgeDays = r1((t - ep) / DAY_MS)
+      if (Number.isFinite(ep) && fin(tEp)) m.epochAgeDays = r1((tEp - ep) / DAY_MS)
       const lon = geoLonOfOmm(g)
       if (Number.isFinite(lon)) { m.geoSlot = fmtGeoSlot(lon); m.lon = r3(lon) }
       m.source = 'GP'
@@ -877,13 +1383,17 @@ export function groupMembers(group, gpIndex, satcatIndex, opts) {
  * ★ 面间平均间隔 = 相邻两面锚点（面内最小 RAAN）的环向差的均值，绕一圈必然 = 360/面数 ——
  *   它是给读者的校验值；真正带信息的是同时给出的 min / max。
  * 壳的 altKm 是壳内成员平均高度的【中位数】，只是读数，不参与分壳判据（附录 C 只按倾角分壳）。
+ * ★ 两道门（2026-10-15 真编目审查）：GEO 成员不参与（RAAN 在近零倾角下没有物理意义，
+ *   几颗北斗 GEO 会各自成一个「面」）；成员不足 minShell（缺省 3）颗的壳不列 —— 原先 8 行里
+ *   5 行只有 1 颗，面间间隔恒印 360。只有一个面的壳，面间间隔三列记空。
  */
 export function planeClusters(members, opts) {
   const incTol = (opts && fin(opts.incTol) && opts.incTol > 0) ? opts.incTol : 1
   const raanTol = (opts && fin(opts.raanTol) && opts.raanTol > 0) ? opts.raanTol : 4
+  const minShell = (opts && fin(opts.minShell) && opts.minShell > 0) ? Math.floor(opts.minShell) : 3
   const shells = new Map()
   for (const m of (members || [])) {
-    if (!fin(m.inclDeg) || !fin(m.raanDeg)) continue
+    if (!fin(m.inclDeg) || !fin(m.raanDeg) || m.regime === 'GEO') continue
     const key = Math.round(foldInclination(m.inclDeg) / incTol) * incTol
     let arr = shells.get(key)
     if (!arr) shells.set(key, (arr = []))
@@ -891,6 +1401,7 @@ export function planeClusters(members, opts) {
   }
   const out = []
   for (const [inc, arr] of shells) {
+    if (arr.length < minShell) continue
     const list = arr.slice().sort((a, b) => (a.raanDeg - b.raanDeg) || byNorad(a.id, b.id))
     // 环向切分：先算相邻（含绕回首个）的间隔，间隔 > tol 即为面的分界
     const n = list.length
@@ -924,17 +1435,18 @@ export function planeClusters(members, opts) {
       spac.push(nx - pInfo[i].raanDeg)
     }
     const alts = arr.map((m) => (fin(m.perigeeKm) && fin(m.apogeeKm) ? (m.perigeeKm + m.apogeeKm) / 2 : NaN)).filter(fin).sort((a, b) => a - b)
+    const multi = pInfo.length > 1      // 单面壳没有「面间」可言
     out.push({
       inclDeg: r2(inc), n: arr.length, altKm: alts.length ? r1(alts[Math.floor((alts.length - 1) / 2)]) : null,
       planeCount: pInfo.length, planes: pInfo,
       perPlaneMin: sizes.length ? Math.min(...sizes) : 0, perPlaneMax: sizes.length ? Math.max(...sizes) : 0,
-      spacingDeg: spac.length ? r2(spac.reduce((s, x) => s + x, 0) / spac.length) : null,
-      spacingMinDeg: spac.length ? r2(Math.min(...spac)) : null,
-      spacingMaxDeg: spac.length ? r2(Math.max(...spac)) : null
+      spacingDeg: multi ? r2(spac.reduce((s, x) => s + x, 0) / spac.length) : null,
+      spacingMinDeg: multi ? r2(Math.min(...spac)) : null,
+      spacingMaxDeg: multi ? r2(Math.max(...spac)) : null
     })
   }
   out.sort((a, b) => (b.n - a.n) || (a.inclDeg - b.inclDeg))
-  return { shells: out, incTol, raanTol }
+  return { shells: out, incTol, raanTol, minShell }
 }
 
 /**
@@ -1006,25 +1518,34 @@ export function histBins(values, lo, hi, step, opts) {
  *    倾角一侧不丢：0–180° 已覆盖全域，恰好 180° 的那颗该落在末列。 */
 export function heatGrid(rows, opts) {
   const xLo = 0, xHi = 180, xStep = (opts && opts.incStep > 0) ? opts.incStep : 5
-  const yLo = 0, yHi = (opts && opts.altMax > 0) ? opts.altMax : 40000, yStep = (opts && opts.altStep > 0) ? opts.altStep : 500
+  // logAlt：高度轴按对数等分（altMin…altMax 切 altBins 层）。LEO 的密集带（300–1500 km）在线性
+  // 0–40000 km 轴上只占底下三行，而 MEO / GEO 各只有一两行有数 —— 对数轴让三个区制同时读得出层次。
+  const logAlt = !!(opts && opts.logAlt)
+  const yLo = logAlt ? ((opts && opts.altMin > 0) ? opts.altMin : 150) : 0
+  const yHi = (opts && opts.altMax > 0) ? opts.altMax : 40000, yStep = (opts && opts.altStep > 0) ? opts.altStep : 500
   const nx = Math.max(1, Math.min(360, Math.round((xHi - xLo) / xStep)))
-  const ny = Math.max(1, Math.min(400, Math.round((yHi - yLo) / yStep)))
+  const ny = logAlt ? Math.max(1, Math.min(400, Math.round((opts && opts.altBins) || 36))) : Math.max(1, Math.min(400, Math.round((yHi - yLo) / yStep)))
   const xBins = [], yBins = []
   for (let i = 0; i < nx; i++) xBins.push({ x0: xLo + i * xStep, x1: xLo + (i + 1) * xStep })
-  for (let j = 0; j < ny; j++) yBins.push({ y0: yLo + j * yStep, y1: yLo + (j + 1) * yStep })
+  const lq = Math.log(yHi / yLo) / ny
+  for (let j = 0; j < ny; j++) {
+    yBins.push(logAlt
+      ? { y0: r1(yLo * Math.exp(j * lq)), y1: r1(yLo * Math.exp((j + 1) * lq)) }
+      : { y0: yLo + j * yStep, y1: yLo + (j + 1) * yStep })
+  }
   const cells = []
   for (let j = 0; j < ny; j++) cells.push(new Array(nx).fill(0))
-  let over = 0
+  let over = 0, under = 0
   for (const r of (rows || [])) {
     const alt = meanAltKm(r)
     if (!fin(alt) || !fin(r.inclDeg)) continue
     let xi = Math.floor((r.inclDeg - xLo) / xStep)
-    let yj = Math.floor((alt - yLo) / yStep)
+    let yj = logAlt ? (alt > 0 ? Math.floor(Math.log(alt / yLo) / lq) : -1) : Math.floor((alt - yLo) / yStep)
     if (xi < 0) xi = 0
     if (xi >= nx) xi = nx - 1
-    if (yj < 0) yj = 0
+    if (yj < 0) { if (logAlt) { under++; continue } yj = 0 }
     if (yj >= ny) { over++; if (alt > yHi) continue; yj = ny - 1 }
     cells[yj][xi]++
   }
-  return { xBins, yBins, cells, over }
+  return { xBins, yBins, cells, over, under, logAlt }
 }

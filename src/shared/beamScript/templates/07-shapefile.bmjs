@@ -1,0 +1,17 @@
+//! id: shapefile
+//! name: ⟪Shapefile · 面图层与点图层|Shapefile · Polygon and point layers⟫
+//! ext: zip
+//zh 单个 Shapefile 仅支持一种几何类型：面（等值线 + Polygon）与点（波束中心 + 标记）分别输出，连同 .prj（WGS-84）打包为一个 ZIP，可直接载入 ArcGIS / QGIS。
+//en A shapefile holds one geometry kind: polygons (contours + areas) and points (peaks + markers) go to separate sets, zipped together with .prj (WGS-84); loads directly in ArcGIS / QGIS.
+//zh 属性字段名限 10 个 ASCII 字符；文本按 UTF-8 编码并附 .cpg。旧版 ArcMap 需 GBK 编码时传入 { encoding: 'gbk' }。
+//en Attribute names are limited to 10 ASCII characters; text is UTF-8 with a .cpg. Pass { encoding: 'gbk' } for legacy ArcMap.
+
+const areas = features(data, { peaks: false, markers: false })
+const points = features(data, { contours: false, polygons: false })
+
+const files = []
+if (areas.length) files.push(...shapefile('coverage_polygons', areas))
+if (points.length) files.push(...shapefile('coverage_points', points))
+if (!files.length) return console.warn('⟪暂无可导出的要素|Nothing to export⟫')
+
+return zip(`${data.meta.title}_shp.zip`, files)

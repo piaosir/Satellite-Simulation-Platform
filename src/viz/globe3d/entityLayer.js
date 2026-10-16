@@ -41,6 +41,7 @@ import { applyRestPose, stageMatrix } from '../models/thumbs.js'
 import { splitMultiMaterial } from '../models/irToThree.js'
 import { isSoftwareRenderer } from './spaceFx.js'
 import { markerZoomK } from './zoomScale.js'
+import { requestRedraw, redrawOnCall } from './redraw.js'   // 地球场景按需出帧：页面直接调本层 / 模型异步就绪后请它补画
 import { sceneAnchor, entityPoseAt, makeEntityPose } from '@core/models/entityPose.mjs'
 import { anchorBodyOf, aimRigOf, makeAimState, solveAim, parkAim, jointValuesOf, shadeOf, ENT_FADE_S } from '@core/models/entityRuntime.mjs'
 
@@ -415,9 +416,11 @@ export function createEntityLayer(o = {}) {
   const camSig = new Float64Array(20)
   let camSigOk = false
   let zoomD = 0   // 缩放联动用的相机距离（scene.zoomDist，update 第五参）；0 = 没给，按 |相机位置|
+  // 上一次 writeInstances 用的相机（screenBoxOf 按同一相机把包围盒八角投到屏上；ok = 已写过一帧）
+  const lastCam = { ok: false, tanH: 1, asp: 1, near: 0, ww: 1, hh: 1, cx: 0, cy: 0, cz: 0, qx: 0, qy: 0, qz: 0, qw: 1 }
   const _hl = new THREE.Vector3()
   const _dirB = [0, 0, 0]
-  const _E2 = new Float64Array(16), _acc = new Float64Array(16), _tmp = new Float64Array(16)
+  const _E2 = new Float64Array(16), _E3 = new Float64Array(16), _E2b = new Float64Array(16), _acc = new Float64Array(16), _tmp = new Float64Array(16)
   let rendererWaiters = []
   // 描边（见文件头「描边」）：离屏遮罩 / 膨胀图、三只材质、全屏三角；本帧在画图标的外包矩形（CSS px：x0, y0, x1, y1，y 向下）
   let maskRT = null, haloRT = null, maskMat = null, dilateMat = null, compMat = null, fsMesh = null, fsScene = null, fsCam = null
@@ -428,7 +431,7 @@ export function createEntityLayer(o = {}) {
   // ───────────── 模型 ─────────────
   function newModel(id) {
     const M = { id, refs: 0, zeroAt: 0, state: 'loading', req: 0, inst: null, meta: null, root: null, MB: null,
-      frames: null, frameOfKey: null, full: null, icon: null, lodState: '', rig: null, box: null, center: [0, 0, 0], radius: 1,
+      frames: null, frameOfKey: null, full: null, icon: null, lodState: '', rig: null, box: null, fbox: null, center: [0, 0, 0], radius: 1,
       anchors: {}, mats: null, dead: false, onUp: null, drest: null }
     M.onUp = () => { if (!disposed && !M.dead) loadModel(M) }
     return M
@@ -613,6 +616,22 @@ export function createEntityLayer(o = {}) {
     let full
     try { full = buildVariant(M, root, 'full') } finally { Object.assign(M, save) }
     R.full = full
+    // 有关节帧（方位 / 俯仰座）：逐件 { 帧 f, 烘焙矩阵 bake, 网格自身包围盒 b }（与合批顶点同一条链 E·D[f]·bake·v），
+    // screenBoxOf 按它投影 —— 静止位姿包围盒框不住对星后的碟面；逐件、几何自身系的盒角，斜转后外接框不至于撑偏。
+    // 无关节帧 → null（走 R.box，逐位不变）
+    R.fbox = null
+    if (R.frames.length > 1 && full && full.bakes) {
+      const fb = []
+      for (const p of full.bakes) {
+        const g = p.node && p.node.geometry
+        if (!g || !g.attributes || !g.attributes.position) continue
+        if (!g.boundingBox) g.computeBoundingBox()
+        const bb = g.boundingBox
+        if (bb.isEmpty()) continue
+        fb.push({ f: p.frame, m: Float64Array.from(p.bake.elements), b: [bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z] })
+      }
+      if (fb.length) R.fbox = fb
+    }
     return R
   }
   /** 关节值 (a1, a2)（NaN = 静止值）→ 各帧本体系矩阵 D（out：frames × 16） */
@@ -681,7 +700,7 @@ export function createEntityLayer(o = {}) {
     disposeModelGpu(M)
     if (M.inst) M.inst.release()
     M.inst = inst; M.meta = R.meta; M.root = R.root; M.MB = R.MB; M.rig = R.rig; M.frames = R.frames; M.frameOfKey = R.frameOfKey
-    M.mats = R.mats; M.matMap = R.matMap; M.box = R.box; M.center = R.center; M.radius = R.radius; M.drest = R.drest
+    M.mats = R.mats; M.matMap = R.matMap; M.box = R.box; M.fbox = R.fbox; M.center = R.center; M.radius = R.radius; M.drest = R.drest
     M.full = R.full; M.icon = null; M.lodState = ''; M.anchors = {}
     variantMeshesIn(M.full, iconScene)
     M.state = 'ready'
@@ -693,6 +712,7 @@ export function createEntityLayer(o = {}) {
       s.poseDirty = true; s.aimDirty = true; s.jointDirty = true
     }
     dirty = true
+    requestRedraw()
   }
 
   // 图标档（后台抽稀）
@@ -719,6 +739,7 @@ export function createEntityLayer(o = {}) {
         variantMeshesIn(V, iconScene)
         M.lodState = 'done'
         dirty = true
+        requestRedraw()
       } catch (e) {
         M.lodState = 'failed'
         console.warn('[entity] 图标档抽稀失败：' + M.id + ' ' + ((e && e.message) || e))
@@ -1019,6 +1040,8 @@ export function createEntityLayer(o = {}) {
     const cl = Math.sqrt(C.x * C.x + C.y * C.y + C.z * C.z) || 1
     const cdx = C.x / cl, cdy = C.y / cl, cdz = C.z / cl
     const hh = Math.max(1, h), ww = Math.max(1, w)
+    lastCam.ok = true; lastCam.tanH = tanH; lastCam.asp = asp; lastCam.near = camera.near; lastCam.ww = ww; lastCam.hh = hh
+    lastCam.cx = C.x; lastCam.cy = C.y; lastCam.cz = C.z; lastCam.qx = qx; lastCam.qy = qy; lastCam.qz = qz; lastCam.qw = qw
     // 随缩放联动：与标记精灵 / 标记文字同一系数（scene.zoomDist：地球视图靶心恒为地心，就是 cl；跟随卫星时是 FOLLOW_ZOOM_DIST）
     const zk = markerZoomK(zoomD > 0 ? zoomD : cl)
     // 1) 计数（容量不够先扩）
@@ -1262,6 +1285,40 @@ export function createEntityLayer(o = {}) {
     busy() { return busyFlag || (pendingGpu > 0 && !renderer) },
     /** 该实体的模型图标此刻在画布上的中心与半径（CSS 像素）：[x, y, r]；没画 / 背面淡到看不见 → null（scene 的拖放命中与高亮环用） */
     screenOf(key) { const s = slots.get(key); return s && s.drawn && s.onScreen && s.fade > 0.05 ? [s.sx, s.sy, s.sr] : null },
+    /** 该实体模型此刻在画布上的外接框（CSS 像素）：[x0, y0, x1, y1]，模型包围盒八角按本帧实例矩阵与相机投出来（选中括号贴它；
+     *  包围圆直径对扁长的车 / 船上下空得太多）；没画 / 有角落在相机背后 → null，调用方回落 screenOf */
+    screenBoxOf(key) {
+      const s = slots.get(key), M = s && s.model, L = lastCam
+      if (!s || !s.drawn || !s.onScreen || s.fade <= 0.05 || !M || !M.box || !L.ok) return null
+      // 有关节帧：逐件网格包围盒按 E·D[f]·bake 投（与 writeInstances 合批顶点同一条链）；否则静止包围盒按 E
+      const fb = M.fbox && s.D && s.D.length === M.frames.length * 16 ? M.fbox : null
+      const nb = fb ? fb.length : 1
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+      for (let q = 0; q < nb; q++) {
+        let E = s.E, b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0
+        if (fb) {
+          const P = fb[q]
+          if (P.f > 0) { mul4(s.E, 0, s.D, P.f * 16, _E2b, 0); mul4(_E2b, 0, P.m, 0, _E3, 0) } else mul4(s.E, 0, P.m, 0, _E3, 0)
+          E = _E3; b0 = P.b[0]; b1 = P.b[1]; b2 = P.b[2]; b3 = P.b[3]; b4 = P.b[4]; b5 = P.b[5]
+        } else { const b = M.box; b0 = b.min[0]; b1 = b.min[1]; b2 = b.min[2]; b3 = b.max[0]; b4 = b.max[1]; b5 = b.max[2] }
+        for (let i = 0; i < 8; i++) {
+          const vx = i & 1 ? b3 : b0, vy = i & 2 ? b4 : b1, vz = i & 4 ? b5 : b2
+          const px = E[0] * vx + E[4] * vy + E[8] * vz + E[12] - L.cx
+          const py = E[1] * vx + E[5] * vy + E[9] * vz + E[13] - L.cy
+          const pz = E[2] * vx + E[6] * vy + E[10] * vz + E[14] - L.cz
+          const tx = 2 * (L.qy * pz - L.qz * py), ty = 2 * (L.qz * px - L.qx * pz), tz = 2 * (L.qx * py - L.qy * px)
+          const cx = px + L.qw * tx + (L.qy * tz - L.qz * ty), cy = py + L.qw * ty + (L.qz * tx - L.qx * tz), cz = pz + L.qw * tz + (L.qx * ty - L.qy * tx)
+          if (-cz <= L.near) return null
+          const X = (cx / (-cz * L.tanH * L.asp) * 0.5 + 0.5) * L.ww, Y = (0.5 - cy / (-cz * L.tanH) * 0.5) * L.hh
+          if (X < x0) x0 = X
+          if (X > x1) x1 = X
+          if (Y < y0) y0 = Y
+          if (Y > y1) y1 = Y
+        }
+      }
+      if (!(x1 >= x0)) return null
+      return [x0, y0, x1, y1]
+    },
     dispose() { api.dispose() }
   }
 
@@ -1388,5 +1445,7 @@ export function createEntityLayer(o = {}) {
       for (const f of ws) { try { f() } catch { /* ignore */ } }
     }
   }
-  return api
+  // 按需出帧：页面直接调本层（喂实体、开关、换光）时地球场景收不到置脏 —— 调用后请求补画一帧。
+  // spriteWeight / hitTest 在出帧与拾取中途被场景问，算读数
+  return redrawOnCall(api, new Set(['spriteWeight', 'hitTest', 'stats', 'dispose']))
 }

@@ -253,9 +253,12 @@ function saveLibrary(ns, data) {
 // ---- 应用设置 ----
 function getSettings() { return read('settings.json', {}) }
 // 走 mutate：读不出来就不写（见 mutate 注释）。这是全库唯一被后台定时器高频调用的写入口
-// （activation.js 的时钟锚每分钟一次 + 每次心跳落激活书），也是唯一能在用户毫无察觉时丢数据的。
+// （activation.js 的时钟锚每 10 分钟一次 + 每次心跳落激活书），也是唯一能在用户毫无察觉时丢数据的。
+// 内容不变就不写：激活书轮询每分钟都把同一份激活书再存一遍，原子写（tmp + .bak + rename）次次惊动杀软。
+// 判据是「补丁里每个键与现值序列化后相同」——相同则整份写出去也与磁盘上逐字节一样，跳过不改变任何读到的内容
 function setSettings(patch) {
-  return mutate('settings.json', {}, (cur) => ({ ...cur, ...patch })) || getSettings()
+  const same = (cur) => !!cur && typeof cur === 'object' && !!patch && typeof patch === 'object' && Object.keys(patch).every((k) => JSON.stringify(patch[k]) === JSON.stringify(cur[k]))
+  return mutate('settings.json', {}, (cur) => (same(cur) ? undefined : { ...cur, ...patch })) || getSettings()
 }
 
 module.exports = {

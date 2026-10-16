@@ -6,7 +6,7 @@ import { reportError } from '../../shared/reportError.js'
 import { errText } from '../../shared/errText.js'
 import { parseGrd } from './parse.js'
 import { sniffPatternFormat, foreignPatternToGrd } from './patFormats.js'
-import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, attBiasTags, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
+import { antennaBasis, antennaBasisEcef, beamBasisFrom, attAxesReadout, attBiasTags, POINT_KEYS, bumpPointRev, dirAzElAbout, dirToAzEl, azElGround, surfaceAzEl, projectGrid, projectGridShared, projShare, projectLimb, gridDir, gridDirs, fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, dLon, loopPointAtFraction, loopLabelAnchor, loopLabelsAtInterval, nearestFractionOnLoop } from './coverage.js'
 import { boresightShellPoint } from './shellProj.js'
 import { schemeColorsRGB, rgbCss, cssRgb } from './colormap.js'
 import { parseLevelValues, levelValuesText, levelValues } from './levelTable.js'
@@ -1159,12 +1159,23 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   }
   // 投影同步：当 (指向 + 热区盒) 变化时才重投影该波束，并原地复用其 proj 数组。
   // 只对「绘制中(beamsToPlot)」的波束调用 → HTS 只画 1/N 省 N 倍；热区盒进一步把每个波束的投影量降到覆盖区。
+  // ★ 多波束天线：同一张网格的波束共用一份投影（coverage.projectGridShared，逐位同各自现算）—— 拖指向 / 播放每帧
+  //   原来逐波束各投一遍，4 个同网格波束就是 4 遍。按网格签名在天线上各留一份共享表；格点过多（Whittaker 细网格）不共用，省内存
+  const SHARE_MAX_PTS = 1.5e6
   function syncBeamProj(c, beam, cfg, field) {
     const box = beamBox(beam, cfg, field)
-    const bkey = basisKeyOf(c) + '|' + (box ? `${box.r0}_${box.r1}_${box.c0}_${box.c1}` : 'F')
+    const bk = basisKeyOf(c)
+    const bkey = bk + '|' + (box ? `${box.r0}_${box.r1}_${box.c0}_${box.c1}` : 'F')
     if (beam._projKey === bkey) return
     const basis = beamBasis(c.meta, cfg)
-    beam.proj = projectGrid(beam.grid, c.meta.igrid, basis, box, beam.proj, true)   // limbOutside：越地平点延伸到地平外，供地平弧裁剪
+    const g = beam.grid
+    if (c.beams && c.beams.length > 1 && g && g.NX * g.NY <= SHARE_MAX_PTS) {
+      const gsig = g.XS + ',' + g.YS + ',' + g.XE + ',' + g.YE + ',' + g.NX + ',' + g.NY
+      if (!c._pjs) c._pjs = new Map()
+      let sh = c._pjs.get(gsig)
+      if (!sh) { sh = projShare(); c._pjs.set(gsig, sh) }
+      beam.proj = projectGridShared(sh, bk + '|' + c.meta.igrid, g, c.meta.igrid, basis, box, beam.proj, true)
+    } else beam.proj = projectGrid(beam.grid, c.meta.igrid, basis, box, beam.proj, true)   // limbOutside：越地平点延伸到地平外，供地平弧裁剪
     beam._projKey = bkey
   }
   function reproject() {
@@ -1491,14 +1502,68 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
     // 聚焦（编辑中）天线排到最后 → 填充叠加时位于最上层，最醒目（其余按选中顺序在下）
     const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
     if (!ks.includes(active.value)) setLivePeak('ground', null)   // 聚焦天线没画出来 → 面板读数留空，不留上一次的陈值
-    const layers = ks.flatMap((k) => buildLayer(k, s.showVal))   // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）
+    // 每天线展开成 N 个波束子层；2D/3D 共用同一份（省一半重算）。逐天线记下这一轮的层 id / 步长格 / 输入签名，供播放时只重建动了的天线（recomputeMoved）
+    const perKey = new Map(), layers = []
+    for (const k of ks) {
+      const c0 = _strideCells.length
+      const ls = buildLayer(k, s.showVal)
+      perKey.set(k, { c: cache.get(k), ids: ls.map((L) => L.id), cells: _strideCells.slice(c0), sig: liveSigOf(k) })
+      for (const L of ls) layers.push(L)
+    }
     const opts = fieldOpts()
     opts.rays = buildAxisRays(ks, A)                             // 天线视轴：一根天线一条，打到地球上（见 buildAxisRays）
     // 增量更新：图层按 id 复用 GPU 缓冲，只有真消失的层才销毁（94 波束下这是「点播放就卡」的大头）
     if (sc) (sc.updateCoverageField || sc.setCoverageField)(layers, opts)
     if (fl) fl.setField(layers, opts)
     _strideDone = _strideCells || []; _strideCells = null; _strideSig = strideSigOf(_strideDone, _viewVm)
+    _partial = (sc && !fl && sc.patchCoverageLayers) ? { sc, ks, perKey, gsig: JSON.stringify(s), hs: sc.covLabelStyle ? sc.covLabelStyle() : '' } : null
     _fullMs = perfNow() - t0            // 整轮耗时（几何 + GPU 重建都算在内）：面板读数用
+  }
+  // ★ 播放 / 实时每拍：只重建【动了的】天线的层（一根 LEO 关联天线在动，同屏不动的 GEO 多波束不再陪着整轮重算），
+  //   其余天线的层原样留在场景里 —— 它们的输入一个没变，重建出来也与留着的逐一相同。任何一项拿不准就退回整轮 recompute：
+  //   上一轮不是只喂 3D（2D 在看 / 在出图）、场景换了、选中集或叠放次序变了、全局显示设置变了、缩放让任何一层的步长档变了、
+  //   底色变了（标注套边烘在贴图里，见 scene.covLabelStyle）、
+  //   不动的天线自身设置 / 指向 / 星历状态 / 聚焦与否 变了、动了的天线这一轮出的层 id 与上一轮不同（波束增减、无星历撤层）。
+  //   层序（li）沿用上一轮的分配（patchCoverageLayers 按 id 认旧层），与整轮重建时一致。
+  let _partial = null
+  const liveSigOf = (k) => {
+    const c = cache.get(k)
+    if (!c || !c.meta || !c.settings) return '-'
+    const node = sats.value.find((x) => x.folder === k.split('|')[0])
+    return JSON.stringify(c.settings) + '|' + basisKeyOf(c) + '|' + (!node || node.labelShow !== false) + '|' + nodeEphGone(node) + '|' + (k === active.value) + '|' + c.beams.length
+  }
+  function recomputeMoved(moved) {
+    const P = _partial
+    const sc = isFlat() ? null : getScene(), fl = flatField()
+    if (!P || !sc || fl || sc !== P.sc) { recompute(); return }
+    const t0 = perfNow()
+    refreshView()
+    const ks = [...selected.value].sort((a, b) => (a === active.value ? 1 : 0) - (b === active.value ? 1 : 0))
+    if (ks.length !== P.ks.length || ks.some((k, i) => k !== P.ks[i]) || JSON.stringify(s) !== P.gsig || strideSigOf(_strideDone, _viewVm) !== _strideSig ||
+      (sc.covLabelStyle ? sc.covLabelStyle() : '') !== P.hs) { recompute(); return }
+    for (const k of ks) {
+      if (moved.has(k)) continue
+      const e = P.perKey.get(k)
+      if (!e || e.c !== cache.get(k) || e.sig !== liveSigOf(k)) { recompute(); return }
+    }
+    _strideCells = []
+    const layers = []
+    for (const k of ks) {
+      if (!moved.has(k)) continue
+      const e = P.perKey.get(k)
+      const c0 = _strideCells.length
+      const ls = buildLayer(k, s.showVal)
+      const ids = ls.map((L) => L.id)
+      if (!e || e.c !== cache.get(k) || ids.length !== e.ids.length || ids.some((id, i) => id !== e.ids[i])) { _strideCells = null; recompute(); return }
+      e.cells = _strideCells.slice(c0); e.sig = liveSigOf(k)
+      for (const L of ls) layers.push(L)
+    }
+    _strideCells = null
+    const opts = fieldOpts()
+    opts.rays = buildAxisRays(ks, A)
+    sc.patchCoverageLayers(layers, opts)
+    _strideDone = ks.flatMap((k) => P.perKey.get(k).cells); _strideSig = strideSigOf(_strideDone, _viewVm)
+    _fullMs = perfNow() - t0
   }
   // ★ 【一帧一个时刻】：覆盖场的重算永远与星位在同一次调用里做完，绝不延后。
   //   曾经为了省算力把它推迟到「上次耗时 ×2」之后 —— 那等于画面上星在 t、覆盖场在 t−Δ，
@@ -1648,8 +1713,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       if (moveCoverage(c, key, p)) { moved.add(key); if (selected.value.includes(key)) changed = true }
     }
     // 仅绘制中的覆盖层变了才重绘；未绘制的性能表天线只需 meta 已更新。
-    // 当场重算、不延后：星位与覆盖场必须是同一个时刻（见上面「一帧一个时刻」）。
-    if (changed) recompute()
+    // 当场重算、不延后：星位与覆盖场必须是同一个时刻（见上面「一帧一个时刻」）。只重建动了的那几根（见 recomputeMoved）
+    if (changed) recomputeMoved(moved)
     return { changed, perfMoved: extras.length ? moved.has(extras[0]) : false, moved }
   }
   // 手改卫星信息（经纬度/高度）后，该星全部天线的覆盖图随之平移/缩放（与仰角线一同变化）。
@@ -2285,6 +2350,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
 
   // 导出当前【选中且绘制中】天线波束的等值线为 GXT 用数据（闭合环 + 增益）。供文件管理器「导出当前画面覆盖为 GXT」。
   // 复用绘制同款 bandGeometry，按各档拼成闭合环（stitchLoops）；相对模式记档值，绝对模式记绝对 dB。
+  // 每条线另带该档的屏上线色 color / 档名 name，波束另带等值线类型与极化 / 增益偏置 / 路损设置和峰值电平 ——
+  // 可编程波束地图的数据模型要用；GXT / KML 序列化器不认这些字段，菜单导出不受影响。
   function exportContours() {
     const out = []
     for (const key of selected.value) {
@@ -2297,7 +2364,8 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       for (const bi of plot) {
         const beam = beamFor(c, cfg, c.beams[bi], dens)   // 导出的线与屏上同一份网格（含 Whittaker 密度）
         const field = beamField(beam, cfg)
-        const asc = [...absLevels(peakOf(beam, field, cfg), cfg)].sort((a, b) => a.abs - b.abs)
+        const peakDb = peakOf(beam, field, cfg)
+        const asc = [...absLevels(peakDb, cfg)].sort((a, b) => a.abs - b.abs)
         const box = beamBox(beam, cfg, field)
         syncBeamProj(c, beam, cfg, field)
         const ascAbs = asc.map((x) => x.abs), stride = displayQuality.value.gridStride || 1
@@ -2307,7 +2375,7 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         const contours = []
         asc.forEach((x, i) => {
           for (const loop of stitchLoops(geo.lines[i])) {
-            if (loop.length >= 4) contours.push({ g: cfg.ctype === 'abs' ? +x.abs.toFixed(2) : x.v, p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]) })
+            if (loop.length >= 4) contours.push({ g: cfg.ctype === 'abs' ? +x.abs.toFixed(2) : x.v, p: loop.map((p) => [+p[0].toFixed(3), +p[1].toFixed(3)]), color: x.lineColor || x.color || '', name: x.name || '' })
           }
         })
         // 峰值点：与 buildBeamLayer 画面显示同源（随指向拖拽/极化/增益实时变化）。
@@ -2315,7 +2383,11 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
         // 峰值方向越过地平（hit=false）→ 地表上根本没有这个点，bore 留空，不往 GXT/KML 里写假坐标。
         const pp = peakPoint(c, cfg, beam, field)
         const pk = (pp && pp.hit) ? [+pp.lon.toFixed(4), +pp.lat.toFixed(4)] : null
-        if (contours.length) out.push({ name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: pk ? [pk] : [], contours })
+        if (contours.length) out.push({
+          name: beamName(c, bi), satName: (node && node.satName) || c.meta.sat || '', lon: c.meta.satLon, bore: pk ? [pk] : [], contours,
+          antName: key.split('|')[1] || '', ctype: cfg.ctype, refDb: cfg.refDb, pol: cfg.pol, gainOffset: cfg.gainOffset, pathLoss: cfg.pathLoss,
+          peak: Number.isFinite(peakDb) ? +peakDb.toFixed(2) : null
+        })
       }
     }
     return out

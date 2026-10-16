@@ -1671,8 +1671,9 @@ async function refreshSlaScan(out, store, gen) {
 
 // MODCOD 列：本行载波从 MODCOD 库里选的那一档（名字可自定义），且与引擎回显的调制 / 码率仍一致才用它；
 // 否则（自定义体制、或选完又手改过调制 / 码率）按「调制方式 + FEC 码率」拼出来
-function modcodNameOf(rowId, d) {
-  const row = linkRows.find((r) => r._id === rowId)
+// rowOf：批量回填时传进来的「行 id → 行」查表（取第一个同 id 的行，同 find 口径）；单条调用照旧线性找
+function modcodNameOf(rowId, d, rowOf) {
+  const row = rowOf ? rowOf.get(rowId) : linkRows.find((r) => r._id === rowId)
   const f = row ? resolveBaseband(row.basebandId).form : null
   const same = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim()
   const mc = f && f.modcodLabel ? ((basebandOpts.value.modcod || {})[f.dvbStandard] || []).find((r) => r.label === f.modcodLabel) : null
@@ -1691,6 +1692,11 @@ function writeResultVals(out) {
     if (p) colAd[def.key] = p
   }
   resColUnits.value = Object.fromEntries(Object.entries(colAd).map(([k, p]) => [k, p.unit]))
+  // 原来逐行 setVals（每行整份复制 computedVals）+ 逐行 linkRows.find —— 两处都是 O(N²)，千行表回填一秒多。
+  // 改成先查表、各行补丁攒成一份（同 id 多次照序合并），末尾一次 patchVals：结果与逐行写逐字节相同
+  const rowOf = new Map()
+  for (const r of linkRows) if (!rowOf.has(r._id)) rowOf.set(r._id, r)
+  const batch = {}
   for (const l of out) {
     const d = l.data
     const patch = {}
@@ -1701,15 +1707,16 @@ function writeResultVals(out) {
         const mbps = colVal(d, def)
         patch._capacityMbps = !isFinite(mbps) ? '—' : ad ? fmtScaled(ad.conv(mbps)) : mbps.toFixed(3)
       } else if (def.key === 'modcodResult') {
-        patch._modcodResult = modcodNameOf(l.rowId, d)
+        patch._modcodResult = modcodNameOf(l.rowId, d, rowOf)
       } else {
         const v = d[def.key]
         const n = parseFloat(v)
         patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
       }
     }
-    setVals(l.rowId, patch)
+    batch[l.rowId] = { ...(batch[l.rowId] || null), ...patch }
   }
+  patchVals(batch)
 }
 // 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：结果列就地重排 + 详细预算重取一次。
 // 不碰引擎——档位只管显示，数值一个没变。

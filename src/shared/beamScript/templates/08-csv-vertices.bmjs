@@ -1,0 +1,26 @@
+//! id: csv-vertices
+//! name: ⟪CSV · 等值线顶点坐标|CSV · Contour vertex coordinates⟫
+//! ext: csv
+//zh 每个顶点一行；按 UTF-8 带 BOM 编码，Excel 可直接打开且中文显示正常。
+//en One row per vertex, opens directly in Excel (UTF-8 with BOM).
+
+const rows = []
+for (const b of data.beams) {
+  b.contours.forEach((c, ci) => {
+    c.points.forEach(([lon, lat], pi) => rows.push({
+      '⟪卫星|Satellite⟫': b.satellite,
+      '⟪波束|Beam⟫': b.name,
+      '⟪频段|Band⟫': b.band,
+      '⟪类型|Type⟫': b.type,
+      '⟪电平|Level⟫': c.level,
+      '⟪单位|Unit⟫': b.unit,
+      '⟪环序号|Ring⟫': ci + 1,
+      '⟪点序号|Vertex⟫': pi + 1,
+      '⟪经度|Longitude⟫': fmt(lon, 6),
+      '⟪纬度|Latitude⟫': fmt(lat, 6),
+    }))
+  })
+}
+console.log(`${rows.length} ⟪行|rows⟫`)
+
+return file('⟪等值线顶点|contour_vertices⟫.csv', csv(rows), { encoding: 'utf-8-bom' })

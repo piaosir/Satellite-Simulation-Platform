@@ -1,0 +1,26 @@
+//! id: transform
+//! name: ⟪GXT · 电平筛选 / 偏置 / 顶点抽稀|GXT · Level filter / offset / vertex simplification⟫
+//! ext: gxt
+//zh 先变换数据再写出格式：电平筛选、电平整体偏置、按容差抽稀顶点、波束重命名。变换作用于本次运行的数据副本，不影响地图。
+//en Transform the data, then write a format: filter levels, offset levels, simplify vertices, rename beams. Each run works on its own copy; the map is untouched.
+
+const KEEP = []        // ⟪仅导出指定电平，如 [48, 46, 44]；空数组 = 全部|levels to keep, e.g. [48, 46, 44]; empty = all⟫
+const OFFSET = 0       // ⟪电平整体偏置（dB），如功放回退取 -3|level offset (dB), e.g. -3 for amplifier back-off⟫
+const TOL_KM = 2       // ⟪抽稀容差（km），0 = 不抽稀|simplification tolerance (km), 0 = off⟫
+const DIGITS = 3       // ⟪坐标小数位|coordinate decimals⟫
+
+let before = 0, after = 0
+for (const b of data.beams) {
+  b.contours = b.contours
+    .filter((c) => !KEEP.length || KEEP.includes(c.level))
+    .map((c) => {
+      before += c.points.length
+      const points = TOL_KM > 0 ? geo.simplify(c.points, TOL_KM) : c.points
+      after += points.length
+      return { ...c, level: +(c.level + OFFSET).toFixed(2), points }
+    })
+  // b.name = b.name.replace(/^Beam\s*/i, '')   // ⟪重命名示例|rename example⟫
+}
+console.log(`⟪顶点|vertices⟫ ${before} → ${after}`)
+
+return file('⟪变换后|transformed⟫.gxt', gxt(data, { digits: DIGITS }))

@@ -206,7 +206,7 @@ export function formatLonLat(lon, lat, fmt, digits = 4, hKm = 0) {
       return `X ${ecefNum(x, d)}  Y ${ecefNum(y, d)}  Z ${ecefNum(z, d)} km`
     }
     case 'dms':
-      return dmsOne(lat, 'N', 'S', Math.max(0, digits - 2)) + ' ' + dmsOne(lon, 'E', 'W', Math.max(0, digits - 2))
+      return dmsOne(lon, 'E', 'W', Math.max(0, digits - 2)) + ' ' + dmsOne(lat, 'N', 'S', Math.max(0, digits - 2))
     case 'utm': {
       const u = toUtm(lon, lat)
       return u.zone + (u.band || '') + ' ' + Math.round(u.e) + 'E ' + Math.round(u.n) + 'N'
@@ -219,7 +219,7 @@ export function formatLonLat(lon, lat, fmt, digits = 4, hKm = 0) {
       return g.zone + '带 ' + Math.round(g.eZoned) + 'E ' + Math.round(g.n) + 'N'
     }
     default:
-      return lat.toFixed(digits) + (lat >= 0 ? '°N ' : '°S ') + Math.abs(lon).toFixed(digits) + (lon >= 0 ? '°E' : '°W')
+      return Math.abs(lon).toFixed(digits) + (lon >= 0 ? '°E ' : '°W ') + Math.abs(lat).toFixed(digits) + (lat >= 0 ? '°N' : '°S')
   }
 }
 

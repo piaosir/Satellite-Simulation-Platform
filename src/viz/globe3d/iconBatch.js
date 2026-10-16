@@ -30,6 +30,7 @@ import * as THREE from 'three'
 import { pointZoomK } from './zoomScale.js'
 import { ICON_LOD_ERR } from './iconLod.js'
 import { buildDotMaskTable } from './dotMaskHash.js'
+import { requestRedraw } from './redraw.js'   // 地球场景按需出帧：模板 / 抽稀档异步就绪后请它补画
 
 const FADE_S = 0.3
 export const ICON_MAX_ART = 8          // 至多几个对日关节逐实例驱动（多出来的停在静止位姿）
@@ -525,6 +526,7 @@ export function createIconBatch(o) {
     if (!wasReady) g.fading = true
     visDirty = true
     requestLods(g)
+    requestRedraw()
   }
   function buildTemplate(g, inst) {
     const mount = o.mount(inst, g.frame)
@@ -645,6 +647,7 @@ export function createIconBatch(o) {
         if (lv.tris > 0) { g.root.add(lv.root); if (o.gpuTrack) o.gpuTrack(lv.root) }
       })
       visDirty = true
+      requestRedraw()
     })
   }
   function switchLevel(g, k) {
@@ -909,7 +912,7 @@ export function createIconBatch(o) {
       c.sig.set(s); c.parts = g.parts
       buildSil(g, i, pxR, W, H, sx0, sy0, c.tab)
       silSpent += (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
-    }
+    } else if (!same) requestRedraw()   // 预算用完先沿用旧表：按需出帧下要请场景再出一帧把它补上
     // 查表：取线方向两侧最近的两档里大的那个（宁可停在轮廓外一点，不扎进图标底下）
     const fb = dia(dx, dy) * SIL_N / 4 - 0.5
     const k0 = ((Math.floor(fb) % SIL_N) + SIL_N) % SIL_N

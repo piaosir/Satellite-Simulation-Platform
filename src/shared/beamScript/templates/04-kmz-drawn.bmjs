@@ -1,0 +1,18 @@
+//! id: kmz-drawn
+//! name: ⟪KMZ · 显示配色与电平标注|KMZ · Display colors with level labels⟫
+//! ext: kmz
+//zh Google Earth 压缩格式（KMZ = 内含 doc.kml 的 ZIP 包）：等值线采用当前显示配色，名称格式为「EIRP 48 dBW」。
+//en Google Earth package (KMZ = a ZIP holding doc.kml): contours use the displayed level colors, named like "EIRP 48 dBW".
+
+const label = (c, b) => `${b.type || (b.source === 'antenna' ? 'Gain' : '')} ${c.level} ${b.unit}`.trim()
+
+const doc = kml(data, {
+  name: '⟪波束覆盖|Beam coverage⟫',
+  colors: 'drawn',
+  lineWidth: 2,
+  fillOpacity: 0.15,
+  contourName: label,
+  peakName: (b) => `${b.satellite} ${b.name}`,
+})
+
+return zip('⟪波束覆盖|Beam coverage⟫.kmz', [file('doc.kml', doc)])

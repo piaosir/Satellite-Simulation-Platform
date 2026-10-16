@@ -1,0 +1,22 @@
+//! id: gxt-per-beam
+//! name: ⟪GXT · 按波束拆分|GXT · Split by beam⟫
+//! ext: gxt
+//zh 每个波束输出一个 GXT 文件，文件名沿用 SATSOFT 命名约定「卫星_频段_波束_类型.gxt」（覆盖库导入时据此解析）。
+//en One GXT per beam, named the SATSOFT way "satellite_band_beam_type.gxt" (the coverage library splits names this way on import).
+//zh 返回多个文件时，导出时需指定输出目录。
+//en When several files are returned, Export prompts for an output folder.
+
+const safe = (s) => String(s ?? '').replace(/[\\/:*?"<>|]+/g, '-').trim()
+const used = new Map()
+const unique = (name) => {
+  const n = (used.get(name) || 0) + 1
+  used.set(name, n)
+  return n === 1 ? name : `${name}-${n}`
+}
+
+const files = data.beams.map((b) => {
+  const name = [b.satellite, b.band, b.name, b.type || (b.source === 'antenna' ? 'GRD' : '')].map(safe).filter(Boolean).join('_')
+  return file(unique(name || 'beam') + '.gxt', gxt(b, { digits: 3 }))
+})
+if (data.polygons.length) files.push(file('Polygon.gxt', gxt({ ...data, beams: [] })))
+return files

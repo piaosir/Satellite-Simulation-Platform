@@ -36,6 +36,7 @@
 import * as THREE from 'three'
 import { MOON_R_KM, EARTH_SHADOW_KM, SUN_R_KM, AU_KM, discOverlap, icrfToEcef } from '../lunar.js'
 import { PLANETS, planetEphemeris, decodePlanetSeries } from '../planets.js'
+import { requestRedraw } from './redraw.js'   // 地球场景按需出帧：星表 / 贴图异步到货后请它补画
 
 /** 软件光栅（SwiftShader / llvmpipe / 微软基本显示驱动…）：逐像素解析的大气与眩光太贵，只留星空与日面 */
 export function isSoftwareRenderer(name) { return /swiftshader|llvmpipe|softpipe|basic render|software|warp/i.test(String(name || '')) }
@@ -361,6 +362,7 @@ export function createStarfield(renderer, soft) {
     nStars = S.n
     stars.visible = true
     syncBg()
+    requestRedraw()
   }).catch(() => { /* 星表模块缺失（漏打包）：不画亮星，底图照画不了（缺标定），星空整件不出 */ })
   // —— 底图贴图：亮度单通道 R8（WebGL2 允许 DOM 图像源直传 R8，浏览器取红通道）、色度 RGBA；都是编码过的数据，不做 sRGB 解码 / 色彩管理 ——
   // 亮度图先 img.decode() 在后台线程解完再交给 three，免得第一次上传时主线程卡一下；超出显卡上限时 three 自己缩
@@ -376,7 +378,7 @@ export function createStarfield(renderer, soft) {
   }
   const ready = (t, red, done) => {
     if (disposed) { t.dispose(); return }
-    const go = () => { if (disposed) { t.dispose(); return } done(prep(t, red)); syncBg() }
+    const go = () => { if (disposed) { t.dispose(); return } done(prep(t, red)); syncBg(); requestRedraw() }
     if (t.image && typeof t.image.decode === 'function') t.image.decode().then(go, go)
     else go()
   }
@@ -473,6 +475,7 @@ export function createPlanets(renderer, soft) {
     if (disposed) return
     series = decodePlanetSeries(mod)
     if (pendDate != null) setTime(pendDate)
+    requestRedraw()
   }).catch(() => { /* 级数模块缺失（漏打包）：不画行星 */ })
   return {
     objects: [pts],
@@ -979,11 +982,11 @@ export function createMoonFx(renderer) {
     const loader = new THREE.TextureLoader()
     loader.load(MOON_MAP_URL, (t) => {
       if (disposed) { t.dispose(); return }
-      U.uMap.value = prep(t, true); ready = true; show()
+      U.uMap.value = prep(t, true); ready = true; show(); requestRedraw()
     }, undefined, () => {})
     loader.load(MOON_RELIEF_URL, (t) => {
       if (disposed) { t.dispose(); return }
-      U.uRelief.value = prep(t, false); U.uReliefK.value = 1
+      U.uRelief.value = prep(t, false); U.uReliefK.value = 1; requestRedraw()
     }, undefined, () => {})
   } catch { /* 同上 */ }
   // 地照 ∝ 从月球看地球的相位：地球相位角 = 日—地—月夹角 ψ，照亮比例 (1 + cos ψ) / 2（新月时 ψ≈0、地球满相）

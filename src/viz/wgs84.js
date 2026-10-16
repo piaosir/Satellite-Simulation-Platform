@@ -45,7 +45,9 @@ export function ecefToGeodetic(x, y, z) {
   for (let k = 0; k < 20; k++) {
     const s = Math.sin(lat)
     C = 1 / Math.sqrt(1 - E2 * s * s)
-    lat = Math.atan2(z + A * C * E2 * s, R)
+    const next = Math.atan2(z + A * C * E2 * s, R)
+    if (Object.is(next, lat)) break   // 已到不动点：再迭代逐位不变（C 只由纬度定），早停与跑满 20 次逐位相同
+    lat = next
   }
   return { lon: lon / DEG, lat: lat / DEG, h: R / Math.cos(lat) - A * C }
 }

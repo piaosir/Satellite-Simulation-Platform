@@ -19,6 +19,8 @@ export const covNav = reactive({
   sendMiniapp: null,
   // 同一菜单的「发送航迹到小程序」：3D 页注册 sendTrajMiniapp()（标记层航迹逐条成件 → 发送弹窗），离开页面复位
   sendTrajMiniapp: null,
+  // 同一菜单的「导出可编程波束地图…」：3D 页注册 beamScript()（采集当前绘制 → 脚本对话框），离开页面复位
+  beamScript: null,
   // 导入 TLE 入口（「文件」菜单）：3D 页注册 importTle() 打开本地 CSV 选择器（原「加载」弹窗移除后的离线兜底），离开页面复位
   importTle: null,
   // 「文件」菜单「导出星历…」：3D 页注册 exportEphem()（导出聚焦卫星；整集导出在星座栏该集的菜单里），离开页面复位

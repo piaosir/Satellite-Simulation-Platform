@@ -12,6 +12,10 @@
 // 没配到 / 没权限 → PUT 403 → 静默跳过回传，下载兜底照常工作。
 const https = require('https')
 const zlib = require('zlib')
+// 压缩 / 解压走线程池（异步）：17 组全量 level 9 压一次 130–300 ms，同步做会把主进程（= 所有窗口的 IPC）整段冻住。
+// 同一个 zlib、同一组参数，产物与同步版逐字节相同
+const { promisify } = require('util')
+const gzipAsync = promisify(zlib.gzip), gunzipAsync = promisify(zlib.gunzip)
 const { createHmac, createHash } = require('crypto')
 const log = require('./ommLog')          // 每一步都进日志窗格：查了哪个对象、为何跳过、传没传成功
 const { fmtBytes, fmtSec, fmtTime } = log
@@ -164,7 +168,7 @@ async function download(group, opts = {}) {
     const r = await fetchBin('GET', objKey(group))
     if (r.status !== 200 || !r.body.length) { log.emit(`${tag}云镜像下载失败（HTTP ${r.status || '连接中断'}）`, 'warn'); return null }
     let text = ''
-    try { text = zlib.gunzipSync(r.body, { maxOutputLength: MAX_RAW }).toString('utf8') }
+    try { text = (await gunzipAsync(r.body, { maxOutputLength: MAX_RAW })).toString('utf8') }
     catch { text = r.body.toString('utf8') }   // 兼容万一存成了明文 CSV
     if (!isValid(text)) { log.emit(`${tag}云镜像内容不满足有效性判据，已丢弃`, 'warn'); return null }
     log.emit(`${tag}云镜像下载成功 —— ${fmtBytes(r.body.length)}(gz) 解压 ${fmtBytes(text.length)} · 对象时间 ${fmtTime(meta.lastModified)} · 耗时 ${fmtSec(Date.now() - t0)}`)
@@ -220,7 +224,7 @@ async function maybeUpload(group, text, label, checkValid, tagOverride) {
       }
     }
     const t0 = Date.now()
-    const gz = zlib.gzipSync(Buffer.from(text, 'utf8'), { level: 9 })
+    const gz = await gzipAsync(Buffer.from(text, 'utf8'), { level: 9 })
     const r = await put(objKey(group), gz)
     if (r.ok) {
       _uploaded.add(group)

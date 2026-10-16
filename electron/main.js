@@ -608,7 +608,10 @@ app.whenReady().then(async () => {
   })
   protocol.handle('models', (req) => models.handleProtocol(req))
   const storage = require(join(root, 'electron/services/storage'))
-  const report = require(join(root, 'electron/services/report'))
+  // 报表服务（顶层 require 了 exceljs + docx，同步约 200 ms）：第一次导出时才真正加载，不再压在建窗之前。
+  // register 里只以 report.xxx(...) 取用，代理在第一次取成员时 require
+  let _report = null
+  const report = new Proxy({}, { get: (_t, k) => (_report || (_report = require(join(root, 'electron/services/report'))))[k] })
   const coverage = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage'))
   const coverageGrd = require(join(root, 'electron/services/coverage'))(join(root, 'resources/coverage-grd'), join(app.getPath('userData'), 'coverage-grd-imported'))
   // 删用户导入的文件一律先进系统回收站（shell.trashItem），进不去再直接删（交互调研 A1）
@@ -648,8 +651,13 @@ app.whenReady().then(async () => {
     }
   })
 
+  const win = createWindow()
+  _booted = true
+
   // 加载 ITU 全精度数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）→ 注入计算内核，
   // 与小程序口径完全一致（小程序为云端下载，桌面端从本地 resources/itu 同步加载）。
+  // ★ 放在建窗【之后】、同一个任务里同步做完：窗口的渲染进程先拉起来并行加载，而任何 IPC 都要等这段跑完才处理得到，
+  //   计算内核拿到的仍是注入后的数据（与原来建窗前注入逐位同一状态）
   try {
     const fs = require('fs')
     const ituDir = join(root, 'resources/itu')
@@ -662,9 +670,6 @@ app.whenReady().then(async () => {
   } catch (e) {
     console.warn('[ITU] 全精度数据加载失败：', e.message)
   }
-
-  const win = createWindow()
-  _booted = true
 
   // 自动更新（仅打包环境生效，dev 下自动跳过）：静默检查 / 下载，正常退出时静默装。
   // 状态变化（检查 / 下载进度 / 下载完成）广播到所有窗口，「帮助 → 检查更新」对话框据此刷新

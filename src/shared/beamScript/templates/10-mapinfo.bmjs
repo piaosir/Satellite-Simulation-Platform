@@ -1,0 +1,39 @@
+//! id: mapinfo
+//! name: ⟪MapInfo · MIF / MID 交换格式|MapInfo · MIF / MID interchange⟫
+//! ext: mif
+//zh MapInfo 交换格式：.mif 存储几何，.mid 存储属性（逐行对应）；中文采用 GBK 编码（Charset "WindowsSimpChinese"）。
+//en MapInfo interchange: .mif holds geometry, .mid the attributes (row by row); Chinese text in GBK (Charset "WindowsSimpChinese").
+
+const rgbInt = (hex) => { const { r, g, b } = color.rgb(hex); return r * 65536 + g * 256 + b }
+const q = (s) => '"' + String(s ?? '').replace(/"/g, '""') + '"'
+const xy = ([x, y]) => `${fmt(x, 6)} ${fmt(y, 6)}`
+
+const mif = [
+  'Version 300', 'Charset "WindowsSimpChinese"', 'Delimiter ","', 'CoordSys Earth Projection 1, 104',
+  'Columns 6', '  Satellite Char(64)', '  Name Char(64)', '  Band Char(16)', '  Type Char(16)', '  Level Float', '  Color Char(7)',
+  'Data', '',
+]
+const mid = []
+
+for (const b of data.beams) {
+  for (const c of b.contours) {
+    const ring = geo.open(c.points)
+    mif.push('Region 1', `  ${ring.length}`, ...ring.map(xy), `    Pen (2,2,${rgbInt(c.color)})`, '    Brush (1,0,16777215)')
+    mid.push([q(b.satellite), q(b.name), q(b.band), q(b.type), c.level, q(c.color)].join(','))
+  }
+  for (const p of b.peaks) {
+    mif.push(`Point ${xy([p.lon, p.lat])}`, '    Symbol (35,0,12)')
+    mid.push([q(b.satellite), q(`${b.name} ⟪波束中心|peak⟫`), q(b.band), q(b.type), 0, q('')].join(','))
+  }
+}
+for (const pg of data.polygons) {
+  const brush = pg.fill.on ? `Brush (2,${rgbInt(pg.fill.color)},16777215)` : 'Brush (1,0,16777215)'
+  mif.push('Region 1', `  ${pg.points.length}`, ...pg.points.map(xy), `    Pen (${Math.max(1, Math.round(pg.width))},2,${rgbInt(pg.color)})`, `    ${brush}`)
+  mid.push([q(pg.satellite), q(pg.name), q(''), q('Polygon'), pg.level ?? 0, q(pg.color)].join(','))
+}
+
+const opts = { encoding: 'gbk', eol: 'crlf' }
+return [
+  file(`${data.meta.title}.mif`, mif.join('\n') + '\n', opts),
+  file(`${data.meta.title}.mid`, mid.join('\n') + '\n', opts),
+]

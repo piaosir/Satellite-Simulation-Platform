@@ -97,7 +97,9 @@ export function ecefToGeodetic(x, y, z, out = { lat: 0, lon: 0, hKm: 0 }) {
   for (let k = 0; k < 20; k++) {
     const s = Math.sin(lat)
     C = 1 / Math.sqrt(1 - WGS_E2 * s * s)
-    lat = Math.atan2(z + WGS84_A_KM * C * WGS_E2 * s, R)
+    const next = Math.atan2(z + WGS84_A_KM * C * WGS_E2 * s, R)
+    if (Object.is(next, lat)) break   // 已到不动点：再迭代逐位不变（C 只由纬度定），早停与跑满 20 次逐位相同
+    lat = next
   }
   out.lat = lat * R2D; out.lon = Math.atan2(y, x) * R2D; out.hKm = R / Math.cos(lat) - WGS84_A_KM * C
   return out
@@ -297,7 +299,9 @@ function targetAnchorInto(t, out) {
   for (let k = 0; k < 20; k++) {
     const s = Math.sin(lat)
     C = 1 / Math.sqrt(1 - WGS_E2 * s * s)
-    lat = Math.atan2(z + WGS84_A_KM * C * WGS_E2 * s, R)
+    const next = Math.atan2(z + WGS84_A_KM * C * WGS_E2 * s, R)
+    if (Object.is(next, lat)) break   // 已到不动点：再迭代逐位不变（C 只由纬度定），早停与跑满 20 次逐位相同
+    lat = next
   }
   const latDeg = lat * R2D, lonDeg = Math.atan2(y, x) * R2D, hKm = R / Math.cos(lat) - WGS84_A_KM * C
   const r = (SCENE_RE_KM + hKm) / SCENE_RE_KM

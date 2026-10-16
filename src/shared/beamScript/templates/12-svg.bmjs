@@ -1,0 +1,54 @@
+//! id: svg
+//! name: ⟪SVG · 矢量覆盖图|SVG · Vector coverage map⟫
+//! ext: svg
+//zh 矢量覆盖图（等经纬度投影）：含经纬网；等值线按显示配色描边并标注电平；Polygon 半透明填充；波束中心以十字标示。
+//en Vector coverage map (plate carrée): graticule, contours stroked in their displayed colors with level labels, translucent polygons, peak crosses.
+
+const W = 1600, H = 1000, PAD = 48
+const bb = geo.bbox(data)
+if (!bb) return console.warn('⟪暂无可绘制的内容|Nothing to draw⟫')
+const p = geo.fit(bb, W, H, PAD)
+const f1 = (v) => v.toFixed(1)
+const path = (pts) => 'M' + pts.map((q) => p.point(q).map(f1).join(',')).join('L') + 'Z'
+
+const svg = [
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="Arial, sans-serif">`,
+  '<rect width="100%" height="100%" fill="#ffffff"/>',
+]
+
+// ⟪经纬网间隔：跨度 ≤10° 取 1°，≤40° 取 5°，其余取 10°|Graticule: 1° up to 10° span, 5° up to 40°, else 10°⟫
+const span = Math.max(p.bbox[2] - p.bbox[0], p.bbox[3] - p.bbox[1])
+const step = span <= 10 ? 1 : span <= 40 ? 5 : 10
+const lonL = (v) => { const w = geo.wrapLon(v); return Math.abs(w) === 180 ? '180°' : `${Math.abs(w)}°${w < 0 ? 'W' : w > 0 ? 'E' : ''}` }, latL = (v) => `${Math.abs(v)}°${v < 0 ? 'S' : v > 0 ? 'N' : ''}`
+for (let lon = Math.ceil(p.bbox[0] / step) * step; lon <= p.bbox[2]; lon += step) {
+  const x = f1(p.x(lon))
+  svg.push(`<line x1="${x}" y1="${PAD}" x2="${x}" y2="${H - PAD}" stroke="#d0d4da" stroke-width="0.8"/>`, `<text x="${x}" y="${H - PAD + 16}" font-size="12" text-anchor="middle" fill="#666">${lonL(lon)}</text>`)
+}
+for (let lat = Math.ceil(p.bbox[1] / step) * step; lat <= p.bbox[3]; lat += step) {
+  const y = f1(p.y(lat))
+  svg.push(`<line x1="${PAD}" y1="${y}" x2="${W - PAD}" y2="${y}" stroke="#d0d4da" stroke-width="0.8"/>`, `<text x="${PAD - 6}" y="${y}" font-size="12" text-anchor="end" dominant-baseline="middle" fill="#666">${latL(lat)}</text>`)
+}
+
+for (const pg of data.polygons) {
+  svg.push(`<path d="${path(pg.points)}" fill="${pg.fill.color}" fill-opacity="${pg.fill.on ? pg.fill.opacity : 0}" stroke="${pg.color}" stroke-width="${pg.width}"><title>${xml.esc(pg.name)}</title></path>`)
+}
+for (const b of data.beams) {
+  for (const c of b.contours) {
+    const ring = geo.open(c.points)
+    svg.push(`<path d="${path(ring)}" fill="none" stroke="${c.color}" stroke-width="1.6"><title>${xml.esc(`${b.satellite} ${b.name} ${c.level} ${b.unit}`)}</title></path>`)
+    const top = ring.reduce((m, q) => (q[1] > m[1] ? q : m), ring[0])
+    const [x, y] = p.point(top)
+    svg.push(`<text x="${f1(x)}" y="${f1(y - 4)}" font-size="12" text-anchor="middle" fill="${c.color}" stroke="#ffffff" stroke-width="3" paint-order="stroke">${c.level}</text>`)
+  }
+  for (const k of b.peaks) {
+    const [x, y] = p.point([k.lon, k.lat])
+    svg.push(`<path d="M${f1(x - 6)},${f1(y)}H${f1(x + 6)}M${f1(x)},${f1(y - 6)}V${f1(y + 6)}" stroke="#111111" stroke-width="1.6"/>`)
+  }
+}
+for (const s of data.stations) {
+  const [x, y] = p.point([s.lon, s.lat])
+  svg.push(`<circle cx="${f1(x)}" cy="${f1(y)}" r="3.5" fill="#111111"/>`, `<text x="${f1(x + 6)}" y="${f1(y + 4)}" font-size="12" fill="#111111">${xml.esc(s.name)}</text>`)
+}
+
+svg.push('</svg>')
+return file('⟪覆盖图|coverage_map⟫.svg', svg.join('\n') + '\n')

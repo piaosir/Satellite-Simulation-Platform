@@ -177,6 +177,21 @@ export function stepBy(n = 1) {
   publish(true)
   emit()
 }
+// 按住方向键的连步（键盘自动重复一秒几十次）：时刻 / 模式照 stepBy 当场改（之后的任何操作读到的都是新时刻），
+// 只把「通知订阅者整场重算」合并到下一帧 —— 一帧里按了几下就只重算最后那一刻，主线程不再被逐键整场重算压满。
+// 画面上那一帧本来也只能显示其中一个时刻；末态（时刻、模式、重算到的那一拍）与逐键 stepBy 相同。
+// 帧回调兜一道定时器：窗口被藏起来 rAF 不走时，重算照样会在 100 ms 内发生
+let stepFlush = 0, stepFlushT = 0
+function flushStep() { if (stepFlush) { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(stepFlush); stepFlush = 0 } clearTimeout(stepFlushT); stepFlushT = 0; emit() }
+export function stepByKey(n = 1) {
+  if (clock.mode !== 'pause') { clock.mode = 'pause'; clock.achieved = 0; stopTimer() }
+  clock.tMs = advanceMs(clock.tMs, Math.abs(n), clock.stepSec, n < 0 ? -1 : 1)
+  publish(true)
+  if (typeof requestAnimationFrame !== 'function') { emit(); return }
+  if (stepFlush || stepFlushT) return
+  stepFlush = requestAnimationFrame(flushStep)
+  stepFlushT = setTimeout(flushStep, 100)
+}
 export function setStep(sec) { clock.stepSec = clampStep(sec); if (clock.mode === 'play') startTimer(); publish(true) }
 export function setSpeed(x) { clock.speed = clampSpeed(x); if (clock.mode === 'play') startTimer(); publish(true) }
 export function setDir(d) { clock.dir = d < 0 ? -1 : 1; publish(true) }

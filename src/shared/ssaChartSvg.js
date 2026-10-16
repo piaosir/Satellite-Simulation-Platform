@@ -43,6 +43,22 @@ const SEQ_DARK = ['#153454', '#1c4a77', '#25619b', '#3179bd', '#4c94d2', '#74b0e
 
 const PRINT_FONTS = { latin: 'Times New Roman', cjkBody: '宋体' }
 
+// —— 纸面档（theme: 'paper'，样式规范 2026-10-15 §F）——
+// 屏上纸面与导出 Word 用【同一张图】：同一 spec、同一函数、同一物理尺寸（mm），只差栅格倍率。
+// 图内文字一律 8 pt Arial + 等线（不随导出对话框的报告字体，§F.2）；线宽按 pt 给（轴 0.5 pt、数据线 1.25 pt）；
+// 不画背景网格、柱方端（§F.2 / R5 / R11）。
+// 对象类型四色全篇固定、跟类型码走不跟段序（§F.4，dataviz 校验器两两全过：最差色盲 ΔE 14.9）：
+export const TYPE_COLOR = { PAY: '#15619B', 'R/B': '#D8960E', DEB: '#B8333D', UNK: '#B7B7B7' }
+// 不属任何一类的单序列（发射次数、在轨对象数）穿石板墨：颜色跟实体走，混合量不借任何一类的色
+const SLATE = '#4A5560'
+// 热图顺序色带：ColorBrewer YlGnBu-9 的第 3–9 级（ESA 报告实测同一条色带；第 1–2 级对白不足 1.3:1 舍去）
+const SEQ_PAPER = ['#C7E9B4', '#7FCDBB', '#41B6C4', '#1D91C0', '#225EA8', '#253494', '#081D58']
+// 热图分级界：1-2-5 序列的整数界（每级上界），末级开口（§F2.5）
+const HEAT_BREAKS = [1, 5, 20, 50, 200, 500, Infinity]
+const PAPER_FONT = "Arial, DengXian, '等线', sans-serif"
+const PT = 96 / 72          // 1 pt = 4/3 px（96 dpi）
+const MM = 96 / 25.4        // 1 mm ≈ 3.78 px
+
 // 屏上色槽定义。放进 SVG 内联 <style>：本模块拿不到当前主题，只能把两套值都写进去让 CSS 去挑。
 // 选择器只认 svg.ssa-fig，重复 N 份也无副作用；:root[data-theme="dark"] 与 global.css 同型。
 const SCREEN_STYLE = (() => {
@@ -65,14 +81,24 @@ const quoteFam = (s) => {
   return "'" + v.replace(/'/g, '') + "'"
 }
 
-function palette(theme, fonts) {
+function palette(theme, fonts, scale) {
+  if (theme === 'paper') {
+    const k = scale > 0 ? scale : 1
+    return {
+      print: true, paperTheme: true, ff: PAPER_FONT,
+      paper: '#FFFFFF', ink: '#222222', dim: '#595959', grid: '#D9D9D9', axis: '#595959', band: '#ECECEC',
+      series: [SLATE, TYPE_COLOR.PAY, TYPE_COLOR.DEB, TYPE_COLOR['R/B']],
+      ramp4: [TYPE_COLOR.PAY, TYPE_COLOR['R/B'], TYPE_COLOR.DEB, TYPE_COLOR.UNK], seq: SEQ_PAPER.slice(),
+      lw: 0.5 * PT * k, dataLw: 1.25 * PT * k, noGrid: true, square: true
+    }
+  }
   if (theme === 'print') {
     const f = fonts || {}
     const ff = [quoteFam(f.latin || PRINT_FONTS.latin), quoteFam(f.cjkBody || PRINT_FONTS.cjkBody)].filter(Boolean).join(', ')
     return {
       print: true, ff,
       paper: '#ffffff', ink: '#222222', dim: '#555555', grid: '#bbbbbb', axis: '#888888',
-      band: '#eceff3', series: SERIES_LIGHT.slice(), ramp4: RAMP4_LIGHT.slice(), seq: SEQ_LIGHT.slice()
+      band: '#eceff3', series: SERIES_LIGHT.slice(), ramp4: RAMP4_LIGHT.slice(), seq: SEQ_LIGHT.slice(), lw: 1
     }
   }
   return {
@@ -81,7 +107,7 @@ function palette(theme, fonts) {
     band: 'var(--surface-2)',
     series: ['var(--ssa-s1)', 'var(--ssa-s2)', 'var(--ssa-s3)'],
     ramp4: ['var(--ssa-r1)', 'var(--ssa-r2)', 'var(--ssa-r3)', 'var(--ssa-r4)'],
-    seq: ['var(--ssa-q1)', 'var(--ssa-q2)', 'var(--ssa-q3)', 'var(--ssa-q4)', 'var(--ssa-q5)', 'var(--ssa-q6)', 'var(--ssa-q7)']
+    seq: ['var(--ssa-q1)', 'var(--ssa-q2)', 'var(--ssa-q3)', 'var(--ssa-q4)', 'var(--ssa-q5)', 'var(--ssa-q6)', 'var(--ssa-q7)'], lw: 1
   }
 }
 
@@ -99,10 +125,15 @@ function maxOf(arr, get) { let m = -Infinity; for (const a of arr) { const v = g
 
 // 千分位。不走 toLocaleString —— 那东西跟运行环境的区域设置走，同一份入参在两台机器上出两种串，
 // 报告的字节复现就没了
-function grp(s) {
+// ★ 2026-10-15 起分组用 U+2009 细空（SI / GB 3101：不插逗号），负号用 U+2212（样式规范 §E.3）。
+//   四位数习惯不分：|v| ≥ 10000 才分；force = 同一条轴上有 ≥ 10000 的刻度时，≥ 1000 的一并分（全轴一致）。
+const THIN = '\u2009'
+function grp(s, force) {
   const m = /^(-?)(\d+)(\.\d+)?$/.exec(String(s))
   if (!m) return String(s)
-  return m[1] + m[2].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (m[3] || '')
+  const n = m[2].length
+  const body = (n >= 5 || (force && n >= 4)) ? m[2].replace(/\B(?=(\d{3})+(?!\d))/g, THIN) : m[2]
+  return (m[1] ? '\u2212' : '') + body + (m[3] || '')
 }
 function fmtStep(v, step) {
   if (!Number.isFinite(v)) return ''
@@ -145,7 +176,8 @@ function ellipsize(s, fs, maxW) {
  */
 function T(P, x, y, s, o) {
   const a = o || {}
-  let at = ` x="${n2(x)}" y="${n2(y)}" font-size="${n2(a.fs)}" fill="${a.fill || P.ink}" font-family="${P.ff}"`
+  // 纸面档全图同一字号（样式规范 §F.2）：版面计算仍按各处的倍率留空，落笔一律 P.fsText
+  let at = ` x="${n2(x)}" y="${n2(y)}" font-size="${n2(P.fsText || a.fs)}" fill="${a.fill || P.ink}" font-family="${P.ff}"`
   if (a.anchor) at += ` text-anchor="${a.anchor}"`
   if (a.weight) at += ` font-weight="${a.weight}"`
   if (a.rotate) at += ` transform="rotate(${n2(a.rotate)} ${n2(x)} ${n2(y)})"`
@@ -177,18 +209,27 @@ const bar = (x, y, w, h, r, dir, fill) => {
   return d ? d + ` fill="${fill}"/>` : ''
 }
 
+// 系列色：纸面档跟实体走（series.key = 类型码 → TYPE_COLOR；无 key 的混合量 → 石板墨），其余两档按序号取槽
+function serColor(P, se, i) {
+  if (P.paperTheme) return (se && se.key && TYPE_COLOR[se.key]) || (i === 0 ? SLATE : P.series[i % P.series.length])
+  return P.series[i % P.series.length]
+}
+
 // —— 坐标轴 ——
 
 // 纵轴（计数轴）：水平网格线 + 左侧刻度数字 + 基线。网格是发丝实线，退到数据后面（不画虚线）。
 function yAxisParts(P, fr, sc, fs, yLabel) {
   const out = []
   const map = (v) => fr.y1 - ((v - sc.min) / ((sc.max - sc.min) || 1)) * fr.h
+  const force = sc.ticks.some((t) => Math.abs(t) >= 10000)
   for (const t of sc.ticks) {
     const y = map(t)
-    out.push(line(fr.x0, y, fr.x1, y, P.grid, 1))
-    out.push(T(P, fr.x0 - fs * 0.45, y + fs * 0.32, grp(fmtStep(t, sc.step)), { fs: fs * 0.9, fill: P.dim, anchor: 'end' }))
+    if (P.noGrid) out.push(line(fr.x0 - fs * 0.25, y, fr.x0, y, P.axis, P.lw))   // 外向刻度 2 pt
+    else out.push(line(fr.x0, y, fr.x1, y, P.grid, P.lw))
+    out.push(T(P, fr.x0 - fs * 0.45, y + fs * 0.32, grp(fmtStep(t, sc.step), force), { fs: fs * 0.9, fill: P.dim, anchor: 'end' }))
   }
-  out.push(line(fr.x0, fr.y1, fr.x1, fr.y1, P.axis, 1))
+  if (P.noGrid) out.push(line(fr.x0, fr.y0, fr.x0, fr.y1, P.axis, P.lw))
+  out.push(line(fr.x0, fr.y1, fr.x1, fr.y1, P.axis, P.lw))
   if (yLabel) {
     const x = fr.x0 - fs * 0.45 - sc.digitW - fs * 0.55
     out.push(T(P, x, (fr.y0 + fr.y1) / 2, yLabel, { fs, fill: P.dim, anchor: 'middle', rotate: -90 }))
@@ -198,30 +239,46 @@ function yAxisParts(P, fr, sc, fs, yLabel) {
 // 纵轴左边距：刻度数字最宽的那条 + 轴名
 function yAxisMetrics(sc, fs, yLabel) {
   let w = 0
-  for (const t of sc.ticks) w = Math.max(w, textW(grp(fmtStep(t, sc.step)), fs * 0.9))
+  const force = sc.ticks.some((t) => Math.abs(t) >= 10000)
+  for (const t of sc.ticks) w = Math.max(w, textW(grp(fmtStep(t, sc.step), force), fs * 0.9))
   sc.digitW = w
   return fs * 0.6 + w + fs * 0.45 + (yLabel ? fs * 1.35 : 0)
+}
+// 整数刻度：计数轴上 1/2/5 取整在最大值很小时会给出 0.2 / 0.5 的步长，「颗数」轴上于是印着 0.5 颗
+// （卫星组、GEO 筛选这类小样本报告必现）。步长不足 1 时改为逐个整数。
+function intScale(lo, hi) {
+  const a = Math.floor(lo), b = Math.max(a + 1, Math.ceil(hi))
+  const ticks = []
+  for (let v = a; v <= b; v++) ticks.push(v)
+  return { min: a, max: b, step: 1, ticks }
 }
 // 计数轴恒从 0 起：条形的长度就是值本身，截断基线会把 3 倍差画成 10 倍差
 function countScale(maxV, rows) {
   const hi = Math.max(0, num(maxV))
-  const s = niceScale(0, hi > 0 ? hi : 1, rows)
+  let s = niceScale(0, hi > 0 ? hi : 1, rows)
+  if (s.step < 1) s = intScale(0, hi)
   s.min = 0
   s.ticks = s.ticks.filter((t) => t >= 0)
   if (!s.ticks.length) s.ticks = [0]
   return s
 }
-// 数值轴（可为负、可不含 0）：line / hist / strip / scatter 的自变量轴与 line 的因变量轴
-function valueScale(lo, hi, cnt, zeroBase) {
+// 数值轴（可为负、可不含 0）：line / hist / strip / scatter 的自变量轴与 line 的因变量轴。
+// intOnly：数据全是整数（计数序列）时不出小数刻度。
+// 全零 / 常数且要求含 0 的序列：从 0 往上撑开，不为了「居中」去印负刻度（逐年陨落在小范围筛选下全零）。
+function valueScale(lo, hi, cnt, zeroBase, intOnly) {
   let a = num(lo), b = num(hi)
-  if (!(b > a)) { const d = Math.abs(a) > 1 ? Math.abs(a) * 0.05 : 0.5; a -= d; b += d }
+  if (!(b > a)) {
+    if (zeroBase && a >= 0) { b = a > 0 ? a * 2 : 1; a = 0 } else { const d = Math.abs(a) > 1 ? Math.abs(a) * 0.05 : 0.5; a -= d; b += d }
+  }
   if (zeroBase && a >= 0 && a < (b - a)) a = 0
-  return niceScale(a, b, cnt)
+  const s = niceScale(a, b, cnt)
+  return (intOnly && s.step < 1) ? intScale(a, b) : s
 }
 
 // 图例：色块 + 标签（标签穿墨色，身份由旁边的色块承载）。返回 { parts, h }
 function legendParts(P, items, x, y, maxW, fs) {
   const parts = []
+  if (P.paperTheme) return legendPaper(P, items, x, y, maxW, fs)
   const sq = fs * 0.78
   const rowH = fs * 1.5
   let cx = x, cy = y + sq, row = 0
@@ -239,7 +296,34 @@ function legendParts(P, items, x, y, maxW, fs) {
   }
   return { parts, h: (row + 1) * rowH }
 }
-function legendHeight(items, maxW, fs) {
+// 纸面档图例：一行左对齐（放不下才折行），色块 6 pt 见方 / 线段 12 pt，字 8 pt 次级墨
+function legendPaper(P, items, x, y, maxW, fs) {
+  const parts = []
+  const sw = fs * 0.75, ln = fs * 1.5, rowH = fs * 1.5
+  let cx = x, cy = y + fs, row = 0
+  for (const it of items) {
+    const key = it.dash !== undefined ? ln : sw
+    const w = key + fs * 0.4 + textW(it.label, fs) + fs * 1.2
+    if (cx > x && cx + w > x + maxW) { cx = x; row++; cy += rowH }
+    if (it.dash !== undefined) parts.push(line(cx, cy - fs * 0.32, cx + ln, cy - fs * 0.32, it.color, P.dataLw || 2, it.dash || ''))
+    else parts.push(rect(cx, cy - fs * 0.32 - sw / 2, sw, sw, it.color))
+    parts.push(T(P, cx + key + fs * 0.4, cy, it.label, { fs, fill: P.dim }))
+    cx += w
+  }
+  return { parts, h: (row + 1) * rowH }
+}
+function legendHeightPaper(items, maxW, fs) {
+  const sw = fs * 0.75, ln = fs * 1.5
+  let cx = 0, row = 0
+  for (const it of items) {
+    const w = (it.dash !== undefined ? ln : sw) + fs * 0.4 + textW(it.label, fs) + fs * 1.2
+    if (cx > 0 && cx + w > maxW) { cx = 0; row++ }
+    cx += w
+  }
+  return (row + 1) * fs * 1.5
+}
+function legendHeight(items, maxW, fs, P) {
+  if (P && P.paperTheme) return legendHeightPaper(items, maxW, fs)
   const sq = fs * 0.78
   let cx = 0, row = 0
   for (const it of items) {
@@ -280,7 +364,7 @@ function drawBar(spec, P, L) {
   // 图例的可用宽度必须与下面真画时给的是同一个数：量的时候按整幅宽、画的时候按绘图区宽，
   // 折行数就会对不上，顶上留的那块高度不是多出一条空档就是被图例压住
   const legW = W * LEG_W
-  const legH = items.length ? legendHeight(items, legW, fs) : 0
+  const legH = items.length ? legendHeight(items, legW, fs, P) : 0
 
   const sc = countScale(maxV, Math.max(3, Math.min(8, Math.floor((H - legH) / (fs * 3.2)))))
   const mL = yAxisMetrics(sc, fs, spec.yLabel)
@@ -314,7 +398,7 @@ function drawBar(spec, P, L) {
   const slot = band * 0.78
   const bw = nc ? Math.min(fs * 2.2, Math.max(1, (slot - gap * (ns - 1)) / ns)) : 0
   const groupW = bw * ns + gap * (ns - 1)
-  const r = fs * 0.36
+  const r = P.square ? 0 : fs * 0.36
   const mapY = (v) => fr.y1 - ((v - sc.min) / ((sc.max - sc.min) || 1)) * fr.h
   for (let ci = 0; ci < nc; ci++) {
     const cx = fr.x0 + band * (ci + 0.5)
@@ -375,7 +459,7 @@ function drawHbar(spec, P, L) {
     if (w > 0.2) parts.push(bar(mL, y, w, barH, r, 'right', color))
     parts.push(T(P, mL + w + fs * 0.45, y + barH * 0.5 + fs * 0.34, fmtInt(v), { fs: fs * 0.95, fill: P.dim }))
   }
-  parts.push(line(mL, mT, mL, mT + Math.max(1, n) * rowH, P.axis, 1))
+  parts.push(line(mL, mT, mL, mT + Math.max(1, n) * rowH, P.axis, P.lw))
   if (spec.xLabel) parts.push(T(P, mL + plotW / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
   if (!n) parts.push(T(P, mL + plotW / 2, mT + rowH / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
   return { h: H, parts }
@@ -399,7 +483,7 @@ function drawStack(spec, P, L) {
       + (total > 0 ? (en ? ' (' : '（') + ((Math.max(0, num(s.value)) / total) * 100).toFixed(1) + (en ? '%)' : '%）') : ''),
     color: P.ramp4[i % P.ramp4.length]
   }))
-  const legH = items.length ? legendHeight(items, plotW, fs) : 0
+  const legH = items.length ? legendHeight(items, plotW, fs, P) : 0
   const H = L.height || Math.round(headH + barH + fs * 0.8 + legH + fs * 0.6)
 
   const parts = []
@@ -428,22 +512,28 @@ function drawStack(spec, P, L) {
 
 // ④ 折线（≤3 条）。线型是第二道身份编码：三槽同时上图时槽①与槽③在红绿色盲下几乎同色，
 // 只靠颜色认不出是哪条。null 断开不连（缺测就是缺测，连过去等于造数据）
-const DASHES = ['', '7 4', '2 3']
+const DASHES = ['', '7 4', '2 3', '9 3 2 3']
 function drawLine(spec, P, L) {
   const fs = L.fs, W = L.width
   const xs = (Array.isArray(spec.x) ? spec.x : []).map(num)
-  const series = (Array.isArray(spec.series) ? spec.series : []).filter((s) => s && Array.isArray(s.data)).slice(0, 3)
+  const series = (Array.isArray(spec.series) ? spec.series : []).filter((s) => s && Array.isArray(s.data)).slice(0, 4)
   const H = L.height || Math.round(W * 0.5)
   const parts = []
 
-  let lo = Infinity, hi = -Infinity
-  for (const s of series) for (const v of s.data) { if (v === null || v === undefined || !Number.isFinite(+v)) continue; lo = Math.min(lo, +v); hi = Math.max(hi, +v) }
+  let lo = Infinity, hi = -Infinity, allInt = true
+  for (const s of series) for (const v of s.data) {
+    if (v === null || v === undefined || !Number.isFinite(+v)) continue
+    lo = Math.min(lo, +v); hi = Math.max(hi, +v)
+    if (!Number.isInteger(+v)) allInt = false
+  }
   if (lo === Infinity) { lo = 0; hi = 1 }
-  const items = series.length > 1 ? series.map((s, i) => ({ label: s.name, color: P.series[i % P.series.length], dash: DASHES[i % DASHES.length] })) : []
+  const items = series.length > 1 ? series.map((s, i) => ({ label: s.name, color: serColor(P, s, i), dash: DASHES[i % DASHES.length] })) : []
   const legW = W * LEG_W
-  const legH = items.length ? legendHeight(items, legW, fs) : 0
+  const legH = items.length ? legendHeight(items, legW, fs, P) : 0
 
-  const ysc = valueScale(lo, hi, Math.max(3, Math.min(7, Math.floor((H - legH) / (fs * 3.2)))), lo >= 0)
+  const ysc = valueScale(lo, hi, Math.max(3, Math.min(7, Math.floor((H - legH) / (fs * 3.2)))), lo >= 0, allInt)
+  // 末点是不完整期（逐年序列的当年）：最后一段另画（淡一档）、末点空心 —— 整段实线读起来像「骤降」
+  const partial = !!spec.partialLast && xs.length >= 2
   const mL = yAxisMetrics(ysc, fs, spec.yLabel)
 
   // 末端直接标注：线在右端分得开才标，挤在一起就只留图例（把标签上下错开会让它脱离自己的线）
@@ -497,15 +587,15 @@ function drawLine(spec, P, L) {
   const mapY = (v) => fr.y1 - ((v - ysc.min) / ((ysc.max - ysc.min) || 1)) * fr.h
   for (const t of xticks) {
     const x = mapX(t)
-    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, 1))
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, P.lw))
     parts.push(T(P, x, fr.y1 + fs * 1.3, spec.xIsYear ? String(Math.round(t)) : grp(fmtStep(t, xstep)), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
   }
   if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
 
-  const lw = Math.max(2, fs * 0.18)
+  const lw = P.dataLw || Math.max(2, fs * 0.18)
   for (let i = 0; i < series.length; i++) {
     const d = series[i].data
-    const color = P.series[i % P.series.length]
+    const color = serColor(P, series[i], i)
     const dash = DASHES[i % DASHES.length]
     let run = []
     const flush = () => {
@@ -513,21 +603,31 @@ function drawLine(spec, P, L) {
       else if (run.length === 1) { const p = run[0].split(','); parts.push(`<circle cx="${p[0]}" cy="${p[1]}" r="${n2(lw)}" fill="${color}"/>`) }
       run = []
     }
-    for (let j = 0; j < xs.length; j++) {
-      const v = d[j]
-      if (v === null || v === undefined || !Number.isFinite(+v)) { flush(); continue }
-      run.push(n2(mapX(xs[j])) + ',' + n2(mapY(+v)))
+    const nMain = partial ? xs.length - 1 : xs.length
+    const valid = (j) => d[j] !== null && d[j] !== undefined && Number.isFinite(+d[j])
+    for (let j = 0; j < nMain; j++) {
+      if (!valid(j)) { flush(); continue }
+      run.push(n2(mapX(xs[j])) + ',' + n2(mapY(+d[j])))
     }
     flush()
+    if (partial && valid(xs.length - 2) && valid(xs.length - 1)) {
+      const a = xs.length - 2, b = xs.length - 1
+      // 纸面档：末段 2 / 1.5 pt 虚线（§F.5）；其余两档淡一档
+      const pd = P.paperTheme ? `${n2(fs / 4)} ${n2(fs * 0.1875)}` : dash
+      parts.push(`<polyline data-partial="1" points="${n2(mapX(xs[a]))},${n2(mapY(+d[a]))} ${n2(mapX(xs[b]))},${n2(mapY(+d[b]))}" fill="none" stroke="${color}" stroke-width="${n2(lw)}"${P.paperTheme ? '' : ' opacity="0.45"'}${pd ? ` stroke-dasharray="${pd}"` : ''} stroke-linecap="round"/>`)
+    }
   }
   // 末端圆点：带一圈底色环，压在别的线上也读得出（print 档底是白的，screen 档跟面板底走）
-  const ringW = Math.max(2, fs * 0.18)
+  const ringW = P.paperTheme ? fs * 0.094 : Math.max(2, fs * 0.18)
   const ring = P.print ? P.paper : 'var(--bg)'
   const okEnd = wantEnd && ends.every((a, ai) => ends.every((b, bi) => ai === bi || Math.abs(mapY(a.v) - mapY(b.v)) >= fs * 1.25))
   for (const e of ends) {
     if (!xs.length) break
     const x = mapX(xs[Math.min(e.xi, xs.length - 1)]), y = mapY(e.v)
-    parts.push(`<circle cx="${n2(x)}" cy="${n2(y)}" r="${n2(Math.max(4, fs * 0.28))}" fill="${P.series[e.i % P.series.length]}" stroke="${ring}" stroke-width="${n2(ringW)}"/>`)
+    const col = serColor(P, series[e.i], e.i)
+    // 不完整期的末点空心（底色填、系列色描边）
+    if (partial && e.xi === xs.length - 1) parts.push(`<circle cx="${n2(x)}" cy="${n2(y)}" r="${n2(Math.max(4, fs * 0.28))}" fill="${ring}" stroke="${col}" stroke-width="${n2(ringW)}"/>`)
+    else parts.push(`<circle cx="${n2(x)}" cy="${n2(y)}" r="${n2(Math.max(4, fs * 0.28))}" fill="${col}" stroke="${ring}" stroke-width="${n2(ringW)}"/>`)
     if (okEnd) parts.push(T(P, x + fs * 0.6, y + fs * 0.32, e.name, { fs: fs * 0.92, fill: P.dim }))
   }
   if (!series.length || !xs.length) parts.push(T(P, fr.x0 + fr.w / 2, fr.y0 + fr.h / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
@@ -555,7 +655,7 @@ function drawHist(spec, P, L) {
   const mapX = (v) => fr.x0 + ((v - xlo) / ((xhi - xlo) || 1)) * fr.w
   const mapY = (v) => fr.y1 - ((v - sc.min) / ((sc.max - sc.min) || 1)) * fr.h
   const gap = bins.length && (fr.w / bins.length) > fs * 0.6 ? Math.max(1, fs * 0.12) : 0
-  const r = fs * 0.3
+  const r = P.square ? 0 : fs * 0.3
   for (const b of bins) {
     const x = mapX(+b.x0), x2 = mapX(+b.x1)
     const v = num(b.n)
@@ -583,7 +683,7 @@ function drawHist(spec, P, L) {
   }
   for (const i of show) {
     const x = mapX(edges[i])
-    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, 1))
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, P.lw))
     parts.push(T(P, x, fr.y1 + fs * 1.3, grp(fmtStep(edges[i], step)), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
   }
   if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
@@ -605,9 +705,11 @@ function drawStrip(spec, P, L) {
   const mL = yAxisMetrics(sc, fs, spec.yLabel)
   const mR = fs * 1.2
   const plotW = Math.max(30, W - mL - mR)
-  const markLabW = marks.length ? Math.min(fs * 6, maxOf(marks, (m) => textW(m && m.label, fs * 0.85))) : 0
-  const mT = fs * 0.9 + (bands.some((b) => b && b.label) ? fs * 1.2 : 0) + (marks.length ? markLabW * 0.574 + fs * 0.45 : 0)
-  const mB = fs * 1.65 + (spec.xLabel ? AXL_H * fs : 0)
+  const pm = P.paperTheme && marks.length ? stripMarkLayout(marks, mL, plotW, fs) : null
+  const markLabW = (!pm && marks.length) ? Math.min(fs * 6, maxOf(marks, (m) => textW(m && m.label, fs * 0.85))) : 0
+  const markUp0 = pm ? fs * 1.3 : (marks.length ? markLabW * 0.574 + fs * 0.45 : 0)
+  const mT = fs * 0.9 + (bands.some((b) => b && b.label) ? fs * 1.2 : 0) + markUp0
+  const mB = fs * 1.65 + (spec.xLabel ? AXL_H * fs : 0) + (pm && !pm.fits ? pm.keyRows * fs * 1.4 : 0)
   const fr = { x0: mL, y0: mT, x1: mL + plotW, y1: mT + Math.max(20, H - mB - mT), w: plotW, h: Math.max(20, H - mB - mT) }
   const parts = []
   const mapX = (v) => fr.x0 + ((clamp(v, -180, 180) + 180) / 360) * fr.w
@@ -615,7 +717,7 @@ function drawStrip(spec, P, L) {
 
   // 底纹先铺（在数据之下），段名压在绘图区顶上。竖标的名字是斜排的、也在顶上，
   // 故段名再往上让出一行 —— 两者同一条基线会叠成一团（实测）
-  const markUp = marks.length ? markLabW * 0.574 + fs * 0.45 : 0
+  const markUp = markUp0
   // ★ from > to 说的是【跨 ±180° 接缝】那一段（如 150°E → −150°，60° 宽的太平洋弧），
   //   与 ssaStats.inArc 同一口径。拿 min/max 去画会画成它的补集（300° 宽），正好反了 ——
   //   故跨缝时画成左右两截，段名挂在宽的那一截上。
@@ -653,8 +755,23 @@ function drawStrip(spec, P, L) {
     const y = mapY(v)
     parts.push(rect(x, y, pxw, fr.y1 - y, P.series[0]))
   }
-  // 竖标压在最上层
-  for (const m of marks) {
+  // 竖标压在最上层。纸面档：名字横排在绘图区上方；放不下就整组改编号引注（不再 −35° 斜排、不截断）
+  if (pm) {
+    pm.ms.forEach((m, i) => {
+      parts.push(line(m.x, fr.y0, m.x, fr.y1, P.ink, P.lw))
+      parts.push(T(P, m.x + (pm.fits ? fs * 0.2 : 0), fr.y0 - fs * 0.3, pm.fits ? m.label : m.tag, { fs, fill: P.ink, anchor: pm.fits ? 'start' : 'middle' }))
+    })
+    if (!pm.fits) {
+      let cx = fr.x0, cy = fr.y1 + fs * 2.7
+      for (const m of pm.ms) {
+        const txt = m.tag + ' ' + m.label
+        const w = textW(txt, fs) + fs * 1.2
+        if (cx > fr.x0 && cx + w > fr.x1) { cx = fr.x0; cy += fs * 1.4 }
+        parts.push(T(P, cx, cy, txt, { fs, fill: P.dim }))
+        cx += w
+      }
+    }
+  } else for (const m of marks) {
     if (!m || !Number.isFinite(+m.lon)) continue
     const x = mapX(+m.lon)
     parts.push(line(x, fr.y0, x, fr.y1, P.series[1], Math.max(1.5, fs * 0.14)))
@@ -667,14 +784,42 @@ function drawStrip(spec, P, L) {
   const xstep = fr.w / 360 * 30 >= fs * 2.6 ? 30 : 60
   for (let v = -180; v <= 180; v += xstep) {
     const x = mapX(v)
-    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, 1))
-    parts.push(T(P, x, fr.y1 + fs * 1.3, String(v), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, P.lw))
+    const lab = P.paperTheme ? (v === 0 ? '0°' : v < 0 ? (-v) + '°W' : v + '°E') : String(v)
+    parts.push(T(P, x, fr.y1 + fs * 1.3, lab, { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
   }
-  parts.push(line(fr.x0, fr.y0, fr.x0, fr.y1, P.axis, 1))
-  parts.push(line(fr.x1, fr.y0, fr.x1, fr.y1, P.axis, 1))
+  parts.push(line(fr.x0, fr.y0, fr.x0, fr.y1, P.axis, P.lw))
+  parts.push(line(fr.x1, fr.y0, fr.x1, fr.y1, P.axis, P.lw))
   if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
   if (!bins.length) parts.push(T(P, fr.x0 + fr.w / 2, fr.y0 + fr.h / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
   return { h: H, parts }
+}
+
+// 纸面档条带竖标的排版：按经度排序，逐个看名字横排能否在下一根竖标之前放下；放不下就整组编号，
+// 并量出编号表（「① 名称　② 名称」）要几行。mapX 与 drawStrip 同一条
+const CIRC = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
+function stripMarkLayout(marks, x0, plotW, fs) {
+  const mapX = (v) => x0 + ((clamp(v, -180, 180) + 180) / 360) * plotW
+  const ms = marks.filter((m) => m && Number.isFinite(+m.lon))
+    .map((m) => ({ x: mapX(+m.lon), label: String(m.label == null ? '' : m.label) }))
+    .sort((a, b) => a.x - b.x)
+  ms.forEach((m, i) => { m.tag = CIRC[i] || '(' + (i + 1) + ')' })
+  let fits = true
+  for (let i = 0; i < ms.length; i++) {
+    const right = i < ms.length - 1 ? ms[i + 1].x : x0 + plotW
+    if (ms[i].x + fs * 0.2 + textW(ms[i].label, fs) + fs * 0.4 > right) { fits = false; break }
+  }
+  let keyRows = 0
+  if (!fits) {
+    keyRows = 1
+    let cx = 0
+    for (const m of ms) {
+      const w = textW(m.tag + ' ' + m.label, fs) + fs * 1.2
+      if (cx > 0 && cx + w > plotW) { keyRows++; cx = 0 }
+      cx += w
+    }
+  }
+  return { ms, fits, keyRows }
 }
 
 // ⑦ 二维密度格。计数跨几个数量级（一格 1 颗到一格上千颗），线性色阶会把除最热的几格外
@@ -693,16 +838,27 @@ function drawHeat(spec, P, L) {
   const ylo = yB.length ? minOf(yB, (b) => +b.y0) : 0
   const yhi = yB.length ? maxOf(yB, (b) => +b.y1) : 1
 
-  const ysc = niceScale(ylo, yhi, Math.max(3, Math.min(8, Math.floor(H / (fs * 3.2)))))
+  // yLog：纵轴（高度）按对数映射，刻度落在 1-2-5 序列上（与 ssaStats.heatGrid 的 logAlt 分层配套）
+  const yLog = !!spec.yLog && ylo > 0 && yhi > ylo
+  let ysc = niceScale(ylo, yhi, Math.max(3, Math.min(8, Math.floor(H / (fs * 3.2)))))
+  if (yLog) {
+    const ticks = []
+    for (let e = Math.floor(Math.log10(ylo)); e <= Math.ceil(Math.log10(yhi)); e++) for (const m of [1, 2, 5]) { const v = m * Math.pow(10, e); if (v >= ylo - 1e-9 && v <= yhi + 1e-9) ticks.push(v) }
+    ysc = { min: ylo, max: yhi, step: 1, ticks }
+  }
   const mL = yAxisMetrics(ysc, fs, spec.yLabel)
   // 右边距 = 色标条 + 它的刻度数字 + 轴名
   const barW = fs * 1.15
   const lg = []
   const K = P.seq.length
   const lmax = Math.log1p(Math.max(1, vmax))
-  for (let i = 1; i <= K; i++) lg.push(Math.max(1, Math.round(Math.expm1((i / K) * lmax))))
+  // 纸面档：级界取 1-2-5 序列的整数（1 / 5 / 20 / 50 / 200 / 500 / > 500，§F2.5）—— 读者能把一格的颜色读回一个整数区间；
+  // 其余两档仍按 log1p 七等分（逐字节不变）
+  const lgText = []
+  if (P.paperTheme) { for (let i = 0; i < K; i++) lgText.push(HEAT_BREAKS[i] === Infinity ? '>' + HEAT_BREAKS[i - 1] : String(HEAT_BREAKS[i])) }
+  else for (let i = 1; i <= K; i++) { const v = Math.max(1, Math.round(Math.expm1((i / K) * lmax))); lg.push(v); lgText.push(fmtInt(v)) }
   let lgW = 0
-  for (const v of lg) lgW = Math.max(lgW, textW(fmtInt(v), fs * 0.85))
+  for (const v of lgText) lgW = Math.max(lgW, textW(v, fs * 0.85))
   const mR = fs * 0.7 + barW + fs * 0.35 + lgW + (spec.legendLabel ? fs * 1.35 : 0) + fs * 0.4
   const plotW = Math.max(30, W - mL - mR)
   const mT = fs * 0.9
@@ -710,7 +866,9 @@ function drawHeat(spec, P, L) {
   const fr = { x0: mL, y0: mT, x1: mL + plotW, y1: mT + Math.max(20, H - mB - mT), w: plotW, h: Math.max(20, H - mB - mT) }
   const parts = []
   const mapX = (v) => fr.x0 + ((v - xlo) / ((xhi - xlo) || 1)) * fr.w
-  const mapY = (v) => fr.y1 - ((v - ylo) / ((yhi - ylo) || 1)) * fr.h
+  const mapY = yLog
+    ? (v) => fr.y1 - (Math.log(Math.max(v, ylo) / ylo) / Math.log(yhi / ylo)) * fr.h
+    : (v) => fr.y1 - ((v - ylo) / ((yhi - ylo) || 1)) * fr.h
 
   for (let yi = 0; yi < yB.length; yi++) {
     const row = cells[yi]
@@ -720,7 +878,7 @@ function drawHeat(spec, P, L) {
       const v = num(row[xi])
       if (v <= 0) continue
       const t = lmax > 0 ? Math.log1p(v) / lmax : 1
-      const idx = clamp(Math.floor(t * K - 1e-9), 0, K - 1)
+      const idx = P.paperTheme ? HEAT_BREAKS.findIndex((b) => v <= b) : clamp(Math.floor(t * K - 1e-9), 0, K - 1)
       const xa = mapX(+xB[xi].x0), xb = mapX(+xB[xi].x1)
       // 相邻格补 0.5px 重叠：格与格之间留缝会把一张密度图画成网格纸
       parts.push(rect(xa, ya, xb - xa + 0.5, yb - ya + 0.5, P.seq[idx]))
@@ -730,18 +888,18 @@ function drawHeat(spec, P, L) {
   for (const t of ysc.ticks) {
     if (t < ylo - 1e-9 || t > yhi + 1e-9) continue
     const y = mapY(t)
-    parts.push(line(fr.x0, y, fr.x0 - fs * 0.32, y, P.axis, 1))
-    parts.push(T(P, fr.x0 - fs * 0.45, y + fs * 0.32, grp(fmtStep(t, ysc.step)), { fs: fs * 0.9, fill: P.dim, anchor: 'end' }))
+    parts.push(line(fr.x0, y, fr.x0 - fs * 0.32, y, P.axis, P.lw))
+    parts.push(T(P, fr.x0 - fs * 0.45, y + fs * 0.32, grp(fmtStep(t, ysc.step), ysc.ticks.some((u) => u >= 10000)), { fs: fs * 0.9, fill: P.dim, anchor: 'end' }))
   }
   if (spec.yLabel) parts.push(T(P, fr.x0 - fs * 0.45 - ysc.digitW - fs * 0.55, (fr.y0 + fr.y1) / 2, spec.yLabel, { fs, fill: P.dim, anchor: 'middle', rotate: -90 }))
   const xsc = niceScale(xlo, xhi, Math.max(2, Math.min(9, Math.floor(fr.w / (fs * 4.2)))))
   for (const t of xsc.ticks) {
     if (t < xlo - 1e-9 || t > xhi + 1e-9) continue
     const x = mapX(t)
-    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, 1))
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, P.lw))
     parts.push(T(P, x, fr.y1 + fs * 1.3, grp(fmtStep(t, xsc.step)), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
   }
-  parts.push(`<rect x="${n2(fr.x0)}" y="${n2(fr.y0)}" width="${n2(fr.w)}" height="${n2(fr.h)}" fill="none" stroke="${P.axis}" stroke-width="1"/>`)
+  parts.push(`<rect x="${n2(fr.x0)}" y="${n2(fr.y0)}" width="${n2(fr.w)}" height="${n2(fr.h)}" fill="none" stroke="${P.axis}" stroke-width="${n2(P.lw)}"/>`)
   if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
 
   // 色标条：七档分级，刻度写在每档的上边界上（对数分档，刻度自然不等距 —— 色标条的轴就是颜色的轴）
@@ -750,10 +908,10 @@ function drawHeat(spec, P, L) {
   for (let i = 0; i < K; i++) {
     parts.push(rect(bx, fr.y1 - (i + 1) * segH, barW, segH + 0.5, P.seq[i]))
     const y = fr.y1 - (i + 1) * segH
-    parts.push(line(bx + barW, y, bx + barW + fs * 0.25, y, P.axis, 1))
-    parts.push(T(P, bx + barW + fs * 0.35, y + fs * 0.3, fmtInt(lg[i]), { fs: fs * 0.85, fill: P.dim }))
+    parts.push(line(bx + barW, y, bx + barW + fs * 0.25, y, P.axis, P.lw))
+    parts.push(T(P, bx + barW + fs * 0.35, y + fs * 0.3, lgText[i], { fs: fs * 0.85, fill: P.dim }))
   }
-  parts.push(`<rect x="${n2(bx)}" y="${n2(fr.y0)}" width="${n2(barW)}" height="${n2(fr.h)}" fill="none" stroke="${P.axis}" stroke-width="1"/>`)
+  parts.push(`<rect x="${n2(bx)}" y="${n2(fr.y0)}" width="${n2(barW)}" height="${n2(fr.h)}" fill="none" stroke="${P.axis}" stroke-width="${n2(P.lw)}"/>`)
   if (spec.legendLabel) parts.push(T(P, bx + barW + fs * 0.35 + lgW + fs * 0.9, (fr.y0 + fr.y1) / 2, spec.legendLabel, { fs, fill: P.dim, anchor: 'middle', rotate: -90 }))
   if (!xB.length || !yB.length) parts.push(T(P, fr.x0 + fr.w / 2, fr.y0 + fr.h / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
   return { h: H, parts }
@@ -792,7 +950,7 @@ function drawScatter(spec, P, L) {
   const mapY = (v) => fr.y1 - ((v - ysc.min) / ((ysc.max - ysc.min) || 1)) * fr.h
   for (const t of xsc.ticks) {
     const x = mapX(t)
-    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, 1))
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.32, P.axis, P.lw))
     parts.push(T(P, x, fr.y1 + fs * 1.3, grp(fmtStep(t, xsc.step)), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
   }
   const r = Math.max(1.3, fs * 0.16)
@@ -805,7 +963,129 @@ function drawScatter(spec, P, L) {
   return { h: H, parts }
 }
 
-const DRAW = { bar: drawBar, hbar: drawHbar, stack: drawStack, line: drawLine, hist: drawHist, strip: drawStrip, heat: drawHeat, scatter: drawScatter }
+// ⑨ 竖柱（逐年计数，可堆叠，样式规范 §F2.3）。spec = { x: 年份[], series: [{ key, name, data }], xIsYear, partialLast }。
+// 计数用竖柱、存量用折线；多序列一律自下而上堆叠（同量纲才堆，不同量纲拆图，不做双轴）。
+// 柱宽 ≤ 槽宽 70%，方端；段间 0.75 pt 白缝；末期不完整时末柱降为 40% 填色加同色描边（§F.5）。
+function drawCol(spec, P, L) {
+  const fs = L.fs, W = L.width
+  const xs = (Array.isArray(spec.x) ? spec.x : []).map(num)
+  const series = (Array.isArray(spec.series) ? spec.series : []).filter((se) => se && Array.isArray(se.data))
+  const n = xs.length
+  const H = L.height || Math.round(W * 0.5)
+  let maxV = 0
+  const tot = new Array(n).fill(0)
+  for (let i = 0; i < n; i++) { for (const se of series) tot[i] += Math.max(0, num(se.data[i])); if (tot[i] > maxV) maxV = tot[i] }
+  const items = series.length > 1 ? series.map((se, i) => ({ label: se.name, color: serColor(P, se, i) })) : []
+  const legW = W * LEG_W
+  const legH = items.length ? legendHeight(items, legW, fs, P) : 0
+  const sc = countScale(maxV, Math.max(3, Math.min(7, Math.floor((H - legH) / (fs * 3.2)))))
+  const mL = yAxisMetrics(sc, fs, spec.yLabel)
+  const mR = fs * 1.2
+  const plotW = Math.max(30, W - mL - mR)
+  const mT = fs * 0.9 + legH
+  const mB = fs * 1.65 + (spec.xLabel ? AXL_H * fs : 0)
+  const fr = { x0: mL, y0: mT, x1: mL + plotW, y1: mT + Math.max(20, H - mB - mT), w: plotW, h: Math.max(20, H - mB - mT) }
+  const parts = []
+  if (items.length) parts.push(...legendParts(P, items, mL, fs * 0.2, legW, fs).parts)
+  parts.push(...yAxisParts(P, fr, sc, fs, spec.yLabel))
+  const mapY = (v) => fr.y1 - ((v - sc.min) / ((sc.max - sc.min) || 1)) * fr.h
+  const slot = n ? fr.w / n : fr.w
+  const bw = Math.max(0.6, slot * 0.7)
+  const seam = P.paperTheme ? fs * 0.094 : Math.max(1, fs * 0.1)      // 0.75 pt 段间白缝
+  const partial = !!spec.partialLast && n >= 1
+  for (let i = 0; i < n; i++) {
+    const cx = fr.x0 + slot * (i + 0.5)
+    let acc = 0
+    const last = partial && i === n - 1
+    for (let si = 0; si < series.length; si++) {
+      const v = Math.max(0, num(series[si].data[i]))
+      if (v <= 0) continue
+      const yTop = mapY(acc + v), yBot = mapY(acc)
+      acc += v
+      const top = si < series.length - 1 && acc < tot[i] ? seam : 0     // 上面还有段才留缝
+      const h = yBot - yTop - Math.min(top, (yBot - yTop) / 2)
+      if (h <= 0.1) continue
+      const color = serColor(P, series[si], si)
+      if (last) parts.push(rect(cx - bw / 2, yTop + (yBot - yTop - h), bw, h, color, ` fill-opacity="0.4" stroke="${color}" stroke-width="${n2(P.lw)}" data-partial="1"`))
+      else parts.push(rect(cx - bw / 2, yTop + (yBot - yTop - h), bw, h, color))
+    }
+  }
+  // 横轴：年份档每 10 年（跨度短退到 5 / 2 / 1），刻度落在柱心上；年份不分组
+  if (n) {
+    const span = Math.max(1, xs[n - 1] - xs[0])
+    const wantN = Math.max(2, Math.min(12, Math.floor(fr.w / (fs * 4.2))))
+    let step = [1, 2, 5, 10, 20, 25, 50].find((st) => span / st <= wantN) || 100
+    if (spec.xIsYear && step < 10 && span / 10 >= 3.5) step = 10
+    for (let i = 0; i < n; i++) {
+      if (Math.round(xs[i]) % step !== 0) continue
+      const x = fr.x0 + slot * (i + 0.5)
+      parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.25, P.axis, P.lw))
+      parts.push(T(P, x, fr.y1 + fs * 1.3, spec.xIsYear ? String(Math.round(xs[i])) : grp(String(xs[i])), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
+    }
+  }
+  if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
+  if (!n || !series.length) parts.push(T(P, fr.x0 + fr.w / 2, fr.y0 + fr.h / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
+  return { h: H, parts }
+}
+
+// ⑩ 堆叠直方（相邻箱首尾相接，样式规范 §F2.1 的 LEO 密度剖面）。spec = { bins: [{ x0, x1 }], series: [{ key, name, data }] }。
+// 自下而上按 series 顺序堆（载荷 / 火箭体 / 碎片 / 未知），段间 0.75 pt 白缝；量不必是整数（空间密度）。
+function drawStackHist(spec, P, L) {
+  const fs = L.fs, W = L.width
+  const bins = (Array.isArray(spec.bins) ? spec.bins : []).filter((b) => b && Number.isFinite(+b.x0) && Number.isFinite(+b.x1))
+  const series = (Array.isArray(spec.series) ? spec.series : []).filter((se) => se && Array.isArray(se.data))
+  const n = bins.length
+  const H = L.height || Math.round(W * 0.62)
+  const tot = new Array(n).fill(0)
+  let maxV = 0
+  for (let i = 0; i < n; i++) { for (const se of series) tot[i] += Math.max(0, num(se.data[i])); if (tot[i] > maxV) maxV = tot[i] }
+  const items = series.map((se, i) => ({ label: se.name, color: serColor(P, se, i) }))
+  const legW = W * LEG_W
+  const legH = items.length > 1 ? legendHeight(items, legW, fs, P) : 0
+  const sc = valueScale(0, maxV > 0 ? maxV : 1, Math.max(3, Math.min(7, Math.floor((H - legH) / (fs * 3.2)))), true, false)
+  sc.ticks = sc.ticks.filter((t) => t >= 0)
+  sc.min = 0
+  const mL = yAxisMetrics(sc, fs, spec.yLabel)
+  const mR = fs * 1.2
+  const plotW = Math.max(30, W - mL - mR)
+  const mT = fs * 0.9 + legH
+  const mB = fs * 1.65 + (spec.xLabel ? AXL_H * fs : 0)
+  const fr = { x0: mL, y0: mT, x1: mL + plotW, y1: mT + Math.max(20, H - mB - mT), w: plotW, h: Math.max(20, H - mB - mT) }
+  const parts = []
+  if (items.length > 1) parts.push(...legendParts(P, items, mL, fs * 0.2, legW, fs).parts)
+  parts.push(...yAxisParts(P, fr, sc, fs, spec.yLabel))
+  const xlo = n ? +bins[0].x0 : 0, xhi = n ? +bins[n - 1].x1 : 1
+  const mapX = (v) => fr.x0 + ((v - xlo) / ((xhi - xlo) || 1)) * fr.w
+  const mapY = (v) => fr.y1 - ((v - sc.min) / ((sc.max - sc.min) || 1)) * fr.h
+  const seam = P.paperTheme ? fs * 0.094 : Math.max(1, fs * 0.1)
+  for (let i = 0; i < n; i++) {
+    const xa = mapX(+bins[i].x0), xb = mapX(+bins[i].x1)
+    let acc = 0
+    for (let si = 0; si < series.length; si++) {
+      const v = Math.max(0, num(series[si].data[i]))
+      if (v <= 0) continue
+      const yTop = mapY(acc + v), yBot = mapY(acc)
+      acc += v
+      const top = acc < tot[i] ? seam : 0
+      const h = yBot - yTop - Math.min(top, (yBot - yTop) / 2)
+      if (h <= 0.05) continue
+      // 相邻箱补 0.5 px 重叠：首尾相接的直方，箱间留缝会被读成「这两层之间是空的」
+      parts.push(rect(xa, yTop + (yBot - yTop - h), xb - xa + 0.5, h, serColor(P, series[si], si)))
+    }
+  }
+  const xsc = niceScale(xlo, xhi, Math.max(2, Math.min(10, Math.floor(fr.w / (fs * 4.2)))))
+  for (const t of xsc.ticks) {
+    if (t < xlo - 1e-9 || t > xhi + 1e-9) continue
+    const x = mapX(t)
+    parts.push(line(x, fr.y1, x, fr.y1 + fs * 0.25, P.axis, P.lw))
+    parts.push(T(P, x, fr.y1 + fs * 1.3, grp(fmtStep(t, xsc.step)), { fs: fs * 0.9, fill: P.dim, anchor: 'middle' }))
+  }
+  if (spec.xLabel) parts.push(T(P, fr.x0 + fr.w / 2, H - AXL_Y * fs, spec.xLabel, { fs, fill: P.dim, anchor: 'middle' }))
+  if (!n || !series.length) parts.push(T(P, fr.x0 + fr.w / 2, fr.y0 + fr.h / 2, EMPTY_TXT[L.lang] || EMPTY_TXT.zh, { fs, fill: P.dim, anchor: 'middle' }))
+  return { h: H, parts }
+}
+
+const DRAW = { bar: drawBar, hbar: drawHbar, stack: drawStack, line: drawLine, hist: drawHist, strip: drawStrip, heat: drawHeat, scatter: drawScatter, col: drawCol, stackhist: drawStackHist }
 
 /**
  * spec → SVG 串。
@@ -815,12 +1095,27 @@ const DRAW = { bar: drawBar, hbar: drawHbar, stack: drawStack, line: drawLine, h
  */
 export function chartSvg(spec, o) {
   const opt = o || {}
-  const theme = opt.theme === 'print' ? 'print' : 'screen'
-  const width = Math.max(180, Math.round(num(opt.width) || 640))
-  // 字号随图宽走：同一份 spec 屏上 700 px、报告里 1200 px，字号不跟着放大就成了蚂蚁
-  const fs = clamp(Math.round(width / 62), 10, 20)
-  const P = palette(theme, opt.fonts)
-  const L = { fs, width, height: Math.max(0, Math.round(num(opt.height))) || 0, lang: opt.lang === 'en' ? 'en' : 'zh' }
+  const theme = opt.theme === 'print' ? 'print' : opt.theme === 'paper' ? 'paper' : 'screen'
+  let width, fs, P, height
+  if (theme === 'paper') {
+    // 纸面档（样式规范 §F.1）：按物理尺寸（mm，96 dpi）画，scale 只给屏上纸面缩放用；图内字号恒为 8 pt。
+    // 导出时 scale = 1、栅格倍率另给（600 dpi = 6.25 倍），放进 Word 按原物理尺寸、不缩放。
+    const k = num(opt.scale) > 0 ? num(opt.scale) : 1
+    const wMm = num(opt.widthMm) > 0 ? num(opt.widthMm) : 160
+    const hMm = num(opt.heightMm) > 0 ? num(opt.heightMm) : 80
+    width = Math.max(60, Math.round(wMm * MM * k))
+    height = Math.max(30, Math.round(hMm * MM * k))
+    fs = 8 * PT * k
+    P = palette('paper', null, k)
+    P.fsText = fs
+  } else {
+    width = Math.max(180, Math.round(num(opt.width) || 640))
+    // 字号随图宽走：同一份 spec 屏上 700 px、报告里 1200 px，字号不跟着放大就成了蚂蚁
+    fs = clamp(Math.round(width / 62), 10, 20)
+    P = palette(theme, opt.fonts)
+    height = Math.max(0, Math.round(num(opt.height))) || 0
+  }
+  const L = { fs, width, height, lang: opt.lang === 'en' ? 'en' : 'zh' }
   const s = spec && typeof spec === 'object' ? spec : {}
   const fn = DRAW[s.type] || null
 

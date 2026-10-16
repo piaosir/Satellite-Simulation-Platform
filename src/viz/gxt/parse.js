@@ -6,7 +6,8 @@
 //   [B1..Bn]     gain=..  p=lon;lat（或 p1=lon;lat）           波束中心（boresight）
 //   [C1..Cn]     gain=..  n_point=..  p1..pN=lon;lat           一条等值线
 // 输出与 resources/coverage/*.json（渲染管线 coverage.get 所需）同构：
-//   { lon, satName, bore:[[lon,lat]...], contours:[{ g, p:[[lon,lat]...] }] }
+//   { lon, satName, bore:[[lon,lat(,gain)]...], contours:[{ g, p:[[lon,lat]...] }] }
+// 波束中心带 gain= 时记成第三个分量（波束中心电平）；渲染端只取前两个，GXT / GXT 结构 JSON 写出时再带回去。
 // 单文件通常 = 单波束（n_diag=1）；多 diagram 时把所有 [Bx]/[Cx] 按文件顺序合并。
 
 // 取一个分号坐标 "114.919;16.199" → [lon, lat]（容错逗号分隔与多余空格）
@@ -29,6 +30,7 @@ export function parseGxt(text) {
   const bore = []               // [[lon,lat]...]
   const contours = []           // [{ g, p:[[lon,lat]...] }]
   let curContour = null         // 正在收集的等值线 { g, p }
+  let boreGain = NaN            // 当前 [Bx] 节的 gain=（在 p= 之前给出）
 
   const flushContour = () => { if (curContour && curContour.p.length) contours.push(curContour); curContour = null }
 
@@ -42,6 +44,7 @@ export function parseGxt(text) {
       section = m[1].trim().toUpperCase()
       // GeoMain 段读完后取值
       if (/^C\d+$/.test(section)) curContour = { g: NaN, p: [] }
+      boreGain = NaN
       continue
     }
     const eq = line.indexOf('=')
@@ -53,8 +56,9 @@ export function parseGxt(text) {
       if (key === 'long_nom') { const n = Number(val); if (Number.isFinite(n)) lon = n }
       else if (key === 'sat_name') satName = val
     } else if (/^B\d+$/.test(section)) {
-      // 波束中心：p 或 p1
-      if (key === 'p' || key === 'p1') { const pt = parsePoint(val); if (pt) bore.push(pt) }
+      // 波束中心：p 或 p1；gain= 记成第三个分量
+      if (key === 'gain') { const g = Number(val); if (Number.isFinite(g)) boreGain = g }
+      else if (key === 'p' || key === 'p1') { const pt = parsePoint(val); if (pt) bore.push(Number.isFinite(boreGain) ? [pt[0], pt[1], boreGain] : pt) }
     } else if (/^C\d+$/.test(section) && curContour) {
       if (key === 'gain') { const g = Number(val); if (Number.isFinite(g)) curContour.g = g }
       else if (/^p\d+$/.test(key)) { const pt = parsePoint(val); if (pt) curContour.p.push(pt) }

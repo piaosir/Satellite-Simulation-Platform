@@ -1,0 +1,49 @@
+//! id: gxt-json
+//! name: ⟪JSON · GXT 结构（按波束拆分）|JSON · GXT schema (split by beam)⟫
+//! ext: json
+//zh GXT 各节逐字段转换为 JSON（formatInfo / geoMain / coHeader / borePoints / contours），每个波束一个文件，
+//zh 按卫星分目录，文件名为「卫星_频段_波束_类型.json」；格式与 LinkLab 小程序云数据一致，可导回「GXT/KML 管理」。
+//en GXT sections transcribed field by field into JSON (formatInfo / geoMain / coHeader / borePoints / contours), one file per beam,
+//en a folder per satellite, named "satellite_band_beam_type.json" — the LinkLab mini-program cloud-data format, importable back into GXT/KML Management.
+//zh gxtJson(波束, 选项)：beamId、emiRcp（缺省 G/T 波束为 R，其余为 E）、polarization、digits（缺省 3）、indent（缺省单行输出）
+//en gxtJson(beam, options): beamId, emiRcp (R for G/T, else E), polarization, digits (default 3), indent (default single line)
+
+const WITH_INDEX = false   // ⟪同时输出 index.json（「目录/文件名」→「coverage/目录/文件名.json」，与云数据一致）|also write index.json ("folder/name" → "coverage/folder/name.json", as in the cloud data)⟫
+
+const safe = (s) => String(s ?? '').replace(/[\\/:*?"<>|]+/g, '-').trim()
+const used = new Map()
+const unique = (path) => {
+  const n = (used.get(path.toLowerCase()) || 0) + 1
+  used.set(path.toLowerCase(), n)
+  return n === 1 ? path : path.replace(/\.json$/, `-${n}.json`)
+}
+
+const files = []
+for (const b of data.beams) {
+  // ⟪天线方向图来源无频段 / 类型：分别记为 GRD / EIRP，导回覆盖库时仍可按四段解析文件名|antenna patterns have no band / type: written as GRD / EIRP so the four-part name still splits on import⟫
+  const band = b.band || (b.source === 'antenna' ? 'GRD' : '')
+  const sat = safe(b.satellite) || 'Satellite'
+  const base = [sat, safe(band), safe(b.name) || 'Beam', b.type || 'EIRP'].join('_')
+  files.push(file(unique(`${sat}/${base}.json`), gxtJson(b, { digits: 3 })))
+}
+
+// ⟪Polygon：按「卫星 / 轨位」分组，每组输出一个文件；每个多边形为一条闭合等值线，电平取数值字段|polygons: one document per satellite / orbit group; each polygon is a closed contour whose level is its value⟫
+const groups = new Map()
+for (const pg of data.polygons) {
+  const key = `${pg.satellite}|${pg.orbitLon ?? ''}`
+  if (!groups.has(key)) groups.set(key, [])
+  groups.get(key).push(pg)
+}
+for (const gs of groups.values()) {
+  const sat = safe(gs[0].satellite) || 'Polygon'
+  const pseudo = { satellite: gs[0].satellite, orbitLon: gs[0].orbitLon, peaks: [], contours: gs.map((pg) => ({ level: pg.level ?? 0, points: geo.close(pg.points) })) }
+  files.push(file(unique(`${sat}/Polygon.json`), gxtJson(pseudo, { digits: 3 })))
+}
+
+if (!files.length) return console.warn('⟪暂无可导出的波束|No beams to export⟫')
+if (WITH_INDEX) {
+  const index = {}
+  for (const f of files) { const key = f.name.replace(/\.json$/, ''); index[key] = `coverage/${f.name}` }
+  files.push(file('index.json', JSON.stringify(index, null, 2)))
+}
+return files

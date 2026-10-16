@@ -1,0 +1,22 @@
+//! id: csv-sites
+//! name: ⟪CSV · 站点覆盖电平|CSV · Coverage level at sites⟫
+//! ext: csv
+//zh 地球站与点标记所在的等值线电平：取包含该点的最高一档，位于全部等值线之外时留空。每个站点一行，每个波束一列。
+//en Which contour level encloses each earth station / point marker: the highest enclosing level, blank when outside. One row per site, one column per beam.
+
+const sites = [
+  ...data.stations.map((s) => ({ ...s, kind: '⟪地球站|Station⟫' })),
+  ...data.points.map((s) => ({ ...s, kind: '⟪点标记|Point⟫' })),
+]
+if (!sites.length) console.warn('⟪暂无地球站或点标记|No stations or point markers⟫')
+
+const rows = sites.map((s) => {
+  const row = { '⟪名称|Name⟫': s.name, '⟪类别|Kind⟫': s.kind, '⟪经度|Longitude⟫': fmt(s.lon, 4), '⟪纬度|Latitude⟫': fmt(s.lat, 4) }
+  for (const b of data.beams) {
+    const key = `${b.satellite} ${b.name} (${b.unit || 'dB'})`.trim()
+    row[key] = geo.levelAt(b, s.lon, s.lat) ?? ''
+  }
+  return row
+})
+
+return file('⟪站点电平|site_levels⟫.csv', csv(rows), { encoding: 'utf-8-bom' })

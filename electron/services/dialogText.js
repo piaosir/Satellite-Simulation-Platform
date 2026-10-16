@@ -31,7 +31,8 @@ const EN = {
   'SP3 精密星历': 'SP3 Precise Ephemeris',
   '星历文件 (OMM · TLE · STK .e · CCSDS OEM · SP3 · 中国卫通 .eph · GPS 年历)': 'Ephemeris Files (OMM · TLE · STK .e · CCSDS OEM · SP3 · China Satcom .eph · GPS Almanac)',
   '卫星编目 CSV（CelesTrak satcat.csv）': 'Satellite Catalog CSV (CelesTrak satcat.csv)',
-  '覆盖等值线 (*.gxt, *.kml)': 'Coverage Contours (*.gxt, *.kml)',
+  '覆盖等值线 (*.gxt, *.kml, *.json)': 'Coverage Contours (*.gxt, *.kml, *.json)',
+  'GXT 结构 JSON (*.json)': 'GXT-structured JSON (*.json)',
   'GXT 等值线 (*.gxt)': 'GXT Contours (*.gxt)',
   'GXT 等值线': 'GXT Contours',
   'Polygon (*.gxt, *.kml)': 'Polygons (*.gxt, *.kml)',
@@ -46,7 +47,7 @@ const EN = {
   // —— 标题 ——
   '导入星历（可多选，每文件一组）': 'Import Ephemeris (multiple files, one group per file)',
   '选择导出文件夹（每颗卫星一个文件）': 'Choose Export Folder (one file per satellite)',
-  '导入覆盖等值线（GXT / KML，可多选）': 'Import Coverage Contours (GXT / KML, multiple)',
+  '导入覆盖等值线（GXT / KML / JSON，可多选）': 'Import Coverage Contours (GXT / KML / JSON, multiple)',
   '导入方向图文件（GRASP GRD / ACP4 / Eutelsat，可多选）': 'Import Antenna Pattern Files (GRASP GRD / ACP4 / Eutelsat, multiple)',
   '导入 GRD / PAT 方向图（可多选）': 'Import GRD / PAT Patterns (multiple)',
   '导出频率计划': 'Export Frequency Plan',

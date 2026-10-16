@@ -20,6 +20,33 @@ function cmdIndexPlugin() {
 // 只拷 wasm 路径要的四个文件（Electron 恒有 WebAssembly，asm.js 回退与编码器 ~1.5 MB 不要）。渲染端取法见 src/viz/models/loader.js 的 THREE_LIBS。
 const threeLibs = resolve('node_modules/three/examples/jsm/libs').replace(/\\/g, '/')
 
+// Monaco 编辑器（可编程波束地图）的两个 Worker：用官方预构建件（min/vs/assets 下自包含的 IIFE，与 ESM 主体同版同协议）
+// 原样拷出、改成固定文件名，不进 Rollup —— TypeScript 语言服务源码约 12 MB（typescriptServices + lib），本已是现成的
+// 打包产物，再交给 Rollup 处理只会徒增构建内存与时间（渲染端构建的堆余量本就紧，见 package.json 的 build 脚本）。
+// dev 由 static-copy 中间件在 /monaco/* 出，build 落 out/renderer/monaco/*；取法见 src/viz/beamScript/monacoCore.js 的
+// MonacoEnvironment.getWorker。
+const monacoWorkers = resolve('node_modules/monaco-editor/min/vs/assets').replace(/\\/g, '/')
+// Monaco ESM 主体里还有两处 new URL(<自家 Worker 源文件>, import.meta.url)：Vite 构建时见到就把它们当 Worker / 资源打进包
+// （TypeScript 那份就是上面说的 12 MB）。运行时这两条路走不到 —— MonacoEnvironment.getWorker 优先 —— 故在进 Vite 的
+// Worker / 资源插件之前把这两个表达式摘掉。Monaco 升级后表达式变了会告警，届时按新写法改 RULES。
+function monacoWorkerUrlStrip() {
+  const RULES = [
+    { file: /monaco-editor[\\/]esm[\\/]vs[\\/]languages[\\/]features[\\/]typescript[\\/]workerManager\.js$/, from: `new Worker(new URL('ts.worker.js', import.meta.url), { type: "module" })` },
+    { file: /monaco-editor[\\/]esm[\\/]vs[\\/]editor[\\/]browser[\\/]services[\\/]editorWorkerService\.js$/, from: `new URL('../../common/services/editorWebWorkerMain.js', import.meta.url)` }
+  ]
+  return {
+    name: 'satsim-monaco-worker-url-strip',
+    enforce: 'pre',
+    transform(code, id) {
+      const file = id.split('?')[0]
+      const r = RULES.find((x) => x.file.test(file))
+      if (!r) return null
+      if (!code.includes(r.from)) { this.warn(`Monaco 源码已变，未找到待摘除的 Worker 表达式：${file}`); return null }
+      return { code: code.replace(r.from, 'null'), map: null }
+    }
+  }
+}
+
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
@@ -49,6 +76,12 @@ export default defineConfig({
     // Worker 一律按 ES 模块打包：模型工作台的导出 / 几何 Worker 依赖图里有动态 import（meshoptimizer）与嵌套 Worker（analyze），
     // 缺省的 IIFE 格式不支持代码分割，整包构建会挂。全仓 new Worker(...) 都带 { type: 'module' }，ES 格式对它们都成立
     worker: { format: 'es' },
+    // 可编程波束地图的沙箱 Worker 用 acorn 做静态检查：依赖扫描不进 Worker 入口，dev 下第一次运行脚本才发现它，
+    // 会触发一次「依赖已更新，整页重载」—— 预先列进来
+    optimizeDeps: { include: ['acorn'] },
+    // JSON 模块产出 JSON.parse("…") 而不是展开成 JS 对象字面量：10m 底图（basemap-10m.json）原来被展开成约 195 万行字面量，
+    // 每个画地图的窗口都要编译一遍、常驻约 55 MB；JSON.parse 的值与键序与字面量逐一相同，编译与内存都降一个量级
+    json: { stringify: true },
     build: {
       outDir: 'out/renderer',
       rollupOptions: {
@@ -77,10 +110,13 @@ export default defineConfig({
     plugins: [
       vue(),
       cmdIndexPlugin(),
+      monacoWorkerUrlStrip(),
       viteStaticCopy({
         targets: [
           { src: [threeLibs + '/draco/gltf/draco_wasm_wrapper.js', threeLibs + '/draco/gltf/draco_decoder.wasm'], dest: 'three-libs/draco/gltf' },
-          { src: [threeLibs + '/basis/basis_transcoder.js', threeLibs + '/basis/basis_transcoder.wasm'], dest: 'three-libs/basis' }
+          { src: [threeLibs + '/basis/basis_transcoder.js', threeLibs + '/basis/basis_transcoder.wasm'], dest: 'three-libs/basis' },
+          { src: monacoWorkers + '/ts.worker-*.js', dest: 'monaco', rename: 'ts.worker.js' },
+          { src: monacoWorkers + '/editor.worker-*.js', dest: 'monaco', rename: 'editor.worker.js' }
         ]
       })
     ]

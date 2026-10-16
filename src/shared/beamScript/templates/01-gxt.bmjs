@@ -1,0 +1,17 @@
+//! id: gxt
+//! name: ⟪GXT · 合并输出|GXT · Combined⟫
+//! ext: gxt
+//zh 与「导出 → 导出 GXT（对地）」逐字节一致：每个波束对应一个 diagram，Polygon 按卫星分组附于其后。
+//en Byte-identical to Export → Export GXT (ground): one diagram per beam, polygons grouped by satellite at the end.
+//zh gxt(data, 选项) 的可选项：
+//en Options of gxt(data, options):
+//zh   adm: 'CHN'               主管部门代码（定宽 3 字符，缺省 'G'）
+//en   adm: 'CHN'               administration code (3 chars, default 'G')
+//zh   digits: 4                坐标小数位（缺省 3）
+//en   digits: 4                coordinate decimals (default 3)
+//zh   polygons: false          不输出 Polygon
+//en   polygons: false          leave polygons out
+//zh   beamId: (b, i) => i + 1  自定义 beam_id
+//en   beamId: (b, i) => i + 1  custom beam_id
+
+return file(`${data.meta.title}.gxt`, gxt(data))

@@ -78,8 +78,16 @@ function stepTitle(dir) {
   const k = keys[(keys.indexOf(cur) + dir + keys.length) % keys.length]
   if (openMenu.value) openKb(k); else kbTitle.value = k
 }
+// 有模态框（对话框 / 代码编辑器）时菜单栏不接键：Alt+单击多光标、查找框 Alt+C 等都归对话框
+const MENU_MODAL_SEL = '[aria-modal="true"], [role="dialog"]'
+function modalOpen() {
+  if (typeof document === 'undefined') return false
+  for (const el of document.querySelectorAll(MENU_MODAL_SEL)) if (el.getClientRects().length) return true
+  return false
+}
 // 窗口级捕获：在页面自己的方向键 / 空格处理之前接走（只在键盘态或菜单展开时才拦）
 function onMenuKey(e) {
+  if (modalOpen()) { altAlone = false; if (menuKb.value && !openMenu.value) closeMenus(); return }
   if (e.key === 'Alt') { if (!e.repeat) altAlone = true; return }
   altAlone = false
   // Alt + 助记符：直接展开（Alt+Q 归标题栏搜索，不占）
@@ -120,20 +128,22 @@ function onMenuKey(e) {
 }
 function onMenuKeyUp(e) {
   if (e.key !== 'Alt') return
-  if (altAlone && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+  if (altAlone && !e.ctrlKey && !e.shiftKey && !e.metaKey && !modalOpen()) {
     e.preventDefault()
     if (menuKb.value || openMenu.value) closeMenus(); else { menuKb.value = true; kbTitle.value = menus.value[0].key }
   }
   altAlone = false
 }
 function onMenuBlur() { altAlone = false; if (menuKb.value && !openMenu.value) closeMenus() }
+function onMenuPointer() { altAlone = false }   // Alt+单击 不算单按 Alt
 if (typeof window !== 'undefined') {
   // setup 期就挂（早于各页面 onMounted 里挂的捕获监听），菜单键盘态下的方向键 / 空格先到这里
   window.addEventListener('keydown', onMenuKey, true)
   window.addEventListener('keyup', onMenuKeyUp, true)
+  window.addEventListener('pointerdown', onMenuPointer, true)
   window.addEventListener('blur', onMenuBlur)
 }
-onBeforeUnmount(() => { window.removeEventListener('keydown', onMenuKey, true); window.removeEventListener('keyup', onMenuKeyUp, true); window.removeEventListener('blur', onMenuBlur) })
+onBeforeUnmount(() => { window.removeEventListener('keydown', onMenuKey, true); window.removeEventListener('keyup', onMenuKeyUp, true); window.removeEventListener('pointerdown', onMenuPointer, true); window.removeEventListener('blur', onMenuBlur) })
 const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/工具按钮时显示，默认「就绪」）
 
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
@@ -351,6 +361,8 @@ const menus = computed(() => [
     { sep: true },
     { id: 'menu.export.5', label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
     { id: 'menu.export.6', label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
+    // 可编程导出：当前绘制交给用户脚本（内置格式本身也是可复制修改的脚本），见 components/BeamScriptDialog.vue
+    { id: 'menu.export.7', label: '导出可编程波束地图…', icon: 'file-code', lock: true, disabled: !covNav.beamScript, hint: '以脚本处理当前绘制的覆盖等值线、波束中心、Polygon 与标记，按自定义格式导出（内置 GXT / KML / GeoJSON / Shapefile / CSV / MapInfo / DXF / SVG 模板）', run: () => { logMsg('导出：可编程波束地图'); covNav.beamScript && covNav.beamScript() } },
     { sep: true },
     { id: 'menu.export.8', label: '发送覆盖图到小程序…', icon: 'device-mobile-share', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 上传至云端，生成密钥供微信小程序「卫星覆盖」导入', run: () => doSendMiniapp() },
     { id: 'menu.export.9', label: '发送航迹到小程序…', icon: 'device-mobile-share', lock: true, disabled: !covNav.sendTrajMiniapp, hint: '将标记层的航行 / 飞行航迹逐条勾选后发送，微信小程序「卫星覆盖 → 航迹」接收', run: () => covNav.sendTrajMiniapp && covNav.sendTrajMiniapp() },
