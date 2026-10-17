@@ -80,7 +80,12 @@ export function matMul(A, B) {
  */
 export function symEigen(A, { maxSweeps = 64 } = {}) {
   const n = A.length
-  const a = Array.from(A, (r) => Float64Array.from(r))
+  // 先按 max|a_ij| 归一：收敛判据里的平方和在 |a| ≳ 1e154 时会上溢、≲ 1e-162 时会下溢，
+  // 判据失灵会一次旋转都不做就返回原对角（单测 studyOptimize ⓪ 守着）。特征值最后乘回去。
+  let scale = 0
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) scale = Math.max(scale, Math.abs(A[i][j]))
+  if (!(scale > 0) || !Number.isFinite(scale)) scale = 1
+  const a = Array.from(A, (r) => Float64Array.from(r, (x) => x / scale))
   const v = identity(n)
   let fro2 = 0
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) fro2 += a[i][j] * a[i][j]
@@ -117,7 +122,7 @@ export function symEigen(A, { maxSweeps = 64 } = {}) {
     }
   }
   const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => a[i][i] - a[j][j] || i - j)
-  const values = Float64Array.from(order, (i) => a[i][i])
+  const values = Float64Array.from(order, (i) => a[i][i] * scale)
   const vectors = zeros(n)
   for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) vectors[r][c] = v[r][order[c]]
   return { values, vectors }

@@ -7,12 +7,16 @@
 //      CONSTR（Deb 2002 的约束问题）全部可行，前沿到解析前沿的距离（GD / IGD）；评估失败（NaN）不中断；
 //   ④ 超体积函数本身对手算；
 //   ⑤ 混合编码：编码 / 解码 / 去重键；CMA-ES 与 NSGA-II 在 real + int + cat + ordinal 混合问题上找到最优；缓存去重；
-//   ⑥ ask/tell：手动逐批推进、runSync、runAsync 三种驱动结果逐位相同；同种子逐位可复现。
+//   ⑥ ask/tell：手动逐批推进、runSync、runAsync 三种驱动结果逐位相同；同种子逐位可复现；
+//   ⑦ 随时停（opt.signal）、边界与入参的边角情形（一维 NM、步长比盒宽、单侧无界、无限边界、全部求值失败）；
+//   ⓪ 线性代数：对称阵特征分解的重构 / 正交性，以及 1e154、1e-300 量级下仍正确。
 
 import {
   runSync, runAsync, nelderMead, nelderMeadSteps, cmaes, cmaesSteps, nsga2, nsga2Steps, hypervolume2d,
   makeSpace, mixedSteps,
 } from '../study/optimize.mjs'
+import { symEigen, cholesky, invLower, matMul } from '../study/linalg.mjs'
+import { makeRng } from '../study/rng.mjs'
 
 let pass = 0, fail = 0
 const ok = (name, cond, extra) => {
@@ -27,6 +31,37 @@ const himmel = ([x, y]) => (x * x + y - 11) ** 2 + (x + y * y - 7) ** 2
 // mpmath 求根（60 位）
 const HIMMEL_MIN = [[3, 2], [-2.8051180869527449, 3.131312518250573], [-3.7793102533777469, -3.2831859912861694], [3.5844283403304917, -1.8481265269644036]]
 const nearestMin = (x) => Math.min(...HIMMEL_MIN.map((m) => Math.hypot(x[0] - m[0], x[1] - m[1])))
+
+console.log('=== ⓪ 线性代数 ===')
+{
+  const rng = makeRng(17)
+  const n = 6
+  const M = Array.from({ length: n }, () => Array.from({ length: n }, () => rng() - 0.5))
+  const A = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => M[i][j] + M[j][i]))
+  const { values, vectors } = symEigen(A)
+  let rec = 0, orth = 0
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      let s = 0, o = 0
+      for (let k = 0; k < n; k++) { s += vectors[i][k] * values[k] * vectors[j][k]; o += vectors[k][i] * vectors[k][j] }
+      rec = Math.max(rec, Math.abs(s - A[i][j])); orth = Math.max(orth, Math.abs(o - (i === j ? 1 : 0)))
+    }
+  }
+  ok('symEigen：V·Λ·Vᵀ 重构 A、V 正交、特征值升序', rec < 1e-13 && orth < 1e-13 && values.every((v, i) => i === 0 || v >= values[i - 1]),
+    `重构 ${rec.toExponential(1)}，正交 ${orth.toExponential(1)}`)
+  const big = symEigen([[2e154, 1e154], [1e154, 2e154]])
+  ok('symEigen：1e154 量级不因平方和上溢而失效（特征值 1e154、3e154）', Math.abs(big.values[0] / 1e154 - 1) < 1e-14 && Math.abs(big.values[1] / 3e154 - 1) < 1e-14,
+    `${big.values[0].toExponential(6)}, ${big.values[1].toExponential(6)}`)
+  const tiny = symEigen([[2e-300, 1e-300], [1e-300, 2e-300]])
+  ok('symEigen：1e-300 量级不因平方和下溢而失效', Math.abs(tiny.values[0] / 1e-300 - 1) < 1e-14 && Math.abs(tiny.values[1] / 3e-300 - 1) < 1e-14)
+  const P = [[4, 2, 0.4], [2, 5, 1], [0.4, 1, 3]]
+  const L = cholesky(P)
+  const LLt = matMul(L, L.map((_, i) => L.map((r) => r[i])))
+  const I = matMul(L, invLower(L))
+  ok('cholesky：L·Lᵀ = A，L·L⁻¹ = I；非正定返回 null',
+    P.every((r, i) => r.every((v, j) => Math.abs(LLt[i][j] - v) < 1e-14)) && I.every((r, i) => r.every((v, j) => Math.abs(v - (i === j ? 1 : 0)) < 1e-15))
+    && cholesky([[1, 2], [2, 1]]) === null)
+}
 
 console.log('=== ① Nelder–Mead ===')
 {
@@ -200,6 +235,58 @@ console.log('=== ⑥ ask/tell 与可复现 ===')
   ok('NSGA-II：同种子逐位可复现，换种子即不同', same(a, b) && !same(a, c))
   ok('CMA-ES：换种子即不同', !same(cmaes(rosen, [0, 0], { seed: 1 }).x, cmaes(rosen, [0, 0], { seed: 2 }).x))
   ok('评估结果长度与请求不符报错（首批 3 个点只回 1 个值）', throws(() => { const g = nelderMeadSteps([0, 0]); g.next(); g.next([1]) }))
+}
+
+console.log('=== ⑦ 随时停与边角情形 ===')
+{
+  // 一维：Gao–Han 系数在 n = 1 时收缩系数为 0，会一次压成一点假收敛；一维须用标准系数
+  const f1 = (x) => Math.sin(3 * x[0]) + 0.1 * x[0] ** 2
+  const d1 = (x) => 3 * Math.cos(3 * x) + 0.2 * x
+  const r1 = nelderMead(f1, [-5.987], { step: 2 })
+  ok('一维 NM（步长 2）收敛到驻点：|f′| < 1e-5', r1.reason === 'converged' && Math.abs(d1(r1.x[0])) < 1e-5,
+    `x = ${r1.x[0].toFixed(6)}，f′ = ${d1(r1.x[0]).toExponential(1)}，${r1.nEval} 次求值`)
+  let worst = 0
+  for (let t = 0; t < 40; t++) {
+    const x0 = -6 + 0.3 * t
+    const r = nelderMead(f1, [x0], { step: 0.5 + (t % 4) })
+    worst = Math.max(worst, Math.abs(d1(r.x[0])))
+  }
+  ok('一维 NM：40 组起点 / 步长全部停在驻点（|f′| < 1e-5）', worst < 1e-5, `最大 |f′| ${worst.toExponential(1)}`)
+
+  const sq = ([x, y]) => (x - 0.7) ** 2 + (y - 0.3) ** 2
+  const rb = nelderMead(sq, [0, 0.5], { step: 2, lower: [0, 0], upper: [1, 1] })
+  ok('起点在边界上且步长比盒宽：初始单纯形不退化，仍找到 (0.7, 0.3)', Math.abs(rb.x[0] - 0.7) < 1e-6 && Math.abs(rb.x[1] - 0.3) < 1e-6,
+    rb.x.map((v) => v.toFixed(6)).join(', '))
+  const ro = nelderMead(([x, y]) => (x + 1) ** 2 + (y - 2) ** 2, [3, 3], { lower: [0, 0], upper: [Infinity, Infinity] })
+  ok('NM 允许单侧无界：x ≥ 0 约束下最优 (0, 2)', Math.abs(ro.x[0]) < 1e-8 && Math.abs(ro.x[1] - 2) < 1e-6, ro.x.map((v) => v.toFixed(8)).join(', '))
+  ok('CMA-ES / NSGA-II 拒收非有限边界', throws(() => cmaes(sq, [1, 1], { lower: [0, 0], upper: [Infinity, 1] }))
+    && throws(() => nsga2(() => [0, 0], { lower: [0, 0], upper: [Infinity, 1] })))
+  const allBad = cmaes(() => NaN, [0.2, -0.4], { maxEval: 60 })
+  ok('CMA-ES 全部求值失败：返回起点（不是 null），f = +∞', same(allBad.x, [0.2, -0.4]) && allBad.f === Infinity)
+
+  // 随时停：求值到一定次数后置位，下一个批次边界收尾，结果是已见过的最好值
+  const stopAt = (limit) => {
+    const sig = { aborted: false }
+    let calls = 0, bestSeen = Infinity
+    const fn = (x) => { const v = rosen(x); calls++; bestSeen = Math.min(bestSeen, v); if (calls >= limit) sig.aborted = true; return v }
+    return { sig, fn, get calls() { return calls }, get best() { return bestSeen } }
+  }
+  const s1 = stopAt(40)
+  const n1 = nelderMead(s1.fn, [-1.2, 1], { signal: s1.sig })
+  const s2 = stopAt(100)
+  const c2 = cmaes(s2.fn, [-1, -1, -1], { signal: s2.sig, seed: 1, restarts: 2 })
+  const s3 = stopAt(500)
+  const z3 = nsga2((x) => { s3.fn(x); return [x[0], 1 - Math.sqrt(x[0]) + x[1]] }, { lower: [0, 0], upper: [1, 1], popSize: 20, generations: 100, signal: s3.sig })
+  ok('signal 置位：NM 在本轮迭代末尾停（至多再求值 n + 1 次），返回已见最好值，reason = aborted',
+    n1.reason === 'aborted' && n1.nEval === s1.calls && n1.nEval <= 40 + 3 && n1.f === s1.best && Array.isArray(n1.x), `${n1.nEval} 次求值`)
+  ok('signal 置位：CMA-ES（含重启）停在当代末尾，不再重启', c2.reason === 'aborted' && c2.nEval === s2.calls && c2.nEval < 110 && c2.f === s2.best && c2.restarts === 0)
+  ok('signal 置位：NSGA-II 停在当代末尾，前沿照常给出', z3.reason === 'aborted' && z3.nEval === 500 && z3.nGen === 24 && z3.front.length > 0)
+  ok('未置位时 NSGA-II 报 generations 跑满', nsga2((x) => [x[0], 1 - x[0]], { lower: [0], upper: [1], popSize: 4, generations: 3 }).reason === 'generations')
+
+  ok('混合空间变量重名报错（含与缺省名 x1 撞名）', throws(() => makeSpace([{ name: 'x1', type: 'real', lower: 0, upper: 1 }, { type: 'int', lower: 5, upper: 9 }]))
+    && throws(() => makeSpace([{ name: 'a', type: 'int', lower: 0, upper: 1 }, { name: 'a', type: 'int', lower: 0, upper: 1 }])))
+  const sp = makeSpace([{ name: 'D', type: 'real', lower: 0.6, upper: 3 }, { name: 'n', type: 'int', lower: 1, upper: 4 }])
+  ok('编码时连续维越界 / NaN 报错（不再悄悄夹到端点）', throws(() => sp.encode([30, 2])) && throws(() => sp.encode([NaN, 2])) && same(sp.encode([3, 4]), [1, 0.875]))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

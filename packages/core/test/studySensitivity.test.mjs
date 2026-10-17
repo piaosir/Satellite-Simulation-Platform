@@ -229,6 +229,8 @@ console.log('=== ⑥ Morris ===')
   ok('求值失败的轨迹整条丢弃并计数', mb.r === 38 && mb.dropped === 2 && mb.muStar.every(Number.isFinite))
   ok('不是 Morris 设计（一步动两个因子）报错', throws(() => morrisAnalyze([[0, 0], [1, 1], [1, 0]], [0, 1, 2], { k: 2 })))
   ok('网格级数为奇数报错', throws(() => morrisSample({ k: 3, r: 2, levels: 5 })))
+  ok('候选轨迹数非整数或小于 r 报错（不再悄悄返回空设计）', throws(() => morrisSample({ k: 3, r: 5, candidates: 'auto' }))
+    && throws(() => morrisSample({ k: 3, r: 5, candidates: 3 })) && morrisSample({ k: 3, r: 5, candidates: 5 }).X.length === 20)
 }
 
 console.log('=== ⑦ 失败点 / 可复现 / 入参 ===')

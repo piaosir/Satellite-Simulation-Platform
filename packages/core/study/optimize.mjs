@@ -3,7 +3,11 @@
 // 统一形态：每个算法的本体是一个生成器（*Steps），yield 一批待评估的点（number[][]，均为副本），
 // 收回等长的评估结果，最后 return 结果对象。这样：
 //   · 同步跑：runSync(steps, fn)；异步 / 并行跑（主进程 IPC、Worker 池）：await runAsync(steps, evalBatch)；
-//   · 界面可以逐批推进、给进度、随时停（口径同 ciNgso 的 createRun / stepBatch / finalize 三段式）；
+//   · 界面可以逐批推进、给进度（每批的大小与累计求值次数调用方自己数得出来）；
+//   · 随时停：opt.signal 传一个带 aborted 属性的对象（AbortController().signal 即可）。CMA-ES / NSGA-II
+//     每代开头、Nelder–Mead 每轮迭代开头（一轮含 1–3 批：反射、扩张或收缩、整体收缩）检查一次，置位后在该处
+//     收尾，照常 return 当前最好结果，reason = 'aborted'。还没交回结果的批次要么照常交回，要么整批交 NaN
+//     （当失败处理，不影响已记下的最好值）；
 //   · CMA-ES 一代 λ 个、NSGA-II 一代 N 个整批交出去，评估端可以并行。
 //
 // 评估结果的形状：
@@ -26,10 +30,11 @@
 //     变异算子用有界 SBX（Deb & Agrawal, Complex Systems 9 (1995) 115–148）与多项式变异（Deb & Goyal 1996）。
 //
 // 边界：
-//   · Nelder–Mead：试探点投影回盒内。
+//   · Nelder–Mead：试探点投影回盒内；允许单侧无界（如 upper 取 Infinity 表示只约束非负）。
 //   · CMA-ES：在无界空间里搜索，评估前经 C¹ 连续的「线性–二次」周期映射落进盒内（Hansen 的 cma 库里
 //     BoundTransform 的同类做法，这里按原理自行推导实现）；返回的 x 是映射后的盒内点。
 //   · NSGA-II：变异与交叉本身就是有界的，结果截在盒内。
+//   · CMA-ES 与 NSGA-II 的边界须为有限数（映射与初始撒点都要用到盒宽）。
 //
 // 混合编码（makeSpace / mixedSteps）：real / int / ordinal / cat 四种变量统一编码到 [0,1]^k，
 // 优化器只见连续量；解码时离散变量按等宽格取整（z 在第 j 格 ⇔ 取第 j 个水平）。离散维的重复点按解码值
@@ -74,15 +79,19 @@ function* ask(X) {
 
 const objVal = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : Infinity)
 
-function boxOf(n, lower, upper) {
+function boxOf(n, lower, upper, finite) {
   if (lower == null && upper == null) return null
   if (!lower || !upper || lower.length !== n || upper.length !== n) throw new Error(`边界 lower / upper 须同为长度 ${n} 的数组`)
   const lo = Float64Array.from(lower, Number), hi = Float64Array.from(upper, Number)
   for (let i = 0; i < n; i++) {
     if (!(lo[i] < hi[i])) throw new Error(`第 ${i} 维边界须满足 lower < upper：[${lower[i]}, ${upper[i]}]`)
+    if (finite && !(Number.isFinite(lo[i]) && Number.isFinite(hi[i]))) throw new Error(`第 ${i} 维边界须为有限数：[${lower[i]}, ${upper[i]}]`)
   }
   return { lo, hi }
 }
+
+/** opt.signal 置位了没有（AbortSignal 或任何带 aborted 的对象） */
+const aborted = (opt) => !!(opt.signal && opt.signal.aborted)
 
 // ───────────────────────── Nelder–Mead ─────────────────────────
 
@@ -94,8 +103,10 @@ function boxOf(n, lower, upper) {
  *   lower / upper  盒约束（试探点投影回盒内）
  *   xtol / ftol    收敛：单纯形各顶点到最好点的 ∞-范数距离 ≤ xtol，且函数值极差 ≤ ftol（缺省 1e-8 / 1e-10）
  *   maxEval        缺省 max(1000, 400·n)；每轮最多 n + 2 次求值，到点后在本轮结束时停（可能略超）
- *   adaptive       Gao–Han 维数自适应系数，缺省 true
- * @returns {Generator} return { x, f, nEval, nIter, reason: 'converged'|'maxEval', trace: number[] }
+ *   adaptive       Gao–Han 维数自适应系数，缺省 true（只对 n ≥ 2 生效：n = 1 时其收缩系数 1 − 1/n = 0，
+ *                  一次收缩就把单纯形压成一点、假收敛，故一维总用标准系数）
+ *   signal         见文件头「随时停」
+ * @returns {Generator} return { x, f, nEval, nIter, reason: 'converged'|'maxEval'|'aborted', trace: number[] }
  */
 export function* nelderMeadSteps(x0, opt = {}) {
   const n = x0.length
@@ -105,7 +116,7 @@ export function* nelderMeadSteps(x0, opt = {}) {
     if (box) for (let i = 0; i < n; i++) x[i] = Math.min(box.hi[i], Math.max(box.lo[i], x[i]))
     return x
   }
-  const adaptive = opt.adaptive !== false
+  const adaptive = opt.adaptive !== false && n >= 2
   const chi = adaptive ? 1 + 2 / n : 2
   const gamma = adaptive ? 0.75 - 1 / (2 * n) : 0.5
   const sigma = adaptive ? 1 - 1 / n : 0.5
@@ -122,7 +133,13 @@ export function* nelderMeadSteps(x0, opt = {}) {
       : (typeof opt.step === 'number' ? opt.step : opt.step[i])
     const v = base.slice()
     v[i] += h
-    if (box && (v[i] > box.hi[i] || v[i] < box.lo[i])) v[i] = base[i] - h   // 出盒就往反方向放
+    if (box && (v[i] > box.hi[i] || v[i] < box.lo[i])) {
+      v[i] = base[i] - h                            // 出盒就往反方向放
+      if (v[i] > box.hi[i] || v[i] < box.lo[i]) {   // 两边都出盒（步长比盒还宽）：朝空间大的一侧走，不超过那侧的一半
+        const up = box.hi[i] - base[i], down = base[i] - box.lo[i]
+        v[i] = up >= down ? base[i] + Math.min(Math.abs(h), up / 2) : base[i] - Math.min(Math.abs(h), down / 2)
+      }
+    }
     S.push(proj(v))
   }
   const F0 = yield* ask(S)
@@ -150,6 +167,7 @@ export function* nelderMeadSteps(x0, opt = {}) {
     }
     if (fspread <= ftol && xspread <= xtol) { reason = 'converged'; break }
     if (nEval >= maxEval) break
+    if (aborted(opt)) { reason = 'aborted'; break }
     nIter++
     xbar.fill(0)
     for (let j = 0; j < n; j++) { const s = S[order[j]]; for (let i = 0; i < n; i++) xbar[i] += s[i] / n }
@@ -267,13 +285,14 @@ function* cmaesRun(x0, sigma0, lambda, rngSeed, opt, budget) {
   let Dg = new Float64Array(n).fill(1)
   let eigenGen = 0
   const hist = []
-  let best = { x: null, f: Infinity }
+  let best = { x: T ? T(m) : Array.from(m), f: Infinity }   // 全部求值失败时也有个点可返回（与 NM 一致）
   let nEval = 0, gen = 0
   let reason = 'maxEval'
   const trace = []
 
   for (;;) {
     if (nEval + lambda > budget) { reason = 'maxEval'; break }
+    if (aborted(opt)) { reason = 'aborted'; break }
     // ── 采样：y = B·(D∘z)，x = m + σ·y
     const Y = [], X = []
     for (let k = 0; k < lambda; k++) {
@@ -377,13 +396,14 @@ function* cmaesRun(x0, sigma0, lambda, rngSeed, opt, budget) {
  *   stopFitness    目标值，f ≤ 它即停
  *   tolFun / tolX  终止判据（缺省 1e-11 / 1e-11·sigma0）
  *   minStd         各维边际标准差下限（数组；混合编码用，见 makeSpace().minStd()）
+ *   signal         见文件头「随时停」
  *   seed           随机种子
  * @returns {Generator} return { x, f, nEval, nGen, reason, sigma, mean, restarts, trace }
  */
 export function* cmaesSteps(x0, opt = {}) {
   const n = x0.length
   if (!(n >= 1)) throw new Error('CMA-ES 需要至少 1 维的初始点')
-  const box = boxOf(n, opt.lower, opt.upper)
+  const box = boxOf(n, opt.lower, opt.upper, true)
   const seed = opt.seed == null ? DEFAULT_SEED : opt.seed
   const lambda0 = opt.popSize == null ? 4 + Math.floor(3 * Math.log(n)) : Math.max(2, Math.floor(opt.popSize))
   let sigma0 = opt.sigma0
@@ -408,7 +428,7 @@ export function* cmaesSteps(x0, opt = {}) {
     nEval += last.nEval; nGen += last.nGen; done = r
     for (const v of last.trace) trace.push(best && best.f < v ? best.f : v)
     if (!best || last.f < best.f) best = last
-    if (last.reason === 'stopFitness' || last.reason === 'maxEval') break
+    if (last.reason === 'stopFitness' || last.reason === 'maxEval' || last.reason === 'aborted') break
     lambda *= 2
   }
   // reason 取最后一轮的停机原因（「为什么停」）；x / f 取各轮中最好的
@@ -499,13 +519,14 @@ function crowding(P, front) {
  *   crossoverProb  SBX 概率，缺省 0.9；etaC 缺省 20
  *   mutationProb   每个基因的多项式变异概率，缺省 1/n；etaM 缺省 20
  *   initial        初始种群（行向量数组；不足 N 的部分随机补齐），如用 LHS 撒的点
+ *   signal         见文件头「随时停」
  *   seed
- * @returns {Generator} return { population, front, nEval, nGen, trace }
+ * @returns {Generator} return { population, front, nEval, nGen, reason: 'generations'|'maxEval'|'aborted', trace }
  *   population：[{ x, f, g, cv, rank, crowding }]，按 rank 升序、同 rank 拥挤距离降序
  *   front：可行的第 0 前沿，按 f[0] 升序
  */
 export function* nsga2Steps(opt = {}) {
-  const box = boxOf(opt.lower ? opt.lower.length : 0, opt.lower, opt.upper)
+  const box = boxOf(opt.lower ? opt.lower.length : 0, opt.lower, opt.upper, true)
   if (!box) throw new Error('NSGA-II 需要盒约束 lower / upper')
   const n = box.lo.length
   const N = Math.max(4, 2 * Math.ceil((opt.popSize == null ? 100 : opt.popSize) / 2))
@@ -594,7 +615,10 @@ export function* nsga2Steps(opt = {}) {
   }
 
   let gen = 0
-  for (; gen < generations && nEval + N <= maxEval; gen++) {
+  let reason = 'generations'
+  for (; gen < generations; gen++) {
+    if (nEval + N > maxEval) { reason = 'maxEval'; break }
+    if (aborted(opt)) { reason = 'aborted'; break }
     const Q = []
     while (Q.length < N) {
       const [c1, c2] = sbx(pick().x, pick().x)
@@ -621,7 +645,7 @@ export function* nsga2Steps(opt = {}) {
   }
   const population = P.slice().sort((a, b) => a.rank - b.rank || b.crowding - a.crowding)
   const front = population.filter((p) => p.rank === 0 && p.cv === 0).sort((a, b) => a.f[0] - b.f[0])
-  return { population, front, nEval, nGen: gen, trace }
+  return { population, front, nEval, nGen: gen, reason, trace }
 }
 
 /** NSGA-II 同步版：nsga2(fn, opt) */
@@ -683,6 +707,8 @@ export function makeSpace(vars) {
       default: throw new Error(`变量 ${name}：未知类型 ${v.type}`)
     }
   })
+  const names = new Set(V.map((v) => v.name))
+  if (names.size !== V.length) throw new Error('混合空间的变量名须互不相同（未命名的变量缺省名为 x0、x1…）')
   const k = V.length
   const cell = (z, m) => Math.min(m - 1, Math.max(0, Math.floor(z * m)))
   const zc = (z) => (z > 0 ? (z < 1 ? z : 1) : 0)
@@ -698,6 +724,7 @@ export function makeSpace(vars) {
   }
   const encode1 = (v, x) => {
     if (v.type === 'real') {
+      if (!(typeof x === 'number' && x >= v.lower && x <= v.upper)) throw new Error(`变量 ${v.name}：取值 ${x} 不在 [${v.lower}, ${v.upper}] 内`)
       const t = v.scale === 'log' ? (Math.log(x) - Math.log(v.lower)) / (Math.log(v.upper) - Math.log(v.lower)) : (x - v.lower) / (v.upper - v.lower)
       return zc(t)
     }

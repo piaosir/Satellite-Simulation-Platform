@@ -99,7 +99,7 @@ export function blockBootstrap(blocks, statistic, opt = {}) {
  * Morris 轨迹设计。
  * @param {{k:number, r:number, levels?:number, grid?:'edges'|'centered', candidates?:number, seed?:number}} opt
  *   levels      网格级数 p（偶数，缺省 4）
- *   candidates  先生成这么多条候选、再按散布挑出 r 条（缺省 = r，不挑）
+ *   candidates  先生成这么多条候选、再按散布挑出 r 条（整数 ≥ r；缺省 = r，不挑）
  * @returns {{X:number[][], k:number, r:number, levels:number, grid:string, delta:number}}
  *   X 共 r·(k+1) 行，每 k+1 行一条轨迹
  */
@@ -110,7 +110,8 @@ export function morrisSample(opt = {}) {
   if (!Number.isInteger(p) || p < 2 || p % 2) throw new Error(`Morris 网格级数须为 ≥ 2 的偶数：${p}`)
   const grid = opt.grid || 'edges'
   if (grid !== 'edges' && grid !== 'centered') throw new Error(`Morris 网格只能是 'edges' 或 'centered'：${grid}`)
-  const M = Math.max(r, opt.candidates == null ? r : Math.floor(opt.candidates))
+  if (opt.candidates != null) needInt(opt.candidates, 'Morris 候选轨迹数 candidates', r)
+  const M = opt.candidates == null ? r : opt.candidates
   const level = grid === 'edges' ? (l) => l / (p - 1) : (l) => (l + 0.5) / p
   const jump = p / 2
   const rng = childRng(opt.seed == null ? DEFAULT_SEED : opt.seed, 'morris')
