@@ -210,7 +210,6 @@ contextBridge.exposeInMainWorld('api', {
     // 干扰分析用：逐波束值（少量站点）/ C/CCI 合成（整张场图，主进程内折成标量）
     grdSampleBeams: (req) => ipcRenderer.invoke('link:grdSampleBeams', req),
     grdSampleXpd: (req) => ipcRenderer.invoke('link:grdSampleXpd', req),
-    grdSampleCci: (req) => ipcRenderer.invoke('link:grdSampleCci', req),
     // 导入方向图后取其波束数（并预编译 .grdbin）
     grdMeta: (file) => ipcRenderer.invoke('link:grdMeta', file),
     cities: () => ipcRenderer.invoke('link:cities'),
@@ -289,10 +288,7 @@ contextBridge.exposeInMainWorld('api', {
     asi: (req) => ipcRenderer.invoke('ci:asi', req),
     xpi: (req) => ipcRenderer.invoke('ci:xpi', req),
     xpiTerm: (req) => ipcRenderer.invoke('ci:xpiTerm', req),
-    cciPoint: (req) => ipcRenderer.invoke('ci:cciPoint', req),
     // C/CCI 复用方案：方向图概要 · 取值点表（同步）· 场图作业（start 只启动，进度 / 结果经两个订阅推回）
-    cciInfo: (req) => ipcRenderer.invoke('ci:cciInfo', req),
-    cciPoints: (req) => ipcRenderer.invoke('ci:cciPoints', req),
     cciBeams: (req) => ipcRenderer.invoke('ci:cciBeams', req),
     cciStart: (req) => ipcRenderer.invoke('ci:cciStart', req),
     cciCancel: () => ipcRenderer.invoke('ci:cciCancel'),

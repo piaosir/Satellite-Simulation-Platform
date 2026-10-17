@@ -5,7 +5,6 @@
 const fs = require('fs');
 const path = require('path');
 const sampler = require('../../packages/core/utils/grdSampler.js');
-const ciCci = require('../../packages/core/utils/interference/ciCci.js');
 
 // saveDir：用户导入 GRD 的持久化目录（与 coverageGrd 同源，userData/coverage-grd-imported）。
 module.exports = function createGrd(saveDir) {
@@ -68,7 +67,7 @@ module.exports = function createGrd(saveDir) {
 
   // 逐波束采样：req = { file, sat, cfg, points } → { beamIdx:number[], values:(number|null)[][] }
   // values[i] 对应 points[i]，内层与 beamIdx 同序。
-  // ⚠️ 消息体随「点数 × 波束数」二次增长——只适合几十个站点。整张场图请走 sampleCci。
+  // ⚠️ 消息体随「点数 × 波束数」二次增长——只适合几十个站点。整张场的逐波束值不要走这里（C/CCI 在主进程当场合成，见 interference.js）。
   function sampleBeams(req) {
     req = req || {};
     const points = Array.isArray(req.points) ? req.points : [];
@@ -112,42 +111,8 @@ module.exports = function createGrd(saveDir) {
     }
   }
 
-  // C/CCI 同频复用干扰：逐点算完当场折成一个数再回传。
-  //
-  // 为什么必须在主进程合成：一张 C/CCI 场图是几千格 × 几十波束。若把逐波束值搬过 IPC
-  // （5000 格 × 40 波束 = 20 万个数）再在渲染端合成，消息体与序列化开销都是白付的——
-  // 合成只需要一个标量结果。故 ciCci 的求和放这里，IPC 只回长度 = 点数的数组。
-  //
-  // req = { file, sat, cfg, points, colors, coloring, servingIdx, floorDb }
-  function sampleCci(req) {
-    req = req || {};
-    const points = Array.isArray(req.points) ? req.points : [];
-    try {
-      const loaded = loadCached(ensureBin(resolveRaw(req.file)));
-      const r = ciCci.cciOverPoints(sampler, loaded, req.sat || {}, req.cfg || {}, points, {
-        colors: req.colors, coloring: req.coloring, servingIdx: req.servingIdx, floorDb: req.floorDb
-      });
-      return { ok: true, ...r };
-    } catch (e) {
-      console.warn('[GRD] C/CCI 采样失败', req.file, e && e.message);
-      return { ok: false, error: e && e.message, cci: points.map(() => null), serving: points.map(() => null), coloring: {}, colors: req.colors || 4 };
-    }
-  }
-
-  // C/CCI 复用方案与场图作业（electron/services/interference.js 的 CCI 段）要的两样：
-  //   loadedOf  已载入的方向图（同 LRU 缓存，首次取值才解析落 .grdbin）
-  //   rawHead   原文件开头一段文本（latin1）：波束合成写在 SYNTHMETA 行 / 解析记录里的逐波束色号从这里读
+  // C/CCI（electron/services/interference.js 的 CCI 段）要的：已载入的方向图（同 LRU 缓存，首次取值才解析落 .grdbin）
   function loadedOf(file) { return loadCached(ensureBin(resolveRaw(file))); }
-  function rawHead(file, maxBytes) {
-    const fp = resolveRaw(file);
-    const cap = Math.max(1024, Number(maxBytes) || 262144);
-    const fd = fs.openSync(fp, 'r');
-    try {
-      const buf = Buffer.alloc(cap);
-      const got = fs.readSync(fd, buf, 0, cap, 0);
-      return buf.toString('latin1', 0, got);
-    } finally { fs.closeSync(fd); }
-  }
 
   /**
    * NGSO 时变干扰用的「准备一次、逐次取值」采样器。
@@ -214,5 +179,5 @@ module.exports = function createGrd(saveDir) {
     } catch (e) { return { ok: false, error: e && e.message }; }
   }
 
-  return { sample, sampleBeams, sampleXpd, sampleCci, loadedOf, rawHead, precompile, meta, ngsoSampler };
+  return { sample, sampleBeams, sampleXpd, loadedOf, precompile, meta, ngsoSampler };
 };

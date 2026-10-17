@@ -1,4 +1,6 @@
-// HTS 多波束复用方案与同频耦合（packages/core/utils/interference/htsCoupling.js）+ 渲染端那一半（src/ci/cciScheme.js）。
+// HTS 多波束复用方案与同频耦合（packages/core/utils/interference/htsCoupling.js）。
+//   C/CCI 页的「复用方案」页已撤（2026-10-17，改为目标波束口径，见 cciTarget.js），本引擎留作参照实现：
+//   目标波束引擎复用这里的几何与统计，并在 cciTarget.test ② 与这里的二值耦合逐点对账。
 //   运行： node packages/core/test/htsCoupling.test.mjs
 //
 //   ① 六角晶格闭式：4 色复用、波束间距 s = (√3/2)·θ3、−10 dB 边缘锥度的抛物线-台座圆口径照射
@@ -9,7 +11,6 @@
 //      E 路报的「约 15.0 / 15.1 dB」是 29×29 菱形截断的有限和（精确方向图下为 15.03 / 15.19 dB），差在截断尾项。
 //   ② 耦合矩阵退化为二值（只有色号、功率偏置为 0）时，fwdAtPoint 与 ciCci.cciAtPoint 逐位一致。
 //   ③ 窗外 null：取该波束网格自身的最小电平作地板计入，并计数。
-//   ④ 频率计划映射：占段（绝对频率 · 极化 · −OBO）、按号 / 按名 / 按波束合成代号自动匹配、重叠 / 极化 / 功率耦合系数。
 //   ⑤ 返向：最坏点与逐点暴力一致；蒙特卡洛同种子可复现。
 //   ⑥ 场图作业：天线网格逐节点、经纬网格与逐点同值、逐波束统计次序。
 // 期望值凡带「独立」二字的，都在本文件里由独立实现现算，不是把被测实现的输出抄回来当基准。
@@ -19,8 +20,6 @@ const require = createRequire(import.meta.url)
 const H = require('../utils/interference/htsCoupling.js')
 const C = require('../utils/interference/ciCci.js')
 const S = require('../utils/grdSampler.js')
-const { planOccupancy, parseBeamNos, autoMatch, schemePayload, syncBeamRows, applyImportRecords, manualColoring } = await import('../../../src/ci/cciScheme.js')
-const { newPlan } = await import('../../../src/shared/freqPlanModel.js')
 
 let pass = 0, fail = 0
 const ok = (name, cond, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + name + (extra ? '  ' + extra : '')); cond ? pass++ : fail++ }
@@ -206,84 +205,6 @@ const gridMinDb = (bm) => { let m = Infinity; for (let i = 0; i < bm.c1re.length
   // 全在窗外 / 卫星不可见的点仍无值
   const far = H.cciPoints({ sampler: S, loaded, sat, cfg, scheme: { source: 'rotation', colors: 1 }, points: [{ lon: 40, lat: 60 }] })
   ok('所有波束都取不到值的点：无值（不编地板）', far.rows[0] === null && far.summary.floorPts === 0)
-}
-
-// ═══ ④ 频率计划映射 ═══
-console.log('\n=== ④ 频率计划映射 ===')
-{
-  // 中星26 式前向：一条转发器下行按「频分排布」切给几个波束（带宽 = Σ 波束带宽），极化在转发器上
-  const plan = newPlan({
-    name: 'HTS 前向',
-    beams: [
-      { id: 'b1', name: 'Beam 1', bwMHz: 440 }, { id: 'b2', name: '波束2', bwMHz: 440 },
-      { id: 'b3', name: 'B3', bwMHz: 207 }, { id: 'b4', name: '#4', bwMHz: 207 }, { id: 'b5', name: '5', bwMHz: 440 }
-    ],
-    channels: [
-      // T1：下行 19260–20140（880 = 440 + 440），b2 / b5，R；上行是信关站 28000–28880
-      { id: 'T1', no: 'T1', up: { fcMHz: 28440, bwMHz: 880, pol: 'L' }, dn: { fcMHz: 19700, bwMHz: 880, pol: 'R' }, beamUpIds: ['b2', 'b5'], beamLayout: 'tile' },
-      // T2：下行 19260–20114（854 = 440 + 207 + 207），b1 / b3 / b4，L；OBO 3 dB
-      { id: 'T2', no: 'T2', up: { fcMHz: 28427, bwMHz: 854, pol: 'R' }, dn: { fcMHz: 19687, bwMHz: 854, pol: 'L' }, beamUpIds: ['b1', 'b3', 'b4'], beamLayout: 'tile', booDb: 3 },
-      // T3：返向，用户上行 29500–29720 → b1，V
-      { id: 'T3', no: 'R1', up: { fcMHz: 29610, bwMHz: 220, pol: 'V' }, dn: { fcMHz: 18310, bwMHz: 220, pol: 'H' }, beamUpIds: ['b1'] }
-    ]
-  })
-  const segOf = (m, id) => (m.get(id).segs || []).map((s) => `${s.f1}-${s.f2}${s.pol}${s.pDb ? s.pDb : ''}`).join(',')
-  const Fall = planOccupancy(plan, 'fwd')
-  ok('前向不筛：返向转发器的信关站下行段（18200–18420）也挂在 b1 上', segOf(Fall, 'b1') === '19260-19700L-3,18200-18420H', segOf(Fall, 'b1'))
-  const F = planOccupancy(plan, 'fwd', { f1: 19200, f2: 20200 })
-  ok('前向占段：T1 频分给 b2 / b5（R）', segOf(F, 'b2') === '19260-19700R' && segOf(F, 'b5') === '19700-20140R', segOf(F, 'b2') + ' ' + segOf(F, 'b5'))
-  ok('前向占段：T2 频分给 b1 / b3 / b4（L，段功率 −OBO）', segOf(F, 'b1') === '19260-19700L-3' && segOf(F, 'b3') === '19700-19907L-3' && segOf(F, 'b4') === '19907-20114L-3',
-    [segOf(F, 'b1'), segOf(F, 'b3'), segOf(F, 'b4')].join(' '))
-  const Rall = planOccupancy(plan, 'rtn')
-  ok('返向不筛：前向转发器的信关站上行段也挂在用户波束上', Rall.get('b1').segs.length === 2)
-  const R = planOccupancy(plan, 'rtn', { f1: 29500, f2: 30000 })
-  ok('返向频段窗 29500–30000：只剩用户上行段', segOf(R, 'b1') === '29500-29720V', segOf(R, 'b1'))
-  ok('频段窗按 GHz 写也认（< 1000 按 GHz）', segOf(planOccupancy(plan, 'rtn', { f1: '29.5', f2: '30' }), 'b1') === '29500-29720V')
-
-  // 自动匹配：按名字里的号；手工指定优先；「不映射」
-  ok('波束号解析', JSON.stringify(parseBeamNos('1-3,7')) === '[1,2,3,7]' && parseBeamNos('Beam 12')[0] === 12 && parseBeamNos('波束 66')[0] === 66
-    && parseBeamNos('#4')[0] === 4 && parseBeamNos('B3')[0] === 3 && parseBeamNos('东部波束').length === 0)
-  const m = autoMatch([0, 1, 2, 3, 4], plan.beams, {})
-  ok('按名自动匹配五个波束', [0, 1, 2, 3, 4].every((i) => m.map.get(i) === ['b1', 'b2', 'b3', 'b4', 'b5'][i] && m.how.get(i) === 'name'))
-  const m2 = autoMatch([0, 1, 2, 3, 4], plan.beams, { manual: { 0: 'b5', 4: '__none' } })
-  ok('手工指定优先、「不映射」不再自动认领', m2.map.get(0) === 'b5' && m2.how.get(0) === 'manual' && !m2.map.has(4))
-  // 波束合成导进来的条目：名字是代号串、synth.nos 是整星编号；这副天线是该星第 2 组（前面一组 2 个波束）
-  const synthBeams = [{ id: 's1', name: '3,4', synth: { groupId: 'g2', nos: [3, 4] } }, { id: 's2', name: '5', synth: { groupId: 'g2', nos: [5] } }]
-  const m3 = autoMatch([0, 1, 2], synthBeams, { synth: { base: 2, id: 'g2' } })
-  ok('按波束合成代号换算（整星编号 − 组起点）', m3.map.get(0) === 's1' && m3.map.get(1) === 's1' && m3.map.get(2) === 's2' && m3.how.get(0) === 'synth')
-
-  // 方案 → 耦合：宽窄重叠 / 正交极化 / 功率
-  const payload = schemePayload({ source: 'freqPlan', rows: syncBeamRows([], [0, 1, 2, 3, 4]), plan: { label: 'HTS 前向', occF: F, occR: R, map: m.map } })
-  const sc = H.normalizeScheme(payload, [0, 1, 2, 3, 4])
-  ok('方案来源 = 频率计划，带计划名', sc.ok && sc.source === 'freqPlan' && sc.label === 'HTS 前向')
-  const cp = H.couplingOf(sc, 'fwd')
-  const w = (j, k) => [cp.wCo[j * 5 + k], cp.wX[j * 5 + k]]
-  approx('b3（207 MHz）受 b5（440 MHz）：重叠占本波束带宽 207/207，正交（L vs R）', w(2, 4)[1], 1 * Math.pow(10, 0.3), 1e-12)
-  approx('b5（440 MHz）受 b3：重叠 207/440，正交，且 b3 段功率 −3 dB', w(4, 2)[1], (207 / 440) * Math.pow(10, -0.3), 1e-12)
-  approx('b2（R，0 dB）受 b1（L，−3 dB）同段：正交 × 10^−0.3', w(1, 0)[1], Math.pow(10, -0.3), 1e-12)
-  ok('b1 与 b3 频段不重叠：耦合 0', w(0, 2)[0] === 0 && w(0, 2)[1] === 0)
-  ok('有正交项 → 走共 / 交极化分量口径', cp.anyX === true)
-  approx('同频同极化（b3 受 b4 不重叠、b1 与 b4 不重叠）—— b1/b2 同段异极化的同极化份额为 0', w(0, 1)[0], 0, 0)
-  // 无频段窗时返向混入信关站段：b1 与 b2 的返向会被那段 28 GHz 耦合上
-  const scAll = H.normalizeScheme(schemePayload({ source: 'freqPlan', rows: [], plan: { occF: F, occR: Rall, map: m.map } }), [0, 1, 2, 3, 4])
-  const cr = H.couplingOf(scAll, 'rtn')
-  ok('返向不筛时信关站上行段造出假耦合（频段窗的必要性）', cr.wCo[0 * 5 + 1] + cr.wX[0 * 5 + 1] > 0)
-
-  // Excel 逐波束表：表头别名、中心 + 带宽换起止、极化写中文
-  const rows = syncBeamRows([], [0, 1])
-  const imp = applyImportRecords(rows, [
-    { no: '1', fColor: '3', fF1: '19.26', fF2: '19.70', fPol: '右旋', rColor: '9', rFc: '29.61', rBw: '220', rPol: 'LHCP' },
-    { no: '7', fColor: '1' }
-  ])
-  ok('Excel 导入：按波束号落行，号对不上的计数', imp.matched === 1 && imp.skipped === 1)
-  const pe = schemePayload({ source: 'excel', rows })
-  const b0 = pe.excel.beams[0]
-  ok('Excel 导入：GHz 起止换 MHz、极化归一', b0.fwd.segs[0].f1 === 19260 && b0.fwd.segs[0].f2 === 19700 && b0.fwd.segs[0].pol === 'R' && b0.fwd.color === '3')
-  ok('Excel 导入：中心 + 带宽 → 起止', b0.rtn.segs[0].f1 === 29500 && b0.rtn.segs[0].f2 === 29720 && b0.rtn.segs[0].pol === 'L' && b0.rtn.color === '9')
-  // 手工色号写回老字段 coloringOverride 的形状（0 基）；老字段能种回逐波束表
-  const mr = syncBeamRows([], [0, 2, 5], { 2: 3, 5: 0 })
-  ok('老字段 coloringOverride 种进逐波束表（1 基显示）', mr[1].mColor === 4 && mr[2].mColor === 1 && mr[0].mColor === '')
-  ok('逐波束表的手工色号 → coloringOverride 形状', JSON.stringify(manualColoring(mr)) === JSON.stringify({ 2: 3, 5: 0 }))
 }
 
 // ═══ 来源优先级与波束合成色号 ═══

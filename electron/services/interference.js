@@ -2,7 +2,7 @@
 //
 // 为什么整条引擎放主进程、渲染端只过 IPC 收发数字：
 //   ① NGSO 时变扫描本就是重活（几十颗星 × 上万时刻），放渲染端会冻页面；
-//   ② C/CCI 场图的逐波束值不能过 IPC（见 grd.js 的 sampleCci）；
+//   ② C/CCI 场的逐波束值不能过 IPC（每点在主进程折成一个数，见下面的 C/CCI 段）；
 //   ③ 平台既有规矩是「渲染端不直接 require core 的 CommonJS」——要么走 IPC，要么在
 //      src/shared/ 手写 ESM 镜像。镜像要人肉同步，是已知的维护坑（见 adaptUnits.js 的头注），
 //      而干扰引擎有 5 个模块、口径全靠 ITU 建议书钉死，绝不适合镜像。故一律走 IPC。
@@ -465,52 +465,14 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
     catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
   }
 
-  // 单点 C/CCI（给定逐波束值的二值着色口径；方向图取值走下面的 cciPoints / cciStart）
-  function cciPoint(req) {
-    const r = req || {};
-    try { return { ok: true, result: I.cciAtPoint(r.values, r.beamIdx, r) }; }
-    catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
-  }
-
   // ---------------------------------------------------------------------------
-  // C/CCI：复用方案 + 逐点 / 场图（HTS 多波束，口径见 core 的 interference/htsCoupling.js）
+  // C/CCI：目标波束 + 勾选的同频同极化波束，覆盖区内逐点（口径见 core 的 interference/cciTarget.js）
   // ---------------------------------------------------------------------------
   //
-  // 方向图只带文件名过来，在这里载入（grd.loadedOf，与链路预算同一份 LRU 缓存）；波束合成色号从文件头读
-  // （SYNTHMETA 行 / 解析记录）。场图是长任务：分帧 + 进度 + 取消，与 NGSO 扫描同一套（令牌作废迟到的帧）。
-  const HC = require('../../packages/core/utils/interference/htsCoupling.js');
+  // 方向图只带文件名过来，在这里载入（grd.loadedOf，与链路预算同一份 LRU 缓存）。场是长任务：分帧 + 进度 + 取消，
+  // 与 NGSO 扫描同一套（令牌作废迟到的帧）。
   const grdSampler = require('../../packages/core/utils/grdSampler.js');
-  function cciPrep(req) {
-    if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
-    const r = req || {};
-    if (!r.file) throw new Error('未指定方向图');
-    const loaded = grd.loadedOf(r.file);
-    const ctx = grdSampler.makeSampleCtx(loaded, r.sat || {}, { ...(r.cfg || {}), pathLoss: 'none' });
-    if (!ctx) throw new Error('对星指向的方向图无法按地面点取值');
-    let fc = null;
-    try { fc = HC.synthFcFromText(grd.rawHead(r.file)); } catch (e) { fc = null; }
-    return { loaded, ctx, fc, scheme: HC.normalizeScheme({ ...(r.scheme || {}), fc }, ctx.beamIdx, r.dir === 'rtn' ? 'rtn' : 'fwd') };
-  }
-  // 方向图概要：存活波束（原始 set 序号）与波束合成色号（按存活波束对齐，取不到为 null）——复用方案表的行
-  function cciInfo(req) {
-    try {
-      const p = cciPrep({ ...(req || {}), scheme: { source: 'rotation' } });
-      return {
-        ok: true, beamIdx: p.ctx.beamIdx.slice(), nset: (p.loaded.beams || []).length,
-        fc: p.fc ? p.ctx.beamIdx.map((i) => (p.fc[i] == null ? null : p.fc[i])) : null
-      };
-    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
-  }
-  // 取值点表（前向，同步）
-  function cciPoints(req) {
-    const r = req || {};
-    try {
-      const p = cciPrep(r);
-      if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
-      return { ok: true, ...HC.cciPoints({ sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme, points: r.points, servingIdx: r.servingIdx, floorDb: r.floorDb }) };
-    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
-  }
-  // 目标波束口径（core 的 interference/cciTarget.js）：逐波束足迹（峰值 − X 等值线 + 峰值落点）给波束图点选用。
+  // 逐波束足迹（峰值 − X 等值线 + 峰值落点）给波束图点选用。
   // 足迹只随方向图 / 指向 / 覆盖电平变，按这三样记一份（拖覆盖电平时同一个数不重算）。
   const CT = require('../../packages/core/utils/interference/cciTarget.js');
   let _fpKey = '', _fpVal = null;
@@ -533,21 +495,12 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
     const token = ++_cciToken;
     let run;
     try {
-      if (r.mode === 'target') {
-        if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
-        if (!r.file) throw new Error('未指定方向图');
-        run = CT.createTargetRun({
-          sampler: grdSampler, loaded: grd.loadedOf(r.file), sat: r.sat, cfg: r.cfg,
-          target: r.target, cochannel: r.cochannel, eocDb: r.eocDb
-        });
-      } else {
-        const p = cciPrep(r);
-        if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
-        run = HC.createCciRun({
-          sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme,
-          dir: r.dir, grid: r.grid, points: r.points, floorDb: r.floorDb, eocDb: r.eocDb, servingIdx: r.servingIdx, rtn: r.rtn
-        });
-      }
+      if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
+      if (!r.file) throw new Error('未指定方向图');
+      run = CT.createTargetRun({
+        sampler: grdSampler, loaded: grd.loadedOf(r.file), sat: r.sat, cfg: r.cfg,
+        target: r.target, cochannel: r.cochannel, eocDb: r.eocDb
+      });
     } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
     const send = (ch, payload) => {
       try { if (webContents && !webContents.isDestroyed()) webContents.send(ch, payload); } catch (e) { /* 窗口已关 */ }
@@ -745,5 +698,5 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
 
   function ngsoCancel() { _token++; return { ok: true }; }
 
-  return { asi, xpi, xpiTerm, cciPoint, cciInfo, cciPoints, cciBeams, cciStart, cciCancel, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
+  return { asi, xpi, xpiTerm, cciBeams, cciStart, cciCancel, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
 };

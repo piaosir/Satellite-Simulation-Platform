@@ -46,11 +46,6 @@ export const SRC_COLS = [
   num('xpdDb', 'XPD', 'dB', 80, { tip: '留空 = 25', blankTip: '留空 = 25' }),
   num('overlapFactor', '重叠', '', 72, { tip: '留空 = 1', blankTip: '留空 = 1' })
 ]
-export const PT_COLS = [
-  txt('name', '名称', 180),
-  num('lon', '经度', '°E', 108),
-  num('lat', '纬度', '°N', 108)
-]
 // NGSO 干扰星座：轨道五列只对 Walker 行开放（星历行的根数由星历给出，格里显示的是星历实参速览，只读）；
 // 「名称 / 星座」一列对 Walker 行是自由文本名称，对星历行是星座选择——那是带分组的动态下拉，不进网格，
 // 由表下方的「当前行」选择框改（见 CiApp）。

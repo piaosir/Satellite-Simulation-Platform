@@ -20,9 +20,7 @@ import { useInterference, toolContextState } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
 import CiAp8Formula from './CiAp8Formula.vue'
 import ExcelGrid from '../components/ExcelGrid.vue'
-import { useCiGrid, headTip, SRC_COLS, PT_COLS, NG_COLS } from './ciInputGrids.js'
-import { CCI_SOURCES, SOURCE_NAME, TABLE_COLS, DEF_COLS, planCols, colorCols, segsText, parseBeamNos } from './cciScheme.js'
-import LbSurfacePlot from '../components/LbSurfacePlot.vue'
+import { useCiGrid, headTip, SRC_COLS, NG_COLS } from './ciInputGrids.js'
 import CiBeamMap from './CiBeamMap.vue'
 import CiCdfPlot from './CiCdfPlot.vue'
 import CiSeriesPlot from './CiSeriesPlot.vue'
@@ -39,36 +37,67 @@ import { stableStringify } from '../shared/configDirty.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { useNotice } from '../shared/useNotice.js'
 import { reportError } from '../shared/reportError.js'
-import { surfacePngDataUrl } from '../shared/surfacePng.js'
 
 // 本窗口的失败出口（reportError / 全局异常都落到这里，常驻到点 ×）。msg 那一行照旧是各页的过程读数。
 const N = useNotice()
 const I = useInterference()
 const {
-  MODES, REUSE_COLORS, mode, busy, msg, site, carrier, asi, ap8, xpi, cci, ngso,
+  MODES, mode, busy, msg, site, carrier, asi, ap8, xpi, cci, ngso,
   satLib, grdAntennas, currentAntenna, ngsoGrdBeams, geoData, hoveredId, satSearch, ngsoGroups, groupStats, groupErrs, groupsErr,
   stale
 } = I
-// C/CCI 场图出图：与链路预算地理场图同一条路径（shared/surfacePng.js，纸色白底、4 倍）
-const cciPlot = ref(null)
-const cciExporting = ref(false)
-async function exportCciField() {
-  const exportFile = window.api && window.api.exportFile
-  if (!exportFile || !cciPlot.value || cciExporting.value) return
-  cciExporting.value = true
-  try {
-    const url = await surfacePngDataUrl(cciPlot.value, 4)
-    if (!url) { N.toastError('导出失败'); return }
-    const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
-    const r = await exportFile({ defaultName: 'C-CCI 覆盖场图.png', data, filters: [{ name: 'PNG 图片', extensions: ['png'] }] })
-    if (r && r.ok) { const fp = r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath || ''; N.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
-    else if (r && !r.canceled) N.toastError('导出失败：' + (r.error || ''))
-  } catch (e) { N.toastError('导出失败：' + ((e && e.message) || e)) } finally { cciExporting.value = false }
-}
 // 「输入已变」灯的悬停口径（与雨衰页同一句）
 const STALE_TIP = '计算输入已被修改，以下数值对应修改前的参数'
 
-// —— C/CCI 目标波束（缺省页）：选目标 → 勾同频同极化波束 → 覆盖区内逐点（口径见 core 的 interference/cciTarget.js）——
+// 方向图下拉按「卫星 · 来源」分组（与卫星-天线树同构：一颗星下挂它的几副天线）；三页（C/CCI / C/XPI / NGSO）共用
+const grdGroups = computed(() => {
+  const out = [], by = new Map()
+  for (const a of grdAntennas.value) {
+    const n = a.node, k = n.origin + '|' + n.folder
+    let g = by.get(k)
+    if (!g) { g = { key: k, label: n.folder === 'ci:analysis' ? '本窗口导入' : `${n.satName} · ${n.origin}`, items: [] }; by.set(k, g); out.push(g) }
+    g.items.push({ key: a.key, text: `${a.ant.name}（${a.ant.beams || 1} 波束）` })
+  }
+  return out
+})
+// 卫星位置与视轴（本窗口导入的可改，见 useInterference.setAntGeo）
+const { antEditable } = I
+const geo = computed(() => {
+  const a = currentAntenna.value
+  const sp = a ? I.antennaSpec(a) : null
+  if (!sp) return { lon: '', lat: '', alt: '', mode: 'nadir', boreLon: '', boreLat: '', boreAz: 0, boreEl: 0, yaw: 0 }
+  const c = sp.cfg || {}
+  const bt = c.boreType || 'azel'
+  const mode = bt === 'geo' ? 'target' : (bt === 'azel' ? (c.boreMode === 'fixed' || +c.boreAz || +c.boreEl ? 'fixed' : 'nadir') : bt)
+  return {
+    lon: sp.sat.lon, lat: sp.sat.lat, alt: sp.sat.alt, mode, bt,
+    boreLon: c.boreLon == null ? sp.sat.lon : c.boreLon, boreLat: c.boreLat || 0,
+    boreAz: c.boreAz || 0, boreEl: c.boreEl || 0, yaw: c.yaw || 0
+  }
+})
+const numOf = (e) => { const v = Number(String(e.target.value).trim()); return Number.isFinite(v) ? v : null }
+function setGeoNum(k, e) { const v = numOf(e); if (v != null) I.setAntGeo({ [k]: v }) }
+function setGeoCfg(k, e) { const v = numOf(e); if (v != null) I.setAntGeo({ cfg: { [k]: v } }) }
+function setBoreMode(m) {
+  const g = geo.value
+  if (m === 'target') I.setAntGeo({ cfg: { boreType: 'geo', boreMode: 'target', boreLon: Number.isFinite(+g.boreLon) ? +g.boreLon : +g.lon, boreLat: +g.boreLat || 0 } })
+  else if (m === 'fixed') I.setAntGeo({ cfg: { boreType: 'azel', boreMode: 'fixed', boreAz: +g.boreAz || 0, boreEl: +g.boreEl || 0 } })
+  else I.setAntGeo({ cfg: { boreType: 'azel', boreMode: 'nadir', boreAz: 0, boreEl: 0 } })
+}
+// 主窗口 / 链路预算来的天线：卫星位置与视轴的一行读数
+const BORE_NAME = { att: '姿态 + 挂点', point: '空间点', sat: '对星跟踪', satoff: '对星跟踪 + 偏置' }
+const geoReadout = computed(() => {
+  const g = geo.value
+  if (!currentAntenna.value || !Number.isFinite(+g.lon)) return ''
+  const deg = (v, d = 2) => (Number.isFinite(+v) ? (+v).toFixed(d) : '—')
+  const ew = (v) => `${deg(Math.abs(+v))}°${+v >= 0 ? 'E' : 'W'}`, ns = (v) => `${deg(Math.abs(+v))}°${+v >= 0 ? 'N' : 'S'}`
+  const bore = g.mode === 'target' ? `目标跟踪 ${ew(g.boreLon)} ${ns(g.boreLat)}`
+    : g.mode === 'fixed' ? `本体固定 Az ${deg(g.boreAz)}° El ${deg(g.boreEl)}°`
+      : g.mode === 'nadir' ? '天底' : (BORE_NAME[g.mode] || g.mode)
+  return [ew(g.lon) + (Math.abs(+g.lat) > 1e-6 ? ' ' + ns(g.lat) : ''), `${deg(g.alt, 0)} km`, bore, +g.yaw ? `Rot ${deg(g.yaw, 1)}°` : ''].filter(Boolean).join(' · ')
+})
+
+// —— C/CCI：选目标 → 勾同频同极化波束 → 覆盖区内逐点（口径见 core 的 interference/cciTarget.js）——
 // 波束图单击：「点选目标」档设目标并自动切到「点选同频」；「点选同频」档加入 / 移出同频组（点目标本身不动）。
 const cctMap = ref(null)
 const cctMapH = 560
@@ -89,13 +118,25 @@ const cctCoText = computed(() => {
   }
   return out.join(', ')
 })
-function onCoText(v) { I.setCciCo(parseBeamNos(v).map((no) => no - 1)) }
+// 波束号串「3, 7, 12-14」→ 1 基号表（逗号 / 顿号 / 分号 / 空白分隔，连号 - ~ –）
+function parseNos(text) {
+  const out = []
+  for (const part of String(text == null ? '' : text).replace(/[，、；;]/g, ',').split(/[,\s]+/)) {
+    const m = /^(\d+)\s*[-~–]\s*(\d+)$/.exec(part)
+    if (m) { const a = +m[1], b = +m[2]; if (b >= a && b - a < 4000) for (let k = a; k <= b; k++) out.push(k) }
+    else if (/^\d+$/.test(part)) out.push(+part)
+  }
+  return out
+}
+function onCoText(v) { I.setCciCo(parseNos(v).map((no) => no - 1)) }
 watch(() => [cci.antennaKey, cctPick.value.target], () => { cctPickMode.value = cctPick.value.target == null ? 'target' : 'co' }, { immediate: true })
 function onBeamPick(idx) {
   if (cctPickMode.value === 'target' || cctPick.value.target == null) { I.setCciTarget(idx); cctPickMode.value = 'co'; return }
   if (idx !== cctPick.value.target) I.toggleCciCo(idx)
 }
 const cctRes = computed(() => cci.tgtResult)
+// 波束图的几何签名：换天线、改卫星位置或视轴都会把足迹整体挪走，到时重新适配视图（改覆盖电平不算）
+const cctFitKey = computed(() => { const a = currentAntenna.value; return a ? a.key + '|' + JSON.stringify(I.antennaSpec(a)) : '' })
 const cctWorst = computed(() => (cctRes.value && cctRes.value.worst ? cctRes.value.worst : null))
 const cctSingle = computed(() => { const m = new Map(); for (const x of (cctRes.value && cctRes.value.singles) || []) m.set(x.idx, x.minDb); return m })
 const cctSummary = computed(() => {
@@ -159,8 +200,7 @@ function applyState(st) {
   // 换了一份内容（切换 / 新建 / 还原历史版本 / 带上下文另建）：
   //   · 三张输入表的撤销栈存的是上一份的行——不清的话一按 Ctrl+Z 就把上一份的整张表换进来、约 1 s 后自动写盘；
   //   · 结果、取过的派生量与在途计算都是上一份的（见 useInterference.clearResults）。
-  for (const g of [srcGrid, ptGrid, ngGrid]) g.clearHistory()
-  for (const g of [cciPlanGrid, cciTableGrid, cciColorGrid, cciDefGrid]) g.clearHistory()   // C/CCI 复用方案四张表
+  for (const g of [srcGrid, ngGrid]) g.clearHistory()
   I.clearResults()
   I.applySnapshot(I.blankSnapshot())   // 先回出厂，再套这一份：缺字段的旧配置不沿用上一份的值
   I.applySnapshot(st)
@@ -365,54 +405,6 @@ const groupSections = computed(() =>
 
 // ─── 输入网格（ExcelGrid）：列定义与写值口径见 ciInputGrids.js；行对象形状不变 ───
 const srcGrid = useCiGrid({ gridId: 'ci-src', list: () => asi.sources, cols: SRC_COLS, add: (at) => I.addSource(at), remove: (id) => I.removeSource(id) })
-const ptGrid = useCiGrid({ gridId: 'ci-pts', list: () => cci.points, cols: PT_COLS, add: (at) => I.addCciPoint(at), remove: (id) => I.removeCciPoint(id) })
-// ─── C/CCI 复用方案：行 = 方向图的存活波束（计划映射 / 逐波束表 / 色号三种摆法，按当前着色来源出一张）+ 色号定义 ───
-const cciRowsList = () => I.cciRows.value
-const CCI_PLAN_COLS = planCols({
-  options: () => I.cciPlanOpts.value.map((x) => ({ value: x.value })),
-  planText: (o) => I.cciPlanText(o),
-  planParse: (v) => I.cciPlanParse(v),
-  occText: (o, d) => I.cciOccText(o, d)
-})
-const CCI_COLOR_COLS = colorCols({ colorText: (o) => I.cciColorText(o) })
-const cciPlanGrid = useCiGrid({ gridId: 'ci-cci-plan', list: cciRowsList, cols: CCI_PLAN_COLS })
-const cciTableGrid = useCiGrid({ gridId: 'ci-cci-tab', list: cciRowsList, cols: TABLE_COLS })
-const cciColorGrid = useCiGrid({ gridId: 'ci-cci-col', list: cciRowsList, cols: CCI_COLOR_COLS, editable: (o, c) => c.key !== 'mColor' || I.cciEffSource.value === 'manual' })
-const cciDefGrid = useCiGrid({ gridId: 'ci-cci-def', list: () => cci.colorDefs, cols: DEF_COLS, add: (at) => I.addColorDef(at), remove: (id) => I.removeColorDef(id) })
-// 自动匹配出来的计划波束、非手工来源的色号：读数压暗（手工指定的照常色）
-const cciPlanCellClass = (r, c) => (c.editable === false || (c.key === 'plan' && !r.o.plan) ? 'ci-ro' : null)
-const cciColorCellClass = (r, c) => (c.editable === false || (c.key === 'mColor' && I.cciEffSource.value !== 'manual') ? 'ci-ro' : null)
-const cciBand = computed(() => (cci.dir === 'rtn' ? cci.bandR : cci.bandF))
-const cciMatched = computed(() => { const m = I.cciMatch.value; return m ? m.map.size : 0 })
-const cciShowColorDefs = computed(() => ['synth', 'manual', 'rotation'].includes(I.cciEffSource.value))
-const cciFmt = (v) => (v === Infinity ? '∞' : f(v))
-// 来源读数：「频率计划「中星26 前向」」「轮转 4 色」
-const cciSrcText = (s) => (s ? (SOURCE_NAME[s.source] || '') + (s.source === 'freqPlan' && s.label ? `「${s.label}」` : '') + (s.source === 'rotation' ? ` ${s.colors} 色` : '') : '')
-const CCI_NUM_SRC = new Set(['synth', 'manual', 'rotation'])
-const cciReuseOf = (b, src) => (b.segs && b.segs.length ? segsText(b.segs) : (b.color == null ? '—' : (CCI_NUM_SRC.has(src) && /^\d+$/.test(String(b.color)) ? 'F' + (Number(b.color) + 1) : String(b.color))))
-const cciPtsLine = computed(() => {
-  const s = cci.result && cci.result.summary
-  if (!s) return ''
-  const parts = [`共 ${(s.beamIdx || []).length} 个存活波束`, '着色来源：' + cciSrcText(s)]
-  if (s.floorPts) parts.push(`窗外计入 ${s.floorPts} 点`)
-  if (s.unassigned) parts.push(`未指派 ${s.unassigned} 个波束`)
-  return parts.join(' · ')
-})
-const cciFieldLine = computed(() => {
-  const s = cci.stats
-  if (!s) return ''
-  const g = s.grid || {}
-  const parts = ['着色来源：' + cciSrcText(s), (g.kind === 'user' ? '经纬网格 ' : '天线网格 ') + `${g.nx}×${g.ny}`, `有值 ${(s.valid || 0).toLocaleString('en-US')} 点`]
-  if (s.floorPts) parts.push(`窗外计入 ${s.floorPts.toLocaleString('en-US')} 点`)
-  if (s.unassigned) parts.push(`未指派 ${s.unassigned} 个波束`)
-  if (s.dir === 'rtn' && s.trials) parts.push(`蒙特卡洛 ${s.trials} 次 · 种子 ${s.seed}`)
-  parts.push(`${(s.elapsedMs / 1000).toFixed(2)} s`)
-  return parts.join(' · ')
-})
-const cciBeamRows = computed(() => ((cci.stats && cci.stats.beams) || []).filter((b) => b.assigned))
-const { cciRows, cciEffSource, cciPlanList, cciPlanAutoId } = I
-const cciShowPlan = computed(() => cci.source === 'freqPlan' || (cci.source === 'auto' && cciPlanList.value.length > 0))
-const cciPlanReading = computed(() => (I.cciPlan.value ? `已匹配 ${cciMatched.value} / ${cciRows.value.length} 个波束` : ''))
 // NGSO 干扰星座：星历行的「名称 / 星座」显示所选星座、轨道五列显示星历实参（只读）；Walker 行照常可编辑
 const groupLabel = (key) => { const x = ngsoGroups.value.find((gr) => gr.key === key); return x ? x.label : key }
 // 没有统计时分两种：在载（加载中…）与载不成（载入失败：原因）——后者从前也显示「加载中…」，一直停在那里
@@ -456,7 +448,6 @@ function ngCellTip(r, c) {
   return cellTipOf(r, c)
 }
 const ngCellClass = (r, c) => (r.o.source !== 'walker' && (c.orbit || c.key === 'name') ? 'ci-ro' : null)
-const roCellClass = (r, c) => (c.editable === false ? 'ci-ro' : null)
 
 // 切页签时清掉上一页留下的过程读数（如 NGSO「计算量过大」）——那一行只对它那页成立。
 // 有作业在跑时不清：那行是作业状态（扫描进度等），下一拍还会被刷新。
@@ -471,7 +462,7 @@ const run = () => {
   if (mode.value === 'asi') I.computeAsi()
   else if (mode.value === 'ap8') I.computeAp8()
   else if (mode.value === 'xpi') I.computeXpi()
-  else if (mode.value === 'cci') (cci.view === 'target' ? I.computeCciTarget() : I.computeCci())
+  else if (mode.value === 'cci') I.computeCciTarget()
   else I.computeNgso()
 }
 </script>
@@ -705,14 +696,6 @@ const run = () => {
 
       <!-- ============ C/CCI ============ -->
       <template v-else-if="mode === 'cci'">
-        <div class="cct-views">
-          <div class="seg nseg" role="radiogroup" aria-label="C/CCI 口径">
-            <button type="button" class="sg" role="radio" :aria-checked="cci.view === 'target' ? 'true' : 'false'" :class="{ on: cci.view === 'target' }" title="选一个目标波束与它的同频同极化波束，算目标覆盖区内的 C/CCI" @click="cci.view = 'target'">目标波束</button>
-            <button type="button" class="sg" role="radio" :aria-checked="cci.view === 'scheme' ? 'true' : 'false'" :class="{ on: cci.view === 'scheme' }" title="按复用方案（频率计划 / 色号 / 轮转）算全部波束" @click="cci.view = 'scheme'">复用方案</button>
-          </div>
-        </div>
-
-        <template v-if="cci.view === 'target'">
         <section class="ci-panel">
           <div class="ci-panel-hd">
             <h2>目标波束 C/CCI</h2>
@@ -722,15 +705,40 @@ const run = () => {
             <div class="cct-side">
               <div class="ci-form cct-form">
                 <div class="srow"><label>方向图</label>
-                  <select v-model="cci.antennaKey" class="ci" :title="currentAntenna ? currentAntenna.label : ''">
+                  <select v-model="cci.antennaKey" class="ci" :title="currentAntenna ? currentAntenna.label + ' · ' + currentAntenna.origin : ''">
                     <option value="">— 选一副天线 —</option>
-                    <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }} · {{ a.origin }}</option>
+                    <optgroup v-for="g in grdGroups" :key="g.key" :label="g.label">
+                      <option v-for="a in g.items" :key="a.key" :value="a.key">{{ a.text }}</option>
+                    </optgroup>
                   </select>
                 </div>
                 <div class="cct-btns">
-                  <button class="ci-btn" @click="I.importGrdHere()">导入 GRD…</button>
+                  <button class="ci-btn" title="导入的方向图在下面给卫星位置与视轴" @click="I.importGrdHere()">导入 GRD…</button>
                   <button class="ci-btn" @click="I.loadGrdTree()">刷新列表</button>
                 </div>
+                <!-- 卫星与视轴：本窗口导入的方向图在这里给（逐副记在导入清单上）；主窗口 / 链路预算来的照那边的设置，只出一行读数 -->
+                <template v-if="currentAntenna && antEditable">
+                  <div class="srow"><label>轨位</label><input class="ci" type="number" step="0.1" :value="geo.lon" @change="setGeoNum('satLon', $event)" /><span class="u">°E</span></div>
+                  <div class="srow"><label>纬度</label><input class="ci" type="number" step="0.1" :value="geo.lat" @change="setGeoNum('satLat', $event)" /><span class="u">°N</span></div>
+                  <div class="srow"><label>高度</label><input class="ci" type="number" step="1" min="100" :value="geo.alt" @change="setGeoNum('satAlt', $event)" /><span class="u">km</span></div>
+                  <div class="srow"><label>指向模式</label>
+                    <select class="ci" :value="geo.mode" @change="setBoreMode($event.target.value)">
+                      <option value="nadir">天底 Nadir</option>
+                      <option value="target">目标跟踪 Targeted</option>
+                      <option value="fixed">本体固定 Fixed (Az/El)</option>
+                    </select><span class="u"></span>
+                  </div>
+                  <template v-if="geo.mode === 'target'">
+                    <div class="srow"><label>视轴经度</label><input class="ci" type="number" step="0.5" :value="geo.boreLon" @change="setGeoCfg('boreLon', $event)" /><span class="u">°E</span></div>
+                    <div class="srow"><label>视轴纬度</label><input class="ci" type="number" step="0.5" :value="geo.boreLat" @change="setGeoCfg('boreLat', $event)" /><span class="u">°N</span></div>
+                  </template>
+                  <template v-else-if="geo.mode === 'fixed'">
+                    <div class="srow"><label>方位 Az</label><input class="ci" type="number" step="0.1" :value="geo.boreAz" @change="setGeoCfg('boreAz', $event)" /><span class="u">°</span></div>
+                    <div class="srow"><label>俯仰 El</label><input class="ci" type="number" step="0.1" :value="geo.boreEl" @change="setGeoCfg('boreEl', $event)" /><span class="u">°</span></div>
+                  </template>
+                  <div class="srow"><label title="绕视轴旋转">旋转 Rot</label><input class="ci" type="number" step="1" :value="geo.yaw" @change="setGeoCfg('yaw', $event)" /><span class="u">°</span></div>
+                </template>
+                <div v-else-if="currentAntenna" class="cct-geo-ro" :title="`卫星位置与视轴取自${currentAntenna.origin}的设置`" data-i18n-skip>{{ geoReadout }}</div>
                 <div class="srow"><label title="覆盖区 = 目标波束增益不低于其峰值减此值的区域；波束图上各波束的轮廓线取同一电平">覆盖电平</label><input v-model.number="cci.eocDb" class="ci" type="number" step="0.5" min="0.5" /><span class="u">dB</span></div>
                 <div class="srow"><label>目标波束</label>
                   <select class="ci" :value="cctPick.target == null ? '' : cctPick.target" :disabled="!cctBeams.length" @change="I.setCciTarget($event.target.value === '' ? null : +$event.target.value)">
@@ -766,7 +774,7 @@ const run = () => {
                   <button class="ci-btn" :disabled="!cctBeams.length || cctExporting" title="导出为 PNG 图片（3 倍分辨率）" @click="exportCctMap">导出</button>
                 </div>
               </div>
-              <CiBeamMap ref="cctMap" :beams="cctBeams" :fit-key="cci.antennaKey" :target="cctPick.target" :co="cctCoValid"
+              <CiBeamMap ref="cctMap" :beams="cctBeams" :fit-key="cctFitKey" :target="cctPick.target" :co="cctCoValid"
                 :field="cctRes ? cctRes.field : null" :worst="cctWorst" :dim="stale.cciTgt" :height="cctMapH" @pick="onBeamPick" />
             </div>
           </div>
@@ -813,206 +821,6 @@ const run = () => {
           <p v-if="cctRes.missing && cctRes.missing.length" class="ci-warn">方向图中无波束 {{ cctRes.missing.map((x) => '#' + (x + 1)).join('、') }}。</p>
           <p v-if="cctRes.floorPts" class="ci-note sm">窗外计入 {{ cctRes.floorPts.toLocaleString('en-US') }} 点。</p>
         </section>
-        </template>
-
-        <template v-else>
-        <section class="ci-panel">
-          <div class="ci-panel-hd">
-            <h2>方向图与复用方案</h2>
-            <div class="ci-hd-tools">
-              <button class="ci-btn" @click="I.importGrdHere()">导入 GRD…</button>
-              <button class="ci-btn" @click="I.loadGrdTree()">刷新列表</button>
-            </div>
-          </div>
-          <div class="ci-form">
-            <div class="srow wide"><label>方向图</label>
-              <select v-model="cci.antennaKey" class="ci">
-                <option value="">— 选一副天线 —</option>
-                <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }} · {{ a.origin }}</option>
-              </select>
-            </div>
-            <div class="srow"><label>链路方向</label>
-              <div class="seg nseg" role="radiogroup" aria-label="链路方向">
-                <button type="button" class="sg" role="radio" :aria-checked="cci.dir === 'fwd' ? 'true' : 'false'" :class="{ on: cci.dir === 'fwd' }" title="用户下行：该点服务波束与同频波束的发射电平之比" @click="cci.dir = 'fwd'">前向</button>
-                <button type="button" class="sg" role="radio" :aria-checked="cci.dir === 'rtn' ? 'true' : 'false'" :class="{ on: cci.dir === 'rtn' }" title="用户上行：本波束接收方向图在同频他区终端处的增益，终端按功控到等接收谱密度" @click="cci.dir = 'rtn'">返向</button>
-              </div>
-            </div>
-            <div class="srow"><label>着色来源</label>
-              <select v-model="cci.source" class="ci" title="自动 = 频率计划 > 波束合成色号 > Excel 导入 > 手工 > 轮转，取第一个有数据的">
-                <option v-for="s in CCI_SOURCES" :key="s.key" :value="s.key">{{ s.label }}</option>
-              </select><span class="u"></span>
-            </div>
-            <div v-if="cciEffSource === 'rotation'" class="srow"><label>复用色数</label>
-              <select v-model.number="cci.colors" class="ci">
-                <option v-for="c in REUSE_COLORS" :key="c" :value="c">{{ c }} 色</option>
-              </select><span class="u"></span>
-            </div>
-            <div class="srow"><label title="正交极化的同频波束、方向图没有交叉极化分量时采用的规格值">交叉极化鉴别</label><input v-model.number="cci.xpdDb" class="ci" type="number" step="1" /><span class="u">dB</span></div>
-            <div class="srow"><label title="服务区 = 该点的服务波束且电平不低于其峰值减这么多；逐波束统计与返向终端落点都只取服务区内的点">服务区边缘</label><input v-model.number="cci.eocDb" class="ci" type="number" step="0.5" min="0" /><span class="u">dB</span></div>
-            <div class="srow"><label title="比服务波束低这么多以上的干扰项忽略">忽略门限</label><input v-model.number="cci.floorDb" class="ci" type="number" /><span class="u">dB</span></div>
-          </div>
-          <p v-if="!grdAntennas.length" class="ci-note">暂无可用方向图。</p>
-
-          <!-- 频率计划：逐波束段 + 极化由计划推出；GRD 波束 ↔ 计划波束按号 / 按名自动匹配，计划波束格可手改 -->
-          <div v-if="cciShowPlan" class="ci-sub">
-            <div class="ci-panel-hd">
-              <h3>频率计划</h3>
-              <span class="ci-hd-sum">{{ cciPlanReading }}</span>
-            </div>
-            <div class="ci-form">
-              <div class="srow wide"><label>频率计划</label>
-                <select v-model="cci.planId" class="ci">
-                  <option value="">{{ cciPlanAutoId ? '本星第一份' : '— 选一份计划 —' }}</option>
-                  <option v-for="p in cciPlanList" :key="p.id" :value="p.id">{{ p.name }}{{ p.satName ? ' · ' + p.satName : '' }}</option>
-                </select>
-              </div>
-              <div class="srow"><label :title="cci.dir === 'rtn' ? '只取计划里落在这一段的上行占段；留空 = 不筛' : '只取计划里落在这一段的下行占段；留空 = 不筛'">{{ cci.dir === 'rtn' ? '返向频段起' : '前向频段起' }}</label><input v-model="cciBand.f1" class="ci" type="text" inputmode="decimal" /><span class="u">MHz</span></div>
-              <div class="srow"><label :title="cci.dir === 'rtn' ? '只取计划里落在这一段的上行占段；留空 = 不筛' : '只取计划里落在这一段的下行占段；留空 = 不筛'">{{ cci.dir === 'rtn' ? '返向频段止' : '前向频段止' }}</label><input v-model="cciBand.f2" class="ci" type="text" inputmode="decimal" /><span class="u">MHz</span></div>
-            </div>
-            <ExcelGrid class="ci-eg" :grid="cciPlanGrid.g" :cols="CCI_PLAN_COLS" :text="cciPlanGrid.textOf" :cell-class="cciPlanCellClass" :cell-tip="cellTipOf" :head-tip="headTip"
-                       empty-text="暂无波束。" />
-          </div>
-
-          <!-- 逐波束复用表：Excel 导入或直接录（前向 / 返向各一组色号 · 起止 · 极化） -->
-          <div v-if="cciEffSource === 'excel'" class="ci-sub">
-            <div class="ci-panel-hd">
-              <h3>逐波束复用表</h3>
-              <div class="ci-hd-tools"><button class="ci-btn" :disabled="!cciRows.length" @click="I.importCciTable()">导入 Excel…</button></div>
-            </div>
-            <ExcelGrid class="ci-eg" :grid="cciTableGrid.g" :cols="TABLE_COLS" :text="cciTableGrid.textOf" :cell-class="roCellClass" :cell-tip="cellTipOf" :head-tip="headTip"
-                       empty-text="暂无波束。" />
-          </div>
-
-          <!-- 色号类来源（波束合成 / 手工 / 轮转）：逐波束色号 + 可选的色号定义（F# → 频段 × 极化） -->
-          <div v-if="cciShowColorDefs" class="ci-sub">
-            <h3>逐波束色号</h3>
-            <ExcelGrid class="ci-eg" :grid="cciColorGrid.g" :cols="CCI_COLOR_COLS" :text="cciColorGrid.textOf" :cell-class="cciColorCellClass" :cell-tip="cellTipOf" :head-tip="headTip"
-                       empty-text="暂无波束。" />
-            <h3>色号定义</h3>
-            <ExcelGrid class="ci-eg" :grid="cciDefGrid.g" :cols="DEF_COLS" :text="cciDefGrid.textOf" :cell-tip="cellTipOf" :head-tip="headTip"
-                       empty-text="暂无色号定义。" add-label="添加色号" del-label="删除所选行" @add="cciDefGrid.append()" />
-          </div>
-
-          <h3>取值点</h3>
-          <ExcelGrid class="ci-eg" :grid="ptGrid.g" :cols="PT_COLS" :text="ptGrid.textOf" :cell-tip="cellTipOf" :head-tip="headTip"
-                     empty-text="暂无取值点。" add-label="添加取值点" del-label="删除所选行" @add="ptGrid.append()" />
-        </section>
-
-        <!-- 场图与逐站取值并排：同一副天线、同一套着色的两种读法——面上的分布与点上的读数。
-             上下摆的时候，要核对某个点的数得先滚过一整张图，两个数还对不到一屏里。 -->
-        <section class="ci-panel">
-          <h2>覆盖场图与逐站取值</h2>
-          <div class="ci-split cci">
-            <div class="ci-split-l">
-              <div class="ci-panel-hd">
-                <h3>{{ cci.dir === 'rtn' ? '返向 C/CCI 覆盖场图' : 'C/CCI 覆盖场图' }}</h3>
-                <span v-if="stale.cciField" class="ci-stale" :title="STALE_TIP">输入已变</span>
-                <button class="ci-btn" :disabled="busy || !currentAntenna" @click="I.computeCciField()">计算场图</button>
-                <button class="ci-btn" :disabled="!cci.field || cciExporting" title="导出为 PNG 图片（4 倍分辨率）" @click="exportCciField">导出</button>
-              </div>
-              <div class="ci-form">
-                <div class="srow"><label>网格</label>
-                  <div class="seg nseg" role="radiogroup" aria-label="网格">
-                    <button type="button" class="sg" role="radio" :aria-checked="cci.grid === 'antenna' ? 'true' : 'false'" :class="{ on: cci.grid === 'antenna' }" title="方向图自身的角度网格（各波束窗口的并集），逐节点计算" @click="cci.grid = 'antenna'">天线网格</button>
-                    <button type="button" class="sg" role="radio" :aria-checked="cci.grid === 'user' ? 'true' : 'false'" :class="{ on: cci.grid === 'user' }" title="按经纬范围与步长铺格" @click="cci.grid = 'user'">经纬网格</button>
-                  </div>
-                </div>
-                <template v-if="cci.dir === 'rtn'">
-                  <div class="srow"><label>终端位置</label>
-                    <div class="seg nseg" role="radiogroup" aria-label="终端位置">
-                      <button type="button" class="sg" role="radio" :aria-checked="cci.rtnMode === 'worst' ? 'true' : 'false'" :class="{ on: cci.rtnMode === 'worst' }" title="各同频波束的终端都落在其服务区内对本波束最不利的一点" @click="cci.rtnMode = 'worst'">最坏点</button>
-                      <button type="button" class="sg" role="radio" :aria-checked="cci.rtnMode === 'mc' ? 'true' : 'false'" :class="{ on: cci.rtnMode === 'mc' }" title="每次试验在各同频波束的服务区内随机取一个终端位置" @click="cci.rtnMode = 'mc'">蒙特卡洛</button>
-                    </div>
-                  </div>
-                  <template v-if="cci.rtnMode === 'mc'">
-                    <div class="srow"><label>试验次数</label><input v-model.number="cci.mcTrials" class="ci" type="number" step="50" min="1" /><span class="u"></span></div>
-                    <div class="srow"><label>随机种子</label><input v-model.number="cci.mcSeed" class="ci" type="number" step="1" /><span class="u"></span></div>
-                  </template>
-                </template>
-              </div>
-              <div v-if="cci.grid === 'user'" class="ci-grid inline">
-                <label>经度起 °E<input v-model.number="cci.bounds.lonMin" type="number" step="1" /></label>
-                <label>经度止 °E<input v-model.number="cci.bounds.lonMax" type="number" step="1" /></label>
-                <label>纬度起 °N<input v-model.number="cci.bounds.latMin" type="number" step="1" /></label>
-                <label>纬度止 °N<input v-model.number="cci.bounds.latMax" type="number" step="1" /></label>
-                <label>网格步长 °<input v-model.number="cci.fieldStep" type="number" step="0.05" /></label>
-              </div>
-              <div v-if="cci.field" class="ci-fieldwrap">
-                <LbSurfacePlot ref="cciPlot"
-                  :xs="cci.field.xs" :ys="cci.field.ys" :nx="cci.field.nx" :ny="cci.field.ny" :z="cci.field.z"
-                  x-label="经度" x-unit="°E" y-label="纬度" y-unit="°N"
-                  :z-label="cci.stats && cci.stats.dir === 'rtn' ? '返向 C/CCI' : 'C/CCI'" z-unit="dB"
-                  :basemap="true" palette="turbo" :level-count="9"
-                  :bounds="{ x0: -180, x1: 180, y0: -90, y1: 90 }" />
-              </div>
-              <p v-else class="ci-note">尚未计算。</p>
-              <p v-if="cciFieldLine" class="ci-note sm">{{ cciFieldLine }}</p>
-            </div>
-
-            <div class="ci-split-r">
-              <div class="ci-panel-hd">
-                <h3>逐站取值</h3>
-                <span v-if="stale.cci" class="ci-stale" :title="STALE_TIP">输入已变</span>
-              </div>
-              <template v-if="cci.result">
-                <div class="ci-tbwrap">
-                  <table class="ci-tb res">
-                    <thead><tr><th>取值点</th><th class="n">经度</th><th class="n">纬度</th><th>服务波束</th><th>复用</th><th class="n">C/CCI dB</th></tr></thead>
-                    <tbody>
-                      <tr v-for="(r, i) in cci.result.rows" :key="i">
-                        <td data-i18n-skip>{{ r.name }}</td>
-                        <td class="dim num">{{ f(r.lon, 4) }}</td>
-                        <td class="dim num">{{ f(r.lat, 4) }}</td>
-                        <td>{{ r.servingIdx == null ? '—' : '#' + (r.servingIdx + 1) }}</td>
-                        <td class="dim" data-i18n-skip>{{ r.reuse || '—' }}</td>
-                        <td class="num" :title="r.floored ? `窗外计入 ${r.floored} 项` : null">{{ r.noCo ? '∞' : f(r.cciDb) }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-                <p v-if="cciPtsLine" class="ci-note sm">{{ cciPtsLine }}</p>
-              </template>
-              <p v-else class="ci-note">尚无逐点读数。</p>
-            </div>
-          </div>
-        </section>
-
-        <!-- 逐波束统计：服务区（服务波束且不低于其峰值「服务区边缘」dB）内的格点 -->
-        <section v-if="cci.stats" class="ci-panel">
-          <h2>逐波束统计<span v-if="stale.cciField" class="ci-stale" :title="STALE_TIP">输入已变</span></h2>
-          <div class="ci-tbwrap tall">
-            <table class="ci-tb res">
-              <thead v-if="cci.stats.dir !== 'rtn'">
-                <tr><th>波束</th><th>复用</th><th class="n" title="与本波束频段重叠的同频波束数">同频</th><th class="n">服务区点数</th><th class="n" title="服务区内的最小值（覆盖边缘最差）">最小 dB</th><th class="n">5% dB</th><th class="n">中位 dB</th></tr>
-              </thead>
-              <thead v-else>
-                <tr><th>波束</th><th>复用</th><th class="n" title="与本波束频段重叠的同频波束数">同频</th><th class="n">服务区点数</th><th class="n" title="各同频波束的终端都落在对本波束最不利的位置">最坏点 dB</th><template v-if="cci.stats.trials"><th class="n">最小 dB</th><th class="n">5% dB</th><th class="n">中位 dB</th></template></tr>
-              </thead>
-              <tbody>
-                <tr v-for="b in cciBeamRows" :key="b.idx">
-                  <td>#{{ b.idx + 1 }}</td>
-                  <td class="dim" data-i18n-skip>{{ cciReuseOf(b, cci.stats.source) }}</td>
-                  <td class="num">{{ b.partners }}</td>
-                  <td class="num">{{ b.cells }}</td>
-                  <template v-if="cci.stats.dir !== 'rtn'">
-                    <td class="num">{{ b.fwd ? cciFmt(b.fwd.min) : '—' }}</td>
-                    <td class="num">{{ b.fwd ? cciFmt(b.fwd.p5) : '—' }}</td>
-                    <td class="num">{{ b.fwd ? cciFmt(b.fwd.p50) : '—' }}</td>
-                  </template>
-                  <template v-else>
-                    <td class="num">{{ b.rtnWorst == null ? '—' : cciFmt(b.rtnWorst) }}</td>
-                    <template v-if="cci.stats.trials">
-                      <td class="num">{{ b.rtnMc ? cciFmt(b.rtnMc.min) : '—' }}</td>
-                      <td class="num">{{ b.rtnMc ? cciFmt(b.rtnMc.p5) : '—' }}</td>
-                      <td class="num">{{ b.rtnMc ? cciFmt(b.rtnMc.p50) : '—' }}</td>
-                    </template>
-                  </template>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-        </template>
       </template>
 
       <!-- ============ C/XPI ============ -->
@@ -1030,7 +838,9 @@ const run = () => {
               <div class="srow wide"><label>方向图</label>
                 <select v-model="cci.antennaKey" class="ci">
                   <option value="">— 选一副天线 —</option>
-                  <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }} · {{ a.origin }}</option>
+                  <optgroup v-for="g in grdGroups" :key="g.key" :label="g.label">
+                    <option v-for="a in g.items" :key="a.key" :value="a.key">{{ a.text }}</option>
+                  </optgroup>
                 </select>
               </div>
               <div class="srow"><label>本站经度</label><input v-model.number="site.lon" class="ci" type="number" step="0.0001" /><span class="u">°E</span></div>
@@ -1333,7 +1143,9 @@ const run = () => {
                 <div class="srow wide"><label>方向图</label>
                   <select v-model="ngso.satPattern.grdKey" class="ci">
                     <option value="">— 选择天线 —</option>
-                    <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }}（{{ a.origin }}）</option>
+                    <optgroup v-for="g in grdGroups" :key="g.key" :label="g.label">
+                      <option v-for="a in g.items" :key="a.key" :value="a.key">{{ a.text }}</option>
+                    </optgroup>
                   </select>
                 </div>
                 <div v-if="ngsoGrdBeams.length > 1" class="srow" title="干扰计算的是与受扰载波同频的那一个波束，不是整副天线"><label>同频波束</label>
@@ -1650,13 +1462,8 @@ const run = () => {
 .ci-rowno { font-family: var(--font-mono); color: var(--text-faint); }
 .ci-ro-read { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-.ci-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 8px 10px; }
-.ci-grid.inline { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); margin-bottom: 8px; }
-.ci-grid label { display: flex; flex-direction: column; gap: 3px; font-size: var(--fs-3); color: var(--text-muted); }
-.ci-grid input, .ci-grid select { font: inherit; font-size: var(--fs-4); padding: 4px 6px; color: var(--text); background-color: var(--field-bg); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 4px); }
-.ci-grid input:focus, .ci-grid select:focus { outline: none; border-color: var(--accent-ui); }
 
-/* 功能条里的复选（.ci-hd-tools）不在 .ci-grid 下，吃不到那边的字号 / 字色：这里自带，两处读起来一样 */
+/* 功能条里的复选（.ci-hd-tools）：字号 / 字色自带 */
 .ci-chk { display: inline-flex; flex-direction: row !important; align-items: center; gap: 5px !important; font-size: var(--fs-3); color: var(--text-muted); cursor: pointer; }
 /* 换算出来的那一段值：填在上面、结果就在下面一行，不用等点「计算」才知道自己填的等于多少 */
 /* 左侧是 3px 色条：色条那一边取直角，圆角只留在右侧，免得色条两端被削成月牙 */
@@ -1715,35 +1522,27 @@ const run = () => {
 .ci-kpi i { font-size: var(--fs-2); font-style: normal; color: var(--text-faint); white-space: nowrap; }
 
 .ci-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr); gap: 20px; align-items: start; }
-/* C/CCI 那对：图是主体，逐站取值六列全是短数字（实测自然宽 312px），给够读的宽度就行 ——
-   表的上界钉死 400px（余量留给长站名与「无同色波束 / 域外」那格），多出来的宽度一律归图：
-   信箱式 1°:1° 下栏宽直接决定图的大小，写 fr 会让超宽屏白空一大片表。
-   不写 fit-content：栏宽跟着表内容跳，改个取值点名字整张图就重排一次。 */
-.ci-split.cci { grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); }
-/* 媒体查询里必须把 .cci 一起点名：单类选择器压不住 .ci-split.cci 的特异度，塌单栏会失效 */
-@media (max-width: 1180px) { .ci-split, .ci-split.cci { grid-template-columns: 1fr; } }
-/* 两栏的标题行等高：左栏「算这张图」比 h3 高一截（.ci-btn 实测 24 px，字号写死不随 --lb-fs），
-   不钉住的话 flex 居中会把右栏的「逐站取值」抬高 5 px —— 两个同级小标题差半行，一眼看得出。 */
-.ci-split.cci .ci-panel-hd { min-height: 24px; }
+@media (max-width: 1180px) { .ci-split { grid-template-columns: 1fr; } }
 /* 表窄到装不下时自己横滚，别把整个 grid 顶宽（grid 项默认 min-width:auto） */
 .ci-tbwrap { min-width: 0; overflow-x: auto; }
-/* C/CCI 逐波束统计：几十到几百个波束，表自己纵滚，别把整页拉长 */
-.ci-tbwrap.tall { max-height: 420px; overflow-y: auto; }
 
-/* —— C/CCI 目标波束 ——
-   左栏是选择（方向图 → 覆盖电平 → 目标 → 同频组 → 计算，自上而下就是操作顺序），右栏是波束图；结果另起一块。
+/* —— C/CCI ——
+   左栏是选择（方向图 →〔卫星与视轴〕→ 覆盖电平 → 目标 → 同频组 → 计算，自上而下就是操作顺序），右栏是波束图；结果另起一块。
    目标蓝 / 同频橙取图表系列色前两槽（lbPlotTheme 的 SERIES_*，亮暗各一套），波束图、波束号格、份额条三处同色：
    波束号格因此兼作图例，不另画图例框。 */
-.cct-views { display: flex; margin: 0 0 12px; }
-.cct-views .seg > .sg { min-width: 92px; text-align: center; }
-.cct { --cct-tg: #15619b; --cct-co: #b8571a; display: grid; grid-template-columns: minmax(250px, 290px) minmax(0, 1fr); gap: 18px; align-items: start; }
+/* 两栏用 flex 换行而不是 grid 双轨：面板窄到放不下「左栏 290 + 图 520」时图整块落到左栏下面铺满，
+   不挤成一条窄缝（按面板宽，不按窗口宽 —— 左侧配置栏开合、字号缩放都会改面板宽）。 */
+.cct { --cct-tg: #15619b; --cct-co: #b8571a; display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
 .ci-panel .cct-tb { --cct-co: #b8571a; }
 :root[data-theme="dark"] .cct, :root[data-theme="dark"] .ci-panel .cct-tb { --cct-tg: #4a8fc9; --cct-co: #d2792f; }
-@media (max-width: 1000px) { .cct { grid-template-columns: 1fr; } }
-.cct-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.cct-form { grid-template-columns: 1fr; gap: 6px; }
-.cct-form .srow { --srow-lab: 64px; }
-.cct-form .srow > select.ci { min-width: 0; }
+.cct-side { flex: 0 0 290px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cct-main { flex: 1 1 520px; min-width: 0; }
+/* 轨道写 minmax(0, 1fr) 不写 1fr：1fr 的下限是格子的最小内容宽，而下拉框的最小内容宽 = 最长那一项的字宽，
+   长天线名会把整列撑出 290、压到右边的图底下（数字框右对齐，值就藏在图后面，看着像空框） */
+.cct-form { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.cct-form .srow { --srow-lab: 64px; min-width: 0; }
+.cct-form .srow > select.ci, .cct-form .srow > input.ci { min-width: 0; }
+.cct-geo-ro { padding: 4px 8px; font-size: var(--fs-3); line-height: 1.5; font-variant-numeric: tabular-nums; color: var(--text-muted); background: var(--surface-2); border-radius: var(--r-ctl); overflow-wrap: anywhere; }
 /* 与上一行的控件左沿对齐：标签列 64 + 行间距 8 */
 .cct-btns { display: flex; gap: 6px; padding-left: 72px; margin-top: -2px; }
 .cct-cohd { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -1761,7 +1560,6 @@ const run = () => {
 .cct-run { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; margin-top: 6px; font-weight: 600; color: var(--accent-on); background: var(--accent-fill); border-color: var(--accent-fill); }
 .cct-run:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 .cct-play { width: 11px; height: 11px; fill: currentColor; }
-.cct-main { min-width: 0; }
 .cct-maphd { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; min-height: 24px; }
 .cct-maphd .seg > .sg { min-width: 76px; text-align: center; }
 /* 结果读数：四个 C/CCI 统计量一排，最差值领头加大；几何读数走下面那行常规读数 */
@@ -1786,7 +1584,6 @@ const run = () => {
 .ci-warn { margin: 8px 0 0; padding: 7px 10px; font-size: var(--fs-3); line-height: 1.55; color: var(--text); background: color-mix(in srgb, var(--warn) 12%, transparent); border-left: 3px solid var(--warn); border-radius: 0 var(--r-box) var(--r-box) 0; }
 .ci-warn strong { font-weight: 700; }
 
-.ci-fieldwrap { margin-top: 10px; }
 /* 星座实参速览：选了真实星座后代替 Walker 输入格 */
 .ci-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; margin: 8px 0 0; padding: 8px 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-box); }
 .ci-stats > div { display: flex; gap: 7px; align-items: baseline; font-size: var(--fs-3); }

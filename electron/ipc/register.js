@@ -904,7 +904,6 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // 干扰分析：逐波束采样（少量站点）与 C/CCI 合成（整张场图，主进程内折成标量再回传）
   ipcMain.handle('link:grdSampleBeams', (_e, req) => (grd ? grd.sampleBeams(req || {}) : { beamIdx: [], values: ((req && req.points) || []).map(() => []) }))
   ipcMain.handle('link:grdSampleXpd', (_e, req) => (grd ? grd.sampleXpd(req || {}) : { ok: false, error: 'GRD 服务未加载', values: ((req && req.points) || []).map(() => null) }))
-  ipcMain.handle('link:grdSampleCci', (_e, req) => (grd ? grd.sampleCci(req || {}) : { ok: false, error: 'GRD 服务未加载', cci: ((req && req.points) || []).map(() => null) }))
   // 城市列表（选址用）
   ipcMain.handle('link:cities', () => core().listCities())
   ipcMain.handle('link:cityGroups', () => core().listCitiesGrouped())
@@ -1160,11 +1159,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('ci:asi', (_e, req) => interference.asi(req))
   ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
   ipcMain.handle('ci:xpiTerm', (_e, req) => interference.xpiTerm(req))
-  ipcMain.handle('ci:cciPoint', (_e, req) => interference.cciPoint(req))
-  // C/CCI 复用方案：方向图概要（存活波束 + 波束合成色号）· 取值点表 · 场图作业（进度 ci:cciProgress、结果 ci:cciDone）
-  ipcMain.handle('ci:cciInfo', (_e, req) => interference.cciInfo(req))
-  ipcMain.handle('ci:cciPoints', (_e, req) => interference.cciPoints(req))
-  // C/CCI 目标波束：逐波束足迹（波束图点选用）；目标波束作业走 ci:cciStart（mode:'target'），进度 / 结果同上
+  // C/CCI：逐波束足迹（波束图点选用）· 目标波束作业（进度 ci:cciProgress、结果 ci:cciDone）
   ipcMain.handle('ci:cciBeams', (_e, req) => interference.cciBeams(req))
   ipcMain.handle('ci:cciStart', (e, req) => interference.cciStart(e.sender, req))
   ipcMain.handle('ci:cciCancel', () => interference.cciCancel())

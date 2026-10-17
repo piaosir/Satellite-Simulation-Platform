@@ -164,7 +164,7 @@ ok(fnBody(GPW, 'function editTime(id, val) {').includes('parseTzText(val, tzMode
 const lgt = fnBody(CI, '  function loadGrdTree() {', '\n  }\n')
 ok(lgt.includes("read('globe3d/grdLive')") && lgt.includes('(s.noradId || s.elements) ? live[s.folder] : undefined'), '干扰分析 loadGrdTree 按 grdLive 覆盖实时星位（只认此刻仍是实时星的节点）')
 ok(lgt.includes('satLon: lon, satLat: lat, satAlt: altKm'), '干扰分析：实时星天线基底也换成实时星位')
-ok((CI.match(/if \(a\.node\.noEph\) \{ msg\.value = '关联卫星当前无星历'; return \}/g) || []).length === 4, '干扰分析：关联星无星历时四处 GRD 取值都不拿旧星位顶替（含 C/CCI 目标波束）')
+ok((CI.match(/if \(a\.node\.noEph\) \{ msg\.value = '关联卫星当前无星历'; return \}/g) || []).length === 2, '干扰分析：关联星无星历时两处 GRD 取值（C/XPI 取值、C/CCI 计算）都不拿旧星位顶替')
 // C/CCI 目标波束的足迹（波束图）同样不取：状态落在足迹那一格的报错位上
 ok(fnBody(CI, '  async function refreshCciBeams() {', '\n  }\n').includes("if (a.node.noEph) { cci.tgtBeams = null; cci.tgtBeamsErr = '关联卫星当前无星历'; return }"), '干扰分析：关联星无星历时 C/CCI 波束足迹不取值')
 

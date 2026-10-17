@@ -1804,7 +1804,7 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
 {
   const mem = new Map();
   globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
-  let ngsoDone = null;
+  let ngsoDone = null, cciDone = null;
   globalThis.window = {
     addEventListener: () => {},
     api: {
@@ -1815,18 +1815,20 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
         ngsoEstimate: async () => ({ ok: true, work: 10 }),
         ngsoStart: async () => ({ ok: true, token: 7, T: 10 }),
         onNgsoProgress: () => {}, onNgsoDone: (fn) => { ngsoDone = fn },
-        groups: async () => ({ ok: true, groups: [] })
+        groups: async () => ({ ok: true, groups: [] }),
+        cciBeams: async () => ({ ok: true, level: 4, beams: [{ idx: 0, rings: [] }, { idx: 1, rings: [] }, { idx: 2, rings: [] }] }),
+        cciStart: async () => ({ ok: true, token: 9, T: 10 }),
+        onCciProgress: () => {}, onCciDone: (fn) => { cciDone = fn }
       },
       linkBudget: {
-        grdSampleXpd: async () => ({ ok: true, values: [{ xpdDb: 21.5, servingIdx: 0, coPolIndex: 1, coPolDb: 40, xPolDb: 18.5 }] }),
-        grdSampleCci: async (req) => ({ ok: true, cci: req.points.map(() => 12), serving: req.points.map(() => 0), coloring: { 0: 1 }, beamIdx: [0], colors: 4 })
+        grdSampleXpd: async () => ({ ok: true, values: [{ xpdDb: 21.5, servingIdx: 0, coPolIndex: 1, coPolDb: 40, xPolDb: 18.5 }] })
       }
     }
   };
   const { useInterference } = await import('../../../src/ci/useInterference.js');
   const I = useInterference();
   const st = () => I.stale.value;
-  ok('没算过不亮', !st().asi && !st().xpi && !st().cci && !st().cciField && !st().ngso);
+  ok('没算过不亮', !st().asi && !st().xpi && !st().cciTgt && !st().ngso);
   await I.computeAsi();
   ok('C/ASI 算完不亮', !!I.asi.result && !st().asi);
   I.carrier.satLonDeg = 125; I.carrier.satName = '新星';
@@ -1850,15 +1852,27 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   ok('C/XPI：卫星侧没在新站重取就重算 → 仍亮', st().xpi);
   await I.sampleXpiFromGrd(); await I.computeXpi();
   ok('C/XPI：重取 + 重算 → 灭', !st().xpi);
-  // 对星跟踪的方向图：主进程不取值，这里给一句明确状态（不落成「域外 / 无同色波束」那类空结果）
+  // 对星跟踪的方向图：主进程不取值，这里给一句明确状态（不落成「覆盖区内无有效值」那类空结果）
   I.grdTree.value = { ...I.grdTree.value, cfgs: { 'F::A': { boreType: 'satoff' } } };
-  await I.computeCci();
+  await I.computeCciTarget();
   ok('对星指向的方向图：C/CCI 明确拦下', /对星指向/.test(I.msg.value), I.msg.value);
+  // C/CCI 目标波束：结果异步回来（onCciDone）；指纹 = 方向图（含指向）+ 目标 + 同频组 + 覆盖电平
   I.grdTree.value = { ...I.grdTree.value, cfgs: { 'F::A': { boreType: 'point' } } };
-  await I.computeCci(); await I.computeCciField();
-  ok('C/CCI 逐点 / 场图算完都不亮', !!I.cci.result && !!I.cci.field && !st().cci && !st().cciField);
-  I.cci.fieldStep = 2;
-  ok('改场图步长 → 只场图亮', st().cciField && !st().cci);
+  I.mode.value = 'cci';
+  await I.refreshCciBeams();
+  I.setCciTarget(0); I.setCciCo([1, 2]);
+  await I.computeCciTarget();
+  cciDone({ token: 9, ok: true, result: { target: 0, cochannel: [1, 2], cover: 10, elapsedMs: 1, field: null, stats: { min: 5, p5: 6, p50: 9 } } });
+  ok('C/CCI 算完不亮', !!I.cci.tgtResult && !st().cciTgt);
+  I.toggleCciCo(2);
+  ok('C/CCI：同频组变了 → 亮', st().cciTgt);
+  I.toggleCciCo(2);
+  ok('C/CCI：改回 → 灭', !st().cciTgt);
+  I.cci.eocDb = 3;
+  ok('C/CCI：覆盖电平变了 → 亮', st().cciTgt);
+  I.cci.eocDb = 4;
+  I.grdTree.value = { ...I.grdTree.value, cfgs: { 'F::A': { boreType: 'point', yaw: 5 } } };
+  ok('C/CCI：方向图指向变了 → 亮', st().cciTgt);
   // NGSO：结果异步回来（onNgsoDone）；扫描期间改了入参 → 回来就亮
   await I.computeNgso();
   I.ngso.stepSec = 20;
@@ -2095,7 +2109,7 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   I.ngso.rain.cdf = [{ pct: 1, attenDb: 1 }]; I.ngso.rain.cdfInfo = 'x';
   I.clearResults();
   ok('★ 切配置：各页结果、本站处 XPD、雨衰分布全清', !I.asi.result && !I.xpi.result && I.xpi.satGrdRatioDb === '' && !I.xpi.satGrdDetail
-    && !I.cci.result && !I.cci.field && !I.ngso.result && !I.ngso.rain.cdf && I.ngso.rain.cdfInfo === '');
+    && !I.cci.tgtResult && !I.ngso.result && !I.ngso.rain.cdf && I.ngso.rain.cdfInfo === '');
   ok('「输入已变」随之熄灭、读数行清空', !st().asi && !st().xpi && !st().ngso && I.msg.value === '');
 
   // C/ASI 在途：切走后回包丢弃
@@ -2134,7 +2148,7 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   delete globalThis.window;
 }
 
-// ═══ 窗口层：五张输入表的撤销栈不跨配置（src/ci/ciInputGrids.js 的 clearHistory；体检 2026-10-16 第二节 #18②）═══
+// ═══ 窗口层：输入表的撤销栈不跨配置（src/ci/ciInputGrids.js 的 clearHistory；体检 2026-10-16 第二节 #18②）═══
 // 网格不随配置重建，栈在闭包里：在 A 改了干扰星表、切到 B 后按 Ctrl+Z，B 的表被整张换成 A 的行并自动存盘。
 {
   const { reactive } = await import('vue');
@@ -2197,8 +2211,8 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
     /fingerprintOf\(hit\.state\) !== fingerprintOf\(cur\)/.test(body) && /createAndOpen\(\{ state: hit\.state, nameAuto: true \}\)/.test(body)
     && !/(^|[^.\w])(site|carrier)\.\w+\s*=[^=]/.test(body), body.slice(0, 80));
   const apply = (app.match(/function applyState\(st\) \{[\s\S]*?\n\}\n/) || [''])[0];
-  ok('CiApp.applyState：清三张表的撤销栈、清结果、补载星座统计',
-    /for \(const g of \[srcGrid, ptGrid, ngGrid\]\) g\.clearHistory\(\)/.test(apply) && /I\.clearResults\(\)/.test(apply) && /I\.refreshGroupStats\(\)/.test(apply));
+  ok('CiApp.applyState：清两张表的撤销栈、清结果、补载星座统计',
+    /for \(const g of \[srcGrid, ngGrid\]\) g\.clearHistory\(\)/.test(apply) && /I\.clearResults\(\)/.test(apply) && /I\.refreshGroupStats\(\)/.test(apply));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

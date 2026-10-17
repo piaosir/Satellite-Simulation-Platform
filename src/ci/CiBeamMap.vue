@@ -18,7 +18,7 @@ import { isDark as screenDark, SERIES_LIGHT, SERIES_DARK } from '../shared/lbPlo
 
 const props = defineProps({
   beams: { type: Array, default: () => [] },     // [{ idx, peak:{lon,lat}|null, rings:[[lon0,lat0,lon1,lat1,…]] }]
-  fitKey: { type: String, default: '' },         // 变了才重新适配视图（同一副天线改覆盖电平不跳视图）
+  fitKey: { type: String, default: '' },         // 几何签名（天线 + 卫星位置 + 视轴）：变了，下一批足迹到达时重新适配视图；改覆盖电平不跳视图
   target: { type: Number, default: null },
   co: { type: Array, default: () => [] },
   field: { type: Object, default: null },        // { xs, ys, nx, ny, z, min, max }（经纬栅格，区外 NaN）
@@ -482,7 +482,7 @@ onBeforeUnmount(() => {
 watch(() => props.beams, () => {
   if (props.beams.length && props.fitKey !== fittedKey) { fittedKey = props.fitKey; fit() } else schedule(4)
 })
-watch(() => props.fitKey, (k) => { if (props.beams.length && k !== fittedKey) { fittedKey = k; fit() } })
+// 不单独盯 fitKey：签名先变、足迹异步后到，按签名当场适配框住的还是旧足迹 —— 等新足迹到了（上一条）再适配
 watch(() => [props.target, props.co, props.worst], () => schedule(4), { deep: true })
 watch(() => [props.field, scale.value], () => { buildFieldImg(); schedule(6) })
 watch(() => props.dim, () => schedule(6))

@@ -16,12 +16,10 @@ import { customConstParams } from '../viz/constellation/customConstGen.js'   // 
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
 import { sceneNowMs } from '../shared/sceneClock.js'   // 「当前时刻」＝主窗口时间轴上的此刻（全软件一条时间线）
 import { reportError, reportPartial } from '../shared/reportError.js'   // 失败进本窗通知条（CiApp 的 useNotice 登记出口）
-// C/CCI 复用方案的渲染端那一半（频率计划占段 / 自动匹配 / 逐波束表 / 出 IPC 的纯数据）与 Excel 导入
-import { planOccupancy, autoMatch, synthBaseOf, syncBeamRows, schemePayload, manualColoring, applyImportRecords, IMPORT_COLS, SOURCE_NAME, segsText } from './cciScheme.js'
-import { importWorkbook, pickSheet, sheetToRecords } from '../shared/gridXlsx.js'
-import { normalizePlan } from '../shared/freqPlanModel.js'
 
 const KEY = 'ci/panel'
+const KEY_CI = 'ci/grdSats'          // 本窗口导入的方向图清单（不随配置走：是清单本身，不是界面偏好）
+const CI_NODE = 'ci:analysis'        // 本窗口导入的方向图统一挂在这个节点下
 const minuteIso = (ms) => new Date(Math.floor(ms / 60000) * 60000).toISOString()   // 取整分的 ISO（UTC）
 // NGSO 面板态的版本号。v2 = 「抽样上限」的出厂默认由 200 改成留空（全量），见 load() 里的迁移。
 const NGSO_STATE_V = 2
@@ -40,7 +38,7 @@ const api = typeof window !== 'undefined' ? window.api : null
 // 前四页算邻网对本网的干扰（C/I）；协调触发反过来算本网对邻网的 ΔT/T，排在最后
 export const MODES = [
   { key: 'asi', label: 'C/ASI 邻星', tip: 'GEO 邻星对本网的干扰：下行取邻星下行 EIRP 密度，上行取邻网发端站的离轴 EIRP 密度' },
-  { key: 'cci', label: 'C/CCI 同频', tip: '多波束频率复用：同色波束在该点的旁瓣叠加，采用 GRD 实测方向图' },
+  { key: 'cci', label: 'C/CCI 同频', tip: '多波束同频干扰：选目标波束与其同频同极化波束，按 GRD 方向图在目标覆盖区内逐点算' },
   { key: 'xpi', label: 'C/XPI 极化', tip: '交叉极化：卫星侧(GRD P1/P2) ⊕ 地球站侧 ⊕ 雨致去极化 三源合成' },
   { key: 'ngso', label: 'NGSO 时变', tip: 'NGSO 干扰是随机过程：逐时刻扫描出 C/I 的 CDF 与 in-line 事件' },
   { key: 'ap8', label: '协调触发', tip: 'RR 附录 8 式(1)–(3)：本网对邻网的 ΔT/T（同频段、同传输方向）' }
@@ -48,12 +46,6 @@ export const MODES = [
 
 // C/ASI 地球站方向图的可选 ID（与引擎 patterns.ES_PATTERNS 的键同表；读回配置时据此校验）
 export const ES_PATTERN_IDS = ['S.465-6', 'RR-AP8-A3', 'S.580-6', 'S580-HYB']
-
-// 与引擎的 REUSE_PRESETS 同表（ciCci.js）。七档 = 有效前沿：
-//   单极化 3 / 7 / 9  （每波束 1/3 · 1/7 · 1/9 频段，同色间距 1.73 / 2.65 / 3.00 d）
-//   双极化 4 / 8 / 12 / 16（K 频段 × 2 极化，K = 2/4/6/8，间距 2.00 / 2.65 / 3.46 / 4.00 d）
-// 同一个间距上只留最省频率的那一档：10 与 8 同为 2.65d 却多切一段频率，被 8 支配，故不列。
-export const REUSE_COLORS = [3, 4, 7, 8, 9, 12, 16]
 
 let _srcSeq = 1
 const blankSource = (o) => ({
@@ -165,41 +157,15 @@ export function useInterference() {
     result: null
   })
 
-  // ---- C/CCI ----
+  // ---- C/CCI（目标波束：选一个目标波束、勾它的同频同极化波束，覆盖区内逐点算；口径见 core 的 interference/cciTarget.js）----
   const cci = reactive({
-    antennaKey: '',                  // 选中的 GRD 天线（folder::name）
-    colors: 4,
-    servingIdx: null,                // null = 取该点最强
-    floorDb: 60,
-    points: [{ _id: 'p1', name: '本站', lon: 116.4074, lat: 39.9042 }],
-    result: null,                    // { rows:[{name,lon,lat,cciDb,servingIdx,reuse,noCo,unassigned}], summary }
-    coloringOverride: null,          // 手工色号：{原始下标: 0 基色号}（逐波束表「色号」列写回这里）
-    // 复用方案（口径见 core 的 interference/htsCoupling.js；渲染端那一半在 ./cciScheme.js）
-    dir: 'fwd',                      // 'fwd' 前向（用户下行）| 'rtn' 返向（用户上行）
-    source: 'auto',                  // 'auto' | 'freqPlan' | 'synth' | 'excel' | 'manual' | 'rotation'
-    planId: '',                      // 频率计划；留空 = 本星的第一份
-    bandF: { f1: '', f2: '' },       // 前向 / 返向频段窗（MHz；留空 = 不筛）
-    bandR: { f1: '', f2: '' },
-    xpdDb: 25,                       // 正交极化、GRD 无交叉极化分量时的规格 XPD
-    eocDb: 4,                        // 服务区 = 服务波束且不低于其峰值这么多
-    rows: {},                        // 天线 key → 逐波束行（计划映射 / 频段 / 色号 / 功率偏置），见 cciScheme.newBeamRow
-    colorDefs: [],                   // 色号定义：[{ _id, color, fF1, fF2, fPol, rF1, rF2, rPol }]
-    // 覆盖场图
-    grid: 'antenna',                 // 'antenna' GRD 自身天线网格 | 'user' 经纬网格
-    bounds: { lonMin: 70, lonMax: 140, latMin: 15, latMax: 55 },
-    fieldStep: 1,
-    rtnMode: 'worst',                // 返向终端位置：'worst' 各干扰波束服务区内最坏点 | 'mc' 蒙特卡洛
-    mcTrials: 200, mcSeed: 20261017,
-    field: null,
-    stats: null,                     // 场图作业的逐波束统计与读数
-    progress: 0, progressTotal: 0,
-    info: null,                      // 方向图概要 { key, beamIdx, fc }（主进程回，不落盘）
-    // 目标波束（缺省页）：选一个目标波束、勾它的同频同极化波束，覆盖区内逐点算（core 的 interference/cciTarget.js）
-    view: 'target',                  // 'target' 目标波束 | 'scheme' 复用方案
+    antennaKey: '',                  // 选中的 GRD 天线（folder::name）；C/XPI 页的 GRD 取值共用这一项
+    eocDb: 4,                        // 覆盖电平：覆盖区 = 目标波束不低于其峰值这么多
     picks: {},                       // 天线 key → { target: 原始下标 | null, co: [原始下标，升序] }
     tgtBeams: null,                  // 逐波束足迹 { key, level, beams:[{ idx, peakDb, peak, rings }] }（主进程回，不落盘）
     tgtBeamsErr: '',
-    tgtResult: null                  // 目标波束作业结果（不落盘）
+    tgtResult: null,                 // 目标波束作业结果（不落盘）
+    progress: 0, progressTotal: 0
   })
 
   // ---- NGSO ----
@@ -302,11 +268,11 @@ export function useInterference() {
         antennas: lp ? ants.map((a) => ({ ...a, satLon: lon, satLat: lat, satAlt: altKm })) : ants
       })
     }
-    for (const key of ['lb/grdSats', 'ci/grdSats']) {
+    for (const key of ['lb/grdSats', KEY_CI]) {
       const st = read(key)
       for (const s of ((st && st.sats) || [])) {
         const ants = (s.antennas || []).filter((a) => a && a.file)
-        if (ants.length) nodes.push({ origin: key === 'ci/grdSats' ? '本窗口' : '链路预算', folder: s.folder, satName: s.satName || s.folder, lon: +s.lon || 0, lat: +s.lat || 0, altKm: +s.altKm || 35786, antennas: ants })
+        if (ants.length) nodes.push({ origin: key === KEY_CI ? '本窗口' : '链路预算', folder: s.folder, satName: s.satName || s.folder, lon: +s.lon || 0, lat: +s.lat || 0, altKm: +s.altKm || 35786, antennas: ants })
       }
     }
     grdTree.value = { sats: nodes, cfgs: (g3 && g3.cfgs) || {} }
@@ -354,14 +320,15 @@ export function useInterference() {
     try {
       const res = await api.coverageGrd.import()
       if (!res || res.canceled) { msg.value = ''; return }
-      const KEY_CI = 'ci/grdSats'
       let st = null
       try { st = JSON.parse(localStorage.getItem(KEY_CI) || 'null') } catch (e) { st = null }
       if (!st || !Array.isArray(st.sats)) st = { sats: [] }
       // 本窗口导入的方向图不挂靠任何卫星库条目——干扰分析常要分析第三方/邻网的天线，
       // 那不是「我的某颗星」。统一落在一个分析用节点下。
-      let node = st.sats.find((s) => s.folder === 'ci:analysis')
-      if (!node) { node = { folder: 'ci:analysis', satName: '分析用方向图', lon: 0, lat: 0, altKm: 35786, antennas: [] }; st.sats.push(node) }
+      let node = st.sats.find((s) => s.folder === CI_NODE)
+      if (!node) { node = { folder: CI_NODE, satName: '分析用方向图', lon: 0, lat: 0, altKm: 35786, antennas: [] }; st.sats.push(node) }
+      // 卫星位置先沿用当前选中那副天线的（同一颗星的几副方向图常一起导入），视轴缺省天底；导入后在 C/CCI 页逐副改
+      const refSat = currentAntenna.value ? antennaSpec(currentAntenna.value).sat : { lon: node.lon, lat: node.lat, alt: node.altKm }
       const added = []
       for (const f of (res.files || [])) {
         if (!f) continue
@@ -375,7 +342,7 @@ export function useInterference() {
         } catch (e) { failed.push({ name: fname, error: e }); continue }
         let name = String(f.base || f.file).replace(/\.(grd|pat)$/i, '')
         while (node.antennas.some((a) => a.name === name)) name += '·'
-        node.antennas.push({ name, file: f.file, beams, imported: true, satLon: node.lon, satLat: node.lat, satAlt: node.altKm })
+        node.antennas.push({ name, file: f.file, beams, imported: true, satLon: refSat.lon, satLat: refSat.lat, satAlt: refSat.alt, cfg: { boreType: 'azel', boreAz: 0, boreEl: 0, yaw: 0 } })
         added.push(name)
       }
       // 这一份就是本窗口导入天线的清单本身（不只是界面偏好）：写不进去，重开窗口这几副就没了
@@ -396,7 +363,8 @@ export function useInterference() {
   // 方向图的卫星几何 + 取值口径（与链路预算 grdParam.antennaSampleSpec 同口径）
   function antennaSpec(a, extraCfg) {
     if (!a) return null
-    const cfg = { ...(grdTree.value.cfgs[a.node.folder + '::' + a.ant.name] || {}), ...(extraCfg || {}) }
+    // 指向：主窗口的天线取 3D 页那份设置；本窗口导入的取天线记录自带的 cfg（见 setAntGeo）
+    const cfg = { ...(a.ant.cfg || {}), ...(grdTree.value.cfgs[a.node.folder + '::' + a.ant.name] || {}), ...(extraCfg || {}) }
     return {
       file: String(a.ant.file),
       sat: {
@@ -406,6 +374,28 @@ export function useInterference() {
       },
       cfg
     }
+  }
+
+  // 本窗口导入的方向图不挂靠任何卫星库条目：卫星位置（轨位 / 纬度 / 高度）与视轴（指向模式 + 旋转）就在本窗口给，
+  // 逐副记在 ci/grdSats 清单的天线记录上（satLon / satLat / satAlt + cfg）。主窗口 / 链路预算来的天线照它们那边的设置，这里只读。
+  const antEditable = computed(() => !!(currentAntenna.value && currentAntenna.value.node.folder === CI_NODE))
+  function setAntGeo(patch) {
+    const a = currentAntenna.value
+    if (!a || a.node.folder !== CI_NODE) return
+    let st = null
+    try { st = JSON.parse(localStorage.getItem(KEY_CI) || 'null') } catch (e) { st = null }
+    const node = st && Array.isArray(st.sats) ? st.sats.find((x) => x.folder === CI_NODE) : null
+    const ant = node && Array.isArray(node.antennas) ? node.antennas.find((x) => x.name === a.ant.name) : null
+    if (!ant) return
+    const p = patch || {}
+    for (const k of ['satLon', 'satLat', 'satAlt']) if (k in p && Number.isFinite(+p[k])) ant[k] = +p[k]
+    if (p.cfg) {
+      const c = { ...(ant.cfg || {}) }
+      for (const [k, v] of Object.entries(p.cfg)) c[k] = k === 'boreType' || k === 'boreMode' ? String(v) : (Number.isFinite(+v) ? +v : 0)
+      ant.cfg = c
+    }
+    try { localStorage.setItem(KEY_CI, JSON.stringify(st)) } catch (e) { reportError('GRD 清单存盘失败', e); return }
+    loadGrdTree()
   }
 
   // ---------------------------------------------------------------------------
@@ -584,276 +574,11 @@ export function useInterference() {
   }
 
   // ---------------------------------------------------------------------------
-  // 计算：C/CCI
+  // 计算：C/CCI（目标波束）
   // ---------------------------------------------------------------------------
-  // ── 复用方案（着色来源 · 频段 · 极化 · 功率偏置）──
-  // 物理在主进程（core 的 interference/htsCoupling.js）；这里只备齐三份渲染端才读得到的数据：方向图的存活波束与
-  // 波束合成色号（cciInfo 回）、频率计划（freqPlan.get + freqPlanModel 推占段）、窗口里的逐波束表。
-  const cciPlans = ref([])                // 频率计划索引
-  const cciPlanRaw = ref(null)            // 当前计划（原样）
-  let _infoSeq = 0, _planSeq = 0
-  const cciRows = computed(() => (cci.antennaKey && Array.isArray(cci.rows[cci.antennaKey]) ? cci.rows[cci.antennaKey] : []))
-  // 计划下拉：本星的排前面；planId 留空 = 本星第一份
-  const cciPlanList = computed(() => {
-    const a = currentAntenna.value
-    const folder = a ? a.node.folder : ''
-    return cciPlans.value.slice().sort((x, y) => (y.satFolder === folder) - (x.satFolder === folder))
-  })
-  const cciPlanAutoId = computed(() => { const a = currentAntenna.value; const p = a && cciPlans.value.find((x) => x.satFolder === a.node.folder); return p ? p.id : '' })
-  const cciPlanId = computed(() => cci.planId || cciPlanAutoId.value)
-  const cciPlan = computed(() => (cciPlanRaw.value && cciPlanRaw.value.id === cciPlanId.value ? cciPlanRaw.value : null))
-  const cciPlanBeams = computed(() => (cciPlan.value ? normalizePlan(cciPlan.value).beams : []))
-  const cciOcc = computed(() => (cciPlan.value ? { F: planOccupancy(cciPlan.value, 'fwd', cci.bandF), R: planOccupancy(cciPlan.value, 'rtn', cci.bandR) } : null))
-  const cciMatch = computed(() => {
-    const info = cci.info
-    if (!info || info.key !== cci.antennaKey || !cciPlan.value) return null
-    const manual = {}
-    for (const r of cciRows.value) if (r.plan) manual[r.idx] = r.plan
-    const a = currentAntenna.value
-    return autoMatch(info.beamIdx, cciPlanBeams.value, { manual, synth: a ? synthBaseOf(a.ant.name, a.node.folder) : null })
-  })
-  // 界面上按哪个来源摆表（与引擎「自动」同一优先级；实际用的来源以结果里回的为准）
-  const cciEffSource = computed(() => {
-    if (cci.source !== 'auto') return cci.source
-    const rtn = cci.dir === 'rtn'
-    const m = cciMatch.value, occ = cciOcc.value
-    if (m && occ && [...m.map.values()].some((id) => { const e = (rtn ? occ.R : occ.F).get(id); return e && e.segs.length })) return 'freqPlan'
-    if (cci.info && Array.isArray(cci.info.fc) && cci.info.fc.some((v) => v != null)) return 'synth'
-    const has = (v) => v !== '' && v != null
-    if (cciRows.value.some((r) => (rtn ? has(r.rF1) || has(r.rF2) || has(r.rColor) : has(r.fF1) || has(r.fF2) || has(r.fColor)))) return 'excel'
-    if (cciRows.value.some((r) => has(r.mColor))) return 'manual'
-    return 'rotation'
-  })
+  // 场在主进程分帧推进（进度 ci:cciProgress、结果 ci:cciDone，令牌作废迟到的帧）；逐波束值不过 IPC，每点在主进程折成一个数。
   const cciReq = (a, extra) => JSON.parse(JSON.stringify({ ...antennaSpec(a), ...(extra || {}) }))   // 现造纯数据：代理过不了结构化克隆
-  function cciSchemeReq() {
-    const occ = cciOcc.value, m = cciMatch.value
-    const ent = cciPlans.value.find((x) => x.id === cciPlanId.value)
-    return schemePayload({
-      source: cci.source, colors: cci.colors, xpdDb: cci.xpdDb, rows: cciRows.value, colorDefs: cci.colorDefs,
-      plan: occ && m ? { label: ent ? ent.name : '', occF: occ.F, occR: occ.R, map: m.map } : null
-    })
-  }
-  // 逐波束行按方向图的存活波束补齐；老配置只有手工色号（coloringOverride）、还没有任何逐波束表时种进来
-  function ensureCciRows(key, beamIdx) {
-    const legacy = Object.keys(cci.rows).length ? null : cci.coloringOverride
-    cci.rows[key] = syncBeamRows(cci.rows[key], beamIdx, legacy)
-  }
-  async function refreshCciInfo() {
-    const a = currentAntenna.value
-    const seq = ++_infoSeq
-    if (!a || a.node.noEph || boreToSat(a) || !api || !api.interference || !api.interference.cciInfo) { cci.info = null; return }
-    let r = null
-    try { r = await api.interference.cciInfo(cciReq(a)) } catch (e) { r = null }
-    if (seq !== _infoSeq) return
-    if (!r || !r.ok) { cci.info = null; return }
-    cci.info = { key: a.key, beamIdx: r.beamIdx, fc: r.fc }
-    ensureCciRows(a.key, r.beamIdx)
-  }
-  watch(() => [cci.antennaKey, currentAntenna.value ? JSON.stringify(antennaSpec(currentAntenna.value)) : ''].join('\n'), refreshCciInfo)
-  watch(() => [cci.antennaKey, cci.info && cci.info.key, Array.isArray(cci.rows[cci.antennaKey])].join('\n'), () => {
-    const i = cci.info
-    if (i && i.key === cci.antennaKey && !Array.isArray(cci.rows[i.key])) ensureCciRows(i.key, i.beamIdx)
-  })
-  // 手工色号写回老字段 coloringOverride（{ 原始下标: 0 基色号 }）
-  watch(() => JSON.stringify(manualColoring(cciRows.value)), (s) => {
-    const m = JSON.parse(s)
-    const next = Object.keys(m).length ? m : null
-    if (JSON.stringify(next) !== JSON.stringify(cci.coloringOverride)) cci.coloringOverride = next
-  })
-  async function loadCciPlans() {
-    if (!api || !api.freqPlan || !api.freqPlan.list) { cciPlans.value = []; return }
-    try {
-      const l = await api.freqPlan.list()
-      cciPlans.value = Array.isArray(l) ? l.map((e) => ({ id: e.id, name: e.name || '频率计划', satFolder: e.satFolder || '', satName: e.satName || '' })) : []
-    } catch (e) { cciPlans.value = [] }
-  }
-  async function loadCciPlan() {
-    const id = cciPlanId.value, seq = ++_planSeq
-    if (!id || !api || !api.freqPlan || !api.freqPlan.get) { cciPlanRaw.value = null; return }
-    let p = null
-    try { p = await api.freqPlan.get(id) } catch (e) { p = null }
-    if (seq !== _planSeq) return
-    cciPlanRaw.value = p ? { ...p, id } : null
-  }
-  watch(cciPlanId, loadCciPlan)
-  loadCciPlans()
-  if (api && api.freqPlan && api.freqPlan.onChanged) api.freqPlan.onChanged(() => { loadCciPlans(); loadCciPlan() })
-  if (typeof window !== 'undefined') window.addEventListener('focus', () => { loadCciPlans() })
-
-  // 计划映射表：计划波束列的选项 / 读数 / 写值（重名的计划波束加序号区分）
-  const cciPlanOpts = computed(() => {
-    const seen = new Map(), out = [{ value: '自动', id: '' }]
-    for (const b of cciPlanBeams.value) {
-      const base = b.name || 'Beam'
-      const k = (seen.get(base) || 0) + 1
-      seen.set(base, k)
-      out.push({ value: k > 1 ? `${base} #${k}` : base, id: b.id })
-    }
-    out.push({ value: '不映射', id: '__none' })
-    return out
-  })
-  function cciPlanText(o) {
-    if (o.plan === '__none') return '不映射'
-    const id = o.plan || (cciMatch.value && cciMatch.value.map.get(o.idx)) || ''
-    const opt = id ? cciPlanOpts.value.find((x) => x.id === id) : null
-    return opt ? opt.value : ''
-  }
-  function cciPlanParse(v) {
-    const s = String(v == null ? '' : v).trim()
-    if (s === '' || s === '自动') return ''
-    const opt = cciPlanOpts.value.find((x) => x.value === s)
-    return opt ? opt.id : undefined
-  }
-  function cciOccText(o, dir) {
-    const m = cciMatch.value, occ = cciOcc.value
-    const id = m && m.map.get(o.idx)
-    const e = id && occ ? (dir === 'rtn' ? occ.R : occ.F).get(id) : null
-    return e && e.segs.length ? segsText(e.segs) : ''
-  }
-  // 色号表的读数（波束合成 / 手工 / 轮转）
-  function cciColorText(o) {
-    const src = cciEffSource.value
-    if (src === 'manual' || src === 'excel' || src === 'freqPlan') return o.mColor === '' || o.mColor == null ? '' : 'F' + o.mColor
-    const info = cci.info
-    const pos = info ? info.beamIdx.indexOf(o.idx) : -1
-    if (src === 'synth') { const v = info && info.fc ? info.fc[pos] : null; return v == null ? '' : 'F' + (v + 1) }
-    return pos < 0 ? '' : 'F' + ((pos % Math.max(1, Math.round(+cci.colors) || 4)) + 1)
-  }
-  function addColorDef(at) {
-    return putAt(cci.colorDefs, { _id: 'cd' + (_srcSeq++), color: cci.colorDefs.length + 1, fF1: '', fF2: '', fPol: '', rF1: '', rF2: '', rPol: '' }, at)
-  }
-  function removeColorDef(id) { const i = cci.colorDefs.findIndex((x) => x._id === id); if (i >= 0) cci.colorDefs.splice(i, 1) }
-  // Excel 导入逐波束表（中星26 那种：波束 · 色号 · 起止或中心带宽 · 极化，前向 / 返向各一组）
-  async function importCciTable() {
-    const rows = cciRows.value
-    if (!rows.length) { msg.value = '先选一副 GRD 方向图'; return }
-    let r
-    try { r = await importWorkbook({ title: '导入逐波束复用表' }) } catch (e) { reportError('导入 Excel', e); return }
-    if (!r || r.canceled) return
-    if (!r.ok) { reportError('导入 Excel', r.error || '读取失败'); return }
-    const sheet = pickSheet(r.sheets, IMPORT_COLS)
-    const got = sheet ? sheetToRecords(sheet, IMPORT_COLS) : { records: null }
-    if (!got.records) { msg.value = '未识别到表头。'; return }
-    const s = applyImportRecords(rows, got.records)
-    if (s.matched) cci.source = 'excel'
-    msg.value = `已导入 ${s.matched} 个波束` + (s.skipped ? `，${s.skipped} 行未对上波束` : '')
-  }
-  // 结果里「复用」那一格：有频段写频段，只有色号写色号（色号类来源 0 基 → F1 起）
-  const NUM_SRC = new Set(['synth', 'manual', 'rotation'])
-  function reuseText(sum, pos) {
-    const a = sum && sum.assign && sum.assign[pos]
-    if (!a) return ''
-    if (a.segs && a.segs.length) return segsText(a.segs)
-    if (a.color == null) return '—'
-    return NUM_SRC.has(sum.source) && /^\d+$/.test(String(a.color)) ? 'F' + (Number(a.color) + 1) : String(a.color)
-  }
-  function cciRowsOf(pts, res, sum) {
-    return pts.map((p, i) => {
-      const x = res && res[i]
-      const pos = x ? (x.servingPos != null ? x.servingPos : (sum && sum.beamIdx ? sum.beamIdx.indexOf(x.servingIdx) : -1)) : -1
-      return {
-        name: p.name || `点${i + 1}`, lon: +p.lon, lat: +p.lat,
-        cciDb: x && Number.isFinite(x.cciDb) ? x.cciDb : null,
-        servingIdx: x ? x.servingIdx : null,
-        reuse: x ? reuseText(sum, pos) : '',
-        noCo: !!(x && x.noCoChannel), unassigned: !!(x && x.unassigned), floored: x ? (x.floorUsed || 0) : 0
-      }
-    })
-  }
-  // 取值点表。前向逐点同步算；返向的数要先有各波束的服务区（终端落点在服务区里取），随场图作业一并出。
-  async function computeCci() {
-    const a = currentAntenna.value
-    if (!a) { msg.value = '先选一副 GRD 方向图'; return }
-    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }   // 源星此刻解不出星位：不拿存盘旧星位顶替（同链路预算 grdParam）
-    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
-    if (!api || (!api.interference && !api.linkBudget)) { msg.value = '需在桌面客户端中运行'; return }
-    const pts = cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat))
-    if (!pts.length) { msg.value = '至少给一个取值点'; return }
-    if (!(api.interference && api.interference.cciPoints)) return computeCciLegacy(a, pts)
-    if (cci.dir === 'rtn') return computeCciField()
-    busy.value = true; msg.value = ''
-    const gen = _gen
-    try {
-      const fp = fpCci()
-      const r = await api.interference.cciPoints(cciReq(a, {
-        points: pts.map((p) => ({ lon: +p.lon, lat: +p.lat })), scheme: cciSchemeReq(), servingIdx: cci.servingIdx, floorDb: +cci.floorDb
-      }))
-      if (gen !== _gen) return
-      if (!r || !r.ok) { msg.value = 'C/CCI 计算失败：' + ((r && r.error) || '未知错误'); cci.result = null; return }
-      cci.result = { rows: cciRowsOf(pts, r.rows, r.summary), summary: r.summary }
-      ranFp.cci = fp
-      if (cci.result.rows.every((x) => x.cciDb == null && !x.noCo)) msg.value = '全部取值点均无有效结果。'
-    } catch (e) {
-      if (gen === _gen) msg.value = 'C/CCI 计算失败：' + ((e && e.message) || e)
-    } finally { busy.value = false }
-  }
-  // 老通道（只有 link:grdSampleCci 的环境）：二值着色、经纬网格
-  async function computeCciLegacy(a, pts) {
-    if (!api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
-    busy.value = true; msg.value = ''
-    const gen = _gen
-    try {
-      const fp = fpCci()
-      const r = await api.linkBudget.grdSampleCci(cciReq(a, {
-        points: pts.map((p) => ({ lon: +p.lon, lat: +p.lat })), colors: cci.colors,
-        coloring: cci.coloringOverride || undefined, servingIdx: cci.servingIdx, floorDb: +cci.floorDb
-      }))
-      if (gen !== _gen) return
-      if (!r || !r.ok) { msg.value = 'C/CCI 计算失败：' + ((r && r.error) || '未知错误'); cci.result = null; return }
-      const beamIdx = r.beamIdx || []
-      const summary = { source: cci.coloringOverride ? 'manual' : 'rotation', colors: r.colors, beamIdx, floorPts: r.floorPts || 0, assign: beamIdx.map((i) => ({ color: r.coloring && r.coloring[i] != null ? String(r.coloring[i]) : null, segs: [] })) }
-      cci.result = { rows: cciRowsOf(pts, r.cci.map((v, i) => (r.serving[i] == null ? null : { cciDb: v, servingIdx: r.serving[i], noCoChannel: v == null })), summary), summary }
-      ranFp.cci = fp
-      if (cci.result.rows.every((x) => x.cciDb == null && !x.noCo)) msg.value = '全部取值点均无有效结果。'
-    } finally { busy.value = false }
-  }
-
-  // C/CCI 覆盖场图：主进程分帧作业（进度 ci:cciProgress、结果 ci:cciDone，令牌作废迟到的帧）。
-  // 网格两种：GRD 自身天线网格（逐节点，节距 = 方向图的节距）· 经纬网格（范围 + 步长）。没有格数上限，只有内存护栏。
-  // 逐波束值不过 IPC：每点在主进程折成一个数，另回逐波束统计（服务区内最小 / 5% / 中位，返向另有最坏点与蒙特卡洛）。
-  let _cciToken = 0, _cciKind = '', _cciFp = '', _cciFpPts = '', _cciPts = []
-  async function computeCciField() {
-    const a = currentAntenna.value
-    if (!a) { msg.value = '先选一副 GRD 方向图'; return }
-    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }   // 源星此刻解不出星位：不拿存盘旧星位顶替（同链路预算 grdParam）
-    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
-    if (!api || (!api.interference && !api.linkBudget)) { msg.value = '需在桌面客户端中运行'; return }
-    if (!(api.interference && api.interference.cciStart)) return computeCciFieldLegacy(a)
-    const pts = cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat))
-    const gen = _gen
-    const b = cci.bounds
-    const req = cciReq(a, {
-      scheme: cciSchemeReq(), dir: cci.dir,
-      grid: cci.grid === 'user'
-        ? { kind: 'user', lonMin: +b.lonMin, lonMax: +b.lonMax, latMin: +b.latMin, latMax: +b.latMax, step: Math.max(1e-3, +cci.fieldStep || 1) }
-        : { kind: 'antenna' },
-      points: pts.map((p) => ({ lon: +p.lon, lat: +p.lat })),
-      floorDb: +cci.floorDb, eocDb: +cci.eocDb, servingIdx: cci.servingIdx,
-      rtn: { mode: cci.rtnMode, trials: +cci.mcTrials, seed: +cci.mcSeed }
-    })
-    if (_cciToken) { _cciToken = 0; stopCciJob() }
-    busy.value = true; cci.progress = 0; cci.progressTotal = 0; msg.value = 'C/CCI 场计算…'
-    _cciFp = fpCciField(); _cciFpPts = fpCci(); _cciPts = pts.map((p) => ({ name: p.name, lon: +p.lon, lat: +p.lat }))
-    let r = null
-    try { r = await api.interference.cciStart(req) }
-    catch (e) { busy.value = false; if (gen === _gen) msg.value = 'C/CCI 场计算失败：' + ((e && e.message) || e); return }
-    if (gen !== _gen) { busy.value = false; if (r && r.ok) stopCciJob(); return }
-    if (!r || !r.ok) { busy.value = false; msg.value = 'C/CCI 场计算失败：' + ((r && r.error) || '未知错误'); return }
-    _cciToken = r.token; _cciKind = 'field'
-    cci.progressTotal = r.T
-  }
-  function applyCciResult(res) {
-    const f = res.field
-    cci.field = f ? { xs: Float64Array.from(f.xs), ys: Float64Array.from(f.ys), nx: f.nx, ny: f.ny, z: Float64Array.from(f.z), valid: f.valid } : null
-    const { field: _f, points: _p, ...rest } = res
-    cci.stats = rest
-    ranFp.cciField = _cciFp
-    if (_cciPts.length) { cci.result = { rows: cciRowsOf(_cciPts, res.points, rest), summary: rest }; ranFp.cci = _cciFpPts }
-    const g = res.grid || {}
-    const gTxt = g.kind === 'user' ? `经纬网格 ${g.nx}×${g.ny}` : `天线网格 ${g.nx}×${g.ny}`
-    const valid = f ? f.valid : 0
-    msg.value = valid ? `C/CCI 场完成：${gTxt} · ${(res.valid || 0).toLocaleString('en-US')} 点有值 · ${(res.elapsedMs / 1000).toFixed(2)} s` : '场图全域无有效值。'
-  }
+  let _cciToken = 0
   if (api && api.interference && api.interference.onCciProgress) {
     api.interference.onCciProgress((p) => {
       if (!p || p.token !== _cciToken) return
@@ -862,13 +587,8 @@ export function useInterference() {
     api.interference.onCciDone((p) => {
       if (!p || p.token !== _cciToken) return
       _cciToken = 0; busy.value = false; cci.progress = 0; cci.progressTotal = 0
-      if (_cciKind === 'target') {
-        if (!p.ok) { msg.value = 'C/CCI 计算失败：' + (p.error || '未知错误'); return }
-        applyCciTarget(p.result)
-        return
-      }
-      if (!p.ok) { msg.value = 'C/CCI 场计算失败：' + (p.error || '未知错误'); return }
-      applyCciResult(p.result)
+      if (!p.ok) { msg.value = 'C/CCI 计算失败：' + (p.error || '未知错误'); return }
+      applyCciTarget(p.result)
     })
   }
   function stopCciJob() {
@@ -881,9 +601,6 @@ export function useInterference() {
     if (api && api.interference && api.interference.cciCancel) await api.interference.cciCancel()
     _cciToken = 0; busy.value = false; cci.progress = 0; cci.progressTotal = 0; msg.value = '已取消'
   }
-  // ---------------------------------------------------------------------------
-  // C/CCI · 目标波束
-  // ---------------------------------------------------------------------------
   // 选择按天线分开记（换一副天线，目标与同频波束号就不是同一组了）；足迹随方向图 / 指向 / 覆盖电平取。
   const cciPick = computed(() => cci.picks[cci.antennaKey] || { target: null, co: [] })
   const cciTgtIdx = computed(() => (cci.tgtBeams && cci.tgtBeams.key === cci.antennaKey ? cci.tgtBeams.beams.map((b) => b.idx) : []))
@@ -935,7 +652,7 @@ export function useInterference() {
   }
   // 只在目标波束页上取；拖覆盖电平时按住 150 ms 再取（足迹要逐波束扫一遍网格）。进页时总取一次：
   // 天线也能在 C/XPI 页换（两页共用 cci.antennaKey），离页期间的变化这里补上（主进程按入参缓存，同参不重算）
-  const cciFpWant = () => mode.value === 'cci' && cci.view === 'target'
+  const cciFpWant = () => mode.value === 'cci'
   watch(() => [cci.antennaKey, currentAntenna.value ? JSON.stringify(antennaSpec(currentAntenna.value)) : '', cci.eocDb].join('\n'), () => {
     if (!cciFpWant()) return
     clearTimeout(_fpTimer)
@@ -971,7 +688,7 @@ export function useInterference() {
     catch (e) { busy.value = false; if (gen === _gen) msg.value = 'C/CCI 计算失败：' + ((e && e.message) || e); return }
     if (gen !== _gen) { busy.value = false; if (r && r.ok) stopCciJob(); return }
     if (!r || !r.ok) { busy.value = false; msg.value = 'C/CCI 计算失败：' + ((r && r.error) || '未知错误'); return }
-    _cciToken = r.token; _cciKind = 'target'
+    _cciToken = r.token
     cci.progressTotal = r.T
   }
   function applyCciTarget(res) {
@@ -983,38 +700,6 @@ export function useInterference() {
     }
     ranFp.cciTgt = _cciTgtFp
     msg.value = res.cover ? `C/CCI 完成：覆盖区 ${res.cover.toLocaleString('en-US')} 点 · ${(res.elapsedMs / 1000).toFixed(2)} s` : '覆盖区内无有效值。'
-  }
-
-  // 老通道的场图：经纬网格逐格（一次 IPC 回全部格）
-  async function computeCciFieldLegacy(a) {
-    if (!api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
-    const b = cci.bounds
-    const step = Math.max(1e-3, +cci.fieldStep || 1)
-    const nx = Math.floor((+b.lonMax - +b.lonMin) / step) + 1
-    const ny = Math.floor((+b.latMax - +b.latMin) / step) + 1
-    if (!(nx > 1 && ny > 1)) { msg.value = '经纬范围不合法'; return }
-    busy.value = true; msg.value = `C/CCI 场计算… ${nx}×${ny} 格`
-    const gen = _gen
-    try {
-      const fp = fpCciField()
-      const xs = new Float64Array(nx), ys = new Float64Array(ny)
-      for (let i = 0; i < nx; i++) xs[i] = +b.lonMin + i * step
-      for (let j = 0; j < ny; j++) ys[j] = +b.latMin + j * step
-      const pts = []
-      for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) pts.push({ lon: xs[i], lat: ys[j] })
-      const r = await api.linkBudget.grdSampleCci(cciReq(a, {
-        points: pts, colors: cci.colors, coloring: cci.coloringOverride || undefined, servingIdx: cci.servingIdx, floorDb: +cci.floorDb
-      }))
-      if (gen !== _gen) return
-      if (!r || !r.ok) { msg.value = 'C/CCI 场计算失败：' + ((r && r.error) || '未知错误'); cci.field = null; return }
-      // 算不出的格（域外 / 无同色波束）留 NaN —— LbSurfacePlot 会留白，绝不涂色
-      const z = new Float64Array(nx * ny)
-      let n = 0
-      for (let k = 0; k < z.length; k++) { const v = r.cci[k]; z[k] = v == null ? NaN : v; if (v != null) n++ }
-      cci.field = { xs, ys, nx, ny, z, valid: n }
-      ranFp.cciField = fp
-      msg.value = n ? `C/CCI 场完成：${nx}×${ny} 格，${n} 格有值` : '场图全域无有效值。'
-    } finally { busy.value = false }
   }
 
   // ---------------------------------------------------------------------------
@@ -1540,8 +1225,6 @@ export function useInterference() {
     }))
     msg.value = `已从卫星库导入「${entry.name}」；EIRP 密度需另行填写（库中存放的是 SFD 与转发器参数，不含邻网谱密度）`
   }
-  function addCciPoint(at) { return putAt(cci.points, { _id: 'p' + (_srcSeq++), name: `点${cci.points.length + 1}`, lon: '', lat: '' }, at) }
-  function removeCciPoint(id) { const i = cci.points.findIndex((p) => p._id === id); if (i >= 0) cci.points.splice(i, 1) }
   function addNgsoGroup(at) {
     return putAt(ngso.interferers, { _id: 'ng' + (_srcSeq++), enabled: true, source: 'group', group: '', limit: '', name: `干扰星座 ${ngso.interferers.length + 1}`, altKm: 1200, incl: 53, planes: 6, perPlane: 6, phase: 1, eirpDensityDbWPerHz: -48, polarization: 'H', xpdDb: '', selfSystem: false, group: '' }, at)
   }
@@ -1563,12 +1246,7 @@ export function useInterference() {
           esCoDb: xpi.esCoDb, esXpolDb: xpi.esXpolDb, esAlignOn: xpi.esAlignOn, esAlignDeg: xpi.esAlignDeg
         },
         ap8: Object.fromEntries(Object.entries(ap8).filter(([k]) => k !== 'result')),
-        cci: {
-          antennaKey: cci.antennaKey, colors: cci.colors, floorDb: cci.floorDb, points: cci.points, coloringOverride: cci.coloringOverride, bounds: cci.bounds, fieldStep: cci.fieldStep,
-          dir: cci.dir, source: cci.source, planId: cci.planId, bandF: cci.bandF, bandR: cci.bandR, xpdDb: cci.xpdDb, eocDb: cci.eocDb,
-          rows: cci.rows, colorDefs: cci.colorDefs, grid: cci.grid, rtnMode: cci.rtnMode, mcTrials: cci.mcTrials, mcSeed: cci.mcSeed,
-          view: cci.view, picks: cci.picks
-        },
+        cci: { antennaKey: cci.antennaKey, eocDb: cci.eocDb, picks: cci.picks },
         ngso: { v: NGSO_STATE_V, minElevDeg: ngso.minElevDeg, horizonH: ngso.horizonH, stepSec: ngso.stepSec, patternKind: ngso.patternKind, applyPolarization: ngso.applyPolarization, thresholdDb: ngso.thresholdDb, inlineGuardDeg: ngso.inlineGuardDeg, satPattern: ngso.satPattern, epochs: ngso.epochs, noise: ngso.noise, criteria: ngso.criteria, rain: { on: ngso.rain.on, thresholdDb: ngso.rain.thresholdDb, applyToInterference: ngso.rain.applyToInterference }, wanted: ngso.wanted, interferers: ngso.interferers }
     }))
   }
@@ -1601,24 +1279,10 @@ export function useInterference() {
       for (const k of Object.keys(d.ap8)) if (k !== 'result' && k in ap8) ap8[k] = d.ap8[k]
     }
     if (d.cci) {
-      Object.assign(cci, { antennaKey: d.cci.antennaKey || '', colors: d.cci.colors || 4, floorDb: d.cci.floorDb ?? 60, coloringOverride: d.cci.coloringOverride || null, fieldStep: d.cci.fieldStep ?? 1 })
-      if (d.cci.bounds) Object.assign(cci.bounds, d.cci.bounds)
-      if (Array.isArray(d.cci.points) && d.cci.points.length) cci.points.splice(0, cci.points.length, ...d.cci.points)
-      // 复用方案（老配置没有这些字段 → 出厂：自动着色、前向、天线网格；手工色号由 coloringOverride 种进逐波束表）
+      // 老配置的复用方案字段（着色来源 / 频率计划 / 取值点 / 场图网格 …）一概不认：该页已撤
       const c = d.cci
-      Object.assign(cci, {
-        dir: c.dir === 'rtn' ? 'rtn' : 'fwd',
-        source: ['auto', 'freqPlan', 'synth', 'excel', 'manual', 'rotation'].includes(c.source) ? c.source : 'auto',
-        planId: c.planId || '', xpdDb: c.xpdDb ?? 25, eocDb: c.eocDb ?? 4,
-        grid: c.grid === 'user' ? 'user' : 'antenna',
-        rtnMode: c.rtnMode === 'mc' ? 'mc' : 'worst', mcTrials: c.mcTrials ?? 200, mcSeed: c.mcSeed ?? 20261017,
-        rows: c.rows && typeof c.rows === 'object' ? JSON.parse(JSON.stringify(c.rows)) : {},
-        colorDefs: Array.isArray(c.colorDefs) ? JSON.parse(JSON.stringify(c.colorDefs)) : []
-      })
-      Object.assign(cci.bandF, { f1: '', f2: '' }, c.bandF || {})
-      Object.assign(cci.bandR, { f1: '', f2: '' }, c.bandR || {})
-      // 目标波束（老配置没有 → 缺省页 = 目标波束、尚未选波束）
-      cci.view = c.view === 'scheme' ? 'scheme' : 'target'
+      cci.antennaKey = c.antennaKey || ''
+      cci.eocDb = Number.isFinite(+c.eocDb) && +c.eocDb > 0 ? +c.eocDb : 4
       const picks = {}
       if (c.picks && typeof c.picks === 'object') {
         for (const [k, v] of Object.entries(c.picks)) {
@@ -1695,7 +1359,7 @@ export function useInterference() {
   // 下面却还是上一次的数；手改入参同理。比的是指纹而不是「动过没有」：带进来的星站与现值相同、改了又改回，都不亮。
   // 指纹只取各页真正入算的量（站名 / 星名 / 门限线这类只影响显示的不进），且全是小对象，computed 逐次重算无负担。
   // ---------------------------------------------------------------------------
-  const ranFp = reactive({ asi: '', ap8: '', xpi: '', cci: '', cciField: '', cciTgt: '', ngso: '' })
+  const ranFp = reactive({ asi: '', ap8: '', xpi: '', cciTgt: '', ngso: '' })
   // C/XPI 卫星侧 GRD 那一段的取值位置：站址 + 天线。现值与取值时不同 ⇒ 表里「本站处 XPD」已不是本站的
   const xpiLoc = () => JSON.stringify([+site.lon, +site.lat, cci.antennaKey])
   function fpXpi(at) {
@@ -1703,12 +1367,6 @@ export function useInterference() {
     const has = grd && xpi.satGrdRatioDb !== '' && xpi.satGrdRatioDb != null
     return JSON.stringify({ src: xpi.satSource, sat: grd ? xpi.satGrdRatioDb : xpi.satManualDb, es: esDesc(), rain: rainDesc(), at: has ? (at || null) : null })
   }
-  // C/CCI：复用方案按「出 IPC 的那份」比（含频率计划推出的占段，计划改了也算输入已变）。返向的取值点读数取自各波束服务区，
-  // 网格与终端口径也入指纹。场图网格范围 / 步长在天线网格档下不显示，入指纹无妨。
-  const cciShared = () => ({ k: cci.antennaKey, c: cci.colors, o: cci.coloringOverride, s: cci.servingIdx, f: cci.floorDb, d: cci.dir, e: cci.eocDb, sc: cciSchemeReq() })
-  const cciGridFp = () => ({ g: cci.grid, b: cci.bounds, st: cci.fieldStep, r: cci.dir === 'rtn' ? [cci.rtnMode, cci.mcTrials, cci.mcSeed] : null })
-  const fpCci = () => JSON.stringify({ ...cciShared(), p: cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat)).map((p) => [+p.lon, +p.lat]), ...(cci.dir === 'rtn' ? cciGridFp() : {}) })
-  const fpCciField = () => JSON.stringify({ ...cciShared(), ...cciGridFp() })
   // 目标波束：方向图（含指向 / 取值口径）+ 目标 + 同频波束 + 覆盖电平
   const fpCciTgt = () => { const a = currentAntenna.value; return JSON.stringify({ a: a ? antennaSpec(a) : null, ...cciTgtPayload(), e: +cci.eocDb }) }
   // NGSO：不走 ngsoPayload —— 自定义星座会把成千颗星的根数整份带上，且起点留空时取的是走动的时间轴此刻
@@ -1724,8 +1382,6 @@ export function useInterference() {
     asi: !!asi.result && JSON.stringify(asiPayload()) !== ranFp.asi,
     ap8: !!ap8.result && JSON.stringify(ap8Payload()) !== ranFp.ap8,
     xpi: !!xpi.result && fpXpi(xpiLoc()) !== ranFp.xpi,
-    cci: !!cci.result && fpCci() !== ranFp.cci,
-    cciField: !!cci.field && fpCciField() !== ranFp.cciField,
     cciTgt: !!cci.tgtResult && fpCciTgt() !== ranFp.cciTgt,
     ngso: !!ngso.result && fpNgso() !== ranFp.ngso
   }))
@@ -1741,7 +1397,7 @@ export function useInterference() {
     ap8.result = null
     xpi.result = null; xpi.satGrdRatioDb = ''; xpi.satGrdDetail = null; xpi.rainInfo = null; xpi.curve = null
     if (_cciToken) { _cciToken = 0; busy.value = false; stopCciJob() }
-    cci.result = null; cci.field = null; cci.stats = null; cci.tgtResult = null; cci.progress = 0; cci.progressTotal = 0
+    cci.tgtResult = null; cci.progress = 0; cci.progressTotal = 0
     ngso.result = null; ngso.estimate = null; ngso.progress = 0; ngso.progressTotal = 0
     ngso.rain.cdf = null; ngso.rain.cdfInfo = ''
     for (const k of Object.keys(ranFp)) ranFp[k] = ''
@@ -1760,21 +1416,18 @@ export function useInterference() {
   function setHover(id) { hoveredId.value = id || '' }
 
   return {
-    MODES, REUSE_COLORS,
+    MODES,
     mode, busy, msg, site, carrier, asi, ap8, xpi, cci, ngso,
     satLib, grdTree, grdAntennas, currentAntenna, ngsoGrdBeams,
     satSearch, searchNeighbors, addNeighbor,
     ngsoGroups, groupStats, groupErrs, groupsErr, loadNgsoGroups, ensureGroup, refreshGroupStats,
     loadLibraries, loadGrdTree, importGrdHere,
-    computeAsi, computeAp8, computeXpi, computeCci, computeCciField, sampleXpiFromGrd,
+    computeAsi, computeAp8, computeXpi, sampleXpiFromGrd,
     computeNgso, cancelNgso, estimateNgso, loadRainCdf, ngsoStartNow,
     addSource, removeSource, addFromLibrary,
-    addCciPoint, removeCciPoint, addNgsoGroup, removeNgsoGroup,
-    // C/CCI 复用方案与场图作业
-    cciRows, cciPlanList, cciPlanAutoId, cciPlanId, cciPlan, cciMatch, cciEffSource, cciPlanOpts,
-    cciPlanText, cciPlanParse, cciOccText, cciColorText, addColorDef, removeColorDef, importCciTable,
-    refreshCciInfo, loadCciPlans, cancelCci,
-    // C/CCI 目标波束
+    addNgsoGroup, removeNgsoGroup,
+    // C/CCI 目标波束；本窗口导入方向图的卫星位置与视轴
+    antennaSpec, antEditable, setAntGeo, cancelCci,
     cciPick, cciTgtIdx, setCciTarget, toggleCciCo, clearCciCo, setCciCo, refreshCciBeams, computeCciTarget,
     geoData, hoveredId, setHover, load, persist, snapshot, applySnapshot, blankSnapshot, stale, clearResults
   }
