@@ -198,6 +198,8 @@ contextBridge.exposeInMainWorld('api', {
     islGeometry: (opt) => ipcRenderer.invoke('link:islGeometry', opt),
     // 星间距离时间序列（时间轴上逐拍的星间距离/掠地高度/互视）：手动几何下「星间链路距离」工具用
     islRangeSeries: (opt) => ipcRenderer.invoke('link:islRangeSeries', opt),
+    // GSO「指向误差」工具：卫星日内运动 + 跟踪方式 + 误差分项 → 偏离角与指向损耗的日统计（结果只在工具里显示）
+    pointingBudget: (opt) => ipcRenderer.invoke('link:pointingBudget', opt),
     ngsoGeometry: (opt) => ipcRenderer.invoke('link:ngsoGeometry', opt),
     ngsoGeometryBatch: (opt) => ipcRenderer.invoke('link:ngsoGeometryBatch', opt),
     accessWindows: (opt) => ipcRenderer.invoke('link:accessWindows', opt),

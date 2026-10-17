@@ -14,12 +14,16 @@
 // 【指向损耗】跟踪方式：
 //   fixed 固定        偏离角 θ(t) = 视向与参考指向的夹角
 //   step / program / monopulse  步进 / 程控 / 单脉冲：天线跟着星走，偏离角 = 跟踪残差（常数）
+//   误差预算分项（tracking.budgetDeg，°）：与上面的主项逐时刻方和根 θ(t) = √(θ_main(t)² + Σθ_i²)（rssDeg）；不给 = 主项原样
 //   损耗 L(θ)：站有方向图（patternTable：[[偏离角°, 相对增益 dB(≤0)], …]）用方向图线性插值；否则高斯主瓣
 //   12·(θ/θ3dB)²（θ3dB = 70λ/D，与 linkCalculator 的波束宽度同式），离开主瓣后按 RR 附录 8 附件 III 的参考方向图
 //   旁瓣段封顶：L = min(高斯, G_max − G_旁瓣(θ))（ap8SidelobeDbi）—— 13 m 固定天线遇 1° 倾斜星不至于报出几百 dB。
 // 【输出】日最大损耗、损耗时间分位（50% / 1%：一天里 50% / 1% 的时间超过的损耗）、最低 / 最高仰角、斜距范围、
 //   距离变化率最大值与多普勒范围（|ṙ|·f/c）、最大偏离角。1 min 步长、24 h（覆盖一个恒星日以上）。
 //   GEO 链路一跳的时延范围由 linkGeoTrack 把两站同一时刻的斜距相加求得。
+//
+// 【调用方】GSO 窗口「指向误差」工具（components/LbPointingTool.vue → IPC link:pointingBudget → gsoPointingBudget）：
+//   结果只在工具里给工程师看，不回写链路表、不进链路引擎。gsoLinkTrack 是曾经的引擎接口，引擎已不再调用，导出照留。
 //
 // 【验证】packages/core/test/geoTrack.test.mjs：A 路 exp5（北京看 110.5°E、i = 1°：偏离 1.11°、斜距日变 161 km、
 //   12 GHz 多普勒 ±236 Hz、1.2 m Ku 7.5 dB）、H 路 zx9（中星 9 号快照星历：1.2 m Ku 6.46 dB）、保持盒 i = 0.05° 13 m Ku 2.7 dB。
@@ -131,6 +135,14 @@ const angleDeg = (a, b) => {
   return Math.atan2(Math.hypot(x, y, z), c) / DEG
 }
 
+// 误差预算合成（°）：主项与各分项方和根 θ = √(θ_main² + Σθ_i²)。分项按绝对值计，非数 / 空项不计；
+// 分项全为 0（或不给）时原样返回主项（不经平方再开方，逐位不变）
+function rssDeg(mainDeg, itemsDeg) {
+  let s2 = 0
+  for (const v of Array.isArray(itemsDeg) ? itemsDeg : []) { const x = Number(v); if (v !== '' && v != null && Number.isFinite(x)) s2 += x * x }
+  return s2 > 0 ? Math.sqrt(mainDeg * mainDeg + s2) : mainDeg
+}
+
 // 旁瓣包络：RR 附录 8 附件 III（不知道实测方向图时的地球站参考方向图），只取主瓣以外那几段（dBi）。
 // D/λ ≥ 100：G1 = 2 + 15·lg(D/λ)（φ < φr = 15.85·(D/λ)^−0.6）、32 − 25·lg φ（φ < 48°）、−10；
 // D/λ < 100：G1 = −1 + 15·lg(D/λ)（φ < 100λ/D）、52 − 10·lg(D/λ) − 25·lg φ（φ < 48°）、10 − 10·lg(D/λ)。
@@ -195,10 +207,10 @@ function satMoving(sat) {
  * 一条 GEO 链路两端站的日内轨迹统计。
  * opts = {
  *   sat: { lonDeg, inclDeg, ecc, argpDeg?, raanDeg?, boxDeg, ephem?: { tMs:[], ecef:[[x,y,z]…] } },
- *   tx / rx: { latDeg, lonDeg, altKm, freqGHz, antenna:{…}, tracking:{ mode, residualDeg } }（只给一端也行）,
+ *   tx / rx: { latDeg, lonDeg, altKm, freqGHz, antenna:{…}, tracking:{ mode, residualDeg, budgetDeg?:[°…] } }（只给一端也行）,
  *   stepMin = 1, hours = 24, alignMin = null
  * }
- * 返回 { moving, tx, rx, delayMinMs, delayMaxMs }；每端 { lossMaxDb, lossP50Db, lossP1Db, maxOffDeg, theta3dBDeg,
+ * 返回 { moving, tx, rx, delayMinMs, delayMaxMs }；每端 { lossMaxDb, lossP50Db, lossP1Db, maxOffDeg（含误差分项）, theta3dBDeg,
  *   minElevDeg, maxElevDeg, minRangeKm, maxRangeKm, maxRangeRateKmS, maxDopplerHz, mode, residualDeg, refAzDeg, refElDeg }。
  */
 const RESULT_CACHE = memo(64)
@@ -238,6 +250,7 @@ function linkGeoTrack(opts) {
     const ant = antennaModel(S.antenna, S.freqGHz)
     const mode = trackMode(S.tracking && S.tracking.mode)
     const res = Math.max(0, num(S.tracking && S.tracking.residualDeg, 0))
+    const budget = (S.tracking && S.tracking.budgetDeg) || null
     const ref = lookSeries(st, centre, stepS)
     let refU
     const al = o.alignMin == null || o.alignMin === '' ? NaN : Number(o.alignMin)
@@ -258,7 +271,7 @@ function linkGeoTrack(opts) {
       series[k].push(L)
       const loss = [], off = []
       for (let j = 0; j < L.u.length; j++) {
-        const th = mode === 'fixed' ? angleDeg(L.u[j], refU) : res
+        const th = rssDeg(mode === 'fixed' ? angleDeg(L.u[j], refU) : res, budget)
         off.push(th); loss.push(pointingLossDb(th, ant))
         env.minEl = Math.min(env.minEl, L.el[j]); env.maxEl = Math.max(env.maxEl, L.el[j])
         env.minR = Math.min(env.minR, L.rng[j]); env.maxR = Math.max(env.maxR, L.rng[j])
@@ -294,7 +307,8 @@ function linkGeoTrack(opts) {
 }
 
 /**
- * GSO 链路引擎（linkCalculator）的接口：入参键名与引擎同一套，几何 / 天线量取引擎已经算好的那份（同一个 θ3dB、增益、频率）。
+ * 曾经的 GSO 链路引擎（linkCalculator）接口：入参键名与引擎同一套，几何 / 天线量取引擎已经算好的那份（同一个 θ3dB、增益、频率）。
+ * 资源库那五个字段撤出后引擎不再调用它（指向损耗改由「指向误差」工具看，见 gsoPointingBudget），导出照留。
  *   satParams.geoIncl（°）/ geoEcc / geoBoxEW（±°）—— 卫星库「倾角 / 偏心率 / 东西保持 ±」；
  *   inputs.trackMode / trackResidual（发信站）、rxTrackMode / rxTrackResidual（收信站）—— 地球站库「跟踪方式 / 跟踪残差」。
  * g：{ orbitPosition, tx:{ lat, lon, altKm, freqGHz, diameterM, efficiency, g0Dbi, theta3dBDeg }, rx:{ … } }
@@ -314,4 +328,43 @@ function gsoLinkTrack(satParams, inputs, g) {
   return linkGeoTrack({ sat, tx, rx })
 }
 
-module.exports = { A_GEO, OMEGA_E, TRACK_MODES, trackMode, satMoving, pointingLossDb, antennaModel, linkGeoTrack, gsoLinkTrack }
+// 偏离角 → 损耗速查表的档位（θ/θ3dB）：主瓣内一路到 θ3dB，再往外两档看旁瓣封顶
+const QUICK_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.5, 2]
+
+/**
+ * GSO 窗口「指向误差」工具：一个地球站对一颗 GSO 星一天（1 min 步、24 h）的指向偏离与指向损耗。
+ * opts = {
+ *   sat: { lonDeg, inclDeg, ecc, boxDeg },
+ *   station: { latDeg, lonDeg, altKm, freqGHz, diameterM, efficiencyPct },
+ *   mode: 'fixed' | 'step'（中文「固定 / 步进跟踪」亦认）, residualDeg（步进跟踪的跟踪残差）,
+ *   budgetDeg: [θ_i…]（误差预算分项，°；哪几项计入由调用方定）, stepMin = 1, hours = 24
+ * }
+ * 主项 θ_main(t)：固定 = 卫星运动带来的视线偏离（对日平均指向）、步进跟踪 = 跟踪残差；θ(t) = √(θ_main(t)² + Σθ_i²)，
+ * 损耗按 pointingLossDb（高斯主瓣 12·(θ/θ3dB)²，出主瓣按 RR 附录 8 旁瓣封顶）。
+ * 返回 null（口径 / 频率 / 效率 / 纬度不成立）或 { theta3dBDeg, g0Dbi, maxOffDeg, lossMaxDb, lossP50Db, lossP1Db,
+ *   minElevDeg, maxElevDeg, minRangeKm, maxRangeKm, maxDopplerHz, quick:[{ ratio, thetaDeg, lossDb }] }。
+ */
+function gsoPointingBudget(opts) {
+  const o = opts || {}, S = o.station || {}, sat = o.sat || {}
+  const lat = num(S.latDeg, NaN), D = num(S.diameterM, NaN), f = num(S.freqGHz, NaN), pct = num(S.efficiencyPct, NaN)
+  if (!(Math.abs(lat) <= 90) || !(D > 0) || !(f > 0) || !(pct > 0 && pct <= 100)) return null
+  const antenna = { diameterM: D, efficiency: pct / 100 }
+  const mode = trackMode(o.mode)
+  const r = linkGeoTrack({
+    sat: { lonDeg: num(sat.lonDeg, 0), inclDeg: Math.max(0, num(sat.inclDeg, 0)), ecc: Math.max(0, num(sat.ecc, 0)), boxDeg: Math.max(0, num(sat.boxDeg, 0)) },
+    tx: {
+      latDeg: lat, lonDeg: num(S.lonDeg, 0), altKm: num(S.altKm, 0), freqGHz: f, antenna,
+      tracking: { mode, residualDeg: mode === 'fixed' ? 0 : Math.max(0, num(o.residualDeg, 0)), budgetDeg: Array.isArray(o.budgetDeg) ? o.budgetDeg : [] }
+    },
+    stepMin: o.stepMin, hours: o.hours
+  })
+  const t = r.tx, ant = antennaModel(antenna, f)
+  return {
+    theta3dBDeg: ant.theta3dBDeg, g0Dbi: ant.g0Dbi, maxOffDeg: t.maxOffDeg,
+    lossMaxDb: t.lossMaxDb, lossP50Db: t.lossP50Db, lossP1Db: t.lossP1Db,
+    minElevDeg: t.minElevDeg, maxElevDeg: t.maxElevDeg, minRangeKm: t.minRangeKm, maxRangeKm: t.maxRangeKm, maxDopplerHz: t.maxDopplerHz,
+    quick: QUICK_RATIOS.map((k) => ({ ratio: k, thetaDeg: k * ant.theta3dBDeg, lossDb: pointingLossDb(k * ant.theta3dBDeg, ant) }))
+  }
+}
+
+module.exports = { A_GEO, OMEGA_E, TRACK_MODES, trackMode, satMoving, pointingLossDb, antennaModel, rssDeg, linkGeoTrack, gsoLinkTrack, gsoPointingBudget }

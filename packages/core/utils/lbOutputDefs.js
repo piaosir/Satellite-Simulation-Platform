@@ -132,10 +132,7 @@ const OUTPUT_GROUPS = [
       // 「总衰减 AT(p)」= ITU-R P.618-14 §2.5 式(65)：AG + √((AR+AC)² + AS²)，含雨衰在内。
       // 曾标作「晴空总衰减」是错的——雨衰常是其中最大的一项（Ku 频段 99.9% 可用度下可占九成）。
       { key: 'uplinkTotalAttenuationResult', label: '上行总衰减 AT(p)', labelEn: 'Uplink Total Attenuation AT(p)', unit: 'dB', geoSide: 'tx', geoField: true },
-      { key: 'downlinkTotalAttenuationResult', label: '下行总衰减 AT(p)', labelEn: 'Downlink Total Attenuation AT(p)', unit: 'dB', geoSide: 'rx', geoField: true },
-      // GSO 倾斜运行 / 保持盒（A-01，utils/geoTrack.js）：定点 + 固定天线时引擎出空，故不进地理场图下拉（geoField 不给）
-      { key: 'uplinkPointingLossResult', label: '上行指向损耗（日最大）', labelEn: 'Uplink Pointing Loss (Daily Max)', unit: 'dB', geoSide: 'tx' },
-      { key: 'downlinkPointingLossResult', label: '下行指向损耗（日最大）', labelEn: 'Downlink Pointing Loss (Daily Max)', unit: 'dB', geoSide: 'rx' }
+      { key: 'downlinkTotalAttenuationResult', label: '下行总衰减 AT(p)', labelEn: 'Downlink Total Attenuation AT(p)', unit: 'dB', geoSide: 'rx', geoField: true }
     ]
   },
   {
@@ -162,13 +159,7 @@ const OUTPUT_GROUPS = [
       { key: 'rxAzimuthResult', label: '收信站方位角', labelEn: 'Rx Station Azimuth', unit: '°', geoSide: 'rx', geoField: true },
       { key: 'slantRangeResult', label: '上行斜距', labelEn: 'Uplink Slant Range', unit: 'km', geoSide: 'tx', geoField: true },
       { key: 'rxSlantRangeResult', label: '下行斜距', labelEn: 'Downlink Slant Range', unit: 'km', geoSide: 'rx', geoField: true },
-      { key: 'linkDelayResult', label: '单跳时延', labelEn: 'One-hop Delay', unit: 'ms', geoSide: 'both', geoField: true },
-      // GSO 倾斜运行 / 保持盒（A-01）：一天里的范围；定点时引擎出空（不进地理场图下拉）
-      { key: 'elevationMinResult', label: '发信站日内最低仰角', labelEn: 'Tx Station Min Elevation (24 h)', unit: '°', geoSide: 'tx' },
-      { key: 'rxElevationMinResult', label: '收信站日内最低仰角', labelEn: 'Rx Station Min Elevation (24 h)', unit: '°', geoSide: 'rx' },
-      { key: 'linkDelayMaxResult', label: '单跳时延（日内最大）', labelEn: 'One-hop Delay (24 h Max)', unit: 'ms', geoSide: 'both' },
-      { key: 'maxDopplerUplinkResult', label: '上行最大多普勒', labelEn: 'Max Uplink Doppler', unit: 'kHz', geoSide: 'tx' },
-      { key: 'maxDopplerDownlinkResult', label: '下行最大多普勒', labelEn: 'Max Downlink Doppler', unit: 'kHz', geoSide: 'rx' }
+      { key: 'linkDelayResult', label: '单跳时延', labelEn: 'One-hop Delay', unit: 'ms', geoSide: 'both', geoField: true }
     ]
   },
   {

@@ -13,7 +13,6 @@ const {
   calculateAtmosphericAttenuation, gaseousAttenuationSite, surfaceTemperature,
   cloudLiquidFraction, scintillationApplies, skyNoise
 } = require('./itu/index.js');
-const geoTrackMod = require('./geoTrack.js'); // GSO 倾斜运行 / 保持盒：日内指向损耗与几何范围（A-01）
 
 // —— 出参小数位增量 FX ——
 //
@@ -495,19 +494,6 @@ function performCalculations(satParams, inputs) {
   // 接收天线半功率波束宽度
   const theta3 = 70 * rxWavelength / rxAntennaDiameter;
 
-  // ============ 倾斜运行 / 保持盒：日内指向损耗（A-01，utils/geoTrack.js）============
-  // 上面这套几何把卫星钉在标称轨位。卫星库给了倾角 / 偏心率 / 东西保持，或地球站库给了跟踪方式与残差时，
-  // 两站各按自己的天线（同一 θ3dB、增益、频率）与跟踪方式算一天（1 min 步）的视向：日最大指向损耗计入链路
-  // （并进下方「其他损耗」那条和，出参另列），仰角 / 斜距 / 时延 / 多普勒范围只出参。
-  // 定点 + 固定天线（缺省）→ geoTk = null：损耗 0、出参留空，结果逐位不变。
-  const geoTk = geoTrackMod.gsoLinkTrack(satParams, inputs, {
-    orbitPosition,
-    tx: { lat: earthLat, lon: earthLon, altKm: altitude, freqGHz: uplinkFrequency, diameterM: antennaDiameter, efficiency: antennaEfficiency, g0Dbi: txAntennaGain, theta3dBDeg: beamWidth },
-    rx: { lat: rxLatitude, lon: rxLongitude, altKm: rxAltitude, freqGHz: downlinkFrequency, diameterM: rxAntennaDiameter, efficiency: rxAntennaEfficiency, g0Dbi: rxAntennaGain, theta3dBDeg: theta3 }
-  });
-  const uplinkPointingLoss = geoTk ? geoTk.tx.lossMaxDb : 0;
-  const downlinkPointingLoss = geoTk ? geoTk.rx.lossMaxDb : 0;
-
   // ============ 大气气体衰减（ITU-R P.676-13 + P.836-6 + P.618-14 §2.5 + P.2041-1）============
   // 统一入口 itu/gasSite.js（与 NGSO 引擎、雨衰页同一函数），口径见该文件头：
   //   p = 100 − 可用度；p ≥ 5% 用 A_G(p)，p < 5% 取 A_G(5%)（P.618-14 式 68），可用度 100%（晴空）取中值 50%；
@@ -668,15 +654,12 @@ function performCalculations(satParams, inputs) {
   const thresholdCN = ebno + 10 * Math.log10(infoRate / noiseBW);
   
   // ============ 其他损耗（用户输入，上下行分别设置）============
-  const uplinkOtherLossIn = inputs.uplinkOtherLoss !== undefined && inputs.uplinkOtherLoss !== '' && inputs.uplinkOtherLoss !== null
+  const uplinkMiscLoss = inputs.uplinkOtherLoss !== undefined && inputs.uplinkOtherLoss !== '' && inputs.uplinkOtherLoss !== null
     ? parseFloat(inputs.uplinkOtherLoss)
     : 0.3; // 上行其他损耗 (dB) 默认值0.3dB
-  const downlinkOtherLossIn = inputs.downlinkOtherLoss !== undefined && inputs.downlinkOtherLoss !== '' && inputs.downlinkOtherLoss !== null
+  const downlinkMiscLoss = inputs.downlinkOtherLoss !== undefined && inputs.downlinkOtherLoss !== '' && inputs.downlinkOtherLoss !== null
     ? parseFloat(inputs.downlinkOtherLoss)
     : 0.3; // 下行其他损耗 (dB) 默认值0.3dB
-  // 链路里扣的那条 = 其他损耗 + 指向损耗（日最大，A-01；缺省 0 → 与输入逐位相同）。出参两项分列。
-  const uplinkMiscLoss = uplinkOtherLossIn + uplinkPointingLoss;
-  const downlinkMiscLoss = downlinkOtherLossIn + downlinkPointingLoss;
   
   // 各项C/T值计算
   const uplinkCT = SFDs - antennaGain - BOi + G_Ts;
@@ -1008,31 +991,8 @@ function performCalculations(satParams, inputs) {
   results.actualUplinkCN0 = (actualUplinkCT + 228.6).toFixed(2 + FX); // 载波上行C/N₀
   
   // 其他损耗（用户输入，实际参与链路计算）
-  results.uplinkMiscLossResult = uplinkOtherLossIn.toFixed(3 + FX); // 上行链路其他损耗(dB) = 其他损耗
-  results.downlinkMiscLossResult = downlinkOtherLossIn.toFixed(3 + FX); // 下行链路其他损耗(dB) = 其他损耗
-  // 倾斜运行 / 保持盒（A-01，utils/geoTrack.js）：定点 + 固定天线时一律留空（详细预算与结果列据此不出这几行）
-  const gtOut = (v, d) => (geoTk && Number.isFinite(v) ? v.toFixed(d + FX) : '');
-  const gtx = geoTk ? geoTk.tx : {}, grx = geoTk ? geoTk.rx : {};
-  results.uplinkPointingLossResult = gtOut(uplinkPointingLoss, 3); // 上行指向损耗（日最大，dB）——已计入链路（上行「其他损耗」那条和）
-  results.downlinkPointingLossResult = gtOut(downlinkPointingLoss, 3); // 下行指向损耗（日最大，dB）——已计入链路
-  results.uplinkPointingLossP50Result = gtOut(gtx.lossP50Db, 3); // 一天里 50% 时间超过的上行指向损耗(dB)
-  results.uplinkPointingLossP1Result = gtOut(gtx.lossP1Db, 3); // 一天里 1% 时间超过的上行指向损耗(dB)
-  results.downlinkPointingLossP50Result = gtOut(grx.lossP50Db, 3);
-  results.downlinkPointingLossP1Result = gtOut(grx.lossP1Db, 3);
-  results.uplinkPointingOffsetResult = gtOut(gtx.maxOffDeg, 3); // 日内最大指向偏离(°)：固定天线 = 视向对日平均指向；跟踪 = 残差
-  results.downlinkPointingOffsetResult = gtOut(grx.maxOffDeg, 3);
-  results.elevationMinResult = gtOut(gtx.minElevDeg, 2); // 发信站日内仰角范围(°)（WGS84 + 站高）
-  results.elevationMaxResult = gtOut(gtx.maxElevDeg, 2);
-  results.rxElevationMinResult = gtOut(grx.minElevDeg, 2);
-  results.rxElevationMaxResult = gtOut(grx.maxElevDeg, 2);
-  results.slantRangeMinResult = gtOut(gtx.minRangeKm, 2); // 日内斜距范围(km)
-  results.slantRangeMaxResult = gtOut(gtx.maxRangeKm, 2);
-  results.rxSlantRangeMinResult = gtOut(grx.minRangeKm, 2);
-  results.rxSlantRangeMaxResult = gtOut(grx.maxRangeKm, 2);
-  results.linkDelayMinResult = gtOut(geoTk && geoTk.delayMinMs, 3); // 一跳单程时延日内范围(ms)：两站同一时刻斜距之和
-  results.linkDelayMaxResult = gtOut(geoTk && geoTk.delayMaxMs, 3);
-  results.maxDopplerUplinkResult = gtOut(gtx.maxDopplerHz / 1000, 4); // 日内最大多普勒(kHz) = 最大距离变化率 × f/c（上行频率）
-  results.maxDopplerDownlinkResult = gtOut(grx.maxDopplerHz / 1000, 4); // 下行频率
+  results.uplinkMiscLossResult = uplinkMiscLoss.toFixed(3 + FX); // 上行链路其他损耗(dB) = 其他损耗
+  results.downlinkMiscLossResult = downlinkMiscLoss.toFixed(3 + FX); // 下行链路其他损耗(dB) = 其他损耗
   
   // 接收站结果
   results.rxAntennaDiameterResult = rxAntennaDiameter.toFixed(2 + FX);

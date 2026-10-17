@@ -107,17 +107,6 @@ const WF_DICT = {
   '3dB 波束宽度': '3dB Beamwidth',
   '天线增益': 'Antenna Gain',
   '星地距离': 'Slant Range',
-  // GSO 倾斜运行 / 保持盒（A-01）：一天（24 h、1 min 步）里的范围与指向
-  '日内最低仰角': 'Min Elevation (24 h)',
-  '日内最高仰角': 'Max Elevation (24 h)',
-  '日内最近斜距': 'Min Slant Range (24 h)',
-  '日内最远斜距': 'Max Slant Range (24 h)',
-  '日内最大指向偏离': 'Max Pointing Offset (24 h)',
-  '指向损耗（日最大）': 'Pointing Loss (Daily Max)',
-  '指向损耗（50% 时间）': 'Pointing Loss (50% of Time)',
-  '指向损耗（1% 时间）': 'Pointing Loss (1% of Time)',
-  '链路时延(日内最小)': 'Link Delay (24 h Min)',
-  '链路时延(日内最大)': 'Link Delay (24 h Max)',
   // —— 传播损耗 ——
   '自由空间损耗': 'Free Space Loss',
   '等效仰角 P.618§8': 'Equivalent Elevation P.618 §8',
@@ -834,13 +823,7 @@ function createBuilder(ctx) {
       ['波长', 'wavelengthResult', 'rxWavelengthResult', 'm'],
       ['3dB 波束宽度', 'beamWidthResult', 'theta3', '°'],
       ['天线增益', 'txAntennaGainResult', 'rxAntennaGainResult', 'dBi'],
-      ['星地距离', 'slantRangeResult', 'rxSlantRangeResult', 'km'],
-      // 倾斜运行 / 保持盒（A-01）：一天里的范围；定点 + 固定天线时引擎出空，这几行自动不出
-      ['日内最低仰角', 'elevationMinResult', 'rxElevationMinResult', '°'],
-      ['日内最高仰角', 'elevationMaxResult', 'rxElevationMaxResult', '°'],
-      ['日内最近斜距', 'slantRangeMinResult', 'rxSlantRangeMinResult', 'km'],
-      ['日内最远斜距', 'slantRangeMaxResult', 'rxSlantRangeMaxResult', 'km'],
-      ['日内最大指向偏离', 'uplinkPointingOffsetResult', 'downlinkPointingOffsetResult', '°']
+      ['星地距离', 'slantRangeResult', 'rxSlantRangeResult', 'km']
     ], { id: 'geometry', cls: 'param' });
     // 在频率行上方插入「城市」行（上行=发信站城市，下行=收信站城市）
     geoSeg.rows.unshift({
@@ -857,10 +840,6 @@ function createBuilder(ctx) {
       ['雨衰 P.618', 'uplinkRainAttenuation', 'downlinkRainAttenuationResult', 'dB'],
       ['云衰 P.840', 'uplinkCloudAttenuation', 'downlinkCloudAttenuation', 'dB'],
       ['其他损耗', 'uplinkMiscLossResult', 'downlinkMiscLossResult', 'dB'],
-      // 倾斜运行 / 保持盒（A-01）：日最大那一档计入链路（级联里单列一行），两个时间分位只作读数
-      ['指向损耗（日最大）', 'uplinkPointingLossResult', 'downlinkPointingLossResult', 'dB'],
-      ['指向损耗（50% 时间）', 'uplinkPointingLossP50Result', 'downlinkPointingLossP50Result', 'dB'],
-      ['指向损耗（1% 时间）', 'uplinkPointingLossP1Result', 'downlinkPointingLossP1Result', 'dB'],
       ['总衰减', 'uplinkTotalAttenuationResult', 'downlinkTotalAttenuationResult', 'dB'],
       ['雨层高度 P.839', 'uplinkRainHeightResult', 'downlinkRainHeightResult', 'km']
     ], { id: 'propagation', cls: 'param' }));
@@ -873,9 +852,6 @@ function createBuilder(ctx) {
       ['轨道高度', 'orbitAltitudeResult', 'km'],
       ['轨道速度', 'orbitVelocityResult', 'km/s'],
       ['链路时延(单程)', 'linkDelayResult', 'ms'],
-      // 倾斜运行 / 保持盒（A-01）：两站同一时刻斜距之和的日内范围；定点时引擎出空、不出这两行
-      ['链路时延(日内最小)', 'linkDelayMinResult', 'ms'],
-      ['链路时延(日内最大)', 'linkDelayMaxResult', 'ms'],
       ['链路时延(往返 RTT)', rttMs, 'ms', true],
       ['上行最大多普勒', 'maxDopplerUplinkResult', 'kHz'],
       ['下行最大多普勒', 'maxDopplerDownlinkResult', 'kHz'],
@@ -937,12 +913,9 @@ function createBuilder(ctx) {
     const noiseBW = num('RXnoiseBW');
     // 功放回退：功放建议功率 − 回退 = 实际输出（selectedPower）
     const paBackoffDb = num('paRecommendationdBResult') - num('selectedPowerResult');
-    // 指向损耗（日最大，A-01）：引擎把它并进链路里扣的那条损耗（出参与「其他损耗」分列）；定点 + 固定天线时出空 → 不列、按 0
-    const pointUp = Number.isFinite(num('uplinkPointingLossResult')) ? num('uplinkPointingLossResult') : null;
-    const pointDn = Number.isFinite(num('downlinkPointingLossResult')) ? num('downlinkPointingLossResult') : null;
     // 上行：沿功率链得到到达卫星热噪声 C/N，再扣除上行干扰损失 → 引擎实际上行 C/N
     const cUp = num('stationEIRPResult') - num('uplinkFSLResult') - num('uplinkAtmosphericAttenuationResult')
-      - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult') - (pointUp || 0);
+      - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult');
     const upThermalCN = cUp + num('satelliteGTResult') + KB - noiseBW;
     const upIntfLoss = upThermalCN - num('uplinkCN');
     // 主导降雨场景：上行降雨占主导时，下行按晴空（下行雨衰与 G/T 劣化不参与）
@@ -951,7 +924,7 @@ function createBuilder(ctx) {
     const dnGtDegEff = uplinkRainDominant ? 0 : num('gOverTdegradationResult');
     // 下行：沿功率链得到到达地面热噪声 C/N，扣除 G/T 劣化（降雨）与下行干扰损失 → 引擎实际下行 C/N
     const cDn = num('transponderOutputEIRP') - num('downlinkFSLResult') - num('downlinkAtmosphericAttenuationResult')
-      - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult') - (pointDn || 0);
+      - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult');
     const dnThermalCN = cDn + num('gOverTeResult') + KB - noiseBW;
     // 下行干扰损失：取引擎真实四路干扰并联值（按主导场景口径），不再从反解 downlinkCN 取残差——
     // 残差在「上行主导 + UPC 未全补偿」时会把上行残余雨衰错计入本行（ACI/ASI/XPI/IM 标签失真可达数 dB）。
@@ -971,7 +944,6 @@ function createBuilder(ctx) {
       C('loss', '雨衰 P.618', 'uplinkRainAttenuation', 'dB', 'up'),
       C('loss', '云衰 P.840', 'uplinkCloudAttenuation', 'dB', 'up'),
       C('loss', '其他损耗', 'uplinkMiscLossResult', 'dB', 'up'),
-      ...(pointUp !== null ? [C('loss', '指向损耗（日最大）', 'uplinkPointingLossResult', 'dB', 'up')] : []),
       C('sub', '到达卫星载波电平 C', null, 'dBW', 'up'),
       C('ref', '到达卫星通量密度', 'arrivalPFDAtSatelliteResult', 'dBW/m²', 'up'),
       C('gain', '卫星 G/T', 'satelliteGTResult', 'dB/K', 'up'),
@@ -993,7 +965,6 @@ function createBuilder(ctx) {
       C('loss', '雨衰 P.618', dnRainEff, 'dB', 'down'),
       C('loss', '云衰 P.840', 'downlinkCloudAttenuation', 'dB', 'down'),
       C('loss', '其他损耗', 'downlinkMiscLossResult', 'dB', 'down'),
-      ...(pointDn !== null ? [C('loss', '指向损耗（日最大）', 'downlinkPointingLossResult', 'dB', 'down')] : []),
       C('sub', '到达地面载波电平 C', null, 'dBW', 'down'),
       C('ref', '卫星到地面 PFD', 'arrivalPFDAtGroundResult', 'dBW/m²', 'down'),
       C('ref', '接收天线增益', 'rxAntennaGainResult', 'dBi', 'down'),

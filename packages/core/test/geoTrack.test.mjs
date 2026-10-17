@@ -1,4 +1,4 @@
-// GSO 倾斜运行 / 保持盒（差距分析 A-01）：packages/core/utils/geoTrack.js 与 GSO 链路引擎的接入。
+// GSO 倾斜运行 / 保持盒（差距分析 A-01）：packages/core/utils/geoTrack.js 的纯算法，与 GSO 窗口「指向误差」工具的合成口径。
 //
 // 【外部真值 / 对拍】
 //   ① A 路 exp5（docs/research/gap-2026-10-17/A/exp5_inclined.cjs）：北京看 110.5°E、i = 1°、e = 3e-4 的 SDP4 星
@@ -6,7 +6,8 @@
 //      保持盒 i = 0.05°：13 m Ku（14 GHz）2.7–2.8 dB。这里把同一颗 SDP4 星逐分钟采样当星历喂进来，同物同比。
 //   ② H 路 zx9（docs/research/gap-2026-10-17/H/zx9.cjs）：随包 GEO 快照里的中星 9 号（i = 0.97°）→ 1.2 m Ku（12 GHz）6.46 dB。
 //   ③ 解析几何：站在星下点时，纯倾角的视线偏离 = atan(a·sin i / (a·cos i − R))；纯偏心率的最大距离变化率 = √(μ/p)·e。
-//   ④ 引擎：缺省（定点 + 固定）结果逐位不变、新出参全空、详细预算不多一行；倾斜时指向损耗计入链路且级联逐行闭合。
+//   ④ 资源库与引擎：倾角 / 偏心率 / 东西保持 ±、跟踪方式 / 残差已撤出（回到 v1.5.3），引擎不读、残留键不改任何出参。
+//   ⑤ 「指向误差」工具：θ(t) = √(θ_main(t)² + Σθ_i²)（rssDeg），gsoPointingBudget 与 linkGeoTrack 同一套几何。
 
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
@@ -19,6 +20,8 @@ const core = require('../index.js')
 const wf = require('../utils/waterfallBuilder.js')
 const P = await import('../../../src/linkbudget/params.js')
 const AN = await import('../../../src/shared/lbAutoName.js')
+const RK = await import('../../../src/shared/lbRetiredKeys.js')
+const SH = await import('../../../src/shared/lbShare.js')
 
 let pass = 0, fail = 0
 const ok = (cond, msg, extra) => { if (cond) { pass++ } else { fail++; console.error('  ✗ ' + msg + (extra ? '\n      ' + extra : '')) } }
@@ -110,67 +113,109 @@ section('④ 跟踪方式与方向图')
   ok(al.tx.maxOffDeg > mean.tx.maxOffDeg, `对准某一刻（alignMin）比对准日平均指向偏得多：${al.tx.maxOffDeg.toFixed(3)}° > ${mean.tx.maxOffDeg.toFixed(3)}°`)
 }
 
-/* ===== ⑤ GSO 链路引擎 ===== */
+/* ===== ⑤ GSO 链路引擎：不读倾斜运行 / 跟踪键 ===== */
 section('⑤ GSO 链路引擎')
 const q = (f) => { const e = console.error, l = console.log; console.error = console.log = () => {}; try { return f() } finally { console.error = e; console.log = l } }
+// v1.5.4 引擎接入时多出的出参（撤出后一个都不该再有）
+const RETIRED_OUT = ['uplinkPointingLossResult', 'downlinkPointingLossResult', 'uplinkPointingLossP50Result', 'uplinkPointingLossP1Result',
+  'downlinkPointingLossP50Result', 'downlinkPointingLossP1Result', 'uplinkPointingOffsetResult', 'downlinkPointingOffsetResult',
+  'elevationMinResult', 'elevationMaxResult', 'rxElevationMinResult', 'rxElevationMaxResult', 'slantRangeMinResult', 'slantRangeMaxResult',
+  'rxSlantRangeMinResult', 'rxSlantRangeMaxResult', 'linkDelayMinResult', 'linkDelayMaxResult', 'maxDopplerUplinkResult', 'maxDopplerDownlinkResult']
 {
-  const SAT = { frequencyBand: 'Ku', satelliteName: 'DEMO' }
-  const r0 = q(() => core.calculateLinkBudget(SAT, {}))
-  const zeros = q(() => core.calculateLinkBudget({ ...SAT, geoIncl: '0', geoEcc: '0', geoBoxEW: '0' }, { trackMode: '固定', trackResidual: '0', rxTrackMode: '固定', rxTrackResidual: '0.3' }))
-  ok(r0.success && JSON.stringify(r0) === JSON.stringify(zeros), '★ 缺省 / 显式定点 + 固定（残差在固定方式下不生效）：结果逐位相同')
-  const NEW_KEYS = ['uplinkPointingLossResult', 'downlinkPointingLossResult', 'elevationMinResult', 'rxElevationMaxResult', 'linkDelayMinResult', 'maxDopplerUplinkResult', 'downlinkPointingLossP1Result']
-  ok(NEW_KEYS.every((k) => r0.data[k] === ''), '缺省时倾斜运行出参一律留空')
-  ok(r0.data.uplinkMiscLossResult === '0.300' && r0.data.downlinkMiscLossResult === '0.300', '「其他损耗」出参仍是输入值（指向损耗不并进这一格）')
-  const rows0 = wf.buildWaterfallSegments({ results: r0.data, orbitType: 'GEO' }).flatMap((s) => s.rows)
-  ok(!rows0.some((x) => /指向|日内|多普勒/.test(x.key)), '缺省时详细预算不多出任何一行')
-
-  // 中星 9 号式倾斜运行（92.2°E、i = 0.97°、e = 9e-4），收信站 1.2 m Ku 12 GHz 固定天线
-  const S9 = { ...SAT, orbitPosition: '92.2', geoIncl: '0.97', geoEcc: '0.0009' }
-  const L9 = { rxAntennaDiameter: '1.2', rxCenterFrequency: '12' }
-  const r9 = q(() => core.calculateLinkBudget(S9, L9)).data
-  const d9 = Number(r9.downlinkPointingLossResult)
-  ok(Math.abs(d9 - 6.59) < 0.05, `★ 收信站 1.2 m Ku 固定：下行指向损耗（日最大）${d9} dB 计入链路（中星 9 号快照星历 6.46 dB）`)
-  ok(Number(r9.uplinkPointingLossResult) > 20, `发信站 6.2 m Ku 固定天线：上行 ${r9.uplinkPointingLossResult} dB（出主瓣，须用跟踪天线）`)
-  const rFix = q(() => core.calculateLinkBudget({ ...SAT, orbitPosition: '92.2' }, L9)).data
-  ok(Number(r9.paRecommendation) > Number(rFix.paRecommendation) * 100, `设置余量：同一条链路功放建议 ${rFix.paRecommendation} → ${r9.paRecommendation} W`)
-  const rTrk = q(() => core.calculateLinkBudget(S9, { ...L9, trackMode: '程控', trackResidual: '0.02' })).data
-  const th3up = 70 * (0.299792458 / 14.25) / 6.2
-  ok(Math.abs(Number(rTrk.uplinkPointingLossResult) - 12 * (0.02 / th3up) ** 2) < 1e-3, `发信站改程控跟踪（残差 0.02°）：上行指向损耗 ${rTrk.uplinkPointingLossResult} dB`)
-  ok(Number(r9.rxElevationMinResult) < Number(r9.rxElevationResult) && Number(r9.rxElevationMaxResult) > Number(r9.rxElevationResult), `日内仰角 ${r9.rxElevationMinResult}…${r9.rxElevationMaxResult}° 夹住标称 ${r9.rxElevationResult}°`)
-  ok(Number(r9.linkDelayMinResult) < Number(r9.linkDelayResult) && Number(r9.linkDelayMaxResult) > Number(r9.linkDelayResult) && Number(r9.maxDopplerDownlinkResult) > 0.2, `一跳时延 ${r9.linkDelayMinResult}…${r9.linkDelayMaxResult} ms、下行多普勒 ±${r9.maxDopplerDownlinkResult} kHz`)
-  // 详细预算：级联里单列「指向损耗（日最大）」，逐行仍闭合到引擎的上 / 下行 C/(N+I)
-  const segs = wf.buildWaterfallSegments({ results: r9, orbitType: 'GEO' })
-  const cas = segs.find((s) => s.id === 'cascade').rows
-  const pt = cas.filter((x) => x.label === '指向损耗（日最大）')
-  ok(pt.length === 2 && pt[0].num === Number(Number(r9.uplinkPointingLossResult).toFixed(2)) && pt[1].numDown === Number(d9.toFixed(2)), '级联上 / 下行各多一行「指向损耗（日最大）」')
-  const upTh = cas.find((x) => x.label === '上行 C/N（热噪声）'), dnTh = cas.find((x) => x.label === '下行 C/N（热噪声）')
-  ok(Math.abs(upTh.num - Number(r9.uplinkThermalCN)) < 0.02 && Math.abs(dnTh.numDown - Number(r9.downlinkThermalCN)) < 0.02, `级联逐行闭合：上行热噪 C/N ${upTh.num} / 引擎 ${r9.uplinkThermalCN}，下行 ${dnTh.numDown} / 引擎 ${r9.downlinkThermalCN}`)
-  const geo = segs.find((s) => s.id === 'geometry').rows.map((x) => x.key), prop = segs.find((s) => s.id === 'propagation').rows.map((x) => x.key)
-  ok(['日内最低仰角', '日内最高仰角', '日内最近斜距', '日内最远斜距', '日内最大指向偏离'].every((k) => geo.includes(k)) && ['指向损耗（日最大）', '指向损耗（50% 时间）', '指向损耗（1% 时间）'].every((k) => prop.includes(k)), '几何段 / 传播段出日内范围与损耗分位')
-  const en = wf.buildWaterfallSegments({ results: r9, orbitType: 'GEO', lang: 'en' }).flatMap((s) => s.rows).filter((x) => /指向|日内|多普勒|时延\(日内/.test(x.key))
-  ok(en.length > 0 && en.every((x) => !/[一-龥]/.test(x.label)), '英文详细预算：新行全有译名')
-  // 求解器 / 批量反复调同一组入参：几何只算一次
-  const t = Date.now()
-  for (let k = 0; k < 100; k++) q(() => core.calculateLinkBudget(S9, L9))
-  ok(Date.now() - t < 500, `同一组入参 100 次引擎调用 ${Date.now() - t} ms（日内轨迹按入参缓存）`)
+  const SAT = { frequencyBand: 'Ku', satelliteName: 'DEMO', orbitPosition: '92.2' }
+  const L = { rxAntennaDiameter: '1.2', rxCenterFrequency: '12' }
+  const r0 = q(() => core.calculateLinkBudget(SAT, L))
+  // 老库里的残留键（非缺省值）：中星 9 号式倾斜运行 + 两站跟踪
+  const stale = q(() => core.calculateLinkBudget({ ...SAT, geoIncl: '0.97', geoEcc: '0.0009', geoBoxEW: '0.05' },
+    { ...L, trackMode: '程控', trackResidual: '0.02', rxTrackMode: '单脉冲', rxTrackResidual: '0.01' }))
+  ok(r0.success && JSON.stringify(r0) === JSON.stringify(stale), '★ 残留的倾角 / 偏心率 / 东西保持 / 跟踪方式 / 跟踪残差不进引擎：结果逐位相同')
+  ok(RETIRED_OUT.every((k) => !(k in r0.data)), '倾斜运行那批出参（指向损耗 / 日内仰角 / 斜距 / 时延范围 / 多普勒）不再出')
+  ok(r0.data.uplinkMiscLossResult === '0.300' && r0.data.downlinkMiscLossResult === '0.300', '「其他损耗」只是输入值')
+  const segs = wf.buildWaterfallSegments({ results: r0.data, orbitType: 'GEO' })
+  ok(!segs.flatMap((x) => x.rows).some((x) => /指向|日内/.test(x.key + x.label)), '详细预算没有指向损耗 / 日内范围行')
+  // 拿 v1.5.4 存下的结果（带那批出参）重出详细预算：也不出那几行
+  const old = { ...r0.data, uplinkPointingLossResult: '31.2', downlinkPointingLossResult: '6.59', elevationMinResult: '36.7', linkDelayMaxResult: '250.1' }
+  const segsOld = wf.buildWaterfallSegments({ results: old, orbitType: 'GEO' })
+  ok(JSON.stringify(segsOld) === JSON.stringify(segs), 'v1.5.4 存下的结果里残留的那批出参：详细预算逐字不变（不出行、级联不扣）')
 }
 
-/* ===== ⑥ 资源库字段与自动命名 ===== */
-section('⑥ 资源库字段')
+/* ===== ⑥ 资源库字段、自动命名与残留键（回到 v1.5.3） ===== */
+section('⑥ 资源库字段与残留键')
 {
-  const f = (arr, k) => arr.find((x) => x.key === k)
-  ok(['geoIncl', 'geoEcc', 'geoBoxEW'].every((k) => f(P.SAT_FIELDS, k) && f(P.SAT_FIELDS, k).target === 'sat' && f(P.SAT_FIELDS, k).def === '0' && typeof f(P.SAT_FIELDS, k).max === 'number'), '卫星库：倾角 / 偏心率 / 东西保持 ±（卫星实体，缺省 0，带范围）')
-  const tm = f(P.ES_COMMON_FIELDS, 'trackMode'), tr = f(P.ES_COMMON_FIELDS, 'trackResidual')
-  ok(tm && tm.rxKey === 'rxTrackMode' && tm.def === '固定' && tr && tr.rxKey === 'rxTrackResidual' && tr.unit === '°', '地球站库：跟踪方式 / 跟踪残差（收发共用一面天线，收侧引擎键 rx*）')
-  ok(!tr.showIf({ trackMode: '固定' }) && tr.showIf({ trackMode: '程控' }), '跟踪残差只在跟踪方式非「固定」时显示')
+  const has = (arr, k) => arr.some((x) => x.key === k)
+  ok(!['geoIncl', 'geoEcc', 'geoBoxEW'].some((k) => has(P.SAT_FIELDS, k)), '卫星库没有倾角 / 偏心率 / 东西保持 ±')
+  ok(!['trackMode', 'trackResidual'].some((k) => has(P.ES_FIELDS, k)), '地球站库没有跟踪方式 / 跟踪残差')
   const satForm = { ...P.defaultsFor(P.SAT_FIELDS), geoIncl: '0.97' }
   const txEs = { ...P.defaultsFor(P.ES_FIELDS), trackMode: '程控', trackResidual: '0.02' }
-  const rxEs = { ...P.defaultsFor(P.ES_FIELDS), trackMode: '单脉冲', trackResidual: '0.01' }
-  const bp = P.buildParams(satForm, P.defaultsFor(P.CARRIER_FIELDS), P.defaultsFor(P.TX_FIELDS), P.defaultsFor(P.RX_FIELDS), txEs, rxEs)
-  ok(bp.satParams.geoIncl === '0.97' && bp.linkParams.trackMode === '程控' && bp.linkParams.trackResidual === '0.02' && bp.linkParams.rxTrackMode === '单脉冲' && bp.linkParams.rxTrackResidual === '0.01', '组装：卫星三项进 satParams，两站各自的跟踪方式 / 残差进 linkParams（发 = 键、收 = rx 键）')
-  ok(AN.esAutoName({ antennaDiameter: '13', trackMode: '程控' }) === '13 m · 程控' && AN.esAutoName({ antennaDiameter: '13', trackMode: '固定' }) === '13 m' && AN.esAutoName({ antennaDiameter: '6.2' }) === '6.2 m', '地球站自动名：跟踪天线带跟踪方式，固定 / 老条目逐字不变')
-  ok(AN.satAutoName({ form: { satelliteName: 'CHINASAT 9', frequencyBand: 'Ku', orbitPosition: '92.2', geoIncl: '0.97' } }) === 'CHINASAT 9 · Ku · 92.2°E · i=0.97°' &&
-    AN.satAutoName({ form: { satelliteName: 'CHINASAT 9', frequencyBand: 'Ku', orbitPosition: '92.2', geoIncl: '0' } }) === 'CHINASAT 9 · Ku · 92.2°E', '卫星自动名：倾斜运行星轨位后缀倾角，定点逐字不变')
+  const bp = P.buildParams(satForm, P.defaultsFor(P.CARRIER_FIELDS), P.defaultsFor(P.TX_FIELDS), P.defaultsFor(P.RX_FIELDS), txEs, txEs)
+  ok(!RK.RETIRED_FORM_KEYS.some((k) => k in bp.satParams || k in bp.linkParams), '组参：表单里的残留键不进引擎入参')
+  ok(AN.esAutoName({ antennaDiameter: '13', trackMode: '程控' }) === '13 m' && AN.esAutoName({ antennaDiameter: '6.2' }) === '6.2 m', '地球站自动名只认口径（v1.5.3：「13 m」，无「· 程控」）')
+  ok(AN.satAutoName({ form: { satelliteName: 'CHINASAT 9', frequencyBand: 'Ku', orbitPosition: '92.2', geoIncl: '0.97' } }) === 'CHINASAT 9 · Ku · 92.2°E', '卫星自动名不带「i=…°」（v1.5.3）')
+  // 残留键：载入即剥 / 打包不带 / 指纹不认
+  const f = { antennaDiameter: '13', trackMode: '程控', trackResidual: '0.02', geoIncl: '1' }
+  const g = RK.withoutRetiredKeys(f)
+  ok(g !== f && JSON.stringify(g) === '{"antennaDiameter":"13"}' && f.trackMode === '程控', 'withoutRetiredKeys：浅拷贝剥掉，原对象不动')
+  const clean = { antennaDiameter: '13' }
+  ok(RK.withoutRetiredKeys(clean) === clean && RK.stripRetiredKeys(clean) === 0, '没有残留键：原样返回同一个对象')
+  ok(RK.stripRetiredKeys(f) === 3 && JSON.stringify(f) === '{"antennaDiameter":"13"}', 'stripRetiredKeys：就地剥、报剥掉几个')
+  const spec = { arr: [], pack: (c) => c }
+  const e154 = { id: 'es1', name: '关口站 13m', form: { antennaDiameter: '13', trackMode: '固定', trackResidual: '0' } }
+  const e153 = { id: 'es1', name: '关口站 13m', form: { antennaDiameter: '13' } }
+  ok(JSON.stringify(SH.packEntry(spec, e154).form) === '{"antennaDiameter":"13"}', '分享包：条目 form 不带残留键')
+  ok(SH.strictFp(spec, e154) === SH.strictFp(spec, e153), '内容指纹不认残留键：v1.5.4 存过的条目与同参数的老条目认作同一份')
+}
+
+/* ===== ⑦ 「指向误差」工具：误差预算方和根 + 一站计算 ===== */
+section('⑦ 指向误差工具')
+{
+  ok(G.rssDeg(0.3, [0.4]) === 0.5 && Math.abs(G.rssDeg(0, [0.03, 0.04]) - 0.05) < 1e-15 && G.rssDeg(0.3, [-0.4]) === 0.5, 'rssDeg：√(θ_main² + Σθ_i²)，分项按绝对值')
+  const x = 1.1063217
+  ok(G.rssDeg(x, []) === x && G.rssDeg(x, [0, '', null, NaN, undefined]) === x && G.rssDeg(x) === x, 'rssDeg：分项全空 / 全 0 → 主项原样（不经平方开方）')
+  const STA = { latDeg: 39.9, lonDeg: 116.4, altKm: 0.05 }
+  const SAT1 = { lonDeg: 110.5, inclDeg: 1, ecc: 3e-4 }
+  const base = G.linkGeoTrack({ sat: SAT1, tx: { ...STA, freqGHz: 12.5, antenna: { diameterM: 1.2, efficiency: 0.65 }, tracking: {} } })
+  const empty = G.linkGeoTrack({ sat: SAT1, tx: { ...STA, freqGHz: 12.5, antenna: { diameterM: 1.2, efficiency: 0.65 }, tracking: { budgetDeg: [] } } })
+  ok(JSON.stringify(base.tx) === JSON.stringify(empty.tx), 'linkGeoTrack：误差分项为空时与不给逐位相同')
+  const st = { ...STA, freqGHz: 12.5, diameterM: 1.2, efficiencyPct: 65 }
+  const p0 = G.gsoPointingBudget({ sat: SAT1, station: st, mode: '固定' })
+  ok(p0 && p0.lossMaxDb === base.tx.lossMaxDb && p0.maxOffDeg === base.tx.maxOffDeg && p0.minElevDeg === base.tx.minElevDeg && p0.maxRangeKm === base.tx.maxRangeKm && p0.maxDopplerHz === base.tx.maxDopplerHz,
+    `固定、无分项：与 linkGeoTrack 同数（日最大 ${p0 && p0.lossMaxDb.toFixed(2)} dB、偏离 ${p0 && p0.maxOffDeg.toFixed(3)}°）`)
+  ok(Math.abs(p0.lossMaxDb - 7.5) < 0.3, `合成轨道 i = 1°、北京、1.2 m Ku 12.5 GHz 固定：${p0.lossMaxDb.toFixed(2)} dB（exp5 SDP4 星 7.5 dB）`)
+  ok(Math.abs(p0.theta3dBDeg - 70 * (0.299792458 / 12.5) / 1.2) < 1e-12, `θ3dB = 70λ/D = ${p0.theta3dBDeg.toFixed(4)}°`)
+  const BUD = [0.1, 0.05, 0.08, 0.02]
+  const p1 = G.gsoPointingBudget({ sat: SAT1, station: st, mode: 'fixed', budgetDeg: BUD })
+  const s2 = BUD.reduce((a, v) => a + v * v, 0)
+  ok(Math.abs(p1.maxOffDeg - Math.sqrt(p0.maxOffDeg ** 2 + s2)) < 1e-12, `固定 + 四项分项：最大总偏离 = √(主项最大² + Σθ_i²) = ${p1.maxOffDeg.toFixed(4)}°`)
+  ok(p1.lossMaxDb > p0.lossMaxDb && p1.lossP50Db > p0.lossP50Db && p1.lossP1Db > p0.lossP1Db && p1.lossP50Db <= p1.lossP1Db && p1.lossP1Db <= p1.lossMaxDb,
+    `分项抬高损耗：日最大 ${p0.lossMaxDb.toFixed(2)} → ${p1.lossMaxDb.toFixed(2)} dB、50% ${p1.lossP50Db.toFixed(2)} ≤ 1% ${p1.lossP1Db.toFixed(2)} ≤ 最大`)
+  ok(p1.minElevDeg === p0.minElevDeg && p1.maxRangeKm === p0.maxRangeKm && p1.maxDopplerHz === p0.maxDopplerHz, '分项不碰几何：仰角 / 斜距 / 多普勒不变')
+  // 定点星：主项恒 0，只剩分项
+  const fixSat = { lonDeg: 110.5, inclDeg: 0, ecc: 0, boxDeg: 0 }
+  const p2 = G.gsoPointingBudget({ sat: fixSat, station: st, mode: '固定', budgetDeg: [0.03, 0.04] })
+  const want2 = 12 * (0.05 / p2.theta3dBDeg) ** 2
+  ok(Math.abs(p2.maxOffDeg - 0.05) < 1e-12 && Math.abs(p2.lossMaxDb - want2) < 1e-9 && p2.lossP50Db === p2.lossMaxDb && p2.lossP1Db === p2.lossMaxDb, `定点星 + 分项 0.03° / 0.04°：偏离恒 0.05°、损耗恒 12·(θ/θ3dB)² = ${want2.toFixed(4)} dB`)
+  ok(p2.maxDopplerHz === 0 && p2.minElevDeg === p2.maxElevDeg && p2.minRangeKm === p2.maxRangeKm, '定点星：多普勒 0、仰角 / 斜距无日变')
+  // 步进跟踪：主项 = 跟踪残差（与卫星怎么动无关），几何照算
+  const p3 = G.gsoPointingBudget({ sat: SAT1, station: { ...st, freqGHz: 14, diameterM: 9 }, mode: '步进跟踪', residualDeg: 0.02, budgetDeg: [0.01] })
+  const th3 = 70 * (0.299792458 / 14) / 9, th = Math.sqrt(0.02 ** 2 + 0.01 ** 2)
+  ok(Math.abs(p3.maxOffDeg - th) < 1e-15 && Math.abs(p3.lossMaxDb - 12 * (th / th3) ** 2) < 1e-12 && p3.lossP1Db === p3.lossMaxDb, `步进跟踪残差 0.02° + 风载 0.01°：偏离恒 ${th.toFixed(5)}°、损耗 ${p3.lossMaxDb.toFixed(4)} dB`)
+  ok(p3.maxDopplerHz > 200 && p3.maxElevDeg - p3.minElevDeg > 1, `步进跟踪：日内仰角 ${p3.minElevDeg.toFixed(2)}…${p3.maxElevDeg.toFixed(2)}°、多普勒 ${p3.maxDopplerHz.toFixed(0)} Hz 照算`)
+  const p3r = G.gsoPointingBudget({ sat: SAT1, station: { ...st, freqGHz: 14, diameterM: 9 }, mode: '固定', residualDeg: 0.02, budgetDeg: [0.01] })
+  ok(p3r.maxOffDeg > 1, '固定方式下「跟踪残差」不计入')
+  // 东西保持：取盒边两天里差的那边
+  const p4 = G.gsoPointingBudget({ sat: { lonDeg: 110.5, inclDeg: 0.05, ecc: 0, boxDeg: 0.05 }, station: { ...st, freqGHz: 14, diameterM: 13 }, mode: '固定' })
+  const p4c = G.gsoPointingBudget({ sat: { lonDeg: 110.5, inclDeg: 0.05, ecc: 0, boxDeg: 0 }, station: { ...st, freqGHz: 14, diameterM: 13 }, mode: '固定' })
+  ok(p4.maxOffDeg > p4c.maxOffDeg && p4.lossMaxDb > p4c.lossMaxDb, `东西保持 ±0.05°：13 m Ku 偏离 ${p4c.maxOffDeg.toFixed(4)} → ${p4.maxOffDeg.toFixed(4)}°、损耗 ${p4c.lossMaxDb.toFixed(2)} → ${p4.lossMaxDb.toFixed(2)} dB`)
+  // 速查表：主瓣内高斯，出主瓣附录 8 封顶
+  const qk = p0.quick
+  const at = (k) => qk.find((r) => r.ratio === k)
+  ok(qk.length === 10 && Math.abs(at(0.5).lossDb - 3) < 1e-12 && Math.abs(at(1).lossDb - 12) < 1e-12 && Math.abs(at(0.5).thetaDeg - 0.5 * p0.theta3dBDeg) < 1e-15, '速查表：θ/θ3dB = 0.5 → 3 dB、1 → 12 dB')
+  ok(at(2).lossDb < 48 && at(2).lossDb > at(1.5).lossDb - 5, `速查表：2·θ3dB 处按附录 8 旁瓣封顶 ${at(2).lossDb.toFixed(1)} dB（高斯式 48 dB）`)
+  ok(qk.every((r, i) => i === 0 || r.thetaDeg > qk[i - 1].thetaDeg), '速查表档位按偏离角升序')
+  // 入参不成立 → null
+  const bad = (patch) => G.gsoPointingBudget({ sat: SAT1, station: { ...st, ...patch } })
+  ok(bad({ diameterM: 0 }) === null && bad({ freqGHz: '' }) === null && bad({ efficiencyPct: 0 }) === null && bad({ efficiencyPct: 120 }) === null && bad({ latDeg: 91 }) === null, '口径 / 频率 / 效率 / 纬度不成立 → null')
+  ok(G.gsoPointingBudget({ sat: SAT1, station: { ...st, efficiencyPct: 1 } }).g0Dbi < p0.g0Dbi - 15, '效率按百分数读（1 = 1%，不当作 100%）')
 }
 
 console.log('\ngeoTrack: 通过 ' + pass + '，失败 ' + fail)

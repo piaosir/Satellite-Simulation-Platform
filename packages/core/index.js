@@ -25,6 +25,7 @@ const adaptiveUnits = require('./utils/adaptiveUnits.js');
 const envField = require('./utils/envField.js');
 const linkSweep = require('./utils/linkSweep.js');
 const lbOutputDefs = require('./utils/lbOutputDefs.js');
+const geoTrack = require('./utils/geoTrack.js');
 const modcodTables = require('./utils/modcodTables.js');
 const ntnPhy = require('./utils/ntnPhy.js');
 const { DEFAULT_SITE } = require('./utils/defaultSite.js');
@@ -135,6 +136,8 @@ module.exports = {
   scanSlaTiers: linkSweep.scanSlaTiers,
   linkSweep,
   lbOutputDefs,
+  // GSO「指向误差」工具：卫星日内运动 + 跟踪方式 + 误差分项方和根 → 偏离角与指向损耗的日统计（只给工具看，不进链路引擎）
+  gsoPointingBudget: geoTrack.gsoPointingBudget,
   // 3GPP NTN 物理层口径（占用带宽 / 信道带宽 / TBS / 信息速率 / 含重复的门限）
   // —— 渲染端另有一份逐值手写副本 src/shared/ntnPhy.js，两份由 ntnPhy.test.mjs 对拍
   ntnPhy,

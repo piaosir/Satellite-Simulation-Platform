@@ -863,6 +863,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     core().sampleIslRangeSeries
       ? core().sampleIslRangeSeries(RE_(opt || {}))
       : { ok: false, reason: '星间几何求解器未加载' })
+  // GSO「指向误差」工具：一个地球站对一颗 GSO 星一天的指向偏离与损耗（utils/geoTrack.js 的 gsoPointingBudget）
+  ipcMain.handle('link:pointingBudget', (_e, opt) => (core().gsoPointingBudget ? core().gsoPointingBudget(opt || {}) : null))
   // NGSO 站星几何求解（选星=SGP4/SDP4 单一典型时刻 t* 几何；手动=闭式球面最差 + 轨道根数）
   ipcMain.handle('link:ngsoGeometry', (_e, opt) =>
     core().solveNgsoMutualWorstCase

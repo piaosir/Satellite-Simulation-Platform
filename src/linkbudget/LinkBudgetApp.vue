@@ -11,6 +11,7 @@ import { importGrdAntennas, removeLocalAntenna, localFolderFor, isLocalFolder, s
 import { resolveRefId, LIB_WINDOWS, libCopyTargets, copyLibEntry, externalLibEntries } from '../shared/lbShare.js'
 import { stableStringify } from '../shared/configDirty.js'
 import { migrateLegacyEs } from '../shared/esMigrate.js'
+import { withoutRetiredKeys } from '../shared/lbRetiredKeys.js'   // 资源库表单的退役键（v1.5.4 倾斜运行 / 跟踪方式五项）：载入即剥
 import { pickColumn, fmtScaled, fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
@@ -30,6 +31,7 @@ import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import StationGrid from './StationGrid.vue'
 import LinkImportDialog from '../components/LinkImportDialog.vue'   // 「导入链路」：星座 3D 主窗建的图上链路
+import LbPointingTool from '../components/LbPointingTool.vue'   // 「指向误差」：倾斜运行 / 东西保持 / 跟踪方式下的日内指向损耗（只读工具，GSO 窗专用）
 import { esStationType } from '../shared/lbStationType.js'   // 站带天线口径 / 天线罩 → 对号地球站库条目
 import BasebandPanel from './BasebandPanel.vue'
 import EarthStationPanel from '../components/EarthStationPanel.vue'
@@ -325,8 +327,9 @@ function migrateFreqIntfLib(lib) {
 function applyLibrary(lib) {
   if (!lib) return
   migrateFreqIntfLib(lib)   // 结构迁移（频率/极化 + 干扰上移卫星），保留旧库自定义值；须在补默认值前
-  // nameAuto：旧库没存过这一位，按历史默认名推定一次（见 shared/lbAutoName.js 的 adoptAutoFlag）
-  const fill = (defFields, kind, extra) => (c, i, pfx) => ({ id: c.id || (pfx + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag(kind, c), form: { ...defaultsFor(defFields), ...(extra || null), ...c.form } })
+  // nameAuto：旧库没存过这一位，按历史默认名推定一次（见 shared/lbAutoName.js 的 adoptAutoFlag）。
+  // 孤儿键原样保留，唯独退役键剥掉（见 shared/lbRetiredKeys.js）：随后那次 scheduleLibSave 把盘上那份一并洗干净
+  const fill = (defFields, kind, extra) => (c, i, pfx) => ({ id: c.id || (pfx + (i + 1)), name: c.name || '', nameAuto: adoptAutoFlag(kind, c), form: withoutRetiredKeys({ ...defaultsFor(defFields), ...(extra || null), ...c.form }) })
   if (Array.isArray(lib.es) && lib.es.length) esConfigs.splice(0, esConfigs.length, ...lib.es.map((c, i) => fill(ES_FIELDS, 'es')(c, i, 'esb')))
   if (Array.isArray(lib.carrier) && lib.carrier.length) basebandConfigs.splice(0, basebandConfigs.length, ...lib.carrier.map((c, i) => fill(CARRIER_FIELDS, 'carrier', { rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null })(c, i, 'bbb')))
   if (Array.isArray(lib.sat) && lib.sat.length) satConfigs.splice(0, satConfigs.length, ...lib.sat.map((c, i) => {
@@ -514,9 +517,6 @@ const RESULT_DEFS = [
   { key: 'selectedPowerWResult', label: '功放实际输出', unit: 'W' },
   { key: 'elevationResult', label: '发站仰角', unit: '°' },
   { key: 'rxElevationResult', label: '收站仰角', unit: '°' },
-  // 倾斜运行 / 保持盒（A-01）：日最大指向损耗（已计入链路）；定点 + 固定天线时为空
-  { key: 'uplinkPointingLossResult', label: '上行指向损耗', unit: 'dB', tip: '日最大：卫星倾斜运行 / 在保持盒里走动时发信站天线的指向损耗（已计入链路）' },
-  { key: 'downlinkPointingLossResult', label: '下行指向损耗', unit: 'dB', tip: '日最大：卫星倾斜运行 / 在保持盒里走动时收信站天线的指向损耗（已计入链路）' },
   { key: 'systemAvailabilityResult', label: '系统可用度', unit: '%' }
 ]
 const DEFAULT_RESULT_KEYS = ['paRecommendation', 'linkmargin', 'carrierTotalCN', 'bandwidthUsageRatio', 'powerUsageRatio', 'capacityMbps']
@@ -1015,9 +1015,9 @@ async function mergeLibFromDisk() {
   if (!lib) return
   const fresh = (kind, arr) => externalLibEntries(lib, kind, arr).filter((c) => !_libGone.has(c.id))
   const es = fresh('es', esConfigs), bb = fresh('carrier', basebandConfigs), sat = fresh('sat', satConfigs)
-  for (const c of es) esConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('es', c), form: { ...defaultsFor(ES_FIELDS), ...c.form } })
+  for (const c of es) esConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('es', c), form: withoutRetiredKeys({ ...defaultsFor(ES_FIELDS), ...c.form }) })
   for (const c of bb) basebandConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('carrier', c), form: { ...defaultsFor(CARRIER_FIELDS), rsCodeMode: 'fraction', dvbStandard: 'custom', modcodIndex: -1, modcodLabel: '', rateAnchor: 'info', rateAnchorValue: null, ...c.form } })
-  for (const c of sat) satConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('sat', c), form: { ...defaultsFor(SAT_FIELDS), ...c.form }, grd: normGrd(c.grd) })
+  for (const c of sat) satConfigs.push({ id: c.id, name: c.name || '', nameAuto: adoptAutoFlag('sat', c), form: withoutRetiredKeys({ ...defaultsFor(SAT_FIELDS), ...c.form }), grd: normGrd(c.grd) })
   const n = es.length + bb.length + sat.length
   if (n) toast(`资源库新增 ${n} 条`)
 }
@@ -1812,6 +1812,26 @@ async function onWinDrop(e) {
   if (shareRef.value) shareRef.value.importText(text, f.name)
 }
 
+// —— 指向误差工具（GSO 专用，只读）——
+// 结果只在工具里看：不回写链路表 / 资源库、不进引擎。每次打开按聚焦行（没有就取第一行）播种：定点经度与上 / 下行频率
+// 取该行所用卫星，站址取该行两端（留空格按引擎口径：经纬度回退默认站址、海拔回退 0，与「计算」同一份 withDefaultSite），
+// 天线口径 / 效率取两端各自的地球站配置（与组参同一个 resolveEs）。
+const pointToolOpen = ref(false)
+const pointToolSeed = computed(() => {
+  const row = linkRows.find((r) => r._id === focusRowId.value) || linkRows[0] || null
+  const sf = ((row ? satOfRow(row) : curSat.value) || {}).form || {}
+  const site = (row && withDefaultSite(row, defSite.value)) || {}
+  const ds = defSite.value || {}
+  const pick = (v, d) => (v == null || String(v).trim() === '' ? (d == null ? '' : String(d)) : String(v))
+  const txEs = (resolveEs(row && row.stationId) || {}).form || {}
+  const rxEs = (resolveEs(row && row.rxStationId) || {}).form || {}
+  return {
+    lonDeg: pick(sf.orbitPosition), upGHz: pick(sf.centerFrequency), dnGHz: pick(sf.rxCenterFrequency),
+    tx: { lat: pick(site.latitude, ds.lat), lon: pick(site.longitude, ds.lon), altM: pick(site.altitude, 0), diameterM: pick(txEs.antennaDiameter), effPct: pick(txEs.antennaEfficiency) },
+    rx: { lat: pick(site.rxLatitude, ds.lat), lon: pick(site.rxLongitude, ds.lon), altM: pick(site.rxAltitude, 0), diameterM: pick(rxEs.antennaDiameter), effPct: pick(rxEs.rxAntennaEfficiency) }
+  }
+})
+
 // —— 导入图上链路（星座 3D 主窗建的 STK Chain 式单向链路：链路表「导入链路」对话框拉取 / tool:open 的 ctx.links 推送）——
 // 本窗只收「地球站 → 透明转发 GEO 星 → 地球站」三节点链路，其余计数跳过（载荷形状见 packages/core/models/mapLinks.mjs）。
 // 口径同上方带上下文打开：只追加，既有链路行与库条目一字不动——
@@ -2509,6 +2529,9 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 高级计算
               </button>
+              <button class="lbr-big" title="指向误差：按卫星倾角 / 偏心率 / 东西保持与地球站跟踪方式、误差分项，算一天的指向偏离与指向损耗（只读，不回写链路表）" @click="pointToolOpen = true">
+                <Icon name="crosshair" :size="16" />指向误差
+              </button>
             </div>
             <div class="lbr-cap">计算</div>
           </div>
@@ -2689,6 +2712,9 @@ onMounted(async () => {
 
     <!-- 导入链路：星座 3D 主窗的图上链路（四窗共用组件；本窗只收 站 → 透明 GEO 星 → 站）-->
     <LinkImportDialog v-if="linkImpOpen" kind="linkbudget" @import="onLinkImport" @close="linkImpOpen = false" />
+
+    <!-- 指向误差（只读工具）：初值取聚焦行，结果只在工具里显示。seed 只在开着时求值（同容量汇总的 capModel） -->
+    <LbPointingTool :open="pointToolOpen" :seed="pointToolOpen ? pointToolSeed : null" @close="pointToolOpen = false" />
 
     <!-- 导出报告：封面元信息 + 输出格式 + 是否含图（三窗共用组件）-->
     <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview"

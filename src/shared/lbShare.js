@@ -23,6 +23,7 @@
 // （早先一律降成 'manual'：两窗只认「mode ≠ manual 且有 orbit」才按轨道解，对端就改按表单里的圆轨道算了。）
 // 各体制剥哪些字段由调用方的 spec.sanitize 声明，见下方 fingerprint 一节。
 import { stableStringify } from './configDirty.js'
+import { stripRetiredKeys, withoutRetiredKeys } from './lbRetiredKeys.js'   // 资源库表单的退役键：打包 / 拆包 / 指纹都不认
 
 export const SHARE_PREFIX = 'LBCFG1.'
 export const LIB_KINDS = ['es', 'carrier', 'sat']
@@ -52,11 +53,12 @@ export function emptyLib() { return { es: [], carrier: [], sat: [] } }
 // —— 条目规整 ——
 // 除 id/name/nameAuto/form 外的顶层键（grd / ngsoSat 等「随条目走的扩展属性」）一律原样带上：
 // 各体制往条目上挂什么由它自己决定，本模块不枚举。深拷贝顺带把 Vue 响应式 Proxy 摘掉
-//（否则经 IPC 结构化克隆会报 An object could not be cloned）。
+//（否则经 IPC 结构化克隆会报 An object could not be cloned）。form 里的退役键（shared/lbRetiredKeys.js）不带。
 const BASE_KEYS = new Set(['id', 'name', 'nameAuto', 'form'])
 function normEntry(e) {
   if (!e || typeof e !== 'object' || !e.form) return null
   const o = { id: String(e.id == null ? '' : e.id), name: String(e.name == null ? '' : e.name), nameAuto: e.nameAuto === true, form: clone(e.form) }
+  stripRetiredKeys(o.form)
   for (const k of Object.keys(e)) if (!BASE_KEYS.has(k) && e[k] !== undefined) o[k] = clone(e[k])
   return o
 }
@@ -195,7 +197,7 @@ export function lockedRefsOf(states, refsOf, libs) {
 //   sanitize 剥掉「本机资源指针」（见文件头）。声明了它 ⇒ 并库时启用宽松匹配。
 const packOf = (spec, c) => (spec && spec.pack ? spec.pack(c) : c)
 function fpKeys(spec, e) {
-  const o = { form: (e && e.form) || null }
+  const o = { form: withoutRetiredKeys((e && e.form) || null) }
   for (const k of (spec && spec.keys) || []) o[k] = (e && e[k] !== undefined) ? e[k] : null
   return o
 }

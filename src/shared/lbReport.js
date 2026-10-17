@@ -305,10 +305,6 @@ export const LB_REPORT_EN = {
   '接收机噪温': 'Receiver Noise Temp.', '卫星名称': 'Satellite Name', '工作频段': 'Frequency Band',
   '上行频率': 'Uplink Frequency', '上行极化': 'Uplink Polarisation', '下行频率': 'Downlink Frequency',
   '下行极化': 'Downlink Polarisation', '定点轨道经度': 'Orbital Longitude', 'SFDref': 'SFDref',
-  // GSO 倾斜运行 / 保持盒（A-01）：卫星库三项 + 地球站库「跟踪方式 / 跟踪残差」及其下拉值
-  '倾角': 'Inclination', '偏心率': 'Eccentricity', '东西保持 ±': 'E-W Station-keeping ±',
-  '跟踪方式': 'Tracking Mode', '跟踪残差': 'Tracking Residual',
-  '固定': 'Fixed', '步进': 'Step Track', '程控': 'Program Track', '单脉冲': 'Monopulse',
   'G/Tref': 'G/Tref', 'Tpdr.带宽': 'Tpdr. Bandwidth', 'Tpdr. IBO': 'Tpdr. IBO', 'Tpdr. OBO': 'Tpdr. OBO',
   'Tpdr. C/IM': 'Tpdr. C/IM', '上行C/ACI': 'Uplink C/ACI', '上行C/ASI': 'Uplink C/ASI',
   '上行C/XPI': 'Uplink C/XPI', 'HPA C/IM': 'HPA C/IM', '下行C/ACI': 'Downlink C/ACI',
