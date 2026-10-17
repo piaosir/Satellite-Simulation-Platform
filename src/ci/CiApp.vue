@@ -21,8 +21,9 @@ import CiGeoPanel from './CiGeoPanel.vue'
 import CiAp8Formula from './CiAp8Formula.vue'
 import ExcelGrid from '../components/ExcelGrid.vue'
 import { useCiGrid, headTip, SRC_COLS, PT_COLS, NG_COLS } from './ciInputGrids.js'
-import { CCI_SOURCES, SOURCE_NAME, TABLE_COLS, DEF_COLS, planCols, colorCols, segsText } from './cciScheme.js'
+import { CCI_SOURCES, SOURCE_NAME, TABLE_COLS, DEF_COLS, planCols, colorCols, segsText, parseBeamNos } from './cciScheme.js'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
+import CiBeamMap from './CiBeamMap.vue'
 import CiCdfPlot from './CiCdfPlot.vue'
 import CiSeriesPlot from './CiSeriesPlot.vue'
 import WinStatusBar from '../components/WinStatusBar.vue'
@@ -66,6 +67,62 @@ async function exportCciField() {
 }
 // 「输入已变」灯的悬停口径（与雨衰页同一句）
 const STALE_TIP = '计算输入已被修改，以下数值对应修改前的参数'
+
+// —— C/CCI 目标波束（缺省页）：选目标 → 勾同频同极化波束 → 覆盖区内逐点（口径见 core 的 interference/cciTarget.js）——
+// 波束图单击：「点选目标」档设目标并自动切到「点选同频」；「点选同频」档加入 / 移出同频组（点目标本身不动）。
+const cctMap = ref(null)
+const cctMapH = 560
+const cctPickMode = ref('target')
+const cctPick = computed(() => I.cciPick.value)
+const cctBeams = computed(() => (cci.tgtBeams && cci.tgtBeams.key === cci.antennaKey ? cci.tgtBeams.beams.slice().sort((a, b) => a.idx - b.idx) : []))
+const cctCoSet = computed(() => new Set(cctPick.value.co || []))
+const cctCoValid = computed(() => { const have = new Set(cctBeams.value.map((b) => b.idx)); return (cctPick.value.co || []).filter((x) => x !== cctPick.value.target && have.has(x)) })
+// 同频组的波束号读数（1 基、连号压成 a-b），也是可编辑的那一格
+const cctCoText = computed(() => {
+  const n = cctCoValid.value.map((x) => x + 1)
+  const out = []
+  for (let i = 0; i < n.length;) {
+    let j = i
+    while (j + 1 < n.length && n[j + 1] === n[j] + 1) j++
+    out.push(j - i >= 2 ? `${n[i]}-${n[j]}` : n.slice(i, j + 1).join(', '))
+    i = j + 1
+  }
+  return out.join(', ')
+})
+function onCoText(v) { I.setCciCo(parseBeamNos(v).map((no) => no - 1)) }
+watch(() => [cci.antennaKey, cctPick.value.target], () => { cctPickMode.value = cctPick.value.target == null ? 'target' : 'co' }, { immediate: true })
+function onBeamPick(idx) {
+  if (cctPickMode.value === 'target' || cctPick.value.target == null) { I.setCciTarget(idx); cctPickMode.value = 'co'; return }
+  if (idx !== cctPick.value.target) I.toggleCciCo(idx)
+}
+const cctRes = computed(() => cci.tgtResult)
+const cctWorst = computed(() => (cctRes.value && cctRes.value.worst ? cctRes.value.worst : null))
+const cctSingle = computed(() => { const m = new Map(); for (const x of (cctRes.value && cctRes.value.singles) || []) m.set(x.idx, x.minDb); return m })
+const cctSummary = computed(() => {
+  if (!cctBeams.value.length) return ''
+  const p = cctPick.value
+  return [`${cctBeams.value.length} 个波束`, p.target != null ? `目标 #${p.target + 1}` : '', cctCoValid.value.length ? `同频 ${cctCoValid.value.length}` : ''].filter(Boolean).join(' · ')
+})
+const cctResLine = computed(() => {
+  const r = cctRes.value
+  if (!r) return ''
+  return [`#${r.target + 1}`, `同频 ${r.cochannel.length}`, `覆盖 −${f(r.eocDb, 1)} dB`, `${(r.cover || 0).toLocaleString('en-US')} 点`, `${(r.elapsedMs / 1000).toFixed(2)} s`].join(' · ')
+})
+const geoTxt = (lon, lat) => (Number.isFinite(lon) && Number.isFinite(lat) ? `${Math.abs(lon).toFixed(3)}°${lon >= 0 ? 'E' : 'W'} ${Math.abs(lat).toFixed(3)}°${lat >= 0 ? 'N' : 'S'}` : '—')
+const cctExporting = ref(false)
+async function exportCctMap() {
+  const exportFile = window.api && window.api.exportFile
+  if (!exportFile || !cctMap.value || cctExporting.value) return
+  cctExporting.value = true
+  try {
+    const url = cctMap.value.toPngDataUrl(3)
+    if (!url) { N.toastError('导出失败'); return }
+    const data = new Uint8Array(await (await fetch(url)).arrayBuffer())
+    const r = await exportFile({ defaultName: 'C-CCI 目标波束.png', data, filters: [{ name: 'PNG 图片', extensions: ['png'] }] })
+    if (r && r.ok) { const fp = r.path || (Array.isArray(r.paths) && r.paths[0]) || r.filePath || ''; N.toastFile('已导出：' + String(fp).split(/[\\/]/).pop(), fp) }
+    else if (r && !r.canceled) N.toastError('导出失败：' + (r.error || ''))
+  } catch (e) { N.toastError('导出失败：' + ((e && e.message) || e)) } finally { cctExporting.value = false }
+}
 
 // —— 主窗口带上下文打开（地图右键 / 卫星信息栏「分析 ▸ 干扰分析」）——
 // 一份配置 = 一座本站 + 一条本链路。带来的 GSO 星（期望星轨位与星名）/ 站（取第一个，站名与站址）与当前配置不同
@@ -414,7 +471,7 @@ const run = () => {
   if (mode.value === 'asi') I.computeAsi()
   else if (mode.value === 'ap8') I.computeAp8()
   else if (mode.value === 'xpi') I.computeXpi()
-  else if (mode.value === 'cci') I.computeCci()
+  else if (mode.value === 'cci') (cci.view === 'target' ? I.computeCciTarget() : I.computeCci())
   else I.computeNgso()
 }
 </script>
@@ -648,6 +705,117 @@ const run = () => {
 
       <!-- ============ C/CCI ============ -->
       <template v-else-if="mode === 'cci'">
+        <div class="cct-views">
+          <div class="seg nseg" role="radiogroup" aria-label="C/CCI 口径">
+            <button type="button" class="sg" role="radio" :aria-checked="cci.view === 'target' ? 'true' : 'false'" :class="{ on: cci.view === 'target' }" title="选一个目标波束与它的同频同极化波束，算目标覆盖区内的 C/CCI" @click="cci.view = 'target'">目标波束</button>
+            <button type="button" class="sg" role="radio" :aria-checked="cci.view === 'scheme' ? 'true' : 'false'" :class="{ on: cci.view === 'scheme' }" title="按复用方案（频率计划 / 色号 / 轮转）算全部波束" @click="cci.view = 'scheme'">复用方案</button>
+          </div>
+        </div>
+
+        <template v-if="cci.view === 'target'">
+        <section class="ci-panel">
+          <div class="ci-panel-hd">
+            <h2>目标波束 C/CCI</h2>
+            <span class="ci-hd-sum">{{ cctSummary }}</span>
+          </div>
+          <div class="cct">
+            <div class="cct-side">
+              <div class="ci-form cct-form">
+                <div class="srow"><label>方向图</label>
+                  <select v-model="cci.antennaKey" class="ci" :title="currentAntenna ? currentAntenna.label : ''">
+                    <option value="">— 选一副天线 —</option>
+                    <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }} · {{ a.origin }}</option>
+                  </select>
+                </div>
+                <div class="cct-btns">
+                  <button class="ci-btn" @click="I.importGrdHere()">导入 GRD…</button>
+                  <button class="ci-btn" @click="I.loadGrdTree()">刷新列表</button>
+                </div>
+                <div class="srow"><label title="覆盖区 = 目标波束增益不低于其峰值减此值的区域；波束图上各波束的轮廓线取同一电平">覆盖电平</label><input v-model.number="cci.eocDb" class="ci" type="number" step="0.5" min="0.5" /><span class="u">dB</span></div>
+                <div class="srow"><label>目标波束</label>
+                  <select class="ci" :value="cctPick.target == null ? '' : cctPick.target" :disabled="!cctBeams.length" @change="I.setCciTarget($event.target.value === '' ? null : +$event.target.value)">
+                    <option value="">—</option>
+                    <option v-for="b in cctBeams" :key="b.idx" :value="b.idx">#{{ b.idx + 1 }}</option>
+                  </select><span class="u"></span>
+                </div>
+              </div>
+              <div class="cct-cohd">
+                <h3 title="与目标波束同频段、同极化的波束：各波束在目标覆盖区内的共极化增益按功率相加即同频干扰">同频同极化波束</h3>
+                <span class="cct-cnt">{{ cctCoValid.length }}</span>
+                <button class="ci-btn cct-clr" :disabled="!cctCoValid.length" @click="I.clearCciCo()">清空</button>
+              </div>
+              <input class="ci cct-nos" type="text" :value="cctCoText" :disabled="cctPick.target == null" title="按波束号输入：逗号分隔，连号用 -；回车或离开输入框生效" @change="onCoText($event.target.value)" @keydown.enter="$event.target.blur()" />
+              <div v-if="cctBeams.length" class="cct-chips" role="group" aria-label="同频同极化波束">
+                <button v-for="b in cctBeams" :key="b.idx" type="button" class="cct-chip" :class="{ tg: b.idx === cctPick.target, co: cctCoSet.has(b.idx) }"
+                  :disabled="b.idx === cctPick.target || cctPick.target == null" :aria-pressed="cctCoSet.has(b.idx) ? 'true' : 'false'"
+                  :title="b.idx === cctPick.target ? '目标波束' : (b.peakDb != null ? `峰值 ${f(b.peakDb)} dBi` : null)" @click="I.toggleCciCo(b.idx)">{{ b.idx + 1 }}</button>
+              </div>
+              <p v-else class="ci-note" :class="{ err: !!cci.tgtBeamsErr }">{{ cci.tgtBeamsErr || (grdAntennas.length ? (cci.antennaKey ? '暂无波束。' : '未选方向图。') : '暂无可用方向图。') }}</p>
+              <button class="ci-btn cct-run" :disabled="busy || cctPick.target == null || !cctCoValid.length" title="计算（Ctrl+Enter）" @click="I.computeCciTarget()">
+                <svg viewBox="0 0 16 16" class="cct-play"><path d="M4 2.5 13 8 4 13.5z" /></svg>{{ busy ? '计算中…' : '计算' }}
+              </button>
+            </div>
+            <div class="cct-main">
+              <div class="cct-maphd">
+                <div class="seg nseg" role="radiogroup" aria-label="点选">
+                  <button type="button" class="sg" role="radio" :aria-checked="cctPickMode === 'target' ? 'true' : 'false'" :class="{ on: cctPickMode === 'target' }" title="单击波束设为目标波束" @click="cctPickMode = 'target'">点选目标</button>
+                  <button type="button" class="sg" role="radio" :aria-checked="cctPickMode === 'co' ? 'true' : 'false'" :class="{ on: cctPickMode === 'co' }" :disabled="cctPick.target == null" title="单击波束加入 / 移出同频同极化波束" @click="cctPickMode = 'co'">点选同频</button>
+                </div>
+                <span v-if="stale.cciTgt" class="ci-stale" :title="STALE_TIP">输入已变</span>
+                <div class="ci-hd-tools">
+                  <button class="ci-btn" :disabled="!cctBeams.length || cctExporting" title="导出为 PNG 图片（3 倍分辨率）" @click="exportCctMap">导出</button>
+                </div>
+              </div>
+              <CiBeamMap ref="cctMap" :beams="cctBeams" :fit-key="cci.antennaKey" :target="cctPick.target" :co="cctCoValid"
+                :field="cctRes ? cctRes.field : null" :worst="cctWorst" :dim="stale.cciTgt" :height="cctMapH" @pick="onBeamPick" />
+            </div>
+          </div>
+        </section>
+
+        <section v-if="cctRes" class="ci-panel">
+          <div class="ci-panel-hd">
+            <h2>结果</h2>
+            <span v-if="stale.cciTgt" class="ci-stale" :title="STALE_TIP">输入已变</span>
+            <span class="ci-hd-sum" data-i18n-skip>{{ cctResLine }}</span>
+          </div>
+          <div class="cct-kpis">
+            <div class="cct-kpi lead" title="覆盖区内最小值"><span>最差 C/CCI</span><div class="cct-v"><b>{{ f(cctRes.stats && cctRes.stats.min) }}</b><i>dB</i></div></div>
+            <div class="cct-kpi" title="覆盖区内 5% 的点低于此值"><span>5% 分位</span><div class="cct-v"><b>{{ f(cctRes.stats && cctRes.stats.p5) }}</b><i>dB</i></div></div>
+            <div class="cct-kpi"><span>中位</span><div class="cct-v"><b>{{ f(cctRes.stats && cctRes.stats.p50) }}</b><i>dB</i></div></div>
+            <div class="cct-kpi" title="目标波束峰值处"><span>峰值点 C/CCI</span><div class="cct-v"><b>{{ f(cctRes.peak && cctRes.peak.cciDb) }}</b><i>dB</i></div></div>
+          </div>
+          <div class="ci-kpis">
+            <div class="ci-kpi"><span>最差点</span><b class="sm" data-i18n-skip>{{ cctWorst ? geoTxt(cctWorst.lon, cctWorst.lat) : '—' }}</b></div>
+            <div class="ci-kpi" title="目标波束在最差点的共极化增益"><span>最差点目标增益</span><b>{{ f(cctWorst && cctWorst.gainDb) }}</b><i>dBi</i></div>
+            <div class="ci-kpi" title="目标波束共极化峰值增益"><span>目标峰值增益</span><b>{{ f(cctRes.peakDb) }}</b><i>dBi</i></div>
+            <div class="ci-kpi" title="覆盖区边界上的目标增益"><span>覆盖边缘增益</span><b>{{ f(cctRes.coverDb) }}</b><i>dBi</i></div>
+          </div>
+          <h3>最差点逐源分解</h3>
+          <div class="ci-tbwrap">
+            <table class="ci-tb res cct-tb">
+              <thead><tr>
+                <th>干扰波束</th>
+                <th class="n" title="该波束单独作用时：目标增益减该波束增益">单项 C/I dB</th>
+                <th class="n">占比</th>
+                <th class="n" title="该波束单独作用时，覆盖区内单项 C/I 的最小值">覆盖区最小单项 C/I dB</th>
+              </tr></thead>
+              <tbody>
+                <tr v-for="it in (cctWorst ? cctWorst.items : [])" :key="it.idx">
+                  <td><i class="cct-sw"></i>#{{ it.idx + 1 }}<span v-if="it.floored" class="ci-slot" title="该点落在该波束 GRD 网格窗外，按其网格最小电平计入">窗外</span></td>
+                  <td class="num">{{ f(it.ciDb) }}</td>
+                  <td class="num">{{ it.sharePct.toFixed(1) }} %<span class="share-bar cct-bar"><i :style="{ width: Math.max(0, Math.min(100, it.sharePct)) + '%' }"></i></span></td>
+                  <td class="num">{{ f(cctSingle.get(it.idx)) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-if="cctRes.clipped" class="ci-warn">覆盖区越出目标波束的方向图窗口。</p>
+          <p v-if="cctRes.missing && cctRes.missing.length" class="ci-warn">方向图中无波束 {{ cctRes.missing.map((x) => '#' + (x + 1)).join('、') }}。</p>
+          <p v-if="cctRes.floorPts" class="ci-note sm">窗外计入 {{ cctRes.floorPts.toLocaleString('en-US') }} 点。</p>
+        </section>
+        </template>
+
+        <template v-else>
         <section class="ci-panel">
           <div class="ci-panel-hd">
             <h2>方向图与复用方案</h2>
@@ -844,6 +1012,7 @@ const run = () => {
             </table>
           </div>
         </section>
+        </template>
       </template>
 
       <!-- ============ C/XPI ============ -->
@@ -1560,6 +1729,54 @@ const run = () => {
 .ci-tbwrap { min-width: 0; overflow-x: auto; }
 /* C/CCI 逐波束统计：几十到几百个波束，表自己纵滚，别把整页拉长 */
 .ci-tbwrap.tall { max-height: 420px; overflow-y: auto; }
+
+/* —— C/CCI 目标波束 ——
+   左栏是选择（方向图 → 覆盖电平 → 目标 → 同频组 → 计算，自上而下就是操作顺序），右栏是波束图；结果另起一块。
+   目标蓝 / 同频橙取图表系列色前两槽（lbPlotTheme 的 SERIES_*，亮暗各一套），波束图、波束号格、份额条三处同色：
+   波束号格因此兼作图例，不另画图例框。 */
+.cct-views { display: flex; margin: 0 0 12px; }
+.cct-views .seg > .sg { min-width: 92px; text-align: center; }
+.cct { --cct-tg: #15619b; --cct-co: #b8571a; display: grid; grid-template-columns: minmax(250px, 290px) minmax(0, 1fr); gap: 18px; align-items: start; }
+.ci-panel .cct-tb { --cct-co: #b8571a; }
+:root[data-theme="dark"] .cct, :root[data-theme="dark"] .ci-panel .cct-tb { --cct-tg: #4a8fc9; --cct-co: #d2792f; }
+@media (max-width: 1000px) { .cct { grid-template-columns: 1fr; } }
+.cct-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.cct-form { grid-template-columns: 1fr; gap: 6px; }
+.cct-form .srow { --srow-lab: 64px; }
+.cct-form .srow > select.ci { min-width: 0; }
+/* 与上一行的控件左沿对齐：标签列 64 + 行间距 8 */
+.cct-btns { display: flex; gap: 6px; padding-left: 72px; margin-top: -2px; }
+.cct-cohd { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.cct-cohd h3 { margin: 0 !important; }
+.cct-cnt { min-width: 20px; padding: 0 6px; font-size: var(--fs-2); font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; color: var(--text); background: color-mix(in srgb, var(--cct-co) 18%, transparent); border: 1px solid color-mix(in srgb, var(--cct-co) 55%, transparent); border-radius: 9px; }
+.cct-clr { margin-left: auto; height: 22px; padding: 0 8px; }
+.cct-nos { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; }
+.cct-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 4px; max-height: 232px; overflow-y: auto; padding: 1px; }
+.cct-chip { height: 24px; padding: 0; font: inherit; font-size: var(--fs-3); font-variant-numeric: tabular-nums; cursor: pointer; color: var(--text-muted); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-ctl); transition: background var(--dur-1, 80ms), border-color var(--dur-1, 80ms); }
+.cct-chip:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+.cct-chip.co { color: var(--text); font-weight: 700; background: color-mix(in srgb, var(--cct-co) 16%, var(--bg)); border-color: var(--cct-co); }
+.cct-chip.co:hover { background: color-mix(in srgb, var(--cct-co) 26%, var(--bg)); }
+.cct-chip.tg { color: var(--text); font-weight: 700; background: color-mix(in srgb, var(--cct-tg) 18%, var(--bg)); border: 2px solid var(--cct-tg); cursor: default; opacity: 1; }
+.cct-chip:disabled:not(.tg) { opacity: 0.5; cursor: default; }
+.cct-run { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 30px; margin-top: 6px; font-weight: 600; color: var(--accent-on); background: var(--accent-fill); border-color: var(--accent-fill); }
+.cct-run:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
+.cct-play { width: 11px; height: 11px; fill: currentColor; }
+.cct-main { min-width: 0; }
+.cct-maphd { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; min-height: 24px; }
+.cct-maphd .seg > .sg { min-width: 76px; text-align: center; }
+/* 结果读数：四个 C/CCI 统计量一排，最差值领头加大；几何读数走下面那行常规读数 */
+.cct-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 2px 0 12px; }
+@media (max-width: 900px) { .cct-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.cct-kpi { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px 9px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-box); }
+.cct-v { display: flex; align-items: baseline; gap: 5px; }
+.cct-kpi span { font-size: var(--fs-3); color: var(--text-muted); white-space: nowrap; }
+.cct-kpi b { font-size: calc(var(--fs-5) * 1.35); font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.cct-kpi i { font-size: var(--fs-3); font-style: normal; color: var(--text-faint); }
+.cct-kpi.lead { border-color: var(--border-strong); box-shadow: inset 3px 0 0 var(--text); }
+.cct-kpi.lead b { font-size: calc(var(--fs-5) * 1.6); }
+.cct-sw { display: inline-block; width: 8px; height: 8px; margin-right: 6px; vertical-align: 1px; background: var(--cct-co); border-radius: 2px; }
+.cct-bar { width: 72px; }
+.cct-bar i { background: var(--cct-co); }
 
 .ci-note { margin: 6px 0 0; font-size: var(--fs-3); line-height: 1.55; color: var(--text-muted); }
 .ci-note.sm { font-size: var(--fs-2); }

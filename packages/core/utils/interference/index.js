@@ -15,6 +15,8 @@ const patterns = require('./patterns.js');
 const ciAsi = require('./ciAsi.js');
 const ciXpi = require('./ciXpi.js');
 const ciCci = require('./ciCci.js');
+// C/CCI 目标波束口径（目标 + 勾选的同频同极化波束，覆盖区内逐点）
+const cciTarget = require('./cciTarget.js');
 const ciNgso = require('./ciNgso.js');
 // RR 附录 8 协调触发（双向 ΔT/T）与附录 5 协调弧：口径属 ITU 规则，放 utils/itu/，经这里一并导出
 const ap8 = require('../itu/ap8.js');
@@ -23,7 +25,7 @@ const ap8Formula = require('./ap8Formula.js');
 
 module.exports = {
   geometry, patterns,
-  ciAsi, ciXpi, ciCci, ciNgso, ap8,
+  ciAsi, ciXpi, ciCci, cciTarget, ciNgso, ap8,
   // 常用入口平铺，免得调用方层层点
   gsoSeparation: geometry.gsoSeparation,
   topocentricAngle: geometry.topocentricAngle,

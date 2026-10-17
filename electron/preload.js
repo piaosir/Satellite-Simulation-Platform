@@ -293,6 +293,7 @@ contextBridge.exposeInMainWorld('api', {
     // C/CCI 复用方案：方向图概要 · 取值点表（同步）· 场图作业（start 只启动，进度 / 结果经两个订阅推回）
     cciInfo: (req) => ipcRenderer.invoke('ci:cciInfo', req),
     cciPoints: (req) => ipcRenderer.invoke('ci:cciPoints', req),
+    cciBeams: (req) => ipcRenderer.invoke('ci:cciBeams', req),
     cciStart: (req) => ipcRenderer.invoke('ci:cciStart', req),
     cciCancel: () => ipcRenderer.invoke('ci:cciCancel'),
     onCciProgress: (cb) => ipcRenderer.on('ci:cciProgress', (_e, p) => cb(p)),

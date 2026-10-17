@@ -1164,6 +1164,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   // C/CCI 复用方案：方向图概要（存活波束 + 波束合成色号）· 取值点表 · 场图作业（进度 ci:cciProgress、结果 ci:cciDone）
   ipcMain.handle('ci:cciInfo', (_e, req) => interference.cciInfo(req))
   ipcMain.handle('ci:cciPoints', (_e, req) => interference.cciPoints(req))
+  // C/CCI 目标波束：逐波束足迹（波束图点选用）；目标波束作业走 ci:cciStart（mode:'target'），进度 / 结果同上
+  ipcMain.handle('ci:cciBeams', (_e, req) => interference.cciBeams(req))
   ipcMain.handle('ci:cciStart', (e, req) => interference.cciStart(e.sender, req))
   ipcMain.handle('ci:cciCancel', () => interference.cciCancel())
   ipcMain.handle('ci:ngsoEstimate', (_e, req) => interference.ngsoEstimate(req))

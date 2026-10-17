@@ -510,18 +510,44 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       return { ok: true, ...HC.cciPoints({ sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme, points: r.points, servingIdx: r.servingIdx, floorDb: r.floorDb }) };
     } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
   }
+  // 目标波束口径（core 的 interference/cciTarget.js）：逐波束足迹（峰值 − X 等值线 + 峰值落点）给波束图点选用。
+  // 足迹只随方向图 / 指向 / 覆盖电平变，按这三样记一份（拖覆盖电平时同一个数不重算）。
+  const CT = require('../../packages/core/utils/interference/cciTarget.js');
+  let _fpKey = '', _fpVal = null;
+  function cciBeams(req) {
+    const r = req || {};
+    try {
+      if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
+      if (!r.file) throw new Error('未指定方向图');
+      const key = JSON.stringify([r.file, r.sat || null, r.cfg || null, r.levelDb]);
+      if (key !== _fpKey || !_fpVal) {
+        _fpVal = CT.beamFootprints({ sampler: grdSampler, loaded: grd.loadedOf(r.file), sat: r.sat, cfg: r.cfg, levelDb: r.levelDb });
+        _fpKey = key;
+      }
+      return { ok: true, ..._fpVal };
+    } catch (e) { _fpKey = ''; _fpVal = null; return { ok: false, error: (e && e.message) || String(e) }; }
+  }
   let _cciToken = 0;
   function cciStart(webContents, req) {
     const r = req || {};
     const token = ++_cciToken;
     let run;
     try {
-      const p = cciPrep(r);
-      if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
-      run = HC.createCciRun({
-        sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme,
-        dir: r.dir, grid: r.grid, points: r.points, floorDb: r.floorDb, eocDb: r.eocDb, servingIdx: r.servingIdx, rtn: r.rtn
-      });
+      if (r.mode === 'target') {
+        if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
+        if (!r.file) throw new Error('未指定方向图');
+        run = CT.createTargetRun({
+          sampler: grdSampler, loaded: grd.loadedOf(r.file), sat: r.sat, cfg: r.cfg,
+          target: r.target, cochannel: r.cochannel, eocDb: r.eocDb
+        });
+      } else {
+        const p = cciPrep(r);
+        if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
+        run = HC.createCciRun({
+          sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme,
+          dir: r.dir, grid: r.grid, points: r.points, floorDb: r.floorDb, eocDb: r.eocDb, servingIdx: r.servingIdx, rtn: r.rtn
+        });
+      }
     } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
     const send = (ch, payload) => {
       try { if (webContents && !webContents.isDestroyed()) webContents.send(ch, payload); } catch (e) { /* 窗口已关 */ }
@@ -719,5 +745,5 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
 
   function ngsoCancel() { _token++; return { ok: true }; }
 
-  return { asi, xpi, xpiTerm, cciPoint, cciInfo, cciPoints, cciStart, cciCancel, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
+  return { asi, xpi, xpiTerm, cciPoint, cciInfo, cciPoints, cciBeams, cciStart, cciCancel, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
 };

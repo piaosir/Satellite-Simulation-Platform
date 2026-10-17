@@ -317,6 +317,7 @@
     "packages/core/test/polKernel.test.mjs",
     "packages/core/test/apertureModel.test.mjs",
     "packages/core/test/htsCoupling.test.mjs",
+    "packages/core/test/cciTarget.test.mjs",
     "packages/core/test/ap8.test.mjs",
     "packages/core/test/art21Table.test.mjs",
     "packages/core/test/accessEngine.test.mjs",

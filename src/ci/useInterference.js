@@ -7,7 +7,7 @@
 // 本模块是**只读消费者**：读三库（store.getLibrary）与 GRD 树，从不写回。算出来的 C/I
 // 要用到链路预算里，由使用者自己搬——这是「只看不回填」的既定取舍，别在这里偷偷写库。
 
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, markRaw } from 'vue'
 // 「自定义星座」（星座页 Walker 生成器）：放置公式与场景历元一律复用星座3D 页那两个模块，
 // 绝不在本窗口另写一遍——NGSO 链路预算的搜索池（ngso/satSearchPool.js）也是这么接的。
 import { generateConstellation, validateWalker } from '../viz/constellation/walker.js'
@@ -193,7 +193,13 @@ export function useInterference() {
     field: null,
     stats: null,                     // 场图作业的逐波束统计与读数
     progress: 0, progressTotal: 0,
-    info: null                       // 方向图概要 { key, beamIdx, fc }（主进程回，不落盘）
+    info: null,                      // 方向图概要 { key, beamIdx, fc }（主进程回，不落盘）
+    // 目标波束（缺省页）：选一个目标波束、勾它的同频同极化波束，覆盖区内逐点算（core 的 interference/cciTarget.js）
+    view: 'target',                  // 'target' 目标波束 | 'scheme' 复用方案
+    picks: {},                       // 天线 key → { target: 原始下标 | null, co: [原始下标，升序] }
+    tgtBeams: null,                  // 逐波束足迹 { key, level, beams:[{ idx, peakDb, peak, rings }] }（主进程回，不落盘）
+    tgtBeamsErr: '',
+    tgtResult: null                  // 目标波束作业结果（不落盘）
   })
 
   // ---- NGSO ----
@@ -805,7 +811,7 @@ export function useInterference() {
   // C/CCI 覆盖场图：主进程分帧作业（进度 ci:cciProgress、结果 ci:cciDone，令牌作废迟到的帧）。
   // 网格两种：GRD 自身天线网格（逐节点，节距 = 方向图的节距）· 经纬网格（范围 + 步长）。没有格数上限，只有内存护栏。
   // 逐波束值不过 IPC：每点在主进程折成一个数，另回逐波束统计（服务区内最小 / 5% / 中位，返向另有最坏点与蒙特卡洛）。
-  let _cciToken = 0, _cciFp = '', _cciFpPts = '', _cciPts = []
+  let _cciToken = 0, _cciKind = '', _cciFp = '', _cciFpPts = '', _cciPts = []
   async function computeCciField() {
     const a = currentAntenna.value
     if (!a) { msg.value = '先选一副 GRD 方向图'; return }
@@ -833,7 +839,7 @@ export function useInterference() {
     catch (e) { busy.value = false; if (gen === _gen) msg.value = 'C/CCI 场计算失败：' + ((e && e.message) || e); return }
     if (gen !== _gen) { busy.value = false; if (r && r.ok) stopCciJob(); return }
     if (!r || !r.ok) { busy.value = false; msg.value = 'C/CCI 场计算失败：' + ((r && r.error) || '未知错误'); return }
-    _cciToken = r.token
+    _cciToken = r.token; _cciKind = 'field'
     cci.progressTotal = r.T
   }
   function applyCciResult(res) {
@@ -856,6 +862,11 @@ export function useInterference() {
     api.interference.onCciDone((p) => {
       if (!p || p.token !== _cciToken) return
       _cciToken = 0; busy.value = false; cci.progress = 0; cci.progressTotal = 0
+      if (_cciKind === 'target') {
+        if (!p.ok) { msg.value = 'C/CCI 计算失败：' + (p.error || '未知错误'); return }
+        applyCciTarget(p.result)
+        return
+      }
       if (!p.ok) { msg.value = 'C/CCI 场计算失败：' + (p.error || '未知错误'); return }
       applyCciResult(p.result)
     })
@@ -870,6 +881,110 @@ export function useInterference() {
     if (api && api.interference && api.interference.cciCancel) await api.interference.cciCancel()
     _cciToken = 0; busy.value = false; cci.progress = 0; cci.progressTotal = 0; msg.value = '已取消'
   }
+  // ---------------------------------------------------------------------------
+  // C/CCI · 目标波束
+  // ---------------------------------------------------------------------------
+  // 选择按天线分开记（换一副天线，目标与同频波束号就不是同一组了）；足迹随方向图 / 指向 / 覆盖电平取。
+  const cciPick = computed(() => cci.picks[cci.antennaKey] || { target: null, co: [] })
+  const cciTgtIdx = computed(() => (cci.tgtBeams && cci.tgtBeams.key === cci.antennaKey ? cci.tgtBeams.beams.map((b) => b.idx) : []))
+  function pickOf(key) {
+    if (!key) return null
+    let p = cci.picks[key]
+    if (!p || typeof p !== 'object') { p = { target: null, co: [] }; cci.picks[key] = p }
+    if (!Array.isArray(p.co)) p.co = []
+    return p
+  }
+  function setCciTarget(idx) {
+    const p = pickOf(cci.antennaKey)
+    if (!p) return
+    const v = idx == null || idx === '' ? null : Number(idx)
+    p.target = Number.isInteger(v) ? v : null
+    if (p.target != null) p.co = p.co.filter((x) => x !== p.target)
+  }
+  function toggleCciCo(idx) {
+    const p = pickOf(cci.antennaKey)
+    const v = Number(idx)
+    if (!p || !Number.isInteger(v) || v === p.target) return
+    p.co = p.co.includes(v) ? p.co.filter((x) => x !== v) : [...p.co, v].sort((a, b) => a - b)
+  }
+  function clearCciCo() { const p = pickOf(cci.antennaKey); if (p) p.co = [] }
+  // 整组设定（按波束号输入那一格）：原始下标，剔除目标与方向图里没有的
+  function setCciCo(list) {
+    const p = pickOf(cci.antennaKey)
+    if (!p) return
+    const have = new Set(cciTgtIdx.value)
+    p.co = [...new Set((list || []).map(Number).filter((x) => Number.isInteger(x) && x !== p.target && (!have.size || have.has(x))))].sort((a, b) => a - b)
+  }
+
+  let _fpSeq = 0, _fpTimer = 0
+  async function refreshCciBeams() {
+    const a = currentAntenna.value
+    const seq = ++_fpSeq
+    if (!a) { cci.tgtBeams = null; cci.tgtBeamsErr = ''; return }
+    if (a.node.noEph) { cci.tgtBeams = null; cci.tgtBeamsErr = '关联卫星当前无星历'; return }
+    if (boreToSat(a)) { cci.tgtBeams = null; cci.tgtBeamsErr = BORE_SAT_MSG; return }
+    if (!api || !api.interference || !api.interference.cciBeams) { cci.tgtBeams = null; cci.tgtBeamsErr = '需在桌面客户端中运行'; return }
+    const level = Math.max(0.1, +cci.eocDb || 4)
+    let r = null
+    try { r = await api.interference.cciBeams(cciReq(a, { levelDb: level })) } catch (e) { r = { ok: false, error: (e && e.message) || String(e) } }
+    if (seq !== _fpSeq) return
+    if (!r || !r.ok) { cci.tgtBeams = null; cci.tgtBeamsErr = (r && r.error) || '方向图读取失败'; return }
+    cci.tgtBeamsErr = ''
+    // 整份替换、不逐项改：不进深层响应（几百个波束 × 几十个轮廓点，拖图时每帧都要遍历一遍）
+    cci.tgtBeams = markRaw({ key: a.key, level: r.level, beams: r.beams || [] })
+  }
+  // 只在目标波束页上取；拖覆盖电平时按住 150 ms 再取（足迹要逐波束扫一遍网格）。进页时总取一次：
+  // 天线也能在 C/XPI 页换（两页共用 cci.antennaKey），离页期间的变化这里补上（主进程按入参缓存，同参不重算）
+  const cciFpWant = () => mode.value === 'cci' && cci.view === 'target'
+  watch(() => [cci.antennaKey, currentAntenna.value ? JSON.stringify(antennaSpec(currentAntenna.value)) : '', cci.eocDb].join('\n'), () => {
+    if (!cciFpWant()) return
+    clearTimeout(_fpTimer)
+    _fpTimer = setTimeout(refreshCciBeams, 150)
+  })
+  watch(cciFpWant, (on) => { if (on) refreshCciBeams() })
+
+  // 入算的那份（只留方向图里还在的波束）
+  function cciTgtPayload() {
+    const p = cciPick.value
+    const have = new Set(cciTgtIdx.value)
+    return {
+      target: p.target != null && have.has(p.target) ? p.target : null,
+      cochannel: (p.co || []).filter((x) => x !== p.target && have.has(x))
+    }
+  }
+  let _cciTgtFp = ''
+  async function computeCciTarget() {
+    const a = currentAntenna.value
+    if (!a) { msg.value = '先选一副 GRD 方向图'; return }
+    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }
+    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
+    if (!api || !api.interference || !api.interference.cciStart) { msg.value = '需在桌面客户端中运行'; return }
+    const pl = cciTgtPayload()
+    if (pl.target == null) { msg.value = '先选目标波束'; return }
+    if (!pl.cochannel.length) { msg.value = '先选同频同极化波束'; return }
+    const gen = _gen
+    if (_cciToken) { _cciToken = 0; stopCciJob() }
+    busy.value = true; cci.progress = 0; cci.progressTotal = 0; msg.value = 'C/CCI 计算…'
+    _cciTgtFp = fpCciTgt()
+    let r = null
+    try { r = await api.interference.cciStart(cciReq(a, { mode: 'target', ...pl, eocDb: Math.max(0.1, +cci.eocDb || 4) })) }
+    catch (e) { busy.value = false; if (gen === _gen) msg.value = 'C/CCI 计算失败：' + ((e && e.message) || e); return }
+    if (gen !== _gen) { busy.value = false; if (r && r.ok) stopCciJob(); return }
+    if (!r || !r.ok) { busy.value = false; msg.value = 'C/CCI 计算失败：' + ((r && r.error) || '未知错误'); return }
+    _cciToken = r.token; _cciKind = 'target'
+    cci.progressTotal = r.T
+  }
+  function applyCciTarget(res) {
+    const f = res.field
+    cci.tgtResult = {
+      ...res,
+      // 区外是 NaN：经 JSON 中转（导出 / 预览）会变成 null，Float64Array.from 再把 null 记成 0 —— 区外整块涂成最低色
+      field: f ? { xs: Float64Array.from(f.xs), ys: Float64Array.from(f.ys), nx: f.nx, ny: f.ny, z: Float64Array.from(f.z, (v) => (v == null ? NaN : v)), valid: f.valid, min: f.min, max: f.max } : null
+    }
+    ranFp.cciTgt = _cciTgtFp
+    msg.value = res.cover ? `C/CCI 完成：覆盖区 ${res.cover.toLocaleString('en-US')} 点 · ${(res.elapsedMs / 1000).toFixed(2)} s` : '覆盖区内无有效值。'
+  }
+
   // 老通道的场图：经纬网格逐格（一次 IPC 回全部格）
   async function computeCciFieldLegacy(a) {
     if (!api.linkBudget) { msg.value = '需在桌面客户端中运行'; return }
@@ -1451,7 +1566,8 @@ export function useInterference() {
         cci: {
           antennaKey: cci.antennaKey, colors: cci.colors, floorDb: cci.floorDb, points: cci.points, coloringOverride: cci.coloringOverride, bounds: cci.bounds, fieldStep: cci.fieldStep,
           dir: cci.dir, source: cci.source, planId: cci.planId, bandF: cci.bandF, bandR: cci.bandR, xpdDb: cci.xpdDb, eocDb: cci.eocDb,
-          rows: cci.rows, colorDefs: cci.colorDefs, grid: cci.grid, rtnMode: cci.rtnMode, mcTrials: cci.mcTrials, mcSeed: cci.mcSeed
+          rows: cci.rows, colorDefs: cci.colorDefs, grid: cci.grid, rtnMode: cci.rtnMode, mcTrials: cci.mcTrials, mcSeed: cci.mcSeed,
+          view: cci.view, picks: cci.picks
         },
         ngso: { v: NGSO_STATE_V, minElevDeg: ngso.minElevDeg, horizonH: ngso.horizonH, stepSec: ngso.stepSec, patternKind: ngso.patternKind, applyPolarization: ngso.applyPolarization, thresholdDb: ngso.thresholdDb, inlineGuardDeg: ngso.inlineGuardDeg, satPattern: ngso.satPattern, epochs: ngso.epochs, noise: ngso.noise, criteria: ngso.criteria, rain: { on: ngso.rain.on, thresholdDb: ngso.rain.thresholdDb, applyToInterference: ngso.rain.applyToInterference }, wanted: ngso.wanted, interferers: ngso.interferers }
     }))
@@ -1501,6 +1617,20 @@ export function useInterference() {
       })
       Object.assign(cci.bandF, { f1: '', f2: '' }, c.bandF || {})
       Object.assign(cci.bandR, { f1: '', f2: '' }, c.bandR || {})
+      // 目标波束（老配置没有 → 缺省页 = 目标波束、尚未选波束）
+      cci.view = c.view === 'scheme' ? 'scheme' : 'target'
+      const picks = {}
+      if (c.picks && typeof c.picks === 'object') {
+        for (const [k, v] of Object.entries(c.picks)) {
+          if (!v || typeof v !== 'object') continue
+          const t = Number(v.target)
+          picks[k] = {
+            target: v.target != null && Number.isInteger(t) ? t : null,
+            co: Array.isArray(v.co) ? [...new Set(v.co.map(Number).filter((x) => Number.isInteger(x) && x !== t))].sort((a, b) => a - b) : []
+          }
+        }
+      }
+      cci.picks = picks
     }
     if (d.ngso) {
       Object.assign(ngso, { minElevDeg: d.ngso.minElevDeg ?? 10, horizonH: d.ngso.horizonH ?? 6, stepSec: d.ngso.stepSec ?? 10, patternKind: d.ngso.patternKind || 'average', applyPolarization: d.ngso.applyPolarization !== false, thresholdDb: d.ngso.thresholdDb ?? 15, inlineGuardDeg: d.ngso.inlineGuardDeg ?? '' })
@@ -1565,7 +1695,7 @@ export function useInterference() {
   // 下面却还是上一次的数；手改入参同理。比的是指纹而不是「动过没有」：带进来的星站与现值相同、改了又改回，都不亮。
   // 指纹只取各页真正入算的量（站名 / 星名 / 门限线这类只影响显示的不进），且全是小对象，computed 逐次重算无负担。
   // ---------------------------------------------------------------------------
-  const ranFp = reactive({ asi: '', ap8: '', xpi: '', cci: '', cciField: '', ngso: '' })
+  const ranFp = reactive({ asi: '', ap8: '', xpi: '', cci: '', cciField: '', cciTgt: '', ngso: '' })
   // C/XPI 卫星侧 GRD 那一段的取值位置：站址 + 天线。现值与取值时不同 ⇒ 表里「本站处 XPD」已不是本站的
   const xpiLoc = () => JSON.stringify([+site.lon, +site.lat, cci.antennaKey])
   function fpXpi(at) {
@@ -1579,6 +1709,8 @@ export function useInterference() {
   const cciGridFp = () => ({ g: cci.grid, b: cci.bounds, st: cci.fieldStep, r: cci.dir === 'rtn' ? [cci.rtnMode, cci.mcTrials, cci.mcSeed] : null })
   const fpCci = () => JSON.stringify({ ...cciShared(), p: cci.points.filter((p) => Number.isFinite(+p.lon) && Number.isFinite(+p.lat)).map((p) => [+p.lon, +p.lat]), ...(cci.dir === 'rtn' ? cciGridFp() : {}) })
   const fpCciField = () => JSON.stringify({ ...cciShared(), ...cciGridFp() })
+  // 目标波束：方向图（含指向 / 取值口径）+ 目标 + 同频波束 + 覆盖电平
+  const fpCciTgt = () => { const a = currentAntenna.value; return JSON.stringify({ a: a ? antennaSpec(a) : null, ...cciTgtPayload(), e: +cci.eocDb }) }
   // NGSO：不走 ngsoPayload —— 自定义星座会把成千颗星的根数整份带上，且起点留空时取的是走动的时间轴此刻
   const fpNgso = () => JSON.stringify({
     st: [site.lon, site.lat, site.alt], rx: [site.rxDiameterM, site.rxEfficiency, site.rxFreqGHz],
@@ -1594,6 +1726,7 @@ export function useInterference() {
     xpi: !!xpi.result && fpXpi(xpiLoc()) !== ranFp.xpi,
     cci: !!cci.result && fpCci() !== ranFp.cci,
     cciField: !!cci.field && fpCciField() !== ranFp.cciField,
+    cciTgt: !!cci.tgtResult && fpCciTgt() !== ranFp.cciTgt,
     ngso: !!ngso.result && fpNgso() !== ranFp.ngso
   }))
 
@@ -1608,7 +1741,7 @@ export function useInterference() {
     ap8.result = null
     xpi.result = null; xpi.satGrdRatioDb = ''; xpi.satGrdDetail = null; xpi.rainInfo = null; xpi.curve = null
     if (_cciToken) { _cciToken = 0; busy.value = false; stopCciJob() }
-    cci.result = null; cci.field = null; cci.stats = null; cci.progress = 0; cci.progressTotal = 0
+    cci.result = null; cci.field = null; cci.stats = null; cci.tgtResult = null; cci.progress = 0; cci.progressTotal = 0
     ngso.result = null; ngso.estimate = null; ngso.progress = 0; ngso.progressTotal = 0
     ngso.rain.cdf = null; ngso.rain.cdfInfo = ''
     for (const k of Object.keys(ranFp)) ranFp[k] = ''
@@ -1641,6 +1774,8 @@ export function useInterference() {
     cciRows, cciPlanList, cciPlanAutoId, cciPlanId, cciPlan, cciMatch, cciEffSource, cciPlanOpts,
     cciPlanText, cciPlanParse, cciOccText, cciColorText, addColorDef, removeColorDef, importCciTable,
     refreshCciInfo, loadCciPlans, cancelCci,
+    // C/CCI 目标波束
+    cciPick, cciTgtIdx, setCciTarget, toggleCciCo, clearCciCo, setCciCo, refreshCciBeams, computeCciTarget,
     geoData, hoveredId, setHover, load, persist, snapshot, applySnapshot, blankSnapshot, stale, clearResults
   }
 }
