@@ -6,6 +6,7 @@
 //   · 实体模板 ent:（地球站 / 飞机 / 船 / 车）：buildAssembly 现场出图，缓存键与工作台 wbStore.entThumb 同一把
 //     （model/entThumb/<TPL_THUMB_VER>-r2/<id>，值 {sig: asmHash(doc), url}）—— 两个窗口同源，谁先画谁存，模板数据改了按哈希自动重画。
 // 现场出图一张占主线程几十毫秒：排队、两张之间让一次空闲回调（同 wbStore.pumpRender），侧栏一展开十几张卡片不把界面卡住。
+// 失效：3D 页 onModelsChanged 收到 meta（工作台重拍缩略图 / 装配件重新入库 / 改元数据）与缩略图下载完成时调 refreshThumb(id)。
 // ★ 所有 api 调用都 catch（未激活时 gate 通道回 {locked:true}，这里当「没有图」处理，界面静默）。
 import { shallowRef } from 'vue'
 import { renderThumb, TPL_THUMB_VER } from '../viz/models/thumbs.js'
@@ -22,25 +23,52 @@ const models = () => (typeof window !== 'undefined' && window.api && window.api.
 /** id → url（没有图的不在表里）；整份换引用，模板里 thumbs.value.get(id) 随之重渲染 */
 export const thumbs = shallowRef(new Map())
 const asked = new Set()
-function putThumb(id, url) { const m = new Map(thumbs.value); m.set(id, url); thumbs.value = m }
+// 每个 id 的取图代次（取过的 id 都在表里）：重取一次 +1，在途的上一次回来就作废——不拿旧图盖掉新图
+const gen = new Map()
+function putThumb(id, url) { if (thumbs.value.get(id) === url) return; const m = new Map(thumbs.value); m.set(id, url); thumbs.value = m }
+function dropThumb(id) { if (!thumbs.value.has(id)) return; const m = new Map(thumbs.value); m.delete(id); thumbs.value = m }
+// 主进程回「没有缩略图」（本机导入件的缩略图要等部件分割与质量估算跑完才拍）：过这么久允许同一 id 再取一次——
+// 卡片重新可见 / 页面重渲染时会再要；正常情况等不到这么久，补拍落盘的 meta 事件先到（refreshThumb）
+const MISS_RETRY_MS = 5000
 
-/** 取一张缩略图（幂等：同一 id 只取一次；下载完成后要重取先 forgetThumb） */
+/** 取一张缩略图（幂等：同一 id 只取一次；元数据 / 缩略图变了用 refreshThumb 重取） */
 export async function requestThumb(id) {
   if (!id || asked.has(id)) return
   asked.add(id)
-  let url = ''
+  const g = (gen.get(id) || 0) + 1
+  gen.set(id, g)
+  let url = '', miss = false
   try {
     const api = models()
     const r = api && api.thumbnail ? await api.thumbnail(id) : null
     if (r && r.state === 'ready' && r.url) url = r.url
+    else if (r && r.state === 'missing') miss = true
   } catch { /* 取不到就留占位图标 */ }
+  if (gen.get(id) !== g) return   // 期间又重取过：以后一次为准
   const s = String(id)
+  // 参数化 / 实体模板：主进程没有图时现场出图（失败也不再定时重取：出一张要几十毫秒，坏了反复画不值）
+  const local = s.startsWith('param:') || s.startsWith('ent:')
   if (!url && s.startsWith('param:')) { try { url = await queued(() => paramThumb(s.slice(6))) } catch { url = '' } }
   else if (!url && s.startsWith('ent:')) { try { url = await queued(() => entThumb(s)) } catch { url = '' } }
-  if (url) putThumb(id, url)
+  if (gen.get(id) !== g) return
+  if (url) { putThumb(id, url); return }
+  if (miss && !local) {
+    // 库里明确没有图（换图后旧文件已删、或还没拍）：表里的旧地址摘掉，退回占位图标而不是裂图；过一会儿允许再取
+    dropThumb(id)
+    setTimeout(() => { if (gen.get(id) === g) asked.delete(id) }, MISS_RETRY_MS)
+  }
 }
-/** 下载 / 元数据变了：允许同一 id 再取一次 */
+/** 允许同一 id 再取一次（不立即取） */
 export function forgetThumb(id) { asked.delete(id) }
+/**
+ * 元数据 / 缩略图变了（3D 页收到 models:changed 的 meta、或缩略图下载完成）：取过的 id 立即重取一次（在途的旧一次作废）；
+ * 从没取过的不动——它显示出来时自然会取到新的。工作台改完装配件自动入库、导入件分析完补拍、重拍缩略图都走这里。
+ */
+export function refreshThumb(id) {
+  if (!id || !gen.has(id)) return
+  asked.delete(id)
+  requestThumb(id)
+}
 
 // ---- 现场出图队列 ----
 const queue = []

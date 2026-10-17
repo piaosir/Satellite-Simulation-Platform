@@ -10,13 +10,17 @@
 //   argp_dot  =  (3/4)·n·J2·(Re/p)²·(5cos²i − 1)
 //   M_dot     =  n·[1 + (3/4)·J2·(Re/p)²·sqrt(1−e²)·(3cos²i − 1)]
 //   交点周期 T_Omega = 2π/(M_dot + argp_dot)
-// 这是【设计用】的口径：解出来的根数随后一律交给 SGP4 传播，两者的 J2 处理略有出入，
-// 故读数里的 Omega_dot 与「SGP4 传播一圈后由相邻升交点反推」的值会差百分之几（测试按 5% 判）。
+// 这是【设计用】的初值口径：解出来的根数随后一律交给 SGP4 传播，两者的 J2 处理略有出入（SGP4 另含 J2² / J4 与深空日月项）。
+// 【SGP4 自洽】ctx.sgp4（satellite.js）给了就再走一步 sgp4Mean.refineDesign：以上式的解为初值，用 sgp4init 的长期率
+// 对 a / i / e 做割线 Newton，使回归闭合、太阳同步、地球同步零漂移、Molniya 2:1 回归在 SGP4 下严格成立；读数里的
+// 交点周期与两个进动率随之改取 SGP4 长期率。合成星的 Kozai 平均运动一律按 sgp4Mean 的通用口径换算（平半长轴 = 设计 a），
+// 3D 页向导读数、customConstGen 与各窗口建星同走这一条（差距分析 A-05）。不给 ctx.sgp4 则停在 J2 一阶解（纯公式层）。
 //
 // 【地方时一律平太阳时】LTAN / LTDN 用太阳【平黄经】L0（Meeus 25.2 的一次式），
 // 与视太阳相差时差方程（≤16 min）。界面 title 里写明了这一条。
 
 import { byLang } from '../../shared/i18n/lang.js'   // 报错文案按平台语言出字（零依赖，Node 测试下回退中文）
+import { refineDesign } from '../../shared/sgp4Mean.js'   // 设计目标的 SGP4 反解（与主进程 core/utils/sgp4Mean.js 共享段逐字节相同）
 
 const RE = 6378.137              // km
 const MU = 398600.4418           // km³/s²
@@ -236,6 +240,18 @@ export const ORBIT_TYPES = [
 ]
 export const ORBIT_TYPE_KEYS = ORBIT_TYPES.map((t) => t.key)
 
+// 每种类型的 RAAN 由哪类设计量定（逐个对照下面 solveDesign 的各分支）：
+//   'earth'    地固经度 —— 临界倾角 / 临界倾角·太阳同步 / 回归轨道的升交点经度、地球同步的星下点经度、Molniya 的远地点经度，
+//              经 GMST(t0) 折成惯性 RAAN；
+//   'sun'      地方时 —— 太阳同步 / 回归·太阳同步的 LTAN / LTDN，经 t0 的太阳平黄经折成 RAAN；
+//   'inertial' RAAN 本身就是输入 —— 圆轨道、自定义根数。
+// 前两类解出的 RAAN 只对求解时刻 t0 成立：合成星 satrec 的历元（场景历元）一换就得按新历元重解，地固 / 日固的设计目标
+// 才守得住（customConstGen.js）。新增类型、或改了某类决定 RAAN 的输入，这里同步登记。
+export const RAAN_FRAME = {
+  circular: 'inertial', critical: 'earth', criticalSunSync: 'earth', geosync: 'earth', molniya: 'earth',
+  repeat: 'earth', repeatSunSync: 'sun', sunSync: 'sun', custom: 'inertial'
+}
+
 // 每种类型的缺省输入（界面初值）
 export function defaultInputs(type) {
   switch (type) {
@@ -264,7 +280,7 @@ function fromHeights(hp, ha) {
  * @param {string} type      ORBIT_TYPE_KEYS 之一
  * @param {object} inputs    该类型的输入（见 defaultInputs）
  * @param {number} t0Ms      场景历元（UTC 毫秒）
- * @param {object} ctx       { gmst: t0 时刻的 GMST（rad） }
+ * @param {object} ctx       { gmst: t0 时刻的 GMST（rad）, sgp4?: satellite.js —— 给了就按 SGP4 长期率把设计目标校正到严格成立 }
  * @returns { ok, errs, warns, seed:{aKm,e,inclDeg,raanDeg,argpDeg,m0Deg}, derived:{…} }
  */
 export function solveDesign(type, inputs, t0Ms, ctx) {
@@ -275,6 +291,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
 
   let aKm = NaN, e = 0, inclDeg = 0, raanDeg = 0, argpDeg = 0, m0Deg = 0
   let repeat = null, ltanHours = null
+  // 该类型在 SGP4 下要严格成立的目标（sgp4Mean.refineDesign 的 target）；缺省 'sma' = 只按通用口径换算
+  let sgpTarget = { kind: 'sma' }
 
   switch (type) {
     case 'circular': {
@@ -311,6 +329,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
         const ecc = solveRoot(f, 1e-6, 0.95, { guess: 0.3 })
         if (!Number.isFinite(ecc)) bad(byLang('该近地点高度下解不出太阳同步的偏心率', 'No sun-synchronous eccentricity for this perigee altitude'), 'perigeeKm')
         else { e = ecc; aKm = rp / (1 - ecc) }
+        sgpTarget = { kind: 'sunSyncEcc', rpKm: rp }
       }
       argpDeg = norm360(num(inp.argpDeg, 270))
       raanDeg = lonToRaan(num(inp.anLonDeg), gmst)
@@ -323,6 +342,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       if (!(inclDeg >= 0 && inclDeg <= 180)) bad(byLang('倾角需在 0…180°', 'Inclination must be within 0…180°'), 'inclDeg')
       // 圆轨道：星下点经度 lambda = (RAAN + argp + M0) − GMST，argp = M0 = 0 => RAAN = lambda + GMST
       raanDeg = lonToRaan(num(inp.subLonDeg), gmst)
+      sgpTarget = { kind: 'geosync' }
       break
     }
     case 'molniya': {
@@ -343,6 +363,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       const u = (argpDeg + 180) * DEG
       const dl = Math.atan2(Math.sin(u) * Math.cos(inclDeg * DEG), Math.cos(u)) * RAD
       raanDeg = norm360(num(inp.apogeeLonDeg) + gmst * RAD - dl)
+      // SGP4 下按 2:1 回归（远地点经度不漂）解 a，近地点高度守住；a 随之离开开普勒半恒星日的 26561.76 km
+      sgpTarget = { kind: 'molniya', rpKm: rp }
       break
     }
     case 'repeat': {
@@ -360,6 +382,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       e = 0; argpDeg = 0; m0Deg = 0
       raanDeg = lonToRaan(num(inp.anLonDeg), gmst)
       repeat = { k, m }
+      sgpTarget = { kind: 'repeat', k, m }
       break
     }
     case 'repeatSunSync': {
@@ -379,6 +402,7 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
         raanDeg = inp.localMode === 'ltdn' ? ltdnToRaan(lt, t0Ms) : ltanToRaan(lt, t0Ms)
       }
       repeat = { k, m }
+      sgpTarget = { kind: 'repeatSunSync', k, m }
       break
     }
     case 'sunSync': {
@@ -403,6 +427,8 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
       const lt = parseHm(inp.localTime)
       if (!Number.isFinite(lt)) bad(byLang('地方时格式应为 hh:mm', 'Local time must be in hh:mm format'), 'localTime')
       else raanDeg = inp.localMode === 'ltdn' ? ltdnToRaan(lt, t0Ms) : ltanToRaan(lt, t0Ms)
+      // 给倾角解高度 / 给高度解倾角：SGP4 下各解自己那一个量
+      sgpTarget = { kind: inp.driver === 'incl' ? 'sunSyncSma' : 'sunSyncIncl' }
       break
     }
     case 'custom': {
@@ -428,15 +454,24 @@ export function solveDesign(type, inputs, t0Ms, ctx) {
   }
   if (!(e >= 0 && e < 1)) { bad(byLang('偏心率解出 ' + e + '，不在 [0,1)', 'Solved eccentricity ' + e + ' is outside [0,1)')); return { ok: false, errs, warns, seed: null, derived: null } }
 
-  const seed = { aKm, e, inclDeg, raanDeg: norm360(raanDeg), argpDeg: norm360(argpDeg), m0Deg: norm360(m0Deg) }
+  let seed = { aKm, e, inclDeg, raanDeg: norm360(raanDeg), argpDeg: norm360(argpDeg), m0Deg: norm360(m0Deg) }
+  // SGP4 自洽（头注【SGP4 自洽】）：只动 a / e / i，RAAN / ω / M₀ 与经度、地方时的落点不动
+  let sgpRates = null
+  if (ctx && ctx.sgp4 && typeof ctx.sgp4.omm2satrec === 'function') {
+    const r = refineDesign(sgpTarget, seed, t0Ms, ctx.sgp4)
+    if (r.ok) { seed = r.seed; sgpRates = r.rates; aKm = seed.aKm; e = seed.e; inclDeg = seed.inclDeg }
+    else warns.push(byLang('SGP4 口径校正未收敛', 'SGP4 consistency correction did not converge'))
+  }
   const h = heights(aKm, e)
   if (h.perigeeKm < 80) warns.push(byLang('近地点高度仅 ' + h.perigeeKm.toFixed(0) + ' km，已在大气层内', 'Perigee altitude only ' + h.perigeeKm.toFixed(0) + ' km, inside the atmosphere'))
   ltanHours = raanToLtan(seed.raanDeg, t0Ms)
+  // 交点周期与两个进动率：校正过就取 SGP4 长期率（rad/min；深空含日月长期项），否则 J2 一阶式
+  const RATE = RAD * 1440
   const derived = {
     periodMin: keplerPeriodSec(aKm) / 60,
-    nodalPeriodMin: nodalPeriodSec(aKm, e, inclDeg) / 60,
-    raanRateDegDay: raanRate(aKm, e, inclDeg) * RAD * 86400,
-    argpRateDegDay: argpRate(aKm, e, inclDeg) * RAD * 86400,
+    nodalPeriodMin: sgpRates ? TWO_PI / (sgpRates.m + sgpRates.w) : nodalPeriodSec(aKm, e, inclDeg) / 60,
+    raanRateDegDay: sgpRates ? sgpRates.o * RATE : raanRate(aKm, e, inclDeg) * RAD * 86400,
+    argpRateDegDay: sgpRates ? sgpRates.w * RATE : argpRate(aKm, e, inclDeg) * RAD * 86400,
     ltanHours,
     ltdnHours: ltanToLtdn(ltanHours),
     repeat,
@@ -478,7 +513,7 @@ export function seedToParams(seed, layout, name) {
 export const CONST = { RE, MU, J2, OMEGA_E, SIDEREAL_DAY, SOLAR_DAY, TROPICAL_YEAR, OMEGA_DOT_SS, CRIT_PRO, CRIT_RETRO, GEO_A }
 
 export default {
-  ORBIT_TYPES, ORBIT_TYPE_KEYS, CONST,
+  ORBIT_TYPES, ORBIT_TYPE_KEYS, RAAN_FRAME, CONST,
   solveDesign, seedToParams, defaultInputs,
   meanSunLongitudeDeg, ltanToRaan, ltdnToRaan, raanToLtan, ltanToLtdn, parseHm, formatHm,
   sunSyncInclination, sunSyncSma, sunSyncMaxAltKm, repeatSma, repeatSunSyncSolve,

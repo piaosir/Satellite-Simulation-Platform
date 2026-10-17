@@ -1,9 +1,11 @@
 <script>
 // 取星口径的两件纯函数放在模块作用域并导出：窗口刷新卫星树时（E2eLinkBudgetApp.reloadSatTree）按树里现在的节点
 // 重解已选条目的轨道，与本面板选星走同一份代码（3D 页改了根数 / 历元，端到端窗口跟着变）。
-import { findPoolByNorad } from '../ngso/satSearchPool.js'
+import { findPoolByNorad, orbitSpecOf, echoEphemToForm } from '../ngso/satSearchPool.js'
 import Icon from '../components/Icon.vue'
 import { treeElementsSpec } from '../shared/treeOrbitEpoch.js'
+import { reportError } from '../shared/reportError.js'
+import { byLang } from '../shared/i18n/lang.js'
 
 const _MU = 398600.4418, _RE = 6378.137
 function altFromMeanMotion(revDay) {
@@ -13,6 +15,7 @@ function altFromMeanMotion(revDay) {
 // 选星后回显轨道高度 / 倾角（只读「自动」）
 export function orbitToForm(form, orbit) {
   if (!form || !orbit) return
+  echoEphemToForm(form, orbit)   // 点序列星没有平均根数：按采样表异步回显；换成别的星时作废在途回显
   if (orbit.type === 'elements') {
     if (orbit.altKm != null) form.orbitAltitude = String(Math.round(orbit.altKm))
     if (orbit.incl != null) form.orbitInclination = String(orbit.incl)
@@ -33,6 +36,8 @@ export async function treeNodeOrbit(node) {
   if (node.noradId != null) {
     const rec = await findPoolByNorad(node.noradId)
     if (rec) {
+      // 星历点序列星（800000 段）走取星的唯一出口（只带引用）——下面两支手拼的话会被拼成全空 OMM、几何报 SGP4 error=2
+      if (rec.orbitType === 'ephem') { try { return orbitSpecOf(rec) } catch (e) { return { type: 'unresolved', noradId: node.noradId, reason: (e && e.message) || String(e) } } }
       if (rec.orbitType === 'elements' && rec.elements) {
         const e = rec.elements
         return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
@@ -151,13 +156,18 @@ function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }
 function pickSearch(rec) {
   const ns = props.ngsoSat
-  ns.mode = 'search'; ns.name = rec.name; ns.noradId = rec.noradId || null; ns.folder = ''
-  if (rec.orbitType === 'elements' && rec.elements) {
+  let orbit
+  if (rec.orbitType === 'ephem') {
+    // 星历点序列星：走取星的唯一出口（只带引用）；记录残缺（星历组已删）时报因、这一条原样不动
+    try { orbit = orbitSpecOf(rec) } catch (e) { reportError(byLang('选星', 'Satellite selection'), e); return }
+  } else if (rec.orbitType === 'elements' && rec.elements) {
     const e = rec.elements
-    ns.orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
+    orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
   } else {
-    ns.orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
+    orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
   }
+  ns.mode = 'search'; ns.name = rec.name; ns.noradId = rec.noradId || null; ns.folder = ''
+  ns.orbit = orbit
   props.form.satelliteName = rec.name
   applyOrbitToForm(ns.orbit)
   kw.value = rec.name; listOpen.value = false

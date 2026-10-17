@@ -14,6 +14,7 @@ import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
+import { waterfallTsv } from '../shared/lbWaterfallTsv.js'   // 详细预算整表复制（四窗一份）
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf, isSatNamePlaceholder } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
 import { fmtGeoSlot } from '../shared/orbitClass.js'   // 轨位 °E/°W 折算（西经不再写成负°E）
@@ -36,6 +37,8 @@ import SatellitePanel from './SatellitePanel.vue'
 import WaterfallTable from './WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
+import LbCapDialog from '../components/LbCapDialog.vue'
+import { CAP_PBW, capKeySat, buildCapModel, normCapParams, applyRowCap, setCapIncluded, setCapCount, setCapTpParam, remapCapParams, capReportBlock } from '../shared/lbCapacity.js'   // 容量汇总（三窗共用纯逻辑）
 import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaLoopback, slaReportBlock, slaParamRows, sunOutageSummary, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import { getPlan, checkAgainstChannel, resyncAll } from '../shared/lbFreqPlanRef.js'   // 发射合规：卫星条目引用了频率计划时的数值核对；resyncAll＝计划改了按引用重套
 import LbDispCtl from '../components/LbDispCtl.vue'
@@ -511,6 +514,9 @@ const RESULT_DEFS = [
   { key: 'selectedPowerWResult', label: '功放实际输出', unit: 'W' },
   { key: 'elevationResult', label: '发站仰角', unit: '°' },
   { key: 'rxElevationResult', label: '收站仰角', unit: '°' },
+  // 倾斜运行 / 保持盒（A-01）：日最大指向损耗（已计入链路）；定点 + 固定天线时为空
+  { key: 'uplinkPointingLossResult', label: '上行指向损耗', unit: 'dB', tip: '日最大：卫星倾斜运行 / 在保持盒里走动时发信站天线的指向损耗（已计入链路）' },
+  { key: 'downlinkPointingLossResult', label: '下行指向损耗', unit: 'dB', tip: '日最大：卫星倾斜运行 / 在保持盒里走动时收信站天线的指向损耗（已计入链路）' },
   { key: 'systemAvailabilityResult', label: '系统可用度', unit: '%' }
 ]
 const DEFAULT_RESULT_KEYS = ['paRecommendation', 'linkmargin', 'carrierTotalCN', 'bandwidthUsageRatio', 'powerUsageRatio', 'capacityMbps']
@@ -706,22 +712,11 @@ const gridVals = computed(() => {
   return out
 })
 // —— 瀑布表一键整表复制（TSV，直接粘贴进 Excel / 报告）——
+// 拼表在 shared/lbWaterfallTsv.js（四窗一份）：多列段列头取段自带的 heads（工况对照「晴空 / 降雨」），
+// 段标题 / 行标签已随 segments 按报表语言翻好，列头在那里按 lbDocT 补上
 async function copyWaterfallTsv() {
   if (!segments.value.length) return
-  const t = lbDocT(reportLang.value)   // 段标题/行标签已随 segments 翻好，列头在此补上
-  const lines = []
-  for (const seg of segments.value) {
-    lines.push(seg.no ? '§' + seg.no + '  ' + seg.title : seg.title)   // 章节号与屏幕/Excel 同号同序
-    if (seg.cols >= 2) lines.push(['', '', t('上行'), t('下行')].concat(seg.cols === 3 ? [t('合计')] : []).concat(['']).join('\t'))
-    for (const r of seg.rows) {
-      const cells = [r.sign || '', r.label, r.up]
-      if (seg.cols >= 2) { cells.push(r.down); if (seg.cols === 3) cells.push(r.total) }
-      cells.push(r.unit || '')
-      lines.push(cells.join('\t'))
-    }
-    lines.push('')
-  }
-  try { await navigator.clipboard.writeText(lines.join('\n')); toast('已复制详细预算（TSV）') }
+  try { await navigator.clipboard.writeText(waterfallTsv(segments.value, lbDocT(reportLang.value))); toast('已复制详细预算（TSV）') }
   catch (e) { toast('复制失败') }
 }
 // Ctrl+Enter 全局快捷计算
@@ -1220,8 +1215,6 @@ watch(showViz, (v) => { try { localStorage.setItem('linkbudget/viz/show', v ? '1
 // 图与左边的表说的是同一条链路的同一组数（见 shared/lbLinkScene.js）
 const linkScene = computed(() => buildGeoScene(sel.value, selParams.value))
 
-// —— 容量汇总（独立模块）——
-// 汇总本批次所有已成功计算的链路：总带宽 = Σ 各链路载波带宽；总容量 = Σ 各链路容量。
 // 单链路容量 = 频谱效率 η(bps/Hz) × 载波带宽 B(kHz) = 容量(kbps)；各链路载波信号配置可不同（η 各异），
 // 故逐链路相乘再求和，而非用单一 η 乘总带宽。engine 已按链路输出 allocBandwidthResult / spectralEfficiencyResult。
 // capacityKbpsOf 是单链路口径的唯一出处：列表/矩阵「容量」指标、容量汇总都从这里换算。
@@ -1231,47 +1224,54 @@ function capacityKbpsOf(d) {
   const eta = parseFloat(d.spectralEfficiencyResult)  // 频谱效率 bps/Hz
   return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN   // 容量 kbps
 }
-// 总功率带宽 = Σ 各链路功率带宽（PowerBWResult = 功率占用 × 转发器带宽，kHz）——转发器资源占用的另一维：
-// 与总带宽并列着看才知道整批是受功率限还是受带宽限（Σ功率带宽 = Σ载波带宽 即整批功带平衡，见「高级计算」）。
-// pbwN = 出了这个数的链路条数；为 0（本批没一条算出功率带宽）时汇总行不出该项，而非显示一个 0。
-const capacitySummary = computed(() => {
-  const done = links.value.filter((l) => l && l.data && !l.error)
-  let bwKHz = 0, capKbps = 0, pbwKHz = 0, pbwN = 0
-  for (const l of done) {
-    const bw = parseFloat(l.data.allocBandwidthResult)
-    if (isFinite(bw)) bwKHz += bw
-    const kbps = capacityKbpsOf(l.data)
-    if (isFinite(kbps)) capKbps += kbps
-    const pbw = parseFloat(l.data.PowerBWResult)
-    if (isFinite(pbw)) { pbwKHz += pbw; pbwN++ }
-  }
-  return {
-    count: done.length,
-    failed: links.value.length - done.length,
-    bwKHz, capKbps, pbwKHz, pbwN,
-    avgEff: bwKHz > 0 ? capKbps / bwKHz : 0   // 带宽加权平均频谱效率 bps/Hz
-  }
-})
-// 自适应单位：容量 kbps→Mbps→Gbps；带宽 kHz→MHz→GHz
-function fmtCapacity(kbps) {
-  const n = Number(kbps)
-  if (!isFinite(n) || n <= 0) return { v: '0', u: 'kbps' }
-  if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'Gbps' }
-  if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'Mbps' }
-  return { v: n.toFixed(n >= 100 ? 1 : 2), u: 'kbps' }
-}
-function fmtBandwidth(khz) {
-  const n = Number(khz)
-  if (!isFinite(n) || n <= 0) return { v: '0', u: 'kHz' }
-  if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'GHz' }
-  if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'MHz' }
-  return { v: n.toFixed(n >= 100 ? 1 : 3), u: 'kHz' }
-}
-const capMain = computed(() => fmtCapacity(capacitySummary.value.capKbps))
-const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
-const pbwMain = computed(() => (capacitySummary.value.pbwN ? fmtBandwidth(capacitySummary.value.pbwKHz) : null))
 
-// —— 本行读数（容量汇总下方第二行，见 LbCapFoot）——
+// —— 容量汇总（功能区「导出 › 容量」→ LbCapDialog，纯逻辑在 shared/lbCapacity.js）——
+// 一组＝一只转发器（一份卫星配置）：功率带宽 = 功率占用 × 本转发器带宽，只在组内求和、对照可用资源出剩余与
+// 占用；表末合计只加能跨转发器相加的量。2026-10-16 起取代链路表表脚那一行（那里把各星的功率带宽直接相加）。
+// 列入 / 载波数随行走（row.cap，由「非 _ 键全存」带上）；可用资源与单价是场景级一份（capParams.tp[卫星配置 id]）。
+const capParams = reactive(normCapParams(null))
+const capOpen = ref(false)
+const capItems = computed(() => { const byRow = new Map(links.value.map((x) => [x.rowId, x])); return linkRows.map((row, i) => {
+  const l = byRow.get(row._id) || null
+  const d = (l && l.data) || null
+  const sat = satOfRow(row)
+  const satForm = (sat && sat.form) || {}
+  return {
+    no: i + 1, rowId: row._id,
+    name: l ? `${l.txName} → ${l.rxName}` : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || byLang('链路 ' + (i + 1), 'Link ' + (i + 1))),
+    carrier: resolveBaseband(row.basebandId).name || '',
+    // 分组键＝卫星配置 id、组名取库条目名（与链路表「卫星」列的选项同名），口径同高级计算 advRows
+    gkey: capKeySat(sat && sat.id), gname: sat ? (sat.name || satForm.satelliteName || sat.id) : '',
+    // 转发器带宽取引擎回显（＝这一行真正算用的那份），没结果的行退到卫星条目
+    tpBwMHz: parseFloat(d ? d.transponderBandwidthResult : satForm.transponderBandwidth),
+    ok: !!(d && !l.error), error: l ? (l.error || '') : '',
+    capKbps: capacityKbpsOf(d),
+    bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
+    pbwKHz: d ? parseFloat(d.PowerBWResult) : NaN,
+    cap: row.cap || null
+  }
+}) })
+// ★ 只在弹窗开着时喂给它（模板里 capOpen ? capModel : null）：prop 在父组件渲染时求值，常驻绑定会让
+//   链路表每改一格都把整张账重算一遍；报告导出走 capFor 现取
+const capModel = computed(() => buildCapModel(capItems.value, capParams, { pbw: CAP_PBW.SUM }))
+// 汇总必须出自「此刻这套输入」：没算过或输入已变，先算一遍再开（同 SLA / 高级计算）
+async function openCapDlg() {
+  if (!(await ensureFreshResults())) return
+  capOpen.value = true
+}
+// 列入 / 载波数挂在链路行上，会被「结果过期」那条深监听盯到——它们是汇总口径不是引擎入参，灯不该亮（同 slaTouch）
+const capRowOf = (id) => linkRows.find((r) => r._id === id) || null
+function capSetInclude(e) { const r = capRowOf(e.rowId); if (r) slaTouch(() => applyRowCap(r, setCapIncluded(r.cap, e.on))) }
+function capSetCount(e) { const r = capRowOf(e.rowId); if (r) slaTouch(() => applyRowCap(r, setCapCount(r.cap, e.n))) }
+function capSetParam(e) { setCapTpParam(capParams, e.key, e.field, e.value) }
+function capToggleAll(on) { slaTouch(() => { for (const r of linkRows) applyRowCap(r, setCapIncluded(r.cap, on)) }) }
+// 「重置」两件事一起做（同 SLA）：各行回到列入、1 路，可用资源与单价清空
+function capReset() {
+  slaTouch(() => { for (const r of linkRows) applyRowCap(r, null) })
+  capParams.tp = {}
+}
+
+// —— 本行读数（链路表表脚，见 LbCapFoot）——
 // 结果列多了要横滚才看得全，而用户看的往往就是刚点的那一行：把聚焦行的结果就地摊平成一行，
 // 点哪行看哪行、重算即刷新。指标口径与「结果列」勾选完全一致（连列序也一致），只是换了个横排读法。
 // 单位取该列此次计算共选的档位（resColUnits），与表头/单元格里的数完全一致。
@@ -1529,11 +1529,13 @@ onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
 async function loadWaterfall() {
   const l = sel.value
   if (!l || !l.data) { segments.value = []; return }
-  segments.value = await api.linkBudget.waterfall({
+  const segs = await api.linkBudget.waterfall({
     results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'GEO',
     adaptUnits: isUnitAdaptive(),
     txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '')
   })
+  // 等回包期间换了链路 / 换了配置（结果已清）：这份是上一条的，不往上贴
+  if (sel.value === l) segments.value = segs
 }
 // 「详细预算」节头上一条 / 下一条、序号格右键「查看详细预算」：切到第 i 条链路的详细预算，聚焦行一并跟过去
 function showDetailAt(i) {
@@ -1564,8 +1566,10 @@ function onRowFocus(idx, rowId) {
 // 算法外层（shared/advBalance.js，闭式解），结果落成各载波的「设置余量」，再照常走一次正常计算——
 // 屏幕上的每个数仍然出自引擎本身，这里只决定喂进去的余量。
 const advDlg = reactive({ open: false, busy: false })
-const advRemap = ref(null)   // 上一次应用时的「原载波id → 派生副本id」映射，回传给对话框
-// 送进对话框的候选链路：全部行 + 各自上一次的计算结果（载波带宽/功率带宽/实际余量）
+const advRemap = ref(null)   // 上一次应用的 { group: 卫星配置 id, map: { 原载波id: 派生副本id } }，回传给对话框
+// 送进对话框的候选链路：全部行 + 各自上一次的计算结果（载波带宽/功率带宽/实际余量）。
+// 功带平衡只在同一只转发器上成立：每行带上所用卫星配置（satKey / satName）与那只转发器的带宽，对话框按星分组、
+// 一次配一组——统一指定时全表同一颗星即一组；逐链路指定时表里用了几颗星就几组。
 const advRows = computed(() => linkRows.map((row, i) => {
   const bb = resolveBaseband(row.basebandId)
   const l = links.value.find((x) => x.rowId === row._id) || null
@@ -1574,9 +1578,14 @@ const advRows = computed(() => linkRows.map((row, i) => {
     : ([row.earthStationLocation, row.rxEarthStationLocation].filter(Boolean).join(' → ') || '链路 ' + (i + 1))
   const marginDb = d ? (isFinite(l.resolvedMargin) ? l.resolvedMargin : parseFloat(d.marginResult)) : NaN
   // 组网语义：功放（此刻实算值 + 发端站型预设）、转发器回退——都从行与上一次结果现取，不另跑引擎；卫星取该行所用的
-  const satForm = (satOfRow(row) && satOfRow(row).form) || {}
+  const sat = satOfRow(row)
+  const satForm = (sat && sat.form) || {}
   return {
     no: i + 1, rowId: row._id, name, carrierId: bb.id, carrierName: bb.name,
+    // 分组键＝卫星配置 id，显示名取库条目名（与链路表「卫星」列的选项同名；同一颗星的不同转发器配置也分得开）
+    satKey: sat ? sat.id : '', satName: sat ? (sat.name || satForm.satelliteName || sat.id) : '',
+    // 转发器带宽：取引擎回显（＝这一行真正算用的那份），没结果的行退到卫星条目
+    tpBwMHz: parseFloat(d ? d.transponderBandwidthResult : satForm.transponderBandwidth),
     bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN,
     pbwKHz: d ? parseFloat(d.PowerBWResult) : NaN,
     marginDb,
@@ -1588,12 +1597,6 @@ const advRows = computed(() => linkRows.map((row, i) => {
     booDb: parseFloat(satForm.BOo), boiDb: parseFloat(satForm.BOi)
   }
 }))
-// 转发器带宽（占用率读数用）：优先取结果里引擎回报的那份，没有结果则取卫星分区那颗星（配置级即场景单选）
-const advTpBwMHz = computed(() => {
-  const d = (links.value.find((l) => l.data) || {}).data
-  const v = parseFloat(d ? d.transponderBandwidthResult : (bandSat.value && bandSat.value.form.transponderBandwidth))
-  return isFinite(v) ? v : 0
-})
 // 结果是否对应「此刻这套输入」：没算过、输入已变、有行还没结果 → 补算一遍。
 // 正在算（用户刚点过「计算」）就等它算完再判，不并发再起一轮。返回 false = 补算失败（报错已写进 error）。
 function computeIdle() {
@@ -1614,6 +1617,7 @@ async function openAdvDlg() {
 }
 // 落地：把解出的余量写进载波配置的「设置余量」，随后重算全表。写进哪一份由 planAdvWriteback 定
 // （纯函数）：一律派生专用副本、用户原来的载波配置一字不动，反复配平复用同一份副本。
+// rows 给全表（含别的卫星上的行）：同一份载波被另一颗星的行引用着，就得派生而不是就地改成本组的余量。
 async function applyAdvPlan(plan) {
   const { ops } = planAdvWriteback({
     carriers: plan.carriers, rowIds: plan.rowIds,
@@ -1637,7 +1641,7 @@ async function applyAdvPlan(plan) {
       if (target) Object.assign(target.form, op.formPatch)
     }
   }
-  advRemap.value = remap   // 载波换了 id：把对话框里那份偏置一并搬过去
+  advRemap.value = { group: plan.group, map: remap }   // 载波换了 id：把对话框里这一组的偏置一并搬过去
   advDlg.busy = true
   try { await compute() } finally { advDlg.busy = false }
   toast(`已按「VSAT 组网平衡」口径配平 ${plan.rowIds.length} 条链路`
@@ -1932,10 +1936,12 @@ function serializeState() {
     v: 3,
     // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
     //   saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
-    rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }),
+    // row.cap（容量汇总的列入 / 载波数）同理：applyRowCap 现造纯对象
+    rows: linkRows.map((r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); if (o.cap) applyRowCap(o, o.cap); return o }),
     satScope: satScope.value,   // 卫星参数归属：'config' 配置级（satId）/ 'link' 链路级（各行 satelliteId）
     satId: satId.value,
-    slaParams: { ...slaParams }
+    slaParams: { ...slaParams },
+    capParams: normCapParams(capParams)   // 容量汇总：逐转发器的可用资源与单价（键＝卫星配置 id）
   }
 }
 // v2 及更早：计算方式/系统余量/超发量是场景级字段 → 下沉到该场景各行所引的载波条目
@@ -1962,15 +1968,31 @@ function adoptSceneGrd(g) {
 }
 // 链路表组件（StationGrid）：载入配置时要清它的撤销 / 重做栈
 const linkGridRef = ref(null)
+// 换了一份内容：上一份的结果态整套清掉（口径同再生式 clearModuleResults）。行 _id 全换新，按 _id 落表的映射
+// 本就对不上号，可 links / segments 不清的话，详细预算、图表、容量汇总、TSV 复制仍报上一份的数，「输入已变」灯
+// 也还亮着。实时列（_eirp / _gt / _paW）随 computedVals 一并清——行一换预览作业即整表重填。
+// 档位扫描 / 日凌预计随结果作废（invalidateSlaScan 推进代次：在途那批回来按代次丢弃）。
+function clearResults() {
+  links.value = []
+  segments.value = []
+  selected.value = 0
+  focusRowId.value = ''
+  error.value = ''
+  sweepParamsByRow.value = {}
+  computedVals.value = {}
+  resColUnits.value = {}
+  resultsStale.value = false
+  invalidateSlaScan()
+}
 function applyState(st) {
   if (!st || typeof st !== 'object') return
   // 换了一份内容（切换 / 新建 / 还原历史版本 / 导入）：表格撤销栈里存的是上一份的行，不清的话一按撤销
   // 就把它整张灌进当前配置、约 1 s 后自动写盘（StationGrid 不随配置重建，栈不会自己清）
   if (linkGridRef.value) linkGridRef.value.clearHistory()
+  clearResults()
   // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
   Object.assign(slaParams, normSlaParams(st.slaParams))
-  slaScanByRow.value = {}
-  slaSunByRow.value = {}
+  capParams.tp = normCapParams(st.capParams).tp   // 容量汇总参数：旧场景没这一项 → 空（各组按缺省）
   // —— v2 场景（本版结构）：行 + 库引用直读；库是全局资产不随场景载入 ——
   if (Array.isArray(st.rows)) {
     // row.sla 逐行深拷（normRowSla 现造新对象）：st 常常就是配置列表里那份 state，
@@ -1978,6 +2000,7 @@ function applyState(st) {
     linkRows.splice(0, linkRows.length, ...st.rows.map((r) => {
       const o = { ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), ...r, _id: 's' + (_sid++) }
       applyRowSla(o, r.sla)
+      applyRowCap(o, r.cap)
       return o
     }))
     satId.value = st.satId || ''
@@ -2060,7 +2083,7 @@ function applyState(st) {
   adoptSceneCalc(st)
 }
 // 场景一变就交给自动保存（防抖写回当前配置）；「上次打开的是哪一份」随 activeId 记一笔
-watch([linkRows, satId, satScope, slaParams], () => autosave.touch(), { deep: true })
+watch([linkRows, satId, satScope, slaParams, capParams], () => autosave.touch(), { deep: true })
 watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* 配额满等忽略 */ } })
 
 // —— 命名配置 CRUD ——
@@ -2088,7 +2111,8 @@ function blankState() {
     rows: [seedDefaultSite({ ...defaultsFor(TX_FIELDS), ...defaultsFor(RX_FIELDS), rxStationId: (esConfigs[1] && esConfigs[1].id) || '' }, defSite.value)],
     satScope: 'config',
     satId: '',
-    slaParams: { ...DEFAULT_SLA_PARAMS }
+    slaParams: { ...DEFAULT_SLA_PARAMS },
+    capParams: { tp: {} }
   }
 }
 
@@ -2098,7 +2122,8 @@ function fingerprintOf(s) {
   // 库是全局资产（自动保存、不入场景）：指纹只含场景自身内容（行/引用）；
   // 方向图匹配已随卫星库条目走（v1.4.3）、计算策略已随载波库条目走（v1.3.8），不再是场景内容 → 不入指纹。
   // SLA：采用值/勾选在 rows 里（row.sla）自然计入；参数是场景级，显式列进来 —— 改了 SLA 就是改了场景。
-  return stableStringify({ rows: s.rows, satScope: s.satScope || 'config', satId: s.satId, slaParams: s.slaParams })
+  // 容量汇总参数同理（场景级）；规整后再比——旧场景没这一项与「一项都没填」是同一份内容，不该算改动
+  return stableStringify({ rows: s.rows, satScope: s.satScope || 'config', satId: s.satId, slaParams: s.slaParams, capParams: normCapParams(s.capParams) })
 }
 // 一份配置刚载入工作区：以当前内容为已落盘基线（useConfigTree 在载入 / 新建后调）
 function setBaseline() { autosave.attach() }
@@ -2162,6 +2187,8 @@ function shareRemap(state, idMap) {
     if (r.satelliteId) r.satelliteId = idMap.sat[r.satelliteId] || ''
   }
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
+  // 容量汇总参数按卫星配置 id 记：随卫星一起换成对端库里的 id（对端没收的星，那组设置丢掉）
+  if (state.capParams) state.capParams = remapCapParams(state.capParams, idMap.sat)
 }
 // —— 发到小程序：一条链路 = 一份小程序配置（逐行摊平，见 shared/lbMiniExport.js）——
 // 小程序没有三库结构，故不发分享包而发【摊平后的扁平配置】；摊平要用到本机三个库（行里存的是
@@ -2273,7 +2300,7 @@ function calcOfLink(l) {
     overDb: key === 'overbalance' ? ((p && p.opt && p.opt.overDb) || '') : ''
   }
 }
-const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
+const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'GEO',
   fieldGroups: FIELD_GROUPS,
@@ -2300,6 +2327,16 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  // 容量汇总（§2）：与弹窗同一份账（列入 / 载波数 / 可用资源 / 单价都算进去），标签按报表语言、数按单位档
+  capFor: (key, lang, noOf) => capReportBlock(capModel.value, { lang, adaptive: unitAdaptive.value, noOf }),
+  // 独立《容量汇总》报告：同一份账（导出前 beforeReport 已补算，computed 随之刷新）
+  capModelFor: () => capModel.value,
+  capDefaultName: (en) => {
+    const s = sceneSatName.value
+    return en
+      ? `GEO_Capacity_${(s || 'Results').replace(/[^\w-]+/g, '_')}`
+      : `GEO容量汇总_${(s || '结果').replace(/[\\/:*?"<>|]/g, '_')}`
+  },
   // 导出含 SLA 的报告前把惰性会话态补齐：档位扫描（MIR / 档位表）与日凌（免责事件那一行）——
   // 两条导出路径都走这里，条款数不再随「有没有开过 SLA 弹窗」变
   beforeSla: async () => { await ensureSlaScan(); await refreshSlaSun() },
@@ -2433,8 +2470,9 @@ onMounted(async () => {
                 <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
               </template>
               <!-- 方向图匹配（卫星方向图 + EIRP/G·T 天线）是本条目的属性：把卫星树与本条目的 grd 递进去，
-                   编辑器就地写 cfg.grd（工作台卫星分区只留只读速览行，见 grdFacts）。 -->
-              <template #default="{ cfg }"><SatellitePanel :form="cfg.form" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="cfg.grd" :local-folder="localFolderFor(cfg.id)"
+                   编辑器就地写 cfg.grd（工作台卫星分区只留只读速览行，见 grdFacts）。
+                   :key＝条目 id：换条目即重建编辑器——同一实例换 form，频段 watcher 会把「换条目」当成「改频段」套预设。 -->
+              <template #default="{ cfg }"><SatellitePanel :key="cfg.id" :form="cfg.form" :fields="SAT_FIELDS" :sat-tree="satTree" :sel="cfg.grd" :local-folder="localFolderFor(cfg.id)"
                 :on-import="() => importGrdFor(cfg)" :on-remove-ant="() => removeImportedGrd(cfg)" :importing="importingGrd" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
@@ -2500,6 +2538,10 @@ onMounted(async () => {
               <button class="lbr-big" :disabled="!linkRows.length" :title="linkRows.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '暂无链路。'" @click="openSlaDlg">
                 <Icon name="shield-check" :size="16" />
                 SLA
+              </button>
+              <button class="lbr-big" :disabled="!linkRows.length" :title="linkRows.length ? '容量汇总：逐转发器汇总容量与带宽，对照可用资源（可勾选链路，设载波数、可用资源与单价）' : '暂无链路。'" @click="openCapDlg">
+                <Icon name="sigma" :size="16" />
+                容量
               </button>
               <button class="lbr-big" :disabled="reportDlg.busy || !linkRows.length" :title="linkRows.length ? '生成交付级报告：Excel（总报告 + 逐链路详情）/ Word / PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '暂无链路。'" @click="openReportDialog"><Icon name="file-export" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="copy" :size="16" />TSV</button>
@@ -2594,7 +2636,7 @@ onMounted(async () => {
                 :lib-fields="{ basebandId: 'carrier', stationId: 'station', rxStationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary"
                 :row-menu-extra="rowMenuExtra" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :pbw-main="pbwMain" :readout="rowReadout" />
+            <LbCapFoot :readout="rowReadout" />
           </LbSection>
 
           <LbSection id="detail" title="详细预算" :stale="!!(resultsStale && links.length)" :no="detailNo" :summary="sel && links.length ? `${sel.txName} → ${sel.rxName}` : ''">
@@ -2629,7 +2671,7 @@ onMounted(async () => {
     />
 
     <!-- 高级计算：多载波功带平衡（VSAT 组网，GEO 窗专用）-->
-    <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :tp-bw-mhz="advTpBwMHz" :busy="advDlg.busy || computing"
+    <LbAdvBalanceDialog :open="advDlg.open" :rows="advRows" :busy="advDlg.busy || computing"
       :stale="resultsStale" :carrier-remap="advRemap" store-key="linkbudget" @close="advDlg.open = false" @apply="applyAdvPlan" />
 
     <!-- SLA 建议：条款表 + SLA 参数 + 可用度档位扫描（四窗共用组件；链路由头部下拉选） -->
@@ -2639,6 +2681,11 @@ onMounted(async () => {
       :error="error" :link-error="(slaLink && slaLink.error) || ''" :link-name="slaLinkName"
       @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
       @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
+
+    <!-- 容量汇总：逐转发器的三线表（三窗共用组件；账目由 shared/lbCapacity 算好传进去） -->
+    <LbCapDialog :open="capOpen" :model="capOpen ? capModel : null" :adaptive="unitAdaptive" :error="error"
+      @close="capOpen = false" @include="capSetInclude" @count="capSetCount" @param="capSetParam"
+      @toggle-all="capToggleAll" @reset="capReset" @export="openCapReportDialog" />
 
     <!-- 导入链路：星座 3D 主窗的图上链路（四窗共用组件；本窗只收 站 → 透明 GEO 星 → 站）-->
     <LinkImportDialog v-if="linkImpOpen" kind="linkbudget" @import="onLinkImport" @close="linkImpOpen = false" />

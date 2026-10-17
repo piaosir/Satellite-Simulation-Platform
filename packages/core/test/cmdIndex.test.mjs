@@ -38,11 +38,11 @@ ok('宇宙空间归地图设置视图（原晨昏线分区 geo-term 已并入）
 ok('轨道壳层（SatCovPanel）归对星覆盖分析', by('satcov-shell')[0] && by('satcov-shell')[0].view === 'satcov' && has('satcov-shell', '线宽'))
 ok('设置窗按 settings 归档', by('set-quality')[0] && by('set-quality')[0].view === 'settings' && has('set-quality', '渲染分辨率'))
 ok('视图顶部（分区前）的行挂到 <view>-top', has('constellation-top', '轨道类型'))
-ok('GXT 视图首块有节头（2026-10-15 补）：卫星行归 gxt-sats', has('gxt-sats', '线粗'))
+ok('波束地图视图首块有节头（2026-10-16 改为 BeamMapPanel.vue）：批次行归 gxt-sats', has('gxt-sats', '线宽') && has('gxt-sats', '填充不透明度') && by('gxt-sats')[0].view === 'gxt')
 ok('动态标题的分区 title 为空', by('vis-list')[0] && by('vis-list')[0].title === null)
 
 // 模板里每个 data-sec 都进了索引（漏一个就是一块搜不到）
-for (const f of ['src/pages/ConstellationMap3D.vue', 'src/components/SatCovPanel.vue', 'src/components/SettingsModal.vue']) {
+for (const f of ['src/pages/ConstellationMap3D.vue', 'src/components/SatCovPanel.vue', 'src/components/BeamMapPanel.vue', 'src/components/SettingsModal.vue']) {
   const tpl = fs.readFileSync(path.join(ROOT, f), 'utf8')
   const keys = [...new Set([...tpl.matchAll(/data-sec="([a-z0-9-]+)"/g)].map((m) => m[1]))]
   const miss = keys.filter((k) => !by(k).length)

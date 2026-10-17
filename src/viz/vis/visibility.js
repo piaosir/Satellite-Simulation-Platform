@@ -9,22 +9,27 @@
 // 星历点序列星（entry = {eph: 表}，没有 rec）：一律经 satPos.propOf(entry) 取传播体——只认 e.rec 的旧写法会让
 // 这类星 posAtMs(undefined) 恒为 null、仰角恒 −999，在过境里静默缺席（单测 modelVisEph）。
 import sat from '../constellation/satellite.js'
-import { posAt, posAtMs, propOf } from '../constellation/satPos.js'   // 取位的唯一入口
+import { posAt, posAtMs, propOf, periodMinOf, overlaysOf } from '../constellation/satPos.js'   // 取位的唯一入口
+// 唯一访问引擎（极值夹逼 + 自适应步长；主进程 solveAccessWindows 用同一份的 CJS 镜像）。相对路径：node 单测直接 import 本文件也解析得到
+import { elevWindows, observerOf, temeToEcef, satSpeedBound, minDetectMs } from '../../../packages/core/utils/access/accessCore.mjs'
+// 球面多边形（建链模块同一份口径：边按经纬度线性、跨日界线展开、面积质心）
+import { pgRing, pgCentroid } from '../../../packages/core/models/mapLinkPoints.mjs'
 
 const DEG = Math.PI / 180
 
-// 环质心（P1 Polygon 目标用代表点）：顶点 [[lon,lat],...] 或 [{lat,lon}] → {lat,lon}。
-// 简单算术平均；跨 ±180° 未做展开（P1 目标点粗定位足够，精确网格采样在 P3 Coverage 阶段实现）。
+// Polygon 目标的代表点：顶点 [[lon,lat],...] 或 [{lat,lon}] → {lat,lon}。
+// 与建链模块同一口径（mapLinkPoints.pgCentroid）：画出来那块区域的球面面积质心，跨 ±180° 照常成立；
+// 凹多边形质心落在区外时改取区内距边界最远的点。不足 3 个有效顶点返回 null。
 export function ringCentroid(pts) {
   if (!Array.isArray(pts) || !pts.length) return null
-  let sx = 0, sy = 0, n = 0
+  const ll = []
   for (const q of pts) {
-    const lon = Array.isArray(q) ? q[0] : q.lon
-    const lat = Array.isArray(q) ? q[1] : q.lat
-    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue
-    sx += lon; sy += lat; n++
+    const lon = Array.isArray(q) ? q[0] : (q && q.lon)
+    const lat = Array.isArray(q) ? q[1] : (q && q.lat)
+    if (Number.isFinite(lon) && Number.isFinite(lat)) ll.push([lon, lat])
   }
-  return n ? { lon: sx / n, lat: sy / n } : null
+  const c = pgCentroid(pgRing(ll))
+  return c ? { lat: c.lat, lon: c.lon } : null
 }
 
 // 单时刻可见性：
@@ -86,116 +91,96 @@ export function computeVisibility(entries, targets, times, minElevDeg) {
   return out
 }
 
-// ==================== ACCESS 时段过境（P2）====================
-// 对每颗星在 [base, base+horizon] 扫描仰角 ≥ 门限的过境窗口：粗扫(step)符号翻转找窗 → 二分精炼
-// AOS/LOS 边界 → 窗内黄金分割找峰仰角。双历元：真实星用 now、合成星用 ccNow。计算量 = 星数 × (horizon/step)，
-// 由调用方以 maxSats 限制卫星集大小（大集请先筛选）。
+// ==================== ACCESS 时段过境（P2；2026-10-17 改走唯一访问引擎）====================
+// 每颗星在 [base, base+horizon] 内仰角 ≥ 门限的全部过境窗口，交给 packages/core/utils/access/accessCore.mjs 的
+// elevWindows：「仰角极值夹逼 + 自适应步长」——步长 = clamp(仰角不可能翻过门限的时长, Δ = min(P/16, 5 min), …)，
+// 贴近门限的区间里靠导数由正转负夹出极大、Brent 精炼到 0.1 s，峰值 ≥ 门限才成窗，AOS / LOS 在单调段上求到 1 ms。
+// 旧版固定 90 s 粗扫 + 二分：完整落在两个粗扫格之间的短过境整段丢失（稠密星座高门限下漏 2–6%，最长中断错到 3.4 倍）。
+// 现在最短可检出过境 = 2 × 峰值精炼精度 = 0.2 s（accessMinDetectMs）。双历元：真实星用 now、合成星用 ccNow。
 //
-// 性能：仰角内核 elevMaxAt 是全流程热点（粗扫每星 horizon/step 次 + 每窗精炼数十次）。三处提速，均不改物理、数值等价：
-//   ① 观测者基（buildObservers）：固定目标点的 ECEF + 天顶方向余弦一次性预算，每采样只剩「向量差·天顶 → asin」，
-//      免去 ecfToLookAngles 内每次重建 geodeticToEcf(sqrt+三角) 与站点 sin/cos；access 不需方位/斜距，故只算仰角。
-//   ② SGP4 直核：ms→JD→tsince 直接调 sat.sgp4，省去 new Date 分配与 propagate/gstime 各算一遍 jday（jday 只算 1 次）。
-//      这一档现在落在 satPos.posAtMs 里（它顺带认星历点序列：表对象走插值，同样不 new Date）。
-//   ③ 峰值黄金分割：单峰区间搜索每步仅新增 1 次传播（旧三分法每步 2 次）。
+// 仰角口径不变：El = asin((satEcf − obsEcf)·ẑ_up / |satEcf − obsEcf|)，WGS-84 观测者基（引擎 observerOf，与 ecfToLookAngles 逐式等价）；
+// 星位经 satPos.posAtMs（SGP4 直核 / 星历点序列插值 / 叠加星历）。
 
-// WGS84 地球（与 satellite.js geodeticToEcf 同参），预建观测者基：ox/oy/oz=站点 ECEF（大地高 altKm，缺省 0）；ux/uy/uz=当地天顶方向余弦。
-// 仰角判据 El=asin( (satEcf−obsEcf)·ẑ_up / |satEcf−obsEcf| )，与 ecfToLookAngles 的 topZ/rangeSat 逐式等价。
-const WGS_A = 6378.137, WGS_B = 6356.7523142
-function buildObservers(targets) {
-  const f = (WGS_A - WGS_B) / WGS_A, e2 = 2 * f - f * f, obs = []
+const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5
+
+/** 过境检测的最短可检出过境时长（ms）：由引擎的峰值精炼精度决定，与星座、门限、时窗无关。 */
+export const accessMinDetectMs = () => minDetectMs()
+
+// 目标点 → 引擎观测者基（WGS-84，大地高 altKm 缺省 0）
+function observersOf(targets) {
+  const obs = []
   for (const t of targets || []) {
-    if (!Number.isFinite(t.lat) || !Number.isFinite(t.lon)) continue
-    const lat = t.lat * DEG, lon = t.lon * DEG, h = Number.isFinite(t.altKm) ? t.altKm : 0
-    const sLat = Math.sin(lat), cLat = Math.cos(lat), sLon = Math.sin(lon), cLon = Math.cos(lon)
-    const N = WGS_A / Math.sqrt(1 - e2 * sLat * sLat)
-    obs.push({ ox: (N + h) * cLat * cLon, oy: (N + h) * cLat * sLon, oz: (N * (1 - e2) + h) * sLat, ux: cLat * cLon, uy: cLat * sLon, uz: sLat })
+    if (!t || !Number.isFinite(t.lat) || !Number.isFinite(t.lon)) continue
+    obs.push(observerOf(t.lat, t.lon, Number.isFinite(t.altKm) ? t.altKm : 0))
   }
   return obs
 }
-
-const JD_UNIX = 2440587.5, MS_PER_DAY = 864e5, RAD2DEG = 180 / Math.PI
-// 某时刻该星对 obs 各点的最大仰角（度）；obs = buildObservers 产物。返回 -999 表示传播失败。
-const elevMaxAt = (rec, obs, tMs) => {
-  const jd = tMs / MS_PER_DAY + JD_UNIX
-  const pv = posAtMs(rec, tMs, jd)
-  if (!pv || !pv.position) return -999
-  const g = sat.gstime(jd), cg = Math.cos(g), sg = Math.sin(g), p = pv.position
-  const ex = p.x * cg + p.y * sg, ey = p.y * cg - p.x * sg, ez = p.z   // ECI→ECEF
-  let best = -999
-  for (let i = 0; i < obs.length; i++) {
-    const o = obs[i], rx = ex - o.ox, ry = ey - o.oy, rz = ez - o.oz
-    const rng = Math.sqrt(rx * rx + ry * ry + rz * rz)
-    if (rng <= 0) continue
-    const el = Math.asin((rx * o.ux + ry * o.uy + rz * o.uz) / rng) * RAD2DEG
-    if (el > best) best = el
-  }
-  return best
+// 卫星地固系速度上界：本体（satrec 根数 / 星历表采样）与叠加星历取大
+function speedBoundOf(rec) {
+  let v = satSpeedBound(rec)
+  const ov = rec && !rec.__ephem ? overlaysOf(rec) : null
+  if (ov) for (const tab of ov) { const u = satSpeedBound(tab); if (u > v) v = u }
+  return v
 }
-// 二分找仰角穿越门限的时刻（[aMs,bMs] 端点跨越；aAbove=a 端是否在门限之上）。18 次≈门限时刻精确到 90s/2¹⁸≈0.3ms。
-// ev(tMs) = 该星在 tMs 对目标的最大仰角（静止目标 = 固定观测者；移动目标 = 该时刻载具所在的观测者）
-const bisectCross = (ev, aMs, bMs, thr, aAbove) => {
-  let lo = aMs, hi = bMs
-  for (let i = 0; i < 18; i++) { const m = (lo + hi) / 2; if ((ev(m) >= thr) === aAbove) lo = m; else hi = m }
-  return (lo + hi) / 2
-}
-// 窗内峰仰角时刻（AOS→LOS 间仰角单峰）：黄金分割搜索，每步仅新增 1 次传播；收敛到 ~0.25s 或 40 步止。
-const GR = (Math.sqrt(5) - 1) / 2   // 0.6180339…
-const peakInWindow = (ev, aMs, bMs) => {
-  let lo = aMs, hi = bMs
-  let x1 = hi - GR * (hi - lo), x2 = lo + GR * (hi - lo)
-  let f1 = ev(x1), f2 = ev(x2)
-  for (let i = 0; i < 40 && (hi - lo) > 250; i++) {
-    if (f1 < f2) { lo = x1; x1 = x2; f1 = f2; x2 = lo + GR * (hi - lo); f2 = ev(x2) }
-    else { hi = x2; x2 = x1; f2 = f1; x1 = hi - GR * (hi - lo); f1 = ev(x1) }
+// 移动目标（航迹载具）的观测者：取 tReal 时刻那一点，速度按 +1 s 差分（km/s）。
+// 移动目标的扫描步长恒 60 s、格点人人相同（base = now），按真实时刻缓存、全批复用；满了整盘清掉。
+function movingObservers(targetsAt, cache) {
+  return (tReal) => {
+    let o = cache.get(tReal)
+    if (o !== undefined) return o
+    const p = targetsAt(tReal), q = p && p[0]
+    o = null
+    if (q && Number.isFinite(q.lat) && Number.isFinite(q.lon)) {
+      const a = observerOf(q.lat, q.lon, Number.isFinite(q.altKm) ? q.altKm : 0)
+      const p2 = targetsAt(tReal + 1000), q2 = p2 && p2[0]
+      if (q2 && Number.isFinite(q2.lat) && Number.isFinite(q2.lon)) {
+        const b = observerOf(q2.lat, q2.lon, Number.isFinite(q2.altKm) ? q2.altKm : 0)
+        a.vx = b.ox - a.ox; a.vy = b.oy - a.oy; a.vz = b.oz - a.oz
+      }
+      o = [a]
+    }
+    if (cache.size > 8192) cache.clear()
+    cache.set(tReal, o)
+    return o
   }
-  const tPeak = (lo + hi) / 2
-  return { peakMs: tPeak, peakEl: ev(tPeak) }
 }
 
 // entries:[{rec|eph,name,noradId,group,slot?,_cc}] · targets:[{lat,lon,altKm?}] · times:{now:Date,ccNow:Date} · horizonSec · minElevDeg
 // opts.targetsAt(tMs) → [{lat,lon,altKm?}]：目标随时刻移动（航迹载具，排得出时刻的航迹）时给，tMs 为真实时刻（UTC ms）；
 //   合成星按场景历元轴扫描，取目标时换回真实时刻（减 ccNow − now）。给了它 targets 可空
+// 多点目标（排不出时刻的航迹 = 航点串）：任一点可见即算，窗口 = 各点窗口的并，峰值取并窗内最高。
+// opts.coarseSec 已作废（引擎自适应步长，没有固定粗扫步长了），传了也不看。
 // 返回 [{noradId,name,group,slot,windows:[{startMs,endMs,durMin,peakEl,peakMs,truncated}]}]，按首窗开始时刻排序。
+//   truncated = 到时窗末仍在过境（窗口被时窗截断）；时窗起点前就已开着的窗 startMs = 起点。
 export function accessWindows(entries, targets, times, horizonSec, minElevDeg, opts) {
   const targetsAt = opts && typeof opts.targetsAt === 'function' ? opts.targetsAt : null
   if (!entries || !entries.length || (!targetsAt && (!targets || !targets.length))) return []
-  const step = ((opts && opts.coarseSec) || 90) * 1000
-  const obs = targetsAt ? null : buildObservers(targets)
+  const obs = targetsAt ? null : observersOf(targets)
   if (obs && !obs.length) return []
-  // 移动目标的观测者按真实时刻缓存：普通星的粗扫格点人人相同（base = now），一次解算全批复用；满了整盘清掉
   const obsCache = targetsAt ? new Map() : null
-  const obsAt = (tReal) => {
-    let o = obsCache.get(tReal)
-    if (!o) { o = buildObservers(targetsAt(tReal)); if (obsCache.size > 8192) obsCache.clear(); obsCache.set(tReal, o) }
-    return o
-  }
+  const obsReal = targetsAt ? movingObservers(targetsAt, obsCache) : null
   const ccOff = times.ccNow && times.now ? times.ccNow.getTime() - times.now.getTime() : 0
   const thr = Number.isFinite(minElevDeg) ? minElevDeg : 0
   const out = []
   for (const e of entries) {
     const base = (e._cc ? times.ccNow : times.now).getTime(), end = base + horizonSec * 1000
-    const rec = propOf(e)   // satrec 或星历点序列表（rec 星与改前逐位同路）
+    const rec = propOf(e)   // satrec 或星历点序列表
     const off = e._cc ? ccOff : 0
-    const ev = obs ? (tMs) => elevMaxAt(rec, obs, tMs) : (tMs) => elevMaxAt(rec, obsAt(tMs - off), tMs)
-    // 峰值种子 = 窗内粗采样最高的那格：黄金分割只在 [种子±step] 内精炼。多点目标「取各点最大仰角」在合并窗口内
-    // 可能双峰（先掠一点顶、再掠另一点顶），全窗单峰搜索会锁错峰；以粗扫全局最高格为种子则稳取真峰，且精炼区间更窄更快。
-    const seededPeak = (seedMs, aMs, bMs) => peakInWindow(ev, Math.max(aMs, seedMs - step), Math.min(bMs, seedMs + step))
-    const windows = []
-    const el0 = ev(base)
-    let prevMs = base, prevAbove = el0 >= thr
-    let startMs = prevAbove ? base : null, pkMs = base, pkEl = el0   // pkMs/pkEl：当前开窗内最高粗采样格
-    for (let ms = base + step; ms <= end; ms += step) {
-      const el = ev(ms), above = el >= thr
-      if (above && !prevAbove) { startMs = bisectCross(ev, prevMs, ms, thr, false); pkMs = ms; pkEl = el }
-      else if (above && prevAbove) { if (el > pkEl) { pkEl = el; pkMs = ms } }
-      else if (!above && prevAbove && startMs != null) {
-        const losMs = bisectCross(ev, prevMs, ms, thr, true), pk = seededPeak(pkMs, startMs, losMs)
-        windows.push({ startMs, endMs: losMs, startMin: (startMs - base) / 60000, endMin: (losMs - base) / 60000, durMin: (losMs - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: false })
-        startMs = null
-      }
-      prevMs = ms; prevAbove = above
+    const stateAt = (tMs, s) => {
+      const jd = tMs / MS_PER_DAY + JD_UNIX
+      const pv = posAtMs(rec, tMs, jd)
+      if (!pv || !pv.position) return false
+      temeToEcef(pv.position, pv.velocity, sat.gstime(jd), s)
+      return true
     }
-    if (prevAbove && startMs != null) { const pk = seededPeak(pkMs, startMs, end); windows.push({ startMs, endMs: end, startMin: (startMs - base) / 60000, endMin: (end - base) / 60000, durMin: (end - startMs) / 60000, peakEl: pk.peakEl, peakMs: pk.peakMs, peakMin: (pk.peakMs - base) / 60000, truncated: true }) }
+    const r = elevWindows({
+      stateAt, obs, obsAt: obsReal ? (tMs) => obsReal(tMs - off) : null,
+      thrDeg: thr, t0: base, t1: end, periodMin: periodMinOf(rec), vSat: speedBoundOf(rec)
+    })
+    const windows = r.windows.map((w) => ({
+      startMs: w.startMs, endMs: w.endMs, startMin: (w.startMs - base) / 60000, endMin: (w.endMs - base) / 60000, durMin: (w.endMs - w.startMs) / 60000,
+      peakEl: w.peakEl, peakMs: w.peakMs, peakMin: (w.peakMs - base) / 60000, truncated: !!w.truncEnd
+    }))
     if (windows.length) out.push({ noradId: e.noradId, name: e.name, group: e.group, slot: e.slot || '', windows })   // slot=GEO 定点标注（调用方预置，纯透传）
   }
   out.sort((a, b) => a.windows[0].startMs - b.windows[0].startMs)
@@ -206,13 +191,13 @@ export function accessWindows(entries, targets, times, horizonSec, minElevDeg, o
 // 把 accessWindows 产出的全部过境窗口在【相对时间轴】上合并去重 → 可见总时长 ÷ 时窗 = 时间覆盖百分比。
 // 「严」体现在三条，缺一条数就虚：
 //   ① 合并重叠：多星（或同星多窗）同时可见只计一次。直接把 durMin 求和会重复计数、可以超 100%，那不是覆盖率。
-//   ② 边界取 accessWindows 二分精炼后的 AOS/LOS（≈0.3ms），不用 90s 粗扫格点凑。
+//   ② 边界取 accessWindows 精炼后的 AOS/LOS（1 ms），不用采样格点凑。
 //   ③ 分母取【实际使用的时窗】（调用方 clamp 后的值），窗口一律夹到 [0, horizonMin]——被时窗切断的
 //      过境（truncated）只按落在窗内的那一段计入。
 // 双历元：真实星按 now、合成星按 ccNow 解算，两者的 startMin/endMin 都是「相对各自基准的分钟」，
 // 故在相对轴上合并（与甘特图同一根轴），不混用绝对时刻。
 // 中断（gap）含首尾——与 coverageGrid 的 revisit FOM 同口径：时窗开头/末尾没覆盖也算一段中断。
-// 上界诚实：窗口本身来自 coarseSec 粗扫，完整落在两个粗采样格之间的极短过境会被漏掉（该口径与过境清单一致）。
+// 窗口来自唯一访问引擎（极值夹逼，不依赖过境长短）：短于 accessMinDetectMs（0.2 s）的过境才可能检不出，与过境清单同一份窗口。
 // 返回 { pct, coveredMin, horizonMin, maxGapMin, gapCount }
 export function timeCoverage(results, horizonMin) {
   const H = Number(horizonMin)

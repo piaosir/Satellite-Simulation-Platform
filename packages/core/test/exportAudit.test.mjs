@@ -99,6 +99,16 @@ function body(text, head) {
   const m = CI.match(/const INK = \[[\s\S]*?\]/)
   ok('⑧ INK 不含 font-family（各节点从根上继承报告字体）', !!m && !/'font-family'/.test(m[0]))
 }
+// ⑨ 2D 导出 / 视频出帧收尾把波束地图层补喂回平面图（体检 2026-10-16 性能 #4）：波束地图通道的线按喂进来那一刻定走不走 GPU，
+//   导出中喂的那份全是 Canvas2D 描边 —— 不补喂就一直走 CPU 描边（9 月 2D 卡顿的根因）
+{
+  const em = /async function exportMap\([\s\S]*?\r?\n\}/.exec(PAGE)
+  const fin = em ? em[0].slice(em[0].lastIndexOf('finally')) : ''
+  ok('⑨a exportMap 收尾：复位 → GRD 重算 → 波束地图补喂', /flat\.setExporting\(false\); grd\.recompute\(\); bm\.feedFlat\(flat\)/.test(fin))
+  ok('⑨b 视频出帧收尾（finish2D）同样补喂', /finish2D: \(\) => \{ if \(flat\) \{ flat\.setExporting\(false\); grd\.recompute\(\); bm\.feedFlat\(flat\)/.test(PAGE))
+  const fb = /setBeamMapField\(layers, opts\) \{[\s\S]*?\n {4}\}/.exec(FLAT)
+  ok('⑨c 平面渲染器的波束地图通道每次喂都按当时的状态重建线集合（补喂即换回 GPU 路）', !!fb && /bmLayers = src\.map\(\(L, i\) => makeFieldEntry\(L, i\)\)/.test(fb[0]))
+}
 
 console.log(`\n${fail ? 'FAIL' : 'OK'} ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

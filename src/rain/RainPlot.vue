@@ -298,7 +298,10 @@ function draw() {
 function resize() {
   const cv = canvas.value, w = wrap.value; if (!cv || !w) return
   dpr = window.devicePixelRatio || 1
-  cssW = Math.max(280, w.clientWidth); cssH = 240
+  // clientWidth 含 wrap 的 padding，不扣掉画布会顶出右边被 .rp 的 overflow 裁掉
+  const cs = getComputedStyle(w)
+  const inner = w.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0)
+  cssW = Math.max(280, Math.floor(inner)); cssH = 240
   cv.width = Math.round(cssW * dpr); cv.height = Math.round(cssH * dpr)
   cv.style.width = cssW + 'px'; cv.style.height = cssH + 'px'
   draw()

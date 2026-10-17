@@ -16,10 +16,11 @@
 //   ③ configs 可为空 —— 允许「只分享资源库」。
 // 读侧兼容 v2（items[]，含 items[].lib）与 v1（裸 {name,state}），老码永远导得进来。
 //
-// 「本机资源指针」的处理（sanitize）：卫星条目里的方向图匹配（GEO/NGSO 的 grd.satFolder）与
-// 轨道取星来源（再生式的 ngsoSat.folder）指向的是【发送方机器上】的 GRD 天线树节点，原样带过去
-// 只会挂到对端另一颗星上。故打包时一律剥掉，并把 ngsoSat.mode 从 'tree' 降为 'manual'
-// （orbit/name/noradId 是自包含数据，照带不误）——对端拿到的是「有轨道、无方向图」这个自洽状态。
+// 「本机资源指针」的处理（sanitize）：卫星条目里的方向图匹配（GEO 的 grd.satFolder）与轨道取星来源
+// （NGSO / 再生式的 ngsoSat.folder）指向的是【发送方机器上】的天线树 / 卫星树节点，原样带过去只会挂到
+// 对端另一颗星上，故打包时一律剥掉。ngsoSat 的取星来源随之改标（shareNgsoSat）：有轨道根数 → 'search'、
+// 没有 → 'manual'；orbit / name / noradId 是自包含数据，照带不误——对端照样按这条轨道解几何，与发送方同一组数。
+// （早先一律降成 'manual'：两窗只认「mode ≠ manual 且有 orbit」才按轨道解，对端就改按表单里的圆轨道算了。）
 // 各体制剥哪些字段由调用方的 spec.sanitize 声明，见下方 fingerprint 一节。
 import { stableStringify } from './configDirty.js'
 
@@ -189,7 +190,7 @@ export function lockedRefsOf(states, refsOf, libs) {
 
 // ============================ 指纹 ============================
 // spec = { arr, label, keys, pack, sanitize, makeNew }
-//   keys     参与内容指纹的扩展键（GEO 卫星 ['grd']、NGSO ['ngsoSat','grd']、再生式 ['ngsoSat']）
+//   keys     参与内容指纹的扩展键（GEO 卫星 ['grd']、NGSO / 再生式 ['ngsoSat']）
 //   pack     本机条目 → 可序列化条目（各体制的 serializeLibrary 同款口径）
 //   sanitize 剥掉「本机资源指针」（见文件头）。声明了它 ⇒ 并库时启用宽松匹配。
 const packOf = (spec, c) => (spec && spec.pack ? spec.pack(c) : c)
@@ -206,6 +207,18 @@ export function strictFp(spec, c) { return stableStringify(fpKeys(spec, packOf(s
 export function looseFp(spec, c) {
   const e = packOf(spec, c)
   return stableStringify(fpKeys(spec, spec && spec.sanitize ? spec.sanitize(e) : e))
+}
+// 卫星轨道来源（ngsoSat，NGSO / 再生式同构）的打包净化，两窗 sat 库 spec.sanitize 共用：
+//   folder（本机卫星树节点）剥掉；取星来源：tree / search 且有 orbit → 'search'（轨道照带，对端按它解几何）；
+//   本就是 manual、或没有 orbit → 'manual'（只有表单里的圆轨道）。
+// ★ 不能把树取的星一律降成 'manual'：GEO 北京→北京例，对端按圆轨道取 40586 km @10°，发送方是 37524 km @43.4°。
+// ★ 点序列引用（{type:'ephem', ref}）指向发送方本机导入的星历组，对端多半没有——那边算时取不到采样表、点名报错，
+//   不会静默退成别的轨道（主进程 customSats.resolveOrbitSpec → core ngsoGeometry.buildSatrec）。
+export function shareNgsoSat(ns) {
+  const o = (ns && typeof ns === 'object') ? ns : {}
+  const orbit = o.orbit || null
+  const picked = !!orbit && !!o.mode && o.mode !== 'manual'
+  return { ...o, orbit, folder: '', mode: picked ? 'search' : 'manual' }
 }
 // 打包用：本机条目 → 净化过的可序列化条目
 export function packEntry(spec, c) {

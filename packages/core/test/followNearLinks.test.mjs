@@ -200,4 +200,31 @@ await t('⑥ 页面接线（源码钉）', () => {
   assert.match(sc, /setLinks\(null\); if \(linkRingTex\) \{ linkRingTex\.dispose\(\); linkRingTex = null \}/)
 })
 
+await t('⑦ 跟随中按需出帧（体检 2026-10-16 性能 #3）：局部相机静止 busy() = false；滚轮缩放缓动期间 true、停稳回落；scene 的 live 不再恒含跟随', async () => {
+  const L = ML.createModelLayer({})
+  L.follow(followState())
+  const cam = new THREE.PerspectiveCamera(42, 1600 / 900, 0.1, 120)
+  const drv = L.followDriver()
+  let k = 0
+  drv.apply(cam, 0.016)
+  while (L.overlay.busy() && k++ < 2000) drv.apply(cam, 0.016)   // 进跟随时若有起始缓动，先走完
+  assert.equal(L.overlay.busy(), false, '局部相机静止：不报 busy（scene 回落到按需 + 1 Hz 兜底）')
+  drv.onWheel({ deltaY: -100, deltaMode: 0 })
+  drv.apply(cam, 0.016)
+  assert.equal(L.overlay.busy(), true, '滚轮之后：缩放缓动期间报 busy（每一帧都出）')
+  k = 0
+  while (L.overlay.busy() && k++ < 2000) drv.apply(cam, 0.016)
+  assert.ok(k < 2000, '缩放缓动停不下来')
+  assert.equal(L.overlay.busy(), false, '停稳回落')
+  drv.rotateBy(0.1, 0)
+  drv.apply(cam, 0.016)
+  assert.equal(L.overlay.busy(), false, '方向键一步到位（没有欠着的阻尼）：靠接口置脏出那一帧，不留连续出帧')
+  L.dispose()
+  const sc = src('viz/globe3d/scene.js')
+  const m = sc.match(/const live = ([^\n]*\n[^\n]*)/)
+  assert.ok(m && !/followDriver/.test(m[1]) && /followBusy/.test(m[1]), 'live 条件不再恒含 !!followDriver')
+  assert.match(sc, /const followBusy = !!followDriver && !!\(overlay && overlay\.busy\(\)\)/)
+  assert.match(sc, /setFollowAnchor, clearSelectionGeom,/, 'setFollowAnchor 在对外接口里（调用即置脏）')
+})
+
 console.log(`followNearLinks: ${n} 项通过`)

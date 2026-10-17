@@ -382,5 +382,135 @@ section('求解时刻 = 场景历元')
   near(dLon(ssC.seed.raanDeg, ssE.seed.raanDeg), 0.98564736 / 2, 0.01, '★ 太阳同步的 RAAN 也随 t0 走（12 h 差半个 0.9856°）')
 }
 
+/* ===== ⑫ ★ 向导星座随场景历元重解（体检 2026-10-16 #4） ===== */
+// 场景历元每天回到当天 08:00，合成星 satrec 的历元就是它；向导按建星那天的 GMST / 太阳平黄经把星下点经度 / LTAN 折成惯性 RAAN，
+// 存下的 params.raan0 过一天就差一天的增量（110.5°E → 次日 109.5°E、30 天 80.9°E；LTAN 10:30 → 30 天 08:32）。
+// 修法：生成合成星时由 design 输入按当前场景历元重解（customConstGen），3D 页 build / 星历导出 / 各窗口取星同走这一个出口。
+// 容差按式子算：
+//   · 设计层（satrec 平根数 + SGP4 自己的 gsto）：圆赤道上 λ = Ω + ω + M₀ − GMST、LTAN = (Ω − L0)/15 + 12 都是恒等式，
+//     只剩浮点舍入 → 1e-9（° / h）；
+//   · 漂移基准（证明用例不空跑）：GMST 每个太阳日比 360° 多走 (876600·3600 + 8640184.812866)/36525/240 − 360 = 0.98564736629°
+//     （satellite.js gstime 的一次项），太阳平黄经一天走 36000.76983/36525 °（Meeus 25.2 一次项）；两式的二次项 30 天内
+//     < 2e-7°，故不重解时 N 天后星下点 = 110.5 − 0.98564736629·N、LTAN = 10.5 − N·(36000.76983/36525)/15，容差 1e-5；
+//   · SGP4 传播层（t0 处真星下点）：J2 短周期沿迹 −0.0121°（见 ③）+ SDP4 在 t0 照样叠上日月周期项（satellite.js 的 sgp4init
+//     置 peo = 0，GEO 两年逐日实测 −0.043…+0.036°）→ 0.06°。重解与否差的是 0.9856°/d，远在这道容差之外。
+section('向导星座随场景历元重解')
+{
+  const _ls = new Map()
+  globalThis.localStorage = { getItem: (k) => (_ls.has(k) ? _ls.get(k) : null), setItem: (k, v) => { _ls.set(k, String(v)) }, removeItem: (k) => { _ls.delete(k) } }
+  const { default: satE } = await import('../../../src/viz/constellation/satellite.js')   // 与 customConstGen / 3D 页同一份
+  const G = await import('../../../src/viz/constellation/customConstGen.js')
+  const U = await import('../../../src/viz/constellation/useCustomConstellations.js')
+  const RAD = 180 / Math.PI, DAY = 86400000
+  const E0 = Date.UTC(2026, 8, 21, 0, 0, 0)                                  // 北京时间 08:00（出厂场景历元）
+  const iso = (ms) => new Date(ms).toISOString()
+  const GMST_DAY = (876600 * 3600 + 8640184.812866) / 36525 / 240 - 360    // °/d
+  const SUN_DAY = 36000.76983 / 36525                                        // °/d
+  const solveAt = (type, inp, ms) => D.solveDesign(type, inp, ms, { gmst: satE.gstime(new Date(ms)) })
+  // 星座配置：params = 建星那天（E0）向导解出的（与 3D 页 saveConstWizard 同一条路），design = 向导输入
+  const mk = (type, inputs, layout, name) => ({ params: D.seedToParams(solveAt(type, inputs, E0).seed, layout, name), design: { type, inputs } })
+  // satrec 平根数 → 星下点经度（SGP4 自己的 gsto；圆赤道轨道上 λ = Ω + ω + M₀ − GMST 是恒等式）
+  const meanLon = (rec) => D.raanToLon((rec.nodeo + rec.argpo + rec.mo) * RAD, rec.gsto)
+  // 与 useCustomConstellations.elementsToSatrec 同一换算：a = (RE + 近地点高度)/(1 − e)，历元 = 场景历元
+  const satrecOf = (el, epMs) => {
+    const a = (RE + el.altKm) / (1 - el.ecc)
+    return satE.omm2satrec({ noradId: 'SIM', epoch: iso(epMs), meanMotion: 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI), ecc: el.ecc, incl: el.incl, raan: el.raan, argp: el.argp, ma: el.ma, bstar: 0, mdot: 0, mddot: 0 })
+  }
+  const sgpLon = (rec, ms) => { const pv = satE.propagate(rec, new Date(ms)); return satE.degreesLong(satE.eciToGeodetic(pv.position, satE.gstime(new Date(ms))).longitude) }
+
+  // 地球同步 110.5°E：次日 / 30 天后的场景历元下仍在 110.5°E
+  const geo = mk('geosync', { subLonDeg: 110.5, inclDeg: 0 }, { pattern: 'single' }, 'GEO')
+  ok(G.designFrame(geo) === 'earth', '地球同步：星下点经度是地固设计量')
+  for (const n of [0, 1, 30]) {
+    const E = E0 + n * DAY
+    const rec = satrecOf(G.customConstSats(geo, iso(E))[0].elements, E)
+    near(meanLon(rec), 110.5, 1e-9, '★ 地球同步：' + n + ' 天后的场景历元下平根数星下点仍是 110.5°E')
+    const ls = sgpLon(rec, E)
+    ok(dLon(ls, 110.5) <= 0.06, '★ 地球同步：' + n + ' 天后 SGP4 传播的 t0 星下点在 110.5°E ± 0.06°（' + ls.toFixed(4) + '）')
+    const stale = satrecOf(generateConstellation(geo.params)[0].elements, E)   // 不重解（修复前）：建星那天的 raan0 配新历元
+    ok(dLon(meanLon(stale), 110.5 - GMST_DAY * n) <= 1e-5, '不重解时 ' + n + ' 天后漂到 ' + (110.5 - GMST_DAY * n).toFixed(3) + '°E（每天 ' + GMST_DAY.toFixed(5) + '°）', meanLon(stale).toFixed(6))
+  }
+  // 太阳同步 LTAN 10:30：30 天后仍是 10:30；布局（T/P/F、星名）沿用存下的 params
+  const sso = mk('sunSync', { driver: 'alt', altKm: 800, localTime: '10:30', localMode: 'ltan' }, { pattern: 'delta', T: 12, P: 3, F: 1 }, 'SSO')
+  ok(G.designFrame(sso) === 'sun', '太阳同步：LTAN 是日固设计量')
+  for (const n of [0, 30]) {
+    const E = E0 + n * DAY
+    const gs = G.customConstSats(sso, iso(E))
+    near(D.raanToLtan(gs[0].elements.raan, E), 10.5, 1e-9, '★ 太阳同步：' + n + ' 天后 LTAN 仍是 10:30')
+    ok(gs.length === 12 && new Set(gs.map((x) => x.elements.raan.toFixed(9))).size === 3 && gs[0].name === 'SSO-P01-S01', '重解只换 RAAN：12 星 3 面、星名照旧')
+    near(D.raanToLtan(sso.params.raan0, E), 10.5 - SUN_DAY * n / 15, 1e-5, '不重解时 ' + n + ' 天后 LTAN 漂到 ' + D.formatHm(10.5 - SUN_DAY * n / 15))
+  }
+  // 回归·太阳同步（LTDN）与其余地固类：30 天后设计量回读不变
+  {
+    const E = E0 + 30 * DAY, g30 = satE.gstime(new Date(E))
+    const rss = mk('repeatSunSync', { k: 233, m: 16, anLonDeg: 0, localTime: '10:00', localMode: 'ltdn' }, { pattern: 'single' }, 'RSS')
+    near(D.ltanToLtdn(D.raanToLtan(G.customConstSats(rss, iso(E))[0].elements.raan, E)), 10, 1e-9, '★ 回归·太阳同步：30 天后 LTDN 仍是 10:00')
+    for (const [type, inp, want, lonOf, tag] of [
+      ['critical', { direction: 'pro', apogeeKm: 39870, perigeeKm: 500, anLonDeg: 75, argpDeg: 270 }, 75, (el) => D.raanToLon(el.raan, g30), '临界倾角：升交点经度'],
+      ['criticalSunSync', { perigeeKm: 500, anLonDeg: -30, argpDeg: 270 }, -30, (el) => D.raanToLon(el.raan, g30), '临界倾角·太阳同步：升交点经度'],
+      ['repeat', { inclDeg: 98.2, k: 233, m: 16, anLonDeg: 120 }, 120, (el) => D.raanToLon(el.raan, g30), '回归轨道：升交点经度'],
+      ['molniya', { apogeeLonDeg: 100, perigeeKm: 500, argpDeg: 270 }, 100, (el) => D.subLonOf({ raanDeg: el.raan, argpDeg: el.argp, inclDeg: el.incl, e: 0, m0Deg: 180 }, g30), 'Molniya：远地点经度']
+    ]) {
+      const c = mk(type, inp, { pattern: 'single' }, 'X')
+      ok(G.designFrame(c) === 'earth', tag + '：地固设计量')
+      ok(dLon(lonOf(G.customConstSats(c, iso(E))[0].elements), want) <= 1e-9, '★ ' + tag + '：30 天后仍是 ' + want + '°')
+    }
+  }
+  // 惯性 RAAN 的不动：圆轨道（Ω 本身是输入）、自定义根数、没有 design 的老存档 / 纯 Walker；坏 design 退回存下的 params
+  {
+    const cir = mk('circular', { inclDeg: 53, altKm: 550, raanDeg: 30 }, { pattern: 'delta', T: 24, P: 6, F: 1 }, 'C')
+    const cusIn = { shape: 'circ', perigeeKm: 1200, apogeeKm: 1200, inclDeg: 55, argpDeg: 0, raanDeg: 40, m0Deg: 0 }
+    const cus = mk('custom', cusIn, { pattern: 'delta', T: 6, P: 2, F: 1 }, 'U')
+    const old = { params: { ...cus.params } }
+    const bad = { params: geo.params, design: { type: 'geosync', inputs: { subLonDeg: 110.5, inclDeg: 400 } } }
+    const unk = { params: geo.params, design: { type: 'noSuchType', inputs: {} } }
+    for (const [c, tag] of [[cir, '圆轨道'], [cus, '自定义根数'], [old, '老存档（无 design）'], [bad, '坏 design（解不出）'], [unk, '未知类型']]) {
+      const got = G.customConstParams(c, iso(E0 + 30 * DAY))
+      ok(got === c.params, tag + '：30 天后照用存下的 params（RAAN 惯性语义不变）')
+    }
+    near(G.customConstSats(cus, iso(E0 + 30 * DAY))[0].elements.raan, 40, 1e-12, '自定义根数：30 天后 RAAN 仍是 40°')
+    ok(G.customConstParams(geo, 'not-a-date') === geo.params && G.customConstParams(null, iso(E0)) && G.designFrame(null) === null, '坏历元 / 空配置不抛')
+    near(G.designRaanShiftDeg('earth', iso(E0), iso(E0 + DAY)), GMST_DAY, 1e-6, '历元增量：地固 = GMST 增量（一天 0.9856°）')
+    near(G.designRaanShiftDeg('sun', iso(E0), iso(E0 + DAY)), SUN_DAY, 1e-6, '历元增量：日固 = 太阳平黄经增量')
+    ok(G.designRaanShiftDeg('inertial', iso(E0), iso(E0 + DAY)) === 0 && Number.isNaN(G.designRaanShiftDeg('earth', null, iso(E0))), '历元增量：惯性 0、缺历元 NaN')
+  }
+  // useCustomConstellations：normalize / persist / load 往返 design 还在；3D 页 build、向导读数、星历导出同一历元同一 RAAN
+  {
+    const blob = () => JSON.parse(localStorage.getItem('constellation3d/customConsts'))
+    const cc = U.useCustomConstellations(() => {})
+    cc.load()
+    cc.setScenarioEpoch(iso(E0))
+    const dsg = { type: 'geosync', inputs: { subLonDeg: 110.5, inclDeg: 0 } }
+    const DSG = JSON.stringify(dsg)
+    const a = cc.add({ name: 'GEO', params: geo.params, design: dsg, color: '#ff6b6b', colorByPlane: false })
+    const s = cc.add({ name: 'SSO', params: sso.params, design: sso.design })
+    const w = cc.add({ name: 'W', params: { name: 'W', pattern: 'delta', T: 6, P: 2, F: 1, incl: 55, shape: 'circ', perigeeKm: 1200, apogeeKm: 1200, argp: 0, raan0: 40, m0: 0 } })
+    dsg.inputs.subLonDeg = 0                                                  // 调用方事后改自己的对象：存进去的是深拷贝
+    ok(JSON.stringify(cc.list.value[0].design) === DSG, 'add：design 深拷贝进列表', JSON.stringify(cc.list.value[0].design))
+    ok(JSON.stringify(blob().items[0].design) === DSG, 'persist：design 落盘')
+    ok(!('design' in blob().items[2]), '没有 design 的星座落盘不写这一项（老存档读写逐字不变）')
+    cc.update(a.id, { name: 'GEO-2' }); cc.toggle(a.id); cc.toggle(a.id); cc.showOnly(w.id)
+    ok(JSON.stringify(blob().items[0].design) === DSG && blob().items[0].name === 'GEO-2', '改名 / 显隐之后 design 还在')
+    const cc2 = U.useCustomConstellations(() => {})
+    cc2.load()
+    ok(JSON.stringify(cc2.list.value[0].design) === DSG && JSON.stringify(cc2.list.value[1].design) === JSON.stringify(sso.design) && cc2.list.value[2].design === undefined, 'load 往返：design 还在，老星座仍没有')
+    for (const n of [1, 30]) {
+      const E = E0 + n * DAY
+      cc2.setScenarioEpoch(iso(E))
+      const rec = cc2.satsOf(a.id)[0].rec
+      near(meanLon(rec), 110.5, 1e-9, '★ 3D 页 build：场景历元前移 ' + n + ' 天，合成星仍在 110.5°E')
+      near(D.raanToLtan(cc2.satsOf(s.id)[0].rec.nodeo * RAD, E), 10.5, 1e-9, '★ 3D 页 build：' + n + ' 天后太阳同步 LTAN 仍是 10:30')
+      // 再编辑向导的读数（3D 页 constSolved：同一场景历元、同一 gstime）与地图上的星一致
+      const ep = cc2.scenarioEpoch.value
+      const sv = D.solveDesign('geosync', cc2.list.value[0].design.inputs, Date.parse(ep), { gmst: satE.gstime(new Date(ep)) })
+      ok(dLon(sv.seed.raanDeg, rec.nodeo * RAD) <= 1e-9 && Math.abs(sv.derived.subLonDeg - 110.5) <= 1e-9, '★ 向导读数（星下点 110.5°E）与地图上的星同一 RAAN（' + n + ' 天后）')
+      ok(dLon(cc2.list.value[0].params.raan0, sv.seed.raanDeg) <= 1e-9, '列表里的 params 跟到当前场景历元（再编辑切「自定义根数」回填的 Ω 不停在建星那天）')
+      near(cc2.satsOf(w.id)[0].rec.nodeo * RAD, 40, 1e-9, '纯 Walker（无 design）' + n + ' 天后 RAAN 仍是 40°')
+      const omm = U.customConstellationsToOmmRecords(a.id)[0]
+      ok(omm.epoch === ep && dLon(Number(omm.raan), rec.nodeo * RAD) <= 1e-9, '导出星历（OMM）与 3D 页同一历元、同一 RAAN')
+    }
+  }
+}
+
 console.log('\norbitDesign: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

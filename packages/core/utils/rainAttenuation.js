@@ -9,14 +9,14 @@
 // 纯 JS、无 Vue/DOM，在 Electron 主进程（Node）以 CommonJS 加载。
 
 const geo = require('./linkCalculator.js');
+const itu = require('./itu/index.js');                        // 气体 / 机载 / 雨高（与链路预算两引擎同一份）
 const { CONSTANTS } = require('./constants.js');
-const { getRhoWs } = require('../data/waterVaporGrid.js');   // ITU-R P.836-6 地面水汽密度
 const rainRate = require('./rainRate.js');                    // ITU-R P.837 降雨率查表（0.01%）
 const s8 = require('./ngsoElevStats.js');                     // ITU-R P.618-14 §8 非静止轨道长期统计
+const { skyNoise } = require('./itu/p618sky.js');             // ITU-R P.618-14 §3 天空噪温（与链路预算同一函数）
 
 const D2R = Math.PI / 180;
 const HOURS_PER_YEAR = 8766;   // 365.25 d × 24 h（与 SatMaster「Link downtime」口径一致）
-const TMR = 275;               // 介质辐射温度 Tmr (K)，ITU-R P.618 降雨天空噪声
 
 function num(v, d) { const n = parseFloat(v); return Number.isFinite(n) ? n : (d === undefined ? NaN : d); }
 
@@ -241,25 +241,27 @@ function calculateRainAttenuation(p) {
   const rainHeight = rp.hR;
   const rainAtten = geo.scaleRainAttenP618_14(A001, pct, lat, elevation);
 
-  // —— 大气气体吸收 P.676：Ps/Ts（P.835）+ rhoWs（P.836）——
-  const Ps = 1013.25 * Math.pow(Math.max(0.01, 1 - 6.5 * altKm / 288.15), 5.2561);
-  const Ts = Math.max(200, (Math.abs(lat) < 22 ? 300.4 : Math.abs(lat) < 45 ? 283.1 : 272.4) - 6.5 * altKm);
-  let rhoWs; try { rhoWs = getRhoWs(lat, lon, availability < 100); } catch (e) { rhoWs = undefined; }
-  const gasAtten = geo.calculateAtmosphericAttenuation(freq, elevation, Ps, Ts, rhoWs);
+  // —— 大气气体吸收：与链路预算两引擎同一入口（itu/gasSite.js：P.676-13 Annex 2 统计法 + P.836-6 + P.618-14 §2.5 式 68
+  //    + 机载 P.2041-1）；Ts（P.835 纬度带 − 6.5 K/km）另供天空噪温 T_mr ——
+  const gasAtten = itu.gaseousAttenuationSite({ f: freq, el: elevation, lat, lon, hsKm: altKm, pPct: pct }).A;
+  const Ts = itu.surfaceTemperature(lat, altKm);
 
-  // —— 云衰 P.840-9、对流层闪烁 ——
-  const cloudAtten = geo.calculateCloudAttenuation(freq, elevation, pct, lat, lon);
-  const scintillation = geo.calculateScintillationFading(freq, elevation, diameter, availability, efficiency / 100);
+  // —— 云衰 P.840-9、对流层闪烁（站高高于雨高时按 P.2041-1 §4.3 / §4.5 削减云柱、忽略闪烁）——
+  const hRain = itu.rainHeightKm(lat, lon);
+  const cloudAtten = geo.calculateCloudAttenuation(freq, elevation, pct, lat, lon, itu.cloudLiquidFraction(altKm, hRain));
+  const scintillation = itu.scintillationApplies(altKm, hRain)
+    ? geo.calculateScintillationFading(freq, elevation, diameter, availability, efficiency / 100) : 0;
 
   // —— 合计衰减：SatMaster 口径 = 气体 + 云 + 雨（简单和，闪烁不计入）；另存 ITU §2.5 严谨式对照 ——
   const totalAtten = gasAtten + cloudAtten + rainAtten;
   const totalAttenItu = gasAtten + Math.sqrt(Math.pow(rainAtten + cloudAtten, 2) + Math.pow(scintillation, 2));
 
   // —— 降雨噪声 / 下行 G/T 衰减（下行专属）——
-  // 统一口径（只此一个噪声量，避免同一物理量出现两个不同基数的数）：
-  //   ① 基数取「雨衰 + 云衰」——云与雨同为吸收介质，凡吸收必辐射（基尔霍夫定律），只算雨会低估；
-  //      气体不计入：它晴空也在，已含在晴空 T_sys 基线里，不构成「劣化」。闪烁也不计（折射，不吸收不辐射）。
-  //   ② T_mr = 275 K：ITU-R P.618 默认值（亦即 1.12·T_地面 − 50，T_地面≈290K）。
+  // 与链路预算两引擎同一函数（itu/p618sky.js，ITU-R P.618-14 §3 式(69)(70)）：
+  //   ① 天空噪温按串联介质合成：T_sky(A) = T_mr·(1−10^(−A/10)) + 2.7·10^(−A/10)，A = 气体 + 云 + 雨（不含闪烁）；
+  //      输入的系统噪温视为晴空值（已含 T_sky(A_G)），劣化只取增量 ΔT = T_sky(A_G+A_C+A_R) − T_sky(A_G)。
+  //      各项分别代入再相加会算出超过 T_mr 本身的亮温（雨天高报 G/T 劣化 0.5~0.7 dB）。
+  //   ② T_mr = 37.34 + 0.81·Ts（式 70，Ts 即上方气体吸收用的地表温度）。
   //   ③ 天空噪声须经馈线衰减才到接收机参考点，故 ÷ 馈线线性损耗——与晴空 T_sys 的折算口径自洽。
   //      馈线损耗填 0 即退化为 SatMaster 口径（其「System noise (clear)」不做馈线折算）。
   const precipAtten = rainAtten + cloudAtten;
@@ -267,7 +269,7 @@ function calculateRainAttenuation(p) {
   if (direction === 'down') {
     const Tsys = systemNoiseTemp > 0 ? systemNoiseTemp : 120;               // 兜底晴空噪温
     const feedLin = Math.pow(10, feederLoss / 10);
-    rainNoiseTemp = TMR * (1 - Math.pow(10, -precipAtten / 10));            // 雨+云致降雨噪温（天线口）
+    rainNoiseTemp = skyNoise({ A_G: gasAtten, A_C: cloudAtten, A_R: rainAtten, Ts }).precip;   // 雨+云致天空噪温增量（天线口）
     gtDegradation = 10 * Math.log10((Tsys + rainNoiseTemp / feedLin) / Tsys);
     noiseIncrease = gtDegradation;                                          // 同一物理量（保留字段兼容）
     dnd = precipAtten + gtDegradation;                                      // 下行劣化 = 信号损失 + 噪声抬升

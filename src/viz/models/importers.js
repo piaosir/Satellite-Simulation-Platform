@@ -2,7 +2,8 @@
 //
 // 字节从哪来：主进程 models:readFile 读好经 IPC 传 Uint8Array（DESIGN §4）。不拿 file:// URL —— dev 页在 http://localhost，
 // Chromium 拒载本地文件，打包版却能载，会形成两种行为（deps 报告 §2.1）。.mtl 与贴图这些「旁车」按同目录文件名再读：
-// 调用方给 readSibling(相对名) → Uint8Array|null；贴图字节转 blob: URL，经 LoadingManager.setURLModifier 喂给 three 的加载器。
+// 调用方给 readSibling(相对名) → Uint8Array|null；贴图由挂在 LoadingManager 上的旁车加载器按名字现读、转 blob: URL 解码
+// （sidecarManager），导入器返回前等它们全部落定，落定后仍没有图像的贴图从材质上摘掉并记告警（settleTextures）。
 //
 // 统一出口：
 //   · 材质一律转成 MeshStandardMaterial（MTL / FBX 给的是 Phong / Lambert：它们不吃 scene.environment 的 PMREM 环境，
@@ -101,32 +102,122 @@ function finish(root, name) {
   return { tris, materialFallback: { noMaterialMeshes: noMaterial, degenerate: deg } }
 }
 
-// 贴图旁车：先把 MTL / 调用方点名的文件读成 blob: URL，加载器按文件名（不分大小写、不看目录）命中
-async function sidecarManager(names, readSibling) {
-  const urls = new Map(), made = []
-  for (const n of names) {
-    const key = baseName(n).toLowerCase()
-    if (!key || urls.has(key)) continue
-    let bytes = null
-    try { bytes = readSibling ? await readSibling(n) : null } catch { bytes = null }
-    if (!bytes) continue
-    const u = URL.createObjectURL(new Blob([bytes], { type: MIME[extOf(n)] || 'application/octet-stream' }))
-    urls.set(key, u); made.push(u)
-  }
+// 贴图落定的封顶：按「多久没有一张落定」算，不按总时长 —— 大件几十张贴图陆续到不会被误砍；只防 IPC / 解码卡死
+// 把整个导入队列一起挂住（正常整批几十到几百毫秒）
+const TEX_SETTLE_MS = 60000
+const isInline = (u) => /^(blob|data):/i.test(u)
+
+// 贴图旁车（MTLLoader / FBXLoader 共用）。两家取每张贴图之前都先问 manager.getHandler(名字)：这里挂一个「按名字去模型所在目录
+// 读字节」的加载器。字节经 IPC 异步到手，所以 load() 先回一张空贴图（three 的 TextureLoader 也是先回空壳），读到 → blob: URL →
+// 解码完再把 image 填进去；导入器返回前由 settleTextures 等它们全部落定 —— 以前不等就返回，wbStore 紧接着导出 glb，
+// image 还是 null，GLTFExporter 整件抛「No valid image data found」，带贴图的 OBJ / FBX 一律入不了库。
+//   · 名字先按原样读（.mtl 里写的相对路径），读不到再按文件名在同目录找：3ds Max 的 .mtl 常写绝对路径；
+//     FBX 的外部贴图（FBXLoader 只给文件名）也走这一条 —— 以前一律记缺
+//   · 同一文件只读一次、只解码一次，各贴图共用同一个 image：几个材质共用一张图集时导出件里也只有一份图（GLTFExporter 按 image 去重）
+//   · FBX 内嵌贴图是 FBXLoader 现造的 blob: / data: URL，原样解码
+//   · blob:（我们造的，和 FBXLoader 造了不管回收的）一解码完就撤 —— 图已到手，撤了不影响（GLTFLoader 也是载完即撤）；
+//     卡住没回来的那张本来就没造 blob:，不会漏
+//   · 只经 readSibling 取字节：不出网、不碰模型目录以外的文件（兜底的 URL 修饰器把漏网的普通地址一律换成空地址）
+function sidecarManager(readSibling) {
   const mgr = new THREE.LoadingManager()
-  const missing = new Set()
-  mgr.setURLModifier((url) => {
-    if (/^(blob:|data:)/.test(url)) return url
-    const hit = urls.get(baseName(decodeURIComponent(url)).toLowerCase())
-    if (hit) return hit
-    missing.add(baseName(url))
-    return 'data:,'   // 找不到的贴图给个空地址：加载器报错走 onError，不会去网络上乱找
+  mgr.setURLModifier((url) => (isInline(url) ? url : 'data:,'))
+  const images = new THREE.ImageLoader(mgr)
+  const sources = new Map()     // 'f:' 规范化文件名 / 'u:' 内嵌 URL → Promise<{url, own, jpeg}|null>
+  const info = new WeakMap()    // 贴图 → {ref, why?: 'missing' | 'bad', jpeg?: boolean}
+  const pending = []
+  const once = (key, make) => { if (!sources.has(key)) sources.set(key, make()); return sources.get(key) }
+  const fileSrc = (name) => once('f:' + name.replace(/\\/g, '/').toLowerCase(), async () => {
+    let b = null
+    try { b = readSibling ? await readSibling(name) : null } catch { b = null }
+    if (!b || !b.byteLength) return null
+    const url = URL.createObjectURL(new Blob([b], { type: MIME[extOf(name)] || 'application/octet-stream' }))
+    return { url, own: true, jpeg: b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff }
   })
-  const done = new Promise((res) => { mgr.onLoad = res; setTimeout(res, 8000) })   // 贴图全到（或 8 s 兜底）再回收 blob
-  return { mgr, missing, cleanup: async () => { await done; for (const u of made) URL.revokeObjectURL(u) } }
+  const inlineSrc = (ref) => once('u:' + ref, async () => {
+    if (/^data:/i.test(ref)) return { url: ref, own: false, jpeg: /^data:image\/jpe?g[;,]/i.test(ref) }
+    let jpeg = false
+    try { jpeg = (await (await fetch(ref)).blob()).type === 'image/jpeg' } catch { /* 只影响导出时的编码 */ }
+    return { url: ref, own: true, jpeg }
+  })
+  const decode = (src) => src.img || (src.img = new Promise((res) => images.load(src.url, res, undefined, () => res(null)))
+    .then((img) => { if (src.own) URL.revokeObjectURL(src.url); return img }))
+  async function fill(tex, rec) {
+    const ref = rec.ref
+    const src = isInline(ref) ? await inlineSrc(ref)
+      : ref ? (await fileSrc(ref)) || (/[\\/]/.test(ref) ? await fileSrc(baseName(ref)) : null) : null
+    if (!src) { rec.why = 'missing'; return }
+    const img = await decode(src)
+    if (!img) { rec.why = 'bad'; return }
+    tex.image = img
+    tex.needsUpdate = true
+    rec.jpeg = src.jpeg
+  }
+  class SiblingTextureLoader extends THREE.Loader {
+    load(url, onLoad, onProgress, onError) {
+      const tex = new THREE.Texture()
+      const rec = { ref: String(url || '') }
+      info.set(tex, rec)
+      pending.push(fill(tex, rec).catch(() => { rec.why = rec.why || 'bad' }).then(() => {
+        if (rec.why) { if (onError) onError(new Error(rec.ref)) } else if (onLoad) onLoad(tex)
+      }))
+      return tex
+    }
+  }
+  // /^/：什么名字都由它接（MTLLoader 按整条路径问，FBXLoader 按「.扩展名」问）
+  mgr.addHandler(/^/, new SiblingTextureLoader(mgr))
+  return {
+    mgr,
+    info: (tex) => info.get(tex),
+    /** 等在途贴图全部落定（读不到 / 解不开也算落定）；一张都没要过的立即返回。返回 true = 连续 ms 没有一张落定、剩下的不等了 */
+    settle(ms = TEX_SETTLE_MS) {
+      if (!pending.length) return Promise.resolve(false)
+      return new Promise((resolve) => {
+        let left = pending.length, timer = 0, over = false
+        const end = (late) => { if (over) return; over = true; clearTimeout(timer); resolve(late) }
+        const arm = () => { clearTimeout(timer); timer = setTimeout(end, ms, true) }
+        const one = () => { if (--left === 0) end(false); else if (!over) arm() }
+        for (const p of pending) p.then(one, one)
+        arm()
+      })
+    }
+  }
 }
 
-async function importObj(bytes, name, readSibling, warnings) {
+// 贴图落定之后，image 仍为空的（读不到 / 解不开 / 超时；FBX 里没有文件名的占位贴图同理）从材质上摘掉：留着 image = null 的贴图，
+// GLTFExporter 整件抛错、模型入不了库；摘掉后照样入库，按原因记告警（只记模型里真用到的）。必须在 finish 之前做：
+// toStandard 照搬贴图槽，materials.js 的退化黑判据要看「有没有底色贴图」。
+// JPEG 源的颜色图标上 mimeType（GLTFExporter 认它）：导出件里照样存 JPEG、不胀成 PNG（与 materials.js 程序贴图同一口径，法线 / 凹凸等留 PNG）
+async function settleTextures(root, side, warnings, waitMs) {
+  const late = await side.settle(waitMs)
+  const lost = { missing: new Set(), bad: new Set(), late: new Set() }
+  const seen = new Set()
+  root.traverse((o) => {
+    if (!o.material) return
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!m || seen.has(m)) continue
+      seen.add(m)
+      for (const k of Object.keys(m)) {
+        const t = m[k]
+        if (!t || !t.isTexture) continue
+        const rec = side.info(t)
+        if (t.image != null) {
+          if (rec && rec.jpeg && (k === 'map' || k === 'emissiveMap')) t.userData.mimeType = 'image/jpeg'
+          continue
+        }
+        m[k] = null
+        // 没经过旁车加载器的（FBX 无文件名的占位贴图）算缺；经过了却没落定原因的只能是到封顶还没回来
+        const why = rec ? rec.why || (late ? 'late' : 'bad') : 'missing'
+        lost[why].add((rec && rec.ref && !isInline(rec.ref) ? baseName(rec.ref) : '') || t.name || m.name || '?')
+      }
+    }
+  })
+  const names = (s) => [...s].slice(0, 5).join('、')
+  if (lost.missing.size) warnings.push('缺少贴图 ' + names(lost.missing))
+  if (lost.bad.size) warnings.push('贴图无法解码 ' + names(lost.bad))
+  if (lost.late.size) warnings.push('贴图读取超时 ' + names(lost.late))
+}
+
+async function importObj(bytes, name, readSibling, warnings, texWaitMs) {
   const text = new TextDecoder('utf-8').decode(bytes)
   const unitHint = objHeaderUnit(text) || 'unknown'
   const mtlNames = []
@@ -141,15 +232,13 @@ async function importObj(bytes, name, readSibling, warnings) {
       if (b) mtlTexts.push(new TextDecoder('utf-8').decode(b)); else warnings.push('缺少材质库 ' + baseName(n))
     }
     if (mtlTexts.length) {
-      const texNames = []
-      for (const t of mtlTexts) for (const m of t.matchAll(/^\s*(?:map_Kd|map_Ka|map_Ks|map_d|map_bump|bump|norm|map_Bump)\s+(?:-\S+\s+\S+\s+)*(.+?)\s*$/gim)) texNames.push(m[1])
-      side = await sidecarManager(texNames, readSibling)
+      side = sidecarManager(readSibling)
       const mtl = new MTLLoader(side.mgr)
       const creators = mtlTexts.map((t) => mtl.parse(t, ''))
       // 多个 mtllib：合并成一个 MaterialCreator 的材质表
       const mc = creators[0]
       for (const c of creators.slice(1)) Object.assign(mc.materialsInfo, c.materialsInfo)
-      mc.preload()
+      // 不 preload：OBJLoader 按 usemtl 现取现造材质（贴图随之开读），.mtl 里没被用到的材质不去读它的贴图、也不必等
       loader.setMaterials(mc)
     }
   }
@@ -161,7 +250,7 @@ async function importObj(bytes, name, readSibling, warnings) {
     if (!o.isMesh) return
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && m.isMeshPhongMaterial && !known.has(m.name)) m.userData.__noMaterial = true
   })
-  if (side) { side.cleanup(); if (side.missing.size) warnings.push('缺少贴图 ' + [...side.missing].slice(0, 5).join('、')) }
+  if (side) await settleTextures(root, side, warnings, texWaitMs)
   return { root, unitHint }
 }
 
@@ -178,16 +267,16 @@ function importStl(bytes, name) {
   return { root, unitHint: 'unknown' }
 }
 
-async function importFbx(bytes, name, readSibling, warnings) {
-  // FBX 的外部贴图名要解析完才知道；这里不预读，只接住内嵌贴图（二进制 FBX 多为内嵌），外部的记缺
-  const side = await sidecarManager([], readSibling)
+async function importFbx(bytes, name, readSibling, warnings, texWaitMs) {
+  // 贴图：内嵌的（FBXLoader 现造 blob: / data:）原样解码，外部的按文件名去同目录读 —— 都由 sidecarManager 的加载器接住，解析完一起等落定
+  const side = sidecarManager(readSibling)
   const root = new FBXLoader(side.mgr).parse(u8buf(bytes), '')
   // FBX 里没有材质的网格：FBXLoader 给名为 __DEFAULT 的灰 Phong（THREE.Loader.DEFAULT_MATERIAL_NAME）→ 标成「没有材质」
   root.traverse((o) => {
     if (!o.isMesh) return
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && m.name === THREE.Loader.DEFAULT_MATERIAL_NAME) m.userData.__noMaterial = true
   })
-  side.cleanup().then(() => { if (side.missing.size) console.info('[models] FBX 缺贴图：' + [...side.missing].join('、')) })
+  await settleTextures(root, side, warnings, texWaitMs)
   const usf = Number(root.userData && root.userData.unitScaleFactor)
   // UnitScaleFactor = 每单位多少厘米：1 → cm（FBX 出厂）、100 → m、0.1 → mm、2.54 → in、30.48 → ft
   let unitHint = 'unknown'
@@ -195,16 +284,17 @@ async function importFbx(bytes, name, readSibling, warnings) {
     const table = [[1, 'cm'], [100, 'm'], [0.1, 'mm'], [2.54, 'in'], [30.48, 'ft']]
     for (const [v, u] of table) if (Math.abs(usf / v - 1) < 0.01) unitHint = u
   }
-  if (side.missing.size) warnings.push('缺少贴图 ' + [...side.missing].slice(0, 5).join('、'))
   return { root, unitHint, fbxUnitScaleFactor: Number.isFinite(usf) ? usf : null }
 }
 
 /**
  * 解析一个 OBJ / STL / FBX 文件。
  * @param {{bytes:Uint8Array, name:string}} file
- * @param {{readSibling?:(relName:string)=>Promise<Uint8Array|null>}} [o]
+ * @param {{readSibling?:(relName:string)=>Promise<Uint8Array|null>, texWaitMs?:number}} [o]
+ *   texWaitMs：贴图落定的封顶（连续这么久没有一张落定就不再等；缺省 TEX_SETTLE_MS = 60 s），没等到的贴图按「读取超时」摘掉
  * @returns {Promise<{root:THREE.Object3D, format:string, unitHint:string, fbxUnitScaleFactor?:number|null, tris:number, ms:number, warnings:string[],
  *   materialFallback:{noMaterialMeshes:number, degenerate:{share:number, fixed:string[]}}}>}
+ *   返回时贴图已全部落定：材质上留下的贴图都有图像（可直接 exportGlb），缺 / 坏 / 超时的已摘掉并记进 warnings。
  *   失败抛 Error（message 只是状态，界面直接显示）
  */
 export async function importFile(file, o = {}) {
@@ -213,11 +303,12 @@ export async function importFile(file, o = {}) {
   if (!IMPORT_FORMATS.includes(fmt)) throw new Error('不支持的格式：' + (fmt || '未知'))
   if (!file.bytes || !file.bytes.byteLength) throw new Error('文件为空。')
   const warnings = []
+  const texWaitMs = Number.isFinite(o.texWaitMs) && o.texWaitMs >= 0 ? o.texWaitMs : TEX_SETTLE_MS
   let r
   try {
-    if (fmt === 'obj') r = await importObj(file.bytes, file.name, o.readSibling, warnings)
+    if (fmt === 'obj') r = await importObj(file.bytes, file.name, o.readSibling, warnings, texWaitMs)
     else if (fmt === 'stl') r = importStl(file.bytes, file.name)
-    else r = await importFbx(file.bytes, file.name, o.readSibling, warnings)
+    else r = await importFbx(file.bytes, file.name, o.readSibling, warnings, texWaitMs)
   } catch (e) {
     throw new Error((fmt.toUpperCase()) + ' 解析失败：' + ((e && e.message) || e))
   }

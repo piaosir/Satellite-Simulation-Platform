@@ -12,7 +12,7 @@ import sat from '../constellation/satellite.js'
 // 航迹目标的载具位置（排得出时刻的航迹：起始 + 速度 / 航点定了时刻）；相对路径，node 单测直接 import 本文件时也解析得到
 import { trajStateAt, makeTrajState, trajEndMs } from '../../../packages/core/models/trajKinematics.mjs'
 import { propOf } from '../constellation/satPos.js'
-import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage } from './visibility.js'
+import { computeVisibility, accessWindows, orbitCanReach, ringCentroid, timeCoverage, accessMinDetectMs } from './visibility.js'
 import { makeCoverageGrid, createCoverageRun, buildCoverageFillBands, estimateCoverageWork, fomMeta, COVERAGE_FOMS } from './coverageGrid.js'
 import { schemeColorsRGB } from '../grd/colormap.js'
 import { geoSlotOfSatrec } from '../../shared/geoSlot.js'
@@ -101,6 +101,7 @@ export function useVisibility({
       if (mt) return vehicleTargetAt(mt, calcAt().getTime(), _vst)
       const t = (getTrajectories() || []).find((x) => x.id === id); return t && Array.isArray(t.pts) ? t.pts.filter((q) => Number.isFinite(q.lat) && Number.isFinite(q.lon)).map((q) => ({ lat: q.lat, lon: q.lon })) : []
     }
+    // Polygon 的代表点 = 球面面积质心（建链模块 pgCentroid 同一口径；跨日界线成立，凹多边形落区外改取区内点）
     if (kind === 'poly') { const pg = (getPolys() || []).find((x) => x.id === id); const c = pg && Array.isArray(pg.pts) ? ringCentroid(pg.pts) : null; return c ? [c] : [] }
     return []
   }
@@ -146,11 +147,12 @@ export function useVisibility({
 
   // ---- ACCESS KPI：时间覆盖（严口径）——全部过境窗口在相对时间轴上【合并去重】后的可见时长 ÷ 实际时窗 ----
   // 附最长中断（含首尾）与过境计数。纯汇总，随 accessResults 变，不触发重算。
+  // minDetectS = 本次过境检测的最短可检出过境时长（s）：唯一访问引擎的峰值精炼精度决定，结果区只出这个数
   const accessKpi = computed(() => {
     const tc = timeCoverage(accessResults.value, accessHorizonMin.value)
     let passes = 0
     for (const s of accessResults.value) passes += (s.windows || []).length
-    return { ...tc, sats: accessResults.value.length, passes }
+    return { ...tc, sats: accessResults.value.length, passes, minDetectS: accessMinDetectMs() / 1000 }
   })
 
   // ---- 极坐标 sky 图：方位=角向(自正北顺时针)、仰角=离心(天顶在圆心、地平在外圈)；viewBox 100×100、中心(50,50)、R=44 ----
@@ -227,7 +229,7 @@ export function useVisibility({
     const stepFn = () => {
       if (token !== _accToken) return   // 已被新的计算作废
       try {
-        const part = accessWindows(ents.slice(i, i + BATCH), tp, { now, ccNow }, H, me, { coarseSec: 90, targetsAt })
+        const part = accessWindows(ents.slice(i, i + BATCH), tp, { now, ccNow }, H, me, { targetsAt })   // 唯一访问引擎：自适应步长，没有固定粗扫步长
         for (const s of part) out.push(s)
       } catch (e) { accessMsg.value = '计算失败：' + ((e && e.message) || e); accessBusy.value = false; return }
       i += BATCH
@@ -265,10 +267,11 @@ export function useVisibility({
     const { fillBands, lo, hi } = buildCoverageFillBands({ cells: d.cells, step: d.step }, values, { scheme: covScheme.value, bands: covBandsFor(meta), domain: covDomain(d, meta), zeroTransparent: meta.zeroTransparent })
     return { id: 'covfom', name: 'Coverage', fillBands, alpha: Number(covAlpha.value) || 0.82, lo, hi, unit: meta.unit }
   }
-  // 依当前模式/数据把热力图画上（或清掉）——统一出口，随算随画、切模式即显隐
+  // 依当前模式/数据把热力图画上（或清掉）——统一出口，随算随画、切模式即显隐。
+  // 不看面板开没开：热力图是算出来的场景内容（同对星壳层 / 环境场），离开视图照留，收走走「清除」（clearCoverage）
   function drawCovNow() {
     if (!drawCov) return
-    drawCov((open.value && mode.value === 'coverage' && covData.value) ? covLayer() : null)
+    drawCov((mode.value === 'coverage' && covData.value) ? covLayer() : null)
   }
   // 覆盖分析同口径：计算那一刻的参数指纹，参数改了不重算 → 「输入已变」
   const covSigNow = () => JSON.stringify([covRegionKind.value, covLatMin.value, covLatMax.value, covLonMin.value, covLonMax.value, covPolyId.value, covStep.value, covHorizonH.value, covSample.value, Number(minElev.value) || 0, satSrc.value])
@@ -333,7 +336,7 @@ export function useVisibility({
   // 覆盖模式 KPI。两个面积加权的百分比，口径必须分清（同为「%」但含义差一个量级）：
   //   timePct（时间覆盖 · 严口径）= Σ w·percent_i / Σ w —— 每格「被覆盖的时间占比」再按面积加权，
   //     即整个区域 × 整个时窗的【时空占比】；从不覆盖的格按 0 计入，不剔除。
-  //   coverPct（覆盖面积 · 松口径）= 时窗内【曾经】被覆盖过的面积占比 —— 一格只覆盖了 1 个采样也算满，
+  //   coverPct（覆盖面积 · 松口径）= 时窗内【曾经】被覆盖过的面积占比 —— 一格只被掠过一瞬也算满，
   //     故恒 ≥ timePct，只能回答「够不够得着」，不能当覆盖率用。
   //   worstPct = 全网格最小的时间覆盖（最差点），最严的那个读数：为 0 说明区域内存在从不被覆盖的点。
   // 加权用 cos φ（等经纬网格胞元面积 ∝ cos φ）。min/max/mean 仍按【当前选中的 FOM】统计（供图例读数）。
@@ -353,13 +356,16 @@ export function useVisibility({
     return {
       timePct: wTot > 0 ? wTime / wTot : 0, worstPct: worst < Infinity ? worst : 0,
       coverPct: wTot > 0 ? wCov / wTot * 100 : 0,
-      min: cnt ? mn : 0, max: cnt ? mx : 0, mean: cnt ? sum / cnt : 0, cells: d.N, unit: meta.unit, label: meta.label
+      min: cnt ? mn : 0, max: cnt ? mx : 0, mean: cnt ? sum / cnt : 0, cells: d.N, unit: meta.unit, label: meta.label,
+      minDetectS: Number.isFinite(d.minDetectSec) ? d.minDetectSec : null   // 区间精确核的最短可检出过境时长（s），随采样步长平方缩小
     }
   })
 
   // ---- 生命周期 ----
   function openPanel() { open.value = true; load(); recompute(); refresh(); drawCovNow() }
-  function close() { open.value = false; hoveredId.value = ''; _covToken++; covBusy.value = false; if (drawCov) drawCov(null); refresh() }
+  // 关面板（真离开可见性视图；收起侧栏不走这里，见宿主按 sideCtx 的进出）：只撤目标点 / 可见星这层逐拍叠加。
+  // 在算的覆盖不取消、热力图不撤 —— 原先这里作废令牌、清热力图，切走一下几十秒的覆盖计算就白算了，进度读数还停在半截
+  function close() { open.value = false; hoveredId.value = ''; refresh() }
 
   watch([minElev, targetKind, targetId], () => { recompute(); refresh(); persist() })
   watch(satSrc, () => persist())   // 来源变：解析与重算在宿主（异步取星历），这里只存

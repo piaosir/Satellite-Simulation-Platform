@@ -25,9 +25,13 @@
 //   与七色同距），但同样间距下它只切 4 段频率、每波束带宽近乎七色的两倍，故双极化系统用它。
 //   10 同为 2.65d 却要切 5 段频率，被 8 支配，不列。
 //
-// ⚠️ 轮转染色只是缺省，不保证同色波束在**空间上**分散。真实系统的着色由波束布局决定，
-//    做正经分析请手工指派或从系统设计文件导入——UI 上须标明缺省着色的这一局限。
-//    （波束合成模块的「频率计划 · 自动分配」按复用距离 √N·d 着色，那份结果才是有几何依据的。）
+// ⚠️ 轮转染色只是兜底，不保证同色波束在**空间上**分散（CS10R 11 波束 3/4 色中位 −4.0/−2.4 dB，物理上无意义）。
+//    着色来源、频段重叠、极化与逐波束功率的耦合口径见 htsCoupling.js（频率计划 > 波束合成色号 > Excel > 手工 > 轮转，
+//    结果里写回实际用的来源）。本文件的 cciAtPoint 是二值耦合的参照实现：htsCoupling.fwdAtPoint 退化为二值时与它逐位一致。
+//
+// ─── 窗外 ───────────────────────────────────────────────────────────────────
+// 某点上干扰波束采样为 null（落在它自己的 GRD 网格窗外）而别的波束有值时，取该波束网格自身的最小电平作地板计入，
+// 并计数（floorPts）。从前直接跳过 = 当作零干扰：平台自产多波束（窗口 1.8θ3）在服务区里大片报「无同色」、C/I 高估。
 
 const LOG10 = Math.log10;
 const lin = (db) => Math.pow(10, db / 10);
@@ -119,27 +123,31 @@ function cciAtPoint(values, beamIdx, o) {
  * （5000 格 × 40 波束 = 20 万个数）。本函数在算完当场把逐波束折成一个数，
  * 只回长度 = 点数的数组。见 electron/services/grd.js 的 sampleCci。
  *
- * @param {object} sampler   { sampleAllCtx, makeSampleCtx } —— 注入以避免 core 反向依赖
+ * 取值与窗外地板走 htsCoupling（二值耦合：coloring 给了按它，否则按 colors 轮转），口径与 C/CCI 页逐点表一致。
+ *
+ * @param {object} sampler   grdSampler 模块（makeSampleCtx / sampleBeamAt / coPolIndexOf）—— 注入以避免 core 反向依赖
  * @param {object} loaded    grdSampler.loadBin 的结果
  * @param {Array<{lon,lat}>} points
- * @returns {{cci:(number|null)[], serving:(number|null)[], coloring:object, colors:number}}
+ * @returns {{cci:(number|null)[], serving:(number|null)[], coloring:object, colors:number, beamIdx:number[], floorPts:number}}
  */
 function cciOverPoints(sampler, loaded, sat, cfg, points, o) {
   const opt = o || {};
   const pts = Array.isArray(points) ? points : [];
   const ctx = sampler.makeSampleCtx(loaded, sat, cfg);
-  if (!ctx) return { cci: pts.map(() => null), serving: pts.map(() => null), coloring: {}, colors: opt.colors || 4 };
+  if (!ctx) return { cci: pts.map(() => null), serving: pts.map(() => null), coloring: {}, colors: opt.colors || 4, floorPts: 0 };
   const colors = Math.max(1, Math.round(Number(opt.colors) || 4));
   const coloring = opt.coloring || defaultColoring(ctx.beamIdx, colors);
-  const cci = new Array(pts.length), serving = new Array(pts.length);
-  for (let i = 0; i < pts.length; i++) {
-    const p = pts[i] || {};
-    const vals = sampler.sampleAllCtx(ctx, Number(p.lon), Number(p.lat));
-    const r = cciAtPoint(vals, ctx.beamIdx, { ...opt, coloring, colors });
-    cci[i] = r ? r.cciDb : null;
-    serving[i] = r ? r.servingIdx : null;
-  }
-  return { cci, serving, coloring, colors, beamIdx: ctx.beamIdx.slice() };
+  // 运行时再取：htsCoupling 顶层 require 了本文件，这里若在顶层反过来 require 会拿到半成品导出
+  const H = require('./htsCoupling.js');
+  const r = H.cciPoints({
+    sampler, loaded, sat, cfg, points: pts, servingIdx: opt.servingIdx, floorDb: opt.floorDb,
+    scheme: { source: 'manual', manual: { coloring } }
+  });
+  return {
+    cci: r.rows.map((x) => (x ? x.cciDb : null)),
+    serving: r.rows.map((x) => (x ? x.servingIdx : null)),
+    coloring, colors, beamIdx: ctx.beamIdx.slice(), floorPts: r.summary.floorPts
+  };
 }
 
 module.exports = { cciAtPoint, cciOverPoints, defaultColoring, REUSE_PRESETS };

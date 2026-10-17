@@ -174,7 +174,7 @@ export const HOP_GS_FIELDS = [
 ]
 // 星地跳的【侧向】默认频率/极化：上行一套、下行一套。频率与极化是有向量——改拓扑时新跳与
 // 来源跳方向相反（链首接卫星把上行跳变成下行跳这类），承接过来就是串味，此时取本侧默认。
-// 几何量（斜距/仰角/其他损耗）与方向无关，照旧承接。见 E2eLinkBudgetApp 的 reseedHop。
+// 几何量（斜距/仰角/其他损耗）与方向无关，照旧承接。见 e2eChainEdit.js 的 reseedHop。
 export const GS_SIDE_DEFAULTS = {
   up: { frequency: '14.25', polarization: 'V' },
   down: { frequency: '12.50', polarization: 'H' }

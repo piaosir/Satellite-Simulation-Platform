@@ -213,3 +213,5 @@ export async function runScript(code, data, opts = {}) {
 }
 
 export { PARAMS as SCRIPT_PARAMS }
+// 可编程导入（importRuntime.js）复用同一套：遮蔽名单、受控 console、调用栈 → 用户行列、外层包装
+export { SHADOW as SHADOW_NAMES, makeConsole, userLoc, wrapperBody }

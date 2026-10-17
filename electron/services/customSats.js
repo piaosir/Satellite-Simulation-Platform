@@ -25,15 +25,18 @@ const FR = require('../../packages/core/utils/frames.js')
 // 服务与引擎都按磁盘路径 require，见 electron/main.js 的 core()）
 const OP = require('../../packages/core/utils/orbitPos.js')
 const ephemStore = require('./ephemStore')
+// 合成 NORAD 号段总表（渲染端 src/shared/synthNorad.js 的 CJS 镜像）：点序列组与 GPS 年历的号都从这里发
+const SN = require('../../packages/core/utils/synthNorad.js')
 
 // 【两种组】kind:'gp' = 平均根数（OMM/TLE，含 GPS 年历换算来的），走 SGP4，与本文件原有通路完全一致；
 //   kind:'ephem' = 时间标签位置序列（STK .e / CCSDS OEM / SP3），走插值器，采样另存 ephemStore。
 // 旧库里的组没有 kind，读回时一律补 'gp'（幂等，不写第二份）。
 const KINDS = ['gp', 'ephem']
-// 星历点序列星的合成 NORAD：800000 段，每组占 10000。useSatGroups.reconcile 与小程序打包
-// 对 >=800000 一律豁免（它们不在任何官方编目里，查不到是正常的，不是「已离轨」）。
-const EPHEM_NORAD_BASE = 800000
-const EPHEM_GROUP_SLOT = 10000
+// 星历点序列星的合成 NORAD：800000 段，每组占 10000（900000 起是自定义星座 / GPS 年历等合成号）。
+// 它们不在任何官方编目里、也不进 3D 页的全量池，查不到是正常的，不是「已离轨」：卫星组核对（3D 页 satGrpSweep 的 probe）
+// 对 >=800000 一律返回 null，useSatGroups.reconcile 整支跳过；卫星组显示 / 聚焦在全量池找不到时回退点序列表（ephOwnByIds）。
+// 小程序打包只送 OMM 根数，点序列星本就送不过去，按「未在当前星历中找到」跳过并记日志。
+const EPHEM_SEG = SN.SYNTH_NORAD.ephem   // [800000, 900000)：只在段内发号（出了段就撞上自定义星座），见 nextNoradBase
 // 采样表按【TEME】存：渲染端与各引擎要的就是 TEME，而渲染端那份 ESM 镜像吃不进 frames.js（CJS），
 // 换帧只能在主进程做。导出时再由 TEME 换回组的原帧 —— 换帧来回误差 ~1e-12 km，远在 1e-9 km 的
 // 打印分辨率以下，故「重序列化原样本」这条口径不受影响（customEphemStore.test.mjs 逐位验过）。
@@ -225,7 +228,8 @@ const genId = () => 'g' + Date.now().toString(36) + (_seq++).toString(36)
 // NORAD：年历里只有 PRN，没有编号。内置 gps 组的星名带「(PRN nn)」（CelesTrak 体例），
 // 按它反查即可；查不到（没下载过 / 该 PRN 当天没在轨）就给 9 开头的合成号 —— 合成号只是个
 // 身份标签，不参与任何计算，但不能与真实编号撞车。
-const GPS_SYNTH_BASE = 990000
+// 号段 [990000, 1000000) 是年历专属（号段总表 gpsAlm），自定义星座发号整段避开；PRN 落不进段的不给合成号、整颗跳过。
+const GPS_SYNTH = SN.SYNTH_NORAD.gpsAlm
 function gpsPrnIndex(getCore) {
   // 只读本机缓存，绝不联网（导入是个本地动作，不该因为没网就卡住）
   try {
@@ -248,14 +252,18 @@ function almanacToRecords(text, getCore) {
   const r = gpsAlm.parseAlmanac(text, { gstime })
   if (!r.records.length) return null
   const idx = gpsPrnIndex(getCore)
+  const warnings = r.warnings.slice()
+  const records = []
   let hit = 0
   for (const rec of r.records) {
     const found = idx.get(String(rec.prn))
-    if (found) { rec.noradId = found; hit++ } else rec.noradId = String(GPS_SYNTH_BASE + rec.prn)
+    if (found) { rec.noradId = found; hit++ }
+    else if (Number.isInteger(rec.prn) && rec.prn >= 0 && GPS_SYNTH.lo + rec.prn < GPS_SYNTH.hi) rec.noradId = String(GPS_SYNTH.lo + rec.prn)
+    else { warnings.push('PRN ' + rec.prn + '：超出 PRN 范围，已跳过'); continue }
+    records.push(rec)
   }
-  const warnings = r.warnings.slice()
-  warnings.push('NORAD 反查：' + hit + ' / ' + r.records.length + ' 颗命中内置 GPS 组，其余用合成号')
-  return { records: r.records, format: r.format, errors: r.errors, warnings }
+  warnings.push('NORAD 反查：' + hit + ' / ' + records.length + ' 颗命中内置 GPS 组，其余用合成号')
+  return { records, format: r.format, errors: r.errors, warnings }
 }
 // 解析文本 → OMM 记录 + 格式（六种官方格式按内容嗅探，扩展名不作判据）。都认不出返回 records=[]。
 function parseAny(text) {
@@ -369,7 +377,11 @@ module.exports = function createCustomSats(getCore) {
     const gname = (name && String(name).trim()) || '导入星历'
     const existing = store.groups.find((g) => g.name === gname)
     const id = existing ? existing.id : genId()
-    const base = existing && existing.noradBase ? existing.noradBase : nextNoradBase(store.groups)
+    // 同名重导入沿用原号（卫星组成员按号存着）；原号不在点序列段里（旧版发号不封顶，第 11 组起落进 900000 以上）、
+    // 或颗数涨出原来占的号撞上别的组，才换号
+    const keep = existing && Number.isFinite(existing.noradBase) ? existing.noradBase : null
+    const base = keep != null && ephemFits(store.groups, keep, r.sats.length, id) ? keep : nextNoradBase(store.groups, r.sats.length, id)
+    if (base == null) return { ok: false, error: '星历点序列合成号段已满' }
 
     const meta = [], tables = [], errs = []
     const warnHits = new Map()   // 建表告警原句 -> { n: 出这句的颗数, name: 第一颗的星名 }
@@ -597,11 +609,23 @@ module.exports = function createCustomSats(getCore) {
     for (let s = 0; s < tab.sgA.length; s++) { if (tab.sgA[s] >= 0) out.push([tab.t[tab.sgA[s]], tab.t[tab.sgB[s]]]) }
     return out.length > 1 ? out : null
   }
-  // 下一个可用的合成 NORAD 段首（每组 10000 个号）
-  function nextNoradBase(groups) {
-    let max = EPHEM_NORAD_BASE - EPHEM_GROUP_SLOT
-    for (const g of groups) if (g.noradBase && g.noradBase > max) max = g.noradBase
-    return max + EPHEM_GROUP_SLOT
+  // 其余点序列组（不含 selfId）实占的号：段首起、颗数向上取整到 1000
+  function ephemTaken(groups, selfId) {
+    return groups.filter((g) => g.kind === 'ephem' && g.id !== selfId && Number.isFinite(g.noradBase))
+      .map((g) => [g.noradBase, g.noradBase + SN.blockSpan((g.sats || []).length, EPHEM_SEG.fine)])
+  }
+  // 段首 b 放得下 n 颗：不出点序列段、不撞别的组
+  function ephemFits(groups, b, n, selfId) {
+    const z = b + SN.blockSpan(n, EPHEM_SEG.fine)
+    return b >= EPHEM_SEG.lo && z <= EPHEM_SEG.hi && !ephemTaken(groups, selfId).some((t) => b < t[1] && t[0] < z)
+  }
+  // 新组 / 换号的组取段首：只在点序列段 [800000, 900000) 里发，删掉的组让出来的号照样复用。先找整段（10000）对齐、
+  // 整段都空着的最低一段（号读起来规整，同名重导入颗数涨了也有余地）；整段占满了再按 1000 对齐填进各组用剩的段尾。
+  // 段里放不下返回 null
+  function nextNoradBase(groups, n, selfId) {
+    const taken = ephemTaken(groups, selfId)
+    const b = SN.lowestFree(EPHEM_SEG, SN.blockSpan(n, EPHEM_SEG.step), taken)
+    return b != null ? b : SN.lowestFree(EPHEM_SEG, SN.blockSpan(n, EPHEM_SEG.fine), taken, EPHEM_SEG.fine)
   }
 
   // 【gp】原有通路，一个字没变：逐条 SGP4 校验；组内按 NORAD 去重（后者覆盖）。

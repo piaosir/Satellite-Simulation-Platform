@@ -106,7 +106,9 @@ function fixNormals(g) {
 /**
  * @param {THREE.Object3D} root 模型根（模型系；来自 loader / irToThree / importers）
  * @param {object} meta ModelMeta
- * @param {{lod?:'lod0'|'lod1'|'lod2', meshopt?:boolean, originAtCom?:boolean, bakeFrame?:boolean, alreadyLod?:boolean}} [opts]
+ * @param {{lod?:'lod0'|'lod1'|'lod2', meshopt?:boolean, originAtCom?:boolean, bakeFrame?:boolean, alreadyLod?:boolean, stamp?:boolean}} [opts]
+ *   stamp：extras.satsim.updatedAt 写导出时刻（缺省写）。导入路径（OBJ / STL / FBX 转 glb 入库）传 false：入库 id 跟 glb 字节走，
+ *   同一文件再导入要得出逐字节相同的 glb，库里才认得出是同一件（体检 2026-10-16 二.24）；导出文件 / 元数据副本照写（副本靠它与原件字节不同）
  * @returns {Promise<{glb:Uint8Array, gmdf:object|null, satsimJson:object, info:{bytes:number, nodes:number, ms:number, errors:string[], warnings:string[], lodTris?:object}}>}
  */
 export async function exportGlb(root, meta, opts = {}) {
@@ -260,7 +262,8 @@ export async function exportGlb(root, meta, opts = {}) {
     }
     // 挂点记下落在哪个节点（下次导出直接认它，不再造新节点）
     if (Array.isArray(satsimJson.attachPoints)) for (const p of satsimJson.attachPoints) { const hit = aps.find((x) => x.name === p.name); if (hit) p.node = hit.node }
-    satsimJson.updatedAt = new Date().toISOString()
+    if (opts.stamp !== false) satsimJson.updatedAt = new Date().toISOString()
+    else delete satsimJson.updatedAt
 
     // ---- 6. GLTFExporter + afterParse ----
     let agiErrors = [], agiWarnings = []

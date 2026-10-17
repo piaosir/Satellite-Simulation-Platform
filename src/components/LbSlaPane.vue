@@ -113,7 +113,7 @@ const PARAMS = [
   { key: 'spaceAvail', avail: true, label: '卫星与载荷可用度', unit: '%', min: 0, max: 100, step: 0.01, tip: '卫星平台与转发器载荷的可用度，链上逐颗计入；100 = 不计入' },
   { key: 'groundAvail', avail: true, label: '基带/骨干网可用度', unit: '%', min: 0, max: 100, step: 0.01, gate: 'groundOn', tip: '调制解调 / 回传 / 骨干的可用度：仅销售空间段时不勾选，销售网络服务时勾选' },
   { key: 'pktBytes', needs: ['loss'], label: 'IP 包长', unit: 'B', min: 1, max: 65535, step: 1, tip: '丢包率换算用的 IP 包长：一个包跨几个 FEC 帧就有几次被丢掉的机会' },
-  { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: 'DVB 家族的帧差错率指数：DVB-S2/S2X/RCS2 的门限按 QEF 定义，约合 10⁻⁷。3GPP NTN 载波的门限是首传 BLER 目标、不出丢包率，本项不生效；未选标准时也不生效' },
+  { key: 'ferExp', needs: ['loss'], label: '帧差错率 10⁻ⁿ', unit: 'n', min: 1, max: 15, step: 1, tip: '门限所对应的 QEF 帧差错率指数，用于自建标准、DVB-RCS2 与 DVB-S；DVB-S2 / S2X 按 ETSI 原表判据取，本项不出现' },
   { key: 'procMsPerEnd', needs: ['rtt'], label: '处理时延预留', unit: 'ms/单程', min: 0, max: 1000, step: 1, tip: '发端调制 + 收端解调的单程处理时延预留，计入往返时延上限（往返穿两趟）' },
   { key: 'jitterMs', needs: ['jitter'], label: '时延抖动', unit: 'ms', min: 0, max: 1000, step: 1, tip: '按运营商入网要求填；IP 业务惯用 ≤ 30–50 ms' },
   { key: 'eirpTolDb', needs: ['txEirp', 'txPsd'], label: 'EIRP 容差', unit: 'dB', min: 0, max: 20, step: 0.1, tip: '按运营商入网要求填' },
@@ -138,7 +138,8 @@ const railParams = computed(() => {
   if (!d) return []
   const has = (k) => !!(d.items && d.items[k])
   const slots = d.eqSlots || []
-  return PARAMS.filter((p) => (p.avail ? slots.includes(p.key)
+  // 帧差错率：DVB-S2 / S2X 的 QEF 判据由 ETSI 原表定（d.qef，见 lbSla.qefOf），这一格对它们不起作用，摆着只会被当成在用
+  return PARAMS.filter((p) => !(p.key === 'ferExp' && d.qef) && (p.avail ? slots.includes(p.key)
     : p.gateOnly ? has('sysAvail')
       : p.needs ? p.needs.some(has) : true))
 })

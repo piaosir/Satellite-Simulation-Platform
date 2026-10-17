@@ -21,6 +21,7 @@
 import { antennaBasis, gridDir, invGridDir, projectLimb, limbMargin, limbPoint, dirToAzEl, azElGround } from './coverage.js'
 import { parseGrd } from './parse.js'
 import { createMinimax } from './minimax.js'
+import { lambdas as apLambdas, apUh, apEtaTaper, apQn } from './apertureModel.js'   // 口径照射成分波束（E-01）
 
 // minimax 求解的墙钟上限（每次 run）：大口径 / 密站点栅一次求解可到十几秒，同步跑在主线程上就是整窗冻死。
 // 到时即停、结果照常出、状态行如实写「未收敛 + 用时」（见 mmNote），由用户决定加密度还是降口径。
@@ -252,6 +253,59 @@ export function solveReflector({
   }
 }
 
+// ============ 口径照射解析天线（E-01）：反射面 → 方向图记录参数 ============
+// refl = solveReflector 的解（p / Dm / focM / effPct / dirDbi / th3Sim / lamSimCm）；offsetClr = 偏置净空比（同 solveReflector 入参）。
+// 返回求值要的几何量（公式与出处见 apertureModel.js 头注）：
+//   p（边缘照射电压比，与 θ3 / 效率同源）、kD = πD/λ（仿真频率）、θ₀ = 馈源轴相对母抛物面轴的偏角（指向反射面中心，= θc）、
+//   xp = Chu–Turrin 交叉极化系数 X = D·sinθ₀/(4F)、sq = Adatia–Rudge 圆极化斜视 ψs = asin(λ·sinθ₀/(4πF))、
+//   Fe = 等效焦距 F·sec²(θ₀/2)（焦点到反射面中心，偏置面扫描性能按它算——与 beamSpacingDegFromFeed 同口径）、BDF（Lo）、
+//   η_taper / η_spill（effPct = η_taper·η_spill）。正馈（offsetClr = −0.5）θ₀ = 0 → 无交叉极化、无斜视。
+export function reflApertureOf(refl, offsetClr = 0.2) {
+  if (!refl || !refl.ok || !(refl.Dm > 0) || !(refl.focM > 0) || !(refl.lamSimCm > 0) || !(refl.p > 0)) return null
+  const clr = Math.max(-0.5, Number.isFinite(offsetClr) ? offsetClr : 0.2)
+  const D = refl.Dm, F = refl.focM, lam = refl.lamSimCm / 100
+  const th0 = _reflGeom(D, F, clr).thc
+  const etaT = apEtaTaper(refl.p)
+  return {
+    p: refl.p, kD: Math.PI * D / lam, Dm: D, focM: F, lam, th0,
+    xp: D * Math.sin(th0) / (4 * F),
+    sq: Math.asin(Math.min(1, lam * Math.abs(Math.sin(th0)) / (4 * Math.PI * F))),
+    Fe: F / (Math.cos(th0 / 2) ** 2), bdf: _bdf(D, F),
+    etaT, etaS: Math.max(1e-6, Math.min(1, refl.effPct / 100 / etaT)),
+    th3: refl.th3Sim, dirDbi: refl.dirDbi
+  }
+}
+// 扫描像差损失（dB，正 = 损失；BDF 已有 → 馈源横移）。偏离反射面轴 θs（rad）的波束：馈源横移 d = θs·Fe/BDF；
+// 等效对称抛物面（焦距 Fe、半径 a）上口径程差 Δ(ρ,φ) = d·h(ρ)·cosφ，h = 2mρ/(1 + m²ρ²)（= sinθ′，m = D/(4Fe)）——
+// 线性部分是波束偏转（最佳倾斜按照射加权最小二乘拟合），剩余的是彗差。小像差（Maréchal）：
+//   G/G₀ = exp(−k²σ²)，σ² = (d²/2)·[M(h²) − M(hρ)²/M(ρ²)]，M(f) = ∫₀¹ f·E(ρ)ρdρ / ∫₀¹ E(ρ)ρdρ，E = p + q(1−ρ²)。
+// 只算峰值跌落，不建彗差旁瓣的不对称（一阶）。σ² 与 λ、D 同比 → 损失只随「扫了几个波束宽」与 F/D 变（Ruze 1965 同结论）。
+export function scanLossDb(ap, thetaS) {
+  if (!ap || !(thetaS > 0)) return 0
+  const m = ap.Dm / (4 * ap.Fe), p = ap.p, q = 1 - p
+  const d = thetaS * ap.Fe / ap.bdf
+  const N = 200, hh = 1 / N
+  let W = 0, M2 = 0, Mh2 = 0, Mhr = 0
+  for (let i = 0; i <= N; i++) {
+    const r = i * hh, w = ((i === 0 || i === N) ? 1 : (i % 2 ? 4 : 2)) * (p + q * (1 - r * r)) * r
+    const h = 2 * m * r / (1 + m * m * r * r)
+    W += w; M2 += w * r * r; Mh2 += w * h * h; Mhr += w * h * r
+  }
+  if (!(W > 0) || !(M2 > 0)) return 0
+  M2 /= W; Mh2 /= W; Mhr /= W
+  const sig2 = (d * d / 2) * Math.max(0, Mh2 - Mhr * Mhr / M2)
+  const k = 2 * Math.PI / ap.lam
+  return 10 * Math.LOG10E * k * k * sig2
+}
+// 赋形档口径照射成分波束的 3dB 宽（°）：p = 10^(T/20)（馈源边缘锥度，与 shapedApertureEff 同一个 p），θ3 = 2·asin(u_h·λ/(πD))
+export function apertureTheta3db(fGHz, Dm, taperDb) {
+  if (!(fGHz > 0) || !(Dm > 0)) return NaN
+  const T = Number.isFinite(taperDb) && taperDb !== 0 ? -Math.abs(taperDb) : -15
+  const p = Math.max(1e-3, Math.min(1, Math.pow(10, T / 20)))
+  const lam = 0.299792458 / fGHz
+  return 2 * Math.asin(Math.min(1, apUh(p) * lam / (Math.PI * Dm))) * 180 / Math.PI
+}
+
 // —— 地面 Polygon → 方向空间（az/el 平面）顶点环：去重、去闭合；<3 有效点返回 null ——
 function projPolyAzEl(satLon, satLat, altKm, polyPts) {
   if (!polyPts || polyPts.length < 3) return null
@@ -406,7 +460,9 @@ export function buildGaussGrd({ satName = '', satLon, satLat = 0, altKm, effPct 
   let th3Min = Infinity
   for (const b of beams) { const t = Math.min(Number(b.thX), Number(b.thY)); if (t > 0 && t < th3Min) th3Min = t }
   head.push(`SatSim synthesized pattern (Gaussian beam model)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beams=${n}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'gauss', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), effPct, ...(Number.isFinite(th3Min) ? { theta3: +th3Min.toFixed(4) } : {}), nBeams: n })}`)
+  // fc：逐波束频率复用色号（波束合成「自动分配」的 b.fc，set 顺序，未分配 = null）——只在有分配时写，没有就与旧版逐字相同
+  const fcs = beams.map((b) => (Number.isInteger(b.fc) && b.fc >= 0 ? b.fc : null))
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'gauss', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), effPct, ...(Number.isFinite(th3Min) ? { theta3: +th3Min.toFixed(4) } : {}), nBeams: n, ...(fcs.some((v) => v != null) ? { fc: fcs } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(` ${n} 3 2 6`)
@@ -749,7 +805,8 @@ export function buildPamGrd({ satName = '', satLon, satLat = 0, altKm, pam, beam
   const head = []
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (Phased array model)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beams=${n}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pam', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, theta3: +Math.min(sol.th3xDeg, sol.th3yDeg).toFixed(4), dirDbi: +peakDbi.toFixed(2), nBeams: n })}`)
+  const fcs = beams.map((b) => (Number.isInteger(b.fc) && b.fc >= 0 ? b.fc : null))   // 频率复用色号（同 buildGaussGrd）
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'pam', satLon: +(+satLon).toFixed(4), satLat: +(+(satLat || 0)).toFixed(4), altKm: Math.round(altKm), Nx: Math.round(pam.Nx), Ny: Math.round(pam.Ny), dxWl: +pam.dxWl, dyWl: +pam.dyWl, R: +pam.R, tri: !!pam.tri, theta3: +Math.min(sol.th3xDeg, sol.th3yDeg).toFixed(4), dirDbi: +peakDbi.toFixed(2), nBeams: n, ...(fcs.some((v) => v != null) ? { fc: fcs } : {}) })}`)
   head.push('++++')
   head.push('1')
   head.push(` ${n} 3 2 6`)
@@ -1129,12 +1186,43 @@ export function shapedStations({ satLon, satLat = 0, altKm, polysPts, theta3, ex
   return { list, counts: smp.counts, over: 0 }
 }
 
-export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stGrid = null, stEdits = null }) {
+// —— 口径照射成分波束核（E-01，buildShapedGrd 的 beamModel:'aperture' 档）——
+// 成分波束场幅 g(r) = F(kD·sin r)（apertureModel 同一个 F：抛物面加台阶，带旁瓣、可负），r = 离 beamlet 中心的平面角距（°，
+// 与高斯档同一 az/el 平面近似）；交叉极化核 G₂ 同表（Chu–Turrin，见 apertureModel 头注 §2）。热路径查表：步长 θ3/256、
+// 线性插值（相对误差 ~1e-5，远小于 0.01 dB）。截断半径按 |F| 的外包络：优化装配取 −35 dB（第一、二旁瓣都在里面，
+// 每站 ~25 支 beamlet；minimax 装配 O(M·L²)），出图取 floorDb（−50 dB，旁瓣铺到出图窗边，窗外才是地板）。
+// 重叠积分 Q 走自相关闭式 Ω₁·Qn(u)，Ω₁ = 4π/(kD²·η_taper)（单支 beamlet 立体角，sr）。
+const AP_OPT_DB = -35
+function _apShapedKernel(p, kD, th, floorDb) {
+  const h = th / 256, Rmax = 16 * th, n = Math.ceil(Rmax / h) + 2
+  const tF = new Float64Array(n), tG = new Float64Array(n), L = new Float64Array(3), q = 1 - p, N = 2 * p + q
+  for (let i = 0; i < n; i++) {
+    apLambdas(kD * Math.sin(i * h * D2R), L)
+    tF[i] = (2 * p * L[0] + q * L[1]) / N
+    tG[i] = (p * L[1] / 2 + q * L[2] / 6) / N
+  }
+  const lastAbove = (db) => { const t = Math.pow(10, db / 20); for (let i = n - 1; i >= 0; i--) if (Math.abs(tF[i]) >= t) return Math.min(Rmax, (i + 1) * h); return h }
+  const look = (tab, d2) => { const x = Math.sqrt(d2) / h, i = x | 0; if (i >= n - 1) return 0; const f = x - i; return tab[i] + (tab[i + 1] - tab[i]) * f }
+  const omega1 = 4 * Math.PI / (kD * kD * apEtaTaper(p))
+  return {
+    rOpt: lastAbove(AP_OPT_DB), rOut: lastAbove(floorDb),
+    amp: (d2) => look(tF, d2), g2: (d2) => look(tG, d2),
+    qn: (d2) => apQn(kD * Math.sin(Math.sqrt(d2) * D2R), p),
+    omega1, omgB: omega1 * (180 / Math.PI) * (180 / Math.PI)
+  }
+}
+
+export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysPts, polyTargets = null, hotspots = null, mode = 'value', value = null, effPct = 55, theta3, floorDb = -50, pol = '', apDm = 0, fSimGHz = 0, expandDeg = 0, stGrid = null, stEdits = null, beamModel = 'gauss', apP = 0, apXp = 0, apSym = 'ew' }) {
   if (!(theta3 > 0)) throw new Error('滚降波束宽度无效。')
   if (mode !== 'physical' && !Number.isFinite(value)) throw new Error('覆盖值无效。')
   const { metas, contourVals, maxTarget, polys, geo, hots, omegaDeg2 } = _shapedPrep({ satLon, satLat, altKm, polysPts, polyTargets, hotspots, expandDeg })
   const covValue = contourVals.length ? Math.min(...contourVals) : value   // 覆盖保证值 = 最低 contour 标签（隔离区不计）
   const th = theta3
+  // 成分波束模型：'gauss'（旧档 / 缺省，逐位不变）| 'aperture'（口径照射：带旁瓣 + 线极化交叉极化，E-01）
+  const ap = beamModel === 'aperture' && apP > 0 && apDm > 0 && fSimGHz > 0
+  const apK = ap ? _apShapedKernel(apP, Math.PI * apDm * fSimGHz / 0.299792458, th, floorDb) : null
+  const apCp = pol === 'rhcp' || pol === 'lhcp'
+  const apXA = ap && !apCp && apXp > 0 ? apXp * Math.PI * apDm * fSimGHz / 0.299792458 : 0   // X·kD（交叉极化幅度系数）
   const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
   const [bx0, by0, bx1, by1] = geo.bbox
   // 站点修正（SATSOFT Edit Stations）：ov=自动站点按位置键改类型/目标偏置，add=手工加站
@@ -1146,11 +1234,12 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   const N = centers.length
   // 超 NMAX_B 的静默增距会把交叠拉到 −3dB 以下（纹波随之变大）——必须让用户知道
   const gridWarn = spacing > BEAMLET_SP * th * 1.02 ? `成分波束数超上限 ${NMAX_B}：波束栅间距放宽至 ${(spacing / th).toFixed(2)}×θ3，纹波偏大（缩小覆盖区或减小口径可复位）` : ''
-  const Rcut = th * Math.sqrt(-floorDb / GCOEF)
+  const Rcut = ap ? apK.rOpt : th * Math.sqrt(-floorDb / GCOEF)
   const near = hashGrid(centers, Rcut)
   const reach = 1.15 * th                          // 覆盖可达半径：口径分辨率外的细部剔除（如实回报）
   // ④ 出图网格几何：并集外接盒 + 滚降到地板的边距；格距 θ3/7，总量 ≤13 万点自适应放粗
-  const margin = Rcut + 0.5 * spacing
+  //    口径照射档：边距放到成分波束旁瓣包络落到 floorDb 处（旁瓣铺满出图窗，不在第一零点处截断）
+  const margin = (ap ? apK.rOut : Rcut) + 0.5 * spacing
   const XS = bx0 - margin, XE = bx1 + margin, YS = by0 - margin, YE = by1 + margin
   const cell = th / 7
   let NX = cl(Math.ceil((XE - XS) / cell) + 1, 61, 301), NY = cl(Math.ceil((YE - YS) / cell) + 1, 61, 301)
@@ -1171,7 +1260,7 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
     const g = new Float64Array(nb.length)
     for (let a = 0; a < nb.length; a++) {
       const dx = smp.X[j] - centers[nb[a]][0], dy = smp.Y[j] - centers[nb[a]][1]
-      g[a] = Math.exp(-KF * (dx * dx + dy * dy) / (th * th))
+      g[a] = ap ? apK.amp(dx * dx + dy * dy) : Math.exp(-KF * (dx * dx + dy * dy) / (th * th))
     }
     nbOf.push(nb); gOf.push(g); kind.push(smp.KIND[j]); tdb.push(smp.TDB[j]); hb.push(smp.HB[j])
   }
@@ -1195,11 +1284,12 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   for (let m = 0; m < M; m++) mmRows[m] = { nb: nbOf[m], g: gOf[m], sign: kind[m] === 2 ? 1 : -1, T: Tv[m] }
   // 归一化功率矩阵 Q_{jk} = ∫gⱼg_k dΩ 的平面闭式：Ω₁·exp(−ln2·d²/θ3²)，Ω₁ = πθ3²/(4ln2)（deg²）；
   // 相邻 beamlet（d = θ3）重叠恰 0.5。对角 Q_jj = Ω₁ = 单支高斯 beamlet 立体角。
-  const omgB = Math.PI * th * th / (4 * Math.LN2)
+  // 口径照射档：Q_jk = Ω₁·Qn(u_jk)（自相关闭式，见 _apShapedKernel），Ω₁ 换到 deg²
+  const omgB = ap ? apK.omgB : Math.PI * th * th / (4 * Math.LN2)
   const Qmm = new Float64Array(N * N)
   for (let j = 0; j < N; j++) for (let k = 0; k <= j; k++) {
     const qx = centers[j][0] - centers[k][0], qy = centers[j][1] - centers[k][1]
-    const v = omgB * Math.exp(-Math.LN2 * (qx * qx + qy * qy) / (th * th))
+    const v = ap ? omgB * apK.qn(qx * qx + qy * qy) : omgB * Math.exp(-Math.LN2 * (qx * qx + qy * qy) / (th * th))
     Qmm[j * N + k] = v; Qmm[k * N + j] = v
   }
   // 初值 = SATSOFT 缺省 Uniform（等幅零相位）叠【确定性】对称破缺 Im_j = 0.05·(−1)^j：
@@ -1219,6 +1309,12 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   }
   let rippleBest = spreadIn()
   // ④ 出图场（峰点引导时按真实出图场闭环自适应，见下）
+  // 口径照射档另存复场（共极化 apFR/apFI + 交叉极化 apXR/apXI）：出图写两分量（交叉极化与共极化相位正交，AR 才算得对）；
+  // 旁瓣半径 rOut 内的 beamlet 逐支累加（直扫中心数组，不走哈希查询的逐点分配）
+  const apFR = ap ? new Float64Array(NX * NY) : null, apFI = ap ? new Float64Array(NX * NY) : null
+  const apXR = ap ? new Float64Array(NX * NY) : null, apXI = ap ? new Float64Array(NX * NY) : null
+  const apCX = ap ? Float64Array.from(centers, (c) => c[0]) : null, apCY = ap ? Float64Array.from(centers, (c) => c[1]) : null
+  const apR2 = ap ? apK.rOut * apK.rOut : 0
   const computeField = () => {
     const F = new Float64Array(NX * NY)            // 复场幅 |f|（下游只用功率 |f|²，故只写幅）
     let Fmax = 0, sumP = 0, kMax = 0
@@ -1227,7 +1323,17 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
       for (let col = 0; col < NX; col++, k++) {
         const px = XS + dx * col
         let fr = 0, fi = 0
-        for (const i of near(px, py, Rcut)) {
+        if (ap) {
+          let xr = 0, xi = 0
+          for (let i = 0; i < N; i++) {
+            const ax = px - apCX[i], ay = py - apCY[i], d2 = ax * ax + ay * ay
+            if (d2 > apR2) continue
+            const g = apK.amp(d2)
+            fr += bRe[i] * g; fi += bIm[i] * g
+            if (apXA) { const t = apK.g2(d2) * (apSym === 'ns' ? ax : ay) * D2R; xr -= bIm[i] * t; xi += bRe[i] * t }   // j·w·G₂·Δ⊥
+          }
+          apFR[k] = fr; apFI[k] = fi; apXR[k] = xr * apXA; apXI[k] = xi * apXA
+        } else for (const i of near(px, py, Rcut)) {
           const ax = px - centers[i][0], ay = py - centers[i][1]
           const g = Math.exp(-KF * (ax * ax + ay * ay) / (th * th))
           fr += bRe[i] * g; fi += bIm[i] * g
@@ -1305,7 +1411,8 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   const intP = (sumP / (Fmax * Fmax)) * dx * dy * D2R * D2R   // 合成场立体角 ∫P̂dΩ/P̂max（cos az 已入 sumP）
   const etaAp = cl(effPct, 1, 100) / 100
   const th3r = theta3 * D2R                                   // θ3 弧度
-  const omega1 = Math.PI * th3r * th3r / (4 * Math.LN2)       // 单支高斯 beamlet 立体角
+  // 单支 beamlet 立体角：高斯 πθ3²/(4ln2)；口径照射 4π/(kD²·η_taper)（自相关闭式 Q(0)）→ D = η_spill·4π/∫P̂dΩ，精确无模型因子
+  const omega1 = ap ? apK.omega1 : Math.PI * th3r * th3r / (4 * Math.LN2)
   const lamS = fSimGHz > 0 ? 0.299792458 / fSimGHz : 0
   const maxDir = (apDm > 0 && lamS > 0) ? 4 * Math.PI * (Math.PI * (apDm / 2) ** 2) / (lamS * lamS) : 0   // 均匀口径最大方向性 4πA/λ²
   const physPeakDbi = (maxDir > 0 && intP > 0)
@@ -1343,16 +1450,26 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   // GRASP ASCII 纯 ASCII 表头（对齐真实参考 .grd；非 ASCII 星名已剔除）。SYNTHMETA 为精简元数据行。
   const sn = asciiSafe(satName)
   head.push(`SatSim synthesized pattern (SATSOFT-style contour shaping)${sn ? ' - ' + sn : ''}. Sat. lon=${(+satLon).toFixed(2)}, lat=${(+(satLat || 0)).toFixed(2)}, height=${Math.round(altKm)} km, beamlets=${N}`)
-  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, mm: { it: mm.iters, act: mm.active, marg: +(-mm.maxRes).toFixed(3) }, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}) })}`)
+  head.push(`SYNTHMETA ${JSON.stringify({ kind: 'shaped', satLon: +satLon.toFixed(4), satLat: +(satLat || 0).toFixed(4), altKm: Math.round(altKm), mode, value: +edgeVal.toFixed(2), peak: +peakDbi.toFixed(2), physPeak: +physPeakDbi.toFixed(2), pa: +paDb.toFixed(2), theta3: +th.toFixed(4), nBeams: N, nPolys: polys.length, mm: { it: mm.iters, act: mm.active, marg: +(-mm.maxRes).toFixed(3) }, ...(expandDeg > 0 ? { exp: +expandDeg.toFixed(3) } : {}), ...(hots.length ? { hot: hots.length } : {}), ...(pol ? { pol } : {}), ...(ap ? { bm: 'aperture', xp: +apXp.toFixed(5) } : {}) })}`)
   head.push('++++')
   head.push('1')
-  head.push(' 1 3 2 6')
+  head.push(ap && apCp ? ' 1 2 2 6' : ' 1 3 2 6')         // 口径照射档圆极化 → icomp 2（RHC/LHC）
   head.push('  0  0')
   head.push(` ${fexp(XS)} ${fexp(YS)} ${fexp(XE)} ${fexp(YE)}`)
   head.push(` ${NX} ${NY} 0`)
   const L = new Array(NX * NY)
   const zero = fexp(0)
-  for (let k = 0; k < NX * NY; k++) {
+  if (ap) {
+    // 口径照射档：写复场两分量。共极化落槽 linX / rhcp → 1、linY / lhcp → 2（与 apertureModel 同口径）；地板只托共极化幅度（保相位）
+    const slot2 = pol === 'linY' || pol === 'lhcp'
+    for (let k = 0; k < NX * NY; k++) {
+      let cr = apFR[k] * S, ci = apFI[k] * S
+      const m = Math.hypot(cr, ci)
+      if (m < fAmp) { if (m > 0) { cr *= fAmp / m; ci *= fAmp / m } else { cr = fAmp; ci = 0 } }
+      const xr = apXR[k] * S, xi = apXI[k] * S
+      L[k] = slot2 ? ` ${fexp(-xr)} ${fexp(-xi)} ${fexp(cr)} ${fexp(ci)}` : ` ${fexp(cr)} ${fexp(ci)} ${fexp(xr)} ${fexp(xi)}`
+    }
+  } else for (let k = 0; k < NX * NY; k++) {
     let c = F[k] * S
     if (c < fAmp) c = fAmp                          // 地板：避免 0 功率/−∞ dB 点
     L[k] = ` ${fexp(c)} ${zero} ${zero} ${zero}`
@@ -1370,7 +1487,9 @@ export function buildShapedGrd({ satName = '', satLon, satLat = 0, altKm, polysP
   const stStats = { c0: smp.counts.c0, c1: smp.counts.c1, c2: smp.counts.c2, ovApplied: smp.ovHit, ovOrphan: edits ? Math.max(0, edits.ov.size - smp.ovHit) : 0, added: edits ? edits.add.length : 0 }
   if (stStats.ovOrphan > 0) warn = (warn ? warn + '；' : '') + `${stStats.ovOrphan} 条站点修正未命中当前站点栅（覆盖区/密度/外扩已变）——「重置站点」可清理`
   // 求解器自己的状态：不收敛 / LP 失败 / 到时限，一律回报（以前只落在 mm 出参里，界面上看不出「迭代 60」是撞了上限）
-  const mmMsg = mmNote(mm)
+  // 口径照射档：成分波束带正负交替的旁瓣，内点 LP 偶尔停在步数上限但仍原始可行的点上（这一步照用，SLP 外环照常收敛；实测每次
+  //   生成 1–4 次，LP 步数放到 400 也去不掉、终解最低覆盖电平差 ≤ 0.07 dB）→ 外环收敛时不把它当失败报；不收敛照报。高斯档口径不变。
+  const mmMsg = mmNote(ap && mm.converged ? { ...mm, lpFail: 0 } : mm)
   if (mmMsg) warn = (warn ? warn + '；' : '') + mmMsg
   return { text: head.join('\r\n') + '\r\n' + L.join('\r\n') + '\r\n', value: edgeVal, peakDbi, physPeakDbi, paDb, covMin, omegaDeg2, nBeams: N, rippleDb: rippleBest / 2, nx: NX, ny: NY, warn, peakAt, hotReport, stStats, mm: { iters: mm.iters, accepted: mm.accepted, active: mm.active, nStations: M, marginDb: -mm.maxRes, converged: mm.converged, lpIters: mm.lpIters, lpFail: mm.lpFail, stoppedBy: mm.stoppedBy, elapsedMs: Math.round(mm.elapsedMs) } }
 }

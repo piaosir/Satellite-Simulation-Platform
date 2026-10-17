@@ -107,12 +107,24 @@ const WF_DICT = {
   '3dB 波束宽度': '3dB Beamwidth',
   '天线增益': 'Antenna Gain',
   '星地距离': 'Slant Range',
+  // GSO 倾斜运行 / 保持盒（A-01）：一天（24 h、1 min 步）里的范围与指向
+  '日内最低仰角': 'Min Elevation (24 h)',
+  '日内最高仰角': 'Max Elevation (24 h)',
+  '日内最近斜距': 'Min Slant Range (24 h)',
+  '日内最远斜距': 'Max Slant Range (24 h)',
+  '日内最大指向偏离': 'Max Pointing Offset (24 h)',
+  '指向损耗（日最大）': 'Pointing Loss (Daily Max)',
+  '指向损耗（50% 时间）': 'Pointing Loss (50% of Time)',
+  '指向损耗（1% 时间）': 'Pointing Loss (1% of Time)',
+  '链路时延(日内最小)': 'Link Delay (24 h Min)',
+  '链路时延(日内最大)': 'Link Delay (24 h Max)',
   // —— 传播损耗 ——
   '自由空间损耗': 'Free Space Loss',
   '等效仰角 P.618§8': 'Equivalent Elevation P.618 §8',
   '大气衰减 P.676': 'Atmospheric Attenuation P.676',
   '雨衰 P.618': 'Rain Attenuation P.618',
   '上行雨衰': 'Uplink Rain Attenuation',   // 主导降雨场景下计入下行列的那笔残余上行雨衰
+  '下行雨衰': 'Downlink Rain Attenuation', // 工况对照段的代价明细行（此前漏在字典外，英文报告里这一行是中文）
   '云衰 P.840': 'Cloud Attenuation P.840',
   '其他损耗': 'Other Losses',
   '总衰减': 'Total Attenuation',
@@ -144,7 +156,11 @@ const WF_DICT = {
   '到达卫星通量密度': 'PFD at Satellite',
   '到达卫星通量密度（晴天）': 'PFD at Satellite (Clear Sky)',
   '卫星到地面 PFD': 'Satellite-to-Ground PFD',
-  'ITU PFD 限值': 'ITU PFD Limit',
+  // RR Art.21 Table 21-4（RR 2024）：自由空间口径、参考带宽内（itu/art21.js）
+  'ITU PFD 参考带宽': 'ITU PFD Reference Bandwidth',
+  '自由空间到达 PFD（参考带宽内）': 'Free-Space PFD (Ref. Bandwidth)',
+  'ITU PFD 限值（参考带宽内）': 'ITU PFD Limit (Ref. Bandwidth)',
+  'ITU PFD 余量': 'ITU PFD Margin',
   '接收馈线损耗': 'Rx Feeder Loss',
   'G/T 劣化': 'G/T Degradation',
   '天线噪声温度': 'Antenna Noise Temperature',
@@ -249,7 +265,6 @@ const WF_DICT = {
   '地面覆盖半径': 'Ground Coverage Radius',
   '最大过境时长(天顶)': 'Max Pass Duration (Zenith)',
   '功率谱·PFD·增益与噪声': 'PSD · PFD · Gain & Noise',
-  'ITU PFD 限值(Art.21)': 'ITU PFD Limit (Art.21)',
   // —— 再生式上行专属段标题 ——
   '几何与天线（上行）': 'Geometry & Antenna (Uplink)',
   '传播损耗（上行）': 'Propagation Loss (Uplink)',
@@ -418,6 +433,9 @@ function createBuilder(ctx) {
     const gt = parseFloat(ctx.satelliteGT);
     if (!isNaN(gt)) results.satelliteGTResult = gt.toFixed(2);
   }
+  // 2026-10-17 前保存的记录：ituPfdRefBandwidth 是 '4kHz' / '1MHz' 文本、没有自由空间 PFD 与余量——
+  // 不拿旧文本冒充新口径的参考带宽（否则单独冒出一行「4kHz kHz」）
+  if (typeof results.ituPfdRefBandwidth === 'string' && !Number.isFinite(Number(results.ituPfdRefBandwidth))) results.ituPfdRefBandwidth = null;
 
   const b = {};
 
@@ -761,7 +779,8 @@ function createBuilder(ctx) {
       b._costRow('上行雨衰（转嫁下行）', resid, 'dB')
     ].filter((row) => row.up !== '' || row.down !== '');
     const seg = b._seg(title, 2, rows, meta);
-    seg.heads = ['晴空', '降雨'];   // 覆盖默认的「上行/下行」列头
+    // 覆盖默认的「上行/下行」列头。与段标题、行名一样按语言出字：屏幕、Excel、Word、PDF 四处都直接用它
+    seg.heads = [b._t('晴空'), b._t('降雨')];
     return seg;
   };
 
@@ -775,7 +794,7 @@ function createBuilder(ctx) {
       b._costRow('G/T 劣化（降雨）', gtDeg, 'dB')
     ].filter((row) => row.up !== '' || row.down !== '');
     const seg = b._seg(title, 2, rows, meta);
-    seg.heads = ['晴空', '降雨'];
+    seg.heads = [b._t('晴空'), b._t('降雨')];
     return seg;
   };
 
@@ -815,7 +834,13 @@ function createBuilder(ctx) {
       ['波长', 'wavelengthResult', 'rxWavelengthResult', 'm'],
       ['3dB 波束宽度', 'beamWidthResult', 'theta3', '°'],
       ['天线增益', 'txAntennaGainResult', 'rxAntennaGainResult', 'dBi'],
-      ['星地距离', 'slantRangeResult', 'rxSlantRangeResult', 'km']
+      ['星地距离', 'slantRangeResult', 'rxSlantRangeResult', 'km'],
+      // 倾斜运行 / 保持盒（A-01）：一天里的范围；定点 + 固定天线时引擎出空，这几行自动不出
+      ['日内最低仰角', 'elevationMinResult', 'rxElevationMinResult', '°'],
+      ['日内最高仰角', 'elevationMaxResult', 'rxElevationMaxResult', '°'],
+      ['日内最近斜距', 'slantRangeMinResult', 'rxSlantRangeMinResult', 'km'],
+      ['日内最远斜距', 'slantRangeMaxResult', 'rxSlantRangeMaxResult', 'km'],
+      ['日内最大指向偏离', 'uplinkPointingOffsetResult', 'downlinkPointingOffsetResult', '°']
     ], { id: 'geometry', cls: 'param' });
     // 在频率行上方插入「城市」行（上行=发信站城市，下行=收信站城市）
     geoSeg.rows.unshift({
@@ -832,6 +857,10 @@ function createBuilder(ctx) {
       ['雨衰 P.618', 'uplinkRainAttenuation', 'downlinkRainAttenuationResult', 'dB'],
       ['云衰 P.840', 'uplinkCloudAttenuation', 'downlinkCloudAttenuation', 'dB'],
       ['其他损耗', 'uplinkMiscLossResult', 'downlinkMiscLossResult', 'dB'],
+      // 倾斜运行 / 保持盒（A-01）：日最大那一档计入链路（级联里单列一行），两个时间分位只作读数
+      ['指向损耗（日最大）', 'uplinkPointingLossResult', 'downlinkPointingLossResult', 'dB'],
+      ['指向损耗（50% 时间）', 'uplinkPointingLossP50Result', 'downlinkPointingLossP50Result', 'dB'],
+      ['指向损耗（1% 时间）', 'uplinkPointingLossP1Result', 'downlinkPointingLossP1Result', 'dB'],
       ['总衰减', 'uplinkTotalAttenuationResult', 'downlinkTotalAttenuationResult', 'dB'],
       ['雨层高度 P.839', 'uplinkRainHeightResult', 'downlinkRainHeightResult', 'km']
     ], { id: 'propagation', cls: 'param' }));
@@ -844,6 +873,9 @@ function createBuilder(ctx) {
       ['轨道高度', 'orbitAltitudeResult', 'km'],
       ['轨道速度', 'orbitVelocityResult', 'km/s'],
       ['链路时延(单程)', 'linkDelayResult', 'ms'],
+      // 倾斜运行 / 保持盒（A-01）：两站同一时刻斜距之和的日内范围；定点时引擎出空、不出这两行
+      ['链路时延(日内最小)', 'linkDelayMinResult', 'ms'],
+      ['链路时延(日内最大)', 'linkDelayMaxResult', 'ms'],
       ['链路时延(往返 RTT)', rttMs, 'ms', true],
       ['上行最大多普勒', 'maxDopplerUplinkResult', 'kHz'],
       ['下行最大多普勒', 'maxDopplerDownlinkResult', 'kHz'],
@@ -863,12 +895,18 @@ function createBuilder(ctx) {
     // 邻星旁瓣/离轴各行（旁瓣发射增益·EIRP·PSD、ITU 旁瓣 PSD 建议、接收旁瓣增益）已整组移除：
     // 它们全由「邻星轨位差 deltaTheta」派生，而平台三窗从来没有这个输入框，引擎只能靠空值回退
     // 硬造一个角度——2026-08-07 起该入参与派生量在两个引擎里一并删除（见 linkCalculator.js 同日注释）。
-    // 留下的这四行与邻星无关：功率谱密度、到达通量密度、RR Art.21 落地 PFD 限值（仰角驱动）。
+    // 留下的行与邻星无关：功率谱密度、到达通量密度、RR Art.21 落地 PFD（仰角驱动）。
+    // RR Art.21 Table 21-4（RR 2024）四行只在下行：参考带宽、自由空间到达 PFD（参考带宽内，No.21.16 口径，
+    // 不扣衰减）、限值与余量，同一参考带宽内相减（itu/art21.js）。上面「到达端通量密度」是含衰减的整载波实际值，
+    // 只作工作点读数。RR 在该频段没有限值时四行为空、整行不出（_dualSeg 剔除两侧皆空的行）。
     segs.push(b._dualSeg('功率谱与通量密度（上行 / 下行）', [
       ['发射端功率谱密度', 'stationPSDResult', 'satellitePSDResult', 'dBW/Hz'],
       ['到达端通量密度', 'arrivalPFDAtSatelliteResult', 'arrivalPFDAtGroundResult', 'dBW/m²'],
       ['到达通量密度（晴天）', 'PFDcResult', '_none', 'dBW/m²'],
-      ['ITU PFD 限值', '_none', 'ituPfdLimitPerM2', 'dBW/m²']
+      ['ITU PFD 参考带宽', '_none', 'ituPfdRefBandwidth', 'kHz'],
+      ['自由空间到达 PFD（参考带宽内）', '_none', 'pfdFreeSpaceRefBwResult', 'dBW/m²'],
+      ['ITU PFD 限值（参考带宽内）', '_none', 'ituPfdLimitResult', 'dBW/m²'],
+      ['ITU PFD 余量', '_none', 'ituPfdMarginResult', 'dB']
     ], { id: 'psd', cls: 'result' }));
 
     // ⑥ 接收增益与噪声（地球站，单列）——G/T 的完整分解：增益侧 + 噪温侧。
@@ -899,9 +937,12 @@ function createBuilder(ctx) {
     const noiseBW = num('RXnoiseBW');
     // 功放回退：功放建议功率 − 回退 = 实际输出（selectedPower）
     const paBackoffDb = num('paRecommendationdBResult') - num('selectedPowerResult');
+    // 指向损耗（日最大，A-01）：引擎把它并进链路里扣的那条损耗（出参与「其他损耗」分列）；定点 + 固定天线时出空 → 不列、按 0
+    const pointUp = Number.isFinite(num('uplinkPointingLossResult')) ? num('uplinkPointingLossResult') : null;
+    const pointDn = Number.isFinite(num('downlinkPointingLossResult')) ? num('downlinkPointingLossResult') : null;
     // 上行：沿功率链得到到达卫星热噪声 C/N，再扣除上行干扰损失 → 引擎实际上行 C/N
     const cUp = num('stationEIRPResult') - num('uplinkFSLResult') - num('uplinkAtmosphericAttenuationResult')
-      - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult');
+      - num('uplinkRainAttenuation') - num('uplinkCloudAttenuation') - num('uplinkMiscLossResult') - (pointUp || 0);
     const upThermalCN = cUp + num('satelliteGTResult') + KB - noiseBW;
     const upIntfLoss = upThermalCN - num('uplinkCN');
     // 主导降雨场景：上行降雨占主导时，下行按晴空（下行雨衰与 G/T 劣化不参与）
@@ -910,7 +951,7 @@ function createBuilder(ctx) {
     const dnGtDegEff = uplinkRainDominant ? 0 : num('gOverTdegradationResult');
     // 下行：沿功率链得到到达地面热噪声 C/N，扣除 G/T 劣化（降雨）与下行干扰损失 → 引擎实际下行 C/N
     const cDn = num('transponderOutputEIRP') - num('downlinkFSLResult') - num('downlinkAtmosphericAttenuationResult')
-      - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult');
+      - dnRainEff - num('downlinkCloudAttenuation') - num('downlinkMiscLossResult') - (pointDn || 0);
     const dnThermalCN = cDn + num('gOverTeResult') + KB - noiseBW;
     // 下行干扰损失：取引擎真实四路干扰并联值（按主导场景口径），不再从反解 downlinkCN 取残差——
     // 残差在「上行主导 + UPC 未全补偿」时会把上行残余雨衰错计入本行（ACI/ASI/XPI/IM 标签失真可达数 dB）。
@@ -930,6 +971,7 @@ function createBuilder(ctx) {
       C('loss', '雨衰 P.618', 'uplinkRainAttenuation', 'dB', 'up'),
       C('loss', '云衰 P.840', 'uplinkCloudAttenuation', 'dB', 'up'),
       C('loss', '其他损耗', 'uplinkMiscLossResult', 'dB', 'up'),
+      ...(pointUp !== null ? [C('loss', '指向损耗（日最大）', 'uplinkPointingLossResult', 'dB', 'up')] : []),
       C('sub', '到达卫星载波电平 C', null, 'dBW', 'up'),
       C('ref', '到达卫星通量密度', 'arrivalPFDAtSatelliteResult', 'dBW/m²', 'up'),
       C('gain', '卫星 G/T', 'satelliteGTResult', 'dB/K', 'up'),
@@ -951,6 +993,7 @@ function createBuilder(ctx) {
       C('loss', '雨衰 P.618', dnRainEff, 'dB', 'down'),
       C('loss', '云衰 P.840', 'downlinkCloudAttenuation', 'dB', 'down'),
       C('loss', '其他损耗', 'downlinkMiscLossResult', 'dB', 'down'),
+      ...(pointDn !== null ? [C('loss', '指向损耗（日最大）', 'downlinkPointingLossResult', 'dB', 'down')] : []),
       C('sub', '到达地面载波电平 C', null, 'dBW', 'down'),
       C('ref', '卫星到地面 PFD', 'arrivalPFDAtGroundResult', 'dBW/m²', 'down'),
       C('ref', '接收天线增益', 'rxAntennaGainResult', 'dBi', 'down'),
@@ -1134,12 +1177,16 @@ function createBuilder(ctx) {
     // 「邻星旁瓣/隔离」相关行（旁瓣增益/EIRP/PSD、ITU 旁瓣 PSD 建议值、接收旁瓣增益）本段没有：
     // 它们是 GEO 静止弧概念，对 NGSO 本就不适配；2026-08-07 起该口径连同 deltaTheta 入参
     // 在 GEO/NGSO 两个引擎里都已删除（平台无此输入框，见 linkCalculator.js 同日注释）。
-    // 保留落地 PFD vs ITU Article 21 限值（仰角驱动，对 NGSO 下行有效）。
+    // 落地 PFD 对 RR Art.21 Table 21-4 限值（仰角驱动）：与 GEO 同四行（参考带宽 / 自由空间到达 PFD / 限值 / 余量），
+    // 查的是 NGSO 行（含 X、Y 与高倾角轨道条件，itu/art21.js）；缺 N、Nv 等参数或 RR 无限值时限值 / 余量为空、不出行。
     segs.push(b._dualSeg('功率谱与通量密度（上行 / 下行）', [
       ['发射端功率谱密度', 'stationPSDResult', 'satellitePSDResult', 'dBW/Hz'],
       ['到达端通量密度', 'arrivalPFDAtSatelliteResult', 'arrivalPFDAtGroundResult', 'dBW/m²'],
       ['到达通量密度（晴天）', 'PFDcResult', '_none', 'dBW/m²'],
-      ['ITU PFD 限值(Art.21)', '_none', 'ituPfdLimitPerM2', 'dBW/m²']
+      ['ITU PFD 参考带宽', '_none', 'ituPfdRefBandwidth', 'kHz'],
+      ['自由空间到达 PFD（参考带宽内）', '_none', 'pfdFreeSpaceRefBwResult', 'dBW/m²'],
+      ['ITU PFD 限值（参考带宽内）', '_none', 'ituPfdLimitResult', 'dBW/m²'],
+      ['ITU PFD 余量', '_none', 'ituPfdMarginResult', 'dB']
     ], { id: 'psd', cls: 'result' }));
 
     // ⑥ 接收增益与噪声（地球站，单列）——G/T 的完整分解。同 GEO：不拆双列，
@@ -1426,11 +1473,14 @@ function createBuilder(ctx) {
     ], { id: 'propagation', cls: 'param' }));
 
     // ④ 卫星（上行接收侧，单列）——再生无转发器：只列轨道运动与卫星接收 G/T
+    // 时延只讲本跳（地球站 → 卫星）：星上再生，链到这里就解调落地，没有「端到端」可言。
+    // ★ 读 linkDelayResult，约定它是本跳单程（上行斜距 / c）——由再生式窗口交结果前纠正：弯管引擎原样出的
+    //   是「上行 + 下行镜像」两段之和，是本跳的 2 倍。RTT 行按同一个数 ×2，同样只算本跳。
     segs.push(b._refSeg('卫星（上行接收）', [
       ['轨道高度', 'orbitAltitudeUpResult', 'km'],
       ['轨道速度(惯性系)', 'orbitVelocityUpResult', 'km/s'],
       ['相对地面运动速度', 'groundRelVelUpResult', 'km/s'],
-      ['链路时延(单程·端到端)', 'linkDelayResult', 'ms'],
+      ['链路时延(单程)', 'linkDelayResult', 'ms'],
       ['链路时延(往返 RTT)', rttMs, 'ms', true],
       ['最大多普勒', 'maxDopplerUplinkResult', 'kHz'],
       ['卫星 G/T', 'satelliteGTResult', 'dB/K']
@@ -1564,20 +1614,26 @@ function createBuilder(ctx) {
 
     // ④ 卫星（下行发射侧，单列）——再生无转发器：只列轨道运动与卫星下行 EIRP。
     // 卫星功率谱密度移入 ⑤，与到达地面 PFD 同列一段（同 GEO 的分区口径）。
+    // 时延只讲本跳（卫星 → 地球站），读 linkDelayResult（约定为本跳单程，见上行构建器同处注记）
     segs.push(b._refSeg('卫星（下行发射）', [
       ['轨道高度', 'orbitAltitudeResult', 'km'],
       ['轨道速度(惯性系)', 'orbitVelocityResult', 'km/s'],
       ['相对地面运动速度', 'groundRelVelResult', 'km/s'],
-      ['链路时延(单程·端到端)', 'linkDelayResult', 'ms'],
+      ['链路时延(单程)', 'linkDelayResult', 'ms'],
       ['链路时延(往返 RTT)', rttMs, 'ms', true],
       ['最大多普勒', 'maxDopplerDownlinkResult', 'kHz'],
       ['卫星下行 EIRP', 'EIRPsResult', 'dBW']
     ], { id: 'satellite', cls: 'param' }));
 
-    // ⑤ 功率谱与通量密度（下行，单列）——发射端 PSD 与到达端 PFD
+    // ⑤ 功率谱与通量密度（下行，单列）——发射端 PSD 与到达端 PFD；RR Art.21 四行同 GEO / NGSO（再生口径：
+    // 卫星下行 EIRP 直发，见 linkCalculatorRegen._art21RegenDownlink），RR 无限值 / 缺参时不出行
     segs.push(b._refSeg('功率谱与通量密度（下行）', [
       ['卫星功率谱密度', 'satellitePSDResult', 'dBW/Hz'],
-      ['卫星到地面 PFD', 'arrivalPFDAtGroundResult', 'dBW/m²']
+      ['卫星到地面 PFD', 'arrivalPFDAtGroundResult', 'dBW/m²'],
+      ['ITU PFD 参考带宽', 'ituPfdRefBandwidth', 'kHz'],
+      ['自由空间到达 PFD（参考带宽内）', 'pfdFreeSpaceRefBwResult', 'dBW/m²'],
+      ['ITU PFD 限值（参考带宽内）', 'ituPfdLimitResult', 'dBW/m²'],
+      ['ITU PFD 余量', 'ituPfdMarginResult', 'dB']
     ], { id: 'psd', cls: 'result' }));
 
     // ⑥ 接收增益与噪声（收信站，单列）——G/T 的完整分解

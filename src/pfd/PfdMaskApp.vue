@@ -22,6 +22,8 @@ import {
   DIRECTIONS, REF_BW, PATTERN_SECTIONS, LN_VALUES, BEAM_LAYOUTS, ES_PATTERNS, EXPORT_MODES, SAT_PATTERNS
 } from '../viz/pfd/useMaskWorkbench.js'
 import { CONST_PRESETS } from '../viz/constellation/walker.js'
+// 面板态 → 引擎 job / 输入校验（纯函数，回归测试拿真引擎跑同一份）
+import { checkInputs, buildJobs, ssEirpOffsetDb, pairedUplinkBand, uplinkBandOf } from './pfdJobs.js'
 
 const STORE_KEY = 'pfd-mask-window-v1'   // 上次工作区的镜像；2026-10-15 起内容归配置列表（见文末「配置列表」）
 
@@ -66,6 +68,9 @@ const is = reactive({
 
 const up = reactive({
   on: true, maskId: 3, refBwKhz: 40,
+  // 上行掩模自己的频段（地球站发射频段）：留空的端点按页头（下行）频段推定对应上行段（pfdJobs.pairedUplinkBand），
+  // 老配置没有这两个字段，同样走推定
+  lowFreqGhz: '', highFreqGhz: '',
   esType: 'typical', esId: -1,
   patternStandard: 'S.580-6', diameterM: 1.2, efficiency: 0.65,
   eirpDbwPerRefBw: 20, arrayElements: 64, scanAnglesDeg: '',
@@ -112,12 +117,20 @@ const N = useNotice()
 const problems = ref([])
 const warns = ref([])
 const results = reactive({ down: null, is: null, up: null })
-// 主进程一次把三种「文件划分」都切好（{ single, 'per-kind', 'per-mask' }，成本只是字符串拼接），
-// 整份留着、按当前划分现取：改「文件划分」下拉即换列表，不必重算
+// 主进程一次把三种「文件划分」都切好（{ single, 'per-kind', 'per-mask' }），这里只收清单（文件名 / 字节数）、
+// 按当前划分现取：改「文件划分」下拉即换列表，不必重算。XML 字节留在主进程，输出时凭 resultToken 取一次（pfdFiles）
 const filesByMode = ref(null)
 const files = computed(() => (filesByMode.value && filesByMode.value[exportMode.value]) || [])
 const opFiles = ref([])
 const hasResults = computed(() => files.value.length > 0 || opFiles.value.length > 0)
+let resultToken = ''
+// 计算进度（主进程 worker 推回，done / total 为工作量刻度）；runId 认这一轮，上一轮迟到的进度不认
+const progress = reactive({ done: 0, total: 0 })
+let runSeq = 0, curRunId = ''
+const stopProgress = (typeof window !== 'undefined' && window.api && window.api.onPfdProgress)
+  ? window.api.onPfdProgress((p) => { if (p && p.id === curRunId && busy.value) { progress.done = p.done; progress.total = p.total } })
+  : null
+onBeforeUnmount(() => { if (stopProgress) stopProgress() })
 
 // —— 结果过期提示（口径同雨衰 / 日凌 / 链路预算）：出结果后任何计算输入再变 → 亮「输入已变」，手动点「计算」重算 ——
 // 「文件划分」不算输入（三种划分都在手里）。计算进行中的改动同样记下：结果回来时它对应的是改动前的参数。
@@ -151,105 +164,14 @@ const refBwUp = computed(() => REF_BW.filter((o) => o.v !== 1000))
 const bwLabel = (khz) => (REF_BW.find((o) => o.v === Number(khz)) || {}).label || `${Number(khz) || 0} kHz`
 const downBw = computed(() => bwLabel(down.refBwKhz))
 const upBw = computed(() => bwLabel(up.refBwKhz))
-/** 星间掩模落盘后一律按 40 kHz 解释，下行页填的 EIRP 谱密度若不是这个口径，差值就是这么多 dB。 */
-const ssBwOffsetDb = computed(() => {
-  const b = Number(down.refBwKhz)
-  return b > 0 && b !== 40 ? 10 * Math.log10(40 / b) : 0
-})
+/** 星间掩模恒按 40 kHz 落盘：下行页按其参考带宽填的 EIRP 谱密度折合到 40 kHz 要加的 dB（计算时已折合进去，见 pfdJobs.buildJobs）。 */
+const ssBwOffsetDb = computed(() => ssEirpOffsetDb(down.refBwKhz))
+/** 上行页频段留空时的推定值（页头下行频段对应的上行段），作占位读数；推不出为 null。 */
+const upBandAuto = computed(() => pairedUplinkBand(g.lowFreqGhz, g.highFreqGhz))
 
-function check() {
-  const bad = []
-  const n = String(g.satName || '').length
-  if (n < 1 || n > 20) bad.push(`卫星名称 ${n} 个字符，ITU 掩模文件要求 1–20`)
-  if (!(Number(g.ntcId) >= 1)) bad.push('ITU 通知号须为不小于 1 的整数')
-  if (!(Number(g.highFreqGhz) > Number(g.lowFreqGhz))) bad.push('频段上限必须大于下限')
-  if (!(Number(g.altKm) > 0)) bad.push('卫星高度须为正数')
-  if (!(Number(g.minElevDeg) >= 0 && Number(g.minElevDeg) < 90)) bad.push('最小工作仰角须在 0–90° 之间')
-  const ids = []
-  for (const [k, o] of [['下行 PFD 掩模', down], ['星间 EIRP 掩模', is], ['上行 EIRP 掩模', up]]) {
-    if (!o.on) continue
-    const id = Number(o.maskId)
-    if (!(id >= 1 && id <= 999)) bad.push(`${k}：掩模编号须在 1–999 之间`)
-    if (ids.includes(id)) bad.push(`掩模编号 ${id} 重复——三种掩模共用同一套 1–999 编号，不得重号`)
-    ids.push(id)
-  }
-  if (up.on && ![4, 40].includes(Number(up.refBwKhz))) {
-    bad.push('上行 EIRP 掩模的参考带宽仅可取 4 kHz 或 40 kHz（ITU 掩模格式未提供 1 MHz 选项）')
-  }
-  if (!down.on && !is.on && !up.on && !op.on) bad.push('未启用任何输出。')
-  return bad
-}
-
-function jobs() {
-  const base = {
-    satName: String(g.satName), ntcId: Number(g.ntcId),
-    lowFreqGhz: Number(g.lowFreqGhz), highFreqGhz: Number(g.highFreqGhz),
-    satHeightKm: Number(g.altKm), incDeg: Number(g.inclDeg), minElevDeg: Number(g.minElevDeg),
-    srsAlpha0Deg: Number(op.alpha0Deg)
-  }
-  const pattern = () => {
-    const k = String(down.patternKind)
-    const lam = 0.299792458 / ((Number(g.lowFreqGhz) + Number(g.highFreqGhz)) / 2)
-    if (k === 'isoflux' || k === 'omni') return { kind: k, peakGainDbi: Number(down.peakGainDbi) }
-    if (k === 'parabolic') {
-      return { kind: k, diameterM: Number(down.dishSizeM), efficiency: Number(down.efficiency),
-               wavelengthM: lam, nullFloorDb: Number(down.nullFloorDb) }
-    }
-    if (k === 'two-level') {
-      return { kind: k, peakGainDbi: Number(down.peakGainDbi),
-               beamwidth1Deg: Number(down.beamwidth1Deg), gainFloor1Db: Number(down.gainFloor1Db),
-               beamwidth2Deg: Number(down.beamwidth2Deg), gainFloor2Db: Number(down.gainFloor2Db) }
-    }
-    return down.patternSection === '1.2'
-      ? { kind: 's1528', section: '1.2', peakGainDbi: Number(down.peakGainDbi), psibDeg: Number(down.psibDeg), Ln: Number(down.Ln) }
-      : { kind: 's1528', section: '1.3', peakGainDbi: Number(down.peakGainDbi), psibDeg: Number(down.psibDeg),
-          mode: String(down.patternMode), dOverLambda: Number(down.dOverLambda), farOutDbi: Number(down.farOutDbi) }
-  }
-  const payload = () => ({
-    maxEirpDbwPerRefBw: Number(down.eirpDbwPerRefBw),
-    usePowerControl: !!down.powerControl, powerControlKappa: Number(down.powerControlKappa),
-    nBeams: Number(down.nco), minAngleDeg: Number(down.beamMinSepDeg), beamLayout: String(down.beamLayout),
-    pattern: pattern()
-  })
-  const out = []
-  if (down.on) {
-    out.push(Object.assign({}, base, payload(), {
-      directions: { down: true }, pfdMaskId: Number(down.maskId), refBwKhz: Number(down.refBwKhz),
-      maskAlpha0Deg: Number(down.maskAlpha0Deg),
-      nAzElPoints: Number(down.gridPoints), latStepDeg: Number(g.latStepDeg),
-      conservativeMarginDb: Number(down.marginDb),
-      sentinelNoEmissionDb: Number(down.noEmissionDb), sentinelUnresolvedDb: Number(down.unresolvedDb)
-    }))
-  }
-  if (is.on) {
-    out.push(Object.assign({}, base, payload(), {
-      directions: { is: true }, eirpMaskId: Number(is.maskId), refBwKhz: 40,
-      maskAlpha0Deg: Number(down.maskAlpha0Deg),
-      nAzElPoints: Number(down.gridPoints), latStepDeg: Number(g.latStepDeg),
-      sepAngleStepDeg: Number(is.sepStepDeg), conservativeMarginDb: Number(is.marginDb)
-    }))
-  }
-  if (up.on) {
-    const lam = 0.299792458 / ((Number(g.lowFreqGhz) + Number(g.highFreqGhz)) / 2)
-    const scan = String(up.scanAnglesDeg || '').split(/[,，\s]+/).map(Number).filter(Number.isFinite)
-    out.push(Object.assign({}, base, {
-      directions: { up: true }, eirpEsMaskId: Number(up.maskId), refBwKhz: Number(up.refBwKhz),
-      esId: up.esType === 'specific' ? Number(up.esId) : -1,
-      maskAlpha0Deg: Number(down.maskAlpha0Deg),
-      nAzElPoints: 9, latStepDeg: Number(g.latStepDeg),
-      sepAngleStepDeg: Number(up.sepStepDeg), conservativeMarginDb: Number(up.marginDb),
-      nBeams: 1, minAngleDeg: 5, beamLayout: 'single', usePowerControl: false,
-      maxEirpDbwPerRefBw: Number(up.eirpDbwPerRefBw),
-      pattern: { section: '1.2', peakGainDbi: 0, psibDeg: 1, Ln: -25 },
-      terminal: {
-        kind: String(up.patternStandard), diameterM: Number(up.diameterM), wavelengthM: lam,
-        efficiency: Number(up.efficiency), maxEirpDbwPerRefBw: Number(up.eirpDbwPerRefBw),
-        arrayElements: Number(up.arrayElements), scanAnglesDeg: scan.length ? scan : [0]
-      }
-    }))
-  }
-  return out
-}
+// 输入校验与 job 装配都在 pfdJobs.js（纯函数，回归测试拿真引擎跑同一份）
+function check() { return checkInputs({ g, down, is, up, op }) }
+function jobs() { return buildJobs({ g, down, is, up, op }) }
 
 function opParams() {
   if (!op.on) return null
@@ -282,17 +204,21 @@ async function generate() {
   const bad = check()
   problems.value = bad
   if (bad.length) { msg.value = `${bad.length} 处参数需先修正`; msgBad.value = true; return false }
-  busy.value = true; msg.value = '正在计算…'; msgBad.value = false
+  busy.value = true; msg.value = ''; msgBad.value = false     // 进行中由状态栏的「计算中…」+ 进度条表示，不再另写一句
   results.down = results.is = results.up = null
-  filesByMode.value = null; opFiles.value = []; warns.value = []
+  filesByMode.value = null; opFiles.value = []; warns.value = []; resultToken = ''
   resultsStale.value = false    // 本轮按此刻的输入算；await 期间再改，watch 会重新亮灯
+  const runId = curRunId = `r${++runSeq}`
+  progress.done = 0; progress.total = 0
   try {
     const list = jobs()
     const req = JSON.parse(JSON.stringify({
       satName: g.satName, ntcId: Number(g.ntcId), specVersion: 'S.1503-4',
-      jobs: list, operatingParams: opParams()
+      jobs: list, operatingParams: opParams(), runId
     }))
     const r = await window.api.pfdGenerate(req)
+    if (runId !== curRunId) return false          // 已被取消 / 切配置作废：这一轮的结果不认
+    if (r && r.canceled) { msg.value = '已取消'; msgBad.value = false; return false }
     if (!r || !r.ok) {
       msg.value = (r && r.error) || '计算失败'; msgBad.value = true
       problems.value = (r && r.errors ? r.errors.map((e) => `${e.path}：${e.message}`) : [])
@@ -306,6 +232,7 @@ async function generate() {
     if (up.on) results.up = r.metas[k++]
     filesByMode.value = r.files || null
     opFiles.value = r.opFiles || []
+    resultToken = r.token || ''
     warns.value = (r.warnings || []).map((w) => (typeof w === 'string' ? w : `${w.path}：${w.message}`))
       .concat(r.opProblems || [])
     const failed = (r.jobErrors || []).filter(Boolean)
@@ -317,9 +244,16 @@ async function generate() {
       : okMsg()
     return failed.length === 0
   } catch (e) {
+    if (runId !== curRunId) return false
     msg.value = (e && e.message) || '计算失败'; msgBad.value = true
     return false
-  } finally { busy.value = false }
+  } finally {
+    if (runId === curRunId) { busy.value = false; progress.done = progress.total = 0 }
+  }
+}
+/** 「取消」：主进程结束 worker，pfdGenerate 随即回 canceled，底栏落「已取消」。 */
+function cancelGenerate() {
+  if (busy.value && window.api && window.api.pfdCancel) window.api.pfdCancel()
 }
 
 async function exportPackage(withRecord) {
@@ -329,9 +263,15 @@ async function exportPackage(withRecord) {
   if (resultsStale.value || !hasResults.value) {
     if (!(await generate()) || !hasResults.value || resultsStale.value) return   // 末项：补算途中又改了输入
   }
-  const out = files.value.map((f) => ({ filename: `Masks/${f.filename}`, text: f.xml }))
-  for (const f of opFiles.value) out.push({ filename: `Masks/${f.filename}`, text: f.xml })
+  // XML 字节留在主进程：按当前「文件划分」取一次（data 原样落盘，与按 UTF-8 写文本逐字节相同）
+  let got = null
+  try { got = await window.api.pfdFiles({ token: resultToken, mode: exportMode.value }) } catch (e) { got = { ok: false, error: (e && e.message) || '' } }
+  if (!got || !got.ok) { msg.value = (got && got.error) || '输出失败'; msgBad.value = true; return }
+  const out = got.files.map((f) => ({ filename: `Masks/${f.filename}`, data: f.data }))
+  for (const f of got.opFiles) out.push({ filename: `Masks/${f.filename}`, data: f.data })
   if (withRecord) {
+    // 两个派生量按「本次实际用的」写明：上行页频段留空时的推定值、星间掩模折合到 40 kHz 的单波束 EIRP 谱密度
+    const ub = uplinkBandOf(g, up)
     out.push({
       filename: `${String(g.satName).replace(/[^\w.-]+/g, '_')}_生成参数记录.json`,
       text: JSON.stringify({
@@ -339,7 +279,10 @@ async function exportPackage(withRecord) {
         生成软件: '卫星仿真平台 · PFD EIRP Mask 生成器',
         掩模格式: 'ITU masks schema v.4.0.0.0（对应 Rec. ITU-R S.1503-2）',
         建模依据: 'Rec. ITU-R S.1503-4',
-        通用参数: g, 下行PFD掩模: down, 星间EIRP掩模: is, 上行EIRP掩模: up, 系统运行参数: op
+        通用参数: g, 下行PFD掩模: down,
+        星间EIRP掩模: Object.assign({}, is, { eirpDbwPer40kHz: Number(down.eirpDbwPerRefBw) + ssBwOffsetDb.value }),
+        上行EIRP掩模: Object.assign({}, up, { lowFreqGhz: ub.lowGhz, highFreqGhz: ub.highGhz }),
+        系统运行参数: op
       }, null, 2)
     })
   }
@@ -557,7 +500,15 @@ const resultBw = computed(() => (curResult.value ? bwLabel(curResult.value.refBw
 const winApi = (typeof window !== 'undefined' && window.api) || null
 const ORBIT_TYPE = 'PFD'
 function serializeState() { return { orbitType: ORBIT_TYPE, ...snapshot() } }
-function clearResults() { filesByMode.value = null; opFiles.value = []; warns.value = []; problems.value = []; msg.value = ''; msgBad.value = false; resultsStale.value = false }
+// 切配置：结果卡与文件清单一起清（从前漏了 results，切过去仍显示上一份的统计）；进行中的计算作废并让主进程结束 worker、
+// 丢掉它缓存的 XML（那一轮的结果回来也不认，见 generate 的 runId）
+function clearResults() {
+  results.down = results.is = results.up = null
+  filesByMode.value = null; opFiles.value = []; warns.value = []; problems.value = []; msg.value = ''; msgBad.value = false; resultsStale.value = false
+  resultToken = ''
+  if (busy.value) { curRunId = ''; busy.value = false; progress.done = progress.total = 0 }
+  if (winApi && winApi.pfdCancel) winApi.pfdCancel({ discard: true })
+}
 function applyState(st) { applySnapshot(BLANK); applySnapshot(st); clearResults() }
 function blankState() { return { orbitType: ORBIT_TYPE, ...JSON.parse(JSON.stringify(BLANK)) } }
 function fingerprintOf(st) { return stableStringify(st) }
@@ -844,8 +795,7 @@ onMounted(async () => {
           <div class="pw-grp"><h3>取用参数</h3>
             <div class="pw-r"><label>卫星高度</label><span class="pv">{{ g.altKm }} km</span><label>轨道倾角</label><span class="pv">{{ g.inclDeg }}°</span></div>
             <div class="pw-r"><label>单波束最大 EIRP 谱密度</label><span class="pv">{{ down.eirpDbwPerRefBw }} dBW/{{ downBw }}</span>
-              <em v-if="ssBwOffsetDb">折合 {{ (Number(down.eirpDbwPerRefBw) + ssBwOffsetDb).toFixed(2) }} dBW/40 kHz</em></div>
-            <p class="pw-note bad" v-if="ssBwOffsetDb" title="改用 40 kHz 参考带宽，或按折合值重填单波束 EIRP 谱密度">下行页参考带宽为 {{ downBw }}，本掩模按 40 kHz 落盘：偏{{ ssBwOffsetDb > 0 ? '低' : '高' }} {{ Math.abs(ssBwOffsetDb).toFixed(2) }} dB。</p>
+              <em v-if="ssBwOffsetDb" title="本掩模按此值计算">折合 {{ (Number(down.eirpDbwPerRefBw) + ssBwOffsetDb).toFixed(2) }} dBW/40 kHz</em></div>
             <div class="pw-r"><label>同频同时工作波束数</label><span class="pv">{{ down.nco }}</span>
               <label>天线方向图</label><span class="pv">{{ curPat.label }}</span></div>
           </div>
@@ -858,6 +808,10 @@ onMounted(async () => {
             <div class="pw-r"><label>掩模编号</label><input class="pi w80" type="number" min="1" max="999" v-model.number="up.maskId" /></div>
             <div class="pw-r"><label>参考带宽</label>
               <select v-model.number="up.refBwKhz"><option v-for="o in refBwUp" :key="o.v" :value="o.v">{{ o.label }}</option></select></div>
+            <!-- 地球站发射频段：页头那个是下行频段。留空的端点按页头频段推定（占位里就是推定值） -->
+            <div class="pw-r"><label>频段</label>
+              <input class="pi w70" type="number" step="any" v-model.number="up.lowFreqGhz" :placeholder="upBandAuto ? String(upBandAuto.lowGhz) : ''" title="留空 = 按页头频段推定上行频段" /><span class="pu">–</span>
+              <input class="pi w70" type="number" step="any" v-model.number="up.highFreqGhz" :placeholder="upBandAuto ? String(upBandAuto.highGhz) : ''" title="留空 = 按页头频段推定上行频段" /><span class="pu">GHz</span></div>
           </div>
           <div class="pw-grp"><h3>地球站</h3>
             <div class="pw-r"><label>站型</label>
@@ -971,6 +925,9 @@ onMounted(async () => {
       </div>
     </div>
     <WinStatusBar :n="N" :busy="busy ? '计算中…' : ''" :stale="!!(resultsStale && hasResults)">
+      <!-- 计算在主进程 worker 里跑：进度条 + 「取消」（同干扰分析 NGSO 扫描的状态栏） -->
+      <span v-if="busy && progress.total" class="pw-sbprog"><i :style="{ width: Math.min(100, progress.done / progress.total * 100) + '%' }"></i></span>
+      <button v-if="busy" type="button" class="btn sm pw-sbcancel" @click="cancelGenerate">取消</button>
       <button v-if="problems.length || warns.length" type="button" class="pw-iss-btn" :class="{ bad: problems.length }" :aria-expanded="issuesOpen ? 'true' : 'false'" @click="issuesOpen = !issuesOpen">
         <Icon name="alert-triangle" :size="12" />{{ problems.length ? problems.length + ' 处需要处理' : warns.length + ' 条提示' }}
       </button>
@@ -1065,6 +1022,10 @@ select { padding: 3px 6px; border: 1px solid var(--field-border); border-radius:
 
 .pw-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
 .pw-msg.bad { color: var(--danger); }
+/* 状态栏里的进度条（中性色）与「取消」，同干扰分析窗的 .ci-sbprog / .ci-sbcancel */
+.pw-sbprog { flex: none; width: 90px; height: 4px; background: var(--surface-2); border-radius: var(--r-ctl); overflow: hidden; }
+.pw-sbprog > i { display: block; height: 100%; background: var(--text-muted); transition: width var(--dur-2) linear; }
+.pw-sbcancel { height: 18px; }
 /* 问题 / 告警全文：贴在状态栏上方的浮层（不进文档流，打开关闭页面不跳） */
 .pw-issues { position: fixed; left: 8px; bottom: 26px; z-index: var(--z-pop); width: min(640px, calc(100vw - 16px)); max-height: 40vh; overflow-y: auto; background: var(--float-bg); border: 1px solid var(--border-strong); border-radius: var(--r-float); box-shadow: var(--shadow-2); }
 .pw-iss-btn { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px; font: inherit; color: var(--warn); background: transparent; border: 1px solid transparent; border-radius: var(--r-ctl); cursor: pointer; }

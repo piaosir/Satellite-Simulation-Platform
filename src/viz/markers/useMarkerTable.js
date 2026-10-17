@@ -2,7 +2,7 @@
 // 与「链路预算性能表」同款交互内核（useGridSelect），此处只提供数据侧 CRUD/解析——渲染/命中/键盘交给 useGridSelect。
 // 三套数据仍是页面里的 points / stations / trajectories 三个 ref（本模块受注入的引用，改后调 sync 落盘+推图）。
 import { ref } from 'vue'
-import { sheetToRecords, sheetToTsv } from '../../shared/gridXlsx.js'
+import { sheetToRecords, sheetToTsv, safeSheetName } from '../../shared/gridXlsx.js'
 import { lonLatPasteKeys } from '../../shared/pasteLonLat.js'
 // 说明行「飞行; 巡航高度=10668 m; 速度=850 km/h; 起始=…; 模型=…; 图标=… px」的解析（DESIGN3 E7；相对路径：node 单测直接 import）
 import { parseTrajNote, WP_ALT_M_MIN, CRUISE_ALT_M_MAX } from '../../../packages/core/models/entityRuntime.mjs'
@@ -122,32 +122,56 @@ function uniqName(base, used, fallback) {
   return out
 }
 
+// 说明表一行 = 航迹名 + 说明，航迹名是【改写前】的原名；而数据表的表名被主进程按 Excel 的规矩合法化过（safeSheetName：
+// 非法字符换「·」、超 31 字截断、重名加 (2)(3)…）—— 名字带「/」、超长或两条同名时，按表名直接查说明就对不上：
+// 飞行读成航行、速度 / 出发时刻 / 定时定高清单丢掉，同名的两条还会串到对方头上。
+// 说明行与数据表是主进程同一趟循环按同一次序写的 → 按说明行的次序拿同一把尺子（渲染端镜像 safeSheetName）再走一遍，
+// 即得每一行落在哪张表上。改写前后同名的（绝大多数）走这一遍结果不变；老文件、新文件同一条路。
+// 返回 实际表名 → { name: 航迹原名, note }
+function trajNotesByTable(rows) {
+  const out = new Map(), replay = new Set()
+  for (const row of rows || []) {
+    if (!row || row[0] == null) continue
+    const name = String(row[0]).trim()
+    const tab = safeSheetName(name, replay)
+    if (!out.has(tab)) out.set(tab, { name, note: String(row[1] == null ? '' : row[1]) })
+  }
+  return out
+}
+// 哪张是说明表：主进程恒把它追加在【最后】、表名「说明」；某条航迹恰好也叫「说明」时那张数据表先占了名字，说明表就成了
+// 「说明(2)」—— 故先认最后一张叫「说明 / 说明(n)」且不像航点表的表，没有再找叫「说明」的（手搓工作簿的说明表可以在任何位置）
+const NOTE_SHEET_RE = new RegExp('^' + TRAJ_NOTE_SHEET + '(\\(\\d+\\))?$')
+function trajNoteSheet(list) {
+  const nameOf = (s) => String(s.name || '').trim()
+  const last = list[list.length - 1]
+  if (last && NOTE_SHEET_RE.test(nameOf(last)) && (nameOf(last) === TRAJ_NOTE_SHEET || !sheetToRecords(last, TRAJ_SHEET_COLS).records)) return last
+  for (let i = list.length - 1; i >= 0; i--) if (nameOf(list[i]) === TRAJ_NOTE_SHEET) return list[i]
+  return null
+}
+
 /**
  * 一份工作簿的工作表 → 一批待建航迹 [{ name, kind, pts }]。
  *   有表头（含「经度 / 纬度」）按表头取列（高度 / 时间两列可有可无），认不出退回位置约定（末两列 = 经纬度）；
  *   经纬度缺一个的行不算航点（残缺航点画不出来，只会在网格里当垃圾行）；
  *   一个航点都读不到的表整张丢掉 —— 工作簿里常混着无关的表，不能每张都造一条空航迹。
  *   高度 / 时间：说明行带钉点清单（定时 / 定高）时只钉清单里那几个航点，没有清单时填了就钉；首航点的时刻落到 t0Ms。
+ *   名字：说明行对得上的取说明行里的原名（表名被合法化过也能原样回来），对不上的取表名。
  * opts：newId 造航点 id；taken 现有航迹名（去重用）；fallbackName 表名为空时的兜底名；
  *       parseTime(text, refMs) → ms（时间文本；页面按显示时区装，不给就不读时间列）。
  */
 export function trajsFromSheets(sheets, opts = {}) {
   const mkId = opts.newId || (() => 'wp' + Math.random().toString(36).slice(2))
   const used = new Set(opts.taken || [])
-  const notes = new Map(), data = []
-  for (const s of sheets || []) {
-    if (!s) continue
-    if (String(s.name || '').trim() === TRAJ_NOTE_SHEET) {   // 说明表不是数据：只取它记的航迹类型
-      for (const row of s.rows || []) if (row && row[0] != null) notes.set(String(row[0]).trim(), String(row[1] == null ? '' : row[1]))
-      continue
-    }
-    if (s.rows && s.rows.length) data.push(s)
-  }
+  const list = (sheets || []).filter(Boolean)
+  const noteSheet = trajNoteSheet(list)                                   // 说明表不是数据：只取它记的航迹类型与航迹级字段
+  const notes = noteSheet ? trajNotesByTable(noteSheet.rows) : new Map()
+  const data = list.filter((s) => s !== noteSheet && s.rows && s.rows.length)
   const out = []
   const parseTime = typeof opts.parseTime === 'function' ? opts.parseTime : null
   for (const s of data) {
     const nm = String(s.name || '').trim()
-    const note = notes.has(nm) ? notes.get(nm) : null
+    const hit = notes.get(nm) || null
+    const note = hit ? hit.note : null
     const pinT = pinListOf(note, '定时'), pinA = pinListOf(note, '定高')
     const { records } = sheetToRecords(s, [...TRAJ_SHEET_COLS, ...TRAJ_SHEET_OPT_COLS])
     let pts
@@ -174,7 +198,7 @@ export function trajsFromSheets(sheets, opts = {}) {
     // 说明行第一段是类型词（老工作簿只有这一段：parseTrajNote 与 trajKindOf 同式，结果不变）；随后的航迹级字段
     // （巡航高度 / 速度 / 起始时刻 / 模型）只挑解析出来的合法项透传 —— 缺字段 = 现状，缺省值不写进对象
     const extra = note != null ? parseTrajNote(note) : { kind: trajKindOf(nm) }
-    const o = { name: uniqName(nm, used, opts.fallbackName), kind: extra.kind, pts }
+    const o = { name: uniqName(hit && hit.name ? hit.name : nm, used, opts.fallbackName), kind: extra.kind, pts }
     for (const k of TRAJ_NOTE_FIELDS) if (extra[k] !== undefined) o[k] = extra[k]
     if (o.kind !== 'flight') for (const p of pts) delete p.altM             // 航行没有高度
     normFirstPin(o)                                                         // 首航点的时刻 → 起始
@@ -186,7 +210,9 @@ export function trajsFromSheets(sheets, opts = {}) {
 // parseTime(text, refMs) → UTC ms | NaN：航迹表格「时间」列的读法（页面按显示时区装；只敲时分时日期取 refMs 那天）
 // nowMs() → UTC ms：时间轴当前时刻（页面传 () => clock.tMs）。航点排不出时刻、航迹也没起始时，只敲时分取它那一天 ——
 //   与平台其它「此刻」同口径（取时间轴游标），不取系统当天；不给就退回系统钟
-export function useMarkerTable({ points, stations, trajectories, newId, sync, parseTime, nowMs }) {
+// onEdit()（可缺省）：表格的一次写入开始了（pushUndo 那一刻）。页面据此把场景撤销里进行中的那段编辑（描绘 / 建链）先落栈、
+//   写完再接着记 —— 表格的写入不进场景栈，不能被夹进那一段的前后快照里（否则撤销那次描绘会连带把表格里的改动抹掉）
+export function useMarkerTable({ points, stations, trajectories, newId, sync, parseTime, nowMs, onEdit }) {
   const nowRef = () => { const v = typeof nowMs === 'function' ? Number(nowMs()) : NaN; return Number.isFinite(v) ? v : Date.now() }
   // 坐标写入：合法数字→写入；空串→清空(null，该行暂不参与渲染)；非数字文本→保留原值（坐标列不存文本）
   function setCoord(obj, key, val) {
@@ -206,15 +232,46 @@ export function useMarkerTable({ points, stations, trajectories, newId, sync, pa
   }
 
   // ===== 撤销 / 重做（快照三层全量；调用方在每次用户操作前 pushUndo 一次，无实际改动则 dropUndo）=====
+  // 条目 = { s: 操作前, a: 操作后 }（JSON 串）。a 在这次操作所在的同步任务收尾时补拍 —— 表格的写入都是「pushUndo → 改数据 → 刷新」
+  // 一口气同步跑完的。撤销 / 重做前先核对此刻是不是这一步记下的 a（撤销）/ s（重做）：对不上 = 之后别处（地图上拖动、侧栏改名、
+  // 场景撤销……）改过这三层，回放旧快照会把那些改动一并抹掉 —— 不回放，表格的撤销记录整个作废，返回 'stale'（2026-10-16 体检 #5 同类）。
+  // 显隐不算改动（同场景撤销的口径）：比对剔掉 show，套回时各对象保留此刻的显隐。
   const undoStack = [], redoStack = []
   const canUndo = ref(false), canRedo = ref(false)
   const _flags = () => { canUndo.value = undoStack.length > 0; canRedo.value = redoStack.length > 0 }
   const _snap = () => JSON.stringify({ points: points.value, stations: stations.value, trajectories: trajectories.value })
-  const _apply = (s) => { const d = JSON.parse(s); points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || [] }
-  function pushUndo() { undoStack.push(_snap()); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; _flags() }
+  const _sig = (str) => JSON.stringify(JSON.parse(str), (k, v) => (k === 'show' ? undefined : v))
+  const _keepShow = (next, cur) => {
+    const m = new Map()
+    for (const o of cur || []) if (o && o.id != null) m.set(o.id, o)
+    for (const o of next || []) { const c = o && o.id != null ? m.get(o.id) : null; if (!c) continue; if ('show' in c) o.show = c.show; else delete o.show }
+  }
+  const _apply = (s) => {
+    const d = JSON.parse(s)
+    _keepShow(d.points, points.value); _keepShow(d.stations, stations.value); _keepShow(d.trajectories, trajectories.value)
+    points.value = d.points || []; stations.value = d.stations || []; trajectories.value = d.trajectories || []
+  }
+  const _stale = (ref) => _sig(_snap()) !== _sig(ref)
+  function pushUndo() {
+    if (typeof onEdit === 'function') onEdit()
+    const e = { s: _snap(), a: null }
+    undoStack.push(e); if (undoStack.length > 100) undoStack.shift(); redoStack.length = 0; _flags()
+    queueMicrotask(() => { if (e.a == null) e.a = _snap() })
+  }
   function dropUndo() { undoStack.pop(); _flags() }
-  function undo() { if (!undoStack.length) return false; redoStack.push(_snap()); _apply(undoStack.pop()); _flags(); sync(); return true }
-  function redo() { if (!redoStack.length) return false; undoStack.push(_snap()); _apply(redoStack.pop()); _flags(); sync(); return true }
+  function undo() {
+    const e = undoStack[undoStack.length - 1]
+    if (!e) return false
+    if (e.a == null) e.a = _snap()   // 同一同步任务里紧接着撤（微任务还没轮到）：此刻就是操作后
+    if (_stale(e.a)) { clearHistory(); return 'stale' }
+    undoStack.pop(); _apply(e.s); redoStack.push(e); _flags(); sync(); return true
+  }
+  function redo() {
+    const e = redoStack[redoStack.length - 1]
+    if (!e) return false
+    if (_stale(e.s)) { clearHistory(); return 'stale' }
+    redoStack.pop(); _apply(e.a); undoStack.push(e); _flags(); sync(); return true
+  }
   function clearHistory() { undoStack.length = 0; redoStack.length = 0; _flags() }
 
   // ===== 通用行操作工厂（点标记 / 地球站共用；航迹航点因嵌套单列另写）=====

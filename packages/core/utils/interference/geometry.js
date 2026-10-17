@@ -157,6 +157,31 @@ function gsoSeparation(st, lonWantedDeg, lonInterfererDeg) {
   };
 }
 
+/**
+ * 计入东西保持容差的两星最近位置：两颗星各自向对方挪一个容差（RR 附录 8 §2.1 对 θt、θg 的定义
+ * 「taking the longitudinal station-keeping tolerances into account」——取两星挨得最近的那一刻）。
+ *
+ * 容差之和不小于标称间隔时两星可以重合：地心角记 0，两星挪到同一经度（按容差比例分摊）。
+ *
+ * @returns {{lonA:number, lonB:number, thetaGDeg:number, nominalDeg:number}}
+ *   lonA / lonB 挪后的经度（°E，未折回 ±180）；thetaGDeg 计入容差后的地心角；nominalDeg 标称经度差
+ */
+function gsoClosestApproach(lonADeg, lonBDeg, tolADeg, tolBDeg) {
+  const a = Number(lonADeg) || 0, b = Number(lonBDeg) || 0;
+  let d = (b - a) % 360;
+  if (d > 180) d -= 360;
+  if (d < -180) d += 360;
+  const s = d >= 0 ? 1 : -1;
+  const sep = Math.abs(d);
+  const tA = Math.max(0, Number(tolADeg) || 0), tB = Math.max(0, Number(tolBDeg) || 0);
+  if (sep <= tA + tB) {
+    const k = (tA + tB) > 0 ? tA / (tA + tB) : 0.5;
+    const meet = a + s * sep * k;
+    return { lonA: meet, lonB: meet, thetaGDeg: 0, nominalDeg: sep };
+  }
+  return { lonA: a + s * tA, lonB: b - s * tB, thetaGDeg: sep - tA - tB, nominalDeg: sep };
+}
+
 // ---------------------------------------------------------------------------
 // 传播
 // ---------------------------------------------------------------------------
@@ -173,5 +198,5 @@ module.exports = {
   DEG, RAD, A_KM, B_KM, E2, GSO_RADIUS_KM, C_KM_S,
   sub, dot, norm, unit,
   geodeticToEcef, gsoEcef, satEcefFromSubPoint, upVector,
-  lookAngles, topocentricAngle, gsoSeparation, fsl
+  lookAngles, topocentricAngle, gsoSeparation, gsoClosestApproach, fsl
 };

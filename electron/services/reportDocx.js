@@ -31,7 +31,7 @@ function tocItems(model) {
   const multi = secs.length > 1
   const items = [{ t: L.master }, { n: '1', t: L.compare, sub: true }]
   if (multi) secs.forEach((s, i) => items.push({ n: '1.' + (i + 1), t: s.title, sub: true }))
-  const withStats = secs.filter((s) => s.summary.stats && s.summary.stats.length)
+  const withStats = secs.filter((s) => s.summary.cap || (s.summary.stats && s.summary.stats.length))
   if (withStats.length) {
     items.push({ n: '2', t: L.capacity, sub: true })
     if (multi) for (const s of withStats) items.push({ n: '2.' + (secs.indexOf(s) + 1), t: s.title, sub: true })
@@ -83,16 +83,26 @@ function masterTailSection(model) {
   const multi = secs.length > 1
   const m = model.method || { basis: [], refGroups: [], constants: [] }
   const children = []
-  // 分节：各节各一张；没有统计的节（星间激光）整个不出
-  const withStats = secs.filter((s) => s.summary.stats && s.summary.stats.length)
+  // 分节：各节各一张；没有统计的节（星间激光）整个不出。
+  // GSO / NGSO / 再生式是逐转发器的表（sum.cap：参数做行、转发器做列）；端到端仍是两列统计行（sum.stats）
+  const withStats = secs.filter((s) => s.summary.cap || (s.summary.stats && s.summary.stats.length))
   if (withStats.length) {
     children.push(P('2　' + L.capacity, 'RptH2'))
     for (const s of withStats) {
       const sum = s.summary
+      const cap = sum.cap
       if (multi) children.push(P('2.' + (secs.indexOf(s) + 1) + '　' + s.title, 'RptH3'))
-      if (sum.statsTitle) children.push(P(sum.statsTitle, 'RptNote'))
+      const note = cap ? cap.note : sum.statsTitle
+      if (note) children.push(P(note, 'RptNote'))
       children.push(P(capTable(model, nextTableNo(model), 0, 1, L.capacity + (multi ? '　·　' + s.title : '')), 'RptCaption'))
-      children.push(docTable([L.param, L.value], sum.stats.map((st) => [st.label, st.value]), { widths: [60, 40], align: ['left', 'right'] }))
+      if (cap) {
+        // 参数列 34 %，其余按转发器列均分（同 §1 逐参数对照的版式）
+        const nv = Math.max(1, cap.head.length - 1)
+        const rest = Math.floor(66 / nv)
+        children.push(docTable(cap.head, cap.rows, { widths: [34, ...cap.head.slice(1).map(() => rest)], align: ['left', ...cap.head.slice(1).map(() => 'right')] }))
+      } else {
+        children.push(docTable([L.param, L.value], sum.stats.map((st) => [st.label, st.value]), { widths: [60, 40], align: ['left', 'right'] }))
+      }
     }
   }
   // 方法学章节：报告的权威性所在——逐段说明算法口径，再列引用建议书与常数基准

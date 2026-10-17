@@ -504,6 +504,7 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   env2.pos = LEO30
   const bs2 = env2.bs
   bs2.addGroup('gauss')
+  bs2.p.beamModel = 'gauss'                                         // 旧档（高斯）：az/el 平面口径（新建组缺省口径照射，按真实离轴角，见 apertureModel.test）
   const s2 = bs2.curSetting.value
   s2.autoSpacing = false; s2.spacing = 2
   bs2.p.polyId = 'P3'
@@ -538,6 +539,7 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   env2.pos = LEO30
   const bs2 = env2.bs
   bs2.addGroup('gauss')
+  bs2.p.beamModel = 'gauss'                                         // 旧档（高斯）：平面相切
   bs2.p.snapTangent = true
   Object.assign(bs2.curSetting.value, { apDriver: 'beamwidth', bw3: 4 })   // 反射面按波束宽驱动 → θ3 ≈ 4°，同一个捕获圈
   bs2.placeAt({ lon: A.lon, lat: A.lat })
@@ -743,11 +745,13 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
     const env = makeEnv()
     const { bs, grd, calls, alerts } = env
     const gA = bs.addGroup(ma); bs.p.snapTangent = false
+    if (ma === 'gauss') bs.p.beamModel = 'gauss'                     // 多馈源旧档：产合成 GRD（口径照射档走解析天线，同高斯组那条路）
     bs.placeAt({ lon: 105, lat: 20 })
     await bs.generate(); await settle(20)
     const A = () => bs.groups.value.find((g) => g.id === gA)
     const n0 = A()._genName
     const gB = bs.addGroup(mb); bs.p.snapTangent = false
+    if (mb === 'gauss') bs.p.beamModel = 'gauss'
     bs.renameGroup(gB, 'Ku')                                        // B 还没生成：树上没有叫 Ku 的天线
     bs.placeAt({ lon: 115, lat: 25 }); bs.placeAt({ lon: 118, lat: 25 })
     const B = () => bs.groups.value.find((g) => g.id === gB)

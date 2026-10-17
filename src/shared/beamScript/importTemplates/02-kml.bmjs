@@ -1,0 +1,25 @@
+//! id: kml
+//! name: ⟪KML / KMZ · 覆盖等值线|KML / KMZ · Coverage contours⟫
+//! ext: kml
+//! match: *.kml, *.kmz
+//zh OGC KML 2.2：按文件夹树还原「卫星 → 波束」，每个 Polygon 一条等值线，Point 为波束中心。
+//zh 电平依次取 ExtendedData 的 gain、名称里的「48 dB」、描述里的「数值：48」；都取不到的按无数值档导入（level 为 null）。KMZ 取包内的 doc.kml。
+//en OGC KML 2.2: the folder tree gives satellite → beam, each Polygon is a contour and each Point a beam centre.
+//en Levels come from ExtendedData gain, then "48 dB" in the name, then a value note in the description; Polygons without one are imported unlevelled (level null). For KMZ, doc.kml inside the archive is read.
+
+const beams = []
+for (const f of files) {
+  const d = kml(f)
+  for (const b of d.beams) {
+    beams.push({
+      satellite: b.satName || f.base,
+      orbitLon: b.lon,
+      band: b.band,
+      name: b.beamName,
+      type: b.type,
+      peaks: b.bore.map(([lon, lat]) => ({ lon, lat })),
+      contours: b.contours.map((c) => ({ level: c.g, points: c.p })),
+    })
+  }
+}
+return beams

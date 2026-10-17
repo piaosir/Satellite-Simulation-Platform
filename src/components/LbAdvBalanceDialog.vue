@@ -12,72 +12,113 @@
 //
 // 面向用户的字串（列名 / 读数名 / 提示 / 报错）一律走全软件的术语：系统余量、载波带宽、功率带宽、
 // 功带平衡、超发/欠发、转发器资源占用……与链路表结果列、载波配置面板同名同义，别在这儿另起一套。
+//
+// 一组＝一只转发器：功带平衡只在同一只转发器上成立（见 advBalance.js 文件头）。卫星统一指定时全表一颗星、
+// 只有一组，界面与从前逐位相同；逐链路指定且表里用了几颗星时，「参与链路」节头多一个卫星下拉，一次配一颗——
+// 链路表、载波表、读数、全表占用都只看这一颗星上的行，转发器带宽也取这颗星自己的。
 import { ref, reactive, computed, watch } from 'vue'
 import NumBox from './NumBox.vue'
 import AppDialog from './AppDialog.vue'
-import { ADV_BASES, solveAdv } from '../shared/advBalance.js'
+import { ADV_BASES, solveAdv, groupAdvRows } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
-  // 候选链路（全表）：{ no, rowId, name, carrierId, carrierName, bwKHz, pbwKHz, marginDb, baseDb, error }
-  // baseDb＝该载波进本功能之前那份原始余量（宿主用 advBaseMargin 从载波配置上取）：反复应用不叠偏置
+  // 候选链路（全表）：{ no, rowId, name, carrierId, carrierName, bwKHz, pbwKHz, marginDb, baseDb, error,
+  //                    satKey, satName, tpBwMHz }
+  // baseDb＝该载波进本功能之前那份原始余量（宿主用 advBaseMargin 从载波配置上取）：反复应用不叠偏置；
+  // satKey / satName＝该行所用卫星配置的 id 与名字（分组键），tpBwMHz＝那只转发器的带宽
   rows: { type: Array, default: () => [] },
-  tpBwMhz: { type: Number, default: 0 },   // 转发器带宽 MHz（占用率读数用）
+  tpBwMhz: { type: Number, default: 0 },   // 转发器带宽 MHz 兜底（行上没带 tpBwMHz 时才用）
   busy: { type: Boolean, default: false },
   stale: { type: Boolean, default: false },  // 上一次计算之后输入又改过 → 参考态可能已不对
-  // 应用后若派生了载波副本，宿主回传 { 原载波id: 副本id }——偏置跟着搬过去，
-  // 否则下一轮打开时这些值会因为载波换了 id 而悄悄归零，解出来的余量跟着变
+  // 应用后若派生了载波副本，宿主回传 { group: 组键, map: { 原载波id: 副本id } }——那一组的偏置跟着搬过去，
+  // 否则下一轮打开时这些值会因为载波换了 id 而悄悄归零，解出来的余量跟着变（老形状＝平铺的 map，按当前组处理）
   carrierRemap: { type: Object, default: null },
   storeKey: { type: String, default: 'lb' }
 })
 const emit = defineEmits(['close', 'apply'])
 
-// —— 面板状态（按窗口记忆：一轮试错要反复开合，选择不该每次重来）——
-const KEY = computed(() => props.storeKey + '/advBalance')
-const base = ref('current')
-const overDb = ref('0')
-const pickedIds = ref(new Set())
-const cstate = reactive({})   // { [carrierId]: { bias } }
-// 配平目标：'sum' = Σ载波带宽（各载波紧挨着排）/ 'fixed' = 指定带宽（对着租下来的那一段配，
-// 保护带与载波间隔留白由此进账）。
-const target = ref('sum')
-const targetBwMHz = ref('9')
+// —— 分组：一组＝一份卫星配置＝一只转发器 ——
+const groups = computed(() => groupAdvRows(props.rows))
+const gk = ref('')   // 当前组键（卫星配置 id）
+const EMPTY_GROUP = { key: '', name: '', rows: [] }
+const curGroup = computed(() => groups.value.find((g) => g.key === gk.value) || groups.value[0] || EMPTY_GROUP)
+const gRows = computed(() => curGroup.value.rows)   // 本组的行：链路表、全表占用、单位挑档都只看它
+const multi = computed(() => groups.value.length > 1)
 
+// —— 面板状态：逐组一份（基准 / 组超发量 / 配平目标 / 逐载波偏置），按窗口记忆到 localStorage ——
+// 各只转发器的设置各是各的：A 星租 9 MHz、B 星租 12 MHz，前向偏置也未必一样。新出现的组从最近用过的那组
+// 的设置起步（老记忆——还不分组的那份——即视作它），没改过就一直读它、不落一份副本。
+// 勾选的行【不入记忆】：行 id 是会话内的流水号（每次载入场景重发、重开窗口从头数），存下来下次会对上
+// 别的场景里碰巧同号的行；只在本窗口会话内记着，一轮试错反复开合照样不丢。
+const KEY = computed(() => props.storeKey + '/advBalance')
+const DEF = () => ({ base: 'current', overDb: '0', target: 'sum', targetBwMHz: '9', carriers: {} })
+const gstate = reactive({})   // { [组键]: DEF() 形 }
+const tpl = ref(DEF())
+const pickedIds = ref(new Set())
+const normState = (s) => {
+  const d = DEF()
+  if (!s || typeof s !== 'object') return d
+  if (s.base) d.base = s.base
+  if (s.overDb != null) d.overDb = String(s.overDb)
+  if (s.target) d.target = s.target
+  if (s.targetBwMHz != null) d.targetBwMHz = String(s.targetBwMHz)
+  // 旧记忆里可能还带着已删掉的 locked 位，只取 bias（多余的键读不进来自然就没了）
+  if (s.carriers) for (const [k, v] of Object.entries(s.carriers)) d.carriers[k] = { bias: v && v.bias != null ? v.bias : 0 }
+  return d
+}
 function loadSaved() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY.value) || 'null')
     if (!s) return
-    if (s.base) base.value = s.base
-    if (s.overDb != null) overDb.value = String(s.overDb)
-    if (Array.isArray(s.rowIds)) pickedIds.value = new Set(s.rowIds)
-    // 旧记忆里可能还带着已删掉的 locked 位，只取 bias（多余的键读不进来自然就没了）
-    if (s.carriers) for (const [k, v] of Object.entries(s.carriers)) cstate[k] = { bias: v.bias == null ? 0 : v.bias }
-    if (s.target) target.value = s.target
-    if (s.targetBwMHz != null) targetBwMHz.value = String(s.targetBwMHz)
+    if (s.groups && typeof s.groups === 'object') {
+      for (const [k, v] of Object.entries(s.groups)) gstate[k] = normState(v)
+      if (typeof s.group === 'string') gk.value = s.group
+      tpl.value = normState(s.groups[s.group])
+    } else tpl.value = normState(s)   // 不分组的老记忆
   } catch (e) { /* 记忆坏了就用默认值 */ }
 }
 function persist() {
   try {
-    localStorage.setItem(KEY.value, JSON.stringify({
-      base: base.value, overDb: overDb.value,
-      rowIds: [...pickedIds.value], carriers: JSON.parse(JSON.stringify(cstate)),
-      target: target.value, targetBwMHz: targetBwMHz.value
-    }))
+    const k = curGroup.value.key
+    // 当前组没改过（还在读起步设置）也写一份，下次打开好认出「最近用的是哪组、什么设置」
+    const all = JSON.parse(JSON.stringify(gstate))
+    if (!all[k]) all[k] = JSON.parse(JSON.stringify(tpl.value))
+    localStorage.setItem(KEY.value, JSON.stringify({ v: 2, group: k, groups: all }))
   } catch (e) { /* ignore */ }
 }
-watch([base, overDb, pickedIds, cstate, target, targetBwMHz], persist, { deep: true })
+watch([gstate, gk], persist, { deep: true })
+// 读是纯的（没这一组就读起步设置，不在渲染里写响应式状态，否则读一次多触发一轮渲染），写才落一份
+const stOf = (k) => gstate[k] || tpl.value
+const ensure = (k) => { if (!gstate[k]) gstate[k] = JSON.parse(JSON.stringify(tpl.value)); return gstate[k] }
+const field = (name) => computed({
+  get: () => stOf(curGroup.value.key)[name],
+  set: (v) => { ensure(curGroup.value.key)[name] = v }
+})
+const base = field('base')
+const overDb = field('overDb')
+// 配平目标：'sum' = Σ载波带宽（各载波紧挨着排）/ 'fixed' = 指定带宽（对着租下来的那一段配，
+// 保护带与载波间隔留白由此进账）。
+const target = field('target')
+const targetBwMHz = field('targetBwMHz')
 
 // 可参与配平的行＝上次算出了带宽/功率带宽/余量的行（算失败或没算过的行只列出、不可勾）
 const usable = (r) => isFinite(r.bwKHz) && isFinite(r.pbwKHz) && isFinite(r.marginDb)
 
-// 打开时对齐现表：记忆里的行可能已被删；一条都没勾中（首次开）则默认全选可用链路
+// 打开时对齐现表：记过的行可能已被删；哪一组一条都没勾中（首次开 / 新出现的星）则默认全选该组可用链路
 watch(() => props.open, (v) => {
   if (!v) return
   loadSaved()
   const alive = new Set(props.rows.map((r) => r.rowId))
   const keep = new Set([...pickedIds.value].filter((id) => alive.has(id)))
-  pickedIds.value = keep.size ? keep : new Set(props.rows.filter((r) => usable(r)).map((r) => r.rowId))
+  for (const g of groupAdvRows(props.rows)) {
+    if (!g.rows.some((r) => keep.has(r.rowId))) for (const r of g.rows) if (usable(r)) keep.add(r.rowId)
+  }
+  pickedIds.value = keep
+  // 记忆里那组还在就回到它，否则落到第一组（统一指定时只有一组）
+  const gs = groupAdvRows(props.rows)
+  if (!gs.some((g) => g.key === gk.value)) gk.value = gs.length ? gs[0].key : ''
 }, { immediate: true })   // 挂载时若已是打开态也照样初始化（关着即空转）
 
 const isPicked = (r) => pickedIds.value.has(r.rowId)
@@ -87,26 +128,36 @@ function togglePick(r) {
   if (s.has(r.rowId)) s.delete(r.rowId); else s.add(r.rowId)
   pickedIds.value = s
 }
-const allPicked = computed(() => { const u = props.rows.filter(usable); return u.length > 0 && u.every(isPicked) })
+// 全选 / 全不选只动本组：别的星上的勾选原样留着
+const allPicked = computed(() => { const u = gRows.value.filter(usable); return u.length > 0 && u.every(isPicked) })
 function toggleAll() {
-  pickedIds.value = allPicked.value ? new Set() : new Set(props.rows.filter(usable).map((r) => r.rowId))
+  const s = new Set(pickedIds.value)
+  const on = !allPicked.value
+  for (const r of gRows.value) if (usable(r)) { if (on) s.add(r.rowId); else s.delete(r.rowId) }
+  pickedIds.value = s
 }
 
-const picked = computed(() => props.rows.filter((r) => isPicked(r)))
-// 逐载波偏置，键就是载波条目 id。读是纯的（没这一项就返回默认值，不在渲染里写响应式状态，
-// 否则读一次多触发一轮渲染），写只在用户改值时发生。
-const cs = (id) => cstate[id] || { bias: 0 }
-const setCs = (id, patch) => { cstate[id] = { ...cs(id), ...patch } }
+const picked = computed(() => gRows.value.filter((r) => isPicked(r)))
+// 逐载波偏置（本组那份），键就是载波条目 id
+const cs = (id) => stOf(curGroup.value.key).carriers[id] || { bias: 0 }
+const setCs = (id, patch) => { const s = ensure(curGroup.value.key); s.carriers = { ...s.carriers, [id]: { ...cs(id), ...patch } } }
 watch(() => props.carrierRemap, (m) => {
   if (!m) return
-  for (const [from, to] of Object.entries(m)) if (cstate[from] && !cstate[to]) { cstate[to] = cstate[from]; delete cstate[from] }
+  const map = m.map && typeof m.map === 'object' ? m.map : m
+  const k = typeof m.group === 'string' ? m.group : curGroup.value.key
+  const s = ensure(k)   // 还在读起步设置的组也要落一份：偏置挂在旧 id 上，不搬就归零
+  const next = { ...s.carriers }
+  for (const [from, to] of Object.entries(map)) if (next[from] && !next[to]) { next[to] = next[from]; delete next[from] }
+  s.carriers = next
 })
+// 本组转发器带宽：行上带的（引擎回显 / 卫星条目），没有才用宿主给的兜底
+const groupTpBw = computed(() => gRows.value.map((r) => Number(r.tpBwMHz)).find((v) => v > 0) || props.tpBwMhz || 0)
 const res = computed(() => solveAdv({
-  picked: picked.value, state: cstate, base: base.value, overDb: overDb.value,
-  tpBwMHz: props.tpBwMhz,
+  picked: picked.value, state: stOf(curGroup.value.key).carriers, base: base.value, overDb: overDb.value,
+  tpBwMHz: groupTpBw.value,
   target: target.value, targetBwMHz: targetBwMHz.value,
-  // 全表占用：表里没参与本组配平的行照样占着转发器，只看本组会低估
-  allRows: props.rows
+  // 全表占用：同一只转发器上没参与本组配平的行照样占着资源，只看本组会低估
+  allRows: gRows.value
 }))
 const canApply = computed(() => !props.busy && res.value.ok && res.value.carriers.length > 0)
 const baseDesc = computed(() => (ADV_BASES.find((b) => b.key === base.value) || {}).desc || '')
@@ -136,7 +187,7 @@ const pickBw = (vals, byMin) => {
   if (!pos.length) return { unit: 'kHz', conv: (v) => v }
   return pickColumn([byMin ? Math.min(...pos) : Math.max(...pos)], 'kHz') || { unit: 'kHz', conv: (v) => v }
 }
-const linkUnit = computed(() => pickBw(props.rows.flatMap((r) => [r.bwKHz, r.pbwKHz]), true))
+const linkUnit = computed(() => pickBw(gRows.value.flatMap((r) => [r.bwKHz, r.pbwKHz]), true))
 const totalUnit = computed(() => {
   const r = res.value
   return pickBw(r.ok ? [r.occBwKHz, r.targetKHz, r.beforePbwKHz, r.afterPbwKHz] : [], false)
@@ -157,6 +208,7 @@ const drifted = (c) => base.value === 'current' && isFinite(c.baseDb) && isFinit
 function apply() {
   if (!canApply.value) return
   emit('apply', {
+    group: curGroup.value.key,   // 宿主回传副本映射时带上它：偏置只搬这一组的
     base: base.value, overDb: parseFloat(overDb.value) || 0,
     rowIds: picked.value.map((p) => p.rowId),
     carriers: res.value.carriers.map((c) => ({ id: c.id, name: c.name, toDb: c.toDb, fromDb: c.fromDb }))
@@ -173,8 +225,13 @@ function apply() {
       <div class="ab-bd">
         <div v-if="stale" class="ab-warn">输入已变</div>
 
-        <!-- ① 参与链路 -->
-        <div class="ab-sec">参与链路</div>
+        <!-- ① 参与链路；表里用了几颗星（逐链路指定）时节头带卫星下拉：一次配一只转发器 -->
+        <div class="ab-sec">参与链路
+          <label v-if="multi" class="ab-grp" title="功带平衡逐只转发器进行：一份卫星配置即一只转发器，下表、载波余量与读数均只含所选卫星的链路">
+            <span>卫星</span>
+            <select v-model="gk"><option v-for="g in groups" :key="g.key" :value="g.key" data-i18n-skip>{{ g.name }}</option></select>
+          </label>
+        </div>
         <div class="ab-tw">
           <table class="ab-t">
             <thead>
@@ -190,7 +247,7 @@ function apply() {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="r in rows" :key="r.rowId" :class="{ on: isPicked(r), off: !usable(r) }" @click="togglePick(r)">
+              <tr v-for="r in gRows" :key="r.rowId" :class="{ on: isPicked(r), off: !usable(r) }" @click="togglePick(r)">
                 <td class="ck"><input type="checkbox" :checked="isPicked(r)" :disabled="!usable(r)" @click.stop="togglePick(r)" /></td>
                 <td class="no">{{ r.no }}</td>
                 <td class="nm" :title="r.name" data-i18n-skip>{{ r.name }}</td>
@@ -205,7 +262,7 @@ function apply() {
                 <td v-if="usable(r)" class="n">{{ d2(r.marginDb) }}<i v-if="solvedMargin.has(r.rowId)" class="ab-to" :class="{ bad: solvedMargin.get(r.rowId) < 0 }">→{{ d2(solvedMargin.get(r.rowId)) }}</i></td>
                 <td v-else class="n">{{ r.error || '未计算' }}</td>
               </tr>
-              <tr v-if="!rows.length"><td colspan="8" class="ab-empty">链路表暂无计算结果。</td></tr>
+              <tr v-if="!gRows.length"><td colspan="8" class="ab-empty">链路表暂无计算结果。</td></tr>
             </tbody>
           </table>
         </div>
@@ -295,6 +352,13 @@ function apply() {
 .ab-sec {
   display: flex; align-items: baseline; gap: 8px; margin: 12px 0 5px; padding-bottom: 3px;
   font-size: var(--fs-2); font-weight: 700; color: var(--text); border-bottom: 1px solid var(--lb-rule, var(--border));
+}
+/* 节头右端的卫星下拉（逐链路指定且用了几颗星时才有）：字重回到正文档，与 .ab-ctl 的下拉同一副样子 */
+.ab-grp { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-weight: 400; }
+.ab-grp > span { color: var(--text-muted); }
+.ab-grp select {
+  max-width: 280px; font: inherit; font-size: var(--fs-2); padding: 1px 4px; background-color: var(--field-bg); color: var(--text);
+  border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px);
 }
 
 .ab-tw { max-height: 208px; overflow: auto; border: 1px solid var(--border); }

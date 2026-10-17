@@ -37,7 +37,7 @@ import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { buildAllocation, autoPlace, newCarrier, setCarrierEdge } from '../shared/freqPlanCapacity.js'
 import { resolveAll, upFromDn, cleanFreq, POLS, POL_LABEL } from '../shared/freqPlanModel.js'
 import { num as parseNum } from '../shared/num.js'   // 全角容错：中文输入法下的全角数字也能落值
-import { useFreqUnit } from './fpUnit.js'
+import { useFreqUnit, useLateDraft } from './fpUnit.js'
 import Icon from '../components/Icon.vue'
 import { byLang } from '../shared/i18n/lang.js'
 
@@ -51,6 +51,9 @@ const emit = defineEmits(['update:carriers', 'select-channel', 'flash', 'set-cha
 
 // fu = 只读读数（小数位随刻度：kHz 取整、GHz 五位），故切到 GHz 时 36 MHz 写成 0.036 而不是被 2 位抹成 0.04
 const { U, numF: fu, dispF, toM, dval, dput, ddone } = useFreqUnit(() => props.unit)
+// 中心与占用带宽两格迟落（回车 / 离焦才落值，同起止两格）：组内各行按起始频率排序，即时落值时敲到一半的
+// 前缀（3732 的中途是 3、36 MHz 的中途是 3）就把这一行重排到别处，tr 一挪焦点掉到 body，后面的键全丢
+const { lval, lput, lend } = useLateDraft(() => props.unit, dispF, toM)
 const guardMHz = ref(0)
 const gv = () => Number(guardMHz.value) || 0
 
@@ -193,7 +196,7 @@ function setTp(id, tpId) {
   patch(id, { channelId: t ? t.id : '', channelNo: t ? t.no : '' })
 }
 
-// 中心频率：即时落值（同转发器表那一格）
+// 中心频率：迟落（见上面 useLateDraft 那条）；r 是开敲时那一行
 function setFc(g, r, mhz) {
   if (!canEdit(g)) return                      // 无 Δ：这一格是禁用的，走到这里只可能是粘贴，宁可不落值
   patch(r.c.id, { fcMHz: mhz == null ? null : toStore(g, mhz) })
@@ -825,14 +828,16 @@ function nudge(g, sign, big) {
                 <td><input class="ci" :value="r.c.name" @input="patch(r.c.id, { name: $event.target.value })" /></td>
                 <td><input class="ci num" :value="eVal(r, 'f1')" :disabled="!canEdit(g)" :title="canEdit(g) ? edgeTitle('f1') : noDxTitle(g)"
                   @input="eInput(r.c.id, 'f1', $event.target.value)" @change="commitEdge(g, r, 'f1', $event.target.value)" /></td>
-                <td><input class="ci num" :value="dval(`fc${r.c.id}`, r.f.fc)" :disabled="!canEdit(g)" :title="noDxTitle(g)" @blur="ddone"
-                  @input="dput(`fc${r.c.id}`, $event.target.value, (m) => setFc(g, r, m))" /></td>
+                <td><input class="ci num" :value="lval(`fc${r.c.id}`, r.f.fc)" :disabled="!canEdit(g)" :title="noDxTitle(g)"
+                  @input="lput(`fc${r.c.id}`, r, $event.target.value)"
+                  @change="lend(`fc${r.c.id}`, (rr, m) => setFc(g, rr, m))" @blur="lend(`fc${r.c.id}`, (rr, m) => setFc(g, rr, m))" /></td>
                 <td><input class="ci num" :value="eVal(r, 'f2')" :disabled="!canEdit(g)" :title="canEdit(g) ? edgeTitle('f2') : noDxTitle(g)"
                   @input="eInput(r.c.id, 'f2', $event.target.value)" @change="commitEdge(g, r, 'f2', $event.target.value)" /></td>
                 <!-- 这两格绑的是载波身上的原值，不是行模型里那个「> 0 才算数」的派生值：填了 0 也得照显示，
                      否则屏上空着、存着的却是 0（同 dput 的「空 ≠ 0」口径） -->
-                <td><input class="ci num" :value="dval(`occ${r.c.id}`, r.c.occBwMHz)" @blur="ddone"
-                  @input="dput(`occ${r.c.id}`, $event.target.value, (m) => patch(r.c.id, { occBwMHz: m }))" /></td>
+                <td><input class="ci num" :value="lval(`occ${r.c.id}`, r.c.occBwMHz)"
+                  @input="lput(`occ${r.c.id}`, r.c.id, $event.target.value)"
+                  @change="lend(`occ${r.c.id}`, (id, m) => patch(id, { occBwMHz: m }))" @blur="lend(`occ${r.c.id}`, (id, m) => patch(id, { occBwMHz: m }))" /></td>
                 <td><input class="ci num" :value="dval(`pwr${r.c.id}`, r.c.pwrBwMHz)" @blur="ddone"
                   @input="dput(`pwr${r.c.id}`, $event.target.value, (m) => patch(r.c.id, { pwrBwMHz: m }))" /></td>
                 <td>

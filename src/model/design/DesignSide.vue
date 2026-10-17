@@ -4,6 +4,8 @@
 //   · 组件：装配签才有——组件库（拖进视口 / 双击添加）与「从模板新建」。模型签只有快速设置一档。
 // 选哪档按签记（DocState.pane，2026-10-06 文档标签条）：换签各回各的档；新开的空装配文档缺省组件库（建签时定，首次挂载即生效）。
 // 没有打开的文档：左栏空。组件库的 DOM（.asm-lib [data-type] …）与原装配页一致，验证台照用。
+// 模型视图的快速设置按签重建（:key = 签 id，体检 2026-10-16 二.23）：「已知尺寸」的尺寸项 / 已知值、识别 / 估算中的状态只属于那一件，
+// 同一个实例带到下一个模型签，「缩放」就按上一件填的尺寸缩当前件。
 import { inject, computed } from 'vue'
 import AsmTab from '../AsmTab.vue'
 import QuickSat from './QuickSat.vue'
@@ -38,7 +40,7 @@ const driven = computed(() => isAsm.value && d.value.driven)
       <AsmTab v-if="eff === 'lib'" />
       <QuickSat v-else-if="driven" />
       <QuickAsm v-else-if="isAsm" />
-      <QuickMesh v-else />
+      <QuickMesh v-else :key="d.id" />
     </div>
   </div>
 </template>

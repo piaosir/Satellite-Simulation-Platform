@@ -1,7 +1,10 @@
 // 解析高斯天线（STK Gaussian）—— 主进程 CommonJS 镜像。
 // 渲染端原件：src/viz/grd/gaussStk.js（Vite 不转本地 CJS，故两份；求值 / 铺网格改动须两处对照，
 // packages/core/test/gaussStk.test.mjs 逐位对拍）。这里只留主进程要的：认记录、求值、铺网格（给 .grdbin）。
+// 通用解析记录（E-01）：顶层 model = 'aperture' 走口径照射模型（./apertureModel.js，与渲染端逐字同体），其余 = STK 高斯（逐位不变）。
 'use strict';
+
+const ap = require('./apertureModel.js');
 
 const AN_FORMAT = 'satsim-analytic-antenna';
 const AN_WIN = 2.0;
@@ -17,22 +20,33 @@ function isAnalyticText(text) {
 function parseRecord(text) {
   const r = JSON.parse(text);
   if (!r || r.format !== AN_FORMAT || !Array.isArray(r.beams) || !r.beams.length) throw new Error('不是解析天线记录');
+  const isAp = r.model === ap.AP_MODEL;
   for (const b of r.beams) {
-    if (![b.az, b.el, b.th3, b.g0, b.back].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0)) throw new Error('解析天线记录损坏');
+    if (isAp) { if (![b.az, b.el, b.th3, b.g0, b.kD, b.p].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0) || !(+b.kD > 0)) throw new Error('解析天线记录损坏'); }
+    else if (![b.az, b.el, b.th3, b.g0, b.back].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0)) throw new Error('解析天线记录损坏');
   }
   return r;
 }
-function anBeamOf(b, win) {
+// model = 记录顶层 model（或 .grdbin 表头逐 set 的 kind）：'aperture' → 口径照射描述子，否则 STK 高斯
+function anBeamOf(b, win, model) {
+  if (model === ap.AP_MODEL || b.kind === ap.AP_MODEL) return ap.apBeamOf(b, win);
   const az = +b.az * D2R, el = +b.el * D2R, ca = Math.cos(az), th = +b.th3 * D2R;
   return { igrid: 6, az: +b.az, el: +b.el, th3: +b.th3, g0: +b.g0, back: +b.back, k: b.k === '4ln2' ? '4ln2' : 'stk',
     bx: -Math.sin(az), by: ca * Math.sin(el), bz: ca * Math.cos(el), inv: 1 / (th * th), kdb: kDbOf(b.k), win: +win > 0 ? +win : AN_WIN };
 }
 function anGainDbi(an, ux, uy, uz) {
+  if (an.kind === ap.AP_MODEL) return ap.apGainDbi(an, ux, uy, uz);
   const c = ux * an.bx + uy * an.by + uz * an.bz;
   const cx = uy * an.bz - uz * an.by, cy = uz * an.bx - ux * an.bz, cz = ux * an.by - uy * an.bx;
   const th = Math.atan2(Math.sqrt(cx * cx + cy * cy + cz * cz), c);
   if (th > Math.PI / 2) return an.back;
   return an.g0 - an.kdb * th * th * an.inv;
+}
+// 四分量复场 → out[0..3] = re1, im1, re2, im2（口径照射档带交叉极化；高斯档只有分量 1）
+function anEval(an, ux, uy, uz, out) {
+  if (an.kind === ap.AP_MODEL) return ap.apEval(an, ux, uy, uz, out);
+  out[0] = Math.sqrt(Math.pow(10, anGainDbi(an, ux, uy, uz) / 10)); out[1] = 0; out[2] = 0; out[3] = 0;
+  return out;
 }
 const resFor = (n) => (n <= 4 ? 101 : n <= 16 ? 81 : n <= 48 ? 61 : n <= 120 ? 49 : n <= 400 ? 37 : n <= 1200 ? 29 : 23);
 function anWindow(an) {
@@ -48,6 +62,18 @@ function materializeBeam(an, res) {
   const { XS, YS, XE, YE } = anWindow(an);
   const NX = res, NY = res, N = NX * NY;
   const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1);
+  if (an.kind === ap.AP_MODEL) {                   // 口径照射：四分量都铺（与渲染端 materializeAperture 同值，Float32 落盘）
+    const c1re = new Float32Array(N), c1im = new Float32Array(N), c2re = new Float32Array(N), c2im = new Float32Array(N), ev = new Float64Array(4);
+    for (let row = 0; row < NY; row++) {
+      const el = (YS + dy * row) * D2R, se = Math.sin(el), ce = Math.cos(el);
+      for (let col = 0; col < NX; col++) {
+        const az = (XS + dx * col) * D2R, ca = Math.cos(az), i = row * NX + col;
+        ap.apEval(an, -Math.sin(az), ca * se, ca * ce, ev);
+        c1re[i] = ev[0]; c1im[i] = ev[1]; c2re[i] = ev[2]; c2im[i] = ev[3];
+      }
+    }
+    return { XS, YS, XE, YE, NX, NY, c1re, c1im, c2re, c2im, an };
+  }
   const c1re = new Float32Array(N), z = new Float32Array(N);
   for (let row = 0; row < NY; row++) {
     const el = (YS + dy * row) * D2R, se = Math.sin(el), ce = Math.cos(el);
@@ -58,12 +84,13 @@ function materializeBeam(an, res) {
   }
   return { XS, YS, XE, YE, NX, NY, c1re, c1im: z, c2re: z, c2im: z, an };
 }
-// 记录文本 → grdSampler.parseGrd 同形对象（每个 set 多带一个 an 描述子）
+// 记录文本 → grdSampler.parseGrd 同形对象（每个 set 多带一个 an 描述子；口径照射档 icomp 取记录）
 function materializeText(text) {
   const rec = parseRecord(text);
-  const ans = rec.beams.map((b) => anBeamOf(b, rec.win));
+  const ans = rec.beams.map((b) => anBeamOf(b, rec.win, rec.model));
   const res = resFor(ans.length);
-  return { ktype: 1, nset: ans.length, icomp: 3, ncomp: 2, igrid: 6, sets: ans.map((an) => materializeBeam(an, res)), rec };
+  const icomp = rec.model === ap.AP_MODEL && rec.icomp === 2 ? 2 : 3;
+  return { ktype: 1, nset: ans.length, icomp, ncomp: 2, igrid: 6, sets: ans.map((an) => materializeBeam(an, res)), rec };
 }
 
-module.exports = { AN_FORMAT, AN_WIN, kDbOf, isAnalyticText, parseRecord, anBeamOf, anGainDbi, resFor, anWindow, materializeBeam, materializeText };
+module.exports = { AN_FORMAT, AN_WIN, kDbOf, isAnalyticText, parseRecord, anBeamOf, anGainDbi, anEval, resFor, anWindow, materializeBeam, materializeText };

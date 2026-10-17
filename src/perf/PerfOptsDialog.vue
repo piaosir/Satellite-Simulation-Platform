@@ -84,11 +84,17 @@ const isOn = (bi) => beamSelOn(o.value, bi)
           <div class="po-ct">参数计算</div>
           <label class="po-chk"><input type="checkbox" v-model="o.sameAsAnt" /><span>与天线当前设置一致</span></label>
           <template v-if="!o.sameAsAnt">
-            <div class="po-row"><label>极化</label><select v-model="o.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
+            <div class="po-row"><label>极化</label><select v-model="o.pol" title="P1 / P2 = GRD 文件里的两个场分量（哪个是共极化由各波束峰值判定，见「Xpol C/I」）"><option value="P1">P1</option><option value="P2">P2</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
             <div v-if="unitChoice" class="po-row"><label>单位</label><span role="radiogroup" class="seg seg2"><button type="button" role="radio" :aria-checked="!!(o.unit === 'dB')" class="sg" :class="{ on: o.unit === 'dB' }" @click="o.unit = 'dB'">dB</button><button type="button" role="radio" :aria-checked="!!(o.unit === 'power')" class="sg" :class="{ on: o.unit === 'power' }" @click="o.unit = 'power'">功率</button><button type="button" role="radio" :aria-checked="!!(o.unit === 'voltage')" class="sg" :class="{ on: o.unit === 'voltage' }" @click="o.unit = 'voltage'">电压</button></span></div>
             <div class="po-row"><label>路径损耗</label><select v-model="o.pathLoss"><option value="none">无</option><option value="relative">相对(h/Rs)²</option><option value="absolute">通量密度</option></select></div>
             <div class="po-row"><label>增益偏置</label><input class="ci" type="number" step="0.5" v-model.lazy.number="o.gainOffset" /><span class="u">dB</span></div>
           </template>
+        </section>
+        <section class="po-card">
+          <div class="po-ct">Xpol C/I</div>
+          <div class="po-row"><label>共极化</label><select v-model="o.coPol" title="自动 = 各波束峰值处功率占优的分量；也可钉死为 P1 或 P2"><option value="auto">自动</option><option value="P1">P1</option><option value="P2">P2</option></select></div>
+          <label class="po-chk" title="线极化：按极化椭圆倾角 τ 旋转后取 E1/E2（E1 = P1·cosτ + P2·sinτ，SATSOFT §3.4.5）；自动 = 各波束峰值处的倾角。圆极化不旋转"><input type="checkbox" :checked="o.polAuto !== false" @change="o.polAuto = $event.target.checked" /><span>自动旋转</span></label>
+          <div class="po-row"><label>旋转角 τ</label><input class="ci" type="number" step="any" v-model.lazy.number="o.polTauDeg" :disabled="o.polAuto !== false" title="相对共极化轴的线极化旋转角" /><span class="u">°</span></div>
         </section>
         <section v-if="pointing" class="po-card">
           <div class="po-ct">指向误差 · Min/Max Pointing</div>

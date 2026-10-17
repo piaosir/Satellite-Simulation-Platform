@@ -46,6 +46,7 @@ const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与�
 const miniAboutOpen = ref(false) // 微信小程序介绍（帮助菜单，与关于平级）
 const fileOpen = ref(false)
 const fileTab = ref('')         // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入；空 = 回到上次停的那页）
+covNav.openFiles = (tab) => { fileTab.value = tab || ''; fileOpen.value = true }   // 各页侧栏的「管理」入口（如波束地图显示 → 波束地图管理）
 const searchOpen = ref(false)   // 标题栏搜索下拉开着：此时标题栏切成非拖拽区，点空白处才收得到 mousedown 去收起它
 const aboutOpen = ref(false)
 const updateOpen = ref(false)    // 检查更新（帮助菜单，与关于平级）
@@ -149,7 +150,7 @@ const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/�
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
 // 视图内容由 3D 页 Teleport 挂入 #side-view；可用性来自 covNav（polyAvail 无 IPC 依赖，可兼作「页面已挂载」信号）
 const pageReady = computed(() => covNav.polyAvail)
-// 可见性分析紧跟 Polygon；电磁波束仿真 / 覆盖等值线显示（GXT · KML）为低频功能，排其后；仿真对象模型排在卫星聚焦特效设置之上
+// 可见性分析紧跟 Polygon；电磁波束仿真 / 波束地图显示（覆盖库：GXT · KML · JSON · 脚本导入）为低频功能，排其后；仿真对象模型排在卫星聚焦特效设置之上
 const sideViews = computed(() => [
   { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
   { key: 'antenna', label: '对地覆盖分析', icon: 'earth', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 波束在地球上的覆盖范围 / 性能指标表（GRD）' },
@@ -157,7 +158,7 @@ const sideViews = computed(() => [
   { key: 'poly', label: 'Polygon（协调区）', icon: 'polygon', disabled: !covNav.polyAvail, hint: 'Polygon：绘制 / 调点 / 扩缩 / 导出' },
   { key: 'vis', label: '可见性分析', icon: 'scan-eye', disabled: !pageReady.value, hint: '选择目标（地球站 / 点 / Polygon）→ 设置最低仰角 → 计算可见卫星（参照 STK Access / Coverage）' },
   { key: 'beams', label: '电磁波束仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '高斯波束 / 多馈源反射面 / 赋形反射面 / 相控阵：设参数 → 点图放置轮廓 → 生成方向图天线' },
-  { key: 'gxt', label: 'GXT/KML 显示', icon: 'layers', disabled: !covNav.covAvail, hint: 'GEO 卫星覆盖等值线：显示 GXT / KML 覆盖库中的波束' },
+  { key: 'gxt', label: '波束地图显示', icon: 'layers', disabled: !covNav.covAvail, hint: 'GEO 卫星波束地图：覆盖库中的波束（GXT / KML / JSON / GeoJSON / Shapefile / 脚本导入的私有格式）' },
   { key: 'markers', label: '地图标记设置', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'links', label: '目标间链路建链', icon: 'waypoints', disabled: !pageReady.value, hint: '建链：在图上依次点选或在链路详情中检索地球站 / 卫星，建立单向链路，再导入链路预算（参照 STK Chain）' },
   { key: 'env', label: '环境场显示', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
@@ -309,7 +310,7 @@ const stepZoom = (d) => { const t = Math.max(0, Math.min(ZOOM_TMAX, zoom.value +
 // ---- 菜单栏（仿 SATSOFT 经典菜单：纯文字标题 + 下拉；不可用项置灰不隐藏）----
 const menus = computed(() => [
   { key: 'file', label: '文件', mn: 'F', items: [
-    { id: 'menu.file.0', label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / GXT · KML 覆盖文件库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
+    { id: 'menu.file.0', label: '文件管理…', icon: 'folder-open', lock: true, hint: '管理轨道星历 / 天线方向图 / 频率计划 / 波束地图库（导入 / 导出 / 删除）', run: () => { fileOpen.value = true } },
     // 频率计划是「文件」不是「计算」：它与天线方向图平级、同挂在卫星下，本身不产出任何计算结果，
     // 只是被链路预算引用的一份资料。故归文件区，不留在计算菜单里。
     { id: 'menu.file.2', label: '转发器频率计划…', icon: 'freq-plan', lock: true, hint: '转发器频率排布与频率分配表：挂在卫星下、与天线方向图平级；供链路预算引用，可导出 PNG / PDF（独立窗口）', run: openFreqPlan },
@@ -456,7 +457,7 @@ const FILE_TABS = [
   { key: 'grd', label: '天线方向图' },
   { key: 'freqplan', label: '频率计划' },
   { key: 'modcod', label: 'MODCOD 表' },
-  { key: 'gxt', label: 'GXT/KML 管理' }
+  { key: 'gxt', label: '波束地图管理' }
 ]
 function showSide(k) { requestSide(k) }   // 搜索命令：打开视图（活动栏 setSide 是「再点收起」的切换语义，这里不要）
 function appCommands() {

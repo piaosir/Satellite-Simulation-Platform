@@ -19,7 +19,7 @@ for (const b of data.beams) {
   for (const c of b.contours) {
     const ring = geo.open(c.points)
     mif.push('Region 1', `  ${ring.length}`, ...ring.map(xy), `    Pen (2,2,${rgbInt(c.color)})`, '    Brush (1,0,16777215)')
-    mid.push([q(b.satellite), q(b.name), q(b.band), q(b.type), c.level, q(c.color)].join(','))
+    mid.push([q(b.satellite), q(b.name), q(b.band), q(b.type), c.level ?? '', q(c.color)].join(','))
   }
   for (const p of b.peaks) {
     mif.push(`Point ${xy([p.lon, p.lat])}`, '    Symbol (35,0,12)')

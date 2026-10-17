@@ -29,13 +29,16 @@
 
 'use strict';
 
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
+// 传输走 netFetch：优先 Electron net（系统代理 / 单位审计网关），无 Electron 时回退 Node https。
+// 正文半截被掐断 / 黑洞都会落地成错误，不会把整个并发池悬住
+const netFetch = require('./netFetch');
 const grib2 = require('../../packages/core/utils/grib2.js');
 
 const HOST = 'nomads.ncep.noaa.gov';
-const TIMEOUT_MS = 60000;
+const TIMEOUT_MS = 60000;            // 无进展超时（单位代理整件扫毒时会先憋一阵再吐，60 s 留足）
+const FRAME_MAX_MS = 10 * 60 * 1000; // 单帧总时限：全球 0.25° 一帧几十 MB，热点上也得传得完
 const CONCURRENCY = 3;
 const REQ_SPACING_MS = 600;          // 发令间隔：≤100 次/分，留足余量不去撞 NOMADS 的限流线
 const CYCLE_TTL_MS = 10 * 60 * 1000; // 起报时次探测结果的复用时长
@@ -108,27 +111,23 @@ module.exports = function createGfs(userDataDir) {
     return wait ? new Promise((r) => setTimeout(r, wait)) : Promise.resolve();
   }
 
-  function httpGet(reqPath) {
-    return new Promise((resolve, reject) => {
-      const r = https.request({ host: HOST, method: 'GET', path: reqPath, timeout: TIMEOUT_MS,
-        headers: { 'User-Agent': 'satsim-platform' } }, (rs) => {
-        const chunks = [];
-        rs.on('data', (c) => chunks.push(c));
-        rs.on('end', () => {
-          const buf = Buffer.concat(chunks);
-          if (rs.statusCode !== 200) return reject(new Error('HTTP ' + rs.statusCode));
-          // NOMADS 出错时回的是 200 + 一段 HTML，不是 4xx —— 只认 GRIB 魔数
-          if (buf.length < 16 || buf.toString('latin1', 0, 4) !== 'GRIB') {
-            const t = buf.toString('utf8', 0, 400).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            return reject(new Error(t.slice(0, 120) || '返回内容不是 GRIB2'));
-          }
-          resolve(buf);
-        });
+  async function httpGet(reqPath) {
+    let r;
+    try {
+      r = await netFetch.request('https://' + HOST + reqPath, {
+        headers: { 'User-Agent': 'satsim-platform' }, idleMs: TIMEOUT_MS, maxMs: FRAME_MAX_MS
       });
-      r.on('timeout', () => { r.destroy(); reject(new Error('请求超时 ' + (TIMEOUT_MS / 1000) + ' s')); });
-      r.on('error', (e) => reject(new Error(e.message)));
-      r.end();
-    });
+    } catch (e) {
+      throw new Error(e.kind === 'timeout' ? '请求超时（' + e.message + '）' : e.message);
+    }
+    const buf = r.body;
+    if (r.status !== 200) throw new Error('HTTP ' + r.status);
+    // NOMADS 出错时回的是 200 + 一段 HTML，不是 4xx —— 只认 GRIB 魔数（门户 / 网关代答的网页同样挡在这里）
+    if (buf.length < 16 || buf.toString('latin1', 0, 4) !== 'GRIB') {
+      const t = buf.toString('utf8', 0, 400).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      throw new Error(t.slice(0, 120) || '返回内容不是 GRIB2');
+    }
+    return buf;
   }
 
   /** 一帧的子集请求路径。box = {latMin,latMax,lonMin,lonMax}，vars 缺省为全套 */

@@ -180,6 +180,9 @@ module.exports = function createCoverageGxt(saveDirFn, opts) {
       beam.lon = it.json && Number.isFinite(it.json.lon) ? it.json.lon : beam.lon
       beam.band = band || beam.band || ''   // 无频段来源按通配认到的波束：不抹掉已有频段
       beam.type = type
+      // 附加信息（导入脚本给的，如载波参数；纯 JSON、渲染端已限 16 KB）：随本次导入整份替换，没给就清掉（换了数据源，旧的会误导）
+      if (it.props && typeof it.props === 'object') beam.props = it.props
+      else delete beam.props
       beam.sourceName = it.sourceName || null
       beam.sourceFormat = it.sourceFormat || (it.rawText != null ? 'gxt' : null)
       beam.importedAt = new Date().toISOString()

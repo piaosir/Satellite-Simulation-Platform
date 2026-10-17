@@ -1,0 +1,135 @@
+{
+  "title": "RR Appendix 5, Table 5-1, No. 9.7 (GSO/GSO): bandwidth overlap + orbital-arc conditions",
+  "source": "ITU Radio Regulations, Edition of 2024, Vol. 2, Appendix 5 (Rev.WRC-23), Table 5-1, pp. AP5-4 to AP5-8",
+  "sourceFile": "2400594-RR-Vol 2-E-A5.pdf",
+  "sourceSha256": "49e283a5c22e57b44b5e0220eee94df4a7d2055418662bf83c125475d98f3abf",
+  "extracted": "2026-10-17",
+  "units": { "band": "MHz", "arc": "degrees, ± about the nominal orbital position of the proposed network" },
+  "serviceKeys": ["FSS", "BSS", "MSS", "SRS", "MetSat"],
+  "notes": [
+    "Every row requires bandwidth overlap (condition i).",
+    "regions: ITU Regions where the band row applies; [1,2,3] = all Regions.",
+    "services.proposed / services.other: services of the proposed network and of the other network that the row covers; pairs (when present) lists the only admitted (proposed, other) combinations; excludePairs removes combinations.",
+    "above: open-ended row 'bands above loMHz except those defined in exceptItems' (the exceptions are taken region by region).",
+    "Rows 1) to 8): pursuant to No. 9.41 an administration may ask to be included for networks outside the arc whose ΔT/T, calculated by AP8 § 2.2.1.2 and § 3.2, exceeds 6 % (not for 6bis)).",
+    "Row 9): all other bands / services, and coordination of space stations operating in the opposite direction of transmission: bandwidth overlap and ΔT/T > 6 % (Appendix 8)."
+  ],
+  "rows": [
+    {
+      "item": "1)",
+      "arcDeg": 7,
+      "bands": [
+        { "loMHz": 3400, "hiMHz": 4200, "regions": [1, 2, 3] },
+        { "loMHz": 5725, "hiMHz": 5850, "regions": [1] },
+        { "loMHz": 5850, "hiMHz": 6725, "regions": [1, 2, 3] },
+        { "loMHz": 7025, "hiMHz": 7075, "regions": [1, 2, 3] }
+      ],
+      "services": { "proposed": ["FSS"], "other": ["FSS"] }
+    },
+    {
+      "item": "2)",
+      "arcDeg": 6,
+      "bands": [
+        { "loMHz": 10950, "hiMHz": 11200, "regions": [1, 2, 3] },
+        { "loMHz": 11450, "hiMHz": 11700, "regions": [1, 2, 3] },
+        { "loMHz": 11700, "hiMHz": 12200, "regions": [2] },
+        { "loMHz": 12200, "hiMHz": 12500, "regions": [3] },
+        { "loMHz": 12500, "hiMHz": 12750, "regions": [1, 3] },
+        { "loMHz": 12700, "hiMHz": 12750, "regions": [2] },
+        { "loMHz": 13750, "hiMHz": 14800, "regions": [1, 2, 3] }
+      ],
+      "services": { "proposed": ["FSS", "BSS"], "other": ["FSS", "BSS"] },
+      "remark": "FSS or BSS not subject to a Plan"
+    },
+    {
+      "item": "2) iii)",
+      "arcDeg": 6,
+      "bands": [
+        { "loMHz": 14500, "hiMHz": 14800, "regions": [1, 2, 3] }
+      ],
+      "services": { "proposed": ["SRS", "FSS"], "other": ["SRS", "FSS"] },
+      "remark": "SRS or FSS not subject to a Plan"
+    },
+    {
+      "item": "2bis)",
+      "arcDeg": 6,
+      "bands": [
+        { "loMHz": 13400, "hiMHz": 13650, "regions": [1] }
+      ],
+      "services": { "proposed": ["FSS", "SRS"], "other": ["FSS", "SRS"] }
+    },
+    {
+      "item": "3)",
+      "arcDeg": 8,
+      "bands": [
+        { "loMHz": 17700, "hiMHz": 19700, "regions": [3] },
+        { "loMHz": 17300, "hiMHz": 19700, "regions": [1, 2] },
+        { "loMHz": 27500, "hiMHz": 29500, "regions": [1, 2, 3] }
+      ],
+      "services": { "proposed": ["FSS"], "other": ["FSS"] }
+    },
+    {
+      "item": "3bis)",
+      "arcDeg": 8,
+      "bands": [
+        { "loMHz": 19700, "hiMHz": 20200, "regions": [1, 2, 3] },
+        { "loMHz": 29500, "hiMHz": 30000, "regions": [1, 2, 3] }
+      ],
+      "services": { "proposed": ["FSS", "MSS"], "other": ["FSS", "MSS"] }
+    },
+    {
+      "item": "4)",
+      "arcDeg": 8,
+      "bands": [
+        { "loMHz": 17300, "hiMHz": 17700, "regions": [1, 2] }
+      ],
+      "services": { "pairs": [["BSS", "FSS"], ["FSS", "BSS"]] }
+    },
+    {
+      "item": "5)",
+      "arcDeg": 8,
+      "bands": [
+        { "loMHz": 17700, "hiMHz": 17800, "regions": [1, 2, 3] }
+      ],
+      "services": { "pairs": [["BSS", "FSS"], ["FSS", "BSS"]] },
+      "remark": "No. 5.517 applies in Region 2"
+    },
+    {
+      "item": "6)",
+      "arcDeg": 8,
+      "bands": [
+        { "loMHz": 18000, "hiMHz": 18300, "regions": [2] },
+        { "loMHz": 18100, "hiMHz": 18400, "regions": [1, 3] }
+      ],
+      "services": { "proposed": ["FSS", "MetSat"], "other": ["FSS", "MetSat"] }
+    },
+    {
+      "item": "6bis)",
+      "arcDeg": 12,
+      "bands": [
+        { "loMHz": 21400, "hiMHz": 22000, "regions": [1, 3] }
+      ],
+      "services": { "proposed": ["BSS"], "other": ["BSS"] },
+      "remark": "No. 9.41 does not apply; see also Resolutions 554 (WRC-12) and 553 (WRC-12)"
+    },
+    {
+      "item": "7)",
+      "arcDeg": 8,
+      "above": { "loMHz": 17300, "exceptItems": ["3)", "3bis)", "6)"] },
+      "services": { "proposed": ["FSS"], "other": ["FSS"] },
+      "remark": "see also Resolution 901 (Rev.WRC-15)"
+    },
+    {
+      "item": "8)",
+      "arcDeg": 16,
+      "above": { "loMHz": 17300, "exceptItems": ["4)", "5)", "6bis)"] },
+      "services": { "proposed": ["FSS", "BSS"], "other": ["FSS", "BSS"], "excludePairs": [["FSS", "FSS"]] },
+      "remark": "FSS or BSS not subject to a Plan, except a network in the FSS with respect to a network in the FSS; see also Resolution 901 (Rev.WRC-15)"
+    }
+  ],
+  "otherwise": {
+    "item": "9)",
+    "condition": "bandwidth overlap and ΔT/T > 6 %",
+    "method": "Appendix 8"
+  }
+}

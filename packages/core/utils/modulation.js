@@ -34,14 +34,16 @@ function isValidOrder(m) {
 function ordersOf(familyKey) {
   const out = [];
   for (let m = ORDER_MIN; m <= (familyKey === 'qam' ? 4096 : 1024); m *= 2) {
-    if (familyKey === 'apsk' && m < 16) continue;   // APSK 环状星座从 16 起（8APSK 现行标准里没有）
+    // APSK 环状星座从 8 起：DVB-S2X 的 8APSK（2+4+2APSK，EN 302 307-2 表 20a 的 5/9-L、26/45-L 两档）是
+    // 现行标准里最小的 APSK；4APSK 不存在（四点环就是 QPSK）
+    if (familyKey === 'apsk' && m < 8) continue;
     if (familyKey === 'qam' && m < 4) continue;     // 2QAM 不存在
     out.push(m);
   }
   return out;
 }
 
-// 该族是否允许这个 M（APSK 从 16 起、QAM 从 4 起，见 ordersOf）
+// 该族是否允许这个 M（APSK 从 8 起、QAM 从 4 起，见 ordersOf）
 const isValidOrderFor = (familyKey, m) => isValidOrder(m) && ordersOf(familyKey).indexOf(Number(m)) > -1;
 
 // 族 + M → 规范名。M-PSK 的 2 / 4 按行业写法出 BPSK / QPSK，不写 2PSK / 4PSK。
@@ -65,8 +67,8 @@ function parseModulation(name) {
   if (!m) return null;
   const order = Number(m[1]);
   const fam = MOD_FAMILIES.find((f) => f.suffix === m[2].toUpperCase());
-  // ★ 阶数按族收紧（APSK 从 16 起、QAM 从 4 起）：让「合法的调制方式」全平台只有一种口径 ——
-  //   表格里挡下 8APSK，引擎却认得它，两处对不上迟早出「界面不让填、老配置却算得出」的怪事
+  // ★ 阶数按族收紧（APSK 从 8 起、QAM 从 4 起）：让「合法的调制方式」全平台只有一种口径 ——
+  //   表格里挡下 4APSK，引擎却认得它，两处对不上迟早出「界面不让填、老配置却算得出」的怪事
   if (!fam || !isValidOrderFor(fam.key, order)) return null;
   return { family: fam.key, order, factor: Math.round(Math.log2(order)) };
 }

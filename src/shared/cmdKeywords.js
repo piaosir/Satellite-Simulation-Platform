@@ -47,7 +47,7 @@ export const CMD_KW = {
   // 改过名的视图把旧名留作关键词：习惯旧叫法的照样搜得到
   '电磁波束仿真': ['beam synthesis', 'EM beam simulation', 'electromagnetic', 'shaped', 'reflector', 'phased array', 'PAM',
     '天线波束合成', '波束合成', '波束', '赋形', '反射面', '相控阵', '多馈源'],
-  'GXT/KML 显示': ['GXT', 'KML', 'coverage contour', '覆盖等值线', '覆盖图', '覆盖库'],
+  '波束地图显示': ['beam map', 'GXT', 'KML', 'GeoJSON', 'coverage contour', '覆盖等值线', '覆盖图', '覆盖库', '波束地图'],
   '地图标记设置': ['markers', 'map markers', 'points', 'earth station', 'trajectory', '标记', '地图标记', '地球站', '点', '航迹', '轨迹', '船', '飞机'],
   '目标间链路建链': ['link', 'links', 'chain', 'STK Chain', 'inter-object link', '链路分析', '链路', '建链', '单向链路', '导入链路预算'],
   '环境场显示': ['ITU', 'rain rate', 'environment', 'climate', 'R0.01', '环境场', '环境', '雨量', '降雨率', '水汽', '雨高', '等温线', '云'],
@@ -61,7 +61,7 @@ export const CMD_KW = {
   '天线方向图': ['GRD', 'pattern', 'antenna', 'STK', 'ACP4', 'Eutelsat', '方向图', '天线', '导出方向图'],
   '频率计划': ['frequency plan', 'transponder', '频率计划文件', '转发器'],
   'MODCOD 表': ['modcod', 'modulation', 'coding', 'DVB-S2', 'threshold', '调制', '编码', '门限', '标准'],
-  'GXT/KML 管理': ['gxt', 'kml', 'coverage', '覆盖库', '覆盖文件'],
+  '波束地图管理': ['beam map', 'gxt', 'kml', 'geojson', 'shapefile', 'coverage', '覆盖库', '覆盖文件', '波束地图', '导入', '可编程导入'],
   // 设置项
   '外观': ['theme', 'appearance', 'dark mode', 'light mode', '主题', '深色模式', '暗色', '夜间', '浅色', '外观'],
   '语言': ['language', 'english', 'chinese', '中文', '英文', '界面语言'],

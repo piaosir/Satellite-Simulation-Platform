@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, watch, ref, toRaw, onMounted, onBeforeUnmount } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { listPlans, getPlan, transponderOptions, applyChannel, MANAGED_KEYS } from '../shared/lbFreqPlanRef.js'
 import { antennaGroups, staleAntOption, folderOfKey } from '../shared/lbGrdImport.js'
@@ -56,9 +56,13 @@ function onPickSat() {
 }
 
 // 选完工作频段，上/下行频率跟随预设变（与小程序一致；仍可手改）。
+// ★ 只认「同一份表单里改了频段」：换了一份表单（资源库换条目、库从盘上重载成新对象）时新条目的频段与上一条
+//    不同，不是用户改了频段——照套预设就把新条目手填的频率冲成预设值，约 0.5 s 后落盘、所有引用它的配置跟着错。
+//    父组件已按条目 id 重建本组件（:key），这里按表单身份再兜一道。
 // ★ 已引用频率计划时不动：频段本身也归转发器托管（由其实际频率判定），
 //    频段预设再来覆盖就把引用值冲掉了。
-watch(() => props.form.frequencyBand, (band) => {
+watch([() => toRaw(props.form), () => props.form.frequencyBand], ([form, band], [prevForm]) => {
+  if (form !== prevForm) return
   if (fpActive.value) return
   const f = BAND_FREQ[band]; if (!f) return
   props.form.centerFrequency = String(f.up)

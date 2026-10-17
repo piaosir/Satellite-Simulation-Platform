@@ -327,8 +327,9 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const pX = anPk ? beam.an.az : gx[field.maxIdx], pY = anPk ? beam.an.el : gy[field.maxIdx]
           const pkHit = shellMapper(igrid, basis, g, br, true)(pX, pY)
           const pk = pkHit || map(pX, pY)
+          // 填充 / 线不透明度按这根天线自己的设置（st = 它的 c.settings），不跟面板态 grd.s（聚焦天线）整场走
           const layer = {
-            id: `${key}#${bm.bi}@${sh.id}:${br}`, R, alpha: st.alpha,
+            id: `${key}#${bm.bi}@${sh.id}:${br}`, R, alpha: st.alpha, lineAlpha: st.lineAlpha,
             name: bm.name + (branches.length > 1 ? (br === 'near' ? ' 近' : ' 远') : ''),
             fillBands, segGroups,
             bore: pk && Number.isFinite(field.max) ? {
@@ -395,7 +396,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       }
       const pr = pd ? projectLimb(pd, basis) : null
       const layer = {
-        id: `${key}#${bm.bi}`, fillBands, segGroups, name: bm.name,
+        id: `${key}#${bm.bi}`, fillBands, segGroups, name: bm.name, alpha: st.alpha, lineAlpha: st.lineAlpha,   // 逐天线不透明度（同对地 buildLayer）
         bore: pr && Number.isFinite(pr.lon) && Number.isFinite(pr.lat) ? {
           lon: pr.lon, lat: pr.lat, hit: pr.vis >= 0,
           satLon: ctx.meta.satLon, satLat: ctx.meta.satLat || 0, satAlt: ctx.meta.satAlt,

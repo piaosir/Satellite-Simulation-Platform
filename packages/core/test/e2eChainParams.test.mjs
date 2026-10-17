@@ -338,5 +338,185 @@ function mkRow() {
   ok("E2eFields：选空值项写回 ''", !!ovSel && /@change="form\[f\.key\] = \$event\.target\.value"/.test(ovSel[0]))
 }
 
+// ============================================================
+// ⑬ 拓扑编辑（src/e2e/e2eChainEdit.js；体检 2026-10-16 二档「端到端编辑后参数被改错」）
+//   ① 链首换人：业务体制跟着链首走（不被重置成出厂 2048 kbps QPSK 3/4）；剩下的端点卫星归一为再生类
+//   ② 星地跳承接：插转接站拆星间跳 / 相邻是星间跳时按侧向默认播种；删中间节点承接与合并后同型的那一侧
+//   ③ 自动几何 GSO 门限：手动档回填的两位小数仰角当门限不再把站对星本身判成「低于最低仰角」
+{
+  const E = await import('../../../src/e2e/e2eChainEdit.js')
+  const P = await import('../../../src/e2e/e2eParams.js')
+  const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../../..')
+  const BIZ = () => ({ ...defaultCarrier(), infoRate: '10000', modulation: '8PSK', fec: '2/3', ebno: '6.20' })
+  const gsUp = (o) => Object.assign(newHop('rf'), { frequency: '14.25', polarization: 'V', slantRange: '39500', elevation: '25' }, o || {})
+  const gsDn = (o) => Object.assign(newHop('rf'), { frequency: '12.50', polarization: 'H', slantRange: '38800', elevation: '32' }, o || {})
+  const islHop = (o) => Object.assign(newHop('rf'), P.defaultsFor(P.HOP_ISL_FIELDS), { rangeKm: '4000', frequency: '26', islEirp: '50', miscLoss: '1.5' }, o || {})
+  const run = (row) => computeLinkChain(buildChain(row, RESOLVE))
+  const gsDefaultsOf = (h, side) => h.frequency === P.GS_SIDE_DEFAULTS[side].frequency && h.polarization === P.GS_SIDE_DEFAULTS[side].polarization &&
+    h.miscLoss === '0.3' && h.slantRange === '' && h.elevation === '25'
+
+  // —— ① 链首体制 / 端点归一 ——
+  {
+    // 「卫星(源)→站」链首定了 10 Mbps 8PSK 2/3，右键链首「向外接一个地球站」
+    const src = newSatNode('regen', '源星'); src.carrier = BIZ()
+    const row = { nodes: [src, newEsNode('收')], hops: [gsDn()] }
+    const r = E.extendEndAt(row, 0, newEsNode('发'))
+    const c0 = row.nodes[0].carrier || {}
+    ok('①a 链首外接地球站：编辑成立、选中新链首', r.ok && r.sel === 0 && row.nodes.length === 3 && row.nodes[0].kind === 'es')
+    ok('★ ①a 新链首接过业务体制（10 Mbps 8PSK 2/3），不是出厂 2048 kbps QPSK 3/4',
+      c0.infoRate === '10000' && c0.modulation === '8PSK' && c0.fec === '2/3', JSON.stringify([c0.infoRate, c0.modulation, c0.fec]))
+    ok('①a 原链首成了段起点，仍是它自己那份（与新链首不共用对象）', row.nodes[1].carrier && row.nodes[1].carrier.modulation === '8PSK' && row.nodes[1].carrier !== c0)
+    const out = run(row)
+    ok('★ ①a 引擎：两段速率仍是 10 Mbps、调制编码 8PSK 2/3', out.success && out.data.carriers.length === 2 &&
+      out.data.carriers.every((c) => Number(c.infoRateResult) === 10000 && c.modulationResult === '8PSK' && c.fecResult === '2/3'),
+      out.success ? JSON.stringify(out.data.carriers.map((c) => [c.infoRateResult, c.modulationResult, c.fecResult])) : out.message)
+  }
+  {
+    // 「站→透明星→站」删链首站
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('txp', '透明星'), newEsNode('收')], hops: [gsUp(), gsDn()] }
+    const r = E.removeNodeAt(row, 0)
+    const c0 = row.nodes[0].carrier || {}
+    ok('①b 删链首站：编辑成立', r.ok && r.sel === 0 && row.nodes.length === 2 && row.hops.length === 1)
+    ok('★ ①b 剩下的端点星归一为再生类（卡片报再生 EIRP、检查器给再生组——与引擎端点归一同口径）', row.nodes[0].kind === 'regen', row.nodes[0].kind)
+    ok('★ ①b 业务体制整套移交给新链首', c0.infoRate === '10000' && c0.modulation === '8PSK' && c0.fec === '2/3', JSON.stringify([c0.infoRate, c0.modulation]))
+    const out = run(row)
+    ok('①b 引擎：速率 10 Mbps、8PSK 2/3', out.success && Number(out.data.carriers[0].infoRateResult) === 10000 && out.data.carriers[0].modulationResult === '8PSK')
+  }
+  {
+    // 「站→再生星→站」下游段自己换了调制；它那份体制里的速率 / 锚点是当初照抄来的旧值。删链首站：
+    // 段体制（它起的那一段的调制编码）留着，只接过业务速率，锚点回到信息速率
+    const a = newEsNode('发'); a.carrier = { ...defaultCarrier(), infoRate: '10000', modulation: 'QPSK', fec: '3/4' }
+    const g = newSatNode('regen', '再生星'); g.carrier = { ...defaultCarrier(), infoRate: '2048', modulation: '8PSK', fec: '2/3', rateAnchor: 'symbol', rateAnchorValue: 1234 }
+    const row = { nodes: [a, g, newEsNode('收')], hops: [gsUp(), gsDn()] }
+    E.removeNodeAt(row, 0)
+    const c0 = row.nodes[0].carrier
+    ok('★ ①c 新链首本是段起点：它那一段的调制编码留着（8PSK 2/3）', c0 === g.carrier && c0.modulation === '8PSK' && c0.fec === '2/3')
+    ok('★ ①c 业务速率接过原链首的 10 Mbps，锚点回到信息速率', c0.infoRate === '10000' && c0.rateAnchor === 'info' && c0.rateAnchorValue === null,
+      JSON.stringify([c0.infoRate, c0.rateAnchor, c0.rateAnchorValue]))
+    const out = run(row)
+    ok('①c 引擎：10 Mbps 8PSK 2/3', out.success && Number(out.data.carriers[0].infoRateResult) === 10000 && out.data.carriers[0].modulationResult === '8PSK')
+  }
+  {
+    // 删链尾站：剩下的端点星同样归一；链首体制不动
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('txp', '透明星'), newEsNode('收')], hops: [gsUp(), gsDn()] }
+    const r = E.removeNodeAt(row, 2)
+    ok('①d 删链尾站：链尾透明星归一为再生类、链首体制原样', r.ok && r.sel === 1 && row.nodes[1].kind === 'regen' && row.nodes[0].carrier.infoRate === '10000')
+    // 老场景：端点透明星载入即归一，中间透明星不动
+    const old = { nodes: [newSatNode('txp', 'A'), newSatNode('txp', 'B'), newSatNode('txp', 'C'), newEsNode('收')], hops: [islHop(), islHop(), gsDn()] }
+    E.normEndpointKinds(old)
+    ok('①e 老场景：链首透明星归一为再生、中间透明星不动、地球站不动', old.nodes.map((n) => n.kind).join(',') === 'regen,txp,txp,es', old.nodes.map((n) => n.kind).join(','))
+    // 链首站 → 卫星（端点改型）：原行为——体制整套照抄到换上的那颗星
+    const b = newEsNode('发'); b.carrier = BIZ()
+    const row2 = { nodes: [b, newSatNode('txp', 'T'), newEsNode('收')], hops: [gsUp(), gsDn()] }
+    const r2 = E.toggleEndpointAt(row2, 0, newSatNode('regen', ''))
+    ok('①f 链首站改为卫星：体制照抄、相邻跳变星间并按星间默认播种', r2.ok && row2.nodes[0].kind === 'regen' && row2.nodes[0].carrier.infoRate === '10000' &&
+      row2.nodes[0].carrier !== b.carrier && row2.hops[0].frequency === '23' && row2.hops[0].rangeKm === '')
+    ok('①g 链只剩 2 个节点时不许删（链一字未动）', (() => { const rw = { nodes: [newSatNode('regen', 'S'), newEsNode('收')], hops: [gsDn()] }; const x = E.removeNodeAt(rw, 0); return !x.ok && x.error === 'minNodes' && rw.nodes.length === 2 })())
+  }
+
+  // —— ② 星地跳承接 ——
+  {
+    // 站 → 再生 A →(星间)→ 再生 B → 站，在星间跳上插地面转接站
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('regen', 'A'), newSatNode('regen', 'B'), newEsNode('收')], hops: [gsUp(), islHop(), gsDn()] }
+    const r = E.insertNodeAt(row, 1, newEsNode('转接站'))
+    ok('②a 星间跳上插转接站：编辑成立', r.ok && r.sel === 2 && row.nodes.length === 5 && row.hops.length === 4)
+    ok('★ ②a 新下行跳（A → 转接站）按下行默认播种：12.50 GHz / H、其他损耗 0.3 dB、斜距留空，不挂星间的 26 GHz / 1.5 dB',
+      gsDefaultsOf(row.hops[1], 'down'), JSON.stringify([row.hops[1].frequency, row.hops[1].polarization, row.hops[1].miscLoss, row.hops[1].slantRange]))
+    ok('★ ②a 新上行跳（转接站 → B）按上行默认播种：14.25 GHz / V', gsDefaultsOf(row.hops[2], 'up'), JSON.stringify([row.hops[2].frequency, row.hops[2].polarization, row.hops[2].miscLoss]))
+    ok('②a 转接站切出一段并照抄链首体制', row.nodes[2].carrier && row.nodes[2].carrier.modulation === '8PSK')
+    ok('②a 地面转接站只能插在星间跳上（星地跳上挡住、链不动）', (() => { const n0 = row.nodes.length; const x = E.insertNodeAt(row, 0, newEsNode('X')); return !x.ok && x.error === 'relayOnSpaceHop' && row.nodes.length === n0 })())
+  }
+  {
+    // 下行设 19.7 GHz / R → 在下行跳上插一颗再生星 → 再删掉
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('txp', 'T'), newEsNode('收')], hops: [gsUp(), gsDn({ frequency: '19.7', polarization: 'R', miscLoss: '0.8', slantRange: '37000', elevation: '40' })] }
+    E.insertNodeAt(row, 1, newSatNode('regen', 'R'))
+    ok('②b 插星：T → R 变星间（星间默认）、R → 站这条下行承接 19.7 / R',
+      row.hops[1].frequency === '23' && row.hops[2].frequency === '19.7' && row.hops[2].polarization === 'R')
+    const r = E.removeNodeAt(row, 2)
+    const h = row.hops[1]
+    ok('★ ②b 再删掉：下行回到 19.7 GHz / R（承接与合并后同型的右侧那跳，不是插星时已变成星间的那一跳）',
+      r.ok && row.hops.length === 2 && h.frequency === '19.7' && h.polarization === 'R' && h.miscLoss === '0.8' && h.slantRange === '37000' && h.elevation === '40',
+      JSON.stringify([h.frequency, h.polarization, h.miscLoss, h.slantRange]))
+  }
+  {
+    // 合并成上行：承接左侧那条上行（原行为）
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('regen', 'R'), newSatNode('txp', 'T'), newEsNode('收')], hops: [gsUp({ frequency: '29.5', polarization: 'L' }), islHop(), gsDn()] }
+    E.removeNodeAt(row, 1)
+    ok('②c 删中间星合并成上行：承接左侧 29.5 GHz / L', row.hops[0].frequency === '29.5' && row.hops[0].polarization === 'L' && row.hops[1].frequency === '12.50')
+    // 两星之间去掉转接站：合并成星间、按星间默认重播（原行为）
+    const b = newEsNode('发'); b.carrier = BIZ()
+    const row2 = { nodes: [b, newSatNode('regen', 'A'), newEsNode('转接'), newSatNode('regen', 'B'), newEsNode('收')], hops: [gsUp(), gsDn(), gsUp(), gsDn()] }
+    E.removeNodeAt(row2, 2)
+    ok('②d 去掉转接站：合并成星间、星间默认（23 GHz、距离留空）', P.hopTypeOf(row2.nodes[1], row2.nodes[2], row2.hops[1]) === 'isl' && row2.hops[1].frequency === '23' && row2.hops[1].rangeKm === '')
+    ok('②d 两侧都是地球站的中间节点不许删（链不动）', (() => { const rw = { nodes: [newEsNode('发'), newSatNode('txp', 'T'), newEsNode('收')], hops: [gsUp(), gsDn()] }; const x = E.removeNodeAt(rw, 1); return !x.ok && x.error === 'esEsAfterRemove' && rw.nodes.length === 3 })())
+  }
+  {
+    // 相邻是星间跳的两种端点编辑：新出来的星地跳不承接星间跳身上的残留几何与 1 dB 其他损耗
+    const a = newEsNode('发'); a.carrier = BIZ()
+    const row = { nodes: [a, newSatNode('regen', 'A'), newSatNode('regen', 'B')], hops: [gsUp(), islHop({ slantRange: '999', elevation: '7' })] }
+    E.extendEndAt(row, 2, newEsNode('收'))
+    ok('★ ②e 链尾星向外接地球站：新下行跳取下行默认（不承接星间跳的 1.5 dB / 残留斜距 999 / 仰角 7）', gsDefaultsOf(row.hops[2], 'down'),
+      JSON.stringify([row.hops[2].frequency, row.hops[2].miscLoss, row.hops[2].slantRange, row.hops[2].elevation]))
+    const row2 = { nodes: [newSatNode('regen', 'A'), newSatNode('regen', 'B'), newEsNode('收')], hops: [islHop(), gsDn()] }
+    row2.nodes[0].carrier = BIZ()
+    E.toggleEndpointAt(row2, 0, newEsNode('发'))
+    ok('★ ②f 链首星改为地球站：新上行跳取上行默认', gsDefaultsOf(row2.hops[0], 'up'), JSON.stringify([row2.hops[0].frequency, row2.hops[0].miscLoss, row2.hops[0].slantRange]))
+    // 原行为：上行跳上插星，上行那一半整套承接
+    const b = newEsNode('发'); b.carrier = BIZ()
+    const row3 = { nodes: [b, newSatNode('txp', 'T'), newEsNode('收')], hops: [gsUp({ frequency: '13.9', polarization: 'L', miscLoss: '0.6' }), gsDn()] }
+    E.insertNodeAt(row3, 0, newSatNode('txp', 'U'))
+    ok('②g 上行跳上插星：上行那一半整套承接（13.9 / L / 0.6）、另一半走星间默认',
+      row3.hops[0].frequency === '13.9' && row3.hops[0].polarization === 'L' && row3.hops[0].miscLoss === '0.6' && row3.hops[0].slantRange === '39500' && row3.hops[1].frequency === '23')
+  }
+
+  // —— ③ 自动几何 GSO 门限 ——
+  {
+    const geo = _require(path.join(ROOT, 'packages/core/utils/ngsoGeometry.js'))
+    const { CITIES_DATA } = _require(path.join(ROOT, 'packages/core/utils/cities.js'))
+    const orbit = { type: 'snapshot', lonDeg: 110.5, latDeg: 0, altKm: 35786 }
+    const st = (c, altM, m) => ({ lonDeg: c.lon, latDeg: c.lat, altKm: altM / 1000, minElevDeg: m, freqGHz: 14 })
+    const feasible = (c, altM, m) => geo.solveMutualWorstCase({ orbit, tx: st(c, altM, m), rx: st(c, altM, m) }).feasible
+    let n = 0, raw = 0, fixed = 0
+    const bad = []
+    for (const c of CITIES_DATA.slice(0, 364)) {
+      for (const altM of [0, Number(c.alt) || 0]) {
+        const g = gsoLookAngles(c.lon, c.lat, altM / 1000, 110.5)
+        if (!g) continue
+        n++
+        const fill = g.elevDeg.toFixed(2)                    // 手动档回填（hopSeedInfo 同式）
+        if (!feasible(c, altM, Number(fill))) raw++
+        if (feasible(c, altM, E.autoGeoMinElev(orbit, Number(fill)))) fixed++
+        else if (bad.length < 3) bad.push(`${c.name}@${altM}m ${fill}`)
+      }
+    }
+    ok('（对照）回填的两位小数原样当门限：常用站约一半被判「低于最低仰角」（本测试不是空转）', raw > n / 4, `${raw}/${n}`)
+    ok('★ ③ 门限放宽半个显示分辨率：国内全部城市（海平面 / 城市海拔）对 110.5°E 都可解', fixed === n, `${fixed}/${n} ${bad.join('；')}`)
+    const bj = CITIES_DATA.find((x) => x.name === '北京')
+    const gb = gsoLookAngles(bj.lon, bj.lat, 0, 110.5)
+    ok('③ 门限真高出真值 0.02°（读数上就不等）照旧判不可见', !feasible(bj, 0, E.autoGeoMinElev(orbit, gb.elevDeg + 0.02)))
+    ok('③ NGSO（圆轨道 / 星历）门限原样（它决定最差斜距）', E.autoGeoMinElev({ type: 'circular', altKm: 1200 }, 10) === 10 && E.autoGeoMinElev({ type: 'omm' }, 25.5) === 25.5)
+    ok('③ 放宽量 0.005°、不出负门限、接受字符串', E.GSO_MIN_ELEV_TOL_DEG === 0.005 && E.autoGeoMinElev(orbit, 0) === 0 && Math.abs(E.autoGeoMinElev(orbit, '43.46') - 43.455) < 1e-9)
+  }
+
+  // —— 窗口接线（SFC 里，照源码结构查）——
+  {
+    const fs = await import('node:fs')
+    const sfc = fs.readFileSync(path.join(ROOT, 'src/e2e/E2eLinkBudgetApp.vue'), 'utf8').replace(/\r\n/g, '\n')
+    const fnB = (sig) => { const i = sfc.indexOf('\n' + sig); if (i < 0) return ''; const j = sfc.indexOf('\n}\n', i + 1); return j < 0 ? '' : sfc.slice(i, j + 3) }
+    const geoB = fnB('async function solveChainGeometry(row, chain) {')
+    const iMin = geoB.indexOf('st.minElevDeg = autoGeoMinElev(orbit, st.minElevDeg)'), iCall = geoB.indexOf('api.linkBudget.ngsoGeometry(')
+    ok('★ 窗口：自动几何的星地跳门限先过 autoGeoMinElev 再交求解器', iMin > 0 && iCall > iMin)
+    ok('窗口：拓扑编辑全走 e2eChainEdit（窗口里不再有 reseedHop 副本）', !/\nfunction reseedHop\(/.test(sfc) &&
+      fnB('function insertNode(hopIdx, kind) {').includes('insertNodeAt(row, hopIdx, nd)') && fnB('function removeAt(kind, i) {').includes('removeNodeAt(row, i)') &&
+      fnB('function toggleEndpoint(i) {').includes('toggleEndpointAt(row, i, nd)') && fnB('function extendEnd(i, kind) {').includes('extendEndAt(row, i, nd)'))
+    ok('窗口：载入场景时端点卫星归一为再生类', fnB('function applyState(st) {').includes('normEndpointKinds(row)'))
+  }
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

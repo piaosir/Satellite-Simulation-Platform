@@ -19,7 +19,17 @@
 //      写回桶里不再复活（撤销书本身把下限抬过去，其之前的激活书永久作废）
 //   ③ 覆写停用：验不过的对象一律【忽略并维持本地授权】，不再落进缓存把人打回未激活。
 //      只有确凿 404（管理端真删）才清缓存 —— 否则任何人一次 PUT 就能远程停用任意设备。
+// ★ 2026-10-16 通信审查补的一条：
+//   ④ 远期 issuedAt：签名合法但 issuedAt 超出「现在」一天以上的激活书一律拒收（管理端时钟错、或管理端
+//      的下一次 issuedAt 被桶里未验签的对象带偏，都签得出这种件）。它一旦被采纳，重放下限与时钟锚
+//      都被抬到未来：离线开机即 'clock' 锁，之后管理端正常签的撤销书全被当成重放件拒收。
+//      「现在」取服务器时间（share.serverNow），本进程还没联网成功过才退到本机有效时间。
+//
+// <userData>/activation.log：每次拉激活书 / 心跳的结果类别（200 / 404 / 403+Code / 网络错 / 验签失败 /
+// 重放拒收 / 远期拒收），同类节流。打包版没有 DevTools，main.log 只记未捕获异常，激活不上时全靠它。
+const path = require('path')
 const { createPublicKey, verify, createHash } = require('crypto')
+const { createFileLogger } = require('./fileLog')
 
 // 验签公钥表：按序试，任一通过即算数。留成数组是为了【密钥轮换】有过渡路径——
 // 换签名钥时把新公钥加在前面、旧的留一版，等存量设备都升上来再删旧的；
@@ -66,6 +76,10 @@ const FIRST_BEAT_DELAY_MS = 1500
 // 时钟防篡改：系统时钟落后「已确证时间」超过此幅度 → state 'clock' 锁定（回拨续命防线；
 // NTP 正常校正是秒级、时区/夏令时不动 epoch，正常用户永远碰不到 24h 这条线）
 const CLOCK_BACK_LIMIT_MS = 24 * 3600e3
+// 激活书 issuedAt 允许超前「现在」的幅度（管理端时钟比服务器快几分钟很常见，一天之外只能是坏件）
+const ISSUED_AHEAD_MS = 24 * 3600e3
+// activation.log 同类结果的重复间隔：类别变了立刻记；同类连着来，至多每小时一行（附上期间的次数）
+const LOG_REPEAT_MS = 60 * 60_000
 
 // 管理员身份硬编码（不开放修改，避免他人冒充）：派生ID → 固定标识。
 // 加新管理机：在那台机器上跑一次、看「关于」对话框显示的设备ID，填进此表再发版即可。
@@ -92,11 +106,63 @@ function verifyLic(lic, expectId) {
   return false
 }
 
-module.exports = (share, storage) => {
+// opts（可选）：{ log } 注入日志器（单测）；{ logFile } 指定日志文件（null = 不落盘）。
+// 缺省：Electron 下写 <userData>/activation.log；裸 node（验证台）不落盘。
+module.exports = (share, storage, opts = {}) => {
   const K = {
     registry: () => `${share.prefixOf()}/mgr/registry.json`,
     dev: (id) => `${share.prefixOf()}/mgr/dev/${id}.json`,
     lic: (id) => `${share.prefixOf()}/mgr/lic/${id}.json`
+  }
+
+  // ---- activation.log ----
+  let _log = opts.log || null
+  function logger() {
+    if (_log) return _log
+    let file = opts.logFile
+    if (file === undefined) {
+      try {
+        const { app } = require('electron')
+        if (app && typeof app.getPath === 'function') file = path.join(app.getPath('userData'), 'activation.log')
+      } catch { /* 非 Electron */ }
+    }
+    _log = file ? createFileLogger(file) : { info() {}, warn() {}, error() {}, debug() {} }
+    return _log
+  }
+  const iso = (t) => { const n = Number(t); return n > 0 ? new Date(n).toISOString() : '—' }
+  // 本机钟与服务器的差（本进程拿到过 COS 的 Date 头才有）：签名 403 / 时钟锁的头号嫌疑，每行都带上
+  function clockNote() {
+    const sn = share.serverNow ? share.serverNow() : 0
+    if (!sn) return ''
+    const d = Math.round((Date.now() - sn) / 1000)
+    return Math.abs(d) >= 5 ? ` · 本机钟 ${d > 0 ? '+' : ''}${d} s` : ''
+  }
+  // 节流计时走单调钟：系统钟被拨来拨去时也不会一口气憋住或刷屏
+  const _seen = {}          // channel → { key, at, n }
+  function note(channel, key, text, level) {
+    const now = Number(process.hrtime.bigint() / 1000000n)
+    const L = _seen[channel]
+    if (L && L.key === key && now - L.at < LOG_REPEAT_MS) { L.n++; return }
+    const more = L && L.n ? ` · 上条之后同类 ×${L.n}` : ''
+    _seen[channel] = { key, at: now, n: 0 }
+    try { logger()[level || 'info'](`${text}${clockNote()}${more}`) } catch { /* 日志写不进不影响授权 */ }
+  }
+  // 失败归类 → { key 节流用的类别, text 日志正文 }。share.js 的错误带 kind / status / cosCode；
+  // 验证台的内存桩只给 message，按消息兜底
+  function classify(e) {
+    if (e instanceof SyntaxError) return { key: 'parse', text: '返回内容不是 JSON' }
+    const kind = (e && e.kind) || ''
+    const msg = String((e && e.message) || e || '').replace(/^COS\s*/, '')
+    if (kind === 'http') {
+      const code = e.cosCode || ''
+      return { key: `http:${e.status}:${code}`, text: `HTTP ${e.status}${code ? ' ' + code : ''}${e.fromCos === false ? '（非 COS 应答）' : ''}` }
+    }
+    if (kind === 'intercept') return { key: `intercept:${e.status || 0}`, text: msg }
+    if (kind === 'timeout') return { key: 'timeout', text: msg }
+    if (kind) return { key: `${kind}:${e.code || ''}`, text: `网络错 · ${msg}` }
+    const m = /^(\d{3})\b/.exec(msg)
+    if (m) return { key: `http:${m[1]}:`, text: `HTTP ${m[1]}` }
+    return { key: 'err:' + msg.slice(0, 40), text: `网络错 · ${msg.slice(0, 160)}` }
   }
 
   // ---- 设备 ID：按本机 MAC 派生的稳定短码（沿用「我的ID」同一份，见 register.js app:deviceId）----
@@ -221,8 +287,18 @@ module.exports = (share, storage) => {
     const id0 = deviceId()
     const a = s.mgrClockAnchor
     const disk = a && typeof a.t === 'number' && a.mac === anchorMac(a.t, id0) ? a.t : 0
-    const iss = (s.activationLic && Number(s.activationLic.issuedAt)) || 0
+    // 缓存激活书的 issuedAt：验签通过、且不比「盘上锚 / 系统钟」超前一天以上才进锚（见文件头 ④）——
+    // 远期 issuedAt 一进锚，离线开机就是 'clock' 锁
+    const lic0 = s.activationLic
+    const iss0 = (lic0 && verifyLic(lic0, id0) && Number(lic0.issuedAt)) || 0
+    const iss = iss0 && iss0 <= Math.max(disk, Date.now()) + ISSUED_AHEAD_MS ? iss0 : 0
     setAnchor(Math.max(disk, iss, Date.now()))
+  }
+  // 「现在」的参照：服务器时间（最近一次 COS 应答的 Date 头 + 单调钟外推）优先；
+  // 本进程还没联网成功过，才取本机有效时间 max(系统钟, 时钟锚)
+  const refNow = () => {
+    const sn = share.serverNow ? share.serverNow() : 0
+    return sn > 0 ? sn : Math.max(Date.now(), anchorNow())
   }
 
   // ---- 激活书重放防线：issuedAt 单调下限（治「撤销后把旧激活书写回桶里就复活」）----
@@ -244,8 +320,18 @@ module.exports = (share, storage) => {
     _floor = v
     storage.setSettings({ mgrLicFloor: { t: v, mac: floorMac(v, deviceId()) } })
   }
-  // 通过验签、且不是被重放的旧件，才算可信
-  const licTrusted = (lic, id) => verifyLic(lic, id) && (Number(lic.issuedAt) || 0) >= _floor
+  // 拒收原因（null = 可信）：验签通过、不是被重放的旧件、issuedAt 也没超前「现在」一天以上
+  function licRejectWhy(lic, id) {
+    if (!lic || typeof lic !== 'object' || lic.v !== 1 || !lic.sig) return { key: 'verify', text: '验签失败（不是激活书）' }
+    if (String(lic.id) !== String(id)) return { key: 'verify', text: '验签失败（设备ID不符）' }
+    if (!verifyLic(lic, id)) return { key: 'verify', text: '验签失败（签名无效）' }
+    const iss = Number(lic.issuedAt) || 0
+    if (iss < _floor) return { key: 'replay', text: `重放拒收（签发 ${iso(iss)}，早于下限 ${iso(_floor)}）` }
+    const ref = refNow()
+    if (iss > ref + ISSUED_AHEAD_MS) return { key: 'future', text: `远期拒收（签发 ${iso(iss)}，超出参照时间 ${iso(ref)} 一天以上）` }
+    return null
+  }
+  const licTrusted = (lic, id) => !licRejectWhy(lic, id)
 
   // ---- 当前激活状态（纯本地：缓存的激活书重新验签后判读，不碰网络）----
   // state: none 无激活书 / active 激活中 / expired 已到期 / revoked 已被管理端撤销
@@ -270,35 +356,49 @@ module.exports = (share, storage) => {
   //      断网口径：已激活的保持已激活（到期判定在 current() 里实时走本地时钟，断网照样生效）、
   //      未激活的保持未激活 —— 必须用 getJsonStrict，宽松版会把门户页误判成「对象损坏」清掉缓存。
   async function refresh() {
-    if (share.configured()) {
-      try {
-        const id = deviceId()
-        const lic = await share.getJsonStrict(K.lic(id))
-        // 落缓存的口径（治「任何持包用户把别人的 lic 覆写成 {} 就能远程停用对方」）：
-        //   · 确凿 404（getJsonStrict 返回 null）→ 管理端确实没签发/已删除 → 清缓存
-        //   · 验签通过且非重放                  → 采纳
-        //   · 其余（空对象 / 篡改 / 他机的 / 重放的旧件）→ 【不动缓存】
-        // 关键在第三条：桶里那个对象人人可写，它不可信就该被忽略，而不是拿来覆盖本机既有授权。
-        // 合法管理端从不写出验不过签的激活书，所以「验不过」只可能是别人写的垃圾。
-        // 注意这不会放松防篡改：验不过的东西一律不采纳，用户改桶里的对象一样占不到便宜。
-        if (lic === null) {
-          storage.setSettings({ activationLic: null })
-        } else if (licTrusted(lic, id)) {
-          storage.setSettings({ activationLic: lic })
-          bumpFloor(Number(lic.issuedAt))
-        } else {
-          console.warn('[activation] 云端激活书不可信（验签失败或为重放旧件），已忽略并维持本地授权')
-        }
-        // 时钟锚注入。顺序有讲究：issuedAt（管理端时钟，可能偏快）只升不降先进，
-        // 服务器 Date 头（权威）最后进且升降皆从 —— 管理端时钟偏快留下的高锚被服务器时间纠回。
-        // 只吃【可信】激活书的 issuedAt：否则别人往你的 lic 里塞个远期 issuedAt 就能把锚拉到未来，
-        // 等于隔空把你的时钟判成异常。
-        if (lic && licTrusted(lic, id) && Number(lic.issuedAt)) bumpAnchor(Number(lic.issuedAt))
-        const sd = share.serverDate && share.serverDate()
-        if (sd) setAnchorAuthoritative(sd)
-      } catch (e) { console.warn('[activation] 拉取激活书失败（维持本地状态）：', e.message) }
+    if (!share.configured()) {
+      note('lic', 'unconfigured', '未配置在线凭证，不联网（维持本地状态）')
+      return current()
     }
+    try { await pullLic() } catch (e) { note('lic', 'internal', `激活书处理异常：${(e && e.message) || e}`, 'warn') }
     return current()
+  }
+  async function pullLic() {
+    const id = deviceId()
+    let lic
+    try {
+      lic = await share.getJsonStrict(K.lic(id))
+    } catch (e) {
+      const c = classify(e)
+      note('lic', c.key, `激活书 ${c.text}（维持本地状态）`, 'warn')
+      return
+    }
+    // 落缓存的口径（治「任何持包用户把别人的 lic 覆写成 {} 就能远程停用对方」）：
+    //   · 确凿 404（getJsonStrict 返回 null）→ 管理端确实没签发/已删除 → 清缓存
+    //   · 验签通过、非重放、非远期          → 采纳
+    //   · 其余（空对象 / 篡改 / 他机的 / 重放的旧件 / 远期件）→ 【不动缓存】
+    // 关键在第三条：桶里那个对象人人可写，它不可信就该被忽略，而不是拿来覆盖本机既有授权。
+    // 合法管理端从不写出验不过签的激活书，所以「验不过」只可能是别人写的垃圾。
+    // 注意这不会放松防篡改：验不过的东西一律不采纳，用户改桶里的对象一样占不到便宜。
+    // 判一次、用到底：采纳与下面的锚注入必须是同一个结论（下限在采纳时会被抬高）
+    const why = lic === null ? null : licRejectWhy(lic, id)
+    if (lic === null) {
+      storage.setSettings({ activationLic: null })
+      note('lic', '404', '激活书 404（未签发 / 已删除）→ 清本地缓存')
+    } else if (!why) {
+      storage.setSettings({ activationLic: lic })
+      bumpFloor(Number(lic.issuedAt))
+      note('lic', 'ok:' + lic.issuedAt, `激活书 200 采纳 · ${lic.status} ${lic.plan || '—'} · 签发 ${iso(lic.issuedAt)}`)
+    } else {
+      note('lic', why.key, `激活书 ${why.text}（已忽略，维持本地授权）`, 'warn')
+    }
+    // 时钟锚注入。顺序有讲究：issuedAt（管理端时钟，可能偏快）只升不降先进，
+    // 服务器时间（权威）最后进且升降皆从 —— 管理端时钟偏快留下的高锚被服务器时间纠回。
+    // 只吃【可信】激活书的 issuedAt：否则别人往你的 lic 里塞个远期 issuedAt 就能把锚拉到未来，
+    // 等于隔空把你的时钟判成异常；远期件（文件头 ④）同样不许进。
+    if (lic && !why && Number(lic.issuedAt)) bumpAnchor(Number(lic.issuedAt))
+    const sn = share.serverNow ? share.serverNow() : (share.serverDate && share.serverDate())
+    if (sn) setAnchorAuthoritative(sn)
   }
 
   // ---- 心跳：上报设备信息 + 顺带拉激活书（管理端的激活/撤销最迟一跳自动生效）----
@@ -314,29 +414,36 @@ module.exports = (share, storage) => {
     try { user = os.userInfo().username || '' } catch { /* 域账号偶发拿不到 */ }
     let app = ''
     try { app = require('electron').app.getVersion() } catch { /* 测试脚本环境 */ }
-    // 明文只留「不是个人信息、且管理端排序/统计要用」的：版本 / 系统 / 在线时间 / 自认状态。
-    // 主机名 / 用户名 / MAC / 机器码封进 sec，只有管理端登录后解得开（见 sealDev）。
-    await share.putJson(K.dev(id), {
-      kind: 'satsim-mgr-dev', v: 1, id,
-      app,
-      os: `${os.platform()} ${os.release()}`, arch: os.arch(),
-      firstSeen, lastSeen: Date.now(),
-      state: st.state,             // 设备自认状态，供管理端对账（权威仍是 lic + 签名）
-      sec: sealDev({
-        host: os.hostname(), user,
-        mac: physicalMacs(),
-        mid: String(s.deviceId || '')   // 原始机器码：管理员机 id 被映射成 master*，这里补回派生短码
+    try {
+      // 明文只留「不是个人信息、且管理端排序/统计要用」的：版本 / 系统 / 在线时间 / 自认状态。
+      // 主机名 / 用户名 / MAC / 机器码封进 sec，只有管理端登录后解得开（见 sealDev）。
+      await share.putJson(K.dev(id), {
+        kind: 'satsim-mgr-dev', v: 1, id,
+        app,
+        os: `${os.platform()} ${os.release()}`, arch: os.arch(),
+        firstSeen, lastSeen: Date.now(),
+        state: st.state,             // 设备自认状态，供管理端对账（权威仍是 lic + 签名）
+        sec: sealDev({
+          host: os.hostname(), user,
+          mac: physicalMacs(),
+          mid: String(s.deviceId || '')   // 原始机器码：管理员机 id 被映射成 master*，这里补回派生短码
+        })
       })
-    })
-    // 名册自愈：不在册才写（写的是 id 列表，不含易变量 → 仅两台新设备同时首跳才可能互踩，
-    // 踩了下一跳自愈）。
-    const reg = await share.getJson(K.registry(), null) || { kind: 'satsim-mgr-registry', v: 1, ids: [] }
-    if (!Array.isArray(reg.ids)) reg.ids = []
-    if (!reg.ids.includes(id)) {
-      reg.ids.push(id)
-      reg.updatedAt = Date.now()
-      await share.putJson(K.registry(), reg)
+      // 名册自愈：不在册才写（写的是 id 列表，不含易变量 → 仅两台新设备同时首跳才可能互踩，
+      // 踩了下一跳自愈）。
+      const reg = await share.getJson(K.registry(), null) || { kind: 'satsim-mgr-registry', v: 1, ids: [] }
+      if (!Array.isArray(reg.ids)) reg.ids = []
+      if (!reg.ids.includes(id)) {
+        reg.ids.push(id)
+        reg.updatedAt = Date.now()
+        await share.putJson(K.registry(), reg)
+      }
+    } catch (e) {
+      const c = classify(e)
+      note('beat', c.key, `心跳 ${c.text}`, 'warn')
+      throw e
     }
+    note('beat', 'ok', '心跳 200')
     return st
   }
 
@@ -349,10 +456,12 @@ module.exports = (share, storage) => {
   // 「跨越到期时刻」「回拨触发 clock」的状态翻转都由这层前后对比广播出去。
   async function withNotify(work, tag) {
     bumpAnchor(Date.now())
-    const before = JSON.stringify(current())
+    const prev = current()
+    const before = JSON.stringify(prev)
     try { await work() } catch (e) { console.warn(`[activation] ${tag}失败：`, e.message) }
     persistAnchor()
     const st = current()
+    if (st.state !== prev.state) { try { logger().info(`状态 ${prev.state} → ${st.state}${clockNote()}`) } catch { /* 日志写不进不影响授权 */ } }
     if (_notify && JSON.stringify(st) !== before) _notify(st)
     return st
   }
@@ -361,6 +470,7 @@ module.exports = (share, storage) => {
   function start(notify) {
     _notify = notify || null
     if (_timer) return
+    try { logger().info(`启动 · 设备 ${deviceId()} · 状态 ${current().state}`) } catch { /* 同上 */ }
     setTimeout(() => { tick() }, FIRST_BEAT_DELAY_MS)
     _timer = setInterval(() => { tick() }, HEARTBEAT_MS)
     _licTimer = setInterval(() => { tickLic() }, LIC_POLL_MS)

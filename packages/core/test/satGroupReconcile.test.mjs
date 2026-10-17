@@ -170,4 +170,27 @@ const ids = (g) => g.sats.map((s) => s.id)
   eq(rep[0].removed.length, 1, '跨会话也报告移除')
 }
 
+// —— 11. 页面 probe：合成号段（800000 起：导入点序列星 / 自定义星座 / GPS 年历 / 天线树虚拟星 / 向导预览）恒不参与核对 ——
+// 回归 2026-10-16 体检二档：satGrpSweep 原先只豁免 >= 900000（NORAD_BASE），导入的点序列星（800000 段，不进全量池）
+// 进了卫星组，隔一份更新的目录就被当离轨删掉（与 customSats.js 的注释不符）。按页面源码取出 probe 那一行求值，跟真实的 reconcile 跑两份目录
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const i = page.indexOf('function satGrpSweep() {'), j = page.indexOf('\n}\n', i)
+  const sw = i >= 0 && j > i ? page.slice(i, j) : ''
+  const m = /const probe = (\(id\) => \(.*\))\n/.exec(sw)
+  ok(!!m, '页面 satGrpSweep 的 probe 取得出来')
+  const base = /const EPHEM_NORAD_BASE = (\d+)/.exec(page)
+  ok(!!base && Number(base[1]) === 800000, '点序列号段起点 800000（与 customSats.js 的 EPHEM_NORAD_BASE 同段）')
+  const probe = new Function('EPHEM_NORAD_BASE', 'idx', 'return ' + m[1])(Number(base[1]), new Set(['111']))
+  ok(probe(111) === true && probe(799999) === false && probe(800000) === null && probe('899999') === null && probe(1700001) === null, 'probe 边界：真实号照常核对，800000 起一律 null')
+  store.clear()
+  const G = useSatGroups()
+  const g = G.add([{ noradId: 111, name: '在轨' }, { noradId: 222, name: '离轨' }, { noradId: 800001, name: '点序列' }, { noradId: 899999, name: '点序列末号' }, { noradId: 900003, name: '合成' }], '混合组')
+  G.reconcile(probe, T1)
+  G.reconcile(probe, T2)
+  eq(ids(G.find(g.id)), ['111', '800001', '899999', '900003'], '两份更新的目录之后：只删真离轨的那颗，点序列星 / 合成星留着')
+  ok(!satOf(G.find(g.id), 800001).missAt && !satOf(G.find(g.id), 899999).missAt, '点序列星连缺席账都不记')
+}
+
 console.log(`satGroupReconcile: ${pass} 项断言全部通过`)

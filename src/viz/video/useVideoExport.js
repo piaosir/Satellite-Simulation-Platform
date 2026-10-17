@@ -113,7 +113,8 @@ const p2 = (n) => String(n).padStart(2, '0')
  *   stageEl(),                         取景所在的舞台元素（地图区，CSS 尺寸即屏上画面）
  *   isFlat(),                          当前是不是 2D 平面图
  *   scene(), flat(),                   两个渲染器（3D：beginCapture / captureFrame / endCapture；2D：exportRender / ensureImagery）
- *   prepare2D(), finish2D(),           2D 导出前后（填充改走 CPU 分带，同 PNG / PDF 导出）
+ *   prepare2D(), finish2D(),           2D 导出前后（填充改走 CPU 分带，同 PNG / PDF 导出；其间宿主的星下点跟随不按墙钟节流：
+ *                                      每帧 clockSetTime 落定时已按该帧星下点对中，这里出帧不必另管跟随）
  *   tzMode(),                          显示时区档位
  *   timeline(),                        { fixed, startMs, stopMs, viewLo, viewHi }
  *   sources(),                         面板里的候选：{ sats, stations, points, antennas, activeAnt }

@@ -247,23 +247,55 @@ const ecefToTeme = (v, gmst) => rot3(v, -gmst)
 /* ===================== 组合：任意帧 <-> TEME ===================== */
 const FRAMES = ['J2000', 'MOD', 'TOD', 'TEME', 'FIXED']
 // 外部星历里出现的帧名 -> 本模块的五档。未知返回 ''（调用方点名拒收）。
+// TDR（CCSDS「True of Date Rotating」= GTOD）是地固旋转系：TOD 经 GAST 落地、不含极移 —— 与本模块 FIXED
+// （TEME 经 GMST82 落地 = TOD 经 GMST + 时差方程落地）同一定义，不是惯性 TOD。
 const FRAME_ALIAS = {
   J2000: 'J2000', EME2000: 'J2000', ICRF: 'J2000', GCRF: 'J2000', INERTIAL: 'J2000',
-  MEANOFDATE: 'MOD', MOD: 'MOD', MEANOFEPOCH: 'J2000',
+  MEANOFDATE: 'MOD', MOD: 'MOD',
   TRUEOFDATE: 'TOD', TOD: 'TOD',
-  TEME: 'TEME', TEMEOFDATE: 'TEME', TEMEOFEPOCH: 'TEME',
-  FIXED: 'FIXED', ECEF: 'FIXED', ECF: 'FIXED', EFG: 'FIXED', ITRF: 'FIXED', WGS84: 'FIXED'
+  TEME: 'TEME', TEMEOFDATE: 'TEME',
+  FIXED: 'FIXED', ECEF: 'FIXED', ECF: 'FIXED', EFG: 'FIXED', ITRF: 'FIXED', WGS84: 'FIXED', TDR: 'FIXED'
 }
+// 「某历元」帧（STK 的 MeanOfEpoch / TrueOfEpoch / TEMEOfEpoch）：轴钉在【帧历元】那一刻、此后不再随日期转 ——
+// 既不是 J2000（除非帧历元恰为 J2000.0），也不是「of date」。帧历元离 J2000 每年差约 50″（2026 年约 0.36°），
+// 故不给帧历元就定不了帧：normFrame 认不出（返回 ''，调用方拒收）；给了帧历元由解析端用 ofEpochToJ2000 一次换到 J2000。
+const OF_EPOCH = { MEANOFEPOCH: 'MOD', TRUEOFEPOCH: 'TOD', TEMEOFEPOCH: 'TEME' }
+const frameToken = (name) => String(name == null ? '' : name).toUpperCase().replace(/[^A-Z0-9]/g, '')
 function normFrame(name) {
-  const k = String(name == null ? '' : name).toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const k = frameToken(name)
   if (FRAME_ALIAS[k]) return FRAME_ALIAS[k]
   if (/^ITRF\d*$/.test(k) || /^IGS\d+$/.test(k) || /^IGB\d+$/.test(k) || /^ITRF\d+$/.test(k)) return 'FIXED'
   return ''
 }
+// 「某历元」帧名 -> 它冻结的那一档（'MOD' | 'TOD' | 'TEME'）；不是「某历元」帧返回 ''
+const ofEpochBase = (name) => OF_EPOCH[frameToken(name)] || ''
+// 帧名 -> 五档：空（null / ''）按 TEME（平台缺省）；认不出的（含缺帧历元的「某历元」帧）抛错，绝不静默当 TEME
+function frameKey(frame) {
+  if (frame == null || frame === '') return 'TEME'
+  const f = normFrame(frame)
+  if (f) return f
+  throw new Error('参考系 ' + frame + (ofEpochBase(frame) ? ' 缺帧历元' : ' 不受支持'))
+}
+// 「某历元」帧 <-> J2000：帧历元 tE（TT 儒略世纪数）处的刚性常转动，速度同转、无牵连项。
+// base 取 ofEpochBase 的返回值；nu 为帧历元处的章动角（可省）。
+function ofEpochToJ2000(v, base, tE, nu) {
+  const n = base === 'MOD' ? null : (nu || nutationAngles(tE))
+  let w = v
+  if (base === 'TEME') w = temeToTod(w, tE, n)
+  if (base === 'TEME' || base === 'TOD') w = todToMod(w, tE, n)
+  return modToJ2000(w, tE)
+}
+function j2000ToOfEpoch(v, base, tE, nu) {
+  const n = base === 'MOD' ? null : (nu || nutationAngles(tE))
+  let w = j2000ToMod(v, tE)
+  if (base === 'TEME' || base === 'TOD') w = modToTod(w, tE, n)
+  if (base === 'TEME') w = todToTeme(w, tE, n)
+  return w
+}
 
 // 位置（km）从任一帧换到 TEME。gmst 由调用方给（省一次 gstime）。
 function toTeme(v, frame, t, gmst, nu) {
-  const f = normFrame(frame) || 'TEME'
+  const f = frameKey(frame)
   if (f === 'TEME') return { x: v.x, y: v.y, z: v.z }
   if (f === 'FIXED') return ecefToTeme(v, gmst)
   const n = nu || nutationAngles(t)
@@ -272,7 +304,7 @@ function toTeme(v, frame, t, gmst, nu) {
   return todToTeme(modToTod(j2000ToMod(v, t), t, n), t, n)
 }
 function fromTeme(v, frame, t, gmst, nu) {
-  const f = normFrame(frame) || 'TEME'
+  const f = frameKey(frame)
   if (f === 'TEME') return { x: v.x, y: v.y, z: v.z }
   if (f === 'FIXED') return temeToEcef(v, gmst)
   const n = nu || nutationAngles(t)
@@ -285,13 +317,13 @@ function fromTeme(v, frame, t, gmst, nu) {
 // 速度（km/s）：地固系要补地球自转牵连项 omega x r，其余帧只是刚性旋转。
 // rEcef 是该刻的地固位置（km）。
 function velToTeme(vel, pos, frame, t, gmst, nu) {
-  const f = normFrame(frame) || 'TEME'
+  const f = frameKey(frame)
   if (f !== 'FIXED') return toTeme(vel, frame, t, gmst, nu)
   const withSpin = { x: vel.x - OMEGA_E * pos.y, y: vel.y + OMEGA_E * pos.x, z: vel.z }
   return ecefToTeme(withSpin, gmst)
 }
 function velFromTeme(vel, posTeme, frame, t, gmst, nu) {
-  const f = normFrame(frame) || 'TEME'
+  const f = frameKey(frame)
   if (f !== 'FIXED') return fromTeme(vel, frame, t, gmst, nu)
   const e = temeToEcef(vel, gmst), r = temeToEcef(posTeme, gmst)
   return { x: e.x + OMEGA_E * r.y, y: e.y - OMEGA_E * r.x, z: e.z }
@@ -308,5 +340,5 @@ export {
   rot1, rot2, rot3,
   precessionAngles, delaunay, meanObliquity, nutationAngles,
   j2000ToMod, modToJ2000, modToTod, todToMod, todToTeme, temeToTod, temeToEcef, ecefToTeme,
-  normFrame, toTeme, fromTeme, velToTeme, velFromTeme, contextAt
+  normFrame, frameKey, ofEpochBase, ofEpochToJ2000, j2000ToOfEpoch, toTeme, fromTeme, velToTeme, velFromTeme, contextAt
 }

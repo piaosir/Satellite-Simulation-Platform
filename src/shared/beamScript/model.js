@@ -6,7 +6,7 @@
 //   polygons    显示中的 Polygon（协调区多边形）
 //   points / stations / trajectories   标记层（点标记 / 地球站 / 航迹）
 //   meta        { app, version, simTime(ms), lang, scope?, title? }
-// 另一来源是文件管理「GXT/KML 管理」页：库里的波束不经绘制直接给（见 coverageLib.js），只有 library，scope = 'library'。
+// 另一来源是文件管理「波束地图管理」页：库里的波束不经绘制直接给（见 coverageLib.js），只有 library，scope = 'library'。
 // 输出是稳定、文档化、可结构化克隆的纯数据。★ 字段名就是公开 API（类型声明见 dts.js）：改名 = 打断用户脚本，
 // 只增不改；要改先升 MODEL_VERSION 并在 dts.js 里标注。
 //
@@ -44,12 +44,14 @@ const UNIT_OF_TYPE = { EIRP: 'dBW', GT: 'dB/K' }
 // meta.title 是给输出文件 / 文档起名用的（模板 `${data.meta.title}.gxt`）：Windows 文件名禁用字符与控制字符折成「-」
 const titleOf = (v) => str(v).replace(/\s*[\\/:*?"<>|\u0000-\u001f][\s\\/:*?"<>|\u0000-\u001f]*/g, '-').replace(/\s+/g, ' ').trim().replace(/^[.\s-]+|[.\s-]+$/g, '')
 
+// 电平缺省（g 为 null / 未给）= 没有数值的环（覆盖边界之类，脚本导入的私有格式常见）→ level: null 照收；
+// g 给了却不是数（脏数据）仍剔除
 function contoursOf(list, fbColor) {
   const out = []
   for (const c of (list || [])) {
     const level = num(c && c.g)
     const points = ptsOf(c && c.p)
-    if (level == null || points.length < 2) continue
+    if ((level == null && c && c.g != null) || points.length < 2) continue
     const o = { level, points, closed: isClosed(points), color: hex6(c.color, fbColor) }
     if (c.name) o.name = str(c.name)
     out.push(o)

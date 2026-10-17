@@ -11,6 +11,8 @@
 // 解析高斯天线（*.gauss.json，STK Gaussian 参数记录，见 ./gaussStk.js）：buildBin 按记录现铺网格写进 .grdbin（数组消费者
 // 照旧吃网格），表头逐 set 带 an 参数；loadBin 还原 beam.an，sampleBeamAt / peakDb 走闭式精确式，不插值、不取节点。
 const gaussStk = require('./gaussStk.js');
+const polKernel = require('./polKernel.js');   // 极化内核（E-03）：共极化判定与渲染端同一份逻辑（src/viz/grd/polKernel.js 镜像）
+const _ev = new Float64Array(4);               // 解析波束四分量求值的暂存
 
 // ===== WGS84（src/viz/wgs84.js 同源）=====
 const A = 6378.137, B = 6356.7523142, F = (A - B) / A, E2 = 2 * F - F * F, RS_GEO = 42164.17;
@@ -147,9 +149,14 @@ function sampleBeamAt(beam, igrid, basis, lon, lat, opt, tgtAltKm) {
   const g = beam.grid, NX = g.NX, NY = g.NY;
   const fc = (xy[0] - g.XS) / ((g.XE - g.XS) / (NX - 1));
   const fr = (xy[1] - g.YS) / ((g.YE - g.YS) / (NY - 1));
-  if (fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) return null;  // 站点在方向图网格域外
+  // 站点在方向图网格域外 → 无值；口径照射解析波束（an.nowin）除外：按方向走闭式、不截窗（E-01；与渲染端 sampleBeamAtParam 同判据）
+  if ((fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) && !(beam.an && beam.an.nowin)) return null;
   let p1, p2;
-  if (beam.an) {
+  if (beam.an && beam.an.kind === 'aperture') {
+    // 口径照射档：四分量闭式（共极化 + 交叉极化，见 apertureModel.js），与渲染端 coverage.samplePowAt 同一份求值
+    gaussStk.anEval(beam.an, a, b, c, _ev);
+    p1 = _ev[0] * _ev[0] + _ev[1] * _ev[1]; p2 = _ev[2] * _ev[2] + _ev[3] * _ev[3];
+  } else if (beam.an) {
     // 解析波束：取值域仍是上面那道网格窗口（= 铺网格的窗口，与渲染端同一判据），域内按闭式精确式求值。
     // (a,b,c) = 单位矢量 e 在正交归一基底上的分量，本就单位长（anGainDbi 的 atan2(|u×b|, u·b) 对模长也不敏感）。
     // 交叉极化恒 0 —— 与合成高斯 GRD（c2 ≡ 0）同一极化口径。
@@ -236,17 +243,31 @@ function parseGrd(text) {
 const MAGIC = 'GRDB';
 // 解析天线记录：按参数现铺网格（窗口 / 分辨率 / 节点值与渲染端 src/viz/grd/gaussStk.js 逐位一致），数据区照旧落四条复分量；
 // 表头 set 多一个 an {az,el,th3,g0,k,back}、顶层多一个 anWin —— loadBin 据此还原闭式求值描述子。旧 .grdbin 没有这两项，照旧载入。
+// 合成 GRD 表头 SYNTHMETA 里的逐波束色号数组（fc[i] = 第 i 个 set 的色号 | null）；没有 / 解析不了 → null。只看 ++++ 之前的表头。
+function synthMetaFc(text) {
+  const end = text.indexOf('++++');
+  const head = end > 0 ? text.slice(0, Math.min(end, 65536)) : text.slice(0, 65536);
+  const m = /^SYNTHMETA\s+(\{.*\})\s*$/m.exec(head);
+  if (!m) return null;
+  try { const meta = JSON.parse(m[1]); return Array.isArray(meta.fc) ? meta.fc : null; } catch (e) { return null; }
+}
 function buildBin(text) {
   const analytic = gaussStk.isAnalyticText(text);
   const g = analytic ? gaussStk.materializeText(text) : parseGrd(text);
   const header = { v: 1, igrid: g.igrid, icomp: g.icomp, ncomp: g.ncomp, sets: [] };
   if (analytic) header.anWin = g.sets[0].an.win;
+  // 逐波束频率复用色号 fc（波束合成「自动分配」的 b.fc，0 起）：解析记录取 beams[i].fc，合成 GRD 取表头 SYNTHMETA.fc[i]；
+  // 落进表头 sets[i].fc → loadBin 挂到 beam.fc（C/CCI 着色读它；没分配的波束不带）
+  const fcs = analytic ? g.rec.beams.map((b) => b.fc) : synthMetaFc(text);
   let dataBytes = 0;
-  for (const s of g.sets) {
+  g.sets.forEach((s, si) => {
     const n = s.NX * s.NY, hs = { XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY, off: dataBytes, n };
-    if (s.an) hs.an = { az: s.an.az, el: s.an.el, th3: s.an.th3, g0: s.an.g0, k: s.an.k, back: s.an.back };
+    // 口径照射档：表头存记录里的扁平参数原样（含斜视前的视轴）+ kind，loadBin 经同一个 anBeamOf 还原逐位相同的描述子
+    if (s.an && s.an.kind === 'aperture') hs.an = { ...g.rec.beams[si], kind: 'aperture' };
+    else if (s.an) hs.an = { az: s.an.az, el: s.an.el, th3: s.an.th3, g0: s.an.g0, k: s.an.k, back: s.an.back };
+    if (fcs && Number.isInteger(fcs[si]) && fcs[si] >= 0) hs.fc = fcs[si];
     header.sets.push(hs); dataBytes += n * 4 * 4;
-  }
+  });
   const headerJson = Buffer.from(JSON.stringify(header), 'utf8');
   const headEnd = 12 + headerJson.length;
   const pad = (4 - (headEnd % 4)) % 4;
@@ -281,7 +302,8 @@ function loadBin(buf) {
       grid: { XS: s.XS, YS: s.YS, XE: s.XE, YE: s.YE, NX: s.NX, NY: s.NY },
       c1re: view(s.off, s.n), c1im: view(s.off + s.n * 4, s.n), c2re: view(s.off + 2 * s.n * 4, s.n), c2im: view(s.off + 3 * s.n * 4, s.n)
     };
-    if (s.an) bm.an = gaussStk.anBeamOf(s.an, header.anWin);   // 解析波束：取值走闭式（sampleBeamAt / peakDb）
+    if (s.an) bm.an = gaussStk.anBeamOf(s.an, header.anWin, s.an.kind);   // 解析波束：取值走闭式（sampleBeamAt / peakDb）
+    if (Number.isInteger(s.fc)) bm.fc = s.fc;                     // 频率复用色号（见 buildBin）
     return bm;
   });
   return { igrid: header.igrid, icomp: header.icomp, ncomp: header.ncomp, beams };
@@ -353,7 +375,10 @@ function peakDb(loaded, cfg) {
   let best = null, bestAn = null;                 // bestAn：解析波束的峰值（dB，精确值，不过线性往返）
   const anOk = pol !== 'P2' && pol !== 'P1/P2' && pol !== 'P2/P1';
   for (const bm of beams) {
-    if (bm.an) { if (anOk && (bestAn === null || bm.an.g0 > bestAn)) bestAn = bm.an.g0; continue; }
+    if (bm.an && bm.an.kind === 'aperture') {
+      // 口径照射档：视轴上交叉极化为 0 → RSS / 共极化分量的峰值 = g0；交叉极化 / 比值口径不在视轴上 → 落到下面的节点扫描
+      if (pol === 'RSS' || ((!bm.an.cp || bm.an.basis === 'circ') && pol === 'P' + bm.an.coSlot)) { if (bestAn === null || bm.an.g0 > bestAn) bestAn = bm.an.g0; continue; }
+    } else if (bm.an) { if (anOk && (bestAn === null || bm.an.g0 > bestAn)) bestAn = bm.an.g0; continue; }
     const n = bm.grid.NX * bm.grid.NY;
     for (let i = 0; i < n; i++) {
       let p1, p2;
@@ -422,23 +447,9 @@ function sampleAllCtx(ctx, lon, lat) {
 //
 // 稳妥判据只有一个：**波束峰值处占优的那个分量就是共极化**。这在物理上无可争议
 // （峰值处交叉极化必远弱于共极化），且与文件怎么写、icomp 标几都无关。
-function coPolIndexOf(beam) {
-  if (beam._coPol === 1 || beam._coPol === 2) return beam._coPol;
-  if (beam.an) return 1;                          // 解析波束：只有分量 1（铺出的网格 c2 ≡ 0，扫一遍也是 1，省掉 O(N)）
-  const n = beam.grid.NX * beam.grid.NY;
-  let best = -1, bi = 0;
-  for (let i = 0; i < n; i++) {
-    const p1 = beam.c1re[i] * beam.c1re[i] + beam.c1im[i] * beam.c1im[i];
-    const p2 = beam.c2re[i] * beam.c2re[i] + beam.c2im[i] * beam.c2im[i];
-    const t = p1 + p2;
-    if (t > best) { best = t; bi = i; }
-  }
-  const p1 = beam.c1re[bi] * beam.c1re[bi] + beam.c1im[bi] * beam.c1im[bi];
-  const p2 = beam.c2re[bi] * beam.c2re[bi] + beam.c2im[bi] * beam.c2im[bi];
-  try { Object.defineProperty(beam, '_coPol', { value: p2 > p1 ? 2 : 1, writable: true, enumerable: false }); }
-  catch (e) { /* 冻结对象：不缓存也能用，只是每次重算 */ }
-  return p2 > p1 ? 2 : 1;
-}
+// 本体搬进极化内核（packages/core/utils/polKernel.js，与渲染端 src/viz/grd/polKernel.js 逐字同体）：渲染端性能表的 Xpol
+// 与这里的 C/XPI 同一个判据。解析波束：高斯档只有分量 1；口径照射档按记录的设计极化落槽（linY / lhcp → 2）。
+function coPolIndexOf(beam) { return polKernel.coPolIndexOf(beam); }
 
 /**
  * 逐点 XPD（dB）—— 共极化对交叉极化的功率比。

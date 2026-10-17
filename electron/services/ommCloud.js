@@ -10,7 +10,8 @@
 // （electron/services/shareConfig.js，已 gitignore、随安装包分发），不再另造第二份密钥文件。
 // 前提：该子账号的策略里要把 omm/* 也加上（PutObject/GetObject/HeadObject）——见 shareConfig.example.js。
 // 没配到 / 没权限 → PUT 403 → 静默跳过回传，下载兜底照常工作。
-const https = require('https')
+// 传输走 netFetch（下载与回传都是）：优先 Electron net —— 单位内网经代理 / 审计网关出网、热点慢链路都靠它。
+const netFetch = require('./netFetch')
 const zlib = require('zlib')
 // 压缩 / 解压走线程池（异步）：17 组全量 level 9 压一次 130–300 ms，同步做会把主进程（= 所有窗口的 IPC）整段冻住。
 // 同一个 zlib、同一组参数，产物与同步版逐字节相同
@@ -28,7 +29,9 @@ const objKey = (g) => `${PREFIX}csv_${g}.csv.gz`
 const MAX_GZ = 8 * 1024 * 1024          // 下载体积上限：桶被写脏也不至于拖垮客户端（现最大的两件：active 组 gz 约 0.8MB、satcat 约 1.4MB）
 const MAX_RAW = 64 * 1024 * 1024        // 解压后上限（zip bomb 防护）
 const STALE_HOURS = 6                   // 云端副本超过此时长才允许回传：一天最多几次覆盖，够新就不动
-const TIMEOUT = 20000
+const TIMEOUT = 20000                   // 下载：无进展超时（热点上 1 MB 的件要走几十秒，按总时长卡会次次失败）
+const MAX_MS = 3 * 60_000               // 下载：总时限，兜慢滴
+const PUT_TIMEOUT = 60000               // 回传：无进展超时（上传进度算进展）
 
 // 与 omm.js / fetch-omm-snapshot.mjs 同一判据：是 CelesTrak OMM CSV 才算数据有效。
 // 这是【缺省档】——桶里还躺着非星历的数据集（omm/csv_satcat.csv.gz，编目里没有 MEAN_MOTION 列），
@@ -54,6 +57,7 @@ function cfg() {
         _cfg.id = s.secretId; _cfg.key = s.secretKey
         if (s.bucket && !envBucket) _cfg.bucket = s.bucket
         if (s.region && !envRegion) _cfg.region = s.region
+        if (s.endpoint) _cfg.endpoint = s.endpoint     // 只给验证台 / 单测：指到本机回环服务器（真凭证文件里没有这一项）
       }
     } catch { /* 无 shareConfig.js：只读模式 */ }
   }
@@ -63,12 +67,19 @@ function cfg() {
 }
 
 const host = () => `${cfg().bucket}.cos.${cfg().region}.myqcloud.com`
+const baseUrl = () => (cfg().endpoint ? String(cfg().endpoint).replace(/\/+$/, '') : `https://${host()}`)
 const canUpload = () => !!(cfg().id && cfg().key)
+
+// 本机时钟纠偏（与 share.js 同一口径，同 COS 官方 SDK 的 CorrectClockSkew）：回传撞上时钟类 403
+// （RequestTimeTooSkewed / AccessDenied「Request has expired」）时按响应 Date 头算出偏移、重签重发一次
+let _clockOffset = 0
+const SKEW_MIN_MS = 30_000
+const xmlTag = (text, tag) => { const m = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(String(text || '')); return m ? m[1].trim() : '' }
 
 // COS q-sign 签名（与 scripts/publish-cos.mjs 同一实现）：只签 method + pathname，不签 header。
 function authorization(method, pathname) {
   const c = cfg()
-  const now = Math.floor(Date.now() / 1000) - 60
+  const now = Math.floor((Date.now() + _clockOffset) / 1000) - 60
   const exp = now + 900
   const signTime = `${now};${exp}`
   const signKey = createHmac('sha1', c.key).update(signTime).digest('hex')
@@ -81,61 +92,23 @@ function authorization(method, pathname) {
   ].join('&')
 }
 
-// GET/HEAD：优先 Electron net（走 Chromium 网络栈，遵循系统代理），无 Electron 时退 Node https。
-// 与 omm.js 的 httpGetText 同思路，但按二进制收（gzip），且要读响应头拿 Last-Modified。
-function fetchBin(method, key) {
-  const url = `https://${host()}/${key}`
-  return new Promise((resolve) => {
-    // 兜底定时器：超大对象中止 / 连接被黑洞时，可能既不 end 也不 error —— 保证 promise 一定落地，不悬住调用方。
-    let settled = false
-    const finish = (status, headers, body) => {
-      if (settled) return
-      settled = true
-      clearTimeout(guard)
-      resolve({ status: status || 0, headers: headers || {}, body: body || Buffer.alloc(0) })
-    }
-    const guard = setTimeout(() => finish(0), TIMEOUT + 2000)
-    let net = null
-    try { net = require('electron').net } catch {}
-    if (net && typeof net.request === 'function') {
-      const chunks = []
-      let size = 0
-      const req = net.request({ method, url })
-      req.on('response', (res) => {
-        res.on('data', (c) => {
-          if (method === 'HEAD') return
-          size += c.length
-          if (size > MAX_GZ) { try { req.abort() } catch {} ; return finish(0) }
-          chunks.push(Buffer.from(c))
-        })
-        res.on('end', () => finish(res.statusCode, res.headers, Buffer.concat(chunks)))
-        res.on('error', () => finish(0))
-      })
-      req.on('error', () => finish(0))
-      setTimeout(() => { if (!settled) { try { req.abort() } catch {} ; finish(0) } }, TIMEOUT)
-      try { req.end() } catch { finish(0) }
-      return
-    }
-    const req = https.request({ host: host(), method, path: '/' + key, timeout: TIMEOUT }, (res) => {
-      const chunks = []
-      let size = 0
-      res.on('data', (c) => {
-        if (method === 'HEAD') return
-        size += c.length
-        if (size > MAX_GZ) { req.destroy(); return finish(0) }
-        chunks.push(c)
-      })
-      res.on('end', () => finish(res.statusCode, res.headers, Buffer.concat(chunks)))
-      res.on('error', () => finish(0))
+// GET/HEAD（匿名公读）：按二进制收（gzip），要读响应头拿 Last-Modified。任何失败都落成 status 0，
+// 调用方据此回落（netFetch 保证一定落地：截断 / 黑洞 / 超上限都会结束）。
+// 不吃缓存：Chromium 磁盘缓存（no-store）与单位缓存代理（Cache-Control: no-cache）都绕开 ——
+// 吃到旧的 HEAD，「云端够新就不回传 / 不比本地新就不下载」两道闸全判错。
+async function fetchBin(method, key) {
+  try {
+    const r = await netFetch.request(`${baseUrl()}/${key}`, {
+      method, headers: { 'Cache-Control': 'no-cache' },
+      idleMs: TIMEOUT, maxMs: MAX_MS, maxBytes: method === 'HEAD' ? 0 : MAX_GZ
     })
-    req.on('error', () => finish(0))
-    req.on('timeout', () => { req.destroy(); finish(0) })
-    req.end()
-  })
+    return { status: r.status, headers: r.headers, body: r.body }
+  } catch (e) {
+    return { status: 0, headers: {}, body: Buffer.alloc(0), why: (e && e.message) || String(e) }
+  }
 }
 
-// 响应头取值：Electron net 的头是数组，Node https 是字符串
-const hdr = (h, name) => { const v = h && h[name]; return Array.isArray(v) ? v[0] : v }
+const hdr = netFetch.hdr
 
 // 查云端某组的元信息 → { lastModified:ISO, size } ；不存在/不可达 → null
 async function head(group) {
@@ -166,7 +139,7 @@ async function download(group, opts = {}) {
     }
     if (meta.size > MAX_GZ) { log.emit(`${tag}云镜像对象 ${fmtBytes(meta.size)} 超出 ${fmtBytes(MAX_GZ)} 上限，已拒绝`, 'warn'); return null }
     const r = await fetchBin('GET', objKey(group))
-    if (r.status !== 200 || !r.body.length) { log.emit(`${tag}云镜像下载失败（HTTP ${r.status || '连接中断'}）`, 'warn'); return null }
+    if (r.status !== 200 || !r.body.length) { log.emit(`${tag}云镜像下载失败（${r.status ? 'HTTP ' + r.status : (r.why || '连接中断')}）`, 'warn'); return null }
     let text = ''
     try { text = (await gunzipAsync(r.body, { maxOutputLength: MAX_RAW })).toString('utf8') }
     catch { text = r.body.toString('utf8') }   // 兼容万一存成了明文 CSV
@@ -179,22 +152,37 @@ async function download(group, opts = {}) {
   }
 }
 
-// 单次 PUT（Node https：与 publish-cos.mjs 同一条验证过的路径，需要 Content-Length，Electron net 不许手设）
-function put(key, buf) {
-  return new Promise((resolve) => {
-    const req = https.request({
-      host: host(), method: 'PUT', path: '/' + key, timeout: 60000,
-      headers: {
-        Authorization: authorization('put', '/' + key),
-        'Content-Length': buf.length,
-        'Content-Type': 'application/gzip'
+// 单次 PUT（失败一律落成 { ok:false, status, why }，不抛）。net 下不手设 Content-Length：
+// 整块体交给网络栈（不分块），长度由它自己算。时钟类 403 按服务器时间重签重发一次。
+async function put(key, buf) {
+  for (let skewLeft = 1; ;) {
+    let r
+    try {
+      r = await netFetch.request(`${baseUrl()}/${key}`, {
+        method: 'PUT', body: buf, idleMs: PUT_TIMEOUT, redirect: 'error',
+        headers: { Authorization: authorization('put', '/' + key), 'Content-Type': 'application/gzip' }
+      })
+    } catch (e) {
+      return { ok: false, status: e.status || 0, why: (e && e.message) || String(e) }
+    }
+    // 200 也要是 COS 自己回的（带 x-cos-request-id）：单位审计网关 / 门户代答的 200 网页不算传上去了
+    const fromCos = !!(hdr(r.headers, 'x-cos-request-id') || /tencent-cos/i.test(hdr(r.headers, 'server')))
+    if (r.status === 200) return fromCos ? { ok: true, status: 200 } : { ok: false, status: 200, why: 'HTTP 200 但不是 COS 应答（疑似被网关拦截）' }
+    const text = r.body.toString('utf8')
+    const code = xmlTag(text, 'Code'), msg = xmlTag(text, 'Message')
+    const skew = r.status === 403 && (code === 'RequestTimeTooSkewed' || (code === 'AccessDenied' && /expired|not yet/i.test(msg)))
+    if (skew && skewLeft > 0) {
+      const t = Date.parse(hdr(r.headers, 'date')) || Date.parse(xmlTag(text, 'ServerTime'))
+      if (t && Math.abs(Date.now() + _clockOffset - t) >= SKEW_MIN_MS) {
+        skewLeft--
+        _clockOffset = t - Date.now()
+        const d = Math.round(-_clockOffset / 1000)
+        log.emit(`众包回传：签名撞上时钟类 403，已按 COS 服务器时间重签（本机钟 ${d > 0 ? '+' : ''}${d} s）`, 'warn')
+        continue
       }
-    }, (res) => { res.resume(); res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode })) })
-    req.on('error', (e) => resolve({ ok: false, status: 0, why: (e && e.message) || String(e) }))
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, status: 0, why: '上传超时 60s' }) })
-    req.write(buf)
-    req.end()
-  })
+    }
+    return { ok: false, status: r.status, code, why: code ? `HTTP ${r.status} ${code}` : `HTTP ${r.status}` }
+  }
 }
 
 const _uploaded = new Set()   // 本进程内每组只回传一次，避免同一会话重复上传
@@ -233,9 +221,9 @@ async function maybeUpload(group, text, label, checkValid, tagOverride) {
     }
     if (r.status === 403) {
       _permDenied = true   // 凭证没有该前缀写权限：整个会话不再重试，避免每组一次无谓的上传
-      log.emit(`${tag}回传云镜像被拒绝（HTTP 403 —— 当前凭证无 ${PREFIX} 前缀写权限），本会话不再尝试回传`, 'warn')
+      log.emit(`${tag}回传云镜像被拒绝（${r.why}${r.code === 'AccessDenied' ? ` —— 当前凭证无 ${PREFIX} 前缀写权限` : ''}），本会话不再尝试回传`, 'warn')
     } else {
-      log.emit(`${tag}回传云镜像失败（${r.status ? 'HTTP ' + r.status : r.why || '网络不可达'}），不影响本机使用`, 'warn')
+      log.emit(`${tag}回传云镜像失败（${r.why || (r.status ? 'HTTP ' + r.status : '网络不可达')}），不影响本机使用`, 'warn')
     }
     return false
   } catch (e) {

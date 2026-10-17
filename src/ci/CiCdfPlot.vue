@@ -27,7 +27,9 @@ const props = defineProps({
   thresholdDb: { type: Number, default: null },
   // 图名（题行左侧）与出图默认文件名
   title: { type: String, default: 'C/I 累积分布' },
-  fileName: { type: String, default: '' }
+  fileName: { type: String, default: '' },
+  // 横轴名（C/XPI 随时间百分比那张图换成 C/XPI）
+  xLabel: { type: String, default: 'C/I (dB)' }
 })
 
 // 绘图矩形（px）
@@ -189,7 +191,7 @@ defineExpose({ svg: svgEl, exportPng })
       </template>
 
       <!-- 轴名 -->
-      <text :x="M.l + PW / 2" :y="H - 6" class="pl-axis" text-anchor="middle">C/I (dB)</text>
+      <text :x="M.l + PW / 2" :y="H - 6" class="pl-axis" text-anchor="middle">{{ xLabel }}</text>
       <text :x="14" :y="M.t + PH / 2" class="pl-axis" text-anchor="middle"
         :transform="`rotate(-90 14 ${M.t + PH / 2})`">超越时间 (%)</text>
     </svg>

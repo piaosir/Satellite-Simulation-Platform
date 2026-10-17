@@ -14,6 +14,9 @@
 // 纯数字口径（见 memory「链路预算纯数字口径」）：模型里不带任何达标/合格/资源判定一类的文字结论，
 // 只有数值、单位与出处。报告要说的话由读者从数字里读，不由软件替他下结论。
 
+// 参考文献只从标准台账（packages/core/data/standards.json）出，见 methodology ② 与 shared/stdLedger.js
+import { reportRefGroups } from './stdLedger.js'
+
 // —— 报告元信息（导出对话框填写，按窗口记住上次输入）——
 // 字段只留《技术文档标准模板》封面上真有栏位的那五项：名称 / 编号 / 密级 / 编制单位 / 日期。
 // 2026-08-02 精简（用户定）：阶段与公司名（与单位重复）、备注（不进任何文件）、项目名称，
@@ -112,6 +115,42 @@ export function defaultDocInfo(scheme, satName, lang, band) {
   }
 }
 
+// —— 报告名称的「钉住」（导出对话框按窗口存一份；全报告与 SLA 报告各存各的，规则相同）——
+// 报告名称走自动命名的规矩（同资源库条目名）：没改过就随当前卫星 / 频段 / 体制 / 语言重算，改过就钉住。
+// ★ 钉住的名字只对「它替换掉的那个自动名」有效：自动名变了（换了卫星 / 频段 / 语言）就回到新的自动名——
+//   否则 A 星改过一次名，切到 B 星导出时文件名已是 B 星，封面、Excel 首行、PDF 书签却仍印 A 星的名字。
+//   各自动名下的钉住名分开记，切回 A 星，A 星那个名字还在。
+// stored：本地存的 { title, titleDefault, pins }；老版本只存了一对 { title, titleDefault }，当作只钉了一条读进来。
+const TITLE_PIN_MAX = 32
+function titlePins(stored) {
+  const pins = {}
+  if (!stored || typeof stored !== 'object') return pins
+  if (stored.pins && typeof stored.pins === 'object') {
+    for (const k of Object.keys(stored.pins)) {
+      const v = stored.pins[k]
+      if (typeof v === 'string' && v.trim() && v.trim() !== k) pins[k] = v
+    }
+  } else if (typeof stored.title === 'string' && stored.title.trim() && stored.titleDefault && stored.title !== stored.titleDefault) {
+    pins[stored.titleDefault] = stored.title
+  }
+  return pins
+}
+// 打开对话框时显示的名称：当前自动名名下钉过就用钉住的，否则就是自动名
+export function resolveReportTitle(stored, autoTitle) {
+  return titlePins(stored)[autoTitle] || autoTitle
+}
+// 存盘：这次的名称记到当前自动名名下（与自动名相同或留空＝没钉，删掉这一条），只留最近 TITLE_PIN_MAX 条。
+// title / titleDefault 两键照旧写——老版本读这份存档时行为与从前一样。
+export function pinReportTitle(stored, autoTitle, title) {
+  const pins = titlePins(stored)
+  const t = String(title == null ? '' : title)
+  delete pins[autoTitle]
+  if (t.trim() && t.trim() !== autoTitle) pins[autoTitle] = t
+  const keys = Object.keys(pins)
+  for (let i = 0; i < keys.length - TITLE_PIN_MAX; i++) delete pins[keys[i]]
+  return { title: t, titleDefault: autoTitle, pins }
+}
+
 // —— 输入清单（可复算）——
 // 直接走各窗自己的 FIELD_GROUPS：那份声明里标签、单位、分组、target 都齐了，报告不再另立一份
 // 字段字典（另立必然与表单漂移——表单加一个字段，报告里就少一项，且没人会发现）。
@@ -120,7 +159,9 @@ export function defaultDocInfo(scheme, satName, lang, band) {
 //
 // 'station' 组（地球站库）按 side 拆成发射链/接收链两块并入两端站的块里——库里一份配置同时供着
 // 收发两端，平铺成一块的话读者分不清哪几行属于发信站。
-const OP_KEYS = { paPowerW: 'powerW' }   // target:'op' 的字段在 opt 里的键名
+// target:'op' 的字段在 opt 里的键名。功放功率预设 GSO / NGSO 叫 paPowerW、再生式叫 opPowerW，进求解器都是 opt.powerW
+// （只有「设置功放功率 / 设置工作点」方式才带；设置余量时功放是反解出来的，opt 里没有，这一行自然不出）
+const OP_KEYS = { paPowerW: 'powerW', opPowerW: 'powerW' }
 
 function fieldValue(f, params, side) {
   const { satParams = {}, linkParams = {}, opt = {} } = params || {}
@@ -133,13 +174,34 @@ function fieldValue(f, params, side) {
 }
 const emptyVal = (v) => (v === undefined || v === null || v === '' || v === '—')
 
+// 存值是代码、界面上给人看的是名字的字段：值 → 显示名。名字本身中英同形（Eb/N₀），不再过 translate。
+const VALUE_NAMES = {
+  noiseRatioMode: { ebno: 'Eb/N₀', esno: 'Es/N₀', snr: 'SNR' }
+}
+// 一格的显示串（null = 这一项不进清单）：
+//   · 对象 / 数组不是一格写得下的东西——3GPP 的物理层描述子（phy）就是，其各项已在详细预算「载波」段逐行列出；
+//   · 代码值换显示名（门限模式 ebno → Eb/N₀）；下拉选项若是 { value, label } 取 label；
+//   · 中文下拉值（UPC「否 / 是 / 自定义」、天线噪温模式「自动 / 自定义」）随报告语言翻；其余值（站名、数值）原样。
+function displayValue(f, v, t) {
+  if (v !== null && typeof v === 'object') return null
+  if (typeof v === 'boolean') return t(v ? '是' : '否')
+  const s = String(v)
+  const names = VALUE_NAMES[f.key]
+  if (names && Object.prototype.hasOwnProperty.call(names, s)) return names[s]
+  const opt = Array.isArray(f.options) ? f.options.find((o) => o && typeof o === 'object' && String(o.value) === s) : null
+  if (opt && opt.label != null) return t(String(opt.label))
+  return f.type === 'select' ? t(s) : s
+}
+
 function digestRows(fields, params, side, t) {
   const rows = []
   for (const f of fields || []) {
-    if (f.target === 'meta') continue          // 界面专用（库条目选择列），不是物理参数
+    if (!f || f.target === 'meta') continue    // 界面专用（库条目选择列），不是物理参数
     const v = fieldValue(f, params, side)
     if (emptyVal(v)) continue
-    rows.push({ label: t(f.label), value: String(v), unit: f.unit || '' })
+    const s = displayValue(f, v, t)
+    if (emptyVal(s)) continue
+    rows.push({ label: t(f.label), value: s, unit: f.unit || '' })
   }
   return rows
 }
@@ -156,10 +218,11 @@ export function buildInputDigest(groups, params, lang) {
 
   for (const grp of groups || []) {
     if (!grp || grp.key === 'station') continue      // 地球站库随两端站块一起出
+    const title = t(grp.title || '')
     const rows = digestRows(grp.fields, params, grp.key === 'downlink' ? 'rx' : 'tx', t)
-    if (grp.key === 'uplink') push(grp.key, t(grp.title), rows.concat(digestRows(bySide('tx'), params, 'tx', t)))
-    else if (grp.key === 'downlink') push(grp.key, t(grp.title), rows.concat(digestRows(bySide('rx'), params, 'rx', t)))
-    else push(grp.key, t(grp.title), rows)
+    if (grp.key === 'uplink') push(grp.key, title, rows.concat(digestRows(bySide('tx'), params, 'tx', t)))
+    else if (grp.key === 'downlink') push(grp.key, title, rows.concat(digestRows(bySide('rx'), params, 'rx', t)))
+    else push(grp.key, title, rows)
   }
   return blocks
 }
@@ -242,6 +305,10 @@ export const LB_REPORT_EN = {
   '接收机噪温': 'Receiver Noise Temp.', '卫星名称': 'Satellite Name', '工作频段': 'Frequency Band',
   '上行频率': 'Uplink Frequency', '上行极化': 'Uplink Polarisation', '下行频率': 'Downlink Frequency',
   '下行极化': 'Downlink Polarisation', '定点轨道经度': 'Orbital Longitude', 'SFDref': 'SFDref',
+  // GSO 倾斜运行 / 保持盒（A-01）：卫星库三项 + 地球站库「跟踪方式 / 跟踪残差」及其下拉值
+  '倾角': 'Inclination', '偏心率': 'Eccentricity', '东西保持 ±': 'E-W Station-keeping ±',
+  '跟踪方式': 'Tracking Mode', '跟踪残差': 'Tracking Residual',
+  '固定': 'Fixed', '步进': 'Step Track', '程控': 'Program Track', '单脉冲': 'Monopulse',
   'G/Tref': 'G/Tref', 'Tpdr.带宽': 'Tpdr. Bandwidth', 'Tpdr. IBO': 'Tpdr. IBO', 'Tpdr. OBO': 'Tpdr. OBO',
   'Tpdr. C/IM': 'Tpdr. C/IM', '上行C/ACI': 'Uplink C/ACI', '上行C/ASI': 'Uplink C/ASI',
   '上行C/XPI': 'Uplink C/XPI', 'HPA C/IM': 'HPA C/IM', '下行C/ACI': 'Downlink C/ACI',
@@ -255,6 +322,15 @@ export const LB_REPORT_EN = {
   '综合损耗': 'Other Losses', '附加损耗': 'Other Losses',
   '轨道高度': 'Orbit Altitude', '轨道倾角': 'Inclination', '最低仰角': 'Min Elevation',
   '卫星编号': 'NORAD ID', '轨道根数': 'Orbital Elements',
+  // 下拉的中文选项值（UPC / 天线噪温模式，输入清单按显示名出）与再生式卫星群 / 星间 / 激光几组字段的标签
+  //（2026-10-16 补：英文报告的输入清单此前这几格整格漏成中文）。译法与界面词典、详细预算 WF_DICT 一致
+  '否': 'No', '是': 'Yes', '自定义': 'Custom', '自动': 'Auto', '下行C/IM': 'Downlink C/IM',
+  '发射EIRP': 'Tx EIRP', '接收G/T': 'Rx G/T', '星间C/I': 'ISL C/I', '星间频率': 'ISL Frequency',
+  '大气余量': 'Atmospheric Margin', '最大工作距离': 'Max Operating Range', '星间链路距离': 'ISL Range',
+  '发射光功率 P_tx': 'Tx Optical Power P_tx', '波长 λ': 'Wavelength λ', '发射口径 D_tx': 'Tx Aperture D_tx',
+  '接收口径 D_rx': 'Rx Aperture D_rx', '发射光学效率 η_tx': 'Transmit Optical Efficiency η_tx',
+  '接收光学效率 η_rx': 'Receive Optical Efficiency η_rx', '发射指向误差': 'Tx Pointing Error',
+  '接收指向误差': 'Rx Pointing Error', '接收机灵敏度 P_req': 'Receiver Sensitivity P_req', '其他损耗 L': 'Other Losses L',
   // 这两条原先漏在字典外，英文报告里那两个章名/表名是中文（2026-09-06 补）
   '详细计算结果': 'Detailed Results', '图件': 'Figures',
   // 独立《服务等级指标（SLA）》报告
@@ -277,6 +353,9 @@ export const LB_REPORT_EN = {
   '保存 SLA 报告': 'Save SLA report',
   '按各链路勾选的条款单出一份《服务等级指标（SLA）》报告（Excel / Word）': 'Exports a standalone Service Level Metrics (SLA) report (Excel / Word) from the clauses ticked on each link',
   '尚无 SLA 条款': 'No SLA clauses yet',
+  // 独立《容量汇总》报告（导出对话框的抬头与 Excel 选项悬停；报告正文的字在 lbCapReport.js 里按 lang 出好）
+  '导出容量报告': 'Export Capacity Report',
+  '容量汇总 · 逐转发器明细 · 计算口径': 'Capacity summary · Per-transponder details · Conventions',
   '平台标志': 'Platform mark',
   '用本软件自己的标志（与「关于」窗口同一枚）': 'Use this application’s own mark (the same one shown in the About window)'
 }
@@ -292,14 +371,15 @@ export const reportT = (lang) => (s) => translate(s, lang)
 //   ② 引用建议书与标准：编号 + 名称 + 在本报告中的具体用途（版本号对得上引擎里实现的那一版）；
 //   ③ 物理常数与基准：报告里出现的每个常数的取值与出处。
 // 只写引擎真正做了的事：没实现的不写、没核实的不写（宁可少一条，不可多一条错的）。
-export function methodology(scheme, lang) {
+// used = 本份报告各链路实际用到的载波体制与终端类型（usedStandards(links)，决定 ② 里列哪几份体制标准与 P.2041）；
+// 缺省按改前口径（DVB-S2/S2X 与 3GPP 两族照列，RCS2 与机载不列）。
+export function methodology(scheme, lang, used) {
   const en = lang === 'en'
   const e2e = scheme.orbitType === 'E2E'
   // ★ ngso 只管「引擎是否走 §8 仰角统计 + SGP4 站星最差工况」——端到端不在其中：
   //   它的几何是逐跳给定（手动）或逐跳解最差工况（自动），可用度是逐跳站址值连乘，
   //   没有 §8 那套分箱加权。故 e2e 另立分支，只在参考文献那一组沿用轨道与时空基准。
   const ngso = scheme.orbitType === 'NGSO' || scheme.orbitType === 'REGEN'
-  const orbitRefs = ngso || e2e
   const regen = scheme.orbitType === 'REGEN'
   // 再生式按【报告里真出现的模块】取旗标：一份配置装了上行 + 星间时，几何一段要两种都说到
   const rmodes = regen ? (Array.isArray(scheme.regenModes) && scheme.regenModes.length ? scheme.regenModes : [scheme.regenMode]) : []
@@ -354,14 +434,17 @@ export function methodology(scheme, lang) {
     + 'carrier-to-interference power ratios and then combined with C/N. Each ratio is a system-level input value.'])
 
   put(['噪声温度合成',
-    '接收系统噪声温度由天线噪温、接收机噪温与馈线损耗折算合成。天线噪温可取手工给定值，也可按 ITU-R P.618-14 §3 '
-    + '由晴空路径衰减与链路仰角实时求取天空噪温，并叠加 25 K 的地面旁瓣拾取常数。降雨工况下另计降雨与云层的介质辐射噪声'
-    + '（平均辐射温度 275 K，经馈线折算入系统噪温），该项与雨衰共同构成下行链路劣化。'],
+    '接收系统噪声温度由天线噪温、接收机噪温与馈线损耗折算合成。天线噪温可取手工给定值（视为晴空值），也可按 ITU-R P.618-14 §3 '
+    + '式(69) 由路径气体衰减求取天空噪温，并叠加 25 K 的地面旁瓣拾取常数；介质平均辐射温度按式(70) 取 T_mr = 37.34 + 0.81·T_s'
+    + '（T_s 为站址地面温度）。降雨工况下气体、云、雨三项衰减先合成再代入式(69)，云与雨带来的噪温增量 T_sky(气体+云+雨) − T_sky(气体) '
+    + '经馈线折算入系统噪温，该项与雨衰共同构成下行链路劣化。'],
   ['Noise temperature budget',
     'System noise temperature is composed of antenna noise, receiver noise and the feeder-loss referral. Antenna noise is either '
-    + 'entered manually or derived in real time from the clear-sky path attenuation and link elevation per ITU-R P.618-14 §3, with a '
-    + '25 K ground-pickup constant added. Under rain, the medium-radiated noise of rain and cloud is added as well (mean radiating '
-    + 'temperature 275 K, referred through the feeder), which together with rain attenuation constitutes the downlink degradation.'])
+    + 'entered manually (taken as the clear-sky value) or derived from the path gaseous attenuation per ITU-R P.618-14 §3 eq. (69), with a '
+    + '25 K ground-pickup constant added; the mean radiating temperature follows eq. (70), T_mr = 37.34 + 0.81·T_s (T_s: surface '
+    + 'temperature at the site). Under rain, the gaseous, cloud and rain attenuations are combined before entering eq. (69); the resulting '
+    + 'increment T_sky(gas + cloud + rain) − T_sky(gas) is referred through the feeder into the system noise temperature and, together '
+    + 'with rain attenuation, constitutes the downlink degradation.'])
 
   if (e2e) {
     put(['可用度与时延、误码的链级口径',
@@ -439,6 +522,29 @@ export function methodology(scheme, lang) {
       + 'with the specified receiver sensitivity (required received power); the coherent Doppler shift follows from the range rate and the optical frequency.'])
   }
 
+  // RR Art.21 落地 PFD：三窗下行（GSO / NGSO 弯管、再生式下行）才有这组出参（packages/core/utils/itu/art21.js）
+  const art21 = !e2e && (!regen || rmodes.includes('downlink'))
+  if (art21) {
+    put(['落地功率通量密度',
+      '下行到达地面的功率通量密度给两种口径：「到达端通量密度」为工作点实际值（整载波，含大气、云、雨衰减与其他损耗，'
+      + '与下行功率链逐行自洽）；「自由空间到达 PFD（参考带宽内）」按 RR No.21.16 取假定自由空间传播条件，只计扩散 10·lg(4πd²)，'
+      + '载波按均匀谱折算到 RR Art.21 Table 21-4 该行的参考带宽内（占用带宽窄于参考带宽时整个载波计入），与同一参考带宽内的限值相减得余量。'
+      + '限值按下行频率、到达角（收信站仰角）、轨道类别与收信站所在 ITU 区域（RR No.5.3–5.9）查 RR 2024 版 Table 21-4；'
+      + '非静止轨道的 X（No.21.16.6）、Y（No.21.16.15）按星座颗数、可见颗数与同频同时发射颗数取值，缺这些参数时不给限值。'
+      + 'RR 在该频段对该业务与轨道没有限值时不给限值与余量。评估点只取收信站一点。'],
+    ['Power flux-density at the Earth’s surface',
+      'Two downlink PFD quantities are given. "PFD at Rx Side" is the operating-point value (whole carrier, including gaseous, cloud, '
+      + 'rain and other losses, consistent line by line with the downlink power cascade). "Free-Space PFD (Ref. Bandwidth)" follows '
+      + 'RR No. 21.16 — assumed free-space propagation, spreading 10·lg(4πd²) only — with the carrier taken as a uniform spectrum and '
+      + 'referred to the reference bandwidth of the applicable row of RR Article 21 Table 21-4 (the whole carrier when its occupied '
+      + 'bandwidth is narrower than the reference bandwidth); the margin is the limit minus this value in the same reference bandwidth. '
+      + 'The limit is looked up in Table 21-4 of the 2024 edition by downlink frequency, angle of arrival (receive-station elevation), '
+      + 'orbit class and the ITU Region of the receive station (RR Nos. 5.3–5.9); for non-GSO systems X (No. 21.16.6) and Y '
+      + '(No. 21.16.15) depend on the number of satellites, the number visible and the number transmitting co-frequency, and no limit '
+      + 'is given without them. Where the RR sets no limit for the band, service and orbit, neither limit nor margin is given. '
+      + 'The receive station is the only point evaluated.'])
+  }
+
   put(['数值口径',
     '全篇数值不作合格性判定，仅给出计算结果与其单位；显示单位在同一指标内跨链路统一选档（如 W/mW/kW、kHz/MHz/GHz），'
     + '级联算式行不作单位换算以保证逐行可手工验算。'],
@@ -446,57 +552,13 @@ export function methodology(scheme, lang) {
     'No pass/fail judgement is made anywhere in this report; only computed values and their units are given. Display units are chosen '
     + 'per quantity consistently across links (e.g. W/mW/kW, kHz/MHz/GHz); cascade rows are never unit-converted so that each line remains hand-checkable.'])
 
-  // ② 引用建议书与标准（分组 + 具体用途）
+  // ② 引用建议书与标准（分组 + 具体用途）—— 一律从标准台账出（packages/core/data/standards.json，经 shared/stdLedger.js），
+  //    这里不再硬编码。只列本次计算实际用到的：传播组只在有星地跳时出，§8 只在 NGSO / 再生式写进 P.618 的用途；
+  //    无线电规则组只在出落地 PFD 限值时（同上面 art21）；轨道组只在 NGSO / 再生式 / 端到端；体制组按各链路载波的标准取
+  //    （DVB-S2 → EN 302 307-1 V1.4.1、DVB-S2X → -2 V1.4.1、RCS2、NR / NB-IoT 各自那几份）；P.2041-1 只在有机载终端时。
+  //    2026-10-17 删去 P.453-14（闪烁的 N_wet 取常数，没接它的数字图）与 P.372-16（天空噪温按 P.618-14 §3，全仓无 P.372 实现）。
   const G = (zh, e) => (en ? e : zh)
-  const refGroups = [
-    {
-      group: G('传播与衰减', 'Propagation and attenuation'),
-      items: [
-        { id: 'ITU-R P.618-14', title: G('地球—空间链路传播数据与预测方法', 'Propagation data and prediction methods required for the design of Earth-space telecommunication systems'), use: G('雨衰预测、雨致去极化 XPD、天空噪温（§3）' + (ngso ? '、非静止轨道仰角统计（§8）' : ''), 'Rain attenuation, rain-induced XPD, sky-noise temperature (§3)' + (ngso ? ', non-GSO elevation statistics (§8)' : '')) },
-        { id: 'ITU-R P.676-13', title: G('大气气体衰减及相关效应', 'Attenuation by atmospheric gases and related effects'), use: G('氧气与水汽的路径吸收衰减（逐线法）', 'Oxygen and water-vapour path absorption (line-by-line method)') },
-        { id: 'ITU-R P.837-7', title: G('降雨特性建模', 'Characteristics of precipitation for propagation modelling'), use: G('站址 0.01% 超越降雨率 R0.01', 'Site 0.01 % exceedance rain rate R0.01') },
-        { id: 'ITU-R P.838-3', title: G('雨衰比衰减系数模型', 'Specific attenuation model for rain for use in prediction methods'), use: G('由降雨率与频率、极化求比衰减 γR', 'Specific attenuation γR from rain rate, frequency and polarisation') },
-        { id: 'ITU-R P.839-4', title: G('降雨高度模型', 'Rain height model for prediction methods'), use: G('等效降雨高度 hR 与倾斜路径长度', 'Effective rain height hR and slant path length') },
-        { id: 'ITU-R P.840-9', title: G('云雾衰减', 'Attenuation due to clouds and fog'), use: G('液态水含量统计给出的云衰减', 'Cloud attenuation from liquid-water content statistics') },
-        { id: 'ITU-R P.836-6', title: G('水汽：地面密度与柱含量', 'Water vapour: surface density and total columnar content'), use: G('气体衰减所需的水汽密度', 'Water-vapour density input to the gaseous attenuation') },
-        { id: 'ITU-R P.453-14', title: G('无线电折射率及其对传播的影响', 'The radio refractive index: its formula and refractivity data'), use: G('折射率相关量的取值基准', 'Refractivity reference data') }
-      ]
-    },
-    {
-      group: G('噪声与系统', 'Noise and system'),
-      items: [
-        // S.465-6 与 S.524-9 两条已撤（2026-08-07）：链路预算侧唯一的消费点是「邻星离轴口径」，
-        // 那组量随 deltaTheta 一并移除，本报告不再有任何数出自这两份建议书。干扰分析模块仍在用它们，
-        // 但那是另一份报告的参考文献——列在这里就是给读者一个本报告根本没算的出处。
-        { id: 'ITU-R P.372-16', title: G('无线电噪声', 'Radio noise'), use: G('天空噪声温度与噪声环境基准', 'Sky-noise temperature and noise environment reference') }
-      ]
-    }
-  ]
-  if (orbitRefs) {
-    refGroups.push({
-      group: G('轨道与时空基准', 'Orbits and reference frames'),
-      items: [
-        { id: 'SGP4 / SDP4 (Hoots & Roehrich, Spacetrack Report No. 3)', title: G('NORAD 通用摄动轨道传播模型', 'NORAD general perturbations orbit propagation model'), use: G('由两行根数 / OMM 传播至 TEME 惯性系', 'Propagation from TLE/OMM into the TEME inertial frame') },
-        { id: 'CCSDS 502.0-B-3', title: G('轨道数据报文（OMM）', 'Orbit Data Messages (Orbit Mean-Elements Message)'), use: G('星历数据交换格式', 'Ephemeris data interchange format') },
-        { id: 'WGS 84 (NIMA TR8350.2)', title: G('世界大地测量系统 1984', 'World Geodetic System 1984'), use: G('站址坐标与地球椭球基准', 'Facility coordinates and Earth ellipsoid reference') }
-      ]
-    })
-  }
-  refGroups.push({
-    group: G('体制与通信标准', 'Air interface and system standards'),
-    items: [
-      { id: 'ETSI EN 302 307-1/-2 (DVB-S2 / S2X)', title: G('数字卫星广播第二代及其扩展', 'Second generation framing, coding and modulation for satellite broadcasting and extensions'), use: G('调制与前向纠错的门限 Es/N₀ 与频谱效率基准', 'Threshold Es/N₀ and spectral efficiency reference for modulation and FEC') },
-      { id: '3GPP TS 38.101-5 / TR 38.821', title: G('非地面网络（NTN）射频与体系', 'Non-terrestrial networks: radio transmission/reception and solutions'), use: G('NTN 频段与逐频段信道带宽档（Table 5.3.5-1/-2）、参考终端与卫星参数', 'NTN bands and per-band channel bandwidths (Table 5.3.5-1/-2), reference terminal and satellite parameters') },
-      { id: '3GPP TS 38.214', title: G('NR 物理层数据处理规程', 'NR physical layer procedures for data'), use: G('MCS 表（调制阶数与目标码率）与传输块大小算法', 'MCS tables (modulation order and target code rate) and transport block size') },
-      { id: '3GPP TS 38.215', title: G('NR 物理层测量', 'NR physical layer measurements'), use: G('SINR 的每资源元素定义 —— 3GPP 载波门限的 SNR 口径', 'Per-resource-element SINR definition — the SNR reference for 3GPP carrier thresholds') },
-      { id: '3GPP TS 38.306', title: G('NR 用户设备无线接入能力', 'NR user equipment radio access capabilities'), use: G('数据速率近似式与系统开销系数', 'Data rate approximation and overhead factors') },
-      { id: '3GPP TS 36.213 / TR 36.763', title: G('E-UTRA 物理层规程与 IoT-NTN 研究', 'E-UTRA physical layer procedures and IoT NTN study'), use: G('NB-IoT 传输块大小表（Rel-14 全表）与 NTN 链路预算场景参数', 'NB-IoT transport block size tables (full Rel-14) and NTN link budget scenario parameters') },
-      { id: '3GPP TS 36.102', title: G('E-UTRA 卫星接入用户设备射频收发', 'E-UTRA satellite access: UE radio transmission and reception'), use: G('IoT-NTN 终端的信道带宽与部署栅格（NB1/NB2 200 kHz、1 PRB）', 'IoT-NTN UE channel bandwidth and deployment raster (NB1/NB2 200 kHz, 1 PRB)') },
-      { id: '3GPP TS 36.211', title: G('E-UTRA 物理信道与调制', 'E-UTRA physical channels and modulation'), use: G('NB-IoT 帧结构、资源单元与 NRS / DMRS —— 有效码率分母的出处', 'NB-IoT frame structure, resource units and NRS / DMRS — the source of the effective code rate denominator') },
-      { id: 'Kodheli et al., AdHoc-Now 2019', title: G('基于卫星的窄带物联网系统链路预算分析', 'Link budget analysis for satellite-based narrowband IoT systems'), use: G('NB-IoT 三张表的解调门限基线（AWGN、BLER 10%、N_rep 1）', 'Demodulation threshold baseline for the three NB-IoT tables (AWGN, 10% BLER, N_rep 1)') },
-      { id: 'Méndez-Monsanto et al., VTC2024-Fall', title: G('NR-NTN 链路级性能评估', 'Link-level performance evaluation for NR-NTN'), use: G('NR 五张 MCS 表的解调门限锚点', 'Demodulation threshold anchors for the five NR MCS tables') }
-    ]
-  })
+  const refGroups = reportRefGroups({ orbitType: scheme.orbitType, regenModes: rmodes, used: used || null }, lang)
 
   // ③ 物理常数与基准
   const constants = [
@@ -504,7 +566,7 @@ export function methodology(scheme, lang) {
     { name: G('真空光速', 'Speed of light in vacuum'), symbol: 'c', value: '299 792.458', unit: 'km/s', src: 'SI' },
     { name: G('地球赤道半径', 'Earth equatorial radius'), symbol: 'Re', value: '6 378.137', unit: 'km', src: 'WGS 84' },
     { name: G('地心引力常数', 'Earth gravitational constant'), symbol: 'μ', value: '398 600.4418', unit: 'km³/s²', src: 'WGS 84 / EGM' },
-    { name: G('雨介质平均辐射温度', 'Mean radiating temperature of rain medium'), symbol: 'T_mr', value: '275', unit: 'K', src: 'ITU-R P.618-14' },
+    { name: G('介质平均辐射温度', 'Mean radiating temperature of the medium'), symbol: 'T_mr', value: '37.34 + 0.81·T_s', unit: 'K', src: G('ITU-R P.618-14 式(70)', 'ITU-R P.618-14 eq. (70)') },
     { name: G('地面旁瓣拾取噪温', 'Ground sidelobe pickup noise temperature'), symbol: 'T_gnd', value: '25', unit: 'K', src: G('ITU-R P.618-14 §3（自动天线噪温）', 'ITU-R P.618-14 §3 (automatic antenna noise)') },
     { name: G('参考噪声温度', 'Reference noise temperature'), symbol: 'T₀', value: '290', unit: 'K', src: G('噪声系数折算基准', 'Noise-figure conversion reference') }
   ]
@@ -575,10 +637,41 @@ export function carrierStdLabel(form, opts, lang) {
   if (key.startsWith('usr:')) return (hit && hit.label) || key
   return en ? key : ((hit && hit.label) || key)
 }
-// 一条链路的载波身份（link.carrier）：stds 逐段一份（端到端再生节点之后可换体制；其余体制就一段）
+// 一条链路的载波身份（link.carrier）：stds 逐段一份（端到端再生节点之后可换体制；其余体制就一段）。
+// keys = 同序的 dvbStandard 键（不随语言变），方法学 ② 据它判本份报告用到了哪几份体制标准（usedStandards）
 export function carrierIdentity(forms, opts, lang) {
   const list = Array.isArray(forms) ? forms : (forms ? [forms] : [])
-  return { stds: list.map((f) => carrierStdLabel(f, opts, lang)) }
+  return {
+    stds: list.map((f) => carrierStdLabel(f, opts, lang)),
+    keys: list.map((f) => String((f && f.dvbStandard) || 'custom'))
+  }
+}
+
+// 本份报告实际用到的载波体制与终端类型 —— 决定方法学 ② 列哪几份体制标准、要不要列 P.2041-1（见 shared/stdLedger.js）。
+//   载波：各链路 link.carrier.keys（端到端逐段）；一条链路都没带键 → 载波未知，体制一族按改前口径照列。
+//   DVB-S2X 正常帧表里的 S2 遗留档门限出自 EN 302 307-1 表 13，故 S2X 正常帧连带列 -1。
+//   机载 / 高空终端：P.2041-1 的修正由站点离地高度触发（引擎不设机载开关，见 core/utils/itu/p2041.js、gasSite.js 的 agl），
+//   故看引擎回显的离地高度（uplinkAglResult / downlinkAglResult / aglResult，km）> 0，或 terminalTypeResult === 'airborne'；
+//   端到端看各跳 hops[]。引擎尚未回显这几个键时一律当地面站（不列 P.2041-1，宁少不多）。
+const AGL_KEYS = ['aglResult', 'uplinkAglResult', 'downlinkAglResult']
+const isAirborneOne = (d) => !!d && (String(d.terminalTypeResult || '').toLowerCase() === 'airborne' ||
+  AGL_KEYS.some((k) => Number(d[k]) > 0.001))
+const isAirborne = (d) => isAirborneOne(d) || (!!d && Array.isArray(d.hops) && d.hops.some(isAirborneOne))
+export function usedStandards(links) {
+  const list = Array.isArray(links) ? links : []
+  const airborne = list.some((l) => l && isAirborne(l.data))
+  const keys = []
+  let known = false
+  for (const l of list) {
+    const k = l && l.carrier && Array.isArray(l.carrier.keys) ? l.carrier.keys : null
+    if (k) { known = true; keys.push(...k.map(String)) }
+  }
+  if (!known) return airborne ? { dvbS2: true, dvbS2x: true, rcs2: false, nr: true, nbiot: true, airborne } : null
+  const has = (re) => keys.some((k) => re.test(k))
+  return {
+    dvbS2: has(/^DVB-S2X?$/), dvbS2x: has(/^DVB-S2X/), rcs2: has(/^DVB-RCS2$/),
+    nr: has(/^3GPP NR-NTN/), nbiot: has(/^3GPP NB-IoT NTN/), airborne
+  }
 }
 
 // —— 报告模型 ——
@@ -588,7 +681,7 @@ export function buildReportModel(o) {
   const {
     lang = 'zh', orbitType = 'GEO', regenMode = 'uplink',
     doc = {}, links = [], calc = {}, appVersion = '', satelliteName = '', frequencyBand = '',
-    adaptUnits = false, slaParams = null, sections = null
+    adaptUnits = false, slaParams = null, sections = null, capacity = null
   } = o || {}
   // 分节（再生式一份配置装了几个计算模块）：sections = [{ key, regenMode, title, short, count }]，
   // 各链路以 link.sec（节下标）归属；体制描述子按全部模块取（副标题并列、方法学按并集）。
@@ -610,6 +703,9 @@ export function buildReportModel(o) {
     // 一条都没有 ⇒ hasSla 为假 ⇒ 三个渲染器整节不出、目录不列、表号不占。
     hasSla: links.some((l) => l && l.sla && l.sla.rows && l.sla.rows.length),
     slaParams: slaParams || null,
+    // 容量汇总（§2）：渲染端按节出好的逐转发器表（shared/lbCapacity.capReportBlock），下标对齐 sections
+    //（不分节＝一个元素）；null ＝ 该窗没有这个模块（端到端），主进程照旧出它自己的统计行。
+    ...(Array.isArray(capacity) ? { capacity } : {}),
     // 结果显示单位的档位（功能区「单位」，出厂锁定＝false）：报告与屏幕同口径——主进程据此决定
     // 汇总行要不要整行换档（report.adaptSummaryUnits）、详表瀑布要不要换档（buildWaterfallSegments）。
     adaptUnits: !!adaptUnits,
@@ -621,7 +717,7 @@ export function buildReportModel(o) {
     }),
     calc: Object.assign({ satelliteName, frequencyBand }, calc),
     links,
-    method: methodology(scheme, lang)
+    method: methodology(scheme, lang, usedStandards(links))
   }
 }
 

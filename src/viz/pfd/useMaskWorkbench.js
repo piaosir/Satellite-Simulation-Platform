@@ -371,8 +371,9 @@ export function useMaskWorkbench(opts) {
   // ---- 计算 ---------------------------------------------------------------
   const busy = ref(false)
   const msg = ref('')
-  const lastXml = ref('')
-  const lastFiles = ref(null)      // { single:[], 'per-kind':[], 'per-mask':[] }
+  const lastXml = ref('')          // pfd:generate 不再回传 XML 文本（字节留在主进程），恒为空串
+  const lastFiles = ref(null)      // { single:[], 'per-kind':[], 'per-mask':[] }，只有清单（文件名 / 字节数）
+  let lastToken = ''               // 取字节用（window.api.pfdFiles）
   const lastRowId = ref('')
   const lastDiscretion = ref([])
   /**
@@ -465,8 +466,9 @@ export function useMaskWorkbench(opts) {
         if (m) { row.result = m; row.error = null }
         else { row.result = null; row.error = (res.jobErrors && res.jobErrors[i]) || '生成失败' }
       })
-      lastXml.value = res.xml
+      lastXml.value = res.xml || ''
       lastFiles.value = res.files || null
+      lastToken = res.token || ''
       lastDiscretion.value = res.discretion || []
       lastOpFiles.value = res.opFiles || []
       warnings.value = (res.warnings || []).concat(res.opProblems || [])
@@ -500,18 +502,21 @@ export function useMaskWorkbench(opts) {
     const list = exportFileList.value
     if (!list.length) { msg.value = '尚未生成。'; return }
     try {
-      if (list.length === 1 && !withArchive) {
+      // XML 字节留在主进程：按当前粒度取一次（data 原样落盘）
+      const got = await window.api.pfdFiles({ token: lastToken, mode: exportMode.value })
+      if (!got || !got.ok) { msg.value = (got && got.error) || '保存失败'; msgLevel.value = 'error'; return }
+      if (got.files.length === 1 && !withArchive) {
         const r = await window.api.exportFile({
-          defaultName: list[0].filename,
-          data: new TextEncoder().encode(list[0].xml),
+          defaultName: got.files[0].filename,
+          data: got.files[0].data,
           filters: [{ name: 'ITU Mask XML', extensions: ['xml'] }]
         })
         msg.value = r && r.ok ? `已保存：${r.filePath}` : (r && r.canceled ? '已取消' : (r && r.error) || '保存失败')
         return
       }
       // 出包目录结构与真实 ITU 提交件对齐：mask 与运行参数进 Masks/，存档在根
-      const files = list.map((f) => ({ filename: `Masks/${f.filename}`, text: f.xml }))
-      for (const f of (lastOpFiles.value || [])) files.push({ filename: `Masks/${f.filename}`, text: f.xml })
+      const files = got.files.map((f) => ({ filename: `Masks/${f.filename}`, data: f.data }))
+      for (const f of got.opFiles) files.push({ filename: `Masks/${f.filename}`, data: f.data })
       if (withArchive) files.push({ filename: archiveName(), text: JSON.stringify(buildArchive(), null, 2) })
       const r = await window.api.exportFiles({ dirLabel: '选择 mask 出包目录', files })
       if (r && r.ok) {

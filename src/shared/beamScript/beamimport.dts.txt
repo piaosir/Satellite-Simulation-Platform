@@ -1,0 +1,149 @@
+// ⟪可编程波束地图 · 导入脚本 API 类型声明（供编辑器智能提示使用，脚本中无需也不可 import）|Programmable beam map · import script API declarations (for editor IntelliSense; nothing to import)⟫
+
+/** ⟪经纬度 [经度, 纬度]，WGS-84 十进制度|[longitude, latitude] in WGS-84 decimal degrees⟫ */
+type LonLat = [lon: number, lat: number]
+
+/** ⟪一个输入文件（选中的文件，或 unzip() 取出的包内文件）|An input file (one of the selected files, or an entry taken out by unzip())⟫ */
+interface InputFile {
+  /** ⟪文件名（包内文件带子目录）|File name (entries from an archive keep their folder path)⟫ */
+  readonly name: string
+  /** ⟪不含扩展名的文件名|File name without the extension⟫ */
+  readonly base: string
+  /** ⟪扩展名（小写、不带点）|Extension (lower case, no dot)⟫ */
+  readonly ext: string
+  /** ⟪字节数|Size in bytes⟫ */
+  readonly size: number
+  /** ⟪原始字节|Raw bytes⟫ */
+  readonly bytes: Uint8Array
+  /** ⟪文本（首次读取时自动识别编码：BOM → UTF-8 / UTF-16，否则 UTF-8，失败按 GBK）|Text (encoding detected on first read: BOM → UTF-8 / UTF-16, otherwise UTF-8, falling back to GBK)⟫ */
+  readonly text: string
+  /** ⟪自动识别出的编码|Detected encoding⟫ */
+  readonly encoding: string
+}
+
+/** ⟪选中的输入文件|The selected input files⟫ */
+declare const files: readonly InputFile[]
+/** ⟪界面语言|UI language⟫ */
+declare const lang: 'zh' | 'en'
+
+/* ===================== ⟪返回值|Return value⟫ ===================== */
+
+interface ImportContour {
+  /** ⟪等值线电平（EIRP → dBW，G/T → dB/K）；覆盖边界之类没有数值的环给 null|Contour level (EIRP → dBW, G/T → dB/K); null for rings without a value, such as coverage boundaries⟫ */
+  level: number | null
+  /** ⟪顶点 [lon, lat]（闭合点可带可不带）|Vertices [lon, lat] (closing vertex optional)⟫ */
+  points: LonLat[]
+}
+interface ImportPeak {
+  lon: number
+  lat: number
+  /** ⟪波束中心电平（可选）|Level at the beam centre (optional)⟫ */
+  value?: number
+}
+interface ImportBeam {
+  /** ⟪卫星名称（同名卫星合并为一颗）|Satellite name (beams of the same name go to one satellite)⟫ */
+  satellite: string
+  /** ⟪轨道位置（°，东经为正、西经为负）|Orbital position (°, east positive, west negative)⟫ */
+  orbitLon?: number | null
+  /** ⟪波束名称|Beam name⟫ */
+  name: string
+  /** ⟪频段，如 Ku|Frequency band, e.g. Ku⟫ */
+  band?: string
+  /** ⟪EIRP（下行）或 GT（上行，写 G/T、R 亦可）|EIRP (downlink) or GT (uplink; G/T or R also accepted)⟫ */
+  type?: string
+  /** ⟪波束中心|Beam centres⟫ */
+  peaks?: ImportPeak[]
+  /** ⟪等值线|Contours⟫ */
+  contours: ImportContour[]
+  /** ⟪附加信息（纯 JSON，单束不超过 16 KB），悬停波束时显示|Extra info (plain JSON, up to 16 KB per beam), shown when hovering the beam⟫ */
+  props?: Record<string, unknown>
+}
+
+/* ===================== ⟪标准库|Standard library⟫ ===================== */
+
+/** ⟪字节 / 文件 → 文本；encoding 缺省自动识别，可指定 'utf-8' / 'gbk' / 'utf-16le' / 'latin1' 等|Bytes / file → text; encoding is detected unless given ('utf-8' / 'gbk' / 'utf-16le' / 'latin1' …)⟫ */
+declare function text(src: InputFile | Uint8Array | string, encoding?: string): string
+/** ⟪解析 JSON（去 BOM，出错带位置）|Parse JSON (BOM stripped, errors carry the position)⟫ */
+declare function json(src: InputFile | string): any
+/** ⟪解析 CSV（RFC 4180；分隔符自动识别逗号 / 分号 / Tab / 竖线）。header:true 时首行为表头、返回对象数组|Parse CSV (RFC 4180; comma / semicolon / tab / vertical-bar delimiter detected). With header:true the first row is the header and objects are returned⟫ */
+declare function csv(src: InputFile | string, opts: { header: true, delimiter?: string, encoding?: string }): Record<string, string>[]
+declare function csv(src: InputFile | string, opts?: { header?: false, delimiter?: string, encoding?: string }): string[][]
+
+interface XmlNode {
+  readonly nodeType: number
+  readonly nodeName: string
+  readonly textContent: string | null
+  readonly parentNode: XmlElement | XmlDocument | null
+}
+interface XmlElement extends XmlNode {
+  /** ⟪带前缀的标签名|Tag name with prefix⟫ */
+  readonly tagName: string
+  /** ⟪去掉前缀的标签名|Tag name without prefix⟫ */
+  readonly localName: string
+  readonly prefix: string | null
+  readonly attributes: Record<string, string>
+  readonly childNodes: XmlNode[]
+  readonly children: XmlElement[]
+  readonly firstElementChild: XmlElement | null
+  readonly textContent: string
+  getAttribute(name: string): string | null
+  hasAttribute(name: string): boolean
+  /** ⟪全部后代中标签名等于 name 的元素（'*' 为全部）|All descendants whose tag name equals name ('*' for all)⟫ */
+  getElementsByTagName(name: string): XmlElement[]
+  /** ⟪全部后代中本地名等于 name 的元素（忽略命名空间前缀，ns 传 '*'）|All descendants whose local name equals name (prefix ignored; pass '*' as ns)⟫ */
+  getElementsByTagNameNS(ns: string, name: string): XmlElement[]
+}
+interface XmlDocument extends XmlNode {
+  readonly documentElement: XmlElement
+  readonly children: XmlElement[]
+  getElementsByTagName(name: string): XmlElement[]
+  getElementsByTagNameNS(ns: string, name: string): XmlElement[]
+}
+/** ⟪解析 XML（极简 DOM，接口名同浏览器）|Parse XML (a small DOM with the browser's method names)⟫ */
+declare function xml(src: InputFile | string): XmlDocument
+/** ⟪解开 ZIP / KMZ，返回包内文件|Unpack a ZIP / KMZ and return the entries⟫ */
+declare function unzip(src: InputFile | Uint8Array): InputFile[]
+
+/** ⟪内置 GXT 解析器（与文件管理导入同一份）|Built-in GXT parser (the same one the file manager uses)⟫ */
+declare function gxt(src: InputFile | string): { lon: number | null, satName: string, bore: [number, number, number?][], contours: { g: number, p: LonLat[] }[] }
+/** ⟪内置 GXT 结构 JSON 解析器|Built-in GXT-structured JSON parser⟫ */
+declare function gxtJson(src: InputFile | string): { lon: number | null, satName: string, emiRcp: string, bore: [number, number, number?][], contours: { g: number, p: LonLat[] }[] }
+/** ⟪内置 KML 解析器（KMZ 自动取包内 doc.kml）：按文件夹树还原卫星 → 波束|Built-in KML parser (doc.kml is taken from a KMZ): rebuilds satellite → beam from the folder tree⟫ */
+declare function kml(src: InputFile | string): {
+  docName: string
+  /** ⟪取不到电平的 Polygon 照收，g 为 null（无数值档，如覆盖边界）|Polygons without a level are kept with g = null (unlevelled, e.g. a coverage boundary)⟫ */
+  beams: { satName: string, beamName: string, lon: number | null, band: string, type: 'EIRP' | 'GT', bore: LonLat[], contours: { g: number | null, p: LonLat[] }[] }[]
+  /** ⟪按无数值档收下的 Polygon 数|Number of Polygons kept without a level⟫ */
+  noGain: number
+  /** ⟪跳过的协调区多边形数|Number of coordination-zone Polygons skipped⟫ */
+  polys: number
+}
+
+type GeoFeature =
+  | { type: 'Polygon', rings: LonLat[][], props: Record<string, any> }
+  | { type: 'LineString', points: LonLat[], props: Record<string, any> }
+  | { type: 'Point', point: LonLat, props: Record<string, any> }
+/** ⟪GeoJSON → 扁平要素表（Multi* 与 GeometryCollection 拆开；Polygon 的 rings[0] 为外环，其余为洞）|GeoJSON → flat feature list (Multi* and GeometryCollection split; rings[0] of a Polygon is the exterior, the rest are holes)⟫ */
+declare function geojson(src: InputFile | string | object): GeoFeature[]
+
+type ShpFeature = {
+  /** ⟪图层（主文件名）|Layer (base file name)⟫ */
+  layer: string
+  /** ⟪.prj 是否为投影坐标系（坐标不是经纬度）|Whether the .prj is a projected system (coordinates are not lon / lat)⟫ */
+  projected: boolean
+  type: 'Polygon' | 'PolyLine' | 'Point' | 'MultiPoint'
+  rings?: LonLat[][]
+  points?: LonLat[]
+  point?: LonLat
+  /** ⟪.dbf 属性（字段名原样，数值字段为 number）|.dbf attributes (field names as stored, numeric fields as numbers)⟫ */
+  props: Record<string, any>
+}
+/** ⟪读 Shapefile：传 ZIP，或一起选中的 .shp / .dbf / .cpg / .prj（按主文件名配套）|Read shapefiles: pass a ZIP, or .shp / .dbf / .cpg / .prj selected together (paired by base name)⟫ */
+declare function shapefile(src: InputFile | readonly InputFile[]): ShpFeature[]
+
+type MifFeature = { type: 'Region' | 'Pline' | 'Line' | 'Point', rings?: LonLat[][], points?: LonLat[], point?: LonLat, props: Record<string, string> }
+/** ⟪读 MapInfo 交换格式：.mif 几何 + .mid 属性（编码按 Charset 识别）|Read MapInfo interchange: .mif geometry + .mid attributes (encoding from Charset)⟫ */
+declare function mif(mifFile: InputFile | string, midFile?: InputFile | string): MifFeature[]
+
+/** ⟪宽松数值解析：'  12.5 '、'1,234'、'48dBW' → 数值；解析不出 → null|Lenient number parsing: '  12.5 ', '1,234', '48dBW' → number; null when not a number⟫ */
+declare function num(v: unknown): number | null

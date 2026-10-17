@@ -1,0 +1,31 @@
+//! id: mapinfo
+//! name: ⟪MapInfo · MIF / MID 交换格式|MapInfo · MIF / MID interchange⟫
+//! ext: mif
+//! match: *.mif
+//zh MapInfo 交换格式：.mif 存几何、.mid 存属性（同名的 .mid 一起选中）。Region 的每个多边形为一条等值线，Point 为波束中心；
+//zh 按列 Satellite / Name / Band / Type 归成波束、Level 为电平（本软件导出的 MIF / MID 原样读回）。编码按 Charset 识别（GBK / UTF-8）。
+//en MapInfo interchange: .mif holds geometry, .mid the attributes (select the matching .mid too). Each polygon of a Region is a contour,
+//en Points are beam centres; grouped into beams by the Satellite / Name / Band / Type columns with Level as the contour level
+//en (MIF / MID exported by this software read back as is). Encoding follows the Charset line (GBK / UTF-8).
+
+const PEAK = / (波束中心|peak)$/i   // ⟪本软件导出时波束中心的 Name 带这个后缀|beam centres exported by this software carry this suffix in Name⟫
+const beams = new Map()
+for (const f of files.filter((x) => x.ext === 'mif')) {
+  const mid = files.find((x) => x.ext === 'mid' && x.base.toLowerCase() === f.base.toLowerCase())
+  if (!mid) console.warn(`${f.name}: ⟪未选中同名 .mid，属性为空|no matching .mid selected; attributes are empty⟫`)
+  for (const o of mif(f, mid)) {
+    const p = o.props || {}
+    if (String(p.Type || '') === 'Polygon') continue   // ⟪协调区 Polygon 不是波束|coordination polygons are not beams⟫
+    const isPeak = o.type === 'Point'
+    const sat = String(p.Satellite || f.base)
+    const name = String(p.Name || f.base).replace(PEAK, '')
+    const band = String(p.Band || '')
+    const type = String(p.Type || 'EIRP')
+    const key = [sat, name, band, type].join('\u0001')
+    if (!beams.has(key)) beams.set(key, { satellite: sat, name, band, type, peaks: [], contours: [] })
+    const b = beams.get(key)
+    if (isPeak) { if (o.point) b.peaks.push({ lon: o.point[0], lat: o.point[1] }) }
+    else for (const ring of (o.rings || (o.points ? [o.points] : []))) b.contours.push({ level: num(p.Level), points: ring })
+  }
+}
+return [...beams.values()]

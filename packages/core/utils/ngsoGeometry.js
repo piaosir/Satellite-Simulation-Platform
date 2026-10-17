@@ -22,7 +22,9 @@
 const sat = require('../vendor/satellite.js');
 const orbitPos = require('./orbitPos.js');
 const ephemInterp = require('./ephemInterp.js');
-const { findWindows } = require('./eventWindows.js');
+const { findWindows } = require('./eventWindows.js');   // 只剩星间互视（ISL）在用；单站访问窗口已改走唯一访问引擎
+const access = require('./access/accessCore.js');      // 唯一访问引擎（accessCore.mjs 的 CJS 镜像，渲染端可见性过境同一份）
+const sgp4Mean = require('./sgp4Mean.js');               // 合成根数 → SGP4 Kozai 平均运动（与渲染端 shared/sgp4Mean.js 共享段逐字节相同）
 
 // —— 几何权威常量（与 wgs84.js / walker.js / useCustomConstellations 同源）——
 const RE_KM = 6378.137;          // WGS84 赤道半径 Re
@@ -105,22 +107,11 @@ function buildSatrec(spec) {
     return tab;
   }
   if (spec.type === 'elements') {
-    // 经典六根数 → OMM：a=(Re+近地点高度)/(1−e)，n=√(μ/a³)，与 walker.js/useCustomConstellations 完全一致。
+    // 经典六根数 → OMM：平半长轴 a=(Re+近地点高度)/(1−e)，喂 SGP4 的 Kozai 平均运动按 sgp4Mean 通用口径反解 initl
+    // （sgp4init 之后平半长轴 = a），与渲染端 useCustomConstellations / treeOrbitEpoch / 搜索池同一份共享段 —— 同一组根数
+    // 两边建出同一颗星。不再拿二体 n=√(μ/a³) 当 Kozai 值（A-05）。
     // epoch 为自定义星座的场景历元 scenarioEpoch（由上游透传）；缺省才退回当前时刻（仅兜底）。
-    const ecc = Math.max(0, Math.min(0.999, Number(spec.ecc) || 0));
-    const a = (RE_KM + (Number(spec.altKm) || 0)) / (1 - ecc);
-    const nRadS = Math.sqrt(MU / (a * a * a));
-    const meanMotion = 86400 * nRadS / (2 * Math.PI); // rev/day
-    return sat.omm2satrec({
-      noradId: spec.noradId != null ? spec.noradId : 'NGSO',
-      epoch: spec.epoch || new Date().toISOString(),
-      meanMotion, ecc,
-      incl: Number(spec.incl) || 0,
-      raan: Number(spec.raan) || 0,
-      argp: Number(spec.argp) || 0,
-      ma: Number(spec.ma) || 0,
-      bstar: 0, mdot: 0, mddot: 0
-    });
+    return sat.omm2satrec(sgp4Mean.ommFromElements(spec, spec.epoch || new Date().toISOString(), spec.noradId != null ? spec.noradId : 'NGSO'));
   }
   throw new Error('未知轨道来源 orbit.type: ' + spec.type);
 }
@@ -691,7 +682,9 @@ function solveMutualWorstCaseBatch(opts) {
 // ============================================================================
 // 9. 单站访问窗口（Access）——时窗内满足最低仰角及以上的【全部】过境时间窗
 // ============================================================================
-// 对「满足最低仰角及以上」用通用窗口求解器 findWindows：f(t)=仰角−最低仰角，>0 即在窗口内。
+// 「满足最低仰角及以上」交给唯一访问引擎（access/accessCore：仰角极值夹逼 + 自适应步长，可见性「时段过境」同一份）：
+// AOS / LOS 精确到 1 ms、峰值到 0.1 s，过境长短不影响能否检出（最短可检出 0.2 s）。2026-10-17 前是 findWindows
+// 固定粗扫 min(P/200, 60 s) —— 完整落在两个粗扫格之间的短过境会整段丢失。
 // 选星（真实星历 omm/elements/tle）→ 逐个真实过境；手动圆轨道（circular）→ 合成虚拟 OMM 传播，
 // 得示意过境（节律/时长真实，绝对时刻因 RAAN/MA/历元取默认而仅供示意，representative=true）；
 // 静止/快照星（snapshot）→ 可见则整时窗为一个常驻窗口。
@@ -742,30 +735,36 @@ function solveAccessWindows(opts) {
   const t0 = opts.t0ISO ? new Date(opts.t0ISO) : anchorDate(satrec);
   const clip = ephemSpanClip(satrec, t0.getTime(), t0.getTime() + horizonHours * 3600000);
   if (clip.reason) return { feasible: false, method, reason: clip.reason, windows: [] };
-  const startS = clip.startMs / 1000, endS = clip.endMs / 1000;
-  const elAt = (ts) => { const la = lookAngles(satrec, station, new Date(ts * 1000)); return la ? la.elevDeg : NaN; };
-  const f = (ts) => { const e = elAt(ts); return isFinite(e) ? e - minEl : NaN; };
-  // 粗扫步长：周期 1/200 与 60s 取较小（既能抓住 LEO 短过境、又封顶总传播次数）。
-  // 周期估不出（星历表凑不出两次升交点）时按绕地最小周期算 —— 该式对周期单调递增，取下界即取最细步长。
-  const periodSec = (stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN) * 60;
-  const coarse = Math.max(5, Math.min(periodSec / 200, 60));
-  const raw = findWindows(f, startS, endS, { coarseStep: coarse, tol: 1, findPeak: true });
-  const windows = raw.map((w) => {
-    const peakT = w.peak ? w.peak.t : (w.start + w.end) / 2;
-    const peakLa = lookAngles(satrec, station, new Date(peakT * 1000));
-    const startLa = lookAngles(satrec, station, new Date(w.start * 1000));
-    const endLa = lookAngles(satrec, station, new Date(w.end * 1000));
+  // 卫星地固系状态（km、km/s）：取位走平台权威入口 orbitPos（SGP4 / 星历点序列 / 叠加星历）
+  const stateAt = (tMs, s) => {
+    const pv = propagateAt(satrec, tMs);
+    if (!pv || !pv.position) return false;
+    access.temeToEcef(pv.position, pv.velocity, sat.gstime(tMs / 86400000 + 2440587.5), s);
+    return true;
+  };
+  // 仰角变化率上界用的卫星速度上界：本体与叠加星历取大
+  let vSat = access.satSpeedBound(satrec);
+  const ovl = satrec && !satrec.__ephem ? orbitPos.overlaysOf(satrec) : null;
+  if (ovl) for (const tab of ovl) vSat = Math.max(vSat, access.satSpeedBound(tab));
+  // 周期估不出（星历表凑不出两次升交点）时按绕地最小周期算 —— 粗步 Δ 对周期单调增，取下界即最细
+  const acc = access.elevWindows({
+    stateAt, obs: [access.observerOf(station.latDeg, station.lonDeg, station.altKm)], thrDeg: minEl,
+    t0: clip.startMs, t1: clip.endMs, periodMin: stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN, vSat
+  });
+  const windows = acc.windows.map((w) => {
+    const peakLa = lookAngles(satrec, station, new Date(w.peakMs));
+    const startLa = lookAngles(satrec, station, new Date(w.startMs));
+    const endLa = lookAngles(satrec, station, new Date(w.endMs));
     const edgeSlant = Math.max(startLa ? startLa.slantKm : 0, endLa ? endLa.slantKm : 0);
-    const clipped = (w.start <= startS + 1e-3) || (w.end >= endS - 1e-3);
     return {
-      startISO: new Date(w.start * 1000).toISOString(),
-      endISO: new Date(w.end * 1000).toISOString(),
-      durationMin: (w.end - w.start) / 60,
-      peakElevDeg: peakLa ? peakLa.elevDeg : (w.peak ? w.peak.value + minEl : null),
-      peakISO: new Date(peakT * 1000).toISOString(),
+      startISO: new Date(w.startMs).toISOString(),
+      endISO: new Date(w.endMs).toISOString(),
+      durationMin: (w.endMs - w.startMs) / 60000,
+      peakElevDeg: peakLa ? peakLa.elevDeg : w.peakEl,
+      peakISO: new Date(w.peakMs).toISOString(),
       peakSlantKm: peakLa ? peakLa.slantKm : null,
       maxSlantKm: edgeSlant || null,
-      clipped
+      clipped: !!(w.truncStart || w.truncEnd)
     };
   });
   const totalDurationMin = windows.reduce((s, w) => s + w.durationMin, 0);

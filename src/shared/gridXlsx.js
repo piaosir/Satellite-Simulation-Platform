@@ -6,26 +6,47 @@
 //
 // 表头约定：导出的首行 = 界面上的列标签（带单位，如「经度 (°E)」）。导回来按标签匹配列，
 // 故用户在 Excel 里【调换列序、删掉不用的列】都认得；标签被改写到认不出时退回位置约定。
+// 一张表里同名的列（链路表发、收两侧的「经度」）表头前加列组名作侧别：「发信站·经度 (°E)」「收信站·经度 (°E)」。
+
+// 列组前缀与标签之间的分隔符（「收信站·经度 (°E)」）
+export const GROUP_SEP = '·'
 
 // 列标签（与界面表头同款：标签 + 括号单位）。unitOf 供动态单位列（Parameter 随口径变）覆盖。
+// groupLabel：同名列的侧别前缀——链路表发、收两侧都有「经度」「地球站配置」，单看标签导回来分不清是哪一侧，
+// 故同名的那几列借列组名写成「收信站·经度 (°E)」。只有调用方判定为同名的列才给（见 sameNameKeys），
+// 不重名的列表头与从前逐字一致。
 export function colLabel(c, unitOf) {
   const u = unitOf ? unitOf(c) : c.unit
-  return String(c.label == null ? c.key : c.label) + (u ? ' (' + u + ')' : '')
+  const g = c.groupLabel ? String(c.groupLabel) + GROUP_SEP : ''
+  return g + String(c.label == null ? c.key : c.label) + (u ? ' (' + u + ')' : '')
 }
 
-// 归一：去全部空白、全角括号转半角、去括号里的单位、小写。「经度 (°E)」「经度（°E）」「经度」→ 同一个键
+// 归一：去全部空白、全角括号转半角、去括号里的单位、小写，各式间隔点统一成「·」。
+// 「经度 (°E)」「经度（°E）」「经度」→ 同一个键；「收信站・经度」（Excel 里换了日文间隔点）→「收信站·经度」
 const normKey = (s) => String(s == null ? '' : s)
   .replace(/[（）]/g, (ch) => (ch === '（' ? '(' : ')'))
   .replace(/\([^)]*\)\s*$/, '')
   .replace(/[*＊]/g, '')
+  .replace(/[・•‧∙⋅･]/g, GROUP_SEP)
   .replace(/\s+/g, '')
   .toLowerCase()
 
 const isBlank = (v) => v == null || String(v).trim() === ''
 
+// 同名列：标签归一后（normKey）撞名的那些列的 key 集合。调用方只给这些列挂 groupLabel（见 colLabel）。
+// ★ 按表的全部列算，不按「这次导出的可见列」算：藏掉发信站「经度」只导收信站那一列时，它的表头也得带侧别——
+//   不带的话导回来按出现次序会对到发信站那一侧。
+export function sameNameKeys(cols) {
+  const list = (cols || []).filter(Boolean)
+  const nameOf = (c) => normKey(c.label == null ? c.key : c.label)
+  const cnt = new Map()
+  for (const c of list) { const n = nameOf(c); cnt.set(n, (cnt.get(n) || 0) + 1) }
+  return new Set(list.filter((c) => cnt.get(nameOf(c)) > 1).map((c) => c.key))
+}
+
 /**
  * 出表模型的一张工作表。
- *   cols   [{ key, label, unit, num, fix, align }]
+ *   cols   [{ key, label, unit, num, fix, align, groupLabel? }]（groupLabel 见 colLabel：同名列的侧别前缀）
  *   rows   数据行
  *   value  (row, col) => 值：数字列返回 number 才能在 Excel 里参与计算，返回字符串亦可
  *   unitOf (col) => 单位（动态单位列用；缺省取 col.unit）
@@ -63,18 +84,32 @@ async function loadHeaderDict() {
 }
 // 测试 / 调用方可直接注入一张 { 中文: 英文 } 表
 export function setHeaderDict(exact) { EN_OF = exact || null }
+const hasEn = (k) => Object.prototype.hasOwnProperty.call(EN_OF, k)
+const HAN = /[一-鿿]/
+// 标签 → 英文：整串查；查不到且带侧别前缀（「收信站·经度」，见 colLabel）时两段各查一次、用「 · 」拼回——
+// 前缀段必须查得到（查不到说明这个「·」不是我们加的前缀，宁可整串认不出）；标签段不含汉字（R0.01%）时原样。
+function labelEn(lab) {
+  if (hasEn(lab)) return EN_OF[lab]
+  const i = lab.indexOf(GROUP_SEP)
+  if (i <= 0) return null
+  const g = lab.slice(0, i).trim()
+  const rest = lab.slice(i + GROUP_SEP.length).trim()
+  if (!rest || !hasEn(g)) return null
+  const restEn = hasEn(rest) ? EN_OF[rest] : (HAN.test(rest) ? null : rest)
+  return restEn == null ? null : EN_OF[g] + ' · ' + restEn
+}
 // 表头 → 英文；查不到返回 null
 export function headerEn(h) {
   if (!EN_OF || h == null) return null
   const k = String(h).replace(/\s+/g, ' ').trim()
   if (!k) return null
-  if (Object.prototype.hasOwnProperty.call(EN_OF, k)) return EN_OF[k]
+  if (hasEn(k)) return EN_OF[k]
   const m = /^(.*?)\s*[(（]([^()（）]*)[)）]$/.exec(k)
-  if (!m) return null
-  const lab = m[1].trim()
-  if (!Object.prototype.hasOwnProperty.call(EN_OF, lab)) return null
-  const unit = Object.prototype.hasOwnProperty.call(EN_OF, m[2]) ? EN_OF[m[2]] : m[2]
-  return EN_OF[lab] + ' (' + unit + ')'
+  const lab = labelEn(m ? m[1].trim() : k)
+  if (lab == null) return null
+  if (!m) return lab
+  const unit = hasEn(m[2]) ? EN_OF[m[2]] : m[2]
+  return lab + ' (' + unit + ')'
 }
 const uiLangEn = () => { try { return localStorage.getItem('ui-lang') === 'en' } catch { return false } }
 // 对话框标题：英文档按 EXACT 翻（主进程那边再按对话框对照表兜一次），查不到原样
@@ -113,31 +148,58 @@ export async function importWorkbook(opt) {
  * 返回 { row: 表头所在行下标, keys: [key|null …] }；找不到返回 null。
  * 判据：该行至少有 2 格（只有 1 列的表则 1 格）能对上列标签 —— 宁可判成「没有表头」退回位置约定，
  * 也不能把一行真数据错认成表头（那会静默吞掉一行）。
+ *
+ * 同名列（链路表发、收两侧都叫「经度」）：一个名字下挂着几个 key（按 cols 的列序）。带侧别的表头
+ * （「收信站·经度」，cols 给了 groupLabel 时认得）只对得上它自己那一列；不带侧别的老文件按出现次序
+ * 依次对到各同名列——第一个「经度」归发信站、第二个归收信站，与导出时的列序一致。
  */
 export function findHeader(rows, cols) {
   const list = (cols || []).filter(Boolean)
-  const byName = new Map()
+  const byName = new Map()       // 归一名 → [key …]
+  const put = (name, key) => {
+    const n = normKey(name)
+    if (!n) return
+    const l = byName.get(n)
+    if (!l) byName.set(n, [key])
+    else if (!l.includes(key)) l.push(key)
+  }
   for (const c of list) {
-    const enLab = c.label != null ? headerEn(c.label) : null
-    const enCol = headerEn(colLabel(c))
-    for (const k of [c.key, c.label, colLabel(c), ...(c.alias || []), enLab, enCol]) {
-      const n = normKey(k)
-      if (n && !byName.has(n)) byName.set(n, c.key)
+    const base = c.groupLabel ? Object.assign({}, c, { groupLabel: '' }) : c
+    const names = [c.key, c.label, colLabel(base), ...(c.alias || []),
+      c.label != null ? headerEn(c.label) : null, headerEn(colLabel(base))]
+    if (c.groupLabel) {
+      // 侧别写法：中文「收信站·经度」与英文「Rx station · Longitude」各挂一份；别名同样可带侧别
+      const side = colLabel(c)
+      names.push(side, headerEn(side))
+      for (const a of (c.alias || [])) names.push(colLabel({ label: a, groupLabel: c.groupLabel }))
     }
+    for (const nm of names) put(nm, c.key)
   }
   const need = Math.min(2, list.length)
   const scan = Math.min(3, rows.length)
   for (let i = 0; i < scan; i++) {
     const cells = rows[i] || []
-    const keys = cells.map((v) => byName.get(normKey(v)) || null)
-    const hit = keys.filter(Boolean).length
-    if (hit >= need) {
-      // 同一个 key 命中两列（表头里有重名）时只认第一列，后面的置空 —— 否则后写的会盖掉前面的值
-      const seen = new Set()
-      return { row: i, keys: keys.map((k) => (k && !seen.has(k) ? (seen.add(k), k) : null)) }
-    }
+    const cand = cells.map((v) => byName.get(normKey(v)) || null)
+    const hit = cand.filter(Boolean).length
+    if (hit >= need) return { row: i, keys: assignKeys(cand) }
   }
   return null
+}
+
+// 表头各格的候选 key → 每格落定一个 key（落不下的置空）。
+//   ① 先落只有一个候选的格（带侧别的表头 / 本就不重名的列）；同一个 key 两格都要时只认第一格，
+//      后面的置空 —— 否则后写的会盖掉前面的值；
+//   ② 再按出现次序，把同名格依次对到还空着的同名 key 上（老文件的「经度」「经度」）。
+// 两遍走：表头里侧别写法与老写法混排、或列序被调过时，①先把认得准的占住，②才不会抢错。
+function assignKeys(cand) {
+  const used = new Set()
+  const keys = cand.map((l) => (l && l.length === 1 && !used.has(l[0]) ? (used.add(l[0]), l[0]) : null))
+  cand.forEach((l, i) => {
+    if (!l || l.length < 2) return
+    const k = l.find((x) => !used.has(x))
+    if (k) { used.add(k); keys[i] = k }
+  })
+  return keys
 }
 
 // 一份工作簿里挑该导入哪张表：按表头能对上几列打分（自家导出的工作簿常有好几张表），

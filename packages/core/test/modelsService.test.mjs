@@ -347,6 +347,10 @@ try {
     const conv = glbOf(makeGltf({ names: ['obj_root'] }))
     const r = await A.saveImported({ glb: conv, meta: { title: 'OBJ 转换件', source: { kind: 'nasa' }, fidelity: 'outreach' } })
     eq([r.ok, r.id, r.meta.source.kind, r.meta.title], [true, 'user:' + sha(conv).slice(0, 12), 'user', 'OBJ 转换件'], '渲染端转好的 glb 入库；来源只能是 user')
+    // 渲染端带来的 geometry 只采用其余字段，三角形数恒按这份 glb（体检 2026-10-16 二.24：OBJ / STL / FBX 转换件曾整份送来全零 geometry，概况恒为 0）
+    const zg = glbOf(makeGltf({ names: ['zero_geom_a', 'zero_geom_b'] }))
+    const zr = await A.saveImported({ glb: zg, meta: { title: 'zero', geometry: { bboxM: { min: [0, 0, 0], max: [1, 1, 0] }, boundingRadiusM: 0.7, tris: 0, areaM2: 0, volumeM3: null, closed: false, centroidM: [0, 0, 0] } } })
+    eq([zr.ok, zr.meta.geometry.tris, zr.meta.files.lod0.tris, zr.meta.geometry.boundingRadiusM], [true, 2, 2, 0.7], '送来的 geometry 不盖三角形数（其余字段照用）')
     eq((await A.saveImported({ glb: glbOf(makeGltf({ copyright: AGI_COPY, names: ['q'] })), meta: {} })).code, 'stk', '带 AGI 署名的不许从这条路进')
     // 元数据副本（copyOf，工作台模型签「另存副本」2026-10-06）：身份 user、可分发；署名 / 出处按目录里的原条目保留（不信送来的）；不带 spec
     const cpg = glbOf(makeGltf({ names: ['copy_root'] }))

@@ -7,12 +7,14 @@
 //   ② 数字列落进 Excel 是【数值】不是字符串（导出的整个意义在于还能在 Excel 里求和排序）；
 //   ③ 表头 = 界面列标签（带单位），回导时按标签匹配 → 用户在 Excel 里【调换列序 / 删掉不用的列】都认得；
 //   ④ 认不出表头时不许瞎猜：sheetToRecords 回 records=null，由调用方退回「末两列=经纬度」的位置约定；
-//   ⑤ 空单元格必须还原成空，不能变成 0 —— 经纬度列一旦被写成 0 就是静默算错（西经/南纬那条老坑）。
+//   ⑤ 空单元格必须还原成空，不能变成 0 —— 经纬度列一旦被写成 0 就是静默算错（西经/南纬那条老坑）；
+//   ⑥ 同名列（链路表发 / 收两侧的「经度」等）：导出表头带侧别「收信站·经度 (°E)」，导回按侧别对；
+//      不带侧别的老文件按出现次序依次对到发、收两侧 —— 收信站那一组不许整组丢掉（体检 #8）。
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { sheetModel, colLabel, findHeader, sheetToRecords, sheetToTsv, pickSheet, safeFileName } from '../../../src/shared/gridXlsx.js'
+import { sheetModel, colLabel, findHeader, sheetToRecords, sheetToTsv, pickSheet, safeFileName, sameNameKeys } from '../../../src/shared/gridXlsx.js'
 
 const require = createRequire(import.meta.url)
 const { buildGridWorkbook, readGridWorkbook } = require('../../../electron/services/gridXlsx.js')
@@ -133,6 +135,109 @@ ok('超长/非法表名不炸', buf2 && buf2.byteLength > 0)
   ok('装了词典后中文表头照认', hZh && hZh.keys.join() === 'country,city,desig,lon,lat', hZh && hZh.keys.join())
   const recEn = sheetToRecords({ rows: [enHead, ['中国', '北京', 'BJ', 116.4, 39.9]] }, COLS)
   ok('英文表头往返取值', recEn.records && recEn.records[0].lon === '116.4' && recEn.records[0].lat === '39.9', JSON.stringify(recEn.records))
+  setHeaderDict(null)
+}
+
+// ---- ⑥ 同名列：链路表发 / 收两侧（GSO 与 NGSO 的真字段表，照 StationGrid 的口径挂侧别）----
+{
+  const { setHeaderDict, headerEn } = await import('../../../src/shared/gridXlsx.js')
+  const G = await import('../../../src/linkbudget/params.js')
+  const N = await import('../../../src/ngso/ngsoParams.js')
+  const GROUP = { tx: '发信站', rx: '收信站' }
+  // 链路表的字段 = 发端组 + 收端组（配置级：不出「卫星」列）；NGSO 手动几何多出斜距列、仰角列改称「仰角」
+  const linkFields = (P, manual) => [
+    ...P.TX_FIELDS.filter((f) => f.key !== 'satelliteId').map((f) => ({ ...f, group: 'tx' })),
+    ...P.RX_FIELDS.map((f) => ({ ...f, group: 'rx' }))
+  ].filter((f) => !f.manualOnly || manual).map((f) => (manual && f.manualLabel ? { ...f, label: f.manualLabel } : f))
+  // StationGrid 的口径：重名按全部字段算；导出只给同名列 groupLabel，导入给全
+  const exportCols = (fields) => { const dup = sameNameKeys(fields); return fields.map((f) => ({ key: f.key, label: f.label, unit: f.unit, groupLabel: dup.has(f.key) ? GROUP[f.group] : '' })) }
+  const importCols = (fields) => fields.map((f) => ({ key: f.key, label: f.label, unit: f.unit, alias: f.alias, groupLabel: GROUP[f.group] }))
+  // 一行数据：发 / 收两侧的值刻意不同，导回来串了侧一眼就看得出
+  const rowOf = (fields) => Object.fromEntries(fields.map((f, i) => [f.key, f.type === 'num' ? (f.group === 'rx' ? 200 + i : 100 + i) : (f.group === 'rx' ? '收' : '发') + f.key]))
+  const roundTrip = async (fields, cols, label) => {
+    const row = rowOf(fields)
+    const sm2 = sheetModel({ name: '链路', cols, rows: [row] })
+    const f2 = path.join(os.tmpdir(), 'satsim-gridxlsx-side-' + process.pid + '.xlsx')
+    fs.writeFileSync(f2, Buffer.from(await buildGridWorkbook({ sheets: [sm2] })))
+    const wb = await readGridWorkbook(f2)
+    try { fs.unlinkSync(f2) } catch { /* ignore */ }
+    const rec = sheetToRecords(pickSheet(wb.sheets, importCols(fields)), importCols(fields))
+    const got = rec.records && rec.records[0]
+    const want = cols.map((c) => c.key)
+    const bad = want.filter((k) => !got || got[k] !== String(row[k]))
+    ok(label, rec.records && rec.records.length === 1 && bad.length === 0, bad.length ? '对不上：' + bad.join(',') + ' ' + JSON.stringify(got) : '')
+    return sm2
+  }
+
+  const gso = linkFields(G, false)
+  const dup = sameNameKeys(gso)
+  ok('同名列：发 / 收两侧七组同名（配置 / 位置 / 经纬度 / 海拔 / R0.01% / 可用度）',
+    ['stationId', 'rxStationId', 'earthStationLocation', 'rxEarthStationLocation', 'longitude', 'rxLongitude', 'latitude', 'rxLatitude',
+      'altitude', 'rxAltitude', 'rainRate', 'rxRainRate', 'uplinkAvailability', 'rxDownlinkAvailability'].every((k) => dup.has(k)), [...dup].join(','))
+  ok('同名列：不重名的列不挂侧别（载波配置 / 卫星G/T / 卫星饱和 EIRP）', !dup.has('basebandId') && !dup.has('G_Ts') && !dup.has('rxEIRP'))
+  ok('colLabel 带侧别', colLabel({ label: '经度', unit: '°E', groupLabel: '收信站' }) === '收信站·经度 (°E)', colLabel({ label: '经度', unit: '°E', groupLabel: '收信站' }))
+
+  const smG = await roundTrip(gso, exportCols(gso), 'GSO 链路表导出 → 导入往返：发 / 收两侧每一列都对上（收信站一组不丢）')
+  ok('导出表头：同名列带侧别、不重名的列原样',
+    smG.header.includes('发信站·经度 (°E)') && smG.header.includes('收信站·经度 (°E)') && smG.header.includes('收信站·地球站配置')
+    && smG.header.includes('载波配置') && smG.header.includes('卫星G/T (dB/K)') && !smG.header.includes('经度 (°E)'), smG.header.join('|'))
+
+  // 藏掉发信站那一侧的经纬度，只导收信站：表头仍带侧别，导回来不会按次序落到发信站
+  const onlyRx = exportCols(gso).filter((c) => c.key !== 'longitude' && c.key !== 'latitude')
+  await roundTrip(gso, onlyRx, '只导出收信站一侧的经纬度（发信站经纬度列已隐藏）：导回仍落在收信站')
+  // 列序被调过（收信站整组排到前面 —— 钉住的列提到最左也是这样）
+  const exp = exportCols(gso)
+  await roundTrip(gso, exp.filter((c) => /^rx/.test(c.key)).concat(exp.filter((c) => !/^rx/.test(c.key))), '收信站整组排在发信站前面：按侧别对，不按次序')
+
+  // 老文件：表头没有侧别（改动前导出的就是这样）→ 按出现次序依次对到发、收两侧
+  const plainCols = gso.map((f) => ({ key: f.key, label: f.label, unit: f.unit }))
+  await roundTrip(gso, plainCols, '老文件（同名表头不带侧别）：按出现次序导回，收信站一组齐全')
+
+  // 同一个侧别表头出现两次：只认第一格（后写的不许盖掉前面的值）
+  const hd = findHeader([['收信站·经度 (°E)', '收信站·经度', '载波配置']], importCols(gso))
+  ok('同一侧别表头重复两格：只认第一格', hd && hd.keys[0] === 'rxLongitude' && hd.keys[1] === null && hd.keys[2] === 'basebandId', hd && hd.keys.join(','))
+  // 侧别写法与老写法混排：认得准的先占住，同名格再按次序落到还空着的那一侧
+  const mix = findHeader([['经度', '发信站·经度', '纬度', '纬度']], importCols(gso))
+  ok('侧别写法与老写法混排：不抢错', mix && mix.keys.join(',') === 'rxLongitude,longitude,latitude,rxLatitude', mix && mix.keys.join(','))
+  // Excel 里间隔点被换成日文「・」也认得
+  const kata = findHeader([['收信站・经度', '发信站・纬度']], importCols(gso))
+  ok('日文间隔点「・」等同「·」', kata && kata.keys.join(',') === 'rxLongitude,latitude', kata && kata.keys.join(','))
+
+  // NGSO：手动几何多出两侧的「斜距」、两侧的「仰角」，同样带侧别往返
+  const ngso = linkFields(N, true)
+  const dupN = sameNameKeys(ngso)
+  ok('NGSO 手动几何：仰角 / 斜距也是同名列', ['minElevation', 'rxMinElevation', 'slantRange', 'rxSlantRange'].every((k) => dupN.has(k)), [...dupN].join(','))
+  await roundTrip(ngso, exportCols(ngso), 'NGSO 链路表（手动几何）导出 → 导入往返：收信站最低仰角 / 斜距不丢')
+  await roundTrip(linkFields(N, false), exportCols(linkFields(N, false)), 'NGSO 链路表（自动最差）导出 → 导入往返')
+
+  // 别的表导来：链路表导出的文件导进再生式的发信站群 / 收信站群（各自只有一侧、列组是「地球站」）。
+  // StationGrid 另把「表名·标签」登记成别名（tableAlias）——发信站表只收「发信站·…」那一侧，收信站表只收「收信站·…」
+  {
+    const R = await import('../../../src/regen/regenParams.js')
+    const smX = sheetModel({ name: '链路', cols: exportCols(gso), rows: [rowOf(gso)] })
+    const sideTable = (fields, tableLabel) => fields.map((f) => ({ key: f.key, label: f.label, unit: f.unit, groupLabel: '地球站',
+      alias: [...(f.alias || []), colLabel({ label: f.label, groupLabel: tableLabel })] }))
+    const txT = sideTable(R.TX_FIELDS, '发信站'), rxT = sideTable(R.RX_FIELDS, '收信站')
+    const g = rowOf(gso)
+    const recTx = sheetToRecords({ rows: [smX.header, ...smX.rows] }, txT).records[0]
+    ok('链路表文件 → 再生式发信站群：收的是发信站那一侧', recTx && recTx.longitude === String(g.longitude) && recTx.latitude === String(g.latitude) && recTx.stationId === String(g.stationId),
+      JSON.stringify(recTx))
+    const recRx = sheetToRecords({ rows: [smX.header, ...smX.rows] }, rxT).records[0]
+    ok('链路表文件 → 再生式收信站群：收的是收信站那一侧', recRx && recRx.rxLongitude === String(g.rxLongitude) && recRx.rxLatitude === String(g.rxLatitude) && recRx.stationId === String(g.rxStationId),
+      JSON.stringify(recRx))
+  }
+
+  // 英文表头：侧别两段各查词典、用「 · 」拼回；导回中英两套都认（老的英文文件同名列按次序）
+  setHeaderDict({ '发信站': 'Tx station', '收信站': 'Rx station', '经度': 'Longitude', '纬度': 'Latitude', '地球站配置': 'Earth Station Configuration', '可用度': 'Availability', '载波配置': 'Carrier Configuration' })
+  ok('英文表头：侧别 + 标签 + 单位', headerEn('收信站·经度 (°E)') === 'Rx station · Longitude (°E)', headerEn('收信站·经度 (°E)'))
+  ok('英文表头：标签不含汉字时原样', headerEn('收信站·R0.01% (mm/h)') === 'Rx station · R0.01% (mm/h)', headerEn('收信站·R0.01% (mm/h)'))
+  ok('英文表头：前缀不是已知组名时整串查不到', headerEn('春分·天数') === null, String(headerEn('春分·天数')))
+  const enRow = exportCols(gso).filter((c) => ['basebandId', 'stationId', 'longitude', 'rxStationId', 'rxLongitude', 'rxLatitude', 'rxDownlinkAvailability'].includes(c.key))
+    .map((c) => headerEn(colLabel(c)) || colLabel(c))
+  const hEn2 = findHeader([enRow], importCols(gso))
+  ok('导回认英文侧别表头', hEn2 && hEn2.keys.join(',') === 'basebandId,stationId,longitude,rxStationId,rxLongitude,rxLatitude,rxDownlinkAvailability', enRow.join('|') + ' → ' + (hEn2 && hEn2.keys.join(',')))
+  const hEnOld = findHeader([['Carrier Configuration', 'Longitude (°E)', 'Latitude (°N)', 'Longitude (°E)', 'Latitude (°N)']], importCols(gso))
+  ok('老的英文文件（同名不带侧别）按次序', hEnOld && hEnOld.keys.join(',') === 'basebandId,longitude,latitude,rxLongitude,rxLatitude', hEnOld && hEnOld.keys.join(','))
   setHeaderDict(null)
 }
 

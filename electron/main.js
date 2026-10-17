@@ -664,7 +664,7 @@ app.whenReady().then(async () => {
     const rd = (f) => { try { return fs.readFileSync(join(ituDir, f)) } catch (e) { return null } }
     const rep = core().loadFullPrecisionData({
       rain: rd('p837_r001_v2.bin'), elev: rd('topo_v1.bin'),
-      vapor: rd('p836_rho_v1.bin'), cloud: rd('p840_logn_v1.bin')
+      vapor: rd('p836_rho_v1.bin'), vapor2: rd('p836_v2.bin'), cloud: rd('p840_logn_v1.bin')
     })
     console.log('[ITU] 全精度数据注入:', JSON.stringify(rep))
   } catch (e) {

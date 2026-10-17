@@ -20,10 +20,11 @@
 //
 // ★ 条款要求：用到数据的界面必须显示归因。故每份出参都带 attrib，界面不许丢。
 
-const https = require('https');
 const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
+// 传输走 netFetch：优先 Electron net（系统代理 / 单位审计网关），无 Electron 时回退 Node https（.wxharness 走这条）
+const netFetch = require('./netFetch');
 // electron 只用来兜底取 userData 路径；调用方（main.js）总是显式传入，
 // 故这里做成可选 require —— 少了它本模块就能在纯 Node 下单测/脚本化跑通（.wxharness 验证台靠这个）。
 let _app = null;
@@ -70,38 +71,34 @@ module.exports = function createWeather(userDataDir) {
   }
 
   // ---- HTTP ----
-  function get(reqPath) {
+  async function get(reqPath) {
     loadConfig();
-    if (!cfg) return Promise.reject(new Error(cfgErr));
+    if (!cfg) throw new Error(cfgErr);
     const token = getToken(cfg);
-    return new Promise((resolve, reject) => {
-      const r = https.request({
-        host: cfg.apiHost, method: 'GET', path: reqPath, timeout: TIMEOUT_MS,
-        headers: { Authorization: 'Bearer ' + token, 'Accept-Encoding': 'gzip' }
-      }, (rs) => {
-        const chunks = [];
-        rs.on('data', (c) => chunks.push(c));
-        rs.on('end', () => {
-          let buf = Buffer.concat(chunks);
-          if (/gzip/i.test(rs.headers['content-encoding'] || '')) {
-            try { buf = zlib.gunzipSync(buf); } catch (e) { return reject(new Error('gzip 解压失败')); }
-          }
-          const body = buf.toString('utf8');
-          if (rs.statusCode !== 200) {
-            // 这几种错的修法完全不同，分因报出来，否则只看到一个 401 无从下手
-            const why = rs.statusCode === 401 ? '身份认证失败（kid/iss/sub 或公私钥不成对）'
-              : rs.statusCode === 403 ? '无权限（控制台未启用「天气预报」，或凭据的 API 限制不允许）'
-                : rs.statusCode === 404 ? '请求路径或 API Host 有误'
-                  : rs.statusCode === 429 ? '已触发限流。' : '';
-            return reject(new Error(`HTTP ${rs.statusCode}${why ? '：' + why : ''}`));
-          }
-          try { resolve(JSON.parse(body)); } catch (e) { reject(new Error('返回内容不是 JSON')); }
-        });
+    let rs;
+    try {
+      // acceptGzip 只对 Node 路生效；net 自己协商压缩并解好，不该再手设 Accept-Encoding
+      rs = await netFetch.request('https://' + cfg.apiHost + reqPath, {
+        headers: { Authorization: 'Bearer ' + token }, acceptGzip: true, idleMs: TIMEOUT_MS, maxMs: 60000
       });
-      r.on('timeout', () => { r.destroy(); reject(new Error('请求超时 ' + (TIMEOUT_MS / 1000) + ' s')); });
-      r.on('error', (e) => reject(new Error(e.message)));
-      r.end();
-    });
+    } catch (e) {
+      throw new Error(e.kind === 'timeout' ? '请求超时（' + e.message + '）' : e.message);
+    }
+    let buf = rs.body;
+    // 认 gzip 魔数，不认 content-encoding 头：net 解压后头还留着 gzip，照头再解一次必然失败
+    if (buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+      try { buf = zlib.gunzipSync(buf); } catch (e) { throw new Error('gzip 解压失败'); }
+    }
+    const body = buf.toString('utf8');
+    if (rs.status !== 200) {
+      // 这几种错的修法完全不同，分因报出来，否则只看到一个 401 无从下手
+      const why = rs.status === 401 ? '身份认证失败（kid/iss/sub 或公私钥不成对）'
+        : rs.status === 403 ? '无权限（控制台未启用「天气预报」，或凭据的 API 限制不允许）'
+          : rs.status === 404 ? '请求路径或 API Host 有误'
+            : rs.status === 429 ? '已触发限流。' : '';
+      throw new Error(`HTTP ${rs.status}${why ? '：' + why : ''}`);
+    }
+    try { return JSON.parse(body); } catch (e) { throw new Error('返回内容不是 JSON'); }
   }
 
   const val = (o) => (o && typeof o === 'object' && 'value' in o ? o.value : o);

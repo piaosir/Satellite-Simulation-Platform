@@ -25,8 +25,13 @@ const s = (v) => String(v == null ? '' : v).trim()
 export function esAutoName(form) {
   const f = form || {}
   const d = s(f.antennaDiameter)
-  return d ? d + ' m' : ''
+  if (!d) return ''
+  // 跟踪天线（GSO 地球站库「跟踪方式」非固定，A-01）：站型连跟踪方式一起认 ——「13 m · 程控」与固定的「13 m」不是一种站
+  const tm = TRACK_NAMES[s(f.trackMode)]
+  return tm ? d + ' m · ' + byLang(tm[0], tm[1]) : d + ' m'
 }
+// 跟踪方式的名字（中英）；「固定」与空不进名字（与改规则前的名字逐字一致）
+const TRACK_NAMES = { '步进': ['步进', 'Step Track'], '程控': ['程控', 'Program Track'], '单脉冲': ['单脉冲', 'Monopulse'] }
 
 // 旧版自动名「口径 · 功放」（功放键名 GSO/NGSO 为 paPowerW、再生式为 opPowerW，按 adaptUnits 换档）。
 // 只用于旧库推定：没存过 nameAuto 的库里，名字还是这个形状的同样算「没起过名字」——
@@ -84,7 +89,10 @@ export function satAutoName(cfg) {
   if (!nm) return ''
   if (cfg && cfg.ngsoSat) return nm                // NGSO / 再生式：只报星名
   const f = (cfg && cfg.form) || {}
-  return [nm, s(f.frequencyBand), satOrbitText(f)].filter(Boolean).join(' · ')
+  // 倾斜运行星（GSO 卫星库「倾角」> 0，A-01）：轨位后缀倾角，与同轨位的定点配置分得开；定点（0 / 空）名字逐字不变
+  const incl = Number(s(f.geoIncl))
+  const inclText = s(f.orbitPosition) && Number.isFinite(incl) && incl > 0 ? 'i=' + s(f.geoIncl) + '°' : ''
+  return [nm, s(f.frequencyBand), satOrbitText(f), inclText].filter(Boolean).join(' · ')
 }
 
 // 旧版自动名「星名 · 频段 · 轨道」。只用于旧库推定：NGSO/再生式改规则（2026-08-15 星名单独成名）前、

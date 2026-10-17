@@ -1032,5 +1032,155 @@ console.log('\n--- X 组：星上方向图（对齐 PMGT 屏3 的下拉） ---')
   }
 }
 
-console.log(`\n=== 合计 ${pass + fail} 条：PASS ${pass} / FAIL ${fail} ===`);
-process.exit(fail === 0 ? 0 : 1);
+// ---------------------------------------------------------------------------
+// R 组：窗口面板态 → job 的频段 / EIRP 口径（体检 2026-10-16 第一节 #3）+ 计算线程（第四节性能 #2）
+// ---------------------------------------------------------------------------
+// 面板态 → job 在 src/pfd/pfdJobs.js（ESM，只能 import）；worker 要等异步回结果 —— 整组异步跑完再出合计。
+// 出厂面板态直接从 PfdMaskApp.vue 的 reactive({...}) 字面量里读（纯数据字面量），不在这里另抄一份：
+// 窗口的出厂值改了，这里跟着变。
+(async () => {
+  console.log('\n--- R 组：面板态 → job（上行频段 / 星间 40 kHz 折合）+ 计算线程 ---');
+  const fs = require('fs'), path = require('path'), url = require('url');
+  const J = await import(url.pathToFileURL(path.join(__dirname, '../../../src/pfd/pfdJobs.js')).href);
+  const W = require('../../../electron/services/pfdMaskWorker.js');
+  const vue = fs.readFileSync(path.join(__dirname, '../../../src/pfd/PfdMaskApp.vue'), 'utf8');
+  const lit = (name) => {
+    const m = vue.match(new RegExp(`const ${name} = reactive\\((\\{[\\s\\S]*?\\n\\})\\)`));
+    return m ? new Function(`return (${m[1]})`)() : null;
+  };
+  const F = { g: lit('g'), down: lit('down'), is: lit('is'), up: lit('up'), op: lit('op') };
+  ok('R0 读到窗口的出厂面板态（页头 Ku 10.7–12.75，上行页频段留空）',
+    !!(F.g && F.down && F.is && F.up && F.op) && F.g.lowFreqGhz === 10.7 && F.g.highFreqGhz === 12.75
+      && F.up.lowFreqGhz === '' && F.up.highFreqGhz === '' && F.down.on && F.is.on && F.up.on);
+  const st = (patch) => {
+    const s = JSON.parse(JSON.stringify(F));
+    for (const k of Object.keys(patch || {})) Object.assign(s[k], patch[k]);
+    return s;
+  };
+  const jobOf = (s, dir) => J.buildJobs(s).find((j) => j.directions[dir]);
+
+  // ── 上行掩模的频段：取上行页自己的，留空按页头下行频段推定
+  const upJob = jobOf(st(), 'up');
+  ok('R1 [他证] 出厂上行 job 频段 = Ku 上行 14.0–14.5（不是页头下行 10.7–12.75）', upJob.lowFreqGhz === 14 && upJob.highFreqGhz === 14.5,
+    `${upJob.lowFreqGhz}–${upJob.highFreqGhz}`);
+  approx('R2 [他证] 终端增益的 λ 按上行中心 14.25 GHz', upJob.terminal.wavelengthM, 0.299792458 / 14.25, 1e-15);
+  ok('R3 [自洽] 下行 / 星间 job 仍用页头频段', jobOf(st(), 'down').lowFreqGhz === 10.7 && jobOf(st(), 'is').highFreqGhz === 12.75);
+  {
+    const b = (lo, hi) => J.uplinkBandOf({ lowFreqGhz: lo, highFreqGhz: hi }, {});
+    const C = b(3.7, 4.2), Ka = b(17.7, 20.2), QV = b(37.5, 42.5), S = b(2.0, 2.2);
+    ok('R4 [他证] 推定档：C 3.7–4.2 → 5.925–6.425；Ka 17.7–20.2 → 27.5–30；Q/V → 47.2–50.2',
+      C.lowGhz === 5.925 && C.highGhz === 6.425 && Ka.lowGhz === 27.5 && Ka.highGhz === 30 && QV.lowGhz === 47.2 && QV.highGhz === 50.2);
+    const U = b(13.75, 14.5), Uc = b(5.925, 6.725);
+    ok('R4b [自洽] 页头本身就是上行段（只出上行掩模时常这么填）→ 照用页头，不再另推',
+      U.lowGhz === 13.75 && U.highGhz === 14.5 && Uc.lowGhz === 5.925 && Uc.highGhz === 6.725);
+    ok('R5 [守卫] 推不出的频段（S 2.0–2.2）给 NaN，校验拦下「未给出频段」',
+      Number.isNaN(S.lowGhz) && J.checkInputs(st({ g: { lowFreqGhz: 2.0, highFreqGhz: 2.2 } })).some((x) => /上行 EIRP 掩模：未给出频段/.test(x)));
+    // 老配置的 up 没有这两个字段 → 同样走推定
+    const legacy = st(); delete legacy.up.lowFreqGhz; delete legacy.up.highFreqGhz;
+    const lj = jobOf(legacy, 'up');
+    ok('R6 [自洽] 老配置（up 无频段字段）→ 按页头推定 14.0–14.5', lj.lowFreqGhz === 14 && lj.highFreqGhz === 14.5);
+    const exp = jobOf(st({ up: { lowFreqGhz: 13.75, highFreqGhz: '' } }), 'up');
+    ok('R7 [自洽] 手填的端点用手填值，留空的端点仍推定', exp.lowFreqGhz === 13.75 && exp.highFreqGhz === 14.5);
+    ok('R8 [守卫] 上行频段上下限填反 → 校验拦下',
+      J.checkInputs(st({ up: { lowFreqGhz: 14.5, highFreqGhz: 14 } })).some((x) => /上行 EIRP 掩模：频段上限必须大于下限/.test(x)));
+    ok('R9 [自洽] 出厂面板态校验无问题', J.checkInputs(st()).length === 0, J.checkInputs(st()).join('；'));
+  }
+
+  // ── 出厂整条链：真引擎 + 与 worker 同一份 generate
+  const reqOf = (s) => ({ satName: s.g.satName, ntcId: Number(s.g.ntcId), specVersion: 'S.1503-4', jobs: J.buildJobs(s), operatingParams: null });
+  {
+    const r = W.generate(reqOf(st()));
+    const pm = (r.files && r.files['per-mask']) || [];
+    const es = pm.find((f) => f.kind === 'eirp_mask_es');
+    ok('R10 [他证] 出厂上行掩模文件名 = Mask_id_3_EIRP_ES_14-14.5.xml', !!es && es.filename === 'Mask_id_3_EIRP_ES_14-14.5.xml', es && es.filename);
+    const doc = io.parseMaskXml(es ? es.xml : '');
+    ok('R11 [他证] 上行掩模 XML 的 low/high_freq = 14000 / 14500 MHz',
+      doc.eirpMaskEs.length === 1 && doc.eirpMaskEs[0].lowFreqGhz === 14 && doc.eirpMaskEs[0].highFreqGhz === 14.5,
+      doc.eirpMaskEs[0] && `${doc.eirpMaskEs[0].lowFreqGhz}–${doc.eirpMaskEs[0].highFreqGhz}`);
+    const pf = io.parseMaskXml(pm.find((f) => f.kind === 'pfd_mask').xml);
+    ok('R12 [自洽] 下行 PFD 掩模仍是页头频段 10.7–12.75', pf.pfdMasks[0].lowFreqGhz === 10.7 && pf.pfdMasks[0].highFreqGhz === 12.75);
+  }
+
+  // ── 星间掩模恒按 40 kHz 落盘：下行页按 b kHz 填的 EIRP 谱密度折合到 40 kHz
+  {
+    const isOnly = (refBwKhz, eirp) => st({ down: { on: false, refBwKhz, eirpDbwPerRefBw: eirp }, up: { on: false } });
+    approx('R13 [他证] 4 kHz 填 −5 dBW → 星间 job 按 40 kHz 用 +5 dBW（+10·lg(40/4)）', jobOf(isOnly(4, -5), 'is').maxEirpDbwPerRefBw, 5, 1e-12);
+    approx('R14 [他证] 1 MHz 填 −5 dBW → −5 + 10·lg(40/1000)', jobOf(isOnly(1000, -5), 'is').maxEirpDbwPerRefBw, -5 + 10 * Math.log10(0.04), 1e-12);
+    approx('R15 [自洽] 40 kHz 原值照用', jobOf(isOnly(40, -5), 'is').maxEirpDbwPerRefBw, -5, 0);
+    // 同一个谱密度两种写法（−5 dBW/4 kHz ≡ +5 dBW/40 kHz）出的星间掩模必须逐点相同
+    const a = W.generate(reqOf(isOnly(4, -5))), c = W.generate(reqOf(isOnly(40, 5)));
+    ok('R16 [他证] −5 dBW/4 kHz 与 +5 dBW/40 kHz 的星间掩模 XML 相同（从前前者低 10 dB）',
+      a.ok && c.ok && a.files.single[0].xml === c.files.single[0].xml && a.metas[0].eirpSs.maxValueDb === c.metas[0].eirpSs.maxValueDb,
+      a.metas && a.metas[0] && `max ${a.metas[0].eirpSs.maxValueDb} vs ${c.metas[0].eirpSs.maxValueDb}`);
+  }
+
+  // ── 计算线程：进度单调到满、字节与同步 generate 逐字节一致、清单不带 XML、可取消
+  {
+    const req = reqOf(st({ down: { gridPoints: 21 }, g: { latStepDeg: 15 } }));
+    const ref = W.generate(JSON.parse(JSON.stringify(req)));
+    const prog = [];
+    const run = W.start(req, { onProgress: (d, t) => prog.push([d, t]) });
+    const r = await run.promise;
+    let mono = prog.length > 0;
+    for (let i = 1; i < prog.length; i++) if (prog[i][0] < prog[i - 1][0]) mono = false;
+    const lastP = prog[prog.length - 1];
+    ok('R17 [自洽] worker 进度单调不减、末条到满', mono && !!lastP && lastP[0] === lastP[1], `${prog.length} 条`);
+    const dec = new TextDecoder();
+    const same = r.ok && ['single', 'per-kind', 'per-mask'].every((m) => r.files[m].length === ref.files[m].length
+      && r.files[m].every((f, i) => f.data instanceof Uint8Array && !('xml' in f) && f.filename === ref.files[m][i].filename && dec.decode(f.data) === ref.files[m][i].xml));
+    ok('R18 [自洽] worker 回的是 UTF-8 字节，与同步 generate 的 XML 逐字节一致', same);
+    const s = W.slim(r);
+    ok('R19 [自洽] 回渲染端的清单不带 XML / 字节', s.xml === undefined && Object.values(s.files).every((l) => l.every((f) => !('data' in f) && !('xml' in f) && f.bytes > 0)));
+    const run2 = W.start(reqOf(st()), {});
+    setTimeout(() => run2.cancel(), 150);
+    let canceled = false;
+    try { await run2.promise } catch (e) { canceled = !!(e && e.canceled) }
+    ok('R20 [自洽] 计算中取消 → 以 canceled 结束', canceled);
+  }
+
+  // ── 主进程三条 IPC（pfd:generate / cancel / files）：register.js 的 PFD 段原样取出，配假 ipcMain / webContents 跑
+  {
+    const reg = fs.readFileSync(path.join(__dirname, '../../../electron/ipc/register.js'), 'utf8');
+    const a = reg.indexOf('// ---- PFD Mask 生成（ITU-R S.1503）');
+    const fi = reg.indexOf("ipcMain.handle('pfd:files'", a);
+    const b = fi < 0 ? -1 : reg.indexOf('\n  })\n', fi);
+    ok('R21 [自洽] 取到 register.js 的 PFD 段', a >= 0 && b > a);
+    const H = {};
+    new Function('ipcMain', 'require', reg.slice(a, b + 5))(
+      { handle: (ch, fn) => { H[ch] = fn } },
+      (p) => require(path.resolve(__dirname, '../../../electron/ipc', p)));
+    const sender = { id: 1, ev: [], isDestroyed: () => false, send(ch, p) { this.ev.push([ch, p]) }, once(e, fn) { this.kill = fn } };
+    const e = { sender };
+    const reqN = (n, runId) => reqOf(st({ down: { gridPoints: n }, is: { on: false }, up: { on: false }, op: { on: false }, g: { latStepDeg: 5 } }));
+    const r1 = await H['pfd:generate'](e, Object.assign(reqN(21), { runId: 'a1' }));
+    ok('R22 [自洽] pfd:generate 回清单 + token、不带 XML，进度事件带本轮 runId',
+      r1.ok && !!r1.token && r1.runId === 'a1' && !('xml' in r1) && r1.files['per-mask'].every((f) => !('data' in f) && f.bytes > 0)
+        && sender.ev.length > 0 && sender.ev.every(([ch, p]) => ch === 'pfd:progress' && p.id === 'a1'));
+    const got = H['pfd:files'](e, { token: r1.token, mode: 'single' });
+    ok('R23 [自洽] pfd:files 按划分取回字节；token 对不上 → 计算结果已失效',
+      got.ok && got.files.length === 1 && got.files[0].data.byteLength === r1.files.single[0].bytes
+        && H['pfd:files'](e, { token: 'x', mode: 'single' }).error === '计算结果已失效');
+    ok('R23b [自洽] 没有进行中的计算时点「取消」不丢缓存（结果恰好先一步回到窗口）；切配置 discard 才丢',
+      H['pfd:cancel'](e) === false && H['pfd:files'](e, { token: r1.token, mode: 'single' }).ok === true
+        && (H['pfd:cancel'](e, { discard: true }), H['pfd:files'](e, { token: r1.token, mode: 'single' }).ok === false));
+    const p2 = H['pfd:generate'](e, Object.assign(reqN(60), { runId: 'a2' }));
+    setTimeout(() => H['pfd:cancel'](e), 120);
+    const r2 = await p2;
+    ok('R24 [自洽] 计算中 pfd:cancel → canceled，不落缓存', r2.canceled === true && r2.runId === 'a2' && !r2.token);
+    const [r3, r4] = await Promise.all([
+      H['pfd:generate'](e, Object.assign(reqN(60), { runId: 'a3' })),
+      H['pfd:generate'](e, Object.assign(reqN(21), { runId: 'a4' }))
+    ]);
+    ok('R25 [自洽] 同一窗口新一轮顶掉旧一轮：旧的回 canceled，新的照常出结果',
+      r3.canceled === true && r4.ok === true && H['pfd:files'](e, { token: r4.token, mode: 'per-mask' }).ok === true);
+    const p5 = H['pfd:generate'](e, Object.assign(reqN(60), { runId: 'a5' }));
+    setTimeout(() => sender.kill(), 120);
+    ok('R26 [自洽] 计算中关窗（webContents destroyed）→ worker 结束、回 canceled', (await p5).canceled === true);
+  }
+})().catch((e) => {
+  console.log('FAIL  R 组异常：' + ((e && e.stack) || e));
+  fail++;
+}).then(() => {
+  console.log(`\n=== 合计 ${pass + fail} 条：PASS ${pass} / FAIL ${fail} ===`);
+  process.exit(fail === 0 ? 0 : 1);
+});

@@ -79,8 +79,30 @@ function _regenUplinkCN(d, sat) {
   return -10 * Math.log10(totalLin);
 }
 
+// RR Art.21 Table 21-4 的 PFD 一组出参（NGSO 引擎按弯管口径 transponderOutputEIRP 算，见 itu/art21.js）：
+//   再生下行 = 卫星下行 EIRP（EIRPsResult）直发 → 自由空间 PFD 与余量整体平移 Δ = EIRPs − 转发器输出 EIRP，
+//     限值、参考带宽、所用行不变（PFD 只随 EIRP 平移；占用带宽与引擎 psdBandwidth 同一把尺）；
+//   再生上行 / 星间 = 没有这条星地下行 → 整组清空，免得界面拿弯管口径的数当本链路的读数。
+const ART21_NUM_KEYS = ['pfdFreeSpaceRefBwResult', 'ituPfdLimitResult', 'ituPfdMarginResult', 'ituPfdLimitPerM2', 'ituPfdRefBandwidth'];
+function _art21Clear(d) {
+  for (const k of ART21_NUM_KEYS) if (k in d) d[k] = null;
+  if ('ituPfdRowResult' in d) d.ituPfdRowResult = '';
+  if ('ituPfdMissingResult' in d) d.ituPfdMissingResult = '';
+  return d;
+}
+function _art21RegenDownlink(d) {
+  const eirp = _num(d.EIRPsResult), bp = _num(d.transponderOutputEIRP);
+  if (eirp == null || bp == null) return d;
+  const delta = eirp - bp;
+  const fs = _num(d.pfdFreeSpaceRefBwResult), m = _num(d.ituPfdMarginResult);
+  if (fs != null) d.pfdFreeSpaceRefBwResult = (fs + delta).toFixed(2 + FX);
+  if (m != null) d.ituPfdMarginResult = (m - delta).toFixed(2 + FX);
+  return d;
+}
+
 // 把结果对象重标为再生式上行专属（合计 C/N = 直接合并的上行 C/(N+I)）。就地改写并返回。
 function _reframeUplinkOnly(d, sat) {
+  _art21Clear(d);
   const thr = _num(d.thresholdCN);
   // 上行 C/(N+I)：直接合并干扰口径重算，覆盖引擎原弯管口径 uplinkCN。热噪声缺失时兜底用引擎值。
   let upCN = _regenUplinkCN(d, sat);
@@ -116,6 +138,10 @@ function _reframeUplinkOnly(d, sat) {
     d.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
     d.interruptionHours = (interruptionMinutes / 60).toFixed(2 + FX);
   }
+  // 单程时延：引擎按弯管口径给的是「上行段 + 下行段」，再生上行只有上行这一跳 → 取上行段，下行段清空。
+  // 窗口侧 regenModeScope.regenHopDelay 同口径（幂等）；参数扫描 / 地理场图直取引擎出参，也靠这里才对。
+  if (d.linkDelayUpResult != null && d.linkDelayUpResult !== '') d.linkDelayResult = d.linkDelayUpResult;
+  d.linkDelayDownResult = '';
   // 下行/转发器在再生口径下不参与——清空展示字段，避免瀑布/汇总误读弯管量
   d.downlinkCN = '';
   d.regenerative = true;
@@ -287,6 +313,7 @@ function _reframeDownlinkOnly(d, sat, gtEff) {
   const pp = _regenDownlinkPsdPfd(d);
   if (pp.psd != null && isFinite(pp.psd)) d.satellitePSDResult = pp.psd.toFixed(2 + FX);
   if (pp.pfd != null && isFinite(pp.pfd)) d.arrivalPFDAtGroundResult = pp.pfd.toFixed(2 + FX);
+  _art21RegenDownlink(d);   // RR Art.21 自由空间 PFD 与余量同样换成卫星下行 EIRP 直发
   // 再生式：上行与下行彻底解耦，系统可用度就是下行可用度（弯管的「上行×下行」联合可用度不成立）。
   const dnAvail = _num(d.downlinkAvailabilityResult);
   if (dnAvail != null) {
@@ -296,6 +323,9 @@ function _reframeDownlinkOnly(d, sat, gtEff) {
     d.interruptionMinutes = interruptionMinutes.toFixed(2 + FX);
     d.interruptionHours = (interruptionMinutes / 60).toFixed(2 + FX);
   }
+  // 单程时延：同上行，再生下行只有下行这一跳 → 取下行段，上行段清空
+  if (d.linkDelayDownResult != null && d.linkDelayDownResult !== '') d.linkDelayResult = d.linkDelayDownResult;
+  d.linkDelayUpResult = '';
   // 上行在再生下行口径下不参与——清空展示字段，避免瀑布/汇总误读弯管量
   d.uplinkCN = '';
   d.regenerative = true;
@@ -393,6 +423,7 @@ function _islIntfMerge(d, sat) {
 
 // 把结果重标为再生式星间专属（合计 C/N = ISL 单跳 C/N）。availPct：互视可见度(%)，作系统可用度。
 function _reframeIslOnly(d, availPct) {
+  _art21Clear(d);
   const thr = _num(d.thresholdCN);
   const islCN = _num(d.islPerHopCNResult);   // 引擎 rf 口径 ISL 单跳 C/N
   if (islCN != null) {

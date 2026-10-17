@@ -6,10 +6,20 @@
 import { curLang } from '../../shared/i18n/lang.js'
 import { onLangChange } from '../../shared/i18n/runtime.js'
 import dtsRaw from '../../shared/beamScript/beammap.dts.txt?raw'
+import dtsImportRaw from '../../shared/beamScript/beamimport.dts.txt?raw'
 import { localize } from '../../shared/beamScript/templates.js'
 
 let _p = null
 let _zh = null
+// 脚本类型声明的两套：导出脚本（data / file() …）与导入脚本（files / json() / csv() …）。两个对话框不会同时开，
+// 谁开着就挂谁那套（setScriptMode）；声明是全局的，同时挂两套会互相串名。
+let _mode = 'export'
+let _core = null
+const dtsOf = () => (_mode === 'import' ? dtsImportRaw : dtsRaw)
+export function setScriptMode(mode) {
+  _mode = mode === 'import' ? 'import' : 'export'
+  if (_core) _core.setScriptTypes(localize(dtsOf(), curLang()))
+}
 // 中文表只在要用时取：模块只求值一次 → 首次取完就记下；求值会直接改全局表，取完还原，挂不挂由 applyLang 定
 async function zhTable() {
   if (!_zh) {
@@ -24,7 +34,7 @@ async function zhTable() {
 function applyLang(core, lang) {
   globalThis._VSCODE_NLS_MESSAGES = lang === 'en' ? undefined : _zh
   globalThis._VSCODE_NLS_LANGUAGE = lang === 'en' ? undefined : 'zh-cn'
-  core.setScriptTypes(localize(dtsRaw, lang))
+  core.setScriptTypes(localize(dtsOf(), lang))
 }
 
 export function loadMonaco() {
@@ -36,6 +46,7 @@ export function loadMonaco() {
     globalThis._VSCODE_NLS_MESSAGES = lang0 === 'en' ? undefined : _zh
     globalThis._VSCODE_NLS_LANGUAGE = lang0 === 'en' ? undefined : 'zh-cn'
     const core = await import('./monacoCore.js')
+    _core = core
     if (curLang() !== 'en' && !_zh) { try { await zhTable() } catch { /* 留英文 */ } }   // 载入期间切到中文
     applyLang(core, curLang())
     let seq = 0

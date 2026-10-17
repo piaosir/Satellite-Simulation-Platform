@@ -15,6 +15,9 @@ const kmlColor = (rrggbb, alpha) => alpha + rrggbb.slice(4, 6) + rrggbb.slice(2,
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 // <ExtendedData>：KML 标准的结构化元信息位。写卫星轨位 / 频段 / 类型 / 增益档，
 // 让「导出 KML → 再导入覆盖库」（kml/parse.js 的 parseKmlBeams）能原样还原，不必从中文名称里猜。
+// 无数值的环（g = null，覆盖边界之类）的增益档写 GAIN_NONE：不写的话再导入时只剩 Placemark 名（= 波束名）可猜，
+// 整份被当成「无增益档」拒收，纯数字波束名（「12」）还会被读成 12 dB。parse.js 认同一个词。
+const GAIN_NONE = 'none'
 function extDataXml(pairs) {
   const rows = pairs.filter(([, v]) => v != null && String(v).trim() !== '')
   if (!rows.length) return []
@@ -109,7 +112,7 @@ export function serializeKml(beams = [], opts = {}) {
     const beamFolders = []
     for (const b of sbeams) {
       const contours = (b.contours || []).filter((c) => c && c.p && c.p.length >= 2)
-      const gains = contours.map((c) => Number(c.g)).filter(Number.isFinite)
+      const gains = contours.filter((c) => c.g != null).map((c) => Number(c.g)).filter(Number.isFinite)   // 无数值的环（g = null）不进渐变量程
       const gmin = gains.length ? Math.min(...gains) : 0
       const gmax = gains.length ? Math.max(...gains) : 1
       const placemarks = []
@@ -144,9 +147,9 @@ export function serializeKml(beams = [], opts = {}) {
         }
         placemarks.push(
           '<Placemark>',
-          `<name>${esc(typeof opts.contourName === 'function' ? opts.contourName(c, b) : `${c.g} dB`)}</name>`,
+          `<name>${esc(typeof opts.contourName === 'function' ? opts.contourName(c, b) : (c.g == null ? (b.name || '') : `${c.g} dB`))}</name>`,
           `<styleUrl>#${sid}</styleUrl>`,
-          ...extDataXml([['gain', c.g]]),
+          ...extDataXml([['gain', c.g == null ? GAIN_NONE : c.g]]),
           '<Polygon>',
           '<tessellate>1</tessellate>',
           '<altitudeMode>clampToGround</altitudeMode>',

@@ -1,4 +1,4 @@
-// 链路表实时预览作业（GSO / NGSO 两窗共用；再生式的预览是闭式算式不走引擎，用不上）。
+// 链路表实时预览作业（GSO / NGSO / 再生式三窗共用；再生式逐行调 computeRegenUplink / Downlink，几何用闭式）。
 // 喂的是「地球站配置」格的第二行 EIRP / G·T 与功放尾标（computedVals 里的 _eirp / _gt / _paW）。
 //
 // 原先是一行一次 IPC、串行 await 到底：千行表要跑上千个往返，每个回包各自触发一次整表重渲染，

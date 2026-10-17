@@ -70,7 +70,7 @@ approx('合计=气体+云+雨', r.totalAtten, r.gasAtten + r.cloudAtten + r.rain
 ok('下行 G/T 衰减 有值', Number.isFinite(r.gtDegradation) && r.gtDegradation > 0);
 ok('下行 DND 有值', Number.isFinite(r.dnd) && r.dnd > 0);
 
-// —— 统一噪声口径（雨+云 · T_mr=275K · 经馈线折算）——
+// —— 统一噪声口径（T_sky(气体+云+雨) − T_sky(气体) · P.618-14 式(69)(70) · 经馈线折算）——
 approx('precipAtten = 雨衰 + 云衰', r.precipAtten, r.rainAtten + r.cloudAtten, 1e-9);
 approx('DND = (雨衰+云衰) + 降雨噪声G/T衰减', r.dnd, r.precipAtten + r.gtDegradation, 1e-9);
 ok('噪声增量与G/T衰减已统一为同一量', Math.abs(r.noiseIncrease - r.gtDegradation) < 1e-12);

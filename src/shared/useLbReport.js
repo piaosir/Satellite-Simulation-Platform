@@ -17,6 +17,7 @@
 import { reactive, ref } from 'vue'
 import { buildReportModel, buildInputDigest, calcBlock, carrierIdentity, regenModeName } from './lbReport.js'
 import { buildSlaReportModel } from './lbSlaReport.js'   // 独立《服务等级指标（SLA）》报告的模型
+import { buildCapReportModel } from './lbCapReport.js'   // 独立《容量汇总》报告的模型
 import { isUnitAdaptive } from './lbUnitMode.js'   // 结果显示单位档（功能区「单位」）：报告与屏幕同口径
 
 // 报告里图件的像素倍率。图上那个「出图」按钮用 4 倍，是因为它出的图不知道会被放到多大；
@@ -27,8 +28,8 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export function useLbReport(o) {
   const dlg = reactive({ open: false, busy: false, progress: null })
-  // 同一个对话框壳两种口径：'full' = 链路预算报告，'sla' = 独立的《服务等级指标（SLA）》报告。
-  // busy / progress 共用（一次只出一份），提交按 variant 分派。
+  // 同一个对话框壳三种口径：'full' = 链路预算报告，'sla' = 独立的《服务等级指标（SLA）》报告，
+  // 'cap' = 独立的《容量汇总》报告。busy / progress 共用（一次只出一份），提交按 variant 分派。
   const variant = ref('full')
 
   // 有没有东西可报：分节窗口按「有链路行」算（导出前 beforeReport 会把没算过的模块补算），
@@ -51,6 +52,14 @@ export function useLbReport(o) {
     dlg.open = true
   }
 
+  // 有没有列入的链路留到导出前补算之后再判（runCap）：没算过 / 已过期的链路此刻还没有结果
+  function openCap() {
+    if (!hasWork()) { o.toast(emptyHint()); return }
+    variant.value = 'cap'
+    dlg.progress = null
+    dlg.open = true
+  }
+
   // 统一成节列表：分节窗口给 sections()，其余窗口就是一个匿名节（key 为空 = 不切模块）
   function collect() {
     if (o.sections) return (o.sections() || []).map((s) => ({ key: s.key, regenMode: s.regenMode || s.key, links: s.links || [] }))
@@ -69,11 +78,13 @@ export function useLbReport(o) {
 
   // 逐条链路取图。切节 → 切链路 → 等图就绪 → 取图；任何一条取不到就跳过。
   // 结束时把「详细预算」还回用户原来看的那一节那条链路（导出不该改变他的现场）。
-  // missing：取图抛错的那几条（「没有就是没有」只认画不出来的图；渲染路径抛错是故障，要报出来，见 run 末尾）
+  // missing：图表区不在 / 取图抛错的那几条（「没有就是没有」只认画不出来的图；图表区没挂上、渲染路径抛错
+  // 都是这条链路该有图却没取到，要报出来，见 run 末尾）
+  // ★ 图表区每切一条链路重取：它挂在「详细预算」里、随当前链路挂卸——停在一条算失败的链路上时它根本没挂，
+  //   开头取一次就是 null，整份报告一张图都没有。
   async function harvestFigures(flat, onStep, missing) {
     const out = {}
-    const viz = o.vizRef()
-    if (!o.showViz() || !viz) return out
+    if (!o.showViz()) return out
     const keep = o.selected()
     const keepSec = o.activeSection ? o.activeSection() : ''
     let curSec = keepSec
@@ -87,9 +98,12 @@ export function useLbReport(o) {
         await o.nextTick()
         // 图表区跟着 selected 走：切完先让它把新入参吃进去，再等它算完
         await wait(30)
+        const name = '#' + (i + 1) + ' ' + (l.txName || '') + ' → ' + (l.rxName || '')
+        const viz = o.vizRef()
+        if (!viz) { out[i] = []; if (missing) missing.push({ name, error: null }); continue }
         try { out[i] = await viz.captureFigures({ scale: FIG_SCALE }) } catch (e) {
           out[i] = []
-          if (missing) missing.push({ name: '#' + (i + 1) + ' ' + (l.txName || '') + ' → ' + (l.rxName || ''), error: e })
+          if (missing) missing.push({ name, error: e })
         }
       }
     } finally {
@@ -109,9 +123,12 @@ export function useLbReport(o) {
       const en = lang === 'en'
       // 分节窗口：先把没算过 / 已过期的模块补齐——报告讲整份配置，结果不齐就不是整份
       if (o.beforeReport) await o.beforeReport(stepper())
+      // 「含 SLA」在补算之后再判：对话框交来的是用户的选择，没算过的链路打开对话框时还没有条款，
+      // 按那一刻的条款数判就会把补算后本该有的那一节漏掉
+      const withSla = !!opts.withSla && (!o.slaCount || o.slaCount() > 0)
       // 含 SLA 时再把档位扫描 / 日凌这些【惰性算的会话态】补齐：它们只在用得着时才算，导出前必须到位，
       // 否则报告里的条款数随「有没有开过 SLA 弹窗」变
-      if (opts.withSla && o.beforeSla) await o.beforeSla()
+      if (withSla && o.beforeSla) await o.beforeSla()
       const secs = collect()
       const flat = flatten(secs)
       const total = flat.length
@@ -135,11 +152,17 @@ export function useLbReport(o) {
       const cbOf = (l) => (o.calcFor ? calcBlock(Object.assign({}, calc, o.calcFor(l)), lang) : calcBlock(calc, lang))
       // SLA 建议（§4）：各窗用 lbSla.slaReportBlock 出纯数据（标签已按 lang 翻好、值已按单位档格式化）。
       // 对话框没勾「含 SLA 建议」就整个不带 —— hasSla 随之为假，三份文件里那一节连同目录条目一起消失。
-      const slaOf = (l) => (opts.withSla && o.slaFor ? o.slaFor(l) : null)
+      const slaOf = (l) => (withSla && o.slaFor ? o.slaFor(l) : null)
+      // 容量汇总（§2）：各窗按节出一张逐转发器的表（shared/lbCapacity.capReportBlock），「链路」行的成员编号
+      // 用这里的全篇 #N（分节时连续编号）——节下标 + rowId 定位，再生式各模块的行 id 互不相干。
+      // 没给 capFor 的窗口（端到端）不带，主进程照旧出它自己的统计行。
+      const noAt = new Map(flat.map(({ l, si }, i) => [si + '|' + l.rowId, i + 1]))
+      const capacity = o.capFor ? secs.map((s, si) => o.capFor(s.key, lang, (rowId) => noAt.get(si + '|' + rowId))) : null
       const model = buildReportModel({
         lang,
         adaptUnits: isUnitAdaptive(),
-        slaParams: opts.withSla && o.slaParams ? o.slaParams() : null,
+        slaParams: withSla && o.slaParams ? o.slaParams() : null,
+        capacity,
         orbitType: o.orbitType,
         regenMode: secs[0].regenMode,
         sections: sectionsFor(secs, lang),
@@ -250,12 +273,61 @@ export function useLbReport(o) {
     }
   }
 
-  // 提交按 variant 分派：两份报告共用同一个对话框壳
-  const submit = (opts) => ((opts && opts.variant === 'sla') ? runSla(opts) : run(opts))
+  // 《容量汇总》：账目与「导出 › 容量」弹窗同一份（o.capModelFor(节 key) → lbCapacity.buildCapModel 的结果），
+  // 不取图、不组瀑布。链路编号用全篇 #N（分节时连续编号，同总报告 §2 与 SLA 报告）。
+  async function runCap(opts) {
+    const api = o.api
+    if (!api) { o.setError('导出需在桌面客户端中运行'); return }
+    if (!o.capModelFor) return
+    dlg.busy = true
+    try {
+      const lang = o.lang()
+      const en = lang === 'en'
+      if (o.beforeReport) await o.beforeReport(stepper())   // 没算过 / 过期的先补算：账要出自此刻这套输入
+      const secs = collect()
+      const flat = flatten(secs)
+      const calc = o.calc()
+      dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: flat.length, total: flat.length }
+      const noAt = new Map(flat.map(({ l, si }, i) => [si + '|' + l.rowId, i + 1]))
+      const model = buildCapReportModel({
+        lang,
+        adaptUnits: isUnitAdaptive(),
+        doc: opts.doc,
+        appVersion: o.appVersion(),
+        orbitType: o.orbitType,
+        regenMode: o.sections ? secs.map((s) => s.regenMode) : secs[0].regenMode,
+        calc: Object.assign({ satelliteName: calc.satelliteName || '', frequencyBand: calc.frequencyBand || '' }, calc),
+        sections: secs.map((s, si) => ({
+          key: s.key,
+          title: regenModeName(s.regenMode, lang),
+          model: o.capModelFor(s.key),
+          noOf: (rowId) => noAt.get(si + '|' + rowId)
+        }))
+      })
+      if (!model.hasCap) { o.setError('没有列入容量汇总的链路'); return }
+      const r = await api.report.exportReport({
+        model: JSON.parse(JSON.stringify(model)), formats: opts.formats,
+        defaultName: (o.capDefaultName ? o.capDefaultName(en) : o.defaultName(en))
+      })
+      if (r && r.ok) { done('已生成：' + (r.files || []).join('　'), r); dlg.open = false }
+      else if (r && !r.canceled) o.setError('导出失败：' + (r.error || '未知错误'))
+    } catch (e) {
+      o.setError('导出失败：' + ((e && e.message) || String(e)))
+    } finally {
+      dlg.busy = false; dlg.progress = null
+      if (o.afterReport) { try { await o.afterReport() } catch (e) { /* 同上 */ } }
+    }
+  }
+
+  // 提交按 variant 分派：三份报告共用同一个对话框壳
+  const submit = (opts) => {
+    const v = opts && opts.variant
+    return v === 'sla' ? runSla(opts) : v === 'cap' ? runCap(opts) : run(opts)
+  }
 
   return {
     reportDlg: dlg, reportVariant: variant,
-    openReportDialog: open, openSlaReportDialog: openSla,
-    runReport: run, runSlaReport: runSla, submitReport: submit
+    openReportDialog: open, openSlaReportDialog: openSla, openCapReportDialog: openCap,
+    runReport: run, runSlaReport: runSla, runCapReport: runCap, submitReport: submit
   }
 }

@@ -289,6 +289,7 @@ async function loadIndex() {
 }
 async function openPlan(id) {
   if (!api?.freqPlan || !id) return
+  if (currentId.value) await flushSave()   // 先把当前这份的待存改动落盘，再换入（见 flushSave）
   const p = await api.freqPlan.get(id)
   if (!p) { flash('计划不存在'); await loadIndex(); return }
   loading = true                        // 整份换入不是「改动」，别让深监听把它当编辑存回去
@@ -351,6 +352,21 @@ async function doSave() {
     dirty = false; reportError('频率计划存盘失败', r?.error || '未知错误'); await loadIndex()
     return false
   } catch (e) { reportError('频率计划存盘失败', e); return false }
+}
+// 聚焦中的迟落格（@change 才提交）先失焦提交 —— 不然这一笔还没进 plan，存了也白存。返回是否真失焦了一格
+function blurEditing() {
+  const a = document.activeElement
+  if (!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false
+  a.blur()
+  return true
+}
+// 换计划 / 新建 / 复制之前把当前这份的待存改动落盘：防抖计时到点时 currentId 若已换成新计划，
+// doSave 存的就是新计划，旧计划那一笔改动连同（随换计划清空的）撤销栈一起丢掉。
+// 失焦提交后等一拍：深监听是 pre-flush，下一拍才把 dirty 记上。
+async function flushSave() {
+  blurEditing()
+  await nextTick()
+  if (dirty) { clearTimeout(saveTimer); await doSave() }
 }
 // 深监听：图/表/检查器三处都直接改 plan，逐处调 scheduleSave 迟早漏
 watch(plan, () => { if (plan.value && !loading) scheduleSave() }, { deep: true })
@@ -477,6 +493,7 @@ async function removePlan(e) {
   flash('已删除')
 }
 async function duplicatePlan(e) {
+  if (e.id === currentId.value) await flushSave()   // 副本从盘上取：刚改的那一笔要先落下去
   const src = await api.freqPlan.get(e.id)
   if (!src) return
   const copy = { ...src, id: '', name: src.name + ' Copy' }      // 名字会进图，后缀同样走英文
@@ -1597,7 +1614,8 @@ onMounted(async () => {
   api?.freqPlan?.onPlanRemoved?.((id) => { if (id) planRemovedRemote(id) })
   api?.freqPlan?.onPlanRenamed?.((id, name) => { if (id) planRenamedRemote(id, name) })
   // 窗口失焦/关闭前把待存的落盘（debounce 尾巴不能丢）
-  window.addEventListener('beforeunload', () => { if (dirty) doSave() })
+  // 聚焦中的迟落格先提交：它的 @change 同步改了 plan，但深监听下一拍才记 dirty，来不及等 —— 失焦过就照存一次
+  window.addEventListener('beforeunload', () => { const blurred = blurEditing(); if (dirty || (blurred && plan.value)) doSave() })
   // 「发到小程序」的凭证与本机ID（缺凭证时菜单项仍在，点开即说明原因，不静默失效）
   api?.share?.configured?.().then((v) => { miniConfigured.value = !!v }).catch(() => {})
   api?.app?.deviceId?.().then((v) => { miniDeviceId.value = String(v || '') }).catch(() => {})

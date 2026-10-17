@@ -18,6 +18,9 @@ export const fileBridge = shallowReactive({
   libraryTick: 0,
   liveTick: 0,   // 3D 页实时刷新关联星位置时自增，驱动文件管理器 GRD 树行经度跟随实时
   customSatTick: 0,   // 自定义卫星库（文件管理导入 OMM/TLE）变更后自增，提示 3D 页重载 custom 分组 + 刷新搜索库
+  // 文件管理「导入替换」内置星座组 / 全部活跃（active）/ 卫星编目（satcat）成功后置 { key, seq }（每次换新对象）：
+  // 3D 页据此作废按旧数据建的会话缓存（该组条目与名录、全部 / 其他并集、全量池、编目索引）并按新数据重载，不必重启
+  ommReplaced: null,
   customConst: null   // 3D 页注入的活「自定义星座」实例（useCustomConstellations），供文件管理改名等直接联动
 })
 
@@ -25,3 +28,4 @@ export function setGrdBridge(grdApi, collectGxt, actions) { fileBridge.grd = grd
 export function clearGrdBridge() { fileBridge.grd = null; fileBridge.collectGxt = null; fileBridge.collectBeamMap = null; fileBridge.grdActions = null }
 export function bumpLibrary() { fileBridge.libraryTick++ }
 export function bumpCustomSats() { fileBridge.customSatTick++ }
+export function bumpOmmReplaced(key) { const p = fileBridge.ommReplaced; fileBridge.ommReplaced = { key: String(key || ''), seq: (p ? p.seq : 0) + 1 } }

@@ -21,6 +21,15 @@
 // 组平衡只给出一个方程，多个载波则自由度不止一个，故约定「统一平移」：各载波在自己的基准余量上同抬同降
 // 同一个 Δ，个别载波可加固定偏置（相对基准的超发量，如前向按设计超发 +2 dB）错开。
 //
+// —— 一组＝一只转发器（2026-10-16 补，卫星可「逐链路指定」之后）——
+// Σ功率带宽 = Σ载波带宽 只在【同一只转发器】上成立：功率带宽 = 功率占用 × 本转发器带宽，功率占用是本转发器
+// 多载波工作点（饱和 EIRP − OBO）上的份额。两份卫星配置＝两只转发器，份额各有各的分母，加在一起配平只平了
+// 一个没有物理意义的总数——真引擎实测（A 星 36 MHz、B 星 54 MHz 各挂一张同构的网、共用两份载波一起配）：
+// 总数平了，A 星 +0.38 dB 超发、B 星 −0.42 dB 欠发，占用率读数还按首条链路那颗星的带宽折算。
+// 故按卫星配置分组（groupAdvRows），一次只配一组；validateAdv 见到勾选行分属多颗星直接拦下。
+// 统一指定时全表一颗星，天然只有一组，与此前逐位相同。同一份载波挂在两颗星上＝两个未知数（两只转发器要的
+// 余量本就不同）：配其中一组时，另一颗星的行算「未勾选链路引用着」，planAdvWriteback 照常派生副本，自然分家。
+//
 // —— 幂等（同样的设置连点几次「应用」，解出的余量必须钉在原地）——
 // 「单载波平衡点」基准天生幂等：平衡点由 A（归一功率带宽）与载波带宽定，与此刻的余量无关。
 // 「当前余量」基准则是个移动靶——我们上一轮写回的余量里已经含着那一轮的偏置，再拿它当基准，
@@ -42,11 +51,33 @@ const lin = (db) => Math.pow(10, db / 10)
 // 归一功率带宽：把一条链路的功率带宽折算到 margin = 0（此后任意余量下的功率带宽 = A × 10^(m/10)）
 const normPbw = (pbwKHz, marginDb) => pbwKHz / lin(marginDb)
 
+// 一行所在的转发器（卫星配置）键：宿主没给（老调用方 / 测试夹具）即视同同一只
+const satKeyOf = (r) => (r && r.satKey != null ? String(r.satKey) : '')
+
+/**
+ * 按转发器给候选链路分组：一组＝一份卫星配置＝一只转发器＝一个配平方程（见文件头「一组＝一只转发器」）。
+ * @param {Array} rows 候选链路，每行可带 satKey（卫星配置 id）/ satName（显示名）
+ * @returns {Array<{ key:string, name:string, rows:Array }>} 按首次出现的次序
+ */
+export function groupAdvRows(rows) {
+  const map = new Map()
+  for (const r of rows || []) {
+    const key = satKeyOf(r)
+    let g = map.get(key)
+    if (!g) { g = { key, name: (r && r.satName) || '', rows: [] }; map.set(key, g) }
+    g.rows.push(r)
+  }
+  return [...map.values()]
+}
+
 // 选中集合是否够条件求解；返回空串表示可解，否则是拦下来的原因
 export function validateAdv(picked) {
   if (!picked || !picked.length) return '未选择链路。'
   const bad = picked.find((p) => !isFinite(p.bwKHz) || !isFinite(p.pbwKHz) || !isFinite(p.marginDb))
   if (bad) return `链路 #${bad.no} 无可用计算结果（${bad.error || '未计算'}）。`
+  // 跨转发器不成方程：各星的功率带宽分母不同，合起来配平只平了一个总数（见文件头）
+  const nSat = new Set(picked.map(satKeyOf)).size
+  if (nSat > 1) return `所选链路分属 ${nSat} 颗卫星。`
   return ''
 }
 
@@ -55,11 +86,12 @@ function groupByCarrier(picked) {
   const map = new Map()
   for (const p of picked) {
     let c = map.get(p.carrierId)
-    if (!c) { c = { id: p.carrierId, name: p.carrierName, links: [], A: 0, bwKHz: 0, margins: [], bases: [] }; map.set(p.carrierId, c) }
+    if (!c) { c = { id: p.carrierId, name: p.carrierName, links: [], A: 0, bwKHz: 0, pbwKHz: 0, margins: [], bases: [] }; map.set(p.carrierId, c) }
     c.links.push(p)
     c.bases.push(num(p.baseDb))
     c.A += normPbw(p.pbwKHz, p.marginDb)
     c.bwKHz += p.bwKHz
+    c.pbwKHz += p.pbwKHz
     c.margins.push(p.marginDb)
   }
   return [...map.values()]
@@ -68,15 +100,16 @@ function groupByCarrier(picked) {
 /**
  * 组平衡求解。
  * @param {object} o
- *   picked   [{ no, rowId, carrierId, carrierName, bwKHz, pbwKHz, marginDb, baseDb, error, paW, paPresetW, booDb, boiDb }]
- *            已勾选的链路（带上一次计算结果）；baseDb＝该载波「进本功能之前」的原始余量（宿主用 advBaseMargin
- *            从载波配置上取，缺省即 marginDb）；paW / paPresetW＝发端功放此刻实算值与站型预设；booDb / boiDb＝卫星条目的回退
+ *   picked   [{ no, rowId, carrierId, carrierName, bwKHz, pbwKHz, marginDb, baseDb, error, paW, paPresetW, booDb, boiDb, satKey, tpBwMHz }]
+ *            已勾选的链路（带上一次计算结果），须同属一只转发器（satKey 相同）；baseDb＝该载波「进本功能之前」的
+ *            原始余量（宿主用 advBaseMargin 从载波配置上取，缺省即 marginDb）；paW / paPresetW＝发端功放此刻实算值与
+ *            站型预设；booDb / boiDb＝卫星条目的回退；tpBwMHz＝该行所在转发器的带宽
  *   state    { [carrierId]: { bias:Number } } 逐载波的偏置（相对基准的固定错位）
  *   base     'current' | 'balance'
  *   overDb   组级超发量（目标总功率带宽相对组占用带宽抬高的 dB 数，0 即严格平衡）
  *   target   'sum'（Σ载波带宽，缺省）| 'fixed'（指定带宽，取 targetBwMHz）
- *   tpBwMHz  转发器带宽（只用于占用率读数，缺省则不报占用率）
- *   allRows  全表行 [{ rowId, bwKHz, pbwKHz }]（可选；给了才出全表占用读数）
+ *   tpBwMHz  转发器带宽（只用于占用率读数；缺省取勾选行自带的 tpBwMHz，都没有则不报占用率）
+ *   allRows  同一只转发器上的全部行 [{ rowId, bwKHz, pbwKHz }]（可选；给了才出全表占用读数）
  */
 export function solveAdv(o) {
   const picked = o.picked || []
@@ -110,9 +143,15 @@ export function solveAdv(o) {
   // balance = 令该载波自己的功率带宽等于自己的载波带宽的那个余量
   for (const c of carriers) {
     c.balanceDb = c.A > 0 ? dB(c.bwKHz / c.A) : NaN
-    // 同一份载波正常取值相同，非「设置余量」方式下取首条
-    c.currentDb = c.margins[0]
-    c.pristineDb = isFinite(c.bases[0]) ? c.bases[0] : c.currentDb
+    // 「此刻的余量」：设置余量方式下各链路同值；功带平衡 / 设置功放功率等方式逐条各解各的、彼此不同——
+    // 取功率加权的等效余量 10·lg(Σ功率带宽 / ΣA)，即让这份载波整体保持此刻功率份额的那个余量（各条同值时
+    // 恰等于该值）。曾取首条链路：表里挪一下行序，多载波组的配平结果跟着变。
+    const m0 = c.margins[0]
+    c.currentDb = (!(c.A > 0) || c.margins.every((m) => Math.abs(m - m0) < 1e-9)) ? m0 : dB(c.pbwKHz / c.A)
+    // 原始基准的锚（ADV_BASE）作数时，宿主给的各条 baseDb 同为锚值；不作数时宿主回落成各条此刻的余量——
+    // 各条不一致即没有锚，回到上面的等效余量（否则又按首条取，行序问题从这条缝里回来）
+    const b0 = c.bases[0]
+    c.pristineDb = (isFinite(b0) && c.bases.every((b) => Math.abs(b - b0) < 1e-9)) ? b0 : c.currentDb
     c.baseDb = base === 'balance' ? c.balanceDb : c.pristineDb
     const st = state[c.id] || null
     c.biasDb = (st && isFinite(num(st.bias))) ? num(st.bias) : 0
@@ -156,9 +195,9 @@ export function solveAdv(o) {
         warnings.push(`链路 #${l.no} 功放需 ${l.paAfterW.toFixed(1)} W，发端站型预设 ${l.paPresetW.toFixed(1)} W`)
       }
     }
-    if (c.margins.some((m) => Math.abs(m - c.currentDb) > 0.005)) {
-      warnings.push(`载波「${c.name}」各链路当前系统余量不一致（${c.margins.map((m) => m.toFixed(2)).join(' / ')} dB）：基准取首条链路，配平结果不受影响`)
-    }
+    // 各链路此刻余量不一（功带平衡 / 设置功放功率逐条各解）：应用后这份载波只剩一个余量，报出区间
+    const mLo = Math.min(...c.margins), mHi = Math.max(...c.margins)
+    if (mHi - mLo > 0.005) warnings.push(`载波「${c.name}」各链路当前系统余量 ${mLo.toFixed(2)} ~ ${mHi.toFixed(2)} dB`)
   }
   // 转发器工作点：整组超过一路载波，而卫星条目上的回退还是单载波那一档 —— 份额整体偏乐观。
   // 阈值取工程常用的多载波下限（OBO ≥ 2 dB / IBO ≥ 4 dB）；卫星条目没给这两个数则不判。
@@ -170,7 +209,9 @@ export function solveAdv(o) {
     }
   }
   const beforePbwKHz = picked.reduce((s, p) => s + p.pbwKHz, 0)
-  const tpBwKHz = (num(o.tpBwMHz) || 0) * 1000
+  // 转发器带宽：宿主显式给的优先，否则取勾选行自带的（同组同星，取首个有效值）
+  const tpOf = (v) => { const n = num(v); return n > 0 ? n : 0 }
+  const tpBwKHz = (tpOf(o.tpBwMHz) || picked.map((p) => tpOf(p.tpBwMHz)).find((v) => v > 0) || 0) * 1000
 
   return {
     ok: true, message: '', warnings, base, overDb, deltaDb,
@@ -179,7 +220,8 @@ export function solveAdv(o) {
     // 转发器占用率（解后）：带宽按组占用带宽算，功率按 Σ功率带宽算
     bwUsePct: tpBwKHz > 0 ? (occBwKHz / tpBwKHz) * 100 : NaN,
     pwUsePct: tpBwKHz > 0 ? (afterPbwKHz / tpBwKHz) * 100 : NaN,
-    ...allUse(o.allRows, outLinks, tpBwKHz),
+    // 全表占用只数同一只转发器上的行：别的卫星上的载波占的是别的转发器
+    ...allUse(Array.isArray(o.allRows) ? o.allRows.filter((r) => satKeyOf(r) === satKeyOf(picked[0])) : null, outLinks, tpBwKHz),
     carriers: carriers.map(carrierRow),
     links: outLinks
   }
@@ -241,7 +283,8 @@ const stripSuffix = (s) => String(s == null ? '' : s).replace(/ · (VSAT|CNC)平
  * @param {object} o
  *   carriers  solveAdv 回的载波清单（用其中的 id / toDb / fromDb）
  *   rowIds    参与本组配平的链路行 id
- *   rows      全表链路行 [{ rowId, carrierId }]（carrierId = 该行此刻解析到的载波条目 id）
+ *   rows      全表链路行 [{ rowId, carrierId }]（carrierId = 该行此刻解析到的载波条目 id）。要给全表、别只给本组：
+ *             别的卫星上的行引用着同一份载波，也算「未勾选链路引用着」，那份载波才会派生副本而不被就地改成本组的余量
  *   configs   载波库 [{ id, name, form }]
  * @returns {{ ops: Array }} ops：
  *   { kind:'inplace', carrierId, name, formPatch }               —— 就地改这份配置

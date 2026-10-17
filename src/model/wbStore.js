@@ -49,6 +49,7 @@ import { guessUnits } from '@core/models/units.mjs'
 import { byLang } from '../shared/i18n/lang.js'
 import { mergeSegment, importRoute, extOf, entryFacts, restoreJob, canCancelJob, meshUnitTieBreak, mergeParamMeta, bodyBoxToModelBox, docKeyOf, libIdOfDoc, evictDrafts, cycleIndex, neighborAfterClose, copyNameOf, numberedNameOf, displayName, reframeMeta, previewLod } from './wbLogic.js'
 import { DRAFT_KEY, LAST_KEY, provKey, draftOk, pickDraft, sanitizeProv, templateSources, libKeyParams } from './asmLogic.js'
+import { postImportPatch, postImportBasis } from './postImportMerge.js'
 
 const plain = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
 const errText = (e) => (e && e.message) || String(e)
@@ -493,6 +494,8 @@ export function createWorkbench(ui) {
     root = r ? markRaw(r) : null; handle = h || null
     cur.meta = meta
     metaId = meta ? cur.id : ''
+    // 刚分析完的导入件：这份元数据可能取在分析落盘之前（大件解析要几秒），补并分析结果（见 notePostImport）
+    if (!same && metaId) reapplyPostImport(metaId)
     cur.kind = kind; cur.lod = lod || ''
     // 装配件（入库的 asm: 与实体模板预览）：frame / 挂点 / 关节都由装配文档生成，模型页改了下次入库就被盖掉 → 只读
     cur.asm = !!(meta && ((typeof cur.id === 'string' && cur.id.startsWith('asm:')) || (meta.spec && meta.spec.kind === 'assembly')))
@@ -825,7 +828,7 @@ export function createWorkbench(ui) {
       if (id.startsWith('asm:')) { dropDraft(id); lsPut(provKey(id), null) }
     }
     if (cur.id === id && local) { showBlank('') }
-    thumbState.delete(id); delete st.thumbs[id]
+    thumbState.delete(id); delete st.thumbs[id]; postDone.delete(id)
     await refresh()
     ui.toast(local ? byLang('已删除。', 'Deleted.') : byLang('缓存已移除。', 'Cache removed.'))
   }
@@ -967,10 +970,15 @@ export function createWorkbench(ui) {
           units: { scaleToMeters: 1, unitGuess: 'unknown', sizeVerified: false },
           frame: { q_model2body: defaultImportQ({ sourceKind: 'user', hasAgi: false, satsimFrame: null }), t_model2body: [0, 0, 0], verified: false }
         })
-        const out = await exportGlb(imp.root, meta, { originAtCom: false })
+        // stamp:false：导出时刻不写进 extras.satsim——入库 id = glb 字节 sha，同一文件再导入得出同一份字节，主进程才认得出是同一件
+        //（existed：已标定的部件表 / 单位 / 本体轴不被重做覆盖，库里也不多出一份）。体检 2026-10-16 二.24
+        const out = await exportGlb(imp.root, meta, { originAtCom: false, stamp: false })
         stop()
         j.phase = 'write'
-        const r = await call('saveImported', { glb: out.glb, meta: { ...out.satsimJson, units: { scaleToMeters: ug.scaleToMeters, unitGuess: ug.unitGuess, sizeVerified: false } } })
+        // 只带身份与口径（名称 / 类别 / 细节档 / 单位 / 本体轴）：三角形数与包围盒由主进程按这份 glb 算，部件 / 面积 / 体积由 postImport 补。
+        // 整份 satsimJson 里有 normalizeMeta 补出的全零 geometry，带过去会盖掉主进程算的值（「概况 · 三角形」恒为 0）
+        const sj = out.satsimJson
+        const r = await call('saveImported', { glb: out.glb, meta: { title: sj.title, kind: sj.kind, fidelity: sj.fidelity, frame: sj.frame, units: { scaleToMeters: ug.scaleToMeters, unitGuess: ug.unitGuess, sizeVerified: false } } })
         if (r === LOCKED) throw new Error(byLang('未激活', 'Not activated'))
         if (!r || !r.ok) throw new Error((r && r.error) || byLang('保存失败', 'Save failed'))
         j.modelId = r.id
@@ -1047,8 +1055,8 @@ export function createWorkbench(ui) {
   }
 
   /**
-   * 导入后自动：单位推断 → 部件分割（Worker）→ 表面 / 体积 / 闭合性（Worker，无质量不出 massProps）→ 缩略图 → saveMeta。
-   * 任何一步失败只记进作业的 error，不挡后面的步骤。
+   * 导入后自动：单位推断 → 部件分割（Worker）→ 表面 / 体积 / 闭合性（Worker，无质量不出 massProps）→ 缩略图 →
+   * saveMeta（只提交算出的字段，与此刻那份三方合并）。任何一步失败只记进作业的 error，不挡后面的步骤。
    */
   async function postImport(id, j, o = {}) {
     const meta0 = await call('getMeta', id)
@@ -1117,13 +1125,60 @@ export function createWorkbench(ui) {
           if (r && r.ok) { thumbState.delete(id); delete st.thumbs[id] }
         }
       } catch (e) { notes.push(byLang('缩略图生成失败', 'thumbnail failed')) }
-      // ⑤ 落盘
-      const r = await call('saveMeta', { id, meta })
-      if (r && r.ok === false) notes.push(byLang('元数据：', 'meta: ') + ((r.errors && r.errors[0]) || r.error || ''))
+      // ⑤ 落盘：只提交本轮自己算出的字段（部件 / 挂点 / 太阳翼组 / geometry / 自动补的单位），按「此刻那份」三方合并（postImportMerge.js）。
+      //   分析期间用户可能已打开这件改了名 / 单位 / 本体轴：按开头的快照整份写回会把这些改动回滚；用户那边整份落盘又会清掉部件表（体检 2026-10-16 二.25）。
+      //   该件正开着：先落定它待存的用户改动，此刻那份 = 工作副本，合并结果同时并进工作副本与撤销栈快照（mergeIntoOpen）
+      const base = postImportBasis(meta0), ours = postImportBasis(meta)
+      notePostImport(id, base, ours)
+      if (pend && pend.id === id) await flushSave()
+      const live = metaId === id && !!cur.meta
+      const theirs = live ? plain(cur.meta) : await call('getMeta', id)
+      const p = theirs && theirs !== LOCKED && theirs.ok !== false ? postImportPatch(base, ours, theirs) : null
+      if (p) {
+        if (live) mergeIntoOpen(p, base, ours)
+        const r = await call('saveMeta', { id, meta: p })
+        if (r && r.ok === false) notes.push(byLang('元数据：', 'meta: ') + ((r.errors && r.errors[0]) || r.error || ''))
+      }
       if (j && notes.length) j.error = [j.error, ...notes].filter(Boolean).join('；')
       if (j && j.tris == null && meta.geometry) j.tris = meta.geometry.tris
     } finally {
       loaded.handle.release()
+    }
+  }
+  // 最近分析完的导入件（id → {base, ours, at}）：选中这件时 getMeta 发在分析落盘之前、模型在那之后才挂上（大件解析要几秒），
+  // 工作副本里就没有分析结果——用户接着改、整份落盘会把库里刚写的部件表清掉。adoptRoot 按这里留的两份补并（三方合并幂等，多并一次无害）。
+  // 只留最近几件、几分钟（部件表大件可达数 MB）
+  const postDone = new Map()
+  const POST_KEEP_N = 4, POST_KEEP_MS = 5 * 60 * 1000
+  function notePostImport(id, base, ours) {
+    postDone.delete(id)
+    postDone.set(id, { base, ours, at: Date.now() })
+    while (postDone.size > POST_KEEP_N) postDone.delete(postDone.keys().next().value)
+  }
+  function reapplyPostImport(id) {
+    const e = postDone.get(id)
+    if (!e || !cur.meta) return
+    if (Date.now() - e.at > POST_KEEP_MS) { postDone.delete(id); return }
+    const p = postImportPatch(e.base, e.ours, plain(cur.meta))
+    if (p) for (const k of Object.keys(p)) cur.meta[k] = p[k]
+  }
+  /**
+   * 分析结果并进正开着的这件（工作副本 + 撤销 / 重做栈）：不入撤销栈（不是用户的一步），也不另排落盘（库里那份由 postImport 自己提交；
+   * 用户待存的改动整份落盘时带着它）。撤销栈的快照是这一件此前的各个状态，各按各自的口径并上同一份结果——撤销到分析完成之前的某一步，
+   * 部件表不会跟着回到空、再被落盘清掉。
+   */
+  function mergeIntoOpen(p, base, ours) {
+    for (const k of Object.keys(p)) cur.meta[k] = p[k]
+    cur.rev++
+    if (p.units) cur.geomRev++
+    if (vp && root && !st.vpOwner) { vp.setModel(root, viewMeta(), { keepView: true }); if (p.units) syncView() }
+    for (const stack of [undoStack, redoStack]) {
+      for (let i = 0; i < stack.length; i++) {
+        let s = null
+        try { s = JSON.parse(stack[i]) } catch { continue }
+        const q = postImportPatch(base, ours, s)
+        if (q) stack[i] = JSON.stringify({ ...s, ...q })
+      }
     }
   }
 
@@ -1257,7 +1312,7 @@ export function createWorkbench(ui) {
   // 每个打开的文档一份 DocState（响应式；st.docs 的顺序 = 签序，st.activeDoc = 激活签的 id）：
   //   {id, kind:'asm'|'model', name, domain, origin:'new'|'lib'|'template'|'copy'|'draft', templateId, templateKey, libId,
   //    inLib, dirty, rev, savedRev, libJson, openJson, saveErr, invalid, empty, driven, prov, saving, savedAt, seq,
-  //    pane:'quick'|'lib', stash:{json, state, sym, posePreview}|null, _rt:{…运行时，不进响应式}}
+  //    pane:'quick'|'lib', treeShut:string[], stash:{json, state, sym, posePreview}|null, _rt:{…运行时，不进响应式}}
   //   · kind 'asm'：装配文档（含驱动装配件），id = asm:<12 位十六进制>（终身不变，入库也用它）。文档本身在编辑器里；DocState 记身份、
   //     存盘状态与最近一次提交（_rt.doc 冻结纯数据 + _rt.json 现成的 JSON 串）。libJson = 库里这件的文档 JSON（提交 / 存盘内容与它相同
   //     就不标脏、不入库）；openJson = 打开时的快照（库件 = 库里那份；第二段「另存副本并还原原件」用）。
@@ -1268,6 +1323,8 @@ export function createWorkbench(ui) {
   //     视口与表单走 cur（激活 = select(libId)）。★ 模型签的撤销栈不跨签保留：元数据撤销栈全局一份，换模型即清。
   //   · stash（暂存）：装配签被换下时编辑器里的状态（撤销栈 + 指针、选择、相机）+ 对称档 / 初值姿态；换回来按它还原（asmSession 写 / 取）。
   //   · pane：左栏档（快速设置 / 组件），按签记；空装配文档缺省组件库。
+  //   · treeShut：结构树里收起的件（组件 id），按签记、随签列表落盘（与 pane 同一口径）：各签的组件 id 常同名（bus / refl1 / wing1），
+  //     共用一份折叠集时在一个签里收起「星体」，换到另一个签它也是收起的（体检 2026-10-16 二.23）。
   // wb.asm 是激活装配签的视图（Proxy：读写都落到激活的那份 DocState；没有激活的装配签时读到缺省空值）—— 现有读者 wb.asm.xxx 不改读法。
   // 存盘作业记下排上时的 DocState（job.d），跑完按它回写，不再看「是不是当前文档」；放弃点、草稿、自动保存定时器都按文档各记各的。
   // 草稿按文档分槽 model/asm/draft/<id>（上限 12，打开着的签不参与淘汰）；签列表与激活签存本机 model/design/tabs，下次开窗恢复。
@@ -1279,7 +1336,7 @@ export function createWorkbench(ui) {
   const NO_ASM = Object.freeze({
     id: '', kind: 'asm', name: '', domain: 'spacecraft', origin: 'new', templateId: '', templateKey: '', libId: '',
     inLib: false, dirty: false, rev: 0, savedRev: -1, libJson: '', openJson: '', saveErr: '', invalid: 0, empty: true, driven: false,
-    prov: null, saving: false, savedAt: 0, seq: 0, pane: 'quick', stash: null
+    prov: null, saving: false, savedAt: 0, seq: 0, pane: 'quick', treeShut: Object.freeze([]), stash: null
   })
   // docsById 是 st.docs 的按 id 索引（同一批响应式代理）。读它的地方都先读过 st.activeDoc（响应式），换签 / 增删签都先改它再改 activeDoc
   const docsById = new Map()
@@ -1302,7 +1359,7 @@ export function createWorkbench(ui) {
       origin: o.origin || 'new', templateId: o.templateId || '', templateKey: o.templateKey || '', libId: o.libId || '',
       inLib: !!o.inLib, dirty: !!o.dirty, rev: 0, savedRev: -1, libJson: o.libJson || '', openJson: o.openJson || '',
       saveErr: '', invalid: 0, empty: true, driven: false, prov: o.prov || null, saving: false, savedAt: 0, seq: ++docSeqN,
-      pane: o.pane === 'lib' ? 'lib' : 'quick', stash: null,
+      pane: o.pane === 'lib' ? 'lib' : 'quick', treeShut: treeShutOf(o.treeShut), stash: null,
       // 运行时（markRaw，不进响应式）：最近一次提交 / 自动保存与草稿的定时器 / 草稿写到哪一次提交 / 草稿写失败的那句 / 放弃点 /
       // 在途存盘作业数 / 已关签 / 库里已删 / 模板基线 JSON（模板签与它分叉出、尚未入库的副本：内容回到基线 = 不分叉、不入库）/
       // 内容代次（「还原原件」整份换掉内容时 +1：编辑器里载着的旧版本作废，asmSession 按代次判断要不要重载、暂存）/
@@ -1313,6 +1370,9 @@ export function createWorkbench(ui) {
     })
   }
   const defaultPane = (doc) => (isDriven(doc) ? 'quick' : doc && Array.isArray(doc.comps) && doc.comps.length ? 'quick' : 'lib')
+  // 结构树折叠集的存档形状：非空字符串、去重、封顶（签列表在本机存储里，坏数据 / 老版本没有这一项都回空表）
+  const TREE_SHUT_MAX = 512
+  const treeShutOf = (v) => (Array.isArray(v) ? [...new Set(v.filter((x) => typeof x === 'string' && x))].slice(0, TREE_SHUT_MAX) : [])
   function syncAsmFacts(d, doc) { d.name = doc.name; d.domain = doc.domain; d.empty = !doc.comps.length; d.driven = isDriven(doc) }
   /** 新开的装配文档：记下初始文档（编辑器载入前按它载；载入后 change(load) 换成编辑器那份冻结快照） */
   function initAsm(d, doc) {
@@ -2073,7 +2133,7 @@ export function createWorkbench(ui) {
     const src = d._rt.doc
     const lg = lang()
     const doc = normalizeAssembly({ ...plain(src), name: copyNameOf(src.name || defaultAsmName(src.domain), takenNames(), lg) })
-    const c = initAsm(mkDoc({ id: newAsmId(), kind: 'asm', origin: 'copy', templateId: d.templateId, prov: d.prov ? plain(d.prov) : null, pane: d.pane }), doc)
+    const c = initAsm(mkDoc({ id: newAsmId(), kind: 'asm', origin: 'copy', templateId: d.templateId, prov: d.prov ? plain(d.prov) : null, pane: d.pane, treeShut: d.treeShut }), doc)
     if (c.prov) lsPut(provKey(c.id), plain(c.prov))
     let es = null
     try { es = edBridge && typeof edBridge.stateOf === 'function' ? edBridge.stateOf(d) : null } catch { es = null }
@@ -2237,7 +2297,7 @@ export function createWorkbench(ui) {
   function writeTabs() {
     clearTimeout(persistT); persistT = 0
     if (!tabsRestored) return   // 恢复完成之前不写：否则开窗时一份空表把上次的签覆盖掉
-    const list = st.docs.map((d) => ({ id: d.id, kind: d.kind, libId: d.libId, templateKey: d.templateKey, templateId: d.templateId, fromTpl: d.kind === 'asm' && !d.inLib ? d._rt.fromTpl || '' : '', fromComp: d.kind === 'asm' && !d.inLib ? d._rt.fromComp || '' : '', origin: d.origin, inLib: d.inLib, name: d.name, domain: d.domain, pane: d.pane }))
+    const list = st.docs.map((d) => ({ id: d.id, kind: d.kind, libId: d.libId, templateKey: d.templateKey, templateId: d.templateId, fromTpl: d.kind === 'asm' && !d.inLib ? d._rt.fromTpl || '' : '', fromComp: d.kind === 'asm' && !d.inLib ? d._rt.fromComp || '' : '', origin: d.origin, inLib: d.inLib, name: d.name, domain: d.domain, pane: d.pane, treeShut: d.kind === 'asm' && d.treeShut.length ? d.treeShut.slice() : undefined }))
     lsPut(DOC_TABS_KEY, { v: 1, list, active: st.activeDoc })
   }
   const tplKeyOk = (k) => typeof k === 'string' && /\|tpl$/.test(k)
@@ -2291,6 +2351,7 @@ export function createWorkbench(ui) {
       }
     }
     if (d && (it.pane === 'lib' || it.pane === 'quick')) d.pane = it.pane
+    if (d && d.kind === 'asm' && Array.isArray(it.treeShut)) d.treeShut = treeShutOf(it.treeShut)
     return d
   }
   /**

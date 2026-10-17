@@ -5,7 +5,8 @@
 // （NGSO 预算模块永久将 ISL 跳数置 0）。
 // 默认值 = MEO Ku 预设（2026-07 起）：轨道 8000 km/45°（平台 MEO 基准工况）+ 卫星点波束 G/T 10 dB/K；
 // 站型/转发器/干扰系数沿用小程序 NGSO 口径（6.2m 关口站 + 3.7m 干线站对 MEO 弯管仍属合理站型）。
-// 只影响新建配置的初始值；已保存配置存的是具体数值，不受影响。引擎空值回退常数另有一套，不随此变。
+// 新建配置的初始值即这套缺省；链路表 / 地球站库里留空的数值格，组参前也按它补（withFieldDefaults，灰字 = 入算值）。
+// 引擎空值回退常数另有一套（弯管 GEO 口径），只在不经本窗组参的调用方留空时用到，不随此变。
 // 每个字段标注 target：'sat' → satParams，'link' → inputs。auto：'rain'|'elev' 为按经纬度自动填。
 
 import { halfStr } from '../shared/num.js'   // 全角减号/数字归一到半角，避免负数（经纬度/门限/SFDref 等）被引擎 Number() 吞掉
@@ -160,6 +161,29 @@ export function defaultsFor(fields) {
   const o = {}
   for (const f of fields) o[f.key] = f.def
   return o
+}
+
+// 一行链路 / 一份地球站配置的「入算值」：留空的数值格补字段缺省 f.def。链路表（StationGrid）与地球站库编辑器
+// 的灰字占位显示的正是 f.def，补完即「灰字 = 留空真正入算的值」（口径同雨衰页 rainParams.effectiveRow）。
+// 为什么要在组参 / 解几何之前补，而不是交给引擎回退：
+//   · 几何求解器没有回退——最低仰角 parseFloat('')||0 成了 0°、经纬度留空成了 NaN（自动最差报「两站不互视」）；
+//   · 引擎的空值回退是弯管 GEO 口径（卫星 G/T 2 dB/K、卫星下行 EIRP 46 dBW），与本窗字段缺省（MEO 点波束 10 dB/K、
+//     再生直发 25 dBW）不是一回事——表里写着 10，算的是 2。
+// 只补数值格（type:'num'）且缺省非空的字段：斜距、星间 C/I 这类缺省为空的格，留空本身有含义（未填即报错 / 不计入），不补；
+// 选择 / 文本 / 内部引用（target:'meta'）一律不动。没有可补的格就原样返回同一对象（入参逐位不变）。
+// 站址留空的 R0.01% / 海拔另按默认站址的 ITU 取值补（shared/lbDefaultSite.js 的 withDefaultSite），须先于本函数：
+// 它看的是经纬度是否留空，本函数会把经纬度补成默认站址（f.def 即 DEFAULT_SITE）。
+export function withFieldDefaults(obj, fields) {
+  if (!obj) return obj
+  let out = null
+  for (const f of fields) {
+    if (f.type !== 'num' || f.target === 'meta' || f.def == null || f.def === '') continue
+    const v = obj[f.key]
+    if (v != null && String(v).trim() !== '') continue
+    if (!out) out = { ...obj }
+    out[f.key] = f.def
+  }
+  return out || obj
 }
 
 // 组装单条链路的 { satParams, linkParams }：卫星+载波共享，叠加某发信站(tx)与某收信站(rx)，

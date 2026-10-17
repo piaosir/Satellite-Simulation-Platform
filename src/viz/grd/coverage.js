@@ -4,6 +4,8 @@
 
 import { geodeticToEcef, geocentricToEcef, ecefToGeodetic, geodeticUp, rayEllipsoid, rayEllipsoidMargin, A, B, E2, RS_GEO } from '../wgs84.js'
 import { anGainDbiXY } from './gaussStk.js'   // 解析高斯天线（beam.an）：取值走闭式精确式，见 samplePowAt
+import { axialRatioDb as polAxialRatioDb } from './polKernel.js'   // 极化内核（E-03）：轴比 / XPD / 共极化判定，主进程同款镜像
+import { AP_MODEL, apEvalXY } from './apertureModel.js'   // 口径照射解析天线（E-01）：四分量闭式、不截窗，主进程同款镜像
 
 const D2R = Math.PI / 180, H = RS_GEO - A
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -632,6 +634,14 @@ function bicubic4At(re1, im1, re2, im2, NX, NY, fc, fr, out) {
 const _sp = new Float64Array(6), _c4 = new Float64Array(4)
 function samplePowAt(beam, fc, fr) {
   const g = beam.grid, NX = g.NX, NY = g.NY
+  if (beam.an && beam.an.kind === AP_MODEL) {
+    // 口径照射档（E-01）：四分量闭式（带交叉极化），格坐标可在物化网格之外（nowin，见 sampleBeamAtParam）
+    apEvalXY(beam.an, g.XS + fc * (g.XE - g.XS) / (NX - 1), g.YS + fr * (g.YE - g.YS) / (NY - 1), _c4)
+    const re1 = _c4[0], im1 = _c4[1], re2 = _c4[2], im2 = _c4[3]
+    _sp[0] = re1 * re1 + im1 * im1; _sp[1] = re2 * re2 + im2 * im2
+    _sp[2] = re1; _sp[3] = im1; _sp[4] = re2; _sp[5] = im2
+    return true
+  }
   if (beam.an) {
     const p = Math.pow(10, anGainDbiXY(beam.an, g.XS + fc * (g.XE - g.XS) / (NX - 1), g.YS + fr * (g.YE - g.YS) / (NY - 1)) / 10)
     _sp[0] = p; _sp[1] = 0; _sp[2] = Math.sqrt(p); _sp[3] = 0; _sp[4] = 0; _sp[5] = 0
@@ -658,22 +668,13 @@ function polPow(pol, p1, p2) {
   return p1
 }
 
-// 轴比 AR(dB)：由两分量复振幅 comp={re1,im1,re2,im2} + icomp 决定的极化基算。
-// icomp=3（圆极化基 R/L）：AR=(√P1+√P2)/|√P1−√P2|；icomp=1/2（线极化正交对 θ/φ 或 co/cx）：由 Stokes S3 求椭率角。
-// 上限截断 60dB（近线极化 AR→∞）。comp 缺失（预置烘焙天线无相位）返回 null。
+// 轴比 AR(dB)：由两分量复振幅 comp={re1,im1,re2,im2} + icomp（GRD 极化基）算，本体在极化内核 polKernel.axialRatioDb：
+// 先换到圆极化基，AR = (|E_R|+|E_L|)/||E_R|−|E_L||（icomp 2 = RHC/LHC 直接取，1/3/4 线基 E_R,L = (E1 ± jE2)/√2），
+// 纯线极化报 400 dB（SATSOFT §3.4.5）。旧实现把 icomp 3 当圆极化基、icomp 1/2 走线极化支路，正好反了（E-03）。
+// comp 缺失（预置烘焙天线无相位）/ icomp 不是场分量基（5–9）返回 null。
 export function axialRatioDb(comp, icomp) {
   if (!comp) return null
-  const { re1, im1, re2, im2 } = comp
-  const p1 = re1 * re1 + im1 * im1, p2 = re2 * re2 + im2 * im2
-  if (icomp === 3) {
-    const a = Math.sqrt(p1), b = Math.sqrt(p2), den = Math.abs(a - b)
-    return den < 1e-12 ? 60 : Math.min(60, 20 * Math.log10((a + b) / den))
-  }
-  const S0 = p1 + p2; if (!(S0 > 0)) return null
-  const S3 = 2 * (re1 * im2 - im1 * re2)                       // 2·Im(E1*·E2)
-  const chi = 0.5 * Math.asin(Math.max(-1, Math.min(1, S3 / S0)))   // 椭率角 ∈[-45°,45°]
-  const t = Math.abs(Math.tan(chi))
-  return t < 1e-6 ? 60 : Math.min(60, -20 * Math.log10(t))    // AR=1/|tanχ|
+  return polAxialRatioDb(icomp, comp.re1, comp.im1, comp.re2, comp.im2)
 }
 
 // 在地表站点(lon,lat)处反查单个波束的方向图值（性能指标表逐站取值内核）。
@@ -740,7 +741,8 @@ export function sampleBeamAtParam(beam, xy, rs, { pol = 'RSS', gainOffset = 0, p
   const g = beam.grid, NX = g.NX, NY = g.NY
   const fc = (xy[0] - g.XS) / ((g.XE - g.XS) / (NX - 1))
   const fr = (xy[1] - g.YS) / ((g.YE - g.YS) / (NY - 1))
-  if (fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) return null   // 站点在方向图网格域外
+  // 站点在方向图网格域外 → 无值；口径照射解析天线（an.nowin）除外：网格只是给画图物化的一块，取值按方向走闭式、不截窗（E-01）
+  if ((fc < 0 || fc > NX - 1 || fr < 0 || fr > NY - 1) && !(beam.an && beam.an.nowin)) return null
   const cplx = samplePowAt(beam, fc, fr)                             // 复场域插值（物理最准）；无复场回退功率域
   const Pw = polPow(pol, _sp[0], _sp[1])
   if (!(Pw > 0)) return null
@@ -890,7 +892,10 @@ function clipToHull(srcFlat, len, hull) {
 export function refinedPeakDb(beam, pol) {
   const k = '_pk_' + pol
   if (beam[k] !== undefined) return beam[k]
-  if (beam.an) { const P = polPow(pol, 1, 0); beam[k] = P > 0 ? beam.an.g0 + 10 * Math.log10(P) : null; return beam[k] }
+  // 口径照射档：视轴上交叉极化为 0 → RSS / 共极化分量的峰值就是闭式 g0；交叉极化分量 / 比值口径的峰值不在视轴上，落到下面的网格细化
+  if (beam.an && beam.an.kind === AP_MODEL) {
+    if (pol === 'RSS' || (!beam.an.cp || beam.an.basis === 'circ') && pol === 'P' + beam.an.coSlot) { beam[k] = beam.an.g0; return beam[k] }
+  } else if (beam.an) { const P = polPow(pol, 1, 0); beam[k] = P > 0 ? beam.an.g0 + 10 * Math.log10(P) : null; return beam[k] }
   const { P1, P2, grid } = beam, NX = grid.NX, NY = grid.NY, N = NX * NY
   const pw = (i) => polPow(pol, P1[i], P2 ? P2[i] : 0)
   let mi = 0, mv = -Infinity

@@ -15,7 +15,15 @@
 // 三角化 / 主进程 .grdbin 的数组消费者用），取值走闭式精确式（coverage.samplePowAt 与 grdSampler.sampleBeamAt
 // 的解析分支）。主进程 CommonJS 镜像：packages/core/utils/gaussStk.js（改这里的求值 / 铺网格要两处对照，
 // packages/core/test/gaussStk.test.mjs 逐位对拍）。
+//
+// ★ 通用解析记录（E-01）：记录顶层 model 字段区分方向图类型 ——
+//   'gaussian'（缺省 / 旧档）= 上面的 STK Gaussian，逐位不变；
+//   'aperture' = 口径照射（抛物面加台阶）+ 偏置反射面交叉极化 + 表面误差散射 + ITU 包络下界，求值本体在 apertureModel.js，
+//     记录由 buildApertureRecord 产（波束合成「多馈源反射面」组的口径照射档）。它【不截窗】：物化网格只给填充 / 等值线，
+//     取值（性能表 / 链路预算 / C/I）按方向走闭式，窗外照样有旁瓣（描述子 nowin = true）。记录带 icomp（3 = Ludwig-3 线极化 /
+//     2 = 圆极化），场有两个分量（交叉极化），逐波束可带频率复用色号 fc（波束合成「自动分配」的 b.fc，0 起；缺省 = 未分配）。
 import { A, B, rayEllipsoidMargin, ecefToGeodetic } from '../wgs84.js'
+import { AP_MODEL, AP_WIN, apBeamOf, apEval, apGainDbi } from './apertureModel.js'
 
 export const C0 = 299792458                       // 光速 m/s（STK 读数用 299 792 458 才对得上，3e8 对不上）
 export const K_STK = 2.76
@@ -112,7 +120,8 @@ export function buildRecord({ sat = null, models, beams, owner = null, win = AN_
     if (!hit) throw new Error('波束引用的方向图模型不存在')
     const az = +b.az, el = +b.el
     if (!Number.isFinite(az) || !Number.isFinite(el)) throw new Error('波束视轴坐标无效')
-    out.push({ name: b.name || '', az, el, model: hit.m.id, th3: hit.r.th3Deg, g0: hit.r.g0Dbi, k: hit.m.k === '4ln2' ? '4ln2' : 'stk', back: Number.isFinite(+hit.m.back) ? +hit.m.back : -30 })
+    // fc：频率复用色号（波束合成「自动分配」，0 起），只作元数据（C/CCI 着色读），不进求值；没分配就不写（旧记录逐字不变）
+    out.push({ name: b.name || '', az, el, model: hit.m.id, th3: hit.r.th3Deg, g0: hit.r.g0Dbi, k: hit.m.k === '4ln2' ? '4ln2' : 'stk', back: Number.isFinite(+hit.m.back) ? +hit.m.back : -30, ...(Number.isInteger(b.fc) && b.fc >= 0 ? { fc: b.fc } : {}) })
   }
   if (!out.length) throw new Error('尚无波束')
   return {
@@ -123,6 +132,47 @@ export function buildRecord({ sat = null, models, beams, owner = null, win = AN_
     beams: out
   }
 }
+
+// ---------------- 口径照射记录（model:'aperture'，E-01）----------------
+// {
+//   format:'satsim-analytic-antenna', v:1, model:'aperture', win:2.5, icomp: 3（线极化 / 混合）| 2（全圆极化）,
+//   sat, owner,
+//   models:[{ id, name, fGHz, fSimGHz, Dm, focM, offsetClr, pol, edgeDb, effPct, dirDbi, th3 }]   生成时各波束设置（反射面）的读数，只作记录
+//   beams:[{ name, az, el, model, th3, g0, kD, p, pol, basis, xp, sq, sym, rz, env, back, scanDb, fc? }]   求值只认这些（apertureModel.apBeamOf）
+// }
+// beams 由波束合成按各自反射面算好（useBeamSynth：p = solveReflector 的边缘照射、kD = πD/λ、g0 = 方向性 − 表面误差 − 扫描损失、
+// xp = D·sinθ₀/(4F)、sq = 圆极化斜视角、rz / env 见 apertureModel 头注）；这里只校验、规整、定 icomp 与分量基。
+const _fin = (v) => Number.isFinite(+v)
+export function buildApertureRecord({ sat = null, models = [], beams, owner = null, win = AP_WIN }) {
+  const out = []
+  let allCp = true
+  for (const b of beams || []) {
+    if (![b.az, b.el, b.th3, b.g0, b.kD, b.p].every(_fin) || !(+b.th3 > 0) || !(+b.kD > 0)) throw new Error('波束方向图参数无效')
+    const pol = b.pol === 'linY' || b.pol === 'rhcp' || b.pol === 'lhcp' ? b.pol : 'linX'
+    if (pol !== 'rhcp' && pol !== 'lhcp') allCp = false
+    const o = {
+      name: String(b.name || ''), az: +b.az, el: +b.el, model: b.model == null ? null : b.model,
+      th3: +b.th3, g0: +b.g0, kD: +b.kD, p: Math.max(0, Math.min(1, +b.p)), pol,
+      xp: _fin(b.xp) ? +b.xp : 0, sq: _fin(b.sq) ? +b.sq : 0, sym: b.sym === 'ns' ? 'ns' : 'ew',
+      rz: b.rz && +b.rz.d2 > 0 && +b.rz.a > 0 ? { a: +b.rz.a, b: +b.rz.b, d2: +b.rz.d2 } : null,
+      env: b.env && (b.env.t === 's672' || b.env.t === 's1528') ? { t: b.env.t, ln: +b.env.ln, gm: +b.env.gm, pb: +b.env.pb } : null,
+      back: _fin(b.back) ? +b.back : -30, scanDb: _fin(b.scanDb) ? +b.scanDb : 0
+    }
+    if (Number.isInteger(b.fc) && b.fc >= 0) o.fc = b.fc
+    out.push(o)
+  }
+  if (!out.length) throw new Error('尚无波束')
+  const icomp = allCp ? 2 : 3
+  for (const o of out) o.basis = icomp === 2 ? 'circ' : 'l3'
+  return {
+    format: AN_FORMAT, v: 1, model: AP_MODEL, win: +win > 0 ? +win : AP_WIN, icomp,
+    sat: sat ? { name: String(sat.name || ''), lon: +sat.lon, lat: +(sat.lat || 0), altKm: +sat.altKm } : null,
+    owner: owner ? { ...owner } : null,
+    models: (models || []).map((m) => ({ ...m })),
+    beams: out
+  }
+}
+export const isApertureRecord = (rec) => !!rec && rec.model === AP_MODEL
 
 // 记录 → 存盘文本。非 ASCII 一律转 \uXXXX：存盘管线按 latin1 逐字节写 / 读（coverage.save / raw），
 // 纯 ASCII 才能原样往返，主进程读到的星名 / 模型名也不乱码。
@@ -145,23 +195,34 @@ export function isAnalyticText(text) {
 export function parseRecord(text) {
   const r = JSON.parse(text)
   if (!r || r.format !== AN_FORMAT || !Array.isArray(r.beams) || !r.beams.length) throw new Error('不是解析天线记录')
+  const ap = r.model === AP_MODEL
   for (const b of r.beams) {
-    if (![b.az, b.el, b.th3, b.g0, b.back].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0)) throw new Error('解析天线记录损坏')
+    if (ap) { if (![b.az, b.el, b.th3, b.g0, b.kD, b.p].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0) || !(+b.kD > 0)) throw new Error('解析天线记录损坏') }
+    else if (![b.az, b.el, b.th3, b.g0, b.back].every((v) => Number.isFinite(+v)) || !(+b.th3 > 0)) throw new Error('解析天线记录损坏')
   }
   return r
 }
 
 // ---------------- 求值 ----------------
 // 逐波束求值描述子（记录 → 预算量）：视轴单位矢量 + 1/θ3² + dB 系数。igrid 恒 6。
-export function anBeamOf(b, win = AN_WIN) {
+// model = 记录顶层 model（或 .grdbin 表头里逐 set 的 kind）：'aperture' → 口径照射描述子（apertureModel.apBeamOf），否则 STK 高斯。
+export function anBeamOf(b, win = AN_WIN, model) {
+  if (model === AP_MODEL || b.kind === AP_MODEL) return apBeamOf(b, win)
   const ax = dir6(+b.az, +b.el), th = +b.th3 * D2R
   return { igrid: 6, az: +b.az, el: +b.el, th3: +b.th3, g0: +b.g0, back: +b.back, k: b.k === '4ln2' ? '4ln2' : 'stk',
     bx: ax[0], by: ax[1], bz: ax[2], inv: 1 / (th * th), kdb: kDbOf(b.k), win: +win > 0 ? +win : AN_WIN }
 }
-export const anBeams = (rec) => rec.beams.map((b) => anBeamOf(b, rec.win))
+export const anBeams = (rec) => rec.beams.map((b) => anBeamOf(b, rec.win, rec.model))
+// 四分量复场（口径照射档有交叉极化；高斯档只有分量 1 = √线性增益）→ out[0..3] = re1, im1, re2, im2
+export function anEval(an, ux, uy, uz, out) {
+  if (an.kind === AP_MODEL) return apEval(an, ux, uy, uz, out)
+  out[0] = Math.sqrt(Math.pow(10, anGainDbi(an, ux, uy, uz) / 10)); out[1] = 0; out[2] = 0; out[3] = 0
+  return out
+}
 
 // 天线系单位矢量 (ux,uy,uz) 方向的增益（dBi）。θ 用 atan2(|u×b|, u·b)：小角度处比 acos 精确。
 export function anGainDbi(an, ux, uy, uz) {
+  if (an.kind === AP_MODEL) return apGainDbi(an, ux, uy, uz)
   const c = ux * an.bx + uy * an.by + uz * an.bz
   const cx = uy * an.bz - uz * an.by, cy = uz * an.bx - ux * an.bz, cz = ux * an.by - uy * an.bx
   const th = Math.atan2(Math.sqrt(cx * cx + cy * cy + cz * cz), c)
@@ -195,6 +256,7 @@ function zeros(n) { let z = _zeros.get(n); if (!z) { z = new Float32Array(n); _z
 
 // 单个波束 → parseGrd 同形的 set（节点值 = 闭式精确值）+ an 描述子
 export function materializeBeam(an, res) {
+  if (an.kind === AP_MODEL) return materializeAperture(an, res)
   const { XS, YS, XE, YE } = anWindow(an)
   const NX = res, NY = res, N = NX * NY
   const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
@@ -214,11 +276,37 @@ export function materializeBeam(an, res) {
   return { XS, YS, XE, YE, NX, NY, P1, P2: z, c1re, c1im: z, c2re: z, c2im: z, peakLin, peakIdx, an }
 }
 
-// 记录 → parseGrd 同形对象（ktype/icomp/ncomp/igrid 与合成 GRD 一致：icomp=3 co/cx、ncomp=2、igrid=6）
+// 口径照射档：四分量都铺（交叉极化在分量 2 / 1，见 apertureModel 头注 §5），P1/P2 = 两分量功率；峰值按总功率
+function materializeAperture(an, res) {
+  const { XS, YS, XE, YE } = anWindow(an)
+  const NX = res, NY = res, N = NX * NY
+  const dx = (XE - XS) / (NX - 1), dy = (YE - YS) / (NY - 1)
+  const P1 = new Float32Array(N), P2 = new Float32Array(N)
+  const c1re = new Float32Array(N), c1im = new Float32Array(N), c2re = new Float32Array(N), c2im = new Float32Array(N)
+  const ev = new Float64Array(4)
+  let peakLin = -Infinity, peakIdx = 0
+  for (let row = 0; row < NY; row++) {
+    const el = (YS + dy * row) * D2R, se = Math.sin(el), ce = Math.cos(el)
+    for (let col = 0; col < NX; col++) {
+      const az = (XS + dx * col) * D2R, ca = Math.cos(az)
+      apEval(an, -Math.sin(az), ca * se, ca * ce, ev)
+      const i = row * NX + col
+      c1re[i] = ev[0]; c1im[i] = ev[1]; c2re[i] = ev[2]; c2im[i] = ev[3]
+      const p1 = ev[0] * ev[0] + ev[1] * ev[1], p2 = ev[2] * ev[2] + ev[3] * ev[3]
+      P1[i] = p1; P2[i] = p2
+      if (p1 + p2 > peakLin) { peakLin = p1 + p2; peakIdx = i }
+    }
+  }
+  return { XS, YS, XE, YE, NX, NY, P1, P2, c1re, c1im, c2re, c2im, peakLin, peakIdx, an }
+}
+
+// 记录 → parseGrd 同形对象（ktype/icomp/ncomp/igrid 与合成 GRD 一致：icomp=3 co/cx、ncomp=2、igrid=6）；
+// 口径照射档 icomp 取记录的（全圆极化 = 2 RHC/LHC，否则 3 Ludwig-3）
 export function materialize(rec, opts = {}) {
   const ans = anBeams(rec)
   const res = opts.res || resFor(ans.length)
-  return { ktype: 1, nset: ans.length, icomp: 3, ncomp: 2, igrid: 6, sets: ans.map((an) => materializeBeam(an, res)) }
+  const icomp = rec.model === AP_MODEL && rec.icomp === 2 ? 2 : 3
+  return { ktype: 1, nset: ans.length, icomp, ncomp: 2, igrid: 6, sets: ans.map((an) => materializeBeam(an, res)) }
 }
 
 // ---------------- 导出：GRASP ASCII 文本 ----------------
@@ -236,6 +324,7 @@ function fexp(v, digits = 10) {
 }
 const asciiSafe = (s) => String(s == null ? '' : s).replace(/[^\x20-\x7E]+/g, ' ').replace(/\s+/g, ' ').trim()
 export function toGrdText(rec, opts = {}) {
+  if (rec && rec.model === AP_MODEL) return apertureGrdText(rec, opts)
   const g = materialize(rec, opts)
   const s = rec.sat || {}
   const sn = asciiSafe(s.name)
@@ -254,6 +343,31 @@ export function toGrdText(rec, opts = {}) {
     L[0] = ` ${fexp(st.XS)} ${fexp(st.YS)} ${fexp(st.XE)} ${fexp(st.YE)}`
     L[1] = ` ${st.NX} ${st.NY} 0`
     for (let i = 0; i < st.NX * st.NY; i++) L[i + 2] = ` ${fexp(st.c1re[i])} ${z} ${z} ${z}`
+    parts.push(L.join('\r\n'))
+  }
+  return parts.join('\r\n') + '\r\n'
+}
+
+// 口径照射档导出：两分量全写（icomp 取记录），SYNTHMETA kind:'aperture'（带逐波束色号 fc，供重导入 / C/CCI 着色）
+function apertureGrdText(rec, opts) {
+  const g = materialize(rec, opts)
+  const s = rec.sat || {}
+  const sn = asciiSafe(s.name)
+  let th3Min = Infinity
+  for (const b of rec.beams) if (+b.th3 > 0 && +b.th3 < th3Min) th3Min = +b.th3
+  const fc = rec.beams.map((b) => (Number.isInteger(b.fc) && b.fc >= 0 ? b.fc : null))
+  const head = [
+    `SatSim analytic pattern (aperture illumination model)${sn ? ' - ' + sn : ''}${Number.isFinite(s.lon) ? `. Sat. lon=${(+s.lon).toFixed(2)}, lat=${(+(s.lat || 0)).toFixed(2)}, height=${Math.round(+s.altKm || 0)} km` : ''}, beams=${g.nset}`,
+    `SYNTHMETA ${JSON.stringify({ kind: 'aperture', ...(Number.isFinite(s.lon) ? { satLon: +(+s.lon).toFixed(4), satLat: +(+(s.lat || 0)).toFixed(4), altKm: Math.round(+s.altKm || 0) } : {}), ...(Number.isFinite(th3Min) ? { theta3: +th3Min.toFixed(4) } : {}), win: rec.win || AP_WIN, nBeams: g.nset, ...(fc.some((v) => v != null) ? { fc } : {}) })}`,
+    '++++', '1', ` ${g.nset} ${g.icomp} 2 6`
+  ]
+  for (let i = 0; i < g.nset; i++) head.push('  0  0')
+  const parts = [head.join('\r\n')]
+  for (const st of g.sets) {
+    const L = new Array(st.NX * st.NY + 2)
+    L[0] = ` ${fexp(st.XS)} ${fexp(st.YS)} ${fexp(st.XE)} ${fexp(st.YE)}`
+    L[1] = ` ${st.NX} ${st.NY} 0`
+    for (let i = 0; i < st.NX * st.NY; i++) L[i + 2] = ` ${fexp(st.c1re[i])} ${fexp(st.c1im[i])} ${fexp(st.c2re[i])} ${fexp(st.c2im[i])}`
     parts.push(L.join('\r\n'))
   }
   return parts.join('\r\n') + '\r\n'

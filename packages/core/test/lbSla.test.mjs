@@ -277,6 +277,67 @@ ok('再生式激光：无发射合规组；可用度与微波星间同口径（�
 ok('再生式上行/下行不出 RTT（只报本段单程时延）',
   !mk({ orbitType: 'REGEN', regenMode: 'uplink' }).items.rtt && !!mk({ orbitType: 'REGEN', regenMode: 'uplink' }).items.owd)
 
+// —— 再生式上行 / 下行：单程时延 = 本跳（2026-10-16 体检 #11）——
+// 窗口把同一座站、同一斜距灌进弯管引擎的上下两侧（另一侧是镜像占位），引擎 linkDelayResult = (上 + 下) / c，
+// 是本跳的两倍（斜距 11000 km 报 73.4 ms、RTT 146.8 ms）。窗口取结果处 regenHopDelay 改写成本跳；
+// SLA 只认本跳（引擎原样出参也一样），依据只写本跳那一段斜距，不再是「36.7 + 36.7」。
+{
+  const regenEng = require('../utils/linkCalculatorRegen.js')
+  const wf = require('../utils/waterfallBuilder.js')
+  const RP = await import('../../../src/regen/regenParams.js')
+  const { regenHopDelay, regenHopGeometry, hopSideOf } = await import('../../../src/regen/regenModeScope.js')
+  const SLANT = 11000, ELEV = 10
+  const hop = SLANT / 299792.458 * 1000   // 36.69 ms
+  const want = `${SLANT.toFixed(2)} km / 299792.458 km/s = ${hop.toFixed(1)} ms`
+  const sat = RP.defaultsFor(RP.SAT_FIELDS), bb = RP.defaultsFor(RP.CARRIER_FIELDS), es = RP.defaultsFor(RP.ES_FIELDS)
+  // 手动几何注入：同窗口 applyManualGeom（两侧同值）
+  const manual = (lp) => Object.assign(lp, { distanceMode: 'slantRange', slantRange: SLANT, minElevation: ELEV, rxDistanceMode: 'slantRange', rxSlantRange: SLANT, rxMinElevation: ELEV })
+  const slaOf = (rm, data, p) => deriveSla({ orbitType: 'REGEN', regenMode: rm, data, ok: true, params: p, carrierForm: bb, modcodRows: [], slaParams: PROP_ONLY })
+
+  const up = RP.buildRegenParams(sat, bb, RP.defaultsFor(RP.TX_FIELDS), es)
+  manual(up.linkParams)
+  const upOpt = { mode: 'power', powerW: 0.2 }
+  const ru = regenEng.computeRegenUplinkMode(up.satParams, up.linkParams, upOpt)
+  ok('再生式上行算例可算（手动几何 11000 km）', !!(ru && ru.success), ru && ru.message)
+  const raw = Object.assign({}, ru.data)
+  // 引擎层（linkCalculatorRegen._reframeUplinkOnly）已改写成本跳：参数扫描 / 地理场图直取引擎出参也对；窗口侧再纠一遍是幂等
+  ok('引擎原样出参的 linkDelayResult 已是本跳（上行段）', near(parseFloat(raw.linkDelayResult), hop, 0.06) && raw.linkDelayResult === raw.linkDelayUpResult, raw.linkDelayResult)
+  ok('引擎原样出参：镜像的下行段已清空', raw.linkDelayDownResult === '', raw.linkDelayDownResult)
+  const sRaw = slaOf('uplink', raw, { ...up, opt: upOpt })
+  ok('SLA 喂引擎原样出参：单程时延仍只认上行这一跳', near(sRaw.items.owd.suggest, hop, 0.06), String(sRaw.items.owd.suggest))
+  ok('SLA 依据只写上行斜距一段', basisText(sRaw.items.owd.basis) === want, basisText(sRaw.items.owd.basis))
+
+  const dU = regenHopDelay(Object.assign({}, ru.data), hopSideOf('uplink'))
+  ok('regenHopDelay（上行）：单程时延 = 上行段', dU.linkDelayResult === raw.linkDelayUpResult && near(parseFloat(dU.linkDelayResult), hop, 0.06), dU.linkDelayResult)
+  ok('regenHopDelay（上行）：镜像的下行段清空', dU.linkDelayDownResult === '')
+  const sU = slaOf('uplink', dU, { ...up, opt: upOpt })
+  ok('SLA（窗口改写后）：单程时延 = 本跳、依据只写一段', near(sU.items.owd.suggest, hop, 0.06) && basisText(sU.items.owd.basis) === want, basisText(sU.items.owd.basis))
+  // 瀑布表：单程与 RTT 都回到本跳口径（行名由 waterfallBuilder 定，这里只认「时延 / RTT」两个词）
+  const rows = wf.buildWaterfallSegments({ results: dU, orbitType: 'REGEN', lang: 'zh' }).flatMap((s) => s.rows || [])
+  const rttRow = rows.find((r) => /RTT/.test(r.label))
+  const oneRow = rows.find((r) => /时延/.test(r.label) && !/RTT/.test(r.label))
+  ok('瀑布表（上行）：单程时延行 = 本跳', !!oneRow && near(parseFloat(oneRow.up), hop, 0.06), oneRow && oneRow.up)
+  ok('瀑布表（上行）：RTT = 本跳 × 2', !!rttRow && near(parseFloat(rttRow.up), 2 * hop, 0.11), rttRow && rttRow.up)
+
+  const dn = RP.buildRegenDownlinkParams(sat, bb, RP.defaultsFor(RP.RX_FIELDS), es)
+  manual(dn.linkParams)
+  const rd = regenEng.computeRegenDownlinkMode(dn.satParams, dn.linkParams, { mode: 'power' })
+  ok('再生式下行算例可算（手动几何 11000 km）', !!(rd && rd.success), rd && rd.message)
+  ok('引擎原样出参（下行）已是本跳、镜像的上行段已清空',
+    rd.data.linkDelayResult === rd.data.linkDelayDownResult && rd.data.linkDelayUpResult === '' && near(parseFloat(rd.data.linkDelayResult), hop, 0.06), rd.data.linkDelayResult)
+  const dD = regenHopDelay(Object.assign({}, rd.data), hopSideOf('downlink'))
+  ok('regenHopDelay（下行）：单程时延 = 下行段、镜像的上行段清空',
+    dD.linkDelayResult === rd.data.linkDelayDownResult && dD.linkDelayUpResult === '' && near(parseFloat(dD.linkDelayResult), hop, 0.06), dD.linkDelayResult)
+  const sD = slaOf('downlink', dD, { ...dn, opt: { mode: 'power' } })
+  ok('SLA（下行）：单程时延 = 本跳、依据只写下行斜距', near(sD.items.owd.suggest, hop, 0.06) && basisText(sD.items.owd.basis) === want, basisText(sD.items.owd.basis))
+
+  // 自动几何：单站求解（tx = rx = 本站）的 oneWayDelayMs 是上下两侧之和 → 改写成本跳（几何卡 / 回填 / 报告同读它）
+  const geo = { feasible: true, worst: { up: { slantKm: 9000 }, dn: { slantKm: 9000 }, oneWayDelayMs: 18000 / 299792.458 * 1000 } }
+  regenHopGeometry(geo, 'dn')
+  ok('regenHopGeometry：几何单程时延改写成本跳', near(geo.worst.oneWayDelayMs, 9000 / 299792.458 * 1000, 1e-9), String(geo.worst.oneWayDelayMs))
+  ok('regenHopGeometry：不可行几何（无 worst）原样放过', regenHopGeometry({ feasible: false }, 'up').feasible === false)
+}
+
 // 端到端：带宽逐透明星、无链级合成行
 const e2eData = {
   systemAvailabilityResult: '99.60040', e2eDelayResult: '246.500', propDelayResult: '240.500', procDelayResult: '6.000',
@@ -703,12 +764,42 @@ ok('分享码往返出来的是新对象（深拷贝，不与源共用引用）'
   ok('只按表单判 NTN（引擎未回显 BLER/TBS 的 snr 口径载波）也不出丢包率',
     !lossCtx({ dvbStandard: '3GPP NTN NB-IoT', noiseRatioMode: 'snr' }, { phyTbsResult: '', phyBlerResult: '' }).items.loss)
   ok('DVB 行不受影响仍出丢包率、不出 BLER', !!dvb.items.loss && !dvb.items.blerTarget)
+  // 2026-10-17（C-07）：场景参数 ferExp 只给没有原文判据的编码标准（自建 / RCS2 / DVB-S）；DVB-S2 / S2X 按 ETSI 原表取
   const fer9 = deriveSla(Object.assign({}, geoCtx, {
+    carrierForm: { dvbStandard: 'usr:1', fec: '3/4', ber: '7', m: '1' },
+    slaParams: Object.assign({}, PROP_ONLY, { ferExp: 9 })
+  }))
+  ok('自建标准的帧差错率取场景参数（FER 10⁻⁹ → 1.00e-7 %），不带原文判据', near(fer9.items.loss.raw, 1e-7, 1e-16) && fer9.qef === null,
+    basisText(fer9.items.loss.basis))
+  const s2fer9 = deriveSla(Object.assign({}, geoCtx, {
     carrierForm: { dvbStandard: 'DVB-S2', fec: '3/4', ber: '7', m: '1' },
     slaParams: Object.assign({}, PROP_ONLY, { ferExp: 9 })
   }))
-  ok('帧差错率是场景参数（FER 10⁻⁹ → 1.00e-7 %）', near(fer9.items.loss.raw, 1e-7, 1e-16),
-    basisText(fer9.items.loss.basis))
+  ok('★ DVB-S2 不吃场景参数：恒按 EN 302 307-1 表 13 的 PER 10⁻⁷', near(s2fer9.items.loss.raw, 1e-5, 1e-12) &&
+    s2fer9.qef && s2fer9.qef.kind === 'PER' && s2fer9.qef.exp === 7, basisText(s2fer9.items.loss.basis))
+  // QEF 判据与帧长按 ETSI 原表（EN 302 307-2 V1.4.1 第 6 章：「Quasi Error Free FER = 10⁻⁵」；表 20a / 20b / 20c 帧长）
+  const MM = require('../utils/modcodTables.js').modcodMap(null)
+  const qefCtx = (form, std) => lossCtx(Object.assign({ dvbStandard: std }, form), null)
+  const withRows = (form, std) => deriveSla(Object.assign({}, geoCtx, {
+    carrierForm: Object.assign({ ber: '7', m: '1', dvbStandard: std }, form), modcodRows: MM[std] }))
+  const x20a = withRows({ modulation: '16APSK', fec: '2/3', modcodLabel: '16APSK 2/3-L' }, 'DVB-S2X')
+  ok('★ DVB-S2X 表 20a 档：FER 10⁻⁵ → 1 − (1 − 10⁻⁵)^1 = 0.0010 %', basisText(x20a.items.loss.basis) === '1 − (1 − 10⁻⁵)^1 = 0.0010 %' &&
+    x20a.qef.kind === 'FER' && x20a.qef.table === 'ETSI EN 302 307-2 V1.4.1 表 20a', basisText(x20a.items.loss.basis))
+  const x13 = withRows({ modulation: '16APSK', fec: '2/3', modcodLabel: '16APSK 2/3' }, 'DVB-S2X')
+  ok('DVB-S2X 里的 S2 遗留档（同调制同码率的常规星座）按表 13 的 PER 10⁻⁷', x13.qef.exp === 7 && near(x13.items.loss.raw, 1e-5, 1e-12))
+  ok('没有 MODCOD 表行时直接查原表（S2X QPSK 9/20 → 表 20a FER 10⁻⁵）',
+    qefCtx({ modulation: 'QPSK', fec: '9/20' }, 'DVB-S2X').qef.exp === 5)
+  ok('名字与入参对不上（套完又手改了调制 / 码率）就不认名字，按入参认', (() => {
+    const d = withRows({ modulation: 'QPSK', fec: '3/4', modcodLabel: '16APSK 2/3-L' }, 'DVB-S2X')
+    return d.qef.exp === 7 && d.qef.table === 'ETSI EN 302 307-1 V1.4.1 表 13'
+  })())
+  const sf = withRows({ modulation: 'QPSK', fec: '11/45', modcodLabel: 'QPSK 11/45' }, 'DVB-S2X Short')
+  ok('★ 短帧（表 20c，16200 bit）：K = 16200 × 11/45 = 3960 bit，1500 B 跨 4 帧 → 0.0040 % → 取档 0.010 %',
+    basisText(sf.items.loss.basis) === '1 − (1 − 10⁻⁵)^4 = 0.0040 % → 0.010 %' && sf.items.loss.suggest === 0.01, basisText(sf.items.loss.basis))
+  ok('BPSK-S 短帧取表 20c 注 1 的 15390 bit；VL-SNR 中帧取表 20b 的 30780 bit',
+    withRows({ modulation: 'BPSK', fec: '1/5', modcodLabel: 'BPSK-S 1/5', m: '2' }, 'DVB-S2X Short').qef.frame === 15390 &&
+    basisText(qefCtx({ modulation: 'BPSK', fec: '1/5' }, 'DVB-S2X VL-SNR Medium').items.loss.basis) === '1 − (1 − 10⁻⁵)^2 = 0.0020 % → 0.010 %')
+  ok('DVB-RCS2（门限未核实）没有原文判据，仍走场景参数', qefCtx({ modulation: 'QPSK', fec: '1/3' }, 'DVB-RCS2').qef === null)
   ok('帧差错模型与随机模型差三四个数量级（0.001 % vs 0.5 %）',
     dvb.items.loss.suggest * 100 < dGeo.items.loss.suggest, dvb.items.loss.suggest + ' vs ' + dGeo.items.loss.suggest)
 

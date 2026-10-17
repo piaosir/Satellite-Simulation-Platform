@@ -60,7 +60,11 @@ export const MODCOD_COLS = [
   { key: 'noiseRatioMode', label: '门限口径', w: 70, tip: 'Eb/N₀ / Es/N₀ / SNR —— 决定右侧门限值按哪种口径解读。SNR = 3GPP 的每资源元素信噪比，噪声带宽取占用带宽 N_RB×12×SCS（NB-IoT 上行为音数×SCS），此时帧效率与滚降两列不参与计算' },
   { key: 'threshold', label: '门限', unit: 'dB', w: 72, num: true, fix: 2, tip: '解调门限，口径由左侧那一列决定' },
   { key: 'm', label: '扩频增益', w: 70, num: true, fix: 2, tip: '该档门限所对应的扩频因子（码片率 ÷ 载波速率，无扩频为 1）。仅在门限口径为 Es/N₀ 时可填：Es/N₀ 是扩频之后每个传输符号的能量比，同一套调制编码每扩频 ×2 门限低 3.01 dB，故门限与扩频因子必须成对给。Eb/N₀ 口径与扩频无关（扩频是载波自己的参数，在载波面板上填）；3GPP 各档不经过该换算链' },
-  { key: 'idx', label: '索引', w: 52, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制无此概念，留空' }
+  { key: 'idx', label: '索引', w: 52, num: true, fix: 0, tip: '体制内的档位序号：3GPP NR 的 MCS 序号、NB-IoT 的 I_TBS（NPUSCH 单音为 I_MCS）。载波面板据此写物理层参数；DVB 各体制无此概念，留空' },
+  // 硬限幅信道门限：只有 DVB-S2X 正常帧的 S2X 档有值（EN 302 307-2 表 20a，资料性），不参与链路计算。
+  // ★ grid:false —— 进 Excel（导出 / 导入 / 无表头按位置认的第 10 列），不占网格一列：9 列已正好装满
+  //   文件管理对话框的网格宽，为一列绝大多数表都是空的资料性数据拉出横向滚动条不值；网格里改在门限格的悬停读数里给。
+  { key: 'hl', label: 'Csat/(N₀Rs)', unit: 'dB', w: 96, num: true, fix: 2, grid: false, tip: '硬限幅（非线性）信道的理想门限：Csat 为硬限幅器饱和单载波功率，N₀Rs 为符号率带宽内的噪声功率；最佳输入回退、滚降 0.10（EN 302 307-2 表 20a，资料性）。不参与链路计算' }
 ]
 
 /**
@@ -74,7 +78,7 @@ export const MODCOD_COLS = [
  * used：() => 当前表里已用到的调制方式名（自定义档不能从它自己那格的下拉里消失）。
  */
 export function modcodGridCols(used) {
-  return MODCOD_COLS.map((c) => {
+  return MODCOD_COLS.filter((c) => c.grid !== false).map((c) => {
     const col = { ...c, align: c.key === 'label' ? 'left' : 'center' }
     if (c.key === 'modulation') {
       col.options = () => modulationOptions(used ? used() : []).map((o) => ({ value: o.value, label: o.label, note: o.factor + ' bit' }))
@@ -104,6 +108,11 @@ export function cellText(row, col) {
 // 名称那格说明它是自动名还是自定义名
 export function cellTip(row, col) {
   if (col.key === 'label') return isAutoLabel(row) ? '自动名：调制方式 + FEC 码率' : '自定义名（清空即恢复自动名）'
+  // 门限格：有硬限幅信道门限（不占网格列，见 MODCOD_COLS 的 hl）就在这里读出来
+  if (col.key === 'threshold') {
+    const hl = row && row.hl !== undefined && row.hl !== null && String(row.hl).trim() !== '' ? Number(row.hl) : NaN
+    return Number.isFinite(hl) ? `硬限幅信道 Csat/(N₀Rs) ${hl.toFixed(2)} dB` : ''
+  }
   if (col.key !== 'modulation') return ''
   const f = modFactorOf(row.modulation)
   return f == null ? '' : `${row.modulation} · ${f} bit/符号`
@@ -153,7 +162,8 @@ export function emptyRow(prev, id) {
     noiseRatioMode: (prev && prev.noiseRatioMode) || 'esno',
     threshold: '',
     idx: '',
-    m: '1'
+    m: '1',
+    hl: ''
   }
 }
 
@@ -242,7 +252,8 @@ export function standardsFromSheets(sheets) {
         noiseRatioMode: parseMode(r.noiseRatioMode),
         threshold: r.threshold || '',
         idx: r.idx || '',
-        m: r.m || ''
+        m: r.m || '',
+        hl: r.hl == null ? '' : r.hl
       })
     }
     if (!rows.length && !bad.length) continue

@@ -9,17 +9,20 @@
 //     峰也取决于谷，用峰值包络会系统性高估。NGSO 就是这个场景。
 //     ——S.1428 的 considering c) 把这件事说得很直白，本模块据此分派。
 //
-// 故：GEO 路走 AP8/S.580，NGSO 路走 S.1428。不是随便挑一个能用的。
+// 故：GEO 路按用途走峰值包络库（C/ASI 缺省 S.465-6、AP8 ΔT/T 恒用 RR 附录 8 附件 3），NGSO 路走 S.1428。
+// 不是随便挑一个能用的。
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // 权威依据
 //   S.1428-1  由 ITU 官方 PDF 正文逐段核对（2001-02 版），三档 D/λ 的分段、Gmax 常数
 //             （≤100 档为 +7.7、>100 档为 +8.4，两档不同）、远旁瓣平台（−5 / −4 / −9 / −12）
 //             均以原文为准，未凭记忆。
-//   AP8/S.580 沿用 utils/linkCalculator.js:202 已有实现的口径（RR AP8 分段 + S.580 的
-//             29−25lgφ 旁瓣段），使干扰分析与链路预算引擎的「旁瓣增益」显示同源。
-//             例外：D/λ<50 档远旁瓣底板不再沿用旧值 −10−10lg(D/λ)（无建议书对应，系符号
-//             笔误），2026-08-11 订正为 RR AP8 的 10−10lg(D/λ)，见 offAxisAP8 小档注释。
+//   RR AP8 附件 3  ITU《无线电规则》2024 年版第 2 卷，附录 8（Rev.WRC-15）AP8-8/AP8-9 页原文逐段核对。
+//   S.465-6   ITU-R S.465-6（01/2010）官方 PDF 正文逐条核对（recommends 2 与 Note 4/5）。
+//   S.580-6   ITU-R S.580-6（01/2004）官方 PDF 正文逐条核对（recommends 1/2 与 Note 3/5/6）。
+//   S580-HYB  v1.5.3 及之前平台唯一的地球站包络（原函数名 offAxisAP8）：RR AP8 分段 + S.580 的
+//             29−25lgφ 旁瓣段。2026-10-17 改名 offAxisS580Hybrid、行为不变，只供显式选择对比。
+//             其 D/λ<50 档远旁瓣底板 2026-08-11 已由 −10−10lg(D/λ)（笔误）订正为 10−10lg(D/λ)。
 //   S.524-9   离轴 EIRP 密度掩模，见 §S524 的注释——含一处与引擎实现的已知分歧。
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -45,22 +48,23 @@ function beamwidth3dB(diameterM, wavelengthM) {
 }
 
 // ---------------------------------------------------------------------------
-// RR AP8 / S.580 峰值包络 —— GEO 邻星干扰用
+// AP8 分段 + S.580 旁瓣（旧版平台包络，S580-HYB）—— 只供显式选择对比
 // ---------------------------------------------------------------------------
 
 /**
- * 地球站离轴增益 G(φ)（dBi），峰值旁瓣包络。
- * 本模块是 AP8/S.580 型离轴包络在全平台的【唯一】实现：链路预算引擎里那份同口径副本
- * （calculateITU465OffAxisGain / calculateITU465Isolation）已于 2026-08-07 随「邻星离轴口径」
- * 整组移除，故不再有「两处必须一致」的约束——但也意味着这里错了没有第二处能对出来，
- * 三档 D/λ 分支的逐点核对与单调性由 test/interference.test.mjs 的「② 方向图」段守着。
- * 旧注释原文（存档）：与 utils/linkCalculator.js 的 calculateITU465OffAxisGain 同口径同分段——两处必须一致，
- * 否则同一副天线在链路预算里显示的旁瓣增益与干扰分析算出的鉴别度会对不上。
+ * 地球站离轴增益 G(φ)（dBi）：RR AP8 的分段结构配 S.580 的 29−25lgφ 旁瓣系数。
  *
- * 注：函数名里的 465 在引擎侧是历史遗留（S.465-6 正文只有 32−25lgφ / −10 两段），
- * 实际结构是 AP8 分段 + S.580 的 29 系数旁瓣段。本模块按事实命名。
+ * ★ 这不是任何一份 ITU 文本里的方向图。v1.5.3 及之前它叫 offAxisAP8、界面称「AP8 离轴包络」，
+ *   C/ASI 与 ΔT/T 全调它——名不副实：近旁瓣比 RR AP8 附件 3 低 3 dB（D/λ ≥ 100）、小口径低到约 9 dB
+ *   （D/λ≈24），干扰系统性偏乐观。2026-10-17 改名、行为一位不改，只留作「旧版包络」供显式对比；
+ *   各用途的缺省见下方的方向图库（makeEsPattern）。
+ *
+ * 链路预算引擎里那份同口径副本（calculateITU465OffAxisGain / calculateITU465Isolation）已于
+ * 2026-08-07 随「邻星离轴口径」整组移除；三档 D/λ 分支的逐点核对与单调性由
+ * test/interference.test.mjs 的「② 方向图」段守着。NGSO 路的 'peak' 包络与 S.1428 退回时仍用它
+ * （NGSO 统计层的既定口径，不随本次订正改动）。
  */
-function offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg) {
+function offAxisS580Hybrid(diameterM, wavelengthM, efficiency, phiDeg) {
   const D = Number(diameterM), lam = Number(wavelengthM), phi = Number(phiDeg);
   const eff = Number(efficiency) > 0 ? Number(efficiency) : 0.65;
   if (!(D > 0) || !(lam > 0)) return null;
@@ -108,11 +112,260 @@ function offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg) {
 }
 
 // ---------------------------------------------------------------------------
+// 地球站离轴参考方向图库 —— GEO 静态场景（C/ASI、RR 附录 8 协调触发）
+// ---------------------------------------------------------------------------
+//
+// 选哪条包络由用途决定（2026-10-17 订正）：
+//   RR-AP8-A3  RR 附录 8 附件 3：AP8 ΔT/T 协调触发计算规定的方向图（§2.2.1：双方既无实测、也无公认
+//              建议书时用它）。ΔT/T 恒用这一条。
+//   S.465-6    ITU-R S.465-6「用于协调与干扰评估」的参考方向图。GSO 网间 C/ASI 的缺省（新老配置一律）。
+//   S.580-6    ITU-R S.580-6：新建天线的设计目标（至少 90% 旁瓣峰不超过），不是评估包络；只在确认天线
+//              满足该目标时选。D/λ < 50 不适用（Note 3）→ 退回 S.465-6 并上报。
+//   S580-HYB   旧版平台包络（offAxisS580Hybrid），只供对比。
+//
+// 主瓣：S.465-6 与 S.580-6 只规定 φ ≥ φmin 的旁瓣包络，φ < φmin 建议书不设定（S.580-6 Note 6 指向
+// RR 附录 7 的主瓣式）。此处与 AP8 附件 3 同构——主瓣抛物线 Gmax − 2.5×10⁻³(Dφ/λ)²，以 φmin 处的
+// 包络值封底（G1 平台），包络在 φmin 处连续；抛物线在 φmin 处仍高于包络时（小口径接收天线按 Note 5
+// 取 φmin = 2.5° 才会出现）在 φmin 处直接接包络。任一点的增益都不超过 Gmax。
+//
+// 天线给法：口径 + 效率（Gmax = 20lg(πD/λ) + 10lgη），或只给主瓣增益——此时按 AP8 附件 3 脚注 4
+// 「20lg(D/λ) ≈ Gmax − 7.7」估 D/λ（AP8 协调计算里对方地球站常只申报增益）。
+
+/** 由主瓣增益估 D/λ：RR AP8 附件 3 脚注 4，20lg(D/λ) ≈ Gmax − 7.7。 */
+function dOverLambdaFromGain(gmaxDbi) {
+  const g = Number(gmaxDbi);
+  return Number.isFinite(g) ? Math.pow(10, (g - 7.7) / 20) : null;
+}
+
+const hasNum = (v) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
+
+/**
+ * 天线 → { gmax, r }。给了口径按口径算 D/λ；给了 gainDbi 就用它当 Gmax（否则由口径与效率算）；
+ * 只有增益没有口径时按脚注 4 估 D/λ（rEstimated = true）。
+ */
+function resolveEsAntenna(diameterM, wavelengthM, efficiency, gainDbi) {
+  const D = Number(diameterM), lam = Number(wavelengthM);
+  if (D > 0 && lam > 0) {
+    const gmax = hasNum(gainDbi) ? Number(gainDbi) : peakGainDbi(D, lam, efficiency);
+    return { gmax, r: D / lam, rEstimated: false };
+  }
+  if (hasNum(gainDbi)) return { gmax: Number(gainDbi), r: dOverLambdaFromGain(gainDbi), rEstimated: true };
+  return null;
+}
+
+/**
+ * RR 附录 8 附件 3（RR 2024 版第 2 卷，AP8 Rev.WRC-15，AP8-8 / AP8-9 页）。增益 dBi。
+ *   D/λ ≥ 100：Gmax − 2.5×10⁻³(Dφ/λ)²   0 < φ < φm
+ *              G1                        φm ≤ φ < φr
+ *              32 − 25lgφ                φr ≤ φ < 48°
+ *              −10                       48° ≤ φ < 180°
+ *   D/λ < 100：Gmax − 2.5×10⁻³(Dφ/λ)²   0 < φ < φm
+ *              G1                        φm ≤ φ < 100λ/D
+ *              52 − 10lg(D/λ) − 25lgφ    100λ/D ≤ φ < 48°
+ *              10 − 10lg(D/λ)            48° ≤ φ ≤ 180°
+ *   G1 = 2 + 15lg(D/λ)，φm = (20λ/D)·√(Gmax − G1)，φr = 15.85·(D/λ)^−0.6
+ * 两档的旁瓣段在 φr / 100λ/D 处与 G1 天然相接；48° 处各有原文自带的 0.03 dB 台阶（32 − 25lg48 = −10.03），照原文。
+ */
+function ap8AnnexIIIGain(gmaxDbi, dOverLambda, phiDeg) {
+  const gmax = Number(gmaxDbi), r = Number(dOverLambda);
+  if (!Number.isFinite(gmax) || !(r > 0)) return null;
+  const phi = Math.abs(Number(phiDeg) || 0);
+  if (!(phi > 0)) return gmax;
+  const g1 = 2 + 15 * LOG10(r);
+  const phiM = (20 / r) * Math.sqrt(Math.max(0, gmax - g1));
+  let g;
+  if (phi < phiM) g = gmax - 2.5e-3 * Math.pow(r * phi, 2);
+  else if (r >= 100) {
+    const phiR = 15.85 * Math.pow(r, -0.6);
+    if (phi < phiR) g = g1;
+    else if (phi < 48) g = 32 - 25 * LOG10(phi);
+    else g = -10;
+  } else if (phi < 100 / r) g = g1;
+  else if (phi < 48) g = 52 - 10 * LOG10(r) - 25 * LOG10(phi);
+  else g = 10 - 10 * LOG10(r);
+  return Math.min(gmax, g);
+}
+
+/**
+ * ITU-R S.465-6 的 φmin（recommends 2 与 Note 5）：
+ *   D/λ ≥ 50：max(1°, 100λ/D)；D/λ < 50：max(2°, 114·(D/λ)^−1.09)
+ *   Note 5：协调中的**接收**地球站天线、D/λ < 33.3（Note 4 所指 1993 年前协调的网络除外）取 2.5°。
+ */
+function s465PhiMin(dOverLambda, receive) {
+  const r = Number(dOverLambda);
+  if (!(r > 0)) return null;
+  if (receive && r < 33.3) return 2.5;
+  if (r >= 50) return Math.max(1, 100 / r);
+  return Math.max(2, 114 * Math.pow(r, -1.09));
+}
+
+/**
+ * ITU-R S.465-6（01/2010）recommends 2：32 − 25lgφ（φmin ≤ φ < 48°），−10（48° ≤ φ ≤ 180°）。增益 dBi。
+ * φ < φmin 建议书不设定，按本节头注取主瓣抛物线、以 φmin 处包络值封底。
+ * Note 4（1993 年前协调的 D/λ ≤ 100 网络）未单列：其包络与 RR AP8 附件 3 的 D/λ < 100 档同式，需要时选 RR-AP8-A3。
+ * @param {boolean} receive 接收天线（Note 5 的 φmin = 2.5° 只对接收天线）
+ */
+function s465Gain(gmaxDbi, dOverLambda, phiDeg, receive) {
+  const gmax = Number(gmaxDbi), r = Number(dOverLambda);
+  if (!Number.isFinite(gmax) || !(r > 0)) return null;
+  const phi = Math.abs(Number(phiDeg) || 0);
+  if (!(phi > 0)) return gmax;
+  const phiMin = s465PhiMin(r, receive);
+  const env = (p) => (p < 48 ? 32 - 25 * LOG10(p) : -10);
+  if (phi >= phiMin) return Math.min(gmax, env(phi));
+  return Math.min(gmax, Math.max(gmax - 2.5e-3 * Math.pow(r * phi, 2), env(phiMin)));
+}
+
+/**
+ * ITU-R S.580-6（01/2004）设计目标（至少 90% 的旁瓣峰不超过）。增益 dBi。
+ *   29 − 25lgφ    φmin ≤ φ ≤ 20°，φmin = max(1°, 100λ/D)     recommends 1
+ *   −3.5          20° < φ ≤ 26.3°                              Note 5（与 S.465 的衔接段）
+ *   32 − 25lgφ    26.3° < φ < 48°                              recommends 2 → S.465
+ *   −10           48° ≤ φ ≤ 180°                               同上
+ * Note 3：只适用于 D/λ ≥ 50，D/λ < 50 返回 null（调用方退回 S.465-6 并上报）。
+ * recommends 1 约束的是 GSO 弧 ±3° 以内的离轴方向——GEO 邻星正落在这个范围里。
+ */
+function s580Gain(gmaxDbi, dOverLambda, phiDeg) {
+  const gmax = Number(gmaxDbi), r = Number(dOverLambda);
+  if (!Number.isFinite(gmax) || !(r >= 50)) return null;
+  const phi = Math.abs(Number(phiDeg) || 0);
+  if (!(phi > 0)) return gmax;
+  const phiMin = Math.max(1, 100 / r);
+  const env = (p) => (p <= 20 ? 29 - 25 * LOG10(p) : p <= 26.3 ? -3.5 : p < 48 ? 32 - 25 * LOG10(p) : -10);
+  if (phi >= phiMin) return Math.min(gmax, env(phi));
+  return Math.min(gmax, Math.max(gmax - 2.5e-3 * Math.pow(r * phi, 2), env(phiMin)));
+}
+
+/** RR AP8 附件 3，口径 + 波长 + 效率的便捷形（与 offAxisS580Hybrid 同签名）。 */
+function offAxisAP8AnnexIII(diameterM, wavelengthM, efficiency, phiDeg) {
+  const a = resolveEsAntenna(diameterM, wavelengthM, efficiency);
+  return a ? ap8AnnexIIIGain(a.gmax, a.r, phiDeg) : null;
+}
+
+/** ITU-R S.465-6，同上；opt.receive = 接收天线（Note 5）。 */
+function offAxisS465_6(diameterM, wavelengthM, efficiency, phiDeg, opt) {
+  const a = resolveEsAntenna(diameterM, wavelengthM, efficiency);
+  return a ? s465Gain(a.gmax, a.r, phiDeg, !!(opt && opt.receive)) : null;
+}
+
+/** ITU-R S.580-6 设计目标，同上；D/λ < 50 返回 null。 */
+function offAxisS580_6(diameterM, wavelengthM, efficiency, phiDeg) {
+  const a = resolveEsAntenna(diameterM, wavelengthM, efficiency);
+  return a ? s580Gain(a.gmax, a.r, phiDeg) : null;
+}
+
+// 方向图 ID → 名称与版本。结果区、方向图切面图与导出都写这两项；口径说明只放 UI 的 title。
+const ES_PATTERNS = {
+  'S.465-6': { id: 'S.465-6', name: 'ITU-R S.465-6', edition: '01/2010' },
+  'RR-AP8-A3': { id: 'RR-AP8-A3', name: 'RR 附录 8 附件 3', edition: 'Rev.WRC-15 · RR 2024' },
+  'S.580-6': { id: 'S.580-6', name: 'ITU-R S.580-6', edition: '01/2004' },
+  'S580-HYB': { id: 'S580-HYB', name: 'AP8 分段 + S.580 旁瓣', edition: '平台 v1.5.3 及之前' }
+};
+const DEFAULT_ASI_PATTERN = 'S.465-6';     // C/ASI 缺省
+const AP8_PATTERN = 'RR-AP8-A3';            // AP8 ΔT/T 恒用
+
+/** 方向图分段结构角（方向图切面图的竖线标注）：[{deg, key, label}]，增益由调用方按同一 gain() 补。 */
+function esPatternMarks(applied, ant, receive, diameterM, wavelengthM, efficiency) {
+  const gmax = ant.gmax, r = ant.r;
+  const out = [{ deg: 35 / r, key: 'hpbw', label: '主瓣半宽' }];          // θ₃dB ≈ 70λ/D
+  const lobeEdge = (g1) => (gmax > g1 ? (20 / r) * Math.sqrt(gmax - g1) : null);
+  if (applied === 'RR-AP8-A3') {
+    const pm = lobeEdge(2 + 15 * LOG10(r));
+    if (pm) out.push({ deg: pm, key: 'phi1', label: 'φm 主瓣边界' });
+    if (r >= 100) out.push({ deg: 15.85 * Math.pow(r, -0.6), key: 'phir', label: 'φr 旁瓣段起点' });
+    else out.push({ deg: 100 / r, key: 'phir', label: '100λ/D 旁瓣段起点' });
+    out.push({ deg: 48, key: 'far', label: '48° 远旁瓣' });
+  } else if (applied === 'S.465-6' || applied === 'S.580-6') {
+    const s580 = applied === 'S.580-6';
+    const pmin = s580 ? Math.max(1, 100 / r) : s465PhiMin(r, receive);
+    const pm = lobeEdge(s580 ? 29 - 25 * LOG10(pmin) : 32 - 25 * LOG10(pmin));
+    if (pm && pm < pmin) out.push({ deg: pm, key: 'phi1', label: 'φm 主瓣边界' });
+    out.push({ deg: pmin, key: 'phir', label: 'φmin 旁瓣包络起点' });
+    if (s580) {
+      out.push({ deg: 20, key: 'm20', label: '20°' });
+      out.push({ deg: 26.3, key: 'm263', label: '26.3°' });
+    }
+    out.push({ deg: 48, key: 'far', label: '48° 远旁瓣' });
+  } else {
+    // 旧版包络：沿用 v1.5.3 的结构角标注
+    const g0 = peakGainDbi(diameterM, wavelengthM, efficiency);
+    if (r >= 100) {
+      const G1 = 2 + 15 * LOG10(r);
+      out.push({ deg: (20 / r) * Math.sqrt(Math.max(0, g0 - G1)), key: 'phi1', label: 'φ₁ 主瓣边界' });
+      out.push({ deg: 15.85 * Math.pow(r, -0.6), key: 'phir', label: 'φr 旁瓣平台外沿' });
+      out.push({ deg: 36.31, key: 'far', label: '远旁瓣 −10 dBi' });
+    } else if (r >= 50) {
+      out.push({ deg: 48, key: 'far', label: '远场底板' });
+    } else {
+      out.push({ deg: Math.pow(10, (19 + 10 * LOG10(r)) / 25), key: 'far', label: '远场底板' });
+    }
+  }
+  return out.filter((m) => m.deg > 0).sort((a, b) => a.deg - b.deg);
+}
+
+/**
+ * 按 ID 解析出一副地球站天线的离轴方向图（与 φ 无关的部分一次算好）。
+ * @param {string} id   ES_PATTERNS 的键；未知 / 缺省 → DEFAULT_ASI_PATTERN（S.465-6）
+ * @param {object} [opt] { receive: 接收天线（S.465-6 Note 5），gainDbi: 主瓣增益（给了就当 Gmax）}
+ * @returns {{id, applied, fellBack, reason, name, edition, gmaxDbi, dOverLambda, dOverLambdaEstimated,
+ *            phiMinDeg, receive, gain:(phiDeg:number)=>number, marks:Array}|null}
+ *   id 是要的那条，applied 是实际用的那条（S.580-6 遇 D/λ < 50 退回 S.465-6，fellBack + reason 如实上报）
+ */
+function makeEsPattern(id, diameterM, wavelengthM, efficiency, opt) {
+  const o = opt || {};
+  const want = ES_PATTERNS[id] ? id : DEFAULT_ASI_PATTERN;
+  const ant = resolveEsAntenna(diameterM, wavelengthM, efficiency, o.gainDbi);
+  if (!ant || !Number.isFinite(ant.gmax) || !(ant.r > 0)) return null;
+  let applied = want, reason = null;
+  if (want === 'S.580-6' && !(ant.r >= 50)) {
+    applied = 'S.465-6';
+    reason = `D/λ = ${ant.r.toFixed(1)} < 50，超出 ITU-R S.580-6 适用范围（Note 3），按 ITU-R S.465-6 计`;
+  } else if (want === 'S580-HYB' && ant.rEstimated) {
+    applied = 'S.465-6';
+    reason = '旧版包络需要天线口径，按 ITU-R S.465-6 计';
+  }
+  const receive = !!o.receive;
+  const gmax = ant.gmax, r = ant.r;
+  let gain, phiMinDeg = null;
+  if (applied === 'RR-AP8-A3') {
+    gain = (phi) => ap8AnnexIIIGain(gmax, r, phi);
+    phiMinDeg = r >= 100 ? 15.85 * Math.pow(r, -0.6) : 100 / r;
+  } else if (applied === 'S.465-6') {
+    gain = (phi) => s465Gain(gmax, r, phi, receive);
+    phiMinDeg = s465PhiMin(r, receive);
+  } else if (applied === 'S.580-6') {
+    gain = (phi) => s580Gain(gmax, r, phi);
+    phiMinDeg = Math.max(1, 100 / r);
+  } else {
+    gain = (phi) => offAxisS580Hybrid(diameterM, wavelengthM, efficiency, phi);
+  }
+  const meta = ES_PATTERNS[applied];
+  return {
+    id: want, applied, fellBack: applied !== want, reason,
+    name: meta.name, edition: meta.edition,
+    gmaxDbi: gmax, dOverLambda: r, dOverLambdaEstimated: ant.rEstimated,
+    phiMinDeg, receive, gain,
+    marks: esPatternMarks(applied, ant, receive, diameterM, wavelengthM, efficiency)
+  };
+}
+
+/** makeEsPattern 的结果去掉函数（出 IPC / 进结果区）：所要与实际所用的 ID、名称版本、D/λ、φmin。 */
+function esPatternInfo(p) {
+  if (!p) return null;
+  return {
+    id: p.id, applied: p.applied, fellBack: p.fellBack, reason: p.reason,
+    name: p.name, edition: p.edition,
+    dOverLambda: p.dOverLambda, dOverLambdaEstimated: p.dOverLambdaEstimated,
+    phiMinDeg: p.phiMinDeg, receive: p.receive
+  };
+}
+
+// ---------------------------------------------------------------------------
 // ITU-R S.1428-1 平均包络 —— NGSO 干扰用
 // ---------------------------------------------------------------------------
 
 // S.1428-1 的适用频段：建议书标题与 recommends 均写明 10.7–30 GHz。
-// 频段之外用它没有依据——由 earthStationOffAxis 退回 AP8 并如实上报 fellBack。
+// 频段之外用它没有依据——由 earthStationOffAxis 退回峰值包络（旧版 AP8/S.580）并如实上报 fellBack。
 const S1428_F_LO_GHZ = 10.7;
 const S1428_F_HI_GHZ = 30;
 
@@ -194,9 +447,11 @@ function offAxisS1428(diameterM, wavelengthM, phiDeg, freqGHz) {
  * η 就成了 C/I 的杠杆：η 从 65% 改到 50%，C/I 恰好掉 10lg(0.65/0.50)=1.14 dB——
  * 纯粹来自两套增益基准混用，不是物理。
  * 现改为 G(φ) = gPeak(η) − [Gmax_ref − G_ref(φ)]：把建议书当**鉴别度包络**用，
- * η 同时作用于 C 与 I，两边对消。AP8 分支（offAxisAP8）本来就自洽，不受影响。
+ * η 同时作用于 C 与 I，两边对消。峰值分支（offAxisS580Hybrid）本来就自洽，不受影响。
  *
- * @param {'peak'|'average'} kind 'peak' = GEO 静态（AP8/S.580）；'average' = NGSO 动态（S.1428）
+ * NGSO 路的峰值分支沿用旧版 AP8/S.580 包络（NGSO 统计层的既定口径，2026-10-17 的 GEO 方向图订正不改它）。
+ *
+ * @param {'peak'|'average'} kind 'peak' = 峰值包络（AP8/S.580，对比用）；'average' = NGSO 动态（S.1428）
  * @param {number} [freqGHz] 给了才校验 S.1428 的 10.7–30 GHz 适用频段（见 offAxisS1428）
  */
 function earthStationOffAxis(kind, diameterM, wavelengthM, efficiency, phiDeg, freqGHz) {
@@ -208,9 +463,9 @@ function earthStationOffAxis(kind, diameterM, wavelengthM, efficiency, phiDeg, f
       // ——那边把 (gPeak − gmaxRef) 提成了循环外常量，两处必须是同一个浮点表达式
       return gPeak == null ? s.gain : (gPeak - s.gmaxRef) + s.gain;
     }
-    // D/λ < 20 或 10.7–30 GHz 之外：S.1428 不适用，退回峰值包络（偏保守，但有出处）
+    // D/λ < 20 或 10.7–30 GHz 之外：S.1428 不适用，退回峰值包络（偏保守）
   }
-  return offAxisAP8(diameterM, wavelengthM, efficiency, phiDeg);
+  return offAxisS580Hybrid(diameterM, wavelengthM, efficiency, phiDeg);
 }
 
 /**
@@ -262,7 +517,7 @@ function makeEarthStationOffAxis(kind, diameterM, wavelengthM, efficiency, freqG
       return { info, gain: (phi) => off + offAxisS1428(diameterM, wavelengthM, phi, freqGHz).gain };
     }
   }
-  return { info, gain: (phi) => offAxisAP8(diameterM, wavelengthM, efficiency, phi) };
+  return { info, gain: (phi) => offAxisS580Hybrid(diameterM, wavelengthM, efficiency, phi) };
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +651,12 @@ function s524LimitPer4kHz(phiDeg, freqGHz) {
 
 module.exports = {
   peakGainDbi, beamwidth3dB,
-  offAxisAP8, offAxisS1428, earthStationOffAxis, earthStationPatternInfo, makeEarthStationOffAxis,
+  // GEO 静态场景的地球站方向图库（C/ASI、RR 附录 8）
+  offAxisS580Hybrid, offAxisAP8AnnexIII, offAxisS465_6, offAxisS580_6,
+  ap8AnnexIIIGain, s465Gain, s465PhiMin, s580Gain, dOverLambdaFromGain, resolveEsAntenna,
+  makeEsPattern, esPatternInfo, ES_PATTERNS, DEFAULT_ASI_PATTERN, AP8_PATTERN,
+  // NGSO
+  offAxisS1428, earthStationOffAxis, earthStationPatternInfo, makeEarthStationOffAxis,
   S1428_F_LO_GHZ, S1428_F_HI_GHZ,
   gaussianSatBeam,
   s524OffAxisEirpDensity, s524LimitPer4kHz, S524_BANDS

@@ -1,0 +1,46 @@
+//! id: csv-vertices
+//! name: ⟪CSV · 等值线顶点坐标|CSV · Contour vertex coordinates⟫
+//! ext: csv
+//! match: *.csv, *.txt
+//! sniff: (经度|longitude|\blon\b)
+//zh 每行一个顶点：按「卫星 / 波束 / 频段 / 类型 / 环序号」归成等值线，电平取「电平」列（本软件导出的顶点 CSV 原样读回）。
+//zh 分隔符（逗号 / 分号 / Tab）与编码（UTF-8 / GBK）自动识别；表头名不同时改下面 COLS 里的候选名。
+//en One vertex per row: rows group into contours by satellite / beam / band / type / ring, with the level from the Level column
+//en (the vertex CSV exported by this software reads back as is). Delimiter (comma / semicolon / tab) and encoding (UTF-8 / GBK) are detected;
+//en adjust the candidate header names in COLS for other files.
+
+const COLS = {
+  satellite: ['卫星', 'satellite', 'sat'],
+  beam: ['波束', 'beam', 'name'],
+  band: ['频段', 'band'],
+  type: ['类型', 'type'],
+  level: ['电平', 'level', 'gain', 'value'],
+  ring: ['环序号', 'ring', 'contour', 'part'],
+  lon: ['经度', 'longitude', 'lon', 'lng', 'x'],
+  lat: ['纬度', 'latitude', 'lat', 'y'],
+}
+
+const beams = new Map()
+for (const f of files) {
+  const rows = csv(f, { header: true })
+  if (!rows.length) continue
+  const heads = Object.keys(rows[0])
+  const col = {}
+  for (const [k, names] of Object.entries(COLS)) col[k] = heads.find((h) => names.some((n) => h.trim().toLowerCase() === n.toLowerCase()))
+  if (!col.lon || !col.lat) { console.error(`${f.name}: ⟪找不到经度 / 纬度列|longitude / latitude columns not found⟫`); continue }
+  for (const r of rows) {
+    const lon = num(r[col.lon]), lat = num(r[col.lat])
+    if (lon == null || lat == null) continue
+    const sat = col.satellite ? r[col.satellite] : f.base
+    const name = col.beam ? r[col.beam] : f.base
+    const band = col.band ? r[col.band] : ''
+    const type = col.type ? r[col.type] : 'EIRP'
+    const key = [sat, name, band, type].join('\u0001')
+    if (!beams.has(key)) beams.set(key, { satellite: sat, name, band, type, rings: new Map() })
+    const ring = col.ring ? String(r[col.ring]) : (col.level ? String(r[col.level]) : '1')
+    const b = beams.get(key)
+    if (!b.rings.has(ring)) b.rings.set(ring, { level: col.level ? num(r[col.level]) : null, points: [] })
+    b.rings.get(ring).points.push([lon, lat])
+  }
+}
+return [...beams.values()].map((b) => ({ satellite: b.satellite, name: b.name, band: b.band, type: b.type, contours: [...b.rings.values()] }))

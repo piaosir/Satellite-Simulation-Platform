@@ -74,11 +74,31 @@ for (const f of ['src/suntool/SunOutageApp.vue', 'src/rain/RainApp.vue']) {
 for (const [f, fn] of [['src/suntool/SunOutageApp.vue', 'async function runExport(kind) {'], ['src/rain/RainApp.vue', 'async function exportExcel() {']]) {
   const s = src(f)
   const i = s.indexOf(fn), body = i >= 0 ? s.slice(i, s.indexOf('\n}\n', i)) : ''
-  const guard = body.indexOf('if (resultsStale.value || !hasResults.value) {'), calc = body.indexOf('if (!(await compute()) || !hasResults.value) return')
+  // 雨衰另把「多站开着却还没有多站结果」并进补算条件（体检 2026-10-16：先算再勾多站，导出不补算多站页）
+  const gm = /if \(resultsStale\.value \|\| !hasResults\.value(?: \|\| divMissing\.value)?\) \{/.exec(body)
+  const guard = gm ? gm.index : -1, calc = body.indexOf('if (!(await compute()) || !hasResults.value) return')
   const out = Math.max(body.indexOf('exportPayload()'), body.indexOf('api.exportExcel(payload)'))
   ok(guard > 0 && calc > guard && out > calc, f + '：导出前输入已变 / 未算先补算，算不成就中止')
   const c = s.indexOf('async function compute() {'), cb = c >= 0 ? s.slice(c, s.indexOf('\n}\n', c)) : ''
   ok(/return true\n/.test(cb) && (cb.match(/return false/g) || []).length >= 3, f + '：compute 回报算没算成')
+}
+
+// ②d 雨衰：结果与输入同步（体检 2026-10-16 二档）
+//    · 右栏曲线 / 详情的入参取计算时留底的那一份（paramsById），不按「当前行 + 当前全局几何」现组——
+//      否则算完再改可用度 / 频率 / 轨位，曲线按新入参重画、标记点（取自结果）还是旧的；
+//    · 勾「多站汇总」算输入变化：「多站开着却没有多站结果」（divMissing，按状态推出——再取消勾选灯即熄）
+//      并进「输入已变」那盏灯，导出前也据此补算多站页
+{
+  const s = src('src/rain/RainApp.vue')
+  const fnB = (head) => { const i = s.indexOf(head); return i >= 0 ? s.slice(i, s.indexOf('\n}\n', i)) : '' }
+  const sp = (() => { const i = s.indexOf('const selectedParams = computed(() => {'); return i >= 0 ? s.slice(i, s.indexOf('\n})\n', i)) : '' })()
+  ok(!!sp && sp.includes('paramsById.value[row._id]') && !sp.includes('caseOpts()') && !sp.includes('buildRainCase('), 'src/rain/RainApp.vue：曲线 / 详情入参取计算时留底的那一份')
+  const cb = fnB('async function compute() {')
+  ok(/m\[id\] = arr\[i\]; pm\[id\] = payload\[i\]/.test(cb) && cb.includes('paramsById.value = pm') && /resultById\.value = \{\}; paramsById\.value = \{\}/.test(cb), 'src/rain/RainApp.vue：入参与结果同一轮留底、失败一起清')
+  ok(fnB('function applyState(st) {').includes('paramsById.value = {}'), 'src/rain/RainApp.vue：换配置时留底入参随结果一起清')
+  ok(s.includes('const divMissing = computed(() => divOn.value && !divResult.value)'), 'src/rain/RainApp.vue：「多站开着却没有多站结果」按状态推出')
+  ok(/<WinStatusBar [^>]*:stale="!!\(\(resultsStale \|\| divMissing\) && \(hasResults \|\| divResult\)\)"/.test(s), 'src/rain/RainApp.vue：已有结果时勾「多站汇总」亮「输入已变」')
+  ok(fnB('async function exportExcel() {').includes('|| divMissing.value) {'), 'src/rain/RainApp.vue：多站开着却没有多站结果 → 导出前补算')
 }
 
 // ③ 无名标记补名

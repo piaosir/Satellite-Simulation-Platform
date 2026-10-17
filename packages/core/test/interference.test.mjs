@@ -88,46 +88,47 @@ approx('FSL 解析核对', G.fsl(38000, 12.5), 20 * Math.log10(38000) + 20 * Mat
 
 console.log('\n=== ② 方向图 ===');
 
-// AP8 必须与链路预算引擎逐位一致（同一副天线在两处显示的旁瓣增益不能不同）
+// 旧版包络（AP8 分段 + S.580 旁瓣；原名 offAxisAP8，2026-10-17 改名 offAxisS580Hybrid、行为不变）逐点锁住
 {
   // 链路预算引擎那份离轴增益实现已随邻星离轴口径整组删除（2026-08-07），patterns.js 现为唯一出处，
   // 故三档 D/λ 分支都要有覆盖（此前只测了 ≥100 那一档）。以下与建议书公式手写复算逐点比对。
+  // 下列断言名里的「AP8」沿用旧称，测的是旧版包络；真正的 RR 附录 8 附件 3 / S.465-6 / S.580-6 见 ap8.test.mjs。
   const lam = A.lambdaOf(12.5);
   // 大天线档 D/λ ≥ 100
   const D1 = 4.5, r1 = D1 / lam;
   ok('AP8 大天线档 D/λ ≥ 100', r1 >= 100, `D/λ=${r1.toFixed(1)}`);
-  approx('AP8 旁瓣段 = 29 − 25lgφ', P.offAxisAP8(D1, lam, 0.65, 3), 29 - 25 * Math.log10(3), 1e-9);
-  approx('AP8 远旁瓣 = −10 dBi', P.offAxisAP8(D1, lam, 0.65, 40), -10, 1e-9);
+  approx('AP8 旁瓣段 = 29 − 25lgφ', P.offAxisS580Hybrid(D1, lam, 0.65, 3), 29 - 25 * Math.log10(3), 1e-9);
+  approx('AP8 远旁瓣 = −10 dBi', P.offAxisS580Hybrid(D1, lam, 0.65, 40), -10, 1e-9);
   // 主瓣抛物线
-  approx('AP8 主瓣抛物线', P.offAxisAP8(D1, lam, 0.65, 0.1),
+  approx('AP8 主瓣抛物线', P.offAxisS580Hybrid(D1, lam, 0.65, 0.1),
     P.peakGainDbi(D1, lam, 0.65) - 0.0025 * Math.pow(r1 * 0.1, 2), 1e-9);
   // 中档 50 ≤ D/λ < 100（1.2 m @ 12.5 GHz，D/λ≈50）：旁瓣段 39−5lg(D/λ)−25lgφ、远场底板 −3−5lg(D/λ)
   const D2 = 1.2, r2 = D2 / lam;
   ok('AP8 中档 50 ≤ D/λ < 100', r2 >= 50 && r2 < 100, `D/λ=${r2.toFixed(1)}`);
-  approx('AP8 中档旁瓣段 = 39−5lg(D/λ)−25lgφ', P.offAxisAP8(D2, lam, 0.65, 10),
+  approx('AP8 中档旁瓣段 = 39−5lg(D/λ)−25lgφ', P.offAxisS580Hybrid(D2, lam, 0.65, 10),
     39 - 5 * Math.log10(r2) - 25 * Math.log10(10), 1e-9);
-  approx('AP8 中档远场底板 = −3−5lg(D/λ)', P.offAxisAP8(D2, lam, 0.65, 60), -3 - 5 * Math.log10(r2), 1e-9);
+  approx('AP8 中档远场底板 = −3−5lg(D/λ)', P.offAxisS580Hybrid(D2, lam, 0.65, 60), -3 - 5 * Math.log10(r2), 1e-9);
   // 小档 D/λ < 50（0.75 m @ 12.5 GHz，D/λ≈31）：旁瓣段 29−25lgφ、远场底板 10−10lg(D/λ)（RR AP8）
   // v1.3.6–v1.3.16 底板曾为 −10−10lg(D/λ)——符号笔误，比 AP8 低约 20 dB，2026-08-11 订正
   const D3 = 0.75, r3 = D3 / lam;
   ok('AP8 小档 D/λ < 50', r3 < 50, `D/λ=${r3.toFixed(1)}`);
-  approx('AP8 小档旁瓣段 = 29−25lgφ', P.offAxisAP8(D3, lam, 0.65, 10), 29 - 25 * Math.log10(10), 1e-9);
+  approx('AP8 小档旁瓣段 = 29−25lgφ', P.offAxisS580Hybrid(D3, lam, 0.65, 10), 29 - 25 * Math.log10(10), 1e-9);
   approx('AP8 小档远场底板 = 10−10lg(D/λ)（RR AP8，非 −10−10lg）',
-    P.offAxisAP8(D3, lam, 0.65, 60), 10 - 10 * Math.log10(r3), 1e-9);
+    P.offAxisS580Hybrid(D3, lam, 0.65, 60), 10 - 10 * Math.log10(r3), 1e-9);
   // φ>48° 回归锚点：D/λ=40 → 10−10lg40 = −6.02 dBi（笔误版给 −26.02，正是低了 20 dB 的那处）
-  approx('AP8 小档底板锚点 D/λ=40 → −6.02 dBi', P.offAxisAP8(40 * lam, lam, 0.65, 120), 10 - 10 * Math.log10(40), 1e-9);
+  approx('AP8 小档底板锚点 D/λ=40 → −6.02 dBi', P.offAxisS580Hybrid(40 * lam, lam, 0.65, 120), 10 - 10 * Math.log10(40), 1e-9);
   // 旁瓣段→底板在交点 φx = 10^((19+10lg(D/λ))/25) 处切换（与大档 36.31° 同款拼接），两侧连续
   {
     const phiX = Math.pow(10, (19 + 10 * Math.log10(r3)) / 25);
     ok('AP8 小档 φx 落在 48° 以内', phiX < 48, `φx=${phiX.toFixed(2)}°`);
     const eps = 1e-7;
-    const lft = P.offAxisAP8(D3, lam, 0.65, phiX - eps), rgt = P.offAxisAP8(D3, lam, 0.65, phiX + eps);
+    const lft = P.offAxisS580Hybrid(D3, lam, 0.65, phiX - eps), rgt = P.offAxisS580Hybrid(D3, lam, 0.65, phiX + eps);
     ok('AP8 小档 φx 处连续', Math.abs(lft - rgt) < 1e-4, `Δ=${(rgt - lft).toExponential(2)}`);
   }
   // 单调不增：包络在 0.5°~60° 全程不得回升（三档接缝处最容易出台阶）
   for (const [D, tag] of [[D1, '大档'], [D2, '中档'], [D3, '小档']]) {
     let mono = true, prev = Infinity;
-    for (let phi = 0.5; phi <= 60; phi += 0.25) { const g = P.offAxisAP8(D, lam, 0.65, phi); if (g > prev + 1e-9) { mono = false; break } prev = g }
+    for (let phi = 0.5; phi <= 60; phi += 0.25) { const g = P.offAxisS580Hybrid(D, lam, 0.65, phi); if (g > prev + 1e-9) { mono = false; break } prev = g }
     ok(`AP8 ${tag}包络 0.5°~60° 单调不增`, mono);
   }
 }
@@ -165,7 +166,7 @@ console.log('\n=== ② 方向图 ===');
   // 适用范围外返回 null（由调用方回退 AP8）
   ok('S.1428 D/λ < 20 返回 null', P.offAxisS1428(0.3, lamS, 5) === null);
   ok('earthStationOffAxis 在 D/λ<20 时回退 AP8',
-    P.earthStationOffAxis('average', 0.3, lamS, 0.65, 5) === P.offAxisAP8(0.3, lamS, 0.65, 5));
+    P.earthStationOffAxis('average', 0.3, lamS, 0.65, 5) === P.offAxisS580Hybrid(0.3, lamS, 0.65, 5));
 
   // 主瓣→G1 边界连续
   const eps = 1e-7;
@@ -177,7 +178,7 @@ console.log('\n=== ② 方向图 ===');
 // S.1428 与 AP8 的方向性差异：同一副天线，平均包络在旁瓣区应低于峰值包络
 {
   const lam = A.lambdaOf(12.5), D = 4.5;
-  const peak = P.offAxisAP8(D, lam, 0.65, 20);
+  const peak = P.offAxisS580Hybrid(D, lam, 0.65, 20);
   const avg = P.offAxisS1428(D, lam, 20).gain;
   ok('20° 处 S.1428(平均) < AP8(峰值)', avg < peak, `${avg.toFixed(2)} < ${peak.toFixed(2)}`);
 }
@@ -392,6 +393,64 @@ const TX = { diameterM: 4.5, efficiency: 0.65, freqGHz: 14.25, powerW: 40, feede
   ok('超 S.524 限值的干扰站被告警', bad.warnings.some((w) => w.includes('S.524')));
 }
 
+// 上行极化（体检 2026-10-16 第一节 #2）：上行比的是干扰载波的【上行】极化，不是邻星的下行极化。
+// 本站下行 H / 上行 V、邻星下行 H：从前拿邻星下行 H 比本站上行 V 判成反极化，白送 25 dB（出厂上行 C/ASI 58.88 → 实为 33.88）。
+console.log('\n--- 上行极化（干扰载波的上行极化；留空沿用下行关系）---');
+{
+  const R = A.resolveUplinkPolarization;
+  const W = { polarization: 'V', downlinkPolarization: 'H' };      // 本站：上行 V、下行 H
+  const co = R(W, { polarization: 'H' });
+  ok('留空 + 邻星下行与本站下行同极化 → 上行同极化、推定为本站上行 V、不折减',
+    co.relation === 'co' && co.db === 0 && co.pol === 'V' && co.inferred === true, JSON.stringify(co));
+  const cx = R(W, { polarization: 'V' }, 20);
+  ok('留空 + 下行反极化 → 上行反极化、推定为本站上行的正交 H、折减 = XPD',
+    cx.relation === 'cross' && cx.db === 20 && cx.pol === 'H' && cx.inferred === true, JSON.stringify(cx));
+  const mx = R(W, { polarization: 'R' });
+  ok('留空 + 下行线/圆混用 → 上行同样混用 3 dB（推不出字母）', mx.relation === 'mixed' && mx.db === 3 && mx.pol === null && mx.inferred, JSON.stringify(mx));
+  const un = R(W, {});
+  ok('留空 + 邻星下行极化也没给 → 关系未知、不折减', un.relation === 'unknown' && un.db === 0 && un.pol === null, JSON.stringify(un));
+  const ex = R(W, { polarization: 'H', uplinkPolarization: 'h' });
+  ok('给了上行极化就用它（大小写不敏感）：H 对本站上行 V = 反极化 25 dB',
+    ex.relation === 'cross' && ex.db === A.DEFAULT_XPD_DB && ex.pol === 'H' && ex.inferred === false, JSON.stringify(ex));
+  const lg = R({ polarization: 'V' }, { polarization: 'V' });
+  ok('调用方没给本站下行极化（单链旧口径）→ 源的 polarization 直接当上行极化比', lg.relation === 'co' && lg.inferred === false);
+  // 本站上下行一线一圆（少见）：搬的是关系不是字母 —— 下行同极化 ⇒ 上行也同极化
+  const lc = R({ polarization: 'L', downlinkPolarization: 'H' }, { polarization: 'H' });
+  ok('本站上行圆极化：下行同极化 ⇒ 上行推定为本站上行 L、不折减', lc.relation === 'co' && lc.pol === 'L' && lc.db === 0);
+
+  // 三种干扰源模型都读源的上行极化：出厂几何下逐模式核
+  const mk = (mode, srcPol) => A.uplinkCAsi({
+    station: BJ, tx: TX, sourceMode: mode,
+    wanted: { lonDeg: 110.5, polarization: 'V', downlinkPolarization: 'H' },
+    interferers: [{ id: 'a', name: '邻星 A', lonDeg: 113, polarization: 'H', diameterM: 4.5, powerW: 40, bandwidthHz: 36e6, feederLossDb: 3.5, offAxisEirpDensityDbWPerHz: -60, ...srcPol }]
+  });
+  for (const mode of ['peer', 'mask', 'explicit']) {
+    const noPol = A.uplinkCAsi({
+      station: BJ, tx: TX, sourceMode: mode, applyPolarization: false,
+      wanted: { lonDeg: 110.5, polarization: 'V', downlinkPolarization: 'H' },
+      interferers: [{ id: 'a', lonDeg: 113, polarization: 'H', diameterM: 4.5, powerW: 40, bandwidthHz: 36e6, feederLossDb: 3.5, offAxisEirpDensityDbWPerHz: -60 }]
+    }).ciDb;
+    const inf = mk(mode, {});
+    approx(`${mode}：上行极化留空、下行同极化 → 与不计极化折减相同`, inf.ciDb, noPol, 1e-9);
+    ok(`${mode}：逐源明细标出按本站上行 V 推定`, inf.sources[0].polarization === 'V' && inf.sources[0].polInferred === true && inf.sources[0].polDb === 0);
+    approx(`${mode}：显式上行极化 H（对本站上行 V 反极化）→ 好出 25 dB`, mk(mode, { uplinkPolarization: 'H' }).ciDb, noPol + A.DEFAULT_XPD_DB, 1e-9);
+  }
+  // 出厂几何（北京 4.5 m、110.5°E 对 113°E / 108°E 两颗邻星、对等站）：旧版包络下 33.88 dB 与体检排查的独立算值一致
+  const factoryWith = (esPattern) => A.uplinkCAsi({
+    station: BJ, tx: TX, sourceMode: 'peer', esPattern,
+    wanted: { lonDeg: 110.5, polarization: 'V', downlinkPolarization: 'H' },
+    interferers: [113, 108].map((lon, i) => ({ id: 's' + i, lonDeg: lon, eirpDensityDbWPerHz: -45, polarization: 'H', diameterM: 4.5, powerW: 40, bandwidthHz: 36e6, feederLossDb: 3.5 }))
+  });
+  approx('★ 出厂几何上行 C/ASI（旧版包络 S580-HYB）= 33.88 dB（从前误判反极化得 58.88）', factoryWith('S580-HYB').ciDb, 33.8812, 5e-4);
+  // 缺省方向图 S.465-6（2026-10-17 订正）：两源离轴角 2.81° / 2.86° 都落在旁瓣段，32 − 25lgφ 比旧版的 29 − 25lgφ 恰高 3 dB
+  // （4.5 m @ 14.25 GHz，D/λ = 214，φmin = 1°）——干扰功率翻倍，C/ASI 恰低 3.0000 dB
+  approx('★ 出厂几何上行 C/ASI（缺省 S.465-6）= 旧版 − 3 dB = 30.88 dB', factoryWith(undefined).ciDb, 33.8812 - 3, 5e-4);
+  ok('缺省方向图 = S.465-6，且写进出参', factoryWith(undefined).geometry.esPattern.applied === 'S.465-6');
+  // 显式给的线/圆混用照样告警；推定出的混用与下行同源（下行已告警），上行不重复报
+  ok('显式上行线/圆混用 → 告警', mk('peer', { uplinkPolarization: 'R' }).warnings.some((w) => w.includes('线/圆')));
+  ok('推定出的混用 → 上行不重复告警', !mk('peer', { polarization: 'R' }).warnings.some((w) => w.includes('线/圆')));
+}
+
 // 上行几何图的出参：三条线 + 落点，图上「读得出的东西」必须与逐源明细是同一个数
 console.log('\n--- 上行干扰几何（离轴 EIRP 密度切面）---');
 {
@@ -417,14 +476,14 @@ console.log('\n--- 上行干扰几何（离轴 EIRP 密度切面）---');
     approx('掩模模式落点在掩模线上', s.interfererDensityDbWPerHz, m.densityDbWPerHz, 1e-12);
   }
 
-  // 对等站曲线 = 主轴密度 − Gmax + G(φ)，逐点可手算（抽三点核）
+  // 对等站曲线 = 主轴密度 − Gmax + G(φ)，逐点可手算（抽三点核；G 取缺省方向图 S.465-6、发射天线）
   {
     const c = gp.peerCurves[0];
     const lam = A.lambdaOf(TX.freqGHz);
     let worst = 0;
     for (const i of [40, 160, 300]) {
       const p = c.curve[i];
-      const want = c.eirpDbW - c.peakGainDbi + P.offAxisAP8(c.diameterM, lam, c.efficiency, p.deg) - 10 * Math.log10(c.bandwidthHz);
+      const want = c.eirpDbW - c.peakGainDbi + P.offAxisS465_6(c.diameterM, lam, c.efficiency, p.deg) - 10 * Math.log10(c.bandwidthHz);
       worst = Math.max(worst, Math.abs(p.densityDbWPerHz - want));
     }
     ok('对等站曲线逐点 = 主轴密度 − Gmax + G(φ)', worst < 2e-3, `最大偏差 ${worst.toExponential(1)} dB（出参保留 3 位小数）`);
@@ -690,7 +749,7 @@ const runNgso = (o) => {
   const b = runNgso({ interferers: [{ id: 'g', sats: OTHER, eirpDensityDbWPerHz: -38, polarization: 'H' }] }).medianCiDb;
   approx('干扰密度 +10 dB → C/I −10 dB', a - b, 10, 1e-9);
   const c = runNgso({ interferers: [{ id: 'g', sats: OTHER, eirpDensityDbWPerHz: -48, polarization: 'V', xpdDb: 25 }] }).medianCiDb;
-  approx('反极化 → C/I 改善恰好一个 XPD', c - a, 25, 1e-9);
+  approx('反极化 → C/I 改善恰好一个 XPD', c - a, 25, 1e-5);   // 2026-10-17：NGSO 采样链路含 Float32，差一个 ulp（约 4e-6 dB）
 }
 
 // CDF 单调 + 分位定义（p 越小越差）
@@ -881,7 +940,7 @@ const runNgso = (o) => {
   const info = P.earthStationPatternInfo('average', 3, lam6, 6);
   ok('S.1428 频段外 → fellBack', info.fellBack === true && info.applied === 'AP8/S.580', info.reason);
   ok('D/λ = 60 本身是够的（挡掉它的是频段不是口径）', 3 / lam6 >= 20, `D/λ=${(3 / lam6).toFixed(1)}`);
-  approx('退回后的值 = AP8 原值', P.earthStationOffAxis('average', 3, lam6, 0.65, 20, 6), P.offAxisAP8(3, lam6, 0.65, 20), 1e-12);
+  approx('退回后的值 = AP8 原值', P.earthStationOffAxis('average', 3, lam6, 0.65, 20, 6), P.offAxisS580Hybrid(3, lam6, 0.65, 20), 1e-12);
   ok('offAxisS1428 在频段外直接返回 null', P.offAxisS1428(3, lam6, 20, 6) === null);
   ok('不给频率则不校验频段（兼容只关心口径比的调用方）', P.offAxisS1428(3, lam6, 20) !== null);
   ok('10.7 / 30 GHz 两个边界都在范围内',
@@ -1810,6 +1869,323 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   I.ngso.thresholdDb = 9;
   ok('NGSO：门限线只影响图上显示 → 不亮', !st().ngso);
   delete globalThis.window;
+}
+
+// ═══ 窗口层：C/ASI 上行极化（体检 2026-10-16 第一节 #2）═══
+// 出厂面板态（本站下行 H / 上行 V，邻星 A/B 下行 H、上行极化留空）走真服务 + 真引擎：上行沿用下行关系 → 同极化，
+// C/ASI = 33.88 dB（旧版包络；从前拿邻星下行 H 比本站上行 V 判成反极化，多算 25 dB 得 58.88）。
+// 2026-10-17 方向图订正后出厂为 ITU-R S.465-6：30.88 dB。
+// useInterference 在模块载入时就取走 window.api，上一段已载入过一份（假 api）——这里用带查询串的 URL 另载一份。
+{
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  const createInterference = require('../../../electron/services/interference.js');
+  const S = createInterference(null, null, null);
+  let sent = null;
+  globalThis.window = {
+    addEventListener: () => {},
+    api: { interference: {
+      // structuredClone 模拟 IPC：payload 里混进响应式代理会在这里当场抛（同真 invoke）
+      asi: async (p) => { sent = structuredClone(p); return S.asi(sent); },
+      xpiTerm: async () => ({ ok: true, term: { db: 30 } })
+    } }
+  };
+  const { useInterference } = await import('../../../src/ci/useInterference.js?asi-uplink-pol');
+  const I = useInterference();
+  await I.computeAsi();
+  const up = () => I.asi.result && I.asi.result.uplink;
+  // 2026-10-17 起出厂方向图为 ITU-R S.465-6：两源都在旁瓣段，比旧版包络（33.88 dB）恰低 3 dB
+  approx('★ 出厂配置 上行 C/ASI = 30.88 dB（S.465-6；留空沿用下行关系 → 同极化）', up() && up().ciDb, 33.8812 - 3, 5e-4);
+  ok('出厂配置的方向图 = S.465-6，随 payload 送引擎、结果写回所用 ID', sent.downlink.esPattern === 'S.465-6' && sent.uplink.esPattern === 'S.465-6'
+    && I.asi.result.downlink.geometry.esPattern.applied === 'S.465-6' && up().geometry.esPattern.applied === 'S.465-6');
+  I.asi.esPattern = 'S580-HYB';
+  await I.computeAsi();
+  approx('选旧版包络 → 回到 33.88 dB', up().ciDb, 33.8812, 5e-4);
+  I.asi.esPattern = 'S.465-6';
+  await I.computeAsi();
+  ok('出厂 上行逐源：极化 0 dB、按本站上行 V 推定', up().sources.length === 2 && up().sources.every((s) => s.polDb === 0 && s.polarization === 'V' && s.polInferred === true));
+  ok('上行 payload 带本站下行极化（推定用），源上行极化留空不送', sent.uplink.wanted.polarization === 'V' && sent.uplink.wanted.downlinkPolarization === 'H'
+    && sent.uplink.interferers.every((s) => s.uplinkPolarization === undefined));
+  ok('下行不受影响：邻星下行 H 对本站下行 H 同极化', I.asi.result.downlink.sources.every((s) => s.polDb === 0));
+
+  // 老配置：源上压根没有 upPolarization 字段 → 按留空算，结果就是正确值；也没有 esPattern → 按缺省 S.465-6（订正）
+  const old = I.snapshot();
+  for (const s of old.asi.sources) delete s.upPolarization;
+  delete old.asi.esPattern;
+  I.applySnapshot(I.blankSnapshot()); I.applySnapshot(old);
+  ok('老配置的行没有上行极化字段（读回不补字段，配置指纹不变）', I.asi.sources.every((s) => !('upPolarization' in s)));
+  ok('老配置没有方向图字段 → 按缺省 S.465-6', I.asi.esPattern === 'S.465-6');
+  await I.computeAsi();
+  approx('老配置 上行 C/ASI = 30.88 dB（S.465-6）', up().ciDb, 33.8812 - 3, 5e-4);
+
+  // 显式填与本站上行 V 反极化的 H → 记 25 dB
+  for (const s of I.asi.sources) s.upPolarization = 'H';
+  await I.computeAsi();
+  approx('上行极化填 H（对本站上行 V 反极化）→ 好出 25 dB', up().ciDb, 33.8812 - 3 + 25, 5e-4);
+  ok('显式给定的不标推定', up().sources.every((s) => s.polarization === 'H' && s.polInferred === false));
+
+  // 三种上行模式都读源的上行极化（逐站给定要先填离轴 EIRP 密度）
+  for (const s of I.asi.sources) { s.upPolarization = ''; s.offAxisEirpDensityDbWPerHz = -60 }
+  for (const m of ['peer', 'mask', 'explicit']) {
+    I.asi.uplinkMode = m;
+    I.asi.applyPolarization = false; await I.computeAsi(); const noPol = up().ciDb;
+    I.asi.applyPolarization = true; await I.computeAsi();
+    approx(`${m}：上行极化留空 → 同极化，与不计极化折减相同`, up().ciDb, noPol, 1e-9);
+  }
+  I.asi.uplinkMode = 'peer';
+
+  // 「搜索邻星」回填：下行极化按本站下行、上行极化按本站上行填
+  I.addNeighbor({ name: 'NEIGHBOR-T', lonDeg: 115 });
+  const nb = I.asi.sources.find((s) => s.name === 'NEIGHBOR-T');
+  ok('搜索邻星回填：下行 H、上行 V（按本站上下行极化）', !!nb && nb.polarization === 'H' && nb.upPolarization === 'V');
+  // 从卫星库导入：库条目的上下行极化各归各的列
+  I.addFromLibrary({ name: 'LIB-T', form: { orbitPosition: 120, downlinkPolarization: 'V', uplinkPolarization: 'H' } });
+  const lb = I.asi.sources.find((s) => s.name === 'LIB-T');
+  ok('从卫星库导入：下行 V、上行 H 各归各列', !!lb && lb.polarization === 'V' && lb.upPolarization === 'H');
+  delete globalThis.window;
+}
+
+// ═══ 窗口层：重开窗口 / 切配置后的星座实参统计与雨衰分布（体检 2026-10-16 第二节 #18①）═══
+// 统计从前只在下拉 @change 时取：配置里选着 Starlink、开着合成可用度，关窗重开后点「取雨衰分布」，读数行写
+// 「轨道 1200 km / 53.0°」（星历档下界面上看不见的 Walker 出厂缺省），CDF 与可用度按这条假轨道算；干扰星座行一直停在「加载中…」。
+// 假 loadGroup 回包手动放行（模拟星历载入在路上），验「补载 / 去重 / 等取回 / 不退回 Walker / 失败如实记」。
+{
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  const loads = [];                       // 每次 loadGroup 的 [key, online]
+  const pending = new Map();              // key(+'#on') → 放行函数
+  const cases = [];                       // 交给雨衰引擎的算例
+  const shell = (inclDeg, altKmMed) => ({ inclDeg, altKmMed, altKmMin: altKmMed - 10, altKmMax: altKmMed + 10, count: 100, strayCount: 0 });
+  const STATS = {
+    starlink: { count: 4408, altKmMin: 340, altKmMax: 570, altKmMed: 548, inclMin: 43, inclMax: 97.7, inclMed: 53.1, periodMin: 95.6, shells: [shell(53.16, 550)] },
+    kuiper: { count: 60, altKmMin: 620, altKmMax: 640, altKmMed: 630, inclMin: 51.9, inclMax: 51.9, inclMed: 51.9, periodMin: 97.2, shells: [shell(51.9, 630)] }
+  };
+  globalThis.window = {
+    addEventListener: () => {},
+    api: {
+      interference: {
+        loadGroup: (key, online) => { loads.push([key, !!online]); return new Promise((res) => pending.set(key + (online ? '#on' : ''), res)); },
+        groups: async () => ({ ok: true, groups: [] }),
+        xpiTerm: async () => ({ ok: true, term: { db: 30 } })
+      },
+      rainAttenuation: { computeBatch: async (cs) => { cases.push(...cs); return cs.map(() => ({ totalAttenItu: 1.5, rainNoiseTemp: 30, elevation: 41.2 })); } }
+    }
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const release = async (key, r) => { const f = pending.get(key); pending.delete(key); if (f) f(r); await tick(); await tick(); };
+  const okStats = (key) => ({ ok: true, group: key, count: STATS[key].count, source: '缓存', stats: STATS[key] });
+  const nLoads = (key, online = false) => loads.filter((x) => x[0] === key && x[1] === online).length;
+  const { useInterference } = await import('../../../src/ci/useInterference.js?group-stats');
+  const I = useInterference();
+
+  // 读回一份配置（= CiApp.applyState：先回出厂再套这一份，随后补载统计）
+  const st = I.snapshot();
+  st.ngso.wanted = { ...st.ngso.wanted, source: 'group', group: 'starlink' };
+  st.ngso.interferers = [{ ...st.ngso.interferers[0], source: 'group', group: 'oneweb' }];
+  st.ngso.rain = { ...st.ngso.rain, on: true };
+  I.applySnapshot(I.blankSnapshot()); I.applySnapshot(st);
+  I.refreshGroupStats();
+  await tick(); await tick();
+  ok('★ 读回的配置：本星座与干扰星座的统计自动补载（显式补载与监听撞上也各只发一次）', nLoads('starlink') === 1 && nLoads('oneweb') === 1, JSON.stringify(loads));
+
+  // 统计还在路上就点「取雨衰分布」：等它取回，绝不退回 Walker 那两格（此刻是出厂 1200 km / 53°）
+  const p = I.loadRainCdf();
+  await tick();
+  ok('统计未到：不先按 Walker 缺省开算', cases.length === 0 && I.busy.value === true);
+  await release('starlink', okStats('starlink'));
+  await p;
+  ok('★ 统计到了才算：轨道 = 主壳层 550 km / 53.16°（不是 Walker 缺省 1200 km / 53°）',
+    cases.length === 12 && cases.every((c) => c.orbitAltKm === 550 && c.inclDeg === 53.16 && c.ngsoStat === true), cases[0] && `${cases[0].orbitAltKm} km / ${cases[0].inclDeg}°`);
+  ok('读数行写的是这条轨道', /轨道 550 km \/ 53\.2°/.test(I.ngso.rain.cdfInfo) && !/1200/.test(I.ngso.rain.cdfInfo), I.ngso.rain.cdfInfo);
+  ok('「取雨衰分布」复用在飞的那次载入，不另发', nLoads('starlink') === 1);
+
+  // 干扰星座载不成：记下原因（表里出「载入失败」，不再永远「加载中…」）
+  await release('oneweb', { ok: false, error: '星座「oneweb」星历不可用（本地无缓存且无内置快照）' });
+  ok('载不成的组记原因、不进统计', I.groupErrs.value.oneweb === '星座「oneweb」星历不可用（本地无缓存且无内置快照）' && !I.groupStats.value.oneweb);
+
+  // Walker 档：按手填的高度 / 倾角——哪怕 group 里还留着一个已载入统计的星座（旧实现不分来源，取的是 Starlink）
+  cases.length = 0;
+  I.ngso.wanted.source = 'walker'; I.ngso.wanted.altKm = 800; I.ngso.wanted.incl = 60;
+  await tick();
+  await I.loadRainCdf();
+  ok('Walker 档按手填轨道 800 km / 60°（不拿残留星座的统计顶替）', cases.length === 12 && cases.every((c) => c.orbitAltKm === 800 && c.inclDeg === 60));
+
+  // 星历档选了个载不成的组：如实报，不开算
+  cases.length = 0;
+  I.ngso.wanted.source = 'group'; I.ngso.wanted.group = 'gone';
+  await tick();
+  const p2 = I.loadRainCdf();
+  await tick();
+  await release('gone', { ok: false, error: '自定义星历组已不存在' });
+  await p2;
+  ok('载不成：报「载入失败：原因」且不开算', cases.length === 0 && I.msg.value === '载入失败：自定义星历组已不存在', I.msg.value);
+  ok('换组时监听补载与「取雨衰分布」的等待共用一次载入', nLoads('gone') === 1);
+
+  // 撤销 / 表格里改来源让某行指向一个组：监听自己补载（不靠下拉 @change）
+  I.ngso.interferers[0].group = 'kuiper';
+  await tick(); await tick();
+  ok('★ 干扰星座行改指向新组 → 自动补载', nLoads('kuiper') === 1);
+  // 用户在下拉里选同一组（ensureGroup）：与在飞的补载共用一次，载完照常出读数
+  const e1 = I.ensureGroup('kuiper');
+  await tick();
+  ok('ensureGroup 复用在飞的补载', nLoads('kuiper') === 1);
+  await release('kuiper', okStats('kuiper'));
+  await e1;
+  ok('载完：统计到位、读数照常', !!I.groupStats.value.kuiper && /星座「kuiper」已载入 60 颗/.test(I.msg.value), I.msg.value);
+  // 「联网刷新」照发（要的就是重取）
+  const e2 = I.ensureGroup('starlink', true);
+  await tick();
+  ok('联网刷新另发一次（online）', nLoads('starlink', true) === 1);
+  await release('starlink#on', okStats('starlink'));
+  await e2;
+  // 载入失败过的组在 applyState 时重试（显式补载只跳过已有统计的组）
+  I.ngso.wanted.group = 'oneweb';
+  await tick();
+  ok('载入失败过的组：再被引用时重试', nLoads('oneweb') === 2);
+  await release('oneweb', okStats('kuiper'));
+  ok('重试成功：原因清掉、统计到位', !('oneweb' in I.groupErrs.value) && !!I.groupStats.value.oneweb);
+  delete globalThis.window;
+}
+
+// ═══ 窗口层：切配置清结果、在途回包按代次丢弃（体检 2026-10-16 第二节 #18②）═══
+// 配置切走后上一份的结果、在本站取的 XPD、雨衰分布不能挂在新配置下（两份同参时「输入已变」都不亮）；
+// 切走时还在算的那一次，回来也不认（NGSO 扫描另让主进程停算）。
+{
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  const held = [];
+  let hold = false, cancels = 0, ngsoDone = null;
+  const reply = (v) => (hold ? new Promise((res) => held.push(() => res(v))) : Promise.resolve(v));
+  globalThis.window = {
+    addEventListener: () => {},
+    api: {
+      interference: {
+        asi: () => reply({ ok: true, downlink: { ciDb: 20, sources: [] }, uplink: { ciDb: 25, sources: [] } }),
+        xpi: () => reply({ ok: true, result: { xpiDb: 18, terms: [] } }),
+        xpiTerm: async () => ({ ok: true, term: { db: 30 } }),
+        ngsoEstimate: async () => ({ ok: true, work: 10 }),
+        ngsoStart: () => reply({ ok: true, token: 7, T: 10 }),
+        ngsoCancel: async () => { cancels++; return true; },
+        onNgsoProgress: () => {}, onNgsoDone: (fn) => { ngsoDone = fn; },
+        groups: async () => ({ ok: true, groups: [] })
+      },
+      rainAttenuation: { computeBatch: (cs) => reply(cs.map(() => ({ totalAttenItu: 1, rainNoiseTemp: 20, elevation: 40 }))) }
+    }
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const { useInterference } = await import('../../../src/ci/useInterference.js?switch-config');
+  const I = useInterference();
+  const st = () => I.stale.value;
+
+  await I.computeAsi(); await I.computeXpi();
+  I.xpi.satGrdRatioDb = 21.5; I.xpi.satGrdDetail = { xpdDb: 21.5, at: '[]' };
+  I.ngso.rain.cdf = [{ pct: 1, attenDb: 1 }]; I.ngso.rain.cdfInfo = 'x';
+  I.clearResults();
+  ok('★ 切配置：各页结果、本站处 XPD、雨衰分布全清', !I.asi.result && !I.xpi.result && I.xpi.satGrdRatioDb === '' && !I.xpi.satGrdDetail
+    && !I.cci.result && !I.cci.field && !I.ngso.result && !I.ngso.rain.cdf && I.ngso.rain.cdfInfo === '');
+  ok('「输入已变」随之熄灭、读数行清空', !st().asi && !st().xpi && !st().ngso && I.msg.value === '');
+
+  // C/ASI 在途：切走后回包丢弃
+  hold = true;
+  const pa = I.computeAsi();
+  I.clearResults();
+  held.shift()(); await pa;
+  ok('切走时在算的 C/ASI，回来不落到新配置', !I.asi.result && I.busy.value === false);
+
+  // 雨衰分布在途（Walker 档）：同上
+  I.ngso.wanted.source = 'walker';
+  const pr = I.loadRainCdf();
+  await tick();
+  I.clearResults();
+  held.shift()(); await pr;
+  ok('切走时在取的雨衰分布，回来不落到新配置', !I.ngso.rain.cdf && I.busy.value === false);
+
+  // NGSO 扫描在跑：停算、令牌作废，迟到的结果不认
+  hold = false;
+  await I.computeNgso();
+  ok('扫描已在跑', I.busy.value === true);
+  I.clearResults();
+  ok('★ 切配置时 NGSO 扫描：让主进程停算、忙态解除', cancels === 1 && I.busy.value === false);
+  ngsoDone({ token: 7, ok: true, result: { warnings: [], elapsedMs: 1, samples: 10 } });
+  ok('迟到的扫描结果不认', !I.ngso.result);
+
+  // 启动途中切走（令牌还没到手）：回来就停、不认
+  hold = true;
+  const pn = I.computeNgso();
+  await tick(); await tick();
+  I.clearResults();
+  held.shift()(); await pn;
+  ok('启动途中切走：启动回包一到就停算、忙态解除', cancels === 2 && I.busy.value === false);
+  ngsoDone({ token: 7, ok: true, result: { warnings: [], elapsedMs: 1, samples: 10 } });
+  ok('启动途中切走：之后的结果也不认', !I.ngso.result);
+  delete globalThis.window;
+}
+
+// ═══ 窗口层：五张输入表的撤销栈不跨配置（src/ci/ciInputGrids.js 的 clearHistory；体检 2026-10-16 第二节 #18②）═══
+// 网格不随配置重建，栈在闭包里：在 A 改了干扰星表、切到 B 后按 Ctrl+Z，B 的表被整张换成 A 的行并自动存盘。
+{
+  const { reactive } = await import('vue');
+  const { useCiGrid, SRC_COLS } = await import('../../../src/ci/ciInputGrids.js');
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
+  const rows = reactive([]);
+  const reset = (names) => rows.splice(0, rows.length, ...names.map((n, i) => ({ _id: 'r' + n + i, name: n, enabled: true })));
+  const mkGrid = () => {
+    const warn = console.warn; console.warn = () => {};      // 组件外调用的生命周期钩子会告警，与本测无关
+    try { return useCiGrid({ gridId: 'ci-src-test', list: () => rows, cols: SRC_COLS, add: () => { rows.push({ _id: 'n' + rows.length, name: 'N', enabled: true }); return rows[rows.length - 1]; }, remove: () => {} }); }
+    finally { console.warn = warn; }
+  };
+  const key = (k) => ({ key: k, ctrlKey: true, preventDefault() {} });
+  const names = () => rows.map((r) => r.name).join(',');
+
+  reset(['A1', 'A2']);
+  const g0 = mkGrid();
+  g0.append();                                               // 在 A 里加一行（入撤销栈）
+  reset(['B1']);                                             // 切到 B（applySnapshot 原地换行）
+  g0.g.gridKey(key('z'));
+  ok('对照：不清栈时，切到 B 按 Ctrl+Z 把 A 的行整张换进 B', names() === 'A1,A2', names());
+
+  reset(['A1', 'A2']);
+  const g1 = mkGrid();
+  g1.append();
+  reset(['B1']);
+  g1.clearHistory();                                         // = CiApp.applyState
+  g1.g.gridKey(key('z'));
+  ok('★ applyState 清栈后：Ctrl+Z 不动 B 的表', names() === 'B1', names());
+  g1.g.gridKey(key('y'));
+  ok('重做栈一并清空', names() === 'B1', names());
+}
+
+// ═══ 窗口层：地图「分析 ▸ 干扰分析」不改动现有配置（体检 2026-10-16 第二节 #18③）═══
+// 原地写：当前「北京 干扰分析」被改成上海、随自动命名改名并自动存盘。现由 toolContextState 算出写入后的内容，
+// 与当前不同才另建一份配置承接（CiApp.applyToolContext → createAndOpen）；相同（同一站再点一次）不新建。
+{
+  const fs = require('fs');
+  const { toolContextState, useInterference } = await import('../../../src/ci/useInterference.js?tool-context');
+  globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+  const I = useInterference();
+  const cur = { orbitType: 'CI', ...I.snapshot(), mode: 'cci' };
+  const before = JSON.stringify(cur);
+  const sh = { name: '上海站', lat: 31.2304, lon: 121.4737 };
+  const r1 = toolContextState(cur, { sat: { name: 'APSTAR-6D', slotLon: 134.0004, geo: true }, sites: [sh, { name: '广州', lat: 23.1, lon: 113.3 }] });
+  ok('当前内容一个字都不动', JSON.stringify(cur) === before);
+  ok('站（取第一个）→ 本站站名与站址；GSO 星 → 期望星轨位（两位小数）与星名', r1.state.site.name === '上海站' && r1.state.site.lat === 31.2304 && r1.state.site.lon === 121.4737
+    && r1.state.carrier.satLonDeg === 134 && r1.state.carrier.satName === 'APSTAR-6D', JSON.stringify([r1.state.site, r1.state.carrier]));
+  ok('干扰星表等其余内容原样沿用', JSON.stringify(r1.state.asi) === JSON.stringify(cur.asi) && JSON.stringify(r1.state.ngso) === JSON.stringify(cur.ngso));
+  ok('停在 C/CCI 页时换到 C/ASI；读数行「星名 · 站名」', r1.state.mode === 'asi' && r1.parts.join(' · ') === 'APSTAR-6D · 上海站');
+  const fp = (s) => { const { mode: _m, ...rest } = s; return JSON.stringify(rest); };
+  const r2 = toolContextState(r1.state, { sites: [sh] });
+  ok('同一站再带一次：内容不变（窗口据此不新建配置）', fp(r2.state) === fp(r1.state));
+  ok('没有定点轨位的星、也没带站 → 不动', toolContextState(cur, { sat: { name: 'STARLINK-1', slotLon: null } }) === null);
+  // 窗口侧：只经 createAndOpen 承接，不再原地写响应式的 site / carrier
+  const app = fs.readFileSync(new URL('../../../src/ci/CiApp.vue', import.meta.url), 'utf8');
+  const body = (app.match(/async function applyToolContext\(c\) \{[\s\S]*?\n\}\n/) || [''])[0];
+  ok('CiApp.applyToolContext：内容不同才 createAndOpen 另建，且不原地写 site / carrier',
+    /fingerprintOf\(hit\.state\) !== fingerprintOf\(cur\)/.test(body) && /createAndOpen\(\{ state: hit\.state, nameAuto: true \}\)/.test(body)
+    && !/(^|[^.\w])(site|carrier)\.\w+\s*=[^=]/.test(body), body.slice(0, 80));
+  const apply = (app.match(/function applyState\(st\) \{[\s\S]*?\n\}\n/) || [''])[0];
+  ok('CiApp.applyState：清五张表的撤销栈、清结果、补载星座统计',
+    /for \(const g of \[srcGrid, explGrid, peerGrid, ptGrid, ngGrid\]\) g\.clearHistory\(\)/.test(apply) && /I\.clearResults\(\)/.test(apply) && /I\.refreshGroupStats\(\)/.test(apply));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

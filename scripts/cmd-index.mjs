@@ -22,6 +22,7 @@ const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..'
 export const SOURCES = [
   { file: 'src/pages/ConstellationMap3D.vue', view: 'auto' },
   { file: 'src/components/SatCovPanel.vue', view: 'satcov' },
+  { file: 'src/components/BeamMapPanel.vue', view: 'gxt' },
   { file: 'src/components/SettingsModal.vue', view: 'settings' }
 ]
 

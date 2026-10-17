@@ -40,6 +40,10 @@ export const FIELD_GROUPS = [
     key: 'station', title: '地球站', icon: 'dish',
     fields: [
       { key: 'antennaDiameter', rxKey: 'rxAntennaDiameter', label: '天线口径', tip: '收发共用同一面天线：口径一致（天线效率按收发频段分设）', side: 'common', unit: 'm', type: 'num', min: 0.1, max: 50, def: '6.2', target: 'link' },
+      // 跟踪方式与残差（A-01）：同一面天线收发共用（rxKey＝收信站侧引擎键名）。卫星倾斜运行 / 有保持盒时按它算指向损耗：
+      // 固定 = 对准日平均指向不动，偏离随卫星走；步进 / 程控 / 单脉冲 = 跟着卫星走，偏离按跟踪残差计（utils/geoTrack.js）
+      { key: 'trackMode', rxKey: 'rxTrackMode', label: '跟踪方式', tip: '固定：对准日平均指向不动，卫星倾斜运行 / 在保持盒里走动时偏离随之变化；步进 / 程控 / 单脉冲：天线跟着卫星走，偏离按跟踪残差计', side: 'common', type: 'select', options: ['固定', '步进', '程控', '单脉冲'], def: '固定', target: 'link' },
+      { key: 'trackResidual', rxKey: 'rxTrackResidual', label: '跟踪残差', tip: '跟踪方式为步进 / 程控 / 单脉冲时的指向残差；指向损耗按高斯主瓣 12·(θ/θ3dB)² 计', side: 'common', unit: '°', type: 'num', min: 0, max: 5, def: '0', target: 'link', showIf: (f) => !!f.trackMode && f.trackMode !== '固定' },
       { key: 'antennaEfficiency', label: '天线效率', side: 'tx', unit: '%', type: 'num', min: 0, minEx: true, max: 100, def: '65', target: 'link' },
       // 功放功率是发射链硬件属性，随站型入库（对齐再生式工作点 opPowerW 的归属）：
       // 「设置功放功率」计算方式逐行取所选站型的此值反推余量。target:'op' 不进引擎参数，App 换算成 opt.powerW。
@@ -70,6 +74,11 @@ export const FIELD_GROUPS = [
       { key: 'rxCenterFrequency', label: '下行频率', tip: '下行中心频率（卫星→收信站）', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '12.5', target: 'link' },
       { key: 'downlinkPolarization', label: '下行极化', tip: '下行极化方式', type: 'select', options: ['V', 'H', 'L', 'R'], def: 'H', target: 'link' },
       { key: 'orbitPosition', label: '定点轨道经度', tip: '卫星定点轨道经度', unit: '°E', type: 'num', min: -180, max: 360, def: '110.5', target: 'sat' },
+      // 倾斜运行 / 保持盒（A-01）：卫星的日内运动。引擎按两站各自的天线与跟踪方式算一天的视向，日最大指向损耗计入链路
+      // （packages/core/utils/geoTrack.js）。三项全 0 = 定点：引擎一个字不动。
+      { key: 'geoIncl', label: '倾角', tip: '轨道倾角：星下点每天南北摆动 ±i、画「8」字（二体同步轨道）。0 = 定点', unit: '°', type: 'num', min: 0, max: 15, def: '0', target: 'sat' },
+      { key: 'geoEcc', label: '偏心率', tip: '轨道偏心率：每天东西摆动 ±2e rad、径向 ±a·e（近地点幅角取 0，东西与南北摆动同相，日内偏离最大）。0 = 正圆', type: 'num', min: 0, max: 0.05, def: '0', target: 'sat' },
+      { key: 'geoBoxEW', label: '东西保持 ±', tip: '东西位保窗口半宽：按当日平均经度落在盒边（两边各算一遍取差的那边）计；固定天线对准盒心那一天的日平均指向', unit: '°', type: 'num', min: 0, max: 5, def: '0', target: 'sat' },
       { key: 'sfdRef', label: 'SFDref', tip: '饱和通量密度参考值 (Saturation Flux Density)', unit: 'dBW/m²', type: 'num', def: '-84', target: 'sat' },
       { key: 'sfdGtRef', label: 'G/Tref', tip: '参考点卫星品质因数 G/T', unit: 'dB/K', type: 'num', def: '0', target: 'sat' },
       { key: 'transponderBandwidth', label: 'Tpdr.带宽', tip: '转发器带宽 (Transponder Bandwidth)', unit: 'MHz', type: 'num', min: 0, minEx: true, def: '36', target: 'sat' },

@@ -288,6 +288,13 @@ contextBridge.exposeInMainWorld('api', {
     xpi: (req) => ipcRenderer.invoke('ci:xpi', req),
     xpiTerm: (req) => ipcRenderer.invoke('ci:xpiTerm', req),
     cciPoint: (req) => ipcRenderer.invoke('ci:cciPoint', req),
+    // C/CCI 复用方案：方向图概要 · 取值点表（同步）· 场图作业（start 只启动，进度 / 结果经两个订阅推回）
+    cciInfo: (req) => ipcRenderer.invoke('ci:cciInfo', req),
+    cciPoints: (req) => ipcRenderer.invoke('ci:cciPoints', req),
+    cciStart: (req) => ipcRenderer.invoke('ci:cciStart', req),
+    cciCancel: () => ipcRenderer.invoke('ci:cciCancel'),
+    onCciProgress: (cb) => ipcRenderer.on('ci:cciProgress', (_e, p) => cb(p)),
+    onCciDone: (cb) => ipcRenderer.on('ci:cciDone', (_e, p) => cb(p)),
     // NGSO 时变扫描：start 只负责启动，进度/结果经下面两个订阅推回（长任务不阻塞窗口）
     ngsoEstimate: (req) => ipcRenderer.invoke('ci:ngsoEstimate', req),
     ngsoStart: (req) => ipcRenderer.invoke('ci:ngsoStart', req),
@@ -324,8 +331,9 @@ contextBridge.exposeInMainWorld('api', {
     close: (id) => ipcRenderer.invoke('perfwin:close', id),
     setTitle: (id, title) => ipcRenderer.invoke('perfwin:setTitle', id, title),
     list: () => ipcRenderer.invoke('perfwin:list'),
-    onAct: (cb) => ipcRenderer.on('perfwin:act', (_e, m) => cb(m)),
-    onClosed: (cb) => ipcRenderer.on('perfwin:closed', (_e, m) => cb(m)),
+    // 返回退订函数：主窗口页面卸载 / 重挂载（切 MSAA）时宿主摘掉，否则死页面的宿主一直收着弹窗操作
+    onAct: (cb) => subscribe('perfwin:act', (_e, m) => cb(m)),
+    onClosed: (cb) => subscribe('perfwin:closed', (_e, m) => cb(m)),
     self: () => ipcRenderer.invoke('perfwin:self'),
     act: (msg) => ipcRenderer.invoke('perfwin:act', msg),
     onMsg: (cb) => ipcRenderer.on('perfwin:msg', (_e, m) => cb(m))
@@ -470,9 +478,14 @@ contextBridge.exposeInMainWorld('api', {
     reveal: (p) => ipcRenderer.invoke('video:reveal', p),
     openPath: (p) => ipcRenderer.invoke('video:openPath', p)
   },
-  // PFD Mask 生成（ITU-R S.1503）：参数进、XML 文本与统计出；落盘走 exportFile / exportFiles
+  // PFD Mask 生成（ITU-R S.1503）：主进程 worker 里算，回统计与文件清单（XML 字节留在主进程，导出时 pfdFiles 按所选
+  // 文件划分取一次，再走 exportFiles 落盘）；进度经 onPfdProgress 推回（返回退订函数）；pfdCancel 中止计算，
+  // 传 { discard: true } 再丢掉主进程缓存的结果（切配置时）
   pfdMask: { open: () => ipcRenderer.invoke('pfd:open') },
   pfdGenerate: (params) => ipcRenderer.invoke('pfd:generate', params),
+  pfdCancel: (opt) => ipcRenderer.invoke('pfd:cancel', plainData(opt)),
+  pfdFiles: (q) => ipcRenderer.invoke('pfd:files', plainData(q)),
+  onPfdProgress: (cb) => subscribe('pfd:progress', (_e, p) => cb(p)),
   // 批量落盘到一个目录（mask 分文件 + 参数存档）
   exportFiles: (payload) => ipcRenderer.invoke('file:saveMany', payload),
   pdfFonts: () => ipcRenderer.invoke('font:pdf'),
@@ -481,7 +494,6 @@ contextBridge.exposeInMainWorld('api', {
     pack: (lvl, iso) => ipcRenderer.invoke('adm:pack', lvl, iso)
   },
   omm: {
-    load: (group, online) => ipcRenderer.invoke('omm:load', group, online),
     positions: (group, iso) => ipcRenderer.invoke('omm:positions', group, iso),
     csv: (group, opts) => ipcRenderer.invoke('omm:csv', group, opts),
     list: () => ipcRenderer.invoke('omm:list'),
@@ -576,7 +588,7 @@ contextBridge.exposeInMainWorld('api', {
     index: () => ipcRenderer.invoke('coverageGxt:index'),
     get: (file) => ipcRenderer.invoke('coverageGxt:get', file),
     raw: (file) => ipcRenderer.invoke('coverageGxt:raw', file),
-    open: () => ipcRenderer.invoke('coverageGxt:open'),
+    open: (opts) => ipcRenderer.invoke('coverageGxt:open', opts),   // opts = { any, bytes }，见 register.js
     addSat: (name, lon) => ipcRenderer.invoke('coverageGxt:addSat', name, lon),
     renameSat: (satId, name) => ipcRenderer.invoke('coverageGxt:renameSat', satId, name),
     removeSat: (satId) => ipcRenderer.invoke('coverageGxt:removeSat', satId),

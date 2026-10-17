@@ -29,6 +29,7 @@
 // 纯 JS、无 IO、无 Vue/DOM，可离线单测。
 
 const lc = require('./linkCalculator.js');
+const { cloudMassAbsorptionKL } = require('./itu/p840.js');   // P.840-9 式(12) K_L（瞬时云衰与统计云衰同一系数）
 const { getIsothermHeight } = require('./isothermHeight.js');
 const met = require('./metSnapshot.js');
 
@@ -192,8 +193,9 @@ function computeInstant(p) {
   const d = met.derive(p.met, altKm);
   const warn = d.warn.slice();
 
-  // ① 气体吸收（P.676-13）：三个大气参数全部换成实测值
-  const gasDb = lc.calculateAtmosphericAttenuation(freq, elevation, d.psHpa, d.tsK, d.rho);
+  // ① 气体吸收（P.676-13 瞬时法：θ ≥ 5° Annex 2 §1.1 + §2.1，θ < 5° Annex 1 分层射线、廓线锚定在站高）：
+  //    三个大气参数全部换成实测值
+  const gasDb = lc.calculateAtmosphericAttenuation(freq, elevation, d.psHpa, d.tsK, d.rho, { hsKm: altKm });
 
   // ② 雨衰（P.838 比衰减 × 路径模型）
   const h0 = getIsothermHeight(lat, lon);
@@ -273,8 +275,8 @@ function computeInstant(p) {
     cloudDb = lc.calculateCloudAttenuation(freq, elevation, Math.max(1, num(p.cloudP, 1)), lat, lon);
   } else if (cloudMode === 'manual' || cloudMode === 'measured') {
     const L = Math.max(0, num(p.cloudLKgM2, 0));
-    // P.840 §3：A_c = L·Kl(f, T=273.15K) / sinθ（云内温度取 0 °C，与 P.840 附注一致）
-    cloudDb = L * lc.cloudSpecificAttenuation(freq, 273.15) / Math.sin(elevation * D2R);
+    // P.840-9 §3.1 式(11)(12)：A_c = K_L(f)·L / sinθ，K_L = K_l(f, 273.75 K) × 修正因子（与统计分支同一系数）
+    cloudDb = L * cloudMassAbsorptionKL(freq) / Math.sin(elevation * D2R);
   }
 
   // ④ 闪烁（P.618-14 §2.4.1）：N_wet 走实测。

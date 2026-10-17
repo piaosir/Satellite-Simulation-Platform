@@ -1405,6 +1405,10 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
       // 标注一律用波束名（自定义或默认「波束 N」）—— 不再用「天线名+波束名」形式
       const L = buildBeamLayer(c, cfg, beamFor(c, cfg, c.beams[bi], dens), beamName(c, bi), withLabels, glMesh)
       L.id = `${key}#${bi}`   // 稳定层 id（天线键|波束序号）：渲染层据此做拖拽增量更新（只重建聚焦天线层）
+      // 填充 / 线不透明度是这根天线自己的（PA 里逐天线存）：层上带着，渲染端按层取 —— 不能用面板态 s 的那份整场套
+      //（那是聚焦天线的值：多天线同显时一换聚焦，所有天线的透明度一起跳到新聚焦那根）
+      L.alpha = Number.isFinite(+cfg.alpha) ? +cfg.alpha : 0.78
+      L.lineAlpha = Number.isFinite(+cfg.lineAlpha) ? +cfg.lineAlpha : 1
       if (L.bore) L.bore.satShown = satShown
       return L
     })
@@ -2405,8 +2409,12 @@ export function useGrdCoverage(getScene, getFlat, isFlat = () => false, hooks = 
   watch(() => s.levels, () => { persistActive(); scheduleRecomputeActive() }, { deep: true })   // 合帧：挑色高频连发不再卡（persistActive 同步保证状态最新，重算合到下一帧）
   watch(() => s.beamsToPlot, () => { persistActive(); recompute() }, { deep: true })   // Beams To Plot 多选变更 → 回存 + 重绘
   watch(active, () => { beamQuery.value = '' })   // 切换聚焦天线：清空波束筛选词（波束数/含义随天线变）
-  watch(() => s.alpha, (a) => { persistActive(); const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageFieldAlpha(a); if (fl) fl.setFieldAlpha(a) })
-  watch(() => s.lineAlpha, (a) => { persistActive(); const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageLineAlpha(a); if (fl) fl.setFieldLineAlpha(a) })
+  // 填充 / 线不透明度（逐天线，见 buildLayer 的 L.alpha / L.lineAlpha）：滑杆热路径只改【聚焦天线】那几层，其余天线各留各的。
+  // 换聚焦时这两个 watcher 也会触发（applySettings 载入了新天线的值）：只是把新聚焦那几层设成它们自己的值，画面不动。
+  // 聚焦天线没勾选显示时没有层可改（原先照样整场一刀切，改一根没上图的天线会把画面上别的天线一起改掉）。
+  const activeLayerIds = () => (selected.value.includes(active.value) ? (s.beamsToPlot || []).map((bi) => `${active.value}#${bi}`) : [])
+  watch(() => s.alpha, (a) => { persistActive(); const ids = activeLayerIds(); if (!ids.length) return; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageFieldAlpha(a, ids); if (fl) fl.setFieldAlpha(a, ids) })
+  watch(() => s.lineAlpha, (a) => { persistActive(); const ids = activeLayerIds(); if (!ids.length) return; const sc = getScene(), fl = flatField(); if (sc) sc.setCoverageLineAlpha(a, ids); if (fl) fl.setFieldLineAlpha(a, ids) })
   // 切换 boresight 类型：把当前指向无缝换算到另一种表示，避免跳变（geo→azel 取该地表点的 az/el；azel→geo 取落地点）
   watch(() => s.boreType, (nt, ot) => {
     if (_muteSync || _dragging || nt === ot) return   // 拖拽自行管理指向，不在此换算

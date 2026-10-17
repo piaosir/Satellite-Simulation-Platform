@@ -1,0 +1,43 @@
+//! id: geojson
+//! name: ⟪GeoJSON · 等值线与波束中心|GeoJSON · Contours and beam centres⟫
+//! ext: geojson
+//! match: *.geojson, *.json
+//! sniff: "type"\s*:\s*"Feature
+//zh GeoJSON（RFC 7946）：Polygon / LineString 为等值线（Polygon 的洞按同档内环导入），Point 为波束中心。
+//zh 按属性 satellite / beam / band / type 归成波束、level 为电平（本软件导出的 GeoJSON 原样读回）；
+//zh 第三方文件属性名不同时改下面 KEYS 里的候选名即可。协调区 Polygon、标记与航迹不是波束，跳过。
+//en GeoJSON (RFC 7946): Polygon / LineString features are contours (polygon holes become inner rings of the same level), Points are beam centres.
+//en Features are grouped into beams by satellite / beam / band / type and level is the contour level (GeoJSON exported by this software reads back as is);
+//en for third-party files adjust the candidate names in KEYS. Coordination polygons, markers and trajectories are not beams and are skipped.
+
+// ⟪属性名不分大小写|attribute names are matched case-insensitively⟫
+const KEYS = {
+  satellite: ['satellite', 'satname', 'sat', '卫星'],
+  orbitLon: ['orbitlon', 'satlon', 'longitude', '轨位'],
+  beam: ['beam', 'beamname', 'name', '波束'],
+  band: ['band', '频段'],
+  type: ['type', '类型'],
+  level: ['level', 'gain', 'value', 'eirp', 'gt', '电平'],
+}
+const get = (p, k) => { for (const n of KEYS[k]) if (p[n] != null && p[n] !== '') return p[n] }
+const lower = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k.toLowerCase(), v]))
+const SKIP = new Set(['polygon', 'point', 'station', 'trajectory'])
+
+const byKey = new Map()
+for (const f of files) {
+  for (const ft of geojson(f)) {
+    const p = lower(ft.props)
+    if (SKIP.has(p.kind)) continue
+    const sat = String(get(p, 'satellite') ?? f.base)
+    const name = String(get(p, 'beam') ?? f.base)
+    const band = String(get(p, 'band') ?? '')
+    const type = String(get(p, 'type') ?? 'EIRP')
+    const key = [sat, name, band, type].join('\u0001')
+    if (!byKey.has(key)) byKey.set(key, { satellite: sat, orbitLon: num(get(p, 'orbitLon')), band, type, name, peaks: [], contours: [] })
+    const b = byKey.get(key)
+    if (ft.type === 'Point') b.peaks.push({ lon: ft.point[0], lat: ft.point[1] })
+    else if (ft.type === 'Polygon') for (const ring of ft.rings) b.contours.push({ level: num(get(p, 'level')), points: ring })
+    else if (ft.type === 'LineString') b.contours.push({ level: num(get(p, 'level')), points: ft.points })
+  }
+}
+return [...byKey.values()]

@@ -6,16 +6,17 @@
 //      lib 要被提到包级——那正是 v2 时代被 normItems 抹掉、导致对端静默算错的那份数据）；
 //   ② 依赖闭包与引擎的解析顺序一致：空引用 = 库里第一份、未知 id 先按名字兜底再落第一份，
 //      「打包进去的那一条」必须正是「对端会算的那一条」；
-//   ③ 打包净化：本机资源指针（GEO/NGSO 的 grd、再生式的 ngsoSat.folder）一律剥掉，且
-//      ngsoSat.mode 从 'tree' 降为 'manual'——否则对端会拿到「轨道号称来自天线树、树里却没这颗星」
-//      的破状态，NGSO 那条 grd.satFolder 非空 ⟺ mode==='tree' 的不变式也会被打破；
+//   ③ 打包净化：本机资源指针（GEO 的 grd、NGSO / 再生式的 ngsoSat.folder）一律剥掉；ngsoSat 的取星来源
+//      由 'tree' 改标 'search'（有轨道根数时，shareNgsoSat）——轨道是自包含数据，对端照样按它解几何。
+//      ★ 不能降成 'manual'：两窗只认「mode ≠ manual 且有 orbit」才按轨道解，降了对端就按表单圆轨道算，
+//        同一个包两台机器两组数（2026-10-16 体检第二档：GEO 北京→北京 对端 40586 km @10° vs 发送方 37524 km @43.4°）；
 //   ④ 宽松指纹只放过「被我们主动剥掉的那几项」：同参数同轨道 ⇒ 复用本机那颗星（沿用本机方向图），
 //      参数或轨道不同 ⇒ 必须新建，绝不能并成一条；
 //   ⑤ 计划即落盘：planImport 报的复用/新增/加序号，adoptLib 必须一字不差地执行；
 //   ⑥ 体制不匹配的包一律拒收（而不是导进去再被过滤掉，让用户对着空列表发懵）。
 import {
   encodeShare, decodeShare, bundleFileText, normalizeBundle, makeBundle, describeBundle, legacyItemsOf,
-  resolveRefs, resolveRefId, lockedRefsOf, packEntry, packLib, planImport, adoptLib, pathOf, strictFp, looseFp, emptyLib
+  resolveRefs, resolveRefId, lockedRefsOf, packEntry, packLib, planImport, adoptLib, pathOf, strictFp, looseFp, emptyLib, shareNgsoSat
 } from '../../../src/shared/lbShare.js'
 import { stableStringify } from '../../../src/shared/configDirty.js'
 
@@ -45,20 +46,22 @@ const geoSatSpec = (arr) => mkSpec('sat', arr, {
   sanitize: (e) => ({ ...e, grd: blankGrd() }),
   makeNew: () => ({ id: 'sat_n' + (++seq), name: '', form: {}, grd: blankGrd() })
 })
-// NGSO：卫星条目带 ngsoSat（轨道来源）+ grd；打包时清空 grd 并把 mode:'tree' 降为 'manual'
-const blankNs = () => ({ mode: 'manual', orbit: null, name: '', noradId: null })
+// NGSO：卫星条目带 ngsoSat（轨道来源；v1.4.5 起没有 grd）；打包时 folder 剥掉、取星来源按 shareNgsoSat 改标（与 NgsoLinkBudgetApp 同一行）
+const blankNs = () => ({ mode: 'manual', orbit: null, name: '', noradId: null, folder: '' })
 const ngsoSatSpec = (arr) => mkSpec('sat', arr, {
-  keys: ['ngsoSat', 'grd'],
-  pack: (c) => ({ ...baseEntry(c), ngsoSat: c.ngsoSat || blankNs(), grd: normGrd(c.grd) }),
-  sanitize: (e) => ({ ...e, grd: blankGrd(), ngsoSat: { ...(e.ngsoSat || blankNs()), mode: (e.ngsoSat && e.ngsoSat.mode) === 'tree' ? 'manual' : ((e.ngsoSat && e.ngsoSat.mode) || 'manual') } }),
-  makeNew: () => ({ id: 'sat_n' + (++seq), name: '', form: {}, ngsoSat: blankNs(), grd: blankGrd() })
+  keys: ['ngsoSat'],
+  pack: (c) => ({ ...baseEntry(c), ngsoSat: c.ngsoSat || blankNs() }),
+  sanitize: (e) => ({ ...e, ngsoSat: shareNgsoSat(e.ngsoSat || blankNs()) }),
+  makeNew: () => ({ id: 'sat_n' + (++seq), name: '', form: {}, ngsoSat: blankNs() })
 })
-// 再生式：树取星的 folder 在 ngsoSat 里
+// 再生式：同一个 shareNgsoSat（窗口里先 normNgsoSat 补齐字段）
 const regenSatSpec = (arr) => mkSpec('sat', arr, {
   keys: ['ngsoSat'],
-  pack: (c) => ({ ...baseEntry(c), ngsoSat: c.ngsoSat || { mode: 'manual', orbit: null, name: '', noradId: null, folder: '' } }),
-  sanitize: (e) => ({ ...e, ngsoSat: { ...(e.ngsoSat || {}), folder: '', mode: (e.ngsoSat && e.ngsoSat.mode) === 'tree' ? 'manual' : ((e.ngsoSat && e.ngsoSat.mode) || 'manual') } })
+  pack: (c) => ({ ...baseEntry(c), ngsoSat: c.ngsoSat || blankNs() }),
+  sanitize: (e) => ({ ...e, ngsoSat: shareNgsoSat(e.ngsoSat || {}) })
 })
+// 两窗「按轨道解几何」的判据（NGSO isSatSelected / 再生式 orbitSpecOf 同口径）
+const usesOrbit = (ns) => !!(ns && ns.mode !== 'manual' && ns.orbit)
 
 console.log('=== 链路预算分享包：编解码 / 闭包 / 并库计划 ===\n')
 
@@ -144,15 +147,24 @@ console.log('=== 链路预算分享包：编解码 / 闭包 / 并库计划 ===\n
   ok('GEO：方向图匹配被清空', g.grd.satFolder === '' && g.grd.eirpKey === '' && g.grd.gtKey === '')
   ok('GEO：参数照带', g.form.orbitPosition === '110.5' && g.name === '中星6D')
 
-  const ngSat = { id: 'sat1', name: 'QIANFAN-1', form: { frequencyBand: 'Ku' }, grd: { satFolder: 'lb:sat1', eirpKey: 'A|0', gtKey: '' }, ngsoSat: { mode: 'tree', orbit: { a: 7000, i: 89 }, name: 'QIANFAN-1', noradId: 12345 } }
+  const ngSat = { id: 'sat1', name: 'QIANFAN-1', form: { frequencyBand: 'Ku' }, ngsoSat: { mode: 'tree', orbit: { type: 'omm', meanMotion: 1.0027, incl: 0.05 }, name: 'QIANFAN-1', noradId: 12345, folder: 'grd:3' } }
   const n = packEntry(ngsoSatSpec([ngSat]), ngSat)
-  ok('NGSO：方向图匹配被清空', n.grd.satFolder === '')
-  ok('NGSO：mode 从 tree 降为 manual（守住 grd 非空 ⟺ mode===tree 的不变式）', n.ngsoSat.mode === 'manual')
-  ok('NGSO：轨道/星名/NORAD 是自包含数据，照带', n.ngsoSat.orbit.a === 7000 && n.ngsoSat.noradId === 12345 && n.ngsoSat.name === 'QIANFAN-1')
+  ok('NGSO：本机卫星树指针 folder 被剥掉', n.ngsoSat.folder === '')
+  ok('★ NGSO：树取的星改标 search（不降成 manual）', n.ngsoSat.mode === 'search', n.ngsoSat.mode)
+  ok('★ NGSO：对端仍按这条轨道解几何（mode ≠ manual 且有 orbit）', usesOrbit(n.ngsoSat))
+  ok('NGSO：轨道/星名/NORAD 是自包含数据，照带', n.ngsoSat.orbit.meanMotion === 1.0027 && n.ngsoSat.noradId === 12345 && n.ngsoSat.name === 'QIANFAN-1')
+  ok('NGSO：本机条目不被打包改写', ngSat.ngsoSat.mode === 'tree' && ngSat.ngsoSat.folder === 'grd:3')
 
-  const rgSat = { id: 'sat1', name: '再生星', form: {}, ngsoSat: { mode: 'tree', orbit: { a: 8000 }, name: 'X', noradId: 7, folder: 'grd:9' } }
+  const rgSat = { id: 'sat1', name: '再生星', form: {}, ngsoSat: { mode: 'tree', orbit: { type: 'elements', altKm: 8000 }, name: 'X', noradId: 7, folder: 'grd:9' } }
   const rg = packEntry(regenSatSpec([rgSat]), rgSat)
-  ok('再生式：取星 folder 被清空、mode 降级', rg.ngsoSat.folder === '' && rg.ngsoSat.mode === 'manual' && rg.ngsoSat.orbit.a === 8000)
+  ok('再生式：取星 folder 被清空、改标 search、轨道照带', rg.ngsoSat.folder === '' && rg.ngsoSat.mode === 'search' && rg.ngsoSat.orbit.altKm === 8000 && usesOrbit(rg.ngsoSat))
+
+  // shareNgsoSat 的各档
+  ok('search 星原样标 search', shareNgsoSat({ mode: 'search', orbit: { type: 'omm' }, folder: '' }).mode === 'search')
+  ok('点序列星（ephem 引用）同样带着引用改标 search', (() => { const s = shareNgsoSat({ mode: 'tree', orbit: { type: 'ephem', ref: { groupId: 'g1', key: 'k' } }, folder: 'f' }); return s.mode === 'search' && s.orbit.ref.groupId === 'g1' && s.folder === '' })())
+  ok('树选星还没解出轨道（orbit 空）→ manual（只有表单圆轨道可算）', shareNgsoSat({ mode: 'tree', orbit: null, folder: 'f' }).mode === 'manual')
+  ok('本就是手动轨道 → manual（残留的 orbit 不让它在对端复活）', shareNgsoSat({ mode: 'manual', orbit: { type: 'omm' } }).mode === 'manual')
+  ok('空 / 缺字段 → 手动、folder 空、orbit null', (() => { const s = shareNgsoSat(null); return s.mode === 'manual' && s.folder === '' && s.orbit === null })())
 
   // 打包只收闭包里的那几条
   const arr = [{ id: 'es1', name: 'A', form: { d: '6.2' } }, { id: 'es2', name: 'B', form: { d: '3.7' } }, { id: 'es3', name: 'C', form: { d: '1.2' } }]
@@ -204,10 +216,14 @@ console.log('=== 链路预算分享包：编解码 / 闭包 / 并库计划 ===\n
 
 // ⑤b 宽松指纹的边界：只放过被剥掉的那几项
 {
-  const local = [{ id: 'sat1', name: '本机星', form: { orbitPosition: '110.5' }, ngsoSat: { mode: 'tree', orbit: { a: 7000 }, name: 'A', noradId: 1 }, grd: { satFolder: 'lb:sat1', eirpKey: 'K', gtKey: '' } }]
+  const local = [{ id: 'sat1', name: '本机星', form: { orbitPosition: '110.5' }, ngsoSat: { mode: 'tree', orbit: { a: 7000 }, name: 'A', noradId: 1, folder: 'grd:1' } }]
   const spec = ngsoSatSpec(local)
-  const same = { id: 'S', name: '来包星', form: { orbitPosition: '110.5' }, ngsoSat: { mode: 'manual', orbit: { a: 7000 }, name: 'A', noradId: 1 }, grd: { satFolder: '', eirpKey: '', gtKey: '' } }
+  // 发送方那颗同参数同轨道的星打包出来的样子（folder 剥掉、取星来源改标 search）
+  const same = { id: 'S', name: '来包星', form: { orbitPosition: '110.5' }, ngsoSat: { mode: 'search', orbit: { a: 7000 }, name: 'A', noradId: 1, folder: '' } }
   ok('同参数同轨道 → 宽松命中（不凭空多出一条重复星）', looseFp(spec, local[0]) === strictFp(spec, same))
+  // 本机是星历搜索取的同一颗星：严格指纹就相同，直接复用
+  const searchLocal = { id: 'sat2', name: '本机搜索星', form: { orbitPosition: '110.5' }, ngsoSat: { mode: 'search', orbit: { a: 7000 }, name: 'A', noradId: 1, folder: '' } }
+  ok('本机星历搜索取的同一颗星 → 严格命中', strictFp(spec, searchLocal) === strictFp(spec, same))
   const diffOrbit = { ...same, ngsoSat: { ...same.ngsoSat, orbit: { a: 7200 } } }
   ok('轨道不同 → 宽松也不命中（两颗不同的星，绝不并成一条）', looseFp(spec, local[0]) !== strictFp(spec, diffOrbit))
   const diffForm = { ...same, form: { orbitPosition: '92.2' } }
@@ -215,6 +231,26 @@ console.log('=== 链路预算分享包：编解码 / 闭包 / 并库计划 ===\n
   // 没声明 sanitize 的库（地球站/载波）不启用宽松匹配
   const esSpec = mkSpec('es', [{ id: 'es1', name: 'A', form: { d: '6.2' } }])
   ok('地球站库无 sanitize → 宽松指纹等同严格指纹', looseFp(esSpec, esSpec.arr[0]) === strictFp(esSpec, esSpec.arr[0]))
+}
+
+// ⑤c 树取的星走一趟分享：对端落库的条目照样按轨道解几何（体检第二档：早先对端退成手动圆轨道）
+{
+  const orbit = { type: 'omm', noradId: '37677', meanMotion: 1.0027, ecc: 0.0002, incl: 0.05, raan: 80, argp: 200, ma: 100 }
+  const aLib = [{ id: 'sat1', name: '中星10R', form: { orbitAltitude: '35786' }, ngsoSat: { mode: 'tree', orbit, name: 'ZHONGXING-10R', noradId: '37677', folder: 'grd:7' } }]
+  const bundle = makeBundle({ mod: 'NGSO', configs: [], lib: { es: [], carrier: [], sat: packLib({ sat: ngsoSatSpec(aLib) }, { sat: new Set(['sat1']) }).sat } })
+  const back = decodeShare(encodeShare(bundle))
+  const bLib = []
+  const ctx = { mod: 'NGSO', lib: { es: mkSpec('es', []), carrier: mkSpec('carrier', []), sat: ngsoSatSpec(bLib) }, getConfigs: () => [] }
+  const map = adoptLib(planImport(back, ctx), ctx)
+  const got = bLib.find((c) => c.id === map.sat.sat1)
+  ok('★ 对端落库：取星来源 search、轨道根数逐字段带到', !!got && got.ngsoSat.mode === 'search' && stableStringify(got.ngsoSat.orbit) === stableStringify(orbit))
+  ok('★ 对端按轨道解几何（不退成表单圆轨道）', !!got && usesOrbit(got.ngsoSat))
+  ok('对端不带发送方的卫星树指针', !!got && got.ngsoSat.folder === '')
+  // 对端本机树里也有这颗星（同轨道，挂着它自己的 folder）→ 宽松复用本机那条，不多出「中星10R 2」
+  const cLib = [{ id: 'satX', name: '本机中星10R', form: { orbitAltitude: '35786' }, ngsoSat: { mode: 'tree', orbit, name: 'ZHONGXING-10R', noradId: '37677', folder: 'grd:2' } }]
+  const ctxC = { mod: 'NGSO', lib: { es: mkSpec('es', []), carrier: mkSpec('carrier', []), sat: ngsoSatSpec(cLib) }, getConfigs: () => [] }
+  const planC = planImport(back, ctxC)
+  ok('对端树里有同一颗星 → 宽松复用（沿用本机取星来源）', planC.lib[0].action === 'reuse-loose' && planC.lib[0].targetId === 'satX', planC.lib[0].action)
 }
 
 // ⑥ 体制隔离

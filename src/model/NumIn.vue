@@ -1,8 +1,8 @@
 <script setup>
 // 数字输入（工作台统一件）：草稿字符串 + 失焦 / 回车落值 + 全角归一（shared/num.js）+ 夹取 + Esc 撤回。
 // 为什么不用 v-model.number / type=number：前者在「−」「1.」这类中间态上把值改成 0（memory 输入框跳变陷阱），
-// 后者吃不了全角「－」（读出来是空串）。表单外回车不发 change（memory sat-edit-live-apply 坑 1），故回车在 keydown 里自己落值；
-// 落值只挂失焦 + 回车两处，不再挂 change（change 在失焦时也会发，挂上就是同一次改动提交两遍）。
+// 后者吃不了全角「－」（读出来是空串）。表单外回车不发 change（memory sat-edit-live-apply 坑 1），故回车在 keydown 里交还焦点、
+// 由失焦落值；落值只挂失焦一处，不挂 change（change 在失焦时也会发，挂上就是同一次改动提交两遍）。
 // 同一份量多个写入方（属性面板 / gizmo / 撤销 / 换签 / 驱动参数联动，2026-10-06 任务书 §3.3.3）时的三条规则：
 //   ① 只有本次聚焦内键入过（input 事件）才在失焦 / 回车时提交——点进来又点出去、Tab 穿过，一律不提交；
 //   ② 外部值变了（聚焦中也一样）→ 丢弃草稿、显示新值、清掉「键入过」：失焦时不会把旧草稿写回去（撤销后被写回、换签后写进新文档）；
@@ -58,9 +58,29 @@ function commit() {
   if (n !== props.modelValue) { emit('update:modelValue', n); emit('commit', n) }
 }
 function onInput() { typed = true }
+// 回车 = 落值并交还焦点（失焦处理器落值，只落一次）——同框里其它文字框「回车即失焦」一个口径（体检 2026-10-16 二.22）。
+// 原来回车后焦点留在框里：接着按 Ctrl+Z 撤的是框里的字（框里变回旧值、画面不动），失焦时旧值又被当成一次新改动提交、重做被清；
+// 设计页的方向键微调同样落不到件上（全局快捷键一律不管输入框里的按键）
 function onKey(e) {
-  if (e.key === 'Enter') { commit(); e.target.select && e.target.select() }
+  if (e.isComposing) return   // 输入法组字中的回车 / Esc 归输入法（确认 / 取消组字），不是落值 / 撤回
+  if (e.key === 'Enter') e.target.blur()
   else if (e.key === 'Escape') { typed = false; draft.value = fmt(props.modelValue); e.target.blur() }
+  else if (!typed && isUndoKey(e)) handBack(e)
+}
+const isUndoKey = (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return false
+  const k = String(e.key || '').toLowerCase()
+  return k === 'z' || k === 'y' || e.code === 'KeyZ' || e.code === 'KeyY'
+}
+// 本次聚焦没键入过时的撤销 / 重做归模型：框里没有要撤的输入（浏览器自带的撤销栈只会把框里改回以前键入过的旧值）。
+// 拦下自带的撤销、交还焦点，再把同一组按键交给页面的全局快捷键（工作台 / 装配会话 / 3D 页的撤销都挂在 window 上、只认非输入框目标）
+function handBack(e) {
+  e.preventDefault()
+  e.stopPropagation()
+  e.target.blur()
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {
+    key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, repeat: e.repeat, bubbles: true, cancelable: true
+  }))
 }
 </script>
 

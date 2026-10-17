@@ -4,8 +4,8 @@
 type LonLat = [lon: number, lat: number]
 
 interface Contour {
-  /** ⟪等值线电平。单位见所属波束的 unit（EIRP → dBW，G/T → dB/K，天线方向图 → dBi 或 dB）|Contour level; unit given by the beam's unit (EIRP → dBW, G/T → dB/K, antenna pattern → dBi or dB)⟫ */
-  level: number
+  /** ⟪等值线电平。单位见所属波束的 unit（EIRP → dBW，G/T → dB/K，天线方向图 → dBi 或 dB）；没有数值的环（覆盖边界之类，脚本导入的私有格式常见）为 null|Contour level; unit given by the beam's unit (EIRP → dBW, G/T → dB/K, antenna pattern → dBi or dB); null for rings without a value (coverage boundaries, common in script-imported formats)⟫ */
+  level: number | null
   /** ⟪顶点 [lon, lat]，按原始数据给出（不增删闭合点）|Vertices [lon, lat] as drawn (closing point neither added nor removed)⟫ */
   points: LonLat[]
   /** ⟪首尾点是否重合|Whether the first and last vertices coincide⟫ */

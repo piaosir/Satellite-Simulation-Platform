@@ -8,7 +8,7 @@
 //      三线表档若哪天加了标题条/合并格，「首行 = 表头」就破功，本测试会失败。
 import { createRequire } from 'module'
 import { modcodSheets, modcodSheetNames, standardsFromSheets, MODCOD_COLS, modcodGridCols, setCell, canonModulation, rejectedModulations,
-  cellText, cellClass, cellEditable, emptyRow, autoLabel, isAutoLabel, labelOf } from '../../../src/shared/modcodTable.js'
+  cellText, cellClass, cellEditable, cellTip, emptyRow, autoLabel, isAutoLabel, labelOf } from '../../../src/shared/modcodTable.js'
 import { safeSheetName as sheetNameUi } from '../../../src/shared/gridXlsx.js'
 import fs from 'fs'
 import os from 'os'
@@ -121,7 +121,7 @@ ok('setCell：调制方式大小写归一', (() => {
 })())
 ok('★ setCell：认不出的调制方式一律不写（保留原值，绝不落成默认让引擎按 2 bit/符号算）', (() => {
   const r = { modulation: 'QPSK' }
-  for (const bad of ['乱写', '6PSK', '8APSK', '2QAM', '', '  ', 'QAM']) { setCell(r, 'modulation', bad); if (r.modulation !== 'QPSK') return false }
+  for (const bad of ['乱写', '6PSK', '4APSK', '2QAM', '', '  ', 'QAM']) { setCell(r, 'modulation', bad); if (r.modulation !== 'QPSK') return false }
   return true
 })())
 ok('setCell：门限口径只落 ebno/esno 两值', (() => {
@@ -185,8 +185,10 @@ ok('新建行名字留空（自动名）、扩频增益 1', (() => { const r = e
 
 /* ---- ③c 扩频增益列：只在 Es/N₀ 行开放 ---- */
 const MC = MODCOD_COLS.find((c) => c.key === 'm')
-ok('列序：前 7 列老次序不动、扩频增益紧跟门限、索引殿后',
-  MODCOD_COLS.map((c) => c.key).join(',') === 'label,modulation,fec,rsCode,bandwidthFactor,noiseRatioMode,threshold,m,idx')
+ok('列序：前 7 列老次序不动、扩频增益紧跟门限、索引其后，硬限幅门限（只进 Excel）殿后',
+  MODCOD_COLS.map((c) => c.key).join(',') === 'label,modulation,fec,rsCode,bandwidthFactor,noiseRatioMode,threshold,m,idx,hl')
+ok('网格不出硬限幅那一列（grid:false），Excel 出', !modcodGridCols(() => []).some((c) => c.key === 'hl') &&
+  MODCOD_COLS.some((c) => c.key === 'hl' && c.grid === false))
 ok('屏上对齐：名称列左、其余居中（表头随列）；Excel 那份不带屏上对齐', (() => {
   const g = modcodGridCols(() => [])
   return g[0].align === 'left' && g.slice(1).every((c) => c.align === 'center') &&
@@ -198,8 +200,24 @@ ok('屏上数字列按 fix 定小数位，非数字原文照显', (() => {
   return cellText(r, T) === '-1.20' && cellText(r, B) === '1.05' && cellText(r, MC) === '2.00' && cellText(r, I) === '' &&
     cellText({ threshold: 'abc' }, T) === 'abc' && cellText({ idx: 10 }, I) === '10'
 })())
-ok('9 列合计不超过文件管理对话框的网格宽（817 − 序号列 38）', MODCOD_COLS.reduce((s, c) => s + c.w, 0) <= 817 - 38,
-  String(MODCOD_COLS.reduce((s, c) => s + c.w, 0)))
+ok('网格 9 列合计不超过文件管理对话框的网格宽（817 − 序号列 38）', modcodGridCols(() => []).reduce((s, c) => s + c.w, 0) <= 817 - 38,
+  String(modcodGridCols(() => []).reduce((s, c) => s + c.w, 0)))
+ok('门限格悬停读出硬限幅信道门限（有才出）', (() => {
+  const T = MODCOD_COLS.find((c) => c.key === 'threshold')
+  return cellTip({ threshold: 7.8, hl: 9.38 }, T) === '硬限幅信道 Csat/(N₀Rs) 9.38 dB' && cellTip({ threshold: 7.8, hl: null }, T) === '' &&
+    cellTip({ threshold: 7.8, hl: '' }, T) === '' && cellTip({ threshold: 7.8, hl: 0 }, T) === '硬限幅信道 Csat/(N₀Rs) 0.00 dB'
+})())
+ok('★ Excel 往返：硬限幅那一列写数、导回后按数落库；老表没有这一列照旧导得进', (() => {
+  const s2x = M.listStandards(null).find((s) => s.key === 'DVB-S2X')
+  const sh = modcodSheets([s2x])[0]
+  const hi = MODCOD_COLS.findIndex((c) => c.key === 'hl')
+  const r35 = s2x.rows.findIndex((r) => M.labelOf(r) === '16APSK 3/5')
+  if (sh.rows[r35][hi] !== 9.38 || sh.rows[s2x.rows.findIndex((r) => M.labelOf(r) === 'QPSK 1/4')][hi] !== null) return false
+  const H = MODCOD_COLS.map((c) => c.label + (c.unit ? ' (' + c.unit + ')' : ''))
+  const back = standardsFromSheets([{ name: 'T', rows: [H, ['16APSK 3/5', '16APSK', '3/5', '0.9', 1.05, 'Es/N₀', 7.8, 1, '', 9.38]] }])
+  const old = standardsFromSheets([{ name: 'T', rows: [H.slice(0, 9), ['QPSK 1/4', 'QPSK', '1/4', '0.9', 1.05, 'Es/N₀', -2.35, 1, '']] }])
+  return M.normalizeRows(back[0].rows)[0].hl === 9.38 && M.normalizeRows(old[0].rows)[0].hl === null
+})())
 ok('esno 行可编辑、显示原值；ebno / snr 行不可编辑、显示「—」并灰掉', (() => {
   const e = { noiseRatioMode: 'esno', m: '2' }, b = { noiseRatioMode: 'ebno', m: '2' }, s = { noiseRatioMode: 'snr' }
   return cellEditable(e, MC) && cellText(e, MC) === '2.00' && cellClass(e, MC) === null &&

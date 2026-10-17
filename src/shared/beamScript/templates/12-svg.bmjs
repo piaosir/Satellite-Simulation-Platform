@@ -35,10 +35,10 @@ for (const pg of data.polygons) {
 for (const b of data.beams) {
   for (const c of b.contours) {
     const ring = geo.open(c.points)
-    svg.push(`<path d="${path(ring)}" fill="none" stroke="${c.color}" stroke-width="1.6"><title>${xml.esc(`${b.satellite} ${b.name} ${c.level} ${b.unit}`)}</title></path>`)
+    svg.push(`<path d="${path(ring)}" fill="none" stroke="${c.color}" stroke-width="1.6"><title>${xml.esc(c.level == null ? `${b.satellite} ${b.name}` : `${b.satellite} ${b.name} ${c.level} ${b.unit}`)}</title></path>`)
     const top = ring.reduce((m, q) => (q[1] > m[1] ? q : m), ring[0])
     const [x, y] = p.point(top)
-    svg.push(`<text x="${f1(x)}" y="${f1(y - 4)}" font-size="12" text-anchor="middle" fill="${c.color}" stroke="#ffffff" stroke-width="3" paint-order="stroke">${c.level}</text>`)
+    svg.push(`<text x="${f1(x)}" y="${f1(y - 4)}" font-size="12" text-anchor="middle" fill="${c.color}" stroke="#ffffff" stroke-width="3" paint-order="stroke">${xml.esc(String(c.level ?? b.name))}</text>`)
   }
   for (const k of b.peaks) {
     const [x, y] = p.point([k.lon, k.lat])

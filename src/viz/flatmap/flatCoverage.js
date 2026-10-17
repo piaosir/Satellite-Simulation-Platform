@@ -30,7 +30,7 @@ import { waterLabels } from '../geo/waterNames.js'
 import { chainList, CHAIN_DEF, CHAIN_LABEL_PX } from '../geo/islandChains.js'
 import { seamCrossing } from '../geo/lineGeom.js'
 // 2D 投影（世界平面的定义）—— 出厂等距圆柱，与换投影前逐位相同
-import { makeProjection, DEFAULT_PROJECTION, isProjection, projParams } from '../geo/projection.js'
+import { makeProjection, DEFAULT_PROJECTION, isProjection, projParams, ALBERS_PARALLELS } from '../geo/projection.js'
 // 经纬图框（SATSOFT 式；地图设置 → 2D 投影）：与视频导出同一支
 import { drawGeoFrame, geoFrameMargins } from '../geo/geoFrame.js'
 // 影像重投影的三角网规划器：CPU 路（导出 / 无 WebGL2 / 环境场栅格）与 GPU 路共用同一份
@@ -73,6 +73,28 @@ function unwrap(ring) {
   const out = new Array(ring.length); let prev = ring[0][0]; out[0] = [prev, ring[0][1]]
   for (let i = 1; i < ring.length; i++) { let lo = ring[i][0]; while (lo - prev > 180) lo -= 360; while (lo - prev < -180) lo += 360; out[i] = [lo, ring[i][1]]; prev = lo }
   return out
+}
+
+// 视图记忆的平面指纹：投影档 + 切口 + 本档认的参数（方位等距认中心纬度、阿尔伯斯认两条标准纬线，见 PROJ_PARAMS）。
+// getView 的 cx / cy 是【这张平面】上的坐标 —— 换了投影 / 切口 / 参数，同一对数就指到地图上别处去了，
+// 宿主恢复视图记忆前拿它比对（getView 带出去的 plane、实例的 planeSig() 与按 mapCrs 现算的这一支同一个式子）。
+// 缺省值 / 钳制与 makeProjection 一致（中心纬度缺省 0、标准纬线缺省中国全图那一对、钳 ±89.5）；
+// 数值取到 1e-6°：切口在 store / setLon0 / makeProjection 里各折一道 ±180，末位抖一下不算换了平面
+const sigNum = (v) => String(Math.round(v * 1e6) / 1e6)
+const wrapLon = (v) => ((v + 180) % 360 + 360) % 360 - 180
+export function planeSigOf(kind, lon0, opts) {
+  const k = isProjection(kind) ? kind : DEFAULT_PROJECTION
+  const o = opts || {}
+  const fin = (v, d, lim) => (Number.isFinite(v) ? clamp(v, -lim, lim) : d)
+  // 先折回再取整；取整推到 +180 的再折一次（±180 是同一条经线）
+  const lon = wrapLon(Math.round(wrapLon(Number(lon0) || 0) * 1e6) / 1e6)
+  const out = [k, sigNum(lon)]
+  for (const p of projParams(k)) {
+    if (p === 'lat0') out.push(sigNum(fin(o.lat0, 0, 90)))
+    else if (p === 'par1') out.push(sigNum(fin(o.par1, ALBERS_PARALLELS[0], 89.5)))
+    else if (p === 'par2') out.push(sigNum(fin(o.par2, ALBERS_PARALLELS[1], 89.5)))
+  }
+  return out.join('|')
 }
 
 export function createFlatCoverage(canvas) {
@@ -164,6 +186,11 @@ export function createFlatCoverage(canvas) {
   let geom = null
   let fieldLayers = [], fieldAlpha = 0.8   // GRD 覆盖多层（每层=一个天线：分带填充 Path2D + 逐档等值线，独立于 geom）
   let fieldLineAlpha = 1                  // 等值线透明度：与填充那份(fieldAlpha)分开——只填充半透、线仍要看得清是常态
+  // 波束地图【专用通道】：覆盖库来源（GXT / KML / JSON / 脚本导入）的等值线多边形，层格式与 GRD 同（见 viz/beammap/layers.js），
+  // 与 GRD 场互不覆写。只走 CPU 填充（三角化好的多边形 → Path2D，无网格）；线照样上 GPU 线集合。
+  // 透明度是逐层的：填充 L.alpha（缺省 bmOpts.alpha）× 逐档 fb.alpha，线在线组上（grp.opacity）。画在 GRD 场之下。
+  let bmLayers = []
+  let bmOpts = { alpha: 0.78, showName: true, nameSize: 16, nameColor: '#ffffff', showBore: true, boreSize: 0.5, boreColor: '#ffffff', showPeak: false, peakSize: 5, peakColor: '#cfd6df', showVal: false, valSize: 12, valColor: '#ffffff' }
   // ---- GRD 分带填充的 GPU 后端（见 ./glField.js）----
   // 'gl'：等距圆柱 + 屏上绘制 + WebGL2 可用 + 电平数 ≤ 上限。此时几何层只送网格（fieldMesh），
   //       填充逐像素在 GPU 上分档，成本随屏幕像素走。
@@ -192,7 +219,7 @@ export function createFlatCoverage(canvas) {
   const DL_KEY = 'data'          // 数据线集合（波束线 + 仰角线 + 聚焦几何）在线程序里的 id
   let dlMeta = null, dlDirty = true   // 数据线集合：上传后的元数据（趟区间 / 跨度）；内容或平面变了就重打包
   // 上下文丢失 / 恢复：显存里的线集合全没了，等值线层按当前状态重传、数据线下一帧重打包
-  function resetGlLines() { dlMeta = null; dlDirty = true; for (const L of fieldLayers) { L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null } syncFieldLines(); resetBaseLines() }
+  function resetGlLines() { dlMeta = null; dlDirty = true; for (const L of fieldLayers.concat(bmLayers)) { L._lnKey = null; L._lnMeta = null; L._lnPlaneKey = null } syncFieldLines(); resetBaseLines() }
   // nLevels：本次要画多少档（几何层传入）。uniform 数组是定长的 → 超上限退回 CPU 路。
   function fieldBackend(nLevels) {
     // 导出恒走 CPU 路：exportRender 的 compat 分支只认 fillBands，PNG/PDF 逐字节一致是硬约束。
@@ -566,18 +593,24 @@ export function createFlatCoverage(canvas) {
     // 覆盖场在转动期间不画，也就不必重烘 —— 松手那一次（fast=false）把它补回来。
     if (!rotLive) {
       fieldLayers = fieldLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: null, bounds: layerBounds(L) }))
+      bmLayers = bmLayers.map((L) => ({ ...L, fillPaths: L.fillBands ? buildFillPaths(L.fillBands) : null, segPaths: null }))
       reprojectGlLayers()                       // GPU 层：投影档要按新平面重投顶点（等距圆柱只改 uniform）
       syncFieldLines()                          // 等值线的 GPU 线集合同理（投影档重投；等距圆柱不动）
       dlDirty = true                            // 数据线集合：投影档要按新平面重投；等距圆柱重打包一次也无妨（几毫秒）
       fieldLayers = fieldLayers.map((L) => ({ ...L, bounds: layerBounds(L) }))   // 重投后跨度才是新的
+      bmLayers = bmLayers.map((L) => ({ ...L, bounds: layerBounds(L) }))
     }
     if (op.term) termData = null
     // fit 的判据是【平面尺寸变没变】而不是「改了什么」：换档、改标准纬线（扇面高度会变）要重新摆进画布，
     // 而方位等距改中心纬度平面恒是 360×360 —— 那时 fit 一下等于把用户放大看的那块弹回全图。
-    if (op.refit === true || (op.refit !== false && Math.abs(PJ.H - H0) > 1e-6)) fit()
+    const refit = op.refit === true || (op.refit !== false && Math.abs(PJ.H - H0) > 1e-6)
+    if (refit) fit()
     // 换投影档会改后端（GPU 路只做等距圆柱）→ 通知宿主重算一轮几何，把填充换成另一种产物
     if (!rotLive) notifyBackend()
     invalidateStatic(); requestDraw()
+    // 真 fit 了 = 视图被打回全图：告诉宿主（底部缩放条回填 + 视图记忆重记），与双击复位 / setMapFrame 重 fit 同一个回调。
+    // 不回调的话状态栏还挂着换平面前的缩放读数（再点「＋」跳一档），视图记忆也还是旧平面上的那块放大区域
+    if (refit && onZoom) onZoom(scaleToT())
   }
 
   // 视角/用户覆写改动由解算器广播回来：底图面/线/国名整份重建 + 静态层快照作废
@@ -850,7 +883,9 @@ export function createFlatCoverage(canvas) {
   // 而屏上真正用得着的分辨率是 res 个像素/度（全平面视图才 2~3），16K 是 45.5 —— 过采样十几倍。
   // 故按「目标分辨率 ×2」先缩一张（2 的幂，够用即可），放大到超过原图时自然用回原图。
   // ★ 只给反向网格档用：别的档三角形本来就少，没必要为它们多担一次缩放和一张画布。
-  let thumbCv = null, thumbId = 0
+  // 两个槽：0 = 影像底图（imgEl）、1 = 其余（环境场栅格）。共用一个槽时，环境场每重烘一次（换字段 / 时间轴换帧都会，
+  // 见 setEnvRaster）就把影像那张挤掉，影像下一次重烘又得从 16K 原图重缩一遍；环境场的缩略图小，多占一个槽不值一提
+  const thumbSlots = [{ cv: null, id: 0 }, { cv: null, id: 0 }]
   function srcThumb(img, sw, sh, res) {
     // 目标要 res 个像素/度，缩略图给 want/360，1:1 就够 —— 再多的源像素也显示不出来。
     // 向上取 2 的幂，实际平均落在 1.4 倍过采样，档位又少：
@@ -858,11 +893,12 @@ export function createFlatCoverage(canvas) {
     // ★ 系数别给大：每跨一档就要重缩一张，而一次 16K 的 drawImage 是 550 ms。
     const want = 2 ** Math.ceil(Math.log2(Math.max(512, 360 * res)))
     if (!(want < sw)) return null                      // 已经够粗，用原图
-    const id = img.__rpId || 0
+    const id = img.__rpId || 0, slot = thumbSlots[img === imgEl ? 0 : 1]
+    let thumbCv = slot.cv
     // 手上这张只要【不比要的粗】就接着用 —— 往回缩放（res 变小）时一次都不用重建
-    if (thumbCv && thumbId === id && thumbCv.width >= want) return thumbCv
+    if (thumbCv && slot.id === id && thumbCv.width >= want) return thumbCv
     const h = Math.max(1, Math.round(sh * want / sw))
-    if (!thumbCv) thumbCv = document.createElement('canvas')
+    if (!thumbCv) thumbCv = slot.cv = document.createElement('canvas')
     thumbCv.width = want; thumbCv.height = h
     const c = thumbCv.getContext('2d')
     c.setTransform(1, 0, 0, 1, 0, 0)
@@ -870,7 +906,7 @@ export function createFlatCoverage(canvas) {
     c.imageSmoothingEnabled = true
     if ('imageSmoothingQuality' in c) c.imageSmoothingQuality = 'high'
     c.drawImage(img, 0, 0, want, h)
-    thumbId = id
+    slot.id = id
     return thumbCv
   }
   const wholeSource = (src, bb) => {
@@ -2133,8 +2169,8 @@ export function createFlatCoverage(canvas) {
     for (const grp of (L.segGroups || [])) {
       if (!grp.segs || !grp.segs.length) continue
       const w = grp.width || 1.2, c = parseColor(grp.color || 'rgba(255,255,255,0.9)')
-      // 线型花样与 dashOf 同一口径：DASH_PX 按线宽等比放大（屏幕 px）
-      pk.style({ rgb: c, alpha: c[3], width: w, dash: DASH_PX[grp.dash] || null, dashScale: Math.max(0.6, w) / 1.2 })
+      // 线型花样与 dashOf 同一口径：DASH_PX 按线宽等比放大（屏幕 px）；grp.opacity = 线组自带的透明度（波束地图逐批次给，GRD 不带）
+      pk.style({ rgb: c, alpha: c[3] * (grp.opacity != null ? grp.opacity : 1), width: w, dash: DASH_PX[grp.dash] || null, dashScale: Math.max(0.6, w) / 1.2 })
       if (PJ.identity) for (const ch of chainsOf(grp)) pk.polyline(ch, false)
       else packGeoInto(pk, chainsToGeo(grp))
     }
@@ -2151,14 +2187,21 @@ export function createFlatCoverage(canvas) {
   // 各层的线集合与当前状态对齐：换平面（投影档重投）/ 上下文恢复（重传）/ 样式热路径（重打包）。
   // 等距圆柱下换切口什么都不做 —— LON0 在 uniform 里。
   function syncFieldLines(force) {
-    for (let i = 0; i < fieldLayers.length; i++) {
-      const L = fieldLayers[i]
-      if (!L.segGroups || !L.segGroups.length) continue
-      if (!lnOk()) { L._lnKey = null; L._lnMeta = null; continue }
-      const want = PJ.identity ? null : planeKey()
-      if (!force && L._lnKey != null && L._lnPlaneKey === want) continue
-      uploadFieldLines(L, i)
+    for (const arr of [fieldLayers, bmLayers]) {
+      for (let i = 0; i < arr.length; i++) {
+        const L = arr[i]
+        if (!L.segGroups || !L.segGroups.length) continue
+        if (!lnOk()) { L._lnKey = null; L._lnMeta = null; continue }
+        const want = PJ.identity ? null : planeKey()
+        if (!force && L._lnKey != null && L._lnPlaneKey === want) continue
+        uploadFieldLines(L, i)
+      }
     }
+  }
+  // 线集合保留名单：GRD 场与波束地图两条通道的等值线 + 数据线 + 底图线分类集合（任一通道整体替换时都得把另一条的带上）
+  function keepLineSets() {
+    const g = glf ? glf.lines() : null
+    if (g) g.keepOnly([DL_KEY, ...baseSets.keys(), ...fieldLayers.map((L) => L._lnKey).filter((x) => x != null), ...bmLayers.map((L) => L._lnKey).filter((x) => x != null)])
   }
   // 投影档：把 GeoJSON（LineString / MultiLineString）经 d3 投成平面折线（含自适应加密与日界线切分）后打进打包器。
   // 与 drawPolylineProj / buildSegPaths 的投影档分支走的是同一个 PJ.path，出来的折线逐点相同。
@@ -2192,14 +2235,18 @@ export function createFlatCoverage(canvas) {
     return pk.finish()
   }
   // 画若干线集合：跨集合按趟透明度归并 —— 同透明度的所有实例画进同一张 GL 画布、按该透明度贴回一次
-  // （每像素只混合一次，与 Canvas2D 一条 Path2D 一次 stroke 同口径）。items=[{ id, meta }]；alphaMul=层级透明度。
+  // （每像素只混合一次，与 Canvas2D 一条 Path2D 一次 stroke 同口径）。items=[{ id, meta, mul? }]；alphaMul=整组透明度，
+  // it.mul = 该集合自己再乘的透明度（GRD 等值线：本层天线的线不透明度）—— 归并按「趟透明度 × mul」分桶，透明度不同的层各贴各的。
   // 等距圆柱按集合的经度跨度裁掉整份不可见的环绕副本。返回 false = GL 当场不可用（调用方退回 Canvas2D）。
   function drawGlLineSets(items, alphaMul) {
     const g = glLines()
     if (!g || !glf) return false
     const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
     const byA = new Map()
-    for (const it of items) for (const p of (it.meta.passes || [])) { let arr = byA.get(p.alpha); if (!arr) byA.set(p.alpha, arr = []); arr.push({ id: it.id, pass: p, meta: it.meta }) }
+    for (const it of items) {
+      const mul = it.mul != null ? it.mul : 1
+      for (const p of (it.meta.passes || [])) { const a = p.alpha * mul; let arr = byA.get(a); if (!arr) byA.set(a, arr = []); arr.push({ id: it.id, pass: p, meta: it.meta }) }
+    }
     if (!byA.size) return true
     // 贴回的范围：世界矩形 ∩ 画布（设备 px）—— 线可能铺满整个地图，不逐集合算包围盒
     const _wr = worldRect()
@@ -2516,7 +2563,7 @@ export function createFlatCoverage(canvas) {
   // 链上逐点就近解缠（跨 ±180° 不被直线横扫全图）。线宽在描边时 /kk 保持恒定屏幕 px。
   function buildSegPaths(segGroups) {
     if (!PJ.identity) return segGroups.map((grp) => ({
-      color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null,
+      color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null, opacity: grp.opacity,
       path: PJ.path(chainsToGeo(grp), new Path2D())
     }))
     return segGroups.map((grp) => {
@@ -2529,7 +2576,7 @@ export function createFlatCoverage(canvas) {
           path.lineTo(lo - LON0, 90 - ch[i][1]); prev = lo
         }
       }
-      return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null, path }
+      return { color: grp.color || 'rgba(255,255,255,0.9)', width: grp.width || 1.2, dash: grp.dash || null, opacity: grp.opacity, path }
     })
   }
 
@@ -2758,8 +2805,50 @@ export function createFlatCoverage(canvas) {
     return true
   }
 
+  // 波束地图通道：填充 + 等值线（画在 GRD 场之下，与 drawField 同一套 ±360 环绕视口裁剪 / GPU 线合成 / 导出回放）。
+  // 与 GRD 那份的差别只在透明度：填充逐层（L.alpha × 逐档 fb.alpha），线逐组（grp.opacity，GPU 路已打进实例色，Path2D 路在这里乘）。
+  function drawBmField() {
+    if (!bmLayers.length) return
+    const kk = k()
+    const wl = -tx / kk, wr = (cw - tx) / kk
+    const a0 = bmOpts.alpha != null ? bmOpts.alpha : 0.78
+    ctx.save()
+    for (const L of bmLayers) {
+      if (!L.fillPaths || !L.fillPaths.length) continue
+      const la = L.alpha != null ? L.alpha : a0
+      for (const off of wraps()) {
+        if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.globalAlpha = la * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.globalAlpha = la * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+    ctx.save()
+    const glItems = [], cpuLayers = []
+    const useGl = lnOk()
+    for (const L of bmLayers) {
+      if (!L.segGroups || !L.segGroups.length) continue
+      if (useGl && L._lnKey != null && L._lnMeta) glItems.push({ id: L._lnKey, meta: L._lnMeta, L }); else cpuLayers.push(L)
+    }
+    if (glItems.length && !drawGlLineSets(glItems, 1)) for (const it of glItems) cpuLayers.push(it.L)
+    for (const L of cpuLayers) {
+      const paths = compat ? null : segPathsOf(L)
+      if (!compat && (!paths || !paths.length)) continue
+      for (const off of wraps()) {
+        if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
+        ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+        if (compat) for (const grp of (L.segGroups || [])) { if (!grp.segs || !grp.segs.length) continue; ctx.globalAlpha = grp.opacity != null ? grp.opacity : 1; ctx.strokeStyle = grp.color || 'rgba(255,255,255,0.9)'; ctx.lineWidth = (grp.width || 1.2) / kk; const d = dashOf(grp.dash, grp.width || 1.2, kk); ctx.setLineDash(d || []); traceSegGroup(grp); ctx.stroke() }
+        else for (const sp of paths) { ctx.globalAlpha = sp.opacity != null ? sp.opacity : 1; ctx.strokeStyle = sp.color; ctx.lineWidth = sp.width / kk; const d = dashOf(sp.dash, sp.width, kk); ctx.setLineDash(d || []); ctx.stroke(sp.path) }
+        ctx.setLineDash([])
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
+  }
   function drawField() {
     if (rotLive) return          // 转动进行中：填充与等值线还烘在上一张平面上，画出来就是错位的
+    drawBmField()                // 波束地图在下，GRD 天线足迹叠在其上
     const kk = k()
     // 填充：把 pan/zoom 烘进变换矩阵，直接填充缓存的世界坐标 Path2D（每帧零顶点遍历），-360/0/+360 三档环绕。
     // 环绕副本按视口裁剪：放大到某区域时三份里通常只有一份可见 → 大足迹填充成本直降到 1/3（拖拽开填充提速核心）。
@@ -2769,15 +2858,21 @@ export function createFlatCoverage(canvas) {
     const glOn = !compat && !exporting && fieldLayers.some((L) => L.fieldMesh) && !!glField()
     const _t0 = performance.now()
     let nGl = 0
-    ctx.save(); ctx.globalAlpha = fieldAlpha
+    ctx.save()
     for (const L of fieldLayers) {
+      // 逐层填充不透明度（GRD：本层天线自己的设置，见 useGrdCoverage.buildLayer），缺省跟整场 fieldAlpha。
+      // GPU 路按它合成这一层（drawFieldGL 的 drawImage 吃当前 globalAlpha）
+      const la = L.alpha != null ? L.alpha : fieldAlpha
+      ctx.globalAlpha = la
       if (glOn && L.fieldMesh) { if (drawFieldGL(L, kk, wl, wr)) nGl++; continue }
       if (!L.fillPaths || !L.fillPaths.length) continue
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        if (compat) for (const fb of (L.fillBands || [])) { ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
-        else for (const fb of L.fillPaths) { ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        // 逐档填充透明度（缺省 null = 跟本层）：GPU 路在着色器里乘（buildFieldMesh 的 alphas），这条 CPU 路（导出 / 无 WebGL2）同样乘上
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.globalAlpha = la * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.globalAlpha = la * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        ctx.globalAlpha = la
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
@@ -2786,18 +2881,23 @@ export function createFlatCoverage(canvas) {
     // 逐档等值线（多层，每层每档一色）：复用缓存的世界坐标 Path2D，setTransform 平移缩放矢量描边（每帧零构建），
     // ±360 环绕按视口裁剪只描可见副本（与填充同策略）。线宽 /kk 保持恒定屏幕 px。
     ctx.lineJoin = 'round'; ctx.lineCap = 'round'
-    ctx.save(); ctx.globalAlpha = fieldLineAlpha
-    // GPU 路：上过线集合的层一次合成（每帧只改 uniform，不碰几何）；其余层（GPU 不可用 / 导出）描 Path2D
+    ctx.save(); ctx.globalAlpha = 1
+    // 线不透明度逐层（GRD：本层天线自己的设置），缺省跟整场 fieldLineAlpha。
+    // GPU 路：上过线集合的层一次合成（每帧只改 uniform，不碰几何），透明度不同的层由 drawGlLineSets 按 mul 分趟各贴各的；
+    // 其余层（GPU 不可用 / 导出）描 Path2D。★ globalAlpha 这里必须是 1：drawGlLineSets 贴回时还要乘它（原先先设成线不透明度
+    // 再当 alphaMul 传一遍，GPU 路实际是不透明度的平方，与导出的 CPU 路对不上）
+    const lineA = (L) => (L.lineAlpha != null ? L.lineAlpha : fieldLineAlpha)
     const glItems = [], cpuLayers = []
     const useGl = lnOk()
     for (const L of fieldLayers) {
       if (!L.segGroups || !L.segGroups.length) continue
-      if (useGl && L._lnKey != null && L._lnMeta) glItems.push({ id: L._lnKey, meta: L._lnMeta, L }); else cpuLayers.push(L)
+      if (useGl && L._lnKey != null && L._lnMeta) glItems.push({ id: L._lnKey, meta: L._lnMeta, L, mul: lineA(L) }); else cpuLayers.push(L)
     }
-    if (glItems.length && !drawGlLineSets(glItems, fieldLineAlpha)) for (const it of glItems) cpuLayers.push(it.L)
+    if (glItems.length && !drawGlLineSets(glItems, 1)) for (const it of glItems) cpuLayers.push(it.L)
     for (const L of cpuLayers) {
       const paths = compat ? null : segPathsOf(L)
       if (!compat && (!paths || !paths.length)) continue
+      ctx.globalAlpha = lineA(L)
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
@@ -2871,24 +2971,30 @@ export function createFlatCoverage(canvas) {
       for (const off of wraps()) {
         if (L.bounds && (L.bounds.hi + off < wl || L.bounds.lo + off > wr)) continue
         ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
-        // 逐档填充透明度（缺省 null = 跟整层 fieldAlpha）：SATSOFT 把透明度也放在 Contour Levels 每一档里
-        if (compat) for (const fb of (L.fillBands || [])) { ctx.globalAlpha = fieldAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
-        else for (const fb of L.fillPaths) { ctx.globalAlpha = fieldAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = fb.color; ctx.fill(fb.path) }
-        ctx.globalAlpha = fieldAlpha
+        // 逐档填充透明度（缺省 null = 跟整层 covGridAlpha）。★ 乘的是本通道的 covGridAlpha —— 原先抄 drawField 时
+        //   留成了 GRD 的 fieldAlpha，STK 热力图在 2D 下的不透明度跟着 GRD 天线走，与 3D（setCovGrid 用 opts.alpha）对不上
+        if (compat) for (const fb of (L.fillBands || [])) { ctx.globalAlpha = covGridAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = 'rgb(' + fb.color[0] + ',' + fb.color[1] + ',' + fb.color[2] + ')'; traceFillBand(fb); ctx.fill() }
+        else for (const fb of L.fillPaths) { ctx.globalAlpha = covGridAlpha * (fb.alpha == null ? 1 : fb.alpha); ctx.fillStyle = fb.color; ctx.fill(fb.path) }
+        ctx.globalAlpha = covGridAlpha
       }
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.restore()
   }
   // GRD 标注层（波束名 / 峰值点 / 数值标签）：画在填充+等值线之上，随各层 bore/segGroups 数据
+  // 两条通道各用各的标注选项：波束地图在下、GRD 在上（与填充层序一致）
   function drawFieldOverlays() {
-    const o = fieldOpts
+    drawOverlaySet(bmLayers, bmOpts)
+    drawOverlaySet(fieldLayers, fieldOpts)
+  }
+  function drawOverlaySet(layers, o) {
+    if (!layers.length) return
     // 覆盖分析(GRD)注记：十字(峰值点)与文字(波束名/峰值/数值)一律按【世界尺寸】联动。
     // 文字为何用世界尺寸：3D 侧这三种标签都由 makeCovLabel(hpx=字号/533) 生成 = 世界尺寸精灵（随缩放线性变化、含每度像素）。
     // 旧实现 2D 文字用「字号 × iz」——既非世界尺寸律(iz=√scale)、又漏掉每度像素 base → 切到 3D 后 2D 明显偏大(默认视角约 2.6×)。
     // 改为与 3D 同源：2D 世界尺寸 px = hpx × 750 × zf(=k()/13.1)，与卫星层数值标签、地名标定完全一致，两视图恒同大。
     const zf = k() / 13.1
     const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
-    for (const L of fieldLayers) {
+    for (const L of layers) {
       const bold = !!o.fontBold   // 三类标签共用的字重（SATSOFT Font Weight）
       if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), o.valColor || '#ffffff', { bold }) }
       const b = L.bore; if (!b) continue
@@ -4397,20 +4503,23 @@ export function createFlatCoverage(canvas) {
     if (onRotate) onRotate({ lon0: LON0, lat0, live: true })
   }
   let labelDragMode = false, onLabelDrag = null, labelDragging = false   // 拖拽等值线数值标签（沿线滑动，不平移地图）
-  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（onPolyDraw(ll,'click')）、左键拖动照常平移地图；
-  // Shift + 左键按住沿路径拖动 = 徒手画（按屏幕像素阈值连续加点 'start'|'move'|'end'，这一下不平移）。右键加点（onRightClick）仍并存。
+  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（onPolyDraw(ll,'click')）；左键按住拖过点击阈值 = 起笔，
+  // 沿路径按屏幕像素阈值连续加点（徒手画，'start'|'move'|'end'）。平移归 Shift + 左键拖动（工具态通则，见 toolLock）。右键加点（onRightClick）仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
-  let drawClickArm = null, lastDrawClick = null   // 绘制态的单击武装 / 上一次单击（双击 = 同一处两下，第二下不重复加点）
-  // 拖波束 / 拖标签的「起拖命中」判定（宿主给）：只在按在视轴 / 标签附近时接管左键，别处照常平移；不给 = 恒接管
+  let drawClickArm = null, lastDrawClick = null   // 绘制态的按下武装（原地抬起 = 单击，拖过阈值 = 起笔）/ 上一次单击（双击 = 同一处两下，第二下不重复加点）
+  // 拖波束 / 拖标签的「起拖命中」判定（宿主给）：拖标签只在按在标签附近时接手；没接手的左键也不平移（见 toolLock）。不给 = 恒接管
   let beamDragHit = null, labelDragHit = null
+  // 工具态（页面经 setToolLock 给：任一地图工具开着）：左键归工具，平移只认 Shift + 左键拖动（口径见 shared/mapToolNav.js）。
+  // 本渲染器自己的模态（拖波束 / 拖标签 / 绘制 / 放置 / 框选 / 转动 / 调顶点 / 拖标记）开着也算，与页面那把锁取并集（toolOn）
+  let toolLock = false
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）：按住走一段才落一个点
   // 顶点编辑（Polygon 调整顶点 / 整体拖动）：editVerts={ pts:[[lon,lat],...], px, move }。
   //  - move=false：按下命中半径内的顶点即拖动该点（回调 onVertexDrag(index, lonlat, 'start'|'move'|'end')）；
   //  - move=true：按下落在多边形内部即整体拖动（回调 onPolyMove(dlon, dlat, 'start'|'move'|'end')，增量制）。
-  // 未命中则照常平移地图。
+  // 未命中地图也不动（工具态，平移归 Shift + 拖动）。
   let editVerts = null, onVertexDrag = null, vertDragging = -1
   let onPolyMove = null, moveDragging = false, moveLast = null
-  // 放置模式（波束合成）：左键点击落点（按下武装 → 拖过阈值解除=平移 → 原地抬起触发 onPlace）
+  // 放置模式（波束合成）：左键点击落点（按下武装 → 拖过阈值解除 → 原地抬起触发 onPlace）
   let placeMode = false, onPlace = null, placeArmed = false, placeSX = 0, placeSY = 0
   // 框选模式（站点栅编辑）：左键拖矩形。'start'/'move' 回屏幕像素（页面画橡皮筋），'end' 回两角经纬（夹到地图边）；
   // 原地点击（未拖过阈值）'end' 回 null＝清选。框选期间不平移。
@@ -4440,6 +4549,7 @@ export function createFlatCoverage(canvas) {
   const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
   // 该标记此刻可不可拖：true＝整类开；字符串＝只认归属它的那一条（owner，航点即所属航迹 id）
   const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
+  const toolOn = () => !!(toolLock || beamDragMode || labelDragMode || polyDrawMode || placeMode || boxMode || rotMode || editVerts || markerDragAny())
   // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
   // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。
   const shortLon = (d) => ((d + 540) % 360) - 180
@@ -4534,15 +4644,17 @@ export function createFlatCoverage(canvas) {
     }
     return best
   }
+  function startPan(e) {
+    panSX = e.clientX; panSY = e.clientY
+    dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+  }
   function onDown(e) {
     clickArm = null; drawClickArm = null
     // 中键：任何工具态下都是平移地图（QGIS 数字化口径）。preventDefault 挡掉中键自动滚动。
-    if (e.button === 1) {
-      e.preventDefault()
-      panSX = e.clientX; panSY = e.clientY
-      dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
-      return
-    }
+    if (e.button === 1) { e.preventDefault(); startPan(e); return }
+    // 工具态：Shift + 左键 = 平移地图，这一下工具不接、抬起也不算点击；不按 Shift 的左键归工具（见 toolLock）
+    const tool = e.button === 0 && toolOn()
+    if (tool && e.shiftKey) { startPan(e); return }
     if (editVerts && e.button === 0) {
       if (editVerts.move) {
         if (pointInEditPoly(e.clientX, e.clientY)) {
@@ -4569,10 +4681,8 @@ export function createFlatCoverage(canvas) {
         return
       }
     }
-    if (polyDrawMode && e.button === 0 && e.shiftKey) {   // 绘制态 + Shift：左键按住起笔，沿路径连续加点（徒手画）
-      polyDrawing = true; canvas.setPointerCapture(e.pointerId)
-      drawLX = e.clientX; drawLY = e.clientY
-      const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start')
+    if (polyDrawMode && e.button === 0) {   // 绘制态：先武装 —— 原地抬起 = 单击加一个点，拖过阈值 = 起笔沿路径连续加点（见 onMove）
+      drawClickArm = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId)
       return
     }
     const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
@@ -4591,16 +4701,15 @@ export function createFlatCoverage(canvas) {
       if (onBoxSelect) onBoxSelect('start', { x0: boxSX, y0: boxSY, x1: boxSX, y1: boxSY })
       return
     }
-    if (placeMode && e.button === 0) { placeArmed = true; placeSX = e.clientX; placeSY = e.clientY }   // 武装放置（不 return：拖动仍平移）
+    if (placeMode && e.button === 0) { placeArmed = true; placeSX = e.clientX; placeSY = e.clientY }   // 武装放置：原地抬起才落点
     // 仅左键平移并夺指针捕获。右键/中键只用于 contextmenu（Polygon 加点 / 右键菜单）——若在此为右键 setPointerCapture，
     // 其 pointerup 会被 preventDefault 的 contextmenu 手势吞掉（Chromium 行为），捕获永不释放，此后点任何输入框都被
     // canvas 截走 → 「画完 Polygon 后输入框不能聚焦」。故非左键直接返回，绝不捕获。
     if (e.button !== 0) return
-    // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑，绘制态的点击归加点：这三种都不选星
-    if (polyDrawMode) drawClickArm = { x: e.clientX, y: e.clientY }
-    else if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
-    panSX = e.clientX; panSY = e.clientY
-    dragging = true; dragAt = performance.now(); lx = e.clientX; ly = e.clientY; panQ.reset(); canvas.setPointerCapture(e.pointerId); canvas.style.cursor = 'grabbing'
+    // 放置态的「点击」归放置（落波束），编辑多边形时的点击归编辑：这两种都不选星；其余点击照旧点选卫星
+    if (!placeMode && !editVerts) clickArm = { x: e.clientX, y: e.clientY }
+    if (tool) return   // 工具态里按在空白处：地图不动（平移归 Shift + 拖动）
+    startPan(e)
   }
   function onMove(e) {
     if (boxDragging) {
@@ -4608,7 +4717,13 @@ export function createFlatCoverage(canvas) {
       if (onHover) onHover(screenToLonLat(e.clientX, e.clientY))
       return
     }
-    if (placeArmed && Math.abs(e.clientX - placeSX) + Math.abs(e.clientY - placeSY) > 6) placeArmed = false   // 拖过阈值 → 是平移不是点击
+    if (placeArmed && Math.abs(e.clientX - placeSX) + Math.abs(e.clientY - placeSY) > 6) placeArmed = false   // 拖过阈值 → 不是点击
+    // 绘制态按住拖过点击阈值（与 onUp 判单击同一把 6 px）：起笔，第一个点落在按下处，之后按 POLY_DRAW_MIN2 节流加点
+    if (drawClickArm && (e.buttons & 1) && Math.abs(e.clientX - drawClickArm.x) + Math.abs(e.clientY - drawClickArm.y) > 6) {
+      const a = drawClickArm; drawClickArm = null
+      polyDrawing = true; drawLX = a.x; drawLY = a.y
+      const ll = screenToLonLat(a.x, a.y); if (ll && onPolyDraw) onPolyDraw(ll, 'start')
+    }
     if (moveDragging) {
       const ll = screenToLonLat(e.clientX, e.clientY)
       if (ll && moveLast && onPolyMove) {
@@ -4692,7 +4807,8 @@ export function createFlatCoverage(canvas) {
   }
   function onLeave() { placeArmed = false; onUp(); if (onHover) onHover(null) }       // 移出地图：清空读数（放置武装作废，避免离屏误落点）
   function onDbl() {
-    if (polyDrawMode) return   // 绘制态的双击是两下加点（第二下已去重），不回全图——否则画到一半画面跳走
+    // 工具态的双击是两下工具点击（加点已去重 / 放置 / 删除 / 追加节点），不回全图——否则点到一半画面跳走
+    if (toolOn()) return
     fit(); invalidateStatic(); requestDraw(); if (onZoom) onZoom(scaleToT())
   }
   // 屏幕坐标 -> 经纬度（夹到地图边缘，框选角点用：框拖出地图外也取有效角）
@@ -4723,7 +4839,7 @@ export function createFlatCoverage(canvas) {
   }
   let onRightClick = null, onHover = null
   function onCtx(e) { e.preventDefault(); if (onRightClick) onRightClick(screenToLonLat(e.clientX, e.clientY), { x: e.clientX, y: e.clientY }) }
-  // 放置模式（波束合成）：左键「点击」（按下→未拖动→抬起）回调 onPlace(ll)；拖动仍平移地图。
+  // 放置模式（波束合成）：左键「点击」（按下→未拖动→抬起）回调 onPlace(ll)；平移归 Shift + 拖动（工具态通则）。
   canvas.addEventListener('wheel', onWheel, { passive: false })
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
@@ -4792,7 +4908,8 @@ export function createFlatCoverage(canvas) {
       // 消失的层收回显存（GPU 路），并记下「几何层是不是自己拒绝了 GL」
       if (glf) glf.keepOnly(fieldLayers.filter((L) => L.fieldMesh).map((L) => L._glKey))
       // 底图线的分类集合与数据线 / 等值线同挂一张 glLines 集合表：保留名单里必须带上，否则显存里的底图线被删、下一次整张重画一笔不画
-      { const g = glf ? glf.lines() : null; if (g) g.keepOnly([DL_KEY, ...baseSets.keys(), ...fieldLayers.map((L) => L._lnKey).filter((x) => x != null)]) }
+      // （波束地图通道的等值线也在这张表里，一并保留）
+      keepLineSets()
       glDenied = !!(src.length && fieldBackend() === 'gl' && !src.some((L) => L.fieldMesh))
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
@@ -4811,8 +4928,37 @@ export function createFlatCoverage(canvas) {
       }
       requestDraw()
     },
-    setFieldAlpha(a) { fieldAlpha = a; requestDraw() },   // 仅覆盖层透明度，静态快照不变
-    setFieldLineAlpha(a) { fieldLineAlpha = a; requestDraw() },   // 等值线透明度（同上：不动静态快照，也不重烘 Path2D）
+    // 波束地图通道（见 bmLayers 声明处）：layers 同 GRD 层格式（viz/beammap/layers.js），整体替换；
+    // opts = { alpha（缺省填充不透明度）, showName/nameSize/nameColor, showBore/boreSize/boreColor, showPeak/…, showVal/…, fontBold }
+    setBeamMapField(layers, opts) {
+      const src = layers || []
+      const old = bmLayers
+      bmLayers = src.map((L, i) => makeFieldEntry(L, i))
+      // 消失 / 换掉的线集合当场收回（新层的键可能与旧层同名 —— 同 id 重上传已覆盖，这里只清真正没了的）
+      if (glf) { const g = glf.lines(); if (g) { const keep = new Set(bmLayers.map((L) => L._lnKey).filter((x) => x != null)); for (const L of old) if (L._lnKey != null && !keep.has(L._lnKey)) g.remove(L._lnKey) } }
+      if (opts) bmOpts = { ...bmOpts, ...opts }
+      requestDraw()
+    },
+    clearBeamMapField() {
+      if (glf) { const g = glf.lines(); if (g) for (const L of bmLayers) if (L._lnKey != null) g.remove(L._lnKey) }
+      bmLayers = []
+      requestDraw()
+    },
+    // 仅覆盖层透明度，静态快照不变。ids = 只改这几层（GRD 滑杆热路径：聚焦天线的各波束层，透明度是逐天线的、层上带着 L.alpha）；
+    // 不给 ids = 整场（缺省值 fieldAlpha 连同各层自带的一起改）
+    setFieldAlpha(a, ids) {
+      const want = ids ? new Set(ids) : null
+      if (!want) fieldAlpha = a
+      for (const L of fieldLayers) if (want ? want.has(L.id) : L.alpha != null) L.alpha = a
+      requestDraw()
+    },
+    // 等值线透明度（同上：不动静态快照，也不重烘 Path2D / 不重传 GPU 线集合 —— 透明度在贴回时乘）
+    setFieldLineAlpha(a, ids) {
+      const want = ids ? new Set(ids) : null
+      if (!want) fieldLineAlpha = a
+      for (const L of fieldLayers) if (want ? want.has(L.id) : L.lineAlpha != null) L.lineAlpha = a
+      requestDraw()
+    },
     // 线宽 / 线型（样式热路径，几何层 restyleActive 调）：只改缓存的 segGroups / segPaths 的 width 与 dash，
     // Path2D 是纯几何不重烘。ids=要改的层 id 列表；byIdx=档下标 → { width, dash }（档下标在 segGroup.idx 上，没带的组不动）。
     restyleFieldLines(ids, byIdx) {
@@ -4855,6 +5001,11 @@ export function createFlatCoverage(canvas) {
       if (o.alpha != null) envAlpha = o.alpha
       if (o.smooth != null) envSmooth = !!o.smooth
       envFadeKey = ''   // 图变了 → 导出用的烘透明度副本作废
+      // ★ 每次提交都给这张图换一个重投影身份：投影档（非等距圆柱）的栅格重投影缓存（reprojectRaster 的键）与方位等距的
+      //   源图缩略图（srcThumb）都按 __rpId 认图，而上色那一侧同尺寸时复用同一张 canvas（envRaster.rasterCanvas）——
+      //   身份不换，换字段 / 换配色 / 时间轴换帧 / 换范围（bbox 不在键里）都命中旧缓存，五个投影档上画面不刷新。
+      //   换身份只作废这一路；透明度在贴图时才乘（setEnvAlpha），不走这里、不重烘
+      if (img) img.__rpId = ++rpSeq
       requestDraw()
     },
     setEnvAlpha(a) { envAlpha = a; envFadeKey = ''; requestDraw() },
@@ -5002,7 +5153,10 @@ export function createFlatCoverage(canvas) {
     },
     // 完整视图记忆：缩放 scale + 画面中心的「世界坐标」(cx=lon-LON0, cy=90-lat)。
     // 用世界中心点而非 tx/ty → 窗口尺寸变化后仍能复原到同一地理中心。setView 需在 resize 后调用（base 已就绪）。
-    getView() { const kk = k(); return { scale, cx: (cw / 2 - tx) / kk, cy: (ch / 2 - ty) / kk } },
+    // plane：记下时那张平面的指纹（planeSigOf）—— cx / cy 只在同一张平面上才指同一处，跨会话恢复前宿主拿它比对；setView 不读它
+    getView() { const kk = k(); return { scale, cx: (cw / 2 - tx) / kk, cy: (ch / 2 - ty) / kk, plane: planeSigOf(PJ.kind, PJ.lon0, PJOPT) } },
+    // 此刻这张平面的指纹（同 getView().plane）
+    planeSig: () => planeSigOf(PJ.kind, PJ.lon0, PJOPT),
     // 画面中心对应的经纬度（落在平面之外返回 null）。换投影中心前先取它、换完 centerOn 回去 = 正看着的那一点留在画面中心
     viewCenterLL() {
       const kk = k()
@@ -5101,7 +5255,7 @@ export function createFlatCoverage(canvas) {
     setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : CUR_IDLE) },
     setOnLabelDrag(fn) { onLabelDrag = fn },
     // 协调区多边形 hold-to-draw 模式：开启后左键按住沿路径连续加点
-    setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE) },
+    setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; drawClickArm = null; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE) },
     setOnPolyDraw(fn) { onPolyDraw = fn },
     setBeamDragHit(fn) { beamDragHit = typeof fn === 'function' ? fn : null },
     setLabelDragHit(fn) { labelDragHit = typeof fn === 'function' ? fn : null },
@@ -5118,11 +5272,13 @@ export function createFlatCoverage(canvas) {
       if (!editVerts) canvas.style.cursor = placeMode ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE)
     },
     setOnVertexDrag(fn) { onVertexDrag = fn },
-    // 放置模式（波束合成）：左键点击落点；拖动仍平移
+    // 放置模式（波束合成）：左键点击落点
     setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE)) },
     setOnPlace(fn) { onPlace = fn },
     // 框选模式（站点栅编辑）：左键拖矩形选站；开启期间不平移
     setBoxSelectMode(v) { boxMode = !!v; boxDragging = false; canvas.style.cursor = boxMode ? 'crosshair' : (placeMode || polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE)) },
+    // 工具态开关（页面：任一地图工具开着）：开着时左键归工具、Shift + 左键拖动才平移（见 toolLock）
+    setToolLock(v) { toolLock = !!v },
     setOnBoxSelect(fn) { onBoxSelect = fn },
     setOnPolyMove(fn) { onPolyMove = fn },
     // ★ 标记 / 标记样式 / 卫星层只住在文字那一张快照里：只重画它（几毫秒），面与线、回退快照都不动 ——

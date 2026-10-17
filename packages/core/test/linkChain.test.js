@@ -222,7 +222,7 @@ function anchorA(label, txEs, rxEs, tol) {
     `${d.hops[1].cnResult} vs ${rd.downlinkCN}`);
   ok(`${label}：★ 端到端 C/(N+I) ⇔ carrierTotalCN`, near(N(d.segments[0].cnResult), N(rd.carrierTotalCN), tol || 0.01),
     `${d.segments[0].cnResult} vs ${rd.carrierTotalCN}`);
-  ok(`${label}：★ 端到端余量 ⇔ 引擎链路余量`, near(N(d.e2eMarginResult), N(rd.linkmargin), tol || 0.01),
+  ok(`${label}：★ 端到端余量 ⇔ 引擎链路余量`, near(N(d.e2eMarginResult), N(rd.linkmargin), tol || 0.0101),
     `${d.e2eMarginResult} vs ${rd.linkmargin}`);
   ok(`${label}：系统可用度 ⇔ 引擎 systemAvailability`,
     near(N(d.systemAvailabilityResult), N(rd.systemAvailabilityResult), 1e-4),
@@ -1160,23 +1160,24 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
   // 基线指纹（2026-08-16，方案二动手前跑出）：改到这一行说明有出参变了，先查是不是碰了计算
   // 2026-09-16 可用度出厂 99.90→100%：两条纯弯管链（占位侧取 UP/DL_LINK_DEFAULTS 的可用度）出参漂 0.01 dB，重锁
   //   弯管 站→透明星→站 956b60cd1e7ac15b→5cb3b3064ff422ac、双透明星 ISL 链 f6412e6530823d41→22a0580b3768b41f；其余七条不变。
+  // 2026-10-17 18 条修复轮重锁 8 条：P.676-13 逐线法 + P.836-6 统计、P.840-9 K_L、P.618 式(69)(70) 天空噪温、Art.21 表驱动、新增 uplinkAglResult / downlinkAglResult；端到端余量对拍容差 0.01 → 0.0101（两位小数双重取整恰差 0.01 时的浮点余量）。
   const BASELINE = {
-    '弯管 站→透明星→站': ['5cb3b3064ff422ac', { nodes: [TX_ES, TXP_SAT, RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER }],
-    '弯管·两端有雨·UPC': ['92ce6a7161365c5e', {
+    '弯管 站→透明星→站': ['0e760ae949117524', { nodes: [TX_ES, TXP_SAT, RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER }],
+    '弯管·两端有雨·UPC': ['cc8a55dfdd45f0e3', {
       nodes: [Object.assign({}, TX_ES, { rainRate: '60', uplinkPowerControl: '是', upcValue: '4' }),
         TXP_SAT, Object.assign({}, RX_ES, { rainRate: '42' })],
       hops: [UP_HOP, DN_HOP], carrier: CARRIER
     }],
-    '再生 站→再生星→站': ['0d8f3031e3cbbf23', { nodes: [TX_ES, RGx('再生星'), RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER }],
-    '再生·带解调实现损失': ['92db2b5579390862', {
+    '再生 站→再生星→站': ['d3fdf38777d56fde', { nodes: [TX_ES, RGx('再生星'), RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER }],
+    '再生·带解调实现损失': ['7fef87874612fa02', {
       nodes: [TX_ES, RGx('再生星', { demodLossDb: '0.8' }), Object.assign({}, RX_ES, { demodLossDb: '1.2' })],
       hops: [UP_HOP, DN_HOP], carrier: CARRIER
     }],
-    '双透明星 ISL 链': ['22a0580b3768b41f', {
+    '双透明星 ISL 链': ['f8d600b53a322de5', {
       nodes: [TX_ES, Object.assign({}, TXP_SAT, { name: 'A星' }), Object.assign({}, TXP_SAT, { name: 'B星' }), RX_ES],
       hops: [UP_HOP, ISLx, DN_HOP], carrier: CARRIER
     }],
-    '六节点混合链（4 段）': ['580f80c568b72e26', {
+    '六节点混合链（4 段）': ['653df32879808592', {
       nodes: [TX_ES, RGx('再生星A', { procDelayMs: '1.5' }), Object.assign({}, TXP_SAT, { name: '透明星B' }),
         Object.assign({}, RX_ES, { name: '转接站C', powerW: '60' }), RGx('再生星D', { procDelayMs: '2.5' }),
         Object.assign({}, RX_ES, { name: '末端站E' })],
@@ -1186,10 +1187,10 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
       carrier: CARRIER
     }],
     '全激光链': ['e19a791924f43a0e', { nodes: [RGx('源星'), RGx('宿星')], hops: [LASERx], carrier: CARRIER }],
-    '激光混合链（3 段）': ['fcd86683588826c0', {
+    '激光混合链（3 段）': ['d3289f61d528a95f', {
       nodes: [TX_ES, RGx('再生星A'), RGx('再生星B'), RX_ES], hops: [UP_HOP, LASERx, DN_HOP], carrier: CARRIER
     }],
-    '逐段体制（QPSK → 8PSK）': ['e9f9b1047e74e672', {
+    '逐段体制（QPSK → 8PSK）': ['9a9ff98e01cd194e', {
       nodes: [TX_ES, RGx('再生星'), RX_ES], hops: [UP_HOP, DN_HOP],
       carrier: CARRIER, carriers: [CARRIER, Object.assign({}, CARRIER, { modulation: '8PSK' })]
     }]

@@ -56,12 +56,14 @@ function _toArrayBuffer(buf) {
 
 // 注入全精度 ITU 数据（降雨率 P.837 / 海拔 P.1511 / 水汽 P.836 / 云 P.840）。
 // 与小程序 app.js 后台下载注入等价；桌面端从本地 resources/itu 同步加载，确保口径完全一致。
+// vapor2 = p836_v2.bin（P.836-6 年统计全概率档 ρ / V / VSCH，气体吸收统计法用）；vapor = 旧 RHO_90/10 两图，作兜底。
 function loadFullPrecisionData(bufs) {
   bufs = bufs || {};
   const rep = {};
   try { if (bufs.rain) { rainRate.setFullPrecisionData(_toArrayBuffer(bufs.rain)); rep.rain = rainRate.isFullDataReady(); } } catch (e) { rep.rain = 'ERR:' + e.message; }
   try { if (bufs.elev) { elevation.setFullPrecisionElevation(_toArrayBuffer(bufs.elev)); rep.elev = elevation.isElevationReady(); } } catch (e) { rep.elev = 'ERR:' + e.message; }
   try { if (bufs.vapor) { waterVaporGrid.setData(_toArrayBuffer(bufs.vapor)); rep.vapor = waterVaporGrid.isReady(); } } catch (e) { rep.vapor = 'ERR:' + e.message; }
+  try { if (bufs.vapor2) { waterVaporGrid.setDataV2(_toArrayBuffer(bufs.vapor2)); rep.vapor2 = waterVaporGrid.isReadyV2(); } } catch (e) { rep.vapor2 = 'ERR:' + e.message; }
   try { if (bufs.cloud) { cloudParamsGrid.setData(_toArrayBuffer(bufs.cloud)); rep.cloud = cloudParamsGrid.isReady ? cloudParamsGrid.isReady() : true; } } catch (e) { rep.cloud = 'ERR:' + e.message; }
   return rep;
 }

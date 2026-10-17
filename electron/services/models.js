@@ -1045,7 +1045,12 @@ function createModels(opts = {}) {
     if (!isFile(glbFile)) writeFileAtomic(glbFile, glb)
     const tris = L.countTris(json)
     let meta = await metaFromGltf(json, { id, title, kind, fidelity, source, files: { lod0: { sha256: sha, bytes: glb.length, tris } }, units, nodeNameMap, gmdf, sourceFormat })
-    if (extra) meta = S.normalizeMeta({ ...meta, ...extra, frame: keepImportQ(extra.frame, meta.frame), id, source, files: meta.files })
+    if (extra) {
+      // 三角形数是这份 glb 的事实（与 files.lod0.tris 同源）：渲染端带来的 geometry 只采用其余字段。体检 2026-10-16 二.24：
+      // OBJ / STL / FBX 转换件曾把 normalizeMeta 补出的全零 geometry 整份送来，「概况 · 三角形」恒为 0（之后的分析不重算三角形数）
+      const gx = extra.geometry && typeof extra.geometry === 'object' && !Array.isArray(extra.geometry) ? { ...extra.geometry, tris } : undefined
+      meta = S.normalizeMeta({ ...meta, ...extra, ...(gx ? { geometry: gx } : {}), frame: keepImportQ(extra.frame, meta.frame), id, source, files: meta.files })
+    }
     const v = S.validateMeta(meta, { nodeNames: G.gltfNodeNames(json) })
     if (!v.ok) log.warn(`[models] ${id} 元数据校验：${(v.errors || []).slice(0, 5).join('；')}`)
     writeJsonAtomic(metaFile, meta, 2)

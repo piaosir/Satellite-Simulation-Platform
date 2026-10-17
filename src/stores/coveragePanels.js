@@ -24,5 +24,7 @@ export const covNav = reactive({
   // 导入 TLE 入口（「文件」菜单）：3D 页注册 importTle() 打开本地 CSV 选择器（原「加载」弹窗移除后的离线兜底），离开页面复位
   importTle: null,
   // 「文件」菜单「导出星历…」：3D 页注册 exportEphem()（导出聚焦卫星；整集导出在星座栏该集的菜单里），离开页面复位
-  exportEphem: null
+  exportEphem: null,
+  // 打开文件管理并停在某一页（App.vue 注册，常驻）：openFiles('gxt') = 波束地图管理（「波束地图显示」侧栏的「管理」入口）
+  openFiles: null
 })

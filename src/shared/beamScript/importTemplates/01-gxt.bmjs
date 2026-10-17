@@ -1,0 +1,26 @@
+//! id: gxt
+//! name: ⟪GXT · SATSOFT / GRASP 等值线|GXT · SATSOFT / GRASP contours⟫
+//! ext: gxt
+//! match: *.gxt
+//zh SATSOFT / GRASP 等值线交换格式，每个文件一个波束。卫星 / 频段 / 波束 / 类型优先按文件名「卫星_频段_波束_类型」拆分，
+//zh 拆不出时卫星取文件里的 sat_name、波束取文件名。波束中心带 gain= 时作为中心电平一并导入。
+//en SATSOFT / GRASP contour interchange, one beam per file. Satellite / band / beam / type come from the file name
+//en "Satellite_Band_Beam_Type" when it splits that way, otherwise sat_name from the file and the file name as the beam.
+//en Beam centres with gain= are imported with their level.
+
+const beams = []
+for (const f of files) {
+  const d = gxt(f)
+  const parts = f.base.split('_')
+  const four = parts.length >= 4
+  beams.push({
+    satellite: four ? parts[0] : (d.satName || f.base),
+    orbitLon: d.lon,
+    band: four ? parts[1] : '',
+    name: four ? parts.slice(2, -1).join('_') : f.base,
+    type: four ? parts[parts.length - 1] : 'EIRP',
+    peaks: d.bore.map(([lon, lat, value]) => ({ lon, lat, value })),
+    contours: d.contours.map((c) => ({ level: c.g, points: c.p })),
+  })
+}
+return beams

@@ -27,6 +27,14 @@ function setKind(v) {
   wb.edit((x) => { x.kind = v; if (v === 'other') delete x.group; else if (x.group) x.group = v })
 }
 const srcTip = computed(() => { const s = m.value && m.value.source; return s ? [s.credit, s.license, s.url].filter(Boolean).join('\n') : '' })
+// 三角形数：geometry.tris 为 0 时退到入库时主进程按 glb 记下的 files.lod0.tris（同一个量）——2026-10-16 之前导入的 OBJ / STL / FBX
+// 元数据里 geometry 被全零值盖过（体检二.24），库里的文件记录是对的
+const tris = computed(() => {
+  const x = m.value
+  const g = x && x.geometry && x.geometry.tris
+  const f = x && x.files && x.files.lod0 && x.files.lod0.tris
+  return g > 0 ? g : (f > 0 ? f : g)
+})
 const sizeOk = computed(() => !!(m.value && m.value.units && m.value.units.sizeVerified))
 const frameOk = computed(() => !!(m.value && m.value.frame && m.value.frame.verified))
 </script>
@@ -50,7 +58,7 @@ const frameOk = computed(() => !!(m.value && m.value.frame && m.value.frame.veri
         <div class="md-kv" :title="srcTip"><span class="k">来源</span><span class="v ov-src">{{ SRC[m.source && m.source.kind] || '—' }}</span></div>
         <div class="md-kv" :title="m.id"><span class="k">编号</span><span class="v ov-id" data-i18n-skip>{{ m.id }}</span></div>
         <div v-if="m.source && m.source.credit" class="md-kv" :title="srcTip"><span class="k">署名</span><span class="v ov-src" data-i18n-skip>{{ m.source.credit }}</span></div>
-        <div class="md-kv"><span class="k">三角形</span><span class="v" data-i18n-skip>{{ fmtInt(m.geometry && m.geometry.tris) }}</span></div>
+        <div class="md-kv"><span class="k">三角形</span><span class="v" data-i18n-skip>{{ fmtInt(tris) }}</span></div>
       </div>
       <div class="md-acts ov-flags">
         <span class="md-ico" :class="sizeOk ? 'good' : 'poor'" :title="sizeOk ? '尺寸已核定（有出处）' : '尺寸未核定：在「单位」节用已知尺寸反算并注明出处'">

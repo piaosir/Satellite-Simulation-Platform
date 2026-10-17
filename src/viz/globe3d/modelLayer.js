@@ -1659,6 +1659,10 @@ export function createModelLayer(o = {}) {
       rotateOn = !!on
       if (ctl) ctl.enableRotate = rotateOn
     },
+    /** 左键那一档（THREE.MOUSE.ROTATE / PAN）：scene 在每次左键按下的捕获阶段按工具态口径给（Shift + 拖动才转，见 shared/mapToolNav.js） */
+    setLeftButton(b) {
+      if (ctl) ctl.mouseButtons.LEFT = b
+    },
     /** 方向键：绕主星步进转局部相机（dAz 绕 L 系 ŷ、dPol 极角，弧度）。与 scene.rotateBy 同一套球坐标约定；极角夹在两极内不翻面 */
     rotateBy(dAz, dPol) {
       if (!fstate || (!dAz && !dPol)) return

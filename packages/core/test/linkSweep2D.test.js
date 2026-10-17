@@ -317,10 +317,15 @@ const AX_RD = { key: 'rxAntennaDiameter', target: 'link', min: 1.2, max: 9.2 }; 
   const { computeLinkMode, computeLinkModeNGSO } = require('../utils/modeSolver.js');
   const regen = require('../utils/linkCalculatorRegen.js');
   const LON = 116.4074, LAT = 39.9042, N = 11, HALF = 20;
+  // 站址的降雨率 / 海拔取扫描联动（autoGeo）在本格写进去的同一组值——否则「本格 ≡ 直接算」比的是两组入参
+  // （原写死 38 mm/h，P.837 在此为 38.066：雨衰差 0.013 dB，余量差 0.009 dB，叠上直接算的两位小数取整就擦 0.01 的边）
+  const rrSite = String(require('../utils/rainRate.js').queryRainRate(LAT, LON).rainRate);
+  const elSite = require('../utils/elevation.js').queryElevation(LAT, LON);
+  const hSite = (elSite && elSite.success && Number.isFinite(elSite.altitude)) ? String(elSite.altitude) : '0';
   const SITE = {
     ...LINK,
-    longitude: String(LON), latitude: String(LAT), altitude: '0', rainRate: '38', uplinkAvailability: '99.9',
-    rxLongitude: String(LON), rxLatitude: String(LAT), rxAltitude: '0', rxRainRate: '38', rxDownlinkAvailability: '99.9',
+    longitude: String(LON), latitude: String(LAT), altitude: hSite, rainRate: rrSite, uplinkAvailability: '99.9',
+    rxLongitude: String(LON), rxLatitude: String(LAT), rxAltitude: hSite, rxRainRate: rrSite, rxDownlinkAvailability: '99.9',
     // NGSO / 再生式的站星几何由前端解算后注入，本模块不重解
     elevation: '35', slantRange: '1500', rxElevation: '35', rxSlantRange: '1500'
   };
@@ -343,17 +348,22 @@ const AX_RD = { key: 'rxAntennaDiameter', target: 'link', min: 1.2, max: 9.2 }; 
   ];
   const C = ((N - 1) / 2) * N + (N - 1) / 2;   // 中心格 = 站址本格
   const offs = [], flats = [];
+  // 直接算那一次也开出参小数位增量（与扫描逐格同一精度）：只到 2 位时，「设置余量」求解器在两位小数上收敛，
+  // 再生上行本例会报 3.01（真值 3.0000），与本格 3.000 恰好差 0.01 擦边——比的就不是同一个数了。
+  const boosters = ['../utils/linkCalculator.js', '../utils/linkCalculatorNGSO.js', '../utils/linkCalculatorRegen.js']
+    .map((m) => require(m).setOutputPrecisionBoost).filter((f) => typeof f === 'function');
+  const precise = (fn) => { const prev = boosters.map((s) => s(4)); try { return fn(); } finally { boosters.forEach((s, i) => s(prev[i])); } };
   for (const [engine, modes, sides] of CASES) {
     for (const mode of modes) {
       const opt = { mode, powerW: 40, overDb: 1 };
       let base = null;
-      try { base = solverOf[engine](SAT, SITE, opt); } catch (e) { base = null; }
+      try { base = precise(() => solverOf[engine](SAT, SITE, opt)); } catch (e) { base = null; }
       const dm = (base && base.success) ? parseFloat(base.data.linkmargin) : NaN;
       for (const side of sides) {
         const r = sweep(engine, side, opt);
         const arr = r.series.linkmargin;
         if (!arr) { offs.push(`${engine}/${mode}/${side} 没有余量场`); continue; }
-        // ① 本格 ≡ 直接算（0.01 dB 内：直接算那次没开出参小数位增量，只到 2 位）
+        // ① 本格 ≡ 直接算（0.01 dB 内：钉住用的基准求解在扫描外按 2 位小数解出功放，本格再按增量精度复算）
         if (!(Math.abs(arr[C] - dm) <= 0.01)) offs.push(`${engine}/${mode}/${side} 本格 ${arr[C].toFixed(3)} ≠ 直接算 ${dm.toFixed(3)}`);
         // ② 钉住之后必须是场，不能是常数
         let lo = Infinity, hi = -Infinity;

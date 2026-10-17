@@ -5,7 +5,8 @@
 //   ② 引擎侧（CJS，packages/core）与渲染侧（ESM，src/shared/carrierRate.js）两份实现【逐条同值】：
 //      载波面板要在渲染端实时算，走 IPC 问因子不现实，只能各留一份，那就必须有一处对拍；
 //   ③ 认不出的名字返回 null 而不是悄悄回落成 2（这正是本模块存在的理由）；
-//   ④ 阶数按族收紧（APSK 从 16 起、QAM 从 4 起、只收 2 的整数次幂），且 compose/parse 互为逆。
+//   ④ 阶数按族收紧（APSK 从 8 起、QAM 从 4 起、只收 2 的整数次幂），且 compose/parse 互为逆。
+//      APSK 下限 2026-10-17 由 16 改 8：DVB-S2X 的 8APSK（EN 302 307-2 表 20a 的 5/9-L、26/45-L）是现行标准。
 import { createRequire } from 'module'
 import * as R from '../../../src/shared/carrierRate.js'
 const require = createRequire(import.meta.url)
@@ -30,7 +31,7 @@ ok('内置 11 项 compose(parse(x)) 原样回来（表里的写法就是规范�
 /* ---- ② 两份实现对拍 ---- */
 const NAMES = Object.keys(BUILTIN).concat([
   'qpsk', '16apsk', ' 64QAM ', '1024QAM', '512APSK', '32PSK', '4QAM',
-  '8APSK', '2QAM', '6PSK', '3QAM', '0PSK', '8192QAM', 'QAM', '16', 'ABC', '', null, undefined
+  '8APSK', '4APSK', '2APSK', '2QAM', '6PSK', '3QAM', '0PSK', '8192QAM', 'QAM', '16', 'ABC', '', null, undefined
 ])
 const mismatch = NAMES.filter((n) => {
   const a = C.modFactorOf(n), b = R.modFactorOf(n)
@@ -53,7 +54,10 @@ ok('isKnownModulation 与 modFactorOf 同口径',
   NAMES.every((n) => C.isKnownModulation(n) === (C.modFactorOf(n) != null)))
 
 /* ---- ④ 阶数按族收紧 + compose/parse 互逆 ---- */
-ok('APSK 从 16 起：8APSK 不认', C.modFactorOf('8APSK') === null && C.composeModulation('apsk', 8) === '')
+ok('APSK 从 8 起：8APSK 认得（3 bit/符号，两侧同值），4APSK / 2APSK 不认',
+  C.modFactorOf('8APSK') === 3 && R.modFactorOf('8APSK') === 3 && C.composeModulation('apsk', 8) === '8APSK' &&
+  C.modFactorOf('4APSK') === null && C.composeModulation('apsk', 4) === '' && R.composeModulation('apsk', 4) === '' &&
+  C.modFactorOf('2APSK') === null)
 ok('QAM 从 4 起：2QAM 不认', C.modFactorOf('2QAM') === null && C.composeModulation('qam', 2) === '')
 ok('只收 2 的整数次幂', [6, 12, 100, 3, 0, -4, 1.5, '4a'].every((m) => !C.isValidOrder(m)) && [2, 4, 8, 4096].every((m) => C.isValidOrder(m)))
 ok('阶数上限 4096（12 bit/符号）', C.isValidOrder(4096) && !C.isValidOrder(8192))

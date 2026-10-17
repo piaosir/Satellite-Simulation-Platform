@@ -14,7 +14,7 @@ import { cityName, cityNameKeys } from '../shared/cityName.js'   // 城市名是
 import CityPicker from '../components/CityPicker.vue'   // 导入站址对话框（与性能指标表「典型城市」同一份）
 import { pointFallbackName, stationFallbackName } from '../shared/markerNames.js'   // 无名标记兜底名（全平台一个口径）
 import { validateValue, invalidTitle } from '../shared/lbValidate.js'   // 数值格校验（与计算前预校验同一口径）：坏格标红 + 悬停范围
-import { sheetModel, exportSheets, importWorkbook, pickSheet, sheetToRecords, sheetToTsv, safeFileName } from '../shared/gridXlsx.js'   // 表格 ⇄ Excel（与 ExcelGrid 系同一套）
+import { sheetModel, exportSheets, importWorkbook, pickSheet, sheetToRecords, sheetToTsv, safeFileName, colLabel, sameNameKeys } from '../shared/gridXlsx.js'   // 表格 ⇄ Excel（与 ExcelGrid 系同一套）
 import { reportError } from '../shared/reportError.js'
 
 // ★ 本文件与 src/ngso/StationGrid.vue 逐字相同、只差上面 defaultsFor 那一行 import（两份 params 的 defaultsFor 同一实现）；
@@ -147,6 +147,21 @@ const groupEndCols = computed(() => {
   return out
 })
 const isGroupEnd = (c) => groupEndCols.value.has(c)
+// 同名列的侧别：链路表发、收两侧都有「地球站配置」「经度」「可用度」…，离开表头的列组行（导出 Excel 的首行、
+// 复制带表头、批量设值的字段下拉）就分不清是哪一侧。同名的那几列借列组名（groups prop：发信站 / 收信站）作前缀，
+// 不重名的列一律不加，表头与改动前逐字一致。重名按全部字段算（含隐藏列 / 计算列，口径见 gridXlsx.sameNameKeys）。
+const groupLabelOf = (f) => {
+  if (!f || !f.group || !props.groups) return ''
+  const g = props.groups.find((x) => x.key === f.group)
+  return (g && g.label) || ''
+}
+const sameNameSet = computed(() => sameNameKeys(props.fields))
+const sideOf = (f) => (f && sameNameSet.value.has(f.key) ? groupLabelOf(f) : '')
+// 批量设值字段下拉的项名：「收信站 · 经度」（带空格的「 · 」是界面复合串的写法，DOM 翻译层按组合模式逐段译）
+const batchLabel = (f) => { const s = sideOf(f); return s ? s + ' · ' + f.label : f.label }
+// 导入时另认「表名·标签」：本表本身就是某一侧的站表时（再生式的发信站群 / 收信站群，label = 发信站 / 收信站），
+// 链路表导出的「发信站·经度」正是本表的「经度」，「收信站·经度」则对不上、不会被错收进来
+const tableAlias = (f) => (props.label ? [...(f.alias || []), colLabel({ label: f.label, groupLabel: props.label })] : f.alias)
 
 const root = ref(null)
 // 站址组（名称+经纬度三键一组）：链路表一行可含发/收两个站址组（f.city='tx'/'rx' 各一组）。
@@ -1126,10 +1141,11 @@ function clearSel() {
   pushUndo()
   for (let r = r0.value; r <= r1.value; r++) for (const c of selCols.value) if (!isRO(c) && !isReadonlyCol(c)) props.stations[r][props.fields[c].key] = ''
 }
-// 列头文本（带表头复制 / 导出 Excel 用）：与界面表头同款「标签 (单位)」，导回来 gridXlsx.findHeader 认得
+// 列头文本（带表头复制用）：与界面表头同款「标签 (单位)」，同名列带侧别（「收信站·经度 (°E)」），
+// 与导出 Excel 的首行同一写法，导回来 gridXlsx.findHeader 认得
 const colHead = (c) => (isRO(c)
   ? props.roLabel + (props.roUnit ? ' (' + props.roUnit + ')' : '')
-  : (props.fields[c].label + (props.fields[c].unit ? ' (' + props.fields[c].unit + ')' : '')))
+  : colLabel({ key: props.fields[c].key, label: props.fields[c].label, unit: props.fields[c].unit, groupLabel: sideOf(props.fields[c]) }))
 // withHeader（Ctrl+Shift+C / 右键「复制（含表头）」）：首行连列头一起复制，与 ExcelGrid 同口径
 function copyRange(withHeader) {
   const lines = []
@@ -1213,14 +1229,14 @@ function pasteText(text, atRow, atDisp) {
 }
 
 // —— Excel 文件进出（主进程 grid:importXlsx / grid:exportXlsx，模型与表头匹配见 shared/gridXlsx.js）——
-// 导出：当前可见列（显示序，含只读末列）+ 表头「标签 (单位)」；select 列写显示名，数值列合法的写成真数字（Excel 里可算），
-// 不合法的原样写成文本（不替用户「修」成别的数）；计算列未算出（—）留空。
+// 导出：当前可见列（显示序，含只读末列）+ 表头「标签 (单位)」，同名列带侧别「收信站·经度 (°E)」；select 列写显示名，
+// 数值列合法的写成真数字（Excel 里可算），不合法的原样写成文本（不替用户「修」成别的数）；计算列未算出（—）留空。
 async function exportXlsx() {
   if (editing.value) endEdit()
   if (!props.stations.length) return
   const cols = visSelCols.value.map((c) => (isRO(c)
     ? { key: '\u0000ro', label: props.roLabel, unit: props.roUnit, num: false, align: 'right', c }
-    : { key: props.fields[c].key, label: props.fields[c].label, unit: props.fields[c].unit, num: false, align: (props.fields[c].type === 'num' || props.fields[c].ro) ? 'right' : undefined, c }))
+    : { key: props.fields[c].key, label: props.fields[c].label, unit: props.fields[c].unit, groupLabel: sideOf(props.fields[c]), num: false, align: (props.fields[c].type === 'num' || props.fields[c].ro) ? 'right' : undefined, c }))
   const value = (s, col) => {
     let v = cellText(s, col.c)
     if (v === '—' && (isRO(col.c) || props.fields[col.c].ro)) return null
@@ -1237,6 +1253,8 @@ async function exportXlsx() {
   emit('xlsxDone', { kind: 'export', path: r.filePath || r.path || '', rows: props.stations.length })
 }
 // 导入：按表头名对列（列序随便、未知列忽略、缺的列不动）；认不出表头就按列位置从首个显示列起铺（同粘贴）。
+// 同名列：带侧别的表头（「收信站·经度」）按侧别对；不带侧别的老文件按出现次序依次对到发、收两侧（见 findHeader）。
+// 侧别写法对每一列都登记（groupLabel 给全）——导出时只有同名列带前缀，多认几个名字不会错认。
 // 从当前行起逐行覆盖，超出表尾加行；整批一步撤销；写完选中导入的那几行。
 async function importXlsx() {
   if (editing.value) endEdit()
@@ -1246,7 +1264,7 @@ async function importXlsx() {
   if (!res.ok) { reportError('导入 Excel', res.error); return }
   const idx = new Map()
   const cols = []
-  props.fields.forEach((f, c) => { if (!f.ro && !isReadonlyCol(c)) { idx.set(f.key, c); cols.push({ key: f.key, label: f.label, unit: f.unit, alias: f.alias }) } })
+  props.fields.forEach((f, c) => { if (!f.ro && !isReadonlyCol(c)) { idx.set(f.key, c); cols.push({ key: f.key, label: f.label, unit: f.unit, alias: tableAlias(f), groupLabel: groupLabelOf(f) }) } })
   const sheet = pickSheet(res.sheets, cols)
   if (!sheet) { reportError('导入 Excel', '该工作簿中没有数据', { level: 'warn' }); return }
   const at = props.stations.length ? r0.value : 0
@@ -1779,7 +1797,7 @@ function clearColContents() {
       <div class="sg-box sg-box-sm" @click.stop>
         <div class="sg-box-hd">批量设值（应用到选中的 {{ selectedRows.length }} 行）</div>
         <div class="sg-batch">
-          <select v-model="batch.key" class="sg-search"><option v-for="f in fields.filter((x) => !x.ro)" :key="f.key" :value="f.key">{{ f.label }}</option></select>
+          <select v-model="batch.key" class="sg-search"><option v-for="f in fields.filter((x) => !x.ro)" :key="f.key" :value="f.key">{{ batchLabel(f) }}</option></select>
           <!-- select 字段的批量值：可输入筛选（datalist）也可下拉选，输入显示名即可，doBatch 里 normalizeFieldValue 归一为存值 -->
           <template v-if="batchField.type === 'select'">
             <input v-model="batch.value" class="sg-search" list="sg-batch-opts" placeholder="输入或选择…（可输入筛选）" autocomplete="off" />

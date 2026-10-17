@@ -14,6 +14,7 @@
 
 import { labelBundle, schemeOf, schemeName, schemeSub, defaultDocInfo, translate } from './lbReport.js'
 import { num } from './lbSla.js'
+import { slaRefList } from './stdLedger.js'
 
 /** 报告名：与全报告 §4 的章名一致（「服务等级指标（SLA）」），不叫「服务等级协议技术附件」 */
 export function slaReportTitle(satName, band, lang, orbitType) {
@@ -102,8 +103,9 @@ const DEFS = {
       'Upper bound on the proportion of IP packets lost within the available time; outage periods are excluded from this statistic. Given only for DVB-family and uncoded carriers: 3GPP NTN thresholds are first-transmission BLER targets and no HARQ retransmission model is applied, so no value is suggested.'),
     fml: 'p = 1 − (1 − FER)^N_f，N_f = ⌈8L / K⌉',
     fmlEn: 'p = 1 − (1 − FER)^N_f, N_f = ⌈8L / K⌉',
-    basis: 'ETSI EN 302 307-1 §4.1（QEF）/ ITU-R S.1062',
-    basisEn: 'ETSI EN 302 307-1 §4.1 (QEF) / ITU-R S.1062'
+    // QEF 判据按门限所在原表：DVB-S2 = EN 302 307-1 §4.1 / 表 13（PER 10⁻⁷），DVB-S2X = EN 302 307-2 第 6 章（FER 10⁻⁵）
+    basis: 'ETSI EN 302 307-1 §4.1 / EN 302 307-2 第 6 章（QEF）/ ITU-R S.1062',
+    basisEn: 'ETSI EN 302 307-1 §4.1 / EN 302 307-2 clause 6 (QEF) / ITU-R S.1062'
   },
   respond: {
     def: D('自故障申告至响应的时限，按合同约定给定。', 'Time limit from fault report to response, given by contract.'),
@@ -180,49 +182,13 @@ export function slaExclusions(lang) {
 
 // —— 引用标准 ——
 // 只列这份报告真用到的：传播那几项恒有；月口径才有 P.841；有 DVB / NTN 链路才有各自的标准。
-const R = (id, zh, en, uzh, uen) => ({ id, zh, en, uzh, uen })
-const REFS = {
-  prop: [
-    R('ITU-R P.618-14', '地球—空间链路传播数据与预测方法', 'Propagation data and prediction methods required for the design of Earth-space telecommunication systems',
-      '雨衰预测与可用度统计', 'Rain attenuation prediction and availability statistics'),
-    R('ITU-R P.837-7', '降雨特性建模', 'Characteristics of precipitation for propagation modelling', '站址 0.01% 超越降雨率 R0.01', 'Site 0.01 % exceedance rain rate R0.01'),
-    R('ITU-R P.838-3', '雨衰比衰减系数模型', 'Specific attenuation model for rain for use in prediction methods', '由降雨率求比衰减 γR', 'Specific attenuation γR from rain rate'),
-    R('ITU-R P.839-4', '降雨高度模型', 'Rain height model for prediction methods', '等效降雨高度与倾斜路径长度', 'Effective rain height and slant path length'),
-    R('ITU-R P.840-9', '云雾衰减', 'Attenuation due to clouds and fog', '云衰减', 'Cloud attenuation'),
-    R('ITU-R P.676-13', '大气气体衰减及相关效应', 'Attenuation by atmospheric gases and related effects', '氧气与水汽的路径吸收', 'Oxygen and water-vapour path absorption'),
-    R('ITU-R P.453-14', '无线电折射率及其对传播的影响', 'The radio refractive index: its formula and refractivity data', '折射率相关量的取值基准', 'Refractivity reference data')
-  ],
-  monthly: [
-    R('ITU-R P.841-6', '年统计量与最坏月统计量的换算', 'Conversion of annual statistics to worst-month statistics',
-      '可用度由年平均折算到最坏月', 'Conversion of availability from the annual mean to the worst month')
-  ],
-  dvb: [
-    R('ETSI EN 302 307-1/-2', '数字卫星广播第二代及其扩展（DVB-S2 / S2X）', 'Second generation framing, coding and modulation for satellite broadcasting and extensions (DVB-S2 / S2X)',
-      '准无误码（QEF）门限定义与 FECFRAME 长度 —— 丢包率的帧差错口径', 'Quasi-error-free (QEF) threshold definition and FECFRAME length — the frame-error basis of the packet loss figure')
-  ],
-  ntn: [
-    R('3GPP TS 38.211 / TS 38.214', 'NR 物理信道与物理层数据处理规程', 'NR physical channels and physical layer procedures for data',
-      '传输块大小与 MCS 表 —— 信息速率与帧长', 'Transport block size and MCS tables — information rate and frame length'),
-    R('3GPP TS 36.211', 'E-UTRA 物理信道与调制', 'E-UTRA physical channels and modulation', 'NB-IoT 资源单元与子帧结构', 'NB-IoT resource unit and subframe structure')
-  ],
-  sla: [
-    R('ITU-R S.579-6', '固定卫星业务假想参考电路与数字链路的可用度目标', 'Availability objectives for a hypothetical reference circuit and a hypothetical reference digital path in the fixed-satellite service',
-      '可用度指标的口径基准', 'Reference convention for the availability objective'),
-    R('ITU-R S.1062-4', '固定卫星业务数字链路的误码性能', 'Allowable error performance for a hypothetical reference digital path in the fixed-satellite service',
-      '误码与差错性能指标的口径基准', 'Reference convention for the error performance objectives')
-  ]
-}
+// 编号 / 版本 / 名称 / 用途一律从标准台账出（packages/core/data/standards.json 的 report.sla 与 sla 两栏，
+// 经 shared/stdLedger.js），与链路预算报告的参考文献同一份；2026-10-17 删去 P.453-14（链路预算没用到），
+// DVB 一条拆成 EN 302 307-1 V1.4.1（PER 10⁻⁷）与 -2 V1.4.1（FER 10⁻⁵）两份——两种 QEF 判据出自两份标准。
 
 /** 引用标准表：只列真用到的（分组已铺平，报告里就是一张三列表） */
 export function slaRefs(lang, o) {
-  o = o || {}
-  const en = lang === 'en'
-  const list = REFS.prop.slice()
-  if (o.monthly) list.push(...REFS.monthly)
-  if (o.hasDvb) list.push(...REFS.dvb)
-  if (o.hasNtn) list.push(...REFS.ntn)
-  list.push(...REFS.sla)
-  return list.map((r) => ({ id: r.id, title: en ? r.en : r.zh, use: en ? r.uen : r.uzh }))
+  return slaRefList(o || {}, lang)
 }
 
 // —— 逐链路的一句话摘要（卫星 / 频段 / 载波 / 几何）——

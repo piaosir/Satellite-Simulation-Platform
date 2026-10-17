@@ -30,7 +30,7 @@ const POL_OPTS = [{ value: '—' }, ...POLS.map((p) => ({ value: p }))]
 const num = (key, label, unit, w, extra) => ({ key, label, unit, w, num: true, get: (o) => showNum(o[key]), parse: parseNum, blank: '', ...extra })
 const txt = (key, label, w, extra) => ({ key, label, w, get: (o) => String(o[key] == null ? '' : o[key]), parse: (v) => String(v == null ? '' : v).trim(), blank: '', ...extra })
 const bool = (key, label, w, extra) => ({ key, label, w, options: YESNO, get: (o) => (o[key] ? '是' : '否'), parse: parseBool, ...extra })
-const pol = (key, w) => ({ key, label: '极化', w, options: POL_OPTS, get: (o) => o[key] || '—', parse: parsePol, blank: '' })
+const pol = (key, w, extra) => ({ key, label: '极化', w, options: POL_OPTS, get: (o) => o[key] || '—', parse: parsePol, blank: '', ...extra })
 
 // —— 列定义 ——
 export const SRC_COLS = [
@@ -38,7 +38,9 @@ export const SRC_COLS = [
   txt('name', '名称', 168),
   num('lonDeg', '轨位', '°E', 92, { tip: '轨位（东经为正，西经为负）' }),
   num('eirpDensityDbWPerHz', '下行 EIRP 密度', 'dBW/Hz', 156),
-  pol('polarization', 66),
+  pol('polarization', 84, { label: '下行极化' }),
+  // 上行 C/ASI 比的是干扰载波的上行极化；留空由引擎按下行的同/反极化关系推定（ciAsi.resolveUplinkPolarization）
+  pol('upPolarization', 84, { label: '上行极化', tip: '留空 = 按下行的同/反极化关系推定', blankTip: '留空 = 按下行的同/反极化关系推定' }),
   num('xpdDb', 'XPD', 'dB', 80, { tip: '留空 = 25', blankTip: '留空 = 25' }),
   num('overlapFactor', '重叠', '', 72, { tip: '留空 = 1', blankTip: '留空 = 1' })
 ]
@@ -116,6 +118,9 @@ export function useCiGrid({ gridId, list, base, cols, text, editable, add, remov
   function dropUndo() { undoStack.pop() }
   function undo() { if (!undoStack.length) return false; redoStack.push(snap()); restore(undoStack.pop()); return true }
   function redo() { if (!redoStack.length) return false; undoStack.push(snap()); restore(redoStack.pop()); return true }
+  // 换了一份配置时清栈（窗口的 applyState 调）：栈里是上一份的整张表，留着的话一按 Ctrl+Z / Ctrl+Y
+  // 就把上一份的行整张换进当前配置、约 1 s 后自动写盘（网格不随配置重建，栈不会自己清）
+  function clearHistory() { undoStack.length = 0; redoStack.length = 0 }
 
   let g = null
   const visCols = () => (g && g.visCols ? g.visCols.value : cols)
@@ -167,5 +172,5 @@ export function useCiGrid({ gridId, list, base, cols, text, editable, add, remov
   }
   // 当前行 = 活动格所在行的行对象（没有活动格时 null）
   const activeRow = computed(() => { const ri = g.sel.value.ri; const r = ri >= 0 ? g.rows.value[ri] : null; return r ? r.o : null })
-  return { g, append, activeRow, textOf }
+  return { g, append, activeRow, textOf, clearHistory }
 }

@@ -500,7 +500,11 @@ function adaptSummaryUnits(rows, links, adaptive) {
 }
 
 // 瀑布段渲染辅助（与小程序 exportLinkBudget 同口径：黑白三线表）
-const valueHeaders = (cols, t) => (cols >= 3 ? [t.uplink, t.downlink, t.total] : cols >= 2 ? [t.uplink, t.downlink] : [t.value])
+// 列头：段自带 heads（工况对照「晴空 / 降雨」、端到端逐段汇总「C/(N+I) / 段余量」，builder 已按语言出字）优先，
+// 长度对不上列数才按列数取「上行 / 下行 / 合计」——与屏幕 WaterfallTable.headsOf、Word segTable 同一判据
+const valueHeaders = (cols, t, seg) => ((seg && Array.isArray(seg.heads) && seg.heads.length === cols)
+  ? seg.heads
+  : cols >= 3 ? [t.uplink, t.downlink, t.total] : cols >= 2 ? [t.uplink, t.downlink] : [t.value])
 const rowValues = (row, cols) => (cols >= 3 ? [row.up || '', row.down || '', row.total || ''] : cols >= 2 ? [row.up || '', row.down || ''] : [row.up || ''])
 // 机读数值（waterfallBuilder 在行上挂的 num/numDown/numTotal，严格解析、语言无关）：
 // 有值就直接写数值单元格，免得再去 Number() 反解已格式化的显示串。null＝这一格不是纯数值
@@ -525,7 +529,7 @@ function writeSegmentBlocks(ws, segments, t, startRow, opts) {
   for (const seg of (segments || [])) {
     if (!seg || !seg.rows || !seg.rows.length) continue
     const cols = seg.cols || 1
-    const vh = valueHeaders(cols, t)
+    const vh = valueHeaders(cols, t, seg)
     const totalCols = 2 + vh.length
     // 段题注：模板 表号格式（黑体 10.5pt 居中，在表上方）
     ws.mergeCells(r, 1, r, totalCols)
@@ -1182,6 +1186,20 @@ function enrichReportModel(model) {
   const secs = Array.isArray(model.sections) && model.sections.length ? model.sections : null
   if (secs) secs.forEach((s, i) => { s.summary = summarize(links.filter((l) => l && l.sec === i), orbitType, s.regenMode || regenMode, t, lang, model.adaptUnits === true) })
   model.summary = summarize(links, orbitType, regenMode, t, lang, model.adaptUnits === true)
+  // 容量汇总（§2，2026-10-16 起 GSO / NGSO / 再生式）：渲染端交来逐转发器的表（标签已按语言、数已按单位档，
+  // 见 shared/lbCapacity.capReportBlock），取代 summarize 里那几行跨转发器直接相加的统计——功率带宽是
+  // 「功率占用 × 本转发器带宽」，各星分母不同，那几行在多星时会把一个没有物理意义的总数印进交付文件。
+  // 模型里没有 capacity（端到端 / 旧调用方）就照旧出统计行。
+  if (Array.isArray(model.capacity)) {
+    const capAt = (i) => {
+      const b = model.capacity[i]
+      return (b && Array.isArray(b.rows) && b.rows.length) ? { note: b.note || '', head: Array.isArray(b.head) ? b.head : [], rows: b.rows } : null
+    }
+    const put = (sum, cap) => { sum.cap = cap; sum.stats = []; sum.statsTitle = '' }
+    if (secs) secs.forEach((s, i) => put(s.summary, capAt(i)))
+    // 不分节 / 只有一节：渲染器读 model.summary（见 sectionsOf）
+    if (!secs || secs.length < 2) put(model.summary, capAt(0))
+  }
   // SLA 建议矩阵（§4）：条款（含单位）做行、链路做列，格里是采用值（留空即建议值）。
   // 条款清单取【各链路条款的并集，按首次出现的次序】—— 端到端的「结算带宽」逐透明星一行，
   // 链与链的行数本就不同；按首链的清单裁一刀会把别的链的条款默默扔掉。
@@ -1488,25 +1506,45 @@ function buildMasterSheet(wb, model, t, L) {
   })
 
   // 容量与统计（分节：各节各一张；没有统计的节——星间激光——整个不出）
-  const withStats = secs.filter((s) => s.summary.stats && s.summary.stats.length)
+  // GSO / NGSO / 再生式交来逐转发器的表（summary.cap：参数做行、转发器做列，≥ 2 组时末列合计）；
+  // 端到端仍是两列的统计行（summary.stats）
+  const withStats = secs.filter((s) => s.summary.cap || (s.summary.stats && s.summary.stats.length))
   if (withStats.length) {
     section('2　' + L.capacity)
     for (const s of withStats) {
+      const cap = s.summary.cap
       if (multi) subsec('2.' + (secs.indexOf(s) + 1) + '　' + s.title)
       tableCap(nextNo(), L.capacity + (multi ? '　·　' + s.title : ''))
       // 题注跨整幅（它是一句话，不是表格的第一列——不跨的话自适应会把第 1 列按这句话的长短撑宽）
-      if (s.summary.statsTitle) {
+      const note = cap ? cap.note : s.summary.statsTitle
+      if (note) {
         ws.mergeCells(r, 1, r, NCOL)
-        str(r, 1, s.summary.statsTitle, 'left', { size: RSTY.size.table, color: 'FF666666' })
+        str(r, 1, note, 'left', { size: RSTY.size.table, color: 'FF666666' })
         ws.getRow(r).height = 18; r++
       }
-      const stHead = r
-      for (const st of s.summary.stats) {
-        str(r, 1, st.label, 'left', { size: RSTY.size.table })
-        str(r, 2, st.value, 'right', { font: FNT, size: RSTY.size.table, bold: true })
-        ws.getRow(r).height = 19; r++
+      if (cap) {
+        // 转发器列的表头靠右：它下面是右对齐的数值（同 §1 逐参数对照）
+        const capHead = r
+        cap.head.forEach((h, ci) => str(r, 1 + ci, h, ci ? 'right' : 'left', { size: RSTY.size.tableDense, wrap: true }))
+        ws.getRow(r).height = 20; r++
+        for (const row of cap.rows) {
+          str(r, 1, row[0], 'left', { size: RSTY.size.table })
+          row.slice(1).forEach((v, ci) => {
+            const c = ws.getCell(r, 2 + ci); c.value = numOrText(v)
+            c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
+          })
+          ws.getRow(r).height = 18; r++
+        }
+        bookBox(ws, capHead, 1, r - 1, cap.head.length, capHead)
+      } else {
+        const stHead = r
+        for (const st of s.summary.stats) {
+          str(r, 1, st.label, 'left', { size: RSTY.size.table })
+          str(r, 2, st.value, 'right', { font: FNT, size: RSTY.size.table, bold: true })
+          ws.getRow(r).height = 19; r++
+        }
+        bookBox(ws, stHead, 1, r - 1, 2)
       }
-      bookBox(ws, stHead, 1, r - 1, 2)
       if (multi) r++
     }
   }
@@ -2352,10 +2390,10 @@ async function buildRainAttenuationExcel(payload) {
     // 口径注（避免读者把 DND 和合计衰减混起来；NGSO 的等效仰角不是「某一时刻的仰角」）
     const dndNote = en
       ? (down
-        ? 'DND = (rain + cloud) + G/T degradation from rain noise. Rain noise uses rain + cloud, T_mr = 275 K, referred through the feeder; gases are excluded (already in clear sky, not a degradation) and scintillation is excluded (refraction, no radiated noise).'
+        ? 'DND = (rain + cloud) + G/T degradation from rain noise. Rain noise = T_sky(gas + cloud + rain) − T_sky(gas), with T_sky per ITU-R P.618-14 eqs. (69)(70) (T_mr = 37.34 + 0.81·T_s), referred through the feeder; scintillation is excluded (refraction, no radiated noise).'
         : 'No rain noise on the uplink: G/T degradation and DND apply to the downlink only.')
       : down
-      ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声按 雨+云、T_mr=275 K、经馈线折算；气体不计入（晴空已含、不构成劣化），闪烁不计入（折射，不辐射噪声）。'
+      ? 'DND = (雨衰+云衰) + 降雨噪声致 G/T 衰减。降雨噪声 = T_sky(气体+云+雨) − T_sky(气体)，T_sky 按 ITU-R P.618-14 式(69)(70)（T_mr = 37.34 + 0.81·T_s），经馈线折算；闪烁不计入（折射，不辐射噪声）。'
       : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
     const s8Note = r.s8 && en
       ? 'NGSO method (ITU-R P.618-14 §8): the elevation range is binned in increments; for each increment the visible time fraction × the exceedance time fraction at that elevation is summed; the equivalent elevation is the elevation at which the single-elevation method gives the same rain attenuation, not any instantaneous geometry. Statistics refer to the satellite service period. Gas/cloud/scintillation/XPD/rain noise temperature are evaluated at that equivalent elevation (rain-equivalent, an engineering approximation). The elevation distribution is the analytic one for near-circular orbits and does not apply to highly eccentric orbits. '

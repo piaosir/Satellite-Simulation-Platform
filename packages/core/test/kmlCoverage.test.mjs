@@ -80,8 +80,10 @@ const fr = parseKmlBeams(foreign)
 ok('第三方：单层文件夹 → 卫星名取文档名', fr.beams.length === 1 && fr.beams[0].satName === 'SomeSat Coverage', fr.beams[0] && fr.beams[0].satName)
 ok('第三方：波束名取文件夹名', fr.beams[0].beamName === 'Spot 1', fr.beams[0].beamName)
 ok('第三方：「EIRP 50 dBW」取到 50', fr.beams[0].contours.some((c) => c.g === 50), fr.beams[0].contours.map((c) => c.g).join(','))
-ok('第三方：纯数字名称「47」也认', fr.beams[0].contours.some((c) => c.g === 47), '')
-ok('第三方：没有数值的多边形不进等值线、单独计数', fr.beams[0].contours.length === 2 && fr.noGain === 1, `contours=${fr.beams[0].contours.length} noGain=${fr.noGain}`)
+// 纯数字名称没有单位也没有标注：可能是电平，也常是波束号 / 序号 —— 不编造成电平，按无数值档收
+ok('第三方：纯数字名称「47」不当电平', !fr.beams[0].contours.some((c) => c.g === 47), fr.beams[0].contours.map((c) => c.g).join(','))
+ok('第三方：取不到电平的多边形按无数值档收（g = null）、单独计数', fr.beams[0].contours.length === 3 && fr.beams[0].contours.filter((c) => c.g === null).length === 2 && fr.noGain === 2,
+  `contours=${fr.beams[0].contours.length} noGain=${fr.noGain}`)
 ok('第三方：无 ExtendedData 时轨位留空（不编造）', fr.beams[0].lon === null, String(fr.beams[0].lon))
 
 /* ---------- ④ 单位是 dB/K 的按 G/T 收；MultiGeometry 一个 Placemark 多个环 ---------- */
@@ -98,17 +100,40 @@ ok('dB/K 名称 → 类型判为 GT', gt.beams[0].type === 'GT', gt.beams[0].typ
 ok('MultiGeometry：两个环同档各成一条等值线', gt.beams[0].contours.length === 2 && gt.beams[0].contours.every((c) => near(c.g, 1.5)),
   `${gt.beams[0].contours.length}`)
 
-/* ---------- ⑤ 报错口径：整份文件都取不到增益档时不静默吞掉 ---------- */
+/* ---------- ⑤ 整份都取不到电平（第三方覆盖边界）：按无数值档收，不再整份拒收；只有协调区时仍报错 ---------- */
 const noneKml = `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>N</name><Folder><name>F</name>
 <Placemark><name>区域</name><Polygon><outerBoundaryIs><LinearRing><coordinates>1,1,0 2,1,0 2,2,0 1,1,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
 </Folder></Document></kml>`
-let threw = ''
-try { parseKmlBeams(noneKml) } catch (e) { threw = e.message || String(e) }
-ok('全无增益档 → 抛错并说明原因', /增益档/.test(threw), threw)
+let threw = '', none = null
+try { none = parseKmlBeams(noneKml) } catch (e) { threw = e.message || String(e) }
+ok('全无电平的覆盖边界 → 照收（一个波束、一条 g = null 的等值线）', !threw && none.beams.length === 1 && none.beams[0].contours.length === 1 && none.beams[0].contours[0].g === null && none.noGain === 1, threw)
 let threw2 = ''
 try { parseKmlBeams(serializeKml([], { name: '空', polys })) } catch (e) { threw2 = e.message || String(e) }
 ok('只有协调区 Polygon → 报「文件中仅有 Polygon」', /仅有 Polygon/.test(threw2), threw2)
+
+/* ---------- ⑥ 无数值档（覆盖边界）导出 → 再导入：一条不丢、电平仍是 null，纯数字波束名不被读成 dB ---------- */
+{
+  const beamsNone = [
+    { name: '12', satName: 'AP9', lon: 142, band: 'Ku', type: 'EIRP', bore: [], contours: [{ g: null, p: ring(100, 20, 3) }, { g: null, p: ring(110, 20, 3) }] },
+    { name: '混合', satName: 'AP9', lon: 142, band: 'Ku', type: 'EIRP', bore: [[120, 25]], contours: [{ g: 48, p: ring(120, 25, 2) }, { g: null, p: ring(120, 25, 4) }] }
+  ]
+  const text = serializeKml(beamsNone, { name: '当前绘制' })
+  ok('导出：无数值档写明 gain = none', (text.match(/<Data name="gain"><value>none<\/value><\/Data>/g) || []).length === 3)
+  let r = null, err = ''
+  try { r = parseKmlBeams(text) } catch (e) { err = e.message || String(e) }
+  const b12 = r && r.beams.find((b) => b.beamName === '12'), bMix = r && r.beams.find((b) => b.beamName === '混合')
+  ok('往返：无数值档的波束不再整份被拒', !err && r.beams.length === 2, err)
+  ok('往返：纯数字波束名「12」的环电平仍是 null（不读成 12 dB）', b12 && b12.contours.length === 2 && b12.contours.every((c) => c.g === null), b12 && b12.contours.map((c) => c.g).join(','))
+  ok('往返：同一波束里有数值档与无数值档各归各的', bMix && bMix.contours.length === 2 && bMix.contours.some((c) => c.g === 48) && bMix.contours.some((c) => c.g === null) && bMix.bore.length === 1,
+    bMix && bMix.contours.map((c) => c.g).join(','))
+  ok('往返：轨位 / 频段 / 类型照旧还原', b12 && near(b12.lon, 142) && b12.band === 'Ku' && b12.type === 'EIRP')
+  // 老版本导出的文件没有 none 标记：无数值档的 Placemark 名就是波束名
+  const legacy = text.replace(/<ExtendedData>\s*<Data name="gain"><value>none<\/value><\/Data>\s*<\/ExtendedData>\s*/g, '')
+  const rl = parseKmlBeams(legacy)
+  const l12 = rl.beams.find((b) => b.beamName === '12')
+  ok('老版本导出（无 none 标记）：纯数字波束名同样不当电平', !/>none</.test(legacy) && l12 && l12.contours.length === 2 && l12.contours.every((c) => c.g === null), l12 && l12.contours.map((c) => c.g).join(','))
+}
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

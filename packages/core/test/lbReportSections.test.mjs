@@ -9,6 +9,8 @@
 //      （只装一个模块的再生式配置出来的文件与改版前一个字不多）。
 //   ⑤ 两个主进程出口拿两节模型能跑通：Excel 几何表按模块各一张、表名带短名，详情表副标题带模块名；
 //      Word 正文里有模块小节与详情章的模块标题。
+//   ⑥ 瀑布段的列头走段自带的 heads（工况对照「晴空 / 降雨」、端到端逐段汇总「C/(N+I) / 段余量」）：
+//      Excel / Word 中英两版都不许印成「上行 / 下行」，英文版不许是中文（体检 #13）。
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -138,6 +140,51 @@ function makeModel(lang = 'zh', sections = [{ key: 'uplink', regenMode: 'uplink'
   assert.ok(xml.includes('1.1　上行（地球站 → 卫星）') && xml.includes('1.2　星间微波链路'), 'Word §1 模块小节')
   assert.ok(xml.includes('2.1　上行（地球站 → 卫星）'), 'Word §2 只有有统计的节')
   assert.ok(xml.includes('#3　SAT-A → SAT-B'), 'Word 详情章有第三条链路')
+}
+
+// —— ⑥ 列头走段自带的 heads（Excel / Word，中英两版）——
+{
+  const core = require(ROOT + '/packages/core/utils/waterfallBuilder.js')
+  const R = {
+    linkmargin: '3.00', thresholdCN: '4.50', RXnoiseBW: '65.00',
+    uplinkCN: '12.00', downlinkCN: '10.00', carrierTotalCN: '7.50',
+    uplinkRainAttenuation: '3.50', downlinkRainAttenuationResult: '7.60', gOverTdegradationResult: '2.90',
+    uplinkPowerRatioResult: '10', downlinkPowerRatioResult: '20',
+    transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '12.90',
+    downlinkInterferenceLossResult: '0.00'
+  }
+  const textOf = (v) => (v && typeof v === 'object' && Array.isArray(v.richText)) ? v.richText.map((t) => t.text).join('') : String(v == null ? '' : v)
+  for (const lang of ['zh', 'en']) {
+    const segs = core.buildWaterfallSegments({ results: R, lang, orbitType: 'GEO' })
+    // 端到端「逐段汇总」那种自带列头的双列段，一并塞进同一条链路
+    segs.push({ id: 'segments', no: segs.length + 1, title: lang === 'en' ? 'Per-Segment Summary' : '逐段汇总', cols: 2, heads: lang === 'en' ? ['C/(N+I)', 'Segment Margin'] : ['C/(N+I)', '段余量'],
+      rows: [{ label: '1', up: '9.10', down: '2.30', unit: 'dB', kind: 'ref', num: 9.1, numDown: 2.3 }] })
+    const model = buildReportModel({
+      lang, orbitType: 'GEO', appVersion: 'test', satelliteName: 'S', frequencyBand: 'Ku',
+      doc: { docNo: 'T-6', classification: '', org: '', date: '2026-10-16' },
+      links: [{ no: 1, rowId: 'r1', txName: 'TX', rxName: 'RX', ok: true, error: '', data: R, segments: segs, inputs: [], figures: [], sla: null, carrier: { stds: ['DVB-S2'] } }]
+    })
+    model.t = labelBundle(lang)
+    report.enrichReportModel(model)
+    const heads = (lang === 'en' ? [['Clear Sky', 'Rain'], ['C/(N+I)', 'Segment Margin']] : [['晴空', '降雨'], ['C/(N+I)', '段余量']])
+    const [P, U, UP, DN] = lang === 'en' ? ['Parameter', 'Unit', 'Uplink', 'Downlink'] : ['参数', '单位', '上行', '下行']
+    // Excel 详情表：段题注下面那一行就是列头
+    const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await report.buildReportWorkbook(model))
+    const ws = wb.worksheets.find((x) => x.name.startsWith('#1'))
+    const rows = []; ws.eachRow((row, rn) => { const a = []; row.eachCell({ includeEmpty: true }, (c, cn) => { a[cn - 1] = textOf(c.value) }); rows[rn] = a })
+    for (const [id, h] of [['weather', heads[0]], ['segments', heads[1]]]) {
+      const seg = segs.find((s) => s.id === id)
+      const capAt = rows.findIndex((a) => a && a[0] === '§' + seg.no + '  ' + seg.title)
+      assert.ok(capAt > 0, `${lang} Excel：找得到「${seg.title}」的段题注`)
+      assert.deepEqual(rows[capAt + 1].slice(0, 4), [P, ...h, U], `${lang} Excel「${seg.title}」列头走 seg.heads：` + JSON.stringify(rows[capAt + 1]))
+    }
+    // 级联主段（三列、不带 heads）照旧「上行 / 下行 / 合计」
+    assert.ok(rows.some((a) => a && a[0] === P && a[1] === UP && a[2] === DN), `${lang} Excel：无 heads 的段照旧上行 / 下行`)
+    // Word：列头文字进了正文，英文版这两张表里没有中文列头
+    const xml = await (await JSZip.loadAsync(await buildReportDocx(model))).file('word/document.xml').async('string')
+    for (const h of heads.flat()) assert.ok(xml.includes('>' + h + '<'), `${lang} Word 列头「${h}」`)
+    if (lang === 'en') for (const zh of ['晴空', '降雨', '段余量']) assert.ok(!xml.includes('>' + zh + '<'), `en Word 不许有中文列头「${zh}」`)
+  }
 }
 
 console.log('lbReportSections: all passed')

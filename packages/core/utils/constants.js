@@ -116,8 +116,10 @@ const P838_TABLE = {
 };
 
 // 通信标准选项
-// DVB-S/S2/S2X: ETSI EN 300 421 / EN 302 307-1 / EN 302 307-2
-// DVB-RCS2:    ETSI EN 301 545-2 V1.2.1 (Second Generation DVB Interactive Satellite System)
+// DVB-S:       ETSI EN 300 421（门限未与原文逐值核对）
+// DVB-S2/S2X:  ETSI EN 302 307-1 V1.4.1 (2014-11) 表 13 / EN 302 307-2 V1.4.1 (2024-08) 表 20a·20b·20c
+//              ——门限由原表生成，见下方「由 ETSI 原表生成」一段与 packages/core/data/etsiDvbS2.json
+// DVB-RCS2:    ETSI EN 301 545-2 V1.5.1 (2026-04) 附录 A 参考波形（调制与码率）；门限未核实（见该表表头）
 // 3GPP NR-NTN: 3GPP TS 38.211/38.212/38.214 Release 17 (TR 38.821)
 // 3GPP NB-IoT NTN: 3GPP TS 36.211/36.212/36.213 Release 17 (TR 36.763)
 // group 供下拉分组（<optgroup>）；key（value）是配置里存的 dvbStandard 值，两个 3GPP 老 key
@@ -140,6 +142,10 @@ const DVB_STANDARD_OPTIONS = [
   { value: 'DVB-S2', label: 'DVB-S2', group: 'DVB' },
   { value: 'DVB-RCS2', label: 'DVB-RCS2', group: 'DVB' },
   { value: 'DVB-S2X', label: 'DVB-S2X', group: 'DVB' },
+  // 短帧 / 中帧各成一张表（EN 302 307-2 表 20c / 20b）：同一个规范名（16APSK 3/5、BPSK 1/5）在不同帧长下
+  // 门限不同，混进正常帧那张表只能给名字硬加后缀。键在英文报告里原样出现（lbReport.carrierStdLabel），故写成可读英文。
+  { value: 'DVB-S2X Short', label: 'DVB-S2X · 短帧', group: 'DVB' },
+  { value: 'DVB-S2X VL-SNR Medium', label: 'DVB-S2X · VL-SNR 中帧', group: 'DVB' },
   { value: '3GPP NR-NTN', label: '3GPP NR-NTN · MCS 表 1（64QAM）', group: '3GPP NR-NTN' },
   { value: '3GPP NR-NTN T2', label: '3GPP NR-NTN · MCS 表 2（256QAM）', group: '3GPP NR-NTN' },
   { value: '3GPP NR-NTN T3', label: '3GPP NR-NTN · MCS 表 3（低频谱效率）', group: '3GPP NR-NTN' },
@@ -165,7 +171,10 @@ const DVBS_MODCOD_TABLE = [
 ];
 
 // DVB-RCS2 MODCOD预设表 (Es/N₀, Turbo码, 1+α=1.2)
-// 帧效率: 0.9; Es/N₀门限: AWGN信道 PER=10⁻⁵
+// 调制与码率 = ETSI EN 301 545-2 V1.5.1 (2026-04) 附录 A 表 A-1 线性调制参考波形的那几档；帧效率 0.9。
+// ★ 门限一列【未核实】：EN 301 545-2 V1.5.1 全文没有门限表（附录 A 只定义波形参数），原注「AWGN、PER = 10⁻⁵」
+//   的出处应是 TR 101 545-4（实施指南），本仓库未取得原文。故只在 title 里如实标「未核实」（DVB_TABLE_META.note），
+//   不写进界面正文；SLA 的帧差错率对本表也不按标准取，仍走场景参数（见 shared/lbSla.js qefOf）。
 const DVB_RCS2_MODCOD_TABLE = [
   { label: 'QPSK 1/3',  modulation: 'QPSK',  fec: '1/3', rsCode: '0.9', bandwidthFactor: 1.2, noiseRatioMode: 'esno', threshold: -0.8 },
   { label: 'QPSK 1/2',  modulation: 'QPSK',  fec: '1/2', rsCode: '0.9', bandwidthFactor: 1.2, noiseRatioMode: 'esno', threshold:  1.4 },
@@ -179,111 +188,62 @@ const DVB_RCS2_MODCOD_TABLE = [
   { label: '16QAM 5/6', modulation: '16QAM', fec: '5/6', rsCode: '0.9', bandwidthFactor: 1.2, noiseRatioMode: 'esno', threshold: 14.4 }
 ];
 
-// DVB-S2 MODCOD预设表 (Es/N₀, RS=0.9, 1+α=1.05)
-const DVBS2_MODCOD_TABLE = [
-  { label: 'QPSK 1/4', modulation: 'QPSK', fec: '1/4', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -1.20 },
-  { label: 'QPSK 1/3', modulation: 'QPSK', fec: '1/3', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -0.70 },
-  { label: 'QPSK 2/5', modulation: 'QPSK', fec: '2/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 0.00 },
-  { label: 'QPSK 1/2', modulation: 'QPSK', fec: '1/2', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 1.00 },
-  { label: 'QPSK 3/5', modulation: 'QPSK', fec: '3/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 2.23 },
-  { label: 'QPSK 2/3', modulation: 'QPSK', fec: '2/3', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 3.10 },
-  { label: 'QPSK 3/4', modulation: 'QPSK', fec: '3/4', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 4.03 },
-  { label: 'QPSK 4/5', modulation: 'QPSK', fec: '4/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 4.68 },
-  { label: 'QPSK 5/6', modulation: 'QPSK', fec: '5/6', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 5.18 },
-  { label: 'QPSK 8/9', modulation: 'QPSK', fec: '8/9', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.20 },
-  { label: 'QPSK 9/10', modulation: 'QPSK', fec: '9/10', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.42 },
-  { label: '8PSK 3/5', modulation: '8PSK', fec: '3/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 5.50 },
-  { label: '8PSK 2/3', modulation: '8PSK', fec: '2/3', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.62 },
-  { label: '8PSK 3/4', modulation: '8PSK', fec: '3/4', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 7.91 },
-  { label: '8PSK 5/6', modulation: '8PSK', fec: '5/6', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 9.35 },
-  { label: '8PSK 8/9', modulation: '8PSK', fec: '8/9', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.69 },
-  { label: '8PSK 9/10', modulation: '8PSK', fec: '9/10', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.98 },
-  { label: '16APSK 2/3', modulation: '16APSK', fec: '2/3', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 8.97 },
-  { label: '16APSK 3/4', modulation: '16APSK', fec: '3/4', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.21 },
-  { label: '16APSK 4/5', modulation: '16APSK', fec: '4/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 11.03 },
-  { label: '16APSK 5/6', modulation: '16APSK', fec: '5/6', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 11.61 },
-  { label: '16APSK 8/9', modulation: '16APSK', fec: '8/9', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.89 },
-  { label: '16APSK 9/10', modulation: '16APSK', fec: '9/10', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.13 },
-  { label: '32APSK 3/4', modulation: '32APSK', fec: '3/4', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.73 },
-  { label: '32APSK 4/5', modulation: '32APSK', fec: '4/5', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.64 },
-  { label: '32APSK 5/6', modulation: '32APSK', fec: '5/6', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 14.28 },
-  { label: '32APSK 8/9', modulation: '32APSK', fec: '8/9', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 15.69 },
-  { label: '32APSK 9/10', modulation: '32APSK', fec: '9/10', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 16.05 }
-];
+// ===================== DVB-S2 / S2X：由 ETSI 原表生成 =====================
+//
+// 门限不再手抄（2026-10-17 前的手抄表有 DVB-S2 3 档、S2X 19 档与原表不符，S2X 还缺 13 个 -L 档，
+// 其中 6 个丢了 -L 后缀混在表里）。packages/core/data/etsiDvbS2.json 是原表的逐值转录：
+//   EN 302 307-1 V1.4.1 (2014-11) 表 13   —— 正常帧 64 800 bit，QEF = TS 包差错率 PER 10⁻⁷，50 次迭代
+//   EN 302 307-2 V1.4.1 (2024-08) 表 20a  —— 正常帧 64 800 bit（QPSK 2/9 为 61 560），QEF = 帧差错率 FER 10⁻⁵，
+//                                           另给硬限幅非线性信道的 Csat/(N0·Rs)（资料性）
+//                                  表 20b  —— VL-SNR 中帧 30 780 bit，FER 10⁻⁵，75 次迭代
+//                                  表 20c  —— 短帧 16 200 bit（BPSK-S 15 390、π/2-BPSK 1/5·4/15 为 14 976），FER 10⁻⁵
+// 由 scripts/build-etsi-dvb-tables.mjs 从原文 PDF 抽取并自检，packages/core/test/etsiTables.test.mjs 逐值钉住。
+// 本段只做「原表行 → MODCOD 行」的映射：
+//   label    = ETSI 规范名（'8APSK 5/9-L'、'BPSK-S 1/5'）；与「调制 + 码率」自动名相同的，归一化时收成自动名
+//   调制     = 名字里的调制；BPSK-S（π/2-BPSK、扩频因子 2，§5.4.0a 每个 FECFRAME 比特重复两次）记 BPSK、m = 2，
+//              门限是扩频后每个传输符号的 Es/N₀，与 m 成对（见 modcodTables.js 文件头）
+//   帧效率 0.9 / 滚降 1.05 —— 平台既有的工程口径，与改前一致（原表频谱效率另记在 etsiDvbS2.json 的 se）
+//   门限     = 原表 Ideal Es/N0（AWGN 线性信道、理想同步、不含实现损失）
+//   hl       = 表 20a 的 Ideal Csat/(N0·Rs)；其余表没有这一列记 null
+// 行序：正常帧表按调制（QPSK → 8APSK → 8PSK → 16/32/64/128/256APSK）、码率升序、同码率常规星座在 -L 之前；
+//       短帧 / 中帧照原表次序。
+const ETSI_DVB = require('../data/etsiDvbS2.json');
+const ETSI_MOD_ORDER = ['BPSK', 'QPSK', '8APSK', '8PSK', '16APSK', '32APSK', '64APSK', '128APSK', '256APSK'];
+const etsiRate = (fec) => { const [a, b] = String(fec).split('/').map(Number); return a / b; };
+function etsiModcodRows(tableIds, sortRows) {
+  const rows = [];
+  for (const id of tableIds) for (const r of ETSI_DVB.tables[id].rows) rows.push(r);
+  if (sortRows) {
+    rows.sort((x, y) => (ETSI_MOD_ORDER.indexOf(x.mod) - ETSI_MOD_ORDER.indexOf(y.mod))
+      || (etsiRate(x.fec) - etsiRate(y.fec)) || ((x.L ? 1 : 0) - (y.L ? 1 : 0)));
+  }
+  return rows.map((r) => ({
+    label: r.name, modulation: r.mod, fec: r.fec, rsCode: '0.9', bandwidthFactor: 1.05,
+    noiseRatioMode: 'esno', threshold: r.esno, m: r.spread || 1, hl: r.hl != null ? r.hl : null
+  }));
+}
 
-// DVB-S2X MODCOD预设表 (Es/N₀, RS=0.9, 1+α=1.05)
-// 参考标准: ETSI EN 302 307-2 V1.3.1 (2021-07), Table 20a
-// 包含全部DVB-S2 MODCOD (向后兼容) 及 DVB-S2X 新增MODCOD
-// 门限值为正常FECFRAME (64800 bits), AWGN信道, QEF (PER < 10⁻⁷) 条件下的Es/N₀
-const DVBS2X_MODCOD_TABLE = [
-  // ——— QPSK (DVB-S2 legacy + S2X新增) ———
-  { label: 'QPSK 2/9',  modulation: 'QPSK', fec: '2/9',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -2.85 },
-  { label: 'QPSK 13/45', modulation: 'QPSK', fec: '13/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -2.03 },
-  { label: 'QPSK 1/4',  modulation: 'QPSK', fec: '1/4',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -1.20 },
-  { label: 'QPSK 1/3',  modulation: 'QPSK', fec: '1/3',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: -0.70 },
-  { label: 'QPSK 2/5',  modulation: 'QPSK', fec: '2/5',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 0.00 },
-  { label: 'QPSK 9/20', modulation: 'QPSK', fec: '9/20', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 0.69 },
-  { label: 'QPSK 1/2',  modulation: 'QPSK', fec: '1/2',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 1.00 },
-  { label: 'QPSK 11/20', modulation: 'QPSK', fec: '11/20', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 1.58 },
-  { label: 'QPSK 3/5',  modulation: 'QPSK', fec: '3/5',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 2.23 },
-  { label: 'QPSK 2/3',  modulation: 'QPSK', fec: '2/3',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 3.10 },
-  { label: 'QPSK 3/4',  modulation: 'QPSK', fec: '3/4',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 4.03 },
-  { label: 'QPSK 4/5',  modulation: 'QPSK', fec: '4/5',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 4.68 },
-  { label: 'QPSK 5/6',  modulation: 'QPSK', fec: '5/6',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 5.18 },
-  { label: 'QPSK 8/9',  modulation: 'QPSK', fec: '8/9',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.20 },
-  { label: 'QPSK 9/10', modulation: 'QPSK', fec: '9/10', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.42 },
-  // ——— 8PSK (DVB-S2 legacy + S2X新增) ———
-  { label: '8PSK 3/5',   modulation: '8PSK', fec: '3/5',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 5.50 },
-  { label: '8PSK 23/36', modulation: '8PSK', fec: '23/36', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.12 },
-  { label: '8PSK 2/3',   modulation: '8PSK', fec: '2/3',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 6.62 },
-  { label: '8PSK 25/36', modulation: '8PSK', fec: '25/36', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 7.05 },
-  { label: '8PSK 13/18', modulation: '8PSK', fec: '13/18', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 7.49 },
-  { label: '8PSK 3/4',   modulation: '8PSK', fec: '3/4',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 7.91 },
-  { label: '8PSK 5/6',   modulation: '8PSK', fec: '5/6',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 9.35 },
-  { label: '8PSK 8/9',   modulation: '8PSK', fec: '8/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.69 },
-  { label: '8PSK 9/10',  modulation: '8PSK', fec: '9/10',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.98 },
-  // ——— 16APSK (DVB-S2 legacy + S2X新增) ———
-  { label: '16APSK 26/45', modulation: '16APSK', fec: '26/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 7.80 },
-  { label: '16APSK 3/5',   modulation: '16APSK', fec: '3/5',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 8.38 },
-  { label: '16APSK 28/45', modulation: '16APSK', fec: '28/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 8.56 },
-  { label: '16APSK 23/36', modulation: '16APSK', fec: '23/36', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 8.77 },
-  { label: '16APSK 2/3',   modulation: '16APSK', fec: '2/3',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 8.97 },
-  { label: '16APSK 25/36', modulation: '16APSK', fec: '25/36', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 9.49 },
-  { label: '16APSK 3/4',   modulation: '16APSK', fec: '3/4',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.21 },
-  { label: '16APSK 13/18', modulation: '16APSK', fec: '13/18', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 9.90 },
-  { label: '16APSK 7/9',   modulation: '16APSK', fec: '7/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 10.69 },
-  { label: '16APSK 4/5',   modulation: '16APSK', fec: '4/5',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 11.03 },
-  { label: '16APSK 5/6',   modulation: '16APSK', fec: '5/6',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 11.61 },
-  { label: '16APSK 77/90', modulation: '16APSK', fec: '77/90', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.09 },
-  { label: '16APSK 8/9',   modulation: '16APSK', fec: '8/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.89 },
-  { label: '16APSK 9/10',  modulation: '16APSK', fec: '9/10',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.13 },
-  // ——— 32APSK (DVB-S2 legacy + S2X新增) ———
-  { label: '32APSK 2/3',   modulation: '32APSK', fec: '2/3',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 11.75 },
-  { label: '32APSK 32/45', modulation: '32APSK', fec: '32/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.14 },
-  { label: '32APSK 11/15', modulation: '32APSK', fec: '11/15', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.49 },
-  { label: '32APSK 3/4',   modulation: '32APSK', fec: '3/4',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 12.73 },
-  { label: '32APSK 7/9',   modulation: '32APSK', fec: '7/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.24 },
-  { label: '32APSK 4/5',   modulation: '32APSK', fec: '4/5',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.64 },
-  { label: '32APSK 5/6',   modulation: '32APSK', fec: '5/6',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 14.28 },
-  { label: '32APSK 8/9',   modulation: '32APSK', fec: '8/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 15.69 },
-  { label: '32APSK 9/10',  modulation: '32APSK', fec: '9/10',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 16.05 },
-  // ——— 64APSK (DVB-S2X新增) ———
-  { label: '64APSK 32/45', modulation: '64APSK', fec: '32/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 13.98 },
-  { label: '64APSK 11/15', modulation: '64APSK', fec: '11/15', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 14.81 },
-  { label: '64APSK 7/9',   modulation: '64APSK', fec: '7/9',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 15.52 },
-  { label: '64APSK 4/5',   modulation: '64APSK', fec: '4/5',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 16.20 },
-  { label: '64APSK 5/6',   modulation: '64APSK', fec: '5/6',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 16.55 },
-  // ——— 128APSK (DVB-S2X新增) ———
-  { label: '128APSK 3/4',  modulation: '128APSK', fec: '3/4',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 17.73 },
-  { label: '128APSK 7/9',  modulation: '128APSK', fec: '7/9',  rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 18.53 },
-  // ——— 256APSK (DVB-S2X新增) ———
-  { label: '256APSK 29/45', modulation: '256APSK', fec: '29/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 16.98 },
-  { label: '256APSK 2/3',   modulation: '256APSK', fec: '2/3',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 17.24 },
-  { label: '256APSK 31/45', modulation: '256APSK', fec: '31/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 18.10 },
-  { label: '256APSK 32/45', modulation: '256APSK', fec: '32/45', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 18.59 },
-  { label: '256APSK 11/15', modulation: '256APSK', fec: '11/15', rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 18.84 },
-  { label: '256APSK 3/4',   modulation: '256APSK', fec: '3/4',   rsCode: '0.9', bandwidthFactor: 1.05, noiseRatioMode: 'esno', threshold: 19.57 }
-];
+// DVB-S2 MODCOD预设表 —— EN 302 307-1 V1.4.1 表 13（Es/N₀，正常帧，QEF PER 10⁻⁷）
+const DVBS2_MODCOD_TABLE = etsiModcodRows(ETSI_DVB.standards['DVB-S2'], false);
+
+// DVB-S2X MODCOD预设表（正常帧）—— EN 302 307-2 V1.4.1 表 20a 的 S2X 新增档（QEF FER 10⁻⁵）
+// + S2 遗留档（S2X 接收机须兼容，门限取 EN 302 307-1 V1.4.1 表 13，QEF PER 10⁻⁷）
+const DVBS2X_MODCOD_TABLE = etsiModcodRows(ETSI_DVB.standards['DVB-S2X'], true);
+// DVB-S2X 短帧 —— 表 20c（含 VL-SNR 的 π/2-BPSK / BPSK-S 短帧档）
+const DVBS2X_SHORT_MODCOD_TABLE = etsiModcodRows(ETSI_DVB.standards['DVB-S2X Short'], false);
+// DVB-S2X VL-SNR 中帧 —— 表 20b
+const DVBS2X_MEDIUM_MODCOD_TABLE = etsiModcodRows(ETSI_DVB.standards['DVB-S2X VL-SNR Medium'], false);
+
+// 每张 DVB 表的条件元数据：门限那一列在什么条件下成立。与 NTN_TABLE_META 同形（channel / block / source
+// 进文件管理 MODCOD 页的标准属性栏，只读），另带 qef（QEF 判据，SLA 丢包率按它取）与 note（只进 title）。
+// 逐行的表号 / 帧长 / QEF 判据以 etsiDvbS2.json 为准（DVB-S2X 正常帧那张表混着表 20a 与表 13 两种判据）。
+const DVB_TABLE_META = {
+  'DVB-S2': { channel: 'AWGN', block: 'FECFRAME 64800 bit', source: 'ETSI EN 302 307-1 V1.4.1 表 13', qef: 'PER 10⁻⁷' },
+  'DVB-S2X': { channel: 'AWGN', block: 'FECFRAME 64800 bit', source: 'ETSI EN 302 307-2 V1.4.1 表 20a · EN 302 307-1 V1.4.1 表 13', qef: 'FER 10⁻⁵ · PER 10⁻⁷' },
+  'DVB-S2X Short': { channel: 'AWGN', block: 'FECFRAME 16200 bit', source: 'ETSI EN 302 307-2 V1.4.1 表 20c', qef: 'FER 10⁻⁵' },
+  'DVB-S2X VL-SNR Medium': { channel: 'AWGN', block: 'FECFRAME 30780 bit', source: 'ETSI EN 302 307-2 V1.4.1 表 20b', qef: 'FER 10⁻⁵' },
+  'DVB-RCS2': { source: 'ETSI EN 301 545-2 V1.5.1 附录 A', note: '门限未核实：EN 301 545-2 V1.5.1 无门限表（应对照 TR 101 545-4）' }
+};
 
 // ===================== 3GPP NTN =====================
 //
@@ -645,7 +605,10 @@ module.exports = {
   DVBS_MODCOD_TABLE,
   DVBS2_MODCOD_TABLE,
   DVBS2X_MODCOD_TABLE,
+  DVBS2X_SHORT_MODCOD_TABLE,
+  DVBS2X_MEDIUM_MODCOD_TABLE,
   DVB_RCS2_MODCOD_TABLE,
+  DVB_TABLE_META,
   NR_NTN_MODCOD_TABLE,
   NR_NTN_T2_MODCOD_TABLE,
   NR_NTN_T3_MODCOD_TABLE,

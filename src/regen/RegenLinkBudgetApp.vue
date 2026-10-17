@@ -3,7 +3,8 @@ import { ref, shallowReactive, reactive, computed, onMounted, onBeforeUnmount, n
 import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
-import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW, powerWToEirp, rxGtFromNoise } from './regenParams.js'
+import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, withFieldDefaults, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW } from './regenParams.js'
+import { hopSideOf, regenHopGeometry, regenHopDelay, regenDigestParams } from './regenModeScope.js'   // 上/下行单跳时延口径 · 报告输入清单按模块取字段
 import { stableStringify } from '../shared/configDirty.js'
 import { pf } from '../shared/num.js'   // 全角容错 parseFloat：手填圆轨道高度/倾角（经 sat 面板，不过 StationGrid 归一）也能吃全角数字
 import { s8LinkParams } from '../shared/s8Params.js'   // ITU-R P.618-14 §8 统计口径参数组装 + 适用性门控
@@ -11,6 +12,7 @@ import { migrateLegacyEs } from '../shared/esMigrate.js'
 import { pickColumn, fmtScaled, fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
 import { lbDocT } from '../shared/lbDocI18n.js'
+import { waterfallTsv } from '../shared/lbWaterfallTsv.js'   // 详细预算整表复制（四窗一份）
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'   // 报表语言跟随平台语言
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, isAutoNamed, newCfgName, newFolderName, copyNameOf, isSatNamePlaceholder } from '../shared/lbAutoName.js'   // 三库条目自动命名（未被用户改名时，名字随关键参数走）
 import { byLang } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
@@ -19,7 +21,8 @@ import { loadCustomSats, findPoolByNorad, orbitSpecOf as poolOrbitSpecOf } from 
 import { lbOrbitSpec, pickedTreeNode, scenarioEpochPatch, pinCircularEpoch } from '../shared/lbTreeOrbit.js'   // 库条目 spec 送引擎前补历元 / 跟上场景历元
 import { GEO_T0_MODES, normGeoT0Mode, normGeoT0ISO, geoT0State, resolveGeoT0ISO, sceneSecondISO, t0InputValue, parseT0Input } from '../shared/geoT0.js'   // 自动几何的搜索起点：时间轴 / 系统时钟 / 指定
 import { slantWgs84Max, altFromSlant } from '../shared/slantRange.js'   // 手动几何：斜距换算 / 等效轨道高度
-import { resolveRefId, LIB_WINDOWS, libCopyTargets, copyLibEntry, externalLibEntries } from '../shared/lbShare.js'
+import { resolveRefId, LIB_WINDOWS, libCopyTargets, copyLibEntry, externalLibEntries, shareNgsoSat } from '../shared/lbShare.js'
+import { createPreviewJob } from '../shared/lbPreview.js'   // 站表实时列（EIRP / G·T / 功放尾标）：输入一变逐行重算，「计算」优先
 import Icon from '../components/Icon.vue'
 import TzPicker from '../components/TzPicker.vue'
 import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
@@ -38,6 +41,8 @@ import RegenSatPanel, { treeNodeOrbit, orbitToForm } from './RegenSatPanel.vue' 
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 import LbVizPane from '../components/LbVizPane.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
+import LbCapDialog from '../components/LbCapDialog.vue'
+import { CAP_PBW, capKeyMode, capKeyIsl, buildCapModel, normCapParams, applyRowCap, setCapIncluded, setCapCount, setCapTpParam, remapCapParams, capReportBlock } from '../shared/lbCapacity.js'   // 容量汇总（三窗共用纯逻辑）
 import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaSamplesFor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
 import LbReportDialog from '../components/LbReportDialog.vue'
 import { useLbReport } from '../shared/useLbReport.js'
@@ -159,6 +164,15 @@ function sitesOf(key) { return key === 'uplink' ? [TX_SITE] : key === 'downlink'
 // 用途三处：出厂行的 R0.01% / 海拔按它写；站址留空的行组参时补它；表内灰字照显它。取不到为 null，一切照旧。
 const defSite = ref(null)
 const ghostOf = (row, f) => defaultSiteValue(row, f.key, defSite.value)
+// 入算行：留空格补成表内灰字的那个值，再组参 / 解几何（口径同雨衰页 effectiveRow）——
+//   ① 站址经纬度都留空：R0.01% / 海拔按默认站址的 ITU 取值（withDefaultSite，须在②之前：它看经纬度是否留空）；
+//   ② 其余留空的数值格补字段缺省（经纬度即 DEFAULT_SITE、最低仰角 10°、卫星 G/T 10 dB/K、再生下行 EIRP 25 dBW…）。
+// 早先留空格原样下去：几何把最低仰角当 0°，引擎按弯管口径回退（卫星 G/T 2 dB/K、下行 EIRP 46 dBW）——灰字写 25、算的是 46。
+// 组参（计算 / 实时列）、几何求解、斜距推算、图表站址都按它取数；表格本身不改写（留空就是留空）。
+const effTx = (row) => withFieldDefaults(withDefaultSite(row, defSite.value, [TX_SITE]), TX_FIELDS)
+const effRx = (row) => withFieldDefaults(withDefaultSite(row, defSite.value, [RX_SITE]), RX_FIELDS)
+// 地球站库条目同理：库编辑器的灰字也是 f.def（天线口径留空曾按引擎回退 6.2 / 3.7 m 算，灰字写着 2.4；功放预设留空直接报「工作点无效」）
+const effEs = (form) => withFieldDefaults(form, ES_FIELDS)
 // 站址名留空的行：链路名取表内灰字那个名字（字段缺省站址名，与 StationGrid 的 ghost 同源），不再回落成「发 n / 收 n」
 const siteNameOf = (row, key, fields, i, pre) => {
   if (row[key]) return row[key]
@@ -503,24 +517,17 @@ const calcModeOf = (bbForm) => ((bbForm && bbForm.calcMode) === 'margin' ? 'marg
 // 工作点 G/T 恒由天线口径/效率 + 天线噪温 + 接收机噪温 + 馈线损耗按引擎口径算得
 // （不再支持「直接输入设备 G/T」——设备 G/T 系统噪温未知，无法自洽推出雨致 G/T 劣化）。
 const rxStations = reactive([])
-// 收信站 G/T 只读列：随天线/噪温/馈线 + 所选卫星下行频率实时算出的晴空 G/T（与引擎 gOverTe 同口径），
-// 让用户编辑参数时即时看到 G/T，无需先计算。传给 StationGrid 的 ro-values（{ _id: 值 }）。
-const rxGtValues = computed(() => {
-  const m = {}
-  for (const rx of rxStations) {
-    const sat = satOfRow(rx)
-    const gt = sat ? rxGtFromNoise(resolveEs(rx.stationId).form, sat.form) : NaN   // 接收链参数取自该站所选地球站配置
-    m[rx._id] = isFinite(gt) ? (Math.round(gt * 100) / 100).toFixed(2) : ''
-  }
-  return m
-})
-// 链路表「地球站配置」格第二行小字（与 GSO/NGSO 一致）：发信站群显示实时 EIRP、收信站群显示实时 G/T。
-// EIRP = 工作点功放 powerWToEirp（取该行所选卫星的上行频率）；G/T 复用 rxGtValues（替代原末列 ro-label 列）。
+// 链路表「地球站配置」格第二行小字（与 GSO/NGSO 一致）：发信站群显示 EIRP、收信站群显示收信站 G/T。
+// 两个读数与功放尾标都取引擎出参（computedVals 的 _eirp / _gt / _paW）：算过且这一行输入没变的，就是那次「计算」的
+// 结果（与结果列同源，见 writeTagVals）；没算过 / 输入已变的行由实时预览（groundPreview）按闭式几何现算。
+// ★ 早先这两处是窗口里的闭式算式：G/T 按 rxGtFromNoise——不认「天线噪温 = 自动」（出厂即自动：10° 仰角比引擎高 0.55 dB）、
+//   也不计云噪；EIRP 按功放预设 powerWToEirp——「设置余量」方式下引擎解出的功放不是预设值，EIRP 与结果列对不上。
+const tagText = (v) => (v != null && v !== '' && v !== '—' ? v : null)
 const txCellSub = (f, row) => {
   if (f.key !== 'stationId') return null
-  const sat = satOfRow(row)
-  const eirp = powerWToEirp(resolveEs(row.stationId).form.opPowerW, resolveEs(row.stationId).form, sat ? sat.form : {})
-  return isFinite(eirp) ? `EIRP ${eirp.toFixed(2)} dBW` : null
+  const m = computedVals.value[row._id]
+  const v = tagText(m && m._eirp)
+  return v ? `EIRP ${v} dBW` : null
 }
 // 功能区「单位」档的响应式副本：模板里就地算的读数（功放尾标等）直接吃它——fmtQty 内部读的是
 // 模块态，不响应式，没算过链路时切档就不会有任何东西触发重渲染。值由 onUnitModeChange 更新。
@@ -528,8 +535,7 @@ const unitAdaptive = ref(isUnitAdaptive())
 // 「地球站配置」格内行内尾标：发信站配置名之后贴该站算出的功放功率（就在第二行 EIRP 之上）。只给发信站——
 // 功放是发射链的量，收信站那格没有它。库里那一项是「功放功率预设」，这里是引擎按该站几何/载波解出的
 // paRecommendation（含回退的功放输出）：计算方式=设置工作点时二者相等，=设置余量时报本链路真正需要的功率。
-// 与 GSO/NGSO 的差别：再生式上行几何要跑 SGP4 最差互视，太贵故不做逐键实时——此值随「计算」更新
-// （输入再改会亮「输入已变」，与结果列同一口径）。
+// 算过且输入没变的行就是结果列「功放功率」那个数；没算过的行是闭式几何的实时估算（同 GSO / NGSO）。
 const txCellTag = (f, row) => {
   if (f.key !== 'stationId') return null
   const m = computedVals.value[row._id]
@@ -539,8 +545,9 @@ const txCellTag = (f, row) => {
 }
 const rxCellSub = (f, row) => {
   if (f.key !== 'stationId') return null
-  const v = rxGtValues.value[row._id]
-  return (v != null && v !== '') ? `G/T ${v} dB/K` : null
+  const m = computedVals.value[row._id]
+  const v = tagText(m && m._gt)
+  return v ? `G/T ${v} dB/K` : null
 }
 
 // ============ 星间链路群（再生式微波 ISL）============
@@ -789,6 +796,7 @@ function clearModuleResults(key) {
   rawDataByRow.value = drop(rawDataByRow.value)
   sweepParamsByRow.value = drop(sweepParamsByRow.value)
   slaScanByRow.value = drop(slaScanByRow.value)
+  dropTagCache(ids)   // 格内读数「以计算结果为准」的登记随结果一起作废
   for (const k of Object.keys(resColUnits)) if (k.startsWith(key + ':')) delete resColUnits[k]
 }
 const METRIC_OPTIONS_UP = [
@@ -1098,8 +1106,8 @@ function writeResultVals(out, mode) {
         patch['_' + def.key] = (v === undefined || v === null || v === '') ? '—' : (ad && isFinite(n)) ? fmtScaled(ad.conv(n)) : v
       }
     }
-    // _paW＝该站算出的功放功率原值（上行独有；不随列档位换算——尾标自己按 fmtQty 换 mW 档，见 cellTagFn）
-    if (mode === 'uplink') patch._paW = d ? d.paRecommendation : ''
+    // 格内读数（_eirp / _gt / _paW）不在这里写：它们只在「计算」那一刻落一次（writeTagVals）——这里还会在切「单位」档时
+    // 整列重写，输入已变的行那时挂的是实时预览的值，不能拿上一次的结果顶回去
     batch[l.rowId] = { ...(batch[l.rowId] || null), ...patch }
   }
   patchVals(batch)
@@ -1141,23 +1149,103 @@ watch(txStations, () => markStale(['uplink']), { deep: true })
 watch(rxStations, () => markStale(['downlink']), { deep: true })
 watch(islLinks, () => markStale(['isl']), { deep: true })
 watch(laserLinks, () => markStale(['laser']), { deep: true })
+
+// —— 上 / 下行一行站送引擎的入参（「计算」与实时列同一份）——
+// 留空格按灰字补齐（effTx / effRx / effEs），卫星取该行所用的那颗，计算方式随该行载波：设置工作点＝上行按站型
+// 「功放功率预设」、下行按收信站 G/T 求余量；设置余量＝反解功放 / G/T。site＝入算行（几何也取它）；
+// powerBad＝上行「设置工作点」而功放预设不是正数（「计算」报因，实时列不算）。
+function groundInputs(mode, st) {
+  const sat = satOfRow(st)
+  const bbForm = resolveBaseband(st.basebandId).form
+  const es = effEs(resolveEs(st.stationId).form)
+  if (mode === 'downlink') {
+    const site = effRx(st)
+    const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, site, es)
+    return { site, satParams, linkParams, opt: { mode: calcModeOf(bbForm) }, powerBad: false }
+  }
+  const site = effTx(st)
+  const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, site, es)
+  const power = calcModeOf(bbForm) === 'power', powerW = parseFloat(es.opPowerW)
+  return { site, satParams, linkParams, opt: power ? { mode: 'power', powerW } : { mode: 'margin' }, powerBad: power && !(powerW > 0) }
+}
+// 实时列那一次引擎调用的入参：几何=手动时与「计算」逐字同一份（applyManualGeom 照抄入算行的斜距 / 仰角）；
+// 几何=自动最差时取引擎闭式（轨道高度 + 最低仰角：单站最差即压在最低仰角上），不跑 SGP4——那只是还没点「计算」时的估算。
+function groundPreviewSpec(mode, inp) {
+  let link = inp.linkParams
+  if (geoManual.value) {
+    const s = mode === 'downlink' ? MANUAL_RX : MANUAL_TX
+    link = { ...inp.linkParams }
+    applyManualGeom(link, inp.site[s.dKey], inp.site[s.eKey])
+  }
+  return { mode, sat: inp.satParams, link, opt: inp.opt }
+}
+// —— 站表实时列：发信站 EIRP + 功放尾标 / 收信站 G/T（与 GSO / NGSO 同一套，作业本体在 shared/lbPreview.js）——
+// 只跑正看着的那张地面表（读数只在那张表上露面）；再生式引擎没有批量入口，逐行一次 IPC（口径相同，只是没了块内取消）。
+// ★ 与结果列同源：算过且这一行输入没变的，读数就是那次「计算」的引擎出参（writeTagVals）；判据＝本行此刻的
+//   预览入参指纹与「计算」那一刻的相同（_resFp）。没算过 / 输入已变的行才由预览按闭式几何现算。
+const fix2 = (v) => { const n = parseFloat(v); return isNaN(n) ? v : n.toFixed(2) }
+const _resFp = {}     // 行 _id → 「计算」那一刻该行的预览入参指纹（会话态，换配置 / 移除模块清掉）
+const _resTags = {}   // 行 _id → 那次「计算」写进格内的读数
+const _pvFp = {}      // 行 _id → 本轮预览给该行组的入参指纹（回包时比对用）
+// 上行：EIRP + 功放尾标；下行：收信站 G/T（「设置余量」时即反解出的所需 G/T，同结果列「收信站 G/T」）
+const tagsOf = (down, d) => (down ? { _gt: d ? fix2(d.gOverTeResult) : '' } : { _eirp: d ? fix2(d.stationEIRPResult) : '', _paW: d ? d.paRecommendation : '' })
+function writeTagVals(mode, out, fpByRow) {
+  const m = {}
+  for (const l of out) {
+    const t = tagsOf(mode === 'downlink', l.data)   // 算失败的行清空读数：结果列是「—」，格里不该还挂着估算值
+    m[l.rowId] = t
+    _resTags[l.rowId] = t
+    if (fpByRow[l.rowId] != null) _resFp[l.rowId] = fpByRow[l.rowId]
+  }
+  patchVals(m)
+}
+// 改过又改回「计算」那一份输入：把计算结果的读数写回去（中间那次预览写的是改动时的估算）
+function restoreTags(id) {
+  const t = _resTags[id], cur = computedVals.value[id]
+  if (!t || (cur && Object.keys(t).every((k) => cur[k] === t[k]))) return
+  setVals(id, t)
+}
+function dropTagCache(ids) { for (const id of ids) { delete _resFp[id]; delete _resTags[id]; delete _pvFp[id] } }
+const pvMode = () => (linkMode.value === 'uplink' || linkMode.value === 'downlink' ? linkMode.value : '')
+const groundPreview = createPreviewJob({
+  count: () => { const m = pvMode(); return api && m ? rowsOf(m).length : 0 },
+  build: (i) => {
+    const mode = pvMode()
+    const st = mode ? rowsOf(mode)[i] : null
+    if (!st) return null
+    try {
+      const inp = groundInputs(mode, st)
+      if (inp.powerBad) return null
+      const spec = groundPreviewSpec(mode, inp)
+      const fp = stableStringify(spec)
+      _pvFp[st._id] = fp
+      if (_resFp[st._id] === fp) { restoreTags(st._id); return null }   // 输入正是算过的那一份：读数以计算结果为准，不再预览
+      return { id: st._id, spec }
+    } catch (e) { return null }
+  },
+  send: (specs) => Promise.all(specs.map((s) => Promise.resolve(s.mode === 'downlink'
+    ? api.linkBudget.computeRegenDownlink(s.sat, s.link, s.opt)
+    : api.linkBudget.computeRegenUplink(s.sat, s.link, s.opt)).catch(() => null))),
+  cancel: () => {},
+  apply: (list) => {
+    const m = {}
+    for (const { id, r } of list) {
+      if (_resFp[id] != null && _resFp[id] === _pvFp[id]) continue   // 挂起前发出、算完才回来的：本行已有同一份输入的计算结果
+      if (r && r.success && r.data) m[id] = tagsOf(r.data.linkType === 'downlink', r.data)
+    }
+    patchVals(m)
+  }
+})
+watch([satConfigs, basebandConfigs, esConfigs, txStations, rxStations, satScope, satId, geoMode, linkMode], () => groundPreview.schedule(), { deep: true })
+// 「计算」优先：computing 一亮就挂起预览、算完再续跑（同 NGSO）
+watch(computing, (v) => { if (v) groundPreview.pause(); else groundPreview.resume() }, { flush: 'sync' })
+onBeforeUnmount(() => groundPreview.dispose())
 // —— 瀑布表一键整表复制（TSV） ——
+// 拼表在 shared/lbWaterfallTsv.js（四窗一份）：多列段列头取段自带的 heads（工况对照「晴空 / 降雨」），
+// 段标题 / 行标签已随 segments 按报表语言翻好，列头在那里按 lbDocT 补上
 async function copyWaterfallTsv() {
   if (!segments.value.length) return
-  const t = lbDocT(reportLang.value)   // 段标题/行标签已随 segments 翻好，列头在此补上
-  const lines = []
-  for (const seg of segments.value) {
-    lines.push(seg.no ? '§' + seg.no + '  ' + seg.title : seg.title)   // 章节号与屏幕/Excel 同号同序
-    if (seg.cols >= 2) lines.push(['', '', t('上行'), t('下行')].concat(seg.cols === 3 ? [t('合计')] : []).concat(['']).join('\t'))
-    for (const r of seg.rows) {
-      const cells = [r.sign || '', r.label, r.up]
-      if (seg.cols >= 2) { cells.push(r.down); if (seg.cols === 3) cells.push(r.total) }
-      cells.push(r.unit || '')
-      lines.push(cells.join('\t'))
-    }
-    lines.push('')
-  }
-  try { await navigator.clipboard.writeText(lines.join('\n')); toast('已复制详细预算（TSV）') }
+  try { await navigator.clipboard.writeText(waterfallTsv(segments.value, lbDocT(reportLang.value))); toast('已复制详细预算（TSV）') }
   catch (e) { toast('复制失败') }
 }
 // 几何/访问窗口卡折叠（记忆）
@@ -1192,7 +1280,13 @@ function mergePlatformGeometry(d, geom) {
   if (w.speedGroundRelKmS != null) { d.groundRelVelResult = w.speedGroundRelKmS.toFixed(3); d.groundRelVelUpResult = d.groundRelVelResult }
   if (w.maxDopplerUpHz != null) d.maxDopplerUplinkResult = (w.maxDopplerUpHz / 1000).toFixed(3)
   if (w.maxDopplerDnHz != null) d.maxDopplerDownlinkResult = (w.maxDopplerDnHz / 1000).toFixed(3)
-  if (w.oneWayDelayMs != null) { d.linkDelayResult = w.oneWayDelayMs.toFixed(3); d.linkDelayUpResult = (w.up.slantKm / _C_KMS * 1000).toFixed(3) }
+  // 时延：几何已按本模块那一跳改写过（computeGround 里的 regenHopGeometry），这里照抄；两段分段时延按几何精度回填，
+  // 镜像那一段随后由 regenHopDelay 清空
+  if (w.oneWayDelayMs != null) {
+    d.linkDelayResult = w.oneWayDelayMs.toFixed(3)
+    d.linkDelayUpResult = (w.up.slantKm / _C_KMS * 1000).toFixed(3)
+    d.linkDelayDownResult = (w.dn.slantKm / _C_KMS * 1000).toFixed(3)
+  }
   if (el && el.periodMin != null) { d.orbitPeriodUpResult = el.periodMin.toFixed(2); d.orbitPeriodDownResult = d.orbitPeriodUpResult }
   const fmtPass = (m) => (m == null || !isFinite(m)) ? '∞' : Number(m).toFixed(2)
   if (w.up.coverageHalfAngleDeg != null) {
@@ -1243,32 +1337,76 @@ function fmtInstant(iso, mode) {
 }
 function fmtDur(min) { if (min == null || !isFinite(min)) return '—'; return min >= 60 ? (min / 60).toFixed(2) + ' h' : min.toFixed(1) + ' min' }
 
-// ============ 容量汇总 ============
+// ============ 容量汇总（功能区「导出 › 容量」→ LbCapDialog，纯逻辑在 shared/lbCapacity.js）============
 function capacityKbpsOf(d) {
   if (!d) return NaN
   const bw = parseFloat(d.allocBandwidthResult); const eta = parseFloat(d.spectralEfficiencyResult)
   return (isFinite(bw) && isFinite(eta)) ? eta * bw : NaN
 }
-// GSO/NGSO 两窗的容量汇总此处还有一项「总功率带宽」（Σ PowerBWResult = Σ 功率占用 × 转发器带宽），
-// 再生式没有：星上解调再调制，转发器（SFD/IBO/OBO/带宽）压根不参与，引擎入参里那套转发器参数只是
-// 为让求解良定而由 buildRegenParams 塞的 NGSO 占位值（见 linkCalculatorRegen.js 文件头）。
-// 结果对象里透传出来的 PowerBWResult 因此是占位值算出的弯管量，不可读——故 pbwN 恒为 0、该项不出现。
-// 报告侧同口径：regenSummaryRows 的四个体制也都没列功率带宽。
-const capacitySummary = computed(() => {
-  const done = links.value.filter((l) => l && l.data && !l.error)
-  let bwKHz = 0, capKbps = 0
-  for (const l of done) {
-    const bw = parseFloat(l.data.allocBandwidthResult); if (isFinite(bw)) bwKHz += bw
-    const kbps = capacityKbpsOf(l.data); if (isFinite(kbps)) capKbps += kbps
-  }
-  return { count: done.length, failed: links.value.length - done.length, bwKHz, capKbps, avgEff: bwKHz > 0 ? capKbps / bwKHz : 0 }
-})
-function fmtCapacity(kbps) { const n = Number(kbps); if (!isFinite(n) || n <= 0) return { v: '0', u: 'kbps' }; if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'Gbps' }; if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'Mbps' }; return { v: n.toFixed(n >= 100 ? 1 : 2), u: 'kbps' } }
-function fmtBandwidth(khz) { const n = Number(khz); if (!isFinite(n) || n <= 0) return { v: '0', u: 'kHz' }; if (n >= 1e6) return { v: (n / 1e6).toFixed(3), u: 'GHz' }; if (n >= 1e3) return { v: (n / 1e3).toFixed(3), u: 'MHz' }; return { v: n.toFixed(n >= 100 ? 1 : 3), u: 'kHz' } }
-const capMain = computed(() => fmtCapacity(capacitySummary.value.capKbps))
-const bwMain = computed(() => fmtBandwidth(capacitySummary.value.bwKHz))
+// 一组＝模块 × 卫星：上行占的是该星的上行频谱、下行占的是下行频谱，两份资源不在一本账上；星间按「发射星 → 接收星」
+// 成对（手动几何两端无身份，整模块一组）。激光没有载波带宽 / 频谱效率口径，不出。
+// ★ 再生式不出功率带宽（pbw: 'none'）：星上解调再调制，转发器（SFD/IBO/OBO/带宽）压根不参与，引擎入参里那套
+// 转发器参数只是为让求解良定而由 buildRegenParams 塞的 NGSO 占位值（见 linkCalculatorRegen.js 文件头），
+// 结果里透传出来的 PowerBWResult / 转发器带宽都是占位值——故可用带宽也没有缺省（availDefault: false），
+// 填了才出剩余与占用。报告侧同口径：regenSummaryRows 的四个体制也都没列功率带宽。
+// 列入 / 载波数随行走（row.cap）；可用带宽与单价是场景级一份（capParams.tp['模块:卫星 id']，星间 'isl:发>收'）。
+const capParams = reactive(normCapParams(null))
+const capOpen = ref(false)
+const capSatName = (s) => (s ? (s.name || satNameOf(s)) : '')
+function capItemsOf(mode) {
+  const byRow = new Map((linksBy[mode] || []).map((x) => [x.rowId, x]))
+  return rowsOf(mode).map((row, i) => {
+    const l = byRow.get(row._id) || null
+    const d = (l && l.data) || null
+    let gkey, gname
+    if (mode === 'isl') {
+      // 手动几何不选星：两端无身份，整模块一组。组名是数据（组头不过呈现层翻译），生成时就按平台语言出字
+      if (geoManual.value) { gkey = capKeyIsl('', ''); gname = byLang('发射星 → 接收星', 'Tx Satellite → Rx Satellite') }
+      else {
+        const a = resolveSatellite(row.txSatelliteId), b = resolveSatellite(row.rxSatelliteId)
+        gkey = capKeyIsl(a && a.id, b && b.id); gname = `${capSatName(a)} → ${capSatName(b)}`
+      }
+    } else {
+      const s = satOfRow(row)
+      gkey = capKeyMode(mode, s && s.id); gname = capSatName(s)
+    }
+    // 链路名按信号流向（与结果区一致）：下行是「卫星 → 收信站」
+    const name = l ? (mode === 'downlink' ? `${l.satName} → ${l.txName}` : `${l.txName} → ${l.satName}`) : byLang('链路 ' + (i + 1), 'Link ' + (i + 1))
+    return {
+      no: i + 1, rowId: row._id, name, carrier: resolveBaseband(row.basebandId).name || '',
+      gkey, gname, tpBwMHz: NaN,
+      ok: !!(d && !l.error), error: l ? (l.error || '') : '',
+      capKbps: capacityKbpsOf(d), bwKHz: d ? parseFloat(d.allocBandwidthResult) : NaN, pbwKHz: NaN,
+      cap: row.cap || null
+    }
+  })
+}
+const capModelOf = (mode) => ((mode && mode !== 'laser' && MODE_KEYS.includes(mode))
+  ? buildCapModel(capItemsOf(mode), capParams, { pbw: CAP_PBW.NONE, availDefault: false })
+  : null)
+const capModel = computed(() => capModelOf(linkMode.value))
+const capSub = computed(() => { const m = modeOf(linkMode.value); return m ? m.label : '' })
+// 汇总必须出自「此刻这套输入」：当前模块没算过或输入已变，先算一遍再开（同 SLA）
+async function openCapDlg() {
+  if (!capModelOf(linkMode.value)) return
+  if (!links.value.length || resultsStale.value) await computeActive()
+  if (!links.value.length) return
+  capOpen.value = true
+}
+// 列入 / 载波数挂在链路行上，会被「结果过期」那条深监听盯到——它们是汇总口径不是引擎入参，灯不该亮（同 slaTouch）
+const capRowOf = (id) => rowsOf(linkMode.value).find((r) => r._id === id) || null
+function capSetInclude(e) { const r = capRowOf(e.rowId); if (r) slaTouch(() => applyRowCap(r, setCapIncluded(r.cap, e.on))) }
+function capSetCount(e) { const r = capRowOf(e.rowId); if (r) slaTouch(() => applyRowCap(r, setCapCount(r.cap, e.n))) }
+function capSetParam(e) { setCapTpParam(capParams, e.key, e.field, e.value) }
+function capToggleAll(on) { slaTouch(() => { for (const r of rowsOf(linkMode.value)) applyRowCap(r, setCapIncluded(r.cap, on)) }) }
+// 「重置」只动当前模块（同 SLA：两件事一起做）：本模块各行回到列入、1 路，本模块各组的可用带宽与单价清空
+function capReset() {
+  const mode = linkMode.value
+  slaTouch(() => { for (const r of rowsOf(mode)) applyRowCap(r, null) })
+  for (const k of Object.keys(capParams.tp)) if (k.startsWith(mode + ':')) delete capParams.tp[k]
+}
 
-// —— 本行读数（容量汇总下方第二行，见 LbCapFoot）——
+// —— 本行读数（链路表表脚，见 LbCapFoot）——
 // 结果列多了要横滚才看得全，而用户看的往往就是刚点的那一行：把聚焦行的结果就地摊平成一行，
 // 点哪行看哪行、重算即刷新。指标口径与「结果列」勾选完全一致（连列序也一致），只是换了个横排读法。
 // 单位取该列此次计算共选的档位（resColUnits 按 '模式:键' 记）；切体制会清空结果，此行随之消失。
@@ -1283,17 +1421,21 @@ const MANUAL_TX = { rows: null, eKey: 'minElevation', dKey: 'slantRange', latKey
 const MANUAL_RX = { rows: null, eKey: 'rxMinElevation', dKey: 'rxSlantRange', latKey: 'rxLatitude', staAltKey: 'rxAltitude', label: '下行' }
 const slantSide = computed(() => (linkMode.value === 'downlink'
   ? { ...MANUAL_RX, rows: rxStations } : { ...MANUAL_TX, rows: txStations }))
-// 某行某侧：按 WGS-84 椭球 + 该站纬度/海拔算「绕站一圈最大斜距」（口径见 shared/slantRange.js）
-const rowSlant = (row, side, altKm) => slantWgs84Max(pf(row[side.latKey]), (pf(row[side.staAltKey]) || 0) / 1000, pf(row[side.eKey]) || 0, altKm)
+// 某行某侧：按 WGS-84 椭球 + 该站纬度/海拔算「绕站一圈最大斜距」（口径见 shared/slantRange.js）。
+// 纬度 / 海拔 / 仰角取入算行（发信站 effTx / 收信站 effRx）：留空的仰角按灰字 10° 推，不再当 0° 推出一个擦地平线的斜距
+const effSide = (row, side) => (side.eKey === MANUAL_RX.eKey ? effRx(row) : effTx(row))
+const rowSlant = (row, side, altKm) => { const r = effSide(row, side); return slantWgs84Max(pf(r[side.latKey]), (pf(r[side.staAltKey]) || 0) / 1000, pf(r[side.eKey]) || 0, altKm) }
 const slantToolRow = computed(() => slantSide.value.rows.find((r) => r._id === focusRowId.value) || null)
 const _slantSeedRow = computed(() => slantToolRow.value || slantSide.value.rows[0] || null)
 const slantToolAlt = computed(() => {
   const sat = _slantSeedRow.value ? satOfRow(_slantSeedRow.value) : (satLink.value ? satConfigs[0] : curSat.value)
   return (sat && sat.form.orbitAltitude) || ''
 })
-const slantToolElev = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.eKey]) || 10)
-const slantToolLat = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.latKey]) || '')
-const slantToolStaAlt = computed(() => (_slantSeedRow.value && _slantSeedRow.value[slantSide.value.staAltKey]) || 0)
+// 仰角 / 纬度 / 海拔初值取种子行的入算值（留空格即灰字那个值，与填入时 rowSlant 的取数一致）
+const _slantSeedEff = computed(() => (_slantSeedRow.value ? effSide(_slantSeedRow.value, slantSide.value) : null))
+const slantToolElev = computed(() => (_slantSeedEff.value && _slantSeedEff.value[slantSide.value.eKey]) || 10)
+const slantToolLat = computed(() => (_slantSeedEff.value && _slantSeedEff.value[slantSide.value.latKey]) || '')
+const slantToolStaAlt = computed(() => (_slantSeedEff.value && _slantSeedEff.value[slantSide.value.staAltKey]) || 0)
 function applySlantFill({ altKm, scope }) {
   const s = slantSide.value
   const rows = scope === 'row' ? [slantToolRow.value].filter(Boolean) : s.rows
@@ -1583,6 +1725,8 @@ async function finishCompute(mode, out, sweepStore) {
 async function computeGround(mode) {
   if (!api) { errorBy[mode] = '引擎需在桌面客户端中运行'; return }
   const isDown = mode === 'downlink'
+  // 本模块真实的那一跳（上行 up / 下行 dn）：另一侧是让弯管引擎与双站几何良定的镜像占位，单程时延只认这一跳
+  const side = hopSideOf(mode)
   const stations = isDown ? rxStations : txStations
   if (!stations.length) { errorBy[mode] = isDown ? '暂无收信站。' : '暂无发信站。'; return }
   if (!satConfigs.length) { errorBy[mode] = '暂无卫星。'; return }
@@ -1593,51 +1737,57 @@ async function computeGround(mode) {
     const t0ISO = searchT0ISO()   // 本批上下行统一起点：时间轴此刻
     // D6：数值格预校验——坏行不送引擎，该行结果清空并写明是哪一格；其余行照算
     const badRows = preValidate((isDown ? rxGridFields : txGridFields).value, stations)
+    const tagFp = {}   // 行 _id → 本次计算时该行的实时列入参指纹（见 writeTagVals：输入没变的行，格内读数以计算结果为准）
     for (let ti = 0; ti < stations.length; ti++) {
       const st = stations[ti]
       const sat = satOfRow(st)   // 这条链路所用的卫星（配置级即场景单选）：参数、轨道来源、频率都取它的
-      const bbForm = resolveBaseband(st.basebandId).form
       const satName = (sat && (sat.form.satelliteName || sat.name)) || '卫星'
       if (badRows.has(ti)) {
         const nm = (isDown ? st.rxEarthStationLocation : st.earthStationLocation) || ((isDown ? '收' : '发') + (ti + 1))
         out.push({ ti, rowId: st._id, txName: nm, satName, data: null, margin: '—', error: badRows.get(ti), geom: null, access: null }); continue
       }
+      // 入参与实时列同一份（groundInputs）：留空格按灰字补齐——站址留空补默认站址（经纬度 + ITU 降雨率 / 海拔）、
+      // 最低仰角 10°、卫星 G/T 10 dB/K、再生下行 EIRP 25 dBW……；几何的站址 / 仰角 / 斜距也取补齐后的入算行 site
+      const inp = groundInputs(mode, st)
+      const site = inp.site
+      tagFp[st._id] = stableStringify(groundPreviewSpec(mode, inp))
       // 轨道来源：选星→真实星历；未选→手动圆轨道（上/下行共用；与星间同一出口 orbitSpecOf）
       const orbitSpec = orbitSpecOf(sat)
 
       if (isDown) {
         // ===== 再生式下行：星上再生 → 收信站接收；工作点 = 收信站 G/T =====
         const rxName = siteNameOf(st, 'rxEarthStationLocation', rxGridFields.value, ti, '收')
-        // 收信站经纬度留空：R0.01% / 海拔也留空时按默认站址的 ITU 取值入算（其余行原样，入参逐位不变）
-        const { satParams, linkParams } = buildRegenDownlinkParams(sat.form, bbForm, withDefaultSite(st, defSite.value, [RX_SITE]), resolveEs(st.stationId).form)
+        const { satParams, linkParams } = inp
         const freqGHz = parseFloat(sat.form.rxCenterFrequency) || 12.5   // 下行频率（几何多普勒/FSL）
-        const stationGeo = { lonDeg: parseFloat(st.rxLongitude), latDeg: parseFloat(st.rxLatitude), altKm: (parseFloat(st.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(st.rxMinElevation) || 0, freqGHz }
+        const stationGeo = { lonDeg: parseFloat(site.rxLongitude), latDeg: parseFloat(site.rxLatitude), altKm: (parseFloat(site.rxAltitude) || 0) / 1000, minElevDeg: parseFloat(site.rxMinElevation) || 0, freqGHz }
         let geo = null, acc = null
         if (geoManual.value) {
           // 手动几何：仰角与斜距就是本行那两个数，不解算轨道（无 t*、无过境窗口、§8 不适用）
-          if (!(pf(st.rxSlantRange) > 0)) {
+          if (!(pf(site.rxSlantRange) > 0)) {
             out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: '手动几何：斜距未填或非正数', geom: null, access: null }); continue
           }
-          applyManualGeom(linkParams, st.rxSlantRange, st.rxMinElevation)
+          applyManualGeom(linkParams, site.rxSlantRange, site.rxMinElevation)
         } else {
           geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
           if (!(geo && geo.feasible)) {
             out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
           }
+          regenHopGeometry(geo, side)   // 单站求解的 oneWayDelayMs 是上下两侧之和 → 改写成本跳（几何卡 / 回填 / 报告同读这一个数）
           // 下行几何注入（单站：收=发，up/dn 同值）
           linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.dn.slantKm; linkParams.rxMinElevation = geo.worst.dn.elevDeg
           linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.dn.slantKm; linkParams.minElevation = geo.worst.dn.elevDeg
           // §8 统计口径（仅下行侧；最低仰角取收信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
-          Object.assign(linkParams, s8LinkParams(geo, { minElevDn: st.rxMinElevation }))
+          Object.assign(linkParams, s8LinkParams(geo, { minElevDn: site.rxMinElevation }))
           try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
         }
         // 计算方式随该行所选载波：power = 按收信站实配 G/T 算余量；margin = 按载波系统余量反解所需 G/T
-        const dopt = { mode: calcModeOf(bbForm) }
+        const dopt = inp.opt
         sweepStore[st._id] = { satParams, linkParams, opt: dopt }
         const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, dopt)
         if (r && r.success) {
           const d = r.data
           if (geo) mergePlatformGeometry(d, geo)   // 手动几何不覆盖：引擎回填的就是用户给的那两个数
+          regenHopDelay(d, side)   // 单程时延只取下行这一跳（引擎按弯管口径报上下两侧之和）
           const m = parseFloat(d.linkmargin)
           out.push({ ti, rowId: st._id, txName: rxName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
         } else {
@@ -1649,34 +1799,29 @@ async function computeGround(mode) {
       // ===== 再生式上行：地球站 → 星上再生解调 =====
       // 计算方式随该行所选载波：power = 按站型功放功率（工作点）算上行余量；margin = 按载波系统余量反解所需功放功率
       const txName = siteNameOf(st, 'earthStationLocation', txGridFields.value, ti, '发')
-      const es = resolveEs(st.stationId).form
-      // 发信站经纬度留空：R0.01% / 海拔也留空时按默认站址的 ITU 取值入算（其余行原样，入参逐位不变）
-      const { satParams, linkParams } = buildRegenParams(sat.form, bbForm, withDefaultSite(st, defSite.value, [TX_SITE]), es)
-      let copt = { mode: 'margin' }
-      if (calcModeOf(bbForm) === 'power') {
-        const powerW = parseFloat(es.opPowerW)
-        if (!(powerW > 0)) {
-          out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率预设」需为正数）', geom: null, access: null }); continue
-        }
-        copt = { mode: 'power', powerW }
+      const { satParams, linkParams } = inp
+      if (inp.powerBad) {
+        out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '工作点无效（地球站配置的「功放功率预设」需为正数）', geom: null, access: null }); continue
       }
+      const copt = inp.opt
       const freqGHz = parseFloat(sat.form.centerFrequency) || 14.25
-      const stationGeo = { lonDeg: parseFloat(st.longitude), latDeg: parseFloat(st.latitude), altKm: (parseFloat(st.altitude) || 0) / 1000, minElevDeg: parseFloat(st.minElevation) || 0, freqGHz }
+      const stationGeo = { lonDeg: parseFloat(site.longitude), latDeg: parseFloat(site.latitude), altKm: (parseFloat(site.altitude) || 0) / 1000, minElevDeg: parseFloat(site.minElevation) || 0, freqGHz }
       let geo = null, acc = null
       if (geoManual.value) {
-        if (!(pf(st.slantRange) > 0)) {
+        if (!(pf(site.slantRange) > 0)) {
           out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: '手动几何：斜距未填或非正数', geom: null, access: null }); continue
         }
-        applyManualGeom(linkParams, st.slantRange, st.minElevation)
+        applyManualGeom(linkParams, site.slantRange, site.minElevation)
       } else {
         geo = await api.linkBudget.ngsoGeometry({ orbit: orbitSpec, tx: stationGeo, rx: stationGeo, t0ISO, horizonHours: geoHorizonHours.value })
         if (!(geo && geo.feasible)) {
           out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: (geo && geo.reason) || '轨道几何不可行', geom: geo, access: null }); continue
         }
+        regenHopGeometry(geo, side)   // 单站求解的 oneWayDelayMs 是上下两侧之和 → 改写成本跳
         linkParams.distanceMode = 'slantRange'; linkParams.slantRange = geo.worst.up.slantKm; linkParams.minElevation = geo.worst.up.elevDeg
         linkParams.rxDistanceMode = 'slantRange'; linkParams.rxSlantRange = geo.worst.up.slantKm; linkParams.rxMinElevation = geo.worst.up.elevDeg
         // §8 统计口径（仅上行侧；最低仰角取发信站门限字段，非最差瞬时仰角；不适用时为空对象=原口径）
-        Object.assign(linkParams, s8LinkParams(geo, { minElevUp: st.minElevation }))
+        Object.assign(linkParams, s8LinkParams(geo, { minElevUp: site.minElevation }))
         try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
       }
       sweepStore[st._id] = { satParams, linkParams, opt: copt }
@@ -1684,6 +1829,7 @@ async function computeGround(mode) {
       if (r && r.success) {
         const d = r.data
         if (geo) mergePlatformGeometry(d, geo)
+        regenHopDelay(d, side)   // 单程时延只取上行这一跳（引擎按弯管口径报上下两侧之和）
         const m = parseFloat(d.linkmargin)
         out.push({ ti, rowId: st._id, txName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, powerW: d.paRecommendation, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
@@ -1691,6 +1837,7 @@ async function computeGround(mode) {
       }
     }
     await finishCompute(mode, out, sweepStore)
+    writeTagVals(mode, out, tagFp)   // 格内读数（EIRP / G·T / 功放尾标）改用本次引擎出参，与结果列同源
     // SLA 档位扫描只在用得着时跑、且不 await（每行 9 档 = 9 次引擎重算，不该跟着每次「计算」全表跑）
     invalidateSlaScan(mode)
     if (slaWanted() && mode === linkMode.value) ensureSlaScan(mode)
@@ -1886,7 +2033,9 @@ async function computeLaser(mode = 'laser') {
 async function loadWaterfall() {
   const l = sel.value
   if (!l || !l.data) { segments.value = []; return }
-  segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'REGEN', adaptUnits: isUnitAdaptive(), txLocation: String(l.txName || '') })
+  const segs = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(l.data)), lang: reportLang.value, orbitType: 'REGEN', adaptUnits: isUnitAdaptive(), txLocation: String(l.txName || '') })
+  // 等回包期间换了链路 / 模块 / 配置（结果已清）：这份是上一条的，不往上贴
+  if (sel.value === l) segments.value = segs
 }
 // 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：有结果的模块结果列全部就地重排 + 详细预算重取一次。
 // 不碰引擎：档位只管显示，数值一个没变。
@@ -2027,26 +2176,21 @@ async function satEntryForCtx(s) {
   satConfigs.push(makeSatConfig())
   const cfg = satConfigs[satConfigs.length - 1]
   const ns = cfg.ngsoSat, sf = cfg.form
-  let rec = null
+  let rec = null, orbit = null
   if (!node && s.noradId) { try { rec = await findPoolByNorad(s.noradId) } catch (e) { rec = null } }
+  // 池记录 → spec 走取星的唯一出口（satSearchPool.orbitSpecOf：目录星 OMM / 自定义星座六根数 / 星历点序列引用），不在这里分支手拼
+  if (rec) { try { orbit = poolOrbitSpecOf(rec) } catch (e) { orbit = null } }
   if (node) {
     ns.mode = 'tree'; ns.name = node.satName; ns.noradId = node.noradId || null; ns.folder = node.folder
     sf.satelliteName = node.satName
-    const orbit = await treeNodeOrbit(node)
-    if (ns.mode === 'tree' && ns.folder === node.folder) { ns.orbit = orbit; orbitToForm(sf, orbit) }   // 反解期间用户另选了星：不拿旧节点顶掉
-  } else if (rec) {
+    const treeOrbit = await treeNodeOrbit(node)
+    if (ns.mode === 'tree' && ns.folder === node.folder) { ns.orbit = treeOrbit; orbitToForm(sf, treeOrbit) }   // 反解期间用户另选了星：不拿旧节点顶掉
+  } else if (orbit) {
     ns.mode = 'search'; ns.name = rec.name; ns.noradId = rec.noradId || null; ns.folder = ''
-    if (rec.orbitType === 'elements' && rec.elements) {
-      const e = rec.elements
-      ns.orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
-    } else if (rec.orbitType === 'ephem') {
-      ns.orbit = poolOrbitSpecOf(rec)   // 星历点序列：只传引用，表由主进程按 ref 解析
-    } else {
-      ns.orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
-    }
+    ns.orbit = orbit
     sf.satelliteName = rec.name
-    orbitToForm(sf, ns.orbit)
-    if (ns.orbit.type === 'ephem') ctxOrbitSnap(sf, s)   // 点序列没有平均根数可回显：轨道高度 / 倾角取主窗口那一拍（手动几何的斜距按它推）
+    orbitToForm(sf, orbit)
+    if (orbit.type === 'ephem') ctxOrbitSnap(sf, s)   // 点序列没有平均根数可回显：轨道高度 / 倾角取主窗口那一拍（手动几何的斜距按它推）
   } else {   // 星历池里没有（离线 / 合成星）：留手动轨道
     if (s.name) sf.satelliteName = s.name
     ctxOrbitSnap(sf, s)
@@ -2219,7 +2363,8 @@ const STATE_KEY = 'regen/last'
 // _ 前缀键（行内部 id / 表格「＋增加」按全字段建行带出的计算列空键）一律剥离，不入场景
 // ★ row.sla 是嵌套对象：从响应式行上浅拷出来的是 Vue 的 Proxy，结构化克隆过不了 ——
 // saveConfig 走 IPC 当场抛「保存失败」。applyRowSla 内部 normRowSla 现造纯对象，顺手落平。
-const stripRow = (r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); return o }
+// row.cap（容量汇总的列入 / 载波数）同理：applyRowCap 现造纯对象
+const stripRow = (r) => { const o = {}; for (const k of Object.keys(r)) if (!k.startsWith('_')) o[k] = r[k]; if (o.sla) applyRowSla(o, o.sla); if (o.cap) applyRowCap(o, o.cap); return o }
 function serializeState() {
   // v3 场景 = 装了哪些模块（有序）+ 各模块的链路行（站址/链路量 + 各列引用的库条目 id）+ 模式/时窗等计算策略。
   // 三库是全局资产（userData/library.json），不再随场景存副本。没装的模块那张表就是空的。
@@ -2237,7 +2382,8 @@ function serializeState() {
     geoHorizonHours: geoHorizonHours.value,
     ...geoT0State(geoT0Mode.value, geoT0ISO.value),   // 搜索起点：缺省（时间轴）不写，老场景载入再存逐字不变
     // SLA：采用值/勾选随行走（row.sla 由 stripRow 的「非 _ 键全存」自然带上），参数是场景级一份
-    slaParams: { ...slaParams }
+    slaParams: { ...slaParams },
+    capParams: normCapParams(capParams)   // 容量汇总：逐组（模块 × 卫星）的可用带宽与单价
   }
 }
 // 四张表（发信站 / 收信站 / 星间 / 激光，同屏只挂当前模块那一张）：载入配置时要清它们的撤销 / 重做栈
@@ -2249,13 +2395,18 @@ function applyState(st) {
   for (const g of [txGridRef, rxGridRef, islGridRef, laserGridRef]) if (g.value) g.value.clearHistory()
   // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
   Object.assign(slaParams, normSlaParams(st.slaParams))
+  capParams.tp = normCapParams(st.capParams).tp   // 容量汇总参数：旧场景没这一项 → 空
   // 模块清单：v3 存 modules（有序、去重、只认四个 key）；v2 及以前按 hiddenModes 反推——四种全在，减去当时隐藏的，
   // 老配置打开来页签一个不少（隐藏的那几个连同它们的行在下次保存时才真正不存）。
   const mods = Array.isArray(st.modules)
     ? st.modules.filter((k, i, a) => MODE_KEYS.includes(k) && a.indexOf(k) === i)
     : MODE_KEYS.filter((k) => !(Array.isArray(st.hiddenModes) && st.hiddenModes.includes(k)))
-  // 换场景：四个模块的结果全清（旧场景的结果对新场景没有意义；按行 _id 落表的映射一并删干净）
+  // 换场景：四个模块的结果全清（旧场景的结果对新场景没有意义；按行 _id 落表的映射一并删干净）。
+  // 正显示着的详细预算（segments）不归哪个模块管，另清——新旧场景当前模块同名时 watch(linkMode) 不触发重取，
+  // 不清就一直摆着上一份的瀑布、TSV 也照样能复制出来；聚焦行是上一份的行 _id，一并放掉。
   for (const k of MODE_KEYS) clearModuleResults(k)
+  segments.value = []
+  focusRowId.value = ''
   modules.value = mods
   linkMode.value = (st.linkMode && mods.includes(st.linkMode)) ? st.linkMode : (mods[0] || '')
   let txRows = Array.isArray(st.tx) ? st.tx : null
@@ -2371,7 +2522,7 @@ function applyState(st) {
   // row.sla 逐行深拷（applyRowSla 现造新对象、空的删键）：st 常常就是配置列表里那份 state，
   // 直接引用会让两处共用同一个 sla 对象，改采用值就地改掉了已保存的那份。
   // 合并默认：旧配置（G/T 尚在卫星侧时保存）的发信站行缺 G_Ts 一类字段，按默认补齐
-  const mkRow = (fields, r) => { const o = { ...defaultsFor(fields), ...r, _id: 's' + (_sid++) }; applyRowSla(o, r.sla); return o }
+  const mkRow = (fields, r) => { const o = { ...defaultsFor(fields), ...r, _id: 's' + (_sid++) }; applyRowSla(o, r.sla); applyRowCap(o, r.cap); return o }
   // 激光行只保留当前字段键（清除旧速率/调制/BER 等已删字段的惰性残留）
   const mkLaser = (r) => { const o = { ...defaultsFor(LASER_FIELDS), _id: 's' + (_sid++) }; for (const f of LASER_FIELDS) if (r[f.key] !== undefined) o[f.key] = r[f.key]; applyRowSla(o, r.sla); return o }
   // 装了的模块至少一条行（旧配置缺那张表 → 一条默认行，不留空表；上 / 下行默认行同 addModule 按默认站址写 R0.01% / 海拔）；
@@ -2394,7 +2545,7 @@ function applyState(st) {
   geoT0ISO.value = normGeoT0ISO(st.geoT0ISO)
 }
 // 场景一变就交给自动保存（防抖写回当前配置）；「上次打开的是哪一份」随 activeId 记一笔
-watch([txStations, rxStations, islLinks, laserLinks, satScope, satId, geoMode, geoHorizonHours, geoT0Mode, geoT0ISO, linkMode, modules, slaParams], () => autosave.touch(), { deep: true })
+watch([txStations, rxStations, islLinks, laserLinks, satScope, satId, geoMode, geoHorizonHours, geoT0Mode, geoT0ISO, linkMode, modules, slaParams, capParams], () => autosave.touch(), { deep: true })
 watch(activeId, (id) => { try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: id || null })) } catch (e) { /* ignore */ } })
 
 // —— 命名配置 CRUD ——
@@ -2431,13 +2582,15 @@ function blankState() {
     tx: [], rx: [], isl: [], laser: [],
     satScope: 'link', satId: '',
     geoMode: 'manual', geoHorizonHours: 24,
-    slaParams: { ...DEFAULT_SLA_PARAMS }
+    slaParams: { ...DEFAULT_SLA_PARAMS },
+    capParams: { tp: {} }
   }
 }
 // 指纹只取「场景内容」字段（库是全局资产、结果列勾选是视图态，均不入指纹）。装了哪些模块是内容。
 // SLA：采用值/勾选在四张表的行里（row.sla）自然计入；参数是场景级，显式列进来。
+// 容量汇总参数同理（场景级）；规整后再比——旧场景没这一项与「一项都没填」是同一份内容
 function fingerprintOf(s) {
-  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, satScope: s.satScope || 'link', satId: s.satId || '', geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, geoT0: geoT0State(s.geoT0Mode, s.geoT0ISO), linkMode: s.linkMode, modules: s.modules, slaParams: s.slaParams })
+  return stableStringify({ tx: s.tx, rx: s.rx, isl: s.isl, laser: s.laser, satScope: s.satScope || 'link', satId: s.satId || '', geoMode: s.geoMode || 'auto', geoHorizonHours: s.geoHorizonHours, geoT0: geoT0State(s.geoT0Mode, s.geoT0ISO), linkMode: s.linkMode, modules: s.modules, slaParams: s.slaParams, capParams: normCapParams(s.capParams) })
 }
 // 一份配置刚载入工作区：以当前内容为已落盘基线（useConfigTree 在载入 / 新建后调）
 function setBaseline() { autosave.attach() }
@@ -2455,19 +2608,17 @@ const shareOpen = ref(false)
 // 先把没落盘的改动写进去：分享框列的是配置列表里的存档，当前这份要与屏幕一致（结果才能随它带走）
 async function openShareDlg() { await autosave.flush(); shareOpen.value = true }
 const packBase = (c) => ({ id: c.id, name: c.name, nameAuto: !!c.nameAuto, form: c.form })
-// 卫星的 sanitize：ngsoSat.folder 是【本机】卫星树取星的节点 id（见 RegenSatPanel 的 tree 下拉），
-// 原样发过去只会指到对端另一颗星上，故打包时清空并把 mode 由 'tree' 降为 'manual'——
-// orbit / name / noradId 是自包含数据，照带不误，对端拿到的是「轨道齐全、取星来源标为手动」的自洽状态。
+// 卫星的 sanitize（shared/lbShare.js 的 shareNgsoSat，与 NGSO 共用）：ngsoSat.folder 是【本机】卫星树取星的节点 id
+// （见 RegenSatPanel 的 tree 下拉），原样发过去只会指到对端另一颗星上，故打包时清空；取星来源随之由 'tree' 改标 'search'
+// （有轨道根数时）——orbit / name / noradId 是自包含数据，照带不误，对端照样按这条轨道解几何。
+// ★ 早先降成 'manual'：orbitSpecOf 只认「mode ≠ manual 且有 orbit」，对端于是丢了轨道、按表单圆轨道算。
 const shareLib = {
   es: { arr: esConfigs, label: '地球站', keys: [], pack: packBase, makeNew: () => makeEsConfig('站型') },
   carrier: { arr: basebandConfigs, label: '载波', keys: [], pack: packBase, makeNew: () => makeBasebandConfig('载波') },
   sat: {
     arr: satConfigs, label: '卫星', keys: ['ngsoSat'],
     pack: (c) => ({ ...packBase(c), ngsoSat: normNgsoSat(c.ngsoSat) }),
-    sanitize: (e) => {
-      const ns = normNgsoSat(e.ngsoSat)
-      return { ...e, ngsoSat: { ...ns, folder: '', mode: ns.mode === 'tree' ? 'manual' : (ns.mode || 'manual') } }
-    },
+    sanitize: (e) => ({ ...e, ngsoSat: shareNgsoSat(normNgsoSat(e.ngsoSat)) }),
     makeNew: () => makeSatConfig('卫星')
   }
 }
@@ -2503,6 +2654,8 @@ function sharePinRefs(st) {
 function shareRemap(state, idMap) {
   if (!state) return
   if (state.satId) state.satId = idMap.sat[state.satId] || ''
+  // 容量汇总参数的组键里带卫星 id：随卫星一起换成对端库里的 id（对端没收的星，那组设置丢掉）
+  if (state.capParams) state.capParams = remapCapParams(state.capParams, idMap.sat)
   for (const r of [...(state.tx || []), ...(state.rx || [])]) {
     if (r.stationId) r.stationId = idMap.es[r.stationId] || ''
     if (r.basebandId) r.basebandId = idMap.carrier[r.basebandId] || ''
@@ -2601,7 +2754,7 @@ async function computeMissing(step) {
   }
 }
 let _selSnap = null   // 导出前各模块的选中行：取图会逐条切过去，结束后还原
-const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitReport } = useLbReport({
+const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'REGEN',
   regenMode: () => linkMode.value || 'uplink',
@@ -2623,7 +2776,9 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   vizRef: () => vizRef.value,
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
-  paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  // 「输入参数」清单的取值源：留底入参按本链路所属模块投影到参与计算的字段上（regenDigestParams）——
+  // 上行不印镜像的收信站群、下行不印上行占位、星间不印「发 / 收」两座假站；组外的键一律不交，对应那几组整块不出
+  paramsFor: (l) => regenDigestParams(l && l.mode, (l && sweepParamsByRow.value[l.rowId]) || null),
   // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
   //（四种链路行都挂 basebandId；激光那两行主进程整个不出，见 report.js summaryRows）
   carrierOf: (l) => {
@@ -2638,6 +2793,14 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
   slaParams: () => slaParamRows(slaParams, reportLang.value),
+  // 容量汇总（§2）：逐节（模块）一张，与弹窗同一份账；激光那一节没有容量口径（capModelOf 给 null → 不出）
+  capFor: (key, lang, noOf) => capReportBlock(capModelOf(key), { lang, adaptive: unitAdaptive.value, noOf }),
+  // 独立《容量汇总》报告：讲整份配置（逐模块一节，同总报告 §2）；激光那一节 capModelOf 给 null → 不出
+  capModelFor: (key) => capModelOf(key),
+  capDefaultName: (en) => {
+    const s = sceneSatName.value || (en ? 'Results' : '结果')
+    return en ? `REGEN_Capacity_${s.replace(/[^\w-]+/g, '_')}` : `再生式容量汇总_${s.replace(/[\\/:*?"<>|]/g, '_')}`
+  },
   beforeSla: ensureSlaScanAll,   // 导出含 SLA 的报告前把每个模块的惰性扫描补齐
   // 「计算方式」一栏报的是这条链路所属模块的口径（上行/下行/星间/激光各一句）；求解策略随载波逐链路而定，
   // 另占「求解方式」一行（取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无求解方式——工作点由链路自身参数给定。
@@ -2662,11 +2825,12 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
     const isDown = mode === 'downlink'
     const isSpace = mode === 'isl' || mode === 'laser'
     const clone = (x) => (x ? JSON.parse(JSON.stringify(x)) : null)
-    // 站址透传（上行取发信站、下行取收信站）→「几何关系」sheet 按 STK 口径标注坐标/最低仰角
+    // 站址透传（上行取发信站、下行取收信站）→「几何关系」sheet 按 STK 口径标注坐标/最低仰角；
+    // 取入算值（留空格即灰字那个值），与这条链路实际解的几何一致
     let staGeo = null
     if (!isSpace) {
-      if (isDown) { const st = rxStations[l.ti] || {}; staGeo = { name: l.txName, lat: parseFloat(st.rxLatitude), lon: parseFloat(st.rxLongitude), altM: parseFloat(st.rxAltitude) || 0, minEl: parseFloat(st.rxMinElevation) || 0 } }
-      else { const st = txStations[l.ti] || {}; staGeo = { name: l.txName, lat: parseFloat(st.latitude), lon: parseFloat(st.longitude), altM: parseFloat(st.altitude) || 0, minEl: parseFloat(st.minElevation) || 0 } }
+      if (isDown) { const st = effRx(rxStations[l.ti] || {}); staGeo = { name: l.txName, lat: parseFloat(st.rxLatitude), lon: parseFloat(st.rxLongitude), altM: parseFloat(st.rxAltitude) || 0, minEl: parseFloat(st.rxMinElevation) || 0 } }
+      else { const st = effTx(txStations[l.ti] || {}); staGeo = { name: l.txName, lat: parseFloat(st.latitude), lon: parseFloat(st.longitude), altM: parseFloat(st.altitude) || 0, minEl: parseFloat(st.minElevation) || 0 } }
     }
     return {
       // 下行的信号流向是「卫星 → 收信站」，链路两端名字据此对调（与结果区一致）
@@ -2718,6 +2882,7 @@ onMounted(async () => {
   try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* ignore */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
   try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
+  groundPreview.refresh()   // 站表实时列首填（默认站址取值已就位：站址留空的行也按它算）
   // 关窗：把场景与资源库挂起的写盘冲掉即放行（观感上秒关）；只有场景写不进磁盘时才问一句
   api?.regen?.onCloseRequested?.(async () => {
     const ok = await autosave.flush()
@@ -2794,8 +2959,9 @@ onMounted(async () => {
                 <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
                 <button class="lb-mini" title="删除此卫星（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
               </template>
-              <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填 -->
-              <template #default="{ cfg }"><RegenSatPanel :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
+              <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填。
+                   :key＝条目 id：换条目即重建编辑器——同一实例换 form，频段 watcher 会把「换条目」当成「改频段」套预设。 -->
+              <template #default="{ cfg }"><RegenSatPanel :key="cfg.id" :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
             </LbLibrary>
             <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
               auto-tip="速率与调制" :copy-targets="copyTargetsOf('carrier')" @copy-to="(c, ns) => copyLibTo('carrier', c, ns)"
@@ -2873,6 +3039,11 @@ onMounted(async () => {
               <button class="lbr-big" :disabled="!nLinks" :title="nLinks ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '暂无链路。'" @click="openSlaDlg">
                 <Icon name="shield-check" :size="16" />
                 SLA
+              </button>
+              <button class="lbr-big" :disabled="!nLinks || linkMode === 'laser'"
+                :title="linkMode === 'laser' ? '星间激光链路无容量汇总' : (nLinks ? '容量汇总：逐转发器汇总容量与带宽，对照可用资源（可勾选链路，设载波数、可用资源与单价）' : '暂无链路。')" @click="openCapDlg">
+                <Icon name="sigma" :size="16" />
+                容量
               </button>
               <button class="lbr-big" :disabled="reportDlg.busy || !canReport" :title="canReport ? '生成整份配置的交付级报告（每个模块一节；未计算的模块在导出前自动补算）：Excel（总报告 + 几何关系 + 逐链路详情）/ Word / PDF（封面 · 目录 · 总报告 · 逐链路详情，含图）' : '尚无计算模块'" @click="openReportDialog"><Icon name="file-export" :size="16" />{{ reportDlg.busy ? '生成中…' : '报告' }}</button>
               <button class="lbr-big" :disabled="!segments.length" title="复制当前瀑布表（TSV，可直接粘贴到 Excel / 报告）" @click="copyWaterfallTsv"><Icon name="copy" :size="16" />TSV</button>
@@ -2985,7 +3156,7 @@ onMounted(async () => {
             <div class="lbx-grid">
               <StationGrid ref="txGridRef" grid-id="regen.tx" bar-to="[data-gridbar='regen.tx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="txStations" :fields="txGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="txRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
+            <LbCapFoot :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
             <template #actions>
@@ -3019,7 +3190,7 @@ onMounted(async () => {
             <div class="lbx-grid">
               <StationGrid ref="rxGridRef" grid-id="regen.rx" bar-to="[data-gridbar='regen.rx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="rxStations" :fields="rxGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="rxRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
+            <LbCapFoot :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
@@ -3049,7 +3220,7 @@ onMounted(async () => {
             <div class="lbx-grid">
               <StationGrid ref="islGridRef" grid-id="regen.isl" bar-to="[data-gridbar='regen.isl']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="islRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :cap="capacitySummary" :cap-main="capMain" :bw-main="bwMain" :readout="rowReadout" />
+            <LbCapFoot :readout="rowReadout" />
           </LbSection>
           <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
@@ -3286,6 +3457,11 @@ onMounted(async () => {
       :error="error" :link-error="(slaLink && slaLink.error) || ''" :link-name="slaLinkName"
       @close="slaOpen = false" @pick="slaIdx = $event" @adopt="slaSetAdopt" @include="slaSetInclude"
       @param="slaSetParam" @toggle-all="slaToggleAll" :sla-count="slaCount" @clear="slaClear" @export="openSlaReportDialog" />
+
+    <!-- 容量汇总：当前模块按卫星分组的三线表（三窗共用组件；再生式不出功率带宽，可用带宽要自己填） -->
+    <LbCapDialog :open="capOpen" :model="capOpen ? capModel : null" :adaptive="unitAdaptive" :sub="capSub" :error="error"
+      @close="capOpen = false" @include="capSetInclude" @count="capSetCount" @param="capSetParam"
+      @toggle-all="capToggleAll" @reset="capReset" @export="openCapReportDialog" />
 
     <!-- 导入链路：星座 3D 主窗的图上链路（四窗共用组件；本窗只收每颗星都按再生的链路，逐跳拆进各模块）-->
     <LinkImportDialog v-if="linkImpOpen" kind="regen" @import="onLinkImport" @close="linkImpOpen = false" />

@@ -16,7 +16,8 @@ const height = Math.max(64, Math.round(WIDTH * (north - south) / Math.max(east -
 const img = await png('overlay.png', WIDTH, height, (ctx) => {
   const p = geo.fit(bb, WIDTH, height, 0)
   // ⟪低电平（外圈）先绘制，高电平覆盖其上|lower (outer) levels first, higher ones on top⟫
-  const all = data.beams.flatMap((b) => b.contours).sort((a, b) => a.level - b.level)
+  const lv = (c) => (c.level == null ? -1e9 : c.level)   // ⟪无数值的环（覆盖边界）垫在最下|level-less rings (coverage boundaries) at the bottom⟫
+  const all = data.beams.flatMap((b) => b.contours).sort((a, b) => lv(a) - lv(b))
   for (const c of all) {
     ctx.beginPath()
     c.points.forEach((q, i) => { const [x, y] = p.point(q); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y) })

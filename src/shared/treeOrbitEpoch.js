@@ -7,9 +7,9 @@
 //   3D 页恢复树时把它写进节点存盘（useGrdCoverage 的迁移），之后各窗口读到的都是节点自己的历元。
 // 纯 ESM、不依赖 Vue / satellite.js：node 可直接测（packages/core/test/treeOrbitEpoch.test.mjs）。
 import { epochMs } from './epochMs.js'
+import { ommFromElements } from './sgp4Mean.js'
 
 export const TREE_ORBIT_LEGACY_EPOCH = '2026-01-01T00:00:00.000Z'
-const RE = 6378.137, MU = 398600.4418
 
 /** 历元串（带不带 Z、±hh:mm 偏移、毫秒数）→ 规范 ISO（带 Z）；解不出返回 null。不带时区的串按 UTC（同 omm2satrec / epochMs） */
 export function normEpoch(v) {
@@ -33,18 +33,12 @@ export function needsTreeEpoch(el) {
 
 /**
  * 经典六根数（altKm = 近地点高度）→ omm2satrec 的入参。与 3D 页 elementsToSatrec、工作台 satrecFromElements、
- * 主进程 ngsoGeometry.buildSatrec 的 elements 分支同一算式：e 夹 [0, 0.999]，a = (RE + 近地点高度)/(1 − e)，n = √(μ/a³)。
+ * 主进程 ngsoGeometry.buildSatrec 的 elements 分支同一算式：e 夹 [0, 0.999]，a = (RE + 近地点高度)/(1 − e)，
+ * Kozai 平均运动取 sgp4Mean.elementsMeanMotion（sgp4init 之后的平半长轴 = a；不再拿二体 √(μ/a³) 当 Kozai 值，A-05）。
  */
 export function elementsOmm(el, noradId) {
   const e = el || {}
-  const ecc = Math.max(0, Math.min(0.999, Number(e.ecc) || 0))
-  const a = (RE + (Number(e.altKm) || 0)) / (1 - ecc)
-  const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI)
-  return {
-    noradId: noradId == null || noradId === '' ? 'SIM' : String(noradId), epoch: treeOrbitEpoch(e), meanMotion, ecc,
-    incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0,
-    bstar: 0, mdot: 0, mddot: 0
-  }
+  return ommFromElements(e, treeOrbitEpoch(e), noradId)
 }
 /** 树节点根数 → 链路预算的轨道 spec（{type:'elements', …, epoch}，主进程 buildSatrec 认它） */
 export function treeElementsSpec(el, noradId) {

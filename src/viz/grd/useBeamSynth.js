@@ -16,9 +16,10 @@
 import { ref, reactive, computed, watch, onScopeDispose, getCurrentScope } from 'vue'
 import { guardedPersist } from '../../shared/persistGuard.js'
 import { reportPartial } from '../../shared/reportError.js'
-import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, snapTangentTrue, colorFreqPlan, freqPlanNodesTrue, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd, pamLobeSplit, shapedStations, stationKey } from './synth.js'
+import { theta3dbFromAperture, shapedTheta3db, shapedApertureEff, feedGeom, crossoverDb, polysUnionPeak, buildGaussGrd, buildShapedGrd, beamSketchRing, hexFillCenters, snapTangentAzEl, snapTangentTrue, colorFreqPlan, freqPlanNodesTrue, reuseDist, solveReflector, solvePam, buildPamGrd, buildPamShapedGrd, pamLobeSplit, shapedStations, stationKey, reflApertureOf, scanLossDb, apertureTheta3db } from './synth.js'
 import { dirToAzEl, azElGround, gridDir } from './coverage.js'
-import { solveStk, syncModel, freshModel, STK_MODEL_DEFAULT, buildRecord, coneFootprint } from './gaussStk.js'
+import { solveStk, syncModel, freshModel, STK_MODEL_DEFAULT, buildRecord, buildApertureRecord, coneFootprint } from './gaussStk.js'
+import { rzScatter } from './apertureModel.js'
 import { geodeticToEcef } from '../wgs84.js'
 // 频率配色板与频率计划模块共用一份（见该文件头）：一个色号在两个模块里必须是同一个色
 import { FC_PALETTE, fcHex, fcCss } from '../../shared/freqReuseColors.js'
@@ -79,8 +80,18 @@ const DEFAULT_P = {
   // —— 相控阵（PAM，SATSOFT §6.5）组级参数：矩形阵 Nx×Ny 单元 · 间距 dx/dy(WL) · 单元因子 cos^R · 三角晶格 ——
   pamNx: 8, pamNy: 8, pamDx: 0.6, pamDy: 0.6, pamR: 1.2, pamElem: true, pamTri: false, pamEff: 100, pamFGHz: 20,
   // 相控阵覆盖方式：'spot'=点/多波束群（放置） | 'shaped'=Butler beamlet 赋形覆盖（Polygon + minimax，产星上激励指令）
-  pamCover: 'spot', pamShapedMode: 'value'
+  pamCover: 'spot', pamShapedMode: 'value',
+  // —— 方向图模型（E-01，多馈源 / 赋形两档）：'gauss' = 高斯主瓣（旧档：读不到此键一律按它，生成结果逐位不变）|
+  //    'aperture' = 口径照射（抛物面加台阶，带旁瓣、按各波束真实离轴角、不截窗，偏置反射面交叉极化）。新建组在 addGroup 里设 'aperture'。
+  beamModel: 'gauss',
+  apRmsMm: 0,                                    // 反射面表面误差 rms（mm，Ruze）：0 = 理想面
+  apCorrM: 0.25,                                 // 表面误差相关长度（m，Ruze 散射宽度）
+  apEnv: 'none',                                 // 旁瓣下界：'none' | 's672-20' | 's672-25'（S.672-4 rec.1）| 's1528-20' | 's1528-25'（S.1528-1 §1.2）
+  apSym: 'ew'                                    // 偏置反射面对称面：'ew'（含天线系东西轴）| 'ns'（南北）→ 交叉极化瓣 / 圆极化斜视的朝向
 }
+// 口径照射档专属键：旧组（beamModel 不是 'aperture'）的生成签名里剔掉它们，升级后旧组不会平白显示「输入已变」
+const AP_KEYS = ['beamModel', 'apRmsMm', 'apCorrM', 'apEnv', 'apSym']
+const isAperture = (gp) => !!gp && gp.beamModel === 'aperture'
 const freshP = () => ({ ...DEFAULT_P, polyIds: [], stOv: [], stAdd: [] })
 // 站点栅生成参数（SATSOFT §9.1 Grid Generation）：配置 → 引擎入参。
 // 空串/缺键 → NaN → 引擎回落缺省密度（老档没有这批键时行为不变）；显式 0 才是「每 Polygon 质心单站」。
@@ -233,8 +244,9 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     }
     return { over, maxOffDeg: maxOff, scanMaxDeg: v.scanMaxDeg }
   })
-  // 赋形：仿真频率 → 成分波束宽 θ3=k(|锥度|)·λ/D
-  const shapedTheta3 = computed(() => shapedTheta3db(shapedSimF.value, Number(p.antD), Number(p.taper)))
+  // 赋形：仿真频率 → 成分波束宽 θ3=k(|锥度|)·λ/D；口径照射档按抛物面加台阶的半功率点精确解（p = 10^(锥度/20)，与效率同一个 p）
+  const shapedTh3Of = (gp, f) => (isAperture(gp) ? apertureTheta3db(f, Number(gp.antD), Number(gp.taper)) : shapedTheta3db(f, Number(gp.antD), Number(gp.taper)))
+  const shapedTheta3 = computed(() => shapedTh3Of(p, shapedSimF.value))
   // 赋形口径效率（照射×溢出，由馈源锥度定死）：只读读数 + 生成定标用（不再自由输入）
   const shapedEff = computed(() => shapedApertureEff(Number(p.taper)).effPct)
   // 反射面/馈源几何读数（F/D、均匀口径 3dB 宽、λ、馈源直径 WL/cm——对齐官方对话框）
@@ -533,6 +545,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const cur = satFolder.value ? satNodeOf(satFolder.value) : null
     const folder = (satFolder.value && (!cur || isSatHost(cur))) ? satFolder.value : firstSatFolder()
     const g = { id: newId('bg'), satFolder: folder, mode: mm, name: uniqueGroupName(defName(mm), folder), pinned: false, p: freshP(), settings: [], activeSettingId: null, beams: [] }
+    if (mm === 'gauss' || mm === 'shaped') g.p.beamModel = 'aperture'   // 新建多馈源 / 赋形组缺省口径照射（旧组读不到键按高斯，见 DEFAULT_P）
     if (mm === 'gauss') { const s = defaultSettingFor(g.p); g.settings = [s]; g.activeSettingId = s.id }
     else if (mm === 'stk') { const s = stkSettingFrom(null, 0); g.settings = [s]; g.activeSettingId = s.id }   // 出厂 = STK Gaussian 默认模型
     groups.value.push(g)
@@ -703,11 +716,13 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, lon, lat)
     const rNew = (exclude ? (Number(exclude.thX) + Number(exclude.thY)) / 4 : (aw.thX + aw.thY) / 4) || 0.5
     const nbs = others.map((b) => { const a = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: a.az, el: a.el, r: (b.thX + b.thY) / 4 } })
-    const s = (mode.value === 'stk' ? snapTangentTrue : snapTangentAzEl)([ae.az, ae.el], nbs, rNew, 1.6, band != null ? band : null)
+    const s = (trueMetric() ? snapTangentTrue : snapTangentAzEl)([ae.az, ae.el], nbs, rNew, 1.6, band != null ? band : null)
     if (!s.snapped) return { lon, lat }
     const g = azElGround(pos.lon, pos.lat || 0, pos.altKm, s.az, s.el)
     return g ? { lon: +g.lon.toFixed(4), lat: +g.lat.toFixed(4) } : { lon, lat }
   }
+  // 波束按真实离轴角成形的档（高斯组 / 多馈源口径照射）：相切吸附、蜂窝布满、频率配色都在方向球面上按真实夹角量（gauss 旧档 / 相控阵照旧 az/el 平面）
+  function trueMetric() { return mode.value === 'stk' || (mode.value === 'gauss' && isAperture(p)) }
   // 赋形态（反射面赋形 / 相控阵赋形覆盖）：无放置波束，placing = 峰值点拾取
   const isShapedLike = () => mode.value === 'shaped' || (mode.value === 'pam' && p.pamCover === 'shaped')
   function placeAt(ll) {
@@ -996,7 +1011,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       : Number(curSetting.value.spacing)
     if (!(sp > 0)) { appAlert('间距无效：须为大于 0 的角度值（Auto = 波束宽度）'); return }
     // 高斯组：间距按真实离轴角铺（Auto = θ3 才真是相邻 −3 dB 交叠）；多馈源 / 相控阵照旧 az/el 平面
-    const centers = hexFillCenters({ satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, polyPts: pg.pts, spacing: sp, metric: mode.value === 'stk' ? 'true' : 'azel' })
+    const centers = hexFillCenters({ satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, polyPts: pg.pts, spacing: sp, metric: trueMetric() ? 'true' : 'azel' })
     if (!centers.length) { appAlert('该 Polygon 内没有布下任何波束中心：间距可能大于区域尺寸'); return }
     const aw = activeWidth()
     pushUndo()
@@ -1023,7 +1038,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const nodes = valid.map((b) => { const a = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: a.az, el: a.el, r: (b.thX + b.thY) / 4 } })
     const k = Math.max(2, Math.min(FC_PALETTE.length, Number(p.fcN) || 4))
     // 高斯组：复用距离按真实夹角判、子晶格在波束群中心的 AEQ 平面里认；多馈源 / 相控阵照旧 az/el 平面
-    const tm = mode.value === 'stk' ? freqPlanNodesTrue(nodes) : null
+    const tm = trueMetric() ? freqPlanNodesTrue(nodes) : null
     const r = tm ? colorFreqPlan(tm.nodes, k, undefined, tm.dist) : colorFreqPlan(nodes, k)
     pushUndo()
     valid.forEach((b, i) => { b.fc = r.colors[i] })
@@ -1073,7 +1088,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       for (const b of gb) {
         if (!Number.isFinite(b.lon) || !Number.isFinite(b.lat) || !(b.thX > 0) || !(b.thY > 0)) { gnum++; continue }
         gnum++
-        const isStk = g.mode === 'stk'
+        // 高斯组与多馈源口径照射档：方向图按真实离轴角 → 草图 = θ3/2 锥 ∩ WGS-84（与生成同一视轴）
+        const isStk = g.mode === 'stk' || (g.mode === 'gauss' && isAperture(gp))
         const rkey = `${isStk ? 'stk|' : ''}${b.lon},${b.lat},${b.thX},${b.thY},${b.rot || 0}|${posKey}`
         if (!b._ring || b._ring.key !== rkey) {
           let segs
@@ -1167,6 +1183,11 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!pos) { if (!silent) stkSay(g, '关联卫星当前无星历'); else syncFail(g, '关联卫星当前无星历'); return null }
     const name = String(g.name || '').trim() || defName(g.mode)
     if (g.mode === 'stk') return generateStk(g, node, pos, name, silent)
+    if (g.mode === 'gauss' && isAperture(g.p)) {                    // 多馈源 · 口径照射档：产解析记录（不截窗），见 generateGaussAperture
+      const k = await generateGaussAperture(g, node, pos, name, silent)
+      if (k) g._genSig = genSigOf(g)
+      return k
+    }
     const clash = node.antennas.find((a) => a.name === name && !a.synth)
     if (clash) { appAlert(`卫星「${node.satName}」下已有同名天线「${name}」且不是合成天线`); return null }
     // 组名改过、且旧名的合成天线还在 → 先清理，避免留下孤儿天线
@@ -1192,6 +1213,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         const thY = Number(b.thY) > 0 ? Number(b.thY) : th3
         const def = { az: ae.az, el: ae.el, thX, thY, rot: Number(b.rot) || 0 }
         if (rf && rf.ok && Number.isFinite(rf.dirDbi)) def.peakDbi = rf.dirDbi + 10 * Math.log10(th3 * th3 / (thX * thY))
+        if (Number.isInteger(b.fc) && b.fc >= 0) def.fc = b.fc   // 频率复用色号 → SYNTHMETA.fc（C/CCI 着色读）
         return def
       })
       const text = buildGaussGrd({ satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, effPct: 55, beams: defs })
@@ -1207,8 +1229,17 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       const pgs = polysForP(g.p)
       if (!pgs.length) { appAlert(`赋形组「${name}」未选择 Polygon。`); return null }
       const sf = g.p.simSame !== false ? Number(g.p.fGHz) : Number(g.p.fSim)
-      const t3 = shapedTheta3db(sf, Number(g.p.antD), Number(g.p.taper))
+      const t3 = shapedTh3Of(g.p, sf)
       if (!(t3 > 0)) { appAlert('成分波束宽度无效。'); return null }
+      // 口径照射档（E-01）：成分波束 = 抛物面加台阶（p = 馈源边缘锥度的电压比，与口径效率同一个 p）+ Chu–Turrin 交叉极化
+      //   （X = D·sinθ₀/(4F)，θ₀ = 馈源轴偏角 = feedGeom.thAxisDeg）；旧档（高斯）参数一个不加 → 生成文本逐位不变
+      let apArgs = {}
+      if (isAperture(g.p)) {
+        const T = Number.isFinite(Number(g.p.taper)) && Number(g.p.taper) !== 0 ? -Math.abs(Number(g.p.taper)) : -15
+        const fgm = feedGeom({ Dm: Number(g.p.antD), focM: Number(g.p.foc), fGHz: sf, taperDb: T, offsetClr: Number(g.p.offsetClr) })
+        const th0 = fgm ? fgm.thAxisDeg * Math.PI / 180 : 0
+        apArgs = { beamModel: 'aperture', apP: Math.pow(10, T / 20), apXp: Number(g.p.foc) > 0 ? Number(g.p.antD) * Math.abs(Math.sin(th0)) / (4 * Number(g.p.foc)) : 0, apSym: g.p.apSym === 'ns' ? 'ns' : 'ew' }
+      }
       // 覆盖区 = Polygon 并集（无覆盖值）；增益恒由口径物理算出（∫P̂dΩ 定标）。
       // 塑形 = 站点栅（SATSOFT 原生：类型/目标偏置）；峰值点已按用户拍板从赋形反射面档移除（SATSOFT 无此物），旧档 hotspots 不再参与。
       const polysPts = pgs.map((pg) => pg.pts.map((q) => [q[0], q[1]]))
@@ -1219,7 +1250,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         mode: 'physical', value: null,
         effPct: shapedApertureEff(g.p.taper).effPct, theta3: t3, apDm: Number(g.p.antD), fSimGHz: sf, pol: g.p.pol || '', expandDeg: expDeg,
         stGrid: stGridOf(g.p),
-        stEdits: { ov: Array.isArray(g.p.stOv) ? g.p.stOv : [], add: Array.isArray(g.p.stAdd) ? g.p.stAdd : [] }
+        stEdits: { ov: Array.isArray(g.p.stOv) ? g.p.stOv : [], add: Array.isArray(g.p.stAdd) ? g.p.stAdd : [] },
+        ...apArgs
       })
       key = await grd.importSynthGrd(node.folder, name, r.text, { ctype: 'abs', levels: [+r.value.toFixed(1)] })
       if (key) {
@@ -1268,7 +1300,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
         // 相控阵点波束群（SATSOFT §6.5）：每波束 → (az,el) 电扫指向，buildPamGrd 逐波束写 pamField 场（sinc 旁瓣/栅瓣/扫描损失内建）
         const valid = (g.beams || []).filter((b) => Number.isFinite(b.lon) && Number.isFinite(b.lat))
         if (!valid.length) { appAlert(`组「${name}」暂无波束。`); return null }
-        const beamsAe = valid.map((b) => { const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: ae.az, el: ae.el } })
+        const beamsAe = valid.map((b) => { const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat); return { az: ae.az, el: ae.el, ...(Number.isInteger(b.fc) && b.fc >= 0 ? { fc: b.fc } : {}) } })
         const text = buildPamGrd({ satName: node.satName, satLon: pos.lon, satLat: pos.lat || 0, altKm: pos.altKm, pam: pamCfg, beams: beamsAe })
         key = await grd.importSynthGrd(node.folder, name, text, { ctype: 'rel', levels: [-3] })
         if (key) {
@@ -1297,7 +1329,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function genSigOf(g) {
     let pg = []
     try { if (g.mode === 'shaped' || g.mode === 'pam') pg = polysForP(g.p).map((x) => [x.id, x.pts]) } catch { /* ignore */ }
-    return hashSig(JSON.stringify([g.satFolder, String(g.name || '').trim(), g.mode, g.p || {}, (g.settings || []).map((s) => bareSetting(s, g.mode)), bare(g.beams || []), pg]))
+    // 口径照射专属键只在口径照射档进签名：旧组升级后补进的缺省键不改它的签名（否则全部显示「输入已变」）
+    let gp = g.p || {}
+    if (!isAperture(gp)) { gp = { ...gp }; for (const k of AP_KEYS) delete gp[k] }
+    return hashSig(JSON.stringify([g.satFolder, String(g.name || '').trim(), g.mode, gp, (g.settings || []).map((s) => bareSetting(s, g.mode)), bare(g.beams || []), pg]))
   }
   // 当前组的天线还在树上、但组参数已改过而没再「生成 / 更新此组」→ 输入已变
   const genStale = computed(() => {
@@ -1330,9 +1365,11 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const gs = Array.isArray(g.settings) ? g.settings : []
     const byId = new Map(gs.map((s) => [s.id, s]))
     const fb = byId.get(g.activeSettingId) || gs[0]
+    // 频率复用色号 fc 进记录（元数据），故也进签名 —— 只在本组有分配时才带，没分配的组签名与旧版逐字相同（升级不触发重同步）
+    const anyFc = (g.beams || []).some((b) => b && Number.isInteger(b.fc) && b.fc >= 0)
     return JSON.stringify([g.satFolder, String(g.name || '').trim(), numOffsetOf(g),
       gs.map((s) => [s.id, s.name, ...STK_KEYS.map((k) => s[k])]),
-      (g.beams || []).map((b) => (b && Number.isFinite(b.lon) && Number.isFinite(b.lat) ? [b.lon, b.lat, fb ? stkModelIdOf(g, b, byId, fb) : null] : 0))])
+      (g.beams || []).map((b) => (b && Number.isFinite(b.lon) && Number.isFinite(b.lat) ? [b.lon, b.lat, fb ? stkModelIdOf(g, b, byId, fb) : null, ...(anyFc ? [Number.isInteger(b.fc) && b.fc >= 0 ? b.fc : null] : [])] : 0))])
   }
   async function generateStk(g, node, pos, name, silent) {
     const say = (m) => { if (!silent) appAlert(m); else syncFail(g, m) }   // 静默同步失败 → 激活组的状态行（不弹窗）
@@ -1347,13 +1384,34 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       if (!b || !Number.isFinite(b.lon) || !Number.isFinite(b.lat)) return
       // 视轴 = 天底基底 igrid-6 的 (az,el)：与记录求值 / 应用出图的 azel(0,0) 天底系同一套
       const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat)
-      recBeams.push({ name: String(off + i + 1), az: ae.az, el: ae.el, model: stkModelIdOf(g, b, byId, fb) })
+      recBeams.push({ name: String(off + i + 1), az: ae.az, el: ae.el, model: stkModelIdOf(g, b, byId, fb), ...(Number.isInteger(b.fc) && b.fc >= 0 ? { fc: b.fc } : {}) })
     })
     if (!recBeams.length) { say(`组「${name}」暂无波束。`); return null }
     const record = buildRecord({
       sat: { name: node.satName, lon: pos.lon, lat: pos.lat || 0, altKm: pos.altKm },
       models: gs.map(stkModelOf), beams: recBeams, owner: { kind: 'beamsynth', groupId: g.id }
     })                                                               // 模型无效在此抛错 → 树上什么都不动
+    const put = await commitAnalytic(g, node, name, record, silent)
+    if (!put) return null
+    const { key, updated, nm } = put
+    g._genSig = hashSig(sig)
+    g._syncErr = ''
+    // 读数行：手动生成恒写；静默同步只在状态行还挂着本组上一条生成 / 同步读数（或失败）时刷新 ——
+    //   否则天线已换成新口径 / 新波束数，面板上还是旧的波束宽 · 峰值 · 个数；别的动作刚写下的回执（蜂窝布满等）不冲掉
+    if (!silent || stkLineOf(g)) {
+      const nb = record.beams.length
+      const thTxt = [...new Set(record.beams.map((b) => +b.th3.toFixed(3)))].sort((a, b) => a - b).map((t) => t + '°').join('/')
+      const gTxt = [...new Set(record.beams.map((b) => +b.g0.toFixed(2)))].sort((a, b) => b - a).join('/')
+      // 两句各写成整条模板（不把「已生成 / 已更新」塞进槽位）：界面语言切换按整条模板匹配
+      stkSay(g, updated ? `已更新天线「${nm}」：${nb} 个波束 · 波束宽 ${thTxt} · 峰值 ${gTxt} dBi`
+        : `已生成天线「${nm}」：${nb} 个波束 · 波束宽 ${thTxt} · 峰值 ${gTxt} dBi`)
+    }
+    return key
+  }
+  // 解析天线记录入树（高斯组 / 多馈源口径照射档共用）：同名的本组解析天线就地更新、同名合成 GRD（本组旧档产物）换成解析天线、
+  // 组改过名则旧名那副改名就地更新；别组 / 非合成的同名天线拒绝。成功返回 { key, updated, nm } 并记 g._genName；失败 null。
+  async function commitAnalytic(g, node, name, record, silent) {
+    const say = (m) => { if (!silent) appAlert(m); else syncFail(g, m) }
     const folder = node.folder
     const findA = (nm) => node.antennas.find((a) => a.name === nm) || null
     // 解析天线的主人（记录 owner.groupId）；未载入的先载入。读不出 → null（当作无主）
@@ -1402,19 +1460,78 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!key) return null
     const nm = key.slice(folder.length + 1)                          // keyOf = folder|name（重名时 createAnalyticAntenna 会补「·N」）
     g._genName = nm
-    g._genSig = hashSig(sig)
-    g._syncErr = ''
-    // 读数行：手动生成恒写；静默同步只在状态行还挂着本组上一条生成 / 同步读数（或失败）时刷新 ——
-    //   否则天线已换成新口径 / 新波束数，面板上还是旧的波束宽 · 峰值 · 个数；别的动作刚写下的回执（蜂窝布满等）不冲掉
-    if (!silent || stkLineOf(g)) {
-      const nb = record.beams.length
-      const thTxt = [...new Set(record.beams.map((b) => +b.th3.toFixed(3)))].sort((a, b) => a - b).map((t) => t + '°').join('/')
-      const gTxt = [...new Set(record.beams.map((b) => +b.g0.toFixed(2)))].sort((a, b) => b - a).join('/')
-      // 两句各写成整条模板（不把「已生成 / 已更新」塞进槽位）：界面语言切换按整条模板匹配
-      stkSay(g, updated ? `已更新天线「${nm}」：${nb} 个波束 · 波束宽 ${thTxt} · 峰值 ${gTxt} dBi`
-        : `已生成天线「${nm}」：${nb} 个波束 · 波束宽 ${thTxt} · 峰值 ${gTxt} dBi`)
+    return { key, updated, nm }
+  }
+
+  // ---- 多馈源反射面 · 口径照射档（E-01）：每波束按其所属设置（= 一面反射面）现解 → 口径照射解析记录 → 解析天线入树 ----
+  // 逐波束量（公式与出处见 apertureModel.js / synth.reflApertureOf / synth.scanLossDb）：
+  //   p、kD = πD/λ、θ3 = solveReflector（边缘照射、效率、方向性同源）；视轴 = 星 → 波束中心的真实方向（天底基底 igrid-6，与高斯组同套）；
+  //   扫描损失：反射面轴 = 本设置全部波束方向的均值，偏轴 θs → 馈源横移 θs·Fe/BDF → 彗差 Maréchal 损失；
+  //   表面误差（组级 rms / 相关长度，Ruze）：相干 −10·lg e·δ²，散射非相干加回；
+  //   峰值 g0 = 方向性 − 表面误差相干损失 − 扫描损失（+ 视轴散射）；ITU 包络下界（组级，可选）Gm = g0、ψb = θ3/2；
+  //   极化 = 设置的极化：线极化 → Chu–Turrin 交叉极化 X = D·sinθ₀/(4F)，圆极化 → Adatia–Rudge 斜视 ψs；对称面朝向 = 组级 apSym；
+  //   色号 fc = 草图「自动分配」的 b.fc（只作元数据）。
+  // 宽度只由反射面定（圆口径 → 圆波束），批量表格里逐波束改过的椭圆宽度 / 旋转在本档不适用。
+  async function generateGaussAperture(g, node, pos, name, silent) {
+    const valid = []
+    ;(g.beams || []).forEach((b, i) => { if (b && Number.isFinite(b.lon) && Number.isFinite(b.lat)) valid.push({ b, i }) })
+    if (!valid.length) { if (!silent) appAlert(`组「${name}」暂无波束。`); return null }
+    const gs = Array.isArray(g.settings) ? g.settings : []
+    if (!gs.length) { if (!silent) appAlert('暂无波束设置。'); return null }
+    const byId = new Map(gs.map((s) => [s.id, s]))
+    const fb = byId.get(g.activeSettingId) || gs[0]
+    const gp = g.p || {}
+    const rmsM = Math.max(0, Number(gp.apRmsMm) || 0) / 1000
+    const corrM = Number(gp.apCorrM) > 0 ? Number(gp.apCorrM) : 0.25
+    const envM = /^(s672|s1528)-(20|25)$/.exec(String(gp.apEnv || ''))
+    const sym = gp.apSym === 'ns' ? 'ns' : 'ew'
+    const per = new Map()                                            // 设置 id → { s, refl, ap }
+    const solveOf = (s) => {
+      if (!per.has(s.id)) { const refl = reflOf(s); per.set(s.id, { s, refl, ap: reflApertureOf(refl, Number(s.offsetClr)) }) }
+      return per.get(s.id)
     }
-    return key
+    const items = valid.map(({ b, i }) => {
+      const s = byId.get(b.settingId) || fb
+      const ae = dirToAzEl(pos.lon, pos.lat || 0, pos.altKm, b.lon, b.lat)
+      return { b, i, s, ae, u: gridDir(6, ae.az, ae.el) }
+    })
+    const axis = new Map()                                           // 设置 id → 反射面轴（该设置波束方向均值）
+    for (const it of items) { const a = axis.get(it.s.id) || [0, 0, 0]; a[0] += it.u[0]; a[1] += it.u[1]; a[2] += it.u[2]; axis.set(it.s.id, a) }
+    const off = numOffsetOf(g)
+    const recBeams = []
+    for (const it of items) {
+      const { ap, refl } = solveOf(it.s)
+      if (!ap) { if (!silent) appAlert(`波束设置「${it.s.name}」反射面参数无效。`); return null }
+      const A = axis.get(it.s.id), al = Math.hypot(A[0], A[1], A[2]) || 1
+      const cs = Math.max(-1, Math.min(1, (it.u[0] * A[0] + it.u[1] * A[1] + it.u[2] * A[2]) / al))
+      const scanDb = scanLossDb(ap, Math.acos(cs))
+      const d2 = (4 * Math.PI * rmsM / ap.lam) ** 2                // Ruze δ²（浅反射面往返）
+      const rz = d2 > 0 ? { a: ap.etaS * (2 * Math.PI * corrM / ap.lam) ** 2 * Math.exp(-d2), b: (Math.PI * corrM / ap.lam) ** 2, d2 } : null
+      const cohDb = refl.dirDbi - 10 * Math.LOG10E * d2 - scanDb
+      const g0 = 10 * Math.log10(Math.pow(10, cohDb / 10) + (rz ? rzScatter(rz, 0) : 0))
+      const env = envM ? { t: envM[1], ln: -Number(envM[2]), gm: g0, pb: ap.th3 / 2 } : null
+      const pol = it.s.pol === 'linY' || it.s.pol === 'rhcp' || it.s.pol === 'lhcp' ? it.s.pol : 'linX'
+      recBeams.push({
+        name: String(off + it.i + 1), az: it.ae.az, el: it.ae.el, model: it.s.id,
+        th3: ap.th3, g0, kD: ap.kD, p: ap.p, pol, xp: ap.xp, sq: ap.sq, sym, rz, env,
+        back: env ? Math.max(15 + env.ln + 0.25 * g0, 0) : -30, scanDb,
+        ...(Number.isInteger(it.b.fc) && it.b.fc >= 0 ? { fc: it.b.fc } : {})
+      })
+    }
+    const models = [...per.values()].map(({ s, refl }) => ({ id: s.id, name: s.name, fGHz: Number(s.fGHz), fSimGHz: simFreqOf(s), Dm: refl.Dm, focM: refl.focM, offsetClr: Number(s.offsetClr), pol: s.pol || 'linX', edgeDb: refl.edgeDb, effPct: refl.effPct, dirDbi: refl.dirDbi, th3: refl.th3Sim }))
+    const record = buildApertureRecord({ sat: { name: node.satName, lon: pos.lon, lat: pos.lat || 0, altKm: pos.altKm }, models, beams: recBeams, owner: { kind: 'beamsynth', groupId: g.id } })
+    // 组改过名、旧名那副是本组旧档（高斯）留下的合成 GRD → 先清掉（解析天线的改名接管在 commitAnalytic 里）
+    if (g._genName && g._genName !== name) {
+      const old = node.antennas.find((a) => a.name === g._genName && a.synth && !a.analytic)
+      if (old) { try { grd.removeAntenna(node.folder, old.name) } catch { /* ignore */ } }
+    }
+    const put = await commitAnalytic(g, node, name, record, silent)
+    if (!put) return null
+    const th3s = [...new Set(recBeams.map((b) => +b.th3.toFixed(3)))].sort((a, b) => a - b)
+    const gTxt = [...new Set(recBeams.map((b) => +b.g0.toFixed(2)))].sort((a, b) => b - a).slice(0, 4).join('/')
+    const scanMax = Math.max(...recBeams.map((b) => b.scanDb))
+    status.value = `已生成天线「${put.nm}」：${recBeams.length} 个波束 · 口径照射 · 波束宽 ${th3s.map((t) => t + '°').join('/')} · 峰值 ${gTxt} dBi · 最大扫描损失 ${scanMax.toFixed(2)} dB`
+    return put.key
   }
   // 状态行上最近一条由高斯组生成 / 同步写下的内容（_stkLine = { gid, text }）：只有它还原样挂在状态行上，静默同步才去刷新
   function stkSay(g, text) { status.value = text; _stkLine = { gid: g.id, text } }

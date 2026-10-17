@@ -14,6 +14,7 @@
 //   ⑥ 本体身份 grdsat:<folder>（与树上 GRD 天线同一份）；页面接线按源码钉（卫星集「卫星天线树」't:tree'、TDZ 顺序、信息栏口径、
 //      各成员表不出合成号、卫星集标签不并空树、搜索下拉重新展开）。
 //   ⑥b 卫星集「卫星天线树」点亮后全部成员进点云，不看树上卫星行的小眼睛（回归 2026-10-14：小眼睛关着的星点亮这一集也不出点）。
+//   ⑥c 卫星集注册表落盘：「仅显示：搜索结果」时关软件，重开不再全关（回归 2026-10-16 体检 #6）；init 空集退回出厂集合；clearSearch 0 命中也还原。
 import { readFileSync } from 'node:fs'
 import sat from '../../../src/viz/constellation/satellite.js'
 import { posAt, posAtMs, periodMinOf, propagatorLabel, validSpan, keepInRenderSet, SIDEREAL_MIN } from '../../../src/viz/constellation/satPos.js'
@@ -175,7 +176,9 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   const el = { altKm: 550, ecc: 0.001, incl: 53, raan: 10, argp: 30, ma: 20 }
   const EP = '2026-10-06T02:30:00.000Z', EP2 = '2026-10-06T03:30:00.000Z'
   const a = recOfElements({ ...el, epoch: EP }), b = recOfElementsOld(el, EP)
-  ok(['no', 'ecco', 'inclo', 'nodeo', 'argpo', 'mo', 'jdsatepoch', 'jdsatepochF'].every((k) => a[k] === b[k]) && a.error === 0, 'elementsOmm 与改造前页面的内联算式同一历元下逐位相同（只换了历元的来源）')
+  ok(['ecco', 'inclo', 'nodeo', 'argpo', 'mo', 'jdsatepoch', 'jdsatepochF'].every((k) => a[k] === b[k]) && a.error === 0, 'elementsOmm 与改造前页面的内联算式同一历元下：历元与角度根数逐位相同（只换了历元的来源）')
+  // 平均运动按 SGP4 平根数口径（A-05，sgp4Mean）：sgp4init 后平半长轴 = 设计 a（信息卡近地点高度回读 550），不再是二体 n 当 Kozai 值
+  ok(Math.abs(a.altp * 6378.137 - 550) < 1e-9 && Math.abs(b.altp * 6378.137 - 550) > 0.1, 'elementsOmm 的平均运动：信息卡近地点高度回读 550 km（改造前二体口径差 ' + (b.altp * 6378.137 - 550).toFixed(3) + ' km）')
   const t = new Date(Date.UTC(2026, 9, 6, 12))
   const p1 = sat.propagate(recOfElements({ ...el, epoch: EP }), t).position, p2 = sat.propagate(recOfElements({ ...el, epoch: EP }), t).position
   const p3 = sat.propagate(recOfElements({ ...el, epoch: EP2 }), t).position
@@ -392,6 +395,34 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   const t = new Date('2026-10-14T08:00:00Z')
   ok(virt.every((e) => keepInRenderSet(e, t)) && virt.every((e) => { const pv = posAt(e, t); return pv && Number.isFinite(pv.position.x) }), '虚拟星条目过得了渲染集的去留判据、此刻有星位（点云里有点、点得中）')
   ok(treeSetEntries(nodes, ids, () => null).length === 0 && treeSetEntries(nodes, ids, null).length === 0, '解不出的不收；没给取条目函数 → 空')
+}
+
+// ---------- ⑥c 卫星集注册表落盘：「仅显示：搜索结果」时直接关软件（体检 2026-10-16 #6）----------
+// 早先落 visible 时滤掉 'q' 就是空集、solo 落 null；重开（含自动更新重启）全部卫星集被关、地图上 0 颗。
+// 现在落进入仅显示前的可见集合（solo.prev）；页面 init 读到空可见集退回出厂集合（已落成空集的老存档）；clearSearch 不只看命中数。
+{
+  const mem = new Map(), prevLS = globalThis.localStorage
+  globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => { mem.set(k, String(v)) }, removeItem: (k) => { mem.delete(k) } }
+  try {
+    const { useSatSets } = await import('../../../src/viz/constellation/useSatSets.js')
+    const S = useSatSets()
+    S.ensure(['t:tree', 'g:geo', 'g:starlink'])
+    S.setVisible(['t:tree', 'g:geo'])
+    S.soloOn('q')   // 搜索出结果：仅显示搜索结果（0 命中也一样进）
+    const saved = JSON.parse(mem.get('constellation3d/satSets'))
+    ok(saved.visible.join() === 't:tree,g:geo' && saved.solo === null, '仅显示搜索结果时落盘：visible = 进入前的可见集合、solo = null（不再落空集）', JSON.stringify({ v: saved.visible, s: saved.solo }))
+    const R = useSatSets(); R.load()
+    ok([...R.visible.value].join() === 't:tree,g:geo' && R.solo.value === null, '重开读回：还是搜索之前那几集')
+    S.restore((id) => id !== 'q'); S.soloOn('g:geo')
+    const s2 = JSON.parse(mem.get('constellation3d/satSets'))
+    ok(s2.visible.join() === 'g:geo' && s2.solo && s2.solo.id === 'g:geo' && s2.solo.prev.join() === 't:tree,g:geo', '仅显示别的集：照旧落 solo（含还原集 prev）')
+  } finally { globalThis.localStorage = prevLS }
+  const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const body = (sig) => { const i = page.indexOf(sig), j = page.indexOf('\n}\n', i); return i >= 0 && j > i ? page.slice(i, j) : '' }
+  const is = body('function initSatSets(legacy) {')
+  ok(is.includes('} else if (!satSets.visible.value.size) {') && is.includes('satSets.solo.value = null') && is.includes("satSets.setVisible(BUILTIN_KEYS.includes(k0) ? [TREE_SET, 'g:' + k0] : [TREE_SET])"), '初始化：读到空可见集退回出厂集合（卫星天线树 + 出厂内置星座）')
+  const cs = body('function clearSearch() {')
+  ok(cs.includes("const qOn = !!(satSets.solo.value && satSets.solo.value.id === 'q') || satSets.visible.value.has('q')") && cs.includes('if (!qOn && !filterEntries.length && !filterN.value && !filterKw.value) return'), 'clearSearch：搜索 0 命中后清空搜索框 / 点 × 也还原（早退看搜索层在不在，不只看命中数）')
 }
 
 // ---------- ⑦ 别的窗口读树（NGSO / 再生式 / 端到端 / 模型工作台）：satTree.loadSatTree 把历元规范一次 ----------

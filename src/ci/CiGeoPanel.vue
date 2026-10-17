@@ -56,6 +56,7 @@ async function exportPng() {
       <CiPatternPlot ref="plotRef"
         :curve="(down && down.patternCurve) || []" :marks="(down && down.patternMarks) || []"
         :sources="(down && down.sources) || []"
+        :pattern-name="down && down.esPattern ? `${down.esPattern.name} · ${down.esPattern.edition}` : ''"
         :peak-gain-dbi="down && down.peakGainDbi" :hovered-id="hoveredId" @hover="emit('hover', $event)" />
     </template>
 
@@ -66,6 +67,7 @@ async function exportPng() {
         :mask-band="(up && up.maskBand) || ''" :mask-authoritative="!!(up && up.maskAuthoritative)"
         :mask-phi0-deg="up && up.maskPhi0Deg"
         :peer-curves="(up && up.peerCurves) || []" :sources="(up && up.sources) || []"
+        :peer-pattern-name="up && up.esPattern ? up.esPattern.name : ''"
         :hovered-id="hoveredId" @hover="emit('hover', $event)" />
     </template>
   </div>

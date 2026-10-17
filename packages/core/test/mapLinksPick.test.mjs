@@ -366,5 +366,45 @@ const lnk = useMapLinks({
   ok('根视图命中按相关度：全名 SAT-1 排第一', h.items[0].name === 'SAT-1')
 }
 
+// ---- ⑤ 撤销接线（host.undo，体检 2026-10-16 #5：建链全程一步）----
+// 一次插入态（startNew / startAt → finish / cancel / 删掉那条）begin / end 各一次；插入态里的修改不另起；
+// 插入态之外的单项修改走 edit（取色框带合并 key）；删除链路 / 节点不在这里包（宿主在调用处包，免得一步压两条）
+{
+  const log = []
+  const links2 = ref([])
+  let seq = 0
+  const L = useMapLinks({
+    links: links2, stations, points, newId: () => 'U' + (++seq),
+    commit: () => {}, satEcefAt: (k) => SATPOS[k] || null, satInfo: () => null, status: () => {},
+    undo: {
+      begin: (isNew) => log.push('begin:' + (isNew ? 'new' : 'old')),
+      end: () => log.push('end'),
+      edit: (label, fn, key) => { log.push('edit' + (key ? ':' + key : '')); return fn() }
+    }
+  })
+  const id = L.startNew(ST('s1'))
+  L.addNode(SAT('norad:1')); L.addNode(ST('s2'))
+  L.setRegen(id, 1, true)          // 插入态里改：算这次建链那一步
+  L.finish()
+  ok('新建 → 完成：begin(new) / end 各一次，插入态里的修改不另起 edit', log.join() === 'begin:new,end', log.join())
+  log.length = 0
+  L.startAt(id); L.addNode(SAT('norad:2')); L.cancel()
+  ok('接着加节点 → 取消：begin(old) / end', log.join() === 'begin:old,end', log.join())
+  log.length = 0
+  L.startNew(ST('s3')); L.startNew(ST('s1'))
+  ok('插入态里再新建：先收上一段（不足两节点整条丢）再开新的一段', log.join() === 'begin:new,end,begin:new', log.join())
+  const cur = L.draw.value.id
+  log.length = 0
+  L.remove(cur)
+  ok('删掉正在插入的那条：收尾 end，删除本身不包 edit', log.join() === 'end', log.join())
+  log.length = 0
+  L.rename(id, '馈电'); L.setColor(id, '#123456'); L.setLaser(id, 1, true); L.moveNode(id, 0, 1); L.reverse(id)
+  ok('插入态之外的单项修改都走 edit，取色带合并 key', log.join() === 'edit,edit:lkc:' + id + ',edit,edit,edit', log.join())
+  ok('edit 照常落改动', L.linkOf(id).name === '馈电' && L.linkOf(id).color === '#123456' && links2.value.length === 2)
+  log.length = 0
+  L.removeNode(id, 0)
+  ok('删节点不在这里包', log.join() === '', log.join())
+}
+
 console.log(`mapLinksPick: ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

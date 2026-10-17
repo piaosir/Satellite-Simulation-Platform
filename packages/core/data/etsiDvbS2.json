@@ -1,0 +1,950 @@
+{
+  "about": "ETSI DVB-S2 / S2X 误码性能原表的逐值转录（AWGN 线性信道 Es/N0 门限 + 表 20a 的硬限幅信道 Csat/(N0·Rs)）。由 scripts/build-etsi-dvb-tables.mjs 从 ETSI 原文 PDF 抽取并自检，勿手改；packages/core/utils/constants.js 据此生成内置 MODCOD 表，packages/core/test/etsiTables.test.mjs 逐值钉住。",
+  "sources": {
+    "EN302307-1": {
+      "doc": "ETSI EN 302 307-1 V1.4.1 (2014-11)",
+      "url": "https://www.etsi.org/deliver/etsi_en/302300_302399/30230701/01.04.01_60/en_30230701v010401p.pdf",
+      "bytes": 499949,
+      "sha256": "19077f80420eb17519fcf6f83e2847d7a877940b134c5306814b8c6f60d8475d"
+    },
+    "EN302307-2": {
+      "doc": "ETSI EN 302 307-2 V1.4.1 (2024-08)",
+      "url": "https://www.etsi.org/deliver/etsi_en/302300_302399/30230702/01.04.01_60/en_30230702v010401p.pdf",
+      "bytes": 1786312,
+      "sha256": "72b013ca8ca957c26a8e5fc70d491fc5c49065d25ff56ab8ae86087f35664fdd"
+    }
+  },
+  "standards": {
+    "DVB-S2": [
+      "S2-13"
+    ],
+    "DVB-S2X": [
+      "S2X-20a",
+      "S2-13"
+    ],
+    "DVB-S2X Short": [
+      "S2X-20c"
+    ],
+    "DVB-S2X VL-SNR Medium": [
+      "S2X-20b"
+    ]
+  },
+  "tables": {
+    "S2-13": {
+      "source": "EN302307-1",
+      "table": "13",
+      "clause": "6",
+      "page": 36,
+      "title": "Es/No performance at Quasi Error Free PER = 10-7 (AWGN channel)",
+      "channel": "AWGN",
+      "frame": 64800,
+      "iterations": 50,
+      "qef": {
+        "kind": "PER",
+        "exp": 7,
+        "def": "Transport Stream Packet Error Ratio (188-byte packets) after FEC, §4.1 / clause 6"
+      },
+      "rows": [
+        {
+          "name": "QPSK 1/4",
+          "mod": "QPSK",
+          "fec": "1/4",
+          "L": false,
+          "spread": 1,
+          "se": 0.490243,
+          "esno": -2.35
+        },
+        {
+          "name": "QPSK 1/3",
+          "mod": "QPSK",
+          "fec": "1/3",
+          "L": false,
+          "spread": 1,
+          "se": 0.656448,
+          "esno": -1.24
+        },
+        {
+          "name": "QPSK 2/5",
+          "mod": "QPSK",
+          "fec": "2/5",
+          "L": false,
+          "spread": 1,
+          "se": 0.789412,
+          "esno": -0.3
+        },
+        {
+          "name": "QPSK 1/2",
+          "mod": "QPSK",
+          "fec": "1/2",
+          "L": false,
+          "spread": 1,
+          "se": 0.988858,
+          "esno": 1
+        },
+        {
+          "name": "QPSK 3/5",
+          "mod": "QPSK",
+          "fec": "3/5",
+          "L": false,
+          "spread": 1,
+          "se": 1.188304,
+          "esno": 2.23
+        },
+        {
+          "name": "QPSK 2/3",
+          "mod": "QPSK",
+          "fec": "2/3",
+          "L": false,
+          "spread": 1,
+          "se": 1.322253,
+          "esno": 3.1
+        },
+        {
+          "name": "QPSK 3/4",
+          "mod": "QPSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 1.487473,
+          "esno": 4.03
+        },
+        {
+          "name": "QPSK 4/5",
+          "mod": "QPSK",
+          "fec": "4/5",
+          "L": false,
+          "spread": 1,
+          "se": 1.587196,
+          "esno": 4.68
+        },
+        {
+          "name": "QPSK 5/6",
+          "mod": "QPSK",
+          "fec": "5/6",
+          "L": false,
+          "spread": 1,
+          "se": 1.654663,
+          "esno": 5.18
+        },
+        {
+          "name": "QPSK 8/9",
+          "mod": "QPSK",
+          "fec": "8/9",
+          "L": false,
+          "spread": 1,
+          "se": 1.766451,
+          "esno": 6.2
+        },
+        {
+          "name": "QPSK 9/10",
+          "mod": "QPSK",
+          "fec": "9/10",
+          "L": false,
+          "spread": 1,
+          "se": 1.788612,
+          "esno": 6.42
+        },
+        {
+          "name": "8PSK 3/5",
+          "mod": "8PSK",
+          "fec": "3/5",
+          "L": false,
+          "spread": 1,
+          "se": 1.779991,
+          "esno": 5.5
+        },
+        {
+          "name": "8PSK 2/3",
+          "mod": "8PSK",
+          "fec": "2/3",
+          "L": false,
+          "spread": 1,
+          "se": 1.980636,
+          "esno": 6.62
+        },
+        {
+          "name": "8PSK 3/4",
+          "mod": "8PSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 2.228124,
+          "esno": 7.91
+        },
+        {
+          "name": "8PSK 5/6",
+          "mod": "8PSK",
+          "fec": "5/6",
+          "L": false,
+          "spread": 1,
+          "se": 2.478562,
+          "esno": 9.35
+        },
+        {
+          "name": "8PSK 8/9",
+          "mod": "8PSK",
+          "fec": "8/9",
+          "L": false,
+          "spread": 1,
+          "se": 2.646012,
+          "esno": 10.69
+        },
+        {
+          "name": "8PSK 9/10",
+          "mod": "8PSK",
+          "fec": "9/10",
+          "L": false,
+          "spread": 1,
+          "se": 2.679207,
+          "esno": 10.98
+        },
+        {
+          "name": "16APSK 2/3",
+          "mod": "16APSK",
+          "fec": "2/3",
+          "L": false,
+          "spread": 1,
+          "se": 2.637201,
+          "esno": 8.97
+        },
+        {
+          "name": "16APSK 3/4",
+          "mod": "16APSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 2.966728,
+          "esno": 10.21
+        },
+        {
+          "name": "16APSK 4/5",
+          "mod": "16APSK",
+          "fec": "4/5",
+          "L": false,
+          "spread": 1,
+          "se": 3.165623,
+          "esno": 11.03
+        },
+        {
+          "name": "16APSK 5/6",
+          "mod": "16APSK",
+          "fec": "5/6",
+          "L": false,
+          "spread": 1,
+          "se": 3.300184,
+          "esno": 11.61
+        },
+        {
+          "name": "16APSK 8/9",
+          "mod": "16APSK",
+          "fec": "8/9",
+          "L": false,
+          "spread": 1,
+          "se": 3.523143,
+          "esno": 12.89
+        },
+        {
+          "name": "16APSK 9/10",
+          "mod": "16APSK",
+          "fec": "9/10",
+          "L": false,
+          "spread": 1,
+          "se": 3.567342,
+          "esno": 13.13
+        },
+        {
+          "name": "32APSK 3/4",
+          "mod": "32APSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 3.703295,
+          "esno": 12.73
+        },
+        {
+          "name": "32APSK 4/5",
+          "mod": "32APSK",
+          "fec": "4/5",
+          "L": false,
+          "spread": 1,
+          "se": 3.951571,
+          "esno": 13.64
+        },
+        {
+          "name": "32APSK 5/6",
+          "mod": "32APSK",
+          "fec": "5/6",
+          "L": false,
+          "spread": 1,
+          "se": 4.11954,
+          "esno": 14.28
+        },
+        {
+          "name": "32APSK 8/9",
+          "mod": "32APSK",
+          "fec": "8/9",
+          "L": false,
+          "spread": 1,
+          "se": 4.397854,
+          "esno": 15.69
+        },
+        {
+          "name": "32APSK 9/10",
+          "mod": "32APSK",
+          "fec": "9/10",
+          "L": false,
+          "spread": 1,
+          "se": 4.453027,
+          "esno": 16.05
+        }
+      ]
+    },
+    "S2X-20a": {
+      "source": "EN302307-2",
+      "table": "20a",
+      "clause": "6",
+      "page": 53,
+      "title": "Performance at Quasi Error Free FER=10-5, Normal FECFRAMES, 50 iterations",
+      "channel": "AWGN",
+      "frame": 64800,
+      "iterations": 50,
+      "qef": {
+        "kind": "FER",
+        "exp": 5,
+        "def": "Frame Error Ratio of useful FECFRAMEs after FEC, clause 6"
+      },
+      "hl": "Ideal Csat/(N0Rs) on the non-linear hard-limiter channel (informative, note 2): optimised IBO, roll-off 10 %, Csat = hard-limiter saturated single-carrier power, N0Rs = noise power in the symbol-rate bandwidth",
+      "rows": [
+        {
+          "name": "QPSK 2/9",
+          "mod": "QPSK",
+          "fec": "2/9",
+          "L": false,
+          "spread": 1,
+          "se": 0.434841,
+          "esno": -2.85,
+          "hl": -2.45,
+          "frame": 61560
+        },
+        {
+          "name": "QPSK 13/45",
+          "mod": "QPSK",
+          "fec": "13/45",
+          "L": false,
+          "spread": 1,
+          "se": 0.567805,
+          "esno": -2.03,
+          "hl": -1.6
+        },
+        {
+          "name": "QPSK 9/20",
+          "mod": "QPSK",
+          "fec": "9/20",
+          "L": false,
+          "spread": 1,
+          "se": 0.889135,
+          "esno": 0.22,
+          "hl": 0.69
+        },
+        {
+          "name": "QPSK 11/20",
+          "mod": "QPSK",
+          "fec": "11/20",
+          "L": false,
+          "spread": 1,
+          "se": 1.088581,
+          "esno": 1.45,
+          "hl": 1.97
+        },
+        {
+          "name": "8APSK 5/9-L",
+          "mod": "8APSK",
+          "fec": "5/9",
+          "L": true,
+          "spread": 1,
+          "se": 1.647211,
+          "esno": 4.73,
+          "hl": 5.95
+        },
+        {
+          "name": "8APSK 26/45-L",
+          "mod": "8APSK",
+          "fec": "26/45",
+          "L": true,
+          "spread": 1,
+          "se": 1.713601,
+          "esno": 5.13,
+          "hl": 6.35
+        },
+        {
+          "name": "8PSK 23/36",
+          "mod": "8PSK",
+          "fec": "23/36",
+          "L": false,
+          "spread": 1,
+          "se": 1.896173,
+          "esno": 6.12,
+          "hl": 6.96
+        },
+        {
+          "name": "8PSK 25/36",
+          "mod": "8PSK",
+          "fec": "25/36",
+          "L": false,
+          "spread": 1,
+          "se": 2.062148,
+          "esno": 7.02,
+          "hl": 7.93
+        },
+        {
+          "name": "8PSK 13/18",
+          "mod": "8PSK",
+          "fec": "13/18",
+          "L": false,
+          "spread": 1,
+          "se": 2.145136,
+          "esno": 7.49,
+          "hl": 8.42
+        },
+        {
+          "name": "16APSK 1/2-L",
+          "mod": "16APSK",
+          "fec": "1/2",
+          "L": true,
+          "spread": 1,
+          "se": 1.972253,
+          "esno": 5.97,
+          "hl": 8.4
+        },
+        {
+          "name": "16APSK 8/15-L",
+          "mod": "16APSK",
+          "fec": "8/15",
+          "L": true,
+          "spread": 1,
+          "se": 2.10485,
+          "esno": 6.55,
+          "hl": 9
+        },
+        {
+          "name": "16APSK 5/9-L",
+          "mod": "16APSK",
+          "fec": "5/9",
+          "L": true,
+          "spread": 1,
+          "se": 2.193247,
+          "esno": 6.84,
+          "hl": 9.35
+        },
+        {
+          "name": "16APSK 26/45",
+          "mod": "16APSK",
+          "fec": "26/45",
+          "L": false,
+          "spread": 1,
+          "se": 2.281645,
+          "esno": 7.51,
+          "hl": 9.17
+        },
+        {
+          "name": "16APSK 3/5",
+          "mod": "16APSK",
+          "fec": "3/5",
+          "L": false,
+          "spread": 1,
+          "se": 2.370043,
+          "esno": 7.8,
+          "hl": 9.38
+        },
+        {
+          "name": "16APSK 3/5-L",
+          "mod": "16APSK",
+          "fec": "3/5",
+          "L": true,
+          "spread": 1,
+          "se": 2.370043,
+          "esno": 7.41,
+          "hl": 9.94
+        },
+        {
+          "name": "16APSK 28/45",
+          "mod": "16APSK",
+          "fec": "28/45",
+          "L": false,
+          "spread": 1,
+          "se": 2.458441,
+          "esno": 8.1,
+          "hl": 9.76
+        },
+        {
+          "name": "16APSK 23/36",
+          "mod": "16APSK",
+          "fec": "23/36",
+          "L": false,
+          "spread": 1,
+          "se": 2.524739,
+          "esno": 8.38,
+          "hl": 10.04
+        },
+        {
+          "name": "16APSK 2/3-L",
+          "mod": "16APSK",
+          "fec": "2/3",
+          "L": true,
+          "spread": 1,
+          "se": 2.635236,
+          "esno": 8.43,
+          "hl": 11.06
+        },
+        {
+          "name": "16APSK 25/36",
+          "mod": "16APSK",
+          "fec": "25/36",
+          "L": false,
+          "spread": 1,
+          "se": 2.745734,
+          "esno": 9.27,
+          "hl": 11.04
+        },
+        {
+          "name": "16APSK 13/18",
+          "mod": "16APSK",
+          "fec": "13/18",
+          "L": false,
+          "spread": 1,
+          "se": 2.856231,
+          "esno": 9.71,
+          "hl": 11.52
+        },
+        {
+          "name": "16APSK 7/9",
+          "mod": "16APSK",
+          "fec": "7/9",
+          "L": false,
+          "spread": 1,
+          "se": 3.077225,
+          "esno": 10.65,
+          "hl": 12.5
+        },
+        {
+          "name": "16APSK 77/90",
+          "mod": "16APSK",
+          "fec": "77/90",
+          "L": false,
+          "spread": 1,
+          "se": 3.386618,
+          "esno": 11.99,
+          "hl": 14
+        },
+        {
+          "name": "32APSK 2/3-L",
+          "mod": "32APSK",
+          "fec": "2/3",
+          "L": true,
+          "spread": 1,
+          "se": 3.291954,
+          "esno": 11.1,
+          "hl": 13.81
+        },
+        {
+          "name": "32APSK 32/45",
+          "mod": "32APSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "se": 3.510192,
+          "esno": 11.75,
+          "hl": 14.5
+        },
+        {
+          "name": "32APSK 11/15",
+          "mod": "32APSK",
+          "fec": "11/15",
+          "L": false,
+          "spread": 1,
+          "se": 3.620536,
+          "esno": 12.17,
+          "hl": 14.91
+        },
+        {
+          "name": "32APSK 7/9",
+          "mod": "32APSK",
+          "fec": "7/9",
+          "L": false,
+          "spread": 1,
+          "se": 3.841226,
+          "esno": 13.05,
+          "hl": 15.84
+        },
+        {
+          "name": "64APSK 32/45-L",
+          "mod": "64APSK",
+          "fec": "32/45",
+          "L": true,
+          "spread": 1,
+          "se": 4.206428,
+          "esno": 13.98,
+          "hl": 17.7
+        },
+        {
+          "name": "64APSK 11/15",
+          "mod": "64APSK",
+          "fec": "11/15",
+          "L": false,
+          "spread": 1,
+          "se": 4.338659,
+          "esno": 14.81,
+          "hl": 17.97
+        },
+        {
+          "name": "64APSK 7/9",
+          "mod": "64APSK",
+          "fec": "7/9",
+          "L": false,
+          "spread": 1,
+          "se": 4.603122,
+          "esno": 15.47,
+          "hl": 19.1
+        },
+        {
+          "name": "64APSK 4/5",
+          "mod": "64APSK",
+          "fec": "4/5",
+          "L": false,
+          "spread": 1,
+          "se": 4.735354,
+          "esno": 15.87,
+          "hl": 19.54
+        },
+        {
+          "name": "64APSK 5/6",
+          "mod": "64APSK",
+          "fec": "5/6",
+          "L": false,
+          "spread": 1,
+          "se": 4.936639,
+          "esno": 16.55,
+          "hl": 20.44
+        },
+        {
+          "name": "128APSK 3/4",
+          "mod": "128APSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 5.163248,
+          "esno": 17.73,
+          "hl": 21.43
+        },
+        {
+          "name": "128APSK 7/9",
+          "mod": "128APSK",
+          "fec": "7/9",
+          "L": false,
+          "spread": 1,
+          "se": 5.355556,
+          "esno": 18.53,
+          "hl": 22.21
+        },
+        {
+          "name": "256APSK 29/45-L",
+          "mod": "256APSK",
+          "fec": "29/45",
+          "L": true,
+          "spread": 1,
+          "se": 5.06569,
+          "esno": 16.98,
+          "hl": 21.6
+        },
+        {
+          "name": "256APSK 2/3-L",
+          "mod": "256APSK",
+          "fec": "2/3",
+          "L": true,
+          "spread": 1,
+          "se": 5.241514,
+          "esno": 17.24,
+          "hl": 21.89
+        },
+        {
+          "name": "256APSK 31/45-L",
+          "mod": "256APSK",
+          "fec": "31/45",
+          "L": true,
+          "spread": 1,
+          "se": 5.417338,
+          "esno": 18.1,
+          "hl": 22.9
+        },
+        {
+          "name": "256APSK 32/45",
+          "mod": "256APSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "se": 5.593162,
+          "esno": 18.59,
+          "hl": 22.91
+        },
+        {
+          "name": "256APSK 11/15-L",
+          "mod": "256APSK",
+          "fec": "11/15",
+          "L": true,
+          "spread": 1,
+          "se": 5.768987,
+          "esno": 18.84,
+          "hl": 23.8
+        },
+        {
+          "name": "256APSK 3/4",
+          "mod": "256APSK",
+          "fec": "3/4",
+          "L": false,
+          "spread": 1,
+          "se": 5.900855,
+          "esno": 19.57,
+          "hl": 24.02
+        }
+      ]
+    },
+    "S2X-20b": {
+      "source": "EN302307-2",
+      "table": "20b",
+      "clause": "6",
+      "page": 54,
+      "title": "Es/N0 Performance at Quasi Error Free FER=10-5 (AWGN Channel), medium XFECFRAMEs, 75 iterations",
+      "channel": "AWGN",
+      "frame": 30780,
+      "iterations": 75,
+      "qef": {
+        "kind": "FER",
+        "exp": 5,
+        "def": "Frame Error Ratio of useful FECFRAMEs after FEC, clause 6"
+      },
+      "rows": [
+        {
+          "name": "BPSK 1/5",
+          "mod": "BPSK",
+          "fec": "1/5",
+          "L": false,
+          "spread": 1,
+          "esno": -6.85
+        },
+        {
+          "name": "BPSK 11/45",
+          "mod": "BPSK",
+          "fec": "11/45",
+          "L": false,
+          "spread": 1,
+          "esno": -5.5
+        },
+        {
+          "name": "BPSK 1/3",
+          "mod": "BPSK",
+          "fec": "1/3",
+          "L": false,
+          "spread": 1,
+          "esno": -4
+        }
+      ]
+    },
+    "S2X-20c": {
+      "source": "EN302307-2",
+      "table": "20c",
+      "clause": "6",
+      "page": 54,
+      "title": "Es/N0 Performance at Quasi Error Free FER=10-5 (AWGN Channel), Short XFECFRAMEs, 75 iterations pi/2 BPSK modes, 50 iterations other modes",
+      "channel": "AWGN",
+      "frame": 16200,
+      "iterations": "75 (π/2-BPSK) / 50",
+      "qef": {
+        "kind": "FER",
+        "exp": 5,
+        "def": "Frame Error Ratio of useful FECFRAMEs after FEC, clause 6"
+      },
+      "rows": [
+        {
+          "name": "BPSK-S 1/5",
+          "mod": "BPSK",
+          "fec": "1/5",
+          "L": false,
+          "spread": 2,
+          "esno": -9.9,
+          "frame": 15390
+        },
+        {
+          "name": "BPSK-S 11/45",
+          "mod": "BPSK",
+          "fec": "11/45",
+          "L": false,
+          "spread": 2,
+          "esno": -8.3,
+          "frame": 15390
+        },
+        {
+          "name": "BPSK 1/5",
+          "mod": "BPSK",
+          "fec": "1/5",
+          "L": false,
+          "spread": 1,
+          "esno": -6.1,
+          "frame": 14976
+        },
+        {
+          "name": "BPSK 4/15",
+          "mod": "BPSK",
+          "fec": "4/15",
+          "L": false,
+          "spread": 1,
+          "esno": -4.9,
+          "frame": 14976
+        },
+        {
+          "name": "BPSK 1/3",
+          "mod": "BPSK",
+          "fec": "1/3",
+          "L": false,
+          "spread": 1,
+          "esno": -3.72
+        },
+        {
+          "name": "QPSK 11/45",
+          "mod": "QPSK",
+          "fec": "11/45",
+          "L": false,
+          "spread": 1,
+          "esno": -2.5
+        },
+        {
+          "name": "QPSK 4/15",
+          "mod": "QPSK",
+          "fec": "4/15",
+          "L": false,
+          "spread": 1,
+          "esno": -2.24
+        },
+        {
+          "name": "QPSK 14/45",
+          "mod": "QPSK",
+          "fec": "14/45",
+          "L": false,
+          "spread": 1,
+          "esno": -1.46
+        },
+        {
+          "name": "QPSK 7/15",
+          "mod": "QPSK",
+          "fec": "7/15",
+          "L": false,
+          "spread": 1,
+          "esno": 0.6
+        },
+        {
+          "name": "QPSK 8/15",
+          "mod": "QPSK",
+          "fec": "8/15",
+          "L": false,
+          "spread": 1,
+          "esno": 1.45
+        },
+        {
+          "name": "QPSK 32/45",
+          "mod": "QPSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "esno": 3.66
+        },
+        {
+          "name": "8PSK 7/15",
+          "mod": "8PSK",
+          "fec": "7/15",
+          "L": false,
+          "spread": 1,
+          "esno": 3.83
+        },
+        {
+          "name": "8PSK 8/15",
+          "mod": "8PSK",
+          "fec": "8/15",
+          "L": false,
+          "spread": 1,
+          "esno": 4.71
+        },
+        {
+          "name": "8PSK 26/45",
+          "mod": "8PSK",
+          "fec": "26/45",
+          "L": false,
+          "spread": 1,
+          "esno": 5.52
+        },
+        {
+          "name": "8PSK 32/45",
+          "mod": "8PSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "esno": 7.54
+        },
+        {
+          "name": "16APSK 7/15",
+          "mod": "16APSK",
+          "fec": "7/15",
+          "L": false,
+          "spread": 1,
+          "esno": 5.99
+        },
+        {
+          "name": "16APSK 8/15",
+          "mod": "16APSK",
+          "fec": "8/15",
+          "L": false,
+          "spread": 1,
+          "esno": 6.93
+        },
+        {
+          "name": "16APSK 26/45",
+          "mod": "16APSK",
+          "fec": "26/45",
+          "L": false,
+          "spread": 1,
+          "esno": 7.66
+        },
+        {
+          "name": "16APSK 3/5",
+          "mod": "16APSK",
+          "fec": "3/5",
+          "L": false,
+          "spread": 1,
+          "esno": 8.1
+        },
+        {
+          "name": "16APSK 32/45",
+          "mod": "16APSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "esno": 9.81
+        },
+        {
+          "name": "32APSK 2/3",
+          "mod": "32APSK",
+          "fec": "2/3",
+          "L": false,
+          "spread": 1,
+          "esno": 11.41
+        },
+        {
+          "name": "32APSK 32/45",
+          "mod": "32APSK",
+          "fec": "32/45",
+          "L": false,
+          "spread": 1,
+          "esno": 12.18
+        }
+      ]
+    }
+  }
+}

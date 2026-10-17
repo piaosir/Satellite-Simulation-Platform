@@ -102,6 +102,12 @@ const OUTPUT_GROUPS = [
       { key: 'stationPSDResult', label: '发信站功率谱密度', labelEn: 'Tx Station PSD', unit: 'dBW/Hz', geoSide: 'both', geoField: true },
       { key: 'arrivalPFDAtSatelliteResult', label: '到达卫星通量密度', labelEn: 'PFD at Satellite', unit: 'dBW/m²', geoSide: 'both', geoField: true },
       { key: 'arrivalPFDAtGroundResult', label: '到达地面通量密度', labelEn: 'PFD at Ground', unit: 'dBW/m²', geoSide: 'both', geoField: true },
+      // RR Art.21 Table 21-4（RR 2024）：自由空间口径、参考带宽内的到达 PFD 与其限值 / 余量（itu/art21.js；RR 在该频段
+      // 无限值时为空）。限值只随收信站变（到达角 = 收信站仰角，区域限定按收信站位置）；余量跨 0 即超出 RR 限值——
+      // 客观门限（crit 0），铺成地理场图就是「收信站搬到哪儿会超 Art.21」的全覆盖校核。
+      { key: 'pfdFreeSpaceRefBwResult', label: '自由空间到达 PFD（参考带宽内）', labelEn: 'Free-Space PFD (Ref. Bandwidth)', unit: 'dBW/m²', geoSide: 'both' },
+      { key: 'ituPfdLimitResult', label: 'ITU PFD 限值（参考带宽内）', labelEn: 'ITU PFD Limit (Ref. Bandwidth)', unit: 'dBW/m²', geoSide: 'rx' },
+      { key: 'ituPfdMarginResult', label: 'ITU PFD 余量', labelEn: 'ITU PFD Margin', unit: 'dB', crit: 0, good: 'above', geoSide: 'both', geoField: true },
       { key: 'transponderOutputEIRP', label: '转发器输出 EIRP', labelEn: 'Transponder Output EIRP', unit: 'dBW', geoSide: 'both' },
       // 「旁瓣 EIRP」已随邻星离轴口径整组移除（2026-08-07）：它由 deltaTheta 派生，而平台三窗
       // 从来没有那个输入框，引擎只能靠空值回退硬造角度 —— 详见 linkCalculator.js 同日注释。
@@ -126,7 +132,10 @@ const OUTPUT_GROUPS = [
       // 「总衰减 AT(p)」= ITU-R P.618-14 §2.5 式(65)：AG + √((AR+AC)² + AS²)，含雨衰在内。
       // 曾标作「晴空总衰减」是错的——雨衰常是其中最大的一项（Ku 频段 99.9% 可用度下可占九成）。
       { key: 'uplinkTotalAttenuationResult', label: '上行总衰减 AT(p)', labelEn: 'Uplink Total Attenuation AT(p)', unit: 'dB', geoSide: 'tx', geoField: true },
-      { key: 'downlinkTotalAttenuationResult', label: '下行总衰减 AT(p)', labelEn: 'Downlink Total Attenuation AT(p)', unit: 'dB', geoSide: 'rx', geoField: true }
+      { key: 'downlinkTotalAttenuationResult', label: '下行总衰减 AT(p)', labelEn: 'Downlink Total Attenuation AT(p)', unit: 'dB', geoSide: 'rx', geoField: true },
+      // GSO 倾斜运行 / 保持盒（A-01，utils/geoTrack.js）：定点 + 固定天线时引擎出空，故不进地理场图下拉（geoField 不给）
+      { key: 'uplinkPointingLossResult', label: '上行指向损耗（日最大）', labelEn: 'Uplink Pointing Loss (Daily Max)', unit: 'dB', geoSide: 'tx' },
+      { key: 'downlinkPointingLossResult', label: '下行指向损耗（日最大）', labelEn: 'Downlink Pointing Loss (Daily Max)', unit: 'dB', geoSide: 'rx' }
     ]
   },
   {
@@ -153,7 +162,13 @@ const OUTPUT_GROUPS = [
       { key: 'rxAzimuthResult', label: '收信站方位角', labelEn: 'Rx Station Azimuth', unit: '°', geoSide: 'rx', geoField: true },
       { key: 'slantRangeResult', label: '上行斜距', labelEn: 'Uplink Slant Range', unit: 'km', geoSide: 'tx', geoField: true },
       { key: 'rxSlantRangeResult', label: '下行斜距', labelEn: 'Downlink Slant Range', unit: 'km', geoSide: 'rx', geoField: true },
-      { key: 'linkDelayResult', label: '单跳时延', labelEn: 'One-hop Delay', unit: 'ms', geoSide: 'both', geoField: true }
+      { key: 'linkDelayResult', label: '单跳时延', labelEn: 'One-hop Delay', unit: 'ms', geoSide: 'both', geoField: true },
+      // GSO 倾斜运行 / 保持盒（A-01）：一天里的范围；定点时引擎出空（不进地理场图下拉）
+      { key: 'elevationMinResult', label: '发信站日内最低仰角', labelEn: 'Tx Station Min Elevation (24 h)', unit: '°', geoSide: 'tx' },
+      { key: 'rxElevationMinResult', label: '收信站日内最低仰角', labelEn: 'Rx Station Min Elevation (24 h)', unit: '°', geoSide: 'rx' },
+      { key: 'linkDelayMaxResult', label: '单跳时延（日内最大）', labelEn: 'One-hop Delay (24 h Max)', unit: 'ms', geoSide: 'both' },
+      { key: 'maxDopplerUplinkResult', label: '上行最大多普勒', labelEn: 'Max Uplink Doppler', unit: 'kHz', geoSide: 'tx' },
+      { key: 'maxDopplerDownlinkResult', label: '下行最大多普勒', labelEn: 'Max Downlink Doppler', unit: 'kHz', geoSide: 'rx' }
     ]
   },
   {

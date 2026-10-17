@@ -27,7 +27,7 @@ export function isValidOrder(m) {
 export function ordersOf(familyKey) {
   const out = []
   for (let m = ORDER_MIN; m <= (familyKey === 'qam' ? 4096 : 1024); m *= 2) {
-    if (familyKey === 'apsk' && m < 16) continue   // APSK 环状星座从 16 起
+    if (familyKey === 'apsk' && m < 8) continue    // APSK 环状星座从 8 起（DVB-S2X 的 8APSK -L 档）
     if (familyKey === 'qam' && m < 4) continue     // 2QAM 不存在
     out.push(m)
   }
@@ -52,7 +52,7 @@ export function parseModulation(name) {
   if (!m) return null
   const order = Number(m[1])
   const fam = MOD_FAMILIES.find((f) => f.suffix === m[2].toUpperCase())
-  // ★ 阶数按族收紧（APSK 从 16 起、QAM 从 4 起）：全平台只有一种「合法调制方式」的口径
+  // ★ 阶数按族收紧（APSK 从 8 起、QAM 从 4 起）：全平台只有一种「合法调制方式」的口径
   if (!fam || !isValidOrderFor(fam.key, order)) return null
   return { family: fam.key, order, factor: Math.round(Math.log2(order)) }
 }

@@ -36,6 +36,8 @@ import { normalizePhy, effectiveThresholdDb, infoRateKbps, nbSingleToneMcs, MU_O
 // ★ 只取 fmtScaled 这一个纯函数（≤4 位小数、去尾零）：换档判定由调用方注入的 fmt 负责，
 //   本模块不碰 lbUnitMode（那边读 localStorage，Node 测试里不存在）。
 import { fmtScaled } from './adaptUnits.js'
+// ETSI DVB-S2 / S2X 原表（内置 MODCOD 表的同一份出处）：丢包率的 QEF 判据与 FECFRAME 长按它取，见 qefOf
+import ETSI_DVB from '../../packages/core/data/etsiDvbS2.json' with { type: 'json' }
 
 // ============ 常量 ============
 
@@ -51,9 +53,13 @@ export const LOSS_TIERS = [0.001, 0.01, 0.05, 0.1, 0.5, 1]
 //   于是「含地面段」的开关状态存不进场景（groundOn 用 0/1）。
 export const DEFAULT_SLA_PARAMS = {
   pktBytes: 1500,      // IP 包长 B（丢包率换算用）
-  // 帧差错率 10⁻ⁿ：DVB 家族（S2/S2X/RCS2）的门限按 QEF 定义（ETSI EN 302 307-1 §4.1，约合 PER < 10⁻⁷），
-  // LDPC+BCH 译码后的错误是【帧级】的，不是比特级独立随机误码。3GPP NTN 不吃这一项：那套 MCS 表的门限是
-  // 首传 BLER 目标（缺省 10 %，TS 38.214），不是 QEF，平台也没建 HARQ 重传模型 → 不出丢包率建议（见 deriveSla）。
+  // 帧差错率 10⁻ⁿ：门限按 QEF（准无误码）定义的编码体制，LDPC+BCH 译码后的错误是【帧级】的，不是比特级独立随机误码。
+  // ★ 内置 DVB-S2 / S2X 各表【不吃】这一项，按 ETSI 原文判据取（qefOf）：
+  //     EN 302 307-1 V1.4.1 §4.1 / 表 13 —— QEF「约合 TS 包差错率 PER < 10⁻⁷」（188 B 包，FEC 之后），正常帧；
+  //     EN 302 307-2 V1.4.1 第 6 章 / 表 20a–20c —— 「Quasi Error Free FER = 10⁻⁵」（有用 FECFRAME 的帧差错率）。
+  //   本项只给没有原文判据的标准用：自建标准、DVB-RCS2（门限未核实）、DVB-S。缺省 7 沿用改前口径。
+  // 3GPP NTN 不吃这一项：那套 MCS 表的门限是首传 BLER 目标（缺省 10 %，TS 38.214），不是 QEF，
+  // 平台也没建 HARQ 重传模型 → 不出丢包率建议（见 deriveSla）。
   ferExp: 7,
   jitterMs: 30,        // 时延抖动 ms（纯合同参数，无计算依据；IP 业务惯用 ≤ 30–50 ms）
   procMsPerEnd: 20,    // 处理时延预留 ms/单程（发端调制 + 收端解调）
@@ -105,7 +111,7 @@ export const SLA_ITEMS = [
   { key: 'berTarget', group: 'delay', label: '设计误码率', labelEn: 'Design BER', unit: '', kind: 'text', ro: true, cmp: null, tip: '载波配置中的设计误码率，原样带出；不是计算得出的量' },
   // 3GPP 那一侧与 berTarget 对应的只读读数：MCS 表门限按【首传 BLER 目标】定义（缺省 10 %），引擎经 phyBlerResult 回显
   { key: 'blerTarget', group: 'delay', label: '目标 BLER（首传）', labelEn: 'Target BLER (first transmission)', unit: '%', kind: 'text', ro: true, cmp: null, tip: '3GPP 载波配置中的目标块差错率，MCS 表的解调门限按它定义（TS 38.214，首传、不含 HARQ 重传）；原样带出，不是计算得出的量' },
-  { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: 'DVB 家族按帧差错：1 − (1 − 10⁻ⁿ)^N_f，n 取帧差错率、N_f = ⌈8L / K⌉；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)；3GPP NTN 载波不出本项（门限是首传 BLER 目标，未建 HARQ 重传模型）。只在可用时间内考核，中断时段不计入丢包统计' },
+  { key: 'loss', group: 'delay', label: '丢包率上限', labelEn: 'Packet loss (max)', unit: '%', kind: 'num', dec: 3, cmp: 'lt', tip: 'DVB 家族按帧差错：1 − (1 − 10⁻ⁿ)^N_f，N_f = ⌈8L / K⌉，K = 帧长 × 码率；DVB-S2 / S2X 的 n 与帧长取 ETSI 原表的 QEF 判据（EN 302 307-1 表 13：PER 10⁻⁷；EN 302 307-2 表 20a–20c：FER 10⁻⁵），其余编码标准取参数「帧差错率」；未选标准时按比特独立随机误码 1 − (1 − 10⁻ⁿ)^(8L)；3GPP NTN 载波不出本项（门限是首传 BLER 目标，未建 HARQ 重传模型）。只在可用时间内考核，中断时段不计入丢包统计' },
   { key: 'respond', group: 'ops', label: '故障响应时间', labelEn: 'Response time', unit: 'min', kind: 'num', dec: 0, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'restore', group: 'ops', label: '故障恢复时间', labelEn: 'Restoration time', unit: 'h', kind: 'num', dec: 1, cmp: null, tip: '合同条款，无计算依据；按运营商入网要求填' },
   { key: 'txFreq', group: 'tx', label: '上行中心频率', labelEn: 'Uplink centre frequency', unit: 'MHz', kind: 'num', dec: 4, cmp: null, tip: '引擎上行中心频率；依据列给 fc ± B/2，引用了频率计划时再附该转发器的频带' },
@@ -354,9 +360,10 @@ export function packetLossPct(n, bytes) {
 
 /**
  * 帧差错模型的丢包率上界（%）：1 − (1 − 10⁻ⁿ)^N_f。
- * DVB-S2/S2X/RCS2 与 3GPP NTN 的门限都按 QEF 定义（ETSI EN 302 307-1 §4.1，约合 PER < 10⁻⁷），
- * LDPC+BCH 译码后的错误是【整帧】丢掉，不是比特级独立随机误码 —— 一个 IP 包落在几个帧里，
- * 就有几次被丢掉的机会。
+ * DVB 家族的门限按 QEF 定义，LDPC+BCH 译码后的错误是【整帧】丢掉，不是比特级独立随机误码 —— 一个 IP 包
+ * 落在几个帧里，就有几次被丢掉的机会。n 取门限所在原表的 QEF 判据（qefOf）：
+ *   DVB-S2  EN 302 307-1 V1.4.1 §4.1 / 表 13：「约合 TS 包差错率 PER < 10⁻⁷」—— 帧级突发下 PER ≈ FER，n = 7；
+ *   DVB-S2X EN 302 307-2 V1.4.1 第 6 章 / 表 20a–20c：「Quasi Error Free FER = 10⁻⁵」，n = 5。
  * @param n       帧差错率的指数（10⁻ⁿ 的 n）
  * @param frames  一个 IP 包跨的帧数 N_f
  */
@@ -370,9 +377,11 @@ export function frameLossPct(n, frames) {
 
 /**
  * 一个 IP 包跨几个 FEC 帧：N_f = ⌈8L / K⌉，K = 一帧净荷 bit。
- *   DVB 家族  K = 64800 × FEC 码率（正常 FECFRAME；表里没有 K_bch，这条近似的误差 < 0.5 %）
+ *   DVB 家族  K = FECFRAME 长 × FEC 码率（表里没有 K_bch，这条近似的误差 < 0.5 %）；FECFRAME 长按原表取
+ *             （正常帧 64 800、S2X 短帧 16 200、VL-SNR 中帧 30 780 及表注里的 61 560 / 15 390 / 14 976），
+ *             认不出时取正常帧 64 800
  *   3GPP NTN  K = 传输块大小 TBS
- * L ≤ 6 kB 时 DVB 支恒为 1 帧，于是 p_loss ≈ FER 本身。
+ * 正常帧 L ≤ 6 kB 时 DVB 支恒为 1 帧，于是 p_loss ≈ FER 本身；短帧低码率一个 1500 B 包就跨好几帧。
  * @returns N_f | null（K 取不出来就不摆这条式子）
  */
 export const DVB_FECFRAME_BITS = 64800
@@ -380,6 +389,49 @@ export function framesPerPacket(bytes, kBits) {
   const L = num(bytes), K = num(kBits)
   if (L === null || !(L > 0) || K === null || !(K > 0)) return null
   return Math.max(1, Math.ceil(8 * L / K))
+}
+
+/**
+ * 载波所套 MODCOD 的 QEF 判据与 FECFRAME 长（只对内置 DVB-S2 / S2X 各表有定义）。
+ *   ① 先认 MODCOD 表行：modcodMap 出给渲染端的行已附 qef / qefExp / frameBits / etsiTable
+ *      （core/utils/modcodTables.js withEtsi），按载波的 modcodLabel，认不出再按调制 + 码率；
+ *   ② 表行不在手边（测试 / 老数据）就直接查原表：按规范名、再按调制 + 码率 + 扩频，DVB-S2X 正常帧先查
+ *      表 20a、S2 遗留档落到表 13（与 withEtsi 同一顺序）；
+ *   ③ 原表里也没有这一档 → 该标准首张原表的判据与帧长（DVB-S2X 正常帧 = 表 20a 的 FER 10⁻⁵ / 64 800）。
+ * @returns { kind: 'PER'|'FER', exp, frame, table } | null —— null = 本标准没有原文判据（自建 / RCS2 / DVB-S / 未选），
+ *          调用方退回场景参数 ferExp
+ */
+export function qefOf(form, rows) {
+  const f = form || {}
+  const std = String(f.dvbStandard || 'custom')
+  const ids = (ETSI_DVB.standards && ETSI_DVB.standards[std]) || null
+  if (!ids) return null
+  const s = (v) => String(v == null ? '' : v).trim()
+  const mod = s(f.modulation).toUpperCase(), fec = s(f.fec)
+  const list = Array.isArray(rows) ? rows : []
+  const lbl = s(f.modcodLabel)
+  // 名字是线索不是凭据：套完 MODCOD 又手改了调制 / 码率时，名字指的那档已不是本载波
+  const agrees = (m2, f2) => (!mod || s(m2).toUpperCase() === mod) && (!fec || s(f2) === fec)
+  const r = (lbl && list.find((x) => x && s(x.label) === lbl && agrees(x.modulation, x.fec))) ||
+    list.find((x) => x && x.qefExp != null && s(x.modulation).toUpperCase() === mod && s(x.fec) === fec)
+  if (r && num(r.qefExp) !== null) {
+    return { kind: r.qef || 'FER', exp: num(r.qefExp), frame: num(r.frameBits) || DVB_FECFRAME_BITS, table: s(r.etsiTable) }
+  }
+  const spread = num(f.m) !== null && num(f.m) >= 1 ? num(f.m) : 1
+  const pick = (pred) => {
+    for (const id of ids) {
+      const t = ETSI_DVB.tables[id]
+      const e = t.rows.find(pred)
+      if (e) return { t, e }
+    }
+    return null
+  }
+  const wantL = /-L\b/.test(lbl)
+  const same = (e) => e.mod === mod && e.fec === fec && (e.spread || 1) === spread
+  const hit = (lbl && pick((e) => e.name === lbl && agrees(e.mod, e.fec))) || pick((e) => same(e) && !!e.L === wantL) || pick(same)
+  const t = hit ? hit.t : ETSI_DVB.tables[ids[0]]
+  const doc = ETSI_DVB.sources[t.source].doc.replace(/ \(\d{4}-\d{2}\)$/, '')
+  return { kind: t.qef.kind, exp: t.qef.exp, frame: (hit && hit.e.frame) || t.frame, table: doc + ' 表 ' + t.table }
 }
 
 /** 端到端 BER 串（'1×10⁻⁷' 或 '1.2e-7'）→ 等效指数 n（正数）。取不出返回 null。 */
@@ -696,7 +748,9 @@ export function deriveSla(ctx) {
     feasibleTier: null,
     // 可用度构成里传播之外的那几项：档位扫描表用 eqFactor 把「传播档」折算成「综合可用度」，
     // 参数轨用 eqSlots 决定显示哪几格（本体制用不到的环节不该出现在参数里）
-    eqSlots: [], eqParts: [], eqFactor: 1
+    eqSlots: [], eqParts: [], eqFactor: 1,
+    // 丢包率所用的 QEF 判据（qefOf；null = 本标准无原文判据、用的是场景参数 ferExp）——参数轨据此决定显不显「帧差错率」
+    qef: null
   }
   if (!data) return out
 
@@ -889,9 +943,14 @@ export function deriveSla(ctx) {
   }
 
   // ---- 时延与丢包 ----
+  // 再生式上行 / 下行是单跳：取本段的分段时延（上行取上行段、下行取下行段）。弯管引擎的 linkDelayResult 是
+  // 上下两侧之和，而再生式另一侧只是让引擎良定的镜像占位——窗口取结果时已改写成本跳（regen/regenModeScope.js），
+  // 这里只认本跳再兜一道：喂进来的是引擎原样出参（没经窗口改写）也不会把两跳之和当单程时延报出去。
+  const hopKey = rm === 'uplink' ? 'linkDelayUpResult' : rm === 'downlink' ? 'linkDelayDownResult' : ''
   const owd = num(data.e2eDelayResult) !== null ? num(data.e2eDelayResult)
     : (rm === 'isl' || rm === 'laser') ? num(data.islDelayResult)
-      : num(data.linkDelayResult)
+      : (hopKey && num(data[hopKey]) !== null) ? num(data[hopKey])
+        : num(data.linkDelayResult)
   if (owd !== null) {
     const ob = []
     if (e2e) {
@@ -916,7 +975,8 @@ export function deriveSla(ctx) {
       if (legs.length && bal(tot / C_KM_S * 1000, owd, 0.06)) {
         ob.push(P((legs.length > 1 ? '(' + legs.map((v) => v.toFixed(2)).join(' + ') + ')' : legs[0].toFixed(2)) + ' km'),
           P('/'), P(C_KM_S + ' km/s'), P('='), P(owd.toFixed(1) + ' ms'))
-      } else if (u !== null && d !== null && bal(u + d, owd, 0.06)) {
+      } else if (!hopKey && u !== null && d !== null && bal(u + d, owd, 0.06)) {
+        // 「上行段 + 下行段」只对两跳的弯管成立；再生式单跳没有第二段可加（镜像那侧不是一跳）
         ob.push(P(u.toFixed(1)), P('+'), P(d.toFixed(1)), P('='), P(owd.toFixed(1) + ' ms'))
       }
     }
@@ -948,8 +1008,10 @@ export function deriveSla(ctx) {
   if (blerShown) put('blerTarget', { basis: [P('—')], suggest: blerShown, text: true })
 
   // 丢包率上界。分两支：
-  //   DVB 家族（S2/S2X/RCS2）门限按 QEF 定义，译码后的错误是【整帧】丢掉 ——
-  //     p = 1 − (1 − FER)^N_f，N_f = ⌈8L / K⌉，K = 一帧净荷 bit；
+  //   编码标准（DVB 家族 / 自建）门限按 QEF 定义，译码后的错误是【整帧】丢掉 ——
+  //     p = 1 − (1 − FER)^N_f，N_f = ⌈8L / K⌉，K = FECFRAME 长 × 码率；
+  //     FER 与帧长：内置 DVB-S2 / S2X 按 ETSI 原文判据（qefOf：S2 表 13 PER 10⁻⁷、S2X 表 20a–20c FER 10⁻⁵），
+  //     其余编码标准（自建 / RCS2 / DVB-S）用场景参数 ferExp、帧长按正常帧；
   //   未选标准（custom）＝无编码/比特独立随机误码，保留原式 1 − (1 − BER)^(8L)。
   // 两支差三四个数量级：把随机误码模型算出的 0.5 % 写进合同是不可交付的承诺（TCP 吞吐随 1/√p 崩）。
   // ★ 3GPP NTN 不出这一条（2026-09-07 深审 #4）：那套 MCS 表的门限是【首传 BLER 目标】（缺省 10 %），既不是 QEF，
@@ -960,13 +1022,16 @@ export function deriveSla(ctx) {
     const coded = String(form.dvbStandard || 'custom') !== 'custom'
     let raw = null, head = null
     if (coded) {
-      const fer = num(sp.ferExp)
-      const fecStr = (params && params.linkParams && params.linkParams.fec !== undefined && params.linkParams.fec !== null && params.linkParams.fec !== '')
-        ? params.linkParams.fec : form.fec
+      const lp = (params && params.linkParams) || {}
+      const inp = (k) => (lp[k] !== undefined && lp[k] !== null && lp[k] !== '') ? lp[k] : form[k]
+      const fecStr = inp('fec')
       const fec = parseFrac(fecStr, NaN)
-      // DVB 家族一帧取正常 FECFRAME 64800 bit × FEC 码率
-      //（表里没有 K_bch，这条近似的误差 < 0.5 %，故依据列只写 N_f 不写 K）
-      const kBits = Number.isFinite(fec) && fec > 0 ? DVB_FECFRAME_BITS * fec : null
+      // 判据按本行真正送进引擎的调制 / 码率认（名字只作优先线索，与入参对不上就不认）
+      const q = qefOf({ dvbStandard: form.dvbStandard, modcodLabel: form.modcodLabel, modulation: inp('modulation'), fec: fecStr, m: inp('m') }, ctx.modcodRows)
+      out.qef = q
+      const fer = q ? q.exp : num(sp.ferExp)
+      // 一帧净荷 = FECFRAME 长 × FEC 码率（表里没有 K_bch，这条近似的误差 < 0.5 %，故依据列只写 N_f 不写 K）
+      const kBits = Number.isFinite(fec) && fec > 0 ? (q ? q.frame : DVB_FECFRAME_BITS) * fec : null
       const nf = framesPerPacket(pkt, kBits)
       if (fer !== null && nf !== null) {
         raw = frameLossPct(fer, nf)

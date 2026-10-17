@@ -93,10 +93,26 @@ const E_BLOCKS = {
   ephemerisllatimepos: { cols: 3, kind: 'lla', vel: false },
   ephemerisllrtimepos: { cols: 3, kind: 'llr', vel: false }
 }
-// STK CoordinateSystem -> 本平台帧；未列出的点名拒收
+// STK CoordinateSystem -> 本平台帧；未列出的点名拒收。
+// MeanOfEpoch / TrueOfEpoch / TEMEOfEpoch 不在表里：轴钉在 CoordinateSystemEpoch 那一刻，给了帧历元就在解析时
+// 一次换到 J2000（ofEpochSamples），没给就拒收（frames.js 的 OF_EPOCH 头注）。
 const E_FRAME = {
   fixed: 'FIXED', inertial: 'J2000', icrf: 'J2000', j2000: 'J2000',
   trueofdate: 'TOD', meanofdate: 'MOD', temeofdate: 'TEME', teme: 'TEME'
+}
+// 「某历元」帧的采样（原地）换到 J2000：p / v 为 3n 数组，epochMs 为帧历元（UTC 毫秒）。刚性常转动，速度同转。
+function ofEpochSamples(p, v, base, epochMs) {
+  const tE = T.julianCenturiesTT(epochMs)
+  const nu = FR.nutationAngles(tE)
+  const n = Math.floor(p.length / 3)
+  for (let i = 0; i < n; i++) {
+    const a = FR.ofEpochToJ2000({ x: p[3 * i], y: p[3 * i + 1], z: p[3 * i + 2] }, base, tE, nu)
+    p[3 * i] = a.x; p[3 * i + 1] = a.y; p[3 * i + 2] = a.z
+    if (v) {
+      const b = FR.ofEpochToJ2000({ x: v[3 * i], y: v[3 * i + 1], z: v[3 * i + 2] }, base, tE, nu)
+      v[3 * i] = b.x; v[3 * i + 1] = b.y; v[3 * i + 2] = b.z
+    }
+  }
 }
 
 function parseStkE(text, name) {
@@ -104,7 +120,7 @@ function parseStkE(text, name) {
   const src = stripBom(text)
   const lines = src.split(/\r?\n/)
   let epochMs = NaN, frameRaw = 'Fixed', unit = 'meters', timeFormat = 'EpSec'
-  let method = 'lagrange', samplesM1 = 5, declared = null, centralBody = 'earth'
+  let method = 'lagrange', samplesM1 = 5, declared = null, centralBody = 'earth', frameEpochRaw = ''
   const rows = []       // { ms, x,y,z, vx,vy,vz }
   let block = null, blockKind = null, skipping = false
   const sampled = []
@@ -137,6 +153,7 @@ function parseStkE(text, name) {
         case 'scenarioepoch': epochMs = T.parseUtcg(val); if (!Number.isFinite(epochMs)) epochMs = T.parseEpochLoose(val); break
         case 'centralbody': centralBody = val.toLowerCase(); break
         case 'coordinatesystem': frameRaw = val; break
+        case 'coordinatesystemepoch': frameEpochRaw = val; break
         case 'distanceunit': unit = val.toLowerCase(); break
         case 'timeformat': timeFormat = val; break
         case 'interpolationmethod': method = /hermite/i.test(val) ? 'hermite' : 'lagrange'; break
@@ -171,7 +188,15 @@ function parseStkE(text, name) {
   if (centralBody && centralBody !== 'earth') errors.push('中心天体 ' + centralBody + ' 不受支持（只收 Earth）')
   const fk = String(frameRaw).toLowerCase().replace(/[^a-z0-9]/g, '')
   let frame = E_FRAME[fk] || ''
-  if (!frame) errors.push('坐标系 ' + frameRaw + ' 不受支持')
+  // 「某历元」帧：帧历元（CoordinateSystemEpoch，UTCG）给了才收，采样随后整体换到 J2000
+  const ofeBase = frame ? '' : FR.ofEpochBase(frameRaw)
+  let ofeMs = NaN
+  if (ofeBase) {
+    ofeMs = T.parseUtcg(frameEpochRaw)
+    if (!Number.isFinite(ofeMs)) ofeMs = T.parseEpochLoose(frameEpochRaw)
+    if (Number.isFinite(ofeMs)) frame = 'J2000'
+    else errors.push('坐标系 ' + frameRaw + ' 缺帧历元（CoordinateSystemEpoch）')
+  } else if (!frame) errors.push('坐标系 ' + frameRaw + ' 不受支持')
   const scale = /^kilometers?$/.test(unit) || unit === 'km' ? 1 : (/^meters?$/.test(unit) || unit === 'm' ? 1e-3 : (/^feet$/.test(unit) ? 3.048e-4 : NaN))
   if (!Number.isFinite(scale)) errors.push('距离单位 ' + unit + ' 不受支持')
   if (errors.length) return { sats: [], errors, warnings }
@@ -196,6 +221,10 @@ function parseStkE(text, name) {
   }
   // LLA / LLR 块按定义就在地固系，与 CoordinateSystem 无关
   if (llFrame) frame = 'FIXED'
+  else if (ofeBase) {
+    ofEpochSamples(p, v, ofeBase, ofeMs)
+    warnings.push('坐标系 ' + frameRaw + '（帧历元 ' + T.formatUtcg(ofeMs) + '）已换到 J2000')
+  }
 
   // 段界：SegmentBoundaryTimes 列出的时刻（按 TimeFormat 读，读不出再按 EpSec），连同数据里的重复时刻一起拆段
   const bounds = []
@@ -222,11 +251,14 @@ function parseStkE(text, name) {
 }
 
 /* ===================== CCSDS OEM ===================== */
-// REF_FRAME 映射；未列出的点名拒收
+// REF_FRAME 映射；未列出的点名拒收。
+// TDR = CCSDS「True of Date Rotating」（SANA 帧名表；Orekit 映射为 GTOD）：TOD 经 GAST 落地的地固旋转系、不含极移，
+// 正是本平台 FIXED 的定义（frames.js 头注）—— 不是惯性 TOD，当成 TOD 会把地固坐标当惯性坐标用。
+// 「某历元」帧（MEANOFEPOCH 一类，非 CCSDS 标准名）须带 REF_FRAME_EPOCH，见 oemSegment。
 const OEM_FRAME = {
   EME2000: 'J2000', J2000: 'J2000', ICRF: 'J2000', GCRF: 'J2000', MJ2000EQ: 'J2000',
-  TEME: 'TEME', TOD: 'TOD', TDR: 'TOD', TRUEOFDATE: 'TOD', MOD: 'MOD', MEANOFDATE: 'MOD',
-  ITRF: 'FIXED', EFG: 'FIXED', ECEF: 'FIXED', GRC: 'FIXED'
+  TEME: 'TEME', TOD: 'TOD', TRUEOFDATE: 'TOD', MOD: 'MOD', MEANOFDATE: 'MOD',
+  ITRF: 'FIXED', EFG: 'FIXED', ECEF: 'FIXED', GRC: 'FIXED', TDR: 'FIXED'
 }
 function oemFrame(raw) {
   const k = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '')
@@ -238,10 +270,19 @@ const OEM_TIME = new Set(['UTC', 'TAI', 'TT', 'GPS', 'TDB'])
 
 // 一段 meta + 数据 -> 段对象
 function oemSegment(meta, dataRows, errors, warnings) {
-  const frame = oemFrame(meta.REF_FRAME)
-  if (!frame) { errors.push('参考系 ' + (meta.REF_FRAME || '(缺)') + ' 不受支持'); return null }
+  let frame = oemFrame(meta.REF_FRAME)
+  const ofeBase = frame ? '' : FR.ofEpochBase(meta.REF_FRAME)
+  if (!frame && !ofeBase) { errors.push('参考系 ' + (meta.REF_FRAME || '(缺)') + ' 不受支持'); return null }
   const tsys = String(meta.TIME_SYSTEM || 'UTC').toUpperCase()
   if (!OEM_TIME.has(tsys)) { errors.push('时间系统 ' + tsys + ' 不受支持'); return null }
+  // 「某历元」帧：帧历元 REF_FRAME_EPOCH（按本段 TIME_SYSTEM）给了才收，采样随后整体换到 J2000
+  let ofeMs = NaN
+  if (ofeBase) {
+    const read = T.parseEpochLoose(meta.REF_FRAME_EPOCH)
+    if (!Number.isFinite(read)) { errors.push('参考系 ' + meta.REF_FRAME + ' 缺帧历元（REF_FRAME_EPOCH）'); return null }
+    ofeMs = T.utcMsFrom({ system: tsys, ms: read })
+    frame = 'J2000'
+  }
   const center = String(meta.CENTER_NAME || 'EARTH').toUpperCase()
   if (center && center !== 'EARTH') { errors.push('中心天体 ' + meta.CENTER_NAME + ' 不受支持（只收 EARTH）'); return null }
   const method = /HERMITE/i.test(meta.INTERPOLATION || '') ? 'hermite' : 'lagrange'
@@ -258,6 +299,16 @@ function oemSegment(meta, dataRows, errors, warnings) {
   }
   if (!rows.length) return null
   const hasV = rows.every((r) => r.nums.length >= 6 && r.nums.slice(3, 6).every(Number.isFinite))
+  if (ofeBase) {
+    for (const r of rows) {
+      const pv = [r.nums[0], r.nums[1], r.nums[2]]
+      const vv = hasV ? [r.nums[3], r.nums[4], r.nums[5]] : null
+      ofEpochSamples(pv, vv, ofeBase, ofeMs)
+      r.nums[0] = pv[0]; r.nums[1] = pv[1]; r.nums[2] = pv[2]
+      if (vv) { r.nums[3] = vv[0]; r.nums[4] = vv[1]; r.nums[5] = vv[2] }
+    }
+    warnings.push('参考系 ' + meta.REF_FRAME + '（帧历元 ' + T.formatCcsds(ofeMs) + '）已换到 J2000')
+  }
   return {
     objectName: meta.OBJECT_NAME || '', objectId: meta.OBJECT_ID || '',
     frame, tsys, method, samples, rows, hasV

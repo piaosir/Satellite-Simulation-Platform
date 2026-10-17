@@ -364,9 +364,10 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
     ok(iG > 0 && iE > iG && b.includes(call), `${/function (\w+)/.exec(sig)[1]}：ensureLinkedFolder 之前捕获并传给 createGaussFor`)
   }
   const ef = body('async function expFocus(sats, label, tagOverride) {')
-  ok(ef.indexOf('_userSelTick++') > ef.indexOf('await expResolve(') && ef.indexOf('_userSelTick++') < ef.indexOf('selEntries = hit'), 'expFocus：解析完、落选中之前 _userSelTick++')
+  ok(ef.indexOf('_userSelTick++') > ef.indexOf('await expResolve(') && ef.indexOf('_userSelTick++') < ef.indexOf('selEntries = remapSel(hit'), 'expFocus：解析完、落选中之前 _userSelTick++')
   const sf = body('function startFollow(e) {')
-  ok(/if \(selEntries\.includes\(e\)\) \{ _userSelTick\+\+; selEntry = e;/.test(sf), 'startFollow：已在选中集里换主选也算用户改选')
+  // 已在选中集里按身份认（selIdentity：同号的另一份对象也算），换主选算用户改选（2026-10-16 体检二档：选中集按对象认星）
+  ok(sf.includes('const had = findSel(e)') && /if \(had\) \{ _userSelTick\+\+; selEntry = had;/.test(sf), 'startFollow：已在选中集里换主选也算用户改选')
 }
 
 // ---------- ⑨ 波束合成跟随的放行闸（createFollowGate）----------

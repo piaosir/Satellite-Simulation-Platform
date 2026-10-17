@@ -19,7 +19,7 @@ import { ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
 import MiniBindingsPanel from './MiniBindingsPanel.vue'
-import { makePack, sendPack, sendUnitsToBoxes, unitsOfPack, unitOfRaw, estimateBytes, fmtBytes, SIZE_WARN, TTL_DAYS } from '../shared/miniPack.js'
+import { makePack, sendPack, sendUnitsToBoxes, unitsOfPack, unitOfRaw, estimateBytes, fmtBytes, SIZE_WARN, TTL_DAYS, BOX_KEEP } from '../shared/miniPack.js'
 import { loadBindings, markSent } from '../shared/miniBindings.js'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
@@ -68,6 +68,7 @@ const picked = ref(new Set())     // 勾选的认证码
 const wantKey = ref(false)        // 另外再生成一个密钥
 const mngOpen = ref(false)        // 就地展开绑定管理（三窗是独立窗口，切回主窗口去设置太远）
 const sentTo = ref([])            // 投递成功的绑定（结果页展示）
+const evicted = ref({})           // { 认证码: 件数 }：为本批腾位置、从该信箱索引里摘掉的更早的件
 const appVer = ref('')
 // 本机在小程序那边显示成什么（「朴东旭的笔记本」）。设置页里改，存 settings.miniSelfLabel；
 // 没起过名就退回派生的机器ID —— 手机上至少能认出是哪台机器发来的。
@@ -155,7 +156,7 @@ function onNameDone() { if (nameEdit.value != null && !nameEdit.value.trim()) { 
 const canRename = computed(() => props.renamable && !!(src.value && src.value.raw))
 
 function reset() {
-  key.value = ''; err.value = ''; warn.value = ''; busy.value = false; sentTo.value = []
+  key.value = ''; err.value = ''; warn.value = ''; busy.value = false; sentTo.value = []; evicted.value = {}
   nameEdit.value = null; on.value = []
   const init = {}
   for (const p of props.picks || []) {
@@ -204,7 +205,9 @@ const info = computed(() => ({
 }))
 const tooBig = computed(() => totalBytes.value > SIZE_WARN)
 const nPicked = computed(() => picked.value.size)
-const canSend = computed(() => nSel.value > 0 && props.configured && picksOk.value && (nPicked.value > 0 || wantKey.value))
+// 投给账号时单批不能超过信箱索引上限（多出的件进不了索引、手机上看不到，主进程会整批拒收）；只出密钥不受此限
+const overCap = computed(() => nPicked.value > 0 && nSel.value > BOX_KEEP)
+const canSend = computed(() => nSel.value > 0 && props.configured && picksOk.value && (nPicked.value > 0 || wantKey.value) && !overCap.value)
 // 只出密钥的那一趟没有收件人，动词就不该是「发送」——投给账号才叫发送，产出凭证叫生成。
 const actLabel = computed(() => (busy.value
   ? (nPicked.value ? '发送中…' : '生成中…')
@@ -243,6 +246,7 @@ async function doSend() {
     })
     if (r.done.length) {
       sentTo.value = bindings.value.filter((b) => r.done.includes(b.ch))
+      evicted.value = r.evicted || {}
       writeLast(r.done)
       await markSent(api, r.done, rows.value.length)
     }
@@ -351,6 +355,7 @@ async function copyKey() {
           <div v-if="tooBig && wantKey" class="ms-warnbox">
             内容 {{ fmtBytes(info.bytes) }}，接近密钥模式 1 MB 上限。
           </div>
+          <div v-if="overCap" class="ms-warnbox">单批上限 {{ BOX_KEEP }} 件，已选 {{ nSel }} 件。</div>
           <div v-if="err" class="ms-warnbox">{{ err }}</div>
           <div v-if="!configured" class="ms-warnbox">「发送到小程序」尚未配置。</div>
           <div class="ms-acts">
@@ -365,6 +370,7 @@ async function copyKey() {
             <div class="ms-list">
               <div v-for="b in sentTo" :key="b.ch" class="ms-row">
                 <span class="ms-nm" data-i18n-skip>{{ b.name || byLang('未命名账号', 'Unnamed account') }}</span>
+                <span v-if="evicted[b.ch]" class="ms-tag" :title="`信箱索引上限 ${BOX_KEEP} 件`">移出最早 {{ evicted[b.ch] }} 件</span>
                 <span class="ms-ch">{{ b.ch.match(/.{1,4}/g).join('-') }}</span>
               </div>
             </div>

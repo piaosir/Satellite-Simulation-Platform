@@ -132,8 +132,10 @@ export function parseKmlPolys(text) {
 /* ===================== 覆盖等值线导入（serializeKml 的逆）===================== */
 // 按 KML 文件夹树还原「卫星 → 波束 → 等值线」：Folder 链末段是波束名、其上一段是卫星名，
 // 每个 <Polygon> 一条等值线、<Point> 一个波束中心。第三方 KML（层级不足/无 ExtendedData）按同一规则退化处理。
+// 取不到电平的 Polygon 按无数值档收（g = null，覆盖边界之类；显示端有专门的「—」档），不再跳过 / 整份拒收。
 // 输出与 gxt/parse.js 的 parseGxt 同构，可直接进覆盖库：
 //   { docName, beams:[{ satName, beamName, lon, band, type, bore:[[lon,lat]...], contours:[{g,p:[[lon,lat]...]}] }], noGain, polys }
+//   noGain = 按无数值档收下的 Polygon 数；polys = 跳过的协调区多边形数
 
 const POLY_FOLDER = '协调区多边形'   // 本软件导出时协调区多边形所在的文件夹：那是协调区不是覆盖档位，导覆盖库时跳过
 
@@ -171,17 +173,20 @@ function containerMeta(el) {
   return out
 }
 
-// 一个 Placemark 的增益档：ExtendedData gain → 名称「48 dB」→ description「数值：48」→ 名称本身是数字。都取不到返回 null
+// 一个 Placemark 的增益档：ExtendedData gain → 名称「48 dB」→ description「数值：48」。都取不到返回 null（无数值档）。
+// gain = none 是本软件导出无数值档时写的标记（见 serialize.js GAIN_NONE），明说没有电平，不再往下猜。
+// ★ 不拿「名称本身是个数」当电平：本软件导出无数值档时 Placemark 名写的是波束名（老版本导出的文件没有 none 标记），
+//   纯数字波束名「12」会被读成 12 dB；第三方文件里纯数字名称也常是波束号 / 序号。没有单位、没有标注的数不编造成电平。
 function gainOf(pm) {
-  const g = numOr(extData(pm).gain)
+  const ed = extData(pm)
+  if (ed.gain != null && /^\s*(none|null)\s*$/i.test(ed.gain)) return null
+  const g = numOr(ed.gain)
   if (g != null) return g
   const nm = kidText(pm, 'name'), desc = kidText(pm, 'description')
   const mdb = /(-?\d+(?:\.\d+)?)\s*dB/i.exec(nm) || /(-?\d+(?:\.\d+)?)\s*dB/i.exec(desc)
   if (mdb) return Number(mdb[1])
   const mval = /数值[:：]\s*(-?\d+(?:\.\d+)?)/.exec(desc)
   if (mval) return Number(mval[1])
-  const mnum = /^\s*(-?\d+(?:\.\d+)?)\s*$/.exec(nm)
-  if (mnum) return Number(mnum[1])
   return null
 }
 
@@ -192,7 +197,7 @@ export function parseKmlBeams(text) {
   const docName = docEl ? kidText(docEl, 'name') : kidText(root, 'name')
 
   const buckets = new Map()
-  const stat = { noGain: 0, polys: 0 }   // 无增益档的多边形数 / 跳过的协调区多边形数
+  const stat = { noGain: 0, polys: 0 }   // 按无数值档收下的多边形数 / 跳过的协调区多边形数
 
   const bucketFor = (path, meta) => {
     const beamName = path.length ? path[path.length - 1] : (docName || '波束')
@@ -218,7 +223,7 @@ export function parseKmlBeams(text) {
     }
     if (!polyEls.length) return
     const g = gainOf(pm)
-    if (g == null) { stat.noGain += polyEls.length; return }
+    if (g == null) stat.noGain += polyEls.length   // 无数值档照收（g = null）
     // 单位写成 dB/K 的是 G/T 图（本软件导出会写 ExtendedData type，第三方文件靠这一手推断）
     if (!meta.type && /dB\s*\/\s*K/i.test(kidText(pm, 'name'))) b.type = 'GT'
     for (const poly of polyEls) {
@@ -246,7 +251,7 @@ export function parseKmlBeams(text) {
   const beams = [...buckets.values()].filter((b) => b.contours.length)
   if (!beams.length) {
     if (stat.polys) throw new Error('文件中仅有 Polygon。')
-    throw new Error(stat.noGain ? `${stat.noGain} 个 Polygon 无增益档` : '未识别到等值线（KML 中没有 <Polygon> 元素）')
+    throw new Error('未识别到等值线（KML 中没有 <Polygon> 元素）')
   }
   return { docName, beams, ...stat }
 }

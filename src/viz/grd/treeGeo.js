@@ -17,9 +17,10 @@
 import sat from '../constellation/satellite.js'
 import { geodeticToEcef } from '../wgs84.js'
 import { classifyOrbit, fmtGeoSlot } from '../../shared/orbitClass.js'
+import { SYNTH_NORAD } from '../../shared/synthNorad.js'
 
-export const TREE_GEO_NORAD_BASE = 1700000   // 合成号段：目录星 < 34 万、点序列 800000 段、自定义星座 900000 段、向导预览 1800000 段
-const TREE_GEO_SPAN = 90000
+export const TREE_GEO_NORAD_BASE = SYNTH_NORAD.treeGeo.lo   // 1700000：合成号段总表见 shared/synthNorad.js（自定义星座发号整段避开）
+const TREE_GEO_SPAN = SYNTH_NORAD.treeGeo.hi - SYNTH_NORAD.treeGeo.lo
 export const TREE_GEO_GROUP = 'grdtree'       // 不以 cc 开头：按真实时刻轴（calcAt）取位，与合成星座的场景历元轴无关
 export const TREE_GEO_LABEL = '卫星天线树'
 // 号落在合成号段里（节点删了、成了死号也认得出 —— 卫星组成员按号存着）：显示时不当 NORAD

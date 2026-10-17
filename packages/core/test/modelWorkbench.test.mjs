@@ -379,4 +379,75 @@ ok('关节编辑：新 stage 名唯一、量程按量纲；改类型同量纲留
   for (const t of W.STAGE_TYPE_LIST) assert.ok(W.STAGE_LABEL[t])
 })
 
+// ─────────────────────────── 导入后自动分析的提交口径（src/model/postImportMerge.js，体检 2026-10-16 二.25）───────────────────────────
+// 分析期间用户打开这件改名 / 改单位 / 转本体轴 / 自己识别过：分析收尾只提交自己算出的字段，按 base / ours / theirs 三方合并
+{
+  const PI = await import(pathToFileURL(path.join(HERE, '../../../src/model/postImportMerge.js')).href)
+  const Q0 = BF.Q_YUP_ZENITH.slice()   // 用户导入件的缺省本体轴
+  const G0 = { bboxM: { min: [0, 0, 0], max: [0, 0, 0] }, boundingRadiusM: 0, tris: 120, areaM2: 0, volumeM3: null, closed: false, centroidM: [0, 0, 0] }
+  const base = {
+    title: 'part', units: { scaleToMeters: 1, unitGuess: 'unknown', sizeVerified: false }, frame: { q_model2body: Q0, t_model2body: [0, 0, 0], verified: false },
+    parts: [], attachPoints: [], solarPanelGroups: [], massProps: null, geometry: G0
+  }
+  // 分析结果：猜成毫米（× 0.001），识别出一副反射面 + 焦点挂点 + 一组太阳翼，量出包围盒 / 包围半径 / 面积 / 体积 / 质心
+  const ours = {
+    ...clone(base), units: { scaleToMeters: 0.001, unitGuess: 'mm', sizeVerified: false },
+    parts: [{ id: 'p1', name: 'dish', role: 'reflector', areaM2: 2, normalBody: [1, 0, 0], fitted: { kind: 'paraboloid', focalM: 1, diameterM: 2, vertexBody: [1, 0, 1], axisBody: [1, 0, 0] } }],
+    attachPoints: [{ name: 'dish_focus', posBody: [1, 0, 2], dirBody: [0, 0, -1], upBody: [0, -1, 0] }],
+    solarPanelGroups: [{ name: 'wing', nodes: ['w1'], efficiency: 28 }],
+    geometry: { ...G0, bboxM: { min: [-1, -2, -3], max: [1, 2, 3] }, boundingRadiusM: 3.5, areaM2: 10, volumeM3: 4, closed: true, centroidM: [0.1, 0.2, 0.3] }
+  }
+  // 「先按分析口径并进去」那一份：后面几条核对「换口径后再提交」= 「并进去之后用户再在单位 / 本体轴节里改」（wbLogic 的整体变换）
+  const merged = () => ({ ...clone(base), ...clone(PI.postImportPatch(base, ours, clone(base))) })
+  ok('导入后分析：只提交自己算出的字段；用户这期间改的名称不回滚；三角形数照库里那份；幂等', () => {
+    const theirs = { ...clone(base), title: '用户改的名' }
+    const p = PI.postImportPatch(base, ours, theirs)
+    assert.deepEqual(Object.keys(p).sort(), ['attachPoints', 'geometry', 'parts', 'solarPanelGroups', 'units'])
+    assert.deepEqual([p.parts, p.attachPoints, p.solarPanelGroups, p.units], [ours.parts, ours.attachPoints, ours.solarPanelGroups, ours.units])
+    assert.deepEqual(p.geometry, { ...ours.geometry, tris: 120 })
+    assert.equal(PI.postImportPatch(base, ours, { ...theirs, ...p }), null, '并过一次再并：什么都不提交')
+    assert.equal(PI.postImportPatch(base, clone(base), clone(base)), null, '什么都没算出来：不提交')
+    assert.deepEqual(Object.keys(PI.postImportBasis({ ...base, title: 'x', tags: ['a'] })).sort(), ['attachPoints', 'frame', 'geometry', 'massProps', 'parts', 'solarPanelGroups', 'units'])
+  })
+  ok('用户这期间改了比例：自动单位不提交，分析结果按用户的比例整体换算（= 并进去后在单位节缩放）', () => {
+    const theirs = { ...clone(base), units: { scaleToMeters: 0.002, unitGuess: 'unknown', sizeVerified: false } }
+    const p = PI.postImportPatch(base, ours, theirs)
+    assert.equal(p.units, undefined)
+    nearV(p.attachPoints[0].posBody, [2, 0, 4])
+    near(p.parts[0].areaM2, 8); near(p.parts[0].fitted.focalM, 2); near(p.parts[0].fitted.diameterM, 4); nearV(p.parts[0].fitted.vertexBody, [2, 0, 2])
+    nearV(p.geometry.bboxM.min, [-2, -4, -6]); nearV(p.geometry.bboxM.max, [2, 4, 6])
+    near(p.geometry.boundingRadiusM, 7); near(p.geometry.areaM2, 40); near(p.geometry.volumeM3, 32); nearV(p.geometry.centroidM, [0.2, 0.4, 0.6])
+    assert.equal(p.geometry.tris, 120)
+    const viaUi = W.rescaleMeta(merged(), 2)
+    nearV(p.attachPoints[0].posBody, viaUi.attachPoints[0].posBody); nearV(p.geometry.centroidM, viaUi.geometry.centroidM)
+  })
+  ok('用户这期间只转了本体轴：自动单位照提交，分析结果随轴向整体转过去（= 并进去后在本体轴节转）', () => {
+    const q1 = BF.axisStep(Q0, 'z', 90)
+    const theirs = { ...clone(base), frame: { ...clone(base.frame), q_model2body: q1 } }
+    const p = PI.postImportPatch(base, ours, theirs)
+    assert.deepEqual(p.units, ours.units)
+    const want = W.reframeMeta(merged(), Q0, q1)
+    nearV(p.attachPoints[0].posBody, want.attachPoints[0].posBody, 1e-12); nearV(p.attachPoints[0].upBody, want.attachPoints[0].upBody, 1e-12)
+    nearV(p.parts[0].normalBody, want.parts[0].normalBody, 1e-12); nearV(p.geometry.centroidM, want.geometry.centroidM, 1e-12)
+    assert.ok(Math.abs(p.attachPoints[0].posBody[0] - 1) > 0.5, '真转过去了')
+    nearV(p.geometry.bboxM.max, ours.geometry.bboxM.max)   // bboxM 是模型轴米：转本体轴不变
+  })
+  ok('用户这期间平移了原点：自动单位不提交（原点偏移按旧比例写），分析结果换到用户的口径 p₁ = k·(p₀ − t₀) + t₁', () => {
+    const theirs = { ...clone(base), frame: { ...clone(base.frame), t_model2body: [0.5, 0, 0] } }
+    const p = PI.postImportPatch(base, ours, theirs)
+    assert.equal(p.units, undefined)
+    nearV(p.attachPoints[0].posBody, [1000.5, 0, 2000], 1e-9)
+    near(p.geometry.volumeM3, 4e9, 1e-3)
+  })
+  ok('用户这期间自己识别过 / 改过部件与挂点：以用户的为准，其余按用户的口径提交；键序不同不算改过', () => {
+    const theirs = { ...clone(base), parts: [{ id: 'u1', name: 'mine', role: 'bus' }], attachPoints: [{ name: 'my_ap', posBody: [0, 0, 0], dirBody: [0, 0, 1], upBody: [0, -1, 0] }] }
+    const p = PI.postImportPatch(base, ours, theirs)
+    assert.deepEqual(Object.keys(p).sort(), ['geometry', 'solarPanelGroups'])
+    near(p.geometry.boundingRadiusM, 3500)
+    const u = base.units
+    const reordered = { ...clone(base), units: { sizeVerified: u.sizeVerified, unitGuess: u.unitGuess, scaleToMeters: u.scaleToMeters } }
+    assert.deepEqual(PI.postImportPatch(base, ours, reordered).units, ours.units)
+  })
+}
+
 console.log(`modelWorkbench: ${n} 项通过`)

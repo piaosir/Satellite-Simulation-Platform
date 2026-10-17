@@ -176,7 +176,15 @@ ok('可见时间占比合理 (0,1]', rn.s8.visFrac > 0 && rn.s8.visFrac <= 1, `(
 // 与「按最低仰角填」的旧口径对照：所有雨衰派生量都应松一口气
 const old = core.calculateRainAttenuation(Object.assign({}, NG, { ngsoStat: false, elevation: 10 }));
 ok('旧口径（最低仰角）雨衰更大', old.rainAtten > rn.rainAtten, `(${old.rainAtten.toFixed(2)} → ${rn.rainAtten.toFixed(2)} dB)`);
-ok('派生量同向：G/T 衰减更小', rn.gtDegradation < old.gtDegradation, `(${old.gtDegradation.toFixed(2)} → ${rn.gtDegradation.toFixed(2)} dB)`);
+// 天空噪温按 P.618-14 式(69) 串联合成后（2026-10-17 C-02），「G/T 劣化」是相对输入的晴空系统噪温算的增量
+// T_sky(A_G+A_C+A_R) − T_sky(A_G)：低仰角的气体发射已把天空抬近 T_mr，雨能再加的就少，故劣化本身不必随仰角
+// 单调（本例 10° 3.73 dB、§8 3.87 dB）。随仰角单调的是雨天天空亮温本身。
+{
+  const itu = require('../utils/itu/index.js');
+  const Tmr = itu.meanRadiatingTemp(itu.surfaceTemperature(NG.lat, 0));
+  const tsky = (r) => itu.skyNoiseTemp(r.gasAtten, Tmr) + r.rainNoiseTemp;   // = T_sky(A_G + A_C + A_R)
+  ok('派生量同向：雨天天空亮温更低（式 69）', tsky(rn) < tsky(old), `(${tsky(old).toFixed(1)} → ${tsky(rn).toFixed(1)} K)`);
+}
 ok('派生量同向：DND 更小', rn.dnd < old.dnd, `(${old.dnd.toFixed(2)} → ${rn.dnd.toFixed(2)} dB)`);
 ok('派生量同向：雨致 XPD 更高', rn.rainXPD > old.rainXPD, `(${old.rainXPD.toFixed(2)} → ${rn.rainXPD.toFixed(2)} dB)`);
 ok('派生量同向：气体吸收更小（仰角抬高）', rn.gasAtten < old.gasAtten);

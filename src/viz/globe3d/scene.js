@@ -38,6 +38,7 @@ import { TILE, span as tileSpan, tileBox, tileClip, tileRange, pickZoom, getTile
 // 顶点级几何原语：与聚焦几何 Worker 共用同一份实现（别在这里再写一份）
 import { spinDelta, rotateSpeedFor } from './earthSpin.js'
 import { tauFor, dampingFor, ZOOM_TAU_MS } from './dragFollow.js'
+import { orbitLeftMode } from '../../shared/mapToolNav.js'   // 工具态左键分工：按住 Shift 拖动才转地球（与 2D 同一口径）
 import { ZOOM_REF_DIST, FOLLOW_ZOOM_DIST, FOLLOW_ICON_K, pointZoomK } from './zoomScale.js'
 import { wheelNotches, stepZoomT } from '../../shared/wheelStep.js'
 import { RE, LIFT, llaToVec, pushStripSegs, pushDashed, densifyArc, DASH_SPEC, FILL_R, FILL_CELL, slerpUnit, footprintFill, coneFace, createSink } from './focusLanes.js'
@@ -388,7 +389,9 @@ export function createGlobeScene(container, quality = {}) {
   // ===================== 按需出帧（脏标记）=====================
   // 空闲时不再逐帧整帧重画，只在「画面可能变了」时出帧：对外接口的调用（文件尾统一包一层）、出帧闸放行、
   // 指针 / 滚轮 / 相机变动、异步到货（贴图解码、影像底层、模型图标，见 redraw.js）都置脏；
-  // 缩放缓动 / 拖动阻尼 / 跟随 / 流动虚线 / 瓦片补片 / 叠加层淡入淡出期间照旧连续出帧（见 loop）。
+  // 缩放缓动 / 拖动阻尼 / 流动虚线 / 瓦片补片 / 叠加层淡入淡出期间照旧连续出帧（见 loop）。
+  // 跟随卫星不再一律连续出帧（体检 2026-10-16 性能 #3：画面静止也按帧率上限整帧画）：主星每拍挪一次 —— 页面每拍调
+  // setFollowAnchor / 模型层接口（redrawOnCall → requestRedraw）都置脏；局部相机的拖动阻尼 / 滚轮缩放缓动由叠加层 busy() 报（modelLayer）。
   // 另留 1 Hz 兜底：漏挂的异步到货最多晚一秒补上。
   let needsRender = true, lastRenderT = 0
   // 切到 2D 平面图（pause）时帧缓冲缩到 1×1：2× 档 + MSAA 的默认帧缓冲有上百 MB，被平面图盖着时白占显存。resume 时复原
@@ -483,13 +486,13 @@ export function createGlobeScene(container, quality = {}) {
   const FOLLOW_SNAP_RAY2 = 0.008 * 0.008   // 视线 / 视轴 / 射线端点离锚点 ≤ 51 km：就是主星本身
   const FOLLOW_SNAP_LINK2 = 5e-5 * 5e-5    // 链路的星端点离锚点 ≤ 320 m：就是主星（同一时刻同一星历，差在毫米级）
   let followA = null
-  const anchoredDirty = { links: false, sel: false, cov: false, shell: false }
+  const anchoredDirty = { links: false, sel: false, cov: false, shell: false, bm: false }
   function setFollowAnchor(a) {
     const ok = Array.isArray(a) && a.length >= 3 && Number.isFinite(a[0]) && Number.isFinite(a[1]) && Number.isFinite(a[2])
     if (!ok && !followA) return
     if (ok && followA && followA.x === a[0] && followA.y === a[1] && followA.z === a[2]) return
     followA = ok ? new THREE.Vector3(a[0], a[1], a[2]) : null
-    anchoredDirty.links = anchoredDirty.sel = anchoredDirty.cov = anchoredDirty.shell = true
+    anchoredDirty.links = anchoredDirty.sel = anchoredDirty.cov = anchoredDirty.shell = anchoredDirty.bm = true
   }
   // 线段 ab 到锚点的最近距离²
   function segDist2A(a, b) {
@@ -550,7 +553,7 @@ export function createGlobeScene(container, quality = {}) {
     reportZoom()
   }, { passive: false })
   // 按需出帧：按下 / 松开 / 按着拖动都置脏（工具态拖波束、拖标记等由页面回调再推几何，那条路走接口置脏；这里兜指针本身）。
-  // 跟随时滚轮交给驱动（局部相机），跟随期间本来就连续出帧
+  // 跟随时滚轮交给驱动（局部相机）：这一下置脏，之后的缩放缓动由叠加层 busy() 报（modelLayer 的 zoomBusy）
   renderer.domElement.addEventListener('wheel', invalidate, { passive: true })
   renderer.domElement.addEventListener('pointerdown', invalidate)
   renderer.domElement.addEventListener('pointerup', invalidate)
@@ -567,7 +570,8 @@ export function createGlobeScene(container, quality = {}) {
     const m = regMat(new LineMaterial({ color, linewidth: width, transparent: true, opacity, worldUnits: false, depthWrite: false }))
     const o = new LineSegments2(g, m); o.renderOrder = order || 0; return o
   }
-  // 覆盖场等值线：逐组显式给的透明度(grp.opacity)优先，否则用整层设置(o.lineAlpha)，都没有才回落 0.95。
+  // 覆盖场等值线：逐组显式给的透明度(grp.opacity)优先，其次本层自带的(L.lineAlpha：GRD 每层是自己那根天线的设置)，
+  // 再次整场设置(o.lineAlpha)，都没有才回落 0.95。
   // ★ 打 userData.covLine 标记 —— setCoverageLineAlpha 靠它认人。同一个 covFieldGroup 里还挂着
   //   天线视轴(covRayGroup，自有 rayOpacity)与峰值点十字，都是 LineMaterial，按材质类型一刀切会把它们一起调暗。
   // 对地(buildDeco) / 对星(buildShellDeco) 同一口径，改这里两边一起变。
@@ -590,9 +594,9 @@ export function createGlobeScene(container, quality = {}) {
       const df = { ...m.defines }; delete df.USE_DASH; m.defines = df; m.dashed = false; m.needsUpdate = true
     }
   }
-  function covContourLine(flat, grp, o) {
-    const ln = fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2,
-      grp.opacity != null ? grp.opacity : ((o && o.lineAlpha != null) ? o.lineAlpha : 0.95), 6)
+  function covContourLine(flat, grp, o, L) {
+    const la = (L && L.lineAlpha != null) ? L.lineAlpha : ((o && o.lineAlpha != null) ? o.lineAlpha : 0.95)
+    const ln = fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : la, 6)
     ln.userData.covLine = true
     if (grp.idx != null) ln.userData.lvIdx = grp.idx   // 档下标（cfg.levels）：restyleCoverageLines 按它认档
     applyCovLineStyle(ln, grp.width, grp.dash)
@@ -2312,7 +2316,7 @@ export function createGlobeScene(container, quality = {}) {
         const a = llaToVec(sg[0][1], sg[0][0], la), b = llaToVec(sg[1][1], sg[1][0], la)
         flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
-      out.push(covContourLine(flat, grp, o))
+      out.push(covContourLine(flat, grp, o, L))
     }
     // 数值标签：每档一处（锚点由上游按等值线环给）
     if (o.showVal) for (const grp of (L.segGroups || [])) {
@@ -2813,7 +2817,8 @@ export function createGlobeScene(container, quality = {}) {
     const mesh = new THREE.Mesh(geo, mats); mesh.renderOrder = 5; mesh.frustumCulled = false
     mesh.userData.covFill = true                        // setCoverageFieldAlpha 靠这个标记认领（原来认 vertexColors）
     const fm = { geo, mats, mesh, posArr: null, vcap: 0, alpha: alpha != null ? alpha : 0.85 }
-    fm.setAlpha = (a) => { fm.alpha = a; for (const m of fm.mats) m.opacity = a }
+    // 整层透明度热路径：乘回逐档填充透明度（updateFill 记在材质 userData.bandA 上）——直接写 a 会把逐档透明度抹成同一个值，直到下次重建
+    fm.setAlpha = (a) => { fm.alpha = a; for (const m of fm.mats) m.opacity = a * (m.userData.bandA != null ? m.userData.bandA : 1) }
     return fm
   }
   const _fillMat = (alpha) => new THREE.MeshBasicMaterial({ transparent: true, opacity: alpha, side: THREE.DoubleSide, depthWrite: false })
@@ -2906,7 +2911,8 @@ export function createGlobeScene(container, quality = {}) {
     let gs = 0
     for (let bi = 0; bi < fillBands.length; bi++) {
       const ge = (bandTri[bi] || 0) * 3, m = fm.mats[bi], c = fillBands[bi].color, ba = fillBands[bi].alpha
-      m.opacity = fm.alpha * (ba == null ? 1 : ba); m.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255)
+      m.userData.bandA = ba == null ? 1 : ba   // 逐档填充透明度：fm.setAlpha 改整层时乘回它
+      m.opacity = fm.alpha * m.userData.bandA; m.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255)
       if (ge > gs) fm.geo.addGroup(gs, ge - gs, bi)
       gs = ge
     }
@@ -2924,7 +2930,7 @@ export function createGlobeScene(container, quality = {}) {
         const a = llaToVec(sg[0][1], sg[0][0], 0).multiplyScalar(lineLift), b = llaToVec(sg[1][1], sg[1][0], 0).multiplyScalar(lineLift)
         flat.push(a.x, a.y, a.z, b.x, b.y, b.z)
       }
-      out.push(covContourLine(flat, grp, o))
+      out.push(covContourLine(flat, grp, o, L))
     }
     // 数值标签：每条等值线最上端点处各标一次档值（相对/绝对，文本由上游决定）。
     // billboard 朝向相机，下半部分会探入地球被遮挡 → 沿径向抬出约半个标签高度（随字号缩放），整块浮在地表之上。
@@ -2985,9 +2991,10 @@ export function createGlobeScene(container, quality = {}) {
     if (!entry) { entry = { group: new THREE.Group(), li, fill: null, deco: [] } }
     else { disposeDeco(entry); entry.li = li }
     const base = 1.0006 + li * 0.00012
+    const alpha = L.alpha != null ? L.alpha : o.alpha   // 逐层填充不透明度（GRD：本层天线自己的设置），缺省跟整场 opts.alpha
     if (L.fillBands && L.fillBands.length) {
-      if (!entry.fill) { entry.fill = makeFill(o.alpha); entry.group.add(entry.fill.mesh) }
-      updateFill(entry.fill, L.fillBands, o.alpha, base)
+      if (!entry.fill) { entry.fill = makeFill(alpha); entry.group.add(entry.fill.mesh) }
+      updateFill(entry.fill, L.fillBands, alpha, base)
     } else if (entry.fill) { entry.fill.mesh.visible = false; entry.fill.geo.setDrawRange(0, 0) }
     const deco = buildDeco(L, o, li)
     for (const d of deco) entry.group.add(d)
@@ -3085,18 +3092,97 @@ export function createGlobeScene(container, quality = {}) {
     }
   }
   // 等值线透明度：只动 LineMaterial（填充走 setCoverageFieldAlpha，两者互不影响）。
-  // covOpts 同步写回 —— 下一次增量重建 deco 时才不会退回旧值。
-  function setCoverageLineAlpha(a) {
-    covOpts = { ...covOpts, lineAlpha: a }
-    for (const e of covLayers.values()) for (const d of e.deco) if (d.userData && d.userData.covLine) d.material.opacity = a
+  // ids = 只改这几层（GRD 滑杆热路径：聚焦天线的各波束层 —— 透明度是逐天线的，层上带着 L.lineAlpha，下次重建自然是新值）；
+  // 不给 ids = 整场（同步写回 covOpts，下一次增量重建 deco 时才不会退回旧值）。
+  function setCoverageLineAlpha(a, ids) {
+    if (!ids) covOpts = { ...covOpts, lineAlpha: a }
+    const want = ids ? new Set(ids) : null
+    for (const [id, e] of covLayers) {
+      if (want && !want.has(id)) continue
+      for (const d of e.deco) if (d.userData && d.userData.covLine) d.material.opacity = a
+    }
   }
-  function setCoverageFieldAlpha(a) {
+  // 填充透明度：同上，ids = 只改这几层。走 fm.setAlpha（乘回逐档填充透明度，不把它们抹平）。
+  function setCoverageFieldAlpha(a, ids) {
     if (!covFieldGroup) return
-    covFieldGroup.traverse((o) => {
-      if (!o.material) return
-      if (o.userData && o.userData.covFill) { for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.opacity = a; return }
-      if (o.material.uniforms && o.material.uniforms.uOpacity) o.material.uniforms.uOpacity.value = a
-    })
+    if (ids) { for (const id of ids) { const e = covLayers.get(id); if (e && e.fill) e.fill.setAlpha(a) } return }
+    covOpts = { ...covOpts, alpha: a }
+    for (const e of covLayers.values()) if (e.fill) e.fill.setAlpha(a)
+    covFieldGroup.traverse((o) => { if (o.material && !(o.userData && o.userData.covFill) && o.material.uniforms && o.material.uniforms.uOpacity) o.material.uniforms.uOpacity.value = a })
+  }
+
+  // ===== 波束地图【专用通道】：覆盖库来源（GXT / KML / JSON / 脚本导入）的等值线多边形，按 GRD 同一种层格式画在地表 =====
+  // 与 GRD 对地覆盖(covFieldGroup)、对星壳层(shellGroup)、STK Coverage(covGridGroup) 四条通道互不覆写，同屏可叠。
+  // 层格式见 viz/beammap/layers.js；与 GRD 层只差一项：逐层填充不透明度 L.alpha（每个批次各一份，缺省跟 opts.alpha），
+  // 线的透明度在线组上（grp.opacity，covContourLine 认）。装饰（线 / 标签 / 十字）与 GRD 共用 buildDeco，画法一字不差。
+  // 填充 renderOrder 4.95：与 GRD 天线足迹同屏时压在其下。视轴（卫星 → 波束中心）走 opts.rays，与 GRD 同格式。
+  let bmGroup = null, bmLayers = new Map(), bmOpts = {}
+  let bmRayGroup = null, bmRayList = null
+  function clearBeamMapField() {
+    bmRayList = null; anchoredDirty.bm = false; putNearLines('bm', null)
+    if (!bmGroup) return
+    bmRayGroup = null                  // 挂在 bmGroup 下，随它一起收走
+    disposeCovGroup(bmGroup)
+    scene.remove(bmGroup); bmGroup = null; bmLayers = new Map()
+  }
+  function ensureBmEntry(L, o, li, prev) {
+    let entry = prev
+    if (!entry) entry = { group: new THREE.Group(), li, fill: null, deco: [] }
+    else { disposeDeco(entry); entry.li = li }
+    const base = 1.0006 + li * 0.00012
+    const alpha = L.alpha != null ? L.alpha : (o.alpha != null ? o.alpha : 0.78)
+    if (L.fillBands && L.fillBands.length) {
+      if (!entry.fill) { entry.fill = makeFill(alpha); entry.fill.mesh.renderOrder = 4.95; entry.group.add(entry.fill.mesh) }
+      updateFill(entry.fill, L.fillBands, alpha, base)
+    } else if (entry.fill) { entry.fill.mesh.visible = false; entry.fill.geo.setDrawRange(0, 0) }
+    const deco = buildDeco(L, o, li)
+    for (const d of deco) entry.group.add(d)
+    entry.deco = deco
+    return entry
+  }
+  // 全量【增量】更新（同 updateCoverageField）：按 id 复用上一轮实体，填充网格原地写回，只重建线与标签；消失的 id 才销毁。
+  function setBeamMapField(layers, opts) {
+    bmOpts = opts || {}
+    const list = layers || []
+    if (!list.length && !(bmOpts.rays && bmOpts.rays.length)) { clearBeamMapField(); return }
+    if (!bmGroup) { bmGroup = new THREE.Group(); scene.add(bmGroup) }
+    const seen = new Set()
+    let li = 0
+    for (const L of list) {
+      const id = L.id != null ? L.id : '#' + li
+      const prev = bmLayers.get(id)
+      const entry = ensureBmEntry(L, bmOpts, li, prev)
+      if (!prev) { bmLayers.set(id, entry); bmGroup.add(entry.group) }
+      seen.add(id); li++
+    }
+    for (const [id, e] of [...bmLayers]) {
+      if (seen.has(id)) continue
+      bmGroup.remove(e.group); disposeCovGroup(e.group); bmLayers.delete(id)
+    }
+    setBmRays(bmOpts.rays)
+  }
+  // 视轴：与 setCovRays 同一套（跟随时主星端的近截交叉加层，见 putNearLines）
+  function setBmRays(list) {
+    if (bmRayGroup) {
+      bmRayGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+      bmRayGroup.parent && bmRayGroup.parent.remove(bmRayGroup)
+      bmRayGroup = null
+    }
+    bmRayList = list || null; anchoredDirty.bm = false
+    const near = followA ? new Map() : null
+    if (bmGroup && list && list.length) {
+      const g = new THREE.Group()
+      for (const ry of list) {
+        if (!ry || !ry.from || !ry.to) continue
+        const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
+        const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+        const col = new THREE.Color(ry.color != null ? ry.color : 0xffb14a), wd = ry.width != null ? ry.width : 1.2, op = ry.opacity != null ? ry.opacity : 0.75
+        if (near) { snapEndsA(a, b); if (segDist2A(a, b) < FOLLOW_NEAR_R2) pushStripSegs(nearBucket(near, col.getHex(), wd, op), [a, b]) }
+        g.add(fatStrip([a, b], col, wd, op, 5))
+      }
+      bmRayGroup = g; bmGroup.add(g)
+    }
+    putNearLines('bm', near)
   }
 
   // ===================== 卫星 / 仰角线（独立图层：等仰角线 + 星下点 + 星点，与 GXT/GRD 覆盖互不干扰） =====================
@@ -3280,15 +3366,20 @@ export function createGlobeScene(container, quality = {}) {
   let beamDragMode = false, onBeamDrag = null, beamDragging = false
   // 拖拽数值标签模式：左键拖动地球时不旋转，改为回调经纬度（拖动等值线数值标签沿线滑动）
   let labelDragMode = false, onLabelDrag = null, labelDragging = false
-  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点、左键拖动照常转地球（同 QGIS 数字化 / SATSOFT §5.2）；
-  // Shift + 左键按住沿路径拖动 = 徒手画（按屏幕像素阈值连续加点，这一下不转地球）。右键加点仍并存。
+  // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（同 QGIS 数字化 / SATSOFT §5.2）；左键按住拖过点击阈值 = 起笔，
+  // 沿路径按屏幕像素阈值连续加点（徒手画）。转地球归 Shift + 左键拖动（工具态通则，见 toolLock）。右键加点仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
   let lastDrawClick = null   // 绘制态上一次单击 {x,y,t}：双击 = 两次单击落在同一处，第二下不重复加点
-  // 工具态的「起拖命中」判定（宿主给）：拖波束 / 拖标签只在按在视轴 / 标签附近时接管左键，别处照常转地球。
-  // 不给 = 恒接管（旧口径）。pressLock：这一下按住被工具接管了 → 本次按压期间停旋转（OrbitControls 在 move 时才查 enableRotate）
+  let drawArm = null         // 绘制态左键按下的武装点 {x,y}：原地抬起 = 单击加点，拖过阈值 = 起笔（见 pointermove）
+  // 工具态的「起拖命中」判定（宿主给）：拖标签只在按在标签附近时接手；没接手的左键也不转地球（见 toolLock）。
+  // 不给 = 恒接管。pressLock：这一下左键归工具 → 本次按压期间停旋转（OrbitControls 在 move 时才查 enableRotate）
   let beamDragHit = null, labelDragHit = null, pressLock = false
-  // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)；拖动仍旋转地球
+  // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)
   let placeMode = false, onPlace = null
+  // 工具态（页面经 setToolLock 给：任一地图工具开着）：左键归工具，转地球只认 Shift + 左键拖动（口径见 shared/mapToolNav.js）。
+  // 本渲染器自己的模态（拖波束 / 拖标签 / 绘制 / 放置 / 拖标记）开着也算，与页面那把锁取并集（toolOn）。
+  // navPress：这一下是工具态里的 Shift + 左键 → 归地图，工具与点选都不接（抬起时清）
+  let toolLock = false, navPress = false
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
   // 标记拖拽（点标记/地球站/航点）：状态先于 updateRotate 声明 —— 它读 markerDragging，setup 期被调到会撞 TDZ
   const HIT_MIN = 11    // 命中半径下限（屏幕 px）：与 2D 侧同值
@@ -3298,6 +3389,7 @@ export function createGlobeScene(container, quality = {}) {
   let onMarkerDrag = null, markerDragging = null, markerGrab = null
   const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
   const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
+  const toolOn = () => !!(toolLock || beamDragMode || labelDragMode || polyDrawMode || placeMode || markerDragAny())
   // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
   // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。2D 侧同口径。
   const shortLon = (d) => ((d + 540) % 360) - 180
@@ -3319,8 +3411,8 @@ export function createGlobeScene(container, quality = {}) {
   }
   function setLabelDragMode(v) { labelDragMode = !!v; if (!v) labelDragging = false; updateRotate(); renderer.domElement.style.cursor = labelDragMode ? 'move' : (beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
   function setOnLabelDrag(fn) { onLabelDrag = fn }
-  function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : (placeMode ? 'crosshair' : '')) }
-  // 放置模式（波束合成）：不停旋转（拖动仍导航），仅把「无拖动的左键点击」变为落点
+  function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; drawArm = null; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : (placeMode ? 'crosshair' : '')) }
+  // 放置模式（波束合成）：把「无拖动的左键点击」变为落点
   function setPlaceMode(v) { placeMode = !!v; renderer.domElement.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : '')) }
   function setOnPlace(fn) { onPlace = fn }
   function setOnPolyDraw(fn) { onPolyDraw = fn }
@@ -3372,6 +3464,13 @@ export function createGlobeScene(container, quality = {}) {
     }
     if (beamDragging) { const ll = pickDragMove(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
     if (labelDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
+    // 绘制态按住拖过点击阈值（与 pointerup 判单击同一把 6 px）：起笔，第一个点落在按下处，之后按 POLY_DRAW_MIN2 节流加点
+    if (drawArm && (e.buttons & 1) && Math.abs(e.clientX - drawArm.x) + Math.abs(e.clientY - drawArm.y) > 6) {
+      const a = drawArm; drawArm = null
+      polyDrawing = true; drawLX = a.x; drawLY = a.y
+      try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+      const ll = pickGlobe(a.x, a.y); if (ll && onPolyDraw) onPolyDraw(ll, 'start')
+    }
     if (polyDrawing) { const dx = e.clientX - drawLX, dy = e.clientY - drawLY; if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') } }
     if (onHover) onHover(pickGlobe(e.clientX, e.clientY))
   })
@@ -4149,8 +4248,23 @@ export function createGlobeScene(container, quality = {}) {
   let lastPickPoint = null
 
   let downX = 0, downY = 0
+  // 左键归不归地图（转地球）在按下那一刻定：按 mapToolNav 的口径给地球控件（跟随时给局部控件）挑 LEFT 那一档。
+  // ★ 捕获阶段：同一元素上捕获监听先于冒泡监听触发（Chromium 89+），OrbitControls 自己的 pointerdown 读 mouseButtons 之前就已设好
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.pointerType === 'touch') return
+    const left = orbitLeftMode(toolOn(), e) === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE
+    controls.mouseButtons.LEFT = left
+    if (followDriver && followDriver.setLeftButton) followDriver.setLeftButton(left)
+  }, true)
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downX = e.clientX; downY = e.clientY
+    navPress = false; drawArm = null
+    // 工具态：Shift + 左键归地图（捕获阶段已让地球 / 局部控件按 Shift 进旋转态），工具一概不接；
+    // 不按 Shift 的左键归工具 —— 工具没接手（按在空白处）地球也不转，pressLock 管到抬起
+    if (e.button === 0 && toolOn()) {
+      if (e.shiftKey) { navPress = true; return }
+      pressLock = true; updateRotate()
+    }
     // 跟随卫星期间照常接：工具态（拖标记 / 拖波束 / 拖标签 / 绘制）压过局部轨道控件，与不跟随时压过地球控件同一口径
     // （闸门见 updateRotate；拾取用的是地球相机，跟随时它的位姿由驱动每帧写好，射线照样落在地球上）。不在工具态里 → 这里什么也不做，左键归局部控件
     // ★ 排在绘制态/放置态【之前】：那两个是「按下即落点」，而光标正压在一枚可拖的标记上时，
@@ -4170,10 +4284,12 @@ export function createGlobeScene(container, quality = {}) {
     const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
     if (beamDragMode && e.button === 0 && hitOk(beamDragHit)) { beamDragging = true; pressLock = true; updateRotate(); const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
     else if (labelDragMode && e.button === 0 && hitOk(labelDragHit)) { labelDragging = true; pressLock = true; updateRotate(); const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
-    else if (polyDrawMode && e.button === 0 && e.shiftKey) { polyDrawing = true; pressLock = true; updateRotate(); drawLX = e.clientX; drawLY = e.clientY; try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* ignore */ } const ll = pickGlobe(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'start') }
+    else if (polyDrawMode && e.button === 0) drawArm = { x: e.clientX, y: e.clientY }   // 绘制态：先武装 —— 原地抬起 = 单击加点，拖过阈值 = 起笔（见 pointermove）
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
     if (pressLock) { pressLock = false; updateRotate() }
+    drawArm = null
+    if (navPress) { navPress = false; return }   // 工具态里 Shift + 左键转地球的那一下：不加点、不放置、不选星
     if (markerDragging) { try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } endMarkerDrag(); return }   // 拖标记结束，不当作选星
     if (polyDrawing) { polyDrawing = false; try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束（显式释放捕获，勿只靠隐式）；不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
@@ -4213,6 +4329,7 @@ export function createGlobeScene(container, quality = {}) {
   // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
   renderer.domElement.addEventListener('pointercancel', (e) => {
     if (pressLock) { pressLock = false; updateRotate() }
+    navPress = false; drawArm = null
     if (markerDragging) endMarkerDrag()
     if (polyDrawing) { polyDrawing = false; if (onPolyDraw) onPolyDraw(null, 'end') }
     try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ }
@@ -4373,8 +4490,11 @@ export function createGlobeScene(container, quality = {}) {
       syncNear(cur)   // 每帧无条件跟一次（内部等值即返回）：恢复视图/直接 setZoom 落在贴地档时也不会漏
     }
     // 按需出帧：上面的相机递推照每帧走（阻尼残量、dt 序列与连续出帧时逐帧相同），下面的整帧更新 + 绘制只在
-    // 置脏 / 相机在动 / 有连续动画（跟随、流动虚线、瓦片补片、叠加层淡入淡出）/ 1 Hz 兜底到点时才做
-    const live = busy || camMoved || !!followDriver || linkFlowMats.length > 0 ||
+    // 置脏 / 相机在动 / 有连续动画（流动虚线、瓦片补片、叠加层淡入淡出）/ 1 Hz 兜底到点时才做。
+    // 跟随不再算连续动画（静止时同样按需，性能 #3）：主星每拍挪动走接口置脏；局部相机这一帧动没动按 apply 之后的叠加层 busy() 判
+    // （上面那次 busy 是上一帧 apply 的结果，差一帧）—— 拖动阻尼 / 缩放缓动的每一帧都出，停稳即回落到按需
+    const followBusy = !!followDriver && !!(overlay && overlay.busy())
+    const live = busy || camMoved || followBusy || linkFlowMats.length > 0 ||
       (pendingTiles && !!imgSet && imageryOn && !!tileGroup) || (tNow - lastRenderT) >= 1000
     if (!needsRender && !live) return
     needsRender = false
@@ -4603,10 +4723,11 @@ export function createGlobeScene(container, quality = {}) {
     if (anchoredDirty.sel) setSelectionSet(selItems)
     if (anchoredDirty.cov) setCovRays(covRayList)
     if (anchoredDirty.shell) setShellRays(shellRayList)
+    if (anchoredDirty.bm) setBmRays(bmRayList)
   }
   function renderFrame() {
     lastRenderT = nowMs()
-    if (anchoredDirty.links || anchoredDirty.sel || anchoredDirty.cov || anchoredDirty.shell) syncAnchored()
+    if (anchoredDirty.links || anchoredDirty.sel || anchoredDirty.cov || anchoredDirty.shell || anchoredDirty.bm) syncAnchored()
     if (linkIconEnds.length && linkIconEdge) syncLinkIcons()   // 图上链路：画着模型图标的星端，箭头让图标此刻的轮廓（叠加层本帧 update 之后）
     const ov = overlay && !overlay.isEmpty() ? overlay : null
     if (dotMaskOn) {
@@ -4641,7 +4762,7 @@ export function createGlobeScene(container, quality = {}) {
 
   // ===================== 跟随卫星：驱动接管地球相机 =====================
   // d = { apply(camera, dtSec)（每帧写地球相机位姿与 near/far）, onWheel(e), attach?(domElement), detach?(), dispose?(),
-  //       setRotate?(on)（左键转局部相机的闸，见 updateRotate）, rotateBy?(dAz, dPol)（方向键） }。
+  //       setRotate?(on)（左键转局部相机的闸，见 updateRotate）, setLeftButton?(b)（左键那一档，见 orbitLeftMode）, rotateBy?(dAz, dPol)（方向键） }。
   // 有驱动时：地球 OrbitControls 停用（enabled=false —— updateRotate 只动 enableRotate，碰不到它）、滚轮与方向键转给驱动、
   // 左键点选星停用；工具态（拖波束 / 拖标签 / 绘制 / 拖标记 / 放置）照常，经 setRotate 压过局部控件。
   // faceTo / faceLonLat / setView / setZoom 一律忽略（页面要摆位先退出跟随）。
@@ -4926,6 +5047,7 @@ export function createGlobeScene(container, quality = {}) {
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走
+    clearBeamMapField()                      // 波束地图：同上（标签贴图 + 线材质）
     // 图上链路（含跟随近场那份）。★ 原来这里还释放一张 linkArrowTex —— 方向标改末端箭头时那张贴图连同声明一起删了，
     //   这一句没跟着改：卸载时抛 ReferenceError，后面的 cancelAnimationFrame / renderer.dispose / 摘画布全没跑（旧场景的 rAF 一直空转）
     setLinks(null); if (linkRingTex) { linkRingTex.dispose(); linkRingTex = null } if (linkDotTex) { linkDotTex.dispose(); linkDotTex = null }
@@ -4941,6 +5063,9 @@ export function createGlobeScene(container, quality = {}) {
     entOverlay = null; entProvider = null; dropHl = null; vehSprites.clear()
     if (dropRing) { scene.remove(dropRing); if (dropRing.material.map) dropRing.material.map.dispose(); dropRing.material.dispose(); dropRing = null; dropRingKey = '' }
     cancelAnimationFrame(raf); controls.dispose(); flushRetiredMats(); for (const t of mkLabelCache.values()) t.dispose(); mkLabelCache.clear(); for (const t of satLabelCache.values()) t.dispose(); satLabelCache.clear(); renderer.dispose()
+    // 当场交还 WebGL 上下文：dispose 只放 three 管的对象，上下文本身（连同显存）要等画布被垃圾回收才释放 ——
+    // 切页 / 切 MSAA 整页重挂载时每拨一次就多压一份。dispose 已摘掉 three 自己的 contextlost 监听，这里丢上下文不会再触发它
+    try { renderer.forceContextLoss() } catch { /* 拿不到 WEBGL_lose_context：等画布回收 */ }
     if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
   }
 
@@ -4949,6 +5074,7 @@ export function createGlobeScene(container, quality = {}) {
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, setFollowOrbit, setFollowAnchor, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCoverageLineAlpha, restyleCoverageLines, setCovGrid, clearCovGrid, setCovGridAlpha,
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays: () => setShellRays(null),
+    setBeamMapField, clearBeamMapField,
     setLinks, clearLinks: () => setLinks(null), setLinkIconPx, setLinkIconEdge, lonLatAt, screenOfLL,
     setTerminator, clearTerminator,
     setRefAxes: axesLayer.setRefAxes, setRefAxesJ2000: axesLayer.setJ2000Axes, setSatTriad: axesLayer.setSatTriad,
@@ -4983,6 +5109,8 @@ export function createGlobeScene(container, quality = {}) {
     },
     setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
     setBeamDragHit: (fn) => { beamDragHit = typeof fn === 'function' ? fn : null }, setLabelDragHit: (fn) => { labelDragHit = typeof fn === 'function' ? fn : null },
+    // 工具态开关（页面：任一地图工具开着）：开着时左键归工具、Shift + 左键拖动才转地球（见 toolLock）
+    setToolLock: (v) => { toolLock = !!v },
     faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
     isPaused: () => !running,   // 切到 2D 平面图后暂停着：页面据此省掉只给 3D 用的每拍计算（点云星位）
     // 覆盖层标注（波束名 / 数值 / 峰值）烘进贴图的套边签名：变了说明已画着的标注该重烘（GRD 层「只重建动了的天线」据此判能不能留旧层）

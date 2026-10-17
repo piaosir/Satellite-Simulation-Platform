@@ -29,13 +29,16 @@ export function useSatSets() {
   const visible = ref(new Set())  // 可见集合（可含 'q'）
   const solo = ref(null)          // { id, prev: [id…] }：「仅显示」进入前的可见集合留在 prev
 
+  // 'q'（搜索结果）不落盘：重开时搜索已经没了。「仅显示：搜索结果」时落的是进入仅显示前的可见集合（solo.prev），solo 落 null ——
+  // 早先照落 visible，滤掉 'q' 就是空集，搜索后直接关软件（含自动更新重启）重开全部卫星集被关、地图上 0 颗（体检 2026-10-16 #6）
   function persist() {
     try {
+      const s = solo.value, q = !!(s && s.id === 'q')
       localStorage.setItem(STORE_KEY, JSON.stringify({
         order: order.value,
         items: items.value,
-        visible: [...visible.value].filter((id) => id !== 'q'),
-        solo: solo.value && solo.value.id !== 'q' ? { id: solo.value.id, prev: solo.value.prev.filter((x) => x !== 'q') } : null
+        visible: (q ? s.prev : [...visible.value]).filter((id) => id !== 'q'),
+        solo: s && !q ? { id: s.id, prev: s.prev.filter((x) => x !== 'q') } : null
       }))
     } catch { /* 存储失败不影响功能 */ }
   }

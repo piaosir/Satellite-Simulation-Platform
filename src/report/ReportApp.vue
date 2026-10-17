@@ -42,7 +42,9 @@ const secs = computed(() => {
   }))
 })
 const multi = computed(() => secs.value.length > 1)
-const secsWithStats = computed(() => secs.value.filter((s) => s.summary.stats && s.summary.stats.length))
+// 容量与统计：GSO / NGSO / 再生式是逐转发器的表（summary.cap，参数做行、转发器做列）；端到端仍是统计行（summary.stats）
+const hasCapSec = (s) => !!(s.summary.cap || (s.summary.stats && s.summary.stats.length))
+const secsWithStats = computed(() => secs.value.filter(hasCapSec))
 // 逐参数对照是链路做列的宽表：按 8 条链路一组切成续表，用「表 n-i（续）」的题注串起来。
 const CMP_CHUNK = 8
 const chunk = (arr, n) => {
@@ -61,7 +63,7 @@ const tblNo = computed(() => {
   const n = { compare: [], capacity: [] }
   let k = 0
   secs.value.forEach(() => n.compare.push(++k))
-  secs.value.forEach((s) => n.capacity.push(s.summary.stats && s.summary.stats.length ? ++k : 0))
+  secs.value.forEach((s) => n.capacity.push(hasCapSec(s) ? ++k : 0))
   n.refs = ++k
   n.consts = ++k
   if (hasSla.value) n.sla = ++k
@@ -217,9 +219,15 @@ onMounted(async () => {
         <h2 class="rp-h2">2　{{ L.capacity }}</h2>
         <template v-for="s in secsWithStats" :key="secs.indexOf(s)">
           <h3 v-if="multi" class="rp-h3">2.{{ secs.indexOf(s) + 1 }}　{{ s.title }}</h3>
-          <div v-if="s.summary.statsTitle" class="rp-note">{{ s.summary.statsTitle }}</div>
+          <div v-if="s.summary.cap ? s.summary.cap.note : s.summary.statsTitle" class="rp-note">{{ s.summary.cap ? s.summary.cap.note : s.summary.statsTitle }}</div>
           <div class="rp-caption">{{ capTable(tblNo.capacity[secs.indexOf(s)], 0, 1, secTitle(s, L.capacity)) }}</div>
-          <table class="rp-tb">
+          <table v-if="s.summary.cap" class="rp-tb">
+            <thead><tr><th v-for="(h, hi) in s.summary.cap.head" :key="hi" :class="hi ? 'num' : 'lbl'">{{ h }}</th></tr></thead>
+            <tbody>
+              <tr v-for="(row, ri) in s.summary.cap.rows" :key="ri"><td v-for="(v, ci) in row" :key="ci" :class="ci ? 'num' : 'lbl'">{{ v }}</td></tr>
+            </tbody>
+          </table>
+          <table v-else class="rp-tb">
             <thead><tr><th class="lbl">{{ L.param }}</th><th class="num">{{ L.value }}</th></tr></thead>
             <tbody>
               <tr v-for="(st, si) in s.summary.stats" :key="si"><td class="lbl">{{ st.label }}</td><td class="num">{{ st.value }}</td></tr>

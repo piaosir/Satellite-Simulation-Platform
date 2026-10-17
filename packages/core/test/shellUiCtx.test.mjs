@@ -134,5 +134,49 @@ async function load(saved) {
   activation.ready = false
 }
 
+// ===== ⑦ 可见性分析：进出看 sideCtx；关面板不取消覆盖、不撤热力图；卫星组来源重启保得住 =====
+// 回归 2026-10-16 体检二档：原先 side 一空就 vis.close() —— 作废覆盖令牌、清热力图（收起侧栏就白算）；停在可见性视图、
+// 卫星集选了某个卫星组，重启时组还没读进来（satGroups.load 排在 onMounted 几个 await 之后）就按「组已删」回退成「当前显示」并写回存档。
+{
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const { dirname, join } = await import('node:path')
+  const HERE = dirname(fileURLToPath(import.meta.url))
+  const page = readFileSync(join(HERE, '../../../src/pages/ConstellationMap3D.vue'), 'utf8').replace(/\r\n/g, '\n')
+  ok('⑦ 可见性进出看 sideCtx（收起侧栏不关、侧栏收着重启也打开）', page.includes("const visCtx = sideCtx() === 'vis'") && page.includes("if (side === 'vis' || (visCtx && !vis.open.value)) { vis.openPanel(); commitGeometry() }") && page.includes('else if (vis.open.value && !visCtx) { vis.close(); commitGeometry() }'))
+  ok('⑦ 不再按 shellUi.side 一空就关', !/else if \(vis\.open\.value\) \{ vis\.close\(\)/.test(page))
+  const iLoad = page.indexOf('\nsatGroups.load()\n'), iSeed = page.indexOf('let setsSeeded = false'), iMount = page.indexOf('onMounted(async () => {')
+  ok('⑦ satGroups.load() 在 setup 顶层同步调（setsSeeded 声明之后、onMounted 之前）', iSeed > 0 && iLoad > iSeed && iLoad < iMount)
+  const mounted = page.slice(iMount, page.indexOf('\n})\n', iMount))
+  ok('⑦ onMounted 里不再读卫星组', !/\n\s*satGroups\.load\(\)/.test(mounted))
+
+  // useVisibility：close 只撤逐拍叠加层 —— 在算的覆盖照算完、热力图照画；「清除」才撤
+  const sat = (await import('../../../src/viz/constellation/satellite.js')).default
+  const { useVisibility } = await import('../../../src/viz/vis/useVisibility.js')
+  const GEO = sat.twoline2satrec('1 39017U 12075A   26265.41000000 -.00000349  00000+0  00000+0 0  9990', '2 39017   0.0200 137.5600 0002700  33.6000 304.8900  1.00270000 50000')
+  const T = new Date(Date.UTC(2026, 8, 22, 12))
+  const draws = []
+  const v = useVisibility({
+    getStations: () => [{ id: 's1', lat: 39.9, lon: 116.4 }], getPoints: () => [], getTrajectories: () => [], getPolys: () => [],
+    getSatSet: () => [{ rec: GEO, name: 'GEO', noradId: 39017, group: 'geo' }],
+    calcAt: () => T, ccTimeAt: (t) => t, isCustomEntry: () => false, refresh: () => {},
+    drawCov: (spec) => draws.push(spec), setCovAlpha: () => {}
+  })
+  v.openPanel(); v.setMode('coverage')
+  v.covRegionKind.value = 'global'; v.covStep.value = 10; v.covHorizonH.value = 1; v.covSample.value = 300
+  v.computeCoverage()
+  const n0 = draws.length
+  v.close()   // 真离开视图（切到别的视图）：覆盖还在算
+  ok('⑦ close 不撤热力图（不往渲染器画 null）', draws.length === n0)
+  ok('⑦ close 不取消在算的覆盖', v.covBusy.value === true)
+  const t0 = Date.now()
+  while (v.covBusy.value && Date.now() - t0 < 20000) await new Promise((r) => setTimeout(r, 10))
+  const last = draws[draws.length - 1]
+  ok('⑦ 面板关着覆盖照样算完、热力图照画', !v.covBusy.value && !!v.covData.value && !!(last && last.fillBands && last.fillBands.length), `busy=${v.covBusy.value} draws=${draws.length}`)
+  ok('⑦ 进度读数不停在半截', !/覆盖计算…/.test(v.covMsg.value), v.covMsg.value)
+  v.clearCoverage()
+  ok('⑦ 「清除」才撤热力图', draws[draws.length - 1] === null && !v.covData.value)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

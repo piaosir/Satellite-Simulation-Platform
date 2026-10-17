@@ -13,17 +13,22 @@
 //      而上一轮我们自己写回的余量里已经含着那一轮的偏置，于是每应用一次就再叠一层；单载波看不出来
 //      （唯一未知数由方程定死、偏置被 Δ 抵消），偏置 ≠ 0 且多份载波才现形——各载波一轮轮错开，
 //      余量永远停不下来。修法＝写回时把原始基准钉在配置上（ADV_BASE），下一轮从它起算。
+//   ⑥ 一组＝一只转发器（⑱ 段）——功率带宽 = 功率占用 × 本转发器带宽，两颗星的份额分母不同；卫星可逐链路
+//      指定之后表里会有几颗星，混在一起配只平了一个没有物理意义的总数。
+//   ⑦ 「当前余量」与行序无关（⑲ 段）——同一份载波各链路余量不一时取功率加权的等效余量，不取首条。
+//   ⑧ 单链路「功带平衡」计算方式闭式落点（⑳ 段）——与高级计算的「单载波平衡点」同一条标度律、逐位对得上。
 //
 // 被测的 advBalance 是渲染端 ESM，故本测试自身也是 .mjs；引擎是 CommonJS，用 createRequire 取。
 import { createRequire } from 'node:module'
 import {
-  solveAdv, validateAdv, planAdvWriteback, advBaseMargin,
+  solveAdv, validateAdv, planAdvWriteback, advBaseMargin, groupAdvRows,
   ADV_MARK, ADV_ORIGIN, ADV_BASE, ADV_OUT
 } from '../../../src/shared/advBalance.js'
 
 const require = createRequire(import.meta.url)
 const { calculateLinkBudget } = require('../utils/linkCalculator.js')
-const { computeLinkMode } = require('../utils/modeSolver.js')
+const { calculateLinkBudget: calculateLinkBudgetNGSO } = require('../utils/linkCalculatorNGSO.js')
+const { computeLinkMode, computeLinkModeNGSO } = require('../utils/modeSolver.js')
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -154,8 +159,10 @@ for (const [c, st, rain] of [['fwd', 'hub'], ['rtn', 'vsatA'], ['rtn', 'vsatB'],
     if (Math.abs((b.pa - a.pa) - d) > 5e-3) shiftOk = false
     if ((b.up > b.dn) !== (a.up > a.dn)) branchOk = false
     // 瓦特侧同一条律：P_after = P_before × 10^(Δ/10)（对话框的闭式预测就是这一式）
-    // 出参 toFixed(3)：两个值各带半个 ULP，0.6 W 上就是 8e-4 的相对量，故按【绝对】量化精度判
-    if (Math.abs(b.paW - a.paW * Math.pow(10, d / 10)) > 0.0015) wattOk = false
+    // 出参 toFixed(3)：两个值各带半个 ULP，0.6 W 上就是 8e-4 的相对量，故按【绝对】量化精度判。
+    // a.paW 的半个 ULP 乘了 10^(Δ/10) 才进差值（Δ = 6 dB 时放大 3.98 倍），界 = 0.0005·(1 + 10^(Δ/10))；
+    // 原先写死 0.0015 在 Δ = 6 dB 时比这个界还紧，数值一挪就会擦边红（2026-10-17 气体 / 噪温订正后实测 0.0022 < 界 0.0025）。
+    if (Math.abs(b.paW - a.paW * Math.pow(10, d / 10)) > 0.0005 * (1 + Math.pow(10, d / 10)) + 1e-9) wattOk = false
   }
   ok(`⑨ 功放标度律 ${c}/${tag}：功放 dBW 随余量 1:1 平移`, shiftOk)
   ok(`⑨ 功放标度律 ${c}/${tag}：选择支不随余量翻转`, branchOk, `上/下行功率比 ${a.up.toFixed(2)} / ${a.dn.toFixed(2)}`)
@@ -398,6 +405,164 @@ function makeAdvHost() {
   const hB = makeAdvHost(); hB.round({ bb1: 3 })
   ok('改偏置一步到位：+2 后改 +3 ≡ 直接 +3', same(hA.settled(), hB.settled()),
     `${JSON.stringify(hA.settled())} vs ${JSON.stringify(hB.settled())}`)
+}
+
+// —— ⑱ 一组＝一只转发器（卫星「逐链路指定」之后）——
+// 功率带宽 = 功率占用 × 本转发器带宽，功率占用是本转发器多载波工作点上的份额：两份卫星配置＝两只转发器，
+// 份额分母各不相同，加在一起配平只平了一个总数。场景：A 星 36 MHz、B 星 54 MHz 各挂一张同构的网
+// （1 前向 + 2 返向），两张网共用同两份载波配置——逐链路指定下最常见的「一张表里几颗星」。
+const XSAT = {
+  A: { ...SAT, satelliteName: 'SatA', transponderBandwidth: 36, orbitPosition: 110.5, sfdRef: -84, BOi: 6, BOo: 3 },
+  B: { ...SAT, satelliteName: 'SatB', transponderBandwidth: 54, orbitPosition: 125, sfdRef: -90, BOi: 4, BOo: 2 }
+}
+const XROW = { A: { G_Ts: '2', rxEIRP: '46' }, B: { G_Ts: '7', rxEIRP: '53' } }   // 两颗星各自的波束 G/T、EIRP（行上的配对量）
+const XST = { ...STATIONS, hubF: { ...STATIONS.hub, rxAntennaDiameter: 1.2, rxLatitude: 23.1, rxLongitude: 113.3 } }
+const XNET = [
+  { rowId: 'a1', sat: 'A', c: 'fwd', s: 'hubF', cid: 'bbFwd' }, { rowId: 'a2', sat: 'A', c: 'rtn', s: 'vsatA', cid: 'bbRtn' },
+  { rowId: 'a3', sat: 'A', c: 'rtn', s: 'vsatB', cid: 'bbRtn' },
+  { rowId: 'b1', sat: 'B', c: 'fwd', s: 'hubF', cid: 'bbFwd' }, { rowId: 'b2', sat: 'B', c: 'rtn', s: 'vsatA', cid: 'bbRtn' },
+  { rowId: 'b3', sat: 'B', c: 'rtn', s: 'vsatB', cid: 'bbRtn' }
+]
+const xRun = (r, m) => {
+  const x = computeLinkMode(XSAT[r.sat], { ...CARRIERS[r.c], ...XST[r.s], ...XROW[r.sat], margin: String(m) }, { mode: 'margin' })
+  if (!x.success) throw new Error('引擎失败: ' + x.message)
+  return { bw: parseFloat(x.data.allocBandwidthResult), pbw: parseFloat(x.data.PowerBWResult), tp: parseFloat(x.data.transponderBandwidthResult), m: x.resolvedMargin }
+}
+// 宿主 advRows 同款：每行带所用卫星配置（satKey / satName）与那只转发器的带宽（引擎回显）
+const xRows = (marginOf) => XNET.map((r, i) => {
+  const e = xRun(r, marginOf(r))
+  return { no: i + 1, rowId: r.rowId, carrierId: r.cid, carrierName: r.cid, satKey: 'sat' + r.sat, satName: XSAT[r.sat].satelliteName,
+    tpBwMHz: e.tp, bwKHz: e.bw, pbwKHz: e.pbw, marginDb: e.m, baseDb: e.m }
+})
+// 某颗星上那几条链路按给定余量重算：Σ功率带宽 / Σ载波带宽 的 dB 数（0 即该转发器平衡）
+const xImb = (sat, marginOf) => {
+  let b = 0, p = 0
+  for (const r of XNET.filter((x) => x.sat === sat)) { const e = xRun(r, marginOf(r)); b += e.bw; p += e.pbw }
+  return 10 * Math.log10(p / b)
+}
+{
+  const M0 = { bbFwd: 3, bbRtn: 2 }
+  const all = xRows((r) => M0[r.cid])
+  const gs = groupAdvRows(all)
+  ok('⑱ 按卫星配置分组：两组、按首次出现的次序、各 3 条', gs.length === 2 && gs[0].key === 'satA' && gs[1].key === 'satB'
+    && gs[0].rows.length === 3 && gs[1].rows.length === 3 && gs[0].name === 'SatA')
+  ok('⑱ 行上没带 satKey（统一指定 / 老调用方）＝一组', groupAdvRows(base).length === 1)
+  const mixed = solveAdv({ picked: all, state: {}, base: 'current', overDb: 0 })
+  ok('⑱ 勾选行分属两颗星 → 拦下', !mixed.ok && mixed.message.includes('2 颗卫星'), mixed.message)
+  // 反证：去掉分组键硬配（＝改动前的算法），总数平了、两只转发器各自一超一欠
+  const joint = solveAdv({ picked: all.map(({ satKey, ...p }) => p), state: {}, base: 'current', overDb: 0 })
+  const jTo = (r) => joint.carriers.find((c) => c.id === r.cid).toDb
+  const jA = xImb('A', jTo), jB = xImb('B', jTo)
+  ok('⑱ 反证：两颗星混在一起配，各转发器各自失衡（一超一欠）', jA > 0.1 && jB < -0.1, `A 星 ${jA.toFixed(2)} dB / B 星 ${jB.toFixed(2)} dB`)
+  const solved = {}
+  for (const g of gs) {
+    const sat = g.key.slice(3)
+    // 不传 tpBwMHz：转发器带宽取行上自带的（各星各自的），占用率不再按首条链路那颗星折算
+    const r = solveAdv({ picked: g.rows, state: {}, base: 'current', overDb: 0, allRows: all })
+    ok(`⑱ ${g.name} 单独配平可解`, r.ok, r.message)
+    if (!r.ok) continue
+    solved[sat] = r
+    near(`⑱ ${g.name} 单独配平：引擎实测该转发器 Σ功率带宽 = Σ载波带宽`, xImb(sat, (x) => r.carriers.find((c) => c.id === x.cid).toDb), 0, 1e-4)
+    near(`⑱ ${g.name} 带宽占用按本星转发器带宽折算`, r.bwUsePct, (r.occBwKHz / (XSAT[sat].transponderBandwidth * 1000)) * 100, 1e-9)
+    ok(`⑱ ${g.name} 全表占用只数本星的行（别的星占的是别的转发器）`, r.allRowsN === 3, `${r.allRowsN} 条`)
+  }
+  if (solved.A && solved.B) {
+    const fA = solved.A.carriers.find((c) => c.id === 'bbFwd').toDb, fB = solved.B.carriers.find((c) => c.id === 'bbFwd').toDb
+    ok('⑱ 同一份载波在两只转发器上要的余量不同（两个未知数，不能共用一份配置）', Math.abs(fA - fB) > 0.1,
+      `前向 A 星 ${fA.toFixed(3)} / B 星 ${fB.toFixed(3)} dB`)
+  }
+}
+{ // ⑱ 写回：同一份载波挂在两颗星上 → 逐星应用各派生一份，原配置不动，同一颗星再配复用自己那份
+  const lib = {
+    configs: [
+      { id: 'bbFwd', name: '前向TDM', form: { calcMode: 'margin', margin: '3' } },
+      { id: 'bbRtn', name: '返向TDMA', form: { calcMode: 'margin', margin: '2' } }
+    ],
+    rows: XNET.map((r) => ({ rowId: r.rowId, carrierId: r.cid })),
+    seq: 3
+  }
+  const snap = JSON.stringify(lib.configs)
+  const A = ['a1', 'a2', 'a3'], B = ['b1', 'b2', 'b3']
+  const cidOf = (rowId) => lib.rows.find((r) => r.rowId === rowId).carrierId
+  const fa = runApply(lib, [{ id: 'bbFwd', toDb: -2.158, fromDb: 3 }, { id: 'bbRtn', toDb: -3.158, fromDb: 2 }], A).forks
+  ok('⑱ 写回：配 A 星时这两份载波还被 B 星的行引用着 → 各派生一份', fa.length === 2)
+  ok('⑱ 写回：B 星的行仍指原配置', B.every((id) => ['bbFwd', 'bbRtn'].includes(cidOf(id))))
+  const fb = runApply(lib, [{ id: 'bbFwd', toDb: -1.354, fromDb: 3 }, { id: 'bbRtn', toDb: -2.354, fromDb: 2 }], B).forks
+  ok('⑱ 写回：再配 B 星 → 另派生一份，名字自动加序号', fb.length === 2 && fb[0].name === '前向TDM · VSAT平衡 2', fb.map((f) => f.name).join(' / '))
+  ok('⑱ 写回：原载波配置一字未动', JSON.stringify(lib.configs.slice(0, 2)) === snap)
+  const mOf = (rowId) => lib.configs.find((c) => c.id === cidOf(rowId)).form.margin
+  ok('⑱ 写回：两颗星各指各的副本、余量各是各的', cidOf('a1') !== cidOf('b1') && mOf('a1') === '-2.158' && mOf('b1') === '-1.354')
+  const n = lib.configs.length
+  const again = runApply(lib, [{ id: cidOf('a1'), toDb: -2.0, fromDb: -2.158 }, { id: cidOf('a2'), toDb: -3.0, fromDb: -3.158 }], A)
+  ok('⑱ 写回：同一颗星再配一轮复用自己那份副本（不生冗余）', again.forks.length === 0 && lib.configs.length === n && mOf('a1') === '-2.000')
+}
+
+// —— ⑲ 「当前余量」与行序无关 ——
+// 功带平衡 / 设置功放功率方式下，同一份载波的各链路逐条各解、余量各不相同。曾取首条链路的余量当这份载波的
+// 「当前」：表里挪一下行序，多载波组的配平结果就变（单载波看不出来——唯一未知数由方程定死）。
+// 现取功率加权的等效余量 10·lg(Σ功率带宽 / ΣA)，即保持该载波此刻功率份额的那个余量。
+{
+  const HET = { vsatA: 1.6, vsatB: 2.4, vsatC: 3.1 }
+  // 宿主口径：没有锚时 baseDb 回落成各条此刻的余量
+  const het = measure(SET, (x) => (x.c === 'fwd' ? 3 : HET[x.s])).map((p) => ({ ...p, baseDb: p.marginDb }))
+  const swapped = [het[3], het[0], het[2], het[1]]
+  const opt = { state: { cFwd: { bias: 2 } }, base: 'current', overDb: 0 }
+  const r1 = solveAdv({ picked: het, ...opt }), r2 = solveAdv({ picked: swapped, ...opt })
+  const to = (r, id) => r.carriers.find((c) => c.id === id).toDb
+  ok('⑲ 各链路余量不一时，配平结果与行序无关',
+    Math.abs(to(r1, 'cFwd') - to(r2, 'cFwd')) < 1e-12 && Math.abs(to(r1, 'cRtn') - to(r2, 'cRtn')) < 1e-12,
+    `前向 ${to(r1, 'cFwd').toFixed(4)} / ${to(r2, 'cFwd').toFixed(4)} · 返向 ${to(r1, 'cRtn').toFixed(4)} / ${to(r2, 'cRtn').toFixed(4)}`)
+  const rtn = het.filter((p) => p.carrierId === 'cRtn')
+  const eqDb = 10 * Math.log10(rtn.reduce((s, p) => s + p.pbwKHz, 0) / rtn.reduce((s, p) => s + p.pbwKHz / Math.pow(10, p.marginDb / 10), 0))
+  near('⑲ 等效余量 = 10·lg(Σ功率带宽 / ΣA)', r1.carriers.find((c) => c.id === 'cRtn').fromDb, eqDb, 1e-12)
+  ok('⑲ 等效余量落在各链路余量之间', eqDb > 1.6 && eqDb < 3.1, eqDb.toFixed(4))
+  ok('⑲ 余量不一 → 报出区间', r1.warnings.some((w) => w.includes('1.60 ~ 3.10 dB')), r1.warnings.join(' | '))
+  // 引擎实测：解出的余量喂回去，整组照样平（等效余量只改分配的起点，不改方程）
+  const back = measure(SET, (x) => r1.carriers.find((c) => c.id === x.carrierId).toDb)
+  near('⑲ 喂回引擎：Σ功率带宽 = Σ载波带宽', back.reduce((s, p) => s + p.pbwKHz, 0), back.reduce((s, p) => s + p.bwKHz, 0), 0.05)
+  // 余量一致时，等效余量就是那个公共值本身（逐位，不经对数来回）
+  const r3 = solveAdv({ picked: base, state: {}, base: 'current', overDb: 0 })
+  ok('⑲ 余量一致时等效余量 = 公共余量（逐位）', r3.carriers.find((c) => c.id === 'cRtn').fromDb === 2 && r3.carriers.find((c) => c.id === 'cFwd').fromDb === 3)
+  ok('⑲ 余量一致不出区间告警', !r3.warnings.some((w) => w.includes('~')))
+  // 锚还作数时（各条 baseDb 同为锚值）照旧取锚
+  const anchored = het.map((p) => ({ ...p, baseDb: p.carrierId === 'cRtn' ? 1.234 : p.marginDb }))
+  ok('⑲ 锚作数时基准取锚', solveAdv({ picked: anchored, state: {}, base: 'current', overDb: 0 }).carriers.find((c) => c.id === 'cRtn').baseDb === 1.234)
+}
+
+// —— ⑳ 单链路「功带平衡」计算方式：闭式落点 ——
+// 曾是步长 0.01 dB 的局部最优搜索，平衡余量带 ±0.005 dB 误差（|分配带宽 − 功率带宽| 达 0.08%～0.1%，前向
+// 8.7 MHz 载波差 7.2 kHz），与高级计算对话框里的「单载波平衡点」两位小数就对不上（12.05 vs 12.04）。
+// 现按标度律闭式落点（对数域牛顿 + 出参临时增位），两处同一条律。
+{
+  const RAIN = { rainRate: '60', rxRainRate: '45', uplinkAvailability: '99.9', rxDownlinkAvailability: '99.9' }
+  for (const [c, st, extra] of [['fwd', 'hub'], ['rtn', 'vsatA'], ['rtn', 'vsatB'], ['fwd', 'hub', RAIN], ['rtn', 'vsatC', RAIN]]) {
+    const tag = `${c}/${st}${extra ? '·雨' : ''}`
+    const inp = { ...CARRIERS[c], ...STATIONS[st], ...(extra || {}), margin: '3' }
+    const r = computeLinkMode(SAT, inp, { mode: 'balance' })
+    if (!r.success) { ok(`⑳ 功带平衡 ${tag} 可解`, false, r.message); continue }
+    const alloc = parseFloat(r.data.allocBandwidthResult), pbw = parseFloat(r.data.PowerBWResult)
+    // 出参各 3 位小数：落点精确时两者之差只剩取整的半格
+    ok(`⑳ 功带平衡 ${tag}：分配带宽 = 功率带宽（到出参末位）`, Math.abs(alloc - pbw) <= 0.0006, `差 ${Math.abs(alloc - pbw).toFixed(4)} kHz`)
+    // 与高级计算的「单载波平衡点」逐位对得上（那边由设置余量方式的一行闭式算出）
+    const row = runRow(c, st, 3)
+    const pt = solveAdv({ picked: [{ no: 1, rowId: 'p', carrierId: 'c', carrierName: 'c', bwKHz: row.bw, pbwKHz: row.pbw, marginDb: row.resolved }], state: {}, base: 'balance', overDb: 0 })
+    if (!extra) near(`⑳ 功带平衡 ${tag}：= 高级计算「单载波平衡点」`, r.resolvedMargin, pt.carriers[0].balanceDb, 1e-4)
+    const o = computeLinkMode(SAT, inp, { mode: 'overbalance', overDb: '1.5' })
+    near(`⑳ 功带平衡下超发 ${tag}：= 平衡余量 + 1.5 dB`, o.success ? o.resolvedMargin : NaN, r.resolvedMargin + 1.5, 1e-9)
+  }
+  // NGSO 引擎同一套求解器、同一条标度律
+  const nInp = { ...CARRIERS.fwd, ...STATIONS.hub, margin: '3', elevation: '35', slantRange: '1500', rxElevation: '35', rxSlantRange: '1500' }
+  const n = computeLinkModeNGSO(SAT, nInp, { mode: 'balance' })
+  ok('⑳ NGSO 功带平衡：分配带宽 = 功率带宽（到出参末位）',
+    n.success && Math.abs(parseFloat(n.data.allocBandwidthResult) - parseFloat(n.data.PowerBWResult)) <= 0.0006,
+    n.success ? `差 ${Math.abs(parseFloat(n.data.allocBandwidthResult) - parseFloat(n.data.PowerBWResult)).toFixed(4)} kHz` : n.message)
+  // 求解期间临时抬高的出参位数必须复位：之后的单点计算仍是 2 位小数（两引擎各查一次）
+  ok('⑳ 求解后 GEO 出参位数已复位', /^-?\d+\.\d{2}$/.test(calculateLinkBudget(SAT, { ...CARRIERS.fwd, ...STATIONS.hub, margin: '3' }).data.marginResult))
+  ok('⑳ 求解后 NGSO 出参位数已复位', /^-?\d+\.\d{2}$/.test(calculateLinkBudgetNGSO(SAT, nInp).data.marginResult))
+  // 引擎报错原文一路带上来（不吞成「计算过程出错」）：带内部署的 NPDSCH 只到 I_TBS 10
+  const bad = computeLinkMode(SAT, { ...CARRIERS.fwd, ...STATIONS.hub, noiseRatioMode: 'snr',
+    phy: { kind: 'nbiot', dir: 'dl', opMode: 'inband', nTones: 12, iTbs: 11, iSf: 0 } }, { mode: 'balance' })
+  ok('⑳ 引擎报错原文照带', !bad.success && /I_TBS/.test(bad.message || ''), bad.success ? '（该输入未报错）' : bad.message)
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

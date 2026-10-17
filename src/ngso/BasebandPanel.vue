@@ -360,9 +360,26 @@ watch([phyOut], () => {
   const v = String(Math.round(o.rate * 1000) / 1000)
   if (props.form.infoRate !== v) props.form.infoRate = v
 }, { immediate: true })
+// DVB 行门限那格的悬停：选中档在 ETSI 原表里的出处与判据（modcodMap 给行附了 etsiTable / qef / qefExp / frameBits / hl，
+// 见 core/utils/modcodTables.js withEtsi）；标准自带 note（DVB-RCS2 门限未核实）也只在这里说，版面上一个字不写
+const SUP_DIGITS = '⁰¹²³⁴⁵⁶⁷⁸⁹'
+const supOf = (n) => String(n).split('').map((c) => (c >= '0' && c <= '9' ? SUP_DIGITS[+c] : c)).join('')
+function dvbThrTip() {
+  const std = props.form.dvbStandard
+  if (!std || std === 'custom') return ''
+  const meta = (props.options.meta || {})[std] || null
+  const mc = modcodSel.value >= 0 ? modcodList.value[modcodSel.value] : null
+  const parts = []
+  if (mc && mc.etsiTable) {
+    parts.push(`${mc.etsiTable} · QEF ${mc.qef} 10⁻${supOf(mc.qefExp)} · FECFRAME ${mc.frameBits} bit · AWGN 理想门限（不含实现损失）`)
+    if (mc.hl != null && mc.hl !== '') parts.push(`硬限幅信道 Csat/(N₀Rs) ${Number(mc.hl).toFixed(2)} dB`)
+  }
+  if (meta && meta.note) parts.push(meta.note)
+  return parts.join('；')
+}
 // 门限那格的悬停口径：把「按什么算的、在什么条件下成立」全说清楚，版面上一个字不写
 const thrTip = computed(() => {
-  if (!phyOn.value) return ''
+  if (!phyOn.value) return dvbThrTip()
   const p = phy.value, o = phyOut.value, m = phyMeta.value
   const bw = p.kind === 'nr'
     ? `${p.nRb} PRB × 12 × ${p.scs} kHz = ${fmtRo(o && o.bOcc)} kHz`

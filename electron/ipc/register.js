@@ -176,7 +176,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 导出回执的打开 / 定位（只认本会话已写出的文件，写出那一步本身在锁内）
     'app:quit', 'scene:cmd', 'files:reveal', 'files:open',
     // ② 浏览面（只读查询，不产出交付物）
-    'omm:load', 'omm:positions', 'omm:csv', 'omm:list',
+    'omm:positions', 'omm:csv', 'omm:list',
     'omm:customList', 'omm:customCsv', 'omm:customGroupRecords',
     // 地图取星的两条：customRawVisible 顶替 customCsv 供「自定义卫星」分组取可见组的并集，
     // ephemTable 供点序列星取位。不放行主窗口的星座图就空了一半（与 customCsv 同一条理由）。
@@ -253,7 +253,6 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (!q) return false
     try { return !(await require('electron').shell.openPath(q)) } catch { return false }
   })
-  ipcMain.handle('omm:load', (_e, group, online) => omm.load(group, online))
   ipcMain.handle('omm:positions', (_e, group, iso) => omm.positions(group, iso))
   ipcMain.handle('omm:csv', (_e, group, opts) => omm.fetchCsv(group, opts))
   // CelesTrak 卫星编目（SATCAT）：与 17 个 GP 组同一个 fetchCsv、同一条四级众包链路，只是 URL /
@@ -600,27 +599,43 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('coverageGxt:removeBeam', (_e, satId, beamId) => coverageGxt.removeBeam(satId, beamId))
     ipcMain.handle('coverageGxt:attach', (_e, satId, beamId, payload) => coverageGxt.attach(satId, beamId, payload))
     ipcMain.handle('coverageGxt:importBatch', (_e, items) => coverageGxt.importBatch(items))
-    // 用户导入：原生框选 .gxt / .kml / .json（多选）→ 逐个读原文返回渲染进程解析（gxt/parse.js、kml/parse.js、gxt/json.js）。
+    // 用户导入：原生框选（多选）→ 逐个读原文返回渲染进程解析（gxt/parse.js、kml/parse.js、gxt/json.js）。
     // KML 与 GXT 结构 JSON 是 UTF-8，GXT 是 latin1 定长文本，编码按扩展名分派（读错编码 → 中文名乱码）。
-    ipcMain.handle('coverageGxt:open', async (e) => {
+    // opts.any：「导入…」批量入口 —— 过滤器放宽到全部波束地图格式（KMZ / GeoJSON / CSV / Shapefile / MapInfo / 自定义）；
+    // opts.bytes：另带原始字节（KMZ / ZIP / Shapefile 是二进制；导入脚本拿到的是字节，自己识别编码）。
+    ipcMain.handle('coverageGxt:open', async (e, opts) => {
+      const o = (opts && typeof opts === 'object') ? opts : {}
       const win = BrowserWindow.fromWebContents(e.sender)
       const lang = await senderLang(e)
+      const filters = o.any
+        ? [
+            { name: '波束地图 (*.gxt, *.kml, *.kmz, *.json, *.geojson, *.csv, *.zip, *.shp, *.mif)', extensions: ['gxt', 'kml', 'kmz', 'json', 'geojson', 'csv', 'txt', 'zip', 'shp', 'dbf', 'shx', 'prj', 'cpg', 'mif', 'mid'] },
+            { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
+            { name: 'KML / KMZ (*.kml, *.kmz)', extensions: ['kml', 'kmz'] },
+            { name: 'JSON / GeoJSON (*.json, *.geojson)', extensions: ['json', 'geojson'] },
+            { name: '所有文件', extensions: ['*'] }
+          ]
+        : [
+            { name: '覆盖等值线 (*.gxt, *.kml, *.json)', extensions: ['gxt', 'kml', 'json'] },
+            { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
+            { name: 'KML (*.kml)', extensions: ['kml'] },
+            { name: 'GXT 结构 JSON (*.json)', extensions: ['json'] },
+            { name: '所有文件', extensions: ['*'] }
+          ]
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: dt('导入覆盖等值线（GXT / KML / JSON，可多选）', lang), properties: ['openFile', 'multiSelections'],
-        filters: dtFilters([
-          { name: '覆盖等值线 (*.gxt, *.kml, *.json)', extensions: ['gxt', 'kml', 'json'] },
-          { name: 'GXT 等值线 (*.gxt)', extensions: ['gxt'] },
-          { name: 'KML (*.kml)', extensions: ['kml'] },
-          { name: 'GXT 结构 JSON (*.json)', extensions: ['json'] },
-          { name: '所有文件', extensions: ['*'] }
-        ], lang)
+        title: dt(o.any ? '导入波束地图（可多选）' : '导入覆盖等值线（GXT / KML / JSON，可多选）', lang), properties: ['openFile', 'multiSelections'],
+        filters: dtFilters(filters, lang)
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
       const path = require('path')
       const files = filePaths.map((fp) => {
         const ext = path.extname(fp).slice(1).toLowerCase()
-        try { return { base: path.basename(fp), ext, text: fs.readFileSync(fp, ext === 'kml' || ext === 'json' ? 'utf8' : 'latin1') } }
-        catch (err) { return { base: path.basename(fp), ext, error: err.message } }
+        try {
+          const buf = fs.readFileSync(fp)
+          const out = { base: path.basename(fp), ext, text: buf.toString(ext === 'kml' || ext === 'json' ? 'utf8' : 'latin1') }
+          if (o.bytes) out.bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+          return out
+        } catch (err) { return { base: path.basename(fp), ext, error: err.message } }
       })
       return { canceled: false, files }
     })
@@ -1144,6 +1159,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('ci:xpi', (_e, req) => interference.xpi(req))
   ipcMain.handle('ci:xpiTerm', (_e, req) => interference.xpiTerm(req))
   ipcMain.handle('ci:cciPoint', (_e, req) => interference.cciPoint(req))
+  // C/CCI 复用方案：方向图概要（存活波束 + 波束合成色号）· 取值点表 · 场图作业（进度 ci:cciProgress、结果 ci:cciDone）
+  ipcMain.handle('ci:cciInfo', (_e, req) => interference.cciInfo(req))
+  ipcMain.handle('ci:cciPoints', (_e, req) => interference.cciPoints(req))
+  ipcMain.handle('ci:cciStart', (e, req) => interference.cciStart(e.sender, req))
+  ipcMain.handle('ci:cciCancel', () => interference.cciCancel())
   ipcMain.handle('ci:ngsoEstimate', (_e, req) => interference.ngsoEstimate(req))
   // NGSO 扫描是长任务：这里只启动，进度经 ci:ngsoProgress、结果经 ci:ngsoDone 推回发起窗口
   ipcMain.handle('ci:ngsoStart', (e, req) => interference.ngsoStart(e.sender, req))
@@ -1935,109 +1955,74 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     }
   })
 
-  // ---- PFD Mask 生成（ITU-R S.1503）：参数 → 引擎 → XSD 校验 → 返回 XML 文本 ----
-  // 放主进程有两个理由：① 引擎是 CommonJS 纯核，渲染端无 import 先例；
-  // ② 60×60×23 网格约 1.4 s，放渲染端会卡住整个 3D 页的渲染循环。
-  // 只回传字符串与统计，落盘仍走通用 file:save（复用其占用/权限的友好报错）。
-  // 入参两种形态都收：
-  //   单 job（旧）：直接是一份 params
-  //   多 job（掩模表）：{ satName, ntcId, specVersion, jobs: [params, ...] } → 合并成一份文档
-  ipcMain.handle('pfd:generate', async (_e, req) => {
-    try {
-      const eng = require('../../packages/core/utils/pfdmask/maskEngine.js')
-      const io = require('../../packages/core/utils/pfdmask/maskIO.js')
-      const t0 = Date.now()
-      const jobs = Array.isArray(req && req.jobs) ? req.jobs : [req]
-
-      const doc = {
-        ntcId: Number(req && req.ntcId !== undefined ? req.ntcId : jobs[0].ntcId),
-        satName: String((req && req.satName) || jobs[0].satName || '').slice(0, 20),
-        pfdMasks: [], eirpMaskEs: [], eirpMaskSs: []
-      }
-      const metas = []
-      const jobErrors = []
-      const discretion = []
-
-      for (const j of jobs) {
-        try {
-          const r = eng.generateMasks(j)
-          // 合并：mask_id 的跨类唯一性由下面的 validateMaskDoc 统一把关
-          doc.pfdMasks.push(...r.doc.pfdMasks)
-          doc.eirpMaskEs.push(...r.doc.eirpMaskEs)
-          doc.eirpMaskSs.push(...r.doc.eirpMaskSs)
-          metas.push(r.meta)
-          jobErrors.push(null)
-          for (const d of (r.meta.discretion || [])) {
-            if (!discretion.some((x) => x.field === d.field && String(x.value) === String(d.value))) discretion.push(d)
-          }
-        } catch (e) {
-          metas.push(null)
-          jobErrors.push((e && e.message) || String(e))
-        }
-      }
-
-      const hard = jobErrors.filter(Boolean)
-      if (!doc.pfdMasks.length && !doc.eirpMaskEs.length && !doc.eirpMaskSs.length) {
-        return { ok: false, error: hard[0] || '没有生成任何 mask', jobErrors, metas }
-      }
-
-      const v = io.validateMaskDoc(doc)
-      if (!v.ok) {
-        return {
-          ok: false,
-          error: `未通过 ITU 官方 XSD 校验，共 ${v.errors.length} 处`,
-          errors: v.errors.slice(0, 20), jobErrors, metas
-        }
-      }
-      const header = [
-        'Generated by 卫星仿真平台 · PFD EIRP Mask Generator',
-        'Schema: ITU masks schema v.4.0.0.0 (Rec. ITU-R S.1503-2)',
-        `Modelled per ${(req && req.specVersion) || 'S.1503-4'}; exported against XSD v4.0.0.0`,
-        'DISCRETIONARY SETTINGS (not specified by Rec. ITU-R S.1503):',
-        ...discretion.map((d) => `  [${d.evidence}] ${d.field} = ${d.value} — ${d.why}`)
-      ]
-      // 三种切分粒度都算出来，由渲染端按用户选择取用（成本只是字符串拼接）
-      const files = {
-        single: io.buildMaskFiles(doc, { mode: 'single', header }),
-        'per-kind': io.buildMaskFiles(doc, { mode: 'per-kind', header }),
-        'per-mask': io.buildMaskFiles(doc, { mode: 'per-mask', header })
-      }
-      const xml = files.single[0].xml
-
-      // 第四份交付物：运行参数（规避角/终端密度/跟踪约束，都不进 mask XML）。
-      // 按 S.1503-4 §B3.3 生成，旁挂独立文件——绝不塞进 mask 文件（Mask-schema.xsd 不含此元素）。
-      const opFiles = []
-      const opProblems = []
-      if (req && req.operatingParams) {
-        try {
-          const opm = require('../../packages/core/utils/pfdmask/operatingParams.js')
-          const chk = opm.validateOperatingParams(req.operatingParams)
-          opProblems.push(...chk.errors, ...chk.warnings)
-          if (chk.ok) {
-            opFiles.push({
-              filename: `Mask_param_id_${req.operatingParams.paramId}_OP.xml`,
-              xml: opm.buildOperatingParamsXml(doc, req.operatingParams, {
-                validate: false,
-                header: [
-                  'Generated by 卫星仿真平台 · PFD EIRP Mask Generator',
-                  'Schema basis: Rec. ITU-R S.1503-4 §B3.3 (ITU has not published an XSD for this element)'
-                ]
-              })
-            })
-          }
-        } catch (e) { opProblems.push((e && e.message) || String(e)) }
-      }
-
-      return {
-        ok: true, xml, files, metas, jobErrors, discretion, opFiles, opProblems,
-        counts: v.counts,
-        warnings: v.warnings.slice(0, 20),
-        elapsedMs: Date.now() - t0,
-        bytes: Buffer.byteLength(xml, 'utf8')
-      }
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) }
+  // ---- PFD Mask 生成（ITU-R S.1503）：参数 → 引擎 → XSD 校验 → XML ----
+  // 计算在 worker_threads 里跑（services/pfdMaskWorker.js）：默认 60×60×23 网格约 1.1 s、120 点 / 2° 一档十几秒，
+  // 全是同步长调用。从前直接在这里算，期间主进程事件循环被占死——所有窗口的 IPC、菜单、拖动一起卡住。
+  // 进度经 pfd:progress 推回发起窗口，pfd:cancel 中止（直接结束 worker）；一个窗口同时只算一份，新的一份顶掉旧的。
+  // XML 留在主进程：回给渲染端的只有统计与文件清单（文件名 / 字节数），导出时 pfd:files 按所选「文件划分」取一次
+  // 字节，照旧走 file:saveMany 落盘（复用其覆盖核对与占用 / 权限的友好报错）——不再每算一次就把三种划分的整份 XML
+  // 克隆过 IPC（细步长下单份就几十 MB）。
+  // 入参两种形态都收（见 pfdMaskWorker.generate）：单 job（旧）直接是一份 params；多 job 为
+  // { satName, ntcId, specVersion, jobs, operatingParams?, runId? }。runId 原样带回进度与结果，渲染端凭它认这一轮。
+  // 用到才 require（同从前的引擎）：这个模块万一载入出错，只坏 PFD 这几条，不连累 register() 里排在后面的全部 handler
+  const pfdWorker = () => require('../services/pfdMaskWorker')
+  const pfdRuns = new Map()     // webContents.id → 进行中的 { promise, cancel }
+  const pfdKept = new Map()     // webContents.id → { token, files, opFiles }（含 XML 字节；下一轮开算 / 切配置 / 关窗时丢）
+  const pfdHooked = new Set()   // 已挂过 destroyed 清理的窗口
+  let pfdSeq = 0
+  const pfdDrop = (id) => {
+    const run = pfdRuns.get(id)
+    if (run) { pfdRuns.delete(id); run.cancel() }
+    pfdKept.delete(id)
+  }
+  ipcMain.handle('pfd:generate', async (e, req) => {
+    const sender = e.sender, id = sender.id
+    pfdDrop(id)
+    if (!pfdHooked.has(id)) {
+      pfdHooked.add(id)
+      sender.once('destroyed', () => { pfdDrop(id); pfdHooked.delete(id) })
     }
+    const runId = req && req.runId != null ? String(req.runId) : ''
+    const t0 = Date.now()
+    let run
+    try {
+      run = pfdWorker().start(req, {
+        onProgress: (done, total) => {
+          try { if (!sender.isDestroyed()) sender.send('pfd:progress', { id: runId, done, total }) } catch { /* 窗口没了 */ }
+        }
+      })
+    } catch (err) { return { ok: false, error: (err && err.message) || String(err), runId } }
+    pfdRuns.set(id, run)
+    try {
+      const r = await run.promise
+      // 结果到手的这一拍里被取消 / 被新一轮顶掉：按取消算，不落缓存
+      if (pfdRuns.get(id) !== run) return { ok: false, canceled: true, error: '已取消', runId }
+      pfdRuns.delete(id)
+      if (!r || !r.ok) return Object.assign({ ok: false }, r, { runId })
+      const token = `${Date.now().toString(36)}.${++pfdSeq}`
+      pfdKept.set(id, { token, files: r.files || {}, opFiles: r.opFiles || [] })
+      return Object.assign(pfdWorker().slim(r), { token, runId, elapsedMs: Date.now() - t0 })
+    } catch (err) {
+      if (pfdRuns.get(id) === run) pfdRuns.delete(id)
+      if (err && err.canceled) return { ok: false, canceled: true, error: '已取消', runId }
+      return { ok: false, error: (err && err.message) || String(err), runId }
+    }
+  })
+  // 中止进行中的计算（「取消」按钮）；opt.discard 再丢掉本窗口缓存的结果（切配置时）。
+  // 取消按钮不丢缓存：结果恰在点下的那一拍已回到窗口时，丢了它窗口里那份就取不出字节了（计算中本就没有缓存——新一轮开算先丢旧的）
+  ipcMain.handle('pfd:cancel', (e, opt) => {
+    const id = e.sender.id, run = pfdRuns.get(id)
+    if (run) { pfdRuns.delete(id); run.cancel() }
+    if (opt && opt.discard) pfdKept.delete(id)
+    return !!run
+  })
+  // 导出时取所选文件划分的 XML 字节：{ token, mode } → { ok, files: [{ filename, data }], opFiles: [{ filename, data }] }
+  ipcMain.handle('pfd:files', (e, q) => {
+    const k = pfdKept.get(e.sender.id)
+    if (!k || !q || q.token !== k.token) return { ok: false, error: '计算结果已失效' }
+    const list = k.files[q.mode] || k.files['per-mask'] || []
+    const pick = (f) => ({ filename: f.filename, data: f.data })
+    return { ok: true, files: list.map(pick), opFiles: k.opFiles.map(pick) }
   })
 
   // ---- 视频导出（H.264 MP4 / 图片序列）：开会话、按位置流式写、收尾（见 services/videoFile.js）。全部在授权锁内 ----
@@ -2166,6 +2151,8 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     // 两种模型走同一个通道：kind:'sla' 是独立的《服务等级指标（SLA）》报告——不出 PDF、
     // 不补瀑布段、不走 enrichReportModel（那几步都是链路预算报告才要的）。
     const isSla = model.kind === 'sla'
+    // kind:'cap' 是独立的《容量汇总》报告——口径同 SLA 版：只出 Excel / Word，模型在渲染端已排好（src/shared/lbCapReport.js）
+    const isCap = model.kind === 'cap'
     // kind:'ssa' 是《空间态势报告》——同样是独立报告：只出 Word，模型在渲染端就已算全
     // （见 src/shared/ssaReport.js），这里一个数都不补。
     const isSsa = model.kind === 'ssa'
@@ -2174,16 +2161,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     if (!formats.length) return { ok: false, error: '未选择任何输出格式' }
     if (isSla && formats.indexOf('pdf') > -1) return { ok: false, error: 'SLA 报告不出 PDF' }
     if (isSla && !model.hasSla) return { ok: false, error: '没有任何链路勾选了 SLA 条款' }
+    if (isCap && formats.indexOf('pdf') > -1) return { ok: false, error: '容量报告不出 PDF' }
+    if (isCap && !model.hasCap) return { ok: false, error: '没有列入容量汇总的链路' }
     if (isSsa && (formats.length !== 1 || formats[0] !== 'docx')) return { ok: false, error: '空间态势报告只出 Word' }
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
     // 报告语言 = 平台语言（model.lang）；对话框跟它走，模型没带再读发起窗口
     const dlgLang = await senderLang(e, model.lang)
     const dlgEn = dlgLang === 'en'
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
-      title: dt(isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : '保存报告', dlgLang) + (formats.length > 1
+      title: dt(isSsa ? '保存空间态势报告' : isSla ? '保存 SLA 报告' : isCap ? '保存容量报告' : '保存报告', dlgLang) + (formats.length > 1
         ? (dlgEn ? ' (also writes ' + formats.map((f) => '.' + f).join(' / ') + ' with the same name)' : '（同名生成 ' + formats.map((f) => '.' + f).join(' / ') + '）')
         : ''),
-      defaultPath: safeSaveName(payload && payload.defaultName, dt(isSsa ? '空间态势报告' : isSla ? '服务等级指标' : '链路预算报告', dlgLang)) + '.' + formats[0],
+      defaultPath: safeSaveName(payload && payload.defaultName, dt(isSsa ? '空间态势报告' : isSla ? '服务等级指标' : isCap ? '容量汇总' : '链路预算报告', dlgLang)) + '.' + formats[0],
       filters: dtFilters(formats.map((f) => EXT[f]), dlgLang)
     })
     if (canceled || !filePath) return { ok: false, canceled: true }
@@ -2209,6 +2198,20 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
         }
         if (formats.indexOf('docx') > -1) {
           const buf = await require('../services/reportSlaDocx').buildSlaDocx(model)
+          fs.writeFileSync(stem + '.docx', Buffer.from(buf))
+          files.push(stem + '.docx')
+        }
+        return receipt({ ok: true, files, filePath: files[0] }, files)
+      }
+      if (isCap) {
+        const files = []
+        if (formats.indexOf('xlsx') > -1) {
+          const buf = await require('../services/reportCap').buildCapWorkbook(model)
+          fs.writeFileSync(stem + '.xlsx', Buffer.from(buf))
+          files.push(stem + '.xlsx')
+        }
+        if (formats.indexOf('docx') > -1) {
+          const buf = await require('../services/reportCapDocx').buildCapDocx(model)
           fs.writeFileSync(stem + '.docx', Buffer.from(buf))
           files.push(stem + '.docx')
         }

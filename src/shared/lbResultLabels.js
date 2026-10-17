@@ -118,7 +118,11 @@ const RESULT_LABEL_LIST = [
     ['arrivalPFDAtSatelliteResult', '到达卫星通量密度', 'dBW/m²'],
     ['arrivalPFDAtGroundResult', '到达地面通量密度', 'dBW/m²'],
     ['PFDcResult', '每载波到达通量密度', 'dBW/m²'],
-    ['ituPfdLimit4kHz', 'ITU PFD 限值（4 kHz）', 'dBW/m²'],
+    // RR Art.21 Table 21-4（RR 2024，packages/core/utils/itu/art21.js）：自由空间口径、参考带宽内；RR 无限值时为空。
+    // 原「ITU PFD 限值（4 kHz）」（ituPfdLimit4kHz）已删：它把 1 MHz 的限值折成 4 kHz，不是 RR 里的量。
+    ['pfdFreeSpaceRefBwResult', '自由空间到达 PFD（参考带宽内）', 'dBW/m²'],
+    ['ituPfdLimitResult', 'ITU PFD 限值（参考带宽内）', 'dBW/m²'],
+    ['ituPfdMarginResult', 'ITU PFD 余量', 'dB'],
     ['ituPfdLimitPerM2', 'ITU PFD 限值（载波带宽）', 'dBW/m²'],
     ['ituPfdRefBandwidth', 'ITU PFD 参考带宽', 'kHz'],
     ['satellitePSDResult', '卫星功率谱密度', 'dBW/Hz'],
@@ -163,7 +167,14 @@ const RESULT_LABEL_LIST = [
     ['uplinkTotalAttenuationResult', '上行总衰减 AT(p)', 'dB'],
     ['downlinkTotalAttenuationResult', '下行总衰减 AT(p)', 'dB'],
     ['uplinkMiscLossResult', '上行其他损耗', 'dB'],
-    ['downlinkMiscLossResult', '下行其他损耗', 'dB']
+    ['downlinkMiscLossResult', '下行其他损耗', 'dB'],
+    // GSO 倾斜运行 / 保持盒（A-01，utils/geoTrack.js）：定点 + 固定天线时引擎出空
+    ['uplinkPointingLossResult', '上行指向损耗（日最大）', 'dB'],
+    ['downlinkPointingLossResult', '下行指向损耗（日最大）', 'dB'],
+    ['uplinkPointingLossP50Result', '上行指向损耗（50% 时间）', 'dB'],
+    ['uplinkPointingLossP1Result', '上行指向损耗（1% 时间）', 'dB'],
+    ['downlinkPointingLossP50Result', '下行指向损耗（50% 时间）', 'dB'],
+    ['downlinkPointingLossP1Result', '下行指向损耗（1% 时间）', 'dB']
   ]),
   ...G('噪声与天线', [
     ['systemNoiseTempKResult', '收信站系统噪温', 'K'],
@@ -202,10 +213,28 @@ const RESULT_LABEL_LIST = [
     ['earthLatitudeResult', '发信站纬度', '°'],
     ['rxLongitudeResult', '收信站经度', '°E'],
     ['rxLatitudeResult', '收信站纬度', '°'],
+    // 站高高出地形的部分（P.2041-1 机载修正的判据；地面站为 0）
+    ['uplinkAglResult', '发信站离地高度', 'km'],
+    ['downlinkAglResult', '收信站离地高度', 'km'],
     ['uplinkFrequencyResult', '上行频率', 'GHz'],
     ['downlinkFrequencyResult', '下行频率', 'GHz'],
     ['uplinkPolarizationAngleResult', '上行极化角', '°'],
-    ['downlinkPolarizationAngleResult', '下行极化角', '°']
+    ['downlinkPolarizationAngleResult', '下行极化角', '°'],
+    // GSO 倾斜运行 / 保持盒（A-01）：一天（24 h、1 min 步）里的范围
+    ['elevationMinResult', '发信站日内最低仰角', '°'],
+    ['elevationMaxResult', '发信站日内最高仰角', '°'],
+    ['rxElevationMinResult', '收信站日内最低仰角', '°'],
+    ['rxElevationMaxResult', '收信站日内最高仰角', '°'],
+    ['slantRangeMinResult', '上行日内最近斜距', 'km'],
+    ['slantRangeMaxResult', '上行日内最远斜距', 'km'],
+    ['rxSlantRangeMinResult', '下行日内最近斜距', 'km'],
+    ['rxSlantRangeMaxResult', '下行日内最远斜距', 'km'],
+    ['linkDelayMinResult', '单跳时延（日内最小）', 'ms'],
+    ['linkDelayMaxResult', '单跳时延（日内最大）', 'ms'],
+    ['uplinkPointingOffsetResult', '发信站日内最大指向偏离', '°'],
+    ['downlinkPointingOffsetResult', '收信站日内最大指向偏离', '°'],
+    ['maxDopplerUplinkResult', '上行最大多普勒', 'kHz'],
+    ['maxDopplerDownlinkResult', '下行最大多普勒', 'kHz']
   ]),
   ...G('可用度', [
     ['systemAvailabilityResult', '系统可用度', '%'],

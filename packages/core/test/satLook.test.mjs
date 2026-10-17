@@ -198,13 +198,35 @@ const SUB = 110.5                       // 星下点经度：拿中星 6D 那个
   ok('⑧ 「拖动调整」与「星下点」互斥：开一个就关掉另一个',
     /subOpen\.value = false/.test(spinFn) && /dropFollow\(\)/.test(spinFn) &&
     /projSpin\.value = false/.test(satFn) && /flat\.setRotateMode\(false\)/.test(satFn))
+  // 跟随的一拍收在 followSubPt：星下点每动一下由 watch(subPtPos) 调，视频导出起手（prepare2D）也调一次
   const followWatch = (VUE.match(/watch\(subPtPos, \(p\) => \{[\s\S]*?\}, \{ immediate: true \}\)/) || [''])[0]
+  const followFn = (VUE.match(/function followSubPt\(p\) \{[\s\S]*?\n\}/) || [''])[0]
   ok('⑧ 跟随只在「星下点」展开着时生效（收起即停，时间轴再走画面也不跟）',
-    /if \(!subOpen\.value \|\| !p \|\| !mapCrs\.subFollow/.test(followWatch) &&
+    /followSubPt\(p\)/.test(followWatch) && /if \(!subOpen\.value \|\| !p \|\| !mapCrs\.subFollow/.test(followFn) &&
     /if \(!subOpen\.value\) \{ dropFollow\(\); return \}/.test(satFn))
   const lookFn = (VUE.match(/function lookReadout\(ll\) \{[\s\S]*?\n\}/) || [''])[0]
   ok('⑧ 光标读数同样跟着那一节的开关走（收起不出，开关一变当场重算）',
     /if \(!subOpen\.value\) return null/.test(lookFn) && /watch\(subOpen, refreshLook\)/.test(VUE))
+
+  // ---------- ⑨ 视频导出逐帧出图期间跟随不节流（体检 2026-10-16 第二档）----------
+  // 2D 跟随卫星时导出视频，成片里地图一顿一顿：跟随按墙钟 250 ms / 0.25° 节流，而逐帧出帧远快于 250 ms，大半帧被闸掉、
+  // 投影中心停在旧星下点。修：出帧期间（prepare2D 置、finish2D 撤）只留亚像素门槛、每帧按该帧星下点对中；片头那一帧当场对中
+  // （首帧时刻与此刻相同时时钟不变、跟随不触发）；收尾清掉节流记账，时钟拨回导出前时画面当场对回那一刻（不停在末帧）。
+  const VIDEO = lf(readFileSync(join(ROOT, 'src', 'viz', 'video', 'useVideoExport.js'), 'utf8'))
+  const prep = (VUE.match(/prepare2D: async \(\) => \{[\s\S]*?\n  \},/) || [''])[0]
+  const fin = (VUE.match(/finish2D: \(\) => \{[^\n]*/) || [''])[0]
+  ok('⑨ 出帧期间跟随两道闸都不走（只留 1e-4° 亚像素门槛）',
+    /FOLLOW_DEG_FRAME = 1e-4/.test(VUE) && /_followFrames \? FOLLOW_DEG_FRAME : FOLLOW_DEG/.test(followFn) &&
+    /!_followFrames && now - followT < FOLLOW_MS/.test(followFn))
+  ok('⑨ prepare2D 在 feedFlat 之后置不节流、当场对中片头那一帧',
+    /_followFrames = true; followAt = null\s+try \{ followSubPt\(subPtPos\.value\) \}/.test(prep) &&
+    prep.indexOf('await feedFlat()') >= 0 && prep.indexOf('await feedFlat()') < prep.indexOf('_followFrames = true'), prep ? '' : '没找到 prepare2D')
+  ok('⑨ finish2D 撤不节流并清节流记账', /_followFrames = false; followT = 0; followAt = null/.test(fin), fin ? '' : '没找到 finish2D')
+  // 宿主的这套口径靠两条出帧次序成立：每帧先 await 时钟落定（watch(subPtPos) 在其间按该帧对中）再出帧；收尾先 finish2D 再拨回时钟
+  ok('⑨ 出帧次序：时钟落定在 exportRender 之前；finish2D 在拨回时钟之前',
+    VIDEO.indexOf('await clockSetTime(t, { keepMode: false })') > 0 &&
+    VIDEO.indexOf('await clockSetTime(t, { keepMode: false })') < VIDEO.indexOf('f.exportRender(cx') &&
+    VIDEO.indexOf('host.finish2D()') > 0 && VIDEO.indexOf('host.finish2D()') < VIDEO.indexOf('await clockSetTime(saved.tMs'))
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed')

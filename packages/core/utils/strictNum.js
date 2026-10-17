@@ -106,7 +106,8 @@ const LINK_INPUT_NUM_KEYS = [
   'rxAntennaDiameter', 'rxAntennaEfficiency', 'rxFeederLoss', 'rxAntennaNoiseTemp', 'rxReceiverNoiseTemp', 'downlinkOtherLoss',
   'centerFrequency', 'rxCenterFrequency',
   'minElevation', 'rxMinElevation', 'slantRange', 'rxSlantRange', 'orbitAltitude', 'rxOrbitAltitude',
-  's8InclDeg', 's8MinElevUp', 's8MinElevDn', 's8OrbitAltKm'
+  's8InclDeg', 's8MinElevUp', 's8MinElevDn', 's8OrbitAltKm',
+  'trackResidual', 'rxTrackResidual'   // GSO 地球站跟踪残差（geoTrack.gsoLinkTrack 读）
 ];
 const LINK_SAT_NUM_KEYS = [
   'transponderBandwidth', 'orbitPosition', 'position', 'sfdRef', 'BOi', 'BOo',
@@ -114,7 +115,8 @@ const LINK_SAT_NUM_KEYS = [
   'aciDownlinkFactor', 'adjDownlinkFactor', 'xpolDownlinkFactor', 'xpdrIntermodFactor',
   'cIsl', 'islHops', 'islHopDistance', 'islEirp', 'islGT', 'islFreq', 'islMiscLoss', 'islCI',
   'islOptTxPower', 'islOptTxAperture', 'islOptRxAperture', 'islOptWavelength', 'islOptPointingLoss',
-  'islOptSensitivity', 'islOptSensRate', 'islOptSensEbN0'
+  'islOptSensitivity', 'islOptSensRate', 'islOptSensEbN0',
+  'geoIncl', 'geoEcc', 'geoBoxEW'   // GSO 倾斜运行 / 保持盒（geoTrack.gsoLinkTrack 读）
 ];
 
 module.exports = { NUM_RE, toHalf, isNumText, strictNum, pickNum, strictInputs, LINK_INPUT_NUM_KEYS, LINK_SAT_NUM_KEYS };

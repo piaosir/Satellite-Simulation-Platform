@@ -159,6 +159,8 @@ export function fmtValue(v, dec) {
 /**
  * RGBA → canvas（等经纬位图）。渲染端拿它给 2D drawImage / 3D 贴图球用。
  * 传入 canvas 可复用（换配色不重新分配）。
+ * ★ 复用 = 同一个对象、内容变了：凡按对象身份缓存派生物的消费方，每次提交都得当新图处理 ——
+ *   2D 投影档的栅格重投影与缩略图按 __rpId 认图，flatCoverage.setEnvRaster 每次提交都换一个；3D 每次新建贴图。
  */
 export function rasterCanvas(rgba, nx, ny, canvas) {
   const cv = canvas && canvas.width === nx && canvas.height === ny ? canvas : Object.assign(document.createElement('canvas'), { width: nx, height: ny })

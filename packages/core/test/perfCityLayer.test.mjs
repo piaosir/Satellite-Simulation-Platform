@@ -155,5 +155,121 @@ const nLayers = () => last().length
   ok('⑥ 眼睛再开 → 重试并上图', loaded.has(K3) && has(K3) && loadCalls > c0)
 }
 
+// ==================== ⑦ 整页重挂载（切 MSAA）不留死页面：detach 摘监听与 watch，新宿主认领开着的窗、adopt 补推整份 ====================
+// 修前：onAct / onClosed 永不摘（preload 也没有退订口），attach 里 await 之后建的 watch 不随页面停 —— 每拨一次 MSAA 死页面的宿主
+// 就多挂一份，弹窗每次操作被新旧两套宿主各算一遍；新宿主认领的窗等不到第二次 ready，此后收不到任何推送。
+{
+  const KW = 'satW|antW'
+  const subs = { act: new Set(), closed: new Set() }
+  const pushed = []
+  let openNow = []
+  const api2 = {
+    open: async () => ({ id: 'wNew' }),
+    push: async (id, m) => { pushed.push({ id, m }) },
+    close: async () => {}, setTitle: async () => {},
+    list: async () => openNow.slice(),
+    onAct: (fn) => { subs.act.add(fn); return () => subs.act.delete(fn) },
+    onClosed: (fn) => { subs.closed.add(fn); return () => subs.closed.delete(fn) }
+  }
+  const loaded2 = new Set()
+  let ensureCalls = 0
+  const mkD = (pf) => ({
+    api: api2, perf: pf,
+    grd: {
+      sats: ref([{ folder: 'satW', satName: 'W', antennas: [{ name: 'antW' }] }]),
+      getPerfContext: (key) => (loaded2.has(key) ? { key, basis, satName: 'W', antName: 'antW', satNo: 1, antNo: 1, beams: [], settings: {}, meta: {} } : null),
+      ensureAntLoaded: async (key) => { ensureCalls++; loaded2.add(key); return true },
+      onTreeKeys: () => {}
+    },
+    satPerf: { picksByAnt: ref({}), optsByAnt: ref({}), dropSession() {} },
+    satcov: {}, envLive: {},
+    scene: () => null, flat: () => null,
+    markers: () => ({ pts: [], sts: [], trs: [] }), fmtLL: (a, b) => a + ',' + b,
+    timeLabel: () => 't', liveTimeText: () => '', tzMode: () => 'local', nowMs: () => 0
+  })
+  const fire = (m) => { for (const f of [...subs.act]) f(m) }
+  // 旧页面的宿主：开一扇对地窗，就绪
+  const pfA = usePerfTable(); pfA.setActiveKey(KW); { const s = pfA.addEmptyStation(); pfA.updateStation(s.id, { city: '北京', lon: 116.4, lat: 39.9 }) }
+  const hostA = createPerfWinHost(mkD(pfA))
+  await hostA.attach()
+  ok('⑦ attach 挂上两路 IPC 监听', subs.act.size === 1 && subs.closed.size === 1)
+  loaded2.add(KW)
+  const wid = await hostA.open('ground', KW)
+  fire({ id: wid, kind: 'ground', key: KW, type: 'ready' })
+  await waitFor(() => pushed.some((p) => p.id === wid))
+  // 页面卸载
+  hostA.detach()
+  ok('⑦ detach：两路 IPC 监听都摘掉', subs.act.size === 0 && subs.closed.size === 0)
+  ok('⑦ detach：窗口表清空（死页面不再认这扇窗）', !hostA.isOpen('ground', KW) && hostA.groundKeys().length === 0)
+  pushed.length = 0
+  pfA.setCityGroups([{ id: 'g1', name: '组', cities: [] }])   // 旧页面的 cityGroups watch 若还活着，会往窗里推
+  await tick(40)
+  ok('⑦ detach：await 之后建的 watch 已停（旧桶再变也不推）', pushed.length === 0, JSON.stringify(pushed.map((p) => p.id)))
+  hostA.detach()   // 幂等
+  // 新页面的宿主：认领还开着的窗；恢复完设置之前不推（桶还是出厂值），adopt 后补推整份
+  openNow = [{ id: wid, kind: 'ground', key: KW }]
+  loaded2.delete(KW)
+  const pfB = usePerfTable(); pfB.setActiveKey(KW); { const s = pfB.addEmptyStation(); pfB.updateStation(s.id, { city: '上海', lon: 121.5, lat: 31.2 }) }
+  const hostB = createPerfWinHost(mkD(pfB))
+  await hostB.attach()
+  ok('⑦ 新宿主认领开着的窗（只有它一套在听）', hostB.isOpen('ground', KW) && subs.act.size === 1)
+  await tick(30)
+  ok('⑦ 认领后、adopt 之前不推（桶还没按存盘恢复）', !pushed.some((p) => p.id === wid))
+  const e0 = ensureCalls
+  await hostB.adopt()
+  const full = () => pushed.find((p) => p.id === wid && p.m.type === 'state' && p.m.patch && Array.isArray(p.m.patch.stations))
+  await waitFor(() => !!full())
+  ok('⑦ adopt：先把天线载上，再补推整份状态（城市 = 新页面恢复的那份）', ensureCalls === e0 + 1 && !!full() && full().m.patch.stations.some((s) => s.city === '上海'), JSON.stringify(full() && full().m.patch.stations.map((s) => s.city)))
+  pushed.length = 0
+  await hostB.adopt()
+  await tick(30)
+  ok('⑦ adopt 只补一次', !pushed.length && ensureCalls === e0 + 1)
+  // 窗口操作只被新宿主处理一次
+  fire({ id: wid, kind: 'ground', key: KW, type: 'stations', payload: [{ id: 'c9', city: '广州', lon: 113.3, lat: 23.1 }] })
+  await tick(30)
+  ok('⑦ 窗口操作落进新页面的桶、旧页面的桶不动', pfB.stationsOf(KW).some((s) => s.city === '广州') && !pfA.stationsOf(KW).some((s) => s.city === '广州'))
+  hostB.detach()
+  // detach 发生在 attach 的 await 当中：醒来不再装 watch
+  const hostC = createPerfWinHost(mkD(usePerfTable()))
+  const pa = hostC.attach(); hostC.detach(); await pa
+  ok('⑦ attach 途中 detach：监听摘净', subs.act.size === 0 && subs.closed.size === 0)
+  // 页面恢复设置比认领清单那次 IPC 还快（没存档时）：先要的 adopt 等清单回来再补
+  pushed.length = 0
+  const hostD = createPerfWinHost(mkD(pfB))
+  const pd = hostD.attach(); hostD.adopt(); await pd
+  await waitFor(() => !!full())
+  ok('⑦ adopt 早于认领清单：清单回来后照样补推', !!full() && subs.act.size === 1)
+  hostD.detach()
+  ok('⑦ 收尾：监听摘净', subs.act.size === 0 && subs.closed.size === 0)
+}
+
+// ==================== ⑧ 页面 / 场景 / preload 接线（按源码钉）====================
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const scene = readFileSync(new URL('../../../src/viz/globe3d/scene.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const preload = readFileSync(new URL('../../../electron/preload.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+  const i0 = page.indexOf('onMounted(async () => {'), i1 = page.indexOf('\n})\n', i0)
+  const mounted = i0 >= 0 && i1 > i0 ? page.slice(i0, i1) : ''
+  // 第一个顶层 await（回调里的 await 不算：那些回调本身是 await 之前建的 watch，挂在组件上）
+  const afterAwait = mounted.slice(mounted.indexOf('\n  await restoreSettings()'))
+  // await 之后不许再有裸 watch(：一律 _lateStops.push(watch(…))
+  const bare = afterAwait.split('\n').filter((l) => /\bwatch\(/.test(l) && !/_lateStops\.push\(watch\(/.test(l) && !/^\s*\/\//.test(l))
+  ok('⑧ onMounted：await 之后建的 watch 句柄全部收进 _lateStops', afterAwait.length > 30 && bare.length === 0 && (afterAwait.match(/_lateStops\.push\(watch\(/g) || []).length >= 6, bare.join(' | '))
+  const tops = afterAwait.split('\n').filter((l) => /^ {2}(if \([^)]*\) )?await /.test(l))   // 顶层（两格缩进）的 await 行
+  const unguarded = tops.filter((l, k) => { const rest = afterAwait.slice(afterAwait.indexOf(l) + l.length, afterAwait.indexOf(l) + l.length + 60); return !/if \(!_pageAlive\) return/.test(l) && !/^\n {2}if \(!_pageAlive\) return/.test(rest) })
+  ok('⑧ onMounted：每个顶层 await 醒来先看页面还在不在', tops.length >= 5 && unguarded.length === 0, unguarded.join(' | ') || `${tops.length} 处 await`)
+  ok('⑧ onMounted：恢复完设置才 adopt 认领的性能表窗口', mounted.indexOf('perfHost.adopt()') > mounted.indexOf('await restoreSettings()'))
+  const j0 = page.indexOf('onBeforeUnmount(() => {\n  _pageAlive = false'), j1 = page.indexOf('\n})\n', j0)
+  const unmount = j0 >= 0 && j1 > j0 ? page.slice(j0, j1) : ''
+  ok('⑧ onBeforeUnmount：先置页面已卸载、落一次盘再停 _lateStops', /_pageAlive = false/.test(unmount) && unmount.indexOf('saveSettings()') < unmount.indexOf('_lateStops.splice(0)') && unmount.indexOf('if (_lateStops.length)') >= 0)
+  ok('⑧ onBeforeUnmount：perfHost.detach()', unmount.includes('perfHost.detach()'))
+  ok('⑧ onBeforeUnmount：收掉编辑段再清场景撤销栈', unmount.indexOf('domUndo.flushAll()') > 0 && unmount.indexOf('domUndo.flushAll()') < unmount.indexOf('clearSceneUndo()'))
+  const d0 = scene.indexOf('function destroy() {'), d1 = scene.indexOf('\n  }\n', d0)
+  const destroy = d0 >= 0 && d1 > d0 ? scene.slice(d0, d1) : ''
+  ok('⑧ scene.destroy：renderer.dispose 之后 forceContextLoss', destroy.indexOf('renderer.forceContextLoss()') > destroy.indexOf('renderer.dispose()') && destroy.indexOf('renderer.dispose()') > 0)
+  ok('⑧ preload：perfWin.onAct / onClosed 返回退订函数', /onAct: \(cb\) => subscribe\('perfwin:act'/.test(preload) && /onClosed: \(cb\) => subscribe\('perfwin:closed'/.test(preload))
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

@@ -193,6 +193,55 @@ console.log('=== 显示单位自适应测试 ===\n');
     en[0].title);
 }
 
+// ⑨ 列头与行名按语言出字（体检 #13）：工况对照段的「晴空 / 降雨」列头与「下行雨衰」等行名，Excel / Word / PDF
+//    三个出口都直接拿 seg.heads 与 row.label 印，英文报表里不许漏成中文。
+//    再生式单跳（上行 / 下行）的时延行只讲本跳：叫「链路时延(单程)」，读 linkDelayResult（窗口已纠成本跳单程），
+//    RTT 按同一个数 ×2；NGSO 弯管那一行仍是「单程·端到端」（体检 #11）。
+{
+  const HAN = /[一-鿿]/;
+  const R = {
+    linkmargin: '3.00', thresholdCN: '4.50', RXnoiseBW: '65.00',
+    uplinkCN: '12.00', downlinkCN: '10.00', carrierTotalCN: '7.50',
+    uplinkRainAttenuation: '3.50', downlinkRainAttenuationResult: '7.60', gOverTdegradationResult: '2.90',
+    uplinkPowerRatioResult: '10', downlinkPowerRatioResult: '20',
+    transponderOutputEIRP: '50.00', downlinkFSLResult: '206.00', gOverTeResult: '12.90',
+    downlinkInterferenceLossResult: '0.00'
+  };
+  const wz = buildWaterfallSegments({ results: R, lang: 'zh', orbitType: 'GEO' }).find((s) => s.id === 'weather');
+  const we = buildWaterfallSegments({ results: R, lang: 'en', orbitType: 'GEO' }).find((s) => s.id === 'weather');
+  ok('工况对照列头：中文「晴空 / 降雨」', wz && wz.heads.join('/') === '晴空/降雨', wz && wz.heads.join('/'));
+  ok('工况对照列头：英文按语言出字', we && we.heads.join('/') === 'Clear Sky/Rain', we && we.heads.join('/'));
+  const left = we ? we.rows.filter((x) => HAN.test(x.label)).map((x) => x.label) : ['(没有工况对照段)'];
+  ok('工况对照英文段：行名无中文残留（含「下行雨衰」）', left.length === 0, left.join(', '));
+
+  // 再生式单跳：上行 / 下行各一份，中英两版
+  const regen = (linkType, lang) => buildWaterfallSegments({
+    results: {
+      linkType, linkmargin: '2.00', thresholdCN: '4.50', linkDelayResult: '36.7',
+      uplinkCN: '10.00', uplinkRainAttenuation: '1.00', downlinkCN: '9.00', downlinkRainAttenuationResult: '2.00', gOverTdegradationResult: '0.50'
+    },
+    lang, orbitType: 'REGEN'
+  });
+  for (const linkType of ['uplink', 'downlink']) {
+    const segs = regen(linkType, 'zh');
+    const sat = segs.find((s) => s.id === 'satellite');
+    const one = sat && sat.rows.find((x) => x.id === 'linkDelayResult');
+    const rtt = sat && sat.rows.find((x) => x.key === '链路时延(往返 RTT)');
+    ok(`再生式${linkType}：时延行叫「链路时延(单程)」、读 linkDelayResult`, one && one.label === '链路时延(单程)' && one.up === '36.7', one && `${one.label} ${one.up}`);
+    ok(`再生式${linkType}：RTT = 本跳单程 ×2`, rtt && rtt.up === '73.4', rtt && rtt.up);
+    ok(`再生式${linkType}：瀑布里不再有「端到端」时延行`, !segs.some((s) => s.rows.some((x) => /端到端/.test(x.label))));
+    const segsEn = regen(linkType, 'en');
+    const oneEn = segsEn.find((s) => s.id === 'satellite').rows.find((x) => x.id === 'linkDelayResult');
+    ok(`再生式${linkType}：英文时延行`, oneEn && oneEn.label === 'Link Delay (One-way)', oneEn && oneEn.label);
+    const wEn = segsEn.find((s) => s.id === 'weather');
+    ok(`再生式${linkType}：工况对照英文列头`, wEn && wEn.heads.join('/') === 'Clear Sky/Rain', wEn && wEn.heads.join('/'));
+  }
+  // NGSO 弯管：上行 + 下行两段之和，「单程·端到端」口径不变
+  const ng = buildWaterfallSegments({ results: { linkmargin: '2.00', linkDelayResult: '58.2' }, lang: 'zh', orbitType: 'NGSO' });
+  const ngRow = [].concat(...ng.map((s) => s.rows)).find((x) => x.id === 'linkDelayResult');
+  ok('NGSO 弯管时延行仍是「单程·端到端」', ngRow && ngRow.label === '链路时延(单程·端到端)', ngRow && ngRow.label);
+}
+
 // ⑧ 锁定档（缺省）：一律留在引擎基准单位。四窗功能区「单位」出厂就是这一档，
 // 且本文件不认识 localStorage——默认值一旦漂到「自适应」，就会出现「屏幕锁定、报告却换了档」。
 {

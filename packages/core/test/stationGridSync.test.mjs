@@ -62,6 +62,12 @@ for (const [name, src] of [['linkbudget', A], ['ngso', B]]) {
   // 2026-10-14 起导入 / 导出 Excel 收进工具条「更多」命令下拉（runMore 分派）
   ok('G2：工具条导入 / 导出 Excel', /value="importXlsx"/.test(A) && /value="exportXlsx"/.test(A) && /v === 'importXlsx'\) importXlsx\(\)/.test(A) && /v === 'exportXlsx'\) exportXlsx\(\)/.test(A))
   ok('D6：坏格挂 st-bad + 悬停范围', /'st-bad': !!badTitle\(s, f\)/.test(A) && /:title="badTitle\(s, f\) \|\| null"/.test(A))
+  // 体检 #8：发 / 收两侧同名列——导出表头带侧别、导入登记侧别写法、批量设值下拉带组名、复制带表头同一写法
+  ok('#8：导出同名列带侧别（groupLabel: sideOf）', /groupLabel: sideOf\(props\.fields\[c\]\)/.test(fnBody('exportXlsx')))
+  ok('#8：导入登记侧别写法（groupLabel: groupLabelOf）+ 表名·标签（alias: tableAlias）',
+    /groupLabel: groupLabelOf\(f\)/.test(fnBody('importXlsx')) && /alias: tableAlias\(f\)/.test(fnBody('importXlsx')))
+  ok('#8：批量设值字段下拉带组名', /\{\{ batchLabel\(f\) \}\}/.test(A) && !/:value="f\.key">\{\{ f\.label \}\}<\/option>/.test(A))
+  ok('#8：复制带表头与导出同一写法（colLabel + sideOf）', /colLabel\(\{[^}]*groupLabel: sideOf\(props\.fields\[c\]\)/.test(A))
   ok('rowMenuExtra 渲染在菜单末尾', /v-for="\(it, k\) in rowMenuExtra"/.test(A) && /runExtra\(it\)/.test(A))
 }
 

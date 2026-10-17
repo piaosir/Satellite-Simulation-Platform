@@ -11,10 +11,11 @@
 //   ≈0.2W 功放@2.4m）；下行「再生下行 EIRP」25 dBW 为**该载波**的下行 EIRP（再生直发口径，非整波束饱和值）。
 //   这一列曾与 GSO / NGSO 同叫「卫星EIRP」——那两窗是整波束饱和值（缺省 46），同名不同义，v1.5.0 起按端到端的叫法分开：
 //   GSO / NGSO「卫星饱和 EIRP」、再生式「再生下行 EIRP」。
-//   只影响新建配置初始值；已保存配置不受影响。
+//   新建配置的初始值即这套缺省；站表 / 地球站库里留空的数值格，组参前也按它补（withFieldDefaults，灰字 = 入算值）——
+//   引擎的空值回退是弯管口径（卫星 G/T 2 dB/K、卫星 EIRP 46 dBW），不能拿来顶再生式的缺省。
 // 每个字段 target：'sat'→satParams，'link'→linkParams，'meta'→仅 UI（载波信号/卫星 id，不进引擎）。
 
-import { defaultsFor } from '../ngso/ngsoParams.js'
+import { defaultsFor, withFieldDefaults } from '../ngso/ngsoParams.js'
 import { halfStr, pf } from '../shared/num.js'   // 全角减号/数字归一到半角，避免负数（经纬度/EIRP/SFDref 等）被引擎 Number()/parseFloat() 吞掉
 // 数值字段（type:'num'）先归一全角→半角再入参；文本/select 原样（勿改站名等）
 const putNum = (obj, f, v) => { obj[f.key] = f.type === 'num' ? halfStr(v) : v }
@@ -226,7 +227,7 @@ export const ES_COMMON_FIELDS = ES_FIELDS.filter((f) => f.side === 'common')   /
 export const ES_TX_FIELDS = ES_FIELDS.filter((f) => f.side === 'tx')   // 发射链（发信站引用，含工作点 target:'op'）
 export const ES_RX_FIELDS = ES_FIELDS.filter((f) => f.side === 'rx')   // 接收链（收信站引用）
 
-export { defaultsFor }
+export { defaultsFor, withFieldDefaults }   // 后者：留空格按 f.def（灰字）入算，见 ngsoParams.js
 
 // 引擎需要一套完整的 NGSO 弯管入参才能良定求解；再生口径下这些下行/转发器量数学上相消（已冒烟验证）。
 // 此处提供占位默认，仅为让引擎跑通，绝不影响再生式上行结果。

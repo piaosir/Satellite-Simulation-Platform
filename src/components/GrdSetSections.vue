@@ -60,7 +60,7 @@ function anFlush() {
   anPending = false
   const key = anKey
   const rec = grd.analyticRecordOf ? grd.analyticRecordOf(key) : null
-  if (!rec || synthOwned(rec, key, synthOwnerLive)) return
+  if (!rec || rec.model === 'aperture' || synthOwned(rec, key, synthOwnerLive)) return   // 口径照射记录不在这里改
   // 走到这里还带 owner 的必是死条子：落盘时抹掉，树上的 synth 标记与生成时的接管判定随之归位（它从此是树上的天线）
   let rec2 = rec.owner ? { ...rec, owner: null } : rec
   try {
@@ -82,7 +82,7 @@ watch([anRec, anOwned], ([rec, owned]) => {
   const k = grd.active.value
   if (k !== anKey) { anFlush(); anKey = k; anErr.value = '' }   // 换天线：上一根的待提交改动先落给上一根
   else if (anPending) return
-  const list = rec && !owned && Array.isArray(rec.models) ? rec.models.map((m) => ({ ...m })) : []
+  const list = rec && !owned && rec.model !== 'aperture' && Array.isArray(rec.models) ? rec.models.map((m) => ({ ...m })) : []
   anDrafts.splice(0, anDrafts.length, ...list)
 }, { immediate: true })
 onBeforeUnmount(anFlush)
@@ -337,18 +337,19 @@ const boreTip = computed(() => {
       </div>
       <template v-if="isSecOpen('grd-set')">
         <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
-        <template v-if="anRec">
+        <!-- 口径照射记录（model:'aperture'，多馈源口径照射档产物）只能在电磁波束仿真里改：这里不出 STK 参数行，无主时整节不出 -->
+        <template v-if="anRec && (anRec.model !== 'aperture' || anOwned)">
           <div class="sect" data-sec="grd-model"><span>方向图</span>
             <button type="button" v-if="anOwned" class="lnk" title="该天线由电磁波束仿真生成，参数须在电磁波束仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在电磁波束仿真中编辑</button>
           </div>
-          <template v-if="!anOwned">
+          <template v-if="anRec.model !== 'aperture' && !anOwned">
             <template v-for="(m, i) in anDrafts" :key="m.id || i">
               <div v-if="anDrafts.length > 1" class="gm-h" data-i18n-skip>{{ m.name || ('#' + (i + 1)) }}</div>
               <GaussModelFields :model="m" @update="(next) => onAnModel(i, next)" />
             </template>
             <div v-if="anErr" class="anerr">{{ anErr }}</div>
           </template>
-          <template v-else>
+          <template v-else-if="anRec.model !== 'aperture'">
             <template v-for="(m, i) in anRec.models" :key="m.id || i">
               <div v-if="anRec.models.length > 1" class="gm-h" data-i18n-skip>{{ m.name || ('#' + (i + 1)) }}</div>
               <GaussModelFields :model="m" readonly />

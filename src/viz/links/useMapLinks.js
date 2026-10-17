@@ -22,8 +22,13 @@
 //   satEcefAt(key, tMs)   卫星此刻 ECEF（km）| null（解析不到）
 //   satInfo(key)          卫星身份快照 { noradId, geo, slotLon, folder, altKm, inclDeg } | null（导入用，解析不到时沿用存档里的）
 //   status(msg)           状态栏 / 日志一句话
+//   undo?                 撤销接线（可缺省，缺省时行为与原来逐字相同）：{ begin(isNew), end(), edit(label, fn, key?) }
+//                         begin / end 包住一次插入态（startNew / startAt → finish / cancel / 删掉那条）：宿主把整段收成一步撤销；
+//                         edit 包住插入态之外的单项修改（改名 / 颜色 / 转发方式 / 激光 / 上下移 / 反向 / 取点）；key = 连发合并（取色框拖动）。
+//                         插入态里的修改都算这次建链那一步，不另起。删除链路 / 节点由宿主在调用处自己包（这里不包，免得一步压两条）
 
 import { ref, shallowRef, reactive, toRaw } from 'vue'
+import { byLang } from '../../shared/i18n/lang.js'
 import { linkIssues, linkTargets, hopKind, linkAutoName, reverseLink, sameNode, slotIssue, linkStrands, linkStrandCount, isAreaNode, LINK_NODES_MAX, ISSUE_TEXT, PICK_MAX } from '../../../packages/core/models/mapLinks.mjs'
 import { nodeCands, tjVehicleCand, defaultPick, pickToggle, pickFamily, pickSetDiv } from '../../../packages/core/models/mapLinkPoints.mjs'
 import { densifyGreatCircle } from '../../../packages/core/models/trajKinematics.mjs'
@@ -90,6 +95,11 @@ export function useMapLinks(host) {
   // 取点编辑态：{ id, node }（node = 链路里那个 Polygon / 航迹节点对象本身（toRaw）——前后插删 / 上下移不丢；节点被删 / 「取消」换了一批对象即失效）
   const pickEd = shallowRef(null)
   const pickHi = ref('')                  // 编辑器点表 / 图上悬停的那个候选点键（图上加一圈高亮）
+  // 撤销接线（见文件头 host.undo）
+  const U = host.undo || null
+  const undoBegin = (isNew) => { if (U && U.begin) U.begin(isNew) }
+  const undoEnd = () => { if (U && U.end) U.end() }
+  const edit = (label, fn, key) => (U && U.edit && !draw.value ? U.edit(label, fn, key) : fn())
 
   const list = () => host.links.value
   const linkOf = (id) => list().find((l) => l.id === id) || null
@@ -163,6 +173,7 @@ export function useMapLinks(host) {
   /** 新建一条并进入插入态；first = 起点节点（右键「从此站 / 此卫星新建链路」），可空 */
   function startNew(first) {
     if (draw.value) finish()
+    undoBegin(true)   // 这一整次建链（到完成 / 取消）收成一步撤销
     const l = { id: host.newId(), name: '', nameAuto: true, color: nextColor(), nodes: [] }
     if (first) l.nodes.push(first)
     list().push(l)
@@ -182,6 +193,7 @@ export function useMapLinks(host) {
     const d = draw.value
     if (d && d.id === id) { if (d.at !== k) draw.value = { ...d, at: k }; return }
     if (d) finish()
+    undoBegin(false)
     selId.value = id
     draw.value = { id, isNew: false, nodes0: JSON.parse(JSON.stringify(l.nodes)), at: k, ins: [] }
     host.commit()
@@ -265,6 +277,7 @@ export function useMapLinks(host) {
     draw.value = null
     if (l && d.isNew && l.nodes.length < 2) remove(l.id)
     else host.commit()
+    undoEnd()
   }
   /** 取消：新建的整条丢掉；接着点的恢复到进入建链态之前 */
   function cancel() {
@@ -274,11 +287,12 @@ export function useMapLinks(host) {
     draw.value = null
     if (l && d.isNew) remove(l.id)
     else { if (l) l.nodes = d.nodes0; host.commit() }
+    undoEnd()
   }
 
   // ---- 列表 / 检查器 ----
   function remove(id) {
-    if (draw.value && draw.value.id === id) draw.value = null
+    if (draw.value && draw.value.id === id) { draw.value = null; undoEnd() }
     if (pickEd.value && pickEd.value.id === id) closePick()
     host.links.value = list().filter((l) => l.id !== id)
     if (selId.value === id) selId.value = ''
@@ -298,19 +312,24 @@ export function useMapLinks(host) {
   function moveNode(id, i, dir) {
     const l = linkOf(id), j = i + dir
     if (!l || j < 0 || j >= l.nodes.length) return
-    const t = l.nodes[i]; l.nodes[i] = l.nodes[j]; l.nodes[j] = t
-    host.commit()
+    edit(byLang('已调整节点顺序', 'Node order changed'), () => {
+      const t = l.nodes[i]; l.nodes[i] = l.nodes[j]; l.nodes[j] = t
+      host.commit()
+    })
   }
-  function setRegen(id, i, on) { const l = linkOf(id), n = l && l.nodes[i]; if (n && n.k === 'sat') { if (on) n.regen = true; else delete n.regen; host.commit() } }
-  function setLaser(id, i, on) { const l = linkOf(id), n = l && l.nodes[i]; if (n && n.k === 'sat') { if (on) n.laser = true; else delete n.laser; host.commit() } }
+  function setRegen(id, i, on) { const l = linkOf(id), n = l && l.nodes[i]; if (n && n.k === 'sat') edit(byLang('已修改转发方式', 'Relay mode changed'), () => { if (on) n.regen = true; else delete n.regen; host.commit() }) }
+  function setLaser(id, i, on) { const l = linkOf(id), n = l && l.nodes[i]; if (n && n.k === 'sat') edit(byLang('已修改星间链路类型', 'Inter-satellite link type changed'), () => { if (on) n.laser = true; else delete n.laser; host.commit() }) }
   /** 改名：空串 = 交还自动命名 */
   function rename(id, v) {
     const l = linkOf(id); if (!l) return
     const t = String(v == null ? '' : v).trim()
-    if (t) { l.name = t; l.nameAuto = false } else { l.name = ''; l.nameAuto = true }
-    host.commit()
+    edit(byLang('已修改链路名称', 'Link renamed'), () => {
+      if (t) { l.name = t; l.nameAuto = false } else { l.name = ''; l.nameAuto = true }
+      host.commit()
+    })
   }
-  function setColor(id, c) { const l = linkOf(id); if (l && /^#[0-9a-fA-F]{6}$/.test(c)) { l.color = c; host.commit() } }
+  // 取色框拖动连发 input：按链路合并成一步（key）
+  function setColor(id, c) { const l = linkOf(id); if (l && /^#[0-9a-fA-F]{6}$/.test(c)) edit(byLang('已修改链路颜色', 'Link color changed'), () => { l.color = c; host.commit() }, 'lkc:' + id) }
   function toggleShow(id) { const l = linkOf(id); if (!l) return; if (l.show === false) delete l.show; else l.show = false; host.commit() }
   /** 全部隐藏（右键「隐藏所有链路」）：同 toggleShow 逐条置 show=false，数据保留，可在列表逐条重新打开 */
   function hideAll() { for (const l of list()) l.show = false; host.commit() }
@@ -319,9 +338,11 @@ export function useMapLinks(host) {
     const l = linkOf(id); if (!l) return ''
     const r = reverseLink(l, host.newId)
     r.color = nextColor()
-    list().push(r)
-    selId.value = r.id
-    host.commit()
+    edit(byLang('已生成反向链路', 'Reverse link created'), () => {
+      list().push(r)
+      selId.value = r.id
+      host.commit()
+    })
     return r.id
   }
   function toggleCheck(id) { const s = new Set(checked.value); if (s.has(id)) s.delete(id); else s.add(id); checked.value = s }
@@ -352,8 +373,10 @@ export function useMapLinks(host) {
   function editPick(fn) {
     const c = pickCur()
     if (!c) return
-    c.n.pick = fn(c.n.k, c.o, c.n.pick)
-    host.commit()
+    edit(byLang('已修改取点', 'Sample points changed'), () => {
+      c.n.pick = fn(c.n.k, c.o, c.n.pick)
+      host.commit()
+    })
   }
   /** 逐点取舍（点表一行 / 图上一个候选点） */
   function pickKey(key) { editPick((k, o, p) => pickToggle(k, o, p, key)) }

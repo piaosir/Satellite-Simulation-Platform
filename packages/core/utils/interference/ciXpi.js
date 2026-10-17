@@ -13,8 +13,11 @@
 //                比任何包络都准。没有 GRD 时退回用户手填。
 //   XPI_地球站  ← 天线极化纯度。GRD 是卫星天线的，管不到这一段，故只能由用户给——但
 //                「给」不等于「填一个 XPD 数」：见下面 resolveXpd 的四种等价给法。
-//   XPD_雨      ← ITU-R P.618-14 §4.1，链路预算引擎已实现，由调用方把算好的值传进来
-//                （本模块不重复实现，避免两处口径漂移）。
+//   XPD_雨      ← ITU-R P.618-14 §4.1：rainXpdP618() 按站址、频率、仰角、极化倾角与时间百分比 p 走平台
+//                既有的雨衰计算核（rainAttenuation.calculateRainAttenuation → calculateRainXPD_P618_14，
+//                现居 utils/itu/p618xpd.js、经 linkCalculator 再导出；与雨衰窗同源，本模块不重写公式）；也可手填。
+//                ★ 两种来源分开标注：v1.5.3 及之前这一段只能手填（出厂 22 dB），送进来却一律标
+//                  source:'p618'，结果表写「P.618-14 §4.1」——来源标注失实（差距分析 D-12），已订正。
 //
 // ⚠️ 诚实边界：GRD 只覆盖三段中的一段。拿卫星侧的 P1/P2 当作端到端 XPI，会偏乐观。
 //    本模块的返回值里逐段标了 source，UI 须照实显示哪些段有实测、哪些段是填的。
@@ -178,8 +181,9 @@ function resolveXpd(desc) {
  * @param {object} o
  *   satellite   {db, source} 或 number —— 卫星侧，来自 GRD（source:'grd'）或手填
  *   earthStation{db, source} 或 number —— 地球站侧，规格/手填
- *   rain        {db, source} 或 number —— 雨致 XPD，由链路预算引擎按 P.618-14 §4.1 算好传入
+ *   rain        {db, source} 或 number —— 雨致 XPD：rainXpdP618() 的结果（source:'p618'）或手填（数字 → 'manual'）
  *   （任一段缺省即视为「无此项劣化」，不参与求和；三段全缺 → 返回 null）
+ *   段名只写是哪一段，来源（GRD 实测 / P.618-14 §4.1 / 手填 …）一律看 source，不写进段名。
  *
  * @returns {{xpiDb, terms:[{key,label,db,source,sharePct}], missing:string[], grdBacked:boolean}|null}
  */
@@ -188,7 +192,7 @@ function combineXpi(o) {
   const spec = [
     ['satellite', '卫星天线'],
     ['earthStation', '地球站天线'],
-    ['rain', '降雨去极化 P.618-14 §4.1']
+    ['rain', '降雨去极化']
   ];
   const terms = [];
   const missing = [];
@@ -223,18 +227,89 @@ function combineXpi(o) {
  * @param {number|null} grdRatioDb  pol:'P1/P2' 采样值（无 GRD 传 null）
  * @param {number|null} satManualDb 无 GRD 时的卫星侧手填值
  * @param {number|object|null} earthStation 数字，或 resolveXpd 的给法描述子（轴比 / 实测电平 / 对准误差）
+ * @param {number|object|null} rain 数字 = 手填（标 'manual'）；{db, source} = 已算好的一段（如 rainXpdP618 的结果）原样收下
  */
-function xpiFromSources(grdRatioDb, satManualDb, earthStation, rainXpdDb) {
+function xpiFromSources(grdRatioDb, satManualDb, earthStation, rain) {
   const g = xpdFromGrdRatio(grdRatioDb);
   const sat = g || (num(satManualDb, null) == null ? null : { db: num(satManualDb, null), source: 'manual' });
-  return combineXpi({
-    satellite: sat,
-    earthStation,
-    rain: num(rainXpdDb, null) == null ? null : { db: num(rainXpdDb, null), source: 'p618' }
+  return combineXpi({ satellite: sat, earthStation, rain });
+}
+
+// ---------------------------------------------------------------------------
+// 第三段：雨致 XPD 按 ITU-R P.618-14 §4.1 计算
+// ---------------------------------------------------------------------------
+//
+// 不另写公式：整条走平台雨衰计算核 rainAttenuation.calculateRainAttenuation —— 站址 → P.837 降雨率 →
+// P.618 A0.01 → 标度到 p% 的 Ap → §4.1 XPDp（4–6 GHz 按 6 GHz 重算雨衰再标度），极化倾角 τ 由站址与
+// GEO 轨位求（圆极化 45°），与雨衰窗的「雨致 XPD」同一个数。懒加载：只在选了「计算」时才拉起雨衰核。
+
+/** XPI 随时间百分比曲线的取值档（%），与 P.618 Ap 标度式的定义域 0.001–5% 对齐。 */
+const RAIN_XPD_PCTS = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5];
+
+const RAIN_POL = { H: 'H', V: 'V', L: 'C', R: 'C', C: 'C' };
+
+/**
+ * @param {object} spec { lat, lon, alt(m), satLonDeg, freqGHz, pol: 'H'|'V'|'L'|'R', pPct, rainRate?(R0.01，留空查 P.837) }
+ * @returns {{db:number|null, source:'p618', note:string, info:object}|{error:string}}
+ *   db = null：该 p 下雨衰为 0（无雨致去极化，本段不计入合成）；info 回显 f / 仰角 / τ / R0.01 / Ap / p
+ */
+function rainXpdP618(spec) {
+  const s = spec || {};
+  const p = num(s.pPct, null);
+  if (p == null || !(p > 0) || p > 5) return { error: '时间百分比需在 0–5% 之间' };
+  const pol = RAIN_POL[String(s.pol || '').trim().toUpperCase()] || 'C';
+  const R = require('../rainAttenuation.js');
+  const r = R.calculateRainAttenuation({
+    lat: s.lat, lon: s.lon, altitude: num(s.alt, 0), satLon: s.satLonDeg,
+    freq: s.freqGHz, pol, polDisplay: s.pol || undefined,
+    availability: 100 - p, rainRate: s.rainRate, direction: 'down'
   });
+  if (!r || r.error) return { error: (r && r.message) || '雨衰计算失败' };
+  const db = Number.isFinite(r.rainXPD) ? r.rainXPD : null;
+  const info = {
+    pPct: p, freqGHz: r.freq, pol: s.pol || pol, elevationDeg: r.elevation, tauDeg: r.tau,
+    rainRateMmH: r.rainRate, rainRateAuto: !!r.rainRateAuto, rainAttenDb: r.rainAtten, xpdDb: db
+  };
+  const fx2 = (v, n) => (Number.isFinite(Number(v)) ? Number(v).toFixed(n) : '—');
+  const note = `p ${p}% · ${fx2(r.freq, 2)} GHz · 仰角 ${fx2(r.elevation, 1)}° · τ ${fx2(r.tau, 1)}° · R0.01 ${fx2(r.rainRate, 1)} mm/h · Ap ${fx2(r.rainAtten, 2)} dB`;
+  return { db, source: 'p618', note, info };
+}
+
+/**
+ * 三段合成 + 雨致那一段的两种来源：
+ *   o.rain = number                          手填（'manual'）
+ *   o.rain = {mode:'manual', db}             同上
+ *   o.rain = {mode:'p618', …rainXpdP618 入参} 按 P.618-14 §4.1 计算；另回 XPI 随时间百分比的曲线
+ *   o.rain = {db, source} / null             原样（旧调用方）
+ * @returns {{result, rain:object|null, curve:Array<{pct, rainXpdDb, xpiDb}>|null, error?:string}}
+ */
+function combineXpiWithRain(o) {
+  const opt = o || {};
+  const rs = opt.rain;
+  if (rs && typeof rs === 'object' && rs.mode === 'p618') {
+    const at = rainXpdP618(rs);
+    if (at.error) return { result: null, rain: null, curve: null, error: at.error };
+    const rainTerm = at.db == null ? null : { db: at.db, source: 'p618', note: at.note };
+    const result = combineXpi({ ...opt, rain: rainTerm });
+    // 曲线：其余两段不变，只让雨那一段随 p 走（p% 时间不被超过的 XPD ⇒ 总 XPI 劣于该值的时间占比）
+    const curve = [];
+    for (const pct of RAIN_XPD_PCTS) {
+      const x = pct === at.info.pPct ? at : rainXpdP618({ ...rs, pPct: pct });
+      if (x.error) continue;
+      const c = combineXpi({ ...opt, rain: x.db == null ? null : { db: x.db, source: 'p618' } });
+      curve.push({ pct, rainXpdDb: x.db, xpiDb: c ? c.xpiDb : null });
+    }
+    return { result, rain: { ...at.info, source: 'p618', note: at.note }, curve };
+  }
+  if (rs && typeof rs === 'object' && rs.mode === 'manual') {
+    const v = num(rs.db, null);
+    return { result: combineXpi({ ...opt, rain: v == null ? null : { db: v, source: 'manual' } }), rain: v == null ? null : { source: 'manual', xpdDb: v }, curve: null };
+  }
+  return { result: combineXpi(opt), rain: null, curve: null };
 }
 
 module.exports = {
   xpdFromGrdRatio, xpdFromAxialRatio, xpdFromLevels, xpdFromAlignment,
-  resolveXpd, combineXpi, xpiFromSources
+  resolveXpd, combineXpi, xpiFromSources,
+  rainXpdP618, combineXpiWithRain, RAIN_XPD_PCTS
 };

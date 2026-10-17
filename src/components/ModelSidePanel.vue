@@ -15,8 +15,9 @@ import Icon from './Icon.vue'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { byLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
-// 缩略图逻辑抽到 modelThumbs.js（模块级单例：本侧栏、标记侧栏的「模型」小块、模型选择弹层共用一份缓存）
-import { thumbs, requestThumb, forgetThumb, createThumbObserver } from './modelThumbs.js'
+// 缩略图逻辑抽到 modelThumbs.js（模块级单例：本侧栏、标记侧栏的「模型」小块、模型选择弹层共用一份缓存）。
+// 缩略图下载完成 / 元数据变了的重取由 3D 页 onModelsChanged 统一做（refreshThumb）：侧栏没展开时同样要刷新那份缓存
+import { thumbs, requestThumb, createThumbObserver } from './modelThumbs.js'
 import { entryFacts } from '../model/wbLogic.js'
 
 const props = defineProps({
@@ -105,7 +106,6 @@ onMounted(() => {
       if (e.phase === 'ready' || e.phase === 'canceled' || e.phase === 'error') m.delete(e.id)
       else m.set(e.id, { phase: e.phase, frac: e.total > 0 ? Math.min(1, e.received / e.total) : 0 })
       prog.value = m
-      if (e.phase === 'ready' && e.lod === 'thumb') { forgetThumb(e.id); requestThumb(e.id) }
     })
   }
 })

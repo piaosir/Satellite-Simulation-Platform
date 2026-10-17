@@ -514,9 +514,23 @@ export function createAsmSession({ wb, getVp }) {
     e.preventDefault()
   }
   window.addEventListener('keydown', onKey)
+  // 设计页的下拉 / 复选 / 单选提交后交还焦点（体检 2026-10-16 二.22）：上面的快捷键与模型视图的 Ctrl+Z 一律不管焦点在表单件里的按键，
+  // 焦点留在收起的下拉上时，Windows 上方向键直接换选项并发 change（在「面」里选了 −Y 再按方向键想微调，星敏跳到下一个面，
+  // 每按一次多一条撤销），Ctrl+Z 也落不到模型撤销上。捕获阶段统一处理，各面板（属性 / 参数行 / 快速设置 / 功能区）不必逐个写；
+  // 表格（.eg-scroll）自己管焦点与键盘，不动。数值框的回车在 NumIn 里交还焦点
+  function onFormChange(e) {
+    if (st.tab !== 'design') return
+    const t = e.target
+    if (!t || t !== document.activeElement) return
+    const pick = t.tagName === 'SELECT' || (t.tagName === 'INPUT' && (t.type === 'checkbox' || t.type === 'radio'))
+    if (!pick || (t.closest && t.closest('.eg-scroll'))) return
+    t.blur()
+  }
+  window.addEventListener('change', onFormChange, true)
 
   function dispose() {
     window.removeEventListener('keydown', onKey)
+    window.removeEventListener('change', onFormChange, true)
     clearTimeout(prefT); clearTimeout(statusT); clearTimeout(statsT); clearTimeout(liveT)
     for (const off of offs) { try { off() } catch { /* 无 */ } }
     offs.length = 0

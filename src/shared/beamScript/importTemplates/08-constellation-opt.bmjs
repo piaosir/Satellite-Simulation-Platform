@@ -1,0 +1,50 @@
+//! id: constellation-opt
+//! name: ⟪JSON · 基带网管星座配置 CONSTELLATION_OPT|JSON · Baseband NMS constellation config (CONSTELLATION_OPT)⟫
+//! ext: json
+//! match: *.json, *.txt
+//! sniff: "CONSTELLATION"\s*:
+//zh 基带 / 终端网管下发的星座配置（NMS 元素类型 CONSTELLATION_OPT）：SATELLITES 每项一个轨位（longitude），
+//zh BEAM 下的 CONTOUR 是覆盖多边形（点列为 [纬度, 经度]，导入时换成 [经度, 纬度]），轮廓不带电平，按无数值档导入；
+//zh 同一 beam_id 的 CARRIER（制式 / 中心频率 / 符号率 / 极化）写进该波束的附加信息，悬停波束时显示。
+//zh 中心频率的单位在同一份文件里也不统一（多数为 kHz，个别为 MHz）：按量级折算成 MHz，频段按频率判定。
+//en Constellation configuration pushed by a baseband / terminal NMS (element type CONSTELLATION_OPT): each SATELLITES entry is one orbital slot (longitude);
+//en each BEAM's CONTOUR is a coverage polygon given as [lat, lon] (swapped to [lon, lat] on import) and carries no level, so it imports as a level-less contour;
+//en CARRIER entries with the same beam_id (standard / centre frequency / symbol rate / polarization) go into the beam's extra info, shown on hover.
+//en Centre-frequency units are mixed even within one file (mostly kHz, a few MHz): they are scaled to MHz by magnitude, and the band follows the frequency.
+
+const toMHz = (v) => (v > 1e6 ? v / 1000 : v)   // ⟪kHz（11644830）或 MHz（12702）|kHz (11644830) or MHz (12702)⟫
+const bandOf = (mhz) => (mhz >= 10700 && mhz <= 12750 ? 'Ku' : mhz >= 3400 && mhz <= 4200 ? 'C' : mhz >= 17700 && mhz <= 21200 ? 'Ka' : '')
+const fx = (v, d) => Number(v).toFixed(d).replace(/\.?0+$/, '')
+const std = (t) => String(t ?? '').toUpperCase().replace(/^DVB-?S(2X?)?$/, (m, x) => 'DVB-S' + (x || ''))   // dvbs2 → DVB-S2
+
+const beams = []
+for (const f of files) {
+  const doc = json(f)
+  const con = doc.CONSTELLATION ?? doc
+  const sats = con.SATELLITES ?? []
+  console.log(`${f.name}: ${con.constellation_name ?? ''} · ${sats.length} ⟪颗卫星|satellites⟫`)
+  for (const s of sats) {
+    const carriers = s.CARRIER ?? []
+    const list = s.BEAM ?? []
+    if (!list.length) { console.warn(`${s.satellite_id}: ⟪无波束，未导入|no beams; not imported⟫`); continue }
+    for (const b of list) {
+      const cs = carriers.filter((c) => c.beam_id === b.beam_id)
+      const mhz = cs.map((c) => toMHz(c.center_freq)).filter(Number.isFinite)
+      beams.push({
+        satellite: s.satellite_id,
+        orbitLon: s.longitude,
+        band: mhz.length ? bandOf(mhz[0]) : '',
+        type: 'EIRP',
+        name: `⟪波束|Beam⟫ ${b.beam_id}`,
+        contours: (b.CONTOUR ?? []).map((c) => ({ level: null, points: (c.points ?? []).map(([lat, lon]) => [lon, lat]) })),
+        props: {
+          '⟪载波|Carriers⟫': cs.map((c) => `${std(c.carrier_type)} ${c.polarization ?? ''} ${fx(toMHz(c.center_freq), 3)} MHz · ${fx(c.symbol_rate, 2)} ksps · P${c.search_priority ?? '-'}`),
+          '⟪卫星优先级|Satellite preference⟫': s.preference,
+          '⟪纬度漂移|Latitude wander⟫': s.latitude_wander != null ? `${s.latitude_wander}°` : undefined,
+          '⟪极化偏转|Polarization skew⟫': s.skew_polarization != null ? `${s.skew_polarization}°` : undefined,
+        },
+      })
+    }
+  }
+}
+return beams

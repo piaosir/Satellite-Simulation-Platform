@@ -63,6 +63,10 @@ const cases = reactive([mkCase()])
 // 的对应就整体串位（右侧详情张冠李戴、表内雨衰挂错行）。_id 随行走，增删改序都不会错配。
 // 也不写回行对象（与链路预算结果列同口径）：不进撤销快照、不惊动存档/脏检/过期 watcher。
 const resultById = shallowRef({})    // { 行_id: 主进程返回的纯对象结果（IPC 克隆安全）}
+// 计算时留底的入参（按行 _id，与 resultById 同一轮写入）：右栏曲线与详情只认这一份。
+// 曾按「当前行 + 当前全局几何」现组——算完再改可用度 / 频率 / 轨位，曲线按新入参重画，
+// 标记点（取自结果）却还是旧的那一个，一张图上两套输入。现在改了输入只亮「输入已变」，重算才换。
+const paramsById = shallowRef({})    // { 行_id: buildRainCase 出参（纯数据）}
 const computing = ref(false)
 const selectedId = ref(cases[0]._id)  // 右侧「单算例分析」当前所分析的算例 _id
 const hasResults = computed(() => cases.some((c) => resultById.value[c._id]))
@@ -142,6 +146,10 @@ async function computeDiversity(ids) {
 watch(divOpt, () => { if (hasResults.value || divResult.value) resultsStale.value = true }, { deep: true })
 // 关掉多站开关：结果与表内反解列一并清掉，免得留着一份对不上当前形态的旧数
 watch(divOn, (on) => { if (!on) { divResult.value = null; divByRow.value = {} } })
+// 多站开着却还没有多站结果（单算例算完才勾上的多站）：右栏多站页空着、导出会退回批量结果页——
+// 与「输入已变」同一盏灯、同一个补算条件。按状态推出而不是勾的那一下置灯：再取消勾选，
+// 单算例结果仍对应当前输入，灯随之熄
+const divMissing = computed(() => divOn.value && !divResult.value)
 
 // —— 表内结果列取值（StationGrid 计算列口径：{ 行_id: { 列key: 值 } }）——
 // 小数位按 RESULT_DIGITS 逐列取：可用度列 2 位会把 99.99% 与 99.999% 显示成同一个数。
@@ -197,9 +205,10 @@ async function compute() {
     const payload = cases.map((row) => buildRainCase(row, caseOpts()))
     const out = await api.computeBatch(payload)
     const arr = Array.isArray(out) ? out : []
-    const m = {}
-    ids.forEach((id, i) => { if (arr[i]) m[id] = arr[i] })
+    const m = {}, pm = {}
+    ids.forEach((id, i) => { if (arr[i]) { m[id] = arr[i]; pm[id] = payload[i] } })
     resultById.value = m
+    paramsById.value = pm   // 入参与结果同一轮落定：右栏曲线 / 详情按它画（见 paramsById 头注）
     const errs = arr.filter((r) => r && r.error).length
     // 多站开关打开时，同一次点击顺带把系统聚合算了（一个按钮、一盏灯）
     let divMsg = ''
@@ -211,7 +220,7 @@ async function compute() {
     toast(divMsg || (errs ? `完成，${errs}/${ids.length} 个算例计算失败（见表内 ✕）`
       : `完成，共 ${ids.length} 个算例${divOn.value ? ' · 多站汇总已出' : ''}`))
     return true
-  } catch (e) { reportError('计算失败', e); resultById.value = {}; return false }
+  } catch (e) { reportError('计算失败', e); resultById.value = {}; paramsById.value = {}; return false }
   finally { computing.value = false }
 }
 // 方向切换：下行/上行影响 G/T 衰减列，已算过则自动重算（单击即定，不存在「打一半」的中间态）
@@ -231,13 +240,15 @@ const selectedCase = computed(() => cases.find((c) => c._id === selectedId.value
 const selectedResult = computed(() => (selectedCase.value && resultById.value[selectedCase.value._id]) || null)
 // 点表格任一行（鼠标或键盘导航）→ 右侧分析跟着切到该行，与链路预算表口径一致；表头下拉仍可用，两者同步
 function onRowFocus(i, id) { if (id) selectedId.value = id }
-// 曲线面板入参：把算出的仰角回灌进去，好让「仰角」轴能标出当前取值点（计算时被全局几何覆盖）
+// 曲线面板入参：取计算时留底的那一份（与表内结果、右栏详情同一套输入），再把算出的仰角回灌进去，
+// 好让「仰角」轴能标出当前取值点（计算时被全局几何覆盖）
 const selectedParams = computed(() => {
   const row = selectedCase.value
-  if (!row) return null
+  const p = row ? paramsById.value[row._id] : null
+  if (!p) return null
   const r = selectedResult.value
   const elevation = (r && !r.error && Number.isFinite(+r.elevation)) ? +r.elevation : undefined
-  return buildRainCase(row, { ...caseOpts(), elevation })
+  return { ...p, elevation }
 })
 const caseName = (c, i) => (c && c.stationName) || ('算例 ' + (i + 1))
 const selName = computed(() => caseName(selectedCase.value, cases.findIndex((c) => c._id === selectedId.value)))
@@ -316,7 +327,7 @@ const detail = computed(() => {
       ['最坏月不可用时长', fh(r.downtimeWorstMonth), false]
     ],
     propNote: down
-      ? `DND = (雨衰+云衰 ${f(r.precipAtten, 2)} dB) + G/T衰减 ${f(r.gtDegradation, 2)} dB。降雨噪声按 雨+云、T_mr=275K、经馈线 ${f(r.feederLoss, 2)} dB 折算；气体不计入（晴空已含，不构成劣化），闪烁不计入（折射，不辐射噪声）。`
+      ? `DND = (雨衰+云衰 ${f(r.precipAtten, 2)} dB) + G/T衰减 ${f(r.gtDegradation, 2)} dB。降雨噪声 = T_sky(气体+云+雨) − T_sky(气体)（P.618-14 式(69)(70)），经馈线 ${f(r.feederLoss, 2)} dB 折算；闪烁不计入（折射，不辐射噪声）。`
       : '上行不计降雨噪声：G/T 衰减与 DND 为下行专属。'
   }
 })
@@ -327,7 +338,8 @@ async function exportExcel() {
   if (computing.value) return
   // 导出讲【当前输入】（口径同链路预算四窗的导出前补算）：输入已变或还没算过，先按当前输入算一遍；
   // 算不成就不导 —— 文件里不许是新参数配旧雨衰值。原因 compute 已就地提示。
-  if (resultsStale.value || !hasResults.value) {
+  // 多站开着却还没有多站结果（divMissing）同样先补算——不补，导出的就是批量结果页而非多站页
+  if (resultsStale.value || !hasResults.value || divMissing.value) {
     if (!(await compute()) || !hasResults.value) return
   }
   try {
@@ -419,6 +431,7 @@ function applyState(st) {
   const si = (st.selectedIdx != null) ? Math.min(st.selectedIdx, Math.max(0, cases.length - 1)) : 0
   selectedId.value = cases[si] ? cases[si]._id : (cases[0] ? cases[0]._id : null)
   resultById.value = {}       // 载入配置后清空旧结果，待重新计算
+  paramsById.value = {}       // 留底入参随结果一起清
   divResult.value = null      // 多站结果同样不跨配置存活
   divByRow.value = {}
   resultsStale.value = false
@@ -772,7 +785,7 @@ onMounted(async () => {
       </section>
     </div>
 
-    <WinStatusBar :n="N" :busy="computing ? '计算中…' : ''" :stale="!!(resultsStale && (hasResults || divResult))" stale-title="计算输入已被修改，表内结果列与右栏数值对应修改前的参数">
+    <WinStatusBar :n="N" :busy="computing ? '计算中…' : ''" :stale="!!((resultsStale || divMissing) && (hasResults || divResult))" stale-title="计算输入已被修改，表内结果列与右栏数值对应修改前的参数">
       <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 需在桌面客户端中运行</span>
     </WinStatusBar>
 

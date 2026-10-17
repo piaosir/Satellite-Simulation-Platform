@@ -1,0 +1,663 @@
+{
+  "meta": {
+    "table": "RR Article 21, Section V, Table 21-4 (Rev.WRC-23) - Limits of power flux-density from space stations",
+    "source": "ITU Radio Regulations, Edition of 2024, Volume 1 - Articles, pp. RR21-6..RR21-14 (PDF pages 296-304 of 2400594-RR-Vol 1-E-A5.pdf)",
+    "sourceUrl": "https://www.itu.int/dms_pub/itu-r/opb/reg/R-REG-RR-2024-ZPF-E.zip",
+    "sourceSha256": "a19db60201342f44443143c01c528abe725b93cf133602631edaa2b6c9ba6a8f",
+    "extractedOn": "2026-10-17",
+    "extraction": "Row-by-row hand transcription from page renders (PyMuPDF, 2.2x and 4x crops), then checked cell by cell against an independent pdfplumber line-grid extraction and a pypdf text dump of the same pages: every printed band edge, reference bandwidth, delta breakpoint and formula agrees (see packages/core/test/art21Table.test.mjs).",
+    "rule": "No. 21.16: the limit relates to the pfd which would be obtained under assumed free-space propagation conditions; it applies to emissions of a space station of the service indicated where the bands are shared with equal rights with the fixed or mobile service, unless otherwise stated. No. 21.17: the limits may be exceeded on the territory of any country whose administration has so agreed.",
+    "units": "limit in dB(W/m2) in the reference bandwidth refBwHz; delta = angle of arrival above the horizontal plane, degrees",
+    "segmentConvention": "a segment applies for from < delta <= to (the first segment of a limit also includes from); value = a + slope*(delta - d0) + logK*log10(delta - logD0) + F*(funcCoef + funcSlope*(delta - d0)), F = X (No. 21.16.6) or Y (No. 21.16.15) when func is given, absent terms are 0",
+    "bandConvention": "band edges inclusive; a row applies to every listed service in every listed band (the 2 500-2 690 MHz row prints bands and services side by side, which gives the same limits for each pairing); region / country qualifiers belong to the band entry they are printed under",
+    "orbitConvention": "orbit null = no orbit qualifier printed; hio = non-GSO space station with apogee altitude > 18 000 km and inclination 35-145 deg (Nos. 21.16.6B, 21.16.6C, 21.16.17)",
+    "footnoteMarks": { "7": "21.16.1", "8": "21.16.2", "9": "21.16.3", "10": "21.16.3A", "11": "21.16.4", "12": "21.16.5", "13": "21.16.6", "14": "21.16.6A", "15": "21.16.6B", "16": "21.16.6C", "17": "21.16.7", "18": "21.16.8", "19": "21.16.9", "20": "21.16.10", "21": "21.16.14", "22": "21.16.15", "23": "21.16.16", "24": "21.16.17", "25": "21.16.18", "26": "21.16.19" },
+    "notCrossChecked": "RR 2020 edition not compared (no local copy); WRC-23 revised Nos. 21.16.6, 21.16.6A, 21.16.6C and added the 27.5-30.0 GHz inter-satellite row (No. 21.16.19)"
+  },
+  "footnotes": {
+    "21.16.1": { "mark": 7, "version": "", "effect": "info", "text": "Equality of right to operate between Regions is established in No. 4.8; inter-Regional limits in ITU-R Recommendations should, as far as practicable, be observed." },
+    "21.16.2": { "mark": 8, "version": "WRC-2000", "effect": "additional-limit", "text": "In addition, in 18.6-18.8 GHz the pfd across the 200 MHz band 18.6-18.8 GHz produced at the surface of the Earth by emissions from a space station under assumed free-space propagation conditions shall not exceed -95 dB(W/m2), except for less than 5% of time, when the limit may be exceeded by up to 3 dB. No. 21.17 does not apply in this band.", "additionalLimit": { "lowMHz": 18600, "highMHz": 18800, "services": ["FSS"], "limit": -95, "refBwHz": 200000000, "exceedPctTime": 5, "exceedDb": 3 } },
+    "21.16.3": { "mark": 9, "version": "", "effect": "info", "text": "Derived to protect line-of-sight fixed service; for troposcatter fixed service sufficient angular separation is needed so that interference at the fixed-service receiver input does not exceed -168 dBW in any 4 kHz band." },
+    "21.16.3A": { "mark": 10, "version": "WRC-19", "effect": "info", "text": "Resolution 903 (Rev.WRC-19) shall apply." },
+    "21.16.4": { "mark": 11, "version": "WRC-2000", "effect": "condition", "text": "The values apply to space stations of non-geostationary satellites in systems operating with 99 or fewer satellites; further study is needed to apply them to systems with 100 or more satellites." },
+    "21.16.5": { "mark": 12, "version": "", "effect": "condition", "text": "Applicable where this band is shared with equal rights with the meteorological aids service." },
+    "21.16.6": { "mark": 13, "version": "WRC-23", "effect": "function", "text": "Defines X(N, Nv). In 18.8-19.3 GHz these limits apply to any non-GSO space station in the FSS for which complete coordination or notification information was received by the Bureau since 17 November 1995 and which was not operational by that date, and in the inter-satellite service." },
+    "21.16.6A": { "mark": 14, "version": "WRC-23", "effect": "condition", "text": "These limits apply to space stations in the meteorological-satellite service and to geostationary satellites in the FSS and inter-satellite services; also to non-GSO FSS space stations in 18.8-19.3 GHz whose complete coordination or notification information was received by 17 November 1995, or which were in operation by that date." },
+    "21.16.6B": { "mark": 15, "version": "WRC-07", "effect": "condition", "text": "These limits also apply to FSS space stations using highly-inclined orbits (apogee > 18 000 km, inclination 35-145 deg) in 17.7-19.7 GHz to which Resolution 147 (WRC-07) applies." },
+    "21.16.6C": { "mark": 16, "version": "WRC-23", "effect": "condition", "text": "These limits apply to all space stations using highly-inclined orbits (apogee > 18 000 km, inclination 35-145 deg) in 17.7-19.7 GHz in the FSS not covered by Resolution 147 (WRC-07) whose complete coordination or notification information was received after 16 November 2007, and in the inter-satellite service." },
+    "21.16.7": { "mark": 17, "version": "", "effect": "info", "text": "Subject to review by ITU-R; apply until revised by a competent world radiocommunication conference." },
+    "21.16.8": { "mark": 18, "version": "WRC-15", "effect": "info", "text": "EESS (active) values are mean pfd values: pfd(delta) = P + 10log(tau) + 10log(PRF) - 30 - 10log(Bc) + Gt(delta) - 10log(4 pi d(delta)^2)." },
+    "21.16.9": { "mark": 19, "version": "WRC-15", "effect": "info", "text": "Also based on sharing with the Earth exploration-satellite (active) and space research services." },
+    "21.16.10": { "mark": 20, "version": "WRC-2000", "effect": "additional-limit", "text": "During the launch and near-Earth operational phase of deep-space facilities, non-GSO space research systems shall not exceed -115 dB(W/m2) for delta < 5 deg, -115 + 0.5(delta - 5) for 5 <= delta <= 25 deg, -105 for delta > 25 deg, in any 1 MHz band." },
+    "21.16.14": { "mark": 21, "version": "WRC-03", "effect": "info", "text": "In 37.5-40 GHz and 40.5-42.5 GHz the pfd from any FSS satellite should be no greater than required to meet FSS link availability and performance objectives; in any case it shall not exceed the limits of Table 21-4." },
+    "21.16.15": { "mark": 22, "version": "WRC-03", "effect": "function", "text": "Defines Y(NN, NS)." },
+    "21.16.16": { "mark": 23, "version": "WRC-03", "effect": "info", "text": "Applicability may need review by a future conference if more than five co-frequency non-GSO systems are simultaneously operating in the same hemisphere." },
+    "21.16.17": { "mark": 24, "version": "WRC-03", "effect": "condition", "text": "These limits apply to non-GSO FSS space stations with inclination between 35 and 145 deg and apogee altitude greater than 18 000 km." },
+    "21.16.18": { "mark": 25, "version": "WRC-03", "effect": "condition", "text": "These limits apply to non-GSO FSS space stations not covered by No. 21.16.17." },
+    "21.16.19": { "mark": 26, "version": "WRC-23", "effect": "info", "text": "The methodology in Annex 2 to Resolution 679 (WRC-23) shall be applied to calculate the pfd from a non-GSO space station transmitting in 27.5-30.0 GHz." }
+  },
+  "functions": {
+    "X": {
+      "provision": "21.16.6",
+      "version": "WRC-23",
+      "args": {
+        "N": "number of satellites in the non-geostationary satellite constellation in the fixed-satellite service",
+        "Nv": "maximum number of visible space stations (minimum elevation 0 deg) from any location on the surface of the Earth within the service area of the non-GSO system; does not depend on latitude; Nv = Max(Nv(j)), Nv(j) = Max(Nv(j(t)), Nv(j(t-1)))"
+      },
+      "branches": [
+        { "nMin": null, "nMinIncl": false, "nMax": 50, "nMaxIncl": true, "text": "X = 0 dB for N <= 50" },
+        { "nMin": 50, "nMinIncl": false, "nMax": 288, "nMaxIncl": true, "text": "X = (5/119)(N - 50) dB for 50 < N <= 288" },
+        { "nMin": 288, "nMinIncl": false, "nMax": 999, "nMaxIncl": true, "text": "X = (1/69)(N + 402) dB for 288 < N <= 999" },
+        { "nMin": 1000, "nMinIncl": true, "nMax": 6000, "nMaxIncl": true, "text": "X = max{20.3; 10 log10(Nv)} dB for 1 000 <= N <= 6 000" },
+        { "nMin": 6000, "nMinIncl": false, "nMax": null, "nMaxIncl": false, "text": "X = 10 log10(Nv) + 1 dB for N > 6 000" }
+      ]
+    },
+    "Y": {
+      "provision": "21.16.15",
+      "version": "WRC-03",
+      "args": {
+        "NN": "maximum number of space stations in a system simultaneously transmitting on a co-frequency basis in the FSS in the Northern Hemisphere",
+        "NS": "maximum number of space stations in the same system simultaneously transmitting on a co-frequency basis in the FSS in the Southern Hemisphere (two stations simultaneously transmitting during short-duration handover count as one)"
+      },
+      "branches": [
+        { "text": "Y = 0 for max(NN, NS) <= 2" },
+        { "text": "Y = 5 log(max(NN, NS)) for max(NN, NS) > 2" }
+      ]
+    }
+  },
+  "countryLists": {
+    "5.494": { "version": "WRC-23", "page": "RR5-117", "iso3": ["DZA", "SAU", "BHR", "CMR", "CAF", "COG", "CIV", "DJI", "EGY", "ARE", "ERI", "ETH", "GAB", "GHA", "GIN", "IRQ", "ISR", "JOR", "KWT", "LBN", "LBY", "MDG", "MLI", "MAR", "MNG", "NGA", "OMN", "PSE", "QAT", "SYR", "COD", "SOM", "SDN", "SSD", "TCD", "TGO", "YEM"] },
+    "5.496": { "version": "WRC-2000", "page": "RR5-117", "iso3": ["AUT", "AZE", "KGZ", "TKM"] },
+    "5.549": { "version": "WRC-12", "page": "RR5-143", "iso3": ["SAU", "BHR", "BGD", "EGY", "ARE", "GAB", "IDN", "IRN", "IRQ", "ISR", "JOR", "KWT", "LBN", "LBY", "MYS", "MLI", "MAR", "MRT", "NPL", "NGA", "OMN", "PAK", "PHL", "QAT", "SYR", "COD", "SGP", "SOM", "SDN", "SSD", "LKA", "TGO", "TUN", "YEM"] }
+  },
+  "rows": [
+    {
+      "id": "T21-4.01", "page": "RR21-7",
+      "bandText": "1 670-1 700 MHz",
+      "serviceText": "Earth exploration-satellite; Meteorological-satellite",
+      "bands": [{ "lowMHz": 1670, "highMHz": 1700 }],
+      "services": ["EESS", "MetSat"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1500000, "cells": ["−133 (value based on sharing with meteorological aids service)"],
+        "segments": [{ "from": 0, "to": 90, "a": -133 }] }]
+    },
+    {
+      "id": "T21-4.02", "page": "RR21-7",
+      "bandText": "1 518-1 525 MHz (Applicable to the territory of the United States in Region 2 between the longitudes 71° W and 125° W)",
+      "serviceText": "Mobile-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 1518, "highMHz": 1525, "regions": [2], "countries": ["USA"], "lonWestWithin": [71, 125] }],
+      "services": ["MSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−181.0", "−193.0 + 20 log δ", "−213.3 + 35.6 log δ", "−150.0"],
+        "segments": [
+          { "from": 0, "to": 4, "a": -181.0 },
+          { "from": 4, "to": 20, "a": -193.0, "logK": 20, "logD0": 0 },
+          { "from": 20, "to": 60, "a": -213.3, "logK": 35.6, "logD0": 0 },
+          { "from": 60, "to": 90, "a": -150.0 }
+        ] }]
+    },
+    {
+      "id": "T21-4.03", "page": "RR21-7",
+      "bandText": "1 518-1 525 MHz (Applicable to all other territory of the United States in Region 2)",
+      "serviceText": "Mobile-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 1518, "highMHz": 1525, "regions": [2], "countries": ["USA"], "lonWestOutside": [71, 125] }],
+      "services": ["MSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−155.0", "−213.3 + 35.6 log δ", "−150.0"],
+        "segments": [
+          { "from": 0, "to": 43.4, "a": -155.0 },
+          { "from": 43.4, "to": 60, "a": -213.3, "logK": 35.6, "logD0": 0 },
+          { "from": 60, "to": 90, "a": -150.0 }
+        ] }]
+    },
+    {
+      "id": "T21-4.04", "page": "RR21-7",
+      "bandText": "1 525-1 530 MHz (Region 1, Region 3); 1 670-1 690 MHz; 1 690-1 700 MHz (Nos. 5.381 and 5.382); 1 700-1 710 MHz; 2 025-2 110 MHz; 2 200-2 300 MHz",
+      "serviceText": "Meteorological-satellite (space-to-Earth); Space research (space-to-Earth) (space-to-space); Space operation (space-to-Earth) (space-to-space); Earth exploration-satellite (space-to-Earth) (space-to-space)",
+      "bands": [
+        { "lowMHz": 1525, "highMHz": 1530, "regions": [1, 3], "footnotes": ["21.16.1"] },
+        { "lowMHz": 1670, "highMHz": 1690, "footnotes": ["21.16.5"] },
+        { "lowMHz": 1690, "highMHz": 1700, "note": "Nos. 5.381 and 5.382" },
+        { "lowMHz": 1700, "highMHz": 1710 },
+        { "lowMHz": 2025, "highMHz": 2110 },
+        { "lowMHz": 2200, "highMHz": 2300 }
+      ],
+      "services": ["MetSat", "SR", "SO", "EESS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−154", "−154 + 0.5(δ − 5)", "−144"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -154, "notes": ["21.16.3"] },
+          { "from": 5, "to": 25, "a": -154, "slope": 0.5, "d0": 5, "notes": ["21.16.3"] },
+          { "from": 25, "to": 90, "a": -144, "notes": ["21.16.3"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.05", "page": "RR21-7",
+      "bandText": "2 500-2 690 MHz; 2 520-2 670 MHz; 2 500-2 516.5 MHz (No. 5.404); 2 500-2 520 MHz; 2 520-2 535 MHz (No. 5.403)",
+      "serviceText": "Fixed-satellite; Broadcasting-satellite; Radiodetermination-satellite; Mobile-satellite; Mobile-satellite (except aeronautical mobile-satellite)",
+      "bands": [
+        { "lowMHz": 2500, "highMHz": 2690 },
+        { "lowMHz": 2520, "highMHz": 2670 },
+        { "lowMHz": 2500, "highMHz": 2516.5, "note": "No. 5.404" },
+        { "lowMHz": 2500, "highMHz": 2520 },
+        { "lowMHz": 2520, "highMHz": 2535, "note": "No. 5.403" }
+      ],
+      "services": ["FSS", "BSS", "RDSS", "MSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−136", "−136 + 11/20(δ − 5)", "−125"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -136, "notes": ["21.16.3A"] },
+          { "from": 5, "to": 25, "a": -136, "slope": 0.55, "d0": 5, "notes": ["21.16.3A"] },
+          { "from": 25, "to": 90, "a": -125, "notes": ["21.16.3A"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.06", "page": "RR21-7",
+      "bandText": "3 400-4 200 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth) (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 3400, "highMHz": 4200 }],
+      "services": ["FSS"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−152", "−152 + 0.5(δ − 5)", "−142"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -152 },
+          { "from": 5, "to": 25, "a": -152, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -142 }
+        ] }]
+    },
+    {
+      "id": "T21-4.07", "page": "RR21-7",
+      "bandText": "3 400-4 200 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth) (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 3400, "highMHz": 4200 }],
+      "services": ["FSS"], "orbit": "NGSO", "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−138 − Y", "−138 − Y + (12 + Y)(δ − 5)/20", "−126"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -138, "func": "Y", "funcCoef": -1, "notes": ["21.16.15", "21.16.16"] },
+          { "from": 5, "to": 25, "a": -138, "slope": 0.6, "d0": 5, "func": "Y", "funcCoef": -1, "funcSlope": 0.05, "notes": ["21.16.15", "21.16.16"] },
+          { "from": 25, "to": 90, "a": -126, "notes": ["21.16.16"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.08", "page": "RR21-8",
+      "bandText": "4 500-4 800 MHz; 5 670-5 725 MHz (Nos. 5.453 and 5.455); 7 250-7 900 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Meteorological-satellite (space-to-Earth); Mobile-satellite; Space research",
+      "bands": [
+        { "lowMHz": 4500, "highMHz": 4800 },
+        { "lowMHz": 5670, "highMHz": 5725, "note": "Nos. 5.453 and 5.455" },
+        { "lowMHz": 7250, "highMHz": 7900 }
+      ],
+      "services": ["FSS", "MetSat", "MSS", "SR"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−152", "−152 + 0.5(δ − 5)", "−142"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -152 },
+          { "from": 5, "to": 25, "a": -152, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -142 }
+        ] }]
+    },
+    {
+      "id": "T21-4.09", "page": "RR21-8",
+      "bandText": "5 150-5 216 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 5150, "highMHz": 5216 }],
+      "services": ["FSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−164"],
+        "segments": [{ "from": 0, "to": 90, "a": -164 }] }]
+    },
+    {
+      "id": "T21-4.10", "page": "RR21-8",
+      "bandText": "6 700-6 825 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 6700, "highMHz": 6825 }],
+      "services": ["FSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−137", "−137 + 0.5(δ − 5)", "−127"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -137, "notes": ["21.16.7"] },
+          { "from": 5, "to": 25, "a": -137, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -127 }
+        ] }]
+    },
+    {
+      "id": "T21-4.11", "page": "RR21-8",
+      "bandText": "6 825-7 075 MHz",
+      "serviceText": "Fixed-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 6825, "highMHz": 7075 }],
+      "services": ["FSS"], "orbit": null, "footnotes": [],
+      "limits": [
+        { "refBwHz": 4000, "cells": ["−154", "−154 + 0.5(δ − 5)", "−144"],
+          "segments": [
+            { "from": 0, "to": 5, "a": -154 },
+            { "from": 5, "to": 25, "a": -154, "slope": 0.5, "d0": 5 },
+            { "from": 25, "to": 90, "a": -144 }
+          ] },
+        { "refBwHz": 1000000, "cells": ["−134", "−134 + 0.5(δ − 5)", "−124"],
+          "segments": [
+            { "from": 0, "to": 5, "a": -134 },
+            { "from": 5, "to": 25, "a": -134, "slope": 0.5, "d0": 5 },
+            { "from": 25, "to": 90, "a": -124 }
+          ] }
+      ]
+    },
+    {
+      "id": "T21-4.12", "page": "RR21-8",
+      "bandText": "8 025-8 500 MHz",
+      "serviceText": "Earth exploration-satellite (space-to-Earth); Space research (space-to-Earth)",
+      "bands": [{ "lowMHz": 8025, "highMHz": 8500 }],
+      "services": ["EESS", "SR"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−150", "−150 + 0.5(δ − 5)", "−140"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -150 },
+          { "from": 5, "to": 25, "a": -150, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -140 }
+        ] }]
+    },
+    {
+      "id": "T21-4.13", "page": "RR21-8",
+      "bandText": "9 900-10 400 MHz",
+      "serviceText": "Earth exploration-satellite (active)",
+      "bands": [{ "lowMHz": 9900, "highMHz": 10400 }],
+      "services": ["EESS-active"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−113", "−109 + 25 log(δ − 5)", "−66.6"],
+        "segments": [
+          { "from": 0, "to": 5.7, "a": -113, "notes": ["21.16.8"] },
+          { "from": 5.7, "to": 53, "a": -109, "logK": 25, "logD0": 5, "notes": ["21.16.8"] },
+          { "from": 53, "to": 90, "a": -66.6, "notes": ["21.16.8"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.14", "page": "RR21-8",
+      "bandText": "10.7-11.7 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth) (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 10700, "highMHz": 11700 }],
+      "services": ["FSS"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−150", "−150 + 0.5(δ − 5)", "−140"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -150 },
+          { "from": 5, "to": 25, "a": -150, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -140 }
+        ] }]
+    },
+    {
+      "id": "T21-4.15", "page": "RR21-8",
+      "bandText": "10.7-11.7 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth) (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 10700, "highMHz": 11700 }],
+      "services": ["FSS"], "orbit": "NGSO", "footnotes": ["21.16.18"],
+      "when": [{ "hio": false }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−126", "−126 + 0.5(δ − 5)", "−116"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -126 },
+          { "from": 5, "to": 25, "a": -126, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -116 }
+        ] }]
+    },
+    {
+      "id": "T21-4.16", "page": "RR21-8",
+      "bandText": "10.7-11.7 GHz; 11.7-12.5 GHz (Region 1); 12.5-12.75 GHz (Region 1 countries listed in Nos. 5.494 and 5.496); 11.7-12.7 GHz (Region 2); 11.7-12.75 GHz (Region 3)",
+      "serviceText": "Fixed-satellite (space-to-Earth) (non-geostationary-satellite orbit)",
+      "bands": [
+        { "lowMHz": 10700, "highMHz": 11700 },
+        { "lowMHz": 11700, "highMHz": 12500, "regions": [1] },
+        { "lowMHz": 12500, "highMHz": 12750, "regions": [1], "countryLists": ["5.494", "5.496"] },
+        { "lowMHz": 11700, "highMHz": 12700, "regions": [2] },
+        { "lowMHz": 11700, "highMHz": 12750, "regions": [3] }
+      ],
+      "services": ["FSS"], "orbit": "NGSO", "footnotes": ["21.16.17"],
+      "when": [{ "hio": true }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−129", "−129 + 0.75(δ − 5)", "−114"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -129, "notes": ["21.16.16"] },
+          { "from": 5, "to": 25, "a": -129, "slope": 0.75, "d0": 5, "notes": ["21.16.16"] },
+          { "from": 25, "to": 90, "a": -114, "notes": ["21.16.16"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.17", "page": "RR21-9",
+      "bandText": "11.7-12.5 GHz (Region 1); 12.5-12.75 GHz (Region 1 countries listed in Nos. 5.494 and 5.496); 11.7-12.7 GHz (Region 2); 11.7-12.75 GHz (Region 3)",
+      "serviceText": "Fixed-satellite (space-to-Earth) (non-geostationary-satellite orbit)",
+      "bands": [
+        { "lowMHz": 11700, "highMHz": 12500, "regions": [1] },
+        { "lowMHz": 12500, "highMHz": 12750, "regions": [1], "countryLists": ["5.494", "5.496"] },
+        { "lowMHz": 11700, "highMHz": 12700, "regions": [2] },
+        { "lowMHz": 11700, "highMHz": 12750, "regions": [3] }
+      ],
+      "services": ["FSS"], "orbit": "NGSO", "footnotes": ["21.16.18"],
+      "when": [{ "hio": false }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−124", "−124 + 0.5(δ − 5)", "−114"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -124 },
+          { "from": 5, "to": 25, "a": -124, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -114 }
+        ] }]
+    },
+    {
+      "id": "T21-4.18", "page": "RR21-9",
+      "bandText": "12.2-12.75 GHz (Region 3); 12.5-12.75 GHz (Region 1 countries listed in Nos. 5.494 and 5.496)",
+      "serviceText": "Fixed-satellite (space-to-Earth) (geostationary-satellite orbit)",
+      "bands": [
+        { "lowMHz": 12200, "highMHz": 12750, "regions": [3], "footnotes": ["21.16.1"] },
+        { "lowMHz": 12500, "highMHz": 12750, "regions": [1], "countryLists": ["5.494", "5.496"], "footnotes": ["21.16.1"] }
+      ],
+      "services": ["FSS"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−148", "−148 + 0.5(δ − 5)", "−138"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -148 },
+          { "from": 5, "to": 25, "a": -148, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -138 }
+        ] }]
+    },
+    {
+      "id": "T21-4.19", "page": "RR21-9",
+      "bandText": "13.4-13.65 GHz (Region 1)",
+      "serviceText": "Fixed-satellite (space-to-Earth) (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 13400, "highMHz": 13650, "regions": [1] }],
+      "services": ["FSS"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 4000, "cells": ["−159 + 0.4δ", "−149", "−149 − 0.5(δ − 80)", "−151"],
+        "segments": [
+          { "from": 0, "to": 25, "a": -159, "slope": 0.4, "d0": 0, "notes": ["21.16.9"] },
+          { "from": 25, "to": 80, "a": -149, "notes": ["21.16.9"] },
+          { "from": 80, "to": 84, "a": -149, "slope": -0.5, "d0": 80, "notes": ["21.16.9"] },
+          { "from": 84, "to": 90, "a": -151, "notes": ["21.16.9"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.20a", "page": "RR21-9",
+      "bandText": "17.7-19.3 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Inter-satellite; Meteorological-satellite (space-to-Earth) — first alternative (Nos. 21.16.6A, 21.16.6B)",
+      "bands": [{ "lowMHz": 17700, "highMHz": 19300, "footnotes": ["21.16.1", "21.16.2"] }],
+      "services": ["FSS", "ISS", "MetSat"], "orbit": null, "footnotes": ["21.16.6A", "21.16.6B"],
+      "when": [
+        { "services": ["MetSat"] },
+        { "services": ["FSS", "ISS"], "orbit": "GSO" },
+        { "services": ["FSS"], "orbit": "NGSO", "hio": false, "pre1995": true, "lowMHz": 18800, "highMHz": 19300 },
+        { "services": ["FSS"], "orbit": "NGSO", "hio": true, "res147": true }
+      ],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115, "notes": ["21.16.6A", "21.16.6B"] },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5, "notes": ["21.16.6A", "21.16.6B"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.6A", "21.16.6B"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.20b", "page": "RR21-9",
+      "bandText": "17.7-19.3 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Inter-satellite — second alternative (No. 21.16.6)",
+      "bands": [{ "lowMHz": 17700, "highMHz": 19300, "footnotes": ["21.16.1", "21.16.2"] }],
+      "services": ["FSS", "ISS"], "orbit": "NGSO", "footnotes": ["21.16.6"],
+      "when": [
+        { "services": ["FSS"], "hio": false, "lowMHz": 17700, "highMHz": 18800 },
+        { "services": ["FSS"], "hio": false, "pre1995": false, "lowMHz": 18800, "highMHz": 19300 },
+        { "services": ["ISS"], "hio": false, "lowMHz": 18800, "highMHz": 19300 }
+      ],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115 − X", "−115 − X + ((10 + X)/20)(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115, "func": "X", "funcCoef": -1, "notes": ["21.16.6"] },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5, "func": "X", "funcCoef": -1, "funcSlope": 0.05, "notes": ["21.16.6"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.6"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.21", "page": "RR21-9",
+      "bandText": "17.7-19.3 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Inter-satellite (No. 21.16.6C)",
+      "bands": [{ "lowMHz": 17700, "highMHz": 19300, "footnotes": ["21.16.1", "21.16.2"] }],
+      "services": ["FSS", "ISS"], "orbit": "NGSO", "footnotes": ["21.16.6C"],
+      "when": [
+        { "services": ["FSS"], "hio": true, "res147": false },
+        { "services": ["ISS"], "hio": true }
+      ],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + (8/9)(δ − 3)", "−112 + (7/13)(δ − 12)", "−105"],
+        "segments": [
+          { "from": 0, "to": 3, "a": -120, "notes": ["21.16.6C"] },
+          { "from": 3, "to": 12, "a": -120, "slope": 0.8888888888888888, "d0": 3, "notes": ["21.16.6C"] },
+          { "from": 12, "to": 25, "a": -112, "slope": 0.5384615384615384, "d0": 12, "notes": ["21.16.6C"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.6C"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.22", "page": "RR21-9",
+      "bandText": "19.3-19.7 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Inter-satellite (No. 21.16.6C)",
+      "bands": [{ "lowMHz": 19300, "highMHz": 19700 }],
+      "services": ["FSS", "ISS"], "orbit": "NGSO", "footnotes": ["21.16.6C"],
+      "when": [
+        { "services": ["FSS"], "hio": true, "res147": false },
+        { "services": ["ISS"], "hio": true }
+      ],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + (8/9)(δ − 3)", "−112 + (7/13)(δ − 12)", "−105"],
+        "segments": [
+          { "from": 0, "to": 3, "a": -120, "notes": ["21.16.6C"] },
+          { "from": 3, "to": 12, "a": -120, "slope": 0.8888888888888888, "d0": 3, "notes": ["21.16.6C"] },
+          { "from": 12, "to": 25, "a": -112, "slope": 0.5384615384615384, "d0": 12, "notes": ["21.16.6C"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.6C"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.23", "page": "RR21-10",
+      "bandText": "19.3-19.7 GHz; 21.4-22 GHz (Regions 1 and 3); 22.55-23.55 GHz; 24.45-24.75 GHz; 25.25-27.5 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth); Broadcasting-satellite; Earth exploration-satellite (space-to-Earth); Inter-satellite; Space research (space-to-Earth)",
+      "bands": [
+        { "lowMHz": 19300, "highMHz": 19700 },
+        { "lowMHz": 21400, "highMHz": 22000, "regions": [1, 3] },
+        { "lowMHz": 22550, "highMHz": 23550 },
+        { "lowMHz": 24450, "highMHz": 24750 },
+        { "lowMHz": 25250, "highMHz": 27500 }
+      ],
+      "services": ["FSS", "BSS", "EESS", "ISS", "SR"], "orbit": null, "footnotes": ["21.16.6B"],
+      "when": [
+        { "hio": false },
+        { "services": ["FSS"], "hio": true, "res147": true },
+        { "lowMHz": 21400 }
+      ],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115, "notes": ["21.16.6B"] },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5, "notes": ["21.16.6B"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.6B"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.24", "page": "RR21-10",
+      "bandText": "27.500-27.501 GHz",
+      "serviceText": "Fixed-satellite (space-to-Earth)",
+      "bands": [{ "lowMHz": 27500, "highMHz": 27501 }],
+      "services": ["FSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115 },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.25", "page": "RR21-10",
+      "bandText": "27.5-30.0 GHz",
+      "serviceText": "Inter-satellite (non-geostationary satellite orbit)",
+      "bands": [{ "lowMHz": 27500, "highMHz": 30000 }],
+      "services": ["ISS"], "orbit": "NGSO", "footnotes": ["21.16.19"],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + 0.5(δ − 5)", "−110"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120 },
+          { "from": 5, "to": 25, "a": -120, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -110 }
+        ] }]
+    },
+    {
+      "id": "T21-4.26", "page": "RR21-10",
+      "bandText": "31.0-31.3 GHz; 34.7-35.2 GHz (space-to-Earth transmissions referred to in No. 5.550 on the territories of countries listed in No. 5.549)",
+      "serviceText": "Space research",
+      "bands": [
+        { "lowMHz": 31000, "highMHz": 31300 },
+        { "lowMHz": 34700, "highMHz": 35200, "countryLists": ["5.549"], "note": "space-to-Earth transmissions referred to in No. 5.550" }
+      ],
+      "services": ["SR"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115 },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.27", "page": "RR21-10",
+      "bandText": "31.8-32.3 GHz",
+      "serviceText": "Space research",
+      "bands": [{ "lowMHz": 31800, "highMHz": 32300 }],
+      "services": ["SR"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + 0.75(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120, "notes": ["21.16.10"] },
+          { "from": 5, "to": 25, "a": -120, "slope": 0.75, "d0": 5, "notes": ["21.16.10"] },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.28", "page": "RR21-10",
+      "bandText": "32.3-33 GHz",
+      "serviceText": "Inter-satellite",
+      "bands": [{ "lowMHz": 32300, "highMHz": 33000 }],
+      "services": ["ISS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−135", "−135 + (δ − 5)", "−115"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -135 },
+          { "from": 5, "to": 25, "a": -135, "slope": 1, "d0": 5 },
+          { "from": 25, "to": 90, "a": -115 }
+        ] }]
+    },
+    {
+      "id": "T21-4.29", "page": "RR21-10",
+      "bandText": "37-38 GHz",
+      "serviceText": "Space research (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 37000, "highMHz": 38000 }],
+      "services": ["SR"], "orbit": "NGSO", "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + 0.75(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120, "notes": ["21.16.10"] },
+          { "from": 5, "to": 25, "a": -120, "slope": 0.75, "d0": 5, "notes": ["21.16.10"] },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.30", "page": "RR21-10",
+      "bandText": "37-38 GHz",
+      "serviceText": "Space research (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 37000, "highMHz": 38000 }],
+      "services": ["SR"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−125", "−125 + (δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -125 },
+          { "from": 5, "to": 25, "a": -125, "slope": 1, "d0": 5 },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.31", "page": "RR21-10",
+      "bandText": "37.5-40 GHz",
+      "serviceText": "Fixed-satellite (non-geostationary-satellite orbit); Mobile-satellite (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 37500, "highMHz": 40000 }],
+      "services": ["FSS", "MSS"], "orbit": "NGSO", "footnotes": ["21.16.4", "21.16.14"],
+      "when": [{ "nMax": 99 }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + 0.75(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 5, "to": 25, "a": -120, "slope": 0.75, "d0": 5, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.4", "21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.32", "page": "RR21-10",
+      "bandText": "37.5-40 GHz",
+      "serviceText": "Fixed-satellite (geostationary-satellite orbit); Mobile-satellite (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 37500, "highMHz": 40000 }],
+      "services": ["FSS", "MSS"], "orbit": "GSO", "footnotes": ["21.16.14"],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−127", "−127 + (4/3)(δ − 5)", "−107 + 0.4(δ − 20)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -127, "notes": ["21.16.14"] },
+          { "from": 5, "to": 20, "a": -127, "slope": 1.3333333333333333, "d0": 5, "notes": ["21.16.14"] },
+          { "from": 20, "to": 25, "a": -107, "slope": 0.4, "d0": 20, "notes": ["21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.33", "page": "RR21-10",
+      "bandText": "40-40.5 GHz",
+      "serviceText": "Fixed-satellite; Mobile-satellite",
+      "bands": [{ "lowMHz": 40000, "highMHz": 40500 }],
+      "services": ["FSS", "MSS"], "orbit": null, "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115 },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    },
+    {
+      "id": "T21-4.34", "page": "RR21-10",
+      "bandText": "40.5-42 GHz",
+      "serviceText": "Fixed-satellite (non-geostationary-satellite orbit); Broadcasting-satellite (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 40500, "highMHz": 42000 }],
+      "services": ["FSS", "BSS"], "orbit": "NGSO", "footnotes": ["21.16.4", "21.16.14"],
+      "when": [{ "nMax": 99 }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.4", "21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.35", "page": "RR21-11",
+      "bandText": "40.5-42 GHz",
+      "serviceText": "Fixed-satellite (geostationary-satellite orbit); Broadcasting-satellite (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 40500, "highMHz": 42000 }],
+      "services": ["FSS", "BSS"], "orbit": "GSO", "footnotes": ["21.16.14"],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + (δ − 5)", "−110 + 0.5(δ − 15)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120, "notes": ["21.16.14"] },
+          { "from": 5, "to": 15, "a": -120, "slope": 1, "d0": 5, "notes": ["21.16.14"] },
+          { "from": 15, "to": 25, "a": -110, "slope": 0.5, "d0": 15, "notes": ["21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.36", "page": "RR21-11",
+      "bandText": "42-42.5 GHz",
+      "serviceText": "Fixed-satellite (non-geostationary-satellite orbit); Broadcasting-satellite (non-geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 42000, "highMHz": 42500 }],
+      "services": ["FSS", "BSS"], "orbit": "NGSO", "footnotes": ["21.16.4", "21.16.14"],
+      "when": [{ "nMax": 99 }],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−120", "−120 + 0.75(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -120, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 5, "to": 25, "a": -120, "slope": 0.75, "d0": 5, "notes": ["21.16.4", "21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.4", "21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.37", "page": "RR21-11",
+      "bandText": "42-42.5 GHz",
+      "serviceText": "Fixed-satellite (geostationary-satellite orbit); Broadcasting-satellite (geostationary-satellite orbit)",
+      "bands": [{ "lowMHz": 42000, "highMHz": 42500 }],
+      "services": ["FSS", "BSS"], "orbit": "GSO", "footnotes": ["21.16.14"],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−127", "−127 + (4/3)(δ − 5)", "−107 + 0.4(δ − 20)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -127, "notes": ["21.16.14"] },
+          { "from": 5, "to": 20, "a": -127, "slope": 1.3333333333333333, "d0": 5, "notes": ["21.16.14"] },
+          { "from": 20, "to": 25, "a": -107, "slope": 0.4, "d0": 20, "notes": ["21.16.14"] },
+          { "from": 25, "to": 90, "a": -105, "notes": ["21.16.14"] }
+        ] }]
+    },
+    {
+      "id": "T21-4.38", "page": "RR21-11",
+      "bandText": "In Region 1: 47.5-47.9 GHz; 48.2-48.54 GHz; 49.44-50.2 GHz",
+      "serviceText": "Fixed-satellite (geostationary-satellite orbit)",
+      "bands": [
+        { "lowMHz": 47500, "highMHz": 47900, "regions": [1] },
+        { "lowMHz": 48200, "highMHz": 48540, "regions": [1] },
+        { "lowMHz": 49440, "highMHz": 50200, "regions": [1] }
+      ],
+      "services": ["FSS"], "orbit": "GSO", "footnotes": [],
+      "limits": [{ "refBwHz": 1000000, "cells": ["−115", "−115 + 0.5(δ − 5)", "−105"],
+        "segments": [
+          { "from": 0, "to": 5, "a": -115 },
+          { "from": 5, "to": 25, "a": -115, "slope": 0.5, "d0": 5 },
+          { "from": 25, "to": 90, "a": -105 }
+        ] }]
+    }
+  ]
+}

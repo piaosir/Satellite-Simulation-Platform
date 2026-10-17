@@ -198,7 +198,7 @@ ok('normMode 认得出 SNR 的各种写法', ['SNR', 'snr', 'SNR(dB)', 'SINR', '
 ok('normMode 不把 Es/N₀ 与 Eb/N₀ 误判成 snr',
   ['Es/N₀', 'EsNo', 'Es/N0', ''].every((v) => M.normMode(v) === 'esno') &&
   ['Eb/N₀', 'EbNo', 'ebno'].every((v) => M.normMode(v) === 'ebno'))
-ok('listStandards 现在有 12 个内置标准（4 DVB + 5 NR + 3 NB）', M.listStandards().length === 12)
+ok('listStandards 现在有 14 个内置标准（6 DVB + 5 NR + 3 NB；DVB-S2X 短帧 / VL-SNR 中帧 2026-10-17 起各成一张）', M.listStandards().length === 14)
 ok('下拉分组齐全（DVB / 3GPP NR-NTN / 3GPP NB-IoT NTN）',
   ['DVB', '3GPP NR-NTN', '3GPP NB-IoT NTN'].every((g) => M.listStandards().some((s) => s.group === g)))
 ok('★ 没动过就不落库：storeFromList(listStandards()) 是空差异（升级后新版门限直接生效）', (() => {

@@ -12,17 +12,19 @@
 //      线性轴会把整个主瓣压成贴着纵轴的一条竖线——正是环图看不清的同一个毛病。
 //   ② 纵轴锚在峰值：右侧副刻度直接标**鉴别度**（峰值 − 增益），读图不必心算。
 //   ③ 干扰星画在曲线上并向下引垂线到横轴：一眼看到它踩在方向图的哪一段
-//      （主瓣 / φ₁ 拐点 / 29−25lgφ 斜坡 / 远场底板），这决定了鉴别度是几 dB。
+//      （主瓣 / 主瓣边界 / 旁瓣斜坡 / 远场底板），这决定了鉴别度是几 dB。曲线是所选的地球站方向图
+//      （缺省 ITU-R S.465-6），名称与版本写在图左下角。
 import { computed, ref } from 'vue'
 import { layoutLabels } from './ciPlotLabels.js'
 import { PLOT_FS as FS, usePlotWidth, usePlotSeriesVars } from './ciPlotKit.js'
 
 const props = defineProps({
   curve: { type: Array, default: () => [] },        // [{deg, gainDbi}]，对数角度轴采样
-  marks: { type: Array, default: () => [] },        // [{deg, gainDbi, key, label}] AP8 结构角
+  marks: { type: Array, default: () => [] },        // [{deg, gainDbi, key, label}] 所选方向图的分段结构角
   sources: { type: Array, default: () => [] },      // 干扰源
   peakGainDbi: { type: Number, default: null },
-  hoveredId: { type: String, default: '' }
+  hoveredId: { type: String, default: '' },
+  patternName: { type: String, default: '' }        // 所用方向图（名称 · 版本），写在图左下角，导出的 PNG 自带出处
 })
 const emit = defineEmits(['hover'])
 
@@ -138,7 +140,7 @@ defineExpose({ svg: svgEl })
         <text v-if="Number.isFinite(Number(peakGainDbi))" :x="M.l + PW + 5" :y="yOf(v)" class="tick dim" dominant-baseline="middle">{{ fmt(peakGainDbi - v, 0) }}</text>
       </g>
 
-      <!-- AP8 结构角：竖线 + 顶部标签 -->
+      <!-- 方向图分段结构角：竖线 + 顶部标签 -->
       <g v-for="(m, i) in marks" :key="'m' + m.key">
         <line :x1="xOf(m.deg)" :y1="M.t" :x2="xOf(m.deg)" :y2="M.t + PH" class="mark" :class="m.key" />
         <text :x="xOf(m.deg) + 2" :y="M.t + FS + (i % 2) * (FS + 2)" class="mark-lab" :class="m.key">{{ m.label }}</text>
@@ -175,6 +177,7 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 
       <!-- 轴名 -->
       <text :x="M.l + PW / 2" :y="H - 6" class="axis" text-anchor="middle">离轴角 φ (°)</text>
+      <text v-if="patternName" :x="4" :y="H - 6" class="pat-name">{{ patternName }}</text>
       <text :x="14" :y="M.t + PH / 2" class="axis" text-anchor="middle" :transform="`rotate(-90 14 ${M.t + PH / 2})`">增益 (dBi)</text>
       <text :x="W - 12" :y="M.t + PH / 2" class="axis dim" text-anchor="middle" :transform="`rotate(90 ${W - 12} ${M.t + PH / 2})`">鉴别度 (dB)</text>
     </svg>
@@ -195,6 +198,7 @@ C/I {{ fmt(p.ciDb, 2) }} dB<template v-if="Number.isFinite(p.sharePct)">
 .axis.dim { opacity: 0.7; font-weight: 500; }
 
 .curve { fill: none; stroke: var(--plot-s0); stroke-width: 1.8; stroke-linejoin: round; }
+.pat-name { font-size: 11px; fill: var(--text-faint); }
 .peak { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 4 3; }
 .peak-lab { font-size: 11px; fill: var(--text-muted); }
 

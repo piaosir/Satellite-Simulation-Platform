@@ -58,7 +58,7 @@ export function createBeamScriptRunner() {
           if (e && e.preventDefault) e.preventDefault()
           finish({ ok: false, files: [], logs: [], ms: 0, error: { name: 'Error', message: String((e && e.message) || (opts.lang === 'en' ? 'Sandbox worker failed' : '沙箱 Worker 异常')), line: null, col: null } })
         }
-        w.postMessage({ type: 'run', code: String(code), token: tk, lang: opts.lang === 'en' ? 'en' : 'zh', scriptName: String(opts.scriptName || '') })
+        w.postMessage({ type: 'run', code: String(code), token: tk, lang: opts.lang === 'en' ? 'en' : 'zh', scriptName: String(opts.scriptName || ''), mode: opts.mode === 'import' ? 'import' : 'export' })
       })
     },
     cancel,

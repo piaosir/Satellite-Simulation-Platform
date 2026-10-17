@@ -5,7 +5,8 @@
 //
 // 四级链路（与 omm.js 逐级对应，只是 URL / 判据 / 标签不同）：
 //   ① 当日缓存闸：<userData>/data/space-weather/solar-flux.json 是今天写的 → 不联网；
-//   ② 直连 NOAA SWPC 四个产品（各 20 s 超时、各 2 次）→ 落盘 + 众包回传云镜像；
+//   ② 直连 NOAA SWPC 四个产品（各 20 s 超时；只有连接层失败才退避再试一次，有 HTTP 响应的不重试，
+//      站点级拒绝 403 / 429 / 5xx 即停本轮其余产品 —— 与 omm.js 直连纪律同口径）→ 落盘 + 众包回传云镜像；
 //   ③ 云镜像（腾讯云 COS，与星历同一个桶的 omm/ 前缀，键 solarflux）；
 //   ④ 用户缓存 / 内置快照 resources/space-weather/solar-flux.json（随安装包分发，无网也能算）。
 // 「今天已试过直连」单独记一份 swpc-attempt.json（不与 celestrak 那份共用：两边是两个站点，
@@ -18,9 +19,9 @@
 //
 // 环境变量：SATSIM_SWPC_BUNDLE_DIR 覆盖内置快照目录（同 SATSIM_OMM_BUNDLE_DIR）；
 //           SATSIM_SWPC_OFFLINE=1 彻底关掉联网（测试与离线验收用 —— 单测不许摸网络）。
-const https = require('https')
 const fs = require('fs')
 const path = require('path')
+const netFetch = require('./netFetch')
 const ommCloud = require('./ommCloud')
 const log = require('./ommLog')
 const { fmtBytes, fmtSec, fmtTime } = log
@@ -30,8 +31,11 @@ const { validSolarFlux } = require('../../packages/core/utils/solarFluxValid.js'
 const TAG = '太阳射电流量：'
 const CLOUD_KEY = 'solarflux'          // 云镜像对象名 omm/csv_solarflux.csv.gz（键任意，CAM 已放行 omm/*）
 const CLOUD_LABEL = '太阳射电流量 F10.7'
-const TIMEOUT = 20000
-const TRIES = 2
+const TIMEOUT = 20000          // 无进展超时
+const MAX_MS = 2 * 60_000      // 总时限，兜慢滴
+const TRIES = 2                // 每个产品至多几次：第二次只留给连接层失败
+const NET_BACKOFF_MS = 1000    // 连接层失败后再试前的退避
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 // NOAA SWPC 四个产品（附录 B 有格式速记）。label 只进日志。
 const SOURCES = {
@@ -115,37 +119,26 @@ function markTried() {
 
 /* ============================ 联网 ============================ */
 
-// 与 omm.js 的 httpGetText 同一条路子：优先 Electron net（走系统代理 / VPN，国内访问的关键），
-// 无 Electron 时回退 Node https（脚本与测试环境）。
-function httpGetText(url) {
-  return new Promise((resolve) => {
-    const fail = (why) => resolve({ text: null, why })
-    let net = null
-    try { net = require('electron').net } catch (e) { /* 非 Electron */ }
-    if (net && typeof net.request === 'function') {
-      let buf = '', done = false
-      const req = net.request(url)
-      req.setHeader('User-Agent', 'satsim-desktop')
-      req.on('response', (res) => {
-        if (res.statusCode !== 200) { done = true; res.on('data', () => {}); res.on('end', () => fail('HTTP ' + res.statusCode)); return }
-        res.on('data', (c) => (buf += c))
-        res.on('end', () => { done = true; resolve({ text: buf, why: '' }) })
-      })
-      req.on('error', (e) => { done = true; fail('连接失败 · ' + ((e && e.message) || e)) })
-      setTimeout(() => { if (!done) { try { req.abort() } catch (e) {} ; fail('连接超时 ' + (TIMEOUT / 1000) + 's') } }, TIMEOUT)
-      try { req.end() } catch (e) { done = true; fail('请求发起失败 · ' + e.message) }
-      return
-    }
-    const req = https.get(url, { timeout: TIMEOUT, headers: { 'User-Agent': 'satsim-desktop' } }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return fail('HTTP ' + res.statusCode) }
-      let buf = ''
-      res.on('data', (c) => (buf += c))
-      res.on('end', () => resolve({ text: buf, why: '' }))
-    })
-    req.on('error', (e) => fail('连接失败 · ' + ((e && e.message) || e)))
-    req.on('timeout', () => { req.destroy(); fail('连接超时 ' + (TIMEOUT / 1000) + 's') })
-  })
+// 与 omm.js 的 httpGetText 同一条路子：走 netFetch（优先 Electron net：系统代理 / 单位审计网关 / 热点慢链路；
+// 无 Electron 时回退 Node https）。非 200 也等正文收完才落地；截断 / 超时一律落成失败，不会悬住。
+// status：HTTP 状态码；连接层失败（含 200 的正文被掐断）为 0 —— 只有这一类值得再试。
+async function httpGetText(url) {
+  try {
+    const r = await netFetch.request(url, { headers: { 'User-Agent': 'satsim-desktop' }, idleMs: TIMEOUT, maxMs: MAX_MS })
+    if (r.status !== 200) return { text: null, why: 'HTTP ' + r.status, status: r.status }
+    return { text: r.body.toString('utf8'), why: '', status: 200 }
+  } catch (e) {
+    const http = !!(e.status && e.status !== 200)
+    const why = e.kind === 'timeout' ? '连接超时 · ' + e.message : e.kind === 'cut' ? e.message : '连接失败 · ' + (e.code || e.message)
+    return { text: null, why: http ? `HTTP ${e.status}（${why}）` : why, status: http ? e.status : 0 }
+  }
 }
+
+// 四个产品各自的解析器：正文解得出条目才算这一份取到了。
+// 门户 / 网关把请求劫持成 200 + 网页时，HTTP 层面是「成功」的 —— 不过这一关，就会被记成「直连成功」、
+// 还会把它当新数据回传云镜像
+const PARSE = { daily30: pick.parseDaily30, forecast45: pick.parseForecast45, monthly: pick.parseMonthly, predicted: pick.parsePredicted }
+const nParsed = (key, text) => { try { return Object.keys(PARSE[key](text) || {}).length } catch (e) { return 0 } }
 
 /* ============================ 服务状态 ============================ */
 
@@ -227,14 +220,25 @@ async function doRefresh(o) {
   } else {
     const t0 = Date.now()
     const fresh = {}
-    let got = 0
+    let got = 0, stopWhy = '', skipped = 0   // stopWhy：站点级拒绝（403 / 429 / 5xx）的那次响应 —— 本轮其余产品不再请求
     for (const key of pick.PRODUCTS) {
       const src = SOURCES[key]
-      let text = null, why = ''
-      for (let i = 0; i < TRIES && !text; i++) { const r = await httpGetText(src.url); text = r.text; why = r.why }
-      if (text) { fresh[key] = text; got++ }
-      else log.emit(`${TAG}${src.label} ${TRIES} 次尝试均失败（${why || '返回内容为空'}）`, 'warn')
+      if (stopWhy) { skipped++; continue }
+      let ok = null, why = '', n = 0
+      // 只有连接层失败才退避再试；有 HTTP 响应的（非 200、或 200 但解不出条目）再要一遍还是这份
+      for (let net = true; n < TRIES && !ok && net;) {
+        if (n) await sleep(NET_BACKOFF_MS)
+        const r = await httpGetText(src.url)
+        n++
+        net = !r.status
+        if (r.text && nParsed(key, r.text) > 0) ok = r.text
+        else why = r.text ? (/^\s*</.test(r.text) ? '返回的是网页，不是该产品' : '返回内容解析不出条目') : r.why
+        if (r.status === 403 || r.status === 429 || r.status >= 500) stopWhy = r.why
+      }
+      if (ok) { fresh[key] = ok; got++ }
+      else log.emit(`${TAG}${src.label} ${n > 1 ? `${n} 次尝试均失败` : '获取失败'}（${why || '返回内容为空'}）`, 'warn')
     }
+    if (skipped) log.emit(`${TAG}SWPC 返回 ${stopWhy}，本轮其余 ${skipped} 个产品不再请求`, 'warn')
     markTried()
     if (got) {
       const merged = pick.mergeProducts(cur ? cur.data : null, fresh, new Date().toISOString())
@@ -260,6 +264,12 @@ async function doRefresh(o) {
   if (cloud) {
     let merged = null
     try { merged = JSON.parse(cloud.text) } catch (e) { merged = null }
+    // 强制刷新时上面不设闸，落盘前补比一次数据时间：云端那份不比本机这份新，就保留本机（不拿旧的盖新的）
+    const msOf = (v) => { const t = v ? Date.parse(v) : NaN; return Number.isFinite(t) ? t : 0 }
+    if (merged && cur && msOf(merged.fetchedAt || cloud.fetchedAt) <= msOf(cur.fetchedAt)) {
+      log.emit(`${TAG}云镜像数据时间 ${fmtTime(merged.fetchedAt || cloud.fetchedAt)} 不新于本机 ${fmtTime(cur.fetchedAt)}，保留${SRC_NAME[cur.source] || cur.source}`)
+      return { ok: false, source: cur.source, fetchedAt: cur.fetchedAt }
+    }
     if (merged) {
       try { ensureDir(); fs.writeFileSync(dataFile(), cloud.text); const t = new Date(cloud.fetchedAt); fs.utimesSync(dataFile(), t, t) } catch (e) { /* 写不进就只在内存里 */ }
       _mem = { data: merged, source: 'cloud', fetchedAt: merged.fetchedAt || cloud.fetchedAt, mtime: cloud.fetchedAt }

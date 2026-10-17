@@ -1,0 +1,12 @@
+const fs=require('fs'),path=require('path');
+const REPO='C:/Users/85256/WeChatProjects/卫星仿真平台';
+const core=require(path.join(REPO,'packages/core/index.js'));
+const rd=(f)=>fs.readFileSync(path.join(REPO,'resources/itu',f));
+core.loadFullPrecisionData({rain:rd('p837_r001_v2.bin'),elev:rd('topo_v1.bin'),vapor:rd('p836_rho_v1.bin'),cloud:rd('p840_logn_v1.bin')});
+const lat=23.13, lon=113.26, f=20, av=99.9;
+const R=core.geoAutoFill(lat,lon).rainRate;
+const lb=core.calculateLinkBudget({frequencyBand:'Ka',orbitPosition:110.5},{centerFrequency:30,rxCenterFrequency:f,uplinkAvailability:100,rxLatitude:lat,rxLongitude:lon,rxRainRate:R,rxDownlinkAvailability:av,rxAntennaDiameter:1.2,rxAntennaEfficiency:65,rxFeederLoss:0.3,rxReceiverNoiseTemp:75,rxAntennaNoiseTempMode:'自动',downlinkPolarization:'L'}).data;
+const Tclear=+lb.systemNoiseTempKResult;
+const rp=core.calculateRainAttenuation({lat,lon,satLon:110.5,freq:f,pol:'C',diameter:1.2,efficiency:65,availability:av,rainRate:R,systemNoiseTemp:Tclear,direction:'down',altitude:0,feederLoss:0.3});
+console.log(`同站同频同可用度：链路预算 雨衰 ${lb.downlinkRainAttenuationResult} dB / 云衰 ${lb.downlinkCloudAttenuation} dB / 雨致 G/T 劣化 ${lb.gOverTdegradationResult} dB（T_sys 晴空 ${Tclear} K）`);
+console.log(`              雨衰页   雨衰 ${rp.rainAtten.toFixed(2)} dB / 云衰 ${rp.cloudAtten.toFixed(2)} dB / G/T 衰减 ${rp.gtDegradation.toFixed(2)} dB / DND ${rp.dnd.toFixed(2)} dB`);

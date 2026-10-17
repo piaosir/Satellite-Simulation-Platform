@@ -10,15 +10,18 @@
 //      只带一个引用 ref:{groupId,key}，取位靠插值；表几 MB，绝不进池记录与 IPC 参数。
 // 统一记录 schema（供搜索显示 + 选星建 orbit spec）：
 //   { name, altName?, noradId, incl, meanMotion, ecc, orbitType:'omm'|'elements'|'ephem',
-//     epoch?/raan?/argp?/ma?/bstar?/mdot?/mddot? (omm), elements?{altKm,ecc,incl,raan,argp,ma} (custom),
+//     epoch?/raan?/argp?/ma?/bstar?/mdot?/mddot? (omm), elements?{altKm,ecc,incl,raan,argp,ma} + epochFrame?'earth'|'sun' (custom),
 //     ref?{groupId,key} + summary?{t0,t1,n,frame,interp} (ephem),
 //     apogeeKm, perigeeKm, groupLabel, custom? }
 
 import { fetchGroupLiveOrSup, parseOMMCsv } from '../viz/constellation/tle.js'
-import { generateConstellation } from '../viz/constellation/walker.js'
 import { resolveScenarioEpoch } from '../viz/constellation/useCustomConstellations.js'
+import { customConstSats, designFrame } from '../viz/constellation/customConstGen.js'
 import sat from '../viz/constellation/satellite.js'
 import { geoLonAtEpoch } from '../shared/geoSlot.js'
+import { tableFrom, evalTable } from '../viz/constellation/ephemTable.js'
+import { metricsFromEphem } from '../shared/satrecMetrics.js'
+import { elementsMeanMotion, ommFromElements } from '../shared/sgp4Mean.js'   // 合成根数 → SGP4 Kozai 平均运动（与 3D 页 / 主进程同一口径）
 
 const RE = 6378.137
 const MU = 398600.4418
@@ -51,16 +54,19 @@ function fromOmm(s, groupLabel) {
 // 自定义星座单星（经典六根数）→ 池记录（type:'elements'）
 // epoch=星座场景历元 scenarioEpoch（与星座3D 页同源、按 resolveScenarioEpoch 同规则解析）：RAAN/MA 依此历元设计，
 // 必须一路透传到 buildSatrec，否则历元不一致 → 自定义星地固指向与 3D 页不一致（详见 useCustomConstellations 注释）。
-function fromCustom(satObj, noradId, constName, epoch) {
+// frame：向导里 RAAN 随历元重解的那类设计量（'earth' / 'sun'，customConstGen.designFrame），记作 epochFrame ——
+// 库条目拍下的是选星那天的 RAAN，scenarioEpochPatch 据此认星并连 RAAN 一起换成当前的。惯性 RAAN 的不带这一项。
+function fromCustom(satObj, noradId, constName, epoch, frame) {
   const el = satObj.elements || {}
   const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
   const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)          // a=(RE+近地点高度)/(1−e)，与 elementsToSatrec 一致
-  const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / TWO_PI
+  const meanMotion = elementsMeanMotion(el)                      // 喂 SGP4 的 Kozai 值（sgp4Mean 通用口径，与建星同一份）
   return {
     name: satObj.name, noradId: String(noradId), incl: String(el.incl), meanMotion: meanMotion.toFixed(6), ecc: String(ecc),
     orbitType: 'elements', epoch: epoch || null,
     elements: { altKm: Number(el.altKm) || 0, ecc, incl: Number(el.incl) || 0, raan: Number(el.raan) || 0, argp: Number(el.argp) || 0, ma: Number(el.ma) || 0 },
-    ...apoPeri(a, ecc), groupLabel: '自定义 · ' + constName, custom: true
+    ...apoPeri(a, ecc), groupLabel: '自定义 · ' + constName, custom: true,
+    ...(frame ? { epochFrame: frame } : {})
   }
 }
 
@@ -107,9 +113,10 @@ async function loadCustomOmmSats() {
   } catch { return [] }
 }
 
-// 读本地自定义星座（与星座3D 页同键、同 walker 生成逻辑），返回 { sats, names, epoch }
+// 读本地自定义星座（与星座3D 页同键、同一出口 customConstSats 生成），返回 { sats, names, epoch }
 // epoch=共享场景历元：由 resolveScenarioEpoch 按「每天更新」规则解析（默认当天 08:00，当天人为改过则用人为值），
-// 与 3D 页同源同规则 → 透传给每颗合成星，供 NGSO 几何按同一设计历元求解、跨窗口一致。
+// 与 3D 页同源同规则 → 透传给每颗合成星，供 NGSO 几何按同一设计历元求解、跨窗口一致；
+// 轨道向导里地固经度 / 地方时为设计量的星座按这个历元重解 RAAN（customConstGen 头注）。
 export function loadCustomSats() {
   let blob = null
   try { blob = JSON.parse(localStorage.getItem(CUSTOM_KEY) || 'null') } catch { return { sats: [], names: [], epoch: null } }
@@ -122,8 +129,9 @@ export function loadCustomSats() {
     names.push(name)
     const b = Number.isFinite(c.noradBase) ? c.noradBase : base
     let gen = []
-    try { gen = generateConstellation(c.params || {}) } catch { gen = [] }
-    for (let i = 0; i < gen.length; i++) sats.push(fromCustom(gen[i], b + i, name, epoch))
+    try { gen = customConstSats(c, epoch) } catch { gen = [] }
+    const frame = designFrame(c)
+    for (let i = 0; i < gen.length; i++) sats.push(fromCustom(gen[i], b + i, name, epoch, frame))
     base += NORAD_STEP
   }
   return { sats, names, epoch }
@@ -185,9 +193,10 @@ export async function findPoolByNorad(noradId) {
 // 池记录 → 轨道 spec / 定点经度 —— 取星的【唯一出口】
 // ============================================================================
 // 各窗口选完星之后要的东西只有两样：喂 SGP4 的轨道 spec，和 GEO 的定点经度。
-// 这两件都只跟池记录的形状有关，不该由每个窗口各按 orbitType 分支、各手拼一遍十三个字段
-// （NGSO 窗口里那三处手拼是历史欠账）。将来星历导入新增 'ephem' 型池记录时，只需在这里加一支，
-// 用到它的窗口一行都不用改 —— 这是「星历导入」那份设计与本文件的接口约定。
+// 这两件都只跟池记录的形状有关，不该由每个窗口各按 orbitType 分支、各手拼一遍十三个字段。
+// 手拼的代价已经实付过一次：只分「六根数 / 其余」两支的手拼把 'ephem' 型池记录（导入的点序列星）拼成全空 OMM，
+// 自动最差每行报「SGP4 初始化失败（error=2）」。NGSO 窗口的取星（星历搜索 / 卫星树关联星 / 地图带星）与再生式窗口的
+// 地图带星现已走这里（2026-10-16）；再生式 / 端到端的取星面板（RegenSatPanel / E2eSatPanel）仍是手拼，待收。
 
 /** 池记录 → 轨道 spec（packages/core 的 buildSatrec / orbitSource 入参）。未知类型抛错。 */
 export function orbitSpecOf(rec) {
@@ -238,6 +247,67 @@ export function orbitSpecOf(rec) {
   throw new Error('未知轨道类型：' + t)
 }
 
+// ============================================================================
+// 星历点序列星 → 表单回显用的轨道高度 / 倾角
+// ============================================================================
+// 选星后链路预算窗口的「轨道高度 / 轨道倾角」只读显示「自动」：目录星按平均运动 / 倾角回显、六根数星按根数回显；
+// 点序列星没有平均根数（池记录的 meanMotion / incl 都是 null），不另取的话表单停在上一颗星的值——手动几何还拿它推
+// 各行斜距。口径同星座 3D 页带星进计算窗（ConstellationMap3D 的 ephemCtxGeom）：
+//   高度 = 近远地点高度均值（satrecMetrics.metricsFromEphem：整表地心距极值，表须跨满一圈）→ 周期反推半长轴 → 表首一拍的密切半长轴；
+//   倾角 = 轨道面法向（metricsFromEphem）→ 表首一拍的密切倾角。取不到的项给 null（编不出来的数不许编）。
+const oscOf = (pv) => {   // evalTable 的 { x,y,z,vx,vy,vz }（TEME km / km·s⁻¹）→ 密切半长轴 / 倾角
+  const rn = Math.hypot(pv.x, pv.y, pv.z), v2 = pv.vx * pv.vx + pv.vy * pv.vy + pv.vz * pv.vz
+  const inv = 2 / rn - v2 / MU                       // 1/a（活力公式）；≤ 0 = 不是绕地闭合轨道
+  if (!(rn > 0) || !(inv > 0)) return null
+  const hx = pv.y * pv.vz - pv.z * pv.vy, hy = pv.z * pv.vx - pv.x * pv.vz, hz = pv.x * pv.vy - pv.y * pv.vx, h = Math.hypot(hx, hy, hz)
+  return h > 0 ? { aKm: 1 / inv, inclDeg: Math.acos(Math.max(-1, Math.min(1, hz / h))) * 180 / Math.PI } : null
+}
+/** 采样表（ephemTable.tableFrom 建好的）→ { altKm, inclDeg }，取不到的项为 null；不是表返回 null。纯函数。 */
+export function ephemEchoFromTable(tab) {
+  if (!tab || !tab.__ephem) return null
+  const m = metricsFromEphem(tab) || {}
+  let altKm = null
+  let inclDeg = Number.isFinite(m.incl) ? m.incl : null
+  if (m.apogeeKm != null && m.perigeeKm != null) altKm = (m.apogeeKm + m.perigeeKm) / 2
+  else if (m.periodMin > 0) altKm = Math.cbrt(MU * Math.pow(m.periodMin * 60 / TWO_PI, 2)) - RE
+  if (altKm == null || inclDeg == null) {
+    const pv = evalTable(tab, tab.t0)
+    const o = pv ? oscOf(pv) : null
+    if (o) { if (altKm == null) altKm = o.aKm - RE; if (inclDeg == null) inclDeg = o.inclDeg }
+  }
+  return { altKm: Number.isFinite(altKm) && altKm > 0 ? altKm : null, inclDeg: Number.isFinite(inclDeg) ? inclDeg : null }
+}
+/**
+ * 点序列星的轨道 spec（orbitSpecOf 出的 {type:'ephem', ref}）→ { altKm, inclDeg }。
+ * 表经 omm:ephemTable 现取（几 MB，只在选星 / 重解那一下取，不进配置与 IPC 参数）；不是点序列 / 取不到表返回 null。
+ */
+export async function ephemOrbitEcho(spec) {
+  if (!spec || spec.type !== 'ephem' || !spec.ref || !spec.ref.groupId) return null
+  const api = (typeof window !== 'undefined') && window.api
+  if (!api || !api.omm || !api.omm.ephemTable) return null
+  let t = null
+  try { t = await api.omm.ephemTable(spec.ref.groupId) } catch { return null }
+  const s = ((t && t.sats) || []).find((x) => x && String(x.key) === String(spec.ref.key))
+  return ephemEchoFromTable(s ? tableFrom(s) : null)
+}
+
+// 再生式 / 端到端两份卫星面板的 orbitToForm 共用：点序列星的高度 / 倾角按采样表异步回显到表单。
+// 同一表单后来又换了星（另一颗点序列星，或目录星 / 六根数星——对它们调一次即作废在途回显），晚到的这次不写；
+// 取不到表 / 表坏：表单不动（计算时主进程会点名报因）。NGSO 窗口按条目上的 orbit 自己核对（echoEphemOrbit），不走这里。
+const _ephemEchoFor = new WeakMap()   // 表单（同一个响应式代理）→ 最近一次要回显的点序列引用
+export function echoEphemToForm(form, spec) {
+  if (!form || typeof form !== 'object') return
+  if (!spec || spec.type !== 'ephem' || !spec.ref || !spec.ref.groupId) { _ephemEchoFor.delete(form); return }
+  const key = spec.ref.groupId + '|' + spec.ref.key
+  _ephemEchoFor.set(form, key)
+  return ephemOrbitEcho(spec).then((e) => {
+    if (!e || _ephemEchoFor.get(form) !== key) return
+    _ephemEchoFor.delete(form)
+    if (e.altKm != null) form.orbitAltitude = String(Math.round(e.altKm))
+    form.orbitInclination = e.inclDeg != null ? String(Math.round(e.inclDeg * 100) / 100) : ''   // 表里推不出倾角就留空，不留上一颗星的
+  }).catch(() => {})
+}
+
 /**
  * 池记录 → 定点经度（°，西经为负）。取不到返回 NaN（不抛）。
  * 记录自带 summary.lonDeg 时优先用它（将来的 'ephem' 型记录只带摘要，不必建 satrec）。
@@ -252,18 +322,8 @@ export function slotLonOf(rec) {
     if (t === 'ephem') return NaN
     if (t === 'omm') return geoLonAtEpoch(sat.omm2satrec(rec))
     if (t === 'elements') {
-      // 与 buildSatrec 的 'elements' 分支同一换算：a=(RE+近地点高度)/(1−e)，n=√(μ/a³)
-      const el = rec.elements || {}
-      const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
-      const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)
-      const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / TWO_PI
-      return geoLonAtEpoch(sat.omm2satrec({
-        noradId: rec.noradId, epoch: rec.epoch || new Date().toISOString(),
-        meanMotion, ecc,
-        incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
-        argp: Number(el.argp) || 0, ma: Number(el.ma) || 0,
-        bstar: 0, mdot: 0, mddot: 0
-      }))
+      // 与 buildSatrec 的 'elements' 分支同一换算（sgp4Mean.ommFromElements：平半长轴 = (RE+近地点高度)/(1−e)）
+      return geoLonAtEpoch(sat.omm2satrec(ommFromElements(rec.elements || {}, rec.epoch || new Date().toISOString(), rec.noradId)))
     }
     return NaN
   } catch { return NaN }

@@ -92,7 +92,27 @@ function migrateNs(ns) {
   const ids = new Set(mine.map((it) => it.id))
   write(f, mine.map((it) => (it.parentId != null && !ids.has(it.parentId)) ? { ...it, parentId: null } : it))
 }
-function listConfigs(ns) { migrateNs(ns); return read(cfgFile(ns), []) }
+function listConfigs(ns) { migrateNs(ns); return migrateConfigList(ns, read(cfgFile(ns), [])) }
+// 读配置时的就地迁移（同 migrateLibrary：只改返回的这一份，窗口下次存场景时落盘；幂等）：
+//   端到端的载波挂在链节点上（state.chains[].nodes[].carrier），不在资源库里 —— 套用 v1 内置 MODCOD 表、
+//   之后没手改过的 DVB-S2 / S2X 门限在这里一并订正（2026-10-17，见 modcodTables.migrateCarrierForm）。
+function migrateConfigList(ns, list) {
+  if (ns !== 'e2e' || !Array.isArray(list)) return list
+  try {
+    const mt = require('../../packages/core/utils/modcodTables.js')
+    for (const it of list) {
+      const chains = it && it.state && Array.isArray(it.state.chains) ? it.state.chains : null
+      if (!chains) continue
+      for (const c of chains) {
+        for (const n of (c && Array.isArray(c.nodes) ? c.nodes : [])) {
+          const patch = n && n.carrier ? mt.migrateCarrierForm(n.carrier) : null
+          if (patch) Object.assign(n.carrier, patch)
+        }
+      }
+    }
+  } catch (e) { console.warn('[storage] 端到端载波 MODCOD 迁移跳过：' + (e && e.message)) }
+  return list
+}
 // 跨命名空间总览（主窗口「配置管理」页用）：只读，不提供跨库写入
 function listAllConfigs() { return CFG_NS.map((ns) => ({ ns, items: listConfigs(ns) })) }
 // 同 setSettings 走 mutate：配置库是用户的活儿，被空库整份覆盖等于场景全丢。
@@ -244,7 +264,21 @@ function dropVersions(ns, ids) {
 // ---- 链路预算全局资源库（地球站/卫星/载波，按体制命名空间 geo/ngso/regen 各一套）----
 // 库脱离场景配置全局存放：场景（configs.json 里的 state）只存站址行 + 库条目 id 引用。
 // 整个命名空间整读整写（库条目量级为个位数到几十，无需增量接口）；write 已原子落盘带 .bak。
-function getLibrary(ns) { const all = read('library.json', {}); return (ns && all[ns]) || null }
+function getLibrary(ns) { const all = read('library.json', {}); return migrateLibrary((ns && all[ns]) || null) }
+// 读库时的就地迁移（只改内存里这一份，窗口下次存库时落盘；幂等，迁过的条目再读不再变）：
+//   载波条目里早先从 v1 内置 MODCOD 表套用进来、之后没手改过的 DVB-S2 / S2X 门限 → ETSI 原表订正值
+//   （2026-10-17，判据与边界见 packages/core/utils/modcodTables.js 的 migrateCarrierForm）。迁移出错不挡读库。
+function migrateLibrary(lib) {
+  if (!lib || !Array.isArray(lib.carrier)) return lib
+  try {
+    const mt = require('../../packages/core/utils/modcodTables.js')
+    for (const c of lib.carrier) {
+      const patch = c && c.form ? mt.migrateCarrierForm(c.form) : null
+      if (patch) Object.assign(c.form, patch)
+    }
+  } catch (e) { console.warn('[storage] 载波 MODCOD 迁移跳过：' + (e && e.message)) }
+  return lib
+}
 function saveLibrary(ns, data) {
   if (!ns) return false
   return mutate('library.json', {}, (all) => ({ ...all, [ns]: data })) !== null

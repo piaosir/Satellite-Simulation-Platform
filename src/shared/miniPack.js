@@ -21,6 +21,16 @@ export const PACK_V = 1
 // 对象在 COS 上没有 TTL 会一直堆积。桶上加 lifecycle 规则要动控制台，故改由信封自带过期时间、
 // 云函数据此判「已失效」——不依赖任何控制台操作，也让用户知道密钥不是永久的。
 export const TTL_DAYS = 90
+const DAY_MS = 86400000
+
+// 整块载荷（覆盖快照 kind='gxt-snapshot'，不套 makePack 的信封）也要带 expiresAt：
+// 云函数与小程序按信封自带的 expiresAt 判过期，缺了就是永不过期 —— 与界面「有效期 TTL_DAYS 天」对不上。
+// 已带的不动（调用方自定了期限）；不改 kind / 其余字段，小程序照旧按 kind 分流。
+function withTtl(payload) {
+  if (!payload || typeof payload !== 'object' || Number(payload.expiresAt) > 0) return payload
+  const t0 = Number(payload.createdAt) > 0 ? Number(payload.createdAt) : Date.now()
+  return { ...payload, expiresAt: t0 + TTL_DAYS * DAY_MS }
+}
 
 // 字节门限。SIZE_MAX 留出的余量给云函数的 JSON 外壳（{success, data, fileID, meta} 那一层）
 // 与 UTF-8 转义膨胀；SIZE_WARN 之上仍然发得出去，只是提示一句。
@@ -44,7 +54,7 @@ export function makePack({ name, from, items, ttlDays } = {}) {
     v: PACK_V,
     from: String(from || ''),                       // 平台版本 / 机器ID —— 小程序据此标注「平台计算值」
     ts,
-    expiresAt: ts + days * 86400000,
+    expiresAt: ts + days * DAY_MS,
     name: String(name || '仿真平台数据'),
     items: asArr(items).filter(Boolean)
   }
@@ -80,6 +90,9 @@ export function describePack(pack) {
 
 export const CH_LEN = 12
 const CH_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'   // 与密钥同源（去 I L O 0 1）
+// 每个认证码信箱里、本机的索引最多保留几件（与 electron/services/share.js 的 BOX_KEEP 同一个数，改一处要同步）。
+// 单批超过它主进程直接拒收：多出来的件传上去也进不了索引，手机上永远看不到
+export const BOX_KEEP = 60
 
 /** 归一：去分隔符、大写、截断。返回可能不足 12 位——由 isCh 判合法 */
 export const normalizeCh = (raw) =>
@@ -137,13 +150,13 @@ export const unitsOfPack = (pack) => asArr(pack && pack.items).map((it) => ({
   payload: packOne(pack, it)
 }))
 
-/** 整块载荷 → 一个单元。sync 由调用方给（如 'gxt:中星6D'），保证重发覆盖同一份 */
+/** 整块载荷 → 一个单元。sync 由调用方给（如 'gxt:中星6D'），保证重发覆盖同一份；补上 expiresAt（见 withTtl） */
 export const unitOfRaw = (payload, o = {}) => [{
   sync: String(o.sync || ''),
   name: String(o.name || (payload && payload.name) || ''),
   label: String(o.label || '快照'),
   tag: '',
-  payload
+  payload: withTtl(payload)
 }]
 
 /**
@@ -152,12 +165,14 @@ export const unitOfRaw = (payload, o = {}) => [{
  * @param {string[]} chs    认证码数组
  * @param {Array} units     投递单元（unitsOfPack / unitOfRaw 造）
  * @param {object} meta     { pid 本机ID, label 本机备注名, app 版本 }
- * @returns {Promise<{ok:boolean, done:string[], fails:Array<{ch:string,error:string}>, bytes:number}>}
+ * @returns {Promise<{ok:boolean, done:string[], fails:Array<{ch:string,error:string}>, bytes:number, evicted:object}>}
+ *   evicted：{ 认证码: 件数 } —— 为这一批腾位置、从该信箱索引里摘掉的更早的件（索引上限 BOX_KEEP）
  */
 export async function sendUnitsToBoxes(api, chs, units, meta = {}) {
   const list = asArr(units).filter((u) => u && u.payload)
   const bytes = list.reduce((s, u) => s + estimateBytes(u.payload), 0)
-  if (!list.length) return { ok: false, done: [], fails: [], bytes, error: '没有可发送的内容' }
+  if (!list.length) return { ok: false, done: [], fails: [], bytes, evicted: {}, error: '没有可发送的内容' }
+  if (list.length > BOX_KEEP) return { ok: false, done: [], fails: [], bytes, evicted: {}, error: `单批最多 ${BOX_KEEP} 件（本次 ${list.length} 件）` }
   const send = api && api.share && api.share.boxSend
   if (!send) return { ok: false, done: [], fails: [], bytes, error: '发送到小程序需在桌面客户端中运行' }
 
@@ -170,7 +185,7 @@ export async function sendUnitsToBoxes(api, chs, units, meta = {}) {
   const over = msgs.filter((m) => estimateBytes(m.payload) > SIZE_MAX)
   if (over.length) {
     return {
-      ok: false, done: [], fails: [], bytes,
+      ok: false, done: [], fails: [], bytes, evicted: {},
       error: `有 ${over.length} 件单件超过 ${fmtBytes(SIZE_MAX)}（微信云函数返回上限）：${over.map((m) => m.name || '未命名').join('、')}`
     }
   }
@@ -179,18 +194,23 @@ export async function sendUnitsToBoxes(api, chs, units, meta = {}) {
 
   const done = []
   const fails = []
+  const evicted = {}
   for (const raw of asArr(chs)) {
     const ch = normalizeCh(raw)
     if (!isCh(ch)) { fails.push({ ch: raw, error: '认证码格式不正确' }); continue }
     try {
       const r = await send(ch, o)
-      if (r && r.ok) done.push(ch)
-      else fails.push({ ch, error: (r && r.error) || '投递失败' })
+      if (r && r.ok) {
+        done.push(ch)
+        if (Number(r.evicted) > 0) evicted[ch] = Number(r.evicted)
+        // 主进程按「截断后还在不在索引里」如实计数；少于本批件数说明有件没进索引（早先投递带着未来时间戳）
+        if (Number.isFinite(Number(r.sent)) && Number(r.sent) < msgs.length) fails.push({ ch, error: `${msgs.length - Number(r.sent)} 件未进索引` })
+      } else fails.push({ ch, error: (r && r.error) || '投递失败' })
     } catch (e) {
       fails.push({ ch, error: String((e && e.message) || e) })
     }
   }
-  return { ok: done.length > 0, done, fails, bytes }
+  return { ok: done.length > 0, done, fails, bytes, evicted }
 }
 
 /** 标准包的便捷入口（等价于 sendUnitsToBoxes(api, chs, unitsOfPack(pack), meta)） */
@@ -201,13 +221,14 @@ export const sendToBoxes = (api, chs, pack, meta) => sendUnitsToBoxes(api, chs, 
  * @param {object} api window.api（需要 api.share.putPack 或老名 api.share.gxtSnapshot）
  * @returns {Promise<{ok:boolean, key?:string, bytes:number, error?:string, warn?:string}>}
  */
-export async function sendPack(api, pack) {
-  const bytes = estimateBytes(pack)
+export async function sendPack(api, pack0) {
   // 这条路上有两种载荷：标准信封（makePack 造，带 items[]）与【整块载荷】（覆盖快照 kind='gxt-snapshot'，
   // 本就没有 items[]，见 MiniSendDialog 的 raw 分支）。只按 items 判空会把整块载荷整条挡在门外——
   // v1.3.10 覆盖快照从直发改走共用弹窗后即是如此：绑定投递照常，密钥这一路恒返回「包里没有内容」、
   // 连 putSnapshot 都走不到，表现为「密钥不显示」。判空须分形态各判各的。
-  const isRaw = !!(pack && pack.kind && !Array.isArray(pack.items))
+  const isRaw = !!(pack0 && pack0.kind && !Array.isArray(pack0.items))
+  const pack = isRaw ? withTtl(pack0) : pack0      // 整块载荷补 expiresAt（标准信封 makePack 时已带）
+  const bytes = estimateBytes(pack)
   if (!isRaw && !asArr(pack && pack.items).length) return { ok: false, bytes, error: '包中没有内容' }
   if (bytes > SIZE_MAX) {
     return {

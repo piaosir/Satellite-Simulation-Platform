@@ -10,8 +10,9 @@
 import { reactive, ref, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
-import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate } from '../shared/lbReport.js'
+import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate, resolveReportTitle, pinReportTitle } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
+import { capReportTitle } from '../shared/lbCapReport.js'
 import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
 // 台标的栅格化与存取（2026-09-16 从本文件搬进 shared/reportLogo.js，零行为改动）：
 // 空间态势报告那个导出对话框要用同一枚台标——它存的是全局键，抄一份必然漂移。
@@ -24,6 +25,7 @@ const props = defineProps({
   // 只出 Excel / Word（不出 PDF、不取图、没有「含服务等级指标」那个开关），标题另走 slaReportTitle。
   // 元信息（编号 / 密级 / 单位 / logo）与全报告【共用同一存储键】——同一个项目连着出两份文件，
   // 不该填两遍；只有标题的自动命名各存一份（改过一次就钉死，两份报告的名字本就不同）。
+  // 'cap' = 独立的《容量汇总》报告：口径同 'sla'（只出 Excel / Word、不取图），标题走 capReportTitle。
   variant: { type: String, default: 'full' },
   lang: { type: String, default: 'zh' },
   orbitType: { type: String, default: 'GEO' },
@@ -51,19 +53,26 @@ const scheme = computed(() => schemeOf(props.orbitType, props.regenMode))
 const schemeText = computed(() => schemeName(scheme.value, props.lang) + (schemeSub(scheme.value, props.lang) ? '　·　' + schemeSub(scheme.value, props.lang) : ''))
 
 const isSla = computed(() => props.variant === 'sla')
-// Excel 选项的悬停口径按实际出的工作簿写：NGSO / 再生式总报告后跟几何关系（再生式分节时每模块一张），SLA 版是另一套表
+const isCap = computed(() => props.variant === 'cap')
+// 单出的那两份（SLA / 容量）：不出 PDF、不取图、没有「含服务等级指标」那个开关
+const isSub = computed(() => isSla.value || isCap.value)
+// Excel 选项的悬停口径按实际出的工作簿写：NGSO / 再生式总报告后跟几何关系（再生式分节时每模块一张），SLA / 容量版各是另一套表
 const xlsxHint = computed(() => t.value(isSla.value
   ? '服务等级指标总表 · 指标定义 · 每条链路一张 · 引用标准'
-  : (scheme.value.orbitType === 'NGSO' || scheme.value.orbitType === 'REGEN')
-    ? '第一张表为总报告，其后为几何关系表与逐链路详情表'
-    : '第一张表为总报告，其后每条链路一张详情表'))
+  : isCap.value
+    ? '容量汇总 · 逐转发器明细 · 计算口径'
+    : (scheme.value.orbitType === 'NGSO' || scheme.value.orbitType === 'REGEN')
+      ? '第一张表为总报告，其后为几何关系表与逐链路详情表'
+      : '第一张表为总报告，其后每条链路一张详情表'))
 const KEY = computed(() => props.storeKey + '/report/doc')
-const OPT_KEY = computed(() => props.storeKey + (isSla.value ? '/sla/opt' : '/report/opt'))
-// 标题的自动命名两份各存一份：全报告叫「…链路预算报告」、这一份叫「…服务等级指标（SLA）」
-const TITLE_KEY = computed(() => props.storeKey + (isSla.value ? '/report/slaTitle' : '/report/title'))
+const OPT_KEY = computed(() => props.storeKey + (isSla.value ? '/sla/opt' : isCap.value ? '/cap/opt' : '/report/opt'))
+// 标题的自动命名各存一份：全报告叫「…链路预算报告」、SLA 版「…服务等级指标（SLA）」、容量版「…容量汇总」
+const TITLE_KEY = computed(() => props.storeKey + (isSla.value ? '/report/slaTitle' : isCap.value ? '/report/capTitle' : '/report/title'))
 const defTitle = () => (isSla.value
   ? slaReportTitle(props.satName, props.band, props.lang, scheme.value.orbitType)
-  : defaultDocInfo(scheme.value, props.satName, props.lang, props.band).title)
+  : isCap.value
+    ? capReportTitle(props.satName, props.band, props.lang)
+    : defaultDocInfo(scheme.value, props.satName, props.lang, props.band).title)
 // logo 存**全局**键（'lb/report/logo'，见 shared/reportLogo.js）：台标是一家单位的，
 // 不是某个体制窗口的——传一次以后各窗口都认，除非用户自己换掉或移除。
 // 报告字体（三档：西文与数字 / 中文正文 / 中文标题与题注）：按窗口各存各的、与本窗的元信息同前缀——
@@ -128,17 +137,18 @@ function loadSaved() {
   logoName.value = lg.name
   logoErr.value = ''
   // 报告名称按「自动命名」的规矩走（同资源库条目名，见 shared/lbAutoName.js）：用户没改过就随
-  // 当前卫星/体制重算，改过一次就钉死。存的时候一并存下「当时的默认名」，据此判断改没改过。
+  // 当前卫星/体制重算，改过就钉住——只钉在当时那个自动名名下，换了卫星 / 频段 / 语言就回到新的自动名
+  // （见 lbReport.resolveReportTitle）。
   let ttl = null
   try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
-  if (ttl && ttl.title) doc.title = (ttl.title === ttl.titleDefault) ? base.title : ttl.title
+  doc.title = resolveReportTitle(ttl, base.title)
+  // 输出选项只记用户自己勾的值：图表区关着 / 一条 SLA 条款都没有时，界面上那一项被动置灰（figOn / slaCount），
+  // 但不改写这里的值——否则关一次图表区导一份报告，此后「含图」就一直是空的
   try {
     const o = JSON.parse(localStorage.getItem(OPT_KEY.value) || 'null')
     if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false; opt.sla = o.sla !== false }
   } catch (e) { /* 用默认 */ }
-  if (!props.vizAvailable) opt.figures = false
-  if (!props.slaCount) opt.sla = false
-  if (isSla.value) opt.pdf = false      // 这一份不出 PDF
+  if (isSub.value) opt.pdf = false      // 单出的这两份不出 PDF
   // 报告字体：本窗上次选的（键认不出就回出厂档）；候选表按本机可用性现列（三个出厂档恒在列）
   let fs = null
   try { fs = JSON.parse(localStorage.getItem(FONT_KEY.value) || 'null') } catch (e) { fs = null }
@@ -152,7 +162,9 @@ function persist() {
     // logo 不进这一份（它在全局键里，见 saveLogo）——否则三个窗口各存一份同样的图，白白撑爆配额。
     // 标题另存（两份报告的自动命名各走各的），故这一份里把它剔掉。
     localStorage.setItem(KEY.value, JSON.stringify(Object.assign({}, doc, { logo: null, title: undefined })))
-    localStorage.setItem(TITLE_KEY.value, JSON.stringify({ title: doc.title, titleDefault: defTitle() }))
+    let ttl = null
+    try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
+    localStorage.setItem(TITLE_KEY.value, JSON.stringify(pinReportTitle(ttl, defTitle(), doc.title)))
     localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
     localStorage.setItem(FONT_KEY.value, JSON.stringify(normReportFontSel(font)))
   } catch (e) { /* 存不下不影响导出 */ }
@@ -167,8 +179,10 @@ function close() {
 }
 watch(() => props.open, (v) => { if (v) loadSaved() }, { immediate: true })
 
-const canSubmit = computed(() => (opt.xlsx || opt.docx || (!isSla.value && opt.pdf))
+const canSubmit = computed(() => (opt.xlsx || opt.docx || (!isSub.value && opt.pdf))
   && props.linkCount > 0 && !props.busy && (!isSla.value || props.slaCount > 0))
+// 「包含图件」的生效值：图表区关着时取不到图，勾选框显示为未勾且置灰，用户原先的选择（opt.figures）原样留着
+const figOn = computed(() => !!opt.figures && props.vizAvailable)
 const figHint = computed(() => {
   if (!props.vizAvailable) return t.value('图表区已关闭（功能区「视图 → 图表」），本次导出没有图')
   return t.value('逐条链路生成地理场图与链路视图（每条都要重跑一次网格扫描，链路多时较慢）')
@@ -185,9 +199,11 @@ function submit() {
     variant: props.variant,
     // 报告字体随元信息一起进模型（三档都是出厂值时为 null：主进程走模板默认）
     doc: Object.assign(JSON.parse(JSON.stringify(doc)), { fonts: composeReportFonts(font) }),
-    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSla.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
-    withFigures: !isSla.value && !!opt.figures && props.vizAvailable,
-    withSla: isSla.value ? true : (!!opt.sla && props.slaCount > 0)
+    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSub.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
+    withFigures: !isSub.value && figOn.value,
+    // 「含 SLA」交用户的选择，有没有条款留到导出前补算之后再判（useLbReport.run）：没算过 / 已过期的链路
+    // 此刻还没有条款，按此刻的条款数判就会把补算后本该有的那一节漏掉
+    withSla: isSla.value ? true : isCap.value ? false : !!opt.sla
   })
 }
 const labelOf = (f) => (props.lang === 'en' ? f.labelEn : f.label)
@@ -198,7 +214,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 
 <template>
   <AppDialog :open="open" :width="560" flush :closable="!busy" @close="close">
-      <template #title><span class="rd-t"><Icon name="file-export" :size="12" />{{ t(isSla ? '导出 SLA 报告' : '导出报告') }}</span></template>
+      <template #title><span class="rd-t"><Icon name="file-export" :size="12" />{{ t(isSla ? '导出 SLA 报告' : isCap ? '导出容量报告' : '导出报告') }}</span></template>
       <template #head><span class="rd-scheme">{{ schemeText }}</span></template>
 
       <div class="rd-bd">
@@ -260,14 +276,14 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
           <label class="rd-ck" :title="t('公文格式：封面 · 目录 · 正文（可在 Word 中继续编辑）')">
             <input v-model="opt.docx" type="checkbox" :disabled="busy" />Word（.docx）
           </label>
-          <label v-if="!isSla" class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
+          <label v-if="!isSub" class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
             <input v-model="opt.pdf" type="checkbox" :disabled="busy" />PDF（.pdf）
           </label>
-          <label v-if="!isSla" class="rd-ck" :class="{ off: !vizAvailable }" :title="figHint">
-            <input v-model="opt.figures" type="checkbox" :disabled="busy || !vizAvailable" />{{ t('包含图件') }}
+          <label v-if="!isSub" class="rd-ck" :class="{ off: !vizAvailable }" :title="figHint">
+            <input type="checkbox" :checked="figOn" :disabled="busy || !vizAvailable" @change="opt.figures = $event.target.checked" />{{ t('包含图件') }}
           </label>
           <!-- 一条条款都没勾时整项不出现：留一个永远点不动的灰选项在这儿，只会让人反复去点它 -->
-          <label v-if="!isSla && slaCount" class="rd-ck" :title="slaHint">
+          <label v-if="!isSub && slaCount" class="rd-ck" :title="slaHint">
             <input v-model="opt.sla" type="checkbox" :disabled="busy" />{{ t('含服务等级指标（SLA）') }}
           </label>
         </div>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { BAND_FREQ, BAND_LABEL } from './satPresets.js'
 import { ensureSearchPool } from './satSearchPool.js'
@@ -128,8 +128,11 @@ const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
 // 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
 const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 
-// 选完工作频段，上/下行频率跟随预设变（与 GEO 窗口一致；仍可手改）
-watch(() => props.form.frequencyBand, (band) => {
+// 选完工作频段，上/下行频率跟随预设变（与 GEO 窗口一致；仍可手改）。
+// ★ 只认「同一份表单里改了频段」：换了一份表单（资源库换条目、库从盘上重载成新对象）不是改频段——照套预设
+//    就把新条目手填的频率冲掉并落盘。父组件已按条目 id 重建本组件（:key），这里按表单身份再兜一道。
+watch([() => toRaw(props.form), () => props.form.frequencyBand], ([form, band], [prevForm]) => {
+  if (form !== prevForm) return
   const f = BAND_FREQ[band]; if (!f) return
   props.form.centerFrequency = String(f.up)
   props.form.rxCenterFrequency = String(f.dn)

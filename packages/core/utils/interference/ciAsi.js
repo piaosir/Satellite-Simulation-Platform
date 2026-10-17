@@ -13,7 +13,10 @@
 //
 // ─── 三个容易算错的地方 ──────────────────────────────────────────────────────
 //   ① 角度：必须是拓扑角，不是经度差（详见 geometry.js 的文件头）。
-//   ② 包络：GEO 两颗星都不动 → 峰值包络 AP8/S.580，不是 S.1428（那是给动态场景的）。
+//   ② 包络：GEO 两颗星都不动 → 峰值包络，不是 S.1428（那是给动态场景的）。峰值包络按 ID 选
+//      （patterns.makeEsPattern）：缺省 ITU-R S.465-6（「用于协调与干扰评估」），可选 RR 附录 8 附件 3、
+//      S.580-6（设计目标）与旧版包络。v1.5.3 及之前写死的「AP8/S.580」其实是 AP8 分段配 S.580 的 29 系数，
+//      近旁瓣比 AP8 附件 3 低 3–9 dB，C/ASI 偏乐观——2026-10-17 订正，新老配置一律按所选 ID 算。
 //   ③ 合成：多干扰源在**线性域**功率相加，不是 dB 相加，也不是取最大。
 //
 // ─── 带宽口径 ────────────────────────────────────────────────────────────────
@@ -59,6 +62,42 @@ function polarizationDiscrimination(wantedPol, interfererPol, xpdDb) {
 }
 
 // ---------------------------------------------------------------------------
+// 上行极化
+// ---------------------------------------------------------------------------
+//
+// 上行比的是「干扰站发的上行载波」与「本站上行载波」的极化，不是邻星下行那一路。拿邻星的下行极化去比
+// 本站上行极化，本站下行 H / 上行 V、邻星下行 H 时会判成反极化、白送一个 XPD——出厂配置上行 C/ASI
+// 因此偏乐观 25 dB（58.88 dB，实为 33.88 dB）。
+//
+//   源给了 uplinkPolarization → 直接用。
+//   留空 → 沿用下行关系：同一网络的上下行极化是成套编排的（下行 H 配上行 V），邻网多半也是同一套，
+//          故搬的是「关系」而不是字母——邻星下行与本站下行同极化 ⇒ 上行也同极化（推定为本站上行极化）；
+//          反极化 ⇒ 上行也反极化（推定为本站上行极化的正交极化）；线/圆混用 ⇒ 上行同样混用（3 dB）；
+//          邻星下行极化也没给 ⇒ 关系未知、不折减（与下行同口径）。
+//   调用方没给本站下行极化（wanted.downlinkPolarization）→ 源的 polarization 直接当上行极化比
+//          （只认一套极化的单链调用，旧口径）。
+//
+// 返回 polarizationDiscrimination 的 {db, relation, mixed}，外加 pol（这一源按什么上行极化算的；
+// 混用 / 未知时推不出字母，给 null）与 inferred（是否由下行关系推定）。
+const ORTHOGONAL_POL = { H: 'V', V: 'H', L: 'R', R: 'L' };
+const normPol = (p) => String(p || '').trim().toUpperCase();
+
+function resolveUplinkPolarization(wanted, it, xpdDb) {
+  const w = wanted || {}, s = it || {};
+  const wUp = normPol(w.polarization);
+  const own = normPol(s.uplinkPolarization);
+  const wDn = normPol(w.downlinkPolarization);
+  if (own || !wDn) {
+    const pol = own || normPol(s.polarization);
+    return Object.assign(polarizationDiscrimination(wUp, pol, xpdDb), { pol: pol || null, inferred: false });
+  }
+  const dn = polarizationDiscrimination(wDn, s.polarization, xpdDb);
+  if (!wUp || dn.relation === 'unknown') return { db: 0, relation: 'unknown', mixed: false, pol: null, inferred: true };
+  const pol = dn.relation === 'co' ? wUp : (dn.relation === 'cross' ? (ORTHOGONAL_POL[wUp] || null) : null);
+  return { db: dn.db, relation: dn.relation, mixed: dn.mixed, pol, inferred: true };
+}
+
+// ---------------------------------------------------------------------------
 // 下行 C/ASI
 // ---------------------------------------------------------------------------
 
@@ -71,9 +110,11 @@ function polarizationDiscrimination(wantedPol, interfererPol, xpdDb) {
  *   interferers    [{ id, name, lonDeg, eirpDensityDbWPerHz, polarization?, xpdDb?,
  *                     overlapFactor?, enabled? }]
  *   applyPolarization  是否计入极化折减（默认 true）
+ *   esPattern      地球站方向图 ID（patterns.ES_PATTERNS；缺省 S.465-6，收信站按接收天线取 Note 5）
  *
  * @returns {{ciDb, sources:[…], geometry:{…}, warnings:[…] }}
  *   ciDb 为 null 表示无有效干扰源（不是 0，也不是 Infinity——UI 应显示「—」）
+ *   geometry.esPattern 所要与实际所用的方向图 ID、名称与版本
  */
 function downlinkCAsi(o) {
   const warnings = [];
@@ -90,6 +131,8 @@ function downlinkCAsi(o) {
   if (!(D > 0)) { warnings.push('缺收信站天线口径'); return { ciDb: null, sources: [], geometry: null, warnings }; }
 
   const gMax = P.peakGainDbi(D, lam, eff);
+  const pat = P.makeEsPattern(o.esPattern, D, lam, eff, { receive: true });
+  if (pat.fellBack) warnings.push(`收信站方向图：${pat.reason}`);
 
   // 期望载波谱密度
   let wantedDensity = num(wanted.eirpDensityDbWPerHz, NaN);
@@ -121,7 +164,7 @@ function downlinkCAsi(o) {
       continue;
     }
 
-    const gOff = P.offAxisAP8(D, lam, eff, sep.thetaDeg);
+    const gOff = pat.gain(sep.thetaDeg);
     const discrimDb = gMax - gOff;                       // 天线鉴别度
     const fslInt = G.fsl(sep.interferer.rangeKm, fGHz);
     const pathDeltaDb = fslWanted - fslInt;              // 斜距差（通常 <0.2 dB，仍照算）
@@ -178,66 +221,50 @@ function downlinkCAsi(o) {
       peakGainDbi: gMax,
       beamwidth3dBDeg: P.beamwidth3dB(D, lam),
       wantedDensityDbWPerHz: wantedDensity,
+      // 所用的地球站方向图（所要的 ID、实际所用的 ID、名称与版本）——结果区与图上都写它
+      esPattern: P.esPatternInfo(pat),
       // 方向图分段环：供「聚焦主轴」视图画等离轴角环并**逐环标出该处的增益与鉴别度**。
       // 这是把「θ 是多少」翻译成「鉴别度是多少」的那一步——干扰星落在哪两环之间，
       // 它吃到多少鉴别度就一目了然，不必再去查表或反推。
-      patternRings: patternRings(D, lam, eff, gMax, sources),
+      patternRings: patternRings(pat, gMax, sources),
       // 方向图本身：对数角度轴上采样出的 G(φ) 曲线，供「方向图切面图」画成一条真实曲线。
       // 这才是天线工程师看的那张图（MATLAB antenna toolbox / ITU 建议书里的标准画法）——
       // 干扰星落在曲线上哪一点、离峰值掉了多少，一眼可读；环图只能表达角度，表达不了增益形状。
-      patternCurve: patternCurve(D, lam, eff),
-      // AP8 的结构角，供图上标注分段
-      patternMarks: patternMarks(D, lam, eff, gMax)
+      patternCurve: patternCurve(pat),
+      // 所选方向图的分段结构角，供图上标注
+      patternMarks: patternMarks(pat)
     },
     warnings
   };
 }
 
 // 对数角度轴采样：0.01°–180°。主瓣区变化极快（抛物线），对数轴才能既看清主瓣又装下远旁瓣。
-function patternCurve(D, lam, eff) {
+function patternCurve(pat) {
   const out = [];
   const lo = Math.log10(0.01), hi = Math.log10(180);
   const N = 400;
   for (let i = 0; i <= N; i++) {
     const deg = Math.pow(10, lo + (hi - lo) * i / N);
-    const g = P.offAxisAP8(D, lam, eff, deg);
+    const g = pat.gain(deg);
     if (Number.isFinite(g)) out.push({ deg: +deg.toFixed(5), gainDbi: +g.toFixed(3) });
   }
   return out;
 }
 
-// AP8 的分段结构角：主瓣半宽 / φ₁（主瓣-旁瓣交界）/ φr（第一旁瓣平台外沿）/ 29−25lgφ 段终点
-function patternMarks(D, lam, eff, gMax) {
-  const ratio = D / lam;
-  const bw = P.beamwidth3dB(D, lam);
-  const out = [];
-  if (bw > 0) out.push({ deg: +(bw / 2).toFixed(4), key: 'hpbw', label: '主瓣半宽' });
-  if (ratio >= 100) {
-    const G1 = 2 + 15 * LOG10(ratio);
-    out.push({ deg: +((20 * lam / D) * Math.sqrt(Math.max(0, gMax - G1))).toFixed(4), key: 'phi1', label: 'φ₁ 主瓣边界' });
-    out.push({ deg: +(15.85 * Math.pow(ratio, -0.6)).toFixed(4), key: 'phir', label: 'φr 旁瓣平台外沿' });
-    out.push({ deg: 36.31, key: 'far', label: '远旁瓣 −10 dBi' });
-  } else if (ratio >= 50) {
-    out.push({ deg: 48, key: 'far', label: '远场底板' });
-  } else {
-    // 小档底板起点 = 29−25lgφ 与 10−10lg(D/λ) 的交点 φx，不是固定 48°（见 patterns.js 小档注释）
-    out.push({ deg: +Math.pow(10, (19 + 10 * LOG10(ratio)) / 25).toFixed(2), key: 'far', label: '远场底板' });
-  }
-  for (const m of out) m.gainDbi = +P.offAxisAP8(D, lam, eff, m.deg).toFixed(2);
+// 所选方向图的分段结构角（主瓣半宽 / φm 主瓣边界 / 旁瓣段起点 / 远旁瓣），各角处的增益按同一条曲线补
+function patternMarks(pat) {
+  const out = pat.marks.map((m) => ({ ...m, deg: +m.deg.toFixed(m.deg >= 10 ? 2 : 4) }));
+  for (const m of out) m.gainDbi = +pat.gain(m.deg).toFixed(2);
   return out.filter((m) => m.deg > 0).sort((a, b) => a.deg - b.deg);
 }
 
-// 环的档位：主瓣半宽 + AP8 的两个结构角（φ₁ 主瓣/旁瓣交界、φr 旁瓣平台外沿）+ 工程刻度。
+// 环的档位：主瓣半宽 + 所选方向图的结构角（主瓣边界、旁瓣段起点）+ 工程刻度。
 // 只保留落在实际干扰源角度范围内的那几档，免得画一堆用不上的环把图挤满。
-function patternRings(D, lam, eff, gMax, sources) {
-  const bw = P.beamwidth3dB(D, lam);
-  const ratio = D / lam;
+function patternRings(pat, gMax, sources) {
   const cand = [];
-  if (bw > 0) cand.push({ deg: bw / 2, kind: 'main', label: '主瓣边缘' });
-  if (ratio >= 100) {
-    const G1 = 2 + 15 * LOG10(ratio);
-    cand.push({ deg: (20 * lam / D) * Math.sqrt(Math.max(0, gMax - G1)), kind: 'phi1', label: 'φ₁' });
-    cand.push({ deg: 15.85 * Math.pow(ratio, -0.6), kind: 'phir', label: 'φr' });
+  for (const m of pat.marks) {
+    if (m.key === 'hpbw') cand.push({ deg: m.deg, kind: 'main', label: '主瓣边缘' });
+    else if (m.key === 'phi1' || m.key === 'phir') cand.push({ deg: m.deg, kind: m.key, label: m.label.split(' ')[0] });
   }
   for (const d of [0.5, 1, 2, 3, 5, 8, 12, 20, 30]) cand.push({ deg: d, kind: 'tick', label: d + '°' });
 
@@ -247,7 +274,7 @@ function patternRings(D, lam, eff, gMax, sources) {
   for (const c of cand) {
     if (!(c.deg > 0) || c.deg > lim) continue;
     if (out.some((o) => Math.abs(o.deg - c.deg) < lim * 0.04)) continue;   // 太近的档并掉
-    const g = P.offAxisAP8(D, lam, eff, c.deg);
+    const g = pat.gain(c.deg);
     out.push({ ...c, deg: +c.deg.toFixed(4), gainDbi: +g.toFixed(2), discrimDb: +(gMax - g).toFixed(2) });
   }
   out.sort((a, b) => a.deg - b.deg);
@@ -313,14 +340,15 @@ function s524Marks(fGHz) {
   return out.filter((m) => m.deg > 0);
 }
 
-/** 对等站的离轴 EIRP 密度曲线：主轴密度 − Gmax + G(φ)，即把那副天线的方向图搬到密度轴上。 */
+/** 对等站的离轴 EIRP 密度曲线：主轴密度 − Gmax + G(φ)，即把那副天线的方向图（同一 ID、发射天线）搬到密度轴上。 */
 function peerDensityCurve(cfg, lam, angles) {
   const gMax = P.peakGainDbi(cfg.diameterM, lam, cfg.efficiency);
-  if (!Number.isFinite(gMax) || !(cfg.bandwidthHz > 0)) return [];
+  const pat = P.makeEsPattern(cfg.esPattern, cfg.diameterM, lam, cfg.efficiency, { receive: false });
+  if (!Number.isFinite(gMax) || !pat || !(cfg.bandwidthHz > 0)) return [];
   const base = cfg.eirpDbW - gMax - 10 * LOG10(cfg.bandwidthHz);
   const out = [];
   for (const deg of angles) {
-    const g = P.offAxisAP8(cfg.diameterM, lam, cfg.efficiency, deg);
+    const g = pat.gain(deg);
     if (Number.isFinite(g)) out.push({ deg: +deg.toFixed(5), densityDbWPerHz: +(base + g).toFixed(3) });
   }
   return out;
@@ -335,8 +363,9 @@ function peerDensityCurve(cfg, lam, angles) {
  *
  * ─── 干扰源模型三选一，选哪个决定了这个数是什么意思 ─────────────────────────
  *
- *   'peer'（默认）—— 把干扰站按一副具体的天线来建模（口径/功率/带宽/馈损），用同一条
- *                    AP8 包络算它朝本星方向的旁瓣 EIRP 密度。**这是工程估算该用的模式**。
+ *   'peer'（默认）—— 把干扰站按一副具体的天线来建模（口径/功率/带宽/馈损），用所选的地球站方向图
+ *                    （o.esPattern，缺省 S.465-6；发射天线，不取 Note 5）算它朝本星方向的旁瓣 EIRP 密度。
+ *                    **这是工程估算该用的模式**。
  *
  *   'mask'        —— 按 ITU-R S.524-9 离轴 EIRP 密度上限，假设邻网每座站都顶着限值、
  *                    在整个重叠带内满发。这是**监管硬上界**，不是运行值。
@@ -349,6 +378,12 @@ function peerDensityCurve(cfg, lam, angles) {
  *
  * satDiscrimDb：本星接收天线在「本站方向」与「干扰站方向」上的增益差。
  *   干扰站与本站共址（最坏）时为 0——这是默认。有 GRD 方向图时由调用方采样后传入。
+ *
+ * 极化（三种模式同一口径，见 resolveUplinkPolarization）：
+ *   wanted.polarization          本站上行极化
+ *   wanted.downlinkPolarization  本站下行极化（可缺；给了才能对留空的源按下行关系推定）
+ *   interferers[].uplinkPolarization  干扰载波的上行极化；留空沿用下行关系
+ *   interferers[].polarization        干扰星的下行极化（只用于上述推定）
  */
 function uplinkCAsi(o) {
   const warnings = [];
@@ -386,6 +421,8 @@ function uplinkCAsi(o) {
   const sources = [];
   const peerCfgs = new Map();          // 几何图用：同参数的对等站合成一条曲线，不逐源重画
   let sumLin = 0;
+  const esPatternId = P.ES_PATTERNS[o.esPattern] ? o.esPattern : P.DEFAULT_ASI_PATTERN;
+  let peerPatInfo = null;              // 对等站所用方向图（各站同一 ID；S.580-6 遇小口径会逐站退回，取首个退回的那条上报）
 
   for (const it of (o.interferers || [])) {
     if (!it || it.enabled === false) continue;
@@ -409,7 +446,12 @@ function uplinkCAsi(o) {
       const iLam = lam;                                   // 同一上行频段
       if (!(iD > 0)) { warnings.push(`干扰站「${it.name || it.id || '?'}」缺口径，已跳过`); continue; }
       const iGmax = P.peakGainDbi(iD, iLam, iEff);
-      const iGoff = P.offAxisAP8(iD, iLam, iEff, iTheta);
+      const iPat = P.makeEsPattern(esPatternId, iD, iLam, iEff, { receive: false });
+      if (iPat.fellBack) {
+        warnings.push(`干扰站「${it.name || it.id || '?'}」方向图：${iPat.reason}`);
+        if (!peerPatInfo || !peerPatInfo.fellBack) peerPatInfo = P.esPatternInfo(iPat);
+      } else if (!peerPatInfo) peerPatInfo = P.esPatternInfo(iPat);
+      const iGoff = iPat.gain(iTheta);
 
       let iEirp = num(it.eirpDbW, NaN);
       if (!Number.isFinite(iEirp)) {
@@ -423,10 +465,10 @@ function uplinkCAsi(o) {
       }
       // 主轴 EIRP 密度 → 换成旁瓣方向的密度
       intDensity = iEirp - iGmax + iGoff - 10 * LOG10(iBw);
-      peerInfo = { thetaDeg: iTheta, diameterM: iD, peakGainDbi: iGmax, offAxisGainDbi: iGoff, eirpDbW: iEirp, bandwidthHz: iBw, coLocated };
+      peerInfo = { thetaDeg: iTheta, diameterM: iD, peakGainDbi: iGmax, offAxisGainDbi: iGoff, eirpDbW: iEirp, bandwidthHz: iBw, coLocated, esPattern: iPat.applied };
       curveKey = `${iD}|${iEff}|${iEirp.toFixed(4)}|${iBw}`;
       if (!peerCfgs.has(curveKey)) {
-        peerCfgs.set(curveKey, { key: curveKey, diameterM: iD, efficiency: iEff, eirpDbW: iEirp, bandwidthHz: iBw, peakGainDbi: iGmax });
+        peerCfgs.set(curveKey, { key: curveKey, diameterM: iD, efficiency: iEff, eirpDbW: iEirp, bandwidthHz: iBw, peakGainDbi: iGmax, esPattern: esPatternId });
       }
 
       // 顺带核一下这座假想的干扰站自己合不合规——超了说明这个假设本身不成立
@@ -448,9 +490,12 @@ function uplinkCAsi(o) {
       intDensity = maskInfo.densityDbWPerHz;
     }
 
-    const pol = applyPol
-      ? polarizationDiscrimination(wanted.polarization, it.polarization, it.xpdDb)
-      : { db: 0, relation: 'off', mixed: false };
+    // 上行极化：比干扰载波的上行极化，不是邻星的下行极化（留空按下行关系推定，见 resolveUplinkPolarization）。
+    // 不计极化折减时也照样解出来——逐源明细要标「这一源按什么极化算的」
+    const upPol = resolveUplinkPolarization(wanted, it, it.xpdDb);
+    const pol = applyPol ? upPol : { db: 0, relation: 'off', mixed: false };
+    // 推定出的混用与下行同源，下行那一路已告警过，这里只报显式给定的
+    if (applyPol && upPol.mixed && !upPol.inferred) warnings.push(`干扰源「${it.name || it.id}」上行与本站线/圆极化混用，鉴别度按 3 dB 计`);
 
     const ov = num(it.overlapFactor, 1);
     const overlapDb = ov > 0 && ov <= 1 ? 10 * LOG10(ov) : 0;
@@ -481,6 +526,7 @@ function uplinkCAsi(o) {
       peer: peerInfo,
       satDiscrimDb,
       polDb: pol.db, polRelation: pol.relation,
+      polarization: upPol.pol, polInferred: upPol.inferred,
       overlapDb,
       ciDb: ciJ,
       skipped: null
@@ -520,6 +566,8 @@ function uplinkCAsi(o) {
       maskBand: maskRef ? maskRef.band : null,
       maskAuthoritative: maskRef ? maskRef.authoritative : false,
       maskPhi0Deg: maskRef ? maskRef.phi0 : null,
+      // 对等站所用的地球站方向图（只有 peer 模式有天线；掩模 / 逐站给定为 null）
+      esPattern: peerPatInfo,
       peerCurves
     },
     warnings
@@ -527,29 +575,27 @@ function uplinkCAsi(o) {
 }
 
 // ---------------------------------------------------------------------------
-// 施扰侧：ΔT/T（RR 附录 8）
+// 施扰侧：ΔTs/Ts（RR 附录 8 的上行分量）
 // ---------------------------------------------------------------------------
 
 /**
- * 本网对邻网的干扰增量：ΔT/T = (ΔT / T_邻网) ，超过门限即触发协调。
+ * 本站上行旁瓣落进邻星接收机的噪温增量 ΔTs 与 ΔTs/Ts —— **只是 RR 附录 8 ΔT/T 的上行分量**
+ * （AP8 式(5)，或 §2.2.1.2 独立上下行分支里的上行那一半）。
  *
- * ΔT = 本站旁瓣 EIRP 密度 落到邻星接收天线上，折算成等效噪温升。
- *   ΔT = Pt·Gt(θ) · Gr / (k · 4πd² ) · (λ²/4π) ... 在 dB 域整理为：
- *   ΔT(dBK) = 本站旁瓣EIRP密度(dBW/Hz) − FSL(dB) + 邻星G/T(dB/K) − 邻星G(dBi) + 邻星G(dBi) ...
+ * ★ v1.5.3 及之前界面把它称作「协调判据 ΔT/T（RR 附录 8）· 门限 6%」——不对：完整的 AP8 ΔT/T 还有
+ *   下行 ΔTe（本星 → 邻网收端站）、传输增益 γ 与链路噪温 T、反方向、两组 (T, γ) 取大、Case II 等，
+ *   全在 utils/itu/ap8.js（C/I 窗「协调触发」页）。本函数保留给旧调用方，口径照实：
+ *   方向图恒用 RR 附录 8 附件 3（v1.5.3 及之前用的是旧版包络，近旁瓣低 3 dB 起，同步订正），
+ *   几何为 WGS84 拓扑角、不计保持容差，功率密度按功放 − 馈损 − 10lg(带宽) 均匀折算。
  *
- * 工程上更直接的写法（AP8 口径）：
- *   ΔT/T (dB) = 旁瓣EIRP密度 − FSL + 邻星G_r − 10lg(k) − 10lg(T_邻网)
- *             = 旁瓣EIRP密度 − FSL + 邻星(G/T) + 228.6 − 10lg(T) − 10lg(T)  ← 易错
- * 为免歧义，本函数直接吃邻星的 G/T：
- *   ΔT/T = 10^[(旁瓣EIRP密度 − FSL + G/T_邻星 + 228.6)/10] / T_邻星 … 仍需 T
- * 故实现取最不易错的形式：由 G/T 与 G 反解 T_邻星，再算 ΔT。
- *
- * 门限：RR AP8 常用 6%（ΔT/T ≤ 6% 视为不需协调）。
+ *   ΔTs (dBK) = 本站旁瓣 EIRP 密度 − FSL + 邻星接收增益 + 228.6
+ *   Ts = 10^((G − G/T)/10)（由邻星 G 与 G/T 反解）
  *
  * @param {object} o
  *   station {lon,lat,alt} 本站；tx {diameterM, efficiency, freqGHz, powerW|eirpDbW, bandwidthHz, feederLossDb}
  *   wanted {lonDeg}；victim {lonDeg, gOverTDbPerK, rxGainDbi}
- * @returns {{deltaTOverTPct, deltaTK, victimTk, thetaDeg, sidelobeEirpDensity, exceeds6pct}|null}
+ * @returns {{deltaTOverTPct, deltaTK, victimTk, thetaDeg, sidelobeEirpDensity, exceeds6pct, component, patternId}|null}
+ *   deltaTOverTPct 即 ΔTs/Ts（%）；exceeds6pct 只供着色
  */
 function deltaTOverT(o) {
   const st = o.station || {}, tx = o.tx || {}, wanted = o.wanted || {}, victim = o.victim || {};
@@ -573,7 +619,7 @@ function deltaTOverT(o) {
   }
   const bw = num(tx.bandwidthHz, NaN);
   if (!Number.isFinite(eirp) || !(bw > 0)) return null;
-  const sidelobeGain = P.offAxisAP8(D, lam, eff, sep.thetaDeg);
+  const sidelobeGain = P.offAxisAP8AnnexIII(D, lam, eff, sep.thetaDeg);
   // EIRP 密度里的增益换成旁瓣增益
   const sidelobeEirpDensity = eirp - gMax + sidelobeGain - 10 * LOG10(bw);
 
@@ -595,8 +641,10 @@ function deltaTOverT(o) {
     deltaTK,
     victimTk,
     deltaTOverTPct: pct,
-    exceeds6pct: pct > 6
+    exceeds6pct: pct > 6,
+    component: 'uplink',                 // ΔTs/Ts：AP8 ΔT/T 的上行分量
+    patternId: P.AP8_PATTERN
   };
 }
 
-module.exports = { downlinkCAsi, uplinkCAsi, deltaTOverT, polarizationDiscrimination, DEFAULT_XPD_DB, lambdaOf };
+module.exports = { downlinkCAsi, uplinkCAsi, deltaTOverT, polarizationDiscrimination, resolveUplinkPolarization, DEFAULT_XPD_DB, lambdaOf };

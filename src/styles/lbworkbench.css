@@ -215,7 +215,7 @@ html[data-theme='dark'] {
 .lbx-satsel:focus { outline: none; border-color: var(--accent-ui); }
 .lbx-satname { font-size: calc(var(--lb-fs) + 2px); font-weight: 700; letter-spacing: var(--ls-tight); color: var(--text); }
 .lbx-satnote { font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
-/* 只读读数族（标签 + 值 + 单位）：与容量汇总（.lbx-cap-item）同族，字号随数据区 --lb-fs */
+/* 只读读数族（标签 + 值 + 单位）：字号随数据区 --lb-fs */
 .lbx-satkv { gap: 3px 16px; }
 .lbx-kv { display: inline-flex; align-items: baseline; gap: 4px; }
 .lbx-kv-l { font-size: var(--lb-fs); color: var(--text-muted); }
@@ -276,7 +276,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
   background: color-mix(in srgb, var(--lb-fill-c, var(--lb-bar, #82a9c6)) 26%, transparent);
 }
 .sg-cell .sg-fillbar ~ .sg-v { position: relative; }
-/* 容量汇总作为链路表分区脚注 */
+/* 本行读数作为链路表分区脚注 */
 .lbx-capfoot { margin-top: 6px; }
 /* —— 详细预算文档区：上排「级联主表 ‖ 图表区」，下排参考段整幅段带 ——
    瀑布表是按 400–800px 预算文档列设计的密排表（定调基准），全宽拉伸=标签数值两头甩。
@@ -558,29 +558,21 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 /* 「结果已过期」提示（空间态势功能区仍用；链路预算四窗在 WinStatusBar） */
 .lbx-stale { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-2); color: var(--warn); white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 400; }
 .lbx-stale::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
-/* 过期结果退一档：结果对应修改前的输入时（.lbx-flow 挂 .lbx-stale-res），结果列 / 本行读数 / 容量汇总 / 详细预算 /
+/* 过期结果退一档：结果对应修改前的输入时（.lbx-flow 挂 .lbx-stale-res），结果列 / 本行读数 / 详细预算 /
    E2E 链路表结果列与汇总卡一律退到 muted 墨色（含危险色——过期的数不该再报状态），图表区降不透明度。只表状态，不加句子。 */
 .lbx-stale-res :is(.sg-cell.ro-field .sg-v, .sg-cell.ro-field .sg-sub, .lbx-capfoot, .lbx-capfoot *, .lbx-doc-main *, .lbx-doc-ref *, .e2-tbl td.c-res, .cs-sum *, .cs-b-m) { color: var(--text-muted) !important; }
 .lbx-stale-res :is(.sg-cell.ro-field .sg-fillbar, .lbx-doc-side) { opacity: .5; }
 
-/* 链路表脚注（三线式：外框上下双线、行间细线、无底色，数值加粗衬线）
-   ——上行「容量汇总」本批次总账，下行「本行读数」当前聚焦行的全量结果指标 */
+/* 链路表脚注（三线式：外框上下双线、无底色，数值加粗）——「本行读数」当前聚焦行的全量结果指标。
+   原先上面还有一行「容量汇总」，2026-10-16 起搬进独立弹窗（LbCapDialog），那组 .lbx-capline / .lbx-cap-* 已删 */
 .lbx-capblk { border-top: 2px solid var(--lb-rule-strong); border-bottom: 2px solid var(--lb-rule-strong); }
-.lbx-capline { display: flex; align-items: baseline; gap: 4px 14px; flex-wrap: wrap; padding: 3px 2px 4px; }
 .lbx-cap-t { font-size: var(--lb-fs); font-weight: 700; letter-spacing: var(--ls-label); color: var(--text); }
-.lbx-cap-big { font-size: calc(var(--lb-fs) + 4px); font-weight: 700; line-height: 1; color: var(--text); font-variant-numeric: tabular-nums; }
-.lbx-cap-big i { font-size: var(--lb-fs); font-weight: 600; font-style: normal; margin-left: 3px; color: var(--text-muted); }
-.lbx-cap-item { display: inline-flex; align-items: baseline; gap: 5px; }
-.lbx-cap-l { font-size: var(--lb-fs); color: var(--text-muted); }
-.lbx-cap-v { font-size: calc(var(--lb-fs) + 1px); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.lbx-cap-v i { font-size: calc(var(--lb-fs) - 1px); font-weight: 400; font-style: normal; color: var(--text-faint); margin-left: 2px; }
-.lbx-cap-n { margin-left: auto; font-size: calc(var(--lb-fs) - 1px); color: var(--text-faint); white-space: nowrap; }
-/* 本行读数：左栏＝标题 + 行号/站对（定宽 148px，与上一行「容量汇总」同起首），右栏＝指标网格。
+/* 本行读数：左栏＝标题 + 行号/站对（定宽 148px），右栏＝指标网格。
    指标按「结果列」次序平铺进等宽格（auto-fill），格内标签靠左、数值靠右、中间一道点线引导——
    二十来个「标签 数值」自由折行时哪个数是哪个的全靠猜，等宽格 + 引导线把每一格框成一条读数，
    数值在各列里齐成一竖行。值比标签重一档、单位退到最轻；着色口径同结果单元格（负余量/超占用转红）。 */
 .lbx-rowline { display: grid; grid-template-columns: 148px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
-/* 没有容量汇总行时读数行就是块内第一行：顶上已是 2px 顶线，再叠一条发丝线成了双线 */
+/* 读数行是块内第一行：顶上已是 2px 顶线，再叠一条发丝线成了双线 */
 .lbx-capblk > .lbx-rowline:first-child { border-top: 0; }
 .lbx-rr-hd { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 2px; }
 /* 行号 + 站对名：定宽栏里长站名折行显示，不裁 */

@@ -1,0 +1,40 @@
+//! id: shapefile
+//! name: ⟪Shapefile · 面图层与点图层|Shapefile · Polygon and point layers⟫
+//! ext: zip
+//! match: *.zip, *.shp
+//zh ESRI Shapefile：ZIP 包，或一起选中的 .shp / .dbf / .cpg / .prj。面要素为等值线（多部件逐环导入），点要素为波束中心；
+//zh 按属性 satellite / beam / band / type 归成波束、level 为电平（本软件导出的 Shapefile 原样读回）。坐标须为 WGS-84 经纬度。
+//en ESRI Shapefile: a ZIP, or .shp / .dbf / .cpg / .prj selected together. Polygon features are contours (every ring of a multipart shape),
+//en point features are beam centres; grouped into beams by satellite / beam / band / type with level as the contour level
+//en (shapefiles exported by this software read back as is). Coordinates must be WGS-84 longitude / latitude.
+
+// ⟪属性名不分大小写（.dbf 字段名常是大写：SATELLITE / BEAM / LEVEL …）|attribute names are matched case-insensitively (.dbf field names are often upper case)⟫
+const KEYS = {
+  satellite: ['satellite', 'satname', 'sat', '卫星'],
+  orbitLon: ['orbitlon', 'satlon', 'lon'],
+  beam: ['beam', 'beamname', 'name', '波束'],
+  band: ['band', '频段'],
+  type: ['type', '类型'],
+  level: ['level', 'gain', 'value', '电平'],
+}
+const get = (p, k) => { for (const n of KEYS[k]) if (p[n] != null && p[n] !== '') return p[n] }
+const lower = (o) => Object.fromEntries(Object.entries(o || {}).map(([k, v]) => [k.toLowerCase(), v]))
+
+const feats = shapefile(files)
+if (feats.some((ft) => ft.projected)) console.warn('⟪.prj 为投影坐标系，坐标未换算|.prj is a projected coordinate system; coordinates were not converted⟫')
+const byKey = new Map()
+for (const ft of feats) {
+  const p = lower(ft.props)
+  if (p.kind === 'polygon' || p.kind === 'point' || p.kind === 'station') continue   // ⟪协调区 Polygon 与标记不是波束|coordination polygons and markers are not beams⟫
+  const sat = String(get(p, 'satellite') ?? ft.layer)
+  const name = String(get(p, 'beam') ?? ft.layer)
+  const band = String(get(p, 'band') ?? '')
+  const type = String(get(p, 'type') ?? 'EIRP')
+  const key = [sat, name, band, type].join('\u0001')
+  if (!byKey.has(key)) byKey.set(key, { satellite: sat, orbitLon: num(get(p, 'orbitLon')), band, type, name, peaks: [], contours: [] })
+  const b = byKey.get(key)
+  if (ft.type === 'Point') b.peaks.push({ lon: ft.point[0], lat: ft.point[1] })
+  else if (ft.type === 'MultiPoint') for (const [lon, lat] of ft.points) b.peaks.push({ lon, lat })
+  else for (const ring of ft.rings) b.contours.push({ level: num(get(p, 'level')), points: ring })
+}
+return [...byKey.values()]

@@ -32,6 +32,7 @@ import sat from '../constellation/satellite.js'
 import { posAt } from '../constellation/satPos.js'   // 取位的唯一入口（对星覆盖不收星历点序列，见 satcovReject）
 import { sampleBeamAtEcef, sampleBeamAtParam, invGridDir, perturbSpacecraft, antennaBasis, axialRatioDb, beamBasisFrom, boreSettingsAtPos, azElGround, pointRevOf, refinedPeakDb as covRefinedPeakDb } from './coverage.js'
 import { losBlocked } from './shellProj.js'
+import { perfXpolDb } from './usePerfTable.js'   // Xpol C/I 与对地表同一口径（极化内核，E-03）
 import { scanWindows, summarize } from './satcovScan.js'
 import { A } from '../wgs84.js'
 
@@ -94,6 +95,7 @@ function defaultOpts() {
     // 目标由用户点选 → 默认【不过滤】：选了却不显示比多显示几行更糟。想只看照到的，勾上过滤。
     filterOn: false, minDir: 0,
     sameAsAnt: true, pol: 'RSS', pathLoss: 'none', gainOffset: 0,
+    coPol: 'auto', polAuto: true, polTauDeg: 0,   // Xpol 极化口径（同对地表 usePerfTable.defaultOpts）
     pointAz: 0, pointEl: 0, pointYaw: 0,
     beamSel: null                    // null = 在全部波束里取最大；否则只在选中的波束里取
   }
@@ -419,15 +421,16 @@ export function useSatPerfTable() {
     const beams = ctx.beams.filter((b) => !beamAllow || beamAllow.has(b.bi))
     const shellList = (shells || []).map((x) => ({ name: x.name, R: A + x.altKm }))
     // 预筛用的网格域【并集】：多波束 GRD 各 set 的 XS/XE 可以不同，拿 beams[0] 当门会误杀落在别的波束域里的星
-    let gx0 = Infinity, gx1 = -Infinity, gy0 = Infinity, gy1 = -Infinity, cell = Infinity
+    let gx0 = Infinity, gx1 = -Infinity, gy0 = Infinity, gy1 = -Infinity, cell = Infinity, noWin = false
     for (const bm of beams) {
       const g = bm.beam && bm.beam.grid; if (!g) continue
+      if (bm.beam.an && bm.beam.an.nowin) noWin = true            // 口径照射解析波束不截窗（E-01）：整副天线没有网格域可言
       gx0 = Math.min(gx0, g.XS, g.XE); gx1 = Math.max(gx1, g.XS, g.XE)
       gy0 = Math.min(gy0, g.YS, g.YE); gy1 = Math.max(gy1, g.YS, g.YE)
       if (g.NX > 1) cell = Math.min(cell, Math.abs(g.XE - g.XS) / (g.NX - 1))
       if (g.NY > 1) cell = Math.min(cell, Math.abs(g.YE - g.YS) / (g.NY - 1))
     }
-    const hasBounds = gx0 <= gx1 && gy0 <= gy1
+    const hasBounds = !noWin && gx0 <= gx1 && gy0 <= gy1
     // 域的角半径（外接圆）：时段扫描在域外按「离域还有多远」放大步长，宁可估大（只是慢一点，不会漏）
     const domRadDeg = hasBounds
       ? Math.min(170, Math.hypot(Math.max(Math.abs(gx0), Math.abs(gx1)), Math.max(Math.abs(gy0), Math.abs(gy1))) + 2)
@@ -451,7 +454,7 @@ export function useSatPerfTable() {
       let win = null, best = -Infinity, db = null, relDb = null
       for (const bm of beams) {
         const g = bm.beam.grid
-        if (xy[0] < Math.min(g.XS, g.XE) || xy[0] > Math.max(g.XS, g.XE) || xy[1] < Math.min(g.YS, g.YE) || xy[1] > Math.max(g.YS, g.YE)) continue
+        if (!(bm.beam.an && bm.beam.an.nowin) && (xy[0] < Math.min(g.XS, g.XE) || xy[0] > Math.max(g.XS, g.XE) || xy[1] < Math.min(g.YS, g.YE) || xy[1] > Math.max(g.YS, g.YE))) continue
         const r = sampleBeamAtParam(bm.beam, xy, rs, dirOpts); if (!r) continue
         let m = r.db, rl = null
         if (byRel) { const pk = refinedPeakDb(bm.beam, polD); rl = pk == null ? null : r.db - pk; m = rl == null ? -Infinity : rl }
@@ -495,7 +498,8 @@ export function useSatPerfTable() {
       const beam = w.bm.beam
       row.beamNo = w.bm.seq || w.bm.bi + 1; row.beamName = w.bm.name
       row.dir = w.db
-      if (want('ar')) { const d2 = sampleBeamAtEcef(beam, ctx.igrid, basis, P, { ...dirOpts, wantComp: true }); row.ar = (d2 && d2.comp) ? axialRatioDb(d2.comp, icomp) : null }
+      const d2 = (want('ar') || want('xpol')) ? sampleBeamAtEcef(beam, ctx.igrid, basis, P, { pol: 'RSS', gainOffset: 0, pathLoss: 'none', wantComp: true }) : null
+      if (want('ar')) row.ar = (d2 && d2.comp) ? axialRatioDb(d2.comp, icomp) : null
       const wantPt = want('minPt') || want('maxPt')
       const p = (want('param') || wantPt) ? sampleBeamAtParam(beam, am.xy, am.rs, parOpts) : null
       let param = p ? p.db : null
@@ -503,9 +507,13 @@ export function useSatPerfTable() {
       row.param = param
       if (wantPt) { const pt = pointMinMax(beam, ctx.igrid, basis, P, parOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2); row.minPt = pt.min; row.maxPt = pt.max }
       if (want('xpol')) {
-        const a1 = sampleBeamAtParam(beam, am.xy, am.rs, { pol: 'P1', gainOffset: 0, pathLoss: 'none' })
-        const b1 = sampleBeamAtParam(beam, am.xy, am.rs, { pol: 'P2', gainOffset: 0, pathLoss: 'none' })
-        row.xpol = (a1 && b1) ? a1.db - b1.db : null
+        // 与对地表同一口径（usePerfTable.perfXpolDb → polKernel）：共极化按峰值判定、线极化 τ 旋转、共极化 / 交叉极化取向
+        if (d2 && d2.comp) row.xpol = perfXpolDb(beam, ctx.igrid, icomp, d2, null, o)
+        else {
+          const a1 = sampleBeamAtParam(beam, am.xy, am.rs, { pol: 'P1', gainOffset: 0, pathLoss: 'none' })
+          const b1 = sampleBeamAtParam(beam, am.xy, am.rs, { pol: 'P2', gainOffset: 0, pathLoss: 'none' })
+          row.xpol = perfXpolDb(beam, ctx.igrid, icomp, null, [a1 ? a1.db : null, b1 ? b1.db : null], o)
+        }
       }
       if (want('slope')) {
         const dd = 0.1

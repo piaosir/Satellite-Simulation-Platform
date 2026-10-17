@@ -22,6 +22,8 @@ import LbLibrary from '../components/LbLibrary.vue'
 import LbDispCtl from '../components/LbDispCtl.vue'
 import WinStatusBar from '../components/WinStatusBar.vue'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
+import { lbDocT } from '../shared/lbDocI18n.js'
+import { waterfallTsv } from '../shared/lbWaterfallTsv.js'   // 详细预算整表复制（四窗一份）
 import LbSlantTool from '../components/LbSlantTool.vue'
 import LbIslRangeTool from '../components/LbIslRangeTool.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
@@ -49,6 +51,8 @@ import {
   blankNgsoSat, normNgsoSat, orbitSpecOf, defaultCarrier, chainInfoRate, serializeChainsState,
   orbitAltKmOf, gsoLookAngles, suggestIslRangeKm
 } from './e2eParams.js'
+// 链路条的拓扑编辑（插入 / 删除 / 端点改型 / 端点外接 + 跳参数播种 + 体制移交）与 GSO 门限口径：纯数据逻辑在这份模块里
+import { ensureSegCarriers, normEndpointKinds, insertNodeAt, removeNodeAt, toggleEndpointAt, extendEndAt, autoGeoMinElev } from './e2eChainEdit.js'
 import { useLbReport } from '../shared/useLbReport.js'
 import { syncAutoNames, adoptAutoFlag, withAutoFlag, newCfgName, newFolderName, copyNameOf } from '../shared/lbAutoName.js'
 import { byLang, isDefaultName } from '../shared/i18n/lang.js'   // 自动生成的名字是数据、呈现层翻不到，生成时就按平台语言出字
@@ -230,16 +234,7 @@ function defaultChain(name) {
   a.carrier = defaultCarrier()
   return { _id: uid('c'), name: name || '', nameAuto: true, nodes: [a, s, b], hops: [h1, h2] }
 }
-// 每个段起点都得有一份具体的体制（面板要有值可编辑）：没有就整套照抄链首＝「和第一跳一致」。
-// 只是 UI 便利——引擎侧缺了也会回落链首那份（见 e2eParams 的 buildChain）。
-function ensureSegCarriers(row) {
-  if (!row || !row.nodes.length) return
-  if (!row.nodes[0].carrier) row.nodes[0].carrier = defaultCarrier()
-  for (const sg of segmentsOf(row.nodes)) {
-    const nd = row.nodes[sg.from]
-    if (nd && !nd.carrier) nd.carrier = JSON.parse(JSON.stringify(row.nodes[0].carrier))
-  }
-}
+// 每个段起点都得有一份具体的体制：ensureSegCarriers（e2eChainEdit.js）没有就整套照抄链首＝「和第一跳一致」。
 // 链首那份体制（唯一定义业务速率的地方）
 const headCarrier = computed(() => (cur.value && cur.value.nodes[0] && cur.value.nodes[0].carrier) || null)
 const chains = reactive([defaultChain()])
@@ -300,72 +295,33 @@ function removeChain(i) {
 }
 
 // —— 链路条编辑：插入 / 删除 / 类型切换 ——
-// hop 的类型由两端节点定死，改拓扑就可能把一跳从星地变成星间（或反过来）。故每次改完都按
-// 新类型给相关跳「重新播种」：变成星间的换星间默认（23 GHz / 45 dBW / 12 dB/K / 1 dB，
-// ★ 距离留空——几何全部手填，留空即报错，绝不替用户编一个数），变回星地的承接原星地那套频率/
-// 极化/斜距/仰角。不播种就会出现「星间跳挂着 14.25 GHz 上行频率」这种串味参数。
-// ★ 承接分【有向】与【无向】两类：几何量（斜距/仰角/附加损耗）与方向无关，一律承接；频率与
-//   极化是有向的——新跳与来源跳反向（链首接卫星把上行跳换成下行跳）或来源本是星间跳时，承接过来
-//   就是「下行跳挂着上行的 14.25 GHz/V」这种串味参数，此时取新跳这一侧的默认值。
-function reseedHop(row, i, gs, gsFromType) {
-  const h = row.hops[i]; if (!h) return
-  const t = hopTypeOf(row.nodes[i], row.nodes[i + 1], h)
-  if (!t) return
-  if (isSpaceHop(t)) { Object.assign(h, defaultsFor(HOP_ISL_FIELDS)); return }
-  if (!gs) return
-  const from = (gsFromType === undefined) ? gs.fromType : gsFromType
-  h.slantRange = gs.slantRange; h.elevation = gs.elevation; h.miscLoss = gs.miscLoss
-  if (from === t) { h.frequency = gs.frequency; h.polarization = gs.polarization }
-  else { const d = GS_SIDE_DEFAULTS[t] || {}; h.frequency = d.frequency; h.polarization = d.polarization }
-}
-// 承接给新跳的星地参数 + 它的【来源跳类型】（up/down/isl/laser，由 hopTypeOf 在改拓扑前算出）
-const gsParamsOf = (h, fromType) => ({
-  frequency: h.frequency, polarization: h.polarization,
-  slantRange: h.slantRange, elevation: h.elevation, miscLoss: h.miscLoss, fromType
-})
+// 改拓扑的数据逻辑（跳参数按新类型重新播种、链首换人时移交业务体制、端点卫星归一为再生类）在
+// e2eChainEdit.js，口径与踩过的坑见那边的头注；这里只建节点（站名按语言、站址按角色）、出提示、收尾刷新。
 // 改拓扑即作废这条链上一次解出的自动几何：它是按【旧的】跳序解的，跳的增删会让它整体错位，
 // 挂在新拓扑上显示就是张冠李戴。结果本身照旧留着（另有「输入已变」提示），只清几何。
 function clearSolved(row) { if (row) delete geoSolved[row._id] }
+// 编辑被挡住时的提示（e2eChainEdit 回提示键；文案留在窗口这一侧）
+const EDIT_BLOCKED = {
+  relayOnSpaceHop: '地面转接站仅能插在星间跳上（两端须是卫星）',
+  minNodes: '链最少 2 个节点',
+  esEsAfterRemove: '删除后将出现地球站直连地球站（非卫星链路）',
+  esEs: '地球站不能直连地球站'
+}
+function afterEdit(row, r) {
+  if (!r.ok) { if (r.error) toast(EDIT_BLOCKED[r.error] || r.error); return }
+  clearSolved(row); syncChainNames(); markStale()
+  sel.type = 'node'; sel.index = r.sel
+}
 function insertNode(hopIdx, kind) {
   const row = cur.value; if (!row) return
-  const old = row.hops[hopIdx]
-  const oldType = hopTypeOf(row.nodes[hopIdx], row.nodes[hopIdx + 1], old)
-  // 地面转接站的入跳是星地下行、出跳是星地上行 ⇒ 只能插在星间跳上；插在星地跳上会造出
-  // 「地球站 → 地球站」这种非卫星链路（引擎会直接拒绝），故这里先挡住。
-  if (kind === 'es' && !isSpaceHop(oldType)) { toast('地面转接站仅能插在星间跳上（两端须是卫星）'); return }
   const nd = kind === 'es' ? newEsNode(nodeName('relay')) : newSatNode(kind)
-  if (kind === 'es') { nd.longitude = '104.0'; nd.latitude = '30.6'; nd.name = nodeName('relay') }
-  // 拆出来的两跳里，与原跳同向的那一跳全承接（另一跳必是星间跳，走星间默认）
-  const gs = isSpaceHop(oldType) ? null : gsParamsOf(old, oldType)
-  row.nodes.splice(hopIdx + 1, 0, nd)
-  row.hops.splice(hopIdx + 1, 0, newHop('rf'))
-  reseedHop(row, hopIdx, gs, oldType); reseedHop(row, hopIdx + 1, gs, oldType)
-  ensureSegCarriers(row); clearSolved(row); syncChainNames(); markStale()
-  sel.type = 'node'; sel.index = hopIdx + 1
+  if (kind === 'es') { nd.longitude = '104.0'; nd.latitude = '30.6' }
+  afterEdit(row, insertNodeAt(row, hopIdx, nd))
 }
 function removeAt(kind, i) {
   const row = cur.value; if (!row) return
   if (kind !== 'node') return
-  if (row.nodes.length <= 2) { toast('链最少 2 个节点'); return }
-  const last = row.nodes.length - 1
-  // 端点：删它连带删相邻那一跳，链就此缩短（链端不必是地球站，故端点也可删）
-  if (i === 0) { row.nodes.splice(0, 1); row.hops.splice(0, 1) }
-  else if (i === last) { row.nodes.splice(last, 1); row.hops.splice(last - 1, 1) }
-  else {
-    // 删中间节点会把它两侧的节点接到一起——若两侧都是地球站，接出来就是「地球站直连地球站」
-    // 这种非卫星链路（引擎会拒）。与 insertNode 的前置 toast 同一处理哲学：当场挡住，不等点计算。
-    const after = row.nodes.slice(0, i).concat(row.nodes.slice(i + 1))
-    for (let k = 0; k + 1 < after.length; k++) {
-      if (after[k].kind === 'es' && after[k + 1].kind === 'es') { toast('删除后将出现地球站直连地球站（非卫星链路）'); return }
-    }
-    const oldType = hopTypeOf(row.nodes[i - 1], row.nodes[i], row.hops[i - 1])
-    const gs = gsParamsOf(row.hops[i - 1], oldType)
-    row.nodes.splice(i, 1)
-    row.hops.splice(i, 1)                  // 删节点即删它右侧那一跳，左侧那跳接上下游
-    reseedHop(row, i - 1, gs, oldType)     // 接上下游后类型可能变（如两星间去掉转接站 ⇒ 星地变星间）
-  }
-  ensureSegCarriers(row); clearSolved(row); syncChainNames(); markStale()
-  sel.type = 'node'; sel.index = Math.min(i, row.nodes.length - 1)
+  afterEdit(row, removeNodeAt(row, i))
 }
 function toggleKind(i) {
   const row = cur.value; if (!row) return
@@ -384,26 +340,13 @@ function toggleEndpoint(i) {
   const last = row.nodes.length - 1
   if (i !== 0 && i !== last) return
   const old = row.nodes[i]
-  const hopIdx = (i === 0) ? 0 : last - 1
-  // 端点切成地球站前先看相邻那个：也是地球站就挡住（与 extendEnd 同一条口径、同一句文案）
-  if (old.kind !== 'es') {
-    const nb = row.nodes[i === 0 ? 1 : last - 1]
-    if (nb && nb.kind === 'es') { toast('地球站不能直连地球站'); return }
+  let nd
+  if (old.kind === 'es') nd = newSatNode('regen', old.name && !PLACEHOLDER_NODE_NAMES.includes(old.name) ? old.name : '')
+  else {
+    nd = newEsNode(nodeName(i === 0 ? 'tx' : 'rx'))
+    if (i !== 0) { nd.longitude = '109.5'; nd.latitude = '18.25' }
   }
-  const oldType = hopTypeOf(row.nodes[hopIdx], row.nodes[hopIdx + 1], row.hops[hopIdx])
-  const gs = gsParamsOf(row.hops[hopIdx], oldType)
-  if (old.kind === 'es') {
-    row.nodes[i] = newSatNode('regen', old.name && !PLACEHOLDER_NODE_NAMES.includes(old.name) ? old.name : '')
-  } else {
-    const es = newEsNode(nodeName(i === 0 ? 'tx' : 'rx'))
-    if (i !== 0) { es.longitude = '109.5'; es.latitude = '18.25' }
-    row.nodes[i] = es
-  }
-  // 体制跟着这个位置走：链首换了人，业务定义（含信息速率）不能跟着没了
-  if (old.carrier) row.nodes[i].carrier = JSON.parse(JSON.stringify(old.carrier))
-  reseedHop(row, hopIdx, gs, oldType)
-  ensureSegCarriers(row); clearSolved(row); syncChainNames(); markStale()
-  sel.type = 'node'; sel.index = i
+  afterEdit(row, toggleEndpointAt(row, i, nd))
 }
 
 // 端点向外接一个节点：链首往前接、链尾往后接（链两端不必是地球站，故两种都可接）。
@@ -411,22 +354,9 @@ function toggleEndpoint(i) {
 function extendEnd(i, kind) {
   const row = cur.value; if (!row) return
   const head = i === 0
-  const old = row.nodes[i]
-  if (kind === 'es' && old.kind === 'es') { toast('地球站不能直连地球站'); return }
   const nd = kind === 'es' ? newEsNode(nodeName(head ? 'tx' : 'rx')) : newSatNode('regen')
   if (kind === 'es' && !head) { nd.longitude = '109.5'; nd.latitude = '18.25' }
-  const h = newHop('rf')
-  // 相邻那一跳（承接的来源）与它的类型：在改拓扑前算好——链首接一颗星会让原本的上行跳
-  // 在新跳这一侧变成下行，方向反转下频率/极化不能承接（见 reseedHop）
-  const nearIdx = head ? 0 : row.hops.length - 1
-  const near = row.hops[nearIdx]
-  const nearType = near ? hopTypeOf(row.nodes[nearIdx], row.nodes[nearIdx + 1], near) : null
-  if (head) { row.nodes.unshift(nd); row.hops.unshift(h) } else { row.nodes.push(nd); row.hops.push(h) }
-  const hopIdx = head ? 0 : row.hops.length - 1
-  // 新跳按其类型播种：星地跳承接相邻那跳的几何（频率/极化按侧向定），星间跳走星间默认（距离仍留空）
-  reseedHop(row, hopIdx, near ? gsParamsOf(near, nearType) : null, nearType)
-  ensureSegCarriers(row); clearSolved(row); syncChainNames(); markStale()
-  sel.type = 'node'; sel.index = head ? 0 : row.nodes.length - 1
+  afterEdit(row, extendEndAt(row, i, nd))
 }
 function toggleLink(i) {
   const row = cur.value; if (!row) return
@@ -792,6 +722,9 @@ async function solveChainGeometry(row, chain) {
       // 0°N/0°E、0° 仰角算」——宁可报因
       if (!isFinite(st.lonDeg) || !isFinite(st.latDeg)) return { error: `第 ${i + 1} 跳：地球站「${es.name || ''}」缺经纬度，无法解几何` }
       if (!isFinite(pf(h.elevation))) return { error: `第 ${i + 1} 跳缺最低仰角（°）——自动几何按它解最差工况` }
+      // GSO 跳：这一格多半是手动档按真几何回填的两位小数（就近取整可高出真值 0.005°），门限按显示分辨率的一半放宽
+      // （口径见 e2eChainEdit.autoGeoMinElev）；NGSO 门限决定最差斜距，原样
+      st.minElevDeg = autoGeoMinElev(orbit, st.minElevDeg)
       let g = null
       try { g = await api.linkBudget.ngsoGeometry({ orbit, tx: st, rx: st, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { g = null }
       if (!g || !g.feasible) return { error: `第 ${i + 1} 跳几何无解：${(g && g.reason) || '求解失败'}` }
@@ -890,7 +823,9 @@ async function compute() {
       if (r && r.success) { results[row._id] = r.data; delete errors[row._id]; chainOf[row._id] = chain }
       else { delete results[row._id]; errors[row._id] = (r && r.message) || '计算失败' }
     }
-    resultsStale.value = _inGen !== gen0   // 算的途中输入又变了：这批结果对应的是开算那一刻，灯保持亮
+    // 算的途中输入又变了：这批结果对应的是开算那一刻，灯保持亮。没有结果就无所谓过期（同 markStale）——
+    // 算的途中换了配置，本批的链全不在了，灯不该替一份还没算过的配置亮着
+    resultsStale.value = _inGen !== gen0 && Object.keys(results).length > 0
     const done = jobChains.filter((r) => chains.includes(r))
     const bad = done.filter((r) => errors[r._id]).length
     // 有校验报错时通知条留着它（常驻），不拿「已计算」回执顶掉
@@ -966,7 +901,10 @@ onLangChange(() => {
 async function refreshDoc() {
   const d = curResult.value
   if (!api || !d) { segments.value = []; return }
-  try { segments.value = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(d)), lang: reportLang.value, orbitType: ORBIT, adaptUnits: isUnitAdaptive() }) } catch (e) { segments.value = [] }
+  let segs = []
+  try { segs = await api.linkBudget.waterfall({ results: JSON.parse(JSON.stringify(d)), lang: reportLang.value, orbitType: ORBIT, adaptUnits: isUnitAdaptive() }) } catch (e) { segs = [] }
+  // 等回包期间换了链 / 换了配置（结果已清）：这份是上一条的，不往上贴
+  if (curResult.value === d) segments.value = segs
 }
 watch([curResult, curIdx], refreshDoc)
 // 功能区「单位」档改动（本窗切换或别的链路预算窗改的）：速率读数就地跟上 + 详细预算重取一次。
@@ -975,14 +913,12 @@ let _offUnitMode = null
 onMounted(() => { _offUnitMode = onUnitModeChange((v) => { unitAdaptive.value = v; refreshDoc() }) })
 onBeforeUnmount(() => { if (_offUnitMode) _offUnitMode() })
 
-function copyWaterfallTsv() {
-  const lines = []
-  for (const s of segments.value) {
-    lines.push((s.no ? '§' + s.no + ' ' : '') + s.title)
-    for (const r of s.rows) lines.push([r.sign || '', r.label, r.up, s.cols >= 2 ? r.down : '', s.cols >= 3 ? r.total : '', r.unit].filter((x) => x !== '').join('\t'))
-    lines.push('')
-  }
-  try { navigator.clipboard.writeText(lines.join('\n')); toast('已复制详细预算（TSV）') } catch (e) { toast('复制失败') }
+// 拼表在 shared/lbWaterfallTsv.js（四窗一份）：多列段出列头（逐段汇总「C/(N+I) / 段余量」取段自带的 heads），
+// 空格保位——早先这里把空串格滤掉再拼，符号列空着或某侧没值时整行左移、与列头错位
+async function copyWaterfallTsv() {
+  if (!segments.value.length) return
+  try { await navigator.clipboard.writeText(waterfallTsv(segments.value, lbDocT(reportLang.value))); toast('已复制详细预算（TSV）') }
+  catch (e) { toast('复制失败') }
 }
 
 // ============ SLA 建议 ============
@@ -1328,7 +1264,9 @@ function applyState(st) {
   geoT0ISO.value = normGeoT0ISO(st.geoT0ISO)
   // SLA 参数：旧场景没这一项 → 补缺省（normSlaParams 幂等，非法值也退缺省）
   Object.assign(slaParams, normSlaParams(st.slaParams))
-  for (const k of Object.keys(slaScanByRow)) delete slaScanByRow[k]
+  // 档位扫描随结果作废：推进代次（在途那批回来按代次丢弃）、留底的链描述子一并放掉
+  invalidateSlaScan()
+  _slaChainOf = {}
   chains.splice(0, chains.length, ...st.chains.map((c) => {
     const row = {
       _id: uid('c'), name: c.name || '', nameAuto: c.nameAuto !== false,
@@ -1338,13 +1276,19 @@ function applyState(st) {
     applyRowSla(row, c.sla)   // 空的删键：留个 sla:{} 会让存量场景的指纹平白变一次
     return row
   }))
-  for (const row of chains) migrateCarriers(row)
+  // 端点卫星归一为再生类：老场景里删端点留下的透明星端点，卡片 / 检查器显示的 EIRPs / SFD 并不进算式
+  // （引擎在端点一律按再生算），载入即对齐——算出的数不变
+  for (const row of chains) { normEndpointKinds(row); migrateCarriers(row) }
   scanGeoSeeds(true)   // 只记录载入态的几何指纹：存盘值优先，此后的输入改动才触发建议值回填
   scanSites(fresh ? 'all' : 'prime')   // 站址取值同理：存盘场景认存盘值，出厂空白场景照站址取
   curIdx.value = 0; sel.type = 'node'; sel.index = 0
+  // 上一份的结果态整套清掉：结果 / 报错 / 自动档解出的几何（按链 _id 落表，新链 _id 全换新）/ 详细预算；
+  // 「输入已变」灯复位——不复位的话它一直亮着（换上来的这份根本还没算过，没有「结果过期」可言）
   for (const k of Object.keys(results)) delete results[k]
   for (const k of Object.keys(errors)) delete errors[k]
+  for (const k of Object.keys(geoSolved)) delete geoSolved[k]
   segments.value = []
+  resultsStale.value = false
   syncChainNames()
 }
 // SLA 的采用值/勾选在 chains 里（row.sla）自然被这条深监听盯住；参数是场景级，另列进来。
@@ -1485,7 +1429,7 @@ async function reloadSatTree() {
 //   站：站名 / 经纬度入节点（降雨率 / 海拔由 scanSites 按站址取）；带天线口径 → 按口径对号地球站库（shared/lbStationType.js），
 //       没带口径沿用缺省引用（库第一份，同新建节点）。本窗的地球站库没有损耗字段，天线罩记不进库条目：
 //       罩损（mapLinks.radomeLossDb，按该跳频率分档）并进与它相邻的星地跳「其他损耗」——自它发出的上行跳、进它的下行跳。
-//   跳：按类型播种（同 reseedHop：星地按上 / 下行侧向默认，星间 / 激光走星间默认）；斜距 / 星间距离留空，手动档由 scanGeoSeeds 给建议值。
+//   跳：按类型播种（同 e2eChainEdit.reseedHop：星地按上 / 下行侧向默认，星间 / 激光走星间默认）；斜距 / 星间距离留空，手动档由 scanGeoSeeds 给建议值。
 //   节点：链端卫星恒为再生（与引擎端点归一同口径），中间卫星按载荷的转发方式；体制落链首（defaultCarrier），段起点照抄。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()

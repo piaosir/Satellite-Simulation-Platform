@@ -16,17 +16,21 @@ const ciAsi = require('./ciAsi.js');
 const ciXpi = require('./ciXpi.js');
 const ciCci = require('./ciCci.js');
 const ciNgso = require('./ciNgso.js');
+// RR 附录 8 协调触发（双向 ΔT/T）与附录 5 协调弧：口径属 ITU 规则，放 utils/itu/，经这里一并导出
+const ap8 = require('../itu/ap8.js');
 
 module.exports = {
   geometry, patterns,
-  ciAsi, ciXpi, ciCci, ciNgso,
+  ciAsi, ciXpi, ciCci, ciNgso, ap8,
   // 常用入口平铺，免得调用方层层点
   gsoSeparation: geometry.gsoSeparation,
   topocentricAngle: geometry.topocentricAngle,
   downlinkCAsi: ciAsi.downlinkCAsi,
   uplinkCAsi: ciAsi.uplinkCAsi,
   deltaTOverT: ciAsi.deltaTOverT,
+  ap8Coordination: ap8.ap8Coordination,
   combineXpi: ciXpi.combineXpi,
+  combineXpiWithRain: ciXpi.combineXpiWithRain,
   xpiFromSources: ciXpi.xpiFromSources,
   resolveXpd: ciXpi.resolveXpd,
   cciAtPoint: ciCci.cciAtPoint,

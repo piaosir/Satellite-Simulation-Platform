@@ -224,5 +224,52 @@ const LAND = new Uint8Array(NX * NY).fill(1); LAND[0] = 0
   ok('半径夹在陆地(1.0)与岸线(1.0004)之间', ENV_R > 1 && ENV_R < 1.0004, String(ENV_R))
 }
 
+// ═══ 气象指标表站点落盘（src/viz/env/useLiveField.js；体检 2026-10-16 第二节 #19）═══
+// 「从标记 / 航迹导入」曾原地 push 进 sites.value，而「设置记忆」的落盘 watch 对 sites 只看引用 → 一次都不写
+// localStorage('live-field-ui')，导入的站重启即丢（表窗口那头发回来的是整份，所以手改过一格才会顺带存上）。
+{
+  console.log('\n--- 气象指标表站点落盘 ---')
+  const store = new Map()
+  let writes = 0
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { if (k === 'live-field-ui') writes++; store.set(k, String(v)) },
+    removeItem: (k) => store.delete(k)
+  }
+  globalThis.window = { api: null, addEventListener() {}, removeEventListener() {} }
+  const { useLiveField } = await import('../../../src/viz/env/useLiveField.js')
+  const markers = {
+    pts: [{ id: 'p1', lon: 116.4, lat: 39.9, name: '' }],
+    sts: [{ id: 's1', lon: 121.5, lat: 31.2, name: '上海站' }, { id: 's2', lon: 113.3, lat: 23.1, name: '广州站' }],
+    trs: [{ id: 't1', name: 'T1', kind: 'sea', pts: [{ lon: 120, lat: 20 }, { lon: 125, lat: 22 }] }]   // 无起始时刻 / 航速 → 航点不带时刻
+  }
+  const host = { markers: () => markers, polys: () => [] }
+  const tick = () => new Promise((r) => setTimeout(r, 20))
+  const disk = () => { const s = JSON.parse(store.get('live-field-ui') || 'null'); return s && Array.isArray(s.sites) ? s.sites : null }
+  const E = useLiveField(host)
+  await tick()
+  const w0 = writes
+  E.importMarkers('mk', { pts: new Set(['p1']), sts: new Set(['s1', 's2']) })   // 表窗口「从标记 / 航迹导入…」→ perfWinHost.actMet
+  await tick()
+  ok('★ 从标记导入（点标记 + 地球站）后落盘', writes - w0 >= 1 && disk() && disk().length === 3, `写盘 ${writes - w0} 次，盘上 ${disk() ? disk().length : '无记录'} 站`)
+  E.importMarkers('traj', 't1')
+  await tick()
+  ok('★ 从航迹导入（每个航点一行）后落盘', disk() && disk().length === 5 && disk().filter((s) => s.src === 'traj').length === 2)
+  const w1 = writes
+  E.importMarkers('mk', { pts: new Set(['p1']), sts: new Set(['s1', 's2']) })
+  await tick()
+  ok('重复导入：同坐标去重、不加行也不白写一次', E.sites.value.length === 5 && writes === w1)
+  E.newSite.lon = '100.5'; E.newSite.lat = '30.25'; E.newSite.name = '手填站'
+  E.addSite()
+  await tick()
+  ok('手动添加（addSite）同样落盘', disk() && disk().length === 6 && disk()[5].name === '手填站')
+  // 重启：新实例从 localStorage 读回
+  const E2 = useLiveField(host)
+  const got = E2.sites.value.map((s) => `${s.name}@${s.lon},${s.lat}:${s.src}`).join('|')
+  const want = E.sites.value.map((s) => `${s.name}@${s.lon},${s.lat}:${s.src}`).join('|')
+  ok('★ 重启后读回同样的站（名称 / 坐标 / 来源）', E2.sites.value.length === 6 && got === want, got)
+  delete globalThis.window
+}
+
 console.log(`\n通过 ${pass} / ${pass + fail}`)
 if (fail) process.exit(1)

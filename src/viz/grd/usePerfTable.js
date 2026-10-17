@@ -11,7 +11,8 @@
 //   两处共用同一份代码，口径不会岔开；宿主侧靠 stationsOf / setStationsOf / setOptsOf 逐 key 读写桶，
 //   不再借 activeKey 切表。
 import { ref, computed } from 'vue'
-import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb, refinedPeakDb } from './coverage.js'
+import { sampleBeamAt, perturbSpacecraft, dirToAzEl, groundLookAngles, axialRatioDb, refinedPeakDb, gridDir } from './coverage.js'
+import { coPolIndexOf, peakTiltRad, xpdAt } from './polKernel.js'   // 极化内核（E-03）：Xpol 的共极化判定 / τ 旋转
 import { cityNameKeys } from '../../shared/cityName.js'   // 城市名反查中英两名都收（英文界面填的是 Beijing）
 import { lonLatPasteKeys } from '../../shared/pasteLonLat.js'
 
@@ -89,6 +90,9 @@ function defaultOpts() {
     // （单波束→1 行，重叠区→数行）。老快照里由旧出厂默认落下的 filterOn:true 在 restoreState 里一次性归零。
     filterOn: false, minDir: 50,                 // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
+    // Xpol C/I 的极化口径（SATSOFT §3.4.5 Polarization Auto Rotation）：共极化分量（auto = 各波束峰值处占优者，可钉死 P1/P2）；
+    // 线极化旋转角 τ 自动 = 各波束峰值处极化椭圆倾角，关掉自动则用 polTauDeg（相对共极化轴，°）
+    coPol: 'auto', polAuto: true, polTauDeg: 0,
     // 指向误差（SATSOFT Cities 页「Pointing Error」）：方位/俯仰/偏航各自【全幅】(°)，取值时按半幅 ±输入/2 用
     // → 既驱动 Min/Max Pointing 列，也定地图上每座城市的指向误差框的大小
     pointAz: 0, pointEl: 0, pointYaw: 0,
@@ -147,6 +151,40 @@ export function fillOpts(o) {
 export function cityLabelText(s, type) {
   const city = String(s.city == null ? '' : s.city).trim(), desig = String(s.desig == null ? '' : s.desig).trim()
   return type === 'desig' ? (desig || city) : (city || desig)
+}
+
+// 波束峰值处的极化参照 { co, tilt }（共极化分量号 + Ludwig-3 倾角，polKernel 按 beam 记忆化；与指向无关）。
+// icomp 1（θφ）要峰值节点的方位角 → 由网格坐标经 igrid 公式还原方向。
+export function beamPolRef(beam, igrid, icomp) {
+  const g = beam.grid
+  const dirAt = (idx) => {
+    const NX = g.NX, col = idx % NX, row = (idx / NX) | 0
+    return gridDir(igrid, g.XS + col * (g.XE - g.XS) / (NX - 1), g.YS + row * (g.YE - g.YS) / (g.NY - 1))
+  }
+  return { co: coPolIndexOf(beam), tilt: peakTiltRad(beam, icomp, dirAt) }
+}
+// 单点 Xpol C/I（dB）：dc = 带复场的样本 { comp, u, v }（u,v = 天线系方向余弦 → 方位角 φ，icomp 1 换 Ludwig-3 用）；
+// 没有复场（预置烘焙天线只有功率）→ 退回共极化 / 交叉极化功率比 powDb = [P1 dB | null, P2 dB | null]（τ 只能取 0）。
+// o = 表选项（coPol / polAuto / polTauDeg）。对地表与对星表共用。
+export function perfXpolDb(beam, igrid, icomp, dc, powDb, o) {
+  const ref = beamPolRef(beam, igrid, icomp)
+  if (dc && dc.comp) return xpdAt(icomp, dc.comp, Math.atan2(dc.v, dc.u), ref, o)
+  if (!powDb) return null
+  const co = o && o.coPol === 'P1' ? 1 : o && o.coPol === 'P2' ? 2 : ref.co
+  const a = co === 2 ? powDb[1] : powDb[0], b = co === 2 ? powDb[0] : powDb[1]
+  if (a == null && b == null) return null
+  if (b == null) return 400
+  if (a == null) return -400
+  return Math.max(-400, Math.min(400, a - b))
+}
+// 对地表的取值包装：d = 本行已取的 Dir 样本（带 comp 则直接用）；否则补取一次 RSS 复场样本 / 两分量功率
+function xpolAt(beam, igrid, icomp, B, s, hKm, d, o) {
+  let dc = d && d.comp ? d : null
+  if (!dc) { const r = sampleBeamAt(beam, igrid, B, s.lon, s.lat, { pol: 'RSS', gainOffset: 0, pathLoss: 'none', hKm, wantComp: true }); if (r && r.comp) dc = r }
+  if (dc) return perfXpolDb(beam, igrid, icomp, dc, null, o)
+  const a = sampleBeamAt(beam, igrid, B, s.lon, s.lat, { pol: 'P1', gainOffset: 0, pathLoss: 'none', hKm })
+  const b = sampleBeamAt(beam, igrid, B, s.lon, s.lat, { pol: 'P2', gainOffset: 0, pathLoss: 'none', hKm })
+  return perfXpolDb(beam, igrid, icomp, null, [a ? a.db : null, b ? b.db : null], o)
 }
 
 export function usePerfTable() {
@@ -564,7 +602,7 @@ export function usePerfTable() {
       const gls = wantGS && !blank ? groundLookAngles(M.satLon, M.satLat || 0, M.satAlt, s.lon, s.lat, hKm) : null   // 地球站看卫星的方位/仰角
       for (const bm of ctx.beams) {
         if (beamAllow && !beamAllow.has(bm.bi)) continue                                     // 波束筛选：未选中的波束不进表
-        const d = blank ? null : sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, want('ar') ? { ...dOpts, wantComp: true } : dOpts)
+        const d = blank ? null : sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, (want('ar') || want('xpol')) ? { ...dOpts, wantComp: true } : dOpts)
         const dir = d ? d.db : null
         if (o.filterOn && (dir == null || dir < o.minDir)) continue                                       // 最低方向性过滤
         const p = !blank && (want('param') || wantPt) ? sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, pOpts) : null
@@ -573,9 +611,11 @@ export function usePerfTable() {
         // Min/Max Pointing：误差区上真实重采样取极值（见 pointMinMax），以 param 为中心。
         // 输入按【全幅误差】解释：实际半幅 = 输入/2（与 SATSOFT 一致，输入 0.06 → 用 ±0.03）。
         const pt = wantPt && !blank ? pointMinMax(bm.beam, igrid, B, s.lon, s.lat, pOpts, param, o.pointAz / 2, o.pointEl / 2, o.pointYaw / 2) : { min: null, max: null }
-        // Xpol C/I = 共极化/交叉极化 功率比（dB）
+        // Xpol C/I（SATSOFT §3.4.5）= 共极化 / 交叉极化（dB，波束内为正）。共极化分量按该波束峰值处占优者判定（可钉死）；
+        // 线极化基（icomp 1/3）先统一到 Ludwig-3 再按 τ 旋转：E1 = P1·cosτ + P2·sinτ、E2 = P2·cosτ − P1·sinτ（polKernel.xpdAt）。
+        // 旧实现恒取 P1 − P2：共极化在分量 2 的文件（EIRP_OK1 / 300_X02G 全部波束）报成 −45 dB（E-03）。
         let xpol = null
-        if (want('xpol') && !blank) { const a = sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, { pol: 'P1', gainOffset: 0, pathLoss: 'none', hKm }); const b = sampleBeamAt(bm.beam, igrid, B, s.lon, s.lat, { pol: 'P2', gainOffset: 0, pathLoss: 'none', hKm }); xpol = (a && b) ? a.db - b.db : null }
+        if (want('xpol') && !blank) xpol = xpolAt(bm.beam, igrid, icomp, B, s, hKm, d, o)
         // Slope = 方向性对指向角的梯度幅值（中心差分，δ=0.1°）
         let slope = null
         if (want('slope') && dir != null) { const dd = 0.1; const ga = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(B, dd, 0, 0), s.lon, s.lat, dOpts); const ge = sampleBeamAt(bm.beam, igrid, perturbSpacecraft(B, 0, dd, 0), s.lon, s.lat, dOpts); if (ga && ge) slope = Math.hypot(ga.db - dir, ge.db - dir) / dd }

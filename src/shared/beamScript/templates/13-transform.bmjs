@@ -17,7 +17,7 @@ for (const b of data.beams) {
       before += c.points.length
       const points = TOL_KM > 0 ? geo.simplify(c.points, TOL_KM) : c.points
       after += points.length
-      return { ...c, level: +(c.level + OFFSET).toFixed(2), points }
+      return { ...c, level: c.level == null ? null : +(c.level + OFFSET).toFixed(2), points }
     })
   // b.name = b.name.replace(/^Beam\s*/i, '')   // ⟪重命名示例|rename example⟫
 }

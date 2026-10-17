@@ -320,7 +320,8 @@ export function createPerfWinHost(D) {
   async function actShell(w, m) {
     const key = w.key, p = m.payload, s = D.satPerf.session(key)
     switch (m.type) {
-      case 'ready': w.ready = true; bindShell(w); pushShellFull(w); refreshShell(key); break
+      // 推送 watcher 只绑一次：认领来的窗由宿主补过一次就绪（adopt），窗口自己重载又会再发一次
+      case 'ready': if (!w.ready) { w.ready = true; bindShell(w) } pushShellFull(w); refreshShell(key); break
       case 'picks:add': D.satPerf.addTarget(p, key); refreshShell(key); break
       case 'picks:addMany': { const n = D.satPerf.addTargets(p || [], key); if (!n) push(w.id, { note: '这些卫星都已在目标卫星列表里' }); refreshShell(key); break }
       case 'picks:remove': D.satPerf.removeTarget(p && p.id, key); refreshShell(key); break
@@ -378,7 +379,7 @@ export function createPerfWinHost(D) {
   function actMet(w, m) {
     const E = D.envLive, p = m.payload
     switch (m.type) {
-      case 'ready': w.ready = true; bindMet(w); push(w.id, metSnap()); E.refreshSites(true); break
+      case 'ready': if (!w.ready) { w.ready = true; bindMet(w) } push(w.id, metSnap()); E.refreshSites(true); break   // watcher 只绑一次（同对星）
       case 'sites': {
         const seen = new Set()
         E.sites.value = (Array.isArray(p) ? p : []).map((s) => {
@@ -416,28 +417,66 @@ export function createPerfWinHost(D) {
     else if (w.kind === 'met') actMet(w, m)
   }
   let attached = false
+  // attach 装上的东西的退订：两路 IPC 监听 + await 之后建的 watch（那时已不在组件作用域里，页面卸载不会自动停）。
+  // 不摘的话整页重挂载（切 MSAA）后死页面的宿主照样收弹窗操作、跟新宿主各算一遍，整份页面也释放不掉
+  let offs = []
+  // listed：认领清单（api.list）回来了；adoptWanted：页面已要过 adopt —— 没存档时页面恢复设置比这次 IPC 还快，认领到了再补
+  let listed = false, adoptWanted = false
   async function attach() {
     if (!api || attached) return
     attached = true
-    api.onAct(handleAct)
-    api.onClosed((m) => { if (m && m.id) dropWin(m.id) })
-    // 主窗口重载（开发期 HMR / 崩溃重启）时弹窗可能还开着：认领它们，等它们下一次 act 或主动重推
+    const mine = offs = []
+    const keep = (off) => { if (typeof off === 'function') mine.push(off) }   // 旧版 preload 的订阅不返回退订函数：照旧挂着
+    keep(api.onAct(handleAct))
+    keep(api.onClosed((m) => { if (m && m.id) dropWin(m.id) }))
+    // 主窗口重载（开发期 HMR / 崩溃重启）或页面重挂载（切 MSAA）时弹窗可能还开着：先认领（claimed），
+    // 页面恢复完设置后由 adopt() 补一次就绪 —— 它们只在自己加载完时发过一次 ready，不会再发
     try {
       const list = await api.list()
-      for (const w of (list || [])) if (!wins.has(w.id)) wins.set(w.id, { id: w.id, kind: w.kind, key: w.key, ready: false, stops: [] })
+      for (const w of (list || [])) if (!wins.has(w.id)) wins.set(w.id, { id: w.id, kind: w.kind, key: w.key, ready: false, stops: [], claimed: true })
       if (list && list.length) ver.value++
     } catch { /* 无窗口 */ }
+    if (offs !== mine) return   // 等的时候已 detach（页面卸载）：别再给死页面装 watch
+    listed = true
     D.grd.onTreeKeys(onTreeKey)
     // 城市组 / 标记变了 → 推给开着的对地 / 气象窗
-    watch(() => D.perf.cityGroups.value, (v) => { for (const w of winsOf('ground')) push(w.id, { cityGroups: v }) }, { deep: true })
-    watch(() => markersSnap(), (v) => { for (const w of wins.values()) if (w.kind !== 'shell') push(w.id, { markers: v }) }, { deep: true })
+    mine.push(watch(() => D.perf.cityGroups.value, (v) => { for (const w of winsOf('ground')) push(w.id, { cityGroups: v }) }, { deep: true }))
+    mine.push(watch(() => markersSnap(), (v) => { for (const w of wins.values()) if (w.kind !== 'shell') push(w.id, { markers: v }) }, { deep: true }))
     // 显示时区改了 → 对地表的「时间」列按新时区重排（对星表的 tzMode 随 shellSnapLight 走）
-    if (typeof D.tzMode === 'function') watch(() => D.tzMode(), (v) => { for (const w of winsOf('ground')) push(w.id, { tzMode: v }) })
+    if (typeof D.tzMode === 'function') mine.push(watch(() => D.tzMode(), (v) => { for (const w of winsOf('ground')) push(w.id, { tzMode: v }) }))
     // 城市桶 / 选项桶整份换了（页面快照恢复、弹窗整份发回）→ 城市层重画；眼睛与逐项改动各自显式调 pushBoxes
-    watch(() => [D.perf.stationsByAnt.value, D.perf.optsByAnt.value], () => pushBoxes())
+    mine.push(watch(() => [D.perf.stationsByAnt.value, D.perf.optsByAnt.value], () => pushBoxes()))
     // 天线树整份换了（GRD 索引载完 / 加天线 / 改名 / 删除）→ 之前载不到的天线重试（启动时城市桶先于索引恢复，见 _loadFailed）
-    watch(() => (D.grd.sats ? D.grd.sats.value : null), () => { _loadFailed.clear(); pushBoxes() })
+    mine.push(watch(() => (D.grd.sats ? D.grd.sats.value : null), () => { _loadFailed.clear(); pushBoxes() }))
     pushBoxes()
+    if (adoptWanted) adopt()
+  }
+  // 认领来的窗补一次就绪（推整份状态、对星 / 气象窗绑推送）：页面在恢复完设置之后调 —— 桶里已是存盘那份，不是出厂默认值
+  // （弹窗按内容签名判回声，先推出厂值会把它那份冲掉）。对地 / 对星窗先把天线载上，取值才有方向图
+  async function adopt() {
+    adoptWanted = true
+    if (!attached || !listed) return   // 认领清单还没回来：attach 收尾时补
+    for (const w of [...wins.values()]) {
+      if (!w.claimed || w.ready) continue
+      w.claimed = false
+      if (w.kind !== 'met' && typeof D.grd.ensureAntLoaded === 'function') {
+        try { await D.grd.ensureAntLoaded(w.key) } catch { /* 载不到照样就绪：表先空着 */ }
+      }
+      if (!attached || wins.get(w.id) !== w || w.ready) continue   // 等的时候页面卸载了 / 窗关了 / 窗自己发过 ready 了
+      handleAct({ id: w.id, kind: w.kind, key: w.key, type: 'ready' })
+    }
+  }
+  // 页面卸载（切页 / 切 MSAA 整页重挂载）：摘 IPC 监听与 watch、停各窗的推送 watcher、清排着的推送 / 重画。
+  // 弹窗本身不关 —— 新页面 attach 时认领、adopt 补推整份状态，窗口接着用
+  function detach() {
+    if (!attached) return
+    attached = false; listed = false; adoptWanted = false
+    const list = offs; offs = []
+    for (const off of list) { try { off() } catch { /* 已摘 */ } }
+    for (const w of wins.values()) { for (const s of w.stops) { try { s() } catch { /* 已停 */ } } w.stops = [] }
+    wins.clear(); queue.clear()
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0 }
+    if (_boxT) { clearTimeout(_boxT); _boxT = 0 }
   }
   // 卫星动了（时钟 / 拖拽 / 改指向）：动过的天线的表重算，城市框重画
   function onMoved(moved) {
@@ -455,7 +494,7 @@ export function createPerfWinHost(D) {
   function refreshAll() { for (const k of groundKeys()) refreshGround(k); for (const k of shellKeys()) refreshShell(k); pushBoxes() }
 
   return {
-    ver, has, attach, open, isOpen, closeKey,
+    ver, has, attach, adopt, detach, open, isOpen, closeKey,
     groundKeys, shellKeys, liveKeys, boxKeys, metOpen, shellBeamModeOpen,
     refreshGround, refreshShell, refreshAll, shellClockTick, onMoved, onSettingsChanged, pushBoxes, setCityShow
   }

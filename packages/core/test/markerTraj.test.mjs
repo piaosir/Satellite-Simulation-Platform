@@ -138,5 +138,96 @@ ok('只有说明表 → 一条航迹都不建', trajsFromSheets([{ name: '说明
   }
 }
 
+// ---- 标记表格自己的撤销栈：表格之外改过标记（地图上拖动 / 侧栏改名 / 场景撤销）之后，表格 Ctrl+Z 不回放旧快照（2026-10-16 体检 #5 同类）----
+{
+  const { ref } = await import('vue')
+  const { useMarkerTable } = await import('../../../src/viz/markers/useMarkerTable.js')
+  const points = ref([]), stations = ref([]), trajectories = ref([])
+  let syncs = 0
+  const mk = useMarkerTable({ points, stations, trajectories, newId: newId, sync: () => { syncs++ } })
+  const tick = () => new Promise((r) => setTimeout(r, 0))
+  // 表格里加一行（pushUndo → 改 → 同步任务收尾补拍「操作后」）
+  mk.pushUndo(); mk.ptLayer.pasteAppend('116.4, 39.9')
+  await tick()
+  ok('表格撤销：照常撤回', mk.undo() === true && points.value.length === 0)
+  ok('表格重做：照常重做', mk.redo() === true && points.value.length === 1)
+  // 显隐不算改动：点一下眼睛之后照样撤得回，且保留此刻的显隐
+  mk.pushUndo(); mk.ptLayer.pasteAppend('121.5, 31.2')
+  await tick()
+  points.value[0].show = false
+  ok('显隐变化不让表格撤销失效', mk.undo() === true && points.value.length === 1 && points.value[0].show === false)
+  mk.redo()
+  // 表格之外加了一个点（没进表格的栈）：撤销不回放、那个点还在、表格的记录作废
+  points.value.push({ id: 'ext', lat: 1, lon: 2 })
+  const n0 = points.value.length, s0 = syncs
+  ok('表格之外改过：undo 返回 stale、不回放', mk.undo() === 'stale' && points.value.length === n0 && points.value.some((p) => p.id === 'ext') && syncs === s0)
+  ok('表格的撤销记录整个作废', !mk.canUndo.value && !mk.canRedo.value)
+  // 同一同步任务里紧接着撤（微任务还没轮到补拍）：此刻就是操作后，照常撤
+  mk.pushUndo(); mk.ptLayer.pasteAppend('100, 10')
+  ok('同步紧接着撤：照常撤回', mk.undo() === true && points.value.length === n0)
+}
+
+// ---- 表名被 Excel 规矩改写过的往返（体检 2026-10-16 第二档）：重名 / 带「/」/ 超 31 字 / 航迹恰好叫「说明」----
+// 主进程按 safeSheetName 改写表名（「/」换「·」、超长截断、重名加 (2)），「说明」表那一行记的却是原名 —— 按表名直接查就对不上：
+// 飞行读成航行、速度 / 出发时刻 / 定时清单丢掉、同名两条串到对方头上。导回时按说明行次序重走同一把尺子对上实际表名。
+// 与页面 mkExportTrajXlsx 同一套出表：表名 = 原名、note = trajNoteOf + pinNoteOf、「时间」列写实际值（推算的也写）。
+{
+  const { trajNoteOf } = await import('../models/entityRuntime.mjs')
+  const { pinNoteOf } = await import('../../../src/viz/markers/useMarkerTable.js')
+  const T0 = Date.UTC(2026, 9, 16, 8, 0, 0)
+  const COLS = [{ key: 'lon', label: '经度' }, { key: 'lat', label: '纬度' }, { key: 'tMs', label: '时间' }]
+  const LONG = '南海北部湾至琼州海峡夜间低空掠海巡逻航线第一编队训练科目甲'   // 32 字：超出 Excel 表名上限 31
+  const exportBook = async (trajs) => {
+    const sheets = trajs.map((t) => sheetModel({
+      name: t.name, cols: COLS, rows: t.pts,
+      value: (r, c) => (c.key === 'tMs' ? (Number.isFinite(r.tOut) ? new Date(r.tOut).toISOString() : null) : r[c.key]),
+      note: trajNoteOf(t) + '; ' + pinNoteOf(t)
+    }))
+    const f = path.join(os.tmpdir(), 'satsim-traj-rename-' + process.pid + '-' + (++seq) + '.xlsx')
+    fs.writeFileSync(f, Buffer.from(await buildGridWorkbook({ sheets })))
+    const b = await readGridWorkbook(f)
+    try { fs.unlinkSync(f) } catch { /* 清理失败不影响判定 */ }
+    return b
+  }
+  const parseTime = (s) => Date.parse(String(s))
+  const A = [
+    { name: '巡逻', kind: 'flight', speedKmh: 480, t0Ms: T0, pts: [{ lat: 20, lon: 110, tOut: T0 }, { lat: 21, lon: 111, tOut: T0 + 1200e3 }] },
+    { name: '巡逻', kind: 'sea', speedKmh: 25, pts: [{ lat: 18, lon: 109, tOut: T0 }, { lat: 18.5, lon: 109.5, tOut: T0 + 9000e3 }] },
+    { name: 'CA981 北京/纽约', kind: 'flight', speedKmh: 900, pts: [{ lat: 40.08, lon: 116.58 }, { lat: 40.64, lon: -73.78 }] },
+    { name: LONG, kind: 'sea', speedKmh: 30, pts: [{ lat: 21.5, lon: 109.1 }, { lat: 20.2, lon: 110.2 }] }
+  ]
+  const backA = await exportBook(A)
+  const tabs = backA.sheets.map((s) => s.name)
+  ok('改写：重名加 (2)、「/」换「·」、超长截断，说明表在最后', tabs.length === 5 && tabs[0] === '巡逻' && tabs[1] === '巡逻(2)' &&
+    tabs[2] === 'CA981 北京·纽约' && tabs[3] === LONG.slice(0, 31) && tabs[4] === '说明', tabs.join('|'))
+  const g = trajsFromSheets(backA.sheets, { newId, parseTime })
+  ok('四条航迹都回来（说明表不算一条）', g.length === 4, JSON.stringify(g.map((t) => t.name)))
+  ok('同名第一条：飞行 480 km/h + 出发时刻，没串成第二条的', g[0] && g[0].kind === 'flight' && g[0].speedKmh === 480 && g[0].t0Ms === T0,
+    JSON.stringify(g[0] && { k: g[0].kind, v: g[0].speedKmh, t0: g[0].t0Ms }))
+  ok('同名第二条（表名「巡逻(2)」）：航行 25 km/h、无出发时刻', g[1] && g[1].kind === 'sea' && g[1].speedKmh === 25 && !('t0Ms' in g[1]),
+    JSON.stringify(g[1] && { k: g[1].kind, v: g[1].speedKmh, t0: g[1].t0Ms }))
+  // 定时清单：第一条只钉首航点（= 出发时刻）、第二条一个都没钉 —— 说明行丢了的话清单为 null，「时间」列里的推算值会全被当成钉点
+  ok('定时清单跟着说明行回来（推算出来的时刻不被钉成航点时刻）',
+    g[0] && g[1] && g[0].pts.every((p) => !('tMs' in p)) && g[1].pts.every((p) => !('tMs' in p)),
+    JSON.stringify(g.slice(0, 2).map((t) => t.pts.map((p) => p.tMs))))
+  ok('带「/」的航迹：类型与速度对上、名字原样回来', g[2] && g[2].kind === 'flight' && g[2].speedKmh === 900 && g[2].name === 'CA981 北京/纽约',
+    JSON.stringify(g[2] && { n: g[2].name, k: g[2].kind, v: g[2].speedKmh }))
+  ok('超长名的航迹：说明对上、完整原名回来', g[3] && g[3].kind === 'sea' && g[3].speedKmh === 30 && g[3].name === LONG,
+    JSON.stringify(g[3] && { n: g[3].name, k: g[3].kind, v: g[3].speedKmh }))
+  ok('同名两条导回后仍分得开（第二条加序号）', g[0] && g[1] && g[0].name === '巡逻' && g[1].name === '巡逻 (2)', g.map((t) => t.name).join('|'))
+  // 航迹恰好叫「说明」：那张数据表先占了名字，说明表被改写成「说明(2)」
+  const backB = await exportBook([
+    { name: '说明', kind: 'flight', speedKmh: 300, pts: [{ lat: 30, lon: 120 }, { lat: 31, lon: 121 }] },
+    { name: '返航', kind: 'sea', speedKmh: 12, pts: [{ lat: 22, lon: 114 }, { lat: 23, lon: 115 }] }
+  ])
+  ok('航迹叫「说明」：说明表成了「说明(2)」', backB.sheets.map((s) => s.name).join('|') === '说明|返航|说明(2)', backB.sheets.map((s) => s.name).join('|'))
+  const gb = trajsFromSheets(backB.sheets, { newId })
+  ok('航迹叫「说明」：两条都回来、各自的说明都对上', gb.length === 2 && gb[0].name === '说明' && gb[0].kind === 'flight' && gb[0].speedKmh === 300 &&
+    gb[1].name === '返航' && gb[1].kind === 'sea' && gb[1].speedKmh === 12, JSON.stringify(gb.map((t) => ({ n: t.name, k: t.kind, v: t.speedKmh }))))
+  // 手搓工作簿最后一张表恰好叫「说明(2)」、却是航点表：照旧当航迹，不被当成说明表吞掉
+  const handB = trajsFromSheets([{ name: '航段', rows: [H, [1, 2]] }, { name: '说明(2)', rows: [H, [3, 4], [5, 6]] }], { newId })
+  ok('最后一张叫「说明(2)」的航点表照旧当航迹', handB.length === 2 && handB[1].name === '说明(2)' && handB[1].pts.length === 2, JSON.stringify(handB.map((t) => t.name)))
+}
+
 console.log(`markerTraj: ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

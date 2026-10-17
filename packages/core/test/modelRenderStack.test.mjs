@@ -349,6 +349,173 @@ await ta('STL 二进制：一个三角形、单位 unknown；坏 FBX 只抛状�
   await assert.rejects(() => importFile({ bytes: new Uint8Array([1]), name: 'c.ply' }), /不支持的格式/)
 })
 
+// ───────── importers.js：带贴图的 OBJ / FBX（体检 2026-10-16 第一节 #7）─────────
+// 导入器返回前等贴图落定；读不到 / 解不开 / 超时的从材质上摘掉并记告警。以前不等就返回，wbStore 紧接着 exportGlb，
+// texture.image 还是 null → GLTFExporter「No valid image data found」，模型入不了库。
+// node 没有 <img>：three 的 ImageLoader 走 document.createElementNS('img')，只在本段装一个最小替身 —— 按 blob: / data: 取字节，
+// 认 PNG / JPEG 文件头就 load，否则 error，且晚一拍（导入器不等的话返回时 image 还是 null）。真解码与 GLTFExporter 全流程在真 Chromium 里验。
+{
+  const { resolveObjectURL } = await import('node:buffer')
+  const enc = (s) => new TextEncoder().encode(s)
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const PNG = Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'))
+  const JPG = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9])
+  const isImg = (b) => !!b && b.length > 3 && ((b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) || (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff))
+  class FakeImg extends EventTarget {
+    get src() { return this._src }
+    set src(u) {
+      this._src = u
+      ;(async () => {
+        let b = null
+        if (/^blob:/.test(u)) { const bl = resolveObjectURL(u); if (bl) b = new Uint8Array(await bl.arrayBuffer()) }
+        else if (/^data:[^,]*;base64,/.test(u)) b = Uint8Array.from(Buffer.from(u.slice(u.indexOf(',') + 1), 'base64'))
+        await sleep(5)
+        if (isImg(b)) { this.width = this.height = 1; this.dispatchEvent(new Event('load')) } else this.dispatchEvent(new Event('error'))
+      })()
+    }
+  }
+  const made = new Set(), revoked = new Set()
+  const { createObjectURL, revokeObjectURL } = URL
+  globalThis.document = { createElementNS: (ns, tag) => { if (tag !== 'img') throw new Error('unexpected createElementNS ' + tag); return new FakeImg() } }
+  URL.createObjectURL = (b) => { const u = createObjectURL.call(URL, b); made.add(u); return u }
+  URL.revokeObjectURL = (u) => { revoked.add(u); return revokeObjectURL.call(URL, u) }
+  // 模拟 wbStore 的 readSibling：files 是「模型所在目录」（键用 / 分隔），calls 记下每次按什么名字读的；hang 里的永不返回，delay 逐个给延迟
+  const sib = (files, calls = [], hang = new Set(), delay = {}) => async (nm) => {
+    calls.push(nm)
+    if (hang.has(nm)) return new Promise(() => {})
+    await sleep(delay[nm] ?? 2)
+    const k = nm.replace(/\\/g, '/')
+    return Object.hasOwn(files, k) ? files[k] : null
+  }
+  const matsOf = (root) => { const s = new Set(); root.traverse((o) => { if (o.isMesh) for (const m of Array.isArray(o.material) ? o.material : [o.material]) s.add(m) }); return [...s] }
+  const byName = (root, nm) => matsOf(root).find((m) => m.name === nm)
+  // GLTFExporter 的前提：材质上留下的每张贴图都有图像
+  const allTexturesHaveImages = (root) => { for (const m of matsOf(root)) for (const k of Object.keys(m)) { const v = m[k]; if (v && v.isTexture) assert.ok(v.image != null, `${m.name}.${k} image 为空`) } }
+  const quadObj = (mtllib, mats) => `mtllib ${mtllib}\n` + mats.map((mn, i) => `o p${i}\nv 0 0 ${i}\nv 1 0 ${i}\nv 1 1 ${i}\nvt 0 0\nvt 1 0\nvt 1 1\nusemtl ${mn}\nf ${3 * i + 1}/${3 * i + 1} ${3 * i + 2}/${3 * i + 2} ${3 * i + 3}/${3 * i + 3}\n`).join('')
+  // ASCII FBX 7.3：一块平板 + 一个材质 + 一张漫反射贴图；video = {file, rel, content?（base64，内嵌）}
+  const fbx = (video) => ['; FBX 7.3.0 project file', '',
+    'FBXHeaderExtension:  {', '\tFBXHeaderVersion: 1003', '\tFBXVersion: 7300', '}',
+    'GlobalSettings:  {', '\tVersion: 1000', '\tProperties70:  {', '\t\tP: "UnitScaleFactor", "double", "Number", "",1', '\t}', '}',
+    'Objects:  {',
+    '\tGeometry: 1001, "Geometry::plane", "Mesh" {',
+    '\t\tVertices: *12 {', '\t\t\ta: 0,0,0,100,0,0,100,100,0,0,100,0', '\t\t}',
+    '\t\tPolygonVertexIndex: *4 {', '\t\t\ta: 0,1,2,-4', '\t\t}',
+    '\t\tGeometryVersion: 124',
+    '\t\tLayerElementUV: 0 {', '\t\t\tVersion: 101', '\t\t\tName: "UVMap"', '\t\t\tMappingInformationType: "ByPolygonVertex"', '\t\t\tReferenceInformationType: "IndexToDirect"',
+    '\t\t\tUV: *8 {', '\t\t\t\ta: 0,0,1,0,1,1,0,1', '\t\t\t}', '\t\t\tUVIndex: *4 {', '\t\t\t\ta: 0,1,2,3', '\t\t\t}', '\t\t}',
+    '\t}',
+    '\tModel: 2001, "Model::plane", "Mesh" {', '\t\tVersion: 232', '\t\tProperties70:  {', '\t\t\tP: "Lcl Translation", "Lcl Translation", "", "A",0,0,0', '\t\t}', '\t}',
+    '\tMaterial: 3001, "Material::skin", "" {', '\t\tVersion: 102', '\t\tShadingModel: "phong"', '\t\tProperties70:  {', '\t\t\tP: "DiffuseColor", "Color", "", "A",1,1,1', '\t\t}', '\t}',
+    '\tTexture: 4001, "Texture::skin", "" {', '\t\tType: "TextureVideoClip"', '\t\tVersion: 202', `\t\tFileName: "${video.file}"`, `\t\tRelativeFilename: "${video.rel}"`, '\t}',
+    '\tVideo: 5001, "Video::skin", "Clip" {', '\t\tType: "Clip"', `\t\tFilename: "${video.file}"`, `\t\tRelativeFilename: "${video.rel}"`,
+    ...(video.content ? ['\t\tContent: ,', `\t\t\t"${video.content}"`] : []), '\t}',
+    '}',
+    'Connections:  {', '\tC: "OO",2001,0', '\tC: "OO",1001,2001', '\tC: "OO",3001,2001', '\tC: "OO",5001,4001', '\tC: "OP",4001,3001, "DiffuseColor"', '}', ''].join('\n')
+  try {
+    await ta('OBJ + MTL + 同目录贴图：返回时贴图已到位；两个材质引用同一文件只读一次、共用同一个 image；没被用到的材质不去读它的贴图；blob: 解码完全部撤掉', async () => {
+      made.clear(); revoked.clear()
+      const calls = []
+      const mtl = 'newmtl skin\nKd 1 1 1\nmap_Kd skin.png\n\nnewmtl skin2\nKd 1 1 1\nmap_Kd SKIN.PNG\n\nnewmtl unused\nmap_Kd never.png\n'
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['skin', 'skin2'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc(mtl), 'skin.png': PNG }, calls) })
+      assert.deepEqual(r.warnings, [])
+      const a = byName(r.root, 'skin'), b = byName(r.root, 'skin2')
+      assert.ok(a.isMeshStandardMaterial && a.map && a.map.image && a.map.image.width === 1)
+      assert.equal(a.map.image, b.map.image, '同一文件共用同一个 image（导出件里只一份图）')
+      assert.equal(a.map.colorSpace, THREE.SRGBColorSpace)
+      assert.equal(a.map.userData.mimeType, undefined, 'PNG 源不标 JPEG')
+      assert.deepEqual(calls.filter((c) => c !== 'a.mtl'), ['skin.png'])
+      assert.ok(made.size >= 1 && [...made].every((u) => revoked.has(u) && !resolveObjectURL(u)), 'blob: 全部撤掉')
+      allTexturesHaveImages(r.root)
+    })
+    await ta('MTL 引用的贴图缺失：模型照样出来，贴图槽置空，告警「缺少贴图」', async () => {
+      const mtl = 'newmtl skin\nKd 0.8 0.8 0.8\nmap_Kd gone.png\nnorm gone_n.png\n'
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['skin'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc(mtl) }) })
+      assert.deepEqual(r.warnings, ['缺少贴图 gone.png、gone_n.png'])
+      const m = byName(r.root, 'skin')
+      assert.equal(m.map, null); assert.equal(m.normalMap, null); assert.equal(r.tris, 1)
+      allTexturesHaveImages(r.root)
+    })
+    await ta('.mtl 写绝对路径（3ds Max）：读不到再按文件名在同目录找；JPEG 源的颜色图标 image/jpeg（导出存 JPEG）、法线图不标', async () => {
+      const calls = []
+      const mtl = 'newmtl skin\nmap_Kd C:\\art\\maps\\skin.jpg\nnorm C:\\art\\maps\\skin_n.jpg\n'
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['skin'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc(mtl), 'skin.jpg': JPG, 'skin_n.jpg': JPG }, calls) })
+      assert.deepEqual(r.warnings, [])
+      const m = byName(r.root, 'skin')
+      assert.ok(m.map.image && m.normalMap.image)
+      assert.equal(m.map.userData.mimeType, 'image/jpeg')
+      assert.equal(m.normalMap.userData.mimeType, undefined)
+      assert.ok(calls.includes('C:\\art\\maps\\skin.jpg') && calls.includes('skin.jpg'))
+    })
+    await ta('贴图文件在但解不开（TGA 等）：摘掉并记「贴图无法解码」；与「缺少」分开记', async () => {
+      const mtl = 'newmtl hull\nmap_Kd hull.tga\n\nnewmtl foil\nmap_Kd foil.png\n'
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['hull', 'foil'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc(mtl), 'hull.tga': Uint8Array.from([0, 0, 2, 0, 0, 0, 0, 0]) }) })
+      assert.deepEqual(r.warnings, ['缺少贴图 foil.png', '贴图无法解码 hull.tga'])
+      assert.equal(byName(r.root, 'hull').map, null)
+      allTexturesHaveImages(r.root)
+    })
+    await ta('有 .mtl 但没引用贴图 / 没有 .mtl 的 OBJ / STL：一张贴图都没要过就不等（缺省封顶 60 s 也不碰）', async () => {
+      const t0 = performance.now()
+      const r1 = await importFile({ bytes: enc(quadObj('a.mtl', ['gold'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc('newmtl gold\nKd 0.8 0.6 0.2\n') }) })
+      const r2 = await importFile({ bytes: enc('o p\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n'), name: 'b.obj' }, {})
+      const r3 = await importFile({ bytes: enc('solid t\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid t\n'), name: 'c.stl' }, {})
+      assert.ok(performance.now() - t0 < 3000)
+      for (const r of [r1, r2, r3]) { assert.deepEqual(r.warnings, []); assert.equal(r.tris, 1) }
+    })
+    await ta('读取卡住：到封顶摘掉并记「贴图读取超时」，不把导入挂住；已到的照样用', async () => {
+      const mtl = 'newmtl a\nmap_Kd ok.png\n\nnewmtl b\nmap_Kd slow.png\n'
+      const t0 = performance.now()
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['a', 'b'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc(mtl), 'ok.png': PNG }, [], new Set(['slow.png'])), texWaitMs: 80 })
+      assert.ok(performance.now() - t0 < 3000)
+      assert.deepEqual(r.warnings, ['贴图读取超时 slow.png'])
+      assert.ok(byName(r.root, 'a').map.image); assert.equal(byName(r.root, 'b').map, null)
+      allTexturesHaveImages(r.root)
+    })
+    await ta('封顶按「多久没有一张落定」算、不按总时长：陆续到的一批贴图总耗时超过封顶也不误砍', async () => {
+      const ms = ['a', 'b', 'c', 'd']
+      const files = { 'a.mtl': enc(ms.map((m) => `newmtl ${m}\nmap_Kd ${m}.png\n`).join('\n')) }, delay = {}
+      ms.forEach((m, i) => { files[m + '.png'] = PNG; delay[m + '.png'] = 150 * (i + 1) })
+      const t0 = performance.now()
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ms)), name: 'a.obj' }, { readSibling: sib(files, [], new Set(), delay), texWaitMs: 400 })
+      assert.ok(performance.now() - t0 >= 550, '总耗时确实超过封顶')
+      assert.deepEqual(r.warnings, [])
+      for (const m of ms) assert.ok(byName(r.root, m).map.image, m)
+    })
+    await ta('FBX 外部贴图：按 RelativeFilename 去同目录读（以前一律记缺）；缺了记「缺少贴图」、模型照样出来', async () => {
+      const calls = []
+      const r = await importFile({ bytes: enc(fbx({ file: 'C:\\art\\skin.png', rel: 'skin.png' })), name: 'p.fbx' }, { readSibling: sib({ 'skin.png': PNG }, calls) })
+      assert.deepEqual(r.warnings, [])
+      const m = byName(r.root, 'skin')
+      assert.ok(m.isMeshStandardMaterial && m.map && m.map.image)
+      assert.deepEqual(calls, ['skin.png'])
+      const g = await importFile({ bytes: enc(fbx({ file: 'C:\\art\\gone.png', rel: 'gone.png' })), name: 'q.fbx' }, { readSibling: sib({}) })
+      assert.deepEqual(g.warnings, ['缺少贴图 gone.png'])
+      assert.equal(byName(g.root, 'skin').map, null); assert.equal(g.tris, 2)
+      allTexturesHaveImages(g.root)
+    })
+    await ta('FBX 内嵌贴图（ASCII 的 base64 → data:）：原样解码、不去读同目录；JPEG 颜色图标 image/jpeg', async () => {
+      const calls = []
+      const r = await importFile({ bytes: enc(fbx({ file: 'emb.jpg', rel: 'emb.jpg', content: Buffer.from(JPG).toString('base64') })), name: 'e.fbx' }, { readSibling: sib({}, calls) })
+      assert.deepEqual(r.warnings, [])
+      const m = byName(r.root, 'skin')
+      assert.ok(m.map && m.map.image)
+      assert.equal(m.map.userData.mimeType, 'image/jpeg')
+      assert.deepEqual(calls, [])
+    })
+    await ta('内嵌 blob:（二进制 FBX 由 FBXLoader 现造、three 不回收）：原样解码、按 Blob 类型认 JPEG、解码完撤掉', async () => {
+      made.clear(); revoked.clear()
+      const u = createObjectURL.call(URL, new Blob([JPG], { type: 'image/jpeg' }))
+      const r = await importFile({ bytes: enc(quadObj('a.mtl', ['skin'])), name: 'a.obj' }, { readSibling: sib({ 'a.mtl': enc('newmtl skin\nmap_Kd ' + u + '\n') }) })
+      assert.deepEqual(r.warnings, [])
+      const m = byName(r.root, 'skin')
+      assert.ok(m.map.image); assert.equal(m.map.userData.mimeType, 'image/jpeg')
+      assert.ok(revoked.has(u) && !resolveObjectURL(u))
+    })
+  } finally {
+    delete globalThis.document
+    URL.createObjectURL = createObjectURL; URL.revokeObjectURL = revokeObjectURL
+  }
+}
+
 // ───────── 命名一套规则 / 多材质拆分 / 导出件节点名 ─────────
 t('irLayout 唯一化 = ir.mjs uniqueNodeNames：后缀不抢原名、场景根不参与争名', () => {
   const root = new THREE.Group(); root.name = 'satellite'; root.userData.__sceneRoot = true
@@ -489,6 +656,53 @@ await ta('OBJ：多个对象 usemtl 同一材质 → 转成同一个 MeshStandar
   const ir = threeToIR(r.root)
   assert.equal(ir.materials.length, 1)
 })
+// ───────── OBJ / STL / FBX 转 glb 入库（体检 2026-10-16 二.24）─────────
+// 入库 id = glb 字节 sha：同一文件再导入要得出逐字节相同的 glb（exportGlb 的 stamp:false 不写导出时刻），主进程才回 existed、库里不多出一份；
+// 渲染端只送名称 / 类别 / 细节档 / 单位 / 本体轴（wbStore runImport 的 mesh 分支同一口径），三角形数与包围盒由主进程按 glb 算。
+// 主进程服务（electron/services/models.js）裸 node 起一份：三个目录全指到临时目录、离线，同 modelsService.test.mjs
+await ta('同一 STL 两次转 glb 逐字节相同、主进程认出是同一件（existed）；概况三角形数按 glb 算，整份送来全零 geometry 也不再盖成 0', async () => {
+  const { createRequire } = await import('node:module')
+  const { mkdtempSync, mkdirSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const S = await import(CORE + 'models/schema.mjs')
+  const facet = (v) => `facet normal 0 0 1\nouter loop\nvertex ${v.slice(0, 3).join(' ')}\nvertex ${v.slice(3, 6).join(' ')}\nvertex ${v.slice(6).join(' ')}\nendloop\nendfacet`
+  const stl = 'solid p\n' + [[0, 0, 0, 30, 0, 0, 0, 20, 0], [30, 0, 0, 30, 20, 0, 0, 20, 0]].map(facet).join('\n') + '\nendsolid p\n'
+  // 与 wbStore 的 mesh 分支同一份导出元数据（normalizeMeta 补全：geometry 是全零的那份）
+  const meta = S.normalizeMeta({
+    id: '', title: 'part', kind: 'spacecraft', fidelity: 'cad', source: { kind: 'user', url: '', credit: '', license: '', redistributable: true },
+    units: { scaleToMeters: 1, unitGuess: 'unknown', sizeVerified: false }, frame: { q_model2body: BF.Q_YUP_ZENITH.slice(), t_model2body: [0, 0, 0], verified: false }
+  })
+  const conv = async (o) => exportGlb((await importFile({ bytes: new TextEncoder().encode(stl), name: 'part.stl' }, {})).root, meta, { originAtCom: false, ...o })
+  const a = await conv({ stamp: false }), b = await conv({ stamp: false }), c = await conv({})
+  assert.ok(Buffer.from(a.glb).equals(Buffer.from(b.glb)), 'stamp:false：同一文件两次导出逐字节相同')
+  assert.equal(Object.hasOwn(parseGlb(a.glb).json.extras.satsim, 'updatedAt'), false)
+  assert.equal(typeof parseGlb(c.glb).json.extras.satsim.updatedAt, 'string', '缺省照写导出时刻（导出文件 / 元数据副本靠它与原件字节不同）')
+  assert.equal(a.satsimJson.geometry.tris, 0, '复现条件：整份 satsimJson 带着全零 geometry')
+  const createModels = createRequire(import.meta.url)('../../../electron/services/models.js')
+  const tmp = mkdtempSync(path.join(tmpdir(), 'satsim-mesh-import-'))
+  const keep = { d: process.env.SATSIM_MODELS_DIR, b: process.env.SATSIM_MODELS_BUNDLE_DIR, o: process.env.SATSIM_MODELS_OFFLINE }
+  let svc = null
+  try {
+    mkdirSync(path.join(tmp, 'bundle'), { recursive: true }); mkdirSync(path.join(tmp, 'stk'), { recursive: true })
+    process.env.SATSIM_MODELS_DIR = path.join(tmp, 'ud', 'models'); process.env.SATSIM_MODELS_BUNDLE_DIR = path.join(tmp, 'bundle'); process.env.SATSIM_MODELS_OFFLINE = '1'
+    const quiet = { info() {}, warn() {}, error() {} }
+    svc = createModels({ appRoot: path.resolve(HERE, '../../..'), log: quiet, stkDefaultDir: path.join(tmp, 'stk'), regQuery: async () => null })
+    const send = (sj) => ({ title: sj.title, kind: sj.kind, fidelity: sj.fidelity, frame: sj.frame, units: { scaleToMeters: 0.001, unitGuess: 'mm', sizeVerified: false } })
+    const s1 = await svc.saveImported({ glb: a.glb, meta: send(a.satsimJson) })
+    const s2 = await svc.saveImported({ glb: b.glb, meta: send(b.satsimJson) })
+    assert.equal(s1.ok, true, JSON.stringify(s1))
+    assert.deepEqual([s2.ok, s2.id, s2.existed], [true, s1.id, true], '再导入同一文件：同一个 id、existed（沿用库里那份元数据）')
+    assert.equal(s1.meta.geometry.tris, 2, '三角形数按 glb 算')
+    near(s1.meta.geometry.boundingRadiusM, Math.hypot(0.03, 0.02) / 2, 1e-6)   // 毫米件：包围盒按单位换成米
+    assert.equal(s1.meta.units.scaleToMeters, 0.001)
+    const s3 = await svc.saveImported({ glb: c.glb, meta: { ...c.satsimJson } })
+    assert.deepEqual([s3.ok, s3.meta.geometry.tris], [true, 2], '整份 satsimJson（全零 geometry）送来：三角形数仍按 glb')
+  } finally {
+    if (svc) svc.stop()
+    for (const [k, v] of [['SATSIM_MODELS_DIR', keep.d], ['SATSIM_MODELS_BUNDLE_DIR', keep.b], ['SATSIM_MODELS_OFFLINE', keep.o]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+    try { rmSync(tmp, { recursive: true, force: true }) } catch { /* Windows 偶有句柄晚放 */ }
+  }
+})
 t('删相机 / 灯节点：子网格提给父节点、世界位姿不变、先序位置不变', () => {
   const root = new THREE.Group()
   const a = new THREE.Group(); a.name = 'a'
@@ -626,6 +840,54 @@ await ta('STL 没有材质：与 OBJ 无 .mtl 同一条路，换成中性浅灰�
   assert.equal(mats[0].name, MAT.NEUTRAL_MATERIAL_NAME)
   assert.ok(Math.abs(mats[0].color.r - 0.8) < 1e-9 && mats[0].metalness === 0 && mats[0].roughness === 0.6)
   assert.equal(r.materialFallback.noMaterialMeshes, 1)
+})
+
+// ───────── 3D 页的模型缩略图缓存（src/components/modelThumbs.js，体检 2026-10-16 二.21）─────────
+// 侧栏「当前卫星」与库卡片、标记小块、选择弹层共用一份按 id 的缓存，每个 id 原来只取一次：新导入件的缩略图要等分析跑完才拍，
+// 一直是占位；装配件改完自动入库换了图，侧栏还是旧图，旧文件删了重开变裂图。现在 3D 页收到 meta / 缩略图下载完成时 refreshThumb。
+// 主进程的 models.thumbnail 换成假的；定时器换成手动拨（「过一会儿允许再取」的 5 s 不真等）
+await ta('模型缩略图缓存：meta 事件重取、旧图不盖新图；库里明确没有图时摘掉旧地址、过一会儿允许再取；没取过的不去取', async () => {
+  const TH = await import(pathToFileURL(path.resolve(HERE, '../../../src/components/modelThumbs.js')).href)
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)) }
+  const calls = [], answer = new Map(), timers = []
+  const win0 = globalThis.window, hadWin = Object.hasOwn(globalThis, 'window'), st0 = globalThis.setTimeout
+  globalThis.window = { api: { models: { thumbnail: (id) => { calls.push(id); const a = answer.get(id); return typeof a === 'function' ? a() : Promise.resolve(a || { state: 'missing' }) } } } }
+  globalThis.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return 0 }
+  const A = 'user:aaaaaaaaaaaa', url = (id) => TH.thumbs.value.get(id)
+  try {
+    await TH.requestThumb(A)
+    assert.equal(TH.thumbs.value.has(A), false, '还没拍：占位')
+    await TH.requestThumb(A)
+    assert.equal(calls.length, 1, '同一 id 只取一次')
+    assert.deepEqual(timers.map((x) => x.ms), [5000], '库里明确没有图：排一次「过一会儿允许再取」')
+    timers.shift().fn()
+    await TH.requestThumb(A)
+    assert.equal(calls.length, 2, '到点后再要就再取')
+    timers.length = 0
+    // 分析完补拍（meta 事件）→ 重取到图
+    answer.set(A, { state: 'ready', url: 'models://thumbs/a1.webp' })
+    TH.refreshThumb(A); await settle()
+    assert.equal(url(A), 'models://thumbs/a1.webp')
+    // 旧图不盖新图：先发的那次慢、后发的快，慢的后回来作废
+    let release = null
+    answer.set(A, () => new Promise((r) => { release = () => r({ state: 'ready', url: 'models://thumbs/OLD.webp' }) }))
+    TH.refreshThumb(A)
+    answer.set(A, { state: 'ready', url: 'models://thumbs/a2.webp' })
+    TH.refreshThumb(A); await settle()
+    release(); await settle()
+    assert.equal(url(A), 'models://thumbs/a2.webp')
+    // 换图后旧文件已删、库里没有图：旧地址摘掉，退回占位而不是裂图
+    answer.set(A, { state: 'missing' })
+    TH.refreshThumb(A); await settle()
+    assert.equal(TH.thumbs.value.has(A), false)
+    // 从没取过的 id：不去取（显示出来时自然取到新的）
+    const n0 = calls.length
+    TH.refreshThumb('user:bbbbbbbbbbbb'); await settle()
+    assert.equal(calls.length, n0)
+  } finally {
+    globalThis.setTimeout = st0
+    if (hadWin) globalThis.window = win0; else delete globalThis.window
+  }
 })
 
 console.log(`modelRenderStack: ${n} 项通过`)

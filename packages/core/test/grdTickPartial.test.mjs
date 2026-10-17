@@ -4,6 +4,7 @@
 //  ① 一颗关联星在动、一颗固定 GEO 不动：逐拍逐层一致，且 B 真走了增量（动的那根天线 patch、不动的不重建）
 //  ② 中途改不动那根天线的设置（线宽）/ 全局显示设置 / 底色签名 / 缩放让步长档变了：B 当拍退回整轮，仍逐层一致
 //  ③ 关联星无星历（层撤下）再恢复：层 id 变了 → 退回整轮，逐层一致
+//  ④ 逐天线不透明度：每层带自己天线的 alpha / lineAlpha；换聚焦不跳变；滑杆热路径只改聚焦天线那几层（没勾选显示就一层不碰）
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -40,8 +41,11 @@ const synthGrd = (name) => {
 
 const ser = (L) => JSON.stringify(L, (k, v) => (ArrayBuffer.isView(v) ? Array.from(v) : v))
 function mkScene() {
-  const st = { layers: new Map(), opts: '', full: 0, patch: 0, rebuilt: [] }
+  const st = { layers: new Map(), opts: '', full: 0, patch: 0, rebuilt: [], alphaCalls: [] }
   const sc = {
+    // 透明度热路径（与 scene.setCoverageFieldAlpha / setCoverageLineAlpha 同签名）：只记调用
+    setCoverageFieldAlpha(a, ids) { st.alphaCalls.push({ kind: 'fill', a, ids: ids ? ids.slice() : null }) },
+    setCoverageLineAlpha(a, ids) { st.alphaCalls.push({ kind: 'line', a, ids: ids ? ids.slice() : null }) },
     vm: { pxPerDeg: 20 },
     viewMetrics() { return this.vm },
     hs: 'h0',
@@ -125,6 +129,37 @@ const step = async (n, dLon, dLat) => {
   live.on = true
   d = await step(3, 0.01, 0)
   ok(!d && [...B.st.layers.keys()].some((id) => id.startsWith(b.kL)), '③ 星历恢复：两边都画回来且一致', d)
+}
+
+// ④ 逐天线不透明度（原先面板态 s 的透明度整场一刀切：换聚焦，所有天线一起跳到新聚焦那根的值）
+{
+  const g = b.g
+  const antOf = (k) => { const [f, nm] = k.split('|'); const node = g.sats.value.find((x) => x.folder === f); return [node, node.antennas.find((x) => x.name === nm)] }
+  const focus = async (k) => { const [node, ant] = antOf(k); await g.setActive(node, ant, { face: false }); await tick0() }
+  const lay = () => [...B.st.layers.entries()].map(([id, x]) => { const L = JSON.parse(x.s); return { id, alpha: L.alpha, lineAlpha: L.lineAlpha } })
+  const of = (k) => lay().filter((x) => x.id.startsWith(k + '#'))
+  const own = (k, a, la) => of(k).length > 0 && of(k).every((x) => x.alpha === a && x.lineAlpha === la)
+  await focus(b.kL)
+  B.st.alphaCalls.length = 0
+  g.s.alpha = 0.3; g.s.lineAlpha = 0.5; await tick0()
+  const hot = B.st.alphaCalls.slice()
+  ok(hot.length === 2 && hot.every((c) => c.ids && c.ids.length && c.ids.every((id) => id.startsWith(b.kL + '#'))) && hot.find((c) => c.kind === 'fill').a === 0.3 && hot.find((c) => c.kind === 'line').a === 0.5,
+    '④ 滑杆热路径只改聚焦天线（LNK）那几层', JSON.stringify(hot))
+  await focus(b.kG)
+  g.s.alpha = 0.9; g.s.lineAlpha = 0.7; await tick0()
+  g.recompute()
+  ok(own(b.kL, 0.3, 0.5) && own(b.kG, 0.9, 0.7), '④ 整轮重建：每层带自己天线的填充 / 线不透明度', JSON.stringify(lay()))
+  B.st.alphaCalls.length = 0
+  await focus(b.kL)   // 换聚焦：setActive 当场整轮重建 + 两个透明度 watcher 跟着触发
+  ok(own(b.kL, 0.3, 0.5) && own(b.kG, 0.9, 0.7), '④ 换聚焦：两根天线各自的不透明度原样不跳', JSON.stringify(lay()))
+  ok(B.st.alphaCalls.every((c) => c.ids && c.ids.every((id) => id.startsWith(b.kL + '#')) && c.a === (c.kind === 'fill' ? 0.3 : 0.5)), '④ 换聚焦时 watcher 只把新聚焦那几层设成它自己的值', JSON.stringify(B.st.alphaCalls))
+  ok(g.getPerfContext(b.kG).settings.alpha === 0.9 && g.getPerfContext(b.kL).settings.alpha === 0.3, '④ 透明度逐天线落在各自的设置里')
+  // 聚焦一根没勾选显示的天线：改它的不透明度一层都不碰（原先照样整场改，把画面上别的天线一起改掉）
+  { const [node, ant] = antOf(b.kG); await g.toggleAnt(node, ant); await tick0() }
+  await focus(b.kG)
+  B.st.alphaCalls.length = 0
+  g.s.alpha = 0.15; await tick0()
+  ok(!B.st.alphaCalls.length && own(b.kL, 0.3, 0.5), '④ 聚焦天线没勾选显示：滑杆不碰任何层', JSON.stringify(B.st.alphaCalls))
 }
 
 assert.ok(true)

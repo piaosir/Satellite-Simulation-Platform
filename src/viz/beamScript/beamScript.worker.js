@@ -11,6 +11,7 @@
 // 被保护的资产只有这份波束地图快照本身（主线程只把它交进来），故这一套足够；不另引 QuickJS 一类解释器，
 // 换来的是 V8 JIT 全速（几十万点的等值线抽稀 / 改写在毫秒级）。
 import { runScript } from '../../shared/beamScript/runtime.js'
+import { runImport } from '../../shared/beamScript/importRuntime.js'   // 可编程导入：同一个沙箱，mode='import' 时 DATA 是输入文件表
 
 const post = self.postMessage.bind(self)
 
@@ -56,8 +57,8 @@ self.onmessage = async (e) => {
   if (m.type !== 'run') return
   self.onmessage = null   // 一个实例只跑一次
   let r
-  try { r = await runScript(m.code, DATA, { lang: m.lang, scriptName: m.scriptName }) }
-  catch (err) { r = { ok: false, files: [], logs: [], error: { name: 'Error', message: String((err && err.message) || err), line: null, col: null }, ms: 0 } }
+  try { r = m.mode === 'import' ? await runImport(m.code, DATA, { lang: m.lang }) : await runScript(m.code, DATA, { lang: m.lang, scriptName: m.scriptName }) }
+  catch (err) { r = { ok: false, files: [], beams: [], logs: [], error: { name: 'Error', message: String((err && err.message) || err), line: null, col: null }, ms: 0 } }
   // 字节件转移所有权（零拷贝）；同一块 buffer 只能列一次
   const bufs = new Set()
   for (const f of r.files || []) if (f.bytes && f.bytes.buffer) bufs.add(f.bytes.buffer)

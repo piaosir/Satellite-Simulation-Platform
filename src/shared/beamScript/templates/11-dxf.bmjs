@@ -27,11 +27,11 @@ const text = (layer, q, s) => { const [x, y] = P(q); out.push('0', 'TEXT', '8', 
 
 data.beams.forEach((b, bi) => {
   for (const c of b.contours) {
-    const layer = layerName(b.satellite || 'SAT', b.name || `B${bi + 1}`, String(c.level))
+    const layer = layerName(b.satellite || 'SAT', b.name || `B${bi + 1}`, String(c.level ?? ''))
     const ring = geo.open(c.points)
     polyline(layer, ring)
     const top = ring.reduce((m, q) => (q[1] > m[1] ? q : m), ring[0])
-    text(layer, top, String(c.level))
+    text(layer, top, String(c.level ?? b.name))
   }
 })
 for (const pg of data.polygons) polyline(layerName('POLYGON', pg.name), pg.points)

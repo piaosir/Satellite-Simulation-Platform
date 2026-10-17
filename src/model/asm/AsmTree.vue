@@ -30,7 +30,10 @@ const docName = computed(() => (doc.value && doc.value.name) || defaultAsmName(d
 const nComps = computed(() => (doc.value ? doc.value.comps.length : 0))
 // 树头与视口读数同一个口径：展开对称后的件数（主件数进 title）
 const nAll = computed(() => (ui.ready && ui.stats.count >= nComps.value ? ui.stats.count : nComps.value))
-const collapsed = ref(new Set())
+// 折叠集按签记（DocState.treeShut，与左栏档 pane 同一口径，随签列表落盘）：本组件在装配签之间切换时不重建，而各签的组件 id 常同名
+// （bus / refl1 / wing1），共用一份时在一个签里收起「星体」，换到另一个签它也收起了（体检 2026-10-16 二.23）
+const collapsed = computed(() => new Set(wb.asm.treeShut || []))
+function setCollapsed(s) { wb.asm.treeShut = [...s] }
 const rows = computed(() => (doc.value ? flattenTree(doc.value, collapsed.value) : []))
 const selSet = computed(() => new Set(ui.selIds))
 const badSet = computed(() => new Set(Object.keys(ui.invalid || {})))
@@ -70,7 +73,7 @@ const isUser = (id) => !!(marks.value[id] && marks.value[id].user)
 function toggle(id) {
   const s = new Set(collapsed.value)
   if (s.has(id)) s.delete(id); else s.add(id)
-  collapsed.value = s
+  setCollapsed(s)
 }
 // 视口里点中的件藏在折叠的父件下：展开祖先并滚到可见
 function reveal(id) {
@@ -79,7 +82,7 @@ function reveal(id) {
   const s = new Set(collapsed.value)
   let c = compById(d, id), changed = false, guard = 0
   while (c && c.parent && guard++ < 256) { if (s.delete(c.parent)) changed = true; c = compById(d, c.parent) }
-  if (changed) collapsed.value = s
+  if (changed) setCollapsed(s)
   nextTick(() => { const el = rootEl.value && rootEl.value.querySelector(`[data-id="${CSS.escape(id)}"]`); if (el) el.scrollIntoView({ block: 'nearest' }) })
 }
 watch(() => ui.primary, (id) => { if (id) reveal(id) })

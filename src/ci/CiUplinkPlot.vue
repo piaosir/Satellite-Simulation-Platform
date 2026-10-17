@@ -27,7 +27,8 @@ const props = defineProps({
   maskPhi0Deg: { type: Number, default: null },
   peerCurves: { type: Array, default: () => [] },     // [{key, diameterM, mainLobeDeg, curve:[…]}]
   sources: { type: Array, default: () => [] },
-  hoveredId: { type: String, default: '' }
+  hoveredId: { type: String, default: '' },
+  peerPatternName: { type: String, default: '' }      // 对等站所用地球站方向图（名称），并进图例，导出的 PNG 自带出处
 })
 const emit = defineEmits(['hover'])
 
@@ -159,7 +160,7 @@ const ownY = computed(() => (Number.isFinite(Number(props.ownDensityDbWPerHz)) ?
 // 图例：一行排不下就折到下一行，整组向上叠
 const legend = computed(() => {
   const items = [{ k: 'mask', text: 'S.524 掩模' + (props.maskBand ? ' · ' + props.maskBand : '') }]
-  for (const c of peerPaths.value) items.push({ k: 'peer', text: '对等站 Ø' + fmt(c.diameterM, 1) + ' m' })
+  for (const c of peerPaths.value) items.push({ k: 'peer', text: '对等站 Ø' + fmt(c.diameterM, 1) + ' m' + (props.peerPatternName ? ' · ' + props.peerPatternName : '') })
   if (ownY.value != null) items.push({ k: 'own', text: '本站上行密度（C）' })
   items.push({ k: 'src', text: '干扰源落点' })
   let x = M.l, row = 0

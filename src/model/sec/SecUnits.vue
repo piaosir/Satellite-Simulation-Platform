@@ -2,7 +2,7 @@
 // 单位：推断结果读数、比例（模型单位 → 米）、尺寸核定与出处；已知尺寸反算（翼展 / 长 / 高 / 口径 → scaleFromKnownDim，
 // 缺省照用户给的尺寸算、不吸附——带出处的尺寸结果必须照它；最近的标准单位作为可选吸附给用户挑，W1 ④-4）。
 // 改比例时本体系里贴在几何上的量（挂点、部件、质心惯量、原点偏移）一并按比例缩放（wbLogic.rescaleMeta）。
-import { ref, computed, inject } from 'vue'
+import { ref, computed, inject, watch } from 'vue'
 import MdSec from '../MdSec.vue'
 import NumIn from '../NumIn.vue'
 import { scaleFromKnownDim, UNIT_SCALE } from '@core/models/units.mjs'
@@ -55,6 +55,11 @@ const DIMS = [
 const dim = ref('span')
 const known = ref(null)
 const res = ref(null)     // scaleFromKnownDim 的结果 + measured
+// 反算的输入与结果只属于算它的那一件、那一口径（体检 2026-10-16 二.23）：右栏在模型签之间切换时不重建，上一件的已知值与结果原样留着，
+// 点「应用」就把上一件算出的比例套到当前件上。换件清输入与结果；几何口径（缩放 / 轴向 / 撤销）、尺寸项、已知值一变，结果作废、要重新反算。
+// 同步触发：已知值框回车是先落值、紧接着同一下调 solve()，排到下一拍才清就会把刚算出的结果清掉
+watch(() => cur.id, () => { known.value = null; res.value = null }, { flush: 'sync' })
+watch([() => cur.geomRev, dim, known], () => { res.value = null }, { flush: 'sync' })
 function measuredMeters() {
   const d = DIMS.find((x) => x.key === dim.value)
   if (!d || !m.value) return null

@@ -1,0 +1,27 @@
+//! id: gxt-json
+//! name: ⟪JSON · GXT 结构|JSON · GXT structure⟫
+//! ext: json
+//! match: *.json
+//! sniff: "contours"\s*:
+//zh GXT 逐节转成的 JSON（formatInfo / geoMain / coHeader / borePoints / contours），每个文件一个波束。
+//zh 卫星 / 频段 / 波束 / 类型优先按文件名四段拆分；拆不出时卫星取 geoMain.satName，emiRcp 为 R（接收）的按 G/T 导入。
+//en JSON transcribed from GXT section by section (formatInfo / geoMain / coHeader / borePoints / contours), one beam per file.
+//en Satellite / band / beam / type come from the four-part file name when possible; otherwise geoMain.satName, and emiRcp R (receive) means G/T.
+
+const beams = []
+for (const f of files) {
+  const d = gxtJson(f)
+  const parts = f.base.split('_')
+  const four = parts.length >= 4
+  const t4 = four ? parts[parts.length - 1] : ''
+  beams.push({
+    satellite: four ? parts[0] : (d.satName || f.base),
+    orbitLon: d.lon,
+    band: four ? parts[1] : '',
+    name: four ? parts.slice(2, -1).join('_') : f.base,
+    type: (t4 === 'EIRP' || t4 === 'GT') ? t4 : (d.emiRcp === 'R' ? 'GT' : 'EIRP'),
+    peaks: d.bore.map(([lon, lat, value]) => ({ lon, lat, value })),
+    contours: d.contours.map((c) => ({ level: c.g, points: c.p })),
+  })
+}
+return beams

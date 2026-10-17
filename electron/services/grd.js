@@ -134,6 +134,21 @@ module.exports = function createGrd(saveDir) {
     }
   }
 
+  // C/CCI 复用方案与场图作业（electron/services/interference.js 的 CCI 段）要的两样：
+  //   loadedOf  已载入的方向图（同 LRU 缓存，首次取值才解析落 .grdbin）
+  //   rawHead   原文件开头一段文本（latin1）：波束合成写在 SYNTHMETA 行 / 解析记录里的逐波束色号从这里读
+  function loadedOf(file) { return loadCached(ensureBin(resolveRaw(file))); }
+  function rawHead(file, maxBytes) {
+    const fp = resolveRaw(file);
+    const cap = Math.max(1024, Number(maxBytes) || 262144);
+    const fd = fs.openSync(fp, 'r');
+    try {
+      const buf = Buffer.alloc(cap);
+      const got = fs.readSync(fd, buf, 0, cap, 0);
+      return buf.toString('latin1', 0, got);
+    } finally { fs.closeSync(fd); }
+  }
+
   /**
    * NGSO 时变干扰用的「准备一次、逐次取值」采样器。
    *
@@ -199,5 +214,5 @@ module.exports = function createGrd(saveDir) {
     } catch (e) { return { ok: false, error: e && e.message }; }
   }
 
-  return { sample, sampleBeams, sampleXpd, sampleCci, precompile, meta, ngsoSampler };
+  return { sample, sampleBeams, sampleXpd, sampleCci, loadedOf, rawHead, precompile, meta, ngsoSampler };
 };

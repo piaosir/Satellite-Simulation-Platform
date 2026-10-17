@@ -1,0 +1,1081 @@
+{
+  "about": "标准台账（2026-10-17 起）：链路预算引擎实际依据的标准、版本、实现到哪几条（clauses）、用的哪版数据（dataVersion）、对 ITU-R ValEx 验证工作簿的状态（valex：达标 / 已知偏差 / 未实现；null = ValEx 无此表，另有对拍写在 valexNote）。交付报告的「引用建议书与标准」（shared/lbReport.js）与 SLA 报告的「引用标准」（shared/lbSlaReport.js）都经 shared/stdLedger.js 从这里读，不在别处硬编码。report = 进哪份报告及条件：lb（链路预算报告）取 ground / pfd / airborne / orbit / dvbS2 / dvbS2x / rcs2 / nr / nbiot，sla（服务等级指标报告）取 always / monthly / dvb / ntn；缺键 = 不进该报告。条款上的 only 限定体制（GEO / NGSO / REGEN / E2E）。label 是印在报告里的编号（字符串，或按语言分的 {zh, en}；缺省即 id；id 须唯一）。",
+  "updated": "2026-10-17",
+  "valexRev": "ITU-R ValEx Rev 8.3.0",
+  "groups": {
+    "prop": {
+      "zh": "传播与衰减",
+      "en": "Propagation and attenuation"
+    },
+    "reg": {
+      "zh": "无线电规则",
+      "en": "Radio Regulations"
+    },
+    "orbit": {
+      "zh": "轨道与时空基准",
+      "en": "Orbits and reference frames"
+    },
+    "air": {
+      "zh": "体制与通信标准",
+      "en": "Air interface and system standards"
+    },
+    "sla": {
+      "zh": "服务等级指标",
+      "en": "Service level metrics"
+    }
+  },
+  "standards": [
+    {
+      "id": "ITU-R P.618-14",
+      "doc": "ITU-R P.618",
+      "version": "14",
+      "date": "08/2023",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "地球—空间链路传播数据与预测方法",
+        "en": "Propagation data and prediction methods required for the design of Earth-space telecommunication systems"
+      },
+      "clauses": [
+        {
+          "ref": "§2.2",
+          "zh": "雨衰",
+          "en": "rain attenuation",
+          "valex": "达标",
+          "valexNote": "A_Rain 64 例 ≤ 0.01 dB"
+        },
+        {
+          "ref": "§2.4.1",
+          "zh": "对流层闪烁（N_wet 取常数，不用 P.453 地图）",
+          "en": "tropospheric scintillation (constant N_wet; P.453 maps not used)",
+          "valex": "已知偏差",
+          "valexNote": "公式在给定 N_wet 时 A_Scint 48 例达标；N_wet 取常数致最大偏差 0.80 dB"
+        },
+        {
+          "ref": "§2.5",
+          "zh": "多种传播损伤的合成",
+          "en": "combination of propagation impairments",
+          "valex": "已知偏差",
+          "valexNote": "Att_Tot 48 例最大偏高 0.33 dB（2026-10-17 改前：气体 +0.30、云 +0.14、闪烁 −0.80 三项传导；C-01 / C-04 落地后重跑）"
+        },
+        {
+          "ref": "§3 式(69)(70)",
+          "zh": "天空噪声温度",
+          "en": "sky-noise temperature, eqs. (69)(70)",
+          "valex": null,
+          "valexNote": "ValEx 无天空噪温表；恒等式与单调性自测见 ituSkyNoise.test.mjs",
+          "refEn": "§3"
+        },
+        {
+          "ref": "§4.1",
+          "zh": "雨致去极化 XPD",
+          "en": "rain-induced cross-polarization discrimination (XPD)",
+          "valex": "已知偏差",
+          "valexNote": "θ ≤ 60° 56 例达标；θ > 60° 8 例最大差 33.4 dB（钳位口径待用户裁决）"
+        },
+        {
+          "ref": "§8",
+          "zh": "非静止轨道链路的时间百分比统计",
+          "en": "time-percentage statistics for non-GSO links",
+          "only": [
+            "NGSO",
+            "REGEN"
+          ],
+          "valex": "达标",
+          "valexNote": "逐箱对拍"
+        }
+      ],
+      "dataVersion": null,
+      "valex": "已知偏差",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "雨衰预测与可用度统计",
+        "en": "Rain attenuation prediction and availability statistics"
+      }
+    },
+    {
+      "id": "ITU-R P.676-13",
+      "doc": "ITU-R P.676",
+      "version": "13",
+      "date": "08/2022",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "大气气体衰减及相关效应",
+        "en": "Attenuation by atmospheric gases and related effects"
+      },
+      "clauses": [
+        {
+          "ref": "附件 1",
+          "refEn": "Annex 1",
+          "zh": "逐线法比衰减（氧气与水汽）",
+          "en": "line-by-line specific attenuation (oxygen and water vapour)",
+          "valex": "已知偏差",
+          "valexNote": "改前用 P.676-9/10 已删除的旧闭式 γ，A_Gas_A2_INST 偏高 11.7–13.7%；C-01 改逐线法后以 ValEx 六张 P.676-13 表重跑定状态"
+        },
+        {
+          "ref": "附件 2",
+          "refEn": "Annex 2",
+          "zh": "斜路径气体衰减与柱水汽法",
+          "en": "slant-path gaseous attenuation and the integrated water-vapour content method",
+          "valex": "已知偏差",
+          "valexNote": "同上"
+        }
+      ],
+      "dataVersion": "packages/core/utils/itu/p676Lines.js：附件 1 表 1 / 表 2 谱线（氧气 44 条、水汽 35 条）；Part 1 / Part 2 系数 p676Data.js",
+      "valex": "已知偏差",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "氧气与水汽的路径吸收",
+        "en": "Oxygen and water-vapour path absorption"
+      }
+    },
+    {
+      "id": "ITU-R P.837-7",
+      "doc": "ITU-R P.837",
+      "version": "7",
+      "date": "06/2017",
+      "current": false,
+      "latest": "ITU-R P.837-8 (09/2025)",
+      "group": "prop",
+      "title": {
+        "zh": "降雨特性建模",
+        "en": "Characteristics of precipitation for propagation modelling"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "站址 0.01% 超越降雨率 R0.01 数字图",
+          "en": "digital map of the rain rate exceeded for 0.01 % of an average year, R0.01",
+          "valex": "达标",
+          "valexNote": "R0.01 达标；其余概率的 Rp 未实现（ValEx Rp 40 例只能算 8 例）"
+        }
+      ],
+      "dataVersion": "R001 数字图（p837_r001_v2.bin）",
+      "valex": "达标",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "站址 0.01% 超越降雨率 R0.01",
+        "en": "Site 0.01 % exceedance rain rate R0.01"
+      }
+    },
+    {
+      "id": "ITU-R P.838-3",
+      "doc": "ITU-R P.838",
+      "version": "3",
+      "date": "03/2005",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "雨衰比衰减系数模型",
+        "en": "Specific attenuation model for rain for use in prediction methods"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "由降雨率与频率、极化求比衰减 γ_R",
+          "en": "specific attenuation γ_R from rain rate, frequency and polarization",
+          "valex": "达标",
+          "valexNote": "Sp.Att 64 例"
+        }
+      ],
+      "dataVersion": null,
+      "valex": "达标",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "由降雨率求比衰减 γR",
+        "en": "Specific attenuation γR from rain rate"
+      }
+    },
+    {
+      "id": "ITU-R P.839-4",
+      "doc": "ITU-R P.839",
+      "version": "4",
+      "date": "09/2013",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "降雨高度模型",
+        "en": "Rain height model for prediction methods"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "零度等温线高度 h0 数字图，降雨高度 h_R = h0 + 0.36 km",
+          "en": "0 °C isotherm height h0 digital map; rain height h_R = h0 + 0.36 km",
+          "valex": "达标",
+          "valexNote": "Rain_Height 逐例"
+        }
+      ],
+      "dataVersion": "h0 数字图（1.5°，isothermHeightGrid.js）",
+      "valex": "达标",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "等效降雨高度与倾斜路径长度",
+        "en": "Effective rain height and slant path length"
+      }
+    },
+    {
+      "id": "ITU-R P.840-9",
+      "doc": "ITU-R P.840",
+      "version": "9",
+      "date": "08/2023",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "云雾衰减",
+        "en": "Attenuation due to clouds and fog"
+      },
+      "clauses": [
+        {
+          "ref": "式(14)",
+          "refEn": "eq. (14)",
+          "zh": "质量吸收系数 K_L（含第 9 版修正因子）",
+          "en": "mass absorption coefficient K_L (with the revision-9 correction factor)",
+          "valex": "达标",
+          "valexNote": "ValEx A_Clouds 的 4 个 K_L 与修正式逐位一致（ituP840.test.mjs；改前 K_l(f, 273.15 K) 偏高 7.7–9.1%）"
+        },
+        {
+          "ref": "§3.3",
+          "zh": "云中液态水对数正态统计（p < 1% 按 1% 取值）",
+          "en": "log-normal statistics of cloud liquid water (values below 1 % held at 1 %)",
+          "valex": "已知偏差",
+          "valexNote": "对数正态公式（给定 m / s / P_L）32 例差 < 10⁻⁶ dB；链路预算 p < 1% 按 1% 取值（用户 07-23 裁定保留），该段 ValEx 最大偏低 0.148 dB（74%）"
+        }
+      ],
+      "dataVersion": "P.840-9 L_red 对数正态参数图（0.25°，p840_logn_v1.bin）",
+      "valex": "已知偏差",
+      "report": {
+        "lb": "ground",
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "云衰减",
+        "en": "Cloud attenuation"
+      }
+    },
+    {
+      "id": "ITU-R P.836-6",
+      "doc": "ITU-R P.836",
+      "version": "6",
+      "date": "12/2017",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "水汽：地面密度与柱含量",
+        "en": "Water vapour: surface density and total columnar content"
+      },
+      "clauses": [
+        {
+          "ref": "附件",
+          "refEn": "Annex",
+          "zh": "地面水汽密度 ρ、柱水汽含量 V_t 与水汽标高的多概率数字图",
+          "en": "multi-probability digital maps of surface water-vapour density ρ, total columnar content V_t and water-vapour scale height",
+          "valex": "已知偏差",
+          "valexNote": "改前只有两张概率图（RHO_90 / RHO_10），ρ(p) 最大偏差 4.9 g/m³；多概率图落地后重跑"
+        }
+      ],
+      "dataVersion": "p836_v2.bin：年统计 18 个概率档 × (ρ, V, VSCH) + 格点海拔（scripts/build-itu-p836.mjs 打包；未注入时退回 p836_rho_v1.bin 两张图）",
+      "valex": "已知偏差",
+      "report": {
+        "lb": "ground"
+      }
+    },
+    {
+      "id": "ITU-R P.835-7",
+      "doc": "ITU-R P.835",
+      "version": "7",
+      "date": "08/2024",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "参考标准大气",
+        "en": "Reference standard atmospheres"
+      },
+      "clauses": [
+        {
+          "ref": "附件 1",
+          "refEn": "Annex 1",
+          "zh": "年均全球参考大气（仰角低于 5° 时 P.676 分层射线的大气廓线）",
+          "en": "mean annual global reference atmosphere (profiles for the P.676 layered-ray path below 5° elevation)",
+          "valex": null,
+          "valexNote": "ValEx 无独立表；经 P.676-13 A_Gas_A1 间接对拍（C-01）"
+        },
+        {
+          "ref": "",
+          "zh": "站址海拔处的地面气压与温度（对流层式、纬度分区参考值）",
+          "en": "surface pressure and temperature at the site altitude (tropospheric formula with latitude-zone reference values)",
+          "valex": null,
+          "valexNote": "平台粗估：伦敦 272.2 K，P.2145 年均 284.1 K（P.1510 / P.2145 图未打包）"
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "ground"
+      }
+    },
+    {
+      "id": "ITU-R P.2041-1",
+      "doc": "ITU-R P.2041",
+      "version": "1",
+      "date": "09/2026",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "机载平台与空间、机载平台与地面之间链路的路径衰减预测",
+        "en": "Prediction of path attenuation on links between an airborne platform and Space and between an airborne platform and the surface of the Earth"
+      },
+      "clauses": [
+        {
+          "ref": "§4.2",
+          "zh": "气体：氧气按离地高度 e^(−h/h_o) 折减、水汽取机高处 V(p)",
+          "en": "gases: oxygen reduced by e^(−h/h_o) with height above ground, water vapour V(p) taken at the aircraft height",
+          "valex": null,
+          "valexNote": "ValEx 无此表；离地高度为 0 时与 P.676-13 附件 2 统计法逐位相同"
+        },
+        {
+          "ref": "§4.3",
+          "zh": "云：雨高至 6 km 之间线性削减柱液态水",
+          "en": "clouds: columnar liquid water reduced linearly between the rain height and 6 km",
+          "valex": null
+        },
+        {
+          "ref": "§4.5",
+          "zh": "闪烁：终端高于雨高时忽略",
+          "en": "scintillation: neglected for terminals above the rain height",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "airborne"
+      }
+    },
+    {
+      "id": "RR Art.21 Table 21-4 (RR 2024)",
+      "label": {
+        "zh": "RR Art.21 Table 21-4（RR 2024）",
+        "en": "RR Art.21 Table 21-4 (RR 2024)"
+      },
+      "doc": "ITU Radio Regulations Article 21",
+      "version": "Edition of 2024",
+      "date": "2024",
+      "current": true,
+      "group": "reg",
+      "title": {
+        "zh": "空间电台在地球表面产生的功率通量密度限值（Rev.WRC-23）",
+        "en": "Limits of power flux-density from space stations (Rev.WRC-23)"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "下行落地 PFD 限值（自由空间口径、参考带宽内）与余量；脚注 Nos. 21.16.1–21.16.19",
+          "en": "Downlink PFD limit at the Earth’s surface (free space, in the reference bandwidth) and margin; footnotes Nos. 21.16.1–21.16.19",
+          "valex": null,
+          "valexNote": "非 ITU-R 建议书，ValEx 不含；限值表对拍见 Art.21 那一路的测试"
+        }
+      ],
+      "dataVersion": "RR 2024 合订本第 1 卷 Article 21 Table 21-4",
+      "valex": null,
+      "report": {
+        "lb": "pfd"
+      }
+    },
+    {
+      "id": "RR Nos. 5.3–5.9 (RR 2024)",
+      "label": {
+        "zh": "RR No.5.3–5.9（RR 2024）",
+        "en": "RR Nos. 5.3–5.9 (RR 2024)"
+      },
+      "doc": "ITU Radio Regulations Article 5",
+      "version": "Edition of 2024",
+      "date": "2024",
+      "current": true,
+      "group": "reg",
+      "title": {
+        "zh": "ITU 区域划分（线 A / B / C）",
+        "en": "ITU Regions (lines A, B and C)"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "按收信站位置判定 Table 21-4 的区域限定",
+          "en": "Regional qualifiers of Table 21-4 at the receive-station location",
+          "valex": null
+        }
+      ],
+      "dataVersion": "RR 2024 合订本第 1 卷 Article 5",
+      "valex": null,
+      "report": {
+        "lb": "pfd"
+      }
+    },
+    {
+      "id": "SGP4 / SDP4 (Hoots & Roehrich, Spacetrack Report No. 3)",
+      "doc": "Spacetrack Report No. 3",
+      "version": "",
+      "date": "1980",
+      "current": true,
+      "group": "orbit",
+      "title": {
+        "zh": "NORAD 通用摄动轨道传播模型",
+        "en": "NORAD general perturbations orbit propagation model"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "由两行根数 / OMM 传播至 TEME 惯性系",
+          "en": "propagation from TLE/OMM into the TEME inertial frame",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "orbit"
+      }
+    },
+    {
+      "id": "CCSDS 502.0-B-3",
+      "doc": "CCSDS 502.0",
+      "version": "B-3",
+      "date": "",
+      "current": true,
+      "group": "orbit",
+      "title": {
+        "zh": "轨道数据报文（OMM）",
+        "en": "Orbit Data Messages (Orbit Mean-Elements Message)"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "星历数据交换格式",
+          "en": "ephemeris data interchange format",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "orbit"
+      }
+    },
+    {
+      "id": "WGS 84 (NIMA TR8350.2)",
+      "doc": "NIMA TR8350.2",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "orbit",
+      "title": {
+        "zh": "世界大地测量系统 1984",
+        "en": "World Geodetic System 1984"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "站址坐标与地球椭球基准",
+          "en": "facility coordinates and Earth ellipsoid reference",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "orbit"
+      }
+    },
+    {
+      "id": "ETSI EN 302 307-1 V1.4.1 (2014-11)",
+      "doc": "ETSI EN 302 307-1",
+      "version": "V1.4.1",
+      "date": "2014-11",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "数字卫星广播第二代（DVB-S2）：帧结构、信道编码与调制",
+        "en": "Second generation framing structure, channel coding and modulation systems for broadcasting, interactive services, news gathering and other broadband satellite applications (DVB-S2)"
+      },
+      "clauses": [
+        {
+          "ref": "§4.1、表 13",
+          "refEn": "§4.1, Table 13",
+          "zh": "QEF（TS 包差错率 PER < 10⁻⁷）、正常帧 64 800 bit 的门限 Es/N₀ 与频谱效率",
+          "en": "QEF (transport-stream PER < 10⁻⁷), threshold Es/N₀ and spectral efficiency for normal 64 800-bit FECFRAMEs",
+          "valex": null,
+          "valexNote": "ValEx 不含；内置 MODCOD 表逐值对拍原表（etsiTables.test.mjs）"
+        }
+      ],
+      "dataVersion": "packages/core/data/etsiDvbS2.json（表 13，28 档）",
+      "valex": null,
+      "report": {
+        "lb": "dvbS2",
+        "sla": "dvb"
+      },
+      "sla": {
+        "zh": "准无误码（QEF）定义：TS 包差错率 PER < 10⁻⁷（DVB-S2 门限的判据）",
+        "en": "Quasi-error-free (QEF) definition: transport-stream PER < 10⁻⁷ (criterion of the DVB-S2 thresholds)"
+      }
+    },
+    {
+      "id": "ETSI EN 302 307-2 V1.4.1 (2024-08)",
+      "doc": "ETSI EN 302 307-2",
+      "version": "V1.4.1",
+      "date": "2024-08",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "DVB-S2 扩展（DVB-S2X）",
+        "en": "DVB-S2 Extensions (DVB-S2X)"
+      },
+      "clauses": [
+        {
+          "ref": "第 6 章、表 20a–20c",
+          "refEn": "clause 6, Tables 20a–20c",
+          "zh": "QEF（FER = 10⁻⁵）门限 Es/N₀：正常帧（含 -L 星座与硬限幅信道 Csat/(N₀Rs)）、VL-SNR 中帧、短帧",
+          "en": "QEF (FER = 10⁻⁵) threshold Es/N₀: normal FECFRAMEs (including the -L constellations and the hard-limiter Csat/(N₀Rs)), VL-SNR medium and short FECFRAMEs",
+          "valex": null,
+          "valexNote": "ValEx 不含；内置 MODCOD 表逐值对拍原表（etsiTables.test.mjs）"
+        }
+      ],
+      "dataVersion": "packages/core/data/etsiDvbS2.json（表 20a 39 档、20b 3 档、20c 22 档）",
+      "valex": null,
+      "report": {
+        "lb": "dvbS2x",
+        "sla": "dvb"
+      },
+      "sla": {
+        "zh": "准无误码（QEF）定义：FER = 10⁻⁵（DVB-S2X 门限的判据）与 FECFRAME 长度",
+        "en": "Quasi-error-free (QEF) definition: FER = 10⁻⁵ (criterion of the DVB-S2X thresholds) and FECFRAME lengths"
+      }
+    },
+    {
+      "id": "ETSI EN 301 545-2 V1.5.1 (2026-04)",
+      "doc": "ETSI EN 301 545-2",
+      "version": "V1.5.1",
+      "date": "2026-04",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "第二代交互式卫星系统（DVB-RCS2）：低层规范",
+        "en": "Second Generation DVB Interactive Satellite System (DVB-RCS2); Part 2: Lower Layers for Satellite standard"
+      },
+      "clauses": [
+        {
+          "ref": "附录 A",
+          "refEn": "Annex A",
+          "zh": "参考波形的调制与码率档位",
+          "en": "modulation and code rates of the reference waveforms",
+          "valex": null,
+          "valexNote": "门限未核实：V1.5.1 无门限表（应对照 TR 101 545-4）"
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "rcs2"
+      }
+    },
+    {
+      "id": "ETSI EN 300 421 V1.1.2 (1997-08)",
+      "doc": "ETSI EN 300 421",
+      "version": "V1.1.2",
+      "date": "1997-08",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "数字卫星广播（DVB-S）",
+        "en": "Framing structure, channel coding and modulation for 11/12 GHz satellite services (DVB-S)"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "DVB-S 预设表的门限 Eb/N₀",
+          "en": "threshold Eb/N₀ of the DVB-S preset table",
+          "valex": null,
+          "valexNote": "未核实：门限未与原文逐值核对（8PSK / 16QAM 档也不出自本标准），故不进报告参考文献"
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {}
+    },
+    {
+      "id": "3GPP TS 38.101-5 / TR 38.821",
+      "doc": "3GPP TS 38.101-5",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "非地面网络（NTN）射频与体系",
+        "en": "Non-terrestrial networks: radio transmission/reception and solutions"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NTN 频段与逐频段信道带宽档（Table 5.3.5-1/-2）、参考终端与卫星参数",
+          "en": "NTN bands and per-band channel bandwidths (Table 5.3.5-1/-2), reference terminal and satellite parameters",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nr"
+      }
+    },
+    {
+      "id": "3GPP TS 38.214",
+      "doc": "3GPP TS 38.214",
+      "version": "V17.0.0",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "NR 物理层数据处理规程",
+        "en": "NR physical layer procedures for data"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "MCS 表（调制阶数与目标码率）与传输块大小算法",
+          "en": "MCS tables (modulation order and target code rate) and transport block size",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nr"
+      }
+    },
+    {
+      "id": "3GPP TS 38.215",
+      "doc": "3GPP TS 38.215",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "NR 物理层测量",
+        "en": "NR physical layer measurements"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "SINR 的每资源元素定义 —— 3GPP 载波门限的 SNR 口径",
+          "en": "Per-resource-element SINR definition — the SNR reference for 3GPP carrier thresholds",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nr"
+      }
+    },
+    {
+      "id": "3GPP TS 38.306",
+      "doc": "3GPP TS 38.306",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "NR 用户设备无线接入能力",
+        "en": "NR user equipment radio access capabilities"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "数据速率近似式与系统开销系数",
+          "en": "Data rate approximation and overhead factors",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nr"
+      }
+    },
+    {
+      "id": "Méndez-Monsanto et al., VTC2024-Fall",
+      "doc": "VTC2024-Fall",
+      "version": "",
+      "date": "2024",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "NR-NTN 链路级性能评估",
+        "en": "Link-level performance evaluation for NR-NTN"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NR 五张 MCS 表的解调门限锚点",
+          "en": "Demodulation threshold anchors for the five NR MCS tables",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nr"
+      }
+    },
+    {
+      "id": "3GPP TS 36.213 / TR 36.763",
+      "doc": "3GPP TS 36.213",
+      "version": "V17.4.0",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "E-UTRA 物理层规程与 IoT-NTN 研究",
+        "en": "E-UTRA physical layer procedures and IoT NTN study"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NB-IoT 传输块大小表（Rel-14 全表）与 NTN 链路预算场景参数",
+          "en": "NB-IoT transport block size tables (full Rel-14) and NTN link budget scenario parameters",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nbiot"
+      }
+    },
+    {
+      "id": "3GPP TS 36.102",
+      "doc": "3GPP TS 36.102",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "E-UTRA 卫星接入用户设备射频收发",
+        "en": "E-UTRA satellite access: UE radio transmission and reception"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "IoT-NTN 终端的信道带宽与部署栅格（NB1/NB2 200 kHz、1 PRB）",
+          "en": "IoT-NTN UE channel bandwidth and deployment raster (NB1/NB2 200 kHz, 1 PRB)",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nbiot"
+      }
+    },
+    {
+      "id": "3GPP TS 36.211",
+      "doc": "3GPP TS 36.211",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "E-UTRA 物理信道与调制",
+        "en": "E-UTRA physical channels and modulation"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NB-IoT 帧结构、资源单元与 NRS / DMRS —— 有效码率分母的出处",
+          "en": "NB-IoT frame structure, resource units and NRS / DMRS — the source of the effective code rate denominator",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nbiot"
+      }
+    },
+    {
+      "id": "Kodheli et al., AdHoc-Now 2019",
+      "doc": "AdHoc-Now 2019",
+      "version": "",
+      "date": "2019",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "基于卫星的窄带物联网系统链路预算分析",
+        "en": "Link budget analysis for satellite-based narrowband IoT systems"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NB-IoT 三张表的解调门限基线（AWGN、BLER 10%、N_rep 1）",
+          "en": "Demodulation threshold baseline for the three NB-IoT tables (AWGN, 10% BLER, N_rep 1)",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "lb": "nbiot"
+      }
+    },
+    {
+      "id": "3GPP TS 38.211 / TS 38.214",
+      "doc": "3GPP TS 38.211",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "NR 物理信道与物理层数据处理规程",
+        "en": "NR physical channels and physical layer procedures for data"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "传输块大小与 MCS 表 —— 信息速率与帧长",
+          "en": "Transport block size and MCS tables — information rate and frame length",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "sla": "ntn"
+      }
+    },
+    {
+      "id": "3GPP TS 36.211 (NB-IoT)",
+      "label": "3GPP TS 36.211",
+      "doc": "3GPP TS 36.211",
+      "version": "",
+      "date": "",
+      "current": true,
+      "group": "air",
+      "title": {
+        "zh": "E-UTRA 物理信道与调制",
+        "en": "E-UTRA physical channels and modulation"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "NB-IoT 资源单元与子帧结构",
+          "en": "NB-IoT resource unit and subframe structure",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "sla": "ntn"
+      }
+    },
+    {
+      "id": "ITU-R P.841-6",
+      "doc": "ITU-R P.841",
+      "version": "6",
+      "date": "",
+      "current": false,
+      "latest": "ITU-R P.841-7 (08/2022，差异未核实)",
+      "group": "sla",
+      "title": {
+        "zh": "年统计量与最坏月统计量的换算",
+        "en": "Conversion of annual statistics to worst-month statistics"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "可用度由年平均折算到最坏月（全球式 p_w = (p / 0.30)^(1/1.15)）",
+          "en": "conversion of availability from the annual mean to the worst month (global formula p_w = (p / 0.30)^(1/1.15))",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "sla": "monthly"
+      },
+      "sla": {
+        "zh": "可用度由年平均折算到最坏月",
+        "en": "Conversion of availability from the annual mean to the worst month"
+      }
+    },
+    {
+      "id": "ITU-R S.579-6",
+      "doc": "ITU-R S.579",
+      "version": "6",
+      "date": "",
+      "current": true,
+      "group": "sla",
+      "title": {
+        "zh": "固定卫星业务假想参考电路与数字链路的可用度目标",
+        "en": "Availability objectives for a hypothetical reference circuit and a hypothetical reference digital path in the fixed-satellite service"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "可用度指标的口径基准",
+          "en": "reference convention for the availability objective",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "可用度指标的口径基准",
+        "en": "Reference convention for the availability objective"
+      }
+    },
+    {
+      "id": "ITU-R S.1062-4",
+      "doc": "ITU-R S.1062",
+      "version": "4",
+      "date": "",
+      "current": true,
+      "group": "sla",
+      "title": {
+        "zh": "固定卫星业务数字链路的误码性能",
+        "en": "Allowable error performance for a hypothetical reference digital path in the fixed-satellite service"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "误码与差错性能指标的口径基准",
+          "en": "reference convention for the error performance objectives",
+          "valex": null
+        }
+      ],
+      "dataVersion": null,
+      "valex": null,
+      "report": {
+        "sla": "always"
+      },
+      "sla": {
+        "zh": "误码与差错性能指标的口径基准",
+        "en": "Reference convention for the error performance objectives"
+      }
+    },
+    {
+      "id": "ITU-R P.453-14",
+      "doc": "ITU-R P.453",
+      "version": "14",
+      "date": "08/2019",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "无线电折射率及其对传播的影响",
+        "en": "The radio refractive index: its formula and refractivity data"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "链路预算未用：闪烁的 N_wet 取常数，未接 P.453 数字图（实时气象图层另用 P.453 公式由实测温湿度导出 N_wet）",
+          "en": "not used by the link budget: N_wet for scintillation is a constant; the P.453 maps are not wired in",
+          "valex": "未实现",
+          "valexNote": "ValEx Nwet 表无从对拍"
+        }
+      ],
+      "dataVersion": null,
+      "valex": "未实现",
+      "report": {}
+    },
+    {
+      "id": "ITU-R P.372-16",
+      "doc": "ITU-R P.372",
+      "version": "16",
+      "date": "",
+      "current": false,
+      "latest": "ITU-R P.372-18 (09/2026)",
+      "group": "prop",
+      "title": {
+        "zh": "无线电噪声",
+        "en": "Radio noise"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "未用：天空噪温按 P.618-14 §3 计算，全仓没有 P.372 的实现",
+          "en": "not used: sky-noise temperature follows P.618-14 §3; P.372 is not implemented",
+          "valex": "未实现"
+        }
+      ],
+      "dataVersion": null,
+      "valex": "未实现",
+      "report": {}
+    },
+    {
+      "id": "ITU-R P.1511-2",
+      "doc": "ITU-R P.1511",
+      "version": "2",
+      "date": "",
+      "current": false,
+      "latest": "ITU-R P.1511-3 (08/2024)",
+      "group": "prop",
+      "title": {
+        "zh": "用于传播预测的地形高度",
+        "en": "Topography for Earth-space propagation modelling"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "站址海拔的自动取值（界面输入辅助，不进引擎）",
+          "en": "automatic site altitude (input aid only, not used inside the engine)",
+          "valex": "达标",
+          "valexNote": "TOPO 与 -3 版差 ≤ 6.4 m"
+        }
+      ],
+      "dataVersion": "topo_v1.bin",
+      "valex": "达标",
+      "report": {}
+    },
+    {
+      "id": "ITU-R P.531-16",
+      "doc": "ITU-R P.531",
+      "version": "16",
+      "date": "09/2025",
+      "current": true,
+      "group": "prop",
+      "title": {
+        "zh": "电离层传播数据与预测方法",
+        "en": "Ionospheric propagation data and prediction methods required for the design of satellite networks and systems"
+      },
+      "clauses": [
+        {
+          "ref": "",
+          "zh": "未实现（法拉第旋转、电离层闪烁、群时延）",
+          "en": "not implemented (Faraday rotation, ionospheric scintillation, group delay)",
+          "valex": "未实现"
+        }
+      ],
+      "dataVersion": null,
+      "valex": "未实现",
+      "report": {}
+    }
+  ]
+}

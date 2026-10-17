@@ -308,6 +308,8 @@ export function useLiveField(host) {
   // ★ 这不是「实况查询」而是**在时间轴当前时刻，这批站点上的读数**：值从立方体逐点取、
   //   逐点跑一次 ITU 引擎，时钟一动整表跟着刷。和风实况只能给"现在"，是另一条路（见下）。
   // ★ 手动录入按**先经度后纬度**：与地图坐标的书写惯例一致（x 在前），也与站表导出对齐。
+  // ★ 一律整份替换（sites.value = [...]），不原地 push / splice：文件末「设置记忆」的落盘 watch 对它只看引用，
+  //   原地改动写不进 localStorage —— 「从标记 / 航迹导入」的站曾经就这样重启即丢（表窗口那头发回来的本就是整份）。
   const sites = ref([])                 // [{ id, name, lon, lat, src }]  src: manual|pt|st|traj
   const siteRows = ref([])              // 引擎回来的逐行读数（与 sites 同序，含 err 行）
   const siteMeta = ref(null)            // { frameT, model, cloudFellBack, ms }
@@ -664,7 +666,7 @@ export function useLiveField(host) {
     const lon = Number(newSite.lon), lat = Number(newSite.lat)
     if (!Number.isFinite(lon) || !Number.isFinite(lat)) { siteMsg.value = '经纬度须填写完整（先经度、后纬度）'; return }
     if (lat < -90 || lat > 90 || lon < -180 || lon > 180) { siteMsg.value = '经纬度超出范围'; return }
-    sites.value.push({ id: nextSiteId(), name: (newSite.name || '').trim() || fmtLL(lon, lat), lon, lat, src: 'manual' })
+    sites.value = [...sites.value, { id: nextSiteId(), name: (newSite.name || '').trim() || fmtLL(lon, lat), lon, lat, src: 'manual' }]
     newSite.lon = ''; newSite.lat = ''; newSite.name = ''
     siteMsg.value = ''
     refreshSites()
@@ -712,11 +714,14 @@ export function useLiveField(host) {
     // 去重：同坐标（0.01° 内）且同时刻（都没有，或同一分钟）才算重复 —— 往返经过同一处、时刻不同的两行都留
     const key = (o) => Math.round(o.lon * 100) + ',' + Math.round(o.lat * 100) + (Number.isFinite(o.tMs) ? '@' + Math.round(o.tMs / 60000) : '')
     const have = new Set(sites.value.map(key))
-    let n = 0
+    const fresh = []
     for (const o of add) {
       if (!Number.isFinite(o.lon) || !Number.isFinite(o.lat) || have.has(key(o))) continue
-      have.add(key(o)); sites.value.push({ id: nextSiteId(), ...o }); n++
+      have.add(key(o)); fresh.push({ id: nextSiteId(), ...o })
     }
+    const n = fresh.length
+    // 整份换（见 sites 声明处）：原地 push 时落盘 watch 收不到，导入的站重启即丢
+    if (n) sites.value = [...sites.value, ...fresh]
     siteMsg.value = n ? `导入 ${n} 站` + (add.length > n ? `（${add.length - n} 个坐标重复，已跳过）` : '') : '无可导入的标记'
     // 带时刻的航点进来了 → 读数表把「时间」列亮出来（只在这次确有时刻时置真，用户关掉的不再自作主张打开）
     if (n && add.some((o) => Number.isFinite(o.tMs)) && !siteCols.value.includes('tMs')) {

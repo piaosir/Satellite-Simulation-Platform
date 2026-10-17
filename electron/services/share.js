@@ -6,8 +6,10 @@
 //       缺失则未配置。授权范围务必只给 share/* · omm/* · updates/gxt/* 三个前缀的
 //       PutObject/GetObject —— 尤其【不能给 updates/*】：那是自动更新的下载目录，而这把密钥随包
 //       分发、asar 可直接解开，给了就等于把更新通道公开。详见 shareConfig.example.js 的说明。
-// 零三方 SDK：内置 https + crypto 自算 q-sign 签名（与 scripts/publish-cos.mjs 同法，扩展支持 query 参与签名）。
-const https = require('https')
+// 零三方 SDK：crypto 自算 q-sign 签名（与 scripts/publish-cos.mjs 同法，扩展支持 query 参与签名）。
+// 传输走 netFetch：优先 Electron net（系统代理 / PAC、代理集成认证、Windows 证书库 —— 单位内网靠它），
+// 无 Electron（验证台 / 单测）时退回 Node https。
+const netFetch = require('./netFetch')
 const { createHmac, createHash, randomUUID, randomBytes } = require('crypto')
 
 let cfg = null
@@ -42,12 +44,23 @@ const hmac = (key, s) => createHmac('sha1', key).update(s).digest('hex')
 
 function configured() { return !!(cfg && cfg.secretId && cfg.secretKey && cfg.bucket && cfg.region) }
 const host = () => `${cfg.bucket}.cos.${cfg.region}.myqcloud.com`
+// 请求基址。endpoint 只给验证台 / 单测用：在（假的）shareConfig 里指到本机回环服务器，真凭证文件里没有这一项
+const baseUrl = () => (cfg && cfg.endpoint ? String(cfg.endpoint).replace(/\/+$/, '') : `https://${host()}`)
 const prefixOf = () => (cfg && cfg.prefix ? String(cfg.prefix).replace(/^\/+|\/+$/g, '') : 'share')
 const sanitizeId = (id) => String(id == null ? '' : id).trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64)
 
+// ---- 本机时钟纠偏（同 COS 官方 SDK 的 CorrectClockSkew）----
+// q-sign-time 按本机时钟算。本机钟偏出签名窗口（快 60 s 以上 / 慢 1 h 以上），COS 回 403 RequestTimeTooSkewed
+// 或 AccessDenied「Request has expired」—— 用户看到分享 / 激活全部失败，打包版里却没有任何痕迹。
+// 撞上这两种 403 时取响应 Date 头（没有就取错误体里的 ServerTime）算出本机偏移，按服务器时间重签、重发一次；
+// 偏移留在进程内，之后的请求都按它签。
+let _clockOffset = 0
+const signNowMs = () => Date.now() + _clockOffset
+const SKEW_MIN_MS = 30_000          // 本机钟与服务器差不到这个数就不是时钟的锅，重签也没用（SDK 同一门槛）
+
 // q-sign：对 method + pathname（+ 列举时的 query 参数）签名；不签 header（q-header-list 空，与 publish 一致）。
 function authorization(method, pathname, params) {
-  const now = Math.floor(Date.now() / 1000) - 60
+  const now = Math.floor(signNowMs() / 1000) - 60
   const exp = now + 3600
   const keyTime = `${now};${exp}`
   const signKey = hmac(cfg.secretKey, keyTime)
@@ -67,8 +80,20 @@ function authorization(method, pathname, params) {
 const encPath = (key) => '/' + key.split('/').map(encodeURIComponent).join('/')
 
 // 最近一次 COS 响应的 Date 头（epoch ms；0=尚未联网成功）。激活模块的时钟锚用。
+// 只认 COS 自己回的响应（带 x-cos-request-id / Server: tencent-cos）：门户 / 网关代答的那一页，钟不是 COS 的钟。
 let _serverDate = 0
+let _serverMono = 0
+const monoMs = () => Number(process.hrtime.bigint() / 1000000n)
 const serverDate = () => _serverDate
+// 服务器「此刻」：最近一次 Date 头 + 此后经过的单调钟（系统钟怎么拨都不影响）；0 = 本进程还没拿到过
+const serverNow = () => (_serverDate ? _serverDate + (monoMs() - _serverMono) : 0)
+const clockOffset = () => _clockOffset
+const cosOrigin = (h) => !!(netFetch.hdr(h, 'x-cos-request-id') || /tencent-cos/i.test(netFetch.hdr(h, 'server')))
+function noteServerDate(status, headers) {
+  if (!cosOrigin(headers)) return
+  const t = Date.parse(netFetch.hdr(headers, 'date'))
+  if (t) { _serverDate = t; _serverMono = monoMs() }
+}
 
 // 写入前缀白名单。真正的防线是 CAM 策略（见 shareConfig.example.js），但策略这种「配在别处、
 // 看不见、容易被后来者图省事放宽」的东西不该是唯一防线：这里就地挡一道，保证客户端在代码层面
@@ -88,52 +113,96 @@ function assertWritable(key) {
   return k
 }
 const decodeXml = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+const xmlTag = (text, tag) => { const m = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(String(text || '')); return m ? decodeXml(m[1]).trim() : '' }
 
-function request(method, pathname, { params, body } = {}) {
-  return new Promise((resolve, reject) => {
-    const auth = authorization(method, pathname, params)
-    let path = pathname
-    if (params && Object.keys(params).length) {
-      path += '?' + Object.keys(params).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&')
+// ---- 单位内网 / 门户网络的代答 ----
+// net 认 Windows 证书库之后，装了审计根证书的单位网关、酒店 / 热点门户都能以「合法 TLS」回一页自己的东西。
+// 两条代答最要命：伪造的 404 会被当成「激活书确实没了」清掉本机授权、会被当成「信箱是空的」整份覆盖掉；
+// 伪造的 200 网页会被当成写入成功。判据：COS 的响应都带 x-cos-request-id，代答的网页不带。
+const looksHtml = (h, text) => /text\/html/i.test(netFetch.hdr(h, 'content-type')) || /^\s*<(!doctype|html|head|body|script|meta|title)\b/i.test(text)
+// 对象确实不存在：只认 COS 自己回的 NoSuchKey（错误体 XML 里的 Code），不认任何人回的一个 404
+const isNoSuchKey = (e) => !!(e && e.status === 404 && e.cosCode === 'NoSuchKey')
+
+const TIMEOUT_MS = 30_000          // 无进展超时：连接、上传、下载任何一段 30 s 没动静才算断（慢链路照样传得完）
+const RETRY_DELAY_MS = 800         // 瞬断（切网 / 连接被重置 / 正文截断 / 5xx）重发一次前的间隔
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+function httpError(status, text, fromCos) {
+  const e = new Error(`COS ${status}: ${String(text || '').slice(0, 300)}`)
+  e.kind = 'http'
+  e.status = status
+  e.fromCos = fromCos
+  e.cosCode = fromCos || /<Error>/.test(text) ? xmlTag(text, 'Code') : ''
+  e.cosMessage = xmlTag(text, 'Message')
+  return e
+}
+function transportError(e) {
+  const text = e.kind === 'timeout' ? `COS 请求超时（${e.message}）` : e.kind === 'redirect' ? `COS 请求${e.message}` : `COS ${e.message}`
+  const out = new Error(text)
+  out.kind = e.kind || 'net'
+  out.code = e.code || ''
+  out.status = e.status || 0
+  return out
+}
+// 时钟类 403：RequestTimeTooSkewed，或 AccessDenied + 「Request has expired」（签名窗口整个落在服务器时间之前）
+const isSkewReply = (e) => e.status === 403 && (e.cosCode === 'RequestTimeTooSkewed' || (e.cosCode === 'AccessDenied' && /expired|not yet/i.test(e.cosMessage)))
+function correctSkew(headers, text) {
+  const t = Date.parse(netFetch.hdr(headers, 'date')) || Date.parse(xmlTag(text, 'ServerTime'))
+  if (!t || Math.abs(signNowMs() - t) < SKEW_MIN_MS) return false
+  _clockOffset = t - Date.now()
+  const d = Math.round(-_clockOffset / 1000)
+  console.warn(`[share] 签名撞上时钟类 403，已按 COS 服务器时间重签（本机钟 ${d > 0 ? '+' : ''}${d} s）`)
+  return true
+}
+
+// 一次 COS 请求：2xx 返回正文；其余 reject（err.kind / status / cosCode 见 httpError、transportError）。
+// 自带两种重发，各至多一次：时钟类 403 按服务器时间重签；瞬断与 5xx 隔 0.8 s 原样重发
+// （PUT 整件覆盖、GET 只读，重发一次都无副作用）。
+async function request(method, pathname, { params, body } = {}) {
+  let query = ''
+  if (params && Object.keys(params).length) {
+    query = '?' + Object.keys(params).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&')
+  }
+  const url = baseUrl() + pathname + query
+  let skewLeft = 1, retryLeft = 1
+  for (;;) {
+    const headers = { Authorization: authorization(method, pathname, params) }
+    if (body != null) headers['Content-Type'] = 'application/json'
+    let r
+    try {
+      r = await netFetch.request(url, { method, headers, body, idleMs: TIMEOUT_MS, redirect: 'error', onHeaders: noteServerDate })
+    } catch (e) {
+      if (e.transient && retryLeft > 0) { retryLeft--; await sleep(RETRY_DELAY_MS); continue }
+      throw transportError(e)
     }
-    const opts = { method, host: host(), path, headers: { Authorization: auth } }
-    if (body != null) { opts.headers['Content-Type'] = 'application/json'; opts.headers['Content-Length'] = Buffer.byteLength(body) }
-    const req = https.request(opts, (res) => {
-      // 服务器时间（TLS 保真）：无论 2xx 还是 404 都记录——激活模块用它做时钟防篡改的权威锚
-      if (res.headers && res.headers.date) {
-        const t = Date.parse(res.headers.date)
-        if (t) _serverDate = t
-      }
-      const chunks = []
-      res.on('data', (c) => chunks.push(c))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8')
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(text)
-        else reject(new Error(`COS ${res.statusCode}: ${text.slice(0, 300)}`))
-      })
-    })
-    // 半连接黑洞（网关吞包不回）下 Node https 默认永不超时：请求会无限挂起，
-    // 「刷新激活状态」一直转圈、分享收发无响应。30 秒足够宽，超了按网络错处理。
-    req.setTimeout(30_000, () => req.destroy(new Error('COS 请求超时')))
-    req.on('error', reject)
-    if (body != null) req.write(body)
-    req.end()
-  })
+    const text = r.body.toString('utf8')
+    const fromCos = cosOrigin(r.headers)
+    if (!fromCos && looksHtml(r.headers, text)) {
+      const e = new Error(`COS 请求被网关拦截（HTTP ${r.status}，返回的是网页）`)
+      e.kind = 'intercept'; e.status = r.status
+      throw e
+    }
+    if (r.status >= 200 && r.status < 300) return text
+    const err = httpError(r.status, text, fromCos)
+    if (fromCos && skewLeft > 0 && isSkewReply(err) && correctSkew(r.headers, text)) { skewLeft--; continue }
+    if (r.status >= 500 && retryLeft > 0) { retryLeft--; await sleep(RETRY_DELAY_MS); continue }
+    throw err
+  }
 }
 
 // 收件箱模型：每个用户一个【聚合对象】 <prefix>/<用户ID>/inbox.json（一个 JSON 数组）。
 // 收发只用 GetObject / PutObject（不需要 GetBucket 列举、不需要 DeleteObject）——CAM 权限最简单、最不易配错。
 const inboxKey = (id) => `${prefixOf()}/${sanitizeId(id)}/inbox.json`
 
-// 读回信箱数组；对象不存在(404/NoSuchKey)视为空数组
+// 读回信箱数组；对象不存在（COS 回的 NoSuchKey）视为空数组。别人回的 404 照抛 ——
+// 当成空信箱的话，下一步 PUT 就把对方信箱里的历史消息整份覆盖掉了
 async function readInbox(id) {
   try {
     const t = await request('GET', encPath(inboxKey(id)))
     const arr = JSON.parse(t)
     return Array.isArray(arr) ? arr : []
   } catch (e) {
-    const msg = String((e && e.message) || '')
-    if (msg.includes('COS 404') || msg.includes('NoSuchKey')) return []
+    if (isNoSuchKey(e)) return []
     throw e
   }
 }
@@ -229,7 +298,10 @@ const BOX_PREFIX = `${GXT_PREFIX}/box`
 const BOX_IDX_KIND = 'satsim-boxidx'
 const BOX_ROSTER_KIND = 'satsim-roster'
 const CH_LEN = 12
-const BOX_KEEP = 60          // 索引里保留的条数上限（超出的最旧条目摘掉；对象本身按上面第三条留着）
+// 索引里保留的条数上限（超出的最旧条目摘掉；对象本身按上面第三条留着）。
+// 单批超过它直接拒收、一个字节都不传：超出的那几件传上去也进不了索引，手机上永远看不到，
+// 却会被报成「已投递」。渲染端 src/shared/miniPack.js 的 BOX_KEEP 是同一个数，改一处要同步。
+const BOX_KEEP = 60
 
 // 认证码归一：去分隔符、大写。字母表与密钥同源（A-Z2-9，去掉易混的 I L O 0 1）。
 // 长度 12 而不是密钥那样的 8：密钥是一次性的，猜中只泄露一份内容；认证码是【长期收件地址】，
@@ -246,15 +318,15 @@ const rosterKey = (ch) => `${boxDir(ch)}/roster.json`
 const boxIdxKey = (ch, pid) => `${boxDir(ch)}/${pid}/index.json`
 const boxMsgKey = (ch, pid, mid) => `${boxDir(ch)}/${pid}/${mid}.json`
 
-// 通用 JSON 读取；对象不存在(404/NoSuchKey)返回 fallback（首次投递时 roster / index 都还不存在）
+// 通用 JSON 读取；对象不存在（COS 回的 NoSuchKey）返回 fallback（首次投递时 roster / index 都还不存在）。
+// 解析不了也回 fallback（对象被写坏，自愈成新结构）；网关代答的网页在 request 里就拦成错误了，到不了这里
 async function getJson(key, fallback) {
   try {
     const v = JSON.parse(await request('GET', encPath(key)))
     return v && typeof v === 'object' ? v : fallback
   } catch (e) {
-    const msg = String((e && e.message) || '')
-    if (msg.includes('COS 404') || msg.includes('NoSuchKey')) return fallback
-    if (msg.includes('Unexpected token') || msg.includes('JSON')) return fallback   // 半截对象/被覆写成空
+    if (isNoSuchKey(e)) return fallback
+    if (e instanceof SyntaxError) return fallback
     throw e
   }
 }
@@ -270,7 +342,8 @@ async function getJson(key, fallback) {
  * @param {string} ch  小程序端的 12 位认证码
  * @param {object} o   { pid 本机ID, label 本机备注名, app 版本,
  *                       msgs: [{ sync 幂等键, name, payload 信封 }] }
- * @returns {Promise<{ok:true, sent:number, bytes:number, mids:string[]}>}
+ * @returns {Promise<{ok:true, sent:number, evicted:number, bytes:number, mids:string[]}>}
+ *   sent    本批真正进了索引的件数；evicted 为给本批腾位置而从索引里摘掉的更早的件数
  */
 async function boxSend(ch, o) {
   if (!configured()) throw new Error('发送到小程序未配置（缺少 COS 凭证：shareConfig.js 或 COS_SECRET_ID 等环境变量）')
@@ -279,6 +352,7 @@ async function boxSend(ch, o) {
   if (!pid) throw new Error('本机ID无效')
   const msgs = (o && Array.isArray(o.msgs) ? o.msgs : []).filter((m) => m && m.payload && typeof m.payload === 'object')
   if (!msgs.length) throw new Error('内容为空')
+  if (msgs.length > BOX_KEEP) throw new Error(`单批最多 ${BOX_KEEP} 件（本次 ${msgs.length} 件）`)
 
   const label = String((o && o.label) || '').slice(0, 40)
   const app = String((o && o.app) || '').slice(0, 20)
@@ -328,6 +402,7 @@ async function boxSend(ch, o) {
   // 3) 索引（单写者，读改写无竞态）
   const idx = await getJson(boxIdxKey(C, pid), null) || { kind: BOX_IDX_KIND, v: 1 }
   if (!Array.isArray(idx.msgs)) idx.msgs = []
+  const before = idx.msgs.map((m) => m && m.id)
   for (const row of rows) {
     const hit = idx.msgs.findIndex((m) => m && m.id === row.id)
     if (hit >= 0) idx.msgs[hit] = row; else idx.msgs.push(row)
@@ -337,7 +412,13 @@ async function boxSend(ch, o) {
   Object.assign(idx, { ch: C, pid, label, app, updatedAt: now })
   await request('PUT', encPath(assertWritable(boxIdxKey(C, pid))), { body: JSON.stringify(idx) })
 
-  return { ok: true, sent: rows.length, bytes: total, mids: rows.map((r) => r.id) }
+  // 如实计数：本批时间戳最新，正常只会摘掉更早的件；早先某次投递若是在拨快的时钟下发的（ts 在未来），
+  // 排在后面的反而是它们 —— 按「截断后还在不在索引里」数，不按「这批有几件」报
+  const kept = new Set(idx.msgs.map((m) => m && m.id))
+  const batch = new Set(rows.map((r) => r.id))
+  const sent = rows.filter((r) => kept.has(r.id)).length
+  const evicted = before.filter((id) => !kept.has(id) && !batch.has(id)).length
+  return { ok: true, sent, evicted, bytes: total, mids: rows.map((r) => r.id) }
 }
 
 /** 平台回看自己往某个认证码投过什么（设置页的「已投递」列表）。roster 一并返回，供显示「还绑了谁」。 */
@@ -379,18 +460,18 @@ async function putJson(key, obj) {
   return true
 }
 
-// 严格 JSON 读：只有【确凿的 404/NoSuchKey】返回 null，其余一切失败照抛。
+// 严格 JSON 读：只有【确凿的 404】—— COS 自己回的 NoSuchKey —— 返回 null，其余一切失败照抛。
 // 与上面 getJson 的区别是不把「解析失败」吞成 fallback —— 酒店/企业门户网络会把任意 GET
 // 劫持成 200 + HTML 登录页，宽松版会把它当「对象损坏」落成空值；对激活书（activation.js）
 // 这等于把断网的已激活设备误清成未激活。激活书要的语义是「抛错 = 云端不可信 = 维持本地缓存」。
+// 同理，单位审计网关回的 404 页面也不算数：只有错误体里 Code=NoSuchKey 的才是对象真没了。
 async function getJsonStrict(key) {
   try {
     return JSON.parse(await request('GET', encPath(key)))
   } catch (e) {
-    const msg = String((e && e.message) || '')
-    if (msg.includes('COS 404') || msg.includes('NoSuchKey')) return null
+    if (isNoSuchKey(e)) return null
     throw e
   }
 }
 
-module.exports = () => ({ configured, send, inbox, remove, putSnapshot, boxSend, boxPeek, boxRevoke, normCh, CH_LEN, getJson, getJsonStrict, putJson, prefixOf, serverDate })
+module.exports = () => ({ configured, send, inbox, remove, putSnapshot, boxSend, boxPeek, boxRevoke, normCh, CH_LEN, BOX_KEEP, getJson, getJsonStrict, putJson, prefixOf, serverDate, serverNow, clockOffset })

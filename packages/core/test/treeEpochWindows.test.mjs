@@ -9,6 +9,7 @@
 //   ⑥ lbOrbitSpec：旧库条目 elements spec（epoch:null）按所选树节点历元补；节点不在 / 非树来源 → 旧数据常量；其余原样；深拷贝
 //   ⑦ 同一颗星同一处：旧库条目经 lbOrbitSpec 送主进程 buildSatrec，与 3D 页（elementsOmm→omm2satrec）同一绝对时刻位置逐位一致
 //   ⑧ scenarioEpochPatch：自定义星座搜索选星（拍下的是旧场景历元）→ 当前 loadCustomSats 的场景历元；星座改过参数 / 号不对 / 已是当前 → 不动
+//      ⑧b 轨道向导地固 / 日固设计量的星座：池记录按当前场景历元重解 RAAN；库条目 RAAN 恰好差这段历元增量才认、连 RAAN 一起换
 //   ⑨ e2eParams.orbitSpecOf(cfg, treeSats)：选星补历元、GSO / 手填不受影响
 //   ⑩ pinCircularEpoch：星间几何的手动圆轨道历元钉到本批 t0（再生式微波 / 激光、端到端星间跳），结果只由 t0 定
 import { createRequire } from 'node:module'
@@ -20,7 +21,7 @@ import { pickedTreeNode, lbOrbitSpec, scenarioEpochPatch, pinCircularEpoch } fro
 // satSearchPool.loadCustomSats 现读 localStorage：node 里垫一个最小实现（只给 ⑧ 用）
 const _ls = new Map()
 globalThis.localStorage = { getItem: (k) => (_ls.has(k) ? _ls.get(k) : null), setItem: (k, v) => { _ls.set(k, String(v)) }, removeItem: (k) => { _ls.delete(k) } }
-const { loadCustomSats } = await import('../../../src/ngso/satSearchPool.js')
+const { loadCustomSats, orbitSpecOf: poolOrbitSpecOf } = await import('../../../src/ngso/satSearchPool.js')
 const { resolveScenarioEpoch } = await import('../../../src/viz/constellation/useCustomConstellations.js')
 const { orbitSpecOf: e2eOrbitSpecOf } = await import('../../../src/e2e/e2eParams.js')
 
@@ -59,7 +60,21 @@ for (const [name, body] of copies) {
   ok(body.length > 200, `${name} treeNodeOrbit 找得到`)
   ok(!/node\.epoch/.test(body), `${name} treeNodeOrbit 不读 node.epoch`)
   ok(body.includes('return treeElementsSpec(el, node.noradId)'), `${name} treeNodeOrbit 根数星走 treeElementsSpec（历元取节点 elements.epoch）`)
-  ok(body.includes('epoch: rec.epoch'), `${name} treeNodeOrbit 关联星（池记录）照旧取 rec.epoch`)
+  // 关联星（池记录）：NGSO 走取星的唯一出口 satSearchPool.orbitSpecOf（历元在那里取 rec.epoch，见下方 ①b）；
+  // 两份面板目录星 / 六根数仍手拼（带 rec.epoch），点序列星走 orbitSpecOf（见 lbWorkbenchResults ⑥ 末段）
+  ok(name === 'NGSO' ? body.includes('return orbitSpecOf(rec)') : body.includes('epoch: rec.epoch'), `${name} treeNodeOrbit 关联星（池记录）照旧取 rec.epoch`)
+}
+// ①b orbitSpecOf：目录星 / 自定义星座照旧带 rec.epoch；星历点序列只带引用（早先 NGSO 手拼把它拼成全空 OMM）
+{
+  const omm = poolOrbitSpecOf({ orbitType: 'omm', noradId: 25544, epoch: '2026-10-16T00:00:00Z', meanMotion: '15.5', ecc: '0.0005', incl: '51.6', raan: '10', argp: '20', ma: '30', bstar: '0.0001', mdot: '0', mddot: '0' })
+  ok(omm.type === 'omm' && omm.epoch === '2026-10-16T00:00:00Z' && omm.meanMotion === 15.5 && omm.noradId === '25544', 'orbitSpecOf：OMM 记录带 rec.epoch、数值归一')
+  const el = poolOrbitSpecOf({ orbitType: 'elements', noradId: '900001', epoch: '2026-10-16T08:00:00.000Z', elements: { altKm: 550, ecc: 0, incl: 53, raan: 1, argp: 2, ma: 3 } })
+  ok(el.type === 'elements' && el.epoch === '2026-10-16T08:00:00.000Z' && el.altKm === 550, 'orbitSpecOf：自定义星座记录带场景历元')
+  const eph = poolOrbitSpecOf({ orbitType: 'ephem', noradId: '800001', name: 'EPH', ref: { groupId: 'g1', key: 'k1' }, summary: { t0: 1, t1: 2 }, meanMotion: null, incl: null })
+  ok(eph.type === 'ephem' && eph.ref.groupId === 'g1' && eph.ref.key === 'k1' && !('meanMotion' in eph), 'orbitSpecOf：点序列记录只带引用（不拼 OMM）')
+  let threw = ''
+  try { poolOrbitSpecOf({ orbitType: 'ephem', noradId: '800002' }) } catch (e) { threw = e.message }
+  ok(!!threw, 'orbitSpecOf：点序列缺引用点名报错（不静默造一颗）', threw)
 }
 ok((NGSO.match(/async function treeNodeOrbit\(/g) || []).length === 1, 'NGSO 只有一份 treeNodeOrbit')
 for (const [name, text] of [['再生式面板', REGEN_P], ['端到端面板', E2E_P]]) {
@@ -149,7 +164,7 @@ ok(fnBody(GPW, 'function editTime(id, val) {').includes('parseTzText(val, tzMode
 const lgt = fnBody(CI, '  function loadGrdTree() {', '\n  }\n')
 ok(lgt.includes("read('globe3d/grdLive')") && lgt.includes('(s.noradId || s.elements) ? live[s.folder] : undefined'), '干扰分析 loadGrdTree 按 grdLive 覆盖实时星位（只认此刻仍是实时星的节点）')
 ok(lgt.includes('satLon: lon, satLat: lat, satAlt: altKm'), '干扰分析：实时星天线基底也换成实时星位')
-ok((CI.match(/if \(a\.node\.noEph\) \{ msg\.value = '关联卫星当前无星历'; return \}/g) || []).length === 3, '干扰分析：关联星无星历时三处 GRD 取值都不拿旧星位顶替')
+ok((CI.match(/if \(a\.node\.noEph\) \{ msg\.value = '关联卫星当前无星历'; return \}/g) || []).length === 4, '干扰分析：关联星无星历时四处 GRD 取值都不拿旧星位顶替')
 
 // ⑥ lbOrbitSpec
 const EP = '2026-09-30T04:00:00.000Z'
@@ -204,6 +219,46 @@ ok(scenarioEpochPatch({ ...stale, noradId: '123' }, cust.sats) === null && scena
 ok(scenarioEpochPatch({ ...omm }, cust.sats) === null && scenarioEpochPatch(null, cust.sats) === null && scenarioEpochPatch(stale, null) === null, '非 elements / 空 → 不动')
 const recCc = buildSatrec(p)
 ok(Math.abs(recCc.jdsatepoch + (recCc.jdsatepochF || 0) - (Date.parse(curEp) / 86400000 + 2440587.5)) < 1e-9, '刷新后的 spec 送主进程即按当前场景历元建星')
+
+// ⑧b 轨道向导里地固 / 日固设计量的星座（体检 2026-10-16 #4）：池记录按当前场景历元重解 RAAN、带 epochFrame；
+//     库条目拍下的是选星那天的 RAAN —— 其余根数相同、RAAN 恰好差这段历元的 GMST / 太阳平黄经增量才认，连 RAAN 一起换
+{
+  const { default: OD } = await import('../../../src/viz/constellation/orbitDesign.js')
+  const { customConstSats } = await import('../../../src/viz/constellation/customConstGen.js')
+  const RAD = 180 / Math.PI, DAY = 86400000
+  const gm = (ms) => sat.gstime(new Date(ms))
+  const curMs = Date.parse(curEp), E_OLD = curMs - 30 * DAY, oldIso = new Date(E_OLD).toISOString()
+  const solveOld = (type, inp) => OD.solveDesign(type, inp, E_OLD, { gmst: gm(E_OLD) }).seed
+  const geoIn = { subLonDeg: 110.5, inclDeg: 0 }, ssoIn = { driver: 'alt', altKm: 800, localTime: '10:30', localMode: 'ltan' }
+  // 30 天前用向导建的两座（params 是那天解的）+ 一座纯 Walker
+  const items = [
+    { id: 'g', name: 'GEO', params: OD.seedToParams(solveOld('geosync', geoIn), { pattern: 'single' }, 'GEO'), design: { type: 'geosync', inputs: geoIn }, noradBase: 900000 },
+    { id: 's', name: 'SSO', params: OD.seedToParams(solveOld('sunSync', ssoIn), { pattern: 'delta', T: 6, P: 3, F: 1 }, 'SSO'), design: { type: 'sunSync', inputs: ssoIn }, noradBase: 910000 },
+    { id: 't', name: 'TEST', params: { name: 'TEST', pattern: 'delta', T: 6, P: 2, F: 1, incl: 55, shape: 'circ', perigeeKm: 1200, apogeeKm: 1200, argp: 0, raan0: 0, m0: 0 }, noradBase: 920000 }
+  ]
+  localStorage.setItem('constellation3d/customConsts', JSON.stringify({ items }))
+  const cs = loadCustomSats()
+  const ep = cs.epoch, epMs = Date.parse(ep)   // 当前场景历元按池里解出的那个比（不怕跑测试时恰好跨过零点）
+  const byNo = (n) => cs.sats.find((r) => r.noradId === String(n))
+  const g = byNo(900000), s4 = byNo(910004), t2 = byNo(920002)
+  ok(g && s4 && t2 && g.epochFrame === 'earth' && s4.epochFrame === 'sun' && !('epochFrame' in t2), '池记录：地固 / 日固设计量带 epochFrame，惯性 RAAN 的不带')
+  ok(Math.abs(OD.raanToLon(g.elements.raan + g.elements.argp + g.elements.ma, gm(epMs)) - 110.5) < 1e-9, '★ 池记录（NGSO / 再生式 / 端到端 / 工作台取星）：30 天前建的地球同步星在当前场景历元仍是 110.5°E')
+  ok(Math.abs(OD.raanToLtan(byNo(910000).elements.raan, epMs) - 10.5) < 1e-9, '★ 池记录：30 天前建的太阳同步星当前 LTAN 仍是 10:30')
+  // 30 天前选星拍下的 spec（satSearchPool.orbitSpecOf 的形状；RAAN 是那天的）
+  const specOf = (c, i, no) => { const el = customConstSats(c, oldIso)[i].elements; return { type: 'elements', noradId: String(no), epoch: oldIso, altKm: el.altKm, ecc: el.ecc, incl: el.incl, raan: el.raan, argp: el.argp, ma: el.ma } }
+  const sg = specOf(items[0], 0, 900000), ss = specOf(items[1], 4, 910004)
+  const pg = scenarioEpochPatch(sg, cs.sats), ps = scenarioEpochPatch(ss, cs.sats)
+  ok(pg && pg.epoch === ep && pg.raan === g.elements.raan && pg.ma === sg.ma && pg.incl === sg.incl && sg.epoch === oldIso, '★ 库条目（地固）：历元与 RAAN 一起换成当前的（不改入参）')
+  ok(ps && ps.epoch === ep && ps.raan === s4.elements.raan && ps.ma === ss.ma, '★ 库条目（日固，第 3 面那颗）：历元与 RAAN 一起换成当前的')
+  const rg = buildSatrec(pg)
+  ok(Math.abs(OD.raanToLon((rg.nodeo + rg.argpo + rg.mo) * RAD, rg.gsto) - 110.5) < 1e-9, '★ 换过的 spec 送主进程 buildSatrec：当前场景历元下仍在 110.5°E')
+  ok(scenarioEpochPatch({ ...sg, raan: sg.raan + 0.5 }, cs.sats) === null, '设计改过（RAAN 差的不是这段历元增量）→ 不动')
+  ok(scenarioEpochPatch({ ...sg, raan: g.elements.raan }, cs.sats) === null, '旧历元配当前 RAAN（修复前建的老星座重新生成后）→ 认不出、不动')
+  ok(scenarioEpochPatch({ ...sg, incl: 1 }, cs.sats) === null && scenarioEpochPatch({ ...sg, epoch: null }, cs.sats) === null, '其余根数对不上 / 拍下时没有历元 → 不动')
+  const st = specOf(items[2], 2, 920002), pt = scenarioEpochPatch(st, cs.sats)
+  ok(pt && pt.epoch === ep && pt.raan === st.raan, '惯性 RAAN 的星座照旧只换历元')
+  ok(/customConstParams\(c, epoch\)/.test(CI), '干扰分析：自定义星座的参数按场景历元重解（customConstParams）')
+}
 
 // ⑨ e2eParams.orbitSpecOf(cfg, treeSats)
 const cfgN = { form: { orbitClass: 'NGSO', orbitAltitude: '550', orbitInclination: '53' }, ngsoSat: { mode: 'tree', folder: 'A', orbit: legacySpec, name: 'A', noradId: null } }

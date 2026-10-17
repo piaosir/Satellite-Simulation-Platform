@@ -6,18 +6,21 @@
 import { ref } from 'vue'
 import sat from './satellite.js'
 import { generateConstellation } from './walker.js'
+import { customConstSats, customConstParams, designFrame } from './customConstGen.js'
 // 星座名是【数据】（进 localStorage、画在打了 skip 的名字位与 <input> 上，呈现层翻不到）：
 // 名字留空时的兜底名按平台语言出字，与「生成星座」向导的出厂名同一套（见 ConstellationMap3D.defaultConstDraft）。
 import { byLang } from '../../shared/i18n/lang.js'
+import { SYNTH_NORAD, fixedRanges, blockSpan, lowestFree } from '../../shared/synthNorad.js'
+import { ommFromElements, elementsMeanMotion } from '../../shared/sgp4Mean.js'   // 合成根数 → SGP4 Kozai 平均运动（全软件同一口径）
 
-const RE = 6378.137
-const MU = 398600.4418
 const STORE_KEY = 'constellation3d/customConsts'
 // 场景历元（STK Scenario Epoch 口径）：全部自定义星座共用的参考历元。默认=电脑「当天 08:00」，每天自动更新；
 // 若当天曾人为修改，则当天以人为值为准（次日再回到该日 08:00）。取当天固定值（而非每次渲染都 new Date()）→
 // 星座在地球上的定向本会话内稳定，不随“打开软件的时刻”秒级漂移；跨天则统一锚在当天 08:00，便于按日复现。
 // RAAN 仍是真惯性升交点赤经（相对春分点/TEME），与真实 TLE/星历同一参考、可直接对应；
 // 渲染时在此历元上叠加时间轴偏移即可向后推演预测（见页面 ccTimeAt）。
+// 例外：轨道向导里以地固经度 / 地方时为设计量的星座（design.type 属 orbitDesign.RAAN_FRAME 的 'earth' / 'sun'），
+// RAAN 按【当前场景历元】由 design 输入重解，否则历元每天前移、星下点 / LTAN 每天漂 0.9856°（见 customConstGen.js）。
 // 本地日期串 YYYY-MM-DD（判定「人为修改是否发生在今天」）
 const localDayStr = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` }
 // 电脑「当天 08:00」的 ISO（本地时区）
@@ -29,10 +32,11 @@ export function resolveScenarioEpoch(blob) {
   if (blob && blob.manualDay === localDayStr(new Date()) && blob.epoch && !isNaN(Date.parse(blob.epoch))) return new Date(blob.epoch).toISOString()
   return today8am()
 }
-// 合成 NORAD 号段：从 900000 起，每座星座占一段（明显区别于真实目录星，避免撞号）
+// 合成 NORAD 号段：从 900000 起，每座星座按生成颗数占 10000 的整数倍（号 = noradBase + 生成序号），取最低的空闲段、
+// 整段避开 GPS 年历 / 天线树 / 向导预览等固定段（号段总表 shared/synthNorad.js，发号见 allocBase）
 // 导出：卫星组按真实星历核对成员时要认出「这颗不是真实目录星」，据此豁免（见 useSatGroups.reconcile）
-export const NORAD_BASE = 900000
-const NORAD_STEP = 10000
+export const NORAD_BASE = SYNTH_NORAD.custom.lo
+const NORAD_STEP = SYNTH_NORAD.custom.step
 // 按轨道面配色调色板（10 色循环）
 const PLANE_PALETTE = ['#ff6b6b', '#ffd166', '#06d6a0', '#4dabf7', '#b197fc', '#ff9f1c', '#38d9a9', '#f783ac', '#74c0fc', '#e599f7']
 
@@ -44,21 +48,22 @@ const hexToRgb = (hex) => {
 }
 
 // 经典轨道根数 → satrec（复用 omm2satrec；历元取共享场景历元 epoch）。altKm=近地点高度，e=0 即圆轨道高度。
+// Kozai 平均运动按 sgp4Mean 的通用口径换算：sgp4init 之后的平半长轴 = 设计 a=(RE+hp)/(1−e)（信息卡近 / 远地点高度逐位回读），
+// 与主进程 buildSatrec 的 elements 分支（C/I、NGSO / 再生式 / 端到端）同一份共享段 —— 不再拿二体 √(μ/a³) 当 Kozai 值（A-05）
 function elementsToSatrec(el, epoch) {
-  const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
-  const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)          // a=(RE+hp)/(1−e)
-  const n = Math.sqrt(MU / (a * a * a))                          // 平均运动 rad/s
-  const meanMotion = 86400 * n / (2 * Math.PI)                   // rev/day（omm2satrec 所需）
-  return sat.omm2satrec({
-    noradId: 'SIM', epoch: epoch || defaultEpoch(), meanMotion, ecc,
-    incl: Number(el.incl) || 0, raan: Number(el.raan) || 0,
-    argp: Number(el.argp) || 0, ma: Number(el.ma) || 0, bstar: 0, mdot: 0, mddot: 0
-  })
+  return sat.omm2satrec(ommFromElements(el, epoch || defaultEpoch(), 'SIM'))
 }
 
 let _seq = 0
 const genId = () => 'cc' + Date.now().toString(36) + (_seq++).toString(36)
 const defConstName = () => byLang('自定义星座', 'Custom Constellation')
+
+// 向导的设计输入 { type, inputs }（轨道类型 + 该类型自己的输入）：深拷贝，切断与向导草稿 / 调用方对象的引用。
+// 没有（老存档 / 纯 Walker）→ undefined，落盘时整项不写 —— 老存档读写逐字不变
+function cloneDesign(d) {
+  if (!d || typeof d !== 'object' || typeof d.type !== 'string' || !d.type) return undefined
+  try { return JSON.parse(JSON.stringify({ type: d.type, inputs: d.inputs && typeof d.inputs === 'object' ? d.inputs : {} })) } catch { return undefined }
+}
 
 // 规范化一条星座配置，补齐缺省字段
 function normalize(c) {
@@ -66,6 +71,7 @@ function normalize(c) {
     id: c.id || genId(),
     name: (c.name || defConstName()).trim() || defConstName(),
     params: { ...c.params },
+    design: cloneDesign(c.design),   // 再编辑回显用；地固 / 日固设计量的类型还靠它按场景历元重解
     color: c.color || '#4dabf7',
     colorByPlane: c.colorByPlane !== false,
     visible: c.visible !== false,
@@ -75,23 +81,38 @@ function normalize(c) {
 
 // onChange：任何增删改/显隐后回调页面重建渲染集（rebuildRenderSet）
 export function useCustomConstellations(onChange) {
-  const list = ref([])              // [{ id, name, params, color, colorByPlane, visible, noradBase }]
+  const list = ref([])              // [{ id, name, params, design?, color, colorByPlane, visible, noradBase }]
   const scenarioEpoch = ref(defaultEpoch())   // 场景历元（全自定义星座共用，持久化）；默认=电脑当天 08:00，可在面板设定
   const built = new Map()           // id → { sig, entries }
-  let _top = NORAD_BASE             // 下一座星座的 NORAD 号段基址
+  let _top = NORAD_BASE             // 发过的最高段尾（落盘为 top：旧版本按它只增地发号，回退到旧版时仍从全部已用段之上发）
   let manualDay = null              // 最近一次人为设定发生的本地日 YYYY-MM-DD；等于今天 → 当天以人为值为准，不被「当天 08:00」覆盖
   const preview = ref(null)         // 实时预览 { editId, cfg }（不持久化）：编辑器打开时随参数刷新
-  const PREVIEW_BASE = NORAD_BASE + 90 * NORAD_STEP   // 预览专用 NORAD 号段，避开已建星座
+  const PREVIEW_BASE = SYNTH_NORAD.preview.lo   // 预览专用 NORAD 号段（1800000 起），已建星座发号整段避开
 
-  const sigOf = (cfg) => JSON.stringify({ p: cfg.params, cb: cfg.colorByPlane, c: cfg.color })
+  // 签名带 design 与场景历元：合成星由三者共同决定（satrec 历元 = 场景历元；地固 / 日固设计量还按它重解 RAAN）
+  const sigOf = (cfg) => JSON.stringify({ p: cfg.params, d: cfg.design || null, cb: cfg.colorByPlane, c: cfg.color, ep: scenarioEpoch.value })
   const notify = () => { if (typeof onChange === 'function') onChange() }
+
+  // 地固 / 日固设计量的星座：params 换成按当前场景历元重解的那组。合成星本身由 build 现解（customConstSats），这一步只让
+  // 列表里 / 盘上的 params 与地图同一历元 —— 再编辑时切到「自定义根数」回填的 Ω、复制出的副本都不再停在建星那天。
+  function atScenarioEpoch(cfg) {
+    if (!designFrame(cfg)) return cfg
+    const p = customConstParams(cfg, scenarioEpoch.value)
+    return JSON.stringify(p) === JSON.stringify(cfg.params) ? cfg : { ...cfg, params: p }
+  }
+  // 场景历元变了之后整表跟上（没有一座要换就不动 list，免得白触发页面的深监听）
+  function syncDesignParams() {
+    const arr = list.value.map(atScenarioEpoch)
+    if (arr.some((c, i) => c !== list.value[i])) list.value = arr
+  }
 
   // 生成该星座的渲染 entries（签名不变则复用缓存）。entry 形如 {rec,name,noradId,group,groupLabel,color,plane}
   function build(cfg) {
     const sig = sigOf(cfg)
     const hit = built.get(cfg.id)
     if (hit && hit.sig === sig) return hit.entries
-    const sats = generateConstellation(cfg.params)
+    // 与 NGSO / 再生式 / 端到端 / 干扰分析 / 星历导出同一出口：地固 / 日固设计量按当前场景历元重解
+    const sats = customConstSats(cfg, scenarioEpoch.value)
     const cRgb = hexToRgb(cfg.color)
     const base = Number.isFinite(cfg.noradBase) ? cfg.noradBase : NORAD_BASE
     const entries = []
@@ -155,7 +176,8 @@ export function useCustomConstellations(onChange) {
     manualDay = localDayStr(new Date())   // 标记「今天人为设定过」→ 当天以此为准，不被「当天 08:00」默认覆盖
     if (v !== scenarioEpoch.value) {
       scenarioEpoch.value = v
-      built.clear()   // 历元变 → 全部合成 satrec 作废，下次 build 按新历元重建（sig 不含历元，故须显式清）
+      built.clear()   // 历元变 → 全部合成 satrec 作废，下次 build 按新历元重建（sig 已带历元，清掉是放掉旧 entries）
+      syncDesignParams()
       notify()
     }
     persist()   // 值变或不变都落盘（至少记下今天的 manualDay）
@@ -167,7 +189,8 @@ export function useCustomConstellations(onChange) {
         top: _top,
         epoch: scenarioEpoch.value,
         manualDay,   // 人为设定日（YYYY-MM-DD）：resolveScenarioEpoch 据此判定「当天以人为值为准」
-        items: list.value.map((c) => ({ id: c.id, name: c.name, params: c.params, color: c.color, colorByPlane: c.colorByPlane, visible: c.visible, noradBase: c.noradBase }))
+        // design 缺省（老存档 / 纯 Walker）为 undefined，JSON 里整项不写
+        items: list.value.map((c) => ({ id: c.id, name: c.name, params: c.params, design: c.design, color: c.color, colorByPlane: c.colorByPlane, visible: c.visible, noradBase: c.noradBase }))
       }))
     } catch { /* 存储失败不影响功能 */ }
   }
@@ -180,6 +203,7 @@ export function useCustomConstellations(onChange) {
     if (v === scenarioEpoch.value) return false
     scenarioEpoch.value = v
     built.clear()
+    syncDesignParams()
     persist()
     notify()
     return true
@@ -190,30 +214,60 @@ export function useCustomConstellations(onChange) {
     try {
       const blob = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
       if (blob && Array.isArray(blob.items)) {
-        list.value = blob.items.map(normalize)
+        // 已存星座的号段原样不动（卫星组成员按号存着）；缺 noradBase 的老条目按序号补，与 NGSO / 干扰 / 模型工作台 / 星历导出的读法一致
+        list.value = blob.items.map((c, i) => normalize(Number.isFinite(c.noradBase) ? c : { ...c, noradBase: NORAD_BASE + i * NORAD_STEP }))
         _top = Number.isFinite(blob.top) ? blob.top : (NORAD_BASE + list.value.length * NORAD_STEP)
         // 场景历元「每天更新」：默认=电脑当天 08:00；当天曾人为修改(manualDay===今天)则沿用持久化人为值。
         // 非人为日（含旧数据/跨天）→ 回写当天 08:00 历元并清掉过期 manualDay，使 3D 页与 NGSO 窗口按日一致。
         manualDay = (blob.manualDay === localDayStr(new Date())) ? blob.manualDay : null
         scenarioEpoch.value = resolveScenarioEpoch(blob)
+        syncDesignParams()   // 向导设计量（地固经度 / 地方时）的星座按本次场景历元重解 params
         if (!manualDay) persist()
       }
     } catch { /* 读失败按空处理 */ }
   }
 
-  // 新增一座星座
+  // —— 发号（号段总表 shared/synthNorad.js）——
+  // 生成颗数：号 = noradBase + 生成序号（build 里解不出 satrec 的星跳过但不让号），故按生成数占段
+  function satCount(cfg) { try { return customConstSats(cfg, scenarioEpoch.value).length } catch { return 0 } }
+  // 除 exceptId 以外各星座占的段 + 固定段（点序列 / GPS 年历 / 天线树 / 向导预览…）
+  function takenExcept(exceptId) {
+    const out = fixedRanges()
+    for (const c of list.value) if (c.id !== exceptId && Number.isFinite(c.noradBase)) out.push([c.noradBase, c.noradBase + blockSpan(satCount(c), NORAD_STEP)])
+    return out
+  }
+  // n 颗星取最低的、与其余星座和固定段都不相交的空闲段（删掉的星座让出来的段照样复用）
+  function allocBase(n, exceptId) {
+    const span = blockSpan(n, NORAD_STEP)
+    const b = lowestFree(SYNTH_NORAD.custom, span, takenExcept(exceptId))
+    _top = Math.max(_top, b + span)
+    return b
+  }
+  // 改参数后颗数涨出原来占的段，且涨出去的那截撞上别的星座 / 固定段
+  function outgrows(old, cfg) {
+    if (JSON.stringify([old.params, old.design || null]) === JSON.stringify([cfg.params, cfg.design || null])) return false
+    const s0 = blockSpan(satCount(old), NORAD_STEP), s1 = blockSpan(satCount(cfg), NORAD_STEP)
+    if (s1 <= s0) return false
+    const a = old.noradBase + s0, z = old.noradBase + s1
+    return takenExcept(old.id).some((t) => a < t[1] && t[0] < z)
+  }
+
+  // 新增一座星座（号段见 allocBase）
   function add(draft) {
-    const cfg = normalize({ ...draft, id: genId(), noradBase: _top, visible: true })
-    _top += NORAD_STEP
+    const cfg0 = atScenarioEpoch(normalize({ ...draft, id: genId(), visible: true }))
+    const cfg = { ...cfg0, noradBase: allocBase(satCount(cfg0), null) }
     list.value = [...list.value, cfg]
     build(cfg); persist(); notify()
     return cfg
   }
-  // 更新一座星座（参数变则重建 satrec，历元仍取共享锚点，相位不跳变）
+  // 更新一座星座（参数变则重建 satrec，历元仍取共享锚点，相位不跳变）。号段原样不动；唯一例外是颗数涨出原段、
+  // 涨出去的那截撞上别的段（outgrows）—— 不换就两颗星同号，换到最低空闲段
   function update(id, draft) {
     const i = list.value.findIndex((c) => c.id === id)
     if (i < 0) return
-    const cfg = normalize({ ...list.value[i], ...draft, id, noradBase: list.value[i].noradBase })
+    const old = list.value[i]
+    let cfg = atScenarioEpoch(normalize({ ...old, ...draft, id, noradBase: old.noradBase }))
+    if (outgrows(old, cfg)) cfg = { ...cfg, noradBase: allocBase(satCount(cfg), id) }
     const arr = list.value.slice(); arr[i] = cfg; list.value = arr
     built.delete(id); build(cfg); persist(); notify()
   }
@@ -272,8 +326,8 @@ export function renameCustomConstellation(id, name) {
 }
 
 // 自定义星座 → 展开为 OMM 记录（历元 = 场景历元，与渲染/搜索同口径）供「导出星历」。
-// onlyId 给定时只导该座；否则全部。经典六根数 → OMM：meanMotion 由 a=(RE+近地点高度)/(1−e) 反算，
-// 与 elementsToSatrec / satSearchPool.fromCustom 一致。
+// onlyId 给定时只导该座；否则全部。经典六根数 → OMM：meanMotion 是喂 SGP4 的 Kozai 值（sgp4Mean.elementsMeanMotion，
+// 与 elementsToSatrec / satSearchPool.fromCustom 一致）；地固 / 日固设计量同走 customConstSats 按场景历元重解。
 export function customConstellationsToOmmRecords(onlyId) {
   try {
     const blob = JSON.parse(localStorage.getItem(STORE_KEY) || 'null')
@@ -285,12 +339,11 @@ export function customConstellationsToOmmRecords(onlyId) {
       const b = Number.isFinite(c.noradBase) ? c.noradBase : base
       if (onlyId && c.id !== onlyId) { base += NORAD_STEP; continue }
       let gen = []
-      try { gen = generateConstellation(c.params || {}) } catch { gen = [] }
+      try { gen = customConstSats(c, epoch) } catch { gen = [] }
       for (let i = 0; i < gen.length; i++) {
         const el = gen[i].elements || {}
         const ecc = Math.max(0, Math.min(0.999, Number(el.ecc) || 0))
-        const a = (RE + (Number(el.altKm) || 0)) / (1 - ecc)
-        const meanMotion = 86400 * Math.sqrt(MU / (a * a * a)) / (2 * Math.PI)
+        const meanMotion = elementsMeanMotion(el)
         out.push({
           name: gen[i].name, noradId: String(b + i), objectId: '', epoch,
           meanMotion: meanMotion.toFixed(8), ecc: String(ecc), incl: String(Number(el.incl) || 0),

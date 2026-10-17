@@ -430,6 +430,8 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
   // C/ASI · C/XPI （轻量，同步返回）
   // ---------------------------------------------------------------------------
 
+  // r.ap8：RR 附录 8 协调触发（双向 ΔT/T + 附录 5 协调弧），C/I 窗「协调触发」页走这条（{ downlink:false, ap8 }），
+  // 不另开 IPC 通道。r.coordination 是旧版只算上行分量 ΔTs/Ts 的入口，留给旧调用方。
   function asi(req) {
     const r = req || {};
     try {
@@ -437,15 +439,21 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       if (r.downlink !== false) out.downlink = I.downlinkCAsi(r.downlink || r);
       if (r.uplink) out.uplink = I.uplinkCAsi(r.uplink);
       if (r.coordination) out.coordination = I.deltaTOverT(r.coordination);
+      if (r.ap8) out.ap8 = I.ap8Coordination(r.ap8);
       return out;
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
     }
   }
 
+  // 雨致 XPD 两种来源：手填，或 rain:{mode:'p618', 站址/轨位/频率/极化/p%} 走平台雨衰核按 P.618-14 §4.1 算
+  // （另回 XPI 随时间百分比的曲线）。result 形状与旧版相同。
   function xpi(req) {
-    try { return { ok: true, result: I.combineXpi(req || {}) }; }
-    catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+    try {
+      const r = I.combineXpiWithRain(req || {});
+      if (r.error) return { ok: false, error: r.error };
+      return { ok: true, result: r.result, rain: r.rain, curve: r.curve };
+    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
   }
 
   // 单段解析：给法描述子（轴比 / 实测共交电平 / 对准误差 / 直接填）→ 该段 XPD + 算式。
@@ -456,12 +464,87 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
     catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
   }
 
-  // 单点 C/CCI（逐站取值用；整张场图走 grd.sampleCci）
+  // 单点 C/CCI（给定逐波束值的二值着色口径；方向图取值走下面的 cciPoints / cciStart）
   function cciPoint(req) {
     const r = req || {};
     try { return { ok: true, result: I.cciAtPoint(r.values, r.beamIdx, r) }; }
     catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
   }
+
+  // ---------------------------------------------------------------------------
+  // C/CCI：复用方案 + 逐点 / 场图（HTS 多波束，口径见 core 的 interference/htsCoupling.js）
+  // ---------------------------------------------------------------------------
+  //
+  // 方向图只带文件名过来，在这里载入（grd.loadedOf，与链路预算同一份 LRU 缓存）；波束合成色号从文件头读
+  // （SYNTHMETA 行 / 解析记录）。场图是长任务：分帧 + 进度 + 取消，与 NGSO 扫描同一套（令牌作废迟到的帧）。
+  const HC = require('../../packages/core/utils/interference/htsCoupling.js');
+  const grdSampler = require('../../packages/core/utils/grdSampler.js');
+  function cciPrep(req) {
+    if (!grd || typeof grd.loadedOf !== 'function') throw new Error('GRD 服务不可用');
+    const r = req || {};
+    if (!r.file) throw new Error('未指定方向图');
+    const loaded = grd.loadedOf(r.file);
+    const ctx = grdSampler.makeSampleCtx(loaded, r.sat || {}, { ...(r.cfg || {}), pathLoss: 'none' });
+    if (!ctx) throw new Error('对星指向的方向图无法按地面点取值');
+    let fc = null;
+    try { fc = HC.synthFcFromText(grd.rawHead(r.file)); } catch (e) { fc = null; }
+    return { loaded, ctx, fc, scheme: HC.normalizeScheme({ ...(r.scheme || {}), fc }, ctx.beamIdx, r.dir === 'rtn' ? 'rtn' : 'fwd') };
+  }
+  // 方向图概要：存活波束（原始 set 序号）与波束合成色号（按存活波束对齐，取不到为 null）——复用方案表的行
+  function cciInfo(req) {
+    try {
+      const p = cciPrep({ ...(req || {}), scheme: { source: 'rotation' } });
+      return {
+        ok: true, beamIdx: p.ctx.beamIdx.slice(), nset: (p.loaded.beams || []).length,
+        fc: p.fc ? p.ctx.beamIdx.map((i) => (p.fc[i] == null ? null : p.fc[i])) : null
+      };
+    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+  }
+  // 取值点表（前向，同步）
+  function cciPoints(req) {
+    const r = req || {};
+    try {
+      const p = cciPrep(r);
+      if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
+      return { ok: true, ...HC.cciPoints({ sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme, points: r.points, servingIdx: r.servingIdx, floorDb: r.floorDb }) };
+    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+  }
+  let _cciToken = 0;
+  function cciStart(webContents, req) {
+    const r = req || {};
+    const token = ++_cciToken;
+    let run;
+    try {
+      const p = cciPrep(r);
+      if (!p.scheme.ok) return { ok: false, error: p.scheme.error };
+      run = HC.createCciRun({
+        sampler: grdSampler, loaded: p.loaded, sat: r.sat, cfg: r.cfg, scheme: p.scheme,
+        dir: r.dir, grid: r.grid, points: r.points, floorDb: r.floorDb, eocDb: r.eocDb, servingIdx: r.servingIdx, rtn: r.rtn
+      });
+    } catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+    const send = (ch, payload) => {
+      try { if (webContents && !webContents.isDestroyed()) webContents.send(ch, payload); } catch (e) { /* 窗口已关 */ }
+    };
+    // 每帧的点数自适应到约 40 ms：波束多的方向图一点就要取几百次值，按固定点数切帧会卡住窗口
+    let batch = Math.max(20, Math.round(2e4 / Math.max(1, run.n)));
+    const tick = () => {
+      if (token !== _cciToken) return;
+      const t1 = Date.now();
+      let done;
+      try { done = run.stepBatch(batch); }
+      catch (e) { send('ci:cciDone', { ok: false, token, error: (e && e.message) || String(e) }); return; }
+      const dt = Date.now() - t1;
+      batch = dt > 0 ? Math.max(20, Math.min(1e6, Math.round(batch * 40 / dt))) : Math.min(1e6, batch * 2);
+      if (done < run.T) { send('ci:cciProgress', { token, done, total: run.T }); setImmediate(tick); return; }
+      let result;
+      try { result = run.finalize(); }
+      catch (e) { send('ci:cciDone', { ok: false, token, error: (e && e.message) || String(e) }); return; }
+      send('ci:cciDone', { ok: true, token, result });
+    };
+    setImmediate(tick);
+    return { ok: true, token, T: run.T, nodes: run.nodes, grid: run.grid };
+  }
+  function cciCancel() { _cciToken++; return { ok: true }; }
 
   // ---------------------------------------------------------------------------
   // NGSO 时变扫描：分帧 + 进度 + 取消
@@ -635,5 +718,5 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
 
   function ngsoCancel() { _token++; return { ok: true }; }
 
-  return { asi, xpi, xpiTerm, cciPoint, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
+  return { asi, xpi, xpiTerm, cciPoint, cciInfo, cciPoints, cciStart, cciCancel, ngsoEstimate, ngsoStart, ngsoCancel, resolveSats, groups, loadGroup, geoNeighbors, ensureSatrecs, statsOf };
 };

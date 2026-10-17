@@ -1,9 +1,11 @@
 <script>
 // 取星口径的两件纯函数放在模块作用域并导出：窗口刷新卫星树时（RegenLinkBudgetApp.reloadSatTree）按树里现在的节点
 // 重解已选条目的轨道，与本面板选星走同一份代码（3D 页改了根数 / 历元，再生式窗口跟着变）。
-import { findPoolByNorad } from '../ngso/satSearchPool.js'
+import { findPoolByNorad, orbitSpecOf, echoEphemToForm } from '../ngso/satSearchPool.js'
 import Icon from '../components/Icon.vue'
 import { treeElementsSpec } from '../shared/treeOrbitEpoch.js'
+import { reportError } from '../shared/reportError.js'
+import { byLang } from '../shared/i18n/lang.js'
 
 // 平均运动(rev/day) → 圆轨道高度(km)
 const _MU = 398600.4418, _RE = 6378.137
@@ -21,6 +23,8 @@ export async function treeNodeOrbit(node) {
   if (node.noradId != null) {
     const rec = await findPoolByNorad(node.noradId)
     if (rec) {
+      // 星历点序列星（800000 段）走取星的唯一出口（只带引用）——下面两支手拼的话会被拼成全空 OMM、几何报 SGP4 error=2
+      if (rec.orbitType === 'ephem') { try { return orbitSpecOf(rec) } catch (e) { return { type: 'unresolved', noradId: node.noradId, reason: (e && e.message) || String(e) } } }
       if (rec.orbitType === 'elements' && rec.elements) {
         const e = rec.elements
         return { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
@@ -39,6 +43,7 @@ export async function treeNodeOrbit(node) {
 // 选星后回显轨道高度/倾角到 form（只读「自动」）
 export function orbitToForm(form, orbit) {
   if (!form || !orbit) return
+  echoEphemToForm(form, orbit)   // 点序列星没有平均根数：按采样表异步回显；换成别的星时作废在途回显
   if (orbit.type === 'elements') {
     if (orbit.altKm != null) form.orbitAltitude = String(Math.round(orbit.altKm))
     if (orbit.incl != null) form.orbitInclination = String(orbit.incl)
@@ -53,7 +58,7 @@ export function orbitToForm(form, orbit) {
 </script>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import { BAND_FREQ, BAND_LABEL } from '../ngso/satPresets.js'
 import { ensureSearchPool } from '../ngso/satSearchPool.js'
 import { classifyOrbit, orbitRegimeLabel } from '../shared/orbitClass.js'
@@ -133,14 +138,19 @@ const searchRes = computed(() => {
 function onSearchFocus() { ensurePool(); listOpen.value = true }
 function onSearchBlur() { setTimeout(() => { listOpen.value = false }, 150) }
 function pickSearch(rec) {
+  let orbit
+  if (rec.orbitType === 'ephem') {
+    // 星历点序列星：走取星的唯一出口（只带引用）；记录残缺（星历组已删）时报因、这一条原样不动
+    try { orbit = orbitSpecOf(rec) } catch (e) { reportError(byLang('选星', 'Satellite selection'), e); return }
+  } else if (rec.orbitType === 'elements' && rec.elements) {
+    const e = rec.elements
+    orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
+  } else {
+    orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
+  }
   props.ngsoSat.mode = 'search'; props.ngsoSat.name = rec.name; props.ngsoSat.noradId = rec.noradId || null
   props.ngsoSat.folder = ''
-  if (rec.orbitType === 'elements' && rec.elements) {
-    const e = rec.elements
-    props.ngsoSat.orbit = { type: 'elements', altKm: Number(e.altKm) || 0, ecc: Number(e.ecc) || 0, incl: Number(e.incl) || 0, raan: Number(e.raan) || 0, argp: Number(e.argp) || 0, ma: Number(e.ma) || 0, epoch: rec.epoch || null, noradId: rec.noradId }
-  } else {
-    props.ngsoSat.orbit = { type: 'omm', name: rec.name, noradId: rec.noradId, epoch: rec.epoch, meanMotion: rec.meanMotion, ecc: rec.ecc, incl: rec.incl, raan: rec.raan, argp: rec.argp, ma: rec.ma, bstar: rec.bstar, mdot: rec.mdot, mddot: rec.mddot }
-  }
+  props.ngsoSat.orbit = orbit
   props.form.satelliteName = rec.name
   applyOrbitToForm(props.ngsoSat.orbit)
   kw.value = rec.name; listOpen.value = false
@@ -174,8 +184,11 @@ const fmtKm = (v) => (v == null ? '—' : Math.round(v).toLocaleString('en-US'))
 // 卫星树下拉的轨位标注：°E/°W 折算（西经不再写成负°E）；lon 缺失/为 0（Number(null)=0 陷阱）不标
 const treeSlot = (s) => { const v = Number(s && s.lon); return Number.isFinite(v) && v !== 0 ? fmtGeoSlot(v) : '' }
 
-// 选完工作频段，上/下行频率跟随预设变（与 GSO/NGSO 一致；仍可手改）
-watch(() => props.form.frequencyBand, (band) => {
+// 选完工作频段，上/下行频率跟随预设变（与 GSO/NGSO 一致；仍可手改）。
+// ★ 只认「同一份表单里改了频段」：换了一份表单（资源库换条目、库从盘上重载成新对象）不是改频段——照套预设
+//    就把新条目手填的频率冲掉并落盘。父组件已按条目 id 重建本组件（:key），这里按表单身份再兜一道。
+watch([() => toRaw(props.form), () => props.form.frequencyBand], ([form, band], [prevForm]) => {
+  if (form !== prevForm) return
   const f = BAND_FREQ[band]; if (!f) return
   props.form.centerFrequency = String(f.up)
   props.form.rxCenterFrequency = String(f.dn)
