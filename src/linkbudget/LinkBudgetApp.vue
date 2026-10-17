@@ -1812,6 +1812,12 @@ async function onWinDrop(e) {
   if (shareRef.value) shareRef.value.importText(text, f.name)
 }
 
+// —— 干扰分析（C/I）：打开独立窗口（主窗口菜单同款入口；未激活时主进程 gate 回 { locked: true }，本窗本就要激活才开得出）——
+function openCiWin() {
+  if (!api || !api.interference || !api.interference.open) return
+  Promise.resolve(api.interference.open()).catch((e) => reportError('打开干扰分析', e))
+}
+
 // —— 指向误差工具（GSO 专用，只读）——
 // 结果只在工具里看：不回写链路表 / 资源库、不进引擎。每次打开按聚焦行（没有就取第一行）播种：定点经度与上 / 下行频率
 // 取该行所用卫星，站址取该行两端（留空格按引擎口径：经纬度回退默认站址、海拔回退 0，与「计算」同一份 withDefaultSite），
@@ -2531,6 +2537,10 @@ onMounted(async () => {
               </button>
               <button class="lbr-big" title="指向误差：按卫星倾角 / 偏心率 / 东西保持与地球站跟踪方式、误差分项，算一天的指向偏离与指向损耗（只读，不回写链路表）" @click="pointToolOpen = true">
                 <Icon name="crosshair" :size="16" />指向误差
+              </button>
+              <!-- 干扰分析（C/I）：独立窗口，与主窗口「计算 › 干扰分析（C/I）」同一个入口、同一枚图标 -->
+              <button class="lbr-big" :disabled="!api" title="干扰分析（C/I）：C/ASI 邻星 · C/CCI 同频复用 · C/XPI 交叉极化 · NGSO 时变 CDF（独立窗口，只读计算器）" @click="openCiWin">
+                <Icon name="device-analytics" :size="16" />干扰分析
               </button>
             </div>
             <div class="lbr-cap">计算</div>
