@@ -1858,6 +1858,9 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
+              <!-- 几何工具统一挂在「计算」组（三窗同一处、同一枚图标）：只服务于手动几何档 -->
+              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度计算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具仅服务于手动档）" @click="slantToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />斜距</button>
+              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具仅服务于手动档）" @click="islToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />星间距离</button>
             </div>
             <div class="lbr-cap" title="端到端仅有正向电平递推一种算法：多跳下反算欠定（目标余量可由发信站功放、任一透明星回退、任一再生星 EIRP 补足）">计算</div>
           </div>
@@ -1877,10 +1880,8 @@ onMounted(async () => {
           <div class="lbr-g">
             <div class="lbr-items">
               <button class="lbr-big" :class="{ on: sideView === 'library' }" :aria-pressed="(sideView === 'library') ? 'true' : 'false'" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
-              <button class="lbr-big" :disabled="!gsHops.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度计算 WGS-84 最大斜距（绕站一圈取最大），填入本跳或本链路全部星地跳（几何=自动时斜距由求解器给出，本工具仅服务于手动档）" @click="slantToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />斜距</button>
-              <button class="lbr-big" :disabled="!spaceHops.length || !geoManual" title="星间距离工具：两星轨道在时间轴上的星间距离，填入本跳或本链路全部星间跳（几何=自动时距离由求解器给出，本工具仅服务于手动档）" @click="islToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />星间距离</button>
             </div>
-            <div class="lbr-cap">视图 / 工具</div>
+            <div class="lbr-cap">视图</div>
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
@@ -2055,10 +2056,6 @@ onMounted(async () => {
                     <em v-if="curSolvedHop.method">{{ curSolvedHop.method }}</em>
                     <button v-if="sceneApi && curSolvedHop.tISO" class="lb-mini e2-loc" title="主窗口时间轴拨到本跳几何取自的时刻 t* 并聚焦本跳卫星；时间轴上标出 t* 与搜索时窗"
                             @click="locateHopInMain"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
-                  </div>
-                  <div v-if="geoManual" class="e2-tools">
-                    <button v-if="!isSpaceHop(selHopType)" class="lb-mini" title="按站址纬度/海拔/仰角/轨道高度计算 WGS-84 最大斜距，填入本跳" @click="slantToolOpen = true">斜距工具</button>
-                    <button v-else class="lb-mini" title="两星轨道在时间轴上的星间距离，填入本跳" @click="islToolOpen = true">距离工具</button>
                   </div>
                 </template>
               </aside>
@@ -2252,7 +2249,6 @@ html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 .e2-ro { flex: 1; min-width: 0; font-size: var(--fs-3); color: var(--text); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .e2-tagline { font-size: var(--fs-2); color: var(--text-faint); margin: 2px 0 5px; }
 .e2-sub { margin: 8px 0 3px; padding-bottom: 2px; font-size: var(--fs-3); letter-spacing: var(--ls-label); color: var(--text-muted); border-bottom: 1px solid var(--lb-rule); }
-.e2-tools { margin-top: 8px; display: flex; gap: 6px; }
 /* 自动几何读数行：解出来的斜距/仰角（送进引擎的那份），与上方手动单元格并存互不覆盖 */
 .e2-auto { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; font-size: var(--fs-3); color: var(--text); font-variant-numeric: tabular-nums; }
 .e2-auto-l { flex: none; min-width: 4em; font-size: var(--fs-3); color: var(--text-muted); }

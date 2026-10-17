@@ -2740,6 +2740,8 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
+              <!-- 几何工具统一挂在「计算」组（三窗同一处、同一枚图标）：只服务于手动几何档 -->
+              <button class="lbr-big" :disabled="!linkRows.length || !geoManual" title="斜距工具：按站址纬度/海拔/仰角与轨道高度计算 WGS-84 最大斜距（绕站一圈取最大），填入本行或链路表全部行（几何=自动时斜距由求解器给出，本工具仅服务于手动档）" @click="slantToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />斜距</button>
             </div>
             <div class="lbr-cap">计算</div>
           </div>
@@ -2823,7 +2825,6 @@ onMounted(async () => {
                 <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" :aria-pressed="(satScope === s.v) ? 'true' : 'false'" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>
               <button class="lb-mini" title="导入主窗口「目标间链路建链」中建立的链路" @click="linkImpOpen = true">导入链路</button>
-              <button class="lb-mini" :disabled="!geoManual" title="斜距工具：按轨道高度 × 仰角计算斜距，可按各行仰角批量填入「斜距」列（几何=手动时可用）" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>

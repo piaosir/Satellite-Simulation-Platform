@@ -3010,6 +3010,10 @@ onMounted(async () => {
                 <svg viewBox="0 0 16 16" class="lbr-svg fill"><path d="M4 2.5 13 8 4 13.5z" /></svg>
                 {{ computing ? '计算中…' : '计算' }}
               </button>
+              <!-- 几何工具统一挂在「计算」组（三窗同一处、同一枚图标）：只服务于手动几何档，各对当前模块那张表；
+                   星间距离按需出现——本配置有星间（微波 / 激光）模块才挂 -->
+              <button class="lbr-big" :disabled="!geoManual || !(linkMode === 'uplink' || linkMode === 'downlink') || !slantSide.rows.length" title="斜距工具：按站址纬度/海拔/仰角与轨道高度计算 WGS-84 最大斜距（绕站一圈取最大），填入当前站群的本行或全部行（几何=自动时斜距由求解器给出，本工具仅服务于手动档）" @click="slantToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />斜距</button>
+              <button v-if="modules.includes('isl') || modules.includes('laser')" class="lbr-big" :disabled="!geoManual || !(linkMode === 'isl' || linkMode === 'laser') || !islToolRows.length" title="星间距离工具：两星轨道在时间轴上的星间距离，填入当前星间链路群的本行或全部行（几何=自动时距离由求解器给出，本工具仅服务于手动档）" @click="islToolOpen = true"><Icon name="ruler-dimension-line" :size="16" />星间距离</button>
             </div>
             <div class="lbr-cap" title="功放与余量随站型设置——在各站所选「地球站配置」的发射参数（工作点）中">计算</div>
           </div>
@@ -3130,7 +3134,6 @@ onMounted(async () => {
                 <span class="lbx-segl">卫星</span>
                 <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" :aria-pressed="(satScope === s.v) ? 'true' : 'false'" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>
-              <button class="lb-mini" :disabled="!geoManual" title="斜距工具：按轨道高度 × 仰角计算斜距，可按各行仰角批量填入「斜距」列（几何=手动时可用）" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -3164,7 +3167,6 @@ onMounted(async () => {
                 <span class="lbx-segl">卫星</span>
                 <span class="lbu-seg"><button v-for="s in SAT_SCOPES" :key="s.v" :class="{ on: satScope === s.v }" :aria-pressed="(satScope === s.v) ? 'true' : 'false'" @click="setSatScope(s.v)">{{ s.l }}</button></span>
               </span>
-              <button class="lb-mini" :disabled="!geoManual" title="斜距工具：按轨道高度 × 仰角计算斜距，可按各行仰角批量填入「斜距」列（几何=手动时可用）" @click="slantToolOpen = true">斜距工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -3194,7 +3196,6 @@ onMounted(async () => {
           </LbSection>
           <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
-              <button class="lb-mini" :disabled="!geoManual" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列（几何=手动时可用）" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
@@ -3224,7 +3225,6 @@ onMounted(async () => {
           </LbSection>
           <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
-              <button class="lb-mini" :disabled="!geoManual" title="星间链路距离工具：两颗卫星在时间轴上的星间距离，可填入「星间链路距离」列（几何=手动时可用）" @click="islToolOpen = true">距离工具</button>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
                 <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
