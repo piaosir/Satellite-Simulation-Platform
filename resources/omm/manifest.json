@@ -1,114 +1,114 @@
 {
-  "generatedAt": "2026-10-16T00:20:34.648Z",
+  "generatedAt": "2026-10-17T05:01:34.742Z",
   "note": "内置 OMM 兜底快照（CelesTrak GP CSV + SATCAT 编目 CSV）",
   "groups": {
     "starlink": {
       "count": 11125,
-      "bytes": 1703460,
-      "gzBytes": 564496,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 1699529,
+      "gzBytes": 563881,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "oneweb": {
       "count": 651,
-      "bytes": 97406,
-      "gzBytes": 32252,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 97317,
+      "gzBytes": 32278,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "kuiper": {
       "count": 391,
-      "bytes": 58830,
-      "gzBytes": 20366,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 58669,
+      "gzBytes": 20345,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "gps": {
       "count": 32,
-      "bytes": 4834,
-      "gzBytes": 1981,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 4845,
+      "gzBytes": 1977,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "beidou": {
-      "count": 53,
-      "bytes": 7803,
-      "gzBytes": 2989,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "count": 54,
+      "bytes": 7944,
+      "gzBytes": 3025,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "galileo": {
-      "count": 30,
-      "bytes": 4572,
-      "gzBytes": 1823,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "count": 32,
+      "bytes": 4868,
+      "gzBytes": 1864,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "qianfan": {
       "count": 256,
-      "bytes": 37962,
-      "gzBytes": 12928,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 37956,
+      "gzBytes": 12976,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "guowang": {
       "count": 234,
-      "bytes": 37066,
-      "gzBytes": 12121,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 37049,
+      "gzBytes": 12080,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "geo": {
-      "count": 566,
-      "bytes": 76901,
-      "gzBytes": 28674,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "count": 567,
+      "bytes": 77010,
+      "gzBytes": 28567,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "glonass": {
       "count": 29,
-      "bytes": 4323,
-      "gzBytes": 1779,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 4322,
+      "gzBytes": 1770,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "o3b": {
       "count": 32,
-      "bytes": 4562,
-      "gzBytes": 1726,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 4557,
+      "gzBytes": 1712,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "iridium": {
       "count": 80,
-      "bytes": 12043,
-      "gzBytes": 4182,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 11992,
+      "gzBytes": 4149,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "globalstar": {
       "count": 36,
-      "bytes": 5729,
-      "gzBytes": 2142,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 5703,
+      "gzBytes": 2144,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "stations": {
       "count": 21,
-      "bytes": 3403,
-      "gzBytes": 1153,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 3410,
+      "gzBytes": 1166,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "planet": {
       "count": 123,
-      "bytes": 18601,
-      "gzBytes": 6979,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 18606,
+      "gzBytes": 6988,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "spire": {
       "count": 72,
-      "bytes": 11427,
-      "gzBytes": 4746,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "bytes": 11421,
+      "gzBytes": 4726,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "active": {
-      "count": 16752,
-      "bytes": 2537361,
-      "gzBytes": 885641,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "count": 16757,
+      "bytes": 2533503,
+      "gzBytes": 885071,
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     },
     "satcat": {
       "count": 71073,
       "bytes": 6775533,
       "gzBytes": 1473678,
-      "generatedAt": "2026-10-16T00:20:34.648Z"
+      "generatedAt": "2026-10-17T05:01:34.742Z"
     }
   }
 }
