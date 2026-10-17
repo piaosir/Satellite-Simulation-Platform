@@ -430,8 +430,8 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
   // C/ASI · C/XPI （轻量，同步返回）
   // ---------------------------------------------------------------------------
 
-  // r.ap8：RR 附录 8 协调触发（双向 ΔT/T + 附录 5 协调弧），C/I 窗「协调触发」页走这条（{ downlink:false, ap8 }），
-  // 不另开 IPC 通道。r.coordination 是旧版只算上行分量 ΔTs/Ts 的入口，留给旧调用方。
+  // r.ap8Formula：C/I 窗「协调触发」页 —— RR 附录 8 式(1)–(3) 原式（{ downlink:false, ap8Formula }），不另开 IPC 通道。
+  // r.ap8：完整的双向 ΔT/T + 附录 5 协调弧（ap8Coordination），留给其它调用方；r.coordination 是更早只算上行分量的旧入口。
   function asi(req) {
     const r = req || {};
     try {
@@ -440,6 +440,7 @@ module.exports = function createInterference(omm, customSats, getCore, grd) {
       if (r.uplink) out.uplink = I.uplinkCAsi(r.uplink);
       if (r.coordination) out.coordination = I.deltaTOverT(r.coordination);
       if (r.ap8) out.ap8 = I.ap8Coordination(r.ap8);
+      if (r.ap8Formula) out.ap8Formula = I.ap8CaseI(r.ap8Formula);
       return out;
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };

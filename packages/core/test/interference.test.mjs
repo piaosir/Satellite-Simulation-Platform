@@ -1872,9 +1872,10 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
 }
 
 // ═══ 窗口层：C/ASI 上行极化（体检 2026-10-16 第一节 #2）═══
-// 出厂面板态（本站下行 H / 上行 V，邻星 A/B 下行 H、上行极化留空）走真服务 + 真引擎：上行沿用下行关系 → 同极化，
-// C/ASI = 33.88 dB（旧版包络；从前拿邻星下行 H 比本站上行 V 判成反极化，多算 25 dB 得 58.88）。
-// 2026-10-17 方向图订正后出厂为 ITU-R S.465-6：30.88 dB。
+// 出厂面板态（本站下行 H / 上行 V，邻星 A/B 下行 H、上行极化留空）走真服务 + 真引擎：上行沿用下行关系 → 同极化
+// （从前拿邻星下行 H 比本站上行 V 判成反极化，多算 25 dB）。
+// 2026-10-17 起 C/ASI 只算邻网对本网：上行干扰量就是表里逐源给定的「上行离轴 EIRP 密度」（邻网发端站朝本星方向），
+// 窗口不再有对等站 / S.524 掩模两种推算口径；出厂两源各 −42.3 dBW/Hz。
 // useInterference 在模块载入时就取走 window.api，上一段已载入过一份（假 api）——这里用带查询串的 URL 另载一份。
 {
   const mem = new Map();
@@ -1894,13 +1895,20 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   const I = useInterference();
   await I.computeAsi();
   const up = () => I.asi.result && I.asi.result.uplink;
-  // 2026-10-17 起出厂方向图为 ITU-R S.465-6：两源都在旁瓣段，比旧版包络（33.88 dB）恰低 3 dB
-  approx('★ 出厂配置 上行 C/ASI = 30.88 dB（S.465-6；留空沿用下行关系 → 同极化）', up() && up().ciDb, 33.8812 - 3, 5e-4);
-  ok('出厂配置的方向图 = S.465-6，随 payload 送引擎、结果写回所用 ID', sent.downlink.esPattern === 'S.465-6' && sent.uplink.esPattern === 'S.465-6'
-    && I.asi.result.downlink.geometry.esPattern.applied === 'S.465-6' && up().geometry.esPattern.applied === 'S.465-6');
+  // 本站上行 EIRP 密度 = 10lg(功放) + Gmax − 馈损 − 10lg(占用带宽)；两源同为 −42.3 dBW/Hz → 合成干扰 −42.3 + 10lg2
+  const ownUp = 10 * Math.log10(40) + P.peakGainDbi(4.5, 299792458 / 14.25e9, 0.65) - 3.5 - 10 * Math.log10(36e6);
+  const upWant = ownUp + 42.3 - 10 * Math.log10(2);
+  approx('出厂本站上行 EIRP 密度（功放 + Gmax − 馈损 − 10lg 带宽）', up() && up().geometry.ownDensityDbWPerHz, ownUp, 1e-9);
+  approx('★ 出厂配置 上行 C/ASI = 本站上行密度 − 合成离轴密度（留空沿用下行关系 → 同极化）', up() && up().ciDb, upWant, 1e-9);
+  ok('上行按逐源给定的离轴 EIRP 密度算（explicit），payload 只带这一个干扰量', sent.uplink.sourceMode === 'explicit'
+    && sent.uplink.interferers.every((s) => s.offAxisEirpDensityDbWPerHz === -42.3 && !('diameterM' in s) && !('powerW' in s) && !('bandwidthHz' in s))
+    && up().sources.every((s) => s.interfererDensityDbWPerHz === -42.3 && !s.peer && !s.maskBand));
+  ok('出厂方向图 = S.465-6，只送下行（本站收信天线对邻星的鉴别度）', sent.downlink.esPattern === 'S.465-6' && sent.uplink.esPattern === undefined
+    && I.asi.result.downlink.geometry.esPattern.applied === 'S.465-6');
+  const dn0 = I.asi.result.downlink.ciDb;
   I.asi.esPattern = 'S580-HYB';
   await I.computeAsi();
-  approx('选旧版包络 → 回到 33.88 dB', up().ciDb, 33.8812, 5e-4);
+  ok('换方向图只动下行，上行不变', I.asi.result.downlink.ciDb !== dn0 && Math.abs(up().ciDb - upWant) < 1e-9);
   I.asi.esPattern = 'S.465-6';
   await I.computeAsi();
   ok('出厂 上行逐源：极化 0 dB、按本站上行 V 推定', up().sources.length === 2 && up().sources.every((s) => s.polDb === 0 && s.polarization === 'V' && s.polInferred === true));
@@ -1908,31 +1916,36 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
     && sent.uplink.interferers.every((s) => s.uplinkPolarization === undefined));
   ok('下行不受影响：邻星下行 H 对本站下行 H 同极化', I.asi.result.downlink.sources.every((s) => s.polDb === 0));
 
-  // 老配置：源上压根没有 upPolarization 字段 → 按留空算，结果就是正确值；也没有 esPattern → 按缺省 S.465-6（订正）
+  // 老配置：源上压根没有 upPolarization 字段 → 按留空算，结果就是正确值；也没有 esPattern → 按缺省 S.465-6（订正）；
+  // 旧版对等站 / 掩模口径的键（uplinkMode、行上的口径 / 功放 / 站址）读回不认，上行一律按离轴 EIRP 密度
   const old = I.snapshot();
-  for (const s of old.asi.sources) delete s.upPolarization;
+  for (const s of old.asi.sources) { delete s.upPolarization; Object.assign(s, { diameterM: 9, powerW: 400, bandwidthHz: 1e6 }) }
   delete old.asi.esPattern;
+  old.asi.uplinkMode = 'mask';
   I.applySnapshot(I.blankSnapshot()); I.applySnapshot(old);
   ok('老配置的行没有上行极化字段（读回不补字段，配置指纹不变）', I.asi.sources.every((s) => !('upPolarization' in s)));
   ok('老配置没有方向图字段 → 按缺省 S.465-6', I.asi.esPattern === 'S.465-6');
+  ok('老配置的 uplinkMode 不认', !('uplinkMode' in I.asi) && !('uplinkMode' in I.snapshot().asi));
   await I.computeAsi();
-  approx('老配置 上行 C/ASI = 30.88 dB（S.465-6）', up().ciDb, 33.8812 - 3, 5e-4);
+  approx('老配置 上行 C/ASI 照离轴 EIRP 密度算（行上残留的对等站字段不进 payload）', up().ciDb, upWant, 1e-9);
+  ok('…payload 不带残留字段', sent.uplink.sourceMode === 'explicit' && sent.uplink.interferers.every((s) => !('diameterM' in s) && !('powerW' in s)));
 
   // 显式填与本站上行 V 反极化的 H → 记 25 dB
   for (const s of I.asi.sources) s.upPolarization = 'H';
   await I.computeAsi();
-  approx('上行极化填 H（对本站上行 V 反极化）→ 好出 25 dB', up().ciDb, 33.8812 - 3 + 25, 5e-4);
+  approx('上行极化填 H（对本站上行 V 反极化）→ 好出 25 dB', up().ciDb, upWant + 25, 1e-9);
   ok('显式给定的不标推定', up().sources.every((s) => s.polarization === 'H' && s.polInferred === false));
+  for (const s of I.asi.sources) s.upPolarization = '';
+  I.asi.applyPolarization = false; await I.computeAsi(); const noPol = up().ciDb;
+  I.asi.applyPolarization = true; await I.computeAsi();
+  approx('上行极化留空 → 同极化，与不计极化折减相同', up().ciDb, noPol, 1e-9);
 
-  // 三种上行模式都读源的上行极化（逐站给定要先填离轴 EIRP 密度）
-  for (const s of I.asi.sources) { s.upPolarization = ''; s.offAxisEirpDensityDbWPerHz = -60 }
-  for (const m of ['peer', 'mask', 'explicit']) {
-    I.asi.uplinkMode = m;
-    I.asi.applyPolarization = false; await I.computeAsi(); const noPol = up().ciDb;
-    I.asi.applyPolarization = true; await I.computeAsi();
-    approx(`${m}：上行极化留空 → 同极化，与不计极化折减相同`, up().ciDb, noPol, 1e-9);
-  }
-  I.asi.uplinkMode = 'peer';
+  // 离轴 EIRP 密度留空的源：上行不计，告警点名
+  I.asi.sources[0].offAxisEirpDensityDbWPerHz = '';
+  await I.computeAsi();
+  approx('一源留空 → 上行只计另一源', up().ciDb, ownUp + 42.3, 1e-9);
+  ok('…告警点名缺离轴 EIRP 密度', (up().warnings || []).some((w) => w.includes(I.asi.sources[0].name) && w.includes('离轴 EIRP 密度')));
+  I.asi.sources[0].offAxisEirpDensityDbWPerHz = -42.3;
 
   // 「搜索邻星」回填：下行极化按本站下行、上行极化按本站上行填
   I.addNeighbor({ name: 'NEIGHBOR-T', lonDeg: 115 });
@@ -2184,8 +2197,8 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
     /fingerprintOf\(hit\.state\) !== fingerprintOf\(cur\)/.test(body) && /createAndOpen\(\{ state: hit\.state, nameAuto: true \}\)/.test(body)
     && !/(^|[^.\w])(site|carrier)\.\w+\s*=[^=]/.test(body), body.slice(0, 80));
   const apply = (app.match(/function applyState\(st\) \{[\s\S]*?\n\}\n/) || [''])[0];
-  ok('CiApp.applyState：清五张表的撤销栈、清结果、补载星座统计',
-    /for \(const g of \[srcGrid, explGrid, peerGrid, ptGrid, ngGrid\]\) g\.clearHistory\(\)/.test(apply) && /I\.clearResults\(\)/.test(apply) && /I\.refreshGroupStats\(\)/.test(apply));
+  ok('CiApp.applyState：清三张表的撤销栈、清结果、补载星座统计',
+    /for \(const g of \[srcGrid, ptGrid, ngGrid\]\) g\.clearHistory\(\)/.test(apply) && /I\.clearResults\(\)/.test(apply) && /I\.refreshGroupStats\(\)/.test(apply));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

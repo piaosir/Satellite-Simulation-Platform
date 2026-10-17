@@ -18,6 +18,8 @@ const ciCci = require('./ciCci.js');
 const ciNgso = require('./ciNgso.js');
 // RR 附录 8 协调触发（双向 ΔT/T）与附录 5 协调弧：口径属 ITU 规则，放 utils/itu/，经这里一并导出
 const ap8 = require('../itu/ap8.js');
+// 协调触发页：附录 8 式(1)–(3) 原式（入参即原式里的量）
+const ap8Formula = require('./ap8Formula.js');
 
 module.exports = {
   geometry, patterns,
@@ -29,6 +31,7 @@ module.exports = {
   uplinkCAsi: ciAsi.uplinkCAsi,
   deltaTOverT: ciAsi.deltaTOverT,
   ap8Coordination: ap8.ap8Coordination,
+  ap8CaseI: ap8Formula.ap8CaseI,
   combineXpi: ciXpi.combineXpi,
   combineXpiWithRain: ciXpi.combineXpiWithRain,
   xpiFromSources: ciXpi.xpiFromSources,

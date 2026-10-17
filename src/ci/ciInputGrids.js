@@ -1,4 +1,4 @@
-// 干扰分析窗的五张可编辑输入表（干扰星 / 上行对等站 / 上行逐站给定 / C/CCI 取值点 / NGSO 干扰星座）：
+// 干扰分析窗的三张可编辑输入表（干扰星 / C/CCI 取值点 / NGSO 干扰星座）：
 // 列定义 + 取值 / 写值口径 + useGridSelect 接线，渲染走 components/ExcelGrid.vue。
 //
 // ★ 行对象的形状一个字段都不改：网格行是 { id: o._id, o } 的薄包装，读写都落在 useInterference 的 reactive 行对象上，
@@ -37,25 +37,14 @@ export const SRC_COLS = [
   bool('enabled', '启用', 54),
   txt('name', '名称', 168),
   num('lonDeg', '轨位', '°E', 92, { tip: '轨位（东经为正，西经为负）' }),
-  num('eirpDensityDbWPerHz', '下行 EIRP 密度', 'dBW/Hz', 156),
+  num('eirpDensityDbWPerHz', '下行 EIRP 密度', 'dBW/Hz', 156, { tip: '邻星朝本站方向的下行 EIRP 密度' }),
   pol('polarization', 84, { label: '下行极化' }),
+  // 上行 C/ASI 的干扰量：邻网发端站朝本星方向的离轴 EIRP 密度（引擎 ciAsi.uplinkCAsi 的 explicit 口径）
+  num('offAxisEirpDensityDbWPerHz', '上行离轴 EIRP 密度', 'dBW/Hz', 176, { tip: '邻网发端站朝本星方向的离轴 EIRP 密度', blankTip: '留空 = 上行不计这一源' }),
   // 上行 C/ASI 比的是干扰载波的上行极化；留空由引擎按下行的同/反极化关系推定（ciAsi.resolveUplinkPolarization）
   pol('upPolarization', 84, { label: '上行极化', tip: '留空 = 按下行的同/反极化关系推定', blankTip: '留空 = 按下行的同/反极化关系推定' }),
   num('xpdDb', 'XPD', 'dB', 80, { tip: '留空 = 25', blankTip: '留空 = 25' }),
   num('overlapFactor', '重叠', '', 72, { tip: '留空 = 1', blankTip: '留空 = 1' })
-]
-export const EXPL_COLS = [
-  txt('name', '干扰源', 168, { editable: false, get: (o) => o.name || o._id }),
-  num('offAxisEirpDensityDbWPerHz', '朝本星方向的离轴 EIRP 密度', 'dBW/Hz', 250, { tip: '必填', blankTip: '必填' })
-]
-export const PEER_COLS = [
-  txt('name', '干扰站', 168, { editable: false, get: (o) => o.name || o._id }),
-  num('diameterM', '口径', 'm', 80),
-  num('powerW', '功放', 'W', 80),
-  num('bandwidthHz', '带宽', 'Hz', 116),
-  num('feederLossDb', '馈损', 'dB', 80),
-  num('stationLon', '站经度', '°E', 100, { tip: '留空 = 同本站', blankTip: '留空 = 同本站' }),
-  num('stationLat', '站纬度', '°N', 100, { tip: '留空 = 同本站', blankTip: '留空 = 同本站' })
 ]
 export const PT_COLS = [
   txt('name', '名称', 180),

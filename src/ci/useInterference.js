@@ -37,12 +37,13 @@ function stateOnly(w) {
 }
 const api = typeof window !== 'undefined' ? window.api : null
 
+// 前四页算邻网对本网的干扰（C/I）；协调触发反过来算本网对邻网的 ΔT/T，排在最后
 export const MODES = [
-  { key: 'asi', label: 'C/ASI 邻星', tip: 'GEO 邻星干扰：拓扑角 + 地球站参考方向图，上下行' },
-  { key: 'ap8', label: '协调触发', tip: 'RR 附录 8 双向 ΔT/T 与附录 5 No.9.7 协调弧' },
+  { key: 'asi', label: 'C/ASI 邻星', tip: 'GEO 邻星对本网的干扰：下行取邻星下行 EIRP 密度，上行取邻网发端站的离轴 EIRP 密度' },
   { key: 'cci', label: 'C/CCI 同频', tip: '多波束频率复用：同色波束在该点的旁瓣叠加，采用 GRD 实测方向图' },
   { key: 'xpi', label: 'C/XPI 极化', tip: '交叉极化：卫星侧(GRD P1/P2) ⊕ 地球站侧 ⊕ 雨致去极化 三源合成' },
-  { key: 'ngso', label: 'NGSO 时变', tip: 'NGSO 干扰是随机过程：逐时刻扫描出 C/I 的 CDF 与 in-line 事件' }
+  { key: 'ngso', label: 'NGSO 时变', tip: 'NGSO 干扰是随机过程：逐时刻扫描出 C/I 的 CDF 与 in-line 事件' },
+  { key: 'ap8', label: '协调触发', tip: 'RR 附录 8 式(1)–(3)：本网对邻网的 ΔT/T（同频段、同传输方向）' }
 ]
 
 // C/ASI 地球站方向图的可选 ID（与引擎 patterns.ES_PATTERNS 的键同表；读回配置时据此校验）
@@ -67,10 +68,7 @@ const blankSource = (o) => ({
   upPolarization: '',
   xpdDb: '',
   overlapFactor: '',
-  // 上行「对等站」模式用
-  diameterM: '', powerW: '', bandwidthHz: '', feederLossDb: '',
-  stationLon: '', stationLat: '',
-  // 上行「逐站给定」模式用：干扰站朝本星方向的离轴 EIRP 密度
+  // 上行 C/ASI 只吃这一个量：邻网地球站朝本星方向的离轴 EIRP 密度（下行吃上面的邻星下行 EIRP 密度）
   offAxisEirpDensityDbWPerHz: '',
   ...o
 })
@@ -125,49 +123,25 @@ export function useInterference() {
     dnPolarization: 'H', upPolarization: 'V'
   })
 
-  // ---- C/ASI ----
+  // ---- C/ASI（邻网对本网：上行 = 邻网地球站离轴 EIRP 密度进本星，下行 = 邻星下行 EIRP 密度进本站）----
   const asi = reactive({
     applyPolarization: true,
-    uplinkMode: 'peer',              // 'peer' 工程估算 | 'mask' S.524 监管上界 | 'explicit'
-    // 地球站参考方向图 ID（引擎 patterns.ES_PATTERNS）：收信站与对等站同用。缺省 ITU-R S.465-6——
+    // 收信站参考方向图 ID（引擎 patterns.ES_PATTERNS），下行算本站天线对邻星方向的鉴别度用。缺省 ITU-R S.465-6——
     // 老配置没有这个字段，一律按缺省算（2026-10-17 订正：此前写死的「AP8/S.580」近旁瓣低 3–9 dB）
     esPattern: 'S.465-6',
+    // 出厂上行离轴 EIRP 密度 −42.3 dBW/Hz：4.5 m、40 W、36 MHz 的同类站按 S.465-6 在 2.81° 处的旁瓣密度（原对等站模式的出厂值）
     sources: [
-      blankSource({ name: '邻星 A', lonDeg: 113, eirpDensityDbWPerHz: -45, polarization: 'H', diameterM: 4.5, powerW: 40, bandwidthHz: 36e6, feederLossDb: 3.5 }),
-      blankSource({ name: '邻星 B', lonDeg: 108, eirpDensityDbWPerHz: -45, polarization: 'H', diameterM: 4.5, powerW: 40, bandwidthHz: 36e6, feederLossDb: 3.5 })
+      blankSource({ name: '邻星 A', lonDeg: 113, eirpDensityDbWPerHz: -45, polarization: 'H', offAxisEirpDensityDbWPerHz: -42.3 }),
+      blankSource({ name: '邻星 B', lonDeg: 108, eirpDensityDbWPerHz: -45, polarization: 'H', offAxisEirpDensityDbWPerHz: -42.3 })
     ],
-    // 邻网卫星（协调触发页用）：轨位、G/T 与朝本站的接收增益。字段沿用旧版「协调判据」的存法，老配置原样读回
-    coordLonDeg: 113, coordGoverT: 2, coordRxGain: 30,
     result: null
   })
 
-  // ---- 协调触发（RR 附录 8）----
-  // 本网的站 / 星 / 载波取「本站与本链路」，邻网卫星的轨位 / G/T / 接收增益取 asi.coord*；这里只放附录 8 另要的量。
-  // 留空 = 按缺省补（占位符写明补什么）；物理换算（功放 → 功率密度、EIRP → 密度、G/T → 噪温、中心 ± 带宽 → 频段）全在引擎。
-  const ap8 = reactive({
-    geometry: 'rule',                 // 'rule' 附件 1/2 公式（与 GIBC 同口径）| 'wgs84' 工程口径
-    region: 3,                        // 本网服务区所在 ITU 区域（附录 5 查协调弧用）
-    applyPolarization: false,         // §2.2.3：双方主管部门同意才计
-    ownTolDeg: 0.1, otherTolDeg: 0.1, // 东西保持容差 ±°（RR No.22.7 的上限）
-    ownTeK: 150,                      // 本站接收系统噪温 Te
-    ownPeDbWPerHz: '',                // AP4 最大功率密度；留空 = 功放 − 馈损 − 10lg(带宽)
-    ownSatEirpDen: '',                // 本星朝邻网收端站的 EIRP 密度；留空 = 本链路载波 EIRP − 10lg(带宽)
-    ownSatRxGainDbi: '', ownSatGt: '',// 本星朝邻网发端站的接收增益 / G/T；留空 = 同邻星
-    ownUpLo: '', ownUpHi: '', ownDnLo: '', ownDnHi: '',   // 指配频段 GHz；留空 = 载波中心 ± 带宽/2
-    ownT1: '', ownG1: '', ownT2: '', ownG2: '',           // AP4 两组 (T, γ)；γ 留空 = 上下行分开比
-    ownRegen: false,
-    otherSatEirpDen: '',              // 邻星朝本站的 EIRP 密度；留空 = 干扰星表里同轨位那颗的下行 EIRP 密度
-    otherDiameterM: '', otherEfficiency: '', otherLon: '', otherLat: '', otherTeK: '',   // 邻网地球站；留空 = 同本站
-    otherRxGainDbi: '',               // 邻网收端站主瓣增益（申报只给增益时）；口径留空则按附录 8 附件 3 脚注 4 由增益估 D/λ
-    otherPeDbWPerHz: '',              // 留空 = 同本网
-    otherUpLo: '', otherUpHi: '', otherDnLo: '', otherDnHi: '', otherUpPol: '', otherDnPol: '',   // 留空 = 同本网
-    otherT1: '', otherG1: '', otherT2: '', otherG2: '',
-    otherRegen: false,
-    // Case II（反向频段）：朝对方卫星方向的 EIRP 密度与接收增益（留空 = 不算）
-    ownSatEirpToSat: '', ownSatRxGainToSat: '', otherSatEirpToSat: '', otherSatRxGainToSat: '',
-    grdKey: '',                       // 本星 EIRP 方向图（folder::name）：在邻网收端站处取 EIRP，填「卫星 EIRP 密度」
-    result: null
-  })
+  // ---- 协调触发（RR 附录 8 式(1)–(3) 原式，本网 → 邻网）----
+  // 只放原式里的量（dB 值，T 用 K）：带撇号的属施扰方 = 本网，不带撇号的属受扰方 = 邻网。不取「本站与本链路」，
+  // 不做几何 / 方向图推算。出厂取附录 8 附件 4 算例（ΔTs 145 K、ΔTe 3.6 K、ΔT/T 7.8%），可直接与原文对账。
+  const AP8_DEF = { PeDb: -37, G1Dbi: 14.5, G2Dbi: 15.5, LuDb: 200, PsDb: -57, G3Dbi: 15.5, G4Dbi: 14.5, LdDb: 196, gammaDb: -15, TK: 105 }
+  const ap8 = reactive({ ...AP8_DEF, result: null })
 
   // ---- C/XPI ----
   const xpi = reactive({
@@ -443,16 +417,9 @@ export function useInterference() {
       uplinkPolarization: s.upPolarization || undefined,   // 只有上行读；留空由引擎按下行关系推定
       xpdDb: numOr(s.xpdDb, undefined),
       overlapFactor: numOr(s.overlapFactor, undefined),
-      offAxisEirpDensityDbWPerHz: numOr(s.offAxisEirpDensityDbWPerHz, undefined),
-      diameterM: numOr(s.diameterM, undefined),
-      powerW: numOr(s.powerW, undefined),
-      bandwidthHz: numOr(s.bandwidthHz, undefined),
-      feederLossDb: numOr(s.feederLossDb, undefined),
-      stationLon: numOr(s.stationLon, undefined),
-      stationLat: numOr(s.stationLat, undefined)
+      offAxisEirpDensityDbWPerHz: numOr(s.offAxisEirpDensityDbWPerHz, undefined)
     }))
-    // 旧版这里还带一份 coordination（只算本站上行进邻星的 ΔTs/Ts，却标「ΔT/T · RR 附录 8 · 门限 6%」）——
-    // 完整的附录 8 计算已挪到「协调触发」页（ap8Payload），这里不再送
+    // C/ASI 只算邻网对本网。本网对邻网的影响在「协调触发」页（附录 8 ΔT/T），这里不送
     return {
       downlink: {
         station,
@@ -468,106 +435,40 @@ export function useInterference() {
         wanted: { lonDeg: +carrier.satLonDeg, polarization: carrier.upPolarization, downlinkPolarization: carrier.dnPolarization },
         tx: { diameterM: +site.txDiameterM, efficiency: +site.txEfficiency / 100, freqGHz: +site.txFreqGHz, powerW: +site.txPowerW, feederLossDb: +site.txFeederLossDb, bandwidthHz: +carrier.bandwidthHz },
         interferers: srcs,
-        sourceMode: asi.uplinkMode,
-        applyPolarization: asi.applyPolarization,
-        esPattern: asi.esPattern
+        // 上行干扰 = 邻网地球站朝本星方向的离轴 EIRP 密度，逐源直接给定（引擎 ciAsi.uplinkCAsi 的 explicit）
+        sourceMode: 'explicit',
+        applyPolarization: asi.applyPolarization
       }
     }
   }
 
   // ---------------------------------------------------------------------------
-  // 计算：协调触发（RR 附录 8，双向 ΔT/T + 附录 5 协调弧）
+  // 计算：协调触发（RR 附录 8 式(1)–(3)，引擎 interference/ap8Formula.js，走 ci:asi 通道 { downlink:false, ap8Formula }）
   // ---------------------------------------------------------------------------
-  // 邻网留空的项按「与本网相同」补——两网同构是附录 8 附件 4 算例的设定，也是只握有一半参数时最不出格的假设；
-  // 补的只是缺省取哪个输入，dB 换算一律在引擎（utils/itu/ap8.js）里做。走 ci:asi 通道（{ downlink:false, ap8 }）。
   function ap8Payload() {
-    const B = +carrier.bandwidthHz
-    const band = (lo, hi) => (numOr(lo, null) != null && numOr(hi, null) != null ? [+lo, +hi] : undefined)
-    const links = (t1, g1, t2, g2) => [[t1, g1], [t2, g2]]
-      .filter(([, g]) => numOr(g, null) != null)
-      .map(([t, g]) => ({ gammaDb: +g, noiseTempK: numOr(t, undefined) }))
-    const ownUp = band(ap8.ownUpLo, ap8.ownUpHi), ownDn = band(ap8.ownDnLo, ap8.ownDnHi)
-    const own = {
-      lonDeg: +carrier.satLonDeg, ewTolDeg: numOr(ap8.ownTolDeg, 0), region: numOr(ap8.region, 3), service: 'FSS',
-      bandwidthHz: B, upCenterGHz: +site.txFreqGHz, dnCenterGHz: +site.rxFreqGHz, upBandGHz: ownUp, dnBandGHz: ownDn,
-      upPol: carrier.upPolarization, dnPol: carrier.dnPolarization,
-      txStation: { lon: +site.lon, lat: +site.lat, alt: +site.alt, diameterM: +site.txDiameterM, efficiency: +site.txEfficiency / 100 },
-      rxStation: { lon: +site.lon, lat: +site.lat, alt: +site.alt, diameterM: +site.rxDiameterM, efficiency: +site.rxEfficiency / 100, noiseTempK: numOr(ap8.ownTeK, undefined) },
-      txPowerDensityDbWPerHz: numOr(ap8.ownPeDbWPerHz, undefined), txPowerW: +site.txPowerW, txFeederLossDb: +site.txFeederLossDb,
-      satEirpDensityDbWPerHz: numOr(ap8.ownSatEirpDen, undefined), satEirpDbW: +carrier.eirpDbW,
-      satRxGainDbi: numOr(ap8.ownSatRxGainDbi, numOr(asi.coordRxGain, undefined)),
-      satGtDbPerK: numOr(ap8.ownSatGt, numOr(asi.coordGoverT, undefined)),
-      satEirpDensityToSatDbWPerHz: numOr(ap8.ownSatEirpToSat, undefined), satRxGainToSatDbi: numOr(ap8.ownSatRxGainToSat, undefined),
-      links: links(ap8.ownT1, ap8.ownG1, ap8.ownT2, ap8.ownG2),
-      regenerative: !!ap8.ownRegen
-    }
-    // 邻网地球站：经纬都留空 = 与本站同址（含海拔）
-    const oLon = numOr(ap8.otherLon, null), oLat = numOr(ap8.otherLat, null)
-    const oSt = (oLon == null && oLat == null)
-      ? { lon: +site.lon, lat: +site.lat, alt: +site.alt }
-      : { lon: oLon != null ? oLon : +site.lon, lat: oLat != null ? oLat : +site.lat, alt: 0 }
-    const oD = numOr(ap8.otherDiameterM, null), oEff = numOr(ap8.otherEfficiency, null)
-    // 收端站只给了主瓣增益、口径留空：不拿本站口径去配这个增益，D/λ 由引擎按附件 3 脚注 4 从增益估
-    const oRxG = numOr(ap8.otherRxGainDbi, null)
-    const oRxD = oD != null ? oD : (oRxG != null ? undefined : +site.rxDiameterM)
-    // 邻星朝本站的 EIRP 密度留空：取干扰星表里同轨位（±0.005°）、已启用那颗的下行 EIRP 密度
-    const same = asi.sources.find((s) => s.enabled && numOr(s.eirpDensityDbWPerHz, null) != null && Math.abs(numOr(s.lonDeg, NaN) - +asi.coordLonDeg) < 0.005)
-    const other = {
-      lonDeg: +asi.coordLonDeg, ewTolDeg: numOr(ap8.otherTolDeg, 0), service: 'FSS',
-      bandwidthHz: B, upCenterGHz: +site.txFreqGHz, dnCenterGHz: +site.rxFreqGHz,
-      upBandGHz: band(ap8.otherUpLo, ap8.otherUpHi) || ownUp, dnBandGHz: band(ap8.otherDnLo, ap8.otherDnHi) || ownDn,
-      upPol: ap8.otherUpPol || carrier.upPolarization, dnPol: ap8.otherDnPol || carrier.dnPolarization,
-      txStation: { ...oSt, diameterM: oD != null ? oD : +site.txDiameterM, efficiency: (oEff != null ? oEff : +site.txEfficiency) / 100 },
-      rxStation: { ...oSt, diameterM: oRxD, efficiency: (oEff != null ? oEff : +site.rxEfficiency) / 100, gainDbi: oRxG != null ? oRxG : undefined, noiseTempK: numOr(ap8.otherTeK, numOr(ap8.ownTeK, undefined)) },
-      txPowerDensityDbWPerHz: numOr(ap8.otherPeDbWPerHz, numOr(ap8.ownPeDbWPerHz, undefined)), txPowerW: +site.txPowerW, txFeederLossDb: +site.txFeederLossDb,
-      satEirpDensityDbWPerHz: numOr(ap8.otherSatEirpDen, same ? +same.eirpDensityDbWPerHz : undefined),
-      satRxGainDbi: numOr(asi.coordRxGain, undefined), satGtDbPerK: numOr(asi.coordGoverT, undefined),
-      satEirpDensityToSatDbWPerHz: numOr(ap8.otherSatEirpToSat, undefined), satRxGainToSatDbi: numOr(ap8.otherSatRxGainToSat, undefined),
-      links: links(ap8.otherT1, ap8.otherG1, ap8.otherT2, ap8.otherG2),
-      regenerative: !!ap8.otherRegen
-    }
-    return { geometry: ap8.geometry === 'wgs84' ? 'wgs84' : 'rule', applyPolarization: !!ap8.applyPolarization, own, other }
+    const o = {}
+    for (const k of Object.keys(AP8_DEF)) o[k] = numOr(ap8[k], null)
+    return o
   }
-
   async function computeAp8() {
     if (!api || !api.interference) { msg.value = '需在桌面客户端中运行'; return }
-    busy.value = true; msg.value = ''
     const gen = _gen
-    try {
-      const payload = ap8Payload()
-      const fp = JSON.stringify(payload)
-      const r = await api.interference.asi({ downlink: false, ap8: payload })
-      if (gen !== _gen) return
-      if (!r || !r.ok || !r.ap8) { msg.value = '计算失败：' + ((r && r.error) || '未知错误'); ap8.result = null; return }
-      ap8.result = r.ap8
-      ranFp.ap8 = fp
-      const miss = [...new Set([...(r.ap8.ownToOther.missing || []), ...(r.ap8.otherToOwn.missing || [])])]
-      msg.value = r.ap8.warnings.length ? r.ap8.warnings[0] : (miss.length ? '缺：' + miss.join('、') : '')
-    } finally { busy.value = false }
+    const payload = ap8Payload()
+    const fp = JSON.stringify(payload)
+    const r = await api.interference.asi({ downlink: false, ap8Formula: payload })
+    if (gen !== _gen) return
+    if (!r || !r.ok || !r.ap8Formula) { msg.value = '计算失败：' + ((r && r.error) || '未知错误'); ap8.result = null; return }
+    if (JSON.stringify(ap8Payload()) !== fp) return   // 回来前又改了格：等下一次（改格即重算，见下方监听）
+    ap8.result = r.ap8Formula
+    ranFp.ap8 = fp
+    msg.value = r.ap8Formula.ok ? '' : '缺少输入：' + r.ap8Formula.missing.join('、')
   }
-
-  // 本星朝邻网收端站方向的 EIRP 密度由 EIRP 方向图取：在邻网收端站（经纬留空 = 本站）处取 GRD 值（dBW），
-  // 按本链路占用带宽折成 dB(W/Hz) 填进「卫星 EIRP 密度」——取到的数照样是输入框里看得见、改得动的值，不另藏一份
-  async function sampleAp8EirpFromGrd() {
-    const a = grdAntennas.value.find((x) => x.key === ap8.grdKey) || null
-    if (!a) { msg.value = '先选一副 GRD 方向图'; return }
-    if (a.node.noEph) { msg.value = '关联卫星当前无星历'; return }
-    if (boreToSat(a)) { msg.value = BORE_SAT_MSG; return }
-    if (!api || !api.linkBudget || !api.linkBudget.grdSample) { msg.value = '需在桌面客户端中运行'; return }
-    const B = +carrier.bandwidthHz
-    if (!(B > 0)) { msg.value = '缺占用带宽'; return }
-    const lon = numOr(ap8.otherLon, +site.lon), lat = numOr(ap8.otherLat, +site.lat)
-    busy.value = true
-    const gen = _gen
-    try {
-      const r = await api.linkBudget.grdSample({ ...antennaSpec(a), points: [{ lon, lat }] })
-      if (gen !== _gen) return
-      const v = Array.isArray(r) ? Number(r[0]) : NaN
-      if (!Number.isFinite(v)) { msg.value = '该点落在方向图网格域外，或卫星不可见'; return }
-      ap8.ownSatEirpDen = +(v - 10 * Math.log10(B)).toFixed(2)
-      msg.value = `「${a.ant.name}」在 ${lon.toFixed(4)}°E ${lat.toFixed(4)}°N：${v.toFixed(2)} dBW → ${ap8.ownSatEirpDen} dB(W/Hz)`
-    } finally { busy.value = false }
-  }
+  // 改一格就重算（原式几步加减，主进程即回）；只在本页开着时算
+  let _ap8T = null
+  watch(() => (mode.value === 'ap8' ? JSON.stringify(ap8Payload()) : ''), (v) => {
+    clearTimeout(_ap8T)
+    if (v) _ap8T = setTimeout(computeAp8, 60)
+  })
 
   async function computeAsi() {
     if (!api || !api.interference) { msg.value = '需在桌面客户端中运行'; return }
@@ -1300,8 +1201,7 @@ export function useInterference() {
     if (asi.sources.some((x) => x.name === s.name)) { satSearch.msg = `「${s.name}」已在表中`; return }
     putAt(asi.sources, blankSource({
       name: s.name, lonDeg: s.lonDeg,
-      polarization: carrier.dnPolarization, upPolarization: carrier.upPolarization,
-      diameterM: site.rxDiameterM, powerW: site.txPowerW, bandwidthHz: carrier.bandwidthHz, feederLossDb: site.txFeederLossDb
+      polarization: carrier.dnPolarization, upPolarization: carrier.upPolarization
     }))
     const slotTxt = fmtGeoSlot(Number(s.lonDeg)) || s.lonDeg + '°E'
     satSearch.msg = s.inclined
@@ -1521,8 +1421,7 @@ export function useInterference() {
       name: entry.name || '库条目',
       lonDeg: f.orbitPosition != null && f.orbitPosition !== '' ? f.orbitPosition : '',
       polarization: f.downlinkPolarization || '',
-      upPolarization: f.uplinkPolarization || '',
-      bandwidthHz: f.transponderBandwidth ? Number(f.transponderBandwidth) * 1e6 : ''
+      upPolarization: f.uplinkPolarization || ''
     }))
     msg.value = `已从卫星库导入「${entry.name}」；EIRP 密度需另行填写（库中存放的是 SFD 与转发器参数，不含邻网谱密度）`
   }
@@ -1541,7 +1440,7 @@ export function useInterference() {
     return JSON.parse(JSON.stringify({
         mode: mode.value,
         site: { ...site }, carrier: { ...carrier },
-        asi: { applyPolarization: asi.applyPolarization, uplinkMode: asi.uplinkMode, esPattern: asi.esPattern, sources: asi.sources, coordLonDeg: asi.coordLonDeg, coordGoverT: asi.coordGoverT, coordRxGain: asi.coordRxGain },
+        asi: { applyPolarization: asi.applyPolarization, esPattern: asi.esPattern, sources: asi.sources },
         xpi: {
           satSource: xpi.satSource, satManualDb: xpi.satManualDb, rainXpdDb: xpi.rainXpdDb,
           rainSource: xpi.rainSource, rainPct: xpi.rainPct, rainDir: xpi.rainDir,
@@ -1572,11 +1471,7 @@ export function useInterference() {
     Object.assign(carrier, d.carrier || {})
     if (d.asi) {
       asi.applyPolarization = d.asi.applyPolarization !== false
-      if (['peer', 'mask', 'explicit'].includes(d.asi.uplinkMode)) asi.uplinkMode = d.asi.uplinkMode
       if (Array.isArray(d.asi.sources) && d.asi.sources.length) asi.sources.splice(0, asi.sources.length, ...d.asi.sources)
-      asi.coordLonDeg = d.asi.coordLonDeg ?? asi.coordLonDeg
-      asi.coordGoverT = d.asi.coordGoverT ?? asi.coordGoverT
-      asi.coordRxGain = d.asi.coordRxGain ?? asi.coordRxGain
       // 方向图：老配置没有这一项 → 留在缺省 S.465-6（订正后新老配置一律按此）
       if (ES_PATTERN_IDS.includes(d.asi.esPattern)) asi.esPattern = d.asi.esPattern
     }
@@ -1738,7 +1633,7 @@ export function useInterference() {
     satSearch, searchNeighbors, addNeighbor,
     ngsoGroups, groupStats, groupErrs, groupsErr, loadNgsoGroups, ensureGroup, refreshGroupStats,
     loadLibraries, loadGrdTree, importGrdHere,
-    computeAsi, computeAp8, sampleAp8EirpFromGrd, computeXpi, computeCci, computeCciField, sampleXpiFromGrd,
+    computeAsi, computeAp8, computeXpi, computeCci, computeCciField, sampleXpiFromGrd,
     computeNgso, cancelNgso, estimateNgso, loadRainCdf, ngsoStartNow,
     addSource, removeSource, addFromLibrary,
     addCciPoint, removeCciPoint, addNgsoGroup, removeNgsoGroup,

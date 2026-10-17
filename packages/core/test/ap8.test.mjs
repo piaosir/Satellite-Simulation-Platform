@@ -341,13 +341,44 @@ console.log('\n=== ⑧ C/XPI 雨致 XPD 来源 ===');
   ok('ci:asi 服务：带 ap8 就回 ap8（不另开 IPC 通道）', sa.ok && !!sa.ap8 && !sa.downlink && sa.ap8.ownToOther.headlinePct > 0);
 }
 
+// ═══ ⑧b 协调触发页引擎：interference/ap8Formula.ap8CaseI（附录 8 式(1)–(3) 原式，同频段、同传输方向）═══
+console.log('\n=== ⑧b 协调触发原式 ===');
+{
+  const F = require('../utils/interference/ap8Formula.js');
+  // 附件 4 算例的十个量（dB 值，T 用 K）
+  const X = { PeDb: -37, G1Dbi: 14.5, G2Dbi: 15.5, LuDb: 200, PsDb: -57, G3Dbi: 15.5, G4Dbi: 14.5, LdDb: 196, gammaDb: -15, TK: 105 };
+  const r = F.ap8CaseI(X);
+  // 原文：ΔTs[dBK] = P′e + G′1 + G2 − Lu + 228.6，ΔTe 同理；ΔT = γ·ΔTs + ΔTe
+  const dTs = Math.pow(10, (-37 + 14.5 + 15.5 - 200 + 228.6) / 10);
+  const dTe = Math.pow(10, (-57 + 15.5 + 14.5 - 196 + 228.6) / 10);
+  const dT = Math.pow(10, -15 / 10) * dTs + dTe;
+  approx('式(1) ΔTs（原文 dB 式现算）', r.deltaTsK, dTs, 1e-9);
+  approx('式(2) ΔTe', r.deltaTeK, dTe, 1e-9);
+  approx('式(3) ΔT = γ·ΔTs + ΔTe', r.deltaTK, dT, 1e-9);
+  approx('ΔT/T', r.pct, dT / 105 * 100, 1e-9);
+  approx('附件 4 原文：ΔTs ≈ 145 K', r.deltaTsK, 145, 0.5);
+  approx('附件 4 原文：ΔTe ≈ 3.6 K', r.deltaTeK, 3.6, 0.05);
+  approx('附件 4 原文：ΔT/T ≈ 7.8%', r.pct, 7.8, 0.05);
+  approx('dB 读数：ΔTs = 21.60 dBK', r.deltaTsDbK, -37 + 14.5 + 15.5 - 200 + 228.6, 1e-9);
+  ok('超 6% 只给 exceeds 供着色；k 与门限取 itu/ap8.js 同一份', r.ok && r.exceeds === true && r.kDb === AP8.K_DB && r.thresholdPct === AP8.THRESHOLD_PCT);
+  ok('T = 200 K → 4.1%，exceeds = false', F.ap8CaseI({ ...X, TK: 200 }).exceeds === false);
+  ok('输入框送来的字符串数字照收', F.ap8CaseI(Object.fromEntries(Object.entries(X).map(([k, v]) => [k, String(v)]))).pct === r.pct);
+  const m = F.ap8CaseI({ ...X, LuDb: '', TK: 0 });
+  ok('缺项 / T ≤ 0 → ok:false，按原式符号列出', m.ok === false && m.missing.join() === 'Lu,T' && m.pct === undefined);
+  ok('经 interference/index.js 导出', require('../utils/interference/index.js').ap8CaseI === F.ap8CaseI);
+  const S = require('../../../electron/services/interference.js')(null, null, null);
+  const sa = S.asi({ downlink: false, ap8Formula: X });
+  ok('ci:asi 服务：带 ap8Formula 就回 ap8Formula（不另开 IPC 通道）', sa.ok && !!sa.ap8Formula && sa.ap8Formula.pct === r.pct && !sa.downlink && !sa.ap8);
+}
+
 // ═══ ⑨ 窗口层：协调触发页与 C/XPI 雨致 XPD（真服务 + 真引擎，structuredClone 模拟 IPC）═══
 console.log('\n=== ⑨ 窗口层 ===');
 {
   const mem = new Map();
   globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) };
   const S = require('../../../electron/services/interference.js')(null, null, null);
-  let sent = null, sentGrd = null;
+  const F = require('../utils/interference/ap8Formula.js');
+  let sent = null;
   globalThis.window = {
     addEventListener: () => {},
     api: {
@@ -355,57 +386,62 @@ console.log('\n=== ⑨ 窗口层 ===');
         asi: async (p) => { sent = structuredClone(p); return S.asi(sent); },
         xpi: async (p) => S.xpi(structuredClone(p)),
         xpiTerm: async () => ({ ok: true, term: { db: 30 } })
-      },
-      // 假 GRD：在任何点都回 46 dBW（EIRP 方向图）
-      linkBudget: { grdSample: async (req) => { sentGrd = structuredClone(req); return req.points.map(() => 46); } }
+      }
     }
   };
   const { useInterference, MODES, ES_PATTERN_IDS } = await import('../../../src/ci/useInterference.js?ap8-window');
   const I = useInterference();
-  ok('新页签「协调触发」', MODES.some((m) => m.key === 'ap8'));
+  const keys = MODES.map((m) => m.key);
+  ok('页签：协调触发（本网 → 邻网）排在 NGSO 之后、最后一页', keys.join() === 'asi,cci,xpi,ngso,ap8', keys.join());
   ok('C/ASI 方向图可选四条、出厂 S.465-6', ES_PATTERN_IDS.length === 4 && I.asi.esPattern === 'S.465-6');
+  const X = { PeDb: -37, G1Dbi: 14.5, G2Dbi: 15.5, LuDb: 200, PsDb: -57, G3Dbi: 15.5, G4Dbi: 14.5, LdDb: 196, gammaDb: -15, TK: 105 };
+  ok('出厂 = 附件 4 算例的十个原式量', Object.entries(X).every(([k, v]) => I.ap8[k] === v));
   await I.computeAp8();
   const r = I.ap8.result;
-  ok('出厂配置算得出双向结果，payload 是纯数据（过得了结构化克隆）', !!r && !!r.ownToOther && !!r.otherToOwn && !!sent && sent.downlink === false);
-  ok('本网发端站 = 本站、邻网卫星 = 旧版「协调判据」三格', sent.ap8.own.txStation.diameterM === 4.5 && sent.ap8.other.lonDeg === 113
-    && sent.ap8.other.satGtDbPerK === 2 && sent.ap8.other.satRxGainDbi === 30);
-  ok('邻星 EIRP 密度留空 → 取干扰星表同轨位一行（邻星 A，−45 dBW/Hz）', sent.ap8.other.satEirpDensityDbWPerHz === -45);
-  ok('出厂几何口径 = 附件 1/2，保持容差 ±0.1°', sent.ap8.geometry === 'rule' && sent.ap8.own.ewTolDeg === 0.1 && Math.abs(r.thetaGDeg - 2.3) < 1e-12);
-  ok('出厂：本网 → 邻网 ΔT′/T′ 超 6%（下行分量），邻网 → 本网 ΔT/T 未超', r.ownToOther.exceeds === true && r.otherToOwn.exceeds === false,
-    `${r.ownToOther.headlinePct.toFixed(2)}% / ${r.otherToOwn.headlinePct.toFixed(2)}%`);
+  ok('payload 只有原式十个量，走 ci:asi { downlink:false, ap8Formula }', !!sent && sent.downlink === false && !sent.ap8 && !sent.uplink
+    && Object.keys(sent.ap8Formula).sort().join() === [...F.AP8_CASE_I_KEYS].sort().join());
+  approx('出厂 ΔT/T = 附件 4 的 7.8%', r.pct, 7.8, 0.05);
+  {
+    const before = JSON.stringify(sent.ap8Formula);
+    const keep = { pw: I.site.txPowerW, lon: I.site.lon, eirp: I.carrier.eirpDbW };
+    I.site.txPowerW = 999; I.site.lon = 0; I.carrier.eirpDbW = 1;
+    await I.computeAp8();
+    ok('不取「本站与本链路」：改本站 / 载波，payload 与结果不变', JSON.stringify(sent.ap8Formula) === before && I.ap8.result.pct === r.pct);
+    I.site.txPowerW = keep.pw; I.site.lon = keep.lon; I.carrier.eirpDbW = keep.eirp;
+  }
   ok('算完不亮「输入已变」', !I.stale.value.ap8);
-  I.ap8.ownTeK = 200;
-  ok('改本站噪温 → 亮', I.stale.value.ap8);
-  I.ap8.ownTeK = 150;
+  I.ap8.TK = 200;
+  ok('改 T → 亮', I.stale.value.ap8);
+  I.ap8.TK = 105;
   ok('改回 → 灭', !I.stale.value.ap8);
-  // 配置读写：ap8 整段进快照；老配置没有 ap8 → 回出厂
+  I.ap8.G1Dbi = '';
+  await I.computeAp8();
+  ok('留空一格 → 不出数，读数行列出缺的原式符号', I.ap8.result.ok === false && I.msg.value === '缺少输入：G′1(θt)');
+  I.ap8.G1Dbi = 14.5;
+  // 本页开着时改一格即重算
+  I.mode.value = 'ap8';
+  I.ap8.gammaDb = -10;
+  await new Promise((res) => setTimeout(res, 300));
+  const dTs = Math.pow(10, (-37 + 14.5 + 15.5 - 200 + 228.6) / 10), dTe = Math.pow(10, (-57 + 15.5 + 14.5 - 196 + 228.6) / 10);
+  approx('改 γ 即重算：(0.1·ΔTs + ΔTe) / T', I.ap8.result && I.ap8.result.pct, (0.1 * dTs + dTe) / 105 * 100, 1e-9);
+  I.ap8.gammaDb = -15;
+  await new Promise((res) => setTimeout(res, 300));
+  I.mode.value = 'asi';
+  // 配置读写：十个原式量进快照；旧版协调触发段（站 / 星 / 载波推算口径）的键不认
+  I.ap8.TK = 150;
   const snap = I.snapshot();
-  ok('快照带 ap8（不带结果）', snap.ap8 && snap.ap8.ownTeK === 150 && !('result' in snap.ap8));
-  I.ap8.ownTolDeg = 0.05;
-  const old = I.snapshot(); delete old.ap8;
+  ok('快照带十个原式量（不带结果）', snap.ap8 && snap.ap8.TK === 150 && Object.keys(snap.ap8).sort().join() === [...F.AP8_CASE_I_KEYS].sort().join());
+  I.applySnapshot(I.blankSnapshot()); I.applySnapshot(snap);
+  ok('读回', I.ap8.TK === 150 && I.ap8.PeDb === -37);
+  const old = I.snapshot(); old.ap8 = { ownTeK: 200, ownTolDeg: 0.05, geometry: 'wgs84', ownG1: 3 };
   I.applySnapshot(I.blankSnapshot()); I.applySnapshot(old);
-  ok('老配置没有 ap8 段 → 回出厂', I.ap8.ownTolDeg === 0.1);
+  ok('旧版协调触发段的键不认 → 原式量回出厂', I.ap8.TK === 105 && !('ownTeK' in I.ap8) && !('geometry' in I.ap8));
+  const old2 = I.snapshot(); delete old2.ap8;
+  I.ap8.TK = 300;
+  I.applySnapshot(I.blankSnapshot()); I.applySnapshot(old2);
+  ok('老配置没有 ap8 段 → 回出厂', I.ap8.TK === 105);
   I.clearResults();
   ok('切配置清掉协调触发结果', I.ap8.result === null && !I.stale.value.ap8);
-
-  // 本星 EIRP 密度由 EIRP 方向图取：在邻网收端站处（经纬留空 = 本站）取 dBW，按占用带宽折成 dB(W/Hz) 填进输入格
-  I.grdTree.value = { sats: [{ folder: 'F', satName: 'S', lon: 110.5, lat: 0, altKm: 35786, antennas: [{ name: 'EIRP', file: 'e.grd', beams: 1 }] }], cfgs: { 'F::EIRP': { boreType: 'geo' } } };
-  I.ap8.grdKey = 'F::EIRP';
-  await I.sampleAp8EirpFromGrd();
-  approx('GRD 46 dBW → 46 − 10lg(36 MHz) dB(W/Hz)', I.ap8.ownSatEirpDen, +(46 - 10 * lg(36e6)).toFixed(2), 1e-9);
-  ok('取值点 = 本站（邻网收端站经纬留空）', sentGrd && sentGrd.points[0].lon === BJ.lon && sentGrd.points[0].lat === BJ.lat);
-  I.ap8.otherLon = 121.47; I.ap8.otherLat = 31.23;
-  await I.sampleAp8EirpFromGrd();
-  ok('给了邻网收端站经纬 → 在那里取', sentGrd.points[0].lon === 121.47 && sentGrd.points[0].lat === 31.23);
-  I.ap8.otherLon = ''; I.ap8.otherLat = ''; I.ap8.ownSatEirpDen = ''; I.ap8.grdKey = '';
-
-  // 邻网收端站只申报增益：口径留空时不拿本站口径去配，D/λ 按附件 3 脚注 4 由增益估
-  I.ap8.otherRxGainDbi = 40;
-  await I.computeAp8();
-  ok('只给增益：收端站不带口径、带增益', sent.ap8.other.rxStation.diameterM === undefined && sent.ap8.other.rxStation.gainDbi === 40);
-  approx('…引擎按脚注 4 估 D/λ = 10^((40 − 7.7)/20)', I.ap8.result.ownToOther.dn.dOverLambda, Math.pow(10, (40 - 7.7) / 20), 1e-9);
-  approx('…g4(θt) 按附件 3 b) 由该 Gmax 与 D/λ 算', I.ap8.result.ownToOther.dn.g4Dbi, P.ap8AnnexIIIGain(40, Math.pow(10, (40 - 7.7) / 20), I.ap8.result.ownToOther.dn.thetaTDeg), 1e-9);
-  I.ap8.otherRxGainDbi = '';
 
   // C/XPI：出厂按 P.618-14 §4.1 计算；老配置雨致 XPD 恰为旧出厂 22 dB → 改为计算，其余数保留手填
   ok('C/XPI 雨致 XPD 出厂 = P.618 计算、p = 0.01%', I.xpi.rainSource === 'p618' && I.xpi.rainPct === 0.01);

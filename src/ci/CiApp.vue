@@ -18,8 +18,9 @@ import { fmtGeoSlot } from '../shared/orbitClass.js'
 import { inputText, parseInput, endFromHours, hoursFromEnd } from '../shared/timeWindowInput.js'
 import { useInterference, toolContextState } from './useInterference.js'
 import CiGeoPanel from './CiGeoPanel.vue'
+import CiAp8Formula from './CiAp8Formula.vue'
 import ExcelGrid from '../components/ExcelGrid.vue'
-import { useCiGrid, headTip, SRC_COLS, EXPL_COLS, PEER_COLS, PT_COLS, NG_COLS } from './ciInputGrids.js'
+import { useCiGrid, headTip, SRC_COLS, PT_COLS, NG_COLS } from './ciInputGrids.js'
 import { CCI_SOURCES, SOURCE_NAME, TABLE_COLS, DEF_COLS, planCols, colorCols, segsText } from './cciScheme.js'
 import LbSurfacePlot from '../components/LbSurfacePlot.vue'
 import CiCdfPlot from './CiCdfPlot.vue'
@@ -99,9 +100,9 @@ const ORBIT_TYPE = 'CI'
 function serializeState() { return { orbitType: ORBIT_TYPE, ...I.snapshot() } }
 function applyState(st) {
   // 换了一份内容（切换 / 新建 / 还原历史版本 / 带上下文另建）：
-  //   · 五张输入表的撤销栈存的是上一份的行——不清的话一按 Ctrl+Z 就把上一份的整张表换进来、约 1 s 后自动写盘；
+  //   · 三张输入表的撤销栈存的是上一份的行——不清的话一按 Ctrl+Z 就把上一份的整张表换进来、约 1 s 后自动写盘；
   //   · 结果、取过的派生量与在途计算都是上一份的（见 useInterference.clearResults）。
-  for (const g of [srcGrid, explGrid, peerGrid, ptGrid, ngGrid]) g.clearHistory()
+  for (const g of [srcGrid, ptGrid, ngGrid]) g.clearHistory()
   for (const g of [cciPlanGrid, cciTableGrid, cciColorGrid, cciDefGrid]) g.clearHistory()   // C/CCI 复用方案四张表
   I.clearResults()
   I.applySnapshot(I.blankSnapshot())   // 先回出厂，再套这一份：缺字段的旧配置不沿用上一份的值
@@ -212,108 +213,9 @@ const xpiSrcOf = (key) => { const t = xpi.result && (xpi.result.terms || []).fin
 const xpiCdf = computed(() => ((xpi.curve || []).filter((c) => Number.isFinite(Number(c.xpiDb))).map((c) => ({ pct: c.pct, ciDb: c.xpiDb }))))
 const xpiCdfMark = computed(() => (xpi.rainInfo && xpi.result && Number.isFinite(Number(xpi.rainInfo.pPct)) ? { [xpi.rainInfo.pPct]: xpi.result.xpiDb } : null))
 
-// ─── 地球站方向图（C/ASI）与协调触发（RR 附录 8）页的悬停口径与读数 ───
-const ES_PATTERN_TIP = '收信站与上行对等站共用。ITU-R S.465-6：协调与干扰评估用参考方向图（缺省）；RR 附录 8 附件 3：附录 8 规定的地球站方向图；ITU-R S.580-6：新建天线的设计目标，D/λ < 50 不适用；旧版：AP8 分段 + S.580 旁瓣（平台 v1.5.3 及之前的包络），近旁瓣比附录 8 附件 3 低 3–9 dB'
-const AP8_GEOM_TIP = '附件 1/2 公式：斜距 d = 42644·√(1 − 0.2954·cosψ)、拓扑角与自由空间损耗按 RR 附录 8 附件 1、2（与 BR GIBC 同口径）；WGS84：椭球站址与真实斜距'
-const AP4_PE_TIP = '发端站天线输入端的最大功率密度（附录 4：15 GHz 以下取最坏 4 kHz、以上取最坏 1 MHz 平均）；留空按功放 − 馈损 − 10lg(占用带宽) 均匀折算'
-const AP8_LINK_TIP = '附录 4 申报的两组传输增益 γ 与链路等效噪温 T（附录 8 §2.4 两组取大）；只给 γ 时 T = Te + γ·Ts；γ 都留空则上下行分别与 6% 比（§2.2.1.2）'
-const EW_TOL_TIP = '东西位置保持容差；两星各向对方挪一个容差后计算拓扑角与地心角（附录 8 §2.1）'
-const REGEN_TIP = '星上变调制：上下行分别与 6% 比（附录 8 §2.2.1.2 / §3.2）'
+// ─── 地球站方向图（C/ASI）的悬停口径与读数 ───
+const ES_PATTERN_TIP = '下行收信站用。ITU-R S.465-6：协调与干扰评估用参考方向图（缺省）；RR 附录 8 附件 3：附录 8 规定的地球站方向图；ITU-R S.580-6：新建天线的设计目标，D/λ < 50 不适用；旧版：AP8 分段 + S.580 旁瓣（平台 v1.5.3 及之前的包络），近旁瓣比附录 8 附件 3 低 3–9 dB'
 const patLabel = (p) => (p && p.name ? `${p.name}（${p.edition}）` : '—')
-// 本网指配频段的缺省（载波中心 ± 占用带宽 / 2）只作占位显示；实际缺省由引擎按同一口径补
-const phBand = (fc, side) => {
-  const half = Number(carrier.bandwidthHz) > 0 ? Number(carrier.bandwidthHz) / 2e9 : 0
-  const v = Number(fc) + side * half
-  return Number.isFinite(v) ? v.toFixed(4) : ''
-}
-const ap8MethodTip = (d) => (d && d.method === 'combined'
-  ? '附录 8 式(3)：ΔT/T = (γ·ΔTs + ΔTe) / T，两组 (T, γ) 取大'
-  : '附录 8 §2.2.1.2 / §3.2：ΔTs/Ts 与 ΔTe/Te 分别与 6% 比，取大')
-const ap8ArcTip = computed(() => {
-  const r = ap8.result
-  if (!r) return ''
-  const seg = { up: '上行', dn: '下行' }
-  return r.arc.bands.map((b) => `${seg[b.key]} ${b.overlapMHz > 0 ? `${f(b.loGHz, 4)}–${f(b.hiGHz, 4)} GHz：${b.arcDeg == null ? '第 9) 项' : `第 ${b.item} 项 ±${b.arcDeg}°`}` : '无重叠'}`).join('；')
-})
-// 明细表：行 = 量，列 = 两个方向（本网 → 邻网 / 邻网 → 本网）。段名行只占位。超 6% 的百分数只着色
-const PE_SRC = { ap4: '附录 4 最大功率密度', carrier: '按功放 − 馈损 − 10lg(占用带宽) 均匀折算' }
-const EIRP_SRC = { given: '给定', carrier: '按载波 EIRP − 10lg(占用带宽)' }
-const ap8Rows = computed(() => {
-  const r = ap8.result
-  if (!r) return []
-  const D = [r.ownToOther, r.otherToOwn]
-  const rows = []
-  const grp = (label) => rows.push({ grp: true, label })
-  const row = (label, unit, get, n, opt) => {
-    const o = opt || {}
-    rows.push({
-      label, unit, strong: !!o.strong,
-      cells: D.map((d) => {
-        const v = get(d)
-        return { text: f(v, n), bad: !!o.pct && Number.isFinite(Number(v)) && Number(v) > r.thresholdPct, title: o.title ? o.title(d) : null }
-      })
-    })
-  }
-  const any = (fn) => D.some(fn)
-  const U = (d) => d.up || {}, Dn = (d) => d.dn || {}, C2 = (d) => d.caseII || {}
-  if (any((d) => d.up)) {
-    grp('Case I 上行 · ΔTs')
-    row('频谱重叠', 'MHz', (d) => U(d).overlapMHz, 3)
-    row('计算频率', 'GHz', (d) => U(d).fGHz, 4)
-    row('发端站拓扑角 θt', '°', (d) => U(d).thetaTDeg, 3)
-    row('发端功率密度 pe', 'dB(W/Hz)', (d) => U(d).peDbWPerHz, 2, { title: (d) => PE_SRC[U(d).peSource] || null })
-    row('发端站旁瓣增益 g1(θt)', 'dBi', (d) => U(d).g1Dbi, 2)
-    row('上行自由空间损耗 lu', 'dB', (d) => U(d).luDb, 2)
-    row('受扰卫星接收增益 g2', 'dBi', (d) => U(d).g2Dbi, 2)
-    row('ΔTs', 'K', (d) => U(d).deltaTsK, 3)
-    row('受扰卫星噪温 Ts', 'K', (d) => U(d).tsK, 1)
-    row('ΔTs/Ts（上行分量）', '%', (d) => d.independent.dTsOverTsPct, 3, { pct: true, strong: true })
-  }
-  if (any((d) => d.dn)) {
-    grp('Case I 下行 · ΔTe')
-    row('频谱重叠', 'MHz', (d) => Dn(d).overlapMHz, 3)
-    row('计算频率', 'GHz', (d) => Dn(d).fGHz, 4)
-    row('收端站拓扑角 θt', '°', (d) => Dn(d).thetaTDeg, 3)
-    row('施扰卫星 EIRP 密度', 'dB(W/Hz)', (d) => Dn(d).satEirpDbWPerHz, 2, { title: (d) => EIRP_SRC[Dn(d).satEirpSource] || null })
-    row('收端站旁瓣增益 g4(θt)', 'dBi', (d) => Dn(d).g4Dbi, 2)
-    row('下行自由空间损耗 ld', 'dB', (d) => Dn(d).ldDb, 2)
-    row('ΔTe', 'K', (d) => Dn(d).deltaTeK, 3)
-    row('受扰收端站噪温 Te', 'K', (d) => Dn(d).teK, 1)
-    row('ΔTe/Te（下行分量）', '%', (d) => d.independent.dTeOverTePct, 3, { pct: true, strong: true })
-  }
-  if (r.ownToOther.polarizationApplied) {
-    grp('极化隔离 §2.2.3')
-    row('Yu', '', (d) => d.yu, 2)
-    row('Yd', '', (d) => d.yd, 2)
-  }
-  const nL = Math.max(0, ...D.map((d) => d.links.length))
-  if (nL) {
-    grp('ΔT/T = (γ·ΔTs + ΔTe) / T')
-    const SUB = ['₁', '₂']
-    for (let k = 0; k < nL; k++) {
-      const L = (d) => d.links[k] || {}
-      row('γ' + SUB[k], 'dB', (d) => L(d).gammaDb, 2)
-      row('T' + SUB[k], 'K', (d) => L(d).noiseTempK, 1, { title: (d) => (L(d).tDerived ? 'T = Te + γ·Ts' : null) })
-      row('ΔT' + SUB[k], 'K', (d) => L(d).deltaTK, 3)
-      row('ΔT' + SUB[k] + '/T' + SUB[k], '%', (d) => L(d).pct, 3, { pct: true })
-    }
-    row('ΔT/T 取大', '%', (d) => d.combinedPct, 3, { pct: true, strong: true })
-  }
-  if (any((d) => d.caseII)) {
-    grp('Case II 反向频段 · ΔTs')
-    row('频谱重叠', 'MHz', (d) => C2(d).overlapMHz, 3)
-    row('星间距离', 'km', (d) => C2(d).interSatKm, 1)
-    row('星间损耗 ls', 'dB', (d) => C2(d).lsDb, 2)
-    row('施扰卫星 EIRP 密度（朝受扰卫星）', 'dB(W/Hz)', (d) => C2(d).satEirpToSatDbWPerHz, 2)
-    row('受扰卫星接收增益（朝施扰卫星）', 'dBi', (d) => C2(d).g2ToSatDbi, 2)
-    row('ΔTs', 'K', (d) => C2(d).deltaTsK, 3)
-    row('ΔTs/Ts', '%', (d) => C2(d).dTsOverTsPct, 3, { pct: true })
-    if (any((d) => d.caseII && d.caseII.links.length)) row('ΔT/T 取大', '%', (d) => C2(d).combinedPct, 3, { pct: true, strong: true })
-  }
-  if (any((d) => d.esToEsOverlapMHz > 0)) row('地对地反向频谱重叠', 'MHz', (d) => d.esToEsOverlapMHz, 3)
-  return rows
-})
-
 const f = (v, n = 2) => (v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toFixed(n))
 // 页首输入带的一行摘要：站名在这里才有落点（它不进任何算式，是给人认站用的）
 const siteSummary = computed(() =>
@@ -405,11 +307,7 @@ const groupSections = computed(() =>
   SECTIONS.map((s) => ({ ...s, items: ngsoGroups.value.filter((g) => (g.kind || 'omm') === s.kind) })))
 
 // ─── 输入网格（ExcelGrid）：列定义与写值口径见 ciInputGrids.js；行对象形状不变 ───
-const enabledSources = () => asi.sources.filter((x) => x.enabled)
 const srcGrid = useCiGrid({ gridId: 'ci-src', list: () => asi.sources, cols: SRC_COLS, add: (at) => I.addSource(at), remove: (id) => I.removeSource(id) })
-// 上行两张：行 = 已启用的干扰星（派生），不增删行；撤销快照取整张干扰星表
-const explGrid = useCiGrid({ gridId: 'ci-expl', list: enabledSources, base: () => asi.sources, cols: EXPL_COLS })
-const peerGrid = useCiGrid({ gridId: 'ci-peer', list: enabledSources, base: () => asi.sources, cols: PEER_COLS })
 const ptGrid = useCiGrid({ gridId: 'ci-pts', list: () => cci.points, cols: PT_COLS, add: (at) => I.addCciPoint(at), remove: (id) => I.removeCciPoint(id) })
 // ─── C/CCI 复用方案：行 = 方向图的存活波束（计划映射 / 逐波束表 / 色号三种摆法，按当前着色来源出一张）+ 色号定义 ───
 const cciRowsList = () => I.cciRows.value
@@ -586,7 +484,7 @@ const run = () => {
       <!-- ── 本站与本链路 ──
            只在真吃这些量的两页出现，且逐项按模式开合（见文件头：为什么不再做常驻侧栏）。
            C/XPI 只用站址，那两格坐在它自己的取值按钮旁；C/CCI 一格都不需要。 -->
-      <section v-if="mode === 'asi' || mode === 'ap8' || mode === 'ngso'" class="ci-panel">
+      <section v-if="mode === 'asi' || mode === 'ngso'" class="ci-panel">
         <div class="ci-panel-hd">
           <h2>本站与本链路</h2>
           <span class="ci-hd-sum">{{ siteSummary }}</span>
@@ -607,7 +505,7 @@ const run = () => {
             <div class="srow"><label>频率</label><input v-model.number="site.rxFreqGHz" class="ci" type="number" step="0.01" /><span class="u">GHz</span></div>
           </div>
 
-          <div v-if="mode === 'asi' || mode === 'ap8'" class="ci-bcol">
+          <div v-if="mode === 'asi'" class="ci-bcol">
             <h3>发信链（上行）</h3>
             <div class="srow"><label>口径</label><input v-model.number="site.txDiameterM" class="ci" type="number" step="0.1" /><span class="u">m</span></div>
             <div class="srow"><label>效率</label><input v-model.number="site.txEfficiency" class="ci" type="number" /><span class="u">%</span></div>
@@ -618,13 +516,13 @@ const run = () => {
 
           <div class="ci-bcol">
             <h3>本链路载波</h3>
-            <div v-if="mode === 'asi' || mode === 'ap8'" class="srow"><label>卫星轨位</label><input v-model.number="carrier.satLonDeg" class="ci" type="number" step="0.1" /><span class="u">°E</span></div>
+            <div v-if="mode === 'asi'" class="srow"><label>卫星轨位</label><input v-model.number="carrier.satLonDeg" class="ci" type="number" step="0.1" /><span class="u">°E</span></div>
             <div class="srow"><label>EIRP</label><input v-model.number="carrier.eirpDbW" class="ci" type="number" step="0.1" /><span class="u">dBW</span></div>
             <div class="srow"><label>占用带宽</label><input v-model.number="carrier.bandwidthHz" class="ci" type="number" /><span class="u">Hz</span></div>
             <div class="srow"><label>下行极化</label>
               <select v-model="carrier.dnPolarization" class="ci"><option>H</option><option>V</option><option>L</option><option>R</option></select><span class="u"></span>
             </div>
-            <div v-if="mode === 'asi' || mode === 'ap8'" class="srow"><label>上行极化</label>
+            <div v-if="mode === 'asi'" class="srow"><label>上行极化</label>
               <select v-model="carrier.upPolarization" class="ci"><option>H</option><option>V</option><option>L</option><option>R</option></select><span class="u"></span>
             </div>
           </div>
@@ -676,20 +574,6 @@ const run = () => {
 
           <ExcelGrid class="ci-eg" :grid="srcGrid.g" :cols="SRC_COLS" :text="srcGrid.textOf" :row-class="offRow" :cell-tip="cellTipOf" :head-tip="headTip"
                      empty-text="暂无干扰星。" add-label="添加干扰星" del-label="删除所选行" @add="srcGrid.append()" />
-
-          <div class="ci-sub">
-            <h3>上行干扰源模型</h3>
-            <div class="ci-radios">
-              <label><input v-model="asi.uplinkMode" type="radio" value="peer" />对等站（工程估算）</label>
-              <label><input v-model="asi.uplinkMode" type="radio" value="mask" />S.524 掩模（监管上界）</label>
-              <label><input v-model="asi.uplinkMode" type="radio" value="explicit" />逐站给定</label>
-            </div>
-            <!-- 逐站给定：首版漏了这张表，导致该模式每条都因缺值被跳过、算不出数 -->
-            <ExcelGrid v-if="asi.uplinkMode === 'explicit'" class="ci-eg" :grid="explGrid.g" :cols="EXPL_COLS" :text="explGrid.textOf"
-                       :cell-class="roCellClass" :cell-tip="cellTipOf" :head-tip="headTip" empty-text="暂无已启用的干扰星。" />
-            <ExcelGrid v-if="asi.uplinkMode === 'peer'" class="ci-eg" :grid="peerGrid.g" :cols="PEER_COLS" :text="peerGrid.textOf"
-                       :cell-class="roCellClass" :cell-tip="cellTipOf" :head-tip="headTip" empty-text="暂无已启用的干扰星。" />
-          </div>
         </section>
 
         <section v-if="asi.result" class="ci-panel">
@@ -727,18 +611,15 @@ const run = () => {
 
               <h3>上行逐源明细</h3>
               <table class="ci-tb res">
-                <thead><tr><th>干扰源</th><th class="n">干扰站离轴角 °</th><th class="n">干扰密度 dBW/Hz</th><th>来源</th><th class="n">极化 dB</th><th class="n">C/I dB</th><th class="n">占比</th></tr></thead>
+                <thead><tr><th>干扰源</th><th class="n">离轴角 °</th><th class="n">离轴 EIRP 密度 dBW/Hz</th><th class="n">极化 dB</th><th class="n">C/I dB</th><th class="n">占比</th></tr></thead>
                 <tbody>
                   <tr
                     v-for="s in (asi.result.uplink && asi.result.uplink.sources) || []" :key="s.id + 'u'"
                     :class="{ hot: hoveredId === s.id }"
                     @mouseenter="I.setHover(s.id)" @mouseleave="I.setHover('')">
-                    <!-- 轨位标的是这一源所属的那颗干扰星（对等站模式下站址另有「站经度/站纬度」两列，别混） -->
-                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="该源所属干扰星的轨位（°E/°W；非干扰站站址经度）">{{ fSlot(s.lonDeg) }}</span></td>
-                    <!-- 施扰的是对方那座站：非共址时它看到的夹角与本站的拓扑角不是一个数 -->
+                    <td>{{ s.name }}<span v-if="fSlot(s.lonDeg)" class="ci-slot" title="该源所属干扰星的轨位（°E/°W）">{{ fSlot(s.lonDeg) }}</span></td>
                     <td class="num">{{ f(s.offAxisDeg) }}</td>
                     <td class="num">{{ f(s.interfererDensityDbWPerHz) }}</td>
-                    <td class="dim">{{ s.maskBand ? 'S.524 ' + s.maskBand : (s.peer ? '对等站 Ø' + f(s.peer.diameterM, 1) + ' m' + (s.peer.coLocated ? '（共址）' : '') : '给定') }}</td>
                     <!-- 上行比的是干扰载波的上行极化；悬停标出按哪个极化算的、是否由下行关系推定 -->
                     <td class="num" :title="upPolTip(s)">{{ f(s.polDb, 1) }}</td>
                     <td class="num">{{ f(s.ciDb) }}</td>
@@ -756,108 +637,12 @@ const run = () => {
         </section>
       </template>
 
-      <!-- ============ 协调触发（RR 附录 8）============
-           本网的站 / 星 / 载波取页首「本站与本链路」；这里只摆附录 8 另要的量。双向 ΔT/T 与附录 5 协调弧全在引擎（utils/itu/ap8.js）。 -->
+      <!-- ============ 协调触发（RR 附录 8 式(1)–(3)，同频段、同传输方向）============
+           本网（施扰，带撇号的量）对邻网（受扰）的 ΔT/T：公式即界面，入参只有原式里的量，见 CiAp8Formula。 -->
       <template v-else-if="mode === 'ap8'">
         <section class="ci-panel">
-          <div class="ci-panel-hd"><h2>协调触发（RR 附录 8）</h2></div>
-          <div class="ci-band ap8">
-            <div class="ci-bcol">
-              <h3>计算设置</h3>
-              <div class="srow" :title="AP8_GEOM_TIP"><label>几何口径</label>
-                <select v-model="ap8.geometry" class="ci"><option value="rule">附件 1/2 公式</option><option value="wgs84">WGS84</option></select><span class="u"></span>
-              </div>
-              <div class="srow" title="本网服务区所在 ITU 区域，查附录 5 表 5-1 No.9.7 协调弧用"><label>ITU 区域</label>
-                <select v-model.number="ap8.region" class="ci"><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option></select><span class="u"></span>
-              </div>
-              <div class="srow" title="RR 附录 8 §2.2.3：仅在双方主管部门同意并已申报极化时计入"><label class="ci-chk"><input v-model="ap8.applyPolarization" type="checkbox" />计入极化隔离 Y</label></div>
-            </div>
-
-            <div class="ci-bcol">
-              <h3>本网</h3>
-              <div class="srow" :title="EW_TOL_TIP"><label>东西保持</label><input v-model="ap8.ownTolDeg" class="ci" type="number" step="0.01" min="0" /><span class="u">±°</span></div>
-              <div class="srow"><label>上行频段</label><span class="ci-range"><input v-model="ap8.ownUpLo" class="ci" type="number" step="0.001" :placeholder="phBand(site.txFreqGHz, -1)" /><i>–</i><input v-model="ap8.ownUpHi" class="ci" type="number" step="0.001" :placeholder="phBand(site.txFreqGHz, 1)" /></span><span class="u">GHz</span></div>
-              <div class="srow"><label>下行频段</label><span class="ci-range"><input v-model="ap8.ownDnLo" class="ci" type="number" step="0.001" :placeholder="phBand(site.rxFreqGHz, -1)" /><i>–</i><input v-model="ap8.ownDnHi" class="ci" type="number" step="0.001" :placeholder="phBand(site.rxFreqGHz, 1)" /></span><span class="u">GHz</span></div>
-              <div class="srow" :title="AP4_PE_TIP"><label>发端功率密度</label><input v-model="ap8.ownPeDbWPerHz" class="ci" type="number" step="0.1" placeholder="按功放折算" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="本星朝邻网收端站方向的最大 EIRP 密度（附录 8 的 ps·g3）"><label>卫星 EIRP 密度</label><input v-model="ap8.ownSatEirpDen" class="ci" type="number" step="0.1" placeholder="按本链路载波" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="本星 EIRP 方向图（dBW）：在邻网收端站处取值，按占用带宽折成 EIRP 密度填入上一格"><label>EIRP 方向图</label>
-                <select v-model="ap8.grdKey" class="ci">
-                  <option value="">—</option>
-                  <option v-for="a in grdAntennas" :key="a.key" :value="a.key">{{ a.label }} · {{ a.origin }}</option>
-                </select>
-                <button class="ci-btn" :disabled="busy || !ap8.grdKey" @click="I.sampleAp8EirpFromGrd()">取值</button>
-              </div>
-              <div class="srow" title="本星朝邻网发端站方向的接收增益（附录 8 的 g2）"><label>卫星接收增益</label><input v-model="ap8.ownSatRxGainDbi" class="ci" type="number" step="0.1" placeholder="同邻星" /><span class="u">dBi</span></div>
-              <div class="srow" title="本星接收 G/T，与接收增益一起反解卫星接收系统噪温 Ts"><label>卫星 G/T</label><input v-model="ap8.ownSatGt" class="ci" type="number" step="0.1" placeholder="同邻星" /><span class="u">dB/K</span></div>
-              <div class="srow" title="本站接收系统噪温（附录 8 的 Te）"><label>收端站噪温</label><input v-model="ap8.ownTeK" class="ci" type="number" step="1" /><span class="u">K</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>γ₁</label><input v-model="ap8.ownG1" class="ci" type="number" step="0.1" /><span class="u">dB</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>T₁</label><input v-model="ap8.ownT1" class="ci" type="number" step="1" placeholder="Te + γ·Ts" /><span class="u">K</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>γ₂</label><input v-model="ap8.ownG2" class="ci" type="number" step="0.1" /><span class="u">dB</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>T₂</label><input v-model="ap8.ownT2" class="ci" type="number" step="1" placeholder="Te + γ·Ts" /><span class="u">K</span></div>
-              <div class="srow" :title="REGEN_TIP"><label class="ci-chk"><input v-model="ap8.ownRegen" type="checkbox" />星上再生</label></div>
-            </div>
-
-            <div class="ci-bcol">
-              <h3>邻网</h3>
-              <div class="srow"><label>卫星轨位</label><input v-model.number="asi.coordLonDeg" class="ci" type="number" step="0.1" /><span class="u">°E</span></div>
-              <div class="srow" :title="EW_TOL_TIP"><label>东西保持</label><input v-model="ap8.otherTolDeg" class="ci" type="number" step="0.01" min="0" /><span class="u">±°</span></div>
-              <div class="srow"><label>上行频段</label><span class="ci-range"><input v-model="ap8.otherUpLo" class="ci" type="number" step="0.001" placeholder="同本网" /><i>–</i><input v-model="ap8.otherUpHi" class="ci" type="number" step="0.001" placeholder="同本网" /></span><span class="u">GHz</span></div>
-              <div class="srow"><label>下行频段</label><span class="ci-range"><input v-model="ap8.otherDnLo" class="ci" type="number" step="0.001" placeholder="同本网" /><i>–</i><input v-model="ap8.otherDnHi" class="ci" type="number" step="0.001" placeholder="同本网" /></span><span class="u">GHz</span></div>
-              <div class="srow"><label>上行极化</label>
-                <select v-model="ap8.otherUpPol" class="ci"><option value="">同本网</option><option>H</option><option>V</option><option>L</option><option>R</option></select><span class="u"></span>
-              </div>
-              <div class="srow"><label>下行极化</label>
-                <select v-model="ap8.otherDnPol" class="ci"><option value="">同本网</option><option>H</option><option>V</option><option>L</option><option>R</option></select><span class="u"></span>
-              </div>
-              <div class="srow" :title="AP4_PE_TIP"><label>发端功率密度</label><input v-model="ap8.otherPeDbWPerHz" class="ci" type="number" step="0.1" placeholder="同本网" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="邻星朝本站方向的最大 EIRP 密度（附录 8 的 p′s·g′3）；留空取干扰星表中同轨位一行的下行 EIRP 密度"><label>卫星 EIRP 密度</label><input v-model="ap8.otherSatEirpDen" class="ci" type="number" step="0.1" placeholder="按干扰星表" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="邻星朝本站方向的接收增益（附录 8 的 g′2）"><label>卫星接收增益</label><input v-model.number="asi.coordRxGain" class="ci" type="number" step="0.1" /><span class="u">dBi</span></div>
-              <div class="srow" title="邻星接收 G/T，与接收增益一起反解卫星接收系统噪温 T′s"><label>卫星 G/T</label><input v-model.number="asi.coordGoverT" class="ci" type="number" step="0.1" /><span class="u">dB/K</span></div>
-              <div class="srow"><label>地球站口径</label><input v-model="ap8.otherDiameterM" class="ci" type="number" step="0.1" placeholder="同本站" /><span class="u">m</span></div>
-              <div class="srow"><label>地球站效率</label><input v-model="ap8.otherEfficiency" class="ci" type="number" step="1" placeholder="同本站" /><span class="u">%</span></div>
-              <div class="srow" title="邻网收端站的主瓣增益（申报只给增益时填）；口径留空则按附录 8 附件 3 脚注 4 由增益估 D/λ（20lg(D/λ) ≈ Gmax − 7.7）"><label>收端站增益</label><input v-model="ap8.otherRxGainDbi" class="ci" type="number" step="0.1" placeholder="按口径与效率" /><span class="u">dBi</span></div>
-              <div class="srow"><label>地球站经度</label><input v-model="ap8.otherLon" class="ci" type="number" step="0.0001" placeholder="同本站" /><span class="u">°E</span></div>
-              <div class="srow"><label>地球站纬度</label><input v-model="ap8.otherLat" class="ci" type="number" step="0.0001" placeholder="同本站" /><span class="u">°N</span></div>
-              <div class="srow" title="邻网收端站接收系统噪温（附录 8 的 T′e）"><label>收端站噪温</label><input v-model="ap8.otherTeK" class="ci" type="number" step="1" placeholder="同本站" /><span class="u">K</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>γ₁</label><input v-model="ap8.otherG1" class="ci" type="number" step="0.1" /><span class="u">dB</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>T₁</label><input v-model="ap8.otherT1" class="ci" type="number" step="1" placeholder="Te + γ·Ts" /><span class="u">K</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>γ₂</label><input v-model="ap8.otherG2" class="ci" type="number" step="0.1" /><span class="u">dB</span></div>
-              <div class="srow" :title="AP8_LINK_TIP"><label>T₂</label><input v-model="ap8.otherT2" class="ci" type="number" step="1" placeholder="Te + γ·Ts" /><span class="u">K</span></div>
-              <div class="srow" :title="REGEN_TIP"><label class="ci-chk"><input v-model="ap8.otherRegen" type="checkbox" />星上再生</label></div>
-            </div>
-
-            <div class="ci-bcol">
-              <h3>反向频段（Case II）</h3>
-              <div class="srow" title="本星朝邻星方向的 EIRP 密度（附录 8 的 ps·g3(ηs′)）"><label>本星 EIRP 密度</label><input v-model="ap8.ownSatEirpToSat" class="ci" type="number" step="0.1" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="本星朝邻星方向的接收增益（附录 8 的 g2(δs′)）"><label>本星接收增益</label><input v-model="ap8.ownSatRxGainToSat" class="ci" type="number" step="0.1" /><span class="u">dBi</span></div>
-              <div class="srow" title="邻星朝本星方向的 EIRP 密度（附录 8 的 p′s·g′3(ηs)）"><label>邻星 EIRP 密度</label><input v-model="ap8.otherSatEirpToSat" class="ci" type="number" step="0.1" /><span class="u">dB(W/Hz)</span></div>
-              <div class="srow" title="邻星朝本星方向的接收增益（附录 8 的 g′2(δs)）"><label>邻星接收增益</label><input v-model="ap8.otherSatRxGainToSat" class="ci" type="number" step="0.1" /><span class="u">dBi</span></div>
-            </div>
-          </div>
-        </section>
-
-        <section v-if="ap8.result" class="ci-panel">
-          <h2>结果<span v-if="stale.ap8" class="ci-stale" :title="STALE_TIP">输入已变</span></h2>
-          <div class="ci-kpis">
-            <div class="ci-kpi" :title="ap8MethodTip(ap8.result.ownToOther)"><span>本网 → 邻网 ΔT′/T′</span><b :class="{ 'st-bad': ap8.result.ownToOther.exceeds }">{{ f(ap8.result.ownToOther.headlinePct, 3) }}</b><i>%</i></div>
-            <div class="ci-kpi" :title="ap8MethodTip(ap8.result.otherToOwn)"><span>邻网 → 本网 ΔT/T</span><b :class="{ 'st-bad': ap8.result.otherToOwn.exceeds }">{{ f(ap8.result.otherToOwn.headlinePct, 3) }}</b><i>%</i></div>
-            <div class="ci-kpi"><span>轨位差</span><b :class="{ 'st-bad': ap8.result.arc.within }">{{ f(ap8.result.lonDiffDeg, 3) }}</b><i>°</i></div>
-            <div class="ci-kpi" :title="ap8ArcTip"><span>协调弧 No.9.7</span><b>{{ ap8.result.arc.maxArcDeg == null ? '—' : '±' + ap8.result.arc.maxArcDeg }}</b><i>°</i></div>
-            <div class="ci-kpi" title="计入两星东西保持容差后的地心角"><span>地心角 θg</span><b>{{ f(ap8.result.thetaGDeg, 3) }}</b><i>°</i></div>
-            <div class="ci-kpi"><span>地球站方向图</span><b class="sm">{{ patLabel(ap8.result.pattern) }}</b></div>
-          </div>
-          <table class="ci-tb res ap8">
-            <thead><tr><th></th><th class="n">本网 → 邻网</th><th class="n">邻网 → 本网</th></tr></thead>
-            <tbody>
-              <template v-for="(r, i) in ap8Rows" :key="i">
-                <tr v-if="r.grp" class="grp"><th colspan="3">{{ r.label }}</th></tr>
-                <tr v-else :class="{ strong: r.strong }">
-                  <th>{{ r.label }}<span v-if="r.unit" class="ci-unit">{{ r.unit }}</span></th>
-                  <td v-for="(c, j) in r.cells" :key="j" class="num" :class="{ 'st-bad': c.bad }" :title="c.title || null">{{ c.text }}</td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
+          <div class="ci-panel-hd"><h2>协调触发（RR 附录 8 · 同频段、同传输方向）</h2></div>
+          <CiAp8Formula :p="ap8" :r="ap8.result" />
         </section>
       </template>
 
@@ -1808,20 +1593,5 @@ const run = () => {
 .ci-hit .dl { color: var(--accent); font-variant-numeric: tabular-nums; }
 .ci-hit .incl { padding: 0 4px; font-size: var(--fs-1); color: var(--warn); border: 1px solid currentColor; border-radius: var(--r-box); }
 .ci-btn.on { background: var(--surface-2); border-color: var(--border-strong); font-weight: 600; }
-
-/* 结果区超门限只着色（RR 附录 8 的 6% 等），不出文字判定 */
-.ci-tb td.st-bad, .ci-kpi b.st-bad { color: var(--danger); font-weight: 700; }
-/* 协调触发页：频段起止两格并排在一个参数行的控件位里 */
-.ci-range { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
-.ci-range > input.ci { flex: 1 1 0; min-width: 0; }
-.ci-range > i { font-style: normal; color: var(--text-faint); }
-.ci-band.ap8 { grid-template-columns: repeat(auto-fill, minmax(260px, 300px)); }
-.ci-band.ap8 .srow { --srow-lab: 84px; }
-/* 单位列等宽（dB(W/Hz) 与 m 混排时输入框右沿对齐）；方向图下拉与「取值」同一行，下拉让出宽度 */
-.ci-band.ap8 .srow > .u { min-width: 58px; }
-.ci-band.ap8 .srow select { min-width: 0; }
-/* 协调触发明细表：段名行压一条栏目线，量名后的单位压暗一档 */
-.ci-tb.res tr.grp th { padding-top: 8px; font-weight: 700; color: var(--text); border-bottom-color: var(--lb-rule); }
-.ci-tb .ci-unit { margin-left: 6px; font-size: .87em; font-weight: 400; color: var(--text-faint); }
 
 </style>
