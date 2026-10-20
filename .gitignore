@@ -387,3 +387,6 @@ build/review/
 .refaxharness/
 # 滑杆配数值框验证台（rangeField.js + controls.css「滑杆配数值框」一节）：preview_start rnum-harness
 .rnumharness/
+
+# 时区图层构建的原始件缓存（TBB 2026e / tzdata 2026.5 / NE 10m 日界线与时区面，约 47 MB），npm run tz:build 首次运行时下载并核 sha256，不进仓库
+.tz-src/
