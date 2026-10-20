@@ -140,6 +140,7 @@
     "packages/core/test/patFormats.test.mjs",
     "packages/core/test/satGroupReconcile.test.mjs",
     "packages/core/test/povInvariants.test.mjs",
+    "packages/core/test/povOwnerAt.test.mjs",
     "packages/core/test/mapAnnotations.test.mjs",
     "packages/core/test/coordFormat.test.mjs",
     "packages/core/test/imageryOrient.test.mjs",

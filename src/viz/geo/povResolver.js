@@ -284,37 +284,61 @@ export function resolvedLines(detail) {
 }
 
 // ---------- 点选 ----------
-// 经度差 → (-180, 180] 内的最短夹角（带符号）
+// 经度差 → [-180, 180) 内的最短夹角（带符号）
 const dlon = (l, ref) => ((l - ref + 540) % 360 + 360) % 360 - 180
 // 多边形（外环+洞）偶奇判定：环上各点先转成以 ref 为锚点的「连续展开」本地 x —— 逐点用与上一点的
 // 最短夹角累加，而非各自独立对 ref 取模。独立取模时，测试点的对跖经线正好穿过该国国土（如堪萨斯↔中国西部）
 // 会把环切成跳变的两段，射线交叉数算错、误判成毫不相关的国家。
+// ★ 射线起点取查询点落在本环展开区间 [lo, lo+360) 里的那个副本 x0，不是死守 0：普通的环宽不到 180°，
+//   点在环内时 0 本来就落在区间里（x0 = 0，与原先逐位相同）；南极本土环横跨满 360°，查询点离环起点
+//   超过 180° 时整段展开区间错开一圈、0 落到区间外 —— 10m 东经 128° 以东、50m 东经 123° 以东、110m 整个
+//   东半球的南极内陆曾经全判成「不在任何单元内」。
+// ★ 展开后首尾差一整圈（绕极一周、环自己没走极点那一段）的，沿极点补两条经线收口：110m 的南极环贴 −90°
+//   只有一条 180 → −180 的边，最短夹角为 0，展开后闭不上。收口口径同 globe3d/antarctica.js 的
+//   antarcticaFillRings（2D / 3D 画南极洲用的就是它）。10m / 50m 的环自己沿 −90° 逐点走了一圈，首尾差为 0。
 function hitPolygon(rings, lon, lat) {
   let inside = false
   for (const ring of rings) {
     const n = ring.length
     const xs = new Array(n)
-    xs[0] = dlon(ring[0][0], lon)
-    for (let k = 1; k < n; k++) xs[k] = xs[k - 1] + dlon(ring[k][0], ring[k - 1][0])
+    let lo = xs[0] = dlon(ring[0][0], lon)
+    for (let k = 1; k < n; k++) { xs[k] = xs[k - 1] + dlon(ring[k][0], ring[k - 1][0]); if (xs[k] < lo) lo = xs[k] }
+    const x0 = lo + ((-lo % 360) + 360) % 360
     for (let i = 0, j = n - 1; i < n; j = i++) {
       const yi = ring[i][1], yj = ring[j][1]
       if ((yi > lat) === (yj > lat)) continue
-      if (xs[i] + (lat - yi) / (yj - yi) * (xs[j] - xs[i]) > 0) inside = !inside
+      if (xs[i] + (lat - yi) / (yj - yi) * (xs[j] - xs[i]) > x0) inside = !inside
+    }
+    if (Math.abs(xs[n - 1] - xs[0]) > 180) {
+      // 环首尾同点同纬度：末点经线 → 极点 → 起点经线，两条经线各算一次穿越
+      const y = ring[0][1], py = y < 0 ? -90 : 90
+      if ((y > lat) !== (py > lat)) {
+        if (xs[n - 1] > x0) inside = !inside
+        if (xs[0] > x0) inside = !inside
+      }
     }
   }
   return inside
 }
 // 经纬度 → { u, owner, n3, zh, en }；不在任何单元内返回 null。
-// 先扫争议单元（更小更具体，与「盖在上面」的绘制顺序一致），再扫基础单元。
+// 先扫争议单元（更小更具体），再扫基础单元。点到的必须是地图上画出来的那一层：
+// ★ 争议单元【倒序】扫：resolvedFeatures 按数组次序画叠加面、后画的盖住先画的 —— 50m 的谢巴农场（NE-B58）
+//   落在戈兰高地（IL-GOL）里，顺序扫先命中戈兰，地图上画的却是黎巴嫩。
+// ★ 与宿主同归属的叠加 resolvedFeatures 不画（「盖了也白盖」），这里同样跳过，落到画在它底下的那层：
+//   它不画、却会挡住底下那层 —— 50m 的 NE-B91（归以色列、宿主以色列）也落在戈兰高地里，中国视角下戈兰画成叙利亚，
+//   只倒序不跳过就会点成以色列。'disputed' 不在此列：争议面画的是宿主色加未定界虚线，点到它照旧返回 'disputed'。
 export function ownerAt(lon, lat, detail) {
   const b = B(detail)
   if (lat <= -85) return pack('ATA', 'ATA', b)      // 南极数据止于约 −85°，极冠直接判南极洲
+  const n = b.units.length
   for (const pass of [true, false]) {
-    for (let i = 0; i < b.units.length; i++) {
+    for (let s = 0; s < n; s++) {
+      const i = pass ? n - 1 - s : s
       const f = b.units[i], p = f.properties
       if (!!p.dispute !== pass) continue
       const own = ownerOf(p.u, detail)
       if (!own || own === 'none') continue
+      if (pass && p.host && own !== 'disputed' && own === ownerOf(p.host, detail)) continue
       const polys = polysOf(f.geometry), bounds = b.lat[i]
       for (let k = 0; k < polys.length; k++) {
         const bb = bounds[k]
