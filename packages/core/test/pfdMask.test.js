@@ -1140,7 +1140,7 @@ console.log('\n--- X 组：星上方向图（对齐 PMGT 屏3 的下拉） ---')
 
   // ── 主进程三条 IPC（pfd:generate / cancel / files）：register.js 的 PFD 段原样取出，配假 ipcMain / webContents 跑
   {
-    const reg = fs.readFileSync(path.join(__dirname, '../../../electron/ipc/register.js'), 'utf8');
+    const reg = fs.readFileSync(path.join(__dirname, '../../../electron/ipc/register.js'), 'utf8').replace(/\r\n/g, '\n');   // autocrlf 检出为 CRLF 时按 \n 定段界
     const a = reg.indexOf('// ---- PFD Mask 生成（ITU-R S.1503）');
     const fi = reg.indexOf("ipcMain.handle('pfd:files'", a);
     const b = fi < 0 ? -1 : reg.indexOf('\n  })\n', fi);

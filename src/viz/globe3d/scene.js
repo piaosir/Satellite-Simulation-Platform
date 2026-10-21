@@ -12,6 +12,8 @@ import { ENV_R, envSphereParams } from '../env/envSphere.js'
 import { ARCTIC_ISLAND_LAT, landColors, setLandPalette, getLandPalette } from '../landPalette.js'
 // 注记描边色/粗细随底色现算：与 2D 平面图共用单一来源
 import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
+// 时区图层的配色 / 墨色档（与 2D 共用一份）
+import { tzInkFor, TZ_W } from '../geo/tzStyle.js'
 // 底图不再是「一份画好的国界」：面/线/标注/点选全部由主权解算层按归属实时算出（视角 = 一张归属表）
 import { resolvedFeatures, resolvedLines, labelSet, ensureDetail, hasDetail, onPovChange } from '../geo/povResolver.js'
 // 边界线显示规范（渲染次序 / 出厂样式 / 线型的屏幕像素图案 / 缩放淡出）：与 2D 平面图共用同一份
@@ -1341,6 +1343,7 @@ export function createGlobeScene(container, quality = {}) {
   function refreshHalo() {
     if (haloKey() === haloNow) return
     rebuildLabels()
+    if (tzSpec3) { tzFillVer = -1; tzLineVer = -1; tzLabelVer = -1; setTzLayer(tzSpec3) }   // 时区层的墨色随底图明度两档
     if (lastProvData) setProvinces(lastProvData)
     if (lastCityData) setCities(lastCityData)
   }
@@ -2799,6 +2802,281 @@ export function createGlobeScene(container, quality = {}) {
     envLineGroup = g; scene.add(g)
   }
   function clearEnv() { clearEnvRaster(); clearEnvContours() }
+
+  // ===== 时区图层（地图综合设置「时区」分区；核心 ../geo/tzLayer.js，宿主 env/useTzLayer.js 推 spec）=====
+  // 体例照 CIA 时区图（配色见 ../geo/tzStyle.js）：陆地按时区实色铺满、海区按航海带浅调铺满（球面上是一瓣瓣的经度带）。
+  // 色块：一张网格，逐面三角化按多边形缓存（偏移变了只是换一组面重拼 + 换色，三角化不重做）；半径 TZ_FILL_R、
+  //   renderOrder 4.4 —— 压在环境场贴图球（4.5）之下，与 2D「色块进静态快照、环境场栅格每帧压在上面」同一层序。
+  //   半点区（印度 / 伊朗…）屏幕空间 45° 斜纹，与 2D 同一体例。
+  // 界线：四类粗线（海上分界 / 陆上时区界 / 描亮外轮廓 / 日界线）压在国界之上、岛链之下。
+  // 标注：屏幕恒定字号的精灵，接进地名避让（与岛链名同一层级、先于底图地名）；时刻文字随仿真时钟重烘（≤ 1 Hz）。
+  // 悬停：与光标处同偏移的全部区域勾外轮廓（白衬 + 深线），宿主 setTzHover 推几何。
+  // ★ 半径与细分成对：色块最长边细分到 ≤2°，弦下垂 ≈ 1.5e-4，最低点仍高于陆地网格（1.0），不与陆地互穿出摩尔纹。
+  const TZ_FILL_R = 1.0003, TZ_LINE_R = 1.00062, TZ_SEG = 2
+  const TZ_ORDER = { sea: 6.705, land: 6.71, hi: 6.72, idl: 6.73, hover: 6.74 }   // 国界 6.70 之上、岛链 6.75 之下
+  const TZ_PX1 = 14, TZ_PX2 = 11                         // 标注两行的屏幕字号（与 2D 同）
+  let tzSpec3 = null, tzFillMesh = null, tzFillVer = -1, tzLineGroup = null, tzLineVer = -1
+  let tzLabelGroup = null, tzLabelVer = -1, tzLabelTimer = 0, tzLabelAt = 0, tzLabelsRef = null
+  let tzHoverGroup = null
+  const tzTexCache = new Map()                           // 标注纹理按文字共用（同一个「+8」全球只烘一张；材质逐精灵，地平淡出各管各）
+  const TZ_SAME_GAP = 170                                // 同一连通区里的时区号在屏上至少隔这么远（px）才再标一处
+  let tzTri = new WeakMap()                              // 多边形（tzLayer 缓存的环数组）→ 三角化结果
+  const tzInk3 = () => tzInkFor(imageryOn, landBg(), tzSpec3 && tzSpec3.style ? tzSpec3.style.fillAlpha || 0 : 0)
+  const TZ_FILL_MAT = new THREE.ShaderMaterial({
+    // uAlpha = 色块不透明度：顶点色只记 0 / 1（有没有这一色），不透明度走 uniform —— 拖滑杆不重拼网格
+    uniforms: { uPeriod: { value: 12.0 }, uAlpha: { value: 1.0 } },
+    vertexShader: `attribute vec4 aC1; attribute vec4 aC2; varying vec4 vC1; varying vec4 vC2;
+      void main() { vC1 = aC1; vC2 = aC2; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform float uPeriod; uniform float uAlpha; varying vec4 vC1; varying vec4 vC2;
+      void main() {
+        vec4 c = vC1;
+        if (vC2.a > 0.0 && mod(gl_FragCoord.x + gl_FragCoord.y, uPeriod) > uPeriod * 0.5) c = vC2;
+        c.a *= uAlpha;
+        if (c.a <= 0.0) discard;
+        gl_FragColor = c;
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthWrite: false, side: THREE.FrontSide
+  })
+  // 一个多边形（[外环, 洞…]，经纬）→ 球面三角网（位置 Float32、索引 Uint32），按 ≤2° 细分（与陆地网格同一做法）
+  function tzTriangulate(poly) {
+    let t = tzTri.get(poly)
+    if (t) return t
+    const uw = poly.map(unwrapRing)
+    const meanLon = (r) => { let s = 0; for (const p of r) s += p[0]; return s / r.length }
+    const om = meanLon(uw[0])
+    for (let i = 1; i < uw.length; i++) { const k = Math.round((om - meanLon(uw[i])) / 360); if (k) for (const p of uw[i]) p[0] += k * 360 }
+    const flat = [], holes = []
+    for (let r = 0; r < uw.length; r++) { if (r > 0) holes.push(flat.length / 2); for (const p of uw[r]) flat.push(p[0], p[1]) }
+    const tri = earcut(flat, holes)
+    const pts = []; for (let i = 0; i < flat.length; i += 2) pts.push([flat[i], flat[i + 1]])
+    const mids = new Map(), idx = []
+    const mid = (a, b) => {
+      const k = a < b ? a + ',' + b : b + ',' + a
+      let m = mids.get(k)
+      if (m === undefined) { m = pts.length; pts.push([(pts[a][0] + pts[b][0]) / 2, (pts[a][1] + pts[b][1]) / 2]); mids.set(k, m) }
+      return m
+    }
+    const d = (a, b) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1])
+    const emit = (a, b, c, depth) => {   // 按边长细分：相邻三角形共用边的切分点一致，无 T 形缝
+      const sAB = d(a, b) > TZ_SEG, sBC = d(b, c) > TZ_SEG, sCA = d(c, a) > TZ_SEG
+      if ((!sAB && !sBC && !sCA) || depth >= 14) { idx.push(a, b, c); return }
+      const n = depth + 1
+      if (sAB && sBC && sCA) { const x = mid(a, b), y = mid(b, c), z = mid(c, a); emit(a, x, z, n); emit(x, b, y, n); emit(z, y, c, n); emit(x, y, z, n); return }
+      if (sAB && !sBC && !sCA) { const m = mid(a, b); emit(a, m, c, n); emit(m, b, c, n); return }
+      if (sBC && !sAB && !sCA) { const m = mid(b, c); emit(b, m, a, n); emit(m, c, a, n); return }
+      if (sCA && !sAB && !sBC) { const m = mid(c, a); emit(c, m, b, n); emit(m, a, b, n); return }
+      if (!sCA) { const m1 = mid(a, b), m2 = mid(b, c); emit(a, m1, m2, n); emit(a, m2, c, n); emit(m1, b, m2, n); return }
+      if (!sAB) { const m1 = mid(b, c), m2 = mid(c, a); emit(b, m1, m2, n); emit(b, m2, a, n); emit(m1, c, m2, n); return }
+      const m1 = mid(c, a), m2 = mid(a, b); emit(c, m1, m2, n); emit(c, m2, b, n); emit(m1, a, m2, n)
+    }
+    for (let i = 0; i < tri.length; i += 3) emit(tri[i], tri[i + 1], tri[i + 2], 0)
+    const pos = new Float32Array(pts.length * 3)
+    for (let i = 0; i < pts.length; i++) {
+      const q = llaToVec(pts[i][1], pts[i][0], 0).multiplyScalar(TZ_FILL_R)
+      pos[i * 3] = q.x; pos[i * 3 + 1] = q.y; pos[i * 3 + 2] = q.z
+    }
+    t = { pos, idx: new Uint32Array(idx) }
+    tzTri.set(poly, t)
+    return t
+  }
+  function tzClearFill() {
+    if (tzFillMesh) { scene.remove(tzFillMesh); tzFillMesh.geometry.dispose(); tzFillMesh = null }
+    tzFillVer = -1
+  }
+  const _tzCol = new THREE.Color()
+  function tzLinearRGBA(hex, a) { _tzCol.set(hex); return [_tzCol.r, _tzCol.g, _tzCol.b, a] }
+  function tzBuildFill() {
+    tzClearFill()
+    const S = tzSpec3
+    if (!S) return
+    tzFillVer = S.geomVer                 // 没有色块要画也记下版本：同一份几何不再反复进来
+    if (!S.fills || !S.fills.length) return
+    let nv = 0, ni = 0
+    const parts = []
+    for (const g of S.fills) for (const poly of g.polys) { const t = tzTriangulate(poly); parts.push([g, t]); nv += t.pos.length / 3; ni += t.idx.length }
+    if (!nv) return
+    const pos = new Float32Array(nv * 3), c1 = new Float32Array(nv * 4), c2 = new Float32Array(nv * 4), index = new Uint32Array(ni)
+    let vo = 0, io = 0
+    for (const [g, t] of parts) {
+      const a = tzLinearRGBA(g.color, 1)                          // 不透明度在 uAlpha 里（见 TZ_FILL_MAT）
+      const b = g.hatch ? tzLinearRGBA(g.hatch, 1) : [0, 0, 0, 0]
+      const n = t.pos.length / 3
+      pos.set(t.pos, vo * 3)
+      for (let i = 0; i < n; i++) { c1.set(a, (vo + i) * 4); c2.set(b, (vo + i) * 4) }
+      for (let i = 0; i < t.idx.length; i++) index[io + i] = t.idx[i] + vo
+      vo += n; io += t.idx.length
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    geo.setAttribute('aC1', new THREE.BufferAttribute(c1, 4))
+    geo.setAttribute('aC2', new THREE.BufferAttribute(c2, 4))
+    geo.setIndex(new THREE.BufferAttribute(index, 1))
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1.01)
+    tzFillMesh = new THREE.Mesh(geo, TZ_FILL_MAT)
+    tzFillMesh.renderOrder = 4.4; tzFillMesh.frustumCulled = false
+    // 斜纹周期按 CSS 像素恒 12（gl_FragCoord 是渲染像素）：每次出帧前按当时的渲染倍率换算 —— 画质档、截图超采样换倍率都跟得上
+    tzFillMesh.onBeforeRender = (r) => {
+      const v = 12.0 * r.getPixelRatio()
+      if (TZ_FILL_MAT.uniforms.uPeriod.value !== v) { TZ_FILL_MAT.uniforms.uPeriod.value = v; TZ_FILL_MAT.uniformsNeedUpdate = true }
+    }
+    scene.add(tzFillMesh)
+  }
+  // 线：四类各一个 LineSegments2（实线，不随缩放重切）
+  function tzClearLines() {
+    if (!tzLineGroup) return
+    tzLineGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(tzLineGroup); tzLineGroup = null; tzLineVer = -1
+  }
+  function tzLinePos(polys) {
+    const sink = createSink()
+    for (const poly of polys) {
+      const line = densifyLonLat(poly)
+      if (line.length < 2) continue
+      const vs = line.map((q) => llaToVec(q[1], q[0], 0).multiplyScalar(TZ_LINE_R))
+      pushStripSegs(sink, densifyArc(vs))
+    }
+    return sink.view()
+  }
+  function tzBuildLines() {
+    tzClearLines()
+    const S = tzSpec3
+    if (!S) return
+    tzLineVer = S.geomVer
+    if (!S.lines) return
+    const ink = tzInk3()
+    const sty = {
+      sea: { color: ink.sea, width: TZ_W.sea, alpha: 1 },
+      land: { color: ink.land, width: TZ_W.land, alpha: 1 },
+      hi: { color: ink.hi, width: TZ_W.hi, alpha: 0.85 },
+      idl: { color: ink.idl, width: TZ_W.idl, alpha: 1 }
+    }
+    const g = new THREE.Group()
+    for (const cls of ['sea', 'land', 'hi', 'idl']) {
+      const src = S.lines[cls] || []
+      if (!src.length) continue
+      const st = sty[cls]
+      g.add(fatSegments(tzLinePos(src), new THREE.Color(st.color), Math.max(0.1, st.width), st.alpha, TZ_ORDER[cls]))
+    }
+    tzLineGroup = g; scene.add(g)
+  }
+  // 悬停外轮廓：白衬 + 深线两条（同一份几何），压在全部时区线之上
+  function tzClearHover() {
+    if (!tzHoverGroup) return
+    tzHoverGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); o.material.dispose() } })
+    scene.remove(tzHoverGroup); tzHoverGroup = null
+  }
+  function setTzHover(h) {
+    tzClearHover()
+    if (h && h.lines && h.lines.length && tzSpec3) {
+      const pos = tzLinePos(h.lines)
+      const g = new THREE.Group()
+      g.add(fatSegments(pos, new THREE.Color('#ffffff'), TZ_W.hover + 2.4, 0.92, TZ_ORDER.hover))
+      g.add(fatSegments(pos.slice(), new THREE.Color(tzInk3().hi), TZ_W.hover, 1, TZ_ORDER.hover + 0.001))
+      tzHoverGroup = g; scene.add(g)
+    }
+    invalidate()
+  }
+  // 标注精灵：两行（偏移 / 星期 + 时分），字面与套边一起烘进纹理（关 mipmap，否则会糊）
+  function tzLabelTex(t1, t2, bold, sea) {
+    const ink = tzInk3()
+    const f1 = 44, f2 = 40, pad = 10
+    const c = document.createElement('canvas')
+    let g = c.getContext('2d')
+    const font1 = `${bold ? 'bold ' : ''}${f1}px ${UI_FONT}`, font2 = `${bold ? 'bold ' : ''}${f2}px ${UI_FONT}`
+    g.font = font1; const w1 = g.measureText(t1).width
+    g.font = font2; const w2 = t2 ? g.measureText(t2).width : 0
+    c.width = Math.ceil(Math.max(w1, w2)) + pad * 2
+    c.height = Math.ceil(t2 ? f1 + f2 * 1.05 : f1) + pad * 2
+    g = c.getContext('2d')
+    g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round'; g.miterLimit = 2
+    const halo = ink.halo || curHalo()
+    const line = (t, f, font, y, col) => { g.font = font; g.lineWidth = Math.max(2, f * 0.16); g.strokeStyle = halo; g.strokeText(t, c.width / 2, y); g.fillStyle = col; g.fillText(t, c.width / 2, y) }
+    const c1 = sea ? ink.sub : ink.text
+    if (t2) { line(t1, f1, font1, pad + f1 * 0.5, c1); line(t2, f2, `${f2}px ${UI_FONT}`, pad + f1 + f2 * 0.55, ink.sub) } else line(t1, f1, font1, c.height / 2, c1)
+    const tex = new THREE.CanvasTexture(c)
+    tex.colorSpace = THREE.SRGBColorSpace
+    tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter
+    return { tex, aspect: c.width / c.height, pxH: (t2 ? TZ_PX1 + TZ_PX2 * 1.05 : TZ_PX1) * (c.height / (t2 ? f1 + f2 * 1.05 : f1)) }
+  }
+  function tzClearLabels() {
+    if (tzLabelTimer) { clearTimeout(tzLabelTimer); tzLabelTimer = 0 }
+    if (tzLabelGroup) {
+      for (const s of tzLabelGroup.children) s.material.dispose()
+      scene.remove(tzLabelGroup); tzLabelGroup = null; tzLabelVer = -1
+    }
+    for (const L of tzTexCache.values()) L.tex.dispose()
+    tzTexCache.clear()
+  }
+  function tzBuildLabels() {
+    tzClearLabels()
+    const S = tzSpec3
+    if (!S) return
+    tzLabelVer = S.textVer; tzLabelAt = performance.now(); tzLabelsRef = S.labels
+    if (!S.style || !S.style.labels || !S.labels || !S.labels.length) return
+    const g = new THREE.Group()
+    for (const l of S.labels) {
+      const bold = !!S.style.bold || !!l.hi
+      const tk = l.t1 + '|' + l.t2 + '|' + bold + '|' + l.sea
+      let L = tzTexCache.get(tk)
+      if (!L) { L = tzLabelTex(l.t1, l.t2, bold, l.sea); tzTexCache.set(tk, L) }
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: L.tex, depthTest: false, depthWrite: false, transparent: true }))
+      spr.position.copy(llaToVec(l.lat, l.lon, 0).multiplyScalar(1.001))
+      spr._dir = spr.position.clone().normalize()
+      spr._tzR = (l.r || 0) * Math.PI / 180        // 连通区内切圆半径（球面弧度 ≈ 单位球上的世界长度）
+      spr._tzPxH = L.pxH; spr._tzAspect = L.aspect; spr._pri = l.r || 0; spr._tzKey = l.cid; spr._tzSea = !!l.sea
+      spr.renderOrder = 10
+      g.add(spr)
+    }
+    tzLabelGroup = g; scene.add(g)
+  }
+  // 地名避让：屏幕恒定字号（世界高 = 像素高 × 距离 / 焦距），内切圆在屏上太小不标；与岛链名同层级排队
+  function tzLbCollect(W, H, foc) {
+    if (!tzLabelGroup) return
+    const placed = new Map(), g2 = TZ_SAME_GAP * TZ_SAME_GAP   // 连通区号 → 已排进队的屏幕位置（精灵按内切圆大小降序）
+    for (const s of tzLabelGroup.children) {
+      // 只标正对视线的那一片：贴着地平的号挤成一圈、还斜着看不清（海区航海带更甚，门槛更高）
+      const dot = s._dir.dot(camDir), thr = s._tzSea ? 0.5 : 0.28
+      fadeLabel(s, dot - thr + 0.05)      // 门槛处淡入（与地名同一条淡出曲线，整体往里挪 thr）
+      if (!s.visible) continue
+      const dist = camera.position.distanceTo(s.position)
+      const hh = s._tzPxH * 0.42, hw = hh * s._tzAspect
+      // 字基本落在这块区里：内切圆在屏上够字框半对角的 0.7 才标（与 2D 同）
+      if (s._tzR * foc / Math.max(1e-6, dist) < Math.hypot(hw, hh) * 0.7) { s.visible = false; continue }
+      const hW = s._tzPxH * dist / foc
+      s.scale.set(hW * s._tzAspect, hW, 1)
+      lbV.copy(s.position).project(camera)
+      if (lbV.z > 1) { s.visible = false; continue }
+      const x = (lbV.x * 0.5 + 0.5) * W, y = (0.5 - lbV.y * 0.5) * H
+      if (x + hw < 0 || x - hw > W || y + hh < 0 || y - hh > H) { s.visible = false; continue }
+      const near = placed.get(s._tzKey)
+      if (near && near.some((q) => (q[0] - x) * (q[0] - x) + (q[1] - y) * (q[1] - y) < g2)) { s.visible = false; continue }
+      if (near) near.push([x, y]); else placed.set(s._tzKey, [[x, y]])
+      lbBuf.push({ s, tier: 0, keep: false, rk: 12, pri: s._pri || 0, x, y, hw, hh })
+    }
+  }
+  function setTzLayer(spec) {
+    const inkPrev = tzSpec3 ? tzInk3() : null
+    tzSpec3 = spec || null
+    if (!tzSpec3) { tzClearFill(); tzClearLines(); tzClearLabels(); tzClearHover(); invalidate(); return }
+    TZ_FILL_MAT.uniforms.uAlpha.value = tzSpec3.style ? tzSpec3.style.fillAlpha || 0 : 0
+    // 不透明度跨过 0.5 时线与字的墨色换档（见 tzInkFor）：线与标注重建，色块网格不动
+    const inkChanged = inkPrev !== null && tzInk3() !== inkPrev
+    // ★ 先判「几何变没变」再重建：重建会把版本号对齐，之后再判就永远是「只变了文字」，标注会带着旧位置拖 1 s
+    const geomChanged = tzFillVer !== tzSpec3.geomVer || tzLineVer !== tzSpec3.geomVer
+    if (tzFillVer !== tzSpec3.geomVer) tzBuildFill()
+    if (tzLineVer !== tzSpec3.geomVer || inkChanged) tzBuildLines()
+    // 标注：几何变了立刻重建；只有时刻变了按 ≤ 1 Hz 重烘（倍速播放时一秒走几十个仿真分钟，没必要逐拍重烘几十张纹理）；
+    // 时区号数组还是同一份（不带当地时刻时宿主沿用原数组，只有 2D 的时区条在变）→ 不重烘
+    if (!geomChanged && !inkChanged && tzLabelVer >= 0 && tzSpec3.labels === tzLabelsRef) tzLabelVer = tzSpec3.textVer
+    if (tzLabelVer !== tzSpec3.textVer || inkChanged) {
+      const textOnly = !geomChanged && !inkChanged && tzLabelVer >= 0 && performance.now() - tzLabelAt < 1000
+      if (!textOnly) tzBuildLabels()
+      else if (!tzLabelTimer) tzLabelTimer = setTimeout(() => { tzLabelTimer = 0; if (tzSpec3 && tzLabelVer !== tzSpec3.textVer) { tzBuildLabels(); invalidate() } }, 1000)
+    }
+    invalidate()
+  }
+  function clearTz() { tzClearFill(); tzClearLines(); tzClearLabels(); tzClearHover(); tzTri = new WeakMap() }
   // 分带填充：与 2D 同源——直接用 bandGeometry 逐三角形切出的各档环带多边形（lon/lat）构网格。
   // 每个凸多边形扇形三角化，顶点色 = 该档颜色 → 填充边界即等值线、精确重合，无毛刺。地平/接缝裁剪
   // 已在 bandGeometry 内完成（多边形已切在 0°仰角线内、跨缝已解缠），无需再在着色器里 discard。
@@ -4410,6 +4688,7 @@ export function createGlobeScene(container, quality = {}) {
     lbBuf.length = 0; lbSlots.clear()
     // 层级序（与 2D flatCoverage 的摆位次序同口径）：岛链 → 大洋 → 国家 → 海域 → 一级 → 二级
     lbCollect(chainLabels, chainCfg.nameSize || 1, 0, W, H, foc)
+    tzLbCollect(W, H, foc)   // 时区标注：用户特意打开的层，与岛链名同层级、先于底图地名
     lbCollect(oceanZh, nameScaleO, 1, W, H, foc); lbCollect(oceanEn, nameScaleO, 1, W, H, foc)
     lbCollect(labelsZh, nameScaleC, 2, W, H, foc); lbCollect(labelsEn, nameScaleC, 2, W, H, foc)
     lbCollect(seaZh, nameScaleS, 3, W, H, foc); lbCollect(seaEn, nameScaleS, 3, W, H, foc)
@@ -4437,13 +4716,18 @@ export function createGlobeScene(container, quality = {}) {
   let raf = 0, lastFrameT = 0, running = true, frameHold = 0
   let lastLoopT = 0   // 上一次【真正出帧】的时间戳：粘滞跟随与缩放缓动都按真实经过时间走，跳帧/停帧不会多补
   let camMoved = false   // 上一出帧里相机（方位/极角）动过：跟随尚未停稳 → 下一帧不受帧率上限约束
+  // 上次出帧以来有时钟拍掐过出帧（holdFrames）：这段帧间隔里装着拍耗时（SGP4 + 聚焦几何 Worker），不是 GPU 帧时 ——
+  // 报给叠加层的性能样本记 0（跟随自动降档只认干净间隔；播放时按需出帧一拍一帧，间隔几乎全是拍耗时）
+  // ★ 记 2 帧：拍后第一帧要上传本拍新建的几何 / 星点缓冲、Vue 也刚改过 DOM，这份出帧成本落在它与下一帧之间 ——
+  //   只作废第一段间隔的话，第二段仍装着拍的连带开销，拍率接近帧率一半时干净样本几乎全是它
+  let loopTaint = 0
   // 出帧闸：一拍里星位是同步算的、聚焦几何要等 Worker 回来，中间若出一帧就成了「星在 t、轨道在 t−Δ」——
   // 那正是 simClock「一次时钟回调 = 一个时刻的完整画面」明令禁止的。故整拍期间不出帧，画面停在上一拍的完整状态。
   // ★ 计数不是布尔：simClock 的 emit() 已是 async，而 setTime/stepBy/pause 那几个入口是「发了不等」，
   //   于是「拖游标」与「定时器那一拍」会并发跑两趟 refreshPositions，各自持一次闸。用布尔的话先算完
   //   的那趟一放行，另一趟还在算，出的正是这道闸要防的半拍画面。计数则要等最后一趟收工才放行。
   //   下限钳到 0：万一有不成对的 release，也只是提早放行，不会把闸永久压死。
-  function holdFrames(on) { frameHold = on ? frameHold + 1 : Math.max(0, frameHold - 1); if (!frameHold) invalidate() }
+  function holdFrames(on) { if (on) loopTaint = 2; frameHold = on ? frameHold + 1 : Math.max(0, frameHold - 1); if (!frameHold) invalidate() }
   function loop(now) {
     if (!running) return   // 已暂停（切到 2D 平面图）：停掉 rAF 链，不再空转渲染被盖住的球面
     raf = requestAnimationFrame(loop)
@@ -4461,6 +4745,8 @@ export function createGlobeScene(container, quality = {}) {
     // dt 取【真正出帧】之间的间隔并钳到 100 ms —— 掉帧不该补出一大跳
     const tNow = now || nowMs()
     const dtSec = lastLoopT ? Math.min(0.1, Math.max(0, (tNow - lastLoopT) / 1000)) : 0
+    const smpSec = loopTaint > 0 ? 0 : dtSec
+    if (loopTaint > 0) loopTaint--
     lastLoopT = tNow
     let cur
     if (followDriver) {
@@ -4512,14 +4798,15 @@ export function createGlobeScene(container, quality = {}) {
     refreshDashScale()   // 虚线周期按屏幕像素恒定：缩放跨过一档就重切
     applyFade()          // 一/二级行政区随缩放淡入淡出
     updateImageryTiles() // 影像瓦片 LOD：可见集合没变时靠签名早退，正常帧近乎零开销
-    if (overlay) overlay.update(dtSec, camera, curW, curH)
+    if (overlay) overlay.update(dtSec, camera, curW, curH, smpSec)
     renderFrame()
   }
 
   // ===================== 统一出帧口：地球场景 + 叠加层（模型图标 / 跟随视图）=====================
   // loop / resize / snapshot 三处出帧都走这里（原先各写一次 renderer.render）。叠加层不存在或为空时
   // 就是一句 renderer.render(scene, camera) —— 与改动前逐像素相同（验证台 .modelharness/w8 逐像素比对）。
-  // 叠加层接口：{ update(dtSec, camera, w, h), render(renderer, camera, w, h), isEmpty(), busy(), dispose(),
+  // 叠加层接口：{ update(dtSec, camera, w, h, smpSec?), render(renderer, camera, w, h), isEmpty(), busy(), dispose(),
+  //   smpSec：干净的帧间隔（这段间隔里没有时钟拍掐过出帧，否则 0；loop 之外的补画不给）—— 只当性能样本用
   //   renderUnder?(renderer, camera, w, h) → bool   // 画「地球之下」的背景（星空 / 太阳盘），返回 true 表示已清屏并画好，
   //                                                  //   地球场景这一趟就不再清颜色（背景色让给它）
   //   dotMask?() → {tab, inst, bits, twb, iwb, zk} | null,   // 点精灵遮罩的哈希表 / 实例表（见 setDotMask、dotMaskHash.js）
@@ -5045,6 +5332,7 @@ export function createGlobeScene(container, quality = {}) {
     offRedraw()         // 同理：退订按需出帧的重画总线、摘掉窗口焦点监听
     if (typeof window !== 'undefined') { window.removeEventListener('blur', onWinBlur); window.removeEventListener('focus', onWinFocus) }
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
+    clearTz(); TZ_FILL_MAT.dispose()   // 时区图层同理
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走
     clearBeamMapField()                      // 波束地图：同上（标签贴图 + 线材质）
@@ -5079,6 +5367,8 @@ export function createGlobeScene(container, quality = {}) {
     setTerminator, clearTerminator,
     setRefAxes: axesLayer.setRefAxes, setRefAxesJ2000: axesLayer.setJ2000Axes, setSatTriad: axesLayer.setSatTriad,
     setEnvRaster, setEnvAlpha, setEnvContours, clearEnv,
+    setTzLayer,
+    setTzHover,
     setSatLayer, clearSatLayer, faceLonLat, setProvinces, setProvincesVisible, setCities, setCitiesVisible, setBorderStyle, setNameScale, setLabelStyle, setWaterMode, setWaterOff, setChains, setOceanColor, setLandColors, setImagery,
     // 影像瓦片诊断：当前选了哪一级、细节层挂了几片、底层几片。瓦片 LOD 出问题时（糊、露洞、
     // 级别不跟随缩放）光看画面分不清是「没选到级」还是「选到了但没画上」，这个出口就是那把尺子。

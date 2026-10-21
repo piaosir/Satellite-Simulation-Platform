@@ -2205,7 +2205,7 @@ console.log('\n=== ⑩ 星座壳层分解（高度与倾角同源）===');
   ok('同一站再带一次：内容不变（窗口据此不新建配置）', fp(r2.state) === fp(r1.state));
   ok('没有定点轨位的星、也没带站 → 不动', toolContextState(cur, { sat: { name: 'STARLINK-1', slotLon: null } }) === null);
   // 窗口侧：只经 createAndOpen 承接，不再原地写响应式的 site / carrier
-  const app = fs.readFileSync(new URL('../../../src/ci/CiApp.vue', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../../../src/ci/CiApp.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n');   // autocrlf 检出为 CRLF 时下面按 \n 断块的正则也要认
   const body = (app.match(/async function applyToolContext\(c\) \{[\s\S]*?\n\}\n/) || [''])[0];
   ok('CiApp.applyToolContext：内容不同才 createAndOpen 另建，且不原地写 site / carrier',
     /fingerprintOf\(hit\.state\) !== fingerprintOf\(cur\)/.test(body) && /createAndOpen\(\{ state: hit\.state, nameAuto: true \}\)/.test(body)

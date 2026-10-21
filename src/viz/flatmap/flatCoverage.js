@@ -24,6 +24,8 @@ import { drawVehicle, flatHeading, vehicleBox } from '../vehicleSymbol.js'
 import { aheadPoint } from '../../../packages/core/models/entityRuntime.mjs'
 // 注记描边色/粗细随底色现算：与 3D 球体共用单一来源
 import { haloColor, haloScale, IMAGERY_HALO, IMAGERY_SCALE } from '../labelHalo.js'
+// 时区图层的配色 / 墨色档（与 3D 共用一份）
+import { tzInkFor, TZ_INK, TZ_W, TZ_STRIP_H, tzBandColor, rgba } from '../geo/tzStyle.js'
 // 水域注记（大洋 + 海域）：与 3D 球体共用同一份表（../geo/waterNames.js）
 import { waterLabels } from '../geo/waterNames.js'
 // 岛链参考线：与 3D 球体共用同一份表
@@ -2403,6 +2405,8 @@ export function createFlatCoverage(canvas) {
         }
       })
     }
+    // 时区界 / 日界线 / 描亮（drawTzLines 同序：国界之上、岛链之下）
+    for (const c of tzLineClasses(eq, plane)) out.push(c)
     // 岛链（drawChains）
     if (chainCfg.on && chains.length) {
       const dashK = chainCfg.dash || 'solid'
@@ -2961,6 +2965,350 @@ export function createFlatCoverage(canvas) {
       for (const an of (g.labels || [])) drawText(g.text, an.lon, an.lat, Math.max(7, 11 * (k() / 13.1)), g.labelColor || '#ffffff', { rot: an.a, strokeScale: CASE_K * 1.15, bold: !!g.bold })
     }
   }
+  // ===== 时区图层（地图综合设置「时区」分区；数据与口径见 ../geo/tzLayer.js，宿主 env/useTzLayer.js 推 spec）=====
+  // 体例照 CIA 时区图（配色与线 / 字样式见 ../geo/tzStyle.js）：
+  //   色块烘进静态快照的 below（紧跟陆地 / 影像之后 —— 实色即把陆地换成时区色、海区换成航海带浅调；环境场栅格照旧压在上面），
+  //   时区界进底图线（GPU 路是四个线类、Canvas 路在 drawLinesContent，排在国界之上、岛链之下），
+  //   时区号与日界线名进文字层（先于底图地名占位），上下两条时区条与悬停外轮廓按视口每帧现画。
+  // 导出走同一套静态内容函数 + 时区条，所见即所得；矢量 PDF（compat）一律点列回放、透明度写进 rgba、斜纹退成实色。
+  let tzSpec = null, tzHover = null
+  let tzFillCache = null, tzFillKey = ''
+  let tzLineCache = null, tzLineKey = ''
+  let tzHovCache = null, tzHovKey = ''
+  const tzPatCache = new Map()
+  const TZ_F1 = 14, TZ_F2 = 11   // 时区号 / 其下当地时刻的字号
+  const TZ_SAME_GAP = 170        // 同一连通区里的时区号在屏上至少隔这么远（CSS px）才再标一处
+  const TZ_SF = 11, TZ_DF = 10   // 时区条：时区号与时刻 / 日期行的字号
+  const TZ_DAY_H = 15            // 下条的日期行高
+  const TZ_STRIP_PROJ = new Set(['equirect', 'mercator', 'equalEarth', 'robinson'])
+  const tzFillA = () => (tzSpec && tzSpec.style ? tzSpec.style.fillAlpha || 0 : 0)
+  const tzInk = () => tzInkFor(imgOn, landBg(), tzFillA())
+  // 四个线类：海上分界最底，陆上时区界其上，描亮外轮廓压在界线上，日界线最上
+  const TZ_LINE_ORDER = ['sea', 'land', 'hi', 'idl']
+  function tzLineStyles() {
+    const ink = tzInk()
+    return {
+      sea: { color: ink.sea, width: TZ_W.sea, dash: null, alpha: 1 },
+      land: { color: ink.land, width: TZ_W.land, dash: null, alpha: 1 },
+      hi: { color: ink.hi, width: TZ_W.hi, dash: null, alpha: 0.85 },
+      idl: { color: ink.idl, width: TZ_W.idl, dash: null, alpha: 1 }
+    }
+  }
+  // 色块：每组（同偏移、同陆海）烘成【一条】平面坐标的 Path2D —— 同组相邻面在一次填充里拼合，内部不出抗锯齿细缝
+  //（不同组之间的缝由时区界压住，陆海之间由海岸线压住）。几何版本 + 平面一变才重烘。
+  function tzBakeFill() {
+    const key = tzSpec.geomVer + '|' + planeKey()
+    if (tzFillCache && tzFillKey === key) return tzFillCache
+    const out = []
+    for (const g of tzSpec.fills) {
+      const path = new Path2D(), rings = []
+      let lo = Infinity, hi = -Infinity
+      for (const poly of g.polys) {
+        if (PJ.identity) {
+          for (const ring of poly) {
+            const u = unwrap(ring)
+            const r = new Array(u.length)
+            for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); r[i] = [x, y] }
+            path.closePath(); rings.push(r)
+          }
+        } else {
+          const rec = projRec(true)
+          PJ.path(asPoly(poly), rec)
+          if (!(rec.lo <= rec.hi)) continue                 // 被投影裁光了（Mercator 极区、Albers 扇面外）
+          path.addPath(rec.path)
+          if (rec.lo < lo) lo = rec.lo
+          if (rec.hi > hi) hi = rec.hi
+          for (const sub of rec.subs) rings.push(sub)
+        }
+      }
+      if (lo <= hi) out.push({ g, lo, hi, path, rings })
+    }
+    tzFillCache = out; tzFillKey = key
+    return out
+  }
+  // 半点区的 45° 斜纹：周期恒 12 CSS px（与 3D 同）。图块按设备像素画（12·dpr 见方，高分屏不糊），
+  // 图案矩阵抵消 CTM 的缩放 → 随缩放不变形
+  function tzPattern(a, b, alpha, kk) {
+    const P = Math.max(4, Math.round(12 * dpr))
+    const key = a + b + alpha + '|' + P
+    let pat = tzPatCache.get(key)
+    if (!pat) {
+      const c = document.createElement('canvas'); c.width = P; c.height = P
+      const g = c.getContext('2d')
+      g.fillStyle = rgba(a, alpha); g.fillRect(0, 0, P, P)
+      g.fillStyle = rgba(b, alpha)
+      g.beginPath(); g.moveTo(0, P / 2); g.lineTo(P / 2, 0); g.lineTo(P, 0); g.lineTo(0, P); g.closePath(); g.fill()
+      g.beginPath(); g.moveTo(P, P / 2); g.lineTo(P, P); g.lineTo(P / 2, P); g.closePath(); g.fill()
+      pat = ctx.createPattern(c, 'repeat')
+      if (tzPatCache.size > 64) tzPatCache.clear()
+      tzPatCache.set(key, pat)
+    }
+    if (pat && pat.setTransform) pat.setTransform(new DOMMatrix([1 / (dpr * kk), 0, 0, 1 / (dpr * kk), 0, 0]))
+    return pat
+  }
+  function drawTzFill() {
+    // 「拖着转」进行中平面逐帧在变：与覆盖场同口径整层不画（50m 一次全量重烘几十到上百毫秒，转不动），松手那次 rebuildPlane 补回
+    if (rotLive) return
+    if (!tzSpec || !tzSpec.fills || !tzSpec.fills.length) return
+    const F = tzBakeFill()
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
+    const fa = tzFillA()   // 现取：烘好的 sh.g 是烘那一刻的组对象，只换不透明度时不重烘（见 setTzLayer）
+    for (const off of wraps()) {
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+      for (const sh of F) {
+        if (sh.hi + off < wl || sh.lo + off > wr) continue
+        const g = sh.g
+        ctx.fillStyle = (!compat && g.hatch) ? (tzPattern(g.color, g.hatch, fa, kk) || rgba(g.flat, fa)) : rgba(compat ? g.flat : g.color, fa)
+        if (compat) {
+          // 导出（svgcanvas 不认 Path2D 入参）：一组合成一条 path、点列回放
+          ctx.beginPath()
+          for (const r of sh.rings) { for (let i = 0; i < r.length; i++) i === 0 ? ctx.moveTo(r[i][0], r[i][1]) : ctx.lineTo(r[i][0], r[i][1]); ctx.closePath() }
+          ctx.fill('evenodd')
+        } else ctx.fill(sh.path, 'evenodd')
+      }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+  // 一组折线烘成平面坐标的 Path2D + 点列（Canvas 路与导出用；GPU 路见 tzLineClasses）
+  function tzBakeList(src) {
+    const list = []
+    if (!PJ.identity) {
+      const rec = projRec(true)
+      PJ.path(asLines(src.filter((q) => q && q.length >= 2)), rec)
+      for (const sp of (rec.subs || [])) {
+        if (sp.length < 2) continue
+        let lo = Infinity, hi = -Infinity
+        const pts = new Float64Array(sp.length * 2), path = new Path2D()
+        for (let i = 0; i < sp.length; i++) { const x = sp[i][0], y = sp[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); pts[i * 2] = x; pts[i * 2 + 1] = y }
+        list.push({ lo, hi, path, pts })
+      }
+    } else {
+      for (const poly of src) {
+        if (!poly || poly.length < 2) continue
+        const u = unwrap(poly)
+        let lo = Infinity, hi = -Infinity
+        const path = new Path2D(), pts = new Float64Array(u.length * 2)
+        for (let i = 0; i < u.length; i++) { const x = u[i][0] - LON0, y = 90 - u[i][1]; if (x < lo) lo = x; if (x > hi) hi = x; i === 0 ? path.moveTo(x, y) : path.lineTo(x, y); pts[i * 2] = x; pts[i * 2 + 1] = y }
+        list.push({ lo, hi, path, pts })
+      }
+    }
+    return list
+  }
+  function tzBakeLines() {
+    const key = tzSpec.geomVer + '|' + planeKey()
+    if (tzLineCache && tzLineKey === key) return tzLineCache
+    const out = {}
+    for (const cls of TZ_LINE_ORDER) out[cls] = tzBakeList((tzSpec.lines && tzSpec.lines[cls]) || [])
+    tzLineCache = out; tzLineKey = key
+    return out
+  }
+  function tzStrokeList(list, s, kk, wl, wr) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = Math.max(0.1, s.width) / kk; ctx.globalAlpha = s.alpha
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round'
+    ctx.setLineDash(s.dash ? s.dash.map((v) => v / kk) : [])
+    for (const off of wraps()) {
+      ctx.setTransform(dpr * kk, 0, 0, dpr * kk, dpr * (tx + off * kk), dpr * ty)
+      if (compat) {
+        const vis = list.filter((sh) => !(sh.hi + off < wl || sh.lo + off > wr))
+        if (!vis.length) continue
+        ctx.beginPath()
+        for (const sh of vis) { const p = sh.pts; ctx.moveTo(p[0], p[1]); for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i], p[i + 1]) }
+        ctx.stroke()
+      } else for (const sh of list) { if (sh.hi + off < wl || sh.lo + off > wr) continue; ctx.stroke(sh.path) }
+    }
+  }
+  function drawTzLines() {
+    if (!tzSpec || rotLive) return   // 同 drawTzFill：转动中不逐帧全精度重投
+    const P = tzBakeLines(), S = tzLineStyles()
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
+    for (const cls of TZ_LINE_ORDER) if (P[cls] && P[cls].length) tzStrokeList(P[cls], S[cls], kk, wl, wr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1; ctx.setLineDash([])
+  }
+  // GPU 底图线的四个时区线类（与 drawTzLines 同序同样式；几何版本进 key，偏移不变就不重打包）
+  function tzLineClasses(eq, plane) {
+    if (!tzSpec) return []
+    const S = tzLineStyles(), out = []
+    for (const cls of TZ_LINE_ORDER) {
+      const src = (tzSpec.lines && tzSpec.lines[cls]) || []
+      if (!src.length) continue
+      const s = S[cls], dash = s.dash
+      out.push({
+        id: 'base:tz-' + cls, key: 'tz|' + cls + '|' + tzSpec.geomVer + '|' + plane + '|' + s.color + '|' + s.width + '|' + (dash ? dash.join(',') : ''),
+        alpha: s.alpha, proj: !eq, w: s.width,
+        style: { color: s.color, width: s.width, dash: dash || null },
+        feed(pk) { for (const ln of src) { if (!ln || ln.length < 2) continue; if (eq) pk.polyline(ln, false); else packRingProj(pk, ln) } }
+      })
+    }
+    return out
+  }
+  // 时区条在【当前绘制坐标】里占的上下两条（文字层快照带余量烘：真视口在 realView，换算成快照坐标）
+  function tzStripBands() {
+    if (!tzStripsOn()) return null
+    const RV = realView || { cw, ch, tx, ty }
+    const M = frameOn() ? geoFrameMargins(FRAME_FS, frameCfg.fmt) : null
+    const vt = M ? M.t : 0, vh = M ? Math.max(1, RV.ch - M.t - M.b) : RV.ch
+    const kk = k()
+    const T = Math.max(RV.ty, vt), Bm = Math.min(RV.ty + PJ.H * kk, vt + vh)
+    const dy = ty - RV.ty
+    return { top: T + TZ_STRIP_H + dy, bot: Bm - TZ_STRIP_H - TZ_DAY_H + dy }
+  }
+  // 文字层：日界线名（北太平洋那一段 180° 经线右侧、竖排）+ 各连通时区的时区号（内切圆太小不标）。
+  // 有时区条的投影档里海区不再另标（时区条就是海区的标注）；压到时区条下的号沿经线挪出来（只在本区那一段里挪）。
+  function drawTzLabels(slots) {
+    if (!tzSpec || !tzSpec.style) return
+    const ink = tzInk(), kk = k(), strip = tzStripsOn(), bold = !!tzSpec.style.bold
+    const SB = strip ? tzStripBands() : null
+    const halo = ink.halo || undefined
+    if (tzSpec.style.idl && tzSpec.lines && tzSpec.lines.idl && tzSpec.lines.idl.length) {
+      const t = '国际日期变更线', fs = 11, la = 30
+      const x = PX(180, la) + 9, y = PY(la, 180), hh = textW(t, fs) / 2 + 2, hw = fs * 0.6
+      if (Number.isFinite(x) && Number.isFinite(y) && x > hw && x < cw - hw && y > hh && y < ch - hh && slotFits(slots, x - hw, y - hh, x + hw, y + hh)) {
+        slotAdd(slots, x - hw, y - hh, x + hw, y + hh)
+        drawText(t, 180, la, fs, ink.idl, { rot: -90, dx: 9, bold: true, halo })
+      }
+    }
+    if (!tzSpec.style.labels || !tzSpec.labels || !tzSpec.labels.length) return
+    const placed = new Map()   // 连通区号 → 已标的屏幕位置
+    const g2 = TZ_SAME_GAP * TZ_SAME_GAP
+    for (const l of tzSpec.labels) {
+      if (l.sea && strip) continue
+      const f1 = l.sea ? TZ_F2 + 2 : TZ_F1
+      const w = Math.max(textW(l.t1, f1), l.t2 ? textW(l.t2, TZ_F2) : 0) / 2 + LB_PADX
+      const h = (l.t2 ? (f1 + TZ_F2) * 0.55 : f1 * LB_HK) + LB_PADY
+      // 字基本落在这块区里：锚点是区内最大内切圆的圆心（构建期 polylabel），半径在屏上够字框半对角的 0.7 才标
+      if (l.r * kk < Math.hypot(w, h) * 0.7) continue
+      let x = PX(l.lon, l.lat), y = PY(l.lat, l.lon)
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x < -80 || x > cw + 80 || y < -40 || y > ch + 40) continue
+      if (SB && (y - h < SB.top || y + h > SB.bot)) {
+        // 压到了时区条：挪到条外，挪后的字框上下沿都还在本区沿这条经线的纬度段里才算数
+        const ny = y - h < SB.top ? SB.top + h + 2 : SB.bot - h - 2
+        if (y + h <= SB.top - 4 || y - h >= SB.bot + 4 || !l.span || SB.bot - SB.top < 2 * h + 4) continue
+        const nl = PJ.identity ? 90 - (ny - ty) / kk : tzLatAtY(ny, l.lon)
+        const dl = h / Math.max(1e-6, PJ.identity ? kk : Math.abs(PY(nl - 1, l.lon) - PY(nl, l.lon)))
+        if (nl - dl < l.span[0] || nl + dl > l.span[1]) continue
+        y = ny; x = PX(l.lon, nl)
+      }
+      const key = l.cid
+      const near = placed.get(key)
+      if (near && near.some((q) => (q[0] - x) * (q[0] - x) + (q[1] - y) * (q[1] - y) < g2)) continue
+      if (!slotFits(slots, x - w, y - h, x + w, y + h)) continue
+      slotAdd(slots, x - w, y - h, x + w, y + h)
+      if (near) near.push([x, y]); else placed.set(key, [[x, y]])
+      const o = { bold: bold || l.hi, halo, sx: x, sy: y }
+      const c1 = l.sea ? ink.sub : ink.text
+      if (l.t2) {
+        drawText(l.t1, 0, 0, f1, c1, { ...o, dy: -TZ_F2 * 0.55 })
+        drawText(l.t2, 0, 0, TZ_F2, ink.sub, { halo, bold: false, sx: x, sy: y, dy: f1 * 0.55 })
+      } else drawText(l.t1, 0, 0, f1, c1, o)
+    }
+  }
+  // ---- 时区条（CIA 时区图上下沿那两排的交互版）：上条各航海带的时区号，下条此刻的当地时刻 + 日期行（跨日处分段）。
+  // 贴着可见地图区的上下沿、按视口每帧现画；圆锥（Albers）与方位等距没有「上沿一排经线」，不画。
+  function tzStripsOn() { return !!(tzSpec && tzSpec.strips && (PJ.identity || TZ_STRIP_PROJ.has(PJ.kind))) }
+  // 屏幕 y 处的纬度：沿某条经线二分（四档都是纬度单调的）；经线是曲的投影档，带边各算各的
+  const tzLatAtY = (y, lon) => {
+    let a = -89.9, b = 89.9
+    if (PY(b, lon) > y) return b
+    if (PY(a, lon) < y) return a
+    for (let i = 0; i < 28; i++) { const m = (a + b) / 2; if (PY(m, lon) < y) b = m; else a = m }
+    return (a + b) / 2
+  }
+  // 一个航海带 [w0, w1]（经度）在屏幕 y 处的横向区段：等距圆柱走平面坐标 + 环绕副本（与色块同一把尺子）；
+  // 投影档的切口落在带内就劈成两段。切口就是 PJ.lon0（画面左边缘，x=0 与 x=W 是同一条经线，见 geo/projection.js），
+  // 中央经线是 lon0+180 —— 曾把中央经线当切口：跨切口那一带两端投到图的左右两边、被当成横贯整条的一段，盖掉十几格。
+  // 每段第三项 = 这一段的东端是否真在 180°（日界线竖线只画在那里；被切口劈开的西半段东端是切口，不是 180°）
+  function tzBandSpans(w0, w1, y) {
+    const out = []
+    if (PJ.identity) {
+      const kk = k()
+      for (const off of wraps()) out.push([(w0 - LON0 + off) * kk + tx, (w1 - LON0 + off) * kk + tx, w1 === 180])
+      return out
+    }
+    const seam = PJ.lon0
+    const pieces = (w0 < seam && seam < w1) ? [[w0, seam - 1e-7], [seam + 1e-7, w1]] : [[w0, w1]]
+    const curved = PJ.kind !== 'mercator'
+    // 带边正好落在切口上（中心经度取 7.5° + 15°·n 时）：fwd(切口) 恒给 x=0，东端要让开一点才落到右边缘
+    const onSeam = (v) => Math.abs(((((v - seam) % 360) + 540) % 360) - 180) < 1e-9
+    for (const [a0, b0] of pieces) {
+      const a = onSeam(a0) ? a0 + 1e-7 : a0, b = onSeam(b0) ? b0 - 1e-7 : b0
+      const la = curved ? tzLatAtY(y, a) : 0, lb = curved ? tzLatAtY(y, b) : 0
+      out.push([PX(a, la), PX(b, lb), b0 === 180])
+    }
+    return out
+  }
+  // 一排格子：底色 = 该带的海区浅调；格间细线；字放得下才写；日界线那条格线加粗成日界线色；显示时区那一格勾内框
+  function tzStripRow(cells, y, h, fs, bold, ink, L, R) {
+    const spans = []
+    for (const c of cells) {
+      for (const [x0, x1, e180] of tzBandSpans(c.w0, c.w1, y + h / 2)) {
+        const a = Math.min(x0, x1), b = Math.max(x0, x1)
+        if (b < L || a > R) continue
+        spans.push({ a, b, c, e180 })
+      }
+    }
+    for (const s of spans) { ctx.fillStyle = tzBandColor(s.c.h); ctx.fillRect(s.a, y, s.b - s.a, h) }
+    ctx.lineWidth = 1; ctx.strokeStyle = ink.sea; ctx.globalAlpha = 1
+    ctx.beginPath()
+    for (const s of spans) { const xa = Math.round(s.a) + 0.5; ctx.moveTo(xa, y); ctx.lineTo(xa, y + h) }
+    ctx.stroke()
+    const hiOffs = tzSpec.hiOffs || []
+    for (const s of spans) {
+      const c = s.c
+      if (s.e180) { ctx.strokeStyle = ink.idl; ctx.lineWidth = TZ_W.idl; ctx.beginPath(); ctx.moveTo(s.b, y); ctx.lineTo(s.b, y + h); ctx.stroke() }
+      if (hiOffs.includes(c.h * 60)) { ctx.strokeStyle = ink.hi; ctx.lineWidth = 1.5; ctx.strokeRect(s.a + 1.5, y + 1.5, s.b - s.a - 3, h - 3) }
+      if (s.b - s.a >= textW(c.t, fs) + 4) drawText(c.t, 0, 0, fs, ink.text, { sx: (s.a + s.b) / 2, sy: y + h / 2 + 0.5, bold, strokeMin: 0, haloK: 0 })
+    }
+    return spans
+  }
+  function drawTzStrips() {
+    if (!tzStripsOn()) return
+    const S = tzSpec.strips, ink = TZ_INK.paper, wr = worldRect(), vi = viewInner()
+    const L = Math.max(wr.x, vi.l), R = Math.min(wr.x + wr.w, vi.l + vi.iw)
+    const T = Math.max(wr.y, vi.t), Bm = Math.min(wr.y + wr.h, vi.t + vi.ih)
+    const SH = TZ_STRIP_H
+    if (R - L < 60 || Bm - T < SH * 2 + TZ_DAY_H + 60) return     // 视口里没多少地图了：不画
+    ctx.save()
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.beginPath(); ctx.rect(L, T, R - L, Bm - T); ctx.clip()
+    // 上条：时区号
+    tzStripRow(S.top, T, SH, TZ_SF, true, ink, L, R)
+    // 下条：时刻行贴底，日期行压在它上面
+    const yT = Bm - SH, yD = yT - TZ_DAY_H
+    const spans = tzStripRow(S.bottom, yT, SH, TZ_SF, false, ink, L, R)
+    // 日期行：同一当地日的相邻格并成一段，段名（星期 + 月-日）居中，贴着可见区钳住（平移时段名不跑出屏）
+    spans.sort((p, q) => p.a - q.a)
+    const runs = []
+    for (const s of spans) {
+      const last = runs[runs.length - 1]
+      if (last && last.dk === s.c.dk && Math.abs(s.a - last.b) < 2) last.b = s.b
+      else runs.push({ a: s.a, b: s.b, dk: s.c.dk, t: s.c.day + ' ' + s.c.md })
+    }
+    ctx.fillStyle = 'rgba(250,247,241,0.96)'; ctx.fillRect(L, yD, R - L, TZ_DAY_H)
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i]
+      if (i > 0) { ctx.strokeStyle = ink.land; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(Math.round(r.a) + 0.5, yD); ctx.lineTo(Math.round(r.a) + 0.5, yD + TZ_DAY_H); ctx.stroke() }
+      const a = Math.max(r.a, L), b = Math.min(r.b, R)
+      const t = textW(r.t, TZ_DF) + 8 <= b - a ? r.t : r.t.split(' ')[0]
+      if (textW(t, TZ_DF) + 6 <= b - a) drawText(t, 0, 0, TZ_DF, ink.sub, { sx: (a + b) / 2, sy: yD + TZ_DAY_H / 2 + 0.5, bold: true, strokeMin: 0, haloK: 0 })
+    }
+    // 外沿：上条下沿、下条上沿各一道
+    ctx.strokeStyle = ink.land; ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(L, Math.round(T + SH) + 0.5); ctx.lineTo(R, Math.round(T + SH) + 0.5)
+    ctx.moveTo(L, Math.round(yD) - 0.5); ctx.lineTo(R, Math.round(yD) - 0.5)
+    ctx.stroke()
+    ctx.restore()
+  }
+  // 悬停外轮廓：与光标处同偏移的全部区域（宿主 setTzHover 推几何）；白衬底 + 深线，任何底色上都看得清。实时层，不进快照与导出
+  function drawTzHover() {
+    if (!tzHover || !tzSpec || !tzHover.lines || !tzHover.lines.length) return
+    const key = tzHover.geomVer + '|' + tzHover.off + '|' + planeKey()
+    if (!tzHovCache || tzHovKey !== key) { tzHovCache = tzBakeList(tzHover.lines); tzHovKey = key }
+    const kk = k(), wl = -tx / kk, wr = (cw - tx) / kk
+    tzStrokeList(tzHovCache, { color: 'rgba(255,255,255,0.92)', width: TZ_W.hover + 2.4, dash: null, alpha: 1 }, kk, wl, wr)
+    tzStrokeList(tzHovCache, { color: tzInk().hi, width: TZ_W.hover, dash: null, alpha: 1 }, kk, wl, wr)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.globalAlpha = 1
+  }
   function drawCovGrid() {
     if (!covGridLayers.length) return
     const kk = k()
@@ -3034,6 +3382,7 @@ export function createFlatCoverage(canvas) {
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(rx, ry, rw, rh)
         ctx.restore()
       }
+      drawTzFill()   // 时区色块：影像每帧画在快照之下，色块进快照即压在影像之上
       ctx.restore()
       return
     }
@@ -3067,6 +3416,7 @@ export function createFlatCoverage(canvas) {
       }
       drawLand()
     }
+    drawTzFill()     // 时区色块：紧跟陆地 / 影像（环境场栅格每帧画在快照之上，照旧压住它）
     ctx.restore()
   }
   // 图廓（地球在这张平面上的外轮廓）。等距圆柱下就是世界矩形的边，由经纬网的 ±180 那两条兼着；
@@ -3152,6 +3502,7 @@ export function createFlatCoverage(canvas) {
       ctx.globalAlpha = 1
     }
     drawBorders()   // 海岸 → 主张 → 停火 → 未定 → 国界（国界压在最上面）
+    drawTzLines()   // 时区界 / 日界线 / 描亮：压在国界之上（与国界重合的那几段坐标逐点相同，画在上面即以时区色显示）
     drawChains()    // 岛链参考线：叠在全部底图线之上（它是注记，不该被国界盖住）
     ctx.restore()
   }
@@ -3219,6 +3570,7 @@ export function createFlatCoverage(canvas) {
     if (chainCfg.on && chainCfg.name !== 'off') {
       drawLabelLayer(chainLbl, slots, (l) => (chainCfg.name === 'en' ? l.en : l.zh), chainCfg.nameSize || 1, zf, chainCfg.color, { ...water, opacity: chainCfg.opacity, bold: !!chainCfg.nameBold })
     }
+    drawTzLabels(slots)   // 时区标注：与岛链名同为用户特意打开的层，先于底图地名占位
     if (oceanMode !== 'off') {
       drawLabelLayer(oceanLbl, slots, (l) => (oceanMode === 'en' ? l.en : l.zh), sizes.oceanScale || 1, zf, labelStyle.oceanColor, { ...water, opacity: labelStyle.oceanOpacity, bold: !!labelStyle.oceanBold })
     }
@@ -4446,6 +4798,8 @@ export function createFlatCoverage(canvas) {
     drawSubPoint()        // 星下点标记：压在最上面，任何图层都不许盖住它
     drawFocusIcons()      // 聚焦卫星星下点图标（最上层）
     drawBoreRings()       // 对星指向目标星高亮环
+    drawTzHover()         // 时区悬停外轮廓（实时层）
+    drawTzStrips()        // 时区条：贴可见地图区上下沿，按视口现画
     ctx.restore()
     if (dropHl) drawDropRing()   // 拖放落点高亮（实时层：按目标此刻的屏幕位置，不进快照、不进导出）
     if (frameOn()) drawMapFrame(); else framePlot = null   // 经纬图框：最上层（留白盖住画布四边，刻度随平移缩放每帧现量）
@@ -5010,6 +5364,21 @@ export function createFlatCoverage(canvas) {
     },
     setEnvAlpha(a) { envAlpha = a; envFadeKey = ''; requestDraw() },
     setEnvContours(groups) { envContours = Array.isArray(groups) ? groups : []; requestDraw() },
+    // 时区图层（宿主 env/useTzLayer.js 推来的 spec，null = 撤层）。几何版本变了：色块 / 线在快照里，整份作废；
+    // 只有文字版本变了（时刻走了一分钟）：只重画文字层，面与线不动。标尺每帧现画，跟着 requestDraw 走。
+    setTzLayer(spec) {
+      const prev = tzSpec
+      tzSpec = spec || null
+      const fa = (s) => (s && s.style ? s.style.fillAlpha || 0 : 0)
+      if (!tzSpec || !prev || prev.geomVer !== tzSpec.geomVer) { tzFillCache = null; tzLineCache = null; invalidateStatic() }
+      // 只换了不透明度（滑杆）：色块在快照里、墨色档也可能跟着换 → 重画快照，烘好的 Path2D 照用（drawTzFill 现取透明度）
+      else if (fa(prev) !== fa(tzSpec)) invalidateStatic()
+      // 时区号没变（不带当地时刻时宿主沿用原数组）：只有时区条变了，它每帧现画，不必重排整张文字层
+      else if (prev.labels !== tzSpec.labels || prev.style !== tzSpec.style) invalidateText()
+      requestDraw()
+    },
+    // 时区悬停外轮廓：{ off, geomVer, lines } | null（实时层，只重画这一帧）
+    setTzHover(h) { tzHover = h || null; requestDraw() },
     clearEnv() { envImg = null; envBBox = null; envContours = []; envFadeKey = ''; requestDraw() },
     // ---- 晨昏线（分界线 + 自带的夜区阴影）----
     // date = UTC 时刻（跟随时间轴，非系统时钟）；传 null 清层。opts 同 3D：{ lineColor, lineWidth, lineOpacity, shadeColor, shadeOpacity, steps }
@@ -5493,6 +5862,7 @@ export function createFlatCoverage(canvas) {
       drawSubPoint()
       drawFocusIcons()
       drawBoreRings()
+      drawTzStrips()
       ctx.restore()
       if (frameOn() && !o.viewport) drawMapFrame()   // 经纬图框所见即所得（视频取景带 viewport：视频自己那一档按成片画，这里不画）
       ctx = SV.ctx; dpr = SV.dpr; cw = SV.cw; ch = SV.ch; base = SV.base; scale = SV.scale; tx = SV.tx; ty = SV.ty; textFont = SV.font; textFontLatin = SV.fontLatin; compat = false; rasterOut = false; vecImg = null

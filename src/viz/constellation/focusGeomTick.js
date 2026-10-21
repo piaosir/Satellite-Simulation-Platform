@@ -9,7 +9,7 @@ import sat from './satellite.js'
 import { posAt, periodMinOf, validSpan } from './satPos.js'   // 取位的唯一入口（satrec 与星历点序列两种传播体都走它）
 import { createFocusGeomCache, ringSegments } from './focusGeomCache.js'
 import { footprintRing } from './focusFootprint.js'
-import { swathK, swathSig, sectionOf, groundMotion, buildSwath, emitSwath3D, swathFlatGeom } from './focusSwath.js'
+import { swathK, swathSamples, groundMotion, buildSwath, emitSwath3D, swathFlatGeom } from './focusSwath.js'
 import { llaToVec, pushDashed, densifyArc, footprintFill, emitCone, createSink, LIFT, RE } from '../globe3d/focusLanes.js'
 
 export function createShard() {
@@ -89,20 +89,20 @@ export function computeTick(st, p) {
         { tMs, t, lat, lon, h, az: gm.az, gs: gm.gs, hd: gm.hd })
       if (swathOn && track.length > 1) {
         K = swathK(Math.max(h, (rec.alta > 0 ? rec.alta : 0) * RE), p.fp)   // 按远地点高度定横向分段（rec.alta 以地球半径为单位）
-        const sig = swathSig(p.fp, K)
-        const secs = new Array(track.length)
-        for (let j = 0; j < track.length; j++) {
-          const q = track[j]
-          if (q.swSig !== sig) { q.sw = sectionOf(q, p.fp, K); q.swSig = sig }
-          secs[j] = q.sw
-        }
+        // 横断面（两臂倾角取相邻采样点割线、根号拐点补点并断开；缓存挂在轨迹点上，见 focusSwath.swathSamples）
+        const ss = swathSamples(track, p.fp, K)
         // 定向分段 + 打转段圆盘 + 首尾端帽 + 按覆盖判据裁出的轮廓（见 focusSwath.buildSwath）；
         // 覆盖圈层开着时当前时刻那只端帽的弧由覆盖圈线自己描
-        sw = buildSwath(track, secs, K, p.fp, p.lod.fpSeg, { fpOn: S.fpOn })
+        sw = buildSwath(ss.pts, ss.secs, K, p.fp, p.lod.fpSeg, { fpOn: S.fpOn, brk: ss.brk })
         emitSwath3D(sw, { edge: trk, fill: S.trkFillOn ? swa : null, dash: S.trkDash })
       } else if (S.trkOn && track.length > 1) {
         // densifyArc：贴地线的直弦在节拍降档后会沉进地球（见 focusLanes.js 那段），满细节时不补一个点
-        pushDashed(trk, densifyArc(track.map((q) => llaToVec(q.lat, q.lon, LIFT))), S.trkDash)
+        // 顶点挂在轨迹点上（_tv）：网格点与细分点是环形缓冲里原样复用的对象、经纬不再变，只有头尾两点每拍新建 ——
+        // 长轨迹（几百圈、几万点）逐拍不再新建几万个 Vector3（原先 GC 占这一支的两成多）；点列数组也按分片复用
+        const tv = st.tv || (st.tv = [])
+        tv.length = track.length
+        for (let j = 0; j < track.length; j++) { const q = track[j]; tv[j] = q._tv || (q._tv = llaToVec(q.lat, q.lon, LIFT)) }
+        pushDashed(trk, densifyArc(tv), S.trkDash)
       }
     }
     // ③ 覆盖圈（波束角 / 最低仰角两种口径）+ 圈内填充 + 覆盖锥

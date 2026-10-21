@@ -16,6 +16,8 @@
 //   附带许可文本而非界面出字。出处记录在 docs/地图数据来源台账.md 与各消费处的代码注释里
 //   （Icon.vue / stationSymbol.js / vehicleSymbol.js）。别国 ADM2 若真从 geoBoundaries 生成（CC BY / ODbL
 //   逐国给），届时署名义务才出现，再把 ATTRIBUTION.json 接回来。
+// 2026-10-20 时区图层引入 timezone-boundary-builder（由 OpenStreetMap 构建，ODbL 1.0），第一项有署名义务的数据。
+//   用户定：正文末一行（不恢复整节「第三方署名」），另一处在图层开关的悬停；字串与版本号见 viz/geo/tzCredit.js。
 import { ref, computed, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
@@ -23,6 +25,7 @@ import logoUrl from '../assets/logo.png'
 import { activation } from '../stores/activation'
 import { byLang } from '../shared/i18n/lang.js'
 import { getLang, onLangChange } from '../shared/i18n/runtime.js'
+import { TZ_CREDIT } from '../viz/geo/tzCredit.js'
 
 const props = defineProps({
   version: { type: String, default: '' },
@@ -119,6 +122,7 @@ async function copyId() {
           </ul>
         </section>
 
+        <div class="credit">{{ TZ_CREDIT }}</div>
       </div>
 
       <template #footer>
@@ -166,4 +170,7 @@ async function copyId() {
 .mods { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 5px; }
 .mods li { position: relative; padding-left: 11px; font-size: var(--fs-3); color: var(--text-muted); }
 .mods li::before { content: ''; position: absolute; left: 0; top: .62em; width: 6px; height: 1px; background: var(--border-strong); }
+
+/* 数据署名（ODbL §4.3）：一行，最淡一档，不进分区体系 */
+.credit { font-size: var(--fs-2); color: var(--text-faint); overflow-wrap: anywhere; }
 </style>

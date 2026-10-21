@@ -14,6 +14,10 @@
 //     纳米比亚的窗口按此收在 2017-09-03（rearguard 源文件写的是 2017-10-24：那次只改了法定口径、
 //     民用时不变，TZif 里没有这次跃迁）—— 2017 年那 51 天的标准时口径差一小时，民用时不受影响。
 
+import { parsePosixTz, yearTransitions } from '../../src/viz/geo/tzPosix.js'
+
+export { parsePosixTz }
+
 const DAY = 86400
 
 export function parseTzif(buf) {
@@ -50,80 +54,7 @@ export function parseTzif(buf) {
   return { version: String.fromCharCode(ver), times, idx, types, footer }
 }
 
-// ---------- POSIX TZ 串 ----------
-// 返回 { std: { name, utoff }, dst?: { name, utoff }, start?, end? }；utoff 为秒（东正西负，已按 POSIX 的反号还原）
-export function parsePosixTz(s) {
-  let i = 0
-  const name = () => {
-    if (s[i] === '<') { const e = s.indexOf('>', i); const n = s.slice(i + 1, e); i = e + 1; return n }
-    const st = i; while (i < s.length && /[A-Za-z]/.test(s[i])) i++
-    return s.slice(st, i)
-  }
-  const hms = () => {   // [+-]hh[:mm[:ss]] → 秒
-    let sign = 1
-    if (s[i] === '+' || s[i] === '-') { if (s[i] === '-') sign = -1; i++ }
-    const num = () => { const st = i; while (i < s.length && /[0-9]/.test(s[i])) i++; if (st === i) throw new Error('POSIX TZ 数字缺失：' + s); return +s.slice(st, i) }
-    let v = num() * 3600
-    if (s[i] === ':') { i++; v += num() * 60; if (s[i] === ':') { i++; v += num() } }
-    return sign * v
-  }
-  const dateRule = () => {
-    let r
-    if (s[i] === 'M') {
-      i++
-      const st = i; while (/[0-9.]/.test(s[i] || '')) i++
-      const [m, w, d] = s.slice(st, i).split('.').map(Number)
-      r = { kind: 'M', m, w, d }
-    } else if (s[i] === 'J') {
-      i++; const st = i; while (/[0-9]/.test(s[i] || '')) i++
-      r = { kind: 'J', n: +s.slice(st, i) }
-    } else {
-      const st = i; while (/[0-9]/.test(s[i] || '')) i++
-      r = { kind: 'n', n: +s.slice(st, i) }
-    }
-    r.time = 7200
-    if (s[i] === '/') { i++; r.time = hms() }
-    return r
-  }
-  const out = {}
-  const stdName = name()
-  out.std = { name: stdName, utoff: 0 - hms() }
-  if (i >= s.length) return out
-  const dstName = name()
-  let dstOff = out.std.utoff + 3600
-  if (i < s.length && s[i] !== ',') dstOff = 0 - hms()
-  out.dst = { name: dstName, utoff: dstOff }
-  if (s[i] === ',') { i++; out.start = dateRule(); if (s[i] !== ',') throw new Error('POSIX TZ 缺结束规则：' + s); i++; out.end = dateRule() }
-  else { out.start = { kind: 'M', m: 3, w: 2, d: 0, time: 7200 }; out.end = { kind: 'M', m: 11, w: 1, d: 0, time: 7200 } }   // POSIX 缺省（美国规则）
-  if (i !== s.length) throw new Error('POSIX TZ 尾部无法解析：' + s)
-  return out
-}
-
-const isLeap = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
-const daysFromCivil = (y, m, d) => Math.floor(Date.UTC(y, m - 1, d) / 1000 / DAY)   // 1970-01-01 起的日序
-
-// 规则日期 → 当年第几天（1970 起的绝对日序）
-function ruleDay(r, y) {
-  if (r.kind === 'M') {
-    const first = daysFromCivil(y, r.m, 1)
-    const wd1 = ((first % 7) + 7 + 4) % 7          // 1970-01-01 是周四
-    let day = first + ((r.d - wd1 + 7) % 7) + (r.w - 1) * 7
-    const dim = [31, isLeap(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][r.m - 1]
-    while (day >= first + dim) day -= 7            // w = 5 表示「最后一个」
-    return day
-  }
-  const jan1 = daysFromCivil(y, 1, 1)
-  if (r.kind === 'J') { let n = r.n - 1; if (isLeap(y) && r.n >= 60) n++; return jan1 + n }   // J：不数 2 月 29 日
-  return jan1 + r.n
-}
-
-// 一年内的两次跃迁（UTC 秒）：开始时刻按本地标准时、结束时刻按本地夏令时（POSIX 定义）
-function yearTransitions(tz, y) {
-  const s = ruleDay(tz.start, y) * DAY + tz.start.time - tz.std.utoff
-  const e = ruleDay(tz.end, y) * DAY + tz.end.time - tz.dst.utoff
-  return [{ t: s, utoff: tz.dst.utoff, isdst: 1 }, { t: e, utoff: tz.std.utoff, isdst: 0 }].sort((a, b) => a.t - b.t)
-}
-
+// POSIX TZ 串的解析与按年展开与运行时共用一份：src/viz/geo/tzPosix.js
 // TZif + 脚注 → 1970…2100 的段 [{ t, utoff(秒), isdst }]，第一段 t = -Infinity（1970-01-01 那一刻所处的状态）
 export function zonePeriods(z, untilYear = 2100) {
   const T0 = 0

@@ -38,7 +38,7 @@ import NumBox from '../components/NumBox.vue'
 import TzPicker from '../components/TzPicker.vue'
 import RenderIsolate from '../components/RenderIsolate.vue'   // 渲染隔离：时间条 / 过境表等不跟着每拍整页重渲
 import VirtualRows from '../components/VirtualRows.vue'       // 定高行虚拟滚动：右栏聚焦集列表
-import { tzOffMin, tzTag, tzParts, tzToMs, normTzMode } from '../shared/tz.js'
+import { tzOffMin, tzTag, tzParts, tzToMs, normTzMode, tzOffLabel } from '../shared/tz.js'
 import SatList from '../components/SatList.vue'
 import SatFilterBar from '../components/SatFilterBar.vue'
 import SatLayersPanel from '../components/SatLayersPanel.vue'
@@ -125,6 +125,8 @@ import GaussModelFields from '../components/GaussModelFields.vue'   // 波束合
 import { useVisibility, orbitClass } from '../viz/vis/useVisibility.js'
 import { useEnvField } from '../viz/env/useEnvField.js'
 import { useLiveField } from '../viz/env/useLiveField.js'
+import { useTzLayer, TZ_PICK_OFFS } from '../viz/env/useTzLayer.js'
+import { TZ_CREDIT } from '../viz/geo/tzCredit.js'
 import { usePerfTable } from '../viz/grd/usePerfTable.js'
 import { useShellCoverage } from '../viz/grd/useShellCoverage.js'
 import { createNoradResolver, foldersForNorads, linkedNodesOf, linkMissing as treeLinkMissing, followFolder as treeFollowFolder, ephGroupsToLoad, grdLivePayload, createLiveThrottle, focusStale, createFollowGate, synthGroupDrives, treeNavState, nodeLinkId, treeSetMembers, treeSetEntries } from '../viz/grd/treeLink.js'
@@ -157,8 +159,8 @@ import { tableFrom } from '../viz/constellation/ephemTable.js'
 import { sampleOrbitAdaptive } from '../viz/constellation/adaptiveSample.js'
 import { ringTtlMs } from '../viz/constellation/focusGeomCache.js'
 import { createFocusGeomPool } from '../viz/constellation/focusGeomPool.js'
-import { footprintRing } from '../viz/constellation/focusFootprint.js'
-import { swathK, sectionOf, groundMotion, buildSwath, swathFlatGeom } from '../viz/constellation/focusSwath.js'
+import { footprintRing, beamLimitText, beamToElevDeg, elevToBeamDeg } from '../viz/constellation/focusFootprint.js'
+import { swathK, swathSamples, groundMotion, buildSwath, swathFlatGeom } from '../viz/constellation/focusSwath.js'
 import { MARK_RANK, NO_KEYS, keysOf, anyOf, withoutClaimed, withoutClaimedDots, mergeLayerSats, claimSig } from '../viz/constellation/satMarkMerge.js'
 import { pf } from '../shared/num.js'
 import { vecToLatLon, llaToVec } from '../viz/globe3d/focusLanes.js'
@@ -297,6 +299,10 @@ const beam = ref('')
 const beamAuto = ref('')
 const beamLock = ref(false)
 const elevMin = ref('')        // 最低仰角（度，空=0°地平线）
+// 切换口径换算出来的那一格：输入框显示取整值，画图用全精度 { k:'beam'|'elev', text, v }。只在格里仍是换算出的那个文本时生效。
+// ★ 取整值不能直接拿来画：近地平处仰角对锥角极敏感（GEO ε=1° 时锥角差 0.0001° 就是仰角差 0.02°），切过去圈会挪
+let fpExact = null
+const fpNum = (k) => { const t = k === 'beam' ? beam.value : elevMin.value; return fpExact && fpExact.k === k && fpExact.text === t ? fpExact.v : parseFloat(t) }
 // 聚焦卫星显示样式（侧栏「显示设置 · 聚焦卫星」，3D 球体与 2D 平面图同一份；出厂值＝可自定义之前写死的那套画法）。
 // 轨道线只在 3D 有：平面图画的是星下点轨迹与覆盖圈，轨道圈（惯性系那条闭合椭圆）在等距圆柱图上没有意义。
 // 线型 solid | dash | dot；透明度 0~1；线宽/像素两边同口径（都是屏幕像素）。
@@ -467,6 +473,17 @@ const envLive = useLiveField({
 watch(() => env.on.value, (v) => { if (v && envLive.on.value) envLive.on.value = false })
 watch(() => envLive.on.value, (v) => { if (v && env.on.value) env.on.value = false })
 
+// 时区（地图综合设置视图的「时区」分区）：tzdb 2026e 规则 + timezone-boundary-builder 2026e 边界，按平台底图与主权层重绘。
+// 打开即是一张时区图（CIA 体例：陆地按时区实色、海区航海带浅调、时区号、上下时区条、日界线）；悬停勾出同偏移的全部区域。
+// 自成一层，不占环境场的栅格槽 —— 与 ITU 场 / 实时气象同屏共存。
+// tzMode 在下方定义 → getter 传入避免 TDZ（仅运行时调用）
+const tz = useTzLayer({
+  draw: (spec) => { if (scene) scene.setTzLayer(spec); if (flat) flat.setTzLayer(spec) },
+  drawHover: (h) => { if (scene) scene.setTzHover(h); if (flat) flat.setTzHover(h) },
+  nowMs: () => clock.tMs,
+  detail: () => displayQuality.value.mapDetail
+})
+
 // 当前帧读数：帧号 / 帧时刻 / 起报时次 / 时钟是否落在已取时段内。
 // ★ 起报时次不是装饰：同一个钟点，00Z 起报的 f012 与 12Z 起报的 f000 是两份不同的数据，
 //   前者是十二小时前算出来的预报。看图的人有权知道自己在看哪一份。
@@ -539,13 +556,18 @@ function onHoverLL(ll) {
   cursor.ll = ll
   if (ll) {
     cursor.env = env.readAt(ll.lat, ll.lon) || envLive.readAt(ll.lat, ll.lon)
+    cursor.tz = tz.readAt(ll.lat, ll.lon)
+    tz.hoverAt(ll.lat, ll.lon)
     cursor.look = lookReadout(ll)
   } else {
     cursor.env = (env.on.value || envLive.on.value) ? dashOf(cursor.env) : null
+    cursor.tz = tz.on.value ? tz.dashRead(cursor.tz) : null
+    tz.hoverClear()
     cursor.look = dashOf(cursor.look)
   }
 }
 watch(() => env.on.value || envLive.on.value, (v) => { if (!v) cursor.env = null })
+watch(() => tz.on.value, (v) => { if (!v) cursor.tz = null })
 // 光标所在点【相对参考卫星】的视角读数。档位与参考卫星都在 mapCrs 里，几何走 coverage 的 satLookAt。
 // ★ 地平线以外的点照给数值（天线系是纯几何的，那里仍有定义），可见与否连同地心角、斜距一起写进 title
 //   —— 界面上只留数字，判定性的话不写（见 CLAUDE.md）。
@@ -651,7 +673,12 @@ function visSetElev(v) { vis.minElev.value = (v === '' || v == null) ? '' : (Num
 // 二期新加的界面词（挂点 / 姿态律）按语言直接出字：词典（uiDict）不归本页管，呈现层查不到就会在英文界面漏成中文。
 // 读 langTick 建立依赖 —— 切语言时模板随之重渲染（byLang 本身读 localStorage，不是响应式）
 const langTick = ref(0)
-const offLangTick = onLangChange(() => { langTick.value++ })
+const offLangTick = onLangChange(() => {
+  langTick.value++
+  // 时区：时区条的星期、状态栏读数（星期 / 航海时区）按语言生成 —— 暂停时也立刻换
+  tz.relang()
+  if (cursor.ll && cursor.tz) cursor.tz = tz.readAt(cursor.ll.lat, cursor.ll.lon)
+})
 function zhEn(zh, en) { void langTick.value; return byLang(zh, en) }
 // 星下点图标大小：允许临时清空（空按默认 12 画），非法保持原值，1–64 钳制（负/超大像素会画坏图层）
 function visSetIcon(v) { vis.iconSize.value = (v === '' || v == null) ? '' : (Number.isFinite(Number(v)) ? Math.min(64, Math.max(1, Number(v))) : vis.iconSize.value) }
@@ -2392,7 +2419,7 @@ const FOCUS_TRACK_BUDGET = 48000
 // 量级，多选时按颗数把圈数收回来。保底 0.25 圈，不像线那样保底 1 圈 —— 几百颗星各画一圈带面已经铺满全球。
 // K 按主选星的远地点高度与当前覆盖圈口径估（与 Worker 里逐星算的同一个函数）。
 const FOCUS_SWATH_BUDGET = 6e6
-const fpOptNow = () => ({ mode: fpMode.value, beamDeg: parseFloat(beam.value), elevDeg: parseFloat(elevMin.value) })
+const fpOptNow = () => ({ mode: fpMode.value, beamDeg: fpNum('beam'), elevDeg: fpNum('elev') })
 const focusSwathK = (e) => swathK(e && e.rec && e.rec.alta > 0 ? e.rec.alta * RE : 0, fpOptNow())
 // 轨迹长度口径：圈数档（trkSpanMode='rev'）＝每颗星各按自己的周期 × trkPeriods；时长档（'time'）＝全体同一段 trkSpanMin 分钟。
 // 两档都先折成「圈数」再过预算（时长档按 periodMin 折算 —— 调用方给主选星 / 该星的周期）。输入本身不设上限，
@@ -2493,13 +2520,17 @@ function startFocusGeometry() {
     return { shards, ringBuild: reRing, spin, keys, subOn: p.style.subOn, dotOn: p.style.dotOn }
   })
 }
-// 波束角档的 ε=0 上限：主选那颗由 Worker 一并回填（placeholder 常显上限；用户超限回写夹断值，锁定态不回写）
+// 波束角档的 ε=0 上限（WGS84 整圈地平）：主选那颗由 Worker 一并回填（placeholder 常显上限；锁定态不回写）。
+// ★ 未锁定时超限 → 回写空值（＝对地全视场，placeholder 现显此刻上限），不再回写「此刻上限」那个数：
+//   上限随星位变（倾斜 GEO 17.397–17.404°、LEO 550 km 133.6–134.1°），回写的快照一过这一拍就小于新上限、
+//   又不会再被夹断，圈从地平缩回去（LEO 最多差 3.7° 仰角 / 约 380 km）；多选时主选是 GEO、写回 17.41，
+//   同屏的低轨星也按 17.41° 画成小圈。空值逐星逐拍封到各自的地平，两种都没有
 function applyBeamLimit(shards) {
   for (const sh of shards) {
     if (sh.bMaxDeg == null) continue
-    const autoText = sh.bMaxDeg.toFixed(1)
+    const autoText = beamLimitText(sh.bMaxDeg)
     if (autoText !== beamAuto.value) beamAuto.value = autoText
-    if (sh.clampText != null && !beamLock.value && sh.clampText !== beam.value) beam.value = sh.clampText
+    if (sh.clampText != null && !beamLock.value && beam.value !== '') beam.value = ''
     return
   }
 }
@@ -2579,13 +2610,14 @@ function focusGeomOfRec(rec, isCc, color) {
     if (orbit.length > 1) orbit.push(orbit[0])   // 同上：轨道圈收口
     const ecf = sat.eciToEcf(pv.position, g)
     const fp = footprintAtEcef([ecf.x, ecf.y, ecf.z], h)
-    // 轨迹面（与聚焦选中集同一份口径与同一套整理：focusSwath.sectionOf → buildSwath）：3D 收带面 / 圆盘 / 轮廓，
+    // 轨迹面（与聚焦选中集同一份口径与同一套整理：focusSwath.swathSamples → buildSwath）：3D 收带面 / 圆盘 / 轮廓，
     // 2D 收 swathFlatGeom 出的经纬 / 逐步标志 / 圆盘环 / 轮廓折线
     let swath = null, flatSw = null
     if (focusStyle.trkOn && focusStyle.trkMode === 'swath' && pts.length > 1) {
       const fpo = fpOptNow(), K = swathK(Math.max(h, rec.alta > 0 ? rec.alta * RE : 0), fpo)
       const sp = pts.map((q) => { const m = groundMotion(q.pv, q.gmst); return { lat: q.lat, lon: q.lon, h: q.gd.height, az: m.az, gs: m.gs, hd: m.hd } })
-      swath = buildSwath(sp, sp.map((q) => sectionOf(q, fpo, K)), K, fpo, 72, { fpOn: !!focusStyle.fpOn })
+      const ss = swathSamples(sp, fpo, K)
+      swath = buildSwath(ss.pts, ss.secs, K, fpo, 72, { fpOn: !!focusStyle.fpOn, brk: ss.brk })
       flatSw = swathFlatGeom(swath)
     }
     return { item: { orbit, track, swath, footprint: fp, primary: false, satPos: { lat, lon, altKm: h, color } }, sub: { lat, lon }, flat: { track, ...(flatSw || {}), footprint: fp, sub: { lat, lon } } }
@@ -2721,7 +2753,7 @@ function setSubClaim2D(claim) {
 // 足迹的纯几何部分（按当前 fpMode 口径）：本页与聚焦几何 Worker 共用 focusFootprint.js 那一份定义。
 // ecef=卫星 ECEF(km)，h=轨道高度 km；lim=可选出参，回填 { bMaxDeg, clampText } 供调用方写占位符（仅 beam 模式）。
 function footprintAtEcef(ecef, h, lim, seg) {
-  return footprintRing(ecef, h, seg, { mode: fpMode.value, beamDeg: parseFloat(beam.value), elevDeg: parseFloat(elevMin.value) }, lim)
+  return footprintRing(ecef, h, seg, fpOptNow(), lim)
 }
 
 // 以 (lat0,lon0) 为心、地心半角 lambda 的地表小圆 -> 经纬度点列
@@ -2930,6 +2962,14 @@ async function refreshPositions() {
   else followCursor()                                                  // 播放推进跑出可见窗口 → 平移尺子接回来
   // 宇宙空间（太阳 / 星空 / 晨昏）随时间轴/实时移动。放在早退之前：一颗星都不显示时照样该走（它只跟时刻有关，与星无关）。
   if (spaceOn.value) applySpace()
+  // 时区：偏移只跟时刻有关（夏令时跃迁 / 标注里的当地时刻），与星无关 —— 同样放在早退之前
+  tz.tick(clock.tMs)
+  // 光标停着不动时读数与悬停描边也跟时钟走（读数带秒；夏令时跃迁后同偏移的区域换了一批）—— 指针事件只在动的时候来
+  if (cursor.ll && tz.on.value) {
+    const r = tz.readAt(cursor.ll.lat, cursor.ll.lon)
+    if (JSON.stringify(r) !== JSON.stringify(cursor.tz)) cursor.tz = r
+    tz.hoverAt(cursor.ll.lat, cursor.ll.lon)
+  }
   // 地球自转（惯性档）：一拍一次，与本拍星位同一帧上屏（外层 holdFrames 掐着出帧）。
   // ★ 与晨昏线一样放在早退【之前】：星座选「无」时地球照样该转 —— 它只跟时刻有关，与星无关。
   //   本拍的时刻与 GMST 就此定下，正常分支往下复用同一份，不再算第二遍（算两遍＝两个时刻同框的口子）。
@@ -5410,18 +5450,21 @@ function fpCommit(k) {
 // 轨迹长度两格（圈数 / 时长）：与覆盖圈口径同一套「草稿 + 失焦/回车提交」（逐键重算会按半截数字把全体轨迹重铺一遍）。
 // 任意正数都收（全角数字先归一），非数 / 非正 → 原值不动。
 const trkEdit = ref(null)             // { k:'rev'|'time', text }
+const trkShown = (k) => { const v = Number(k === 'rev' ? focusStyle.trkPeriods : focusStyle.trkSpanMin); return v > 0 ? +v.toFixed(3) : null }
 const trkVal = (k) => {
   const d = trkEdit.value
   if (d && d.k === k) return d.text
-  const v = Number(k === 'rev' ? focusStyle.trkPeriods : focusStyle.trkSpanMin)
-  return v > 0 ? String(+v.toFixed(3)) : ''
+  const v = trkShown(k)
+  return v == null ? '' : String(v)
 }
 function trkInput(k, e) { trkEdit.value = { k, text: e.target.value } }
 function trkCommit(k) {
   const d = trkEdit.value
   trkEdit.value = null
-  if (!d || d.k !== k) return
-  const v = pf(d.text)
+  if (d && d.k === k) trkSet(k, pf(d.text))
+}
+// 侧栏 / 星座弹窗的草稿格与卫星信息栏的 NumBox 共用这一个落值口
+function trkSet(k, v) {
   if (!(v > 0)) return
   if (k === 'rev') { if (v === focusStyle.trkPeriods) return; focusStyle.trkPeriods = v }
   else { if (v === focusStyle.trkSpanMin) return; focusStyle.trkSpanMin = v }
@@ -5440,40 +5483,51 @@ function setTrkSpanMode(m) {
   focusStyle.trkSpanMode = m
   applyFocusGeom()
 }
-// 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一覆盖圈的两种参数化，由卫星高度 h 唯一对应。
-//   sin(B/2) = (RE/r)·cos ε，r=RE+h；B/2 ≥ asin(RE/r)（地平）时 ε=0。切换定义方式时按此换算，覆盖圈不变。
-function selAltKm() {
+// 波束全锥角 B(°) ↔ 最低仰角 ε(°)：同一条等仰角线的两种读数（见 focusFootprint.js 文件头）。切换口径时用主选星此刻的位置换算，
+// 换算值全精度留在 fpExact 里 —— 主选星的圈切换前后逐点不变。多选时其余星高度不同，同一个锥角对它们是另一个仰角，那是口径本身的差别。
+function selEcefNow() {
   if (!selEntry) return null
   const now = isCustomEntry(selEntry) ? ccTimeAt() : calcAt(); const pv = posAt(selEntry, now)
   if (!pv || !pv.position) return null
-  const gd = sat.eciToGeodetic(pv.position, sat.gstime(now))
-  return gd.height > 0 ? gd.height : null
+  const g = sat.gstime(now), gd = sat.eciToGeodetic(pv.position, g)
+  if (!(gd.height > 0)) return null
+  const f = sat.eciToEcf(pv.position, g)
+  return { ecef: [f.x, f.y, f.z], h: gd.height }
 }
-function beamToElevDeg(Bdeg, h) {
-  const x = ((RE + h) / RE) * Math.sin((Bdeg / 2) * DEG)
-  return x >= 1 ? 0 : Math.acos(clamp(x, -1, 1)) / DEG          // 达/超地平 → ε=0
-}
-function elevToBeamDeg(eDeg, h) {
-  return 2 * Math.asin(clamp((RE / (RE + h)) * Math.cos(eDeg * DEG), -1, 1)) / DEG
-}
-// 切换波束角/最低仰角：用聚焦星当前高度把当前值换算到另一参数，二者始终描述同一覆盖圈
+// 上一次切换：{ from, val, to, conv } —— 来回切、中间没动过换算出的值，就还原用户原先填的那个文本（换算往返数值上不漂，
+// 但会把「5」显示成「5.00」一类、主选星换了还会换出别的数）
+let fpSwap = null
+const fpText = (v) => String(+v.toFixed(2))
 function setFpMode(m) {
   if (fpMode.value === m) return
   fpEdit.value = null                 // 两格是 v-if/v-else，切换时旧输入框直接卸载、不会触发 blur → 草稿在这里作废
-  const h = selAltKm()
-  if (h != null) {
-    const bMax = 2 * Math.asin(clamp(RE / (RE + h), -1, 1)) / DEG
-    if (m === 'elev') {
-      const b = parseFloat(beam.value)
-      const Bdeg = b > 0 ? Math.min(b, bMax) : bMax             // beam 空=对地全视场=地平
-      elevMin.value = beamToElevDeg(Bdeg, h).toFixed(1)
-    } else {
-      const ev = parseFloat(elevMin.value)
-      const e = ev >= 0 && ev < 90 ? ev : 0
-      beam.value = e <= 0 ? '' : elevToBeamDeg(e, h).toFixed(1)  // ε=0 → 全视场，回落到「自动」空值
+  const cur = fpMode.value, curVal = cur === 'beam' ? beam.value : elevMin.value
+  if (fpSwap && fpSwap.from === m && fpSwap.to === cur && fpSwap.conv === curVal) {
+    if (m === 'elev') elevMin.value = fpSwap.val; else beam.value = fpSwap.val
+    fpSwap = null; fpExact = null
+  } else {
+    const p = selEcefNow(), src = fpNum(cur)                      // 先取源格的全精度值，再作废 fpExact
+    fpExact = null
+    if (p) {
+      if (m === 'elev') {
+        const e = beamToElevDeg(p.ecef, src)                        // beam 空 / 达整圈地平 → 0
+        elevMin.value = fpText(e); fpExact = { k: 'elev', text: elevMin.value, v: e }
+      } else {
+        const b = elevToBeamDeg(p.ecef, src)
+        beam.value = b == null ? '' : fpText(b)                     // ε=0 → 全视场，回落到「自动」空值
+        if (b != null) fpExact = { k: 'beam', text: beam.value, v: b }
+      }
     }
+    fpSwap = p ? { from: cur, val: curVal, to: m, conv: m === 'beam' ? beam.value : elevMin.value } : null
   }
   fpMode.value = m
+  refreshFootprint()
+}
+// 卫星信息栏「覆盖圈」节的两格：与侧栏同一份状态（fpMode / beam / elevMin / beamLock），NumBox 自带草稿、失焦或回车提交
+function rdkSetFp(k, v) {
+  const t = v == null || (k === 'beam' && !(v > 0)) ? '' : String(v)   // 波束角 0 / 清空＝对地全视场
+  if (t === (k === 'beam' ? beam.value : elevMin.value)) return
+  if (k === 'beam') beam.value = t; else elevMin.value = t
   refreshFootprint()
 }
 function toggleBeamLock() { beamLock.value = !beamLock.value }
@@ -6833,6 +6887,8 @@ function feedFlat() {
   if (sideCtx() === 'satcov') satcov.recompute()   // 对星视图占着 2D 那块场（见 ownsFlatField）→ 上一行被闸住，改由它来喂
   env.redraw()      // 环境场：平面图是懒创建的，切过来时把当前图层（栅格+等值线）补喂一份
   envLive.redraw()  // 实时气象场：同上。两张场共用一个槽，次序无所谓——归属闸挡着，关着的那一方清不掉对方
+  flat.setTzLayer(tz.currentSpec())   // 时区：同上，补喂当前那一份（关着则为 null）
+  flat.setTzHover(tz.currentHover())
   applySpace()      // 宇宙空间（晨昏效果 / 晨昏线）：同上，平面图懒创建，切过来补喂当前时刻那一份（关着则清层）
   redrawSats()      // 卫星/仰角线图层（含 Polygon）
   if (covGridLast) flat.setCovGrid(covGridLast.layer, covGridLast.opts)   // 覆盖分析热力图：建平面渲染器之前算的只进了 3D（见 covGridLast）
@@ -7446,6 +7502,7 @@ function applyDisplayQuality() {
   if (scene) { scene.setPixelRatio(q.pixelRatio); scene.setRenderFps(q.fps); scene.setSphereDetail(q.sphereSeg); scene.setMapDetail(q.mapDetail, q.mapThin) }
   if (flat) { flat.setRenderScale(q.pixelRatio); flat.setMapDetail(q.mapDetail, q.mapThin) }
   grd.recompute()   // gridStride 变化 → 覆盖层按新步长重建（无选中层时为空操作）
+  tz.setDetail()    // 时区面拓扑与底图同档：国界段才逐点重合
 }
 function togglePtLayer() { showPtLayer.value = !showPtLayer.value; syncMarkers() }
 function toggleStLayer() { showStLayer.value = !showStLayer.value; syncMarkers() }
@@ -9153,7 +9210,7 @@ const fmtPeakDb = (v) => (Number.isFinite(+v) ? (+v).toFixed(2) : '—')
 // 地图右侧、时间轴之上（时间轴仍通栏）。显隐只听 shellUi.satInfo：用户改聚焦时收着的栏弹出、清空聚焦时收起（见 _rdkHadSel）；
 // 栏开着时换星只换栏里的内容，地图视口一个像素不动；
 // 栏开合不改场景（聚焦几何 / 跟随 / 图例都不动，判据同「收起侧栏≠离开视图」）。
-const RDK_SECS = ['rdk-live', 'rdk-sv', 'rdk-osc', 'rdk-geo', 'rdk-el', 'rdk-rel', 'rdk-ant', 'rdk-mdl']
+const RDK_SECS = ['rdk-live', 'rdk-sv', 'rdk-osc', 'rdk-geo', 'rdk-el', 'rdk-rel', 'rdk-cov', 'rdk-trk', 'rdk-ant', 'rdk-mdl']
 function rdkSec(key, e) {   // 点节头 = 折叠 / 展开；Ctrl+点 = 只展开这一节、折叠其余（Blender 口径；聚焦集不参与）
   if (e && (e.ctrlKey || e.metaKey) && RDK_SECS.includes(key)) { for (const k of RDK_SECS) setSecOpen(k, k === key); return }
   toggleSec(key)
@@ -11969,7 +12026,7 @@ function snapshot() {
     oceanMode: oceanNameMode.value, seaMode: seaNameMode.value, oceanName: oceanNameSize.value, seaName: seaNameSize.value, waterOff: { ...waterOff },
     chain: { on: chainOn.value, off: { ...chainOff }, style: { ...chainStyle } },
     refAxes: { ...refAxes },
-    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, spaceOn: spaceOn.value, space: { ...space }, tzMode: tzMode.value, crs: { ...mapCrs, rev: MAP_CRS_REV }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, viewRev: VIEW_PREFS_REV, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, focusStyle: { ...focusStyle }, windowMin: windowMin.value, tl: { mode: tlMode.value, startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value },
+    showProvinces: showProvinces.value, showCities: showCities.value, admSel1: [...admSel1.value], admName1: admName1.value, admName2: admName2.value, borderStyle: { ...borderStyle }, labelStyle: { ...labelStyle }, spaceOn: spaceOn.value, space: { ...space }, tzMode: tzMode.value, crs: { ...mapCrs, rev: MAP_CRS_REV }, oceanColor: oceanColor.value, imagery: { on: imageryOn.value, k: imageryKey.value, bright: imageryBright.value }, landScheme: landScheme.value, landOverrides: { ...landOverrides }, groupColors: { ...groupColors }, viewRev: VIEW_PREFS_REV, frame: viewPrefs.frame, dragDamping: viewPrefs.dragDamping, wheelStep3d: viewPrefs.wheelStep3d, wheelStep2d: viewPrefs.wheelStep2d, live: live.value, clock: { stepSec: clock.stepSec, speed: clock.speed }, beamLock: beamLock.value, fpMode: fpMode.value, beam: beam.value, elevMin: elevMin.value, fpExact: fpExact ? { ...fpExact } : null, focusStyle: { ...focusStyle }, windowMin: windowMin.value, tl: { mode: tlMode.value, startMs: tlStart.value, stopMs: tlStop.value, end: tlEnd.value },
     markStyle: { ...markStyle },
     mkPtLayer: showPtLayer.value, mkStLayer: showStLayer.value, mkTrajLayer: showTrajLayer.value,
     lnkStyle: { ...lnkStyle },
@@ -12155,6 +12212,7 @@ async function restoreSettings() {
   if (s.fpMode === 'elev') fpMode.value = 'elev'
   if (typeof s.beam === 'string') beam.value = s.beam
   if (typeof s.elevMin === 'string') elevMin.value = s.elevMin
+  { const x = s.fpExact; fpExact = x && (x.k === 'beam' || x.k === 'elev') && typeof x.text === 'string' && Number.isFinite(x.v) ? { k: x.k, text: x.text, v: x.v } : null }
   if (Number.isFinite(s.windowMin)) { windowMin.value = clamp(roundSecMin(s.windowMin), WIN_MIN, WIN_MAX); winStartMin.value = -PAST_FRAC * windowMin.value }
   // 时段：固定档的起止 / 终止处理（没有或坏了就是滚动档；end 照留，下次切固定沿用）
   { const p = normPeriod(s.tl); tlEnd.value = p.end; if (p.mode === 'fixed') { tlMode.value = 'fixed'; tlStart.value = p.startMs; tlStop.value = p.stopMs } }
@@ -13293,7 +13351,8 @@ const RESET_SECS = {
     snap: () => objSnap(markStyle), put: (v) => { objPut(markStyle, v); applyMarkStyle() }, run: () => resetMarkPart(p)
   }])),
   land: { snap: () => objSnap(landOverrides), put: (v) => { objPut(landOverrides, v); applyLandColors(true) }, run: clearLandOverrides },
-  chains: { snap: () => ({ st: objSnap(chainStyle), off: objSnap(chainOff) }), put: (v) => { objPut(chainStyle, v.st); objPut(chainOff, v.off); applyChains() }, run: resetChains }
+  chains: { snap: () => ({ st: objSnap(chainStyle), off: objSnap(chainOff) }), put: (v) => { objPut(chainStyle, v.st); objPut(chainOff, v.off); applyChains() }, run: resetChains },
+  tz: { snap: () => tz.snapStyle(), put: (v) => tz.putStyle(v), run: () => tz.resetStyle() }
 }
 function resetSec(key, arg) {
   const D = RESET_SECS[key]; if (!D) return
@@ -13609,6 +13668,8 @@ onMounted(async () => {
   scene.setBorderStyle({ ...borderStyle })
   scene.setLabelStyle({ ...labelStyle })
   scene.setOceanColor(oceanColor.value)
+  scene.setTzLayer(tz.currentSpec())   // 时区：场景建好之前就开着（取数是异步的）→ 补喂
+  tz.start()                           // 上次关窗时开着：恢复（缺数据先取，画面随后补上）
   if (imageryOn.value) applyImagery()
   scene.setFocusStyle(focusStyle3D())
   scene.setSatPointsVisible(focusStyle.cloudOn)
@@ -13896,7 +13957,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', onPickArmDown, true); window.removeEventListener('focus', onWinFocus)
   window.removeEventListener('pointerdown', onLinkPickDown, true); window.removeEventListener('pointerup', onLinkPickUp, true); window.removeEventListener('keydown', onLinkKey, true); window.removeEventListener('keydown', onMapToolKey, true); window.removeEventListener('keydown', onSceneUndoKey); window.removeEventListener('keydown', onShiftKey); window.removeEventListener('keyup', onShiftKey); window.removeEventListener('blur', onShiftBlur)
   window.removeEventListener('pointermove', onLinkHoverMove); if (_lnkHovRaf) cancelAnimationFrame(_lnkHovRaf)
-  cursor.ll = null; cursor.env = null; if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (geomPool) { geomPool.dispose(); geomPool = null }; if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
+  cursor.ll = null; cursor.env = null; cursor.tz = null; tz.dispose(); if (ro) ro.disconnect(); if (trackRo) trackRo.disconnect(); if (geomPool) { geomPool.dispose(); geomPool = null }; if (flat) flat.destroy(); if (scene) { scene.clearCoverage(); scene.destroy() }
 })
 </script>
 
@@ -15345,7 +15406,6 @@ onBeforeUnmount(() => {
               </template>
             </template>
           </div>
-
         </div>
         </div>
 
@@ -15988,6 +16048,35 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
+        <!-- 时区：打开即把地图换成一张时区图（陆地按时区实色、海区航海带浅调、时区号、上下时区条、日界线） -->
+        <div class="sec" :class="{ hid: !tz.on.value }">
+          <div class="sect acc" data-sec="geo-tz" :class="{ open: isSecOpen('geo-tz', false) }" @click="toggleSec('geo-tz', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-tz', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-tz', false)" @keydown.space.self.prevent="toggleSec('geo-tz', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-tz', false) }" :size="12" /><span>时区</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('tz')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: tz.on.value }" role="switch" :aria-checked="tz.on.value ? 'true' : 'false'" :title="(tz.on.value ? '隐藏时区图层' : '显示时区图层') + '\n' + TZ_CREDIT" @click.stop="tz.on.value = !tz.on.value"><i></i></button></div>
+          <template v-if="isSecOpen('geo-tz', false)">
+          <div class="srow"><label>口径</label>
+            <span class="seg nseg" role="radiogroup" aria-label="时区口径">
+              <button type="button" role="radio" :aria-checked="!!tz.civil.value" class="sg" :class="{ on: tz.civil.value }" title="此刻各地实际使用的时间（含夏令时）" @click="tz.civil.value = true">现行</button>
+              <button type="button" role="radio" :aria-checked="!tz.civil.value" class="sg" :class="{ on: !tz.civil.value }" title="不含夏令时（与 CIA 时区图同口径）" @click="tz.civil.value = false">标准时</button>
+            </span>
+          </div>
+          <label class="chk2"><input type="checkbox" v-model="tz.fill.value" /><span>色块</span></label>
+          <div v-if="tz.fill.value" class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0.05" max="1" step="0.01" v-model.number="tz.alpha.value" /><span class="u">{{ Number(tz.alpha.value).toFixed(2) }}</span></div>
+          <label class="chk2"><input type="checkbox" v-model="tz.labels.value" /><span>时区号</span></label>
+          <template v-if="tz.labels.value">
+            <label class="chk2 sub" title="时区号下加一行当地时刻，随仿真时钟走"><input type="checkbox" v-model="tz.localTime.value" /><span>当地时刻</span></label>
+            <label class="chk2 sub"><input type="checkbox" v-model="tz.bold.value" /><span>粗体</span></label>
+          </template>
+          <label class="chk2" title="平面图上下沿：各航海带的时区号，与此刻各带的当地时刻（跨日处分段标日期）"><input type="checkbox" v-model="tz.strips.value" /><span>时区条</span></label>
+          <label class="chk2"><input type="checkbox" v-model="tz.idl.value" /><span>国际日期变更线</span></label>
+          <div class="srow"><label>选择时区</label><button v-if="tz.picks.value.length" type="button" class="lnk" title="清除全部选择" @click="tz.picks.value = []">清除</button></div>
+          <div class="tz-picks" role="group" aria-label="选择时区">
+            <button v-for="o in TZ_PICK_OFFS" :key="o" type="button" class="tz-pk" :class="{ on: tz.picks.value.includes(o), frac: o % 60 !== 0 }" :aria-pressed="tz.picks.value.includes(o) ? 'true' : 'false'" :title="tzOffLabel(o)" @click="tz.togglePick(o)">{{ tz.offShort(o) }}</button>
+          </div>
+          <label class="chk2" title="光标处同偏移的全部区域勾出外轮廓"><input type="checkbox" v-model="tz.hoverHi.value" /><span>悬停描亮</span></label>
+          <div v-if="tz.msg.value" class="srow"><span class="tz-st warn">{{ tz.msg.value }}</span></div>
+          <div v-else-if="tz.busy.value" class="srow"><span class="tz-st">加载中…</span></div>
+          </template>
+        </div>
+
         <div class="sec">
           <div class="sect acc" data-sec="geo-crs" :class="{ open: isSecOpen('geo-crs', false) }" @click="toggleSec('geo-crs', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('geo-crs', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('geo-crs', false)" @keydown.space.self.prevent="toggleSec('geo-crs', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('geo-crs', false) }" :size="12" /><span>坐标系</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="resetSec('crs')"><Icon name="rotate-ccw" :size="12" /></button><span class="sect-sw-ph" aria-hidden="true"></span></div>
           <template v-if="isSecOpen('geo-crs', false)">
@@ -16518,6 +16607,55 @@ onBeforeUnmount(() => {
                 <div class="rdk-r"><span class="rdk-k">径向速度</span><span class="rdk-s">Ṙ</span><span class="rdk-v">{{ rdkRel.dR }}</span><span class="rdk-u">km/s</span></div>
                 <div class="rdk-r"><span class="rdk-k">沿迹速度</span><span class="rdk-s">İ</span><span class="rdk-v">{{ rdkRel.dI }}</span><span class="rdk-u">km/s</span></div>
                 <div class="rdk-r"><span class="rdk-k">法向速度</span><span class="rdk-s">Ċ</span><span class="rdk-v">{{ rdkRel.dC }}</span><span class="rdk-u">km/s</span></div>
+              </div>
+            </section>
+
+            <!-- 覆盖圈口径：与侧栏「聚焦卫星 › 覆盖圈」同一份设置（fpMode / beam / elevMin / beamLock）的快捷入口；切换口径时按主选星换算 -->
+            <section class="rdk-sec" data-rdk="cov">
+              <div class="rdk-sh" @click="rdkSec('rdk-cov', $event)">
+                <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-cov') }" :size="12" />
+                <span class="rdk-st">覆盖圈</span>
+              </div>
+              <div v-if="isSecOpen('rdk-cov')" class="rdk-ins rdk-cov">
+                <span class="seg nseg" role="radiogroup" aria-label="覆盖圈定义">
+                  <button type="button" role="radio" :aria-checked="!!(fpMode === 'beam')" class="sg" :class="{ on: fpMode === 'beam' }" title="按星上波束角（全锥角）画覆盖圈" @click="setFpMode('beam')">波束角</button>
+                  <button type="button" role="radio" :aria-checked="!!(fpMode === 'elev')" class="sg" :class="{ on: fpMode === 'elev' }" title="按地面最低仰角画覆盖圈（0°=地平线）" @click="setFpMode('elev')">最低仰角</button>
+                </span>
+                <div v-if="fpMode === 'beam'" class="rdk-in">
+                  <label>波束全锥角</label>
+                  <button type="button" :aria-pressed="(beamLock) ? 'true' : 'false'" class="covlock" :class="{ on: beamLock }" :title="beamLock ? '已锁定：超出该星上限不截断' : '锁定：超出该星上限时不回写截断值'" @click="toggleBeamLock"><Icon :name="beamLock ? 'lock' : 'lock-open'" :size="12" /></button>
+                  <NumBox class="ci" :min="0" :max="180" :step="0.1" allow-empty :model-value="beam === '' ? null : beam" :placeholder="beamAuto || '自动'" title="波束全锥角，空=对地全视场（失焦或回车生效）" @commit="(v) => rdkSetFp('beam', v)" />
+                  <span class="u">°</span>
+                </div>
+                <div v-else class="rdk-in">
+                  <label>最低仰角</label>
+                  <NumBox class="ci" :min="0" :max="89.9" :step="1" allow-empty :model-value="elevMin === '' ? null : elevMin" placeholder="0" title="最低仰角，0°=地平线（失焦或回车生效）" @commit="(v) => rdkSetFp('elev', v)" />
+                  <span class="u">°</span>
+                </div>
+              </div>
+            </section>
+
+            <!-- 星下点轨迹长度：与侧栏「聚焦卫星 › 星下点轨迹」同一份设置（trkSpanMode / trkPeriods / trkSpanMin）的快捷入口；切换口径时按主选星周期换算 -->
+            <section class="rdk-sec" data-rdk="trk">
+              <div class="rdk-sh" @click="rdkSec('rdk-trk', $event)">
+                <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('rdk-trk') }" :size="12" />
+                <span class="rdk-st">星下点轨迹</span>
+              </div>
+              <div v-if="isSecOpen('rdk-trk')" class="rdk-ins rdk-cov">
+                <span class="seg nseg" role="radiogroup" aria-label="星下点轨迹长度口径">
+                  <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode !== 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode !== 'time' }" title="按轨道周期的倍数给长度" @click="setTrkSpanMode('rev')">轨迹圈数</button>
+                  <button type="button" role="radio" :aria-checked="!!(focusStyle.trkSpanMode === 'time')" class="sg" :class="{ on: focusStyle.trkSpanMode === 'time' }" title="按时长给长度（分钟）" @click="setTrkSpanMode('time')">轨迹周期</button>
+                </span>
+                <div v-if="focusStyle.trkSpanMode !== 'time'" class="rdk-in">
+                  <label>轨迹圈数</label>
+                  <NumBox class="ci" :min="0" :step="1" :model-value="trkShown('rev')" placeholder="1" title="从当前时刻起画几个轨道周期的星下点轨迹（失焦或回车生效）" @commit="(v) => trkSet('rev', v)" />
+                  <span class="u">圈</span>
+                </div>
+                <div v-else class="rdk-in">
+                  <label>轨迹周期</label>
+                  <NumBox class="ci" :min="0" :step="10" :model-value="trkShown('time')" placeholder="0" title="从当前时刻起画多长时间的星下点轨迹（分钟，失焦或回车生效）" @commit="(v) => trkSet('time', v)" />
+                  <span class="u">min</span>
+                </div>
               </div>
             </section>
 
@@ -17613,6 +17751,10 @@ html[lang="en"] .rdk { --rdk-uw: 44px; --rdk-kw: 46px; --rdk-hw: 66px; --rdk-lw:
 .rdk-in .ci { grid-column: 3; width: 100%; height: var(--h-ctl); box-sizing: border-box; }
 .rdk-in > label + .ci { grid-column: 2 / 4; }                                              /* 标称经度没有 ± */
 .rdk-in .u { grid-column: 4; color: var(--text-faint); font-size: var(--fs-2); }
+/* 覆盖圈：口径分段通栏（展开式枚举）+ 一格取值；锁钮占 ± 那一列。节内没有读数，去掉设置块底下那道点线 */
+.rdk-ins.rdk-cov { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
+.rdk-cov > .seg > .sg { flex: 1; min-width: 0; }
+.rdk-in .covlock { grid-column: 2; justify-self: end; }
 /* 日轨迹图：像素坐标直画（宽度由 ResizeObserver 量），配色全走主题 token */
 .rdk-plot { margin-top: 6px; height: 136px; }
 .rdk-plot svg { display: block; overflow: visible; }
@@ -18673,6 +18815,14 @@ html[lang="en"] .plgl { flex: 0 1 auto; min-width: 52px; max-width: 45%; white-s
 /* 图层关掉时整节压暗（与标记 / 聚焦两栏同一手感） */
 .geo-side .sec > :not(.sect) { transition: opacity var(--dur-2) linear; }
 .geo-side .sec.hid > :not(.sect) { opacity: .5; }
+.geo-side .tz-st { font-size: var(--fs-2); color: var(--text-faint); line-height: 1.5; }   /* 时区分区：只放运行时状态（取数中 / 取数失败） */
+.geo-side .tz-st.warn { color: var(--warn); }
+.geo-side .tz-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(46px, 1fr)); gap: 3px; margin: 2px 0 6px; }
+.geo-side .tz-pk { height: 22px; padding: 0 2px; border: 1px solid var(--border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--fs-2); font-variant-numeric: tabular-nums; cursor: pointer; white-space: nowrap; }
+.geo-side .tz-pk.frac { color: var(--text-faint); }
+.geo-side .tz-pk:hover { color: var(--text); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.geo-side .tz-pk.on { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-on); }
+.geo-side .tz-pk.on:hover { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
 /* 列表行里的小色块（链路行）：显示这一条当前的实际颜色 */
 .mrow .clr.mkc { flex: none; width: 22px; height: 16px; min-width: 0; }
 /* 隐藏的条目：拨杆留亮，其余退到后景（同 .plg.hid） */

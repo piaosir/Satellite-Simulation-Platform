@@ -1,0 +1,30 @@
+Time zone boundaries
+====================
+
+Source database
+  timezone-boundary-builder, release 2026e, "timezones-1970" (zones identical since 1970 merged)
+  https://github.com/evansiroky/timezone-boundary-builder/releases/tag/2026e
+  Data (c) OpenStreetMap contributors, made available under the Open Database License (ODbL) 1.0:
+  https://opendatacommons.org/licenses/odbl/1-0/
+
+Derivative Database
+  The time zone faces bundled with this application (built from src/viz/geo/tz/tz-10m.json,
+  tz-50m.json and tz-110m.json into the renderer resources of the installation) are a Derivative
+  Database of the source database above. They are included in full, in machine-readable form, and
+  are likewise made available under the Open Database License (ODbL) 1.0.
+
+  Method of alteration (ODbL 4.6 b):
+    1. Zones are taken from the source database; Asia/Urumqi is folded into Asia/Shanghai.
+    2. Zone boundaries are simplified as a coverage (tolerance 0.004 / 0.02 / 0.08 degree for the
+       1:10m / 1:50m / 1:110m scales) and re-cut along the Natural Earth admin-0 map units used by
+       the application's base map, so that national boundaries coincide with the base map; gaps
+       left by the simplification are assigned to the nearest zone (Voronoi partition).
+    3. Units whose sovereignty depends on the selected point of view carry a per-owner zone table.
+    4. Sea areas are 15-degree nautical bands; the date-line deviations near Kiribati, the Bering
+       Strait and the Aleutians follow Natural Earth 10m time_zones (public domain).
+    5. Coordinates are quantized to the base map's TopoJSON transform.
+
+Rules
+  Offsets and daylight-saving rules come from the IANA Time Zone Database 2026e (public domain),
+  read from the compiled TZif files of the PyPI package tzdata 2026.5. No attribution is required;
+  the version is listed for reference.

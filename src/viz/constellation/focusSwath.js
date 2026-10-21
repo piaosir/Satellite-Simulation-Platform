@@ -8,13 +8,13 @@
 //
 // 每个轨迹采样点出一条【横断面】：从星下点向两侧各伸一臂到该口径下的椭球覆盖边缘（圆轨道＝垂直航向），臂上按格边长等分；
 // 相邻横断面之间连成三角网就是带面（见 globe3d/focusLanes.js 的 swathFill）。
-// ★ 边缘与瞬时覆盖圈严格同源，不是球近似：最低仰角档走 wgs84.isoElevationSolver（等仰角环逐方位用的就是它），
-//   波束角档走 wgs84.footprintHitDir（足迹圈逐方位用的就是它）—— 于是任一时刻的覆盖圈都与带的两缘相切于断面端点。
+// ★ 边缘与瞬时覆盖圈严格同源，不是球近似：两种口径都走 wgs84.isoElevationSolver（等仰角环逐方位用的就是它），
+//   波束角档按采样点自己的星位折成仰角（focusFootprint.coverElevDeg）—— 于是任一时刻的覆盖圈都与带的两缘相切于断面端点。
 //   球近似只用来定网格密度（swathK）、求根初值与两臂倾角。
 // ★ 纯计算、不碰 DOM：主线程（对星聚焦特效）与 Worker（聚焦选中集）跑同一份。
 import { Vector3 } from 'three'
 import * as W from '../wgs84.js'
-import { beamHalfAngle, elevOf, coverHalfAngleSph, footprintRing } from './focusFootprint.js'
+import { elevOf, coverElevDeg, coverHalfAngleSph, footprintRing } from './focusFootprint.js'
 import { llaToVec, vecToLatLon, pushDashed, densifyArc, footprintFill, swathFill, FILL_CELL, LIFT, RE } from '../globe3d/focusLanes.js'
 
 const WE = 7.2921159e-5     // 地球自转角速度 rad/s（与信息卡的对地速度同一常数）
@@ -52,23 +52,46 @@ export function swathSig(fpOpt, K) {
   return (elev ? 'e' : 'b') + v + '|' + K
 }
 
-// 两臂的包络倾角 cosθ（θ 自航向起量）：覆盖半径 λ 随高度变（偏心轨道）时，扫过区域的侧边界不在「垂直航向」的两点上，
-// 而在 cosθ = −λ'/v 的方位上（λ' = dλ/dh·ḣ，v = 星下点地面角速度）—— λ 在涨时两臂后倾、在缩时前倾。
-// 推导：p 深入覆盖区的量 λ(t) − dist(p, c(t)) 对 t 取极值 ⇔ λ' + v·cosθ_p = 0。圆轨道 λ'≈0 → θ=90°，即垂直横断面。
-// 实测量级：GPS（e=0.012）|cosθ| ≈ 0.003，与垂直无异；Molniya 近地点后 ≈ 0.37，两臂后倾 22°，垂直断面的两缘整段落在
-// 下一时刻的覆盖区里（带在变宽处漏填、轮廓被裁掉）。
+// 两臂的包络倾角 cosθ（θ 自航向起量，左右两臂各一）：覆盖半宽 λ 随时间变时，扫过区域的侧边界不在「垂直航向」的两点上，
+// 而在 cosθ = −λ'/v 的方位上（v = 星下点地面角速度）—— λ 在涨时两臂后倾、在缩时前倾。
+// 推导：p 深入覆盖区的量 λ(t) − dist(p, c(t)) 对 t 取极值 ⇔ λ' + v·cosθ_p = 0。λ' ≡ 0 → θ=90°，即垂直横断面。
+// 画图走 swathSections：λ'/v 取【相邻两个采样点】的割线 −Δλ/Δc（两邻点星下点的地心角距），与轮廓 / 覆盖判据用的离散采样同一尺度 ——
+//   平面上两圆外公切线的法向恰是 cosθ = −(λ₂−λ₁)/D，于是断面端点落在相邻采样覆盖圈并集的边界上，不被它们盖进去。
+// ★ 曾只按球近似对高度求导（dλ/dh·ḣ）：漏了纬度项 —— 椭球上地平张角随纬度变，波束角档贴近上限时折算仰角沿轨在 0°~1.5° 间摆
+//   （近上限处仰角对锥角极敏感），半宽变化率远大于高度项；两臂仍按垂直航向取，端点不在包络上，被相邻时刻的覆盖区盖进 OUT_TOL
+//   以上裁掉、又没有别的曲线补上 → 轮廓开口（LEO 550 km 锥角离上限 0.02°~1° 时断成 6~8 段，最大开口 40°）。
+// ★ 也不能取瞬时导数：折算仰角落到 0°（整圈地平）那一刻 λ(t) 是根号型拐点，导数趋于无穷 —— 拐点前一个采样点的两臂按瞬时导数
+//   倾到夹限、几乎朝正后方，端点埋进前一个采样的覆盖圈；而按一个采样步长量，那一步半宽只涨 0.3°、星下点挪了 2.9°。
+// 单点调 sectionOf（无邻点）时退回瞬时导数（tiltPair，推前 / 推后 TILT_DT 秒中心差分）。
+// 实测量级：GPS（e=0.012）|cosθ| ≈ 0.003，与垂直无异；Molniya 近地点后 ≈ 0.37，两臂后倾 22°。
 // 缺速度信息（手搓的点）取垂直；夹在 ±TILT_MAX：|λ'| ≥ v 时覆盖区在原地膨胀、侧边界退化，那几步由圆盘兜。
 const TILT_MAX = 0.9
-function tiltCos(pt, fpOpt) {
+const TILT_DT = 2                      // s：LEO 一步挪 0.03°，求根容差 1.5e-11 rad 折成导数误差远小于 v 的千万分之一
+// 该点左右两侧的覆盖半宽（地心角 rad，沿 ±n 即垂直航向量）。卫星在地表之下返回 null
+function halfWidths(F, pt, fpOpt) {
+  const sol = W.isoElevationSolver(F.S, coverElevDeg(F.S, fpOpt))
+  if (!sol) return null
+  const g = coverHalfAngleSph(pt.h, fpOpt)
+  return [sol.solve(F.nx, F.ny, F.nz, g), sol.solve(-F.nx, -F.ny, -F.nz, g)]
+}
+function tiltPair(F, pt, fpOpt) {
   const gs = pt.gs, hd = pt.hd
-  if (!(gs > 1e-9) || !Number.isFinite(hd) || !(pt.h > 1)) return 0
-  const dl = coverHalfAngleSph(pt.h + 0.5, fpOpt) - coverHalfAngleSph(pt.h - 0.5, fpOpt)   // rad/km（±0.5 km 中心差分）
-  return clamp(-dl * hd / gs, -TILT_MAX, TILT_MAX)
+  if (!(gs > 1e-9) || !Number.isFinite(hd)) return [0, 0]
+  const r = Math.sqrt(F.S[0] * F.S[0] + F.S[1] * F.S[1] + F.S[2] * F.S[2])
+  const at = (sg) => {                   // t + sg·TILT_DT 时刻的星位（地心方向沿航向挪、地心距按径向速度变）；n 与 u、d 都正交 → 也与推移后的 u′ 正交
+    const a = sg * gs * TILT_DT, c = Math.cos(a), sn = Math.sin(a), rr = r + sg * hd * TILT_DT
+    const S2 = [rr * (c * F.ux + sn * F.dx), rr * (c * F.uy + sn * F.dy), rr * (c * F.uz + sn * F.dz)]
+    return halfWidths({ S: S2, nx: F.nx, ny: F.ny, nz: F.nz }, pt, fpOpt)
+  }
+  const p = at(1), m = at(-1)
+  if (!p || !m) return [0, 0]
+  const k = -1 / (2 * TILT_DT * gs)
+  return [clamp((p[0] - m[0]) * k, -TILT_MAX, TILT_MAX), clamp((p[1] - m[1]) * k, -TILT_MAX, TILT_MAX)]
 }
 
-// 一个采样点的横向几何框架：卫星 ECEF、地心方向 u、航向 d、左法向 n = u × d（面朝航向、天顶朝上的左手边，均在 u 的切平面内）、
-// 两臂倾角 ct/st。无从下笔（高度非正 / 位置无效）返回 null。pt = { lat, lon, h, az, gs?, hd? }
-function motionFrame(pt, fpOpt) {
+// 一个采样点的横向几何框架：卫星 ECEF、地心方向 u、航向 d、左法向 n = u × d（面朝航向、天顶朝上的左手边，均在 u 的切平面内）。
+// 无从下笔（高度非正 / 位置无效）返回 null。pt = { lat, lon, h, az, gs?, hd? }
+function baseFrame(pt) {
   if (!pt || !(pt.h > 0) || !Number.isFinite(pt.lat) || !Number.isFinite(pt.lon)) return null
   const S = W.geodeticToEcef(pt.lon, pt.lat, pt.h)
   const r = Math.sqrt(S[0] * S[0] + S[1] * S[1] + S[2] * S[2]) || 1
@@ -81,31 +104,17 @@ function motionFrame(pt, fpOpt) {
   let nx = uy * dz - uz * dy, ny = uz * dx - ux * dz, nz = ux * dy - uy * dx
   const nn = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1
   nx /= nn; ny /= nn; nz /= nn
-  const ct = tiltCos(pt, fpOpt), st = Math.sqrt(1 - ct * ct)
-  return { S, ux, uy, uz, dx, dy, dz, nx, ny, nz, ct, st }
+  return { S, ux, uy, uz, dx, dy, dz, nx, ny, nz }
 }
-// motionFrame + 「沿切向单位方向 w 取覆盖边缘点」edgeAt(wx, wy, wz) → [lat, lon]（大地 °）—— 与瞬时覆盖圈逐方位同一份解算。
-// 最低仰角档逐次拿上一个根作初值（沿方位连续取样时收敛最快），首次用球近似。卫星在地表之下时返回 null。
+// baseFrame + 「沿切向单位方向 w 取覆盖边缘点」edgeAt(wx, wy, wz) → [lat, lon]（大地 °）—— 与瞬时覆盖圈逐方位同一份解算。
+// 逐次拿上一个根作初值（沿方位连续取样时收敛最快），首次用球近似。卫星在地表之下时返回 null。
 function sectionFrame(pt, fpOpt) {
-  const F = motionFrame(pt, fpOpt)
+  const F = baseFrame(pt)
   if (!F) return null
-  const { S, ux, uy, uz } = F
-  let edgeAt
-  if (fpOpt && fpOpt.mode === 'elev') {
-    const sol = W.isoElevationSolver(S, elevOf(fpOpt.elevDeg))
-    if (!sol) return null
-    let guess = coverHalfAngleSph(pt.h, fpOpt)   // 球近似作初值：与椭球解相差不到千分之三，落在求根器的窄窗之内
-    edgeAt = (wx, wy, wz) => { guess = sol.solve(wx, wy, wz, guess); const g = sol.geoOn(sol.surfAt(wx, wy, wz, guess)); return [g[1], g[0]] }
-  } else {
-    const eta = beamHalfAngle(pt.h, fpOpt && fpOpt.beamDeg)
-    const ce = Math.cos(eta), se = Math.sin(eta)
-    edgeAt = (wx, wy, wz) => {
-      const hit = W.footprintHitDir(S, [-ce * ux + se * wx, -ce * uy + se * wy, -ce * uz + se * wz])
-      const gd = W.ecefToGeodetic(hit[0], hit[1], hit[2])
-      return [gd.lat, gd.lon]
-    }
-  }
-  F.edgeAt = edgeAt
+  const sol = W.isoElevationSolver(F.S, coverElevDeg(F.S, fpOpt))
+  if (!sol) return null
+  let guess = coverHalfAngleSph(pt.h, fpOpt)   // 球近似作初值：与椭球解相差不到千分之三，落在求根器的窄窗之内
+  F.edgeAt = (wx, wy, wz) => { guess = sol.solve(wx, wy, wz, guess); const g = sol.geoOn(sol.surfAt(wx, wy, wz, guess)); return [g[1], g[0]] }
   return F
 }
 
@@ -121,14 +130,16 @@ function slerpInto(out, o, ax, ay, az, bx, by, bz, t) {
 }
 
 // 一个采样点的横断面。pt = { lat, lon, h, az, gs?, hd? }（大地经纬 °、高度 km、航向 rad、地面角速度 rad/s、径向速度 km/s），
-// fpOpt 同 footprintRing 的 opt。返回 Float32Array((K+1)·3)：渲染球面上的单位矢量（与 llaToVec 同一套坐标，Y 是极轴），
+// fpOpt 同 footprintRing 的 opt；tilt＝[左, 右] 两臂的 cosθ（省略＝按瞬时导数现算，见 tiltPair）。
+// 返回 Float32Array((K+1)·3)：渲染球面上的单位矢量（与 llaToVec 同一套坐标，Y 是极轴），
 // 左缘在前、右缘在后、第 K/2 个恰是星下点 —— 左臂 左缘→星下点、右臂 星下点→右缘，各沿大圆等分。无从下笔返回 null。
-export function sectionOf(pt, fpOpt, K) {
+export function sectionOf(pt, fpOpt, K, tilt) {
   if (!(K >= 1)) return null
   const F = sectionFrame(pt, fpOpt)
   if (!F) return null
-  const L = F.edgeAt(F.ct * F.dx + F.st * F.nx, F.ct * F.dy + F.st * F.ny, F.ct * F.dz + F.st * F.nz)
-  const R = F.edgeAt(F.ct * F.dx - F.st * F.nx, F.ct * F.dy - F.st * F.ny, F.ct * F.dz - F.st * F.nz)
+  const [cL, cR] = tilt || tiltPair(F, pt, fpOpt), sL = Math.sqrt(1 - cL * cL), sR = Math.sqrt(1 - cR * cR)
+  const L = F.edgeAt(cL * F.dx + sL * F.nx, cL * F.dy + sL * F.ny, cL * F.dz + sL * F.nz)
+  const R = F.edgeAt(cR * F.dx - sR * F.nx, cR * F.dy - sR * F.ny, cR * F.dz - sR * F.nz)
   const a = llaToVec(L[0], L[1], 0), b = llaToVec(R[0], R[1], 0), c = llaToVec(pt.lat, pt.lon, 0)
   const out = new Float32Array((K + 1) * 3)
   const half = K >> 1
@@ -136,6 +147,100 @@ export function sectionOf(pt, fpOpt, K) {
   for (let j = 0; j <= half; j++) slerpInto(out, j * 3, a.x, a.y, a.z, c.x, c.y, c.z, j / half)
   for (let j = half + 1; j <= K; j++) slerpInto(out, j * 3, c.x, c.y, c.z, b.x, b.y, b.z, (j - half) / (K - half))
   return out
+}
+
+// 一整条轨迹的采样点 + 横断面（画图用这个）：两臂倾角取相邻采样点的割线（见 tiltPair 上方的注）。
+// 返回 { pts, secs, brk }：pts 可能比入参多出补的点（buildSwath 要用这一份 pts），brk＝断开的步（交给 buildSwath 的 opt.brk）。
+// 缓存挂在采样点对象上（聚焦几何的轨迹环形缓冲里网格点原样复用）：swHw＝两侧垂直半宽、swE＝折算仰角、swSig＝口径签名、
+// swTilt＝上次用的倾角、sw＝横断面、swIns＝它与下一个点之间补的拐点。半宽只随口径变；断面只在口径或倾角变了才重算 ——
+// 内部点的邻点不变，倾角逐位相同；每拍新建的首尾点（head / tail）与它们的紧邻点才会重算。
+//
+// ★ 根号拐点：波束角档折算仰角在 0°（整圈地平）处起落时 λ(t) 是根号型拐点，拐点一侧覆盖圈胀缩得比挪得快（|λ'| > v），
+//   扫过区域在那里的边界是【拐点时刻那只最大的覆盖圈】的一段弧 —— 不在任何断面端点上，两缘的弦从它里面切过去被裁掉 → 开口。
+//   这里沿插值星位二分出拐点时刻、补成一个真采样点（最大的那只圈），并把它与仰角 > 0 那侧邻点之间那一步断开：
+//   断开处两侧按段首 / 段尾落端帽圆盘、端帽弧接两缘（与窗口首尾同一套），角上那段弧就由端帽弧补上。
+//   在拐点上加密采样没用：步子越密割线越逼近那个趋于无穷的瞬时导数，两臂又倒回去（实测更糟）。
+const STILL_D = 1e-4                   // rad：两邻点星下点挪不到 0.006°（GEO 原地）就不按割线算倾角，取垂直
+const ONSET_ITERS = 30                 // 拐点二分次数：一步 2.9° → 收到 1e-9 步长
+const angU = (a, b) => Math.acos(clamp(a.ux * b.ux + a.uy * b.uy + a.uz * b.uz, -1, 1))
+// 点 → baseFrame（半宽、折算仰角按口径签名缓存在点上）；无从下笔返回 null
+function prepPoint(q, fpOpt, sig) {
+  const F = baseFrame(q)
+  if (!F) return null
+  if (q.swSig !== sig || !q.swHw) { q.swHw = halfWidths(F, q, fpOpt); q.swE = coverElevDeg(F.S, fpOpt); q.swSig = sig; q.sw = null; q.swTilt = null; q.swIns = null }
+  return q.swHw ? F : null
+}
+// 一列点的两臂倾角（cosθ，[左, 右]）：两侧有邻点取中心割线，否则单侧；单侧那一点贴得太近（每拍新建的首点离下一个网格点
+// 可以只差零点几秒）就再往外取一个。brk[i]＝步 i→i+1 断开，不跨它取邻点
+function tiltsOf(P, fr, brk) {
+  const n = P.length, out = new Array(n)
+  const ok = (i, j) => fr[j] && !(brk && brk[Math.min(i, j)])
+  for (let i = 0; i < n; i++) {
+    if (!fr[i]) { out[i] = null; continue }
+    let a = i > 0 && ok(i, i - 1) ? i - 1 : i, b = i + 1 < n && ok(i, i + 1) ? i + 1 : i
+    if (a === i && b > i && b + 1 < n && ok(b, b + 1) && angU(fr[i], fr[b]) < 0.25 * angU(fr[b], fr[b + 1])) b++
+    if (b === i && a < i && a > 0 && ok(a, a - 1) && angU(fr[i], fr[a]) < 0.25 * angU(fr[a - 1], fr[a])) a--
+    const D = a < b ? angU(fr[a], fr[b]) : 0
+    if (!(D > STILL_D)) { out[i] = [0, 0]; continue }
+    const ha = P[a].swHw, hb = P[b].swHw
+    out[i] = [clamp(-(hb[0] - ha[0]) / D, -TILT_MAX, TILT_MAX), clamp(-(hb[1] - ha[1]) / D, -TILT_MAX, TILT_MAX)]
+  }
+  return out
+}
+// a、b 之间 f 处的插值采样点（星下点在渲染球面上走大圆 —— 与 coverTester 的插点同一口径；高度 / 航向 / 速度线性）
+function lerpPoint(a, b, f) {
+  const va = llaToVec(a.lat, a.lon, 0), vb = llaToVec(b.lat, b.lon, 0), tmp = new Float64Array(3)
+  slerpInto(tmp, 0, va.x, va.y, va.z, vb.x, vb.y, vb.z, f)
+  const g = vecToLatLon(tmp[0], tmp[1], tmp[2])
+  let dz = (b.az || 0) - (a.az || 0)
+  dz -= Math.round(dz / (2 * Math.PI)) * 2 * Math.PI
+  const L = (x, y) => (Number.isFinite(x) && Number.isFinite(y) ? x + (y - x) * f : x)
+  return { lat: g[0], lon: g[1], h: a.h + (b.h - a.h) * f, az: (a.az || 0) + dz * f, gs: L(a.gs, b.gs), hd: L(a.hd, b.hd), tMs: L(a.tMs, b.tMs) }
+}
+// 步 a→b 里折算仰角落到 0° 的那一刻（a、b 恰一侧为 0）：返回仰角为 0 那一侧紧贴拐点的插值点
+function onsetPoint(a, b, fpOpt) {
+  const zeroA = !(a.swE > 0)
+  let lo = 0, hi = 1                     // 不变式：lo 端与 a 同侧、hi 端与 b 同侧
+  for (let it = 0; it < ONSET_ITERS; it++) {
+    const f = (lo + hi) / 2, q = lerpPoint(a, b, f)
+    const z = !(coverElevDeg(W.geodeticToEcef(q.lon, q.lat, q.h), fpOpt) > 0)
+    if (z === zeroA) lo = f; else hi = f
+  }
+  return lerpPoint(a, b, zeroA ? lo : hi)
+}
+export function swathSamples(pts, fpOpt, K) {
+  const n = pts ? pts.length : 0, sig = swathSig(fpOpt, K)
+  const fr0 = new Array(n)
+  for (let i = 0; i < n; i++) fr0[i] = prepPoint(pts[i], fpOpt, sig)
+  // 根号拐点：补拐点采样（缓存在步首点上，按下一个点的对象同一性判还能不能用），断开它与仰角 > 0 那侧邻点之间的一步
+  const onset = (i) => i + 1 < n && fr0[i] && fr0[i + 1] && (pts[i].swE > 0) !== (pts[i + 1].swE > 0)
+  let P = pts, brkArr = null
+  if (!(fpOpt && fpOpt.mode === 'elev') && pts.some((_, i) => onset(i))) {
+    P = []
+    const brk = []
+    for (let i = 0; i < n; i++) {
+      const a = pts[i]
+      P.push(a)
+      if (!onset(i)) continue
+      const b = pts[i + 1], pos = a.swE > 0
+      if (!a.swIns || a.swIns.b !== b) a.swIns = { b, q: onsetPoint(a, b, fpOpt) }
+      brk[P.length - 1] = pos ? 1 : 0              // 步 a→拐点：a 在仰角 > 0 一侧才断
+      P.push(a.swIns.q)
+      brk[P.length - 1] = pos ? 0 : 1              // 步 拐点→b：b 在仰角 > 0 一侧才断
+    }
+    brkArr = new Uint8Array(Math.max(0, P.length - 1))
+    for (let i = 0; i < brkArr.length; i++) brkArr[i] = brk[i] || 0
+  }
+  const fr = P === pts ? fr0 : P.map((q) => prepPoint(q, fpOpt, sig))
+  const tl = tiltsOf(P, fr, brkArr)
+  const secs = new Array(P.length)
+  for (let i = 0; i < P.length; i++) {
+    const q = P[i], t = tl[i]
+    if (!t) { secs[i] = null; continue }
+    if (!q.sw || !q.swTilt || q.swTilt[0] !== t[0] || q.swTilt[1] !== t[1]) { q.sw = sectionOf(q, fpOpt, K, t); q.swTilt = t }
+    secs[i] = q.sw
+  }
+  return { pts: P, secs, brk: brkArr }
 }
 
 // ===================== 横断面序列 → 可画的带（三处消费方共用） =====================
@@ -160,10 +265,11 @@ const reversedSection = (s, K) => {
   return o
 }
 const halfWidthOf = (s, c) => Math.acos(clamp(s[c] * s[0] + s[c + 1] * s[1] + s[c + 2] * s[2], -1, 1))   // 星下点到左缘的角（rad）
-// secs: 每个采样点一条横断面（sectionOf 产出，可为 null）。
+// secs: 每个采样点一条横断面（sectionOf 产出，可为 null）；brk: 可选，brk[i]＝步 i→i+1 断开（见 swathSamples 的根号拐点）。
 // 返回 { n, K, secs(定向后), rev, kind, spans, runs, allStill }
-//  kind[i]：步 i→i+1 的性质，1＝平移、2＝转弯、3＝原地、0＝断面缺失；spans / runs：连续平移步 / 非平移步覆盖的断面下标区间 [a, b]
-export function swathLayout(secs, K) {
+//  kind[i]：步 i→i+1 的性质，1＝平移、2＝转弯、3＝原地、0＝断面缺失或断开；spans / runs：连续平移步 / 非平移步覆盖的断面下标区间 [a, b]
+//  ★ 「一段连续断面」一律按 kind[i] ≠ 0 判（圆盘端帽、两缘、端帽弧都是），断开与断面缺失同一待遇
+export function swathLayout(secs, K, brk) {
   const n = secs ? secs.length : 0
   const out = new Array(n), rev = new Uint8Array(n), kind = new Int8Array(Math.max(0, n - 1))
   const c = (K >> 1) * 3, k3 = K * 3
@@ -181,7 +287,7 @@ export function swathLayout(secs, K) {
   let nT = 0, nR = 0, nS = 0
   for (let i = 0; i + 1 < n; i++) {
     const a = out[i], b = out[i + 1]
-    if (!a || !b) continue
+    if (!a || !b || (brk && brk[i])) continue
     const fx = b[c] - a[c], fy = b[c + 1] - a[c + 1], fz = b[c + 2] - a[c + 2]
     let kd
     if (Math.sqrt(fx * fx + fy * fy + fz * fz) < STILL_FRAC * halfWidthOf(a, c)) kd = 3   // 原地（单位球上弦长≈弧长）
@@ -212,9 +318,11 @@ export function swathDiscs(layout, pts, fpOpt, seg) {
   const discs = []
   if (!layout || !pts) return discs
   const K = layout.K, c = (K >> 1) * 3, secs = layout.secs, n = layout.n
-  const near = (s) => {                  // 已有盘里离这条断面的星下点不到 DISC_DUP×半宽的
+  // 已有盘里圆心离这条断面的星下点、半宽与它都差不到 DISC_DUP×半宽的（同一只圈）。半宽也要比：根号拐点补的点可以紧贴
+  // 前一个采样点，两只圈却不一样大，端帽弧必须从自己那只圈上截（见 swathSamples）
+  const near = (s) => {
     const w = halfWidthOf(s, c)
-    for (const d of discs) if (Math.acos(clamp(s[c] * d.cx + s[c + 1] * d.cy + s[c + 2] * d.cz, -1, 1)) <= DISC_DUP * w) return true
+    for (const d of discs) if (Math.abs(d.w - w) <= DISC_DUP * w && Math.acos(clamp(s[c] * d.cx + s[c + 1] * d.cy + s[c + 2] * d.cz, -1, 1)) <= DISC_DUP * w) return true
     return false
   }
   const put = (i, cap) => {
@@ -226,7 +334,7 @@ export function swathDiscs(layout, pts, fpOpt, seg) {
     if (!ring || ring.length < 3) return false
     const f = ring[0], l = ring[ring.length - 1]
     if (Math.abs(f.lat - l.lat) > 1e-9 || Math.abs(f.lon - l.lon) > 1e-9) ring.push({ lat: f.lat, lon: f.lon })
-    discs.push({ i, lat: q.lat, lon: q.lon, ring, cap, cx: s[c], cy: s[c + 1], cz: s[c + 2] })
+    discs.push({ i, lat: q.lat, lon: q.lon, ring, cap, cx: s[c], cy: s[c + 1], cz: s[c + 2], w: halfWidthOf(s, c) })
     return true
   }
   for (const [a, b] of layout.runs) {
@@ -241,11 +349,11 @@ export function swathDiscs(layout, pts, fpOpt, seg) {
       if (put(i, false) || !has) { lx = s[c]; ly = s[c + 1]; lz = s[c + 2]; has = true }
     }
   }
-  // 端帽：每段连续断面的首尾 —— 窗口起点（当前时刻）与终点的覆盖圈
+  // 端帽：每段连续断面的首尾 —— 窗口起点（当前时刻）与终点的覆盖圈、根号拐点断开处两侧
   for (let i = 0; i < n;) {
     if (!secs[i]) { i++; continue }
     let j = i
-    while (j + 1 < n && secs[j + 1]) j++
+    while (j + 1 < n && layout.kind[j]) j++
     put(i, true); put(j, true)
     i = j + 1
   }
@@ -261,6 +369,8 @@ export function swathDiscs(layout, pts, fpOpt, seg) {
 const OUT_TOL = 0.05 * Math.PI / 180   // 地面裕度（rad）：深入某时刻覆盖区不足这么多的点仍算边界（吸收椭球 / 倾角的近似误差）
 const REJ_PAD = 0.05                   // 粗筛半径裕度（rad，≈2.9°）：盖过球近似与椭球、渲染映射之间的差
 const NEAR_R = 0.15                    // 邻域表半径（rad）：候选点沿折线连续走，离锚点这么远以内共用一张「可能盖到它的样本」表
+const SW = 9                           // coverTester 每个样本占的数（布局见 add）
+const FINE_G = 0.6                     // 细格档的格宽上限（弦长）：再粗细格就不比锚点邻域表小了
 const CUT_ITERS = 18                   // 交界点二分次数：区间 ≤ 几度 → 收到 1e-5 度量级
 // 覆盖判据（与断面边缘同一份椭球口径）：inside(x, y, z) —— 渲染球面单位矢量处的地面点是否在某个采样时刻的覆盖区里。
 // 采样取轨迹点本身；相邻两点间隔超过 λ/2 时插点（多选降采样档 LEO 一步 15°，只拿原点的话盘都接不上）。
@@ -268,25 +378,15 @@ const CUT_ITERS = 18                   // 交界点二分次数：区间 ≤ 几
 //   否则每个候选点都要把整条轨迹扫一遍（LEO 一圈 121 个样本 × 几百个候选点，每拍每颗 0.3 ms）。
 //   样本上千（多圈 LEO）时邻域表经空间网格建，不做全表扫。
 function coverTester(pts, fpOpt) {
-  const elev = !!(fpOpt && fpOpt.mode === 'elev')
-  const e0 = elev ? elevOf(fpOpt.elevDeg) * Math.PI / 180 : 0
-  const beamDeg = fpOpt && fpOpt.beamDeg
-  // 每个样本 10 个数：卫星 ECEF（S）、|S|、星下点渲染单位矢量（C）、粗筛余弦、判据阈值、邻域表余弦 —— 平铺在一块定长数组里
+  // 每个样本 SW 个数：卫星 ECEF（S）、星下点渲染单位矢量（C）、粗筛余弦、判据阈值、邻域表余弦 —— 平铺在一块定长数组里
   const buf = []
   let lamMax = 0
   const add = (lat, lon, h, lam) => {
     const S = W.geodeticToEcef(lon, lat, h), c = llaToVec(lat, lon, 0), rho = RE / (RE + h)
-    // 地面裕度 OUT_TOL 按球近似折成该口径的量：最低仰角档折成仰角、波束角档折成离天底角，加到判据上
-    let thr
-    if (elev) {
-      const el = (psi) => Math.atan2(Math.cos(psi) - rho, Math.sin(psi))
-      thr = Math.sin(e0 + Math.max(0, el(Math.max(0, lam - OUT_TOL)) - el(lam)))
-    } else {
-      const off = (psi) => Math.atan2(Math.sin(psi), 1 / rho - Math.cos(psi))
-      const eta = beamHalfAngle(h, beamDeg)
-      thr = Math.cos(Math.max(0, eta - Math.max(0, off(lam) - off(Math.max(0, lam - OUT_TOL)))))
-    }
-    buf.push(S[0], S[1], S[2], Math.sqrt(S[0] * S[0] + S[1] * S[1] + S[2] * S[2]), c.x, c.y, c.z,
+    // 判据＝该样本时刻的那条等仰角线（波束角档按样本自己的星位折成仰角）；地面裕度 OUT_TOL 按球近似折成仰角加上去
+    const el = (psi) => Math.atan2(Math.cos(psi) - rho, Math.sin(psi))
+    const thr = Math.sin(coverElevDeg(S, fpOpt) * Math.PI / 180 + Math.max(0, el(Math.max(0, lam - OUT_TOL)) - el(lam)))
+    buf.push(S[0], S[1], S[2], c.x, c.y, c.z,
       Math.cos(Math.min(Math.PI, lam + REJ_PAD)), thr, Math.cos(Math.min(Math.PI, lam + REJ_PAD + NEAR_R)))
     if (lam > lamMax) lamMax = lam
   }
@@ -312,44 +412,68 @@ function coverTester(pts, fpOpt) {
     add(cur.lat, cur.lon, h, cur.lam)
     prev = cur
   }
-  const D = Float64Array.from(buf), n = D.length / 10
-  // 空间网格（样本上千才建）：格宽 = 邻域表半径的弦长，重建邻域表只看锚点所在格与周围 26 格
-  const g = 2 * Math.sin(Math.min(Math.PI, lamMax + REJ_PAD + NEAR_R) / 2)
+  const D = Float64Array.from(buf), n = D.length / SW
+  // 空间网格（样本上千才建）。两档：
+  //  · 细格（格宽 = 粗筛半径 lamMax + REJ_PAD 的弦长）：过粗筛的样本，圆心离查询点不超过这个弦长 → 每个分量差不过一格，
+  //    必在查询点所在格与周围 26 格里。邻域表＝这 27 格的并，只随【查询点换格】重建 —— 与锚点无关，故不带 NEAR_R 那圈余量。
+  //    ★ 窄波束 / 多圈时这是唯一跑得动的档：波束 3° 的 LEO 覆盖半角只有 0.002 rad，样本按半角的一半插点（一步 64 个），
+  //      老档的邻域半径却被 REJ_PAD + NEAR_R（0.2 rad）撑着，每个候选点要扫几千个样本（50 圈 1.2 s/拍）。
+  //  · 粗格（格宽 = 邻域表半径的弦长，按锚点建表）：覆盖半角大时细格并不更小，保留原路
+  const gF = 2 * Math.sin(Math.min(Math.PI, lamMax + REJ_PAD) / 2)
+  const fine = n > 600 && gF < FINE_G
+  const g = fine ? gF : 2 * Math.sin(Math.min(Math.PI, lamMax + REJ_PAD + NEAR_R) / 2)
   let grid = null
-  if (n > 600 && g < 0.6) {
+  if (fine || (n > 600 && g < 0.6)) {
     grid = new Map()
     for (let j = 0; j < n; j++) {
-      const o = j * 10
-      const key = ((Math.floor(D[o + 4] / g) + 1024) * 2048 + (Math.floor(D[o + 5] / g) + 1024)) * 2048 + (Math.floor(D[o + 6] / g) + 1024)
+      const o = j * SW
+      const key = ((Math.floor(D[o + 3] / g) + 1024) * 2048 + (Math.floor(D[o + 4] / g) + 1024)) * 2048 + (Math.floor(D[o + 5] / g) + 1024)
       let a = grid.get(key); if (!a) grid.set(key, a = []); a.push(j)
     }
   }
   const near = new Int32Array(Math.max(1, n))
   let nNear = 0, ax = 0, ay = 0, az = 0, anchored = false
   const cosNear = Math.cos(NEAR_R)
-  const pick = (j) => { const o = j * 10; if (ax * D[o + 4] + ay * D[o + 5] + az * D[o + 6] >= D[o + 9]) near[nNear++] = j }
+  const pick = (j) => { const o = j * SW; if (ax * D[o + 3] + ay * D[o + 4] + az * D[o + 5] >= D[o + 8]) near[nNear++] = j }
+  let cx = NaN, cy = NaN, cz = NaN       // 细格档：邻域表当前对应的格
   function rebuild(x, y, z) {
     ax = x; ay = y; az = z; nNear = 0; anchored = true
     if (!grid) { for (let j = 0; j < n; j++) pick(j); return }
     const ix = Math.floor(x / g), iy = Math.floor(y / g), iz = Math.floor(z / g)
+    cx = ix; cy = iy; cz = iz
     for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let d = -1; d <= 1; d++) {
       const js = grid.get(((ix + a + 1024) * 2048 + (iy + b + 1024)) * 2048 + (iz + d + 1024))
-      if (js) for (const j of js) pick(j)
+      if (!js) continue
+      if (fine) for (const j of js) near[nNear++] = j
+      else for (const j of js) pick(j)
     }
   }
+  const stale = fine
+    ? (x, y, z) => !anchored || Math.floor(x / g) !== cx || Math.floor(y / g) !== cy || Math.floor(z / g) !== cz
+    : (x, y, z) => !anchored || x * ax + y * ay + z * az < cosNear
   // 地面点（渲染球面单位矢量 x,y,z；其纬经就是大地纬经）：大地天顶 N = (x, −z, y)（ECEF 轴序），
   // 椭球面点 P = (Nc·x, −Nc·z, Nc(1−e²)·y)，Nc＝卯酉圈曲率半径 —— 与 geodeticToEcef / geodeticUp 恒等，免三角函数
+  // 样本 j 是否盖住地面点（粗筛 + 等仰角判据；与邻域表里的逐个判定同一式子）
+  const covers = (j, x, y, z, Px, Py, Pz) => {
+    const o = j * SW
+    if (x * D[o + 3] + y * D[o + 4] + z * D[o + 5] < D[o + 6]) return false
+    const dx = D[o] - Px, dy = D[o + 1] - Py, dz = D[o + 2] - Pz
+    const dd = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
+    return dx * x - dy * z + dz * y > D[o + 7] * dd
+  }
+  // ★ 上一次盖住的那个样本先试：候选点沿折线连续走，盖住上一点的样本九成也盖住这一点 —— 命中就连邻域表都不必重建。
+  //   多圈轨迹（几十上百圈）里绝大多数缘线点都被别的圈压着，原先每点都要把邻域表（随圈数线性涨）扫到命中为止，
+  //   整体是圈数的平方（LEO 100 圈 140 ms/拍、400 圈 2 s/拍）。结果不变：命中意味着它过了粗筛与判据，
+  //   必在当前点的邻域表里，扫表也会判 true；没命中照旧扫表。
+  let hit = -1
   function inside(x, y, z) {
-    if (!anchored || x * ax + y * ay + z * az < cosNear) rebuild(x, y, z)
     const Nc = W.A / Math.sqrt(1 - W.E2 * y * y)
     const Px = Nc * x, Py = -Nc * z, Pz = Nc * (1 - W.E2) * y
+    if (hit >= 0 && covers(hit, x, y, z, Px, Py, Pz)) return true
+    if (stale(x, y, z)) rebuild(x, y, z)
     for (let k = 0; k < nNear; k++) {
-      const o = near[k] * 10
-      if (x * D[o + 4] + y * D[o + 5] + z * D[o + 6] < D[o + 7]) continue
-      const dx = D[o] - Px, dy = D[o + 1] - Py, dz = D[o + 2] - Pz
-      const dd = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
-      const up = dx * x - dy * z + dz * y
-      if (elev ? up > D[o + 8] * dd : up > 0 && (dx * D[o] + dy * D[o + 1] + dz * D[o + 2]) > D[o + 8] * dd * D[o + 3]) return true   // 波束角档：可见、且离天底角小于锥半角（扣裕度）
+      const j = near[k]
+      if (covers(j, x, y, z, Px, Py, Pz)) { hit = j; return true }
     }
     return false
   }
@@ -395,25 +519,32 @@ function clipOutside(P, closed, T, out) {
     if (len > 1e-5) out.push(Float32Array.from(p))
   }
 }
-// 端帽弧：pt 处覆盖圈被两臂（方向 ±θ）分成的两段里、背离相邻断面 nb 的那段 —— 起点取背向前进的半边，终点取朝向前进的半边。
+// 端帽弧：pt 处覆盖圈被左右两臂分成的两段里、背离相邻断面 nb 的那段 —— 起点取背向前进的半边，终点取朝向前进的半边。
 // 外侧按【实际位移】（相邻断面的星下点在哪边）判，不单信瞬时航向：轨迹恰在窗口端点处掉头时两者相反。
 // 弧上的点直接取该处端帽圆盘的环（ring，与瞬时覆盖圈同一份解算、同一档方位密度）里落在外侧的那一串，不再另行求根；
-// 首尾补上该点（定向后）断面 sec 的两个端点 —— 与两缘严丝合缝。
-function capArc(pt, fpOpt, ring, sec, nb, K) {
-  const F = motionFrame(pt, fpOpt)
+// 首尾补上该点（定向后）断面 sec 的两个端点 —— 与两缘严丝合缝。两臂方位直接从 sec 的两个端点量（不重算倾角），与断面一定一致。
+function capArc(pt, ring, sec, nb, K) {
+  const F = baseFrame(pt)
   if (!F || !ring || ring.length < 4) return null
   const c = (K >> 1) * 3, k3 = K * 3
+  // 切平面内某地面点（ECEF）的方位：与航向夹角的余弦、在左法向哪一侧
+  const azOf = (p) => {
+    const pu = p[0] * F.ux + p[1] * F.uy + p[2] * F.uz
+    const wx = p[0] - pu * F.ux, wy = p[1] - pu * F.uy, wz = p[2] - pu * F.uz
+    return [(wx * F.dx + wy * F.dy + wz * F.dz) / (Math.sqrt(wx * wx + wy * wy + wz * wz) || 1), wx * F.nx + wy * F.ny + wz * F.nz >= 0]
+  }
+  const armOf = (o) => { const g = vecToLatLon(sec[o], sec[o + 1], sec[o + 2]); return azOf(W.geodeticToEcef(g[1], g[0], 0)) }
+  const a0 = armOf(0), a1 = armOf(k3)
+  const cLeft = a0[1] ? a0[0] : a1[0], cRight = a0[1] ? a1[0] : a0[0]
   // 航向 d 是 ECEF 分量；渲染坐标 = (X, Z, −Y)（llaToVec 的轴序）
   const back = F.dx * (nb[c] - sec[c]) + F.dz * (nb[c + 1] - sec[c + 1]) - F.dy * (nb[c + 2] - sec[c + 2]) > 0
   const m = ring.length - 1                      // 环首尾同点
   const keep = new Uint8Array(m)
   let nk = 0
   for (let k = 0; k < m; k++) {
-    const p = W.geodeticToEcef(ring[k].lon, ring[k].lat, 0)
-    const pu = p[0] * F.ux + p[1] * F.uy + p[2] * F.uz
-    const wx = p[0] - pu * F.ux, wy = p[1] - pu * F.uy, wz = p[2] - pu * F.uz   // 切平面内的方位矢量
-    const cosA = (wx * F.dx + wy * F.dy + wz * F.dz) / (Math.sqrt(wx * wx + wy * wy + wz * wz) || 1)
-    if (back ? cosA < F.ct : cosA > F.ct) { keep[k] = 1; nk++ }
+    const [cosA, left] = azOf(W.geodeticToEcef(ring[k].lon, ring[k].lat, 0))
+    const ct = left ? cLeft : cRight                // 左半边比左臂、右半边比右臂
+    if (back ? cosA < ct : cosA > ct) { keep[k] = 1; nk++ }
   }
   if (!nk || nk === m) return null
   let s0 = 0
@@ -449,7 +580,7 @@ export function swathOutline(layout, pts, fpOpt, discs, opt) {
     }
     return best ? best.ring : null
   }
-  // ① 两缘：连续有效断面连成左缘 / 右缘，遇原地步断开
+  // ① 两缘：连续有效断面连成左缘 / 右缘，遇原地步 / 断开处断开
   let a = -1
   const flush = (b) => {
     if (a >= 0 && b > a) {
@@ -462,17 +593,17 @@ export function swathOutline(layout, pts, fpOpt, discs, opt) {
   for (let i = 0; i < n; i++) {
     if (!secs[i]) { flush(i - 1); continue }
     if (a < 0) a = i
-    if (i + 1 < n && kind[i] === 3) flush(i)
+    if (i + 1 < n && (kind[i] === 3 || !kind[i])) flush(i)
   }
   flush(n - 1)
   // ②③ 端帽弧：每段连续断面的首尾；首 / 尾那一步原地时航向不可信，交给下面的整圈
   for (let i = 0; i < n;) {
     if (!secs[i]) { i++; continue }
     let j = i
-    while (j + 1 < n && secs[j + 1]) j++
+    while (j + 1 < n && kind[j]) j++
     if (j > i) {
-      if (kind[i] !== 3 && !(fpOn && i === 0)) { const P = capArc(pts[i], fpOpt, ringAt(i), secs[i], secs[i + 1], K); if (P) cands.push([P, false]) }
-      if (kind[j - 1] !== 3) { const P = capArc(pts[j], fpOpt, ringAt(j), secs[j], secs[j - 1], K); if (P) cands.push([P, false]) }
+      if (kind[i] !== 3 && !(fpOn && i === 0)) { const P = capArc(pts[i], ringAt(i), secs[i], secs[i + 1], K); if (P) cands.push([P, false]) }
+      if (kind[j - 1] !== 3) { const P = capArc(pts[j], ringAt(j), secs[j], secs[j - 1], K); if (P) cands.push([P, false]) }
     }
     i = j + 1
   }
@@ -480,7 +611,7 @@ export function swathOutline(layout, pts, fpOpt, discs, opt) {
   for (const d of (discs || [])) {
     const i = d.i
     const still = (i + 1 < n && kind[i] === 3) || (i > 0 && kind[i - 1] === 3)
-    const lone = (i === 0 || !secs[i - 1]) && (i + 1 >= n || !secs[i + 1])
+    const lone = (i === 0 || !kind[i - 1]) && (i + 1 >= n || !kind[i])
     if (!still && !lone) continue
     if (fpOn && i === 0) continue
     const P = new Float64Array(d.ring.length * 3)
@@ -493,10 +624,10 @@ export function swathOutline(layout, pts, fpOpt, discs, opt) {
   return lines
 }
 
-// 一颗星一拍的轨迹面：定向分段 + 圆盘 + 轮廓。pts / secs 同下标（secs[i] = sectionOf(pts[i], fpOpt, K)，可为 null）。
-// seg：覆盖圈环的分段数（与瞬时覆盖圈同档）；opt.fpOn：覆盖圈层是否开着（见 swathOutline）。
+// 一颗星一拍的轨迹面：定向分段 + 圆盘 + 轮廓。pts / secs 同下标（画图取 swathSamples 的产出；secs[i] 可为 null）。
+// seg：覆盖圈环的分段数（与瞬时覆盖圈同档）；opt.fpOn：覆盖圈层是否开着（见 swathOutline）；opt.brk：断开的步（swathSamples 给）。
 export function buildSwath(pts, secs, K, fpOpt, seg, opt) {
-  const layout = swathLayout(secs, K)
+  const layout = swathLayout(secs, K, opt && opt.brk)
   const discs = swathDiscs(layout, pts, fpOpt, seg)
   const lines = swathOutline(layout, pts, fpOpt, discs, opt)
   return { K, layout, discs, lines }

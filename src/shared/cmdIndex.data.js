@@ -47,6 +47,7 @@ export default [
   {"view":"geo","key":"geo-name","title":"地名","items":[{"label":"名称"},{"label":"字号"},{"label":"颜色"},{"label":"不透明度"},{"label":"搜索"},{"label":"粗体"}]},
   {"view":"geo","key":"geo-adm","title":"行政区","items":[{"label":"国家"}]},
   {"view":"geo","key":"geo-chain","title":"岛链","items":[{"label":"名称"},{"label":"颜色"},{"label":"线粗"},{"label":"不透明度"},{"label":"线型"},{"label":"字号"}]},
+  {"view":"geo","key":"geo-tz","title":"时区","items":[{"label":"口径"},{"label":"选择时区"},{"label":"不透明度"},{"label":"色块"},{"label":"时区号"},{"label":"时区条","hint":"平面图上下沿：各航海带的时区号，与此刻各带的当地时刻（跨日处分段标日期）"},{"label":"国际日期变更线"},{"label":"悬停描亮","hint":"光标处同偏移的全部区域勾出外轮廓"}]},
   {"view":"geo","key":"geo-crs","title":"坐标系","items":[{"label":"大地基准"},{"label":"坐标格式"},{"label":"颜色"},{"label":"轴长"}]},
   {"view":"geo","key":"geo-pov","title":"地图视角","items":[{"label":"视角"}]},
   {"view":"markers","key":"markers-top","title":null,"items":[{"label":"名称"},{"label":"纬度"},{"label":"经度"},{"label":"颜色"},{"label":"模型"},{"label":"天线口径","hint":"天线口径；留空 = 模型标称口径"},{"label":"功放功率","hint":"发射链功放输出功率；导入链路预算时写入发端地球站的功放功率预设，留空 = 沿用库条目"},{"label":"跟踪"},{"label":"指向"},{"label":"类型"},{"label":"标注"},{"label":"巡航高度"},{"label":"状态"},{"label":"天线罩","hint":"导入链路预算时，罩损计入地球站其他损耗"}]},

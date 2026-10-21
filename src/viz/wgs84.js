@@ -116,16 +116,59 @@ function basisAround(d0) {
   return [e1, cross(d0, e1)]
 }
 
-// 波束角口径下沿单个方向 dir 的地面边缘点（ECEF）：射线交椭球，掠地平未命中时取最近趋近点投影到椭球。
-// footprintEllipsoid 逐方位调它；轨迹面（constellation/focusSwath.js）横向左右两个方向各调一次 —— 同一份兜底口径。
-export function footprintHitDir(satEcef, dir) {
-  let hit = rayEllipsoid(satEcef, dir)
-  if (!hit) {
-    const a = dot(dir, dir)
-    const t = -dot(satEcef, dir) / a
-    hit = projectToSurface([satEcef[0] + t * dir[0], satEcef[1] + t * dir[1], satEcef[2] + t * dir[2]])
+// 地平张角（离天底角的正切 τ）：卫星 S 沿方位 w（与地心天底 d0 正交的单位矢量）那一侧、与 WGS84 椭球相切的射线 d0 + τ·w。
+// 缩放空间 (x/A, y/A, z/B) 里椭球是单位球、相切关系保持，相切 ⇔ 判别式为零 ⇔
+//   (q² − k·c0)τ² + 2(p·q − k·b0)τ + (p² − k·a0) = 0，p = o'·d0'、q = o'·w'、a0/b0/c0 = d0'·d0' / d0'·w' / w'·w'、k = |o'|² − 1。
+// 天底必命中 → 常数项 > 0；垂直天底必脱靶 → 二次项 < 0 → 恰有一正根，就是 w 那一侧的切线。卫星在地表之内时返回 NaN。
+function limbTan(S, d0, w) {
+  const ox = S[0] / A, oy = S[1] / A, oz = S[2] / B
+  const ax = d0[0] / A, ay = d0[1] / A, az = d0[2] / B
+  const wx = w[0] / A, wy = w[1] / A, wz = w[2] / B
+  const k = ox * ox + oy * oy + oz * oz - 1
+  if (!(k > 0)) return NaN
+  const p = ox * ax + oy * ay + oz * az, q = ox * wx + oy * wy + oz * wz
+  const qa = q * q - k * (wx * wx + wy * wy + wz * wz)
+  const qb = p * q - k * (ax * wx + ay * wy + az * wz)
+  const qc = p * p - k * (ax * ax + ay * ay + az * az)
+  const D = Math.sqrt(Math.max(0, qb * qb - qa * qc))
+  return qb >= 0 ? (qb + D) / -qa : qc / (D - qb)   // 同一个正根的两种写法，各自避开相消
+}
+// 地平张角（离天底角，rad）：沿方位 w 的切线与地心天底的夹角。见 limbTan
+export function limbHalfAngle(satEcef, w) {
+  return Math.atan(limbTan(satEcef, norm([-satEcef[0], -satEcef[1], -satEcef[2]]), w))
+}
+// 地平张角的方位平均（rad）：覆盖圈「波束角」口径的等效球就取它 —— sin(B/2) = sin η̄ · cos ε（见 constellation/focusFootprint.js）。
+// 地平张角随方位只含低次谐波（扁率的 2 倍方位项为主），16 个方位的均值与 720 个相差 1e-11 rad 以下。卫星在地表之内时返回 NaN。
+export function limbHalfAngleMean(satEcef, N = 16) {
+  const d0 = norm([-satEcef[0], -satEcef[1], -satEcef[2]])
+  const [e1, e2] = basisAround(d0)
+  let s = 0
+  for (let k = 0; k < N; k++) {
+    const az = (k / N) * 2 * Math.PI, c = Math.cos(az), sn = Math.sin(az)
+    s += Math.atan(limbTan(satEcef, d0, [c * e1[0] + sn * e2[0], c * e1[1] + sn * e2[1], c * e1[2] + sn * e2[2]]))
   }
-  return hit
+  return s / N
+}
+
+// 波束角口径下沿单个方向 dir 的地面边缘点（ECEF）：射线交椭球；脱靶（锥角超过该方位的地平张角）时取【同一方位】
+// 那条切线的切点 —— 即该方位的地平点（ε=0）。不能取脱靶射线的最近趋近点再投影：那一点离天底的地心角是 90°−η，
+// 锥角越大越往圈里缩，超出地球张角的波束反而画成一个比地平小的圈。
+// footprintEllipsoid 逐方位调它。（聚焦覆盖圈不走真圆锥：两种口径统一画等仰角线，见 constellation/focusFootprint.js）
+export function footprintHitDir(satEcef, dir) {
+  const hit = rayEllipsoid(satEcef, dir)
+  if (hit) return hit
+  const d0 = norm([-satEcef[0], -satEcef[1], -satEcef[2]])
+  const c = dot(dir, d0)
+  const w = [dir[0] - c * d0[0], dir[1] - c * d0[1], dir[2] - c * d0[2]]
+  const wn = Math.hypot(w[0], w[1], w[2])
+  const tau = wn > 1e-12 ? limbTan(satEcef, d0, [w[0] / wn, w[1] / wn, w[2] / wn]) : NaN
+  // 卫星在地表之内 / 正背天底：无地平可言，退回最近趋近点投影
+  const d = Number.isFinite(tau) ? [d0[0] + tau * w[0] / wn, d0[1] + tau * w[1] / wn, d0[2] + tau * w[2] / wn] : dir
+  // 切点 = 缩放空间里切线离原点最近的点（判别式为零时就是那个二重根）；投到椭球只消掉舍入
+  const ox = satEcef[0] / A, oy = satEcef[1] / A, oz = satEcef[2] / B
+  const dx = d[0] / A, dy = d[1] / A, dz = d[2] / B
+  const t = -(ox * dx + oy * dy + oz * dz) / (dx * dx + dy * dy + dz * dz)
+  return projectToSurface([satEcef[0] + t * d[0], satEcef[1] + t * d[1], satEcef[2] + t * d[2]])
 }
 
 // 覆盖足迹圈（WGS84）：卫星 ECEF(km)、星上锥半角 eta(rad) -> 地面边缘 [{lat,lon}...]。

@@ -801,6 +801,12 @@ onBeforeUnmount(() => {
           <span class="cval">{{ cursor.env.text }}</span>
           <span class="eunit">{{ cursor.env.unit }}</span>
         </span>
+        <!-- 时区读数：时区图层开着且光标在图上时出现。偏移 / 当地时刻 / 夏令时三格各自定宽（夏令时那格不在夏令时就只占位不显字），光标跨区时整排不跳 -->
+        <span v-if="cursor.tz" class="cell envval tzval" :title="cursor.tz.title || null">
+          <span class="cval tzoff">{{ cursor.tz.off }}</span>
+          <span class="cval tzt">{{ cursor.tz.text }}</span>
+          <span v-if="cursor.tz.dstSlot" class="eunit tzdst" :class="{ off: !cursor.tz.dst }">夏令时</span>
+        </span>
         <span v-if="cursor.look" class="cell envval" :title="cursor.look.title">
           <span class="ekey">{{ cursor.look.short }}</span>
           <span class="cval">{{ cursor.look.text }}</span>
@@ -991,6 +997,9 @@ html.ui-row-resize, html.ui-row-resize * { cursor: row-resize !important; user-s
 .cell.envval { color: var(--text); gap: 5px; }
 .cell.envval .ekey, .cell.envval .eunit { color: var(--text-faint); font-size: var(--fs-2); }
 .cell.envval .cval { font-family: var(--font-code); font-weight: 600; font-variant-numeric: tabular-nums; min-width: 6ch; text-align: right; }   /* 光标离开地图时显示「—」、宽度不缩：整排不跳 */
+.cell.tzval .tzoff { min-width: 9ch; text-align: left; }   /* 最长 UTC+12:45 / UTC−9:30 */
+.cell.tzval .tzt { min-width: 12ch; }                       /* 周二 14:23:05 / Tue 14:23:05 */
+.cell.tzval .tzdst.off { visibility: hidden; }
 .cell.coord { color: var(--text); }
 .cell.coord .cur { flex: none; }
 .cell.coord .cval { font-family: var(--font-code); font-weight: 600; letter-spacing: var(--ls-tight); min-width: 150px; }

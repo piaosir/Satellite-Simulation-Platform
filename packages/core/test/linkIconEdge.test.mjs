@@ -181,7 +181,7 @@ await t('③ 接线（源码钉）', () => {
   assert.match(sc, /if \(!\(px >= 0\) && !it\.mine\) continue\r?\n      it\.mine = px >= 0/)
   assert.match(sc, /if \(linkIconEnds\.length && linkIconEdge\) syncLinkIcons\(\)/)
   // 出帧顺序：叠加层本帧 update 在 renderFrame 之前（edgePx 用本帧相机）
-  assert.match(sc, /if \(overlay\) overlay\.update\(dtSec, camera, curW, curH\)\r?\n    renderFrame\(\)/)
+  assert.match(sc, /if \(overlay\) overlay\.update\(dtSec, camera, curW, curH(, smpSec)?\)\r?\n    renderFrame\(\)/)
   const pg = src('pages/ConstellationMap3D.vue')
   assert.match(pg, /scene\.setLinkIconEdge\(linkIconEdge\)/)
   assert.match(pg, /return mo && mo\.id \? modelLayer\.iconEdgePx\(mo\.key \|\| e\.name, other\) : -1/)

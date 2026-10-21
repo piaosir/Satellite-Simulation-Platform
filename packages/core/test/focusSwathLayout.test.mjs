@@ -7,13 +7,16 @@
 //  ⑥ 回归（2026-09 实拍）：GPS BIIF-1 最低仰角 25°、轨迹 1 h，按 10 min 一拍走 1 h —— 每拍带面与「覆盖圈扫过的真并集」
 //     逐点相符（修前：首条断面把当前覆盖圈切掉一半，末端一进打转段又整盘冒出来，面积在 1× 与 3× 之间跳）
 //  ⑦ GPS 整圈（过极转弯、升降段互相压住）：带面与真并集相符；轮廓点全落在真边界上（仰角恰为门限）
-//  ⑧ Molniya 近地点后（覆盖半径一分钟涨一两度）：带面与真并集相符（两臂按包络倾斜，见 focusSwath.tiltCos）
+//  ⑧ Molniya 近地点后（覆盖半径一分钟涨一两度）：带面与真并集相符（两臂按包络倾斜，见 focusSwath.tiltPair 上方的注）
+//  ⑨ 回归（2026-10-21）：低轨星波束角贴近上限（折算仰角沿轨在 0° 处起落，根号拐点）—— 轮廓闭合不开口、带面与真并集相符
+//     （修前：两臂只按球近似对高度求导定倾角，端点不在包络上被裁掉，550 km 星在 133.5° 断成 8 段、开口 10.6°）
 import sat from '../../../src/viz/constellation/satellite.js'
 import * as W from '../../../src/viz/wgs84.js'
 import { groundMotion, swathK, sectionOf, swathLayout, buildSwath, emitSwath3D, swathFlatGeom } from '../../../src/viz/constellation/focusSwath.js'
 import { llaToVec, vecToLatLon, swathFill, createSink, FILL_R } from '../../../src/viz/globe3d/focusLanes.js'
 import { createFocusGeomPool } from '../../../src/viz/constellation/focusGeomPool.js'
 import { createShard, syncShard, computeTick } from '../../../src/viz/constellation/focusGeomTick.js'
+import { coverElevDeg } from '../../../src/viz/constellation/focusFootprint.js'
 
 let fails = 0
 const ok = (cond, msg, extra = '') => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}${extra ? '  (' + extra + ')' : ''}`); if (!cond) fails++ }
@@ -266,6 +269,60 @@ const E25 = { mode: 'elev', beamDeg: NaN, elevDeg: 25 }
   const r = tickOf(st, t, E10, per)
   const c = compare(r, satsAlong(MOL, t, per * P), 10)
   ok((c.over + c.miss) / c.nt < 0.006, '⑧ Molniya 变宽段带面 = 真并集（两臂按包络倾斜）', `画 ${c.nd} 真 ${c.nt} 多 ${c.over} 漏 ${c.miss}`)
+}
+
+// —— ⑨ 低轨星波束角贴近上限：轮廓闭合、带面 = 真并集 ——
+{
+  const leo = (incl, raan) => sat.omm2satrec({ noradId: 'LEO', epoch: '2026-10-21T00:00:00', meanMotion: 86400 / (2 * Math.PI * Math.sqrt(6928.137 ** 3 / 398600.4418)), ecc: 0.0001, incl, raan, argp: 0, ma: 0, bstar: 0, mdot: 0, mddot: 0 })
+  // 轮廓开口：每段端点到其他段（按 0.02° 加密）最近的距离
+  const gapsOf = (f) => {
+    const L = []
+    for (let q = 0; q < f.swLnOff[1]; q++) { const pl = []; for (let k = f.swLnPt[q]; k < f.swLnPt[q + 1]; k++) { const v = llaToVec(f.swLnLL[k * 2], f.swLnLL[k * 2 + 1], 0); pl.push([v.x, v.y, v.z]) } L.push(pl) }
+    const ang = (a, b) => Math.acos(Math.min(1, a[0] * b[0] + a[1] * b[1] + a[2] * b[2])) / DEG
+    const D = L.map((pl) => {
+      const o = []
+      for (let k = 0; k < pl.length; k++) {
+        o.push(pl[k])
+        if (k + 1 < pl.length) { const a = pl[k], b = pl[k + 1], s = Math.ceil(ang(a, b) / 0.02); for (let j = 1; j < s; j++) { const t = j / s, x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, z = a[2] + (b[2] - a[2]) * t, m = Math.hypot(x, y, z); o.push([x / m, y / m, z / m]) } }
+      }
+      return o
+    })
+    let worst = 0
+    L.forEach((pl, i) => {
+      for (const [p, q] of [[pl[0], pl[pl.length - 1]], [pl[pl.length - 1], pl[0]]]) {
+        let best = pl.length > 1 ? ang(p, q) : 180               // 本段自己闭合也算接上
+        D.forEach((d, j) => { if (j !== i) for (const x of d) best = Math.min(best, ang(p, x)) })
+        worst = Math.max(worst, best)
+      }
+    })
+    return { n: L.length, worst }
+  }
+  // 真值：逐 20 s 星位、各按那一刻折算的仰角门限
+  const truthFp = (sats, fp) => {
+    const hit = new Uint8Array(NP)
+    for (const S of sats) {
+      const s = Math.sin(coverElevDeg(S, fp) * DEG)
+      for (let i = 0; i < NP; i++) {
+        if (hit[i]) continue
+        const o = i * 6, dx = S[0] - GND[o], dy = S[1] - GND[o + 1], dz = S[2] - GND[o + 2]
+        if (dx * GND[o + 3] + dy * GND[o + 4] + dz * GND[o + 5] >= s * Math.hypot(dx, dy, dz)) hit[i] = 1
+      }
+    }
+    return hit
+  }
+  for (const [nm, incl, B] of [['550 km / 53°', 53, 133.5], ['550 km / 53°', 53, 134.0], ['550 km / 97.6°', 97.6, 133.5]]) {
+    const rec = leo(incl, 40), P = 2 * Math.PI / rec.no * 60000, fp = { mode: 'beam', beamDeg: B, elevDeg: NaN }
+    const st = createShard()
+    syncShard(st, { keys: ['l'], add: [{ key: 'l', rec, cc: false, color: 0 }], primary: 'l' })
+    const t = Date.parse('2026-10-21T00:00:00Z')
+    const r = tickOf(st, t, fp, 0.45)
+    const g = gapsOf(r.flat)
+    ok(g.worst < 0.12, `⑨ ${nm} B=${B}°：轮廓闭合（开口 ≤ 0.12°，与 OUT_TOL 同量级）`, `${g.n} 段，最大开口 ${g.worst.toFixed(3)}°`)
+    const sats = satsAlong(rec, t, 0.45 * P), d = drawnCover(new Float32Array(r.swath.buf, 0, r.swath.n), r.swath.n), tr = truthFp(sats, fp)
+    let nd = 0, nt = 0, over = 0, miss = 0
+    for (let i = 0; i < NP; i++) { nd += d[i]; nt += tr[i]; if (d[i] && !tr[i]) over++; if (!d[i] && tr[i]) miss++ }
+    ok((over + miss) / nt < 0.006, `⑨ ${nm} B=${B}°：带面 = 真并集`, `画 ${nd} 真 ${nt} 多 ${over} 漏 ${miss}`)
+  }
 }
 
 if (fails) { console.log(`\n${fails} 项失败`); process.exit(1) } else console.log('\n全部通过')

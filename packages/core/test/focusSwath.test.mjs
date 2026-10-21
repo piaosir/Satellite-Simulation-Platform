@@ -9,7 +9,7 @@
 //  ⑥ vecToLatLon 是 llaToVec 的逆
 import * as W from '../../../src/viz/wgs84.js'
 import sat from '../../../src/viz/constellation/satellite.js'
-import { footprintRing, beamHalfAngle } from '../../../src/viz/constellation/focusFootprint.js'
+import { footprintRing, beamToElevDeg } from '../../../src/viz/constellation/focusFootprint.js'
 import { groundMotion, swathK, swathSig, sectionOf } from '../../../src/viz/constellation/focusSwath.js'
 import { llaToVec, vecToLatLon, swathFill, createSink, FILL_R, FILL_CELL } from '../../../src/viz/globe3d/focusLanes.js'
 
@@ -50,15 +50,10 @@ function edgeCheck(mode, tag) {
   const S = W.geodeticToEcef(lon, lat, h)
   const ring = footprintRing(S, h, 72, fp)
   const L = vecToLatLon(sec[0], sec[1], sec[2]), R = vecToLatLon(sec[K * 3], sec[K * 3 + 1], sec[K * 3 + 2])
-  // 两缘按口径本身验：最低仰角档＝该点对星仰角恰为目标值；波束角档＝星→该点射线离天底恰为锥半角
-  //（不拿「到环顶点的距离」验：环是 120/72 个顶点的折线，顶点间距本身就有半度）
-  let dL, dR
-  if (mode === 'elev') { dL = Math.abs(W.elevationDeg(L[1], L[0], S) - fp.elevDeg); dR = Math.abs(W.elevationDeg(R[1], R[0], S) - fp.elevDeg) }
-  else {
-    const eta = beamHalfAngle(h, fp.beamDeg) / DEG
-    const off = (pt) => { const p = W.geodeticToEcef(pt[1], pt[0], 0); const d = [p[0] - S[0], p[1] - S[1], p[2] - S[2]]; const dn = Math.hypot(...d), sn = Math.hypot(...S); return Math.abs(Math.acos(-(d[0] * S[0] + d[1] * S[1] + d[2] * S[2]) / (dn * sn)) / DEG - eta) }
-    dL = off(L); dR = off(R)
-  }
+  // 两缘按口径本身验：该点对星仰角恰为目标值（波束角档＝按该星位换算出的仰角，两档画同一族等仰角线）
+  //（不拿「到环顶点的距离」验：环是 120 个顶点的折线，顶点间距本身就有半度）
+  const eT = mode === 'elev' ? fp.elevDeg : beamToElevDeg(S, fp.beamDeg)
+  const dL = Math.abs(W.elevationDeg(L[1], L[0], S) - eT), dR = Math.abs(W.elevationDeg(R[1], R[0], S) - eT)
   ok(dL < 1e-5 && dR < 1e-5, `${tag} 两缘严格落在口径上`, `左 ${dL.toExponential(2)}° 右 ${dR.toExponential(2)}°`)
   // 也顺带验一下与瞬时覆盖圈（折线）的贴合：到最近环顶点不超过顶点间距的一半
   const near = (pt) => { let m = Infinity; const v = llaToVec(pt[0], pt[1], 0); for (const q of ring) m = Math.min(m, angDeg(v, llaToVec(q.lat, q.lon, 0))); return m }

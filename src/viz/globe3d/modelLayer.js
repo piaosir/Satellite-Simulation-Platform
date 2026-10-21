@@ -987,7 +987,7 @@ export function lodByBudget(meta, want, budget) {
 /**
  * 软件光栅（没有可用 GPU：SwiftShader / llvmpipe / 微软基本显示驱动 …）判据。命中时球面图标不画（照旧点精灵）、
  * 跟随不载模型（画回退标记）、不画大气与眩光 —— DESIGN §9-8「弱 GPU → 原图标，静默」。
- * 硬件 GPU 再慢也不走这条：交给跟随里的逐档降级（lod0 → lod1 → lod2 → 标记）按实测帧时自己退。
+ * 硬件 GPU 再慢也不走这条：交给跟随里的逐档降级（lod0 → lod1 → lod2，到 lod2 为止、不撤模型）按实测帧时自己退。
  */
 export { isSoftwareRenderer }   // 判据与宇宙空间（spaceFx.js）同一份
 
@@ -1073,8 +1073,7 @@ export function createModelLayer(o = {}) {
   let zoomTarget = 60, dMin = 5, dMax = FOLLOW_MAX_M
   let hudOn = { bodyAxes: false, lvlh: false, nadir: false, velocity: false, sun: false, isl: false, es: false, mounts: false }
   let lod = 'lod1', lodDowngraded = null, lodBudget = 0
-  let modelOff = false                       // 本次跟随里逐档降级已退到底（lod2 / 参数化仍跟不上）：只画标记
-  const perf = { acc: 0, n: 0, hold: 0, slow: 0, frameMs: 0, lastT: 0 }
+  const perf = { acc: 0, n: 0, hold: 0, frameMs: 0, lastT: 0 }
   let camMovedL = false, zoomBusy = false, dragging = false
   const ES_MAX = 12                          // HUD 地球站方向最多几支（页面按距离近者优先给）
   const ISL_GRAZE_M = RE_M + 100e3           // ISL 通视判据：连线不擦过 100 km 高度以下（与 regen 星间链路的擦地口径同量级）
@@ -1147,15 +1146,16 @@ export function createModelLayer(o = {}) {
   /**
    * 跟随主星的模型：先按三角形预算定档（lodByBudget），再「渐进」—— 目标档比 lod2 细时先挂 lod2（几百 KB，几十毫秒见模型），
    * 目标档在后台解析好再原位换上（LOD 流式；大件的贴图解码 / 上传停顿不再是进入跟随后的一段空白）。
-   * 没有模型 / 软件光栅 / 逐档降级已退到底：不建槽位（或建了不载），局部原点画回退标记（见 updateFollow）。
+   * 没有模型 / 软件光栅：不建槽位（或建了不载），局部原点画回退标记（见 updateFollow）。
    * hintR：库条目里的包围半径（米）—— 模型还没到时就按它定取景距离与缩放上下限，模型到了不再跳一下。
+   * slot.want：目标档；自动降档改它再 go()（原位换档，见 updateFollow）。
    */
   function loadFollow(modelId, wantLod, budget, frame) {
     releaseFollowInst()
-    if (!modelId || gpuWeak || modelOff) return
+    if (!modelId || gpuWeak) return
     let hintR = 0
     try { const m = o.metaOf ? o.metaOf(modelId) : null; const g = m && m.geometry; if (g && g.boundingRadiusM > 0) hintR = g.boundingRadiusM } catch { hintR = 0 }
-    const slot = { modelId, lod: wantLod, inst: null, mount: null, req: 0, onUp: null, go: null, budget: budget || 0, frame: frame || null, frameSig: frameSig(frame), hintR }
+    const slot = { modelId, want: wantLod, lod: wantLod, inst: null, mount: null, req: 0, onUp: null, go: null, budget: budget || 0, frame: frame || null, frameSig: frameSig(frame), hintR }
     fslot = slot
     const live = (req) => !disposed && fslot === slot && req === slot.req
     // 新实例先在场景外编好着色器（warmUp）再原位换上；换上之前旧的一档照画
@@ -1172,14 +1172,22 @@ export function createModelLayer(o = {}) {
       followRoot.add(slot.mount.holder)
       fitFollow()
       requestRedraw()
+      perf.acc = 0; perf.n = 0   // 换档前攒的半窗是旧档的帧时
       return true
     }
     const go = async () => {
       const req = ++slot.req
+      // 换档进行中不采样（updateFollow 认 slot.swapping）：新档挂上之前画的还是旧档，量到的帧时不该再降一档 ——
+      // 新档解析慢（本地大件）时，原先第 4 窗就按旧档的帧时把目标再降一档，中间那档一次都没显示过
+      slot.swapping = true
+      try { await goBody(req) } finally { if (req === slot.req) slot.swapping = false }
+    }
+    const goBody = async (req) => {
       slot.onUp = () => { if (fslot === slot) go() }
-      let lodT = wantLod
+      const want = slot.want
+      let lodT = want
       if (!modelId.startsWith('param:') && slot.budget > 0) {
-        try { lodT = lodByBudget(await source.meta(modelId), wantLod, slot.budget) } catch { lodT = wantLod }
+        try { lodT = lodByBudget(await source.meta(modelId), want, slot.budget) } catch { lodT = want }
         if (!live(req)) return
       }
       slot.lod = modelId.startsWith('param:') ? 'param' : lodT   // 参数化是现场生成的一份，没有档可降
@@ -1436,7 +1444,7 @@ export function createModelLayer(o = {}) {
     fixNearLinks()
   }
   // 近场链路的端点（逐拍：换链路 / 换锚点姿态 / 邻星表变 / 主星模型到了各修一次）：
-  //   · tip.z = 3 的段终点是主星本体：终点挪到「从起点射向原点、先撞上的本体外包盒面」（模型没到 / 退成标记 → 包围球 / 原点）——
+  //   · tip.z = 3 的段终点是主星本体：终点挪到「从起点射向原点、先撞上的本体外包盒面」（模型没到 → 包围球 / 原点）——
   //     箭头尖停在星体外，不扎进模型肚子里被深度藏掉；
   //   · 端点落在某颗邻星旁（局部那一趟按真 ECEF 差摆它，链路按大地经纬高落点，两边差 ≤ 1%）：钉到邻星的局部位置，终点的箭头 /
   //     起点的线头让邻星此刻的屏幕半径（逐帧，见 updateFollow）。
@@ -1445,7 +1453,7 @@ export function createModelLayer(o = {}) {
   function bodyEntry(sx, sy, sz, out) {
     // 起点 → L 系米 → 本体系
     _ns.set(sx, sy, sz).multiplyScalar(RE_M).applyQuaternion(qS2L)
-    const hasModel = !!(fslot && fslot.mount) && !modelOff
+    const hasModel = !!(fslot && fslot.mount)
     const box = hasModel ? fslot.mount.box : null
     let t = -1
     if (box) {
@@ -1465,7 +1473,7 @@ export function createModelLayer(o = {}) {
       if (t0 <= t1 && t0 >= 0 && t0 < 1) t = t0
     }
     if (t < 0) {
-      // 有模型、射线却没进外包盒（本体原点不在盒里）：退到包围球；没有模型可画（还在加载 / 退成标记）就停在原点，
+      // 有模型、射线却没进外包盒（本体原点不在盒里）：退到包围球；没有模型可画（还在加载 / 画回退标记）就停在原点，
       // 箭头让标记的屏幕半径（见 fixNearLinks）
       const len = _ns.length()
       const r = hasModel ? followRadius() : 0
@@ -1478,7 +1486,7 @@ export function createModelLayer(o = {}) {
     nearLinkNb.length = 0
     nearLinkFarM = 0
     if (!nearLinkG || !fstate) return
-    const hasModel = !!(fslot && fslot.mount) && !modelOff
+    const hasModel = !!(fslot && fslot.mount)
     for (const o of nearLinkG.children) {
       const geo = o.geometry
       const ib = geo && geo.attributes.instanceStart ? geo.attributes.instanceStart.data : null
@@ -1550,7 +1558,6 @@ export function createModelLayer(o = {}) {
       releaseFollowInst()
       dropAllOthers()
       setNear(null)
-      modelOff = false
       if (mark) mark.visible = false
       return
     }
@@ -1575,8 +1582,7 @@ export function createModelLayer(o = {}) {
     if (entering) {
       const prof = gpuWeak ? followProfile('low') : followProfile(getQuality().tier, getQuality())
       lod = prof.lod; lodDowngraded = null; lodBudget = prof.tris
-      modelOff = false
-      perf.acc = 0; perf.n = 0; perf.hold = 3; perf.slow = 0
+      perf.acc = 0; perf.n = 0; perf.hold = 3
       if (studio && studioShadows !== prof.shadows) { studio.dispose(); studio = null }
       studioShadows = prof.shadows
       userZoomed = false
@@ -1589,7 +1595,6 @@ export function createModelLayer(o = {}) {
       zoomTarget = d0
       if (ctl) { ctl.target.set(0, 0, 0); ctl.update() }
     } else if (state.modelId !== prevModel || frameSig(state.frame) !== prevFrame) {
-      modelOff = false
       loadFollow(state.modelId, lod, lodBudget, state.frame)
       if (!fslot || !fslot.mount) fitFollow()
     }
@@ -1761,7 +1766,7 @@ export function createModelLayer(o = {}) {
   }
 
   const _lab = new THREE.Vector3()
-  function updateFollow(dt, camera, w, h) {
+  function updateFollow(dt, camera, w, h, smp) {
     _vpW = w || 0; _vpH = h || 0
     camL.fov = camera.fov
     if (w && h && camL.aspect !== w / h) camL.aspect = w / h
@@ -1773,9 +1778,8 @@ export function createModelLayer(o = {}) {
     camL.far = Math.max(6e5, camera.near * RE_M * 1.02, nearLinkG ? (nearLinkFarM + d) * 1.05 : 0)
     camL.updateProjectionMatrix()
     const labelK = 2 * Math.tan(camL.fov * Math.PI / 360) / Math.max(1, h)   // 1 CSS 像素 ↔ sizeAttenuation:false 精灵的 scale
-    // 主星模型：逐档降级退到底（modelOff）就藏起来；没有可画的模型（绑定「无」/ 没缓存 / 失败 / 还在加载 / 软件光栅）画回退标记
-    const hasModel = !!(fslot && fslot.mount) && !modelOff
-    if (fslot && fslot.mount) fslot.mount.holder.visible = !modelOff
+    // 主星模型：没有可画的模型（绑定「无」/ 没缓存 / 失败 / 还在加载 / 软件光栅）画回退标记
+    const hasModel = !!(fslot && fslot.mount)
     if (mark) {
       mark.visible = !hasModel
       if (!hasModel) mark.scale.setScalar(MARK_PX * labelK)
@@ -1852,27 +1856,30 @@ export function createModelLayer(o = {}) {
       const md = t > 0 ? _lab.copy(sunL).multiplyScalar(t).add(camL.position).length() : camL.position.length()
       sunVisModel = hasModel ? 0.25 + 0.75 * smooth(r * 0.35, r * 0.9, md) : 1
     }
-    // 自动降档（任务书 §5.9：帧率跌破上限 1 s 自动降一档 LOD，带迟滞 —— 降了本次跟随不回升）。
-    // 链：lod0 → lod1 → lod2（参数化没有档）→ 只画标记。最后一步更严：平均帧时超过上限的 2.5 倍、连续 3 秒才撤模型
-    //（真到这一步的是 GPU 跟不上，不是一两帧抖动）。
-    // ★ 窗口藏起来时 rAF 被压到 ~1 Hz、dt 被钳在 0.1 s —— 那不是 GPU 慢，不许据此降档（每秒不足 10 帧的窗口不算）
+    // 自动降档（任务书 §5.9：帧率跌破上限 1 s 自动降一档 LOD，带迟滞 —— 降了本次跟随不回升）。链：lod0 → lod1 → lod2，到 lod2 为止（参数化没有档）。
+    // ★ 2026-10-20 用户报「跟随卫星一段时间模型会错误消失」，两处改：
+    //   ① 采样只认 scene 给的干净帧间隔 smp（这段间隔里没有时钟拍掐过出帧，见 scene.holdFrames；不干净给 0）。原先拿 dt 量：播放时按需出帧
+    //      一拍只出一帧，dt ≈ 整拍耗时（SGP4 + 聚焦几何 Worker）+ 半个垂直同步，拍耗时 25 / 40 ms 起就被当成 GPU 慢，几秒内一路降到底。
+    //   ② 删掉最后一步「lod2 仍跟不上 → 撤模型只画标记」：lod2 / 参数化只有几千到几万面，跟不上的是地球那一趟（影像 / 大气 / 分辨率），
+    //      撤掉主星省不回帧率，只把跟随的对象弄没了。降档原位换（旧档照画到新档挂好；取不到更粗的一档就留着旧档）。
+    // ★ 窗口藏起来时 rAF 被压到 ~1 Hz、失焦压到 10 fps（间隔 ≥ 0.099 s）—— 那不是 GPU 慢，不许据此降档
     const hidden = typeof document !== 'undefined' && document.hidden
-    if (dt > 0 && dt < 0.099 && !hidden && fslot && fslot.inst && !modelOff) {
-      perf.acc += dt; perf.n++
+    if (smp > 0 && smp < 0.099 && !hidden && fslot && fslot.inst && !fslot.swapping) {
+      perf.acc += smp; perf.n++
       if (perf.acc >= 1) {
         const avg = perf.acc / perf.n
         const q = getQuality()
         const cap = q && q.fps > 0 ? q.fps : 60
-        const bottom = fslot.lod === 'lod2' || fslot.lod === 'param'
+        // 上次降档后档位没变（只有 lod0 一档的本机 / STK 导入模型，lodByBudget 退回原档）也算到底 —— 否则持续偏慢时
+        // 每 hold + 1 窗就把同一档重挂一遍，周期性小卡、降档链停不下来
+        const bottom = fslot.lod === 'lod2' || fslot.lod === 'param' || fslot.lod === lodDowngraded
         if (perf.hold > 0 || perf.n < 10) { if (perf.hold > 0) perf.hold-- }
         else if (!bottom && avg > 1.5 / cap) {
           lodDowngraded = fslot.lod
           lod = LOD_DOWN[fslot.lod] || 'lod2'
-          loadFollow(fstate.modelId, lod, lodBudget, fstate.frame)
-          perf.hold = 3; perf.slow = 0
-        } else if (bottom) {
-          perf.slow = avg > 2.5 / cap ? perf.slow + 1 : 0
-          if (perf.slow >= 3) { lodDowngraded = fslot.lod; modelOff = true }
+          fslot.want = lod
+          fslot.go()
+          perf.hold = 3
         }
         perf.acc = 0; perf.n = 0
       }
@@ -1893,7 +1900,8 @@ export function createModelLayer(o = {}) {
 
   let lastMask = false
   const overlay = {
-    update(dt, camera, w, h) {
+    // smp：干净的帧间隔（秒；这段间隔里没有时钟拍掐过出帧，scene 给；0 / 缺省 = 不当性能样本）—— 只给跟随自动降档用，见 updateFollow
+    update(dt, camera, w, h, smp) {
       if (disposed) return
       lastW = w; lastH = h
       if (w && h) { const lm = lineMats.list; for (let i = 0; i < lm.length; i++) lm[i].resolution.set(w, h) }
@@ -1902,7 +1910,7 @@ export function createModelLayer(o = {}) {
       batch.setZoomK(fstate ? FOLLOW_ICON_K : null)
       const busyIcons = batch.update(dt, camera, w, h, iconsOn && !gpuWeak)
       overlay._busyIcons = busyIcons
-      if (fstate) updateFollow(dt, camera, w, h)
+      if (fstate) updateFollow(dt, camera, w, h, smp)
       // 点精灵遮罩开关跟着「有没有图标 / 跟随邻星在」走（没有了就把原材质换回来 —— 关掉后球面逐像素回到原样）。
       // 跟随时 500 km 内的邻星由局部那一趟画（模型或圆点 + 名字），它在星座点云里那个点要藏掉，不然同一颗星画两遍
       const want = batch.maskWanted()
@@ -2036,7 +2044,7 @@ export function createModelLayer(o = {}) {
         iconGroups: bs.iconGroups, iconDraws: bs.iconDraws, iconTris: bs.iconTris, iconLevels: bs.iconLevels,
         // 在画的图标此刻的屏幕直径（px，已乘缩放联动系数）：[key, 直径]
         iconsPx: bs.iconsPx, lod: fslot ? (fslot.inst ? fslot.inst.lod : 'loading') : null, lodTarget: fslot ? fslot.lod : null,
-        lodDowngradedFrom: lodDowngraded, modelOff, marker: !!(mark && mark.visible), gpuWeak, followRadiusM: followRadius(), others: others.size, islLos: isl,
+        lodDowngradedFrom: lodDowngraded, modelVisible: !!(fslot && fslot.mount && fslot.mount.holder.visible && fslot.mount.holder.parent === followRoot), marker: !!(mark && mark.visible), gpuWeak, followRadiusM: followRadius(), others: others.size, islLos: isl,
         stations: fstate && Array.isArray(fstate.stations) ? fstate.stations.length : 0, zoomBusy, dMin: +dMin.toFixed(3),
         followBox: fslot && fslot.mount ? fslot.mount.box : null, hudLang: hud ? hud.lang : null,
         frameMs: +perf.frameMs.toFixed(2), camDistM: +camL.position.length().toFixed(2),
