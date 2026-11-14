@@ -4,15 +4,13 @@
 //   ① A 路 exp5（docs/research/gap-2026-10-17/A/exp5_inclined.cjs）：北京看 110.5°E、i = 1°、e = 3e-4 的 SDP4 星
 //      ——视线偏 1.11°、斜距日变 161 km、12 GHz 多普勒 ±236 Hz、1.2 m Ku（12.5 GHz）固定天线 7.5 dB；
 //      保持盒 i = 0.05°：13 m Ku（14 GHz）2.7–2.8 dB。这里把同一颗 SDP4 星逐分钟采样当星历喂进来，同物同比。
-//   ② H 路 zx9（docs/research/gap-2026-10-17/H/zx9.cjs）：随包 GEO 快照里的中星 9 号（i = 0.97°）→ 1.2 m Ku（12 GHz）6.46 dB。
+//   ② H 路 zx9（docs/research/gap-2026-10-17/H/zx9.cjs）：固定 2026-10-14 中星 9 号快照（i = 0.97°）→ 1.2 m Ku（12 GHz）6.46 dB。
 //   ③ 解析几何：站在星下点时，纯倾角的视线偏离 = atan(a·sin i / (a·cos i − R))；纯偏心率的最大距离变化率 = √(μ/p)·e。
 //   ④ 资源库与引擎：倾角 / 偏心率 / 东西保持 ±、跟踪方式 / 残差已撤出（回到 v1.5.3），引擎不读、残留键不改任何出参。
 //   ⑤ 「指向误差」工具：θ(t) = √(θ_main(t)² + Σθ_i²)（rssDeg），gsoPointingBudget 与 linkGeoTrack 同一套几何。
 
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { gunzipSync } from 'node:zlib'
-import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const G = require('../utils/geoTrack.js')
 const sat = require('../vendor/satellite.js')
@@ -51,11 +49,11 @@ section('① A 路 exp5（北京看 110.5°E，SDP4 星当星历）')
   ok(box.tx.lossMaxDb > 2.6 && box.tx.lossMaxDb < 2.9, `★ 保持盒 i = 0.05°：13 m Ku（14 GHz）固定天线 ${box.tx.lossMaxDb.toFixed(2)} dB（exp5：2.7–2.8 dB）`)
 }
 
-/* ===== ② H 路 zx9：随包快照里的中星 9 号 ===== */
+/* ===== ② H 路 zx9：固定参考快照里的中星 9 号 ===== */
 section('② H 路 zx9（中星 9 号快照星历）')
 {
-  const here = fileURLToPath(new URL('.', import.meta.url))
-  const csv = gunzipSync(readFileSync(here + '../../../resources/omm/csv_geo.csv.gz')).toString('utf8').split(/\r?\n/)
+  // 参考读数对应这份历史根数；出厂快照会刷新，不能用新轨道校验旧日期的数值。
+  const csv = readFileSync(new URL('./fixtures/geoTrack.zhongxing9.csv', import.meta.url), 'utf8').split(/\r?\n/)
   const head = csv[0].split(',')
   const line = csv.find((x) => x.startsWith('ZHONGXING-9,'))
   ok(!!line, '快照里有 ZHONGXING-9')
