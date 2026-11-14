@@ -2,7 +2,7 @@
 // 运行：node packages/core/test/linkChain.test.js
 //
 // 分两部分：
-//   ① 级联代数钉死——倒数和、分段切割（含地面转接站）、最弱段、可用度乘积（星间段不参与）、时延求和；
+//   ① 级联代数钉死——倒数和、分段切割（含地面转接站）、最弱段、可用度乘积（含各星间跳指定可用度）、时延求和；
 //   ② 回归锚点（最重要）——新引擎不是另起炉灶，它借的是现有三引擎的物理量，凡是老引擎能算的
 //      拓扑，两边必须给出同一个数：
 //        a. 站→透明星→站  ⇔ computeLinkModeNGSO 的 carrierTotalCN（弯管全链）
@@ -152,15 +152,15 @@ console.log('=== ① 结构与级联代数 ===\n');
   ok('最弱段标记正确', String(d.weakestSegment) === String(mi + 1) && segs[mi].weakest === true,
     `weakest=${d.weakestSegment}`);
 
-  // 可用度乘积（星间段不参与）：四个星地 hop 的站址可用度连乘
+  // 可用度乘积（含各星间跳指定可用度）：四个星地 hop 的站址可用度连乘
   const gs = hops.filter((h) => h.type === 'up' || h.type === 'down');
   ok('星地 hop 计 4 个、星间 hop 计 1 个', gs.length === 4 && hops.filter((h) => h.type === 'isl').length === 1);
   let av = null;
   for (const h of gs) { const a = N(h.availabilityResult); av = (av === null) ? a : av * a / 100; }
   ok('★ 系统可用度 = 各星地 hop 可用度之积', near(N(d.systemAvailabilityResult), av, 1e-4),
     `${d.systemAvailabilityResult} vs ${av.toFixed(5)}`);
-  ok('★ 星间 hop 不报可用度（手动距离下无互视统计，不许漏出占位入参的雨衰可用度）',
-    hops[1].availabilityResult === '', JSON.stringify(hops[1].availabilityResult));
+  ok('★ 星间 hop 可用度缺省回显 100%（不取占位地球站的雨衰可用度）',
+    hops[1].availabilityResult === '100.00000', JSON.stringify(hops[1].availabilityResult));
 
   // 时延求和
   let dly = 0;
@@ -423,7 +423,7 @@ console.log('\n=== ③ 星间段可用度：手动距离下端到端可用度不
   const expect = parseFloat(TX_ES.availability) * parseFloat(RX_ES.availability) / 100;
   ok('★ 系统可用度 = 上行站 × 下行站（星间段不贡献可用度损失）',
     near(N(d.systemAvailabilityResult), expect, 1e-4), `${d.systemAvailabilityResult} vs ${expect}`);
-  ok('星间段的段级结果里没有可用度字段被写坏', d.hops[1].availabilityResult === '');
+  ok('星间段的可用度缺省 100%', d.hops[1].availabilityResult === '100.00000');
 }
 
 
@@ -444,11 +444,11 @@ console.log('\n=== 4 链端点为卫星（星上发起 / 星上结算）===\n');
   ok('站→卫星（2 节点）算得出', up2.success === true, up2.message);
   ok('★ 其结果 = 三节点链的上行段', up2.success && up2.data.segments[0].cnResult === three.data.segments[0].cnResult,
     `${up2.success && up2.data.segments[0].cnResult} vs ${three.data.segments[0].cnResult}`);
-  // 卫星 → 卫星（星间单跳）：可用度空（星间段不贡献）
+  // 卫星 → 卫星（星间单跳）：缺省可用度 100%
   const ISL1 = { link: 'rf', frequency: '23', rangeKm: '2500', islEirp: '45', islGT: '12', miscLoss: '1' };
   const isl2 = computeLinkChain({ nodes: [RG, Object.assign({}, RG, { name: 'B' })], hops: [ISL1], carrier: CARRIER });
   ok('卫星→卫星（星间单跳）算得出', isl2.success === true, isl2.message);
-  ok('星间单跳链不报系统可用度（星间段不贡献）', isl2.success && isl2.data.systemAvailabilityResult === '');
+  ok('星间单跳链缺省系统可用度 100%', isl2.success && isl2.data.systemAvailabilityResult === '100.00000');
   // 端点透明星按再生（载荷直发 / 解调结算）归一：不做转发器变换，也就没有转发器占用
   const headTxp = computeLinkChain({ nodes: [Object.assign({}, TXP_SAT, { eirp: '28' }), RX_ES], hops: [DN_HOP], carrier: CARRIER });
   ok('★ 端点透明星按再生归一（无来波可转发 ⇒ 不做转发器变换）',
@@ -1161,6 +1161,7 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
   // 2026-09-16 可用度出厂 99.90→100%：两条纯弯管链（占位侧取 UP/DL_LINK_DEFAULTS 的可用度）出参漂 0.01 dB，重锁
   //   弯管 站→透明星→站 956b60cd1e7ac15b→5cb3b3064ff422ac、双透明星 ISL 链 f6412e6530823d41→22a0580b3768b41f；其余七条不变。
   // 2026-10-17 18 条修复轮重锁 8 条：P.676-13 逐线法 + P.836-6 统计、P.840-9 K_L、P.618 式(69)(70) 天空噪温、Art.21 表驱动、新增 uplinkAglResult / downlinkAglResult；端到端余量对拍容差 0.01 → 0.0101（两位小数双重取整恰差 0.01 时的浮点余量）。
+  // 2026-11-14：星间跳可用度默认 100%，逐跳回显及纯星间系统可用度随新口径更新四条指纹。
   const BASELINE = {
     '弯管 站→透明星→站': ['0e760ae949117524', { nodes: [TX_ES, TXP_SAT, RX_ES], hops: [UP_HOP, DN_HOP], carrier: CARRIER }],
     '弯管·两端有雨·UPC': ['cc8a55dfdd45f0e3', {
@@ -1173,11 +1174,11 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
       nodes: [TX_ES, RGx('再生星', { demodLossDb: '0.8' }), Object.assign({}, RX_ES, { demodLossDb: '1.2' })],
       hops: [UP_HOP, DN_HOP], carrier: CARRIER
     }],
-    '双透明星 ISL 链': ['f8d600b53a322de5', {
+    '双透明星 ISL 链': ['9de7107650d381f8', {
       nodes: [TX_ES, Object.assign({}, TXP_SAT, { name: 'A星' }), Object.assign({}, TXP_SAT, { name: 'B星' }), RX_ES],
       hops: [UP_HOP, ISLx, DN_HOP], carrier: CARRIER
     }],
-    '六节点混合链（4 段）': ['653df32879808592', {
+    '六节点混合链（4 段）': ['f1b924660e75ff95', {
       nodes: [TX_ES, RGx('再生星A', { procDelayMs: '1.5' }), Object.assign({}, TXP_SAT, { name: '透明星B' }),
         Object.assign({}, RX_ES, { name: '转接站C', powerW: '60' }), RGx('再生星D', { procDelayMs: '2.5' }),
         Object.assign({}, RX_ES, { name: '末端站E' })],
@@ -1186,8 +1187,8 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
         Object.assign({}, DN_HOP, { slantRange: '39000', elevation: '28' })],
       carrier: CARRIER
     }],
-    '全激光链': ['e19a791924f43a0e', { nodes: [RGx('源星'), RGx('宿星')], hops: [LASERx], carrier: CARRIER }],
-    '激光混合链（3 段）': ['d3289f61d528a95f', {
+    '全激光链': ['021df6fce7dab09e', { nodes: [RGx('源星'), RGx('宿星')], hops: [LASERx], carrier: CARRIER }],
+    '激光混合链（3 段）': ['8071bdafa8b319db', {
       nodes: [TX_ES, RGx('再生星A'), RGx('再生星B'), RX_ES], hops: [UP_HOP, LASERx, DN_HOP], carrier: CARRIER
     }],
     '逐段体制（QPSK → 8PSK）': ['9a9ff98e01cd194e', {
@@ -1222,6 +1223,33 @@ console.log('\n=== 12 方案二：级联精简（传播项折叠 / 手算链完�
   ok('hops[0].polarizationResult 原样回显本跳极化', h0.polarizationResult === (UP_HOP.polarization || ''), h0.polarizationResult);
   ok('下行跳不出发信站 EIRP / PSD（客户端不在这一段发射）',
     r.data.hops[1].stationEirpResult === '' && r.data.hops[1].stationPsdResult === '');
+}
+
+// 星间可用度：微波与激光逐跳连乘、缺省兼容、0% 不丢失、越界拒收。
+{
+  const rg = (name) => Object.assign({ kind: 'regen', name, gt: '10', eirp: '28' }, INTF);
+  const rf = { link: 'rf', frequency: '23', rangeKm: '3000', islEirp: '45', islGT: '12', miscLoss: '1', availability: '99.5' };
+  const laser = { link: 'laser', rangeKm: '4600', availability: '98', laser: {
+    txPowerDbm: '30', wavelengthNm: '1550', txApertureMm: '80', rxApertureMm: '80', txOpticsEff: '0.8', rxOpticsEff: '0.8',
+    txPointingErrUrad: '1', rxPointingErrUrad: '1', rxSensitivityDbm: '-35.5', otherLossDb: '0'
+  } };
+  const chain = { nodes: [TX_ES, rg('A'), rg('B'), rg('C'), RX_ES], hops: [UP_HOP, rf, laser, DN_HOP], carrier: CARRIER };
+  const mixed = computeLinkChain(chain);
+  ok('微波 + 激光混合链可计算', mixed.success, mixed.message);
+  const expected = 100 * (Number(TX_ES.availability) / 100) * .995 * .98 * (Number(RX_ES.availability) / 100);
+  ok('所有跳可用度相乘得到系统可用度', mixed.success && near(N(mixed.data.systemAvailabilityResult), expected, 1e-5), mixed.data && mixed.data.systemAvailabilityResult);
+  ok('微波与激光回显各自可用度', mixed.success && mixed.data.hops[1].availabilityResult === '99.50000' && mixed.data.hops[2].availabilityResult === '98.00000');
+  const clearChain = JSON.parse(JSON.stringify(chain)); delete clearChain.hops[1].availability; delete clearChain.hops[2].availability;
+  const legacy = computeLinkChain(clearChain);
+  ok('旧配置未提供星间可用度时按 100% 入算', legacy.success && near(N(legacy.data.systemAvailabilityResult), Number(TX_ES.availability) * Number(RX_ES.availability) / 100, 1e-5));
+  ok('星间可用度只影响系统可用度，不改余量与时延', mixed.success && legacy.success && mixed.data.e2eMarginResult === legacy.data.e2eMarginResult && mixed.data.e2eDelayResult === legacy.data.e2eDelayResult);
+  for (const hop of [rf, laser]) {
+    const single = (a) => computeLinkChain({ nodes: [rg('S'), rg('T')], hops: [{ ...hop, availability: a }], carrier: CARRIER });
+    const zero = single('0');
+    ok(hop.link + ' 可用度 0% 计入全链路且年中断时长为全年', zero.success && zero.data.systemAvailabilityResult === '0.00000' && near(N(zero.data.interruptionHours), 365.25 * 24, .01));
+    ok(hop.link + ' 空可用度按 100%', single('').data.systemAvailabilityResult === '100.00000');
+    for (const bad of ['-1', '101', 'oops']) ok(hop.link + ' 非法可用度拒收 ' + bad, !single(bad).success);
+  }
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

@@ -348,7 +348,11 @@ export function useBeamMapDisplay(deps = {}) {
           } catch (e) { if (deps.onError) deps.onError('波束数据读取失败：' + r.label, e); continue }
           if (my !== redrawSeq) return
           const beam = beamObj(r, d, idx.lon)
-          for (const L of buildBeamLayers(beam, styleForBeam(st, it, ba, id), lab, `bm:${it.id}:${ba.id}:${id}`)) layers.push(L)
+          for (const L of buildBeamLayers(beam, styleForBeam(st, it, ba, id), lab, `bm:${it.id}:${ba.id}:${id}`)) {
+            // 独立身份，不能靠分隔符拆层 id（波束名本身允许含 | / :）。
+            L.mapObject = { kind: 'coverage', id: JSON.stringify([it.id, ba.id, id]), itemId: it.id, batchId: ba.id, beamId: id, name: `${idx.displayName} · ${r.label}` }
+            layers.push(L)
+          }
           if (disp.showRay && st.levels.length) for (const b of (beam.bore || []).slice(0, 1)) { const ry = beamRay(idx.lon != null ? idx.lon : beam.satLon, b, rayStyle); if (ry) rays.push(ry) }
         }
       }

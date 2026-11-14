@@ -223,5 +223,20 @@ ok('solveChainK 两节点时与 splitUnavailability 同解', (() => {
   ok('core 出口透出 scanSlaTiers', /scanSlaTiers/.test(idx))
 }
 
+// 星间可用度固定：只缩放星地雨衰档位，整条链的可用度恰为目标且不突破星间上限。
+{
+  const c = JSON.parse(JSON.stringify(CHAIN))
+  c.nodes.splice(2, 0, { ...c.nodes[1], name: '第二颗再生星' })
+  c.hops.splice(1, 0, { link: 'rf', frequency: '23', rangeKm: '3000', islEirp: '45', islGT: '12', miscLoss: '1', availability: '99.8' })
+  const samples = slaChainSamplesFor(['99.90', '99.70'], .998)
+  ok('固定星间可用度限制目标 SLA 档位', samples.length > 0 && samples.every((s) => s.tier <= 99.8))
+  const scan = scanSlaTiers({ engine: 'chain', chain: c, samples })
+  ok('含星间固定因子的扫描仍恰达每个可达档位', scan.rows.length === samples.length && scan.rows.every((r) => r.ok && near(r.data.systemAvailabilityResult, r.tier, 1e-5)), scan.rows.map((r) => r.data && r.data.systemAvailabilityResult).join(' / '))
+  ok('扫描不改写原始星间可用度', c.hops[1].availability === '99.8')
+  ok('星间可用度 0% 不生成不可达 SLA 档位', slaChainSamplesFor(['99.9'], 0).length === 0)
+  const allClear = slaChainSamplesFor(['100', '100'], .998)
+  ok('星地晴空时按扣除星间因子的目标等分', allClear.length > 0 && allClear.every((s) => near(s.avail * s.avail / 100 * .998, s.tier, 1e-8)))
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

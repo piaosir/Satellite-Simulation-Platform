@@ -258,16 +258,20 @@ export function slaSamplesFor(o) {
 
 /**
  * 端到端的档位扫描样本：逐档给一个缩放系数 k（对链上全部地球站节点同用一个）。
- * 全部节点都是 100%（出厂晴天）时缩放不出来，按等分拆：每跳取 S^(1/n)，样本带 avail（各地球站节点直接取这个值）。
+ * fixedFactor 是所有星间跳固定可用度的乘积（0..1），星地部分须达到 S / fixedFactor。
+ * 全部地球站都是 100% 时按星地跳数等分该目标；星间跳本身不缩放。
  */
-export function slaChainSamplesFor(avails) {
+export function slaChainSamplesFor(avails, fixedFactor = 1) {
+  if (!(fixedFactor > 0 && fixedFactor <= 1)) return []
   const out = []
   const a = []
   for (const v of (avails || [])) { const n = num(v); if (n !== null && n <= 100) a.push(n) }
   const allClear = a.length > 0 && a.every((v) => v >= 100)
   for (const S of AVAIL_TIERS) {
-    if (allClear) { if (S < 100) out.push({ tag: String(S), tier: S, avail: 100 * Math.pow(S / 100, 1 / a.length) }); continue }
-    const k = solveChainK(avails, S)
+    const rainTarget = S / fixedFactor
+    if (rainTarget > 100 + 1e-10) continue
+    if (allClear) { out.push({ tag: String(S), tier: S, avail: 100 * Math.pow(Math.min(100, rainTarget) / 100, 1 / a.length) }); continue }
+    const k = solveChainK(avails, Math.min(100, rainTarget))
     if (k !== null) out.push({ tag: String(S), tier: S, k })
   }
   return out
@@ -639,10 +643,11 @@ export function slaLoopback(slaParams, data, params) {
  * 着色参照：扫描给的「最高可行档」是【传播域 · 年口径】的，采用值是综合域（且可能是月口径），
  * 两者得换到同一个域才可比。
  */
-function refTier(tier, toWm, factor) {
+function refTier(tier, toWm, factor, fixedFactor = 1) {
   const t = num(tier)
   if (t === null) return null
-  const v = toWm ? worstMonthAvail(t) : t
+  const rain = fixedFactor > 0 ? worstMonthAvail(Math.min(100, t / fixedFactor)) : 0
+  const v = toWm ? rain === null ? null : rain * fixedFactor : t
   return v === null ? null : v * (factor === null || factor === undefined ? 1 : factor)
 }
 
@@ -692,10 +697,14 @@ function availOf(data, params, key, echo) {
 // 端到端：链上各星地跳的站址可用度。
 // ★ 取【跳】不取【节点】：系统可用度是各星地跳之积（见 linkChain 的 availPct），地面转接站
 //   在两跳里各算一次；按节点列表去解缩放系数会少乘一次，档位就对不上了。
-export function chainHopAvails(data) { return chainAvails(data) }
-function chainAvails(data) {
+export function chainHopAvails(data) { return chainAvails(data, true) }
+// Fixed inter-satellite availability limits all SLA tiers; changing rain availability cannot improve it.
+export function chainSpaceFactor(data) {
+  return ((data && data.hops) || []).filter((h) => h && (h.type === 'isl' || h.type === 'laser')).reduce((factor, h) => factor * (num(h.availabilityResult) ?? 100) / 100, 1)
+}
+function chainAvails(data, rainOnly = false) {
   const hops = (data && Array.isArray(data.hops)) ? data.hops : []
-  return hops.filter((h) => h && (h.type === 'up' || h.type === 'down')).map((h) => num(h.availabilityResult)).filter((v) => v !== null)
+  return hops.filter((h) => h && (!rainOnly || h.type === 'up' || h.type === 'down')).map((h) => num(h.availabilityResult)).filter((v) => v !== null)
 }
 
 /**
@@ -818,11 +827,15 @@ export function deriveSla(ctx) {
       // 最坏月：把上面算出的年口径整体折一次（端到端也是先把各星地跳乘完再折——P.841 是对
       // 单站降雨统计的经验式，逐跳折算再相乘会把保守叠两次；这一步是近似）。
       if (toWm) {
-        const wm = worstMonthAvail(sys)
+        const fixed = e2e ? chainSpaceFactor(data) : 1
+        const wmRain = fixed > 0 ? worstMonthAvail(Math.min(100, sys / fixed)) : null
+        const wm = fixed === 0 ? 0 : wmRain === null ? null : wmRain * fixed
         if (wm !== null) {
           // 依据列换成折算那一步：年口径那个数就摆在式子里（档位表的「档位」列仍是它）
           propBasis.length = 0
-          propBasis.push(P('100 − ((100 − ' + sys.toFixed(3) + ') / 0.30)^(1/1.15)'), P('='), P(wm.toFixed(3) + ' %'))
+          propBasis.push(P('100 − ((100 − ' + (fixed > 0 ? sys / fixed : 100).toFixed(3) + ') / 0.30)^(1/1.15)'))
+          if (fixed !== 1) propBasis.push(P('×'), P((fixed * 100).toFixed(3) + ' %'))
+          propBasis.push(P('='), P(wm.toFixed(3) + ' %'))
           sys = wm
         }
       }
@@ -846,9 +859,9 @@ export function deriveSla(ctx) {
           cb.push(P(f.pct.toFixed(3) + ' %'))
         }
         cb.push(P('='), P(comp.toFixed(3) + ' %'))
-        put('sysAvail', { basis: cb.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, out.eqFactor) })
+        put('sysAvail', { basis: cb.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, out.eqFactor, e2e ? chainSpaceFactor(data) : 1) })
       } else {
-        put('sysAvail', { basis: propBasis.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, 1) })
+        put('sysAvail', { basis: propBasis.concat(snapStep(comp), failParts), suggest: tier, ref: refTier(out.feasibleTier, toWm, 1, e2e ? chainSpaceFactor(data) : 1) })
       }
       // 依据列在 slaRows 里按【采用可用度】现拼：这一行的值就是从那个数算出来的，
       // 依据写着算出来的系统可用度、值却按取档后的那一档给，两个数对不上账

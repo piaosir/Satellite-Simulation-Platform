@@ -256,7 +256,8 @@ const scOf = (n) => {
   // 文件管理列表：satcat 排在末尾、带 kind；GP 行不带 kind（文件管理就按这个字段把它拆成单独一节）
   const list = omm.listCsv()
   const last = list[list.length - 1]
-  eq(list.length, 18, 'listCsv 行数 = 17 个 GP 组 + 1 个数据集')
+  eq(list.length, 24, 'listCsv 行数 = 17 个基础 GP 组 + 6 个用途目录 + 1 个数据集')
+  ok(['gnss', 'weather', 'earth-resources', 'sar', 'science', 'amateur'].every((key) => list.some((r) => r.key === key)), '新增用途目录进入文件管理星历清单')
   eq(last.key, 'satcat', 'satcat 行排在末尾')
   eq(last.kind, 'satcat', 'satcat 行带 kind')
   eq(last.file, 'csv_satcat.csv', 'satcat 的缓存文件名与 GP 同形')

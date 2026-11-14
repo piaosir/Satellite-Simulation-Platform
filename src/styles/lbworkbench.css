@@ -110,30 +110,36 @@ html[data-theme='dark'] {
 .lb-libpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* —— 侧栏＝参数检查器（对齐 MATLAB Property Inspector / Blender 属性面板）——
-   目标：高信息密度 + 可扫读。三件事：① 多列栅格按宽度自动降列；② 每个参数压成一条 21px 的
-   「标签 … 数值」行，行间发丝线（表感，眼睛沿右缘数值列往下扫）；③ 输入框去框（hover/focus 才显边），
+   目标：完整可读 + 可扫读。三件事：① 多列栅格按宽度自动降列；②「标签 … 数值」行至少 21px 高，
+   长标签可换行，行间发丝线（表感，眼睛沿右缘数值列往下扫）；③ 输入框去框（hover/focus 才显边），
    把原本一堵框墙还原成读数表。带 .lb-shell 前缀凑够三级特异度，压过各 Panel 的 scoped 规则。 */
 /* .bb-cm（计算方式行）原先漏在这张清单外，保留着自己 2fr 1fr 1fr 的三列：侧栏只有 ~439px 时
    后两列各摊到 105px，而数值框就要 104px —— 标签被挤成 0 宽，中文下「系统余量 (dB)」整条看不见。
    并进来一起走自动降列。 */
 .lb-shell .lb-libpane :is(.es-grid, .es-common, .bb-grid, .bb-modcod, .bb-rt, .bb-cm, .sp-fields, .rsp-fields) {
-  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 0 18px; margin-bottom: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--fs-3) * 16 + 8px)), 1fr)); gap: 0 18px; margin-bottom: 8px;
 }
+/* 按当前字号给标签与数值留出空间；窄栏退为单列，宽栏才并排。面板原有 max-width 不再限制库编辑器。 */
+.lb-shell .lb-libpane :is(.bb, .sp, .rsp) { max-width: none; min-width: 0; }
 .lb-shell .lb-libpane .es-common-note { grid-column: 1 / -1; font-size: var(--fs-2); line-height: 1.45; padding: 3px 0 0; }
 /* 公共参数条的「主参数」（天线口径）：一份配置 = 一面天线，口径是认站型的第一眼信息（列表摘要也按它报），
    故在密排读数表里破一次例——横排单列、大号读数、边框常显（其余参数仍是无框读数行，见下方 .es-i 规则）。 */
-.lb-shell .lb-libpane .es-common { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 4px 14px; }
+.lb-shell .lb-libpane .es-common { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 4px 14px; }
 .lb-shell .lb-libpane .es-f-big { flex: 0 0 auto; min-height: 0; padding: 1px 0 0; border-bottom: none; gap: 3px; }
 .lb-shell .lb-libpane .es-f-big .es-l { font-size: var(--fs-3); font-weight: 600; color: var(--text); }
 /* 高度不在此覆写：由 EarthStationPanel 的 .es-f-big .es-i 统一给 --h-ctl-lg（理由见那边）。
    纵向内距也不给 —— controls.css 已用 !important 清零，写了也是死值 */
 .lb-shell .lb-libpane .es-f-big .es-i { width: 100px; font-size: var(--fs-6); padding: 0 8px; background-color: var(--bg); border-color: var(--border); }
 .lb-shell .lb-libpane .es-f-big .es-i:focus { border-color: var(--accent-ui); }
-/* 发/收两栏：默认宽度（460px）下并排成两张读数表（中缝竖线分隔），拖窄到放不下才上下堆叠 */
-.lb-shell .lb-libpane .es { gap: 12px; }
-.lb-shell .lb-libpane .es-side { min-width: 186px; }
+/* 发/收分组直接按可用宽度分栏，分隔线不参与折行，避免窄栏留下独占一行的空白。 */
+.lb-shell .lb-libpane .es {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--fs-3) * 16 + 8px)), 1fr)); gap: 8px 18px;
+}
+.lb-shell .lb-libpane .es-side { min-width: 0; }
+.lb-shell .lb-libpane .es-div { display: none; }
+.lb-shell .lb-libpane .es-grid { grid-template-columns: minmax(0, 1fr); }
 .lb-shell .lb-libpane .pf { grid-template-columns: 76px minmax(0, 1fr) 28px; margin-bottom: 4px; }   /* NGSO/再生式「搜索卫星」取星器 */
-/* 参数行：定高密排 + 行间发丝线（栅格多列时天然形成并排两张读数表） */
+/* 参数行：最小行高 + 行间发丝线，实际高度随完整标签撑开。 */
 .lb-shell .lb-libpane :is(.es-f, .bb-f, .sp-f, .rsp-f) {
   min-height: 21px; padding: 0; gap: 6px; border-bottom: 1px solid var(--lb-rule-soft);
 }
@@ -179,6 +185,24 @@ html[data-theme='dark'] {
 .lb-shell .lbx-flow :is(.sp-fields, .rsp-fields) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 20px; }
 .lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-grid, .bb-grid, .bb-modcod, .bb-rt) { gap: 2px 20px; }
 .lb-shell .lb-libpane :is(.sp-fields, .rsp-fields) { gap: 2px 20px; }
+/* 资源库每列共用名称/输入起点。标签不再撑满整行，输入内容靠左，短名称也不会与数值隔开大片空白。
+   标签最多 10 个字宽，窄列分配 55%；输入占余宽，长名称在自己的轨道内自然换行。 */
+.lb-shell .lb-libpane :is(.es-f, .bb-f, .sp-f, .rsp-f) {
+  display: grid; grid-template-columns: minmax(0, min(calc(var(--fs-3) * 10), 55%)) minmax(0, 1fr); column-gap: 8px;
+}
+.lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i, select.es-i, select.bb-i, select.sp-i, select.rsp-i),
+.lb-shell .lb-libpane .bb-f.bb-f-tg .bb-i {
+  width: 100%; min-width: 0; text-align: left;
+}
+/* 资源库字段名和单位必须直接读全，不能靠悬停补齐。 */
+.lb-shell .lb-libpane :is(.es-l, .bb-l, .sp-l, .rsp-l) {
+  white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.45;
+}
+/* 载波标签内有单位、门限口径切换钮；允许这些内容换行，按钮自身也受标签宽度约束。 */
+.lb-shell .lb-libpane .bb-l { flex-wrap: wrap; row-gap: 2px; }
+.lb-shell .lb-libpane :is(.bb-tg, .bb-tg-fix) { min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.lb-shell .lb-libpane .es-f-big { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 100%; }
+.lb-shell .lb-libpane .es-ibox { min-width: 0; max-width: 100%; }
 /* 卫星分区（NGSO「卫星与轨道」）：库单选 + 纯文本摘要一行 */
 .lbx-satrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
 .lbx-satpick { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-3); color: var(--text-muted); }
@@ -351,15 +375,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    4.9em 数值列 ≈「−112.422」这类最长值的宽度（TNR 数字半角 0.5em）；末轨 1fr 吃掉栏里多出来的部分。
    参考段（_refSeg/_dualSeg）只有 cols1 / cols2 两种。 */
 .lbx-doc-ref .wf > .wf-seg {
-  break-inside: avoid; margin: 0 0 1.6em; min-width: 0;
-  display: grid; grid-template-columns: minmax(0, 10.5em) 4.9em 3.4em 1fr; column-gap: 1.2em;
+  break-inside: avoid; margin: 0 0 1.6em; min-width: 0; display: block;
 }
-.lbx-doc-ref .wf > .seg-cols2 { grid-template-columns: minmax(0, 10.5em) 4.9em 4.9em 3.4em 1fr; }
-.lbx-doc-ref .wf.wf-en > .wf-seg { grid-template-columns: minmax(0, 14.5em) 4.9em 3.4em 1fr; }
-.lbx-doc-ref .wf.wf-en > .seg-cols2 { grid-template-columns: minmax(0, 14.5em) 4.9em 4.9em 3.4em 1fr; }
-.lbx-doc-ref .wf .wf-title { grid-column: 1 / -1; }
-.lbx-doc-ref .wf-seg > .wf-row.cols1,
-.lbx-doc-ref .wf-seg > .wf-row.cols2 { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: 1.2em; }
+.lbx-doc-ref .wf-seg > .wf-row.cols1 { grid-template-columns: minmax(0, 10.5em) 4.9em 3.4em 1fr; column-gap: 1.2em; }
+.lbx-doc-ref .wf-seg > .wf-row.cols2 { grid-template-columns: minmax(0, 10.5em) 4.9em 4.9em 3.4em 1fr; column-gap: 1.2em; }
+.lbx-doc-ref .wf.wf-en > .wf-seg > .wf-row.cols1 { grid-template-columns: minmax(0, 14.5em) 4.9em 3.4em 1fr; }
+.lbx-doc-ref .wf.wf-en > .wf-seg > .wf-row.cols2 { grid-template-columns: minmax(0, 14.5em) 4.9em 4.9em 3.4em 1fr; }
 .lbx-doc-ref .wf .wf-sign { display: none; }        /* 参考段全是 ref 行，符号列恒空，整列收掉 */
 .lbx-doc-ref .wf .wf-l { max-width: 15em; }         /* 超长标签折行显示全，不把整段撑宽 */   /* 165px */
 .lbx-doc > .lbx-fold { flex: 1 1 100%; max-width: 69em; }         /* 几何折叠：独占末行但内容自限宽 */
@@ -548,7 +569,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
 /* 站表在分节流里按内容自适应高：不封顶、不内滚——加行就把页面撑长，纵向滚动统一由 .lbx-flow 承担
    （横向仍在 .sg-scroll 内滚：表宽超屏时底部横条 + 表上 Shift+滚轮） */
 .lbx-flow .lbx-grid .sg { height: auto; max-height: none; }
-.lbx-flow .lbx-grid .sg-scroll { min-height: 56px; }
+.lbx-flow .lbx-grid .sg-scroll { min-height: 56px; overflow-y: hidden; }
 /* 库编辑面板宽度松绑：主从视图另一侧就这么宽，别再自限 */
 .lbx-flow .lbl-ed-bd .bb, .lb-libpane .lbl-ed-bd .bb,
 .lbx-flow .lbl-ed-bd .es-box, .lb-libpane .lbl-ed-bd .es-box { max-width: none; }
@@ -571,7 +592,7 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    指标按「结果列」次序平铺进等宽格（auto-fill），格内标签靠左、数值靠右、中间一道点线引导——
    二十来个「标签 数值」自由折行时哪个数是哪个的全靠猜，等宽格 + 引导线把每一格框成一条读数，
    数值在各列里齐成一竖行。值比标签重一档、单位退到最轻；着色口径同结果单元格（负余量/超占用转红）。 */
-.lbx-rowline { display: grid; grid-template-columns: 148px minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
+.lbx-rowline { display: grid; grid-template-columns: var(--lbx-rr-head-w, 148px) minmax(0, 1fr); column-gap: 14px; align-items: start; padding: 3px 2px 4px; border-top: 1px solid var(--lb-rule-soft); }
 /* 读数行是块内第一行：顶上已是 2px 顶线，再叠一条发丝线成了双线 */
 .lbx-capblk > .lbx-rowline:first-child { border-top: 0; }
 .lbx-rr-hd { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 2px; }
@@ -652,14 +673,12 @@ html[data-theme='dark'] .sg-cell .sg-fillbar::after {
    检查器行是「标签占剩余宽 + 数值定宽」的密排结构，标签设了 ellipsis。中文 4 个字说完的
    「分配带宽」，英文 Allocated Bandwidth 要 128px，而标签只分到 90px —— 直接被咬掉。
    译名那侧已按卫通惯例缩写（BW / Freq. / Pol. / Rx），这里再把数值列收窄一档补上差额；
-   两者相加才够，单靠任一侧都不够。只在英文下生效，中文版式一个像素不动。 */
-html[lang="en"] .lb-shell :is(.lbx-flow, .lb-libpane) :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 92px; }
-html[lang="en"] .lb-shell .lb-libpane :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 88px; }
-html[lang="en"] .lb-shell .lb-libpane :is(select.es-i, select.bb-i, select.sp-i, select.rsp-i) { width: 100px; }
+   仅工作台英文数值列收窄；资源库统一采用名称/输入网格，长译名自动换行。 */
+html[lang="en"] .lb-shell .lbx-flow :is(.es-i, .bb-i, .sp-i, .rsp-i) { width: 92px; }
 /* 口径切换那两行（.bb-f-tg：门限 Eb/N₀⇄Es/N₀、效率⇄频谱效率）标签里嵌着一枚钮，本就最挤。
    BasebandPanel 的 scoped 规则把输入框收到 78px 让位，而上面这条英文规则特异度更高会把它顶回
    92px —— 反把标签挤没。这里显式收得更窄，英文标签才放得下。 */
-html[lang="en"] .lb-shell :is(.lbx-flow, .lb-libpane) .bb-f.bb-f-tg .bb-i { width: 68px; }
+html[lang="en"] .lb-shell .lbx-flow .bb-f.bb-f-tg .bb-i { width: 68px; }
 /* 卫星分区栏名轴：按中文 3 字算死的（--lb-fs × 3），英文 Configurations / Transponder 放不下 */
 html[lang="en"] .lbx-satband { --lbx-gut: calc(var(--lb-fs) * 6 + 12px); }
 
@@ -677,8 +696,8 @@ html[lang="en"] .lbx-satband { --lbx-gut: calc(var(--lb-fs) * 6 + 12px); }
 .lb-body { flex: 1; display: flex; min-height: 0; }
 .lb-col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
 .lb-col:last-child { border-right: none; }
-/* 左侧栏（配置列表 / 资源库 二选一）：宽度由 sideWidth 内联给出，两视图各记各的 */
-/* 宽度不做动画：开 / 关侧栏与切视图时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
+/* 左侧文件区：配置列表、资源库可并排显示，宽度分别内联给出并记忆 */
+/* 宽度不做动画：开 / 关侧栏时主区跟着一帧到位（宽度过渡每帧重排整个工作台） */
 .lb-side { flex: none; position: relative; }
 .lb-side.resizing { user-select: none; }
 /* 右缘拖拽手柄：命中区 6px 不变；视觉是居中 2px 细线——悬停停留 150ms 才淡入，拖动中立即转机位色 */
@@ -743,3 +762,9 @@ html[lang="en"] .lbx-satband { --lbx-gut: calc(var(--lb-fs) * 6 + 12px); }
 .lbx-tab.on { height: 29px; color: var(--text); background: var(--bg); border-color: var(--border-strong); box-shadow: inset 0 2px 0 var(--accent-ui); transition-duration: 0s; }
 .lbx-tab:focus-visible { outline-offset: -2px; }
 .lbx-tab-sub { font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+/* Shared widths keep corresponding metrics aligned across selected rows and languages. */
+.lbx-rr-hd > .lbx-cap-t { align-self: flex-start; white-space: nowrap; }
+.lbx-rowline, .lbx-budget-row { contain: layout style; }
+.lbx-budget-row + .lbx-budget-row { margin-top: 16px; }
+.lbx-budget-hd { display: flex; align-items: baseline; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--lb-rule); font-size: var(--lb-fs); font-weight: 600; overflow-wrap: anywhere; }

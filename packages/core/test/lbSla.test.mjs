@@ -1023,5 +1023,20 @@ ok('每条条款都归属于一个已声明的组', SLA_ITEMS.every((it) => SLA_
 ok('每条条款都有中英名', SLA_ITEMS.every((it) => it.label && it.labelEn))
 ok('条款 key 无重复', new Set(SLA_ITEMS.map((i) => i.key)).size === SLA_ITEMS.length)
 
+// 星间跳的指定可用度参与 SLA 构成，但不随降雨最坏月折算。
+{
+  const { chainSpaceFactor, chainHopAvails } = await import('../../../src/shared/lbSla.js')
+  const data = { systemAvailabilityResult: '98.01', hops: [
+    { type: 'up', availabilityResult: '99' }, { type: 'isl', availabilityResult: '99' }
+  ] }
+  ok('星地档位样本只取雨衰侧，固定星间因子另取', chainHopAvails(data).length === 1 && near(chainSpaceFactor(data), .99))
+  const annual = deriveSla({ orbitType: 'E2E', data, slaParams: { ...PROP_ONLY, spaceAvail: 99.9 }, esCount: 1, satCount: 2 })
+  ok('SLA 依据包含星间可用度乘积', near(annual.items.propAvail.suggest, 98.01) && basisText(annual.items.propAvail.basis).includes('99.000 % × 99.000 %'))
+  const monthly = deriveSla({ orbitType: 'E2E', data, slaParams: { ...PROP_ONLY, spaceAvail: 99.9, monthly: 1 }, esCount: 1, satCount: 2 })
+  ok('最坏月只折算星地雨衰因子，星间因子保持不变', near(monthly.items.propAvail.suggest, worstMonthAvail(99) * .99, 1e-8), String(monthly.items.propAvail.suggest))
+  const pureSpace = deriveSla({ orbitType: 'E2E', data: { systemAvailabilityResult: '99', hops: [{ type: 'laser', availabilityResult: '99' }] }, slaParams: { ...PROP_ONLY, monthly: 1 } })
+  ok('纯星间链路可用度不作雨衰月折算', pureSpace.items.sysAvail.suggest === 99)
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

@@ -44,7 +44,7 @@ function capLabels(pbw, lang) {
 // ============ 逐转发器明细 ============
 /**
  * 一组一张表：# · 链路 · 载波 · 载波数 · 容量 · 载波带宽 · [功率带宽] · 带宽占用 · [功率占用]，
- * 组内逐链路一行，组末「小计 / 可用 / 剩余」（同弹窗）。功率两列按体制：'sum' 组内求和、'list' 只逐行、'none' 不出。
+ * 组内逐链路一行，组末小计（同弹窗）。功率两列按体制：'sum' 组内求和、'list' 只逐行、'none' 不出。
  * 数按单位档格式化好（整张账共一档，同 capReportBlock），组内没有列入链路的组不出。
  * @returns [{ key, name, tpBwMHz, head, align, rows, keyRows }]
  */
@@ -81,11 +81,6 @@ export function capDetailBlock(model, { lang = 'zh', adaptive = false, noOf = nu
     rows.push(['', L('小计', 'Subtotal'), '', String(g.n), C(g.capKbps), B(g.bwKHz),
       ...pw(sumPw ? B(g.pbwKHz) : ''), P(g.bwPct), ...pw(sumPw ? P(g.pwPct) : '')])
     keyRows.push(true)
-    if (g.availBwKHz != null) {
-      rows.push(['', L('可用', 'Available'), '', '', '', B(g.availBwKHz), ...pw(sumPw ? B(g.availPwKHz) : ''), '', ...pw('')])
-      rows.push(['', L('剩余', 'Remaining'), '', '', '', B(g.remBwKHz), ...pw(sumPw ? B(g.remPwKHz) : ''), '', ...pw('')])
-      keyRows.push(false, false)
-    }
     out.push({ key: g.key, name: g.name || '—', tpBwMHz: g.tpBwMHz > 0 ? g.tpBwMHz : null, head, align, rows, keyRows })
   }
   return out
@@ -113,25 +108,13 @@ export function capDefinitions(pbw, o, lang) {
       : L('各链路在各自最差时刻的功率份额折算的等效带宽，逐行列出，组内不求和。', 'Equivalent bandwidth of each link’s power share at its own worst-case epoch; listed per link, not summed within the group.'),
     L('PEB = 功率占用 × B_转发器 × N', 'PEB = power usage × B_transponder × N')))
   }
-  out.push(D(L('可用带宽', 'Available BW'), o.availDefault === false
-    ? L('本组可占用的带宽，由用户给定；未给定时不出剩余与占用。', 'Bandwidth available to the group, as entered; without it no remaining or usage figure is given.')
-    : L('本组可占用的转发器带宽；未给定时取转发器带宽。', 'Transponder bandwidth available to the group; the transponder bandwidth when not entered.'),
-  L('B_可用', 'B_avail')))
-  if (sum) {
-    out.push(D(L('可用功率', 'Available power'), L('本组可占用的转发器功率，以等效带宽计；未给定时等于可用带宽。', 'Transponder power available to the group, as equivalent bandwidth; equal to the available bandwidth when not entered.'),
-      L('P_可用', 'P_avail')))
-  }
-  out.push(D(L('剩余带宽', 'Remaining BW'), L('可用带宽扣除本组载波带宽之和。', 'Available bandwidth less the sum of allocated bandwidths in the group.'),
-    L('B_剩余 = B_可用 − ΣB', 'B_rem = B_avail − ΣB')))
-  if (sum) {
-    out.push(D(L('剩余功率', 'Remaining power'), L('可用功率扣除本组功率带宽之和。', 'Available power less the sum of power bandwidths in the group.'),
-      L('P_剩余 = P_可用 − ΣPEB', 'P_rem = P_avail − ΣPEB')))
-  }
-  out.push(D(L('带宽占用', 'Bandwidth Usage'), L('载波带宽占可用带宽的比例。', 'Allocated bandwidth as a share of the available bandwidth.'),
+  out.push(D(L('带宽占用', 'Bandwidth Usage'), o.availDefault === false
+    ? L('载波带宽占本组可用带宽的比例；无可用带宽时不出占用。', 'Allocated bandwidth as a share of the group’s available bandwidth; omitted when no bandwidth reference is set.')
+    : L('载波带宽占本组可用带宽的比例；默认以转发器带宽为基准。', 'Allocated bandwidth as a share of the group’s available bandwidth; defaults to the transponder bandwidth.'),
     L('ΣB / B_可用 × 100 %', 'ΣB / B_avail × 100 %')))
   if (hasPw) {
     out.push(sum
-      ? D(L('功率占用', 'Power Usage'), L('功率带宽占可用功率的比例。', 'Power bandwidth as a share of the available power.'), L('ΣPEB / P_可用 × 100 %', 'ΣPEB / P_avail × 100 %'))
+      ? D(L('功率占用', 'Power Usage'), L('功率带宽占本组可用功率的比例；可用功率以等效带宽计，默认等于可用带宽。', 'Power bandwidth as a share of the group’s available power, expressed as equivalent bandwidth and defaulting to the available bandwidth.'), L('ΣPEB / P_可用 × 100 %', 'ΣPEB / P_avail × 100 %'))
       : D(L('功率占用', 'Power Usage'), L('单条链路的功率带宽占转发器带宽的比例。', 'Power bandwidth of one link as a share of the transponder bandwidth.'), L('PEB / B_转发器 × 100 %', 'PEB / B_transponder × 100 %')))
   }
   out.push(D(L('频谱效率', 'Spectral Efficiency'), L('本组容量与载波带宽之比（带宽加权）。', 'Group capacity over allocated bandwidth (bandwidth-weighted).'),

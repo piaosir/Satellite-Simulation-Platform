@@ -279,7 +279,7 @@ console.log('④ 本次运行非 200 计数满 5 → 全部停直连')
   ok(srcs.every((s) => s === 'cache'), '各组都回落本地缓存', srcs.join(','))
   ok(logs.some((l) => l.level === 'warn' && l.text.includes('本次运行已累计 5 次非 200 响应 —— 本次运行停止直连')), '满 5 次时报一次警告')
   ok(logs.some((l) => l.text.includes('本次运行 CelesTrak 已返回 5 次非 200 响应，跳过直连，直接查云镜像')), '之后各组日志写明跳过原因')
-  eq(Object.keys(attempts(dataDir)).length, 18, '封站时 17 组 + SATCAT 全部记账今天已试过（下次启动也不自动再连）')
+  eq(Object.keys(attempts(dataDir)).length, 24, '封站时基础星座、用途目录与 SATCAT 全部记账今天已试过（下次启动也不自动再连）')
   // 强刷不破例：计数闸只有重启软件才清
   let before = calls.length
   const rf = await omm.fetchCsv('starlink', { force: true })
@@ -359,6 +359,20 @@ console.log('⑥ solarFlux.js（SWPC）')
   r = await svc.refresh({ force: true })
   eq(calls.length, 4, 'SWPC 200 但是网页：各产品不重试（4 次）')
   svc._reset()
+}
+
+// 新增目录走同一下载 / 缓存链路，分类名必须映射到正确的官方 GROUP。
+{
+  const { omm } = makeOmm()
+  reset(() => R.ok(csvOf('REFERENCE')))
+  for (const key of ['gnss', 'weather', 'earth-resources', 'sar', 'science', 'amateur']) {
+    const before = calls.length
+    const result = await omm.fetchCsv(key)
+    ok(result && result.text.includes('REFERENCE-0'), key + ' 目录可取回星历')
+    eq(queryOf(calls[before]), 'GROUP=' + (key === 'earth-resources' ? 'resource' : key), key + ' 使用对应官方分组')
+    await omm.fetchCsv(key)
+    eq(calls.length, before + 1, key + ' 重复读取命中缓存')
+  }
 }
 
 // ---------------- 收尾 ----------------

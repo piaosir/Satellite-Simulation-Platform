@@ -445,16 +445,16 @@ export function methodology(scheme, lang, used) {
   if (e2e) {
     put(['可用度与时延、误码的链级口径',
       '传播余量按年时间百分比统计：给定链路可用度对应的超越时间百分比即雨衰预测的输入；降雨率取 ITU-R P.837-7 的 '
-      + '0.01% 超越降雨率（可按站址自动取值或手工指定）。链级系统可用度取各星地跳站址可用度之积（各跳雨区独立假设）；'
-      + '星间跳为真空段，不贡献可用度损失。地面转接站的上、下行同址同雨，独立相乘是保守包络。'
+      + '0.01% 超越降雨率（可按站址自动取值或手工指定）。链级系统可用度取各星地跳站址可用度与各星间跳指定可用度之积（各跳独立假设）；'
+      + '星间跳可用度默认 100%，可按各跳实际情况设置。地面转接站的上、下行同址同雨，独立相乘是保守包络。'
       + '端到端误码率取各段设计误码率之和——各段独立解调、比特透传，误码一旦产生下游无法恢复。'
       + '端到端时延 = 各跳传播时延（斜距 / 光速）之和 + 各再生类节点的处理时延之和。'],
     ['Availability, delay and error-rate conventions for the chain',
       'Propagation margins are stated as annual time percentages: the exceedance percentage corresponding to the required '
       + 'availability is the input to the rain-attenuation prediction; rain rate is the 0.01 % exceedance value of ITU-R P.837-7 '
       + '(taken automatically from the site coordinates or entered manually). Chain availability is the product of the site '
-      + 'availabilities of the Earth–space hops (rain cells assumed independent); inter-satellite hops are vacuum paths and '
-      + 'contribute no availability loss. For a ground relay the uplink and downlink share one site and one rain cell, so the '
+      + 'availabilities of the Earth–space hops and the specified availabilities of the inter-satellite hops (hops assumed independent); '
+      + 'inter-satellite availability defaults to 100% and can be set for each hop. For a ground relay the uplink and downlink share one site and one rain cell, so the '
       + 'independent product is a conservative envelope. The end-to-end bit error ratio is the sum of the per-segment design '
       + 'values — each segment is demodulated independently and bits are passed through, so an error once made cannot be '
       + 'recovered downstream. End-to-end delay is the sum of the per-hop propagation delays (slant range / c) plus the '

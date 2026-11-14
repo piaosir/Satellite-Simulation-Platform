@@ -2727,12 +2727,18 @@ export function createGlobeScene(container, quality = {}) {
   // 拾取辅助（「链路分析」图上点选 Polygon / 航迹 / 候选点用）：
   //   lonLatAt(x, y)          屏幕点落在地球上的经纬度 | null（点在地球外）
   //   screenOfLL(lat, lon, h) 经纬高（km）→ 屏幕坐标 { x, y }（client 像素）| null（在地球背面被挡住 / 相机背后）
+  let _domRect = null, _domRectAt = -1e9
+  function domRect() {
+    const now = performance.now()
+    if (!_domRect || now - _domRectAt > 16) { _domRect = renderer.domElement.getBoundingClientRect(); _domRectAt = now }
+    return _domRect
+  }
   function lonLatAt(clientX, clientY) { return pickGlobe(clientX, clientY) }
   function screenOfLL(lat, lon, altKm) {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
     const P = linkEndVec({ lat, lon, altKm: Number(altKm) || 0 })
     if (occludedByGlobe(P)) return null
-    const r = renderer.domElement.getBoundingClientRect(), s = projPx(P, r)
+    const r = domRect(), s = projPx(P, r)
     if (!(s.z < 1)) return null
     return { x: s.x + r.left, y: s.y + r.top }
   }
@@ -3268,6 +3274,7 @@ export function createGlobeScene(container, quality = {}) {
     let entry = prev
     if (!entry) { entry = { group: new THREE.Group(), li, fill: null, deco: [] } }
     else { disposeDeco(entry); entry.li = li }
+    entry.source = L
     const base = 1.0006 + li * 0.00012
     const alpha = L.alpha != null ? L.alpha : o.alpha   // 逐层填充不透明度（GRD：本层天线自己的设置），缺省跟整场 opts.alpha
     if (L.fillBands && L.fillBands.length) {
@@ -3377,15 +3384,16 @@ export function createGlobeScene(container, quality = {}) {
     const want = ids ? new Set(ids) : null
     for (const [id, e] of covLayers) {
       if (want && !want.has(id)) continue
+      if (e.source) e.source.lineAlpha = a
       for (const d of e.deco) if (d.userData && d.userData.covLine) d.material.opacity = a
     }
   }
   // 填充透明度：同上，ids = 只改这几层。走 fm.setAlpha（乘回逐档填充透明度，不把它们抹平）。
   function setCoverageFieldAlpha(a, ids) {
     if (!covFieldGroup) return
-    if (ids) { for (const id of ids) { const e = covLayers.get(id); if (e && e.fill) e.fill.setAlpha(a) } return }
+    if (ids) { for (const id of ids) { const e = covLayers.get(id); if (e) { if (e.source) e.source.alpha = a; if (e.fill) e.fill.setAlpha(a) } } return }
     covOpts = { ...covOpts, alpha: a }
-    for (const e of covLayers.values()) if (e.fill) e.fill.setAlpha(a)
+    for (const e of covLayers.values()) { if (e.source) e.source.alpha = a; if (e.fill) e.fill.setAlpha(a) }
     covFieldGroup.traverse((o) => { if (o.material && !(o.userData && o.userData.covFill) && o.material.uniforms && o.material.uniforms.uOpacity) o.material.uniforms.uOpacity.value = a })
   }
 
@@ -3407,6 +3415,7 @@ export function createGlobeScene(container, quality = {}) {
     let entry = prev
     if (!entry) entry = { group: new THREE.Group(), li, fill: null, deco: [] }
     else { disposeDeco(entry); entry.li = li }
+    entry.source = L
     const base = 1.0006 + li * 0.00012
     const alpha = L.alpha != null ? L.alpha : (o.alpha != null ? o.alpha : 0.78)
     if (L.fillBands && L.fillBands.length) {
@@ -3562,7 +3571,7 @@ export function createGlobeScene(container, quality = {}) {
   }
   // 屏幕坐标 -> 地球表面经纬度（命中近侧半球），未命中返回 null
   function pickGlobe(clientX, clientY) {
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const ndcv = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     ray.setFromCamera(ndcv, camera)
     const o = ray.ray.origin, d = ray.ray.direction
@@ -3579,7 +3588,7 @@ export function createGlobeScene(container, quality = {}) {
   function pickGlobeOrLimb(clientX, clientY) {
     const hit = pickGlobe(clientX, clientY)
     if (hit) return hit
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const ndcv = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     ray.setFromCamera(ndcv, camera)
     const o = ray.ray.origin, d = ray.ray.direction.clone().normalize()
@@ -3702,7 +3711,7 @@ export function createGlobeScene(container, quality = {}) {
   const _mp = new THREE.Vector3()
   function markerAtScreen(clientX, clientY) {
     if (!markerDragAny()) return null
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const mx = clientX - r.left, my = clientY - r.top
     const zoomK = LABEL_REF_DIST / zoomDist()   // 与 rescaleMarkers 同一把尺：跟随卫星时精灵按固定系数画，命中圈跟着
     let best = null, bd = Infinity
@@ -4474,7 +4483,7 @@ export function createGlobeScene(container, quality = {}) {
     let list = null
     try { list = pickExtras() } catch { list = null }
     if (!list || !list.length) return null
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const mx = clientX - r.left, my = clientY - r.top
     let best = null, bd = Infinity
     for (const x of list) {
@@ -4507,7 +4516,7 @@ export function createGlobeScene(container, quality = {}) {
   // 左键点选与右键菜单共用这一份：命中半径随相机距离缩放，保持屏幕上 ~14px 的固定手感；点云关着就不拾取。
   function pickSatAt(clientX, clientY) {
     if (!satPoints || !satPoints.visible) return -1   // 点云关着就不拾取（见 setSatPointsVisible）
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const v = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1)
     const tanHalf = Math.tan(camera.fov * 0.5 * Math.PI / 180) || 1
     const dist = camera.position.distanceTo(controls.target)
@@ -4872,7 +4881,7 @@ export function createGlobeScene(container, quality = {}) {
   }
   function entityAtScreen(clientX, clientY, kinds) {
     if (followDriver) return null
-    const r = renderer.domElement.getBoundingClientRect()
+    const r = domRect()
     const mx = clientX - r.left, my = clientY - r.top
     const zoomK = LABEL_REF_DIST / camera.position.distanceTo(controls.target)
     const cd = camera.position.clone().normalize()
@@ -5147,6 +5156,7 @@ export function createGlobeScene(container, quality = {}) {
 
   function resize() {
     if (capture) return   // 视频出帧中：尺寸由 beginCapture 定死，容器尺寸变了等 endCapture 时一并补上
+    _domRect = null
     const ww = container.clientWidth, hh = container.clientHeight
     if (!ww || !hh) return
     curW = ww; curH = hh
@@ -5359,6 +5369,10 @@ export function createGlobeScene(container, quality = {}) {
 
   const api = {
     setSatellites, setLabelMode, setHighlight, setHighlightLLA, setOnPick,
+    coveragePickLayers: () => [
+      ...[...bmLayers.values()].sort((a, b) => a.li - b.li).map((e) => ({ layer: e.source, options: bmOpts, source: 'beammap' })),
+      ...[...covLayers.values()].sort((a, b) => a.li - b.li).map((e) => ({ layer: e.source, options: covOpts, source: 'antenna' }))
+    ],
     setOrbit, setGroundTrack, setFootprint, setSelectionSet, setFocusLanes, setOrbitRingSet, setOrbitRingSpin, setFollowOrbit, setFollowAnchor, clearSelectionGeom,
     setCoverage, clearCoverage, setCoverageField, updateCoverageField, patchCoverageLayers, clearCoverageField, setCoverageFieldAlpha, setCoverageLineAlpha, restyleCoverageLines, setCovGrid, clearCovGrid, setCovGridAlpha,
     setShellField, updateShellField, clearShellField, setShellFieldAlpha, setShellGuides, clearShellGuides, setShellRays, clearShellRays: () => setShellRays(null),
@@ -5439,7 +5453,7 @@ export function createGlobeScene(container, quality = {}) {
   }
   // 按需出帧：对外接口一调用就置脏 —— 页面改了什么，下一帧就画出来，不必逐个函数记「这个改了画面」。
   // 只读 / 拾取 / 自己出帧的成员除外：它们不改画面，有的还会被高频调用（每次都逼出一帧就失去了按需的意义）。
-  const NO_DIRTY = new Set(['lonLatAt', 'screenOfLL', 'imageryStats', 'viewMetrics', 'glLimits', 'getZoom', 'getView', '_spaceFx',
+  const NO_DIRTY = new Set(['lonLatAt', 'screenOfLL', 'imageryStats', 'viewMetrics', 'glLimits', 'getZoom', 'getView', 'coveragePickLayers', '_spaceFx',
     'isFollowing', 'getCamera', 'getRenderInfo', 'pickSatAt', 'pickExtraAt', 'entityAtScreen', 'isCapturing',
     'snapshot', 'captureFrame', 'pause', 'resume', 'destroy', 'invalidate', 'isPaused', 'covLabelStyle'])
   for (const k of Object.keys(api)) {

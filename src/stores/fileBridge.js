@@ -12,7 +12,7 @@ export const fileBridge = shallowReactive({
   grd: null,
   collectGxt: null,
   collectBeamMap: null,
-  // 3D 页注入的宿主动作：{ redraw, openAddSat(), openEditSat(folder), livePos(folder) }。
+  // 3D 页注入的宿主动作：{ redraw, openAddSat(), openEditSat(folder), isSatModalOpen(), closeSatModal(), livePos(folder) }。
   // 文件管理器据此复用覆盖分析「原版」卫星弹窗（含星座关联/地图点选），改星后重绘场景。
   grdActions: null,
   libraryTick: 0,

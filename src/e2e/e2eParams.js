@@ -149,7 +149,7 @@ export const NODE_ES_FIELDS = [
   { key: 'latitude', label: '纬度', unit: '°N', type: 'num', min: -90, max: 90, def: '39.9042' },
   { key: 'altitude', label: '海拔', tip: '站址海拔（m）。填好经纬度即按 ITU-R P.1511 地形高程自动取值，也可直接改；站址再变即重取', unit: 'm', type: 'num', def: '0' },
   { key: 'rainRate', label: 'R0.01%', tip: '站址年 0.01% 时间降雨率（mm/h）。填好经纬度即按 ITU-R P.837 自动取值，也可直接改；站址再变即重取', unit: 'mm/h', type: 'num', min: 0, def: '54' },
-  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度之积；星间段不参与', unit: '%', type: 'num', min: 0, max: 100, def: '100' }   // 出厂 100%＝晴天（2026-09-16 用户拍板）
+  { key: 'availability', label: '可用度', tip: '本站的链路可用度（%）。系统可用度 = 各星地 hop 站址可用度与各星间 hop 可用度之积', unit: '%', type: 'num', min: 0, max: 100, def: '100' }   // 出厂 100%＝晴天（2026-09-16 用户拍板）
 ]
 // 段起点电平的快调入口：功放功率可在【节点上】覆盖库条目（空＝跟随库）。
 // 只在该站作为段起点（发信站 / 地面转接站的上行侧）时有物理意义，检查器按此显示。
@@ -179,7 +179,9 @@ export const GS_SIDE_DEFAULTS = {
   up: { frequency: '14.25', polarization: 'V' },
   down: { frequency: '12.50', polarization: 'H' }
 }
+const SPACE_AVAIL_FIELD = { key: 'availability', label: '星间链路可用度', tip: '本跳星间链路的可用度，计入端到端系统可用度乘积；默认 100%', unit: '%', type: 'num', min: 0, max: 100, def: '100' }
 export const HOP_ISL_FIELDS = [
+  { ...SPACE_AVAIL_FIELD },
   { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km），直接送入引擎计算自由空间损耗。留空即报错。可用「距离工具」按两星轨道在时间轴上计算后填入', unit: 'km', type: 'num', min: 0, minEx: true, def: '' },
   { key: 'frequency', label: '星间频率', unit: 'GHz', type: 'num', min: 0.1, max: 100, def: '23' },
   { key: 'islEirp', label: '发射EIRP', tip: '发射卫星星间发射 EIRP（dBW，手填）', unit: 'dBW', type: 'num', def: '45' },
@@ -190,6 +192,7 @@ export const HOP_ISL_FIELDS = [
   { key: 'miscLoss', label: '其他损耗', unit: 'dB', type: 'num', min: 0, def: '1' }
 ]
 export const HOP_LASER_FIELDS = [
+  { ...SPACE_AVAIL_FIELD },
   { key: 'rangeKm', label: '星间链路距离', tip: '本跳的星间距离（km）。留空即报错', unit: 'km', type: 'num', min: 0, minEx: true, def: '' },
   { key: 'txPowerDbm', label: '发射光功率 P_tx', unit: 'dBm', type: 'num', def: '30' },
   { key: 'wavelengthNm', label: '波长 λ', unit: 'nm', type: 'num', min: 0, minEx: true, def: '1550' },
@@ -202,7 +205,7 @@ export const HOP_LASER_FIELDS = [
   { key: 'rxSensitivityDbm', label: '接收机灵敏度 P_req', tip: '所需接收功率（dBm）；本跳余量 = P_rx − P_req。灵敏度应与本段体制的设计 BER 取同一定义点', unit: 'dBm', type: 'num', def: '-35.5' },
   { key: 'otherLossDb', label: '其他损耗 L', unit: 'dB', type: 'num', min: 0, def: '0' }
 ]
-const LASER_KEYS = HOP_LASER_FIELDS.map((f) => f.key).filter((k) => k !== 'rangeKm')
+const LASER_KEYS = HOP_LASER_FIELDS.map((f) => f.key).filter((k) => k !== 'rangeKm' && k !== 'availability')
 
 // ============ 新建节点 / hop ============
 let _uid = 1
@@ -362,6 +365,10 @@ export function buildChain(row, resolve) {
       for (const k of LASER_KEYS) o.laser[k] = halfStr(h[k])
     } else {
       for (const f of HOP_ISL_FIELDS) o[f.key] = val(f, h[f.key])
+    }
+    if (isSpaceHop(t)) {
+      const availability = val(SPACE_AVAIL_FIELD, h.availability)
+      o.availability = availability == null || String(availability).trim() === '' ? SPACE_AVAIL_FIELD.def : availability
     }
     return o
   })

@@ -1,5 +1,5 @@
 <script setup>
-// 分享 / 导入弹窗（GEO / NGSO / 再生式三窗共用）。
+// 分享 / 导入弹窗（GEO / NGSO / 再生式 / 端到端四窗共用）。
 //
 // 与旧版（三份各自为政的弹窗）的区别：
 //   · 分享单元从「当前聚焦的那一个配置」扩展为【勾选的 N 个配置 + 勾选的 M 条库条目】，
@@ -12,7 +12,7 @@
 //
 // 体制差异全部由父组件经 ctx 注入，本组件不认识任何一种体制：
 //   ctx = {
-//     mod:'GEO'|'NGSO'|'REGEN',            // 与 configs.json 里的 orbitType 同值
+//     mod:'GEO'|'NGSO'|'REGEN'|'E2E',      // 与 configs.json 里的 orbitType 同值
 //     getConfigs()  → 本机配置树扁平数组（含文件夹，已按体制过滤）
 //     getActiveId() → 当前聚焦配置 id
 //     getDraft()    → { name, state } 当前工作参数（未保存的那份）
@@ -114,6 +114,7 @@ const libArrays = computed(() => {
   for (const k of LIB_KINDS) o[k] = (props.ctx.lib && props.ctx.lib[k] && props.ctx.lib[k].arr) || []
   return o
 })
+const libKinds = computed(() => LIB_KINDS.filter((k) => props.ctx.lib && props.ctx.lib[k]))
 const selStates = computed(() => {
   const out = []
   if (sel.draft && draft.value && draft.value.state) out.push(draft.value.state)
@@ -371,7 +372,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
               <span v-if="nAuto" class="lbs-hint" title="被已勾选的配置引用，随配置一起打包，不可取消：此为对端复现同一计算结果的前提">{{ nAuto }} 条随配置</span>
             </div>
             <div class="lbs-list">
-              <template v-for="k in LIB_KINDS" :key="k">
+              <template v-for="k in libKinds" :key="k">
                 <div class="lbs-grp">
                   <span class="lbs-grp-t">{{ (ctx.lib[k] && ctx.lib[k].label) || KIND_LABEL[k] }}</span>
                   <span class="lbs-grp-n">{{ effIds[k].size }}/{{ libArrays[k].length }}</span>

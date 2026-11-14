@@ -73,7 +73,7 @@
 //
 // ============ 端到端汇总口径 ============
 //   · 端到端余量 = 最弱段余量（各段独立解调，比特透传）。
-//   · 系统可用度 = 各星地 hop 站址可用度之积（各站雨区独立假设）；星间 hop 不贡献可用度损失
+//   · 系统可用度 = 各星地 hop 站址可用度与各星间 hop 指定可用度之积（各跳独立假设）
 //     （真空无雨；手动距离下也无互视统计）——占位入参算出的雨衰可用度绝不许漏进星间段。
 //   · 端到端时延 = Σ hop 传播时延（距离/c）+ Σ 再生类节点处理时延。
 //   · 载波体制为链级单一体制，全段同门限。
@@ -360,6 +360,10 @@ function computeLinkChain(chain) {
       if (!(num(h.frequency) > 0)) return { success: false, message: `第 ${i + 1} 跳缺频率（GHz）` };
     } else {
       if (!(num(h.rangeKm) > 0)) return { success: false, message: `第 ${i + 1} 跳缺星间链路距离（km）` };
+      if (h.availability != null && String(h.availability).trim() !== '') {
+        const a = num(h.availability);
+        if (a === null || a < 0 || a > 100) return { success: false, message: `第 ${i + 1} 跳星间链路可用度须在 0–100% 之间` };
+      }
     }
     // —— 激光跳两端都必须是再生类 ——（此处端点卫星已归一为 regen，故可就地判）
     // 发端：透明转发器只能变频放大射频，射频变光必须经星上再生；让透明星「发激光」算出来的是
@@ -788,10 +792,9 @@ function computeLinkChain(chain) {
     if (sg.margin === null) continue;
     if (weakestMargin === null || sg.margin < weakestMargin) { weakestMargin = sg.margin; weakest = sg.index; }
   }
-  // 系统可用度 = 各星地 hop 站址可用度之积（星间 hop 不参与——真空无雨，手动距离下也无互视统计）
+  // 系统可用度 = 各星地跳站址可用度 × 各星间跳指定可用度（独立假设；旧数据星间默认 100%）
   let availPct = null;
   for (const rec of hops) {
-    if (rec.type !== 'up' && rec.type !== 'down') continue;
     if (rec.availability === null || rec.availability === undefined) continue;
     availPct = (availPct === null) ? rec.availability : (availPct * rec.availability / 100);
   }
@@ -1174,7 +1177,7 @@ function probeIslHop(chain, hop, carrier) {
     atm: 0, rain: 0, cloud: 0,
     misc: numOr(hop.miscLoss, 1),
     gtDeg: 0,
-    availability: null,                 // 星间段不贡献可用度损失（手动距离下无互视统计）
+    availability: numOr(hop.availability, 100), // 星间跳指定可用度；旧链缺省 100%
     noiseBW: num(d.RXnoiseBW),
     thresholdCN: num(d.thresholdCN),
     // 星间干扰 C/I 由引擎并联进 islPerHopCN（留空即两者同值，逐位与从前相同），
@@ -1203,7 +1206,7 @@ function probeLaserHop(chain, hop) {
     fsl: num(d.laserFslResult),
     atm: 0, rain: 0, cloud: 0, misc: numOr(d.laserOtherLossResult, 0),
     gtDeg: 0,
-    availability: null,
+    availability: numOr(hop.availability, 100),
     noiseBW: null,
     thresholdCN: null,
     laserMargin: margin,

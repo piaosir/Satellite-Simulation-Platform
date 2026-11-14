@@ -1,6 +1,10 @@
 <script setup>
 import { ref, reactive, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount, toRef, provide, toRaw, defineComponent, defineAsyncComponent, h as hVnode } from 'vue'
 import { cursor } from '../stores/cursor'
+import { pickCoverageLayer, pickLinkGeometry } from '../shared/mapObjectPick.js'
+import { createHoverLabel } from '../shared/hoverLabel.js'
+import { hoverLabelPrefs } from '../stores/hoverLabelPrefs.js'
+import { hiddenMapSatellites, mapSatelliteHidden, setMapSatelliteHidden, showHiddenMapSatellites } from '../stores/mapSatVisibility.js'
 import { view } from '../stores/view'
 import { covNav } from '../stores/coveragePanels'
 import { zoom } from '../stores/zoom'
@@ -49,6 +53,7 @@ import EphemImportDialog from '../components/EphemImportDialog.vue'
 import EphemExportDialog from '../components/EphemExportDialog.vue'
 import { applyEphemOverlays } from '../viz/constellation/ephemOverlays.js'
 import { useSatSets } from '../viz/constellation/useSatSets.js'
+import { sectionOf, builtinSetLabel, REFERENCE_GROUPS, isUniverseGroup, isNamedConstellation } from '../viz/constellation/satSetSections.js'
 import { ownerName } from '../shared/satcatCodes.js'
 import { loadSatcatIndex } from '../shared/satcatIndex.js'
 import { makePredicate, emptyFilters, normalize as normalizeFilters, isEmpty as isFilterEmpty, metricsOf } from '../shared/satFilter.js'
@@ -202,7 +207,8 @@ const GROUPS = [
   { key: 'stations', label: '空间站' },
   { key: 'planet', label: 'Planet' },
   { key: 'spire', label: 'Spire' },
-  { key: 'other', label: '其他' }
+  { key: 'other', label: '其他星座（内置大型星座以外）' },
+  ...REFERENCE_GROUPS
 ]
 const GROUP_LABEL = { other: '其他' }
 GROUPS.forEach((g) => { GROUP_LABEL[g.key] = g.label })
@@ -640,6 +646,7 @@ function computeVisibilityGeometry() {
   const subPx = (Number(vis.iconSize.value) || 12) * 1.6   // 3D 星下点图标：大小×1.6对齐屏幕像素、颜色随面板（与 2D 一致）
   const items = [], subs = []
   for (const r of rs) {
+    if (mapSatelliteHidden(satIdOf(r))) continue
     if (!Number.isFinite(r.subLon) || !Number.isFinite(r.subLat)) continue
     const hot = hid && String(r.noradId) === hid
     const key = satIdOf(r)   // 卫星标记归并用（pushGeom）：在轨点 / 星下点图标被聚焦层认领时让位
@@ -2649,7 +2656,7 @@ function grdBoreTargetRings(seen) {
     if (node && !satVisible(node)) continue
     done.add(st.boreSat)
     const te = satEntryById(st.boreSat)
-    if (te && seen.has(satIdOf(te))) continue
+    if (te && (seen.has(satIdOf(te)) || mapSatelliteHidden(satIdOf(te)))) continue
     const P = satTargetEcef(st.boreSat)
     if (!P) continue
     const g = W.ecefToGeodetic(P[0], P[1], P[2])
@@ -2665,7 +2672,7 @@ function computeSatcovFocusGeometry() {
   const items = [], subs = [], flatGeom = [], rings = []
   const seen = new Set(selEntries.map((e) => satIdOf(e)))   // 已被点选的星不重画一遍（几何完全一致）
   const add = (id, g) => {
-    if (!g || (id && seen.has(id))) return
+    if (!g || (id && (seen.has(id) || mapSatelliteHidden(id)))) return
     if (id) { seen.add(id); g.item.key = id; if (g.sub) g.sub.key = id }
     items.push(g.item); flatGeom.push(g.flat)
     if (g.item.satPos) rings.push(g.item.satPos)             // 金色高亮环：套在星本体上（在轨高度，不是星下点）
@@ -2844,6 +2851,7 @@ function rebuildRenderSet() {
       // 导入星历「对应已有卫星」的替身：换成本尊（同一颗星在各集里是同一个对象，选中 / 聚焦 / 跟随才认得出）
       if (e._bound) { const live = boundLiveOf(e); if (live) e = live }
       const k = String(e.noradId)
+      if (mapSatelliteHidden(satIdOf(e))) continue
       if (seen.has(k) || (hidden && hidden.has(k))) continue
       if (!isCustomEntry(e) && !keepInRenderSet(e, now)) continue   // 只剔 SGP4 解不出来的；星历星留下，画不画逐拍由 refreshPositions 定
       seen.add(k); out.push(e)
@@ -3086,7 +3094,7 @@ function ensureGroup(key, reload) {
   if (groupPending.has(key)) return groupPending.get(key)
   const label = GROUP_LABEL[key] || key
   const merged = key === 'all' || key === 'other'
-  const pick = (sats) => (key === 'other' ? sats.filter((x) => x._group === 'other') : sats)
+  const pick = (sats) => (key === 'other' ? sats.filter((x) => x._otherConstellation) : sats)
   const put = (sats, at) => {
     const list = buildEntries(sats, key)
     retire(groupEntries.get(key))   // 上一版（本机缓存版 / 导入替换前那份）整批退役：选中集里还捏着的按身份换成这一版（见 curEntryOf）
@@ -3190,7 +3198,7 @@ async function loadUniverse(silent, opts = {}) {
   const cacheOnly = !!opts.cacheOnly
   const fopt = cacheOnly ? { cacheOnly: true } : undefined
   const setS = (t) => { if (!silent) status.value = t }
-  const keys = GROUPS.filter((g) => !['all', 'other', 'none', 'custom'].includes(g.key)).map((g) => g.key)
+  const keys = GROUPS.filter((g) => isUniverseGroup(g.key)).map((g) => g.key)
   let done = 0
   setS(`加载全部卫星 0/${keys.length + 1} …`)
   const tick = () => { done++; setS(`加载全部卫星 ${done}/${keys.length + 1} …`) }
@@ -3201,8 +3209,9 @@ async function loadUniverse(silent, opts = {}) {
     .catch(() => { tick(); miss++; return [] }))
   const arrs = await Promise.all(tasks)
   // 并集（NORAD 去重）+ 分组归类映射
-  const groupOf = new Map(), universe = new Map()
+  const groupOf = new Map(), universe = new Map(), namedIds = new Set()
   for (const a of arrs) for (const s of a) {
+    if (isNamedConstellation(s._group)) namedIds.add(String(s.noradId))
     if (!groupOf.has(s.noradId)) groupOf.set(s.noradId, s._group)
     if (!universe.has(s.noradId)) universe.set(s.noradId, s)
   }
@@ -3220,7 +3229,10 @@ async function loadUniverse(silent, opts = {}) {
     for (const s of cs) { universe.set(s.noradId, s); groupOf.set(s.noradId, 'custom') }
   } catch { /* 无自定义库：忽略 */ }
   // 归类：在已知分组里的标该组，其余标“其他”
-  for (const s of universe.values()) s._group = groupOf.get(s.noradId) || 'other'
+  for (const s of universe.values()) {
+    s._group = groupOf.get(s.noradId) || 'other'
+    s._otherConstellation = !namedIds.has(String(s.noradId)) && s._group !== 'custom'
+  }
   // 合并视图的下载时间：取各组最新一份（无则 null → 调用方回退 now）
   universeFetchedAt = fetchedAts.length ? fetchedAts.reduce((a, b) => (b > a ? b : a)) : null
   // —— 供「卫星组按真实星历核对成员」用的两项证据（只有它俩都成立才敢判某颗星离轨，见 satGrpSweep）——
@@ -3242,7 +3254,8 @@ let universeFetchedMin = null  // 本次并集里最旧一份的下载时间（�
 let searchPool = []
 let poolReady = false, poolLoading = false, poolPromise = null
 let filterEntries = []   // 搜索即筛选的显示集（命中星，跨分组，来自全量池）；非空 → renderEntries 渲染它而非当前分组
-let filterTimer = null   // 输入即筛选的防抖计时器
+const searchLoading = ref(false)
+let searchRequest = 0
 const filterN = ref(0)   // 筛选命中数（模板状态提示；0 = 非筛选态）
 const filterKw = ref('')   // 当前筛选词（独立于 keyword —— pickResult 会清 keyword 但筛选仍在，状态条据此显示）
 // 卫星集「具体是谁」标签：给可见性分析「分析目标」区显式点出正在分析哪些星 —— 口径与 rebuildRenderSet 完全一致：
@@ -3397,7 +3410,7 @@ function selectSat(e, face, additive) {
 // 点云只装渲染集，这些星看得见点不中。只在点击那一刻由 scene 调用（pickExtraAt），不进逐拍。
 // 来源与画它的地方一一对应：聚焦集（commitGeometry）· 可见性结果（computeVisibilityGeometry）·
 // 天线树关联星名（redrawSats）· 对星覆盖源星 / 目标星（computeSatcovFocusGeometry）。在渲染集里的交给点云，这里跳过。
-// opts.flat：2D 平面图来要候选（flatCoverage.satAtScreen）——2D 不画点云，渲染集里的星不交给点云、照样进候选；
+// opts.flat：2D 平面图来要候选（flatCoverage.satAtScreen）——2D 不画点云，只拾取聚焦、链路等实际画出的星；
 // 可见性结果在 2D 不画星，不进候选（免得点中一处空白选上一颗看不见的星）。
 function pickExtraSats(opts) {
   const flat2d = !!(opts && opts.flat)
@@ -3407,6 +3420,7 @@ function pickExtraSats(opts) {
   const now = calcAt(), ccNow = ccTimeAt(now), gmst = sat.gstime(now), ccGmst = sat.gstime(ccNow)
   const push = (e, lla) => {
     if (!e || (!e.rec && !e.eph)) return
+    if (mapSatelliteHidden(satIdOf(e))) return
     const k = e.noradId ? 'n:' + e.noradId : 'm:' + e.name
     if (inSet.has(k)) return
     inSet.add(k)
@@ -3521,13 +3535,16 @@ function rebindSelection(preferGroup) {
   if (changed || dropped) { refreshSelection(); _selSysVer = selVer.value }
 }
 
-function onSearch(e) {
+async function onSearch(e) {
   keyword.value = e.target.value
   const kw = keyword.value.trim().toLowerCase()
-  if (filterTimer) clearTimeout(filterTimer)
-  filterTimer = setTimeout(() => applyFilter(kw), 250)   // 输入即筛选显示（防抖 250ms；空词恢复分组）
-  if (!kw) { searchResults.value = []; return }
-  ensureSearchPool()   // 懒加载全量搜索库（幂等）
+  const request = ++searchRequest
+  if (!kw) { searchLoading.value = false; clearSearch(); return }
+  searchResults.value = []
+  searchLoading.value = true
+  await ensureSearchPool()
+  if (request !== searchRequest) return
+  searchLoading.value = false
   const src = searchSource(), out = []
   for (let i = 0; i < src.length && out.length < 40; i++) {
     const en = src[i]
@@ -3540,14 +3557,14 @@ function onSearch(e) {
 }
 function clearSearch() {
   keyword.value = ''; searchResults.value = []
-  if (filterTimer) { clearTimeout(filterTimer); filterTimer = null }
+  searchRequest++; searchLoading.value = false
   // 搜索 0 命中时 filterEntries 是空的，但「仅显示：搜索结果」已经进了（地图上 0 颗）：只看命中数就早退，清空搜索框 / 点 × 都还原不回来
   const qOn = !!(satSets.solo.value && satSets.solo.value.id === 'q') || satSets.visible.value.has('q')
   if (!qOn && !filterEntries.length && !filterN.value && !filterKw.value) return
   filterEntries = []; filterN.value = 0; filterKw.value = ''
   expDrop('q')
   if (satSets.solo.value && satSets.solo.value.id === 'q') satSets.restore((id) => id !== 'q')   // 仅显示的是搜索结果 → 还原之前的可见集合
-  else { const v = new Set(satSets.visible.value); v.delete('q'); satSets.setVisible([...v]) }
+  else if (satSets.visible.value.has('q')) { const v = new Set(satSets.visible.value); v.delete('q'); satSets.setVisible([...v]) }
   applySetsChanged()
 }
 // 搜索 / 查找的命中 → 「搜索结果」集：出现即「仅显示」它（顶部标签一点就还原叠加，状态显式）；label 给读数用
@@ -3556,12 +3573,13 @@ function showSearchHits(hit, label) {
   if (!(satSets.solo.value && satSets.solo.value.id === 'q')) satSets.soloOn('q')
   applySetsChanged()
 }
-// 搜索框即筛选：命中星（全量池，跨分组）成为「搜索结果」集；空词 = 清掉它。属性条件走「查找卫星」对话框（openFinder）。
+// 只有明确点击「仅显示匹配卫星」才改变地图；输入只更新候选列表。
 async function applyFilter(kw) {
-  const raw = String(kw == null ? filterKw.value : kw).trim()
+  const raw = String(kw == null ? keyword.value : kw).trim()
   const k = raw.toLowerCase()
   if (!k) { clearSearch(); return }
   await ensureSearchPool()
+  if (raw !== keyword.value.trim()) return
   const hit = [], seen = new Set()
   for (const en of searchSource()) {
     if (!(en.name.toLowerCase().includes(k) || String(en.noradId).includes(k) || (en.groupLabel && en.groupLabel.toLowerCase().includes(k)))) continue
@@ -3592,7 +3610,7 @@ async function ensureSatcatIndex() {
   satcatIdx.value = idx
   return idx
 }
-function pickResult(item) { searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
+function pickResult(item) { searchRequest++; searchLoading.value = false; searchResults.value = []; keyword.value = ''; selectSat(item.en, true) }
 // 跟随一并退出：3D 相机跟随与 2D「跟随卫星」（星下点跟随）都跟的是主选星，清空聚焦后没有可跟的了 ——
 // 2D 那支原先漏了：取消聚焦后画面仍被拖着走、悬停与单击被挡，只能按 Esc 退出
 function closeCard() { _userSelTick++; stopFollow(); if (_flatFollowSat) stopFlatFollow(); selEntries = []; selEntry = null; selected.value = null; selList.value = []; resetBeam(); pushMarkers(); commitGeometry(); saveSelection(); refreshSelModel(); feedModelsNow(); bumpSelSignal() }   // commitGeometry 清聚焦星几何/星下点；可见性叠加层（若开）保留
@@ -4278,7 +4296,7 @@ async function grpSatList(key) {
     for (const s of uni) {
       const it = expMkItem(s.noradId, s.name, `${s.name || ''} · ${GROUP_LABEL[s._group] || '其他'} · NORAD ${s.noradId}`, '', geoSlotOfOmm(s))
       all.push(it)
-      if (s._group === 'other') oth.push(it)
+      if (s._otherConstellation) oth.push(it)
     }
     all.sort((a, b) => NAME_COLLATOR.compare(a.name, b.name)); oth.sort((a, b) => NAME_COLLATOR.compare(a.name, b.name))
     grpListCache.set('all', all); grpListCache.set('other', oth)
@@ -4730,7 +4748,7 @@ function setName(id) {
   const k = id[0], r = id.slice(2)
   if (id === 'q') return filterKw.value ? `搜索「${filterKw.value}」` : '搜索结果'
   if (k === 't') return TREE_GEO_LABEL
-  if (k === 'g') return satSets.nameOf(id) || GROUP_LABEL[r] || r
+  if (k === 'g') return satSets.nameOf(id) || builtinSetLabel(r, GROUP_LABEL[r] || r)
   if (k === 's') { const g = satGroups.find(r); return g ? g.name : '' }
   if (k === 'i') { const g = importGroups.value.find((x) => x.id === r); return g ? g.name : '' }
   if (k === 'c') { const c = customConst.list.value.find((x) => x.id === r); return c ? c.name : '' }
@@ -4765,9 +4783,12 @@ function applySetsChanged() { satSets.persist(); ensureSetsLoaded(); rebuildRend
 function toggleSet(id) { satSets.toggle(id); applySetsChanged() }
 function soloSet(id) { satSets.soloOn(id); applySetsChanged() }
 function restoreSets() { satSets.restore((id) => id !== 'q' || filterEntries.length > 0); applySetsChanged() }
+function hideAllSets() { satSets.hideAll(); applySetsChanged() }
+function restoreHiddenSets() { satSets.restoreHidden((id) => satSets.order.value.includes(id)); applySetsChanged() }
 function reorderSet(id, to) { satSets.move(id, to) }
 // 首次进页：读注册表；没有存档就按旧存档迁移（「当前分组」+ 自定义星座 / 导入组各自的 visible 标志）
-// 卫星天线树：没有存档 → 显示；存档里还没有这一行（升级上来的）→ 显示并置顶 —— 树里的同步定点星原先不归任何一集、恒在图上，
+// 卫星天线树：没有存档 → 显示；旧存档仍有可见项且还没有这一行 → 显示并置顶。空集合是用户的有效选择，必须原样恢复。
+// 树里的同步定点星原先不归任何一集、恒在图上，
 //   升级后地图上不能少星。仅显示态下同样并进去，并记进还原集（还原之后也还在）。
 function initSatSets(legacy) {
   const had = satSets.load()
@@ -4780,18 +4801,11 @@ function initSatSets(legacy) {
     else if (BUILTIN_KEYS.includes(key)) vis.push('g:' + key)
     for (const c of customConst.list.value) if (c.visible !== false) vis.push('c:' + c.id)
     satSets.setVisible(vis)
-  } else if (!satSets.visible.value.size) {
-    // 读到空可见集 → 退回出厂集合（卫星天线树 + 出厂内置星座）：旧版「仅显示：搜索结果」落盘会落下空集（体检 2026-10-16 #6，
-    // useSatSets.persist 已修），已经落成空集的存档重开也不至于地图上 0 颗
-    if (treeNew) satSets.move(TREE_SET, 0)
-    satSets.solo.value = null
-    const k0 = GROUPS[DEFAULT_GROUP].key
-    satSets.setVisible(BUILTIN_KEYS.includes(k0) ? [TREE_SET, 'g:' + k0] : [TREE_SET])
-  } else if (treeNew) {
+  } else if (treeNew && satSets.visible.value.size) {
     satSets.move(TREE_SET, 0)
     const s = satSets.solo.value
-    if (s && !s.prev.includes(TREE_SET)) satSets.solo.value = { ...s, prev: [...s.prev, TREE_SET] }
     satSets.setVisible([...satSets.visible.value, TREE_SET])
+    if (s) satSets.solo.value = { ...s, prev: s.prev.includes(TREE_SET) ? s.prev : [...s.prev, TREE_SET] }
   }
   applySetsChanged()
 }
@@ -4800,7 +4814,7 @@ async function loadGroupCounts() {
   try {
     const rows = (apiOk && window.api.omm.list) ? await window.api.omm.list() : []
     const next = { ...groupCounts.value }
-    for (const r of rows || []) { if (!r || r.kind === 'satcat' || !Number.isFinite(r.count)) continue; if (r.key === 'active') next.all = next.all == null ? r.count : next.all; else if (!(r.key in next)) next[r.key] = r.count }
+    for (const r of rows || []) { if (!r || r.kind === 'satcat' || r.source === 'none' || !Number.isFinite(r.count)) continue; if (r.key === 'active') next.all = next.all == null ? r.count : next.all; else if (!(r.key in next)) next[r.key] = r.count }
     groupCounts.value = next
   } catch { /* 取不到就不显示 */ }
 }
@@ -4821,7 +4835,7 @@ const setRows = computed(() => {
     } else if (k === 'g') {
       const g = GROUPS.find((x) => x.key === r); if (!g) continue
       const o = ov[id] || {}
-      rows.push({ id, kind: 'builtin', name: o.name || g.label, lit: !o.name, count: setCount(id), sub: '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，可在菜单中重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
+      rows.push({ id, kind: 'builtin', name: o.name || builtinSetLabel(r, g.label), lit: !o.name, count: setCount(id), sub: r === 'all' ? '跨星座汇总' : '', color: groupColors[r] || '', colorable: groupColorable(r), visible: vis.has(id), renamable: true, icon: 'satellite', iconTitle: 'CelesTrak 星历组（可改名 / 改色 / 剔除成员，可在菜单中重置为出厂）', modified: !!(o.name || groupColors[r] || (o.hidden && o.hidden.length)) })
     } else if (k === 's') {
       const g = satGroups.find(r); if (!g) continue
       rows.push({ id, kind: 'group', name: g.name, count: g.sats.length, sub: '', color: g.color || '', colorable: true, visible: vis.has(id), renamable: true, icon: 'layers', iconTitle: '卫星组：按 NORAD 记录的成员集', modified: false })
@@ -4843,11 +4857,12 @@ const setSummary = computed(() => {
   const vis = satSets.visible.value
   // 「卫星天线树」开着但一颗星都没往图上加：不算一集（与 satSetLabel 同一口径）
   const treeIdle = vis.has(TREE_SET) && !treeSetMembers(grdSats.value, treeGeoIdMap.value).length
-  return { shown: shownCount.value, layers: vis.size - (treeIdle ? 1 : 0), dataTime: dataTime.value, status: status.value }
+  return { shown: vis.size ? shownCount.value : 0, layers: vis.size - (treeIdle ? 1 : 0), dataTime: dataTime.value, status: status.value, allHidden: !vis.size, canRestoreHidden: !!satSets.hiddenSnapshot.value?.length, saveState: satSets.saveState.value }
 })
 const soloInfo = computed(() => (satSets.solo.value ? { id: satSets.solo.value.id, name: setName(satSets.solo.value.id), lit: setNameLit(satSets.solo.value.id) } : null))
 const setSearch = computed(() => ({
   keyword: keyword.value,
+  loading: searchLoading.value,
   openTick: searchOpenTick.value,
   results: searchResults.value.map((r) => ({ noradId: r.noradId, name: r.name, groupLabel: r.groupLabel, slot: r.slot, picked: selNorads.value.has(String(r.noradId)), syn: !!(r.en && r.en._grdFolder), en: r.en })),   // syn：天线树虚拟星（合成号不当 NORAD 显示）
   finderActive: !isFilterEmpty(satFilters)
@@ -4866,9 +4881,9 @@ const addItems = computed(() => {
 })
 function setMenuItems(row) {
   const id = row.id, k = row.kind
-  const order = satSets.order.value, idx = order.indexOf(id), n = order.length
+  const order = satSets.order.value, idx = order.indexOf(id)
   const head = [
-    { key: 'solo', label: '仅显示该集', icon: 'eye' },
+    { key: 'solo', label: '仅显示此项', icon: 'eye' },
     { key: 'focus', label: '聚焦', icon: 'crosshair' },
     { key: 'expand', label: expTag.value === id ? '收起成员' : '展开成员', icon: 'list' }
   ]
@@ -4876,8 +4891,8 @@ function setMenuItems(row) {
   // 卫星天线树：成员与名字归天线树管 —— 不改名、不粘贴、不删除
   if (k === 'tree') return head.concat([
     { sep: true },
-    { key: 'up', label: '上移', icon: 'arrow-up', disabled: idx <= 0 },
-    { key: 'down', label: '下移', icon: 'arrow-down', disabled: idx < 0 || idx >= n - 1 },
+    { key: 'up', label: '组内上移', icon: 'arrow-up', disabled: !setRows.value.slice(0, idx).some((r) => sectionOf(r) === sectionOf(row)) },
+    { key: 'down', label: '组内下移', icon: 'arrow-down', disabled: !setRows.value.slice(idx + 1).some((r) => sectionOf(r) === sectionOf(row)) },
     { sep: true },
     { key: 'copy', label: '复制卫星', icon: 'copy' },
     { key: 'saveGroup', label: '存为卫星组', icon: 'folder-plus' },
@@ -4890,8 +4905,8 @@ function setMenuItems(row) {
   const sel = selList.value.length
   const items = head.concat([
     { sep: true },
-    { key: 'up', label: '上移', icon: 'arrow-up', disabled: idx <= 0 },
-    { key: 'down', label: '下移', icon: 'arrow-down', disabled: idx < 0 || idx >= n - 1 },
+    { key: 'up', label: '组内上移', icon: 'arrow-up', disabled: !setRows.value.slice(0, idx).some((r) => sectionOf(r) === sectionOf(row)) },
+    { key: 'down', label: '组内下移', icon: 'arrow-down', disabled: !setRows.value.slice(idx + 1).some((r) => sectionOf(r) === sectionOf(row)) },
     { sep: true },
     { key: 'rename', label: '重命名', icon: 'pencil', hint: 'F2' },
     { key: 'copy', label: '复制卫星', icon: 'copy' },
@@ -5138,8 +5153,12 @@ async function setAction(key, row) {
   if (key === 'focus') { setFocus(row); return }
   if (key === 'expand') { expToggle(id, row.name); return }
   if (key === 'close') { clearSearch(); return }
-  if (key === 'up') { satSets.moveBy(id, -1); return }
-  if (key === 'down') { satSets.moveBy(id, 1); return }
+  if (key === 'up' || key === 'down') {
+    const peers = setRows.value.filter((r) => sectionOf(r) === sectionOf(row))
+    const peer = peers[peers.findIndex((r) => r.id === id) + (key === 'up' ? -1 : 1)]
+    if (peer) satSets.move(id, satSets.order.value.indexOf(peer.id))
+    return
+  }
   if (key === 'send') { sendSatsToMiniapp(); return }
   if (key === 'reveal') { revealInTree(''); return }
   if (key === 'paste') { setPaste(row); return }
@@ -5176,7 +5195,7 @@ async function setAction(key, row) {
 }
 function setRename(row, name) {
   const k = row.kind, r = row.id.slice(2)
-  if (k === 'builtin') { satSets.rename(row.id, name === (GROUP_LABEL[r] || r) ? '' : name); return }
+  if (k === 'builtin') { satSets.rename(row.id, name === builtinSetLabel(r, GROUP_LABEL[r] || r) ? '' : name); return }
   if (k === 'group') { satGroups.rename(r, name); return }
   if (k === 'custom') { customConst.update(r, { name }); return }
   if (k === 'import') { const g = importGroups.value.find((x) => x.id === r); if (g) { impRenameVal.value = name; impRenameId.value = g.id; impCommitRename(g) } }
@@ -8655,11 +8674,12 @@ function askRemoveAnt(sat, a) {
 // 仰角线显示开关（仰角值/颜色在卫星「✎」弹窗里编辑）
 function toggleSatElev(node) { node.elevShow = !node.elevShow; redrawSats() }
 // 小眼睛状态独立于「卫星设置」里的显示图标/显示卫星名两个开关：只要有一个开着就算亮着，两个都关了才算灭
-const satVisible = (node) => node.iconShow !== false || node.labelShow !== false
+const satVisible = (node) => !mapSatelliteHidden(grdNodeSatId(node)) && (node.iconShow !== false || node.labelShow !== false)
 // 一键同时隐藏/恢复图标+名称（各自的独立开关在「卫星设置」里）；卫星名开关也影响 3D 覆盖连线(卫星↔波束中心)，需重绘覆盖层。
 // 对星覆盖分析里这个开关还兼「聚焦特效」的总闸（见 computeSatcovFocusGeometry），故在该视图另走一次壳层重算 + 几何提交。
 function toggleSatLabel(node) {
   const next = !satVisible(node); node.labelShow = next; node.iconShow = next
+  if (next && mapSatelliteHidden(grdNodeSatId(node))) { setMapSatelliteHidden(grdNodeSatId(node), false); rebuildRenderSet() }
   redrawSats()
   if (grdOpen.value) grd.recompute()
   satcov.scheduleRecompute(); commitGeometry()   // 无条件：壳层没画过时 scheduleRecompute 内部 _painted 闸自会早退
@@ -9619,6 +9639,7 @@ function redrawSats() {
   if (!scene) return
   const lines = [], labels = [], sats = [], dots = [], fills = []
   for (const node of grdSats.value) {
+    if (mapSatelliteHidden(grdNodeSatId(node))) continue
     // 三项相互独立：卫星名由 labelShow 控、图标由 iconShow 控（2D 专用，3D 不画图标）；等仰角线由 elevShow 控且需填仰角值。
     // 同一颗星另被聚焦 / 对星特效 / 可见性画着图标时，这枚让位、名字照留（卫星标记归并，见函数尾 mergeLayerSats）。
     const showLabel = node.labelShow !== false
@@ -9845,9 +9866,12 @@ function onMapRightClick(ll, pos, satIdx, entHit) {
   const eo = eh ? entObjOf(eh.kind, eh.id) : null
   const ent = eo ? { kind: eh.kind === 'vehicle' ? 'traj' : eh.kind, id: eh.id, has: !!eo.model } : null
   // 压着的航迹（载具 / 线 / 航点）或 Polygon（区内）：「从此航迹 / Polygon 新建链路」「追加到链路」用；压着站 / 点时不另认（站优先）
-  const area = pos && !(ent && (ent.kind === 'station' || ent.kind === 'point')) ? lnkAreaAt(pos.x, pos.y) : null
+  let area = pos && !(ent && (ent.kind === 'station' || ent.kind === 'point')) ? lnkAreaAt(pos.x, pos.y) : null
+  const link = !se && !ent && (!area || area.k === 'pg') && pos ? mapLinkObjAt(pos.x, pos.y) : null
+  if (link) area = null
   // enPv：压着的是向导预览星（号段提交后换号，没有联动身份）→ 不给「新建高斯天线」
-  ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null, sid: se ? satIdOf(se) : '', enRef: se && se.noradId != null ? se.noradId : null, enPv: !!(se && se.group === PREVIEW_GROUP), ent, area }
+  const coverage = !se && !ent && !area && !link && pos ? coverageObjAt(pos.x, pos.y) : null
+  ctxMenu.value = { x: pos ? pos.x : 0, y: pos ? pos.y : 0, ll: ll || null, sid: se ? satIdOf(se) : '', enRef: se && se.noradId != null ? se.noradId : null, enPv: !!(se && se.group === PREVIEW_GROUP), ent, area, coverage, link }
   nextTick(clampCtxMenu)   // 按菜单实际渲染尺寸夹紧到视口内：靠右/靠下边缘右键时不再被裁掉一截
 }
 function ctxFollow() {
@@ -9870,7 +9894,18 @@ const ctxObjName = computed(() => {
   if (m.ent && (m.ent.kind === 'station' || m.ent.kind === 'point')) { const o = entObjOf(m.ent.kind, m.ent.id); return o ? ((o.name || '').trim() || fmtLL(o.lat, o.lon)) : '' }
   if (ctxTraj.value) return (ctxTraj.value.name || '').trim() || '航迹'
   if (ctxPoly.value) return (ctxPoly.value.name || '').trim() || 'Polygon'
+  if (m.link) return m.link.name
+  if (m.coverage) return m.coverage.name
   return ''
+})
+const ctxObject = computed(() => {
+  const m = ctxMenu.value
+  if (!m || m.anaOnly) return null
+  if (m.sid) return { kind: 'sat', id: m.sid }
+  if (m.ent) return { kind: m.ent.kind, id: m.ent.id }
+  if (ctxTraj.value) return { kind: 'traj', id: ctxTraj.value.id }
+  if (ctxPoly.value) return { kind: 'poly', id: ctxPoly.value.id }
+  return m.link || m.coverage || null
 })
 // 压着的星是否已在聚焦集里（决定给「聚焦 / 加入聚焦」还是「移出聚焦」）
 const ctxSatFocused = computed(() => { const m = ctxMenu.value; if (!m || !m.sid) return false; return selList.value.some((x) => x && satIdOf(x) === m.sid) })
@@ -9883,7 +9918,6 @@ function ctxMkAct(act) {
   const m = ctxMenu.value; closeCtx()
   const e = m && m.ent; if (!e || (e.kind !== 'station' && e.kind !== 'point')) return
   if (act === 'move') mkEditToggle(e.kind === 'station' ? 'stations' : 'points')
-  else if (act === 'reveal') revealMapObj({ kind: e.kind, id: e.id })
   else if (act === 'hide') { const o = entObjOf(e.kind, e.id); if (o && mkShown(o)) toggleMkItem(o) }
 }
 function ctxTrajAct(act) {
@@ -9891,7 +9925,6 @@ function ctxTrajAct(act) {
   if (act === 'time') revealTrajTime(t.id)
   else if (act === 'draw') editTraj(t)
   else if (act === 'pts') mkEditToggle(t.id)
-  else if (act === 'reveal') revealMapObj({ kind: 'traj', id: t.id })
 }
 function ctxPolyAct(act) {
   const pg = ctxPoly.value; closeCtx(); if (!pg) return
@@ -9899,7 +9932,6 @@ function ctxPolyAct(act) {
   else if (act === 'move') polyMoveToggle(pg)
   else if (act === 'cont') polyContinue(pg)
   else if (act === 'hide') { if (pg.show !== false) togglePoly(pg) }
-  else if (act === 'reveal') revealMapObj({ kind: 'poly', id: pg.id })
 }
 // 全局段按有没有数据裁剪：没有可隐藏的就不给「隐藏所有…」
 const ctxHave = computed(() => {
@@ -10062,6 +10094,40 @@ function clampCtxMenu() {
   if (x !== m.x || y !== m.y) ctxMenu.value = { ...m, x, y }
 }
 function closeCtx() { ctxMenu.value = null; ctxSub.value = null }
+function ctxObjectSettings() { const o = ctxObject.value; closeCtx(); if (o) openMapObjectSettings(o) }
+async function ctxHideObject() {
+  const o = ctxObject.value
+  closeCtx()
+  if (!o) return
+  if (o.kind === 'sat') {
+    const e = satEntryById(o.id)
+    if (!e) return
+    setMapSatelliteHidden(o.id, true)
+    for (let i = selEntries.length - 1; i >= 0; i--) if (satIdOf(selEntries[i]) === o.id) removeSel({ idx: i })
+    refreshHiddenSatellites()
+    showStatus(byLang('已隐藏卫星', 'Satellite hidden') + '「' + (e.name || e.noradId) + '」', { actions: [{ label: '重新显示', run: () => { setMapSatelliteHidden(o.id, false); refreshHiddenSatellites() } }] })
+  } else if (o.kind === 'poly') {
+    const pg = polys.value.find((p) => p.id === o.id)
+    if (pg && pg.show !== false) togglePoly(pg)
+  } else if (mkGroupOf(o.kind)) {
+    const obj = entObjOf(o.kind, o.id)
+    if (obj && mkShown(obj)) toggleMkItem(obj)
+  } else if (o.kind === 'coverage' && o.itemId) {
+    const it = bm.items.value.find((i) => i.id === o.itemId), ba = it && it.batches.find((b) => b.id === o.batchId)
+    if (ba && ba.beams.includes(o.beamId)) bm.toggleBeam(it, ba, o.beamId)
+  } else if (o.kind === 'coverage' && o.antKey) {
+    const controller = o.side === 'satcov' ? satcov : grd
+    controller.selected.value = controller.selected.value.filter((key) => key !== o.antKey)
+    controller.recompute()
+    saveSettings()
+  } else if (o.kind === 'link') {
+    const link = links.value.find((l) => l.id === o.id)
+    if (link) lnk.setShow(o.id, false)
+  }
+  onStageLeave(); clearMapSel()
+}
+function refreshHiddenSatellites() { rebuildRenderSet(); redrawSats(); commitGeometry(); pushLinks(true) }
+function ctxShowHiddenSatellites() { closeCtx(); showHiddenMapSatellites(); refreshHiddenSatellites() }
 const ctxLL = () => ctxMenu.value && ctxMenu.value.ll
 // —— 菜单动作（均在当前右键经纬度处执行）——
 function ctxAddPoint() { const ll = ctxLL(); if (ll) undoable('markers', byLang('已新建点标记', 'Point created'), () => addPoint(ll.lat, ll.lon), true); closeCtx() }
@@ -10112,11 +10178,6 @@ function openStationDlg(o) {
   }
 }
 function ctxAddStation() { const ll = ctxLL(); if (ll) openStationDlg({ lat: ll.lat, lon: ll.lon }); closeCtx() }
-function ctxStationProps() {
-  const m = ctxMenu.value; closeCtx()
-  const s = m && m.ent && m.ent.kind === 'station' ? stations.value.find((x) => x.id === m.ent.id) : null
-  if (s) openStationDlg({ id: s.id, lat: s.lat, lon: s.lon })
-}
 function openStModelPick(ev) { const r = ev.currentTarget.getBoundingClientRect(); stPick.value = { x: r.left, y: r.top, w: r.width, h: r.height } }
 function confirmStation() {
   const p = stPrompt.value; if (!p) return
@@ -10180,6 +10241,19 @@ function linkSatEntry(key) {
   if (e) _lnkSatCache.set(key, e)
   return e
 }
+function linkSatHidden(key) {
+  if (!key || !hiddenMapSatellites.value.length) return false
+  const e = linkSatEntry(key)
+  if (e) return mapSatelliteHidden(satIdOf(e))
+  // 老链路可仍用天线树键；它的星位能由 bodyTargetEcef 解出，不一定已有目录条目。
+  if (key.startsWith('grdsat:')) {
+    const node = grdSats.value.find((s) => String(s.folder) === key.slice(7))
+    return !!node && mapSatelliteHidden(grdNodeSatId(node))
+  }
+  if (key.startsWith('norad:')) return mapSatelliteHidden('n:' + key.slice(6))
+  if (key.startsWith('name:')) return mapSatelliteHidden('m:' + key.slice(5))
+  return false
+}
 // 此刻 ECEF（km）：合成星走场景历元轴（与画面同口径）；天线树虚拟星解析不到条目时退回 bodyTargetEcef
 function linkSatEcef(key, tMs) {
   const e = linkSatEntry(key)
@@ -10229,6 +10303,7 @@ const lnk = useMapLinks({
   commit: () => { persistMarkers(); pushLinks() },
   satEcefAt: linkSatEcef,
   satInfo: linkSatInfo,
+  satHidden: linkSatHidden,
   status: (m) => logMsg(m),
   // 场景撤销：一次插入态（新建 / 接着加节点 → 完成 / 取消）一步；检查器里的单项修改一步（取色框连拖合并）
   undo: {
@@ -10240,9 +10315,11 @@ const lnk = useMapLinks({
 const lnkStyle = lnk.style
 // 每拍 / 每次改动推一份到两个渲染器；没有链路时只在「从有到无」那一拍清一次
 let _lnkHad = false
+let _lnkPickGeometry = { scene: [], flat: [] }
 function pushLinks(force) {
   if (!scene) return
   const r = lnk.compute(calcAt().getTime())
+  _lnkPickGeometry = r
   const has = r.scene.length > 0 || r.flat.length > 0
   if (!has && !_lnkHad && !force) return
   _lnkHad = has
@@ -10444,8 +10521,8 @@ function lnkEnterDraw() {   // 与 Polygon 绘制 / 航迹描绘 / 标记调整 
 // 图上右键发起的不抢焦点（人还在图上点）
 function lnkNew(first, fromPanel) { if (!lnkEnterDraw()) return; lnkRep.value = -1; lnk.startNew(first || null); if (fromPanel) lnkFocusSlot() }
 function lnkAddAt(id, at) { if (!lnkEnterDraw()) return; lnkRep.value = -1; lnk.startAt(id, at); lnkFocusSlot() }
-function lnkFinish() { lnk.finish(); lnk.preview.value = null }
-function lnkCancel() { lnk.cancel(); lnk.preview.value = null }
+function lnkFinish() { lnk.finish() }
+function lnkCancel() { lnk.cancel() }
 const lnkDrawN = computed(() => { const d = lnk.draw.value; const l = d ? lnk.linkOf(d.id) : null; return l ? l.nodes.length : 0 })
 watch([lnkDrawN, () => lnk.draw.value && lnk.draw.value.id], () => { lnkMsg.value = '' })
 // 有没有本次插进去、可撤销的节点（横幅「撤销」/ 右键「撤销上一节点」没有就置灰；进入插入态前就有的节点不撤）
@@ -12858,7 +12935,7 @@ function mkMenuItems(n) {
   }
   const o = mkObj(n)
   if (!o) return []
-  const head = [{ key: 'locate', label: '定位', icon: 'crosshair', hint: 'Enter' }, { key: 'rename', label: '重命名', icon: 'pencil', hint: 'F2' }]
+  const head = [{ key: 'settings', label: '对象设置…', icon: 'settings' }, { key: 'locate', label: '定位', icon: 'crosshair', hint: 'Enter' }, { key: 'rename', label: '重命名', icon: 'pencil', hint: 'F2' }]
   const tail = [{ key: 'model', label: '模型…', icon: 'box' }, o.color ? { key: 'uncolor', label: '恢复默认颜色', icon: 'undo-2' } : null, { sep: true }, { key: 'delete', label: '删除', icon: 'trash', tone: 'danger', hint: 'Del' }]
   if (g === 'traj') return [...head,
     { key: 'draw', label: '绘制航点', icon: 'mouse-pointer-click', on: activeTraj.value === o.id },
@@ -12961,6 +13038,7 @@ function mkResetLayer(g) { resetSec(g === 'points' ? 'mk-pt' : g === 'stations' 
 function mkAction(key, n) {
   const g = n && n.g, o = mkObj(n)
   switch (key) {
+    case 'settings': if (o) openMapObjectSettings({ kind: mkKindOf(g), id: o.id }); break
     case 'point': case 'station': case 'sea': case 'flight': mkAdd(key); break
     case 'table': openMkTable(g === 'traj' ? 'traj' : g); break
     case 'send': sendTrajsToMiniapp(); break
@@ -12999,11 +13077,12 @@ function mkAddWp(t) {
   wpLat.value = ''; wpLon.value = ''
 }
 function mkDelWp(t, i) { undoable('markers', '已删除航点', () => removeWaypoint(t, i), true) }
-// 地图 → 树：点中对象 = 树里选中它；「在列表中定位」= 切到本视图、展开图层、滚到那一行闪一下
+// 地图 → 树的列表定位辅助；“对象设置…”直接选中对象并滚到属性检查器。
 function mkReveal(kind, id) {
   const g = mkGroupOf(kind)
   if (!g) return
   setSecOpen('mko-' + g, true)
+  mkQ.value = ''   // 图上跳入的对象不能被上次的搜索条件挡住。
   mkSel.value = { g, id }
   revealEl('markers', [], `.mko-row[data-key="${CSS.escape(g + ':' + id)}"]`)
 }
@@ -13425,14 +13504,23 @@ function onSceneUndoKey(e) {
 // ===================== 地图对象：悬停反馈 + 左键选中 =====================
 // 过去图上只有卫星能被左键点中，站 / 点 / 航迹 / Polygon 单击没有任何反应，悬停也没有反馈。
 // 现在：悬停在可点的对象上 → 手形光标 + 光标旁名字签（运行时数据）；单击站 / 点 / 航迹 / Polygon →
-// 高亮环（站 / 点 / 载具）+ 状态栏一句「地球站「X」· 经纬度」，附「属性… / 在列表中定位」。卫星仍走 onMapPick（聚焦）。
+// 高亮环（站 / 点 / 载具）+ 状态栏对象名称与“对象设置…”；右键在名称下方首项提供同一个设置入口。卫星仍走 onMapPick（聚焦）。
 // 工具态（绘制 / 建链 / 拖拽…）与跟随视角里都不接：那时左键归工具 / 局部相机。
 const hoverTag = ref(null)          // { x, y, text }
+const hoverObjectKey = ref('')
+const objectHoverLabel = createHoverLabel({ getPrefs: () => hoverLabelPrefs, show: (value) => { hoverTag.value = value } })
+watch(() => [hoverLabelPrefs.mode, hoverLabelPrefs.seconds], () => objectHoverLabel.refresh())
 // 舞台的 obj-hov 类只看「有没有」：读布尔 computed，签随光标每 40 ms 换一个新对象时不再带着整页重渲（签本身在 RenderIsolate 里）
-const hoverTagOn = computed(() => !!hoverTag.value)
+const hoverTagOn = computed(() => !!hoverObjectKey.value)   // 标签关闭或到时隐藏后，仍保留对象的手形反馈。
 const mapSel = ref(null)            // { kind, id }
-let _hovRaf = 0, _hovEv = null, _hovAt = 0, _satPickAt = 0, _stgDown = null
-function satNameAt(x, y) {
+let _hovRaf = 0, _hovEv = null, _hovAt = 0, _stageWheelAt = -1e9, _satPickAt = 0, _stgDown = null
+function onStageWheel() { _stageWheelAt = performance.now() }
+function stagePickWidth(R) {
+  if (R && R.viewportSize) { const vp = R.viewportSize(); if (vp && vp.w) return vp.w }
+  const cv = flatView.value ? flatCanvas.value : el.value
+  return cv ? cv.clientWidth : window.innerWidth
+}
+function satEntryAt(x, y) {
   let e = null
   if (flatView.value) { const r = flat && flat.satAtScreen ? flat.satAtScreen(x, y) : null; e = r ? r.ref : null }
   else if (scene) {
@@ -13440,7 +13528,31 @@ function satNameAt(x, y) {
     if (i >= 0) e = renderEntries[i] || null
     if (!e && scene.pickExtraAt) { const r = scene.pickExtraAt(x, y); e = r ? r.ref : null }
   }
-  return e ? String(e.name || e.noradId || '') : ''
+  return e
+}
+function coverageObjAt(x, y) {
+  const R = lnkView()
+  if (!R || !R.coveragePickLayers) return null
+  const layers = R.coveragePickLayers()
+  if (!layers || !layers.length) return null
+  const h = pickCoverageLayer(layers, { lonLatAt: R.lonLatAt, screenOfLL: R.screenOfLL, pickWidth: stagePickWidth(R) }, x, y)
+  if (!h) return null
+  if (h.source === 'beammap') return h.layer.mapObject || null
+  // GRD 层身份＝天线键#波束序号；天线名内的 # 不影响末尾波束号。
+  const id = String(h.layer.id || ''), cut = id.lastIndexOf('#'), key = cut < 0 ? id : id.slice(0, cut)
+  const split = key.indexOf('|'), folder = key.slice(0, split), ant = key.slice(split + 1)
+  const sat = grdSats.value.find((s) => s.folder === folder)
+  if (!sat || !sat.antennas.some((a) => a.name === ant)) return null
+  return { kind: 'coverage', id, antKey: key, folder, ant, name: `${sat.satName} · ${ant} · ${h.layer.name || ''}`, side: flatView.value && sideCtx() === 'satcov' ? 'satcov' : 'antenna' }
+}
+function mapLinkObjAt(x, y) {
+  const R = lnkView()
+  if (!R) return null
+  const layers = flatView.value ? _lnkPickGeometry.flat : _lnkPickGeometry.scene
+  if (!layers || !layers.length) return null
+  const id = pickLinkGeometry(layers, { screenOfLL: R.screenOfLL, pickWidth: stagePickWidth(R) }, flatView.value, x, y)
+  const link = id != null ? links.value.find((l) => l.id === id && l.show !== false) : null
+  return link ? { kind: 'link', id: link.id, name: lnk.nameOf(link) } : null
 }
 function mapObjAt(x, y) {
   const h = entHitAt(x, y, ['station', 'point', 'vehicle'])
@@ -13448,31 +13560,37 @@ function mapObjAt(x, y) {
   if (h && h.kind === 'point') { const p = points.value.find((q) => q.id === h.id); if (p) return { kind: 'point', id: p.id, name: (p.name || '').trim() || fmtLL(p.lat, p.lon), lat: p.lat, lon: p.lon, hit: h } }
   const a = h && h.kind === 'vehicle' ? { k: 'tj', id: h.id } : lnkAreaAt(x, y)
   if (a && a.k === 'tj') { const t = trajectories.value.find((q) => q.id === a.id); if (t) return { kind: 'traj', id: t.id, name: (t.name || '').trim() || '航迹', hit: h && h.kind === 'vehicle' ? h : null } }
+  const link = mapLinkObjAt(x, y)
+  if (link) return link
   if (a && a.k === 'pg') { const pg = polys.value.find((q) => q.id === a.id); if (pg) return { kind: 'poly', id: pg.id, name: (pg.name || '').trim() || 'Polygon' } }
-  return null
+  return coverageObjAt(x, y)
 }
 const mapToolBusy = () => !!(mapTool.value || following.value || flatFollowing.value || (lnk.pickEd && lnk.pickEd.value) || ctxMenu.value)
 function onStageHover(e) {
   onStageShiftSync(e)
-  if (e.buttons || e.pointerType === 'touch') { if (hoverTag.value) hoverTag.value = null; return }
+  if (e.buttons || e.pointerType === 'touch' || !mapCanvasTarget(e)) { onStageLeave(); return }
   _hovEv = { x: e.clientX, y: e.clientY }
   if (!_hovRaf) _hovRaf = requestAnimationFrame(hoverStep)
 }
 function hoverStep() {
   _hovRaf = 0
   const p = _hovEv
-  if (!p || mapToolBusy()) { if (hoverTag.value) hoverTag.value = null; return }
-  // 拾取在大星座里不算便宜（点云射线逐点测）：一帧最多测一次，且 40 ms 内不重测（光标停住时名字签保持）
+  if (!p || mapToolBusy()) { onStageLeave(); return }
+  // 拾取在大星座里不算便宜（点云射线逐点测）：一帧最多测一次，且 40 ms 内不重测（光标停住时名字签保持）；滚轮缩放期间让位给渲染帧
   const now = performance.now()
-  if (now - _hovAt < 40) { _hovRaf = requestAnimationFrame(hoverStep); return }
+  if (now - _hovAt < 40 || now - _stageWheelAt < 80) { _hovRaf = requestAnimationFrame(hoverStep); return }
   _hovAt = now
-  let text = satNameAt(p.x, p.y)
-  if (!text) { const o = mapObjAt(p.x, p.y); text = o ? o.name : '' }
-  hoverTag.value = text ? { x: p.x, y: p.y, text } : null
+  const sat = satEntryAt(p.x, p.y), o = sat ? null : mapObjAt(p.x, p.y)
+  const text = sat ? String(sat.name || sat.noradId || '') : (o ? o.name : '')
+  const key = sat ? 'sat:' + satIdOf(sat) : (o ? o.kind + ':' + o.id : '')
+  hoverObjectKey.value = key
+  objectHoverLabel.update(key, text ? { x: p.x, y: p.y, text } : null)
 }
-function onStageLeave() { _hovEv = null; if (hoverTag.value) hoverTag.value = null }
+function onStageLeave() { _hovEv = null; hoverObjectKey.value = ''; objectHoverLabel.reset(); if (_hovRaf) cancelAnimationFrame(_hovRaf); _hovRaf = 0 }
+onBeforeUnmount(() => { onStageLeave(); objectHoverLabel.dispose() })
 function onStagePointerDown(e) {
-  _stgDown = e.button === 0 ? { x: e.clientX, y: e.clientY } : null
+  onStageLeave()
+  _stgDown = e.button === 0 && mapCanvasTarget(e) ? { x: e.clientX, y: e.clientY } : null
   navDrag.value = e.button === 0 && e.shiftKey && navLock.value
 }
 function onStagePointerUp(e) {
@@ -13489,22 +13607,78 @@ function mapSelRing(h) {
   if (flat && flat.setDropHighlight) flat.setDropHighlight(flatView.value ? h : null)
 }
 function clearMapSel() { if (mapSel.value) { mapSel.value = null; mapSelRing(null) } }
-const MAP_OBJ_WORD = { station: '地球站', point: '点标记', traj: '航迹', poly: 'Polygon' }
+const MAP_OBJ_WORD = { station: '地球站', point: '点标记', traj: '航迹', poly: 'Polygon', coverage: '覆盖图', link: '链路' }
 function selectMapObj(o) {
-  mapSel.value = { kind: o.kind, id: o.id }
+  mapSel.value = { ...o, hit: undefined }
   mapSelRing(o.hit || null)
   if (mkGroupOf(o.kind)) { setSecOpen('mko-' + mkGroupOf(o.kind), true); mkSel.value = { g: mkGroupOf(o.kind), id: o.id } }   // 标记面板的树跟着选中
   const ll = Number.isFinite(o.lat) && Number.isFinite(o.lon) ? ' · ' + fmtLL(o.lat, o.lon) : ''
-  const acts = [{ label: '在列表中定位', run: () => revealMapObj(o) }]
-  if (o.kind === 'station') acts.unshift({ label: '属性…', run: () => openStationDlg({ id: o.id, lat: o.lat, lon: o.lon }) })
+  const acts = [{ label: '对象设置…', run: () => openMapObjectSettings(o) }]
   showStatus(`${MAP_OBJ_WORD[o.kind] || ''}「${o.name}」${ll}`, { actions: acts, ms: 10000 })
 }
 function revealMapObj(o) {
   if (mkGroupOf(o.kind)) mkReveal(o.kind, o.id)
-  else if (o.kind === 'poly') revealEl('poly', ['poly-list'], `.plg[data-pg="${o.id}"]`)
+  else if (o.kind === 'poly') return revealEl('poly', ['poly-list'], `.plg[data-pg="${CSS.escape(o.id)}"]`)
+  else if (o.kind === 'coverage') return openMapObjectSettings(o)
+}
+const mapCanvasTarget = (e) => !!(e.target && e.target.tagName === 'CANVAS' && ((el.value && el.value.contains(e.target)) || e.target === flatCanvas.value))
+let objectSettingsSeq = 0
+async function openMapObjectSettings(o) {
+  const seq = ++objectSettingsSeq
+  if (!o) return
+  if (o.kind === 'sat') {
+    const sat = satEntryById(o.id)
+    if (!sat || !requireActivation()) return
+    const node = sat._grdFolder && grdSats.value.find((n) => n.folder === sat._grdFolder)
+    if (node) { editSat(node); return }
+    const cfg = String(sat.group || '').startsWith('cc_') ? customConst.list.value.find((c) => c.id === sat.group.slice(3)) : null
+    if (cfg) { openConstWizard(cfg); return }
+    selectSat(sat, false, false); shellUi.satInfo = true
+    return
+  }
+  const group = mkGroupOf(o.kind)
+  if (group) {
+    const obj = mkObj({ g: group, id: o.id })
+    if (!obj || !requestSide('markers')) return
+    o = { ...o, name: mkNameOf(group, obj).name }
+    selectMapObj(o); mkQ.value = ''; setSecOpen('mko-' + group, true); mkSelect({ g: group, id: o.id })
+    await revealEl('markers', [], '.mki')
+  } else if (o.kind === 'link') {
+    if (!links.value.some((l) => l.id === o.id) || !requestSide('links')) return
+    lnk.selId.value = o.id
+    selectMapObj(o); pushLinks()
+    await revealEl('links', ['lk-list', 'lk-insp'], '.lk-detail')
+  } else if (o.kind === 'poly') {
+    if (!polys.value.some((p) => p.id === o.id) || !requestSide('poly')) return
+    selectMapObj(o)
+    await revealMapObj(o)
+  } else if (o.kind === 'coverage' && o.itemId) {
+    const it = bm.items.value.find((i) => i.id === o.itemId), ba = it && it.batches.find((b) => b.id === o.batchId)
+    if (!ba || !ba.beams.includes(o.beamId) || !requestSide('gxt')) return
+    ba.q = ''; selectMapObj(o)
+    await revealEl('gxt', [], `.batch[data-batch="${CSS.escape(ba.id)}"] .chk[data-beam="${CSS.escape(o.beamId)}"]`)
+  } else if (o.kind === 'coverage' && o.antKey) {
+    const sat = grdSats.value.find((s) => s.folder === o.folder), a = sat && sat.antennas.find((b) => b.name === o.ant)
+    const side = o.side || 'antenna'
+    if (!a || !requestSide(side)) return
+    selectMapObj(o)
+    try {
+      if (!(await grd.ensureAntLoaded(o.antKey))) return
+      if (seq !== objectSettingsSeq || shellUi.side !== side) return
+      await (side === 'satcov' ? satcov : grd).setActive(sat, a, { face: false })
+      if (seq !== objectSettingsSeq || shellUi.side !== side) return
+      // 只展开设置，不切换勾选、不移动相机。
+      await revealSection(side, 'grd-set')
+    } catch (err) { reportError('打开覆盖图设置失败', err) }
+  }
 }
 // 选中的对象被删了 / 隐藏了 → 收掉高亮环
 watch(() => { const s = mapSel.value; if (!s) return true
+  if (s.kind === 'coverage') {
+    if (s.itemId) { const it = bm.items.value.find((i) => i.id === s.itemId), ba = it && it.batches.find((b) => b.id === s.batchId); return !bm.cleared.value && !!ba && ba.beams.includes(s.beamId) }
+    return (s.side === 'satcov' ? satcov.selected.value : grd.selected.value).includes(s.antKey)
+  }
+  if (s.kind === 'link') return links.value.some((l) => l.id === s.id && l.show !== false)
   const L = s.kind === 'station' ? stations.value : s.kind === 'point' ? points.value : s.kind === 'traj' ? trajectories.value : polys.value
   const x = L.find((q) => q.id === s.id); return !!x && x.show !== false }, (ok) => { if (!ok) clearMapSel() })
 
@@ -13554,6 +13728,7 @@ const mapTool = computed(() => { for (const [k, on] of MAP_TOOLS) if (on()) retu
 // 地图只认 Shift + 左键拖动（2D 平移 / 3D 转地球）。两个渲染器各自的模态开着也自认工具态，这把锁补上
 // 渲染器看不见的那几种（建链、卫星点选走窗口级拾取）。横幅一律挂同一枚 Shift 键帽（ShiftNavHint）
 const navLock = computed(() => !!(mapTool.value || (satModal.value && satPick.value)))
+watch(() => navLock.value || mapToolBusy(), (busy) => { if (busy) onStageLeave() })
 watch(navLock, (v) => { if (scene) scene.setToolLock(v); if (flat) flat.setToolLock(v) }, { flush: 'sync' })
 // 舞台光标：工具态里按住 Shift = 抓手，Shift 拖动中 = 抓紧（压过各工具自己的十字 / 移动光标，见 .nav-shift）
 const navDrag = ref(false)
@@ -13739,6 +13914,8 @@ onMounted(async () => {
     redraw: redrawSats,
     openAddSat: () => openAddSat(true),
     openEditSat: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); if (n) editSat(n, true) },
+    isSatModalOpen: () => !!(satModal.value && satModal.value.hideViz),
+    closeSatModal,
     livePos: (folder) => { const n = grdSats.value.find((s) => s.folder === folder); return n ? satLivePos(n) : null }   // 实时星下点（文件管理器树行经度用）
   })
   fileBridge.collectBeamMap = recollectBeamMap   // 文件管理「当前覆盖可编程导出…」：与菜单「导出可编程波束地图…」同一份采集
@@ -13967,7 +14144,7 @@ onBeforeUnmount(() => {
       <div
         ref="stageWrapEl" class="stage-wrap" data-pane="stage" :class="{ dragon: impDragOver, shown: stageShown, 'lnk-hov': lnkCandHov, 'obj-hov': hoverTagOn, 'nav-shift': navLock && shiftDown, 'nav-drag': navDrag }"
         @dragenter="impDragEnter" @dragover="impDragOverH" @dragleave="impDragLeave" @drop="onImpDrop"
-        @pointermove="onStageHover" @pointerleave="onStageLeave" @pointerdown="onStagePointerDown" @pointerup="onStagePointerUp" @pointercancel="navDrag = false"
+        @wheel.passive="onStageWheel" @pointermove="onStageHover" @pointerleave="onStageLeave" @pointerdown="onStagePointerDown" @pointerup="onStagePointerUp" @pointercancel="navDrag = false"
       >
         <!-- 悬停名字签：光标压在卫星 / 站 / 点 / 航迹 / Polygon 上时显示它的名字（运行时数据，不吃指针） -->
         <RenderIsolate><div v-if="hoverTag" class="hov-tag" :style="{ left: (hoverTag.x + 14) + 'px', top: (hoverTag.y + 12) + 'px' }" data-i18n-skip>{{ hoverTag.text }}</div></RenderIsolate>
@@ -14187,6 +14364,7 @@ onBeforeUnmount(() => {
               :exp-items="expList" :exp-loading="expLoading" :exp-error="expErr" :exp-actions="expActions"
               :search="setSearch" :menu-items="setMenuItems" :add-items="addItems" :epoch="customList.length ? scenarioEpochLocal : null" :default-color="DEFAULT_SAT_HEX"
               @toggle="r => toggleSet(r.id)" @solo="r => soloSet(r.id)" @restore="restoreSets"
+              @hide-all="hideAllSets" @restore-hidden="restoreHiddenSets" @search-show="applyFilter()"
               @expand="r => expToggle(r.id, r.name)" @action="setAction" @add="onAdd" @reorder="reorderSet"
               @color="setColorOf" @color-reset="r => setColorOf(r, '')" @rename="setRename"
               @search-input="v => onSearch({ target: { value: v } })" @search-clear="clearSearch" @search-pick="pickResult" @search-toggle-pick="toggleResultSel" @open-finder="openFinder"
@@ -14212,7 +14390,7 @@ onBeforeUnmount(() => {
 
         <!-- 波束地图显示（覆盖库：GXT / KML / JSON / 脚本导入）：界面在 BeamMapPanel.vue，状态与上图在 bm（useBeamMapDisplay） -->
         <div v-show="shellUi.side === 'gxt'" class="sview">
-          <BeamMapPanel v-if="covOpen" :bm="bm" />
+          <BeamMapPanel v-if="covOpen" :bm="bm" :selected="mapSel?.kind === 'coverage' ? mapSel : null" />
         </div>
 
         <!-- Polygon：协调区多边形的绘制 / 调点 / 扩缩 / 导出 -->
@@ -14226,7 +14404,7 @@ onBeforeUnmount(() => {
           <template v-if="isSecOpen('poly-list')">
           <div v-if="!polys.length && !polyDrawId" class="tip">暂无 Polygon。</div>
           <!-- 这一行的就地修改（线色 / 名称 / 数值 / 填充 / 线粗 / 字号 / 顶点表格）按一段记撤销：首个 input / change 在捕获阶段拍 before，change / 离开收尾 -->
-          <div v-for="pg in polys" :key="pg.id" class="plg" :data-pg="pg.id" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id, hid: pg.show === false }"
+          <div v-for="pg in polys" :key="pg.id" class="plg" :data-pg="pg.id" :class="{ act: polyDrawId === pg.id || polyEditId === pg.id || polyMoveId === pg.id || (mapSel?.kind === 'poly' && mapSel.id === pg.id), hid: pg.show === false }"
                @input.capture="polyEditBegin(pg)" @change.capture="polyEditBegin(pg)" @change="polyEditEnd(pg)" @focusout="polyEditEnd(pg)">
             <div class="plgh">
               <button type="button" class="layersw" :class="{ on: pg.show !== false }" role="switch" :aria-checked="pg.show !== false ? 'true' : 'false'" :title="pg.show !== false ? '隐藏该 Polygon（数据保留）' : '显示该 Polygon'" @click="togglePoly(pg)"><i></i></button>
@@ -15223,7 +15401,7 @@ onBeforeUnmount(() => {
             </template>
           </div>
 
-          <div v-if="lnkSel" class="sec">
+          <div v-if="lnkSel" class="sec lk-detail">
             <div class="sect acc" data-sec="lk-insp" :class="{ open: isSecOpen('lk-insp') }" @click="toggleSec('lk-insp')" role="button" tabindex="0" :aria-expanded="isSecOpen('lk-insp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('lk-insp')" @keydown.space.self.prevent="toggleSec('lk-insp')">
               <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('lk-insp') }" :size="12" /><span>链路详情</span>
               <button type="button" class="lnk" title="按相反信号流向复制一条独立链路" @click.stop="lnkReverse">生成反向链路</button>
@@ -16808,10 +16986,11 @@ onBeforeUnmount(() => {
     </RenderIsolate>
 
     <!-- 卫星编辑弹窗（单独对话框）；点选模式下折叠为顶部横幅，便于点击地图上的卫星 -->
-    <!-- hideViz（从文件管理器调起）：浮到文件管理器之上与之共存（提升 z-index 并改 fixed 定位） -->
+    <!-- 文件管理调起时 Teleport 到 body，避开主界面的层叠上下文，并使用子弹窗层级 -->
     <!-- 非 hideViz＝对着地图编辑：挂 sat-live 靠边停，改一处落一处的效果得看得见（见 applySatLive） -->
+    <Teleport to="body" :disabled="!satModal || !satModal.hideViz">
     <div v-if="satModal && !satPick" class="sat-mask" :class="{ 'sat-overlay': satModal.hideViz, 'sat-live': !satModal.hideViz }">
-      <div class="sat-dlg">
+      <div class="sat-dlg" role="dialog" :aria-modal="satModal.hideViz ? 'true' : undefined" :aria-label="satModal.folder ? '编辑卫星' : '添加卫星'">
         <div class="sdh sdh-win"><span class="sdt">{{ satModal.folder ? '编辑卫星' : '添加卫星' }}</span><button class="winx" type="button" aria-label="关闭" title="关闭" @click="closeSatModal"><Icon name="x" :size="12" /></button></div>
         <div class="sdbody">
           <div class="sdiv">卫星（图标 / 卫星名）</div>
@@ -16863,6 +17042,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    </Teleport>
 
     <!-- 独立仰角线弹窗：与「添加/编辑卫星」弹窗脱钩，只填位置 + 仰角线参数，不涉及图标/卫星名/星座关联 -->
     <AppDialog v-if="elevModal" :title="elevModal.folder ? '编辑仰角线' : '添加仰角线'" :width="320" flush dialog-class="el-dlg" @close="closeElevModal">
@@ -17166,6 +17347,9 @@ onBeforeUnmount(() => {
         </template>
         <!-- 菜单头：压着的对象名（运行时数据） -->
         <div v-if="ctxObjName" class="ctx-hd menu-hd" data-i18n-skip :title="ctxObjName">{{ ctxObjName }}</div>
+        <button v-if="ctxObject" type="button" class="ctx-item menu-item" role="menuitem" @click="ctxObjectSettings">对象设置…</button>
+        <button v-if="ctxObject && !lnk.draw.value" type="button" class="ctx-item menu-item" role="menuitem" @click="ctxHideObject">隐藏</button>
+        <div v-if="ctxObject" class="ctx-sep menu-sep" role="separator"></div>
         <!-- 压在一颗星上：聚焦 / 加入 / 移出（右键里原先没有「聚焦」） -->
         <template v-if="ctxMenu.sid && !lnk.draw.value">
           <button type="button" v-if="!ctxSatFocused" class="ctx-item menu-item" role="menuitem" @click="ctxFocusSat('only')">聚焦</button>
@@ -17190,15 +17374,12 @@ onBeforeUnmount(() => {
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('edit')">调整顶点</button>
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('move')">整体拖动</button>
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('cont')">继续绘制</button>
-          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('hide')">隐藏</button>
-          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxPolyAct('reveal')">在列表中定位</button>
         </template>
         <!-- 压着航迹（载具头 / 航迹线）：航迹时间、继续描绘、调整航点 -->
         <template v-if="ctxTraj && !lnk.draw.value">
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('time')">航迹时间…</button>
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('draw')">继续描绘</button>
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('pts')">调整航点</button>
-          <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxTrajAct('reveal')">在列表中定位</button>
         </template>
         <!-- 压着卫星 / 地球站 / 点标记：带上下文打开计算窗（二级菜单）；行尾是将带进去的那颗星 -->
         <button type="button" v-if="ctxAna.items.length" class="ctx-item menu-item ctx-subp" role="menuitem" :class="{ on: !!ctxSub, hi: !!ctxSub }" @mouseenter="openCtxSub" @click="openCtxSub">
@@ -17207,13 +17388,10 @@ onBeforeUnmount(() => {
         <div v-if="following || flatFollowing || ctxMenu.sid || ctxAna.items.length || (ctxMenu.area && !lnk.draw.value) || ctxPoly || ctxTraj" class="ctx-sep menu-sep" role="separator"></div>
         <!-- 压着地球站 / 点标记 / 载具头：挂 / 换 / 卸模型 -->
         <template v-if="ctxMenu.ent">
-          <button type="button" v-if="ctxMenu.ent.kind === 'station'" class="ctx-item menu-item" role="menuitem" @click="ctxStationProps">地球站属性…</button>
           <button type="button" v-if="ctxMenu.ent.kind === 'station' && !lnk.draw.value" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('st')">从此站新建链路</button>
           <button type="button" v-if="ctxMenu.ent.kind === 'point' && !lnk.draw.value" class="ctx-item menu-item" role="menuitem" @click="ctxLinkFrom('st')">从此点新建链路</button>
           <template v-if="(ctxMenu.ent.kind === 'station' || ctxMenu.ent.kind === 'point') && !lnk.draw.value">
             <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('move')">调整位置</button>
-            <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('hide')">隐藏</button>
-            <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxMkAct('reveal')">在列表中定位</button>
           </template>
           <button type="button" class="ctx-item menu-item" role="menuitem" @click="ctxEntModel">模型…</button>
           <button type="button" v-if="ctxMenu.ent.has" class="ctx-item menu-item" role="menuitem" @click="ctxEntUnmount">移除模型</button>
@@ -17227,6 +17405,7 @@ onBeforeUnmount(() => {
         <button type="button" class="ctx-item menu-item" role="menuitem" :class="{ dis: !ctxMenu.ll }" @click="ctxSetLandColor">设置此国大地颜色</button>
         <div class="ctx-sep menu-sep" role="separator"></div>
         <button type="button" v-if="ctxHave.pt" class="ctx-item menu-item" role="menuitem" @click="ctxHidePoints">隐藏所有点标记</button>
+        <button type="button" v-if="hiddenMapSatellites.length" class="ctx-item menu-item" role="menuitem" @click="ctxShowHiddenSatellites">显示隐藏的卫星</button>
         <button type="button" v-if="ctxHave.st" class="ctx-item menu-item" role="menuitem" @click="ctxHideStations">隐藏所有地球站</button>
         <button type="button" v-if="ctxHave.tj" class="ctx-item menu-item" role="menuitem" @click="ctxHideTrajs">隐藏所有航迹</button>
         <button type="button" v-if="(ctxHave.pt ? 1 : 0) + (ctxHave.st ? 1 : 0) + (ctxHave.tj ? 1 : 0) > 1" class="ctx-item menu-item" role="menuitem" @click="ctxHideAllMk">隐藏所有标记</button>
@@ -18844,7 +19023,7 @@ html[lang="en"] .plgl { flex: 0 1 auto; min-width: 52px; max-width: 45%; white-s
 .sdh.sdh-win { align-items: stretch; padding: 0; }
 .sdh.sdh-win .sdt { padding: 11px 14px; align-self: center; }
 /* 从文件管理器（z2000 浮层）调起时，提升到其上方并改 fixed，以便两个弹窗共存 */
-.sat-mask.sat-overlay { position: fixed; z-index: var(--z-dialog); }
+.sat-mask.sat-overlay { position: fixed; z-index: var(--z-dialog-pop); }
 /* 对话框框体：全软件一档（--r-card + --shadow-3 + 160ms 上浮入场）；遮罩走 --scrim、瞬时出现，出场瞬时 */
 .sat-dlg { width: 320px; max-height: 86%; overflow-y: auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); display: flex; flex-direction: column; animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .sdh { display: flex; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); }

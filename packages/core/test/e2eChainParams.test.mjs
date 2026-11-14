@@ -518,5 +518,24 @@ function mkRow() {
   }
 }
 
+// 星间可用度在两种跳参数中均有默认值，激光按跳字段传递，不混进光学参数。
+{
+  for (const link of ['rf', 'laser']) {
+    const a = newSatNode('regen', 'A'), b = newSatNode('regen', 'B')
+    a.carrier = defaultCarrier()
+    const hop = newHop(link); hop.rangeKm = '3000'
+    const row = { nodes: [a, b], hops: [hop] }
+    ok(link + ' 新跳默认可用度 100%', hop.availability === '100')
+    hop.availability = '98.25'
+    const chain = buildChain(row, RESOLVE)
+    ok(link + ' buildChain 传递星间可用度', chain.hops[0].availability === '98.25')
+    if (link === 'laser') ok('激光可用度存于跳级，不混入 laser 光学参数', !('availability' in chain.hops[0].laser))
+    hop.availability = 0
+    ok(link + ' 数值 0% 不被缺省值覆盖', buildChain(row, RESOLVE).hops[0].availability === 0)
+    delete hop.availability
+    ok(link + ' 旧跳缺可用度按字段默认值补齐', buildChain(row, RESOLVE).hops[0].availability === '100')
+  }
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)
 process.exit(fail ? 1 : 0)

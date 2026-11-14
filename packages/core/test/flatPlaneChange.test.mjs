@@ -184,5 +184,17 @@ f.setOnZoom((t) => zoomCalls.push(t))
     /window\.addEventListener\('beforeunload', flushViewSave\)/.test(VUE) && /window\.removeEventListener\('beforeunload', flushViewSave\)\n\s*flushViewSave\(\)/.test(VUE))
 }
 
+const dblCanvas = mkCanvas()
+let doubleClick
+dblCanvas.addEventListener = (name, fn) => { if (name === 'dblclick') doubleClick = fn }
+const dblMap = createFlatCoverage(dblCanvas)
+dblMap.resize(); dblMap.setZoom(0.8)
+let dblZoom
+dblMap.setOnZoom((v) => { dblZoom = v })
+doubleClick()
+ok('原有双击恢复全图：恢复缩放并回填缩放条', dblMap.getZoom() < 0.8 && dblZoom === dblMap.getZoom())
+dblMap.setZoom(0.8); dblMap.setToolLock(true); doubleClick()
+ok('绘制等工具态保留原双击语义，不恢复全图', Math.abs(dblMap.getZoom() - 0.8) < 1e-9)
+
 console.log('\nflatPlaneChange: ' + pass + ' passed, ' + fail + ' failed')
 process.exit(fail ? 1 : 0)   // 平面渲染器起了几个空闲定时器（量刷新周期 / 预热 110m），不等它们

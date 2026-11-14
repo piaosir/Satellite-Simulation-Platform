@@ -104,7 +104,7 @@ export async function revealRow(view, keys, label) {
 
 const isHeading = (e) => e.classList.contains('sect') || e.classList.contains('shd') || e.hasAttribute('data-sec')
 function findHeading(list) {
-  for (const k of list) { const el = document.querySelector('[data-sec="' + k + '"]'); if (el) return el }
+  for (const k of list) { const el = [...document.querySelectorAll('[data-sec="' + k + '"]')].find((e) => e.getClientRects().length); if (el) return el }
   return null
 }
 // Teleport 随 side 挂载、分区随展开态渲染：等一次 tick + 两帧再找元素

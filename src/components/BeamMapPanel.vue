@@ -11,7 +11,8 @@ import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { covNav } from '../stores/coveragePanels'
 
 const props = defineProps({
-  bm: { type: Object, required: true }   // useBeamMapDisplay 活实例
+  bm: { type: Object, required: true },   // useBeamMapDisplay 活实例
+  selected: { type: Object, default: null }
 })
 const bm = props.bm
 const LV_DASH = [['', '跟批次'], ['solid', '实线'], ['dash', '虚线'], ['dot', '点线'], ['dashdot', '点划线']]
@@ -68,7 +69,7 @@ const byBeam = (it, ba) => bm.isBeamScheme(it, ba)
         </select>
       </div>
 
-      <div v-for="(ba, bi) in it.batches" :key="ba.id" class="batch">
+      <div v-for="(ba, bi) in it.batches" :key="ba.id" class="batch" :data-batch="ba.id">
         <div class="bah">
           <input class="bnm" :value="ba.name" :placeholder="'批次' + (bi + 1)" @input="(e) => { ba.name = e.target.value }" />
           <button type="button" class="ibtn sm danger" title="删除批次" @click="bm.removeBatch(it, ba)"><Icon name="x" :size="12" /></button>
@@ -81,7 +82,7 @@ const byBeam = (it, ba) => bm.isBeamScheme(it, ba)
         </div>
         <input class="ci bq search-field" :value="ba.q" placeholder="搜索：拉萨 / Beam 3，或序号 1-62、1,3,5" @input="(e) => { ba.q = e.target.value }" />
         <div class="list">
-          <label v-for="r in bm.filteredRows(it, ba)" :key="r.id" class="chk" :title="r.tip || null">
+          <label v-for="r in bm.filteredRows(it, ba)" :key="r.id" class="chk" :data-beam="r.id" :class="{ 'object-selected': selected?.itemId === it.id && selected.batchId === ba.id && selected.beamId === r.id }" :title="r.tip || null">
             <input type="checkbox" :checked="ba.beams.includes(r.id)" @change="bm.toggleBeam(it, ba, r.id)" />
             <span class="bseq">{{ r.seq }}</span><span class="bl" data-i18n-skip>{{ r.label }}</span>
             <input v-if="byBeam(it, ba) && ba.beams.includes(r.id)" class="lvclr" type="color" title="该波束的颜色" :value="bm.beamColorOf(it, ba, r.id)" @click.stop @input="(e) => bm.setBeamColor(ba, r.id, e.target.value)" />
@@ -178,6 +179,10 @@ const byBeam = (it, ba) => bm.isBeamScheme(it, ba)
     </div>
   </div>
 </template>
+
+<style scoped>
+.chk.object-selected { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
+</style>
 
 <style scoped>
 :where(button).lnk, :where(button).addbatch { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }

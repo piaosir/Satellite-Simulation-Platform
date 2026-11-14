@@ -19,6 +19,8 @@ import {
   resolveRefs, resolveRefId, lockedRefsOf, packEntry, packLib, planImport, adoptLib, pathOf, strictFp, looseFp, emptyLib, shareNgsoSat
 } from '../../../src/shared/lbShare.js'
 import { stableStringify } from '../../../src/shared/configDirty.js'
+import { createE2eShareAdapter } from '../../../src/e2e/e2eShare.js'
+import { buildChain, defaultCarrier, newEsNode, newSatNode, newHop, serializeChainsState, orbitSpecOf } from '../../../src/e2e/e2eParams.js'
 
 let pass = 0, fail = 0
 function ok(name, cond, extra) {
@@ -411,6 +413,63 @@ console.log('=== 链路预算分享包：编解码 / 闭包 / 并库计划 ===\n
   ok('旧结构场景不参与闭包（自带内嵌库）', (() => { const r = rgRefs({ tx: [{ stationId: 'es2' }] }); return !r.es.length && !r.carrier.length && !r.sat.length })())
   const legacySt = { tx: [{ stationId: 'es2' }] }
   ok('旧结构场景不被钉引用（原样返回同一份，不误伤内嵌库的引用）', rgPin(legacySt) === legacySt)
+}
+
+// 端到端：直接调用工作台使用的适配层，跨不同默认库往返，验证每跳的入参保持一致。
+{
+  const es = [
+    { id: 'es1', name: '默认站', form: { antennaDiameter: '9', opPowerW: '120' } },
+    { id: 'es2', name: '接收站', form: { antennaDiameter: '3.7', opPowerW: '20' } }
+  ]
+  const sat = [{ id: 'sat1', name: '中继星', form: { orbitClass: 'NGSO', orbitAltitude: '550', gt: '2', eirp: '28' },
+    ngsoSat: { mode: 'tree', folder: 'local-tree-node', name: '中继星', noradId: 12345,
+      orbit: { type: 'elements', altKm: 550, inclDeg: 53, epoch: '2026-11-14T00:00:00Z' } } }]
+  const sender = createE2eShareAdapter({ esConfigs: es, satConfigs: sat })
+  const tx = newEsNode('北京'), relay = newSatNode('regen', '中继'), rx = newEsNode('上海')
+  tx.esId = ''; rx.esId = 'es2'; relay.satId = ''
+  tx.carrier = { ...defaultCarrier(), infoRate: '2048' }
+  relay.carrier = { ...defaultCarrier(), modulation: '8PSK', fec: '2/3' }
+  relay.ov = { gt: '4.5' }
+  const hops = [newHop('rf'), newHop('rf')]
+  for (const h of hops) { h.slantRange = '1200'; h.elevation = '30' }
+  const state = serializeChainsState([{ name: '端到端示例', nameAuto: false, nodes: [tx, relay, rx], hops, sla: { adopt: { cir: '1024' } } }], 'auto')
+  state.geoT0Mode = 'manual'; state.geoT0ISO = '2026-11-14T00:00:00Z'
+  const before = stableStringify(state)
+  const pinned = sender.pinRefs(state)
+  const libs = { es, carrier: [], sat }
+  const ids = lockedRefsOf([state], sender.refsOf, libs)
+  ok('端到端：闭包包含全部节点引用且无载波库', ids.es.size === 2 && ids.sat.size === 1 && ids.carrier.size === 0)
+  ok('端到端：留空引用钉住发送方默认条目', pinned.chains[0].nodes[0].esId === 'es1' && pinned.chains[0].nodes[1].satId === 'sat1')
+  ok('端到端：打包不修改原场景', stableStringify(state) === before)
+  // 本窗解析不按名字兜底：故意让失效 id 与第二份条目的名字相同。
+  const bad = JSON.parse(before); bad.chains[0].nodes[0].esId = '接收站'
+  ok('端到端：失效 id 按引擎回退首份而不误按名称引用', sender.pinRefs(bad).chains[0].nodes[0].esId === 'es1' && sender.refsOf(bad).es[0] === 'es1')
+  const bundle = makeBundle({ mod: 'E2E', configs: [{ name: '端到端示例', path: ['工程'], state: pinned }], lib: packLib(sender.lib, ids) })
+  const back = decodeShare(encodeShare(bundle))
+  ok('端到端：分享码和文件往返一致', stableStringify(decodeShare(bundleFileText(bundle))) === stableStringify(back))
+  ok('端到端：卫星树指针剥离但轨道保持', back.lib.sat[0].ngsoSat.folder === '' && back.lib.sat[0].ngsoSat.mode === 'search' &&
+    stableStringify(orbitSpecOf(back.lib.sat[0])) === stableStringify(orbitSpecOf(sat[0])))
+  const destEs = [{ id: 'es1', name: '另一站', form: { antennaDiameter: '1', opPowerW: '5' } }]
+  const destSat = [{ id: 'sat1', name: '另一星', form: { orbitClass: 'GSO', gt: '-10' } }]
+  const receiver = createE2eShareAdapter({ esConfigs: destEs, satConfigs: destSat,
+    makeEsConfig: () => ({ id: 'import-es-' + (++seq), form: {} }),
+    makeSatConfig: () => ({ id: 'import-sat-' + (++seq), form: {} }) })
+  const ctx = { mod: 'E2E', ...receiver, getConfigs: () => [] }
+  const plan = planImport(back, ctx)
+  const map = adoptLib(plan, ctx)
+  const imported = back.configs[0].state
+  receiver.remapState(imported, map)
+  const resolver = (e, s) => ({ es: (id) => e.find((c) => c.id === id) || e[0], sat: (id) => s.find((c) => c.id === id) || s[0] })
+  ok('端到端：导入到相同 id 的异参数库时新建并改写每个节点', imported.chains[0].nodes.every((nd) => (nd.kind === 'es' ? nd.esId : nd.satId).startsWith('import-')))
+  ok('端到端：跨库往返后引擎链描述子逐字段一致', stableStringify(buildChain(state.chains[0], resolver(es, sat))) === stableStringify(buildChain(imported.chains[0], resolver(destEs, destSat))))
+  ok('端到端：段体制、行内覆盖、SLA、几何起点原样保留', stableStringify(imported.chains[0].nodes[1].carrier) === stableStringify(relay.carrier) &&
+    imported.chains[0].nodes[1].ov.gt === '4.5' && imported.chains[0].sla.adopt.cir === '1024' && imported.geoMode === 'auto' && imported.geoT0ISO === state.geoT0ISO)
+  ok('端到端：重复导入复用同参数资源', planImport(bundle, ctx).counts.libNew === 0)
+  ok('端到端：可以只分享资源库', !planImport(makeBundle({ mod: 'E2E', lib: bundle.lib }), ctx).reject)
+  for (const mod of ['GEO', 'NGSO', 'REGEN']) {
+    ok(`端到端：${mod} 窗口拒收端到端分享包`, !!planImport(bundle, { ...ctx, mod }).reject)
+    ok(`端到端：拒收 ${mod} 分享包`, !!planImport({ ...bundle, mod }, ctx).reject)
+  }
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`)

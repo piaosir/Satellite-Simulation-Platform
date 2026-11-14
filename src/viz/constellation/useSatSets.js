@@ -28,6 +28,8 @@ export function useSatSets() {
   const items = ref({})           // id -> { name?, color?, hidden?: [NORAD…], removed?: true }
   const visible = ref(new Set())  // 可见集合（可含 'q'）
   const solo = ref(null)          // { id, prev: [id…] }：「仅显示」进入前的可见集合留在 prev
+  const saveState = ref('saved')
+  const hiddenSnapshot = ref(null) // 「全部隐藏」的还原点，随存档保留
 
   // 'q'（搜索结果）不落盘：重开时搜索已经没了。「仅显示：搜索结果」时落的是进入仅显示前的可见集合（solo.prev），solo 落 null ——
   // 早先照落 visible，滤掉 'q' 就是空集，搜索后直接关软件（含自动更新重启）重开全部卫星集被关、地图上 0 颗（体检 2026-10-16 #6）
@@ -38,9 +40,11 @@ export function useSatSets() {
         order: order.value,
         items: items.value,
         visible: (q ? s.prev : [...visible.value]).filter((id) => id !== 'q'),
-        solo: s && !q ? { id: s.id, prev: s.prev.filter((x) => x !== 'q') } : null
+        solo: s && !q ? { id: s.id, prev: s.prev.filter((x) => x !== 'q') } : null,
+        hiddenSnapshot: hiddenSnapshot.value
       }))
-    } catch { /* 存储失败不影响功能 */ }
+      saveState.value = 'saved'
+    } catch { saveState.value = 'error' }
   }
   // 读回；返回 false 表示没有存档（调用方按旧存档迁移）
   function load() {
@@ -51,6 +55,7 @@ export function useSatSets() {
     items.value = (s.items && typeof s.items === 'object') ? s.items : {}
     visible.value = new Set(Array.isArray(s.visible) ? s.visible : [])
     solo.value = (s.solo && typeof s.solo.id === 'string') ? { id: s.solo.id, prev: Array.isArray(s.solo.prev) ? s.solo.prev : [] } : null
+    hiddenSnapshot.value = Array.isArray(s.hiddenSnapshot) ? s.hiddenSnapshot.filter((id) => typeof id === 'string' && id !== 'q') : null
     return true
   }
 
@@ -117,7 +122,17 @@ export function useSatSets() {
 
   // —— 显隐 / 仅显示 ——
   const isVisible = (id) => visible.value.has(id)
-  function setVisible(ids) { visible.value = new Set(ids); persist() }
+  function setVisible(ids) { solo.value = null; visible.value = new Set(ids); persist() }
+  function hideAll() {
+    if (visible.value.size) hiddenSnapshot.value = (solo.value && solo.value.id === 'q' ? solo.value.prev : [...visible.value]).filter((id) => id !== 'q')
+    setVisible([])
+  }
+  function restoreHidden(keep) {
+    if (!hiddenSnapshot.value) return
+    const ids = hiddenSnapshot.value.filter((id) => !keep || keep(id))
+    hiddenSnapshot.value = null
+    setVisible(ids)
+  }
   function toggle(id) {
     const next = new Set(visible.value)
     if (next.has(id)) next.delete(id); else next.add(id)
@@ -147,9 +162,9 @@ export function useSatSets() {
   const reset = (id) => setOv(id, { name: '', color: '', hidden: [] })
 
   return {
-    order, items, visible, solo,
+    order, items, visible, solo, saveState, hiddenSnapshot,
     persist, load, ensure, prune, drop, restoreRemoved, move, moveBy, resetOrder,
-    isVisible, setVisible, toggle, soloOn, restore,
+    isVisible, setVisible, toggle, soloOn, restore, hideAll, restoreHidden,
     isRemoved, hasOverride, nameOf, colorOf, hiddenOf, rename, setColor, hide, unhide, reset
   }
 }

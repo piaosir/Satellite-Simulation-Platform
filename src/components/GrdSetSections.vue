@@ -35,6 +35,27 @@ const grd = props.grd
 const st = grd.s
 const isShell = computed(() => props.variant === 'shell')
 
+// 标题里的改名入口与天线树共用改名逻辑，两种覆盖视图同步迁移名称与设置。
+const editAnt = ref(''), editAntVal = ref(''), editAntErr = ref(''), antNameEl = ref(null)
+function startRenameAnt() {
+  if (!grd.active.value) return
+  editAnt.value = grd.active.value; editAntVal.value = grd.activeName(); editAntErr.value = ''
+  nextTick(() => { const el = antNameEl.value; if (el) { el.focus(); el.select() } })
+}
+function cancelRenameAnt() { editAnt.value = ''; editAntVal.value = ''; editAntErr.value = '' }
+function commitRenameAnt() {
+  const key = editAnt.value
+  if (!key) return   // 回车 / 确认后的 blur 不重复提交，Esc 后不落库
+  if (key !== grd.active.value) { cancelRenameAnt(); return }
+  const i = key.indexOf('|')
+  if (grd.renameAntenna(key.slice(0, i), key.slice(i + 1), editAntVal.value) === false) {
+    editAntErr.value = '天线名为空或与同星其他天线重名'
+    return
+  }
+  cancelRenameAnt()
+}
+watch(() => grd.active.value, cancelRenameAnt, { flush: 'sync' })
+
 // ================= 方向图（解析高斯天线才有）=================
 // 记录随 anRev 醒（analyticRecordOf 内部先读它）；非解析天线 → null，整节不出。
 // 树上建的（owner null）→ 就地编辑；波束合成产出的（owner beamsynth）→ 只读，改参数回波束合成。
@@ -327,14 +348,24 @@ const boreTip = computed(() => {
 <template>
   <template v-if="grd.antMeta()">
     <div class="sec">
-      <div class="sect setsect acc" :class="{ open: isSecOpen('grd-set') }" @click="toggleSec('grd-set')">
+      <div class="sect setsect acc" data-sec="grd-set" :class="{ open: isSecOpen('grd-set') }" @click="toggleSec('grd-set')">
         <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-set') }" :size="12" />
         <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
         </svg>
-        <span class="setlbl">天线设置</span><span class="setname" :title="grd.activeName()">{{ grd.activeName() }}</span>
+        <span class="setlbl">天线设置</span>
+        <span v-if="editAnt" class="setrename" @click.stop @dblclick.stop @keydown.stop>
+          <input ref="antNameEl" class="setname-in" v-model="editAntVal" aria-label="天线名称" :aria-invalid="!!editAntErr"
+            @input="editAntErr = ''" @keydown.enter.prevent="commitRenameAnt" @keydown.esc.prevent="cancelRenameAnt" @blur="commitRenameAnt" />
+          <button type="button" class="ibtn sm" title="确认重命名" aria-label="确认重命名" @mousedown.prevent @click="commitRenameAnt"><Icon name="check" :size="12" /></button>
+        </span>
+        <template v-else>
+          <span class="setname" :title="grd.activeName()" data-i18n-skip>{{ grd.activeName() }}</span>
+          <button type="button" class="ibtn sm setrename-btn" title="重命名天线" aria-label="重命名天线" @click.stop="startRenameAnt"><Icon name="pencil" :size="12" /></button>
+        </template>
         <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置仅作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
       </div>
+      <div v-if="editAntErr" class="anerr" role="alert">{{ editAntErr }}</div>
       <template v-if="isSecOpen('grd-set')">
         <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
         <!-- 口径照射记录（model:'aperture'，多馈源口径照射档产物）只能在电磁波束仿真里改：这里不出 STK 参数行，无主时整节不出 -->
@@ -644,8 +675,15 @@ const boreTip = computed(() => {
 /* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款） */
 .setsect { margin: -12px -16px 10px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }
-.setsect .setlbl { color: var(--text); font-weight: 600; }
-.setsect .setname { margin-left: 6px; color: var(--accent); font-weight: 600; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setsect .setlbl { color: var(--text); font-weight: 600; flex: none; }
+/* 名称与编辑框吃满标题剩余宽度，只有空间确实不足时才省略；动作按钮始终保留。 */
+.setsect .setname { flex: 1; margin-left: 6px; min-width: 0; color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setrename { display: flex; flex: 1; align-items: center; gap: 4px; margin-left: 6px; min-width: 0; }
+.setname-in { flex: 1; width: 0; min-width: 0; padding: 0 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); font: inherit; user-select: text; }
+.setname-in:focus { outline: none; border-color: var(--accent); }
+.setname-in[aria-invalid="true"] { border-color: var(--danger); }
+.setsect .setrename-btn, .setrename .ibtn { flex: none; margin-block: -2px; }
+.setsect .editing { flex: none; white-space: nowrap; }
 .sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 1px 6px; }
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 /* 整行都是 label 命中区：指在文字上时复选框也给悬停反馈（同宿主页） */

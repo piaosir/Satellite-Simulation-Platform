@@ -5,7 +5,7 @@
 //   ② 账目与弹窗同一份：矩阵就是 capReportBlock（总报告 §2 同一张表），明细小计＝逐行之和；
 //   ③ 明细只列【列入且算出结果】的链路；未列入 / 计算失败只在汇总范围里报编号；
 //   ④ 链路编号用导出流程给的全篇 #N（noOf），不是弹窗里的节内序号；
-//   ⑤ 计算口径只列真出现的量：NGSO 无可用功率 / 剩余功率、再生式无功率两列、没单价无资费、一组无合计；
+//   ⑤ 计算口径只列真出现的量：不出可用 / 剩余、再生式无功率两列、没单价无资费、一组无合计；
 //   ⑥ 分节只看真出了账的节（激光 null、全不列入的节不算一节）；
 //   ⑦ 英文模型全文无汉字（数据里的名字也用英文喂）；
 //   ⑧ 两个渲染器真出得来文件；Excel 数值格是数（可求和）且显示位数与读数一致。
@@ -78,10 +78,9 @@ function gsoModel(lang, pbw = CAP_PBW.SUM, opts = {}) {
   // 甲星：#1 2000 + #2 3000×4 = 14000 kbps；带宽 1350 + 1350×4 = 6750 kHz；功率 1800 + 900×4 = 5400
   ok('② 小计容量 / 载波带宽 / 功率带宽＝逐行之和', sub[3] === '5' && sub[4] === '14000.000' && sub[5] === '6750.000' && sub[6] === '5400.000', sub.join(' | '))
   ok('② 载波数倍数进逐行', g1.rows[1][3] === '4' && g1.rows[1][4] === '12000.000')
-  const avail = g1.rows.find((x) => x[1] === '可用'), rem = g1.rows.find((x) => x[1] === '剩余')
-  ok('② 可用（缺省＝转发器带宽）与剩余', avail[5] === '36000.000' && avail[6] === '36000.000' && rem[5] === '29250.000' && rem[6] === '30600.000')
+  ok('② 明细仅逐链路与小计，无可用 / 剩余行', g1.rows.length === 3 && g1.rows.at(-1) === sub && !det.some((g) => g.rows.some((x) => /^(可用|剩余)$/.test(x[1]))))
   const g2 = det[1]
-  ok('② 用户给的可用带宽生效', g2.rows.find((x) => x[1] === '可用')[5] === '27000.000')
+  ok('② 存量可用带宽仍用于占用率计算', g2.rows[0][7] === '10.00' && g2.rows.at(-1)[7] === '10.00')
 }
 
 // —— ③ ④ 明细只列列入且算出的；编号用全篇 #N ——
@@ -101,7 +100,7 @@ function gsoModel(lang, pbw = CAP_PBW.SUM, opts = {}) {
 {
   const terms = (defs) => defs.map((d) => d.term)
   const gso = terms(gsoModel('zh').definitions)
-  ok('⑤ GSO：功率带宽 / 可用功率 / 剩余功率 / 年费 / 合计都在', ['功率带宽', '可用功率', '剩余功率', '年费', '单位容量成本', '合计'].every((k) => gso.includes(k)), gso.join('、'))
+  ok('⑤ GSO：保留功率带宽 / 年费 / 合计，删除可用 / 剩余口径', ['功率带宽', '年费', '单位容量成本', '合计'].every((k) => gso.includes(k)) && !gso.some((k) => /^(可用|剩余)/.test(k)), gso.join('、'))
   ok('⑤ GSO 结算带宽＝max', gsoModel('zh').definitions.find((d) => d.term === '结算带宽').formula.includes('max'))
   const ngso = gsoModel('zh', CAP_PBW.LIST)
   const nt = terms(ngso.definitions)
@@ -158,10 +157,15 @@ function gsoModel(lang, pbw = CAP_PBW.SUM, opts = {}) {
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(xbuf)
     ok(`⑧ ${lang} 三张表`, wb.worksheets.length === 3, wb.worksheets.map((w) => w.name).join(' / '))
-    // 明细表里找「36000」那一格：要是数、且 numFmt 三位小数
+    // 明细表里找小计容量「14000」那一格：要是数、且 numFmt 三位小数
     let cell = null
-    wb.worksheets[1].eachRow((row) => row.eachCell((c) => { if (!cell && c.value === 36000) cell = c }))
-    ok(`⑧ ${lang} Excel 数值格是数且按读数位数显示`, cell && cell.numFmt === '0.000', cell ? cell.numFmt : '没找到 36000')
+    wb.worksheets[1].eachRow((row) => row.eachCell((c) => { if (!cell && c.value === 14000) cell = c }))
+    ok(`⑧ ${lang} Excel 数值格是数且按读数位数显示`, cell && cell.numFmt === '0.000', cell ? cell.numFmt : '没找到 14000')
+    let removedRow = false
+    wb.eachSheet((ws) => ws.eachRow((row) => row.eachCell((c) => {
+      if (typeof c.value === 'string' && /^(可用|剩余|Available|Remaining)/.test(c.value)) removedRow = true
+    })))
+    ok(`⑧ ${lang} Excel 三张表均无可用 / 剩余行`, !removedRow)
   }
   // 分节（再生式）也出得来
   const mk = (g) => buildCapModel(ITEMS(false).filter((x) => x.gkey === g), null, { pbw: CAP_PBW.NONE, availDefault: false })

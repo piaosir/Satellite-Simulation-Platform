@@ -239,8 +239,8 @@ function nadirSprite(color) {
 export function createLinkGlobe(container) {
   const w0 = Math.max(1, container.clientWidth || 480), h0 = Math.max(1, container.clientHeight || 320)
   // 不透明底（清屏色 = 页面底色）而非 alpha 通道：出图直接就是不透明的 PNG，
-  // 贴进 Word 不会露出下面的东西。
-  const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
+  // 贴进 Word 不会露出下面的东西。snapshot() 在同一同步任务内 render → toDataURL，无需 preserveDrawingBuffer，让页面滚动合成走零拷贝交换链。
+  const renderer = new THREE.WebGLRenderer({ antialias: true })
   renderer.setSize(w0, h0, false)
   renderer.setPixelRatio(renderScale())
   renderer.domElement.style.width = '100%'
@@ -284,8 +284,14 @@ export function createLinkGlobe(container) {
   let curW = w0, curH = h0
   let dark = false
   let paper = false     // 出图那一帧：纸色（白底、浅色贴图、纸上墨色），见 snapshot
-  let dirty = 6                        // 待渲染帧数：交互/改数时补满，静止时降到 0 不空转
-  const mark = (n) => { dirty = Math.max(dirty, n || 30) }
+  let raf = 0, timer = 0, disposed = false
+  let dirty = 6                        // 待渲染帧数：交互/改数时补满，静止时降到 0 停掉 rAF 与定时器（不空转抢滚动主线程）
+  function schedule() {
+    if (disposed) return
+    if (!raf) raf = requestAnimationFrame(loop)
+    if (!timer) timer = setTimeout(onTimer, 100)
+  }
+  const mark = (n) => { dirty = Math.max(dirty, n || 30); schedule() }
   controls.addEventListener('change', () => mark(2))
 
   // 滚轮缩放：与星座 3D 页（viz/globe3d/scene.js）同一套手感，两颗地球滚起来该是一个软件。
@@ -574,7 +580,6 @@ export function createLinkGlobe(container) {
     }
   }
 
-  let raf = 0, timer = 0, disposed = false
   function step() {
     if (disposed) return
     if (dirty <= 0 && !controls.autoRotate) return
@@ -585,15 +590,21 @@ export function createLinkGlobe(container) {
     renderer.render(scene, camera)
   }
   function loop() {
+    raf = 0
     if (disposed) return
-    raf = requestAnimationFrame(loop)
     step()
+    if (dirty > 0 || controls.autoRotate) schedule()
+    else if (timer) { clearTimeout(timer); timer = 0 }
   }
-  loop()
-  // rAF + 100 ms 定时器双保险（同 viz/globe3d/scene.js 的 schedule）：窗口最小化、
-  // 或这张图所在的画布暂时不合成时，rAF 被浏览器节流到 0 fps——只挂 rAF 的话，
-  // 此间换一条链路就再也画不出来，回到前台看到的还是上一条的几何。
-  timer = setInterval(step, 100)
+  // rAF + 100 ms 定时器双保险（同 viz/globe3d/scene.js）：窗口最小化、或画布暂不合成时 rAF 被节流到 0 fps，
+  // 由 100 ms 定时器兜底把 dirty 帧画完；dirty 归零后两者一并停表，静止期零唤醒。
+  function onTimer() {
+    timer = 0
+    if (disposed) return
+    step()
+    if (dirty > 0 || controls.autoRotate) schedule()
+  }
+  schedule()
 
   const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(resize) : null
   if (ro) ro.observe(container)
@@ -611,7 +622,7 @@ export function createLinkGlobe(container) {
       disposed = true
       offBasemap()
       if (raf) cancelAnimationFrame(raf)
-      if (timer) clearInterval(timer)
+      if (timer) clearTimeout(timer)
       if (ro) ro.disconnect()
       clearLayer()
       controls.dispose()

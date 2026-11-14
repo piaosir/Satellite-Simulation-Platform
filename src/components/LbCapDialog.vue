@@ -2,12 +2,12 @@
 // 「容量汇总」对话框（GSO / NGSO / 再生式 三窗共用；功能区「导出 › 容量」打开）。
 //
 // 外壳是 AppDialog，宽一档。本组件不算任何数：账目由 shared/lbCapacity.buildCapModel 算好传进来，
-// 这里只排一张按转发器分组的三线表——组头写转发器身份，组内逐链路一行，组末「小计 / 可用 / 剩余」
-// 三行与资费读数，≥ 2 组时表末合计（体例同频率分配表的分组小计、运营商的传输计划）。
-// 四样自定义回传宿主落盘：列入 / 载波数 → 行上 row.cap；可用带宽 / 可用功率 / 单价 → 场景级 capParams。
+// 这里只排一张按转发器分组的三线表——组头写转发器身份，组内逐链路一行，组末小计与资费读数，
+// ≥ 2 组时表末合计（体例同频率分配表的分组小计、运营商的传输计划）。
+// 自定义回传宿主落盘：列入 / 载波数 → 行上 row.cap；单价 → 场景级 capParams。
 //
-// 功率带宽两列按体制（model.pbw）：'sum' 组内求和并出可用 / 剩余；'list'（NGSO）只逐行列、小计与剩余留空；
-// 'none'（再生式）整列不出。数值着色只有一条规则：超过可用（占用 > 100 %、剩余 < 0）标红。
+// 功率带宽两列按体制（model.pbw）：'sum' 组内求和；'list'（NGSO）只逐行列、小计留空；
+// 'none'（再生式）整列不出。占用 > 100 % 标红。
 import { computed } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
@@ -44,18 +44,10 @@ const fp = (v) => capFx(v, CAP_DEC.pct)
 const fe = (v) => capFx(v, CAP_DEC.eff)
 const ff = (v) => capFx(v, CAP_DEC.fee)
 const fu = (v) => capFx(v, CAP_DEC.unitCost)
-// 可用资源输入框按表的带宽档显示、按 kHz 回存（换档后输入 9 MHz 落库的是 9000 kHz）
-const inBw = (kHz) => (kHz == null || !Number.isFinite(kHz) ? null : parseFloat((kHz * u.value.bw.f).toFixed(6)))
-const phBw = (kHz) => { const v = inBw(kHz); return v == null ? '' : String(v) }
-function setAvail(g, field, v) {
-  emit('param', { key: g.key, field, value: v == null ? null : v / u.value.bw.f })
-}
 
 // 口径进悬停（界面不写说明文字）
 const tipPbw = computed(() => (sumPw.value ? '功率占用 × 转发器带宽 × 载波数' : '各链路最差时刻的功率带宽，组内不求和'))
 const tipPwUse = computed(() => (sumPw.value ? '功率带宽 / 可用功率' : '功率带宽 / 转发器带宽'))
-const tipAvail = computed(() => (sumPw.value ? '留空：可用带宽＝转发器带宽，可用功率＝可用带宽'
-  : mode.value === CAP_PBW.LIST ? '留空：可用带宽＝转发器带宽' : ''))
 const tipBill = computed(() => (sumPw.value ? 'max(Σ载波带宽, Σ功率带宽)' : 'Σ载波带宽'))
 </script>
 
@@ -113,20 +105,6 @@ const tipBill = computed(() => (sumPw.value ? 'max(Σ载波带宽, Σ功率带�
               <td v-if="hasPw" class="c-v">{{ sumPw ? fb(g.pbwKHz) : '' }}</td>
               <td class="c-v" :class="{ 'st-bad': g.bwPct > 100 }">{{ fp(g.bwPct) }}</td>
               <td v-if="hasPw" class="c-v" :class="{ 'st-bad': g.pwPct > 100 }">{{ sumPw ? fp(g.pwPct) : '' }}</td>
-            </tr>
-            <tr class="cd-a">
-              <td></td><td></td><td class="c-l" :title="tipAvail || null">可用</td><td></td><td></td><td></td>
-              <td class="c-v"><NumBox class="cd-in" :model-value="g.availBwUser ? inBw(g.availBwKHz) : null" :placeholder="phBw(g.availBwDef)"
-                allow-empty :min="0" @commit="(v) => setAvail(g, 'bwKHz', v)" /></td>
-              <td v-if="hasPw" class="c-v"><NumBox v-if="sumPw" class="cd-in" :model-value="g.availPwUser ? inBw(g.availPwKHz) : null" :placeholder="phBw(g.availPwDef)"
-                allow-empty :min="0" @commit="(v) => setAvail(g, 'pwKHz', v)" /></td>
-              <td></td><td v-if="hasPw"></td>
-            </tr>
-            <tr class="cd-m">
-              <td></td><td></td><td class="c-l" title="可用 − 小计">剩余</td><td></td><td></td><td></td>
-              <td class="c-v" :class="{ 'st-bad': g.remBwKHz < 0 }">{{ fb(g.remBwKHz) }}</td>
-              <td v-if="hasPw" class="c-v" :class="{ 'st-bad': g.remPwKHz < 0 }">{{ sumPw ? fb(g.remPwKHz) : '' }}</td>
-              <td></td><td v-if="hasPw"></td>
             </tr>
             <tr class="cd-f">
               <td :colspan="ncol">
@@ -217,7 +195,7 @@ const tipBill = computed(() => (sumPw.value ? 'max(Σ载波带宽, Σ功率带�
 .cd-r:hover > td { background: var(--surface); }
 /* 不列入：整行压暗（数还在，只是不进和） */
 .cd-r.off > td:not(.c-k) { color: var(--text-faint); }
-/* 组末三行：小计带一道发丝线、加粗；可用 / 剩余照常字重 */
+/* 组末小计：带一道发丝线、加粗 */
 .cd-s > td { font-weight: 600; color: var(--text); border-top: 1px solid var(--lb-rule-soft); }
 .cd-s > td.c-l { font-weight: 600; }
 /* 资费与效率读数：一行横排，项间留白 */

@@ -399,7 +399,7 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
 
 // ---------- ⑥c 卫星集注册表落盘：「仅显示：搜索结果」时直接关软件（体检 2026-10-16 #6）----------
 // 早先落 visible 时滤掉 'q' 就是空集、solo 落 null；重开（含自动更新重启）全部卫星集被关、地图上 0 颗。
-// 现在落进入仅显示前的可见集合（solo.prev）；页面 init 读到空可见集退回出厂集合（已落成空集的老存档）；clearSearch 不只看命中数。
+// 现在落进入仅显示前的可见集合（solo.prev）；空集合也原样保存与恢复；clearSearch 不只看命中数。
 {
   const mem = new Map(), prevLS = globalThis.localStorage
   globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => { mem.set(k, String(v)) }, removeItem: (k) => { mem.delete(k) } }
@@ -420,7 +420,7 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   const page = readFileSync(new URL('../../../src/pages/ConstellationMap3D.vue', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   const body = (sig) => { const i = page.indexOf(sig), j = page.indexOf('\n}\n', i); return i >= 0 && j > i ? page.slice(i, j) : '' }
   const is = body('function initSatSets(legacy) {')
-  ok(is.includes('} else if (!satSets.visible.value.size) {') && is.includes('satSets.solo.value = null') && is.includes("satSets.setVisible(BUILTIN_KEYS.includes(k0) ? [TREE_SET, 'g:' + k0] : [TREE_SET])"), '初始化：读到空可见集退回出厂集合（卫星天线树 + 出厂内置星座）')
+  ok(!is.includes('else if (!satSets.visible.value.size)') && is.includes('treeNew && satSets.visible.value.size'), '初始化：空可见集合原样保留；升级补天线树只作用于仍有可见项的存档')
   const cs = body('function clearSearch() {')
   ok(cs.includes("const qOn = !!(satSets.solo.value && satSets.solo.value.id === 'q') || satSets.visible.value.has('q')") && cs.includes('if (!qOn && !filterEntries.length && !filterN.value && !filterKw.value) return'), 'clearSearch：搜索 0 命中后清空搜索框 / 点 × 也还原（早退看搜索层在不在，不只看命中数）')
 }

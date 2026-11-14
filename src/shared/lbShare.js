@@ -1,4 +1,4 @@
-// 链路预算「分享包」v3：编解码 + 依赖闭包 + 并库计划。GEO / NGSO / 再生式三窗共用。
+// 链路预算「分享包」v3：编解码 + 依赖闭包 + 并库计划。GEO / NGSO / 再生式 / 端到端四窗共用。
 //
 // 包格式（分享码 = SHARE_PREFIX + URL-safe base64(JSON)；base64 走 TextEncoder 字节，中文安全）：
 //   { app:'satlink', kind:'lbcfg', v:3, mod, from, ts,
@@ -28,7 +28,7 @@ import { stripRetiredKeys, withoutRetiredKeys } from './lbRetiredKeys.js'   // �
 export const SHARE_PREFIX = 'LBCFG1.'
 export const LIB_KINDS = ['es', 'carrier', 'sat']
 export const KIND_LABEL = { es: '地球站', carrier: '载波', sat: '卫星' }
-export const MOD_LABEL = { GEO: 'GEO 静止轨道', NGSO: 'NGSO 非静止轨道', REGEN: '再生式（星上处理）' }
+export const MOD_LABEL = { GEO: 'GEO 静止轨道', NGSO: 'NGSO 非静止轨道', REGEN: '再生式（星上处理）', E2E: '端到端' }
 
 // —— base64（浏览器 btoa/atob；Node 下跑测试时退到 Buffer）——
 const _btoa = (s) => (typeof btoa === 'function' ? btoa(s) : globalThis.Buffer.from(s, 'binary').toString('base64'))

@@ -353,5 +353,61 @@ const NGSO_SRC = read('src/ngso/NgsoLinkBudgetApp.vue'), REGEN_SRC = read('src/r
   }
 }
 
+// —— ⑦ 多行结果：只收选中行、按表格次序，删除 / 换配置后不带入旧行 ——
+{
+  const { resultRowIndices } = await import('../../../src/shared/lbResultSelection.js')
+  const rows = [{ _id: 'a' }, { _id: 'b' }, { _id: 'c' }]
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+  ok('Ctrl 离散多选不补中间行，点击次序不改变结果行序', eq(resultRowIndices(rows, ['c', 'a'], 'b'), [0, 2]))
+  ok('多选优先于当前详细预算的行', eq(resultRowIndices(rows, ['a', 'b', 'c'], 'b'), [0, 1, 2]))
+  ok('取消多选退回当前行', eq(resultRowIndices(rows, [], 'b'), [1]))
+  ok('删行 / 换配置后忽略失效编号', eq(resultRowIndices(rows, ['gone', 'c'], 'b'), [2]))
+  ok('所有选择已失效时退回有效当前行', eq(resultRowIndices(rows, ['gone'], 'b'), [1]))
+  ok('空表或没有有效选择不虚构首行', eq(resultRowIndices([], ['a'], 'a'), []) && eq(resultRowIndices(rows, [], 'gone'), []))
+  ok('重复编号只显示一次', eq(resultRowIndices(rows, ['b', 'b'], 'a'), [1]))
+}
+
+// 端到端表格 / 自定义公式只向系统字段开放，BER 不用 parseFloat 错读科学记数法。
+{
+  const { E2E_RESULT_DEFS, e2eSystemResultData, systemBerValue, reconcileChainAvailability } = await import('../../../src/e2e/e2eResults.js')
+  const { makeResolver, evalRows } = await import('../../../src/shared/lbCustomCols.js')
+  const data = e2eSystemResultData({ e2eBerResult: '2×10⁻⁷', e2eDelayResult: '20', propDelayResult: '18', procDelayResult: '2',
+    stationEIRPResult: '50', carrierTotalCN: '20', hops: [{ distanceResult: '100' }, { distanceResult: '200' }] })
+  ok('端到端 BER 科学计数正确用于公式', systemBerValue('2×10⁻⁷') === 2e-7 && systemBerValue('1e-9') === 1e-9)
+  ok('系统字段池不泄露站、星或特定段参数', !('stationEIRPResult' in data) && !('carrierTotalCN' in data) && !E2E_RESULT_DEFS.some((d) => /EIRP|GT|CN|modcod/i.test(d.key)))
+  ok('全链路总距离逐跳相加', data.totalDistanceResult === 300)
+  ok('距离汇总不暴露浮点尾数', e2eSystemResultData({ hops: [{ distanceResult: '.1' }, { distanceResult: '.2' }] }).totalDistanceResult === .3)
+  ok('缺失一跳距离不输出错误总和', e2eSystemResultData({ hops: [{ distanceResult: '100' }, {}] }).totalDistanceResult === null)
+  ok('处理时延已移出结果列与公式字段池', !E2E_RESULT_DEFS.some((d) => d.key === 'procDelayResult') && !('procDelayResult' in data))
+  const reply = { systemAvailabilityResult: '99.00000', interruptionMinutes: '1.00', interruptionHours: '1.00', hops: [
+    { index: 0, type: 'up', availabilityResult: '99.00000' },
+    { index: 1, type: 'isl', availabilityResult: '' },
+    { index: 2, type: 'laser', availabilityResult: '100.00000' }
+  ] }
+  const corrected = reconcileChainAvailability(reply, { hops: [{}, { availability: '90' }, { availability: '80' }] })
+  ok('回填按本次星间输入计入 RF 与激光可用度', corrected.systemAvailabilityResult === '71.28000' && corrected.hops[1].availabilityResult === '90.00000' && corrected.hops[2].availabilityResult === '80.00000')
+  ok('年中断时长随修正后的系统可用度同步', Math.abs(Number(corrected.interruptionHours) - (100 - 71.28) / 100 * 365.25 * 24) < .01)
+  ok('结果归一不修改原回包与输入', reply.systemAvailabilityResult === '99.00000' && reply.hops[1].availabilityResult === '')
+  ok('0% 星间可用度在窗口回填中保留', reconcileChainAvailability(reply, { hops: [{}, { availability: 0 }, { availability: '80' }] }).systemAvailabilityResult === '0.00000')
+  ok('旧配置未提供星间可用度时按 100%', reconcileChainAvailability(reply, { hops: [{}, {}, {}] }).systemAvailabilityResult === '99.00000')
+  const preciseReply = { systemAvailabilityResult: '100.00000', interruptionMinutes: '0.02', interruptionHours: '0.00', hops: [
+    { index: 0, type: 'up', availabilityResult: '100.00000' },
+    { index: 1, type: 'isl', availabilityResult: '100.00000' },
+    { index: 2, type: 'down', availabilityResult: '100.00000' }
+  ] }
+  const preciseChain = { hops: [{}, { availability: '99.999996' }, {}] }
+  const precise = reconcileChainAvailability(preciseReply, preciseChain)
+  ok('高精度星间输入不被五位回显抹成年中断零分钟', precise.interruptionMinutes === '0.02')
+  ok('引擎正确汇总不因逐跳显示舍入而被重算', precise.systemAvailabilityResult === preciseReply.systemAvailabilityResult && precise.interruptionHours === preciseReply.interruptionHours)
+  const preciseGround = reconcileChainAvailability(preciseReply, { hops: [{}, { availability: '100' }, {}] })
+  ok('星地回显舍入时同样保留引擎中断时长', preciseGround.interruptionMinutes === '0.02')
+  for (const type of ['isl', 'laser']) {
+    const oldReply = { ...preciseReply, interruptionMinutes: '0.00', hops: preciseReply.hops.map((h, i) => i === 1 ? { ...h, type, availabilityResult: '' } : h) }
+    ok(type + ' 旧回包缺可用度时按完整输入精度修复', reconcileChainAvailability(oldReply, preciseChain).interruptionMinutes === '0.02')
+  }
+  const values = evalRows([{ id: 'x', expr: 'e2eBerResult*10000000', dp: 2 }], [{ id: 'r', data }], makeResolver(E2E_RESULT_DEFS), E2E_RESULT_DEFS)
+  ok('自定义列按实际端到端 BER 求值', values.r._cx === '2.00')
+}
+
 console.log(`lbWorkbenchResults：${pass} 通过，${fail} 失败`)
 if (fail) process.exit(1)

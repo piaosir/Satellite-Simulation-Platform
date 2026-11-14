@@ -29,6 +29,7 @@ import { tzParts, tzTag, normTzMode } from '../shared/tz.js'
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import { useConfigTree } from '../shared/useConfigTree.js'
+import { useLbFilePanels } from '../shared/useLbFilePanels.js'
 import { useConfigAutosave } from '../shared/useConfigAutosave.js'
 import { useConfigVersions } from '../shared/useConfigVersions.js'
 import LbVersionsDialog from '../components/LbVersionsDialog.vue'
@@ -49,6 +50,8 @@ import { useLbReport } from '../shared/useLbReport.js'
 import LbDispCtl from '../components/LbDispCtl.vue'
 import WinStatusBar from '../components/WinStatusBar.vue'
 import LbCapFoot from '../components/LbCapFoot.vue'
+import LbMultiBudget from '../components/LbMultiBudget.vue'
+import { resultRowIndices } from '../shared/lbResultSelection.js'
 import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
 import LbSlantTool from '../components/LbSlantTool.vue'
 import LbIslRangeTool from '../components/LbIslRangeTool.vue'
@@ -100,37 +103,25 @@ onBeforeUnmount(() => { if (stopAutosaveListen) stopAutosaveListen(); autosave.d
 const { verDlg, openVersions, restoreVersion, duplicateVersion } = useConfigVersions({
   ns: 'regen', api, tree: cfgTree, autosave, applyState, summarize: (st) => ({ label: cfgLabelOf(st) }), fingerprint: fingerprintOf, toast
 })
-// —— 左侧栏（VS Code 活动栏范式：同屏只开一个视图）——
-// 'configs' = 配置列表（场景文件树）/ 'library' = 资源库（全局参数库）/ '' = 隐藏，两者二选一。
-// 开关：功能区「文件 › 配置列表」与「视图 › 资源库」，点当前视图即收起。
-const SIDE_KEY = 'regen/sideView'
-const sideView = ref((() => {
-  const v = localStorage.getItem(SIDE_KEY)
-  if (v === 'configs' || v === 'library' || v === '') return v
-  return localStorage.getItem('regen/configsCollapsed') === '1' ? '' : 'configs'   // 旧键迁移（v1.4.4 及以前）
-})())
-watch(sideView, (v) => {
-  try { localStorage.setItem(SIDE_KEY, v) } catch (e) { /* ignore */ }
-  if (v === 'library') reloadSatTree()   // 单例窗口：展开资源库即纳入星座3D 新导入的卫星（选星器数据源）
-})
-function toggleSide(v) { sideView.value = sideView.value === v ? '' : v }
-// 两视图各记各的宽度（树窄、资源库宽——后者要放得下两列参数），右缘同一个手柄按当前视图写对应那份
+// 左侧文件区：配置列表、资源库可同时显示，各自独立收起。
+const { showConfigs, showLibrary, toggleSide } = useLbFilePanels('regen')
+watch(showLibrary, (visible) => { if (visible) reloadSatTree() })
+// 两个侧栏分别记住宽度，右缘手柄只调整所在侧栏。
 const CFG_W_MIN = 180, CFG_W_MAX = 520
 const configsWidth = ref(Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, Number(localStorage.getItem('regen/configsWidth')) || 210)))
 const LIB_W_MIN = 300, LIB_W_MAX = 760
 const libWidth = ref(Math.min(LIB_W_MAX, Math.max(LIB_W_MIN, Number(localStorage.getItem('regen/libWidth')) || 460)))
-const sideResizing = ref(false)
-const sideWidth = computed(() => (sideView.value === 'library' ? libWidth.value : configsWidth.value))
-function startResizeSide(e) {
-  const lib = sideView.value === 'library'
+const sideResizing = ref('')
+function startResizeSide(e, panel) {
+  const lib = panel === 'library'
   const w = lib ? libWidth : configsWidth, min = lib ? LIB_W_MIN : CFG_W_MIN, max = lib ? LIB_W_MAX : CFG_W_MAX
   const startX = e.clientX, startW = w.value
   // html.ui-col-resize（controls.css）：拖动全程整窗锁 col-resize 光标、禁选字——指针划过表格 / 按钮时光标不再跳
-  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  sideResizing.value = panel; document.documentElement.classList.add('ui-col-resize')
   document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   const move = (ev) => { w.value = Math.min(max, Math.max(min, startW + (ev.clientX - startX))) }
   const up = () => {
-    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    sideResizing.value = ''; document.documentElement.classList.remove('ui-col-resize')
     document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
     try { localStorage.setItem(lib ? 'regen/libWidth' : 'regen/configsWidth', String(w.value)) } catch (e2) { /* ignore */ }
@@ -671,7 +662,7 @@ const selSatId = ref('')
 // 站表/链路表库引用列（载波信号配置 / 地球站配置 / 卫星）格内「编辑参数」钮的去处：
 // 展开资源库侧栏、切到对应子栏并选中该条目。id 留空即由资源库自行落到首份配置（与引擎「空→第一份」一致）。
 function editInLibrary(kind, id) {
-  sideView.value = 'library'
+  showLibrary.value = true
   libTab.value = kind
   if (kind === 'sat') selSatId.value = id || (bandSat.value && bandSat.value.id) || ''
   else if (kind === 'station') selEsId.value = id || ''
@@ -812,12 +803,12 @@ const METRIC_OPTIONS_UP = [
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
   { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
-  { key: 'stationEIRPResult', label: '地球站 EIRP (dBW)' },
-  { key: 'stationPSDResult', label: '功率谱密度 (dBW/Hz)' }
+  { key: 'stationEIRPResult', label: '发信地球站 EIRP (dBW)' },
+  { key: 'stationPSDResult', label: '发信站上行功率谱密度 (dBW/Hz)' }
 ]
 const METRIC_OPTIONS_DN = [
   { key: 'linkmargin', label: '链路余量 (dB)' },
-  { key: 'gOverTeResult', label: '收信站 G/T (dB/K)' },
+  { key: 'gOverTeResult', label: '收信地球站 G/T (dB/K)' },
   { key: 'capacityMbps', label: '容量 (Mbps)' },
   { key: 'spectralEfficiencyResult', label: '频谱效率 (bps/Hz)' },
   { key: 'carrierTotalCN', label: '下行 C/N (dB)' },
@@ -828,7 +819,7 @@ const METRIC_OPTIONS_DN = [
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
   { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
-  { key: 'satellitePSDResult', label: '卫星功率谱密度 (dBW/Hz)' },
+  { key: 'satellitePSDResult', label: '卫星下行功率谱密度 (dBW/Hz)' },
   { key: 'arrivalPFDAtGroundResult', label: '到达地面 PFD (dBW/m²)' }
 ]
 const METRIC_OPTIONS_ISL = [
@@ -844,7 +835,7 @@ const METRIC_OPTIONS_ISL = [
   { key: 'fecResult', label: 'FEC 码率', type: 'text', tip: '本行载波的 FEC 码率（引擎回显，保持录入写法）' },
   { key: 'modcodResult', label: 'MODCOD', type: 'text', tip: '从 MODCOD 库中所选档位的名称；未从库中选择则按「调制方式 + FEC 码率」拼出' },
   { key: 'allocBandwidthResult', label: '载波带宽 (kHz)' },
-  { key: 'islRfEirpResult', label: '发射 EIRP (dBW)' },
+  { key: 'islRfEirpResult', label: '发射卫星 EIRP (dBW)' },
   { key: 'islVisibleFracResult', label: '互视可见度 (%)' }
 ]
 const METRIC_OPTIONS_LASER = [
@@ -864,11 +855,40 @@ const METRIC_OPTIONS_LASER = [
 function parseMetricLabel(label) { const m = /^(.*?)\s*\(([^)]+)\)$/.exec(label || ''); return m ? { title: m[1], unit: m[2] } : { title: label || '', unit: '' } }
 const mkResultDefs = (opts) =>
   opts.map((o) => { const { title, unit } = parseMetricLabel(o.label); return { key: o.key, label: title, unit, type: o.type, tip: o.tip } })
+const extraResultDefs = (keys) => keys.map((key) => ({ ...RESULT_LABELS[key] }))
 const RESULT_DEFS_BY = {
-  uplink: mkResultDefs(METRIC_OPTIONS_UP),
-  downlink: mkResultDefs(METRIC_OPTIONS_DN),
-  isl: mkResultDefs(METRIC_OPTIONS_ISL),
-  laser: mkResultDefs(METRIC_OPTIONS_LASER)
+  uplink: [
+    ...mkResultDefs(METRIC_OPTIONS_UP),
+    ...extraResultDefs([
+      'slantRangeResult', 'elevationResult', 'linkDelayUpResult',
+      'azimuthResult', 'txAntennaGainResult', 'arrivalPFDAtSatelliteResult',
+      'uplinkRainAttenuation', 'uplinkFSLResult', 'uplinkAtmosphericAttenuationResult',
+      'uplinkCloudAttenuation', 'uplinkTotalAttenuationResult',
+      'satelliteGTResult', 'thresholdCN', 'symbolRateResult', 'noiseBW'
+    ])
+  ],
+  downlink: [
+    ...mkResultDefs(METRIC_OPTIONS_DN),
+    { key: 'EIRPsResult', label: '卫星发射 EIRP', unit: 'dBW' },
+    ...extraResultDefs([
+      'rxSlantRangeResult', 'rxElevationResult', 'linkDelayDownResult',
+      'rxAzimuthResult', 'rxAntennaGainResult',
+      'downlinkRainAttenuationResult', 'downlinkFSLResult', 'downlinkAtmosphericAttenuationResult',
+      'downlinkCloudAttenuation', 'downlinkTotalAttenuationResult',
+      'systemNoiseTempKResult', 'thresholdCN', 'symbolRateResult', 'noiseBW'
+    ])
+  ],
+  isl: [
+    ...mkResultDefs(METRIC_OPTIONS_ISL),
+    ...extraResultDefs(['islRfFslResult', 'islRfGtResult', 'islRfMiscLossResult', 'thresholdCN', 'symbolRateResult', 'noiseBW'])
+  ],
+  laser: [
+    ...mkResultDefs(METRIC_OPTIONS_LASER),
+    { key: 'laserGRxResult', label: '接收增益', unit: 'dBi' },
+    { key: 'laserPointLossTxResult', label: '发射指向损耗', unit: 'dB' },
+    { key: 'laserPointLossRxResult', label: '接收指向损耗', unit: 'dB' },
+    { key: 'laserTxPowerResult', label: '发射光功率', unit: 'dBm' }
+  ]
 }
 const DEFAULT_RESULT_KEYS = {
   uplink: ['linkmargin', 'paRecommendation', 'carrierTotalCN', 'capacityMbps'],
@@ -960,7 +980,7 @@ const customPoolOf = (mode) => {
   // 会让人以为是两个量，且裸标签一歧义就报「未知字段」。词表是命名权威，表头短名只用于链路表列头。
   // 一个模块都没装（mode 为空）时池子是空的：弹窗只在装了模块时才开得了，但 computed 在渲染期就会求值
   // 文字型结果列（调制方式 / FEC / MODCOD）不是量，不进公式字段池
-  const base = (RESULT_DEFS_BY[mode] || []).filter((d) => d.key !== 'capacityMbps' && d.type !== 'text').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
+  const base = (RESULT_DEFS_BY[mode] || []).filter((d) => d.key !== 'capacityMbps' && d.type !== 'text').map((d) => { const t = RESULT_LABELS[d.key]; return { key: d.key, label: d.key === 'EIRPsResult' ? d.label : t ? t.label : d.label, unit: t ? t.unit : d.unit, group: '结果列' } })
   const rows = ccRowsOf(mode).filter((r) => rawDataByRow.value[r._id])
   if (!rows.length) return buildPool(base)
   // 键取全部行的并集：逐行出参可不同（0 雨强行的 XPD 出 '-'），单行样本会误滤别行的合法键。
@@ -1116,6 +1136,8 @@ function writeResultVals(out, mode) {
 // 「详细预算」节头上一条 / 下一条、序号格右键「查看详细预算」：切到第 i 条链路的详细预算，聚焦行一并跟过去
 function showDetailAt(i) {
   if (i < 0 || i >= links.value.length) return
+  for (const grid of [txGridRef, rxGridRef, islGridRef, laserGridRef]) grid.value?.clearSelection()
+  selectedRowIds.value = []
   focusRowId.value = links.value[i].rowId
   if (i !== selected.value) { selected.value = i; loadWaterfall() }
 }
@@ -1128,6 +1150,10 @@ function viewDetailOfRow(rows, i) {
   nextTick(() => { const el = document.querySelector('[data-sec="detail"]'); if (el) el.scrollIntoView({ block: 'start' }) })
 }
 const detailMenuItem = (rows) => ({ label: '查看详细预算', icon: 'file-text', disabled: (i) => linkIdxOfRow(rows, i) < 0, run: (i) => viewDetailOfRow(rows, i) })
+function onRowSelection(ids) {
+  selectedRowIds.value = ids
+  if (ids.length === 1) onRowFocus(rowsOf(linkMode.value).findIndex((r) => r._id === ids[0]), ids[0])
+}
 function onRowFocus(idx, rowId) {
   focusRowId.value = rowId
   if (!links.value.length) return
@@ -1406,11 +1432,13 @@ function capReset() {
   for (const k of Object.keys(capParams.tp)) if (k.startsWith(mode + ':')) delete capParams.tp[k]
 }
 
-// —— 本行读数（链路表表脚，见 LbCapFoot）——
+// —— 核心计算结果（链路表表脚，按选中行的表格顺序叠加）——
 // 结果列多了要横滚才看得全，而用户看的往往就是刚点的那一行：把聚焦行的结果就地摊平成一行，
 // 点哪行看哪行、重算即刷新。指标口径与「结果列」勾选完全一致（连列序也一致），只是换了个横排读法。
 // 单位取该列此次计算共选的档位（resColUnits 按 '模式:键' 记）；切体制会清空结果，此行随之消失。
 const focusRowId = ref('')
+const selectedRowIds = ref([])
+watch(linkMode, () => { selectedRowIds.value = [] })
 
 // —— 斜距工具（几何=手动）——
 // 只做换算与填入；填多少、填哪几行由用户点。填入按【各行自己的仰角】算，不是把同一个数刷满全表。
@@ -1499,33 +1527,43 @@ watch(() => [geoMode.value, satScope.value, satId.value,
     `${satLink.value ? r.satelliteId : ''},${satOfRow(r).form.orbitAltitude},${r[s.latKey]},${r[s.staAltKey]},${r[s.eKey]}`).join(';')).join('/')].join('#'),
 scheduleSlant, { immediate: true })
 
-const rowReadout = computed(() => {
-  const mode = linkMode.value
-  const rows = rowsOf(mode)
-  if (!mode || !rows.length) return null
-  let idx = rows.findIndex((r) => r._id === focusRowId.value)
-  if (idx < 0 && sel.value) idx = rows.findIndex((r) => r._id === sel.value.rowId)   // 还没点过表 → 跟详细预算走
-  if (idx < 0) return null
-  const row = rows[idx]
-  const link = links.value.find((l) => l.rowId === row._id) || null
+const readoutLinksById = computed(() => new Map(links.value.map((l) => [l.rowId, l])))
+const readoutCustomPool = computed(() => customPoolOf(linkMode.value))
+function buildRowReadout(row, idx) {
+  const link = readoutLinksById.value.get(row._id) || null
   const m = computedVals.value[row._id] || null
   const items = []
-  for (const def of (m ? resultDefsOnOf(mode) : [])) {
+  for (const def of (m ? resultDefsOnOf(linkMode.value) : [])) {
     const v = m['_' + def.key]
     if (v === undefined || v === null || v === '' || v === '—') continue
     const n = parseFloat(v)   // 着色口径同结果单元格（见 cellClassFn）：负余量转红
     const bad = def.key === 'linkmargin' && isFinite(n) && n < 0
-    items.push({ key: def.key, label: def.label, value: v, unit: resColUnits[mode + ':' + def.key] || def.unit || '', tip: def.tip || def.label, bad })
+    items.push({ key: def.key, label: def.label, value: v, unit: resColUnits[linkMode.value + ':' + def.key] || def.unit || '', tip: def.tip || def.label, bad })
   }
   const cv = customVals.value[row._id] || null
-  for (const c of (cv ? (customColsBy[mode] || []).filter((x) => x.on !== false) : [])) {
+  for (const c of (cv ? (customColsBy[linkMode.value] || []).filter((x) => x.on !== false) : [])) {
     const v = cv['_c' + c.id]
     if (v === undefined || v === null || v === '' || v === '—') continue
-    items.push({ key: '_c' + c.id, label: c.label, value: v, unit: unitOf(c, customPoolOf(mode)), tip: c.expr, bad: false })
+    items.push({ key: '_c' + c.id, label: c.label, value: v, unit: unitOf(c, readoutCustomPool.value), tip: c.expr, bad: false })
   }
   const name = link ? pairLabel(link) : (row.earthStationLocation || row.rxEarthStationLocation || '')
   return { no: idx + 1, rowId: row._id, name, err: (link && link.error) || '', items }
+}
+const rowReadout = computed(() => {
+  const rows = rowsOf(linkMode.value)
+  let idx = rows.findIndex((r) => r._id === focusRowId.value)
+  if (idx < 0 && sel.value) idx = rows.findIndex((r) => r._id === sel.value.rowId)
+  return idx < 0 ? null : buildRowReadout(rows[idx], idx)
 })
+const rowReadouts = computed(() => {
+  const rows = rowsOf(linkMode.value)
+  return resultRowIndices(rows, selectedRowIds.value, rowReadout.value?.rowId).map((i) => buildRowReadout(rows[i], i))
+})
+const selectedBudgetRows = computed(() => rowReadouts.value.map((r) => {
+  const link = readoutLinksById.value.get(r.rowId)
+  return { ...r, data: link?.data, txName: link?.txName, rxName: link?.rxName }
+}))
+
 // 「详细预算」节头那枚行号：由 sel 反算，与该节自己的摘要（站对名）同源。
 // 不能照搬 rowReadout.no —— onRowFocus 只在该行**已算出结果**时才推进 selected，聚焦到一条尚未
 // 计算的新行时详细预算画的仍是原来那条链路，两处编号本就该不同，同源才不会出现自相矛盾的节头。
@@ -2407,6 +2445,7 @@ function applyState(st) {
   for (const k of MODE_KEYS) clearModuleResults(k)
   segments.value = []
   focusRowId.value = ''
+  selectedRowIds.value = []
   modules.value = mods
   linkMode.value = (st.linkMode && mods.includes(st.linkMode)) ? st.linkMode : (mods[0] || '')
   let txRows = Array.isArray(st.tx) ? st.tx : null
@@ -2693,7 +2732,7 @@ const shareCtx = {
     } else {
       const first = plan.lib.find((r) => r.action === 'new')
       if (first) {
-        sideView.value = 'library'
+        showLibrary.value = true
         libTab.value = first.kind === 'es' ? 'station' : first.kind
         const nid = idMap[first.kind][first.srcId]
         if (first.kind === 'es') selEsId.value = nid
@@ -2902,87 +2941,97 @@ onMounted(async () => {
   <div class="lb-shell" @dragover="onWinDragOver" @drop="onWinDrop">
     <ActivationLock />
     <div class="lb-body">
-      <!-- ① 左侧栏：配置列表 / 资源库 二选一（功能区「文件 › 配置列表」「视图 › 资源库」开关，右缘可拖宽） -->
-      <aside v-show="sideView" class="lb-col lb-side" :class="[sideView === 'library' ? 'lb-lib' : 'lb-configs', { resizing: sideResizing }]" :style="{ width: sideWidth + 'px' }">
-        <!-- ①-A 配置列表视图：场景文件树 -->
-        <template v-if="sideView !== 'library'">
-          <div class="lb-col-hd">
-            <span class="lb-cfg-hd-t">配置列表</span>
-            <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
-            </span>
-          </div>
-          <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
-            <ConfigTree
-              :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
-              :expanded="expandedFolders"
-              :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
-              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
-              @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
-              @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
-            />
-          </div>
-          <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">本机标识：<b>{{ deviceId }}</b></div>
-        </template>
+      <!-- ① 左侧文件区：配置列表在左，资源库在右，可同时显示 -->
+      <aside v-show="showConfigs" class="lb-col lb-side lb-configs" :class="{ resizing: sideResizing === 'configs' }" :style="{ width: configsWidth + 'px' }">
+        <div class="lb-col-hd">
+          <span class="lb-cfg-hd-t">配置列表</span>
+          <span class="lb-cfg-acts">
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="showConfigs = false"><Icon name="x" :size="12" /></button>
+          </span>
+        </div>
+        <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
+          <ConfigTree
+            :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
+            :expanded="expandedFolders"
+            :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+            @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
+            @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
+            @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
+          />
+        </div>
+        <div v-if="deviceId" class="lb-myid" :title="'本机用户 ID（用于在线分享）'">本机标识：<b>{{ deviceId }}</b></div>
+        <div class="lb-cfg-resizer" title="拖动调整配置栏宽度" @mousedown.prevent="startResizeSide($event, 'configs')"></div>
+      </aside>
 
-        <!-- ①-B 资源库视图：地球站 / 卫星 / 载波三库主从管理（全局资产，改动实时保存并影响所有引用场景） -->
-        <template v-else>
-          <div class="lb-col-hd">
-            <span class="lb-cfg-hd-t">资源库</span>
-            <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" :title="`新增${(LIB_TABS.find((t) => t.key === libTab) || {}).label}配置`"
-                @click="libTab === 'station' ? addEsConfig() : libTab === 'sat' ? addSatConfig() : addBasebandConfig()"><Icon name="plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="12" /></button>
-            </span>
-          </div>
-          <nav class="lb-lib-tabs">
-            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
-              {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
-            </button>
-          </nav>
-          <div class="lb-libpane">
-            <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-              auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
-              @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
-              <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
-                <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
-              </template>
-              <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
-            </LbLibrary>
-            <LbLibrary v-else-if="libTab === 'sat'" v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
-              auto-tip="所选卫星" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
-              @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
-              <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
-                <button class="lb-mini" title="删除此卫星（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
-              </template>
-              <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填。
-                   :key＝条目 id：换条目即重建编辑器——同一实例换 form，频段 watcher 会把「换条目」当成「改频段」套预设。 -->
-              <template #default="{ cfg }"><RegenSatPanel :key="cfg.id" :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
-            </LbLibrary>
-            <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
-              auto-tip="速率与调制" :copy-targets="copyTargetsOf('carrier')" @copy-to="(c, ns) => copyLibTo('carrier', c, ns)"
-              @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig" @toast="toast">
-              <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="创建此配置的副本" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
-                <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
-              </template>
-              <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
-            </LbLibrary>
-          </div>
-        </template>
-
-        <!-- 右缘拖拽调宽手柄（两视图各记各的宽度） -->
-        <div class="lb-cfg-resizer" :title="sideView === 'library' ? '拖动调整资源库栏宽度' : '拖动调整配置栏宽度'" @mousedown.prevent="startResizeSide"></div>
+      <aside v-if="showLibrary" class="lb-col lb-side lb-lib" :class="{ resizing: sideResizing === 'library' }" :style="{ width: libWidth + 'px' }">
+        <div class="lb-col-hd">
+          <span class="lb-cfg-hd-t">资源库</span>
+          <span class="lb-cfg-acts">
+            <button class="lb-mini lb-mini-ico" :title="`新增${(LIB_TABS.find((t) => t.key === libTab) || {}).label}配置`"
+              @click="libTab === 'station' ? addEsConfig() : libTab === 'sat' ? addSatConfig() : addBasebandConfig()"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="showLibrary = false"><Icon name="x" :size="12" /></button>
+          </span>
+        </div>
+        <nav class="lb-lib-tabs">
+          <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
+            {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
+          </button>
+        </nav>
+        <div class="lb-libpane">
+          <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
+            auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
+            @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+            <template #editor-actions="{ cfg }">
+              <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
+              <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
+            </template>
+            <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
+          </LbLibrary>
+          <LbLibrary v-else-if="libTab === 'sat'" v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
+            auto-tip="所选卫星" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
+            @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
+            <template #editor-actions="{ cfg }">
+              <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
+              <button class="lb-mini" title="删除此卫星（被引用时提示引用数）" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
+            </template>
+            <!-- 取星只定轨道（卫星/天线树 / 星历搜索）；EIRP·G/T 逐行手填。
+                 :key＝条目 id：换条目即重建编辑器——同一实例换 form，频段 watcher 会把「换条目」当成「改频段」套预设。 -->
+            <template #default="{ cfg }"><RegenSatPanel :key="cfg.id" :form="cfg.form" :fields="SAT_FIELDS" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
+          </LbLibrary>
+          <LbLibrary v-else v-model="selBbId" layout="column" :items="basebandConfigs" :summary="bbSummary" name-placeholder="载波名称"
+            auto-tip="速率与调制" :copy-targets="copyTargetsOf('carrier')" @copy-to="(c, ns) => copyLibTo('carrier', c, ns)"
+            @add="addBasebandConfig" @duplicate="duplicateBasebandConfig" @remove="removeBasebandConfig" @toast="toast">
+            <template #editor-actions="{ cfg }">
+              <button class="lb-mini" title="创建此配置的副本" @click="duplicateBasebandConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
+              <button class="lb-mini" title="删除此配置（被引用时提示引用数）" :disabled="basebandConfigs.length <= 1" @click="removeBasebandConfig(cfg)">删除</button>
+            </template>
+            <template #default="{ cfg }"><BasebandPanel :form="cfg.form" :options="basebandOpts" :calc-modes="CALC_MODES" /></template>
+          </LbLibrary>
+        </div>
+        <div class="lb-cfg-resizer" title="拖动调整资源库栏宽度" @mousedown.prevent="startResizeSide($event, 'library')"></div>
       </aside>
 
       <!-- ② 主区：MATLAB 式功能区 + 停靠面板 -->
       <section class="lb-col lb-build">
         <!-- 功能区：文件 · 计算 · 视图 · 导出 ‖ 状态位（计算方式随载波入资源库，功能区只留执行） -->
         <div class="lbr">
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :class="{ on: showConfigs }" :aria-pressed="(showConfigs) ? 'true' : 'false'" :title="showConfigs ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+              <button class="lbr-big" :class="{ on: showLibrary }" :aria-pressed="(showLibrary) ? 'true' : 'false'" :title="`${showLibrary ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用）`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
+                <Icon name="refresh-cw" :size="16" />
+                刷新
+              </button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
@@ -3019,21 +3068,6 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
-              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
-              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
-              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（卫星/天线树 / 城市库 / 载波信号选项 等）" @click="refreshLatest">
-                <Icon name="refresh-cw" :size="16" />
-                刷新
-              </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」（场景文件树；与「资源库」二选一）'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
-            </div>
-            <div class="lbr-cap">文件</div>
-          </div>
-          <div class="lbr-g">
-            <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :aria-pressed="(sideView === 'library') ? 'true' : 'false'" :title="`${sideView === 'library' ? '隐藏' : '左侧栏显示'}「资源库」：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length} · 载波 ${basebandConfigs.length}（全局资产，场景按 id 引用；与「配置列表」二选一）`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
               <button class="lbr-big" :class="{ on: showViz }" :aria-pressed="showViz ? 'true' : 'false'" :title="showViz ? '隐藏详细预算的图表区（地理场图 + 链路视图）' : '显示详细预算的图表区：链路视图（3D 站星几何）+ 地理场图（站址经纬度；星间无地面站，仅输出链路视图）'" @click="showViz = !showViz"><Icon name="chart-line" :size="16" />图表</button>
             </div>
             <div class="lbr-cap">视图</div>
@@ -3157,9 +3191,9 @@ onMounted(async () => {
               <span class="lbx-gridbar" data-gridbar="regen.tx"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="txGridRef" grid-id="regen.tx" bar-to="[data-gridbar='regen.tx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="txStations" :fields="txGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="txRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
+              <StationGrid ref="txGridRef" grid-id="regen.tx" bar-to="[data-gridbar='regen.tx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="txStations" :fields="txGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="txCellSub" :cell-tag="txCellTag" :cities="cities" :city-search="citySearch" label="发信站" :auto-geo="autoGeoTx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="txRowMenu" @xlsx-done="onXlsxDone" @selection-change="onRowSelection" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :readout="rowReadout" />
+            <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
           <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
             <template #actions>
@@ -3190,9 +3224,9 @@ onMounted(async () => {
               <span class="lbx-gridbar" data-gridbar="regen.rx"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="rxGridRef" grid-id="regen.rx" bar-to="[data-gridbar='regen.rx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="rxStations" :fields="rxGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="rxRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
+              <StationGrid ref="rxGridRef" grid-id="regen.rx" bar-to="[data-gridbar='regen.rx']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="rxStations" :fields="rxGridFields" :ghost-of="ghostOf" :groups="GROUPS_STATION" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cell-sub="rxCellSub" :cities="cities" :city-search="citySearch" label="收信站" :auto-geo="autoGeoRx" :site-type="applySiteType" :select-options="{ basebandId: basebandSelectOptions, stationId: esSelectOptions, satelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', stationId: 'station', satelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="rxRowMenu" @xlsx-done="onXlsxDone" @selection-change="onRowSelection" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :readout="rowReadout" />
+            <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
           <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
@@ -3219,9 +3253,9 @@ onMounted(async () => {
               <span class="lbx-gridbar" data-gridbar="regen.isl"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="islGridRef" grid-id="regen.isl" bar-to="[data-gridbar='regen.isl']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="islRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
+              <StationGrid ref="islGridRef" grid-id="regen.isl" bar-to="[data-gridbar='regen.isl']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="islLinks" :fields="islGridFields" :groups="GROUPS_ISL" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="星间链路" :show-import="false" :select-options="{ basebandId: basebandSelectOptions, txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ basebandId: 'carrier', txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="islRowMenu" @xlsx-done="onXlsxDone" @selection-change="onRowSelection" @row-focus="onRowFocus" />
             </div>
-            <LbCapFoot :readout="rowReadout" />
+            <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
           <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
@@ -3248,17 +3282,18 @@ onMounted(async () => {
               <span class="lbx-gridbar" data-gridbar="regen.laser"></span>
             </template>
             <div class="lbx-grid">
-              <StationGrid ref="laserGridRef" grid-id="regen.laser" bar-to="[data-gridbar='regen.laser']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="laserRowMenu" @xlsx-done="onXlsxDone" @row-focus="onRowFocus" />
+              <StationGrid ref="laserGridRef" grid-id="regen.laser" bar-to="[data-gridbar='regen.laser']" :focus-id="rowReadout ? rowReadout.rowId : ''" :stations="laserLinks" :fields="laserGridFields" :groups="GROUPS_LASER" :freeze-keys="false" :extra-values="gridVals" :cell-class="cellClassFn" :cities="cities" :city-search="citySearch" label="激光星间链路" :show-import="false" :select-options="{ txSatelliteId: satSelectOptions, rxSatelliteId: satSelectOptions }" :lib-fields="{ txSatelliteId: 'sat', rxSatelliteId: 'sat' }" @edit-lib="editInLibrary" :row-menu-extra="laserRowMenu" @xlsx-done="onXlsxDone" @selection-change="onRowSelection" @row-focus="onRowFocus" />
             </div>
             <!-- 激光星间不出容量汇总（载波带宽/频谱效率口径不适用），但本行读数照给 -->
-            <LbCapFoot :readout="rowReadout" />
+            <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
-          <LbSection v-if="linkMode" id="detail" title="详细预算" :stale="!!(resultsStale && links.length)" :no="detailNo" :summary="sel && links.length ? pairLabel(sel) : ''">
+          <LbSection v-if="linkMode" id="detail" title="详细预算" :stale="!!(resultsStale && links.length)" :no="selectedBudgetRows.length > 1 ? 0 : detailNo" :summary="selectedBudgetRows.length > 1 ? '' : sel && links.length ? pairLabel(sel) : ''">
             <template #nav>
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected <= 0" title="上一条" @click="stepDetail(-1)"><Icon name="chevron-up" :size="12" /></button>
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected >= links.length - 1" title="下一条" @click="stepDetail(1)"><Icon name="chevron-down" :size="12" /></button>
             </template>
-            <div v-if="error" class="lb-err">{{ error }}</div>
+            <LbMultiBudget v-if="selectedBudgetRows.length > 1" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="REGEN" :adaptive="unitAdaptive" />
+            <div v-else-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>
             <div v-else-if="core" class="lbx-doc">
@@ -3430,7 +3465,7 @@ onMounted(async () => {
       @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
       @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
       @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
-      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="showConfigs = false"
     />
 
     <!-- 历史版本（自动保存的后悔药）：还原 / 用那一版另建副本 -->

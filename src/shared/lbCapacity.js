@@ -32,6 +32,7 @@
 //          ★ 只在本模块里生效：链路表 09-07 随 CnC 回退删掉的「路数」列不恢复，高级计算的组账仍是一行一路。
 //   场景级 capParams.tp[组键] = { bwKHz?, pwKHz?, price? }：可用带宽 / 可用功率（kHz，与引擎出参同基准）、
 //          单价（万元/MHz/年）。组键见 capKeySat / capKeyMode / capKeyIsl。
+// 2026-11-14：弹窗与报告不再展示可用 / 剩余行；保留存量资源参数与计算，供占用率继续使用。
 import { pickUnit } from './adaptUnits.js'
 
 export const CAP_PBW = Object.freeze({ SUM: 'sum', LIST: 'list', NONE: 'none' })
@@ -211,14 +212,14 @@ function finishGroup(g, tp, pbw, availDefault) {
 }
 
 // ============ 显示 ============
-// 档位：整张表的带宽类数（逐行 / 小计 / 可用 / 剩余 / 结算）共选一档、容量一档——同一列上下要能直接比，
-// 小载波不能因为与转发器同列就被压成 0.075。功能区「单位」档锁定（出厂）时恒为引擎基准 kHz / kbps。
+// 档位：整张表显示的带宽类数（逐行 / 小计 / 结算）共选一档、容量一档——同一列上下要能直接比，
+// 未显示的可用 / 剩余资源不参与选档。功能区「单位」档锁定（出厂）时恒为引擎基准 kHz / kbps。
 export function capUnits(model, adaptive) {
   const bws = [], caps = []
   const push = (arr, ...vs) => { for (const v of vs) if (v != null && Number.isFinite(v)) arr.push(Math.abs(v)) }
   for (const g of (model && model.groups) || []) {
     for (const r of g.rows) { push(bws, r.bwKHz, r.pbwKHz); push(caps, r.capKbps) }
-    push(bws, g.bwKHz, g.pbwKHz, g.availBwKHz, g.availPwKHz, g.remBwKHz, g.remPwKHz, g.billKHz)
+    push(bws, g.bwKHz, g.pbwKHz, g.billKHz)
     push(caps, g.capKbps)
   }
   if (model && model.total) { push(bws, model.total.bwKHz, model.total.billKHz); push(caps, model.total.capKbps) }
@@ -267,10 +268,6 @@ export function capReportBlock(model, { lang = 'zh', adaptive = false, noOf = nu
   add(L('载波带宽', 'Allocated BW'), u.bw.unit, groups.map((g) => B(g.bwKHz)), t ? B(t.bwKHz) : null)
   if (pbwSum) add(L('功率带宽', 'Power BW'), u.bw.unit, groups.map((g) => B(g.pbwKHz)), null)
   if (anyAvail) {
-    add(L('可用带宽', 'Available BW'), u.bw.unit, groups.map((g) => B(g.availBwKHz)), null)
-    if (pbwSum) add(L('可用功率', 'Available power'), u.bw.unit, groups.map((g) => B(g.availPwKHz)), null)
-    add(L('剩余带宽', 'Remaining BW'), u.bw.unit, groups.map((g) => B(g.remBwKHz)), null)
-    if (pbwSum) add(L('剩余功率', 'Remaining power'), u.bw.unit, groups.map((g) => B(g.remPwKHz)), null)
     add(L('带宽占用', 'Bandwidth Usage'), '%', groups.map((g) => capFx(g.bwPct, CAP_DEC.pct)), null)
     if (pbwSum) add(L('功率占用', 'Power Usage'), '%', groups.map((g) => capFx(g.pwPct, CAP_DEC.pct)), null)
   }

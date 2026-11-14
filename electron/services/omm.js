@@ -42,7 +42,9 @@ const GROUP_QUERY = {
   qianfan: 'GROUP=qianfan', guowang: 'NAME=HULIANWANG', geo: 'GROUP=geo',
   glonass: 'GROUP=glo-ops', o3b: 'NAME=O3B', iridium: 'GROUP=iridium-NEXT',
   globalstar: 'GROUP=globalstar', stations: 'GROUP=stations', planet: 'GROUP=planet',
-  spire: 'GROUP=spire', active: 'GROUP=active'
+  spire: 'GROUP=spire', active: 'GROUP=active',
+  gnss: 'GROUP=gnss', weather: 'GROUP=weather', 'earth-resources': 'GROUP=resource',
+  sar: 'GROUP=sar', science: 'GROUP=science', amateur: 'GROUP=amateur'
 }
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
 
@@ -71,7 +73,9 @@ const epName = (k) => (DATASETS[k] ? DATASETS[k].url.replace(/^https?:\/\/[^/]+\
 const GROUP_LABEL = {
   starlink: 'Starlink', oneweb: 'OneWeb', kuiper: 'Kuiper', gps: 'GPS', beidou: '北斗', galileo: 'Galileo',
   qianfan: '千帆星座', guowang: '中国星网', geo: 'GEO', glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星',
-  globalstar: 'Globalstar', stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部在轨'
+  globalstar: 'Globalstar', stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部在轨',
+  gnss: 'GNSS 导航卫星', weather: '气象卫星', 'earth-resources': '地球资源观测卫星',
+  sar: '合成孔径雷达（SAR）', science: '空间与地球科学卫星', amateur: '业余无线电卫星'
 }
 const GL = (k) => GROUP_LABEL[k] || (DATASETS[k] && DATASETS[k].label) || k
 // 数据来源在日志里的统一叫法（offlineBest 的 source）

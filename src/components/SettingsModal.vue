@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { quality, effective, setTier, setField, setMapLevel, currentMapLevelIndex, TIERS, FIELD_OPTS, MAP_LEVELS } from '../stores/displayQuality'
 import { viewPrefs } from '../stores/viewPrefs'
+import { hoverLabelPrefs, setHoverLabelMode, setHoverLabelSeconds, resetHoverLabelPrefs } from '../stores/hoverLabelPrefs.js'
 import { theme, setTheme } from '../stores/theme'
 import { uiFont, setUiFont, availableFonts } from '../stores/uiFont'
 import { getLang, setLang } from '../shared/i18n/runtime'
@@ -47,6 +48,10 @@ const FRAME_OPTS = [
   { key: 'inertial', label: '惯性视角' },
   { key: 'fixed', label: '相机跟随' }
 ]
+function commitHoverSeconds(e) {
+  setHoverLabelSeconds(e.target.value)
+  e.target.value = String(hoverLabelPrefs.seconds)
+}
 
 // 外壳是 AppDialog（Esc / 关闭钮关、焦点落在「关闭」上、Tab 在框内循环）
 </script>
@@ -136,6 +141,25 @@ const FRAME_OPTS = [
           </div>
         </section>
 
+        <section class="sec">
+          <div class="shd" data-sec="set-interaction"><span>交互设置</span><button type="button" class="ibtn sm" title="恢复本节默认" aria-label="恢复本节默认" @click="resetHoverLabelPrefs"><Icon name="rotate-ccw" :size="12" /></button></div>
+          <div class="grid">
+            <label class="frow">
+              <span class="fn">对象悬停标签</span>
+              <select :value="hoverLabelPrefs.mode" @change="setHoverLabelMode($event.target.value)">
+                <option value="always">一直显示（默认）</option>
+                <option value="off">不显示</option>
+                <option value="timed">限时显示</option>
+              </select>
+            </label>
+            <label v-if="hoverLabelPrefs.mode === 'timed'" class="frow">
+              <span class="fn">显示时长（秒）</span>
+              <input class="hover-seconds" type="number" inputmode="decimal" min="0.1" step="any" :value="hoverLabelPrefs.seconds" aria-label="显示时长（秒）" @change="commitHoverSeconds" @keydown.enter="($event) => $event.target.blur()" />
+            </label>
+          </div>
+          <div class="hover-hint">悬停时显示对象名称。限时模式从进入对象时计时，移开后再次悬停会重新显示。</div>
+        </section>
+
         <!-- 基础设置 -->
         <section class="sec">
           <div class="shd" data-sec="set-basic">基础设置</div>
@@ -167,6 +191,11 @@ const FRAME_OPTS = [
       </template>
   </AppDialog>
 </template>
+
+<style scoped>
+.hover-seconds { width: 176px; min-width: 0; padding: 3px 7px; border: 1px solid var(--field-border); background: var(--field-bg); color: var(--text); border-radius: var(--r-ctl); }
+.hover-hint { margin-top: 8px; color: var(--text-muted); font-size: var(--fs-3); line-height: 1.5; }
+</style>
 
 <style scoped>
 /* 外壳（遮罩 / 框体 / 题条 / 关闭钮 / 页脚）是 AppDialog；分段是 controls.css 的分段本体 */

@@ -174,7 +174,7 @@ const hopBot = (i) => {
           <span class="cs-c-v" :class="marginCls(result && result.e2eMarginResult)">{{ (result && result.e2eMarginResult) || '—' }}<i>dB</i></span>
         </div>
         <div class="cs-card">
-          <span class="cs-c-l" title="各星地 hop 站址可用度之积（各站雨区独立假设）；星间 hop 不贡献可用度损失。地面转接站上下行同址同雨，独立乘积为保守包络">系统可用度</span>
+          <span class="cs-c-l" title="各星地跳站址可用度与各星间跳指定可用度之积（各跳独立假设）。地面转接站上下行同址同雨，独立乘积为保守包络">系统可用度</span>
           <span class="cs-c-v">{{ (result && result.systemAvailabilityResult) || '—' }}<i>%</i></span>
         </div>
         <div class="cs-card">

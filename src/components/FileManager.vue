@@ -96,7 +96,9 @@ const OMM_LABELS = {
   starlink: 'Starlink', oneweb: 'OneWeb', kuiper: 'Kuiper', gps: 'GPS', beidou: '北斗',
   galileo: 'Galileo', qianfan: '千帆星座', guowang: '中国星网', geo: 'GEO 静止轨道',
   glonass: 'GLONASS', o3b: 'O3b', iridium: '铱星 Iridium', globalstar: 'Globalstar',
-  stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部活跃卫星'
+  stations: '空间站', planet: 'Planet', spire: 'Spire', active: '全部活跃卫星',
+  gnss: 'GNSS 导航卫星', weather: '气象卫星', 'earth-resources': '地球资源观测卫星',
+  sar: '合成孔径雷达（SAR）', science: '空间与地球科学卫星', amateur: '业余无线电卫星'
 }
 // 格式显示名（解析/序列化在主进程 core/utils/ommFormats.js 与 ephemFormats.js，这里只要标签）
 const EPH_FMT = {
@@ -485,6 +487,8 @@ function openEditGrdSat(sat) {
   if (!a || !a.openEditSat) { flash('主窗口未打开。'); return }
   a.openEditSat(sat.folder)
 }
+function grdSatModalOpen() { return !!fileBridge.grdActions?.isSatModalOpen?.() }
+onBeforeUnmount(() => { if (grdSatModalOpen()) fileBridge.grdActions.closeSatModal() })
 
 /* ===================== ②b 频率计划（挂在卫星下，与 GRD 天线平级）=====================
    宿主卫星树与 GRD 天线同源：3D 页在场时用活树（拿得到刚加的星），否则退到 localStorage 快照，
@@ -1332,6 +1336,12 @@ function onDlgKey(e) { if (e.key === 'F2') e.stopPropagation() }
 // 输入法组字中的 Esc 是取消组字。发送到小程序开着时只拦住冒泡，关它交给它自己的 Esc（上传中它不关）；
 // MODCOD 表格开着下拉 / 右键菜单时留给表格自己收；输入框里的 Esc 留给行内改名的「取消」。
 function onKey(e) {
+  // 卫星子弹窗由主界面持有，仍归文件管理这一层管理，Esc 先关它，F2 不改背后的文件。
+  if (grdSatModalOpen()) {
+    if (e.key === 'F2') { e.stopPropagation(); return }
+    if (e.key === 'Escape' && !e.isComposing) { e.stopPropagation(); e.preventDefault(); fileBridge.grdActions.closeSatModal() }
+    return
+  }
   if (e.key === 'F2') { onF2(e); return }
   if (e.key !== 'Escape' || e.isComposing) return
   if (confirmState.open) { e.stopPropagation(); e.preventDefault(); answerConfirm(false); return }

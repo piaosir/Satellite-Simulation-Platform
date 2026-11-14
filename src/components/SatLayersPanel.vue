@@ -1,16 +1,17 @@
 <script setup>
-// 星座侧栏 · 卫星集面板：卫星天线树 / 内置星座 / 卫星组 / 导入星历 / 自定义星座 摊成【一张有序表】，每一行同一套控件与手势。
+// 星座侧栏：按来源分区，共用一份有序注册表与显隐状态。目录汇总视图单独收进「目录参考」。
 //   · 眼睛        显 / 隐（可多开，地图 = 所有可见集的并集）
 //   · Alt + 眼睛  仅显示这一集（其余暂隐；顶部出现「仅显示：X」，点它还原）
 //   · 点行        展开 / 收起成员表（同一时刻只开一处）
 //   · 聚焦        只走菜单「聚焦」（双击行聚焦已取消：点行展开时连点两下极易误触，一下把地球转走）
-//   · 拖行首把手  调顺序（松手落位）；键盘党用菜单的 上移 / 下移 / 置顶
+//   · 拖行首把手  调整组内顺序（松手落位）；菜单提供组内上移 / 下移
 //   · 改名        F2 / 菜单「重命名」（行给了 renamable 才行：卫星天线树的名字不归这里管）；行尾「⋯」与右键 = 同一份菜单，条目由宿主按种类给（menuItems(row)）
 // 新建统一走顶部「＋」菜单（宿主给 addItems）。本组件只管呈现与本地 UI 态（改名 / 菜单 / 两步删除 / 拖拽 / 搜索下拉开合），
-// 数据与动作全在宿主（emit 出去）。
+// 数据与动作全在宿主（emit 出去）。输入只查找候选，主动显示搜索结果才改变地图。
 // 搜索下拉可关：Esc（焦点在搜索框里）/ 在搜索行外按下鼠标 / 点选一条结果 → 收起；再输入、点回搜索框（有关键词时）、关键词被
 // 宿主改了，或宿主递增 search.openTick（标题栏搜索桥，同一个词再搜也算）→ 重新展开。结果行的「＋」（加入 / 移出选中集）不收起，可以连着攒一批。
-import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { sectionsOf, sectionOf } from '../viz/constellation/satSetSections.js'
 import Icon from './Icon.vue'
 import SatList from './SatList.vue'
 
@@ -35,11 +36,42 @@ const props = defineProps({
   defaultColor: { type: String, default: '#4dabf7' }
 })
 const emit = defineEmits([
-  'toggle', 'solo', 'restore', 'expand', 'action', 'add', 'reorder',
+  'toggle', 'solo', 'restore', 'hide-all', 'restore-hidden', 'search-show', 'expand', 'action', 'add', 'reorder',
   'color', 'color-reset', 'rename',
   'search-input', 'search-clear', 'search-pick', 'search-toggle-pick', 'open-finder',
   'epoch', 'epoch-now', 'list-action', 'list-activate'
 ])
+const sections = computed(() => sectionsOf(props.rows).map((s) => ({
+  ...s,
+  visibleCount: s.rows.reduce((n, r) => n + (r.visible ? 1 : 0), 0)
+})))
+const rowIdxMap = computed(() => new Map(props.rows.map((r, i) => [r.id, i])))
+const collapsed = ref(new Set(['catalog']))
+function toggleSection(id) {
+  const next = new Set(collapsed.value)
+  if (next.has(id)) next.delete(id); else next.add(id)
+  collapsed.value = next
+}
+watch(() => props.rows.map((r) => [r.id, r.visible]), (rows, old = []) => {
+  const before = new Map(old)
+  let next = null
+  for (const [id, visible] of rows) {
+    if ((!before.has(id) && old.length) || (visible && !before.get(id))) {
+      const row = props.rows.find((r) => r.id === id)
+      const sec = row ? sectionOf(row) : ''
+      if (sec && collapsed.value.has(sec)) {
+        if (!next) next = new Set(collapsed.value)
+        next.delete(sec)
+      }
+    }
+  }
+  if (next) collapsed.value = next
+}, { immediate: true })
+watch(() => props.expanded, (id) => {
+  const row = props.rows.find((r) => r.id === id)
+  if (row && collapsed.value.has(sectionOf(row))) toggleSection(sectionOf(row))
+})
+const allCatalogVisible = computed(() => props.rows.some((r) => r.id === 'g:all' && r.visible))
 
 /* —— 行内改名 —— */
 const renameId = ref('')
@@ -112,12 +144,13 @@ function onItem(it) {
   if (it.key === 'rename') { startRename(row); return }
   if (it.key === 'delete') {
     if (delArm.value === row.id) { clearTimeout(armT); delArm.value = ''; emit('action', 'delete', row); return }
-    delArm.value = row.id; clearTimeout(armT); armT = setTimeout(() => { delArm.value = '' }, 5000)
+    delArm.value = row.id; clearTimeout(armT)
     return
   }
   emit('action', it.key, row)
 }
 const itemLabel = (it, row) => (row && it.key === 'delete' && delArm.value === row.id ? '确认删除' : it.label)
+function confirmDelete(row) { delArm.value = ''; emit('action', 'delete', row) }
 onBeforeUnmount(() => { clearTimeout(armT); endDrag(); window.removeEventListener('keydown', onMenuKey, true); document.removeEventListener('mousedown', onDocDown, true) })
 
 /* —— 搜索下拉的开合（本地 UI 态；结果本身由宿主给） —— */
@@ -136,7 +169,7 @@ function onSearchReopen() { if (props.search && props.search.keyword) setDrop(tr
 // Esc 收起：真收起了一份看得见的下拉才截停（否则照常往外走，宿主的 Esc 照旧生效）；输入法组字中的 Esc 归输入法
 function onSearchKey(e) {
   if (e.key !== 'Escape' || e.isComposing) return
-  const shown = dropOpen.value && !!(props.search && props.search.results && props.search.results.length)
+  const shown = dropOpen.value && !!props.search.keyword
   setDrop(false)
   if (shown) { e.stopPropagation(); e.preventDefault() }
 }
@@ -152,7 +185,7 @@ watch(() => props.search && props.search.openTick, () => {
 
 /* —— 眼睛：普通点 = 显隐；Alt + 点 = 仅显示 —— */
 function onEye(ev, row) { if (ev.altKey) emit('solo', row); else emit('toggle', row) }
-const eyeTitle = (row) => (row.visible ? '隐藏（Alt + 点击：仅显示该集）' : '显示（Alt + 点击：仅显示该集）')
+const eyeTitle = (row) => (row.visible ? '隐藏此项' : '显示此项') + '；同一卫星也可能出现在其他显示项中'
 
 /* —— 拖拽排序：按住行首把手拖，松手落位 —— */
 const bodyEl = ref(null)
@@ -171,7 +204,7 @@ function scrollHost() {
   }
   return null
 }
-function rowEls() { return bodyEl.value ? Array.from(bodyEl.value.querySelectorAll('.lp-row[data-idx]')) : [] }
+function rowEls() { return bodyEl.value ? Array.from(bodyEl.value.querySelectorAll('.lp-row[data-idx]')).filter((el) => !drag.value || sectionOf(props.rows[Number(el.dataset.idx)]) === drag.value.section) : [] }
 function dropIndexAt(y) {
   const els = rowEls()
   let idx = els.length
@@ -183,7 +216,9 @@ function onGripDown(ev, row, idx) {
   ev.preventDefault(); ev.stopPropagation()
   dragEl = ev.currentTarget
   try { dragEl.setPointerCapture(ev.pointerId) } catch { /* ignore */ }
-  drag.value = { id: row.id, from: idx, to: idx }
+  const peers = props.rows.filter((r) => sectionOf(r) === sectionOf(row))
+  const from = peers.findIndex((r) => r.id === row.id)
+  drag.value = { id: row.id, from, to: from, section: sectionOf(row) }
   window.addEventListener('pointermove', onDragMove)
   window.addEventListener('pointerup', onDragUp, true)
   window.addEventListener('pointercancel', onDragUp, true)
@@ -207,7 +242,8 @@ function onDragUp() {
   // to 是「落在第 to 行之前」；越过自己时下标要少算一位
   let to = d.to
   if (to > d.from) to -= 1
-  if (to !== d.from) emit('reorder', d.id, to)
+  const peers = props.rows.filter((r) => sectionOf(r) === d.section)
+  if (to !== d.from && peers[to]) emit('reorder', d.id, props.rows.findIndex((r) => r.id === peers[to].id))
 }
 function endDrag() {
   drag.value = null
@@ -216,20 +252,24 @@ function endDrag() {
   window.removeEventListener('pointercancel', onDragUp, true)
   dragEl = null
 }
-const dropBefore = (idx) => { const d = drag.value; return !!d && d.to === idx && d.from !== idx && d.from + 1 !== idx }
-const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props.rows.length && d.from !== props.rows.length - 1 }
+const dropBefore = (idx, section) => { const d = drag.value; return !!d && d.section === section && d.to === idx && d.from !== idx && d.from + 1 !== idx }
+const dropAfterLast = (section) => { const d = drag.value; return !!d && d.section === section.id && d.to === section.rows.length && d.from !== section.rows.length - 1 }
 </script>
 
 <template>
   <div class="lp">
     <div ref="topEl" class="lp-top">
+      <div class="lp-toolbar">
+        <span class="lp-save" :class="{ error: summary.saveState === 'error' }" role="status"><Icon :name="summary.saveState === 'error' ? 'alert-triangle' : 'check'" :size="12" />{{ summary.saveState === 'error' ? '显示设置保存失败' : '显示设置已保存' }}</span>
+        <button type="button" class="lp-ib lp-add" title="新建卫星组、生成星座或导入星历" @click="openAdd"><Icon name="plus" :size="12" /><span>添加</span></button>
+      </div>
       <div ref="searchEl" class="lp-search">
         <span class="lp-si"><Icon name="search" :size="12" /></span>
-        <input class="search-field" :value="search.keyword" placeholder="搜索名 / 编号" spellcheck="false" @input="onSearchInput" @focus="onSearchReopen" @click="onSearchReopen" @keydown="onSearchKey" />
+        <input class="search-field" :value="search.keyword" placeholder="查找卫星名称 / NORAD 编号" aria-label="查找卫星名称或 NORAD 编号" spellcheck="false" @input="onSearchInput" @focus="onSearchReopen" @click="onSearchReopen" @keydown="onSearchKey" />
         <button type="button" v-if="search.keyword" class="lp-x ibtn sm" title="清除" @click="emit('search-clear')"><Icon name="x" :size="12" /></button>
         <button type="button" class="lp-ib" :class="{ on: search.finderActive }" :aria-pressed="search.finderActive ? 'true' : 'false'" title="查找卫星：按所有者 / 对象类型 / 状态 / 发射年 / 轨道区制 / 近远地点 / 倾角 / 周期" @click="emit('open-finder')"><Icon name="filter" :size="12" /></button>
-        <button type="button" class="lp-ib lp-add" title="添加：新建卫星组 / 生成卫星或星座 / 导入星历 / 从目录查找 / 找回删掉的内置星座" @click="openAdd"><Icon name="plus" :size="12" /></button>
-        <div v-if="dropOpen && search.results && search.results.length" class="lp-drop menu">
+        <div v-if="dropOpen && search.keyword" class="lp-drop menu">
+          <div class="lp-search-state">{{ search.loading ? '正在查找…' : search.results?.length ? '匹配卫星' : '无匹配卫星' }}</div>
           <div v-for="it in search.results" :key="it.noradId" class="lp-di" :class="{ picked: it.picked }" @click="onResultPick(it)">
             <div class="lp-dt">
               <div class="lp-dn" data-i18n-skip>{{ it.name }}</div>
@@ -237,13 +277,22 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
             </div>
             <button type="button" :aria-pressed="it.picked ? 'true' : 'false'" class="lp-dp ibtn sm" :title="it.picked ? '已在选中集中，点击移出' : '加入选中集'" @click.stop="emit('search-toggle-pick', it)"><Icon :name="it.picked ? 'check' : 'plus'" :size="12" /></button>
           </div>
+          <button v-if="search.results?.length" type="button" class="lp-show-hits" @click="setDrop(false); emit('search-show')"><Icon name="eye" :size="12" />仅显示匹配卫星</button>
         </div>
       </div>
       <!-- 读数行是界面语汇 + 数字，跟界面语言走（不整行 skip）；只有「仅显示：」后面那个用户起的集名不翻（lit = 界面词才翻） -->
       <div class="lp-sum">
-        <span class="lp-sn">显示 {{ summary.shown ?? 0 }} 颗 · {{ summary.layers ?? 0 }} 集<template v-if="summary.dataTime"> · OMM {{ summary.dataTime }}</template><template v-if="summary.status"> · {{ summary.status }}</template></span>
-        <button type="button" v-if="solo" class="lp-solo" title="点击还原之前的显示" @click="emit('restore')"><span><span>仅显示：</span><span :data-i18n-skip="solo.lit ? null : ''">{{ solo.name }}</span></span><Icon name="x" :size="12" /></button>
+        <span class="lp-sn">显示 {{ summary.shown ?? 0 }} 颗 · {{ summary.layers ?? 0 }} 项</span>
+        <button v-if="!summary.allHidden" type="button" class="lp-text-btn" @click="emit('hide-all')">全部隐藏</button>
       </div>
+      <div v-if="solo" class="lp-mode">
+        <span class="lp-mode-name">仅显示：<span :data-i18n-skip="solo.lit ? null : ''">{{ solo.name }}</span></span>
+        <button type="button" class="lp-text-btn" @click="emit('restore')">恢复之前显示</button>
+      </div>
+      <div v-if="summary.allHidden" class="lp-mode"><span>已全部隐藏</span><button v-if="summary.canRestoreHidden" type="button" class="lp-text-btn" @click="emit('restore-hidden')">恢复之前显示</button></div>
+      <div v-if="allCatalogVisible" class="lp-warning" role="status">全量目录显示中 · 包含其他星座的卫星</div>
+      <div v-if="summary.status" class="lp-load-state" role="status">{{ summary.status }}</div>
+      <div v-else-if="summary.dataTime" class="lp-data-time">OMM {{ summary.dataTime }}</div>
     </div>
 
     <div ref="bodyEl" class="lp-body" :class="{ dragging: !!drag }">
@@ -258,8 +307,9 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
           <button type="button" :aria-pressed="searchRow.visible ? 'true' : 'false'" class="lp-eye" :title="eyeTitle(searchRow)" @click.stop="onEye($event, searchRow)"><Icon :name="searchRow.visible ? 'eye' : 'eye-off'" :size="12" /></button>
           <span class="lp-sw fixed"><span class="lp-swi" :style="{ background: searchRow.color || defaultColor }"></span></span>
           <span class="lp-ki" title="搜索结果"><Icon name="search" :size="12" /></span>
-          <span class="lp-nm" :title="searchRow.name" :data-i18n-skip="searchRow.lit ? null : ''">{{ searchRow.name }}</span>
+          <button type="button" class="lp-nm" :aria-expanded="expanded === searchRow.id" :title="searchRow.name + ' · 查看成员'" :data-i18n-skip="searchRow.lit ? null : ''" @click.stop="emit('expand', searchRow)">{{ searchRow.name }}</button>
           <span class="lp-cnt" data-i18n-skip>{{ searchRow.count }}</span>
+          <button type="button" class="lp-only" :class="{ on: solo?.id === searchRow.id }" :title="solo?.id === searchRow.id ? '恢复之前显示' : '仅显示此项'" @click.stop="solo?.id === searchRow.id ? emit('restore') : emit('solo', searchRow)">{{ solo?.id === searchRow.id ? '还原' : '仅显示此项' }}</button>
           <button type="button" aria-haspopup="menu" class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, searchRow)"><Icon name="ellipsis" :size="12" /></button>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== searchRow.id }" :size="12" /></span>
         </div>
@@ -271,33 +321,44 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
         />
       </template>
       <div v-if="!rows.length" class="lp-empty">暂无卫星集。</div>
-      <template v-for="(row, idx) in rows" :key="row.id">
-        <div v-if="dropBefore(idx)" class="lp-dropline"></div>
+      <section v-for="section in sections" :key="section.id" class="lp-section">
+        <div class="lp-section-head">
+          <button type="button" class="lp-section-toggle" :aria-expanded="!collapsed.has(section.id)" :title="section.tip" @click="toggleSection(section.id)">
+            <Icon name="chevron-down" class="disc" :class="{ shut: collapsed.has(section.id) }" :size="12" />
+            <Icon :name="section.icon" :size="12" /><span>{{ section.title }}</span><span class="lp-section-count">{{ section.visibleCount }} 显示 · {{ section.rows.length }} 项</span>
+          </button>
+          <button v-if="section.add" type="button" class="lp-section-add" :title="'添加' + section.title" :aria-label="'添加' + section.title" @click="emit('add', section.add)"><Icon name="plus" :size="12" /></button>
+        </div>
+        <template v-if="!collapsed.has(section.id)">
+      <template v-for="(row, idx) in section.rows" :key="row.id">
+        <div v-if="dropBefore(idx, section.id)" class="lp-dropline"></div>
         <div
-          class="lp-row" :data-idx="idx"
+          class="lp-row" :data-idx="rowIdxMap.get(row.id)"
           :class="{ off: !row.visible, exp: expanded === row.id, solo: solo && solo.id === row.id, arm: delArm === row.id, dragsrc: drag && drag.id === row.id, ctx: !!(menu && menu.kind === 'row' && menu.row && menu.row.id === row.id) }"
           @click="emit('expand', row)"
           @contextmenu.prevent.stop="openMenu($event, row)"
         >
-          <span class="lp-grip" title="拖动调整顺序" @pointerdown="onGripDown($event, row, idx)" @click.stop><Icon name="grip-vertical" :size="12" /></span>
-          <button type="button" :aria-pressed="row.visible ? 'true' : 'false'" class="lp-eye" :title="eyeTitle(row)" @click.stop="onEye($event, row)"><Icon :name="row.visible ? 'eye' : 'eye-off'" :size="12" /></button>
+          <span class="lp-grip" title="拖动调整组内顺序" @pointerdown="onGripDown($event, row, idx)" @click.stop><Icon name="grip-vertical" :size="12" /></span>
+          <button type="button" :aria-pressed="row.visible ? 'true' : 'false'" :aria-label="(row.visible ? '隐藏' : '显示') + row.name" class="lp-eye" :title="eyeTitle(row)" @click.stop="onEye($event, row)"><Icon :name="row.visible ? 'eye' : 'eye-off'" :size="14" /></button>
           <label v-if="row.colorable" class="lp-sw" :title="'星点颜色（' + (row.color || '未设置') + '）'" @click.stop>
             <span class="lp-swi" :class="{ unset: !row.color }" :style="row.color ? { background: row.color } : null"></span>
             <input type="color" :value="row.color || defaultColor" @input="emit('color', row, $event.target.value)" />
           </label>
           <span v-else class="lp-sw fixed"><span class="lp-swi" :style="{ background: row.color || defaultColor }"></span></span>
-          <span v-if="row.icon" class="lp-ki" :title="row.iconTitle || ''"><Icon :name="row.icon" :size="12" /></span>
           <input
             v-if="renameId === row.id" :ref="setRnEl" class="lp-rn" v-model="renameVal"
             @click.stop @keydown.enter="commitRename(row)" @keydown.esc.stop="renameId = ''" @blur="commitRename(row)"
           />
           <!-- 名字（连同悬停全名）是用户数据才不翻：skip 只挂内层；「已改动」小点的 title 是界面词，放在 skip 外面 -->
-          <span v-else class="lp-nm"><span :title="row.name" :data-i18n-skip="row.lit ? null : ''">{{ row.name }}</span><i v-if="row.modified" class="lp-mod" title="已改动过（可在菜单中重置）"></i></span>
+          <button v-else type="button" class="lp-nm" :aria-expanded="expanded === row.id" :title="row.name + (row.sub ? ' · ' + row.sub : '') + ' · 查看成员'" @click.stop="emit('expand', row)"><span class="lp-name-line" :class="{ wrap: row.id === 'g:other' && row.lit }"><span :data-i18n-skip="row.lit ? null : ''">{{ row.name }}</span><i v-if="row.modified" class="lp-mod" title="已改动过（可在菜单中重置）"></i></span><span class="lp-row-meta">{{ row.visible ? '显示中' : '已隐藏' }}<template v-if="row.sub"> · {{ row.sub }}</template></span></button>
           <!-- 副读数全是界面语汇 + 日期（「星历 · 起 → 止」/ 格式名 · 导入日 / Walker 码「53° · 单星」），不含用户数据，不 skip -->
-          <span v-if="row.sub" class="lp-sub">{{ row.sub }}</span>
-          <span class="lp-cnt" data-i18n-skip>{{ row.count }}</span>
+          <span class="lp-cnt" :title="row.count === '' ? '尚未加载' : row.count + ' 颗卫星'" data-i18n-skip>{{ row.count === '' ? '—' : row.count }}</span>
+          <button type="button" class="lp-only" :class="{ on: solo?.id === row.id }" :title="solo?.id === row.id ? '恢复之前显示' : '仅显示' + row.name" @click.stop="solo?.id === row.id ? emit('restore') : emit('solo', row)">{{ solo?.id === row.id ? '还原' : '仅显示此项' }}</button>
           <button type="button" aria-haspopup="menu" class="lp-more" title="更多操作（右键同）" @click.stop="openMenu($event, row)"><Icon name="ellipsis" :size="12" /></button>
           <span class="lp-chev"><Icon name="chevron-down" class="disc" :class="{ shut: expanded !== row.id }" :size="12" /></span>
+        </div>
+        <div v-if="delArm === row.id" class="lp-delete-confirm" role="alert">
+          <span>删除此项？</span><button type="button" class="lp-text-btn" @click="delArm = ''">取消</button><button type="button" class="lp-text-btn danger" @click="confirmDelete(row)">确认删除</button>
         </div>
         <SatList
           v-if="expanded === row.id"
@@ -306,7 +367,9 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
           @action="(k, p) => emit('list-action', k, p, row)" @activate="(it) => emit('list-activate', it, row)"
         />
       </template>
-      <div v-if="dropAfterLast()" class="lp-dropline"></div>
+      <div v-if="dropAfterLast(section)" class="lp-dropline"></div>
+        </template>
+      </section>
     </div>
 
     <div v-if="epoch !== null" ref="footEl" class="lp-foot" title="全部自定义星座共用的场景历元：星座定向以此为准，拖时间轴仍从此历元向后推演">
@@ -458,4 +521,48 @@ const dropAfterLast = () => { const d = drag.value; return !!d && d.to === props
 .lp-mi.warn { color: var(--danger); }
 .lp-mi.dis { pointer-events: none; }
 .lp-mi em { font-style: normal; font-variant-numeric: tabular-nums; }
+
+/* 按来源分区；主操作用文字呈现，成员与显示各有独立按钮。 */
+.lp-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lp-save { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-1); color: var(--text-muted); }
+.lp-save.error, .lp-text-btn.danger { color: var(--danger); }
+.lp-add { width: auto; gap: 4px; padding: 0 9px; font-size: var(--fs-2); }
+.lp-x { right: calc(var(--h-ctl) + 8px); }
+.lp-sum { justify-content: space-between; }
+.lp-sn { white-space: normal; }
+.lp-text-btn, .lp-only, .lp-section-add { border: 0; background: transparent; padding: 3px 5px; color: var(--text-muted); border-radius: var(--r-ctl); font: inherit; cursor: pointer; }
+.lp-text-btn { flex: none; font-size: var(--fs-2); color: var(--accent-ui); }
+.lp-text-btn:hover, .lp-only:hover, .lp-section-add:hover { background: var(--wash-hover); color: var(--text); }
+.lp-mode { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 3px 6px; background: var(--accent-ui-weak); border-radius: var(--r-ctl); font-size: var(--fs-2); }
+.lp-mode-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-warning { color: var(--warn); font-size: var(--fs-1); line-height: 1.5; }
+.lp-load-state, .lp-data-time { color: var(--text-faint); font-size: var(--fs-1); overflow-wrap: anywhere; }
+.lp-section { padding-bottom: 5px; }
+.lp-section-head { display: flex; align-items: center; gap: 2px; padding: 3px 8px; margin-top: 3px; }
+.lp-section-toggle { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text-muted); display: flex; align-items: center; gap: 6px; padding: 4px 0; text-align: left; font-size: var(--fs-2); cursor: pointer; }
+.lp-section-toggle:hover { color: var(--text); }
+.lp-section-count { margin-left: auto; color: var(--text-faint); font-size: var(--fs-1); font-variant-numeric: tabular-nums; }
+.lp-section-add { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; }
+.lp-row { position: relative; gap: 5px; min-height: 46px; align-items: flex-start; padding: 3px 8px 3px 4px; box-sizing: border-box; }
+.lp-eye { width: 24px; height: 24px; }
+.lp-nm { display: flex; flex-direction: column; gap: 2px; border: 0; background: transparent; padding: 2px 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.lp-name-line { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.lp-name-line.wrap { white-space: normal; }
+.lp-row-meta { max-width: calc(100% - 65px); color: var(--text-faint); font-size: var(--fs-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; }
+.lp-row.off .lp-nm { opacity: 1; }
+.lp-row.off .lp-cnt, .lp-row.off .lp-swi { opacity: .75; }
+.lp-row.off .lp-eye { opacity: 1; }
+.lp-only { position: absolute; right: 24px; bottom: 2px; font-size: var(--fs-1); padding: 3px 5px; }
+.lp-row > .lp-eye, .lp-row > .lp-grip, .lp-row > .lp-more, .lp-row > .lp-chev, .lp-row > .lp-cnt { margin-top: 2px; }
+.lp-row > .lp-sw { margin-top: 8px; }
+.lp-only.on { background: var(--accent-ui-weak); color: var(--accent-ui); }
+.lp-more { opacity: .7; width: 22px; height: 24px; }
+.lp-grip { width: 10px; }
+.lp-cnt { min-width: 26px; }
+.lp-chev { width: 10px; }
+.lp-search-state { padding: 7px 9px; font-size: var(--fs-2); color: var(--text-faint); }
+.lp-show-hits { display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; padding: 8px; border: 0; border-top: 1px solid var(--border); background: var(--surface); color: var(--accent-ui); cursor: pointer; font-size: var(--fs-2); position: sticky; bottom: 0; }
+.lp-show-hits:hover { background: var(--surface-2); }
+.lp-delete-confirm { display: flex; align-items: center; gap: 6px; margin: 0 8px 6px 24px; padding: 4px 6px; border: 1px solid var(--danger); border-radius: var(--r-ctl); font-size: var(--fs-2); }
+.lp-delete-confirm > span { flex: 1; color: var(--danger); }
 </style>

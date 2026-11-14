@@ -24,7 +24,9 @@ const GROUP_QUERY = {
   qianfan: 'GROUP=qianfan', guowang: 'NAME=HULIANWANG', geo: 'GROUP=geo',
   glonass: 'GROUP=glo-ops', o3b: 'NAME=O3B', iridium: 'GROUP=iridium-NEXT',
   globalstar: 'GROUP=globalstar', stations: 'GROUP=stations', planet: 'GROUP=planet',
-  spire: 'GROUP=spire', active: 'GROUP=active'
+  spire: 'GROUP=spire', active: 'GROUP=active',
+  gnss: 'GROUP=gnss', weather: 'GROUP=weather', 'earth-resources': 'GROUP=resource',
+  sar: 'GROUP=sar', science: 'GROUP=science', amateur: 'GROUP=amateur'
 }
 const SUP_FILE = { starlink: 'starlink', oneweb: 'oneweb', kuiper: 'kuiper', planet: 'planet', iridium: 'iridium', gps: 'gps' }
 // 与 omm.js 的 DATASETS 逐字一致（改这里也要同步改 omm.js）。SATCAT 无补充端点，SUP_FILE 不加条目。

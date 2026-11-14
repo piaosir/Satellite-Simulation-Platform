@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import assert from 'node:assert/strict'
 import { ref } from 'vue'
+import { parse } from 'acorn'
 
 const require = createRequire(import.meta.url)
 let pass = 0
@@ -507,7 +508,16 @@ function mkTree(over = {}) {
   const src = (p) => readFileSync(new URL('../../../' + p, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
   for (const g of ['src/linkbudget/StationGrid.vue', 'src/ngso/StationGrid.vue']) {
     const s = src(g)
-    ok(/function clearHistory\(\) \{ undoStack\.value = \[\]; redoStack\.value = \[\] \}/.test(s) && /defineExpose\(\{[^}]*\bclearHistory\b/.test(s), g + '：暴露 clearHistory')
+    ok(/defineExpose\(\{[^}]*\bclearHistory\b/.test(s), g + '：暴露 clearHistory')
+    const script = /^<script setup[^>]*>([\s\S]*?)<\/script>/m.exec(s)[1]
+    const ast = parse(script, { ecmaVersion: 'latest', sourceType: 'module' })
+    const functions = ast.body.filter((n) => n.type === 'FunctionDeclaration' && ['clearHistory', 'clearSelection'].includes(n.id.name))
+    const undoStack = ref([['old-row']]), redoStack = ref([['old-redo']]), sel = ref({ old: true }), rangeActive = ref('rows')
+    new Function('undoStack', 'redoStack', 'sel', 'rangeActive', functions.map((n) => script.slice(n.start, n.end)).join('\n') + '\nclearHistory();')(undoStack, redoStack, sel, rangeActive)
+    eq(undoStack.value, [], g + '：切配置清撤销栈')
+    eq(redoStack.value, [], g + '：切配置清重做栈')
+    eq(sel.value, {}, g + '：切配置清多选行')
+    eq(rangeActive.value, false, g + '：切配置清范围选择')
   }
   const wins = [
     ['src/linkbudget/LinkBudgetApp.vue', ['linkGridRef']],

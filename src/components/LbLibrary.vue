@@ -1,6 +1,6 @@
 <script setup>
 // 资源库主从视图（GEO / NGSO / 再生式共用）：取代旧「竖排大卡片」。
-// 列表＝条目名称 + 一行摘要（行内 hover 动作：复制/删除），另一侧＝所选条目的编辑面板（slot，
+// 列表＝可直接编辑的条目名称 + 一行摘要（行内 hover 动作：复制/删除），另一侧＝所选条目的编辑面板（slot，
 // 原 BasebandPanel / EarthStationPanel / RegenSatPanel 原样塞入）。同屏只展开一份编辑器，
 // 列表本身就是全库速览——信息密度与「同屏一个上下文」两头都占。
 // 两种排布（layout）：'row' = 左列表右编辑器（宽区）；'column' = 上列表下编辑器（右侧「资源库」侧栏）。
@@ -81,17 +81,25 @@ function flash(msg) {
   clearTimeout(_hintT)
   _hintT = setTimeout(() => { hint.value = '' }, 2600)
 }
-function onNameInput(e) {
-  const cfg = selected.value
+function onNameInput(e, cfg) {
   if (!cfg) return
+  const wasAuto = cfg.nameAuto
+  // 连全选清空的第一笔也先暂停自动命名，避免父组件深监听立刻把名称填回。
+  cfg.nameAuto = false
   cfg.name = e.target.value
-  if (cfg.nameAuto && cfg.name.trim()) { cfg.nameAuto = false; flash('已固定为自定义名称') }
+  if (wasAuto && cfg.name.trim()) flash('已固定为自定义名称')
 }
-function onNameBlur() {
-  const cfg = selected.value
+function onNameBlur(cfg) {
   if (!cfg || cfg.name.trim() || cfg.nameAuto) return
   cfg.nameAuto = true
   flash('已恢复自动命名')
+}
+function onNameKey(e) {
+  // 中文输入法用 Enter 确认候选字时继续编辑。
+  if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+    e.preventDefault()
+    e.target.blur()
+  }
 }
 
 // —— 复制名称：条目名进剪贴板，到链路表的「载波配置 / 地球站配置」那一格 Ctrl+V 就套用了 ——
@@ -121,6 +129,7 @@ function onKey(e) {
 }
 // 列表（role=listbox）上下键换条目：配合 Ctrl+C 可全键盘取名，也是可聚焦列表该有的键盘行为
 function onListKey(e) {
+  if (e.target && e.target.tagName === 'INPUT') return
   const n = props.items.length
   if (!n || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp')) return
   const i = props.items.findIndex((c) => selected.value && c.id === selected.value.id)
@@ -136,7 +145,9 @@ function onListKey(e) {
       <div v-for="cfg in items" :key="cfg.id" class="lbl-row" :class="{ on: selected && cfg.id === selected.id }"
            role="option" :aria-selected="selected && cfg.id === selected.id" @click="emit('update:modelValue', cfg.id)"
            @contextmenu="openRowMenu($event, cfg)">
-        <span class="lbl-nm" :title="cfg.name" data-i18n-skip>{{ cfg.name || byLang('（未命名）', '(Unnamed)') }}</span>
+        <input :value="cfg.name" class="lbl-nm" :title="cfg.name + '\n' + byLang('点击直接改名；清空名称可恢复自动命名', 'Click to rename; clear to restore automatic naming')"
+               :placeholder="byLang('（未命名）', '(Unnamed)')" :aria-label="byLang('修改名称', 'Edit name')" spellcheck="false" data-i18n-skip
+               @focus="emit('update:modelValue', cfg.id)" @input="onNameInput($event, cfg)" @blur="onNameBlur(cfg)" @keydown="onNameKey" />
         <span v-if="sumOf(cfg)" class="lbl-sum" :title="sumOf(cfg)">{{ sumOf(cfg) }}</span>
         <span class="lbl-row-acts">
           <button class="lbl-ico" :class="{ done: copied === cfg.id }" title="复制名称（到链路表的配置格 Ctrl+V 即套用本条）"
@@ -152,15 +163,14 @@ function onListKey(e) {
     <div v-if="selected" class="lbl-ed">
       <div class="lbl-ed-hd">
         <input :value="selected.name" class="lbl-ed-nm" :placeholder="namePlaceholder" spellcheck="false"
-               @input="onNameInput" @blur="onNameBlur" />
+               @input="onNameInput($event, selected)" @blur="onNameBlur(selected)" @keydown="onNameKey" />
         <button class="lbl-cpy" :class="{ done: copied === selected.id }" @click="copyName(selected)"
                 :title="`复制名称「${selected.name}」到剪贴板：在链路表选中「载波配置 / 地球站配置」单元格后 Ctrl+V 即套用本条（选中条目直接按 Ctrl+C 亦可）`">
           <Icon :name="copied === selected.id ? 'check' : 'clipboard'" :size="12" />
         </button>
         <span v-if="selected.nameAuto" class="lbl-auto" :title="`名称随${autoTip}自动生成；在此改名后就固定为自定义名称，不再自动更新（清空名称可恢复自动）`">自动</span>
-        <span v-if="hint" :key="hintSeq" class="lbl-hint">{{ hint }}</span>
-        <span class="lbl-ed-sp"></span>
         <slot name="editor-actions" :cfg="selected" />
+        <span v-if="hint" :key="hintSeq" class="lbl-hint">{{ hint }}</span>
       </div>
       <div class="lbl-ed-bd">
         <slot :cfg="selected" />
@@ -187,12 +197,14 @@ function onListKey(e) {
 .lbl-row { position: relative; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px 6px 11px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .lbl-row:hover { background: var(--surface); }
 .lbl-row.on { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent-ui); }
-.lbl-nm { font-size: var(--fs-3); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 56px; }
+.lbl-nm { min-width: 0; width: calc(100% - 56px); height: auto; font: inherit; font-size: var(--fs-3); font-weight: 600; line-height: inherit; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0; border: 0; border-radius: var(--r-ctl, 2px); background: transparent; cursor: text; }
+.lbl-nm:hover, .lbl-nm:focus { background: var(--field-bg); box-shadow: 0 0 0 1px var(--field-border); }
+.lbl-nm:focus { outline: none; box-shadow: 0 0 0 1px var(--accent-ui); }
 .lbl-row:not(.on) .lbl-nm { color: var(--text-muted); font-weight: 400; }
 .lbl-sum { font-family: var(--font-mono); font-size: var(--fs-2); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lbl-row-acts { position: absolute; top: 5px; right: 5px; display: none; gap: 2px; }
-.lbl.has-more .lbl-nm { padding-right: 78px; }   /* 行内钮多一枚「更多」 */
-.lbl-row:hover .lbl-row-acts { display: inline-flex; }
+.lbl.has-more .lbl-nm { width: calc(100% - 78px); }   /* 行内钮多一枚「更多」 */
+.lbl-row:hover .lbl-row-acts, .lbl-row:focus-within .lbl-row-acts { display: inline-flex; }
 .lbl-ico { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }
 .lbl-ico:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .lbl-ico.del:hover:not(:disabled) { color: var(--danger); }
@@ -213,7 +225,6 @@ function onListKey(e) {
 .lbl-auto { flex: none; font-size: var(--fs-1); line-height: 15px; padding: 0 5px; cursor: help; color: var(--text-faint); background: var(--bg); border: 1px dashed var(--border-strong); border-radius: var(--r-ctl); }
 .lbl-hint { flex: 0 1 auto; min-width: 0; font-size: var(--fs-2); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: lbl-hint-fade 2.6s ease forwards; }
 @keyframes lbl-hint-fade { 0% { opacity: 0 } 8%, 70% { opacity: 1 } 100% { opacity: 0 } }
-.lbl-ed-sp { flex: 1; }
 .lbl-ed-bd { padding: 10px 12px 6px; overflow-x: auto; }
 
 /* —— 竖排（右侧「资源库」侧栏）：上＝条目列表（自身内滚，占上部）/ 下＝编辑器（占余高内滚）——

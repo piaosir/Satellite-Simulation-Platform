@@ -4049,9 +4049,15 @@ export function createFlatCoverage(canvas) {
   // ---- 拖放命中（不受「调整位置」门控）：地球站 → 点标记 → 载具（图上压盖次序反过来）。2D 没有卫星拾取 ----
   // 几何与 markerAt 同一套（stBox / stExtent / ptDiam / idxDiam，立在锚点上的符号抓形体中心），外加载具（半径 max(HIT_MIN, vi·0.5 + 4)）。
   // 返回 { kind, id, x, y, px }（x / y = 画布 CSS 像素的形体中心，px = 视觉直径）或 null。
+  let _cvRect = null, _cvRectAt = -1e9
+  function canvasRect() {
+    const now = performance.now()
+    if (!_cvRect || now - _cvRectAt > 16) { _cvRect = canvas.getBoundingClientRect(); _cvRectAt = now }
+    return _cvRect
+  }
   const ENT_ORDER = ['station', 'point', 'vehicle']
   function entityAtScreen(clientX, clientY, kinds) {
-    const r = canvas.getBoundingClientRect()
+    const r = canvasRect()
     const mx = clientX - r.left, my = clientY - r.top
     let best = null, bd = Infinity
     const test = (x, y, d, kind, id) => {
@@ -4821,7 +4827,7 @@ export function createFlatCoverage(canvas) {
   // ---- 交互 ----
   function onWheel(e) {
     e.preventDefault()
-    const r = canvas.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top
+    const r = canvasRect(), mx = e.clientX - r.left, my = e.clientY - r.top
     const kk = k(), wx = (mx - tx) / kk, wy = (my - ty) / kk
     scale = tToScale(stepZoomT(scaleToT(), wheelNotches(e), wheelPct, TMAX))
     const k2 = k(); tx = mx - wx * k2; ty = my - wy * k2; noteZoom(); requestDraw()   // ★ 不作废快照：缩放期缩位图，静止后由 scheduleRebuild 补一次
@@ -4880,7 +4886,7 @@ export function createFlatCoverage(canvas) {
   let boxMode = false, onBoxSelect = null, boxDragging = false, boxSX = 0, boxSY = 0
   function vertexAt(clientX, clientY) {
     if (!editVerts || !editVerts.pts || !editVerts.pts.length) return -1
-    const r = canvas.getBoundingClientRect()
+    const r = canvasRect()
     const mx = clientX - r.left, my = clientY - r.top
     let best = -1, bd = Math.max(7, (editVerts.px || 3) + 5)   // 命中半径：顶点半径+5px、下限 7px
     editVerts.pts.forEach((p, i) => {
@@ -4922,7 +4928,7 @@ export function createFlatCoverage(canvas) {
   }
   function markerAt(clientX, clientY) {
     if (!markerDragAny()) return null
-    const r = canvas.getBoundingClientRect()
+    const r = canvasRect()
     const mx = clientX - r.left, my = clientY - r.top
     const iz = izNow()
     let best = null, bd = Infinity
@@ -4964,7 +4970,7 @@ export function createFlatCoverage(canvas) {
   // 屏幕坐标是否落在编辑多边形内（射线法，投影后逐边判交）
   function pointInEditPoly(clientX, clientY) {
     if (!editVerts || !editVerts.pts || editVerts.pts.length < 3) return false
-    const r = canvas.getBoundingClientRect()
+    const r = canvasRect()
     const mx = clientX - r.left, my = clientY - r.top
     const pts = editVerts.pts; let inside = false
     for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -4986,7 +4992,7 @@ export function createFlatCoverage(canvas) {
     let list = null
     try { list = pickExtras() } catch { list = null }
     if (!list || !list.length) return null
-    const r = canvas.getBoundingClientRect()
+    const r = canvasRect()
     const mx = clientX - r.left, my = clientY - r.top
     let best = null, bd = Infinity
     for (const c of list) {
@@ -5171,7 +5177,7 @@ export function createFlatCoverage(canvas) {
   function screenToLonLatClamp(clientX, clientY) {
     const hit = screenToLonLat(clientX, clientY)
     if (hit) return hit
-    const r = canvas.getBoundingClientRect(), kk = k()
+    const r = canvasRect(), kk = k()
     const sx = clientX - r.left, sy = clientY - r.top
     const cx = tx + PJ.W * kk / 2, cy = ty + PJ.H * kk / 2
     let a = 0, b = 1, best = null
@@ -5184,7 +5190,7 @@ export function createFlatCoverage(canvas) {
   }
   // 屏幕坐标 -> 经纬度（投影逆运算）；超出地图范围返回 null（经纬图框的留白同样不算地图）
   function screenToLonLat(clientX, clientY) {
-    const r = canvas.getBoundingClientRect(), kk = k()
+    const r = canvasRect(), kk = k()
     const P = frameOn() ? framePlot : null, sx = clientX - r.left, sy = clientY - r.top
     if (P && (sx < P.x || sy < P.y || sx > P.x + P.w || sy > P.y + P.h)) return null
     const wx = (clientX - r.left - tx) / kk, wy = (clientY - r.top - ty) / kk
@@ -5206,6 +5212,7 @@ export function createFlatCoverage(canvas) {
 
   // 画布位图尺寸 = CSS 尺寸 × effDpr()。窗口尺寸变化与 DPR 变化都从这里进。
   function resizeNow() {
+    _cvRect = null
     const w = canvas.clientWidth || canvas.parentElement?.clientWidth || 0, h = canvas.clientHeight || canvas.parentElement?.clientHeight || 0
     if (!w || !h) return
     const firstFit = cw < 2 || ch < 2; cw = w; ch = h; dpr = effDpr()
@@ -5477,6 +5484,10 @@ export function createFlatCoverage(canvas) {
     setOnHover(fn) { onHover = fn },
     // 卫星拾取：onPick(ref|null, additive)；pickExtras() → [{ lat, lon, ref }]（宿主现给，见 satAtScreen）
     setOnPick(fn) { onPick = typeof fn === 'function' ? fn : null },
+    coveragePickLayers: () => [
+      ...bmLayers.map((layer) => ({ layer, options: bmOpts, source: 'beammap' })),
+      ...fieldLayers.map((layer) => ({ layer, options: fieldOpts, source: 'antenna' }))
+    ],
     setPickExtras(fn) { pickExtras = typeof fn === 'function' ? fn : null },
     // 用户自己拖动画面松手（位移 > 6 px）：宿主据此让「跟随」之类的自动定位让位
     setOnPanEnd(fn) { onPanEnd = typeof fn === 'function' ? fn : null },
@@ -5726,7 +5737,7 @@ export function createFlatCoverage(canvas) {
     screenOfLL(lat, lon) {
       const x = PX(lon, lat), y = PY(lat, lon)
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null
-      const r = canvas.getBoundingClientRect()
+      const r = canvasRect()
       return { x: x + r.left, y: y + r.top }
     },
     setFocusSat(p) { focusSats = (Array.isArray(p) ? p : (p ? [p] : [])).filter((q) => q && Number.isFinite(q.lat) && Number.isFinite(q.lon)); requestDraw() },

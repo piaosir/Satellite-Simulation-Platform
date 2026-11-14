@@ -111,8 +111,8 @@ const RESULT_LABEL_LIST = [
     ['selectedPowerResult', '功放实际输出电平', 'dBW'],
     ['selectedPowerWResult', '功放实际输出', 'W'],
     ['UPCmarginResult', 'UPC 上行功控余量', 'dB'],
-    ['stationEIRPResult', '发信站 EIRP', 'dBW'],
-    ['stationPSDResult', '发信站功率谱密度', 'dBW/Hz'],
+    ['stationEIRPResult', '发信地球站 EIRP', 'dBW'],
+    ['stationPSDResult', '发信站上行功率谱密度', 'dBW/Hz'],
     // 旁瓣增益/EIRP/PSD 与 ITU-R S.524 的 PSD 门限随邻星离轴口径整组移除（2026-08-07）：
     // 它们全由 deltaTheta 派生，而平台无该输入框；离轴 EIRP 密度与协调门限看干扰分析模块。
     ['arrivalPFDAtSatelliteResult', '到达卫星通量密度', 'dBW/m²'],
@@ -125,8 +125,8 @@ const RESULT_LABEL_LIST = [
     ['ituPfdMarginResult', 'ITU PFD 余量', 'dB'],
     ['ituPfdLimitPerM2', 'ITU PFD 限值（载波带宽）', 'dBW/m²'],
     ['ituPfdRefBandwidth', 'ITU PFD 参考带宽', 'kHz'],
-    ['satellitePSDResult', '卫星功率谱密度', 'dBW/Hz'],
-    ['transponderOutputEIRP', '转发器输出 EIRP', 'dBW'],
+    ['satellitePSDResult', '卫星下行功率谱密度', 'dBW/Hz'],
+    ['transponderOutputEIRP', '卫星转发器输出 EIRP', 'dBW'],
     ['eirpPerCarrier', '每载波 EIRP（上行雨）', 'dBW'],
     ['RXeirpPerCarrierResult', '每载波 EIRP（下行雨）', 'dBW']
   ]),
@@ -143,7 +143,7 @@ const RESULT_LABEL_LIST = [
     ['downlinkComponentResult', '下行雨卫星总 C/T', 'dBW/K'],
     ['EIRPsResult', '卫星饱和 EIRP', 'dBW'],
     ['SFDsResult', '卫星 SFD', 'dBW/m²'],
-    ['satelliteGTResult', '卫星 G/T', 'dB/K'],
+    ['satelliteGTResult', '卫星接收 G/T', 'dB/K'],
     ['antennaGainResult', '卫星天线单位面积增益', 'dBi'],
     ['BOiResult', 'IBO 输入回退', 'dB'],
     ['BOoResult', 'OBO 输出回退', 'dB'],
@@ -176,7 +176,7 @@ const RESULT_LABEL_LIST = [
     ['receiverNoiseTempResult', '接收机噪温', 'K'],
     ['rainNoiseTempResult', '雨噪声温度', 'K'],
     ['cloudNoiseTempResult', '云噪声温度', 'K'],
-    ['gOverTeResult', '收信站 G/T', 'dB/K'],
+    ['gOverTeResult', '收信地球站 G/T', 'dB/K'],
     ['gOverTdegradationResult', 'G/T 劣化（降雨）', 'dB'],
     ['txAntennaGainResult', '发信站天线增益', 'dBi'],
     ['rxAntennaGainResult', '收信站天线增益', 'dBi'],
@@ -231,11 +231,11 @@ const RESULT_LABEL_LIST = [
     ['islTotalCNResult', 'ISL 多跳等效 C/N', 'dB'],
     ['islCascadeCNResult', 'ISL 级联 C/N', 'dB'],
     ['islImpactResult', 'ISL 对上行的代价', 'dB'],
-    ['islRfEirpResult', 'ISL 发射 EIRP', 'dBW'],
+    ['islRfEirpResult', '发射卫星 EIRP', 'dBW'],
     ['islRfFreqResult', 'ISL 频率', 'GHz'],
     ['islRfDistResult', 'ISL 星间距离', 'km'],
     ['islRfFslResult', 'ISL 自由空间损耗', 'dB'],
-    ['islRfGtResult', 'ISL 接收 G/T', 'dB/K'],
+    ['islRfGtResult', '接收卫星 G/T', 'dB/K'],
     ['islRfMiscLossResult', 'ISL 其他损耗', 'dB']
   ])
 ]

@@ -21,6 +21,7 @@
 //   commit()              推图 + 落盘（syncMarkers 那一套）
 //   satEcefAt(key, tMs)   卫星此刻 ECEF（km）| null（解析不到）
 //   satInfo(key)          卫星身份快照 { noradId, geo, slotLon, folder, altKm, inclDeg } | null（导入用，解析不到时沿用存档里的）
+//   satHidden?(key)       地图已隐藏该卫星时不画端点标记；链路几何和读数保留
 //   status(msg)           状态栏 / 日志一句话
 //   undo?                 撤销接线（可缺省，缺省时行为与原来逐字相同）：{ begin(isNew), end(), edit(label, fn, key?) }
 //                         begin / end 包住一次插入态（startNew / startAt → finish / cancel / 删掉那条）：宿主把整段收成一步撤销；
@@ -274,6 +275,7 @@ export function useMapLinks(host) {
     const d = draw.value
     if (!d) return
     const l = linkOf(d.id)
+    if (preview.value && preview.value.id === d.id) preview.value = null
     draw.value = null
     if (l && d.isNew && l.nodes.length < 2) remove(l.id)
     else host.commit()
@@ -284,6 +286,7 @@ export function useMapLinks(host) {
     const d = draw.value
     if (!d) return
     const l = linkOf(d.id)
+    if (preview.value && preview.value.id === d.id) preview.value = null
     draw.value = null
     if (l && d.isNew) remove(l.id)
     else { if (l) l.nodes = d.nodes0; host.commit() }
@@ -292,6 +295,7 @@ export function useMapLinks(host) {
 
   // ---- 列表 / 检查器 ----
   function remove(id) {
+    if (preview.value && preview.value.id === id) preview.value = null
     if (draw.value && draw.value.id === id) { draw.value = null; undoEnd() }
     if (pickEd.value && pickEd.value.id === id) closePick()
     host.links.value = list().filter((l) => l.id !== id)
@@ -330,9 +334,26 @@ export function useMapLinks(host) {
   }
   // 取色框拖动连发 input：按链路合并成一步（key）
   function setColor(id, c) { const l = linkOf(id); if (l && /^#[0-9a-fA-F]{6}$/.test(c)) edit(byLang('已修改链路颜色', 'Link color changed'), () => { l.color = c; host.commit() }, 'lkc:' + id) }
-  function toggleShow(id) { const l = linkOf(id); if (!l) return; if (l.show === false) delete l.show; else l.show = false; host.commit() }
+  function setShow(id, on) {
+    const l = linkOf(id); if (!l) return
+    // 恢复显示也丢弃隐藏期间可能迟到的悬停 / 取点事件。
+    if (preview.value && preview.value.id === id) preview.value = null
+    if (pickEd.value && pickEd.value.id === id) closePick()
+    if (on) delete l.show
+    else {
+      l.show = false
+      // 显隐是整条链路的开关：先清理它的临时层，再提交给渲染器。
+      if (draw.value && draw.value.id === id) { finish(); return }
+    }
+    host.commit()
+  }
+  function toggleShow(id) { const l = linkOf(id); if (l) setShow(id, l.show === false) }
   /** 全部隐藏（右键「隐藏所有链路」）：同 toggleShow 逐条置 show=false，数据保留，可在列表逐条重新打开 */
-  function hideAll() { for (const l of list()) l.show = false; host.commit() }
+  function hideAll() {
+    for (const l of list()) l.show = false
+    preview.value = null; closePick()
+    if (draw.value) finish(); else host.commit()
+  }
   /** 生成反向链路（用户主动点的复制操作；双向 = 两条独立链路） */
   function reverse(id) {
     const l = linkOf(id); if (!l) return ''
@@ -464,6 +485,7 @@ export function useMapLinks(host) {
     return p && p.st ? { k: 'gp' } : { k: 'sat', key: n && n.k === 'sat' && n.key ? String(n.key) : '' }
   }
   const linkDir = () => (style.dir === 'flow' || style.dir === 'off' ? style.dir : 'static')
+  const satHidden = (n) => !!(n && n.k === 'sat' && host.satHidden && host.satHidden(n.key))
 
   function compute(tMs) {
     const sm = stMap(), pm = ptMap(), am = areaMap(), ctx = ctxOf(sm, pm, am)
@@ -500,7 +522,7 @@ export function useMapLinks(host) {
       rd.set(l.id, entry)
       // 取点编辑器开着的节点：全部候选点（逐个按「放在这一位」与相邻卫星算读数）+ 图上候选点层
       let c3 = null, c2 = null
-      if (pe && pe.id === l.id) {
+      if (pe && pe.id === l.id && l.show !== false) {
         const ci = l.nodes.findIndex((n) => toRaw(n) === pe.node)
         const cn = ci >= 0 ? l.nodes[ci] : null
         const co = cn && isAreaNode(cn) ? am.get(areaKey(cn)) : null
@@ -519,7 +541,7 @@ export function useMapLinks(host) {
           entry.cand = { i: ci, map }
         }
       }
-      // 画：隐藏的链路不画；无效的只在建链中画（正在点的那条边点边看）；编辑器的候选点照画
+      // 画：隐藏的链路连同候选点全部不画；无效的只在建链中画（正在点的那条边点边看）。
       const sel = l.id === selId.value || l.id === dId
       const drawn = l.show !== false && (!issues.length || l.id === dId)
       if (!drawn && !c3) continue
@@ -553,7 +575,10 @@ export function useMapLinks(host) {
         P.forEach((arr, i) => {
           const n = l.nodes[i]
           for (const p of arr) {
-            if (!p.st) { s3.sats.push({ lat: p.lat, lon: p.lon, altKm: p.altKm }); s2.sats.push({ lon: p.lon, lat: p.lat }); continue }
+            if (!p.st) {
+              if (!satHidden(n)) { s3.sats.push({ lat: p.lat, lon: p.lon, altKm: p.altKm }); s2.sats.push({ lon: p.lon, lat: p.lat }) }
+              continue
+            }
             if (!isAreaNode(n)) continue
             if (p.key === 'veh' && host.trajShown && host.trajShown(n.id)) continue   // 载具有载具图标标着
             s3.gpts.push({ lat: p.lat, lon: p.lon, altKm: p.altKm }); s2.gpts.push({ lon: p.lon, lat: p.lat })
@@ -564,9 +589,9 @@ export function useMapLinks(host) {
     }
     // 选择器预览：候选放进该位后与前后邻的跳，画成虚线（同「不可见跳」的画法，一眼分得出是还没放进去的）、不加粗；
     // 候选是星就带它的圆点（检索出来的编目星不一定在图上）；Polygon / 航迹候选按缺省取点的各代表点各画一束。
-    // 不进读数；正在给这条挑节点，链路隐藏着也照画
+    // 不进读数；隐藏状态优先于迟到的选择器悬停事件，不能让预览把链路重新画出来。
     const pv = preview.value, pl = pv ? linkOf(pv.id) : null
-    if (pl) {
+    if (pl && pl.show !== false) {
       const ns = pl.nodes, at = Math.max(0, Math.min(ns.length, pv.at))
       const cs = pv.node ? endsOf(pv.node) : (pv.ll && Number.isFinite(pv.ll.lat) && Number.isFinite(pv.ll.lon) ? [groundPos(pv.ll.lat, pv.ll.lon)] : [])
       if (cs.length) {
@@ -584,7 +609,9 @@ export function useMapLinks(host) {
         for (const c of cs) {
           for (const a of before) seg(a, c, pv.node || null, nBefore)
           for (const b of after) seg(c, b, nAfter, pv.node || null)
-          if (!c.st) { g3.sats.push({ lat: c.lat, lon: c.lon, altKm: c.altKm }); g2.sats.push({ lon: c.lon, lat: c.lat }) }
+          if (!c.st) {
+            if (!satHidden(pv.node)) { g3.sats.push({ lat: c.lat, lon: c.lon, altKm: c.altKm }); g2.sats.push({ lon: c.lon, lat: c.lat }) }
+          }
           else if (pv.node && isAreaNode(pv.node)) { g3.gpts.push({ lat: c.lat, lon: c.lon, altKm: c.altKm }); g2.gpts.push({ lon: c.lon, lat: c.lat }) }
         }
         sc.push(g3); fl.push(g2)
@@ -655,7 +682,7 @@ export function useMapLinks(host) {
     selId, draw, style, read, checked, preview, pickEd, pickHi,
     linkOf, nameOf, nodeName, stMap, nodePos, nodeEnds, areaNode, candsOf,
     startNew, startAt, cursorOf, addNode, undoNode, canUndo, replaceNode, finish, cancel,
-    remove, removeNode, moveNode, setRegen, setLaser, rename, setColor, toggleShow, hideAll, reverse, toggleCheck, setAllChecked,
+    remove, removeNode, moveNode, setRegen, setLaser, rename, setColor, setShow, toggleShow, hideAll, reverse, toggleCheck, setAllChecked,
     pickIdx, openPick, closePick, togglePick, pickCur, pickKey, pickFam, pickDiv, pickCands,
     compute, targetCounts, payloads
   }

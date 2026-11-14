@@ -14,9 +14,12 @@ import CityPicker from '../components/CityPicker.vue'   // 站名旁「典型城
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
 import { useConfigTree } from '../shared/useConfigTree.js'
+import { useLbFilePanels } from '../shared/useLbFilePanels.js'
 import { useConfigAutosave } from '../shared/useConfigAutosave.js'
 import { useConfigVersions } from '../shared/useConfigVersions.js'
 import LbVersionsDialog from '../components/LbVersionsDialog.vue'
+import LbShareDialog from '../components/LbShareDialog.vue'
+import { createE2eShareAdapter } from './e2eShare.js'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
 import LbDispCtl from '../components/LbDispCtl.vue'
@@ -29,10 +32,17 @@ import LbIslRangeTool from '../components/LbIslRangeTool.vue'
 import LbReportDialog from '../components/LbReportDialog.vue'
 import EarthStationPanel from '../components/EarthStationPanel.vue'
 import BasebandPanel from '../ngso/BasebandPanel.vue'
+import LbCapFoot from '../components/LbCapFoot.vue'
+import LbCustomColsDialog from '../components/LbCustomColsDialog.vue'
+import { E2E_RESULT_DEFS, E2E_DEFAULT_RESULT_KEYS, e2eSystemResultData, reconcileChainAvailability } from './e2eResults.js'
+import { loadOrder, saveOrder, normalizeOrder, makeDragOrder } from '../shared/lbResultOrder.js'
+import { makeResolver, evalRows, loadDefs, saveDefs, unitOf } from '../shared/lbCustomCols.js'
+import LbMultiBudget from '../components/LbMultiBudget.vue'
+import { resultRowIndices } from '../shared/lbResultSelection.js'
 import WaterfallTable from '../ngso/WaterfallTable.vue'
 import LbSlaDialog from '../components/LbSlaDialog.vue'
-import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaChainSamplesFor, chainHopAvails, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
-import { fmtQty, fmtQtyParts } from '../shared/adaptUnits.js'
+import { deriveSla, normSlaParams, applyRowSla, setAdopt, setInclude, setAllInclude, clearAdopt, slaIncludeCount, slaChainSamplesFor, chainHopAvails, chainSpaceFactor, slaReportBlock, slaParamRows, DEFAULT_SLA_PARAMS , slaScanReportRows, slaComposition} from '../shared/lbSla.js'   // SLA 建议（四窗共用纯逻辑）
+import { fmtQty, fmtQtyParts, pickColumn, fmtScaled } from '../shared/adaptUnits.js'
 import ChainStrip from './ChainStrip.vue'
 import E2eFields from './E2eFields.vue'
 import E2eSatPanel, { treeNodeOrbit, orbitToForm } from './E2eSatPanel.vue'   // 后两者：刷新卫星树时重解已选星（与面板选星同一份代码）
@@ -80,26 +90,22 @@ const { toast, toastFile, toastError } = N
 const LIB_NS = 'e2e'
 const ORBIT = 'E2E'
 
-// ============ 左侧栏：配置列表 / 资源库（VS Code 活动栏范式，同屏一个上下文）============
-const SIDE_KEY = 'e2e/sideView'
-const sideView = ref((() => { const v = localStorage.getItem(SIDE_KEY); return (v === 'configs' || v === 'library' || v === '') ? v : 'configs' })())
-watch(sideView, (v) => { try { localStorage.setItem(SIDE_KEY, v) } catch (e) { /* ignore */ } })
-function toggleSide(v) { sideView.value = sideView.value === v ? '' : v }
+// 左侧文件区：配置列表、资源库可同时显示，各自独立收起。
+const { showConfigs, showLibrary, toggleSide } = useLbFilePanels('e2e')
 const CFG_W_MIN = 180, CFG_W_MAX = 520, LIB_W_MIN = 300, LIB_W_MAX = 760
 const configsWidth = ref(Math.min(CFG_W_MAX, Math.max(CFG_W_MIN, Number(localStorage.getItem('e2e/configsWidth')) || 210)))
 const libWidth = ref(Math.min(LIB_W_MAX, Math.max(LIB_W_MIN, Number(localStorage.getItem('e2e/libWidth')) || 460)))
-const sideResizing = ref(false)
-const sideWidth = computed(() => (sideView.value === 'library' ? libWidth.value : configsWidth.value))
-function startResizeSide(e) {
-  const lib = sideView.value === 'library'
+const sideResizing = ref('')
+function startResizeSide(e, panel) {
+  const lib = panel === 'library'
   const w = lib ? libWidth : configsWidth, min = lib ? LIB_W_MIN : CFG_W_MIN, max = lib ? LIB_W_MAX : CFG_W_MAX
   const startX = e.clientX, startW = w.value
   // html.ui-col-resize（controls.css）：拖动全程整窗锁 col-resize 光标、禁选字——指针划过表格 / 按钮时光标不再跳
-  sideResizing.value = true; document.documentElement.classList.add('ui-col-resize')
+  sideResizing.value = panel; document.documentElement.classList.add('ui-col-resize')
   document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'
   const move = (ev) => { w.value = Math.min(max, Math.max(min, startW + (ev.clientX - startX))) }
   const up = () => {
-    sideResizing.value = false; document.documentElement.classList.remove('ui-col-resize')
+    sideResizing.value = ''; document.documentElement.classList.remove('ui-col-resize')
     document.body.style.cursor = ''; document.body.style.userSelect = ''
     window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up)
     try { localStorage.setItem(lib ? 'e2e/libWidth' : 'e2e/configsWidth', String(w.value)) } catch (e2) { /* ignore */ }
@@ -204,7 +210,7 @@ const LIB_TABS = [
 const libTab = ref('station')
 const selEsId = ref(''), selSatId = ref('')
 function editInLibrary(kind, id) {
-  sideView.value = 'library'; libTab.value = kind
+  showLibrary.value = true; libTab.value = kind
   if (kind === 'sat') selSatId.value = id || ''
   else selEsId.value = id || ''
 }
@@ -244,6 +250,130 @@ const sel = reactive({ type: 'node', index: 0 })
 const results = reactive({})     // _id → 引擎 data
 const errors = reactive({})      // _id → 报错文本
 const curResult = computed(() => (cur.value ? results[cur.value._id] || null : null))
+const selectedRowIds = ref([])
+let rowAnchor = 0
+function selectChain(i, event) {
+  const id = chains[i]._id
+  if (event.shiftKey) {
+    selectedRowIds.value = chains.slice(Math.min(rowAnchor, i), Math.max(rowAnchor, i) + 1).map((r) => r._id)
+  } else if (event.ctrlKey || event.metaKey) {
+    const ids = new Set(selectedRowIds.value.length ? selectedRowIds.value : cur.value ? [cur.value._id] : [])
+    ids.has(id) ? ids.delete(id) : ids.add(id)
+    selectedRowIds.value = [...ids]
+    rowAnchor = i
+  } else {
+    selectedRowIds.value = [id]
+    rowAnchor = i
+  }
+  const active = selectedRowIds.value.length && !selectedRowIds.value.includes(id)
+    ? chains.findIndex((r) => selectedRowIds.value.includes(r._id)) : i
+  if (curIdx.value !== active) { sel.type = 'node'; sel.index = 0 }
+  curIdx.value = active
+}
+const selectedBudgetRows = computed(() => resultRowIndices(chains, selectedRowIds.value, cur.value?._id).map((i) => {
+  const row = chains[i]
+  return { rowId: row._id, no: i + 1, name: row.name, data: results[row._id], err: errors[row._id] || '' }
+}))
+const selectedChainRows = computed(() => resultRowIndices(chains, selectedRowIds.value, cur.value?._id).map((i) => ({
+  row: chains[i], index: i, no: i + 1
+})))
+function onChainAction(entry, action, ...args) {
+  const index = chains.indexOf(entry.row)
+  if (index < 0) return
+  if (curIdx.value !== index) { curIdx.value = index; sel.type = 'node'; sel.index = 0 }
+  action(...args)
+}
+
+// End-to-end results and formulas share an explicit system-only whitelist.
+const customCols = ref(loadDefs('e2e/customCols'))
+watch(customCols, (v) => saveDefs('e2e/customCols', v), { deep: true })
+const customPool = E2E_RESULT_DEFS.map((d) => ({ ...d, group: '端到端系统' }))
+const customResolve = makeResolver(customPool)
+const customOn = computed(() => customCols.value.filter((c) => c.on !== false))
+const systemDataByRow = computed(() => Object.fromEntries(chains.map((r) => [r._id, e2eSystemResultData(results[r._id])])))
+const customVals = computed(() => evalRows(customOn.value, chains.map((r) => ({ id: r._id, data: systemDataByRow.value[r._id] })), customResolve, customPool))
+const ccUnit = (c) => unitOf(c, customPool)
+const ccDlgOpen = ref(false)
+function ccPreview(expr, dp) {
+  const row = cur.value
+  if (!row || !systemDataByRow.value[row._id]) return null
+  const out = evalRows([{ id: 'preview', expr, dp }], [{ id: row._id, data: systemDataByRow.value[row._id] }], customResolve, customPool)
+  return out[row._id]?._cpreview || null
+}
+const allResultDefs = computed(() => [...E2E_RESULT_DEFS, ...customCols.value.map((c) => ({
+  key: '_c' + c.id, label: c.label, unit: ccUnit(c), tip: c.expr, customId: c.id
+}))])
+const resultKeys = ref((() => {
+  try { const v = JSON.parse(localStorage.getItem('e2e/resultCols')); return Array.isArray(v) ? v.filter((k) => E2E_RESULT_DEFS.some((d) => d.key === k)) : E2E_DEFAULT_RESULT_KEYS.slice() }
+  catch { return E2E_DEFAULT_RESULT_KEYS.slice() }
+})())
+watch(resultKeys, (v) => { try { localStorage.setItem('e2e/resultCols', JSON.stringify(v)) } catch {} }, { deep: true })
+const resultOrder = ref(loadOrder('e2e/resultOrder', allResultDefs.value))
+watch(allResultDefs, (defs) => { resultOrder.value = normalizeOrder(resultOrder.value, defs) })
+watch(resultOrder, (v) => saveOrder('e2e/resultOrder', v))
+const resultDefsOrdered = computed(() => resultOrder.value.map((k) => allResultDefs.value.find((d) => d.key === k)).filter(Boolean))
+const resultOn = (d) => d.customId ? customCols.value.find((c) => c.id === d.customId)?.on !== false : resultKeys.value.includes(d.key)
+const resultDefsOn = computed(() => resultDefsOrdered.value.filter(resultOn))
+function toggleResultKey(d) {
+  if (d.customId) customCols.value = customCols.value.map((c) => c.id === d.customId ? { ...c, on: c.on === false } : c)
+  else resultKeys.value = resultKeys.value.includes(d.key) ? resultKeys.value.filter((k) => k !== d.key) : [...resultKeys.value, d.key]
+}
+const colPickOpen = ref(false)
+const colDrag = reactive({ key: '' })
+const colDragH = makeDragOrder({ state: colDrag, getOrder: () => resultOrder.value, setOrder: (v) => { resultOrder.value = v } })
+onBeforeUnmount(() => colDragH.end())
+function onColPickWheel(e) {
+  const el = e.currentTarget
+  if (!(e.deltaY > 0 ? el.scrollTop + el.clientHeight < el.scrollHeight - 1 : el.scrollTop > 1)) e.preventDefault()
+}
+const resultScales = computed(() => {
+  const out = {}
+  if (unitAdaptive.value) for (const d of E2E_RESULT_DEFS) if (d.unit) {
+    const scale = pickColumn(Object.values(systemDataByRow.value).map((r) => r?.[d.key] ?? NaN), d.unit)
+    if (scale) out[d.key] = scale
+  }
+  return out
+})
+const resultUnit = (d) => resultScales.value[d.key]?.unit || d.unit || ''
+function resultValue(rowId, d) {
+  if (d.customId) return customVals.value[rowId]?.[d.key] || '—'
+  const v = systemDataByRow.value[rowId]?.[d.key]
+  if (v == null) return '—'
+  if (d.scientific) return cellNum(results[rowId]?.[d.key])
+  const scale = resultScales.value[d.key]
+  return scale ? fmtScaled(scale.conv(v)) : cellNum(results[rowId]?.[d.key] ?? v)
+}
+const resultBad = (rowId, d) => d.key === 'e2eMarginResult' && systemDataByRow.value[rowId]?.[d.key] < 0
+const rowReadouts = computed(() => selectedBudgetRows.value.map((row) => ({
+  ...row,
+  items: resultDefsOn.value.map((d) => ({ key: d.key, label: d.label, unit: resultUnit(d), value: resultValue(row.rowId, d), tip: d.tip || d.label, bad: resultBad(row.rowId, d) }))
+    .filter((it) => it.value !== '—')
+})))
+
+const selectedRowSet = computed(() => new Set(selectedRowIds.value))
+const allRowsSelected = computed(() => chains.length > 0 && chains.every((r) => selectedRowSet.value.has(r._id)))
+function toggleAllRows() { selectedRowIds.value = allRowsSelected.value ? [] : chains.map((r) => r._id) }
+let rowDragging = false, rowDragAnchor = 0
+function onRowDown(i, event) {
+  event.currentTarget.closest('.e2-tbl-wrap')?.focus({ preventScroll: true })
+  selectChain(i, event)
+  rowDragAnchor = event.shiftKey ? rowAnchor : i
+  rowDragging = !(event.ctrlKey || event.metaKey)
+}
+function onRowEnter(i) {
+  if (!rowDragging) return
+  selectedRowIds.value = chains.slice(Math.min(rowDragAnchor, i), Math.max(rowDragAnchor, i) + 1).map((r) => r._id)
+}
+function stopRowDrag() { rowDragging = false }
+onMounted(() => window.addEventListener('mouseup', stopRowDrag))
+onBeforeUnmount(() => window.removeEventListener('mouseup', stopRowDrag))
+function onChainTableKey(event) {
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName)) return
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+    event.preventDefault(); selectedRowIds.value = chains.map((r) => r._id)
+  } else if (event.key === 'Escape') { selectedRowIds.value = []; colPickOpen.value = false }
+}
+
 // 信息速率不守恒（3GPP 段的速率由本段物理层参数定，链首钉不住）：引擎逐段比对后报出，这里只陈述数字
 const rateMismatchText = computed(() => {
   const d = curResult.value
@@ -278,8 +408,9 @@ function renameChain(row, v) {
 }
 // ★ 这里曾引用一个不存在的 ensureChainRate（三轮的迁移函数，四轮删了定义漏了调用点）——
 //   点「＋ 链路」当场 ReferenceError，按钮看起来没反应。新链的体制由 defaultChain/ensureSegCarriers 保证。
-function addChain() { const c = defaultChain(); ensureSegCarriers(c); chains.push(c); syncChainNames(); curIdx.value = chains.length - 1; sel.type = 'node'; sel.index = 0 }
+function addChain() { selectedRowIds.value = []; const c = defaultChain(); ensureSegCarriers(c); chains.push(c); syncChainNames(); curIdx.value = chains.length - 1; sel.type = 'node'; sel.index = 0 }
 function duplicateChain(i) {
+  selectedRowIds.value = []
   const src = chains[i]; if (!src) return
   const copy = JSON.parse(JSON.stringify(src))
   copy._id = uid('c'); copy.name = src.nameAuto ? '' : copyNameOf(src.name)
@@ -287,6 +418,7 @@ function duplicateChain(i) {
   chains.splice(i + 1, 0, copy); syncChainNames(); curIdx.value = i + 1
 }
 function removeChain(i) {
+  selectedRowIds.value = []
   if (chains.length <= 1) return
   const id = chains[i]._id
   chains.splice(i, 1)
@@ -581,12 +713,14 @@ const selThresholdEff = computed(() => {
   return thresholdEffLive(segCarrierForm(selEndSegIndex.value), (selNode.value || {}).demodLossDb)
 })
 // 段标尺上的体制名：业务速率（全链同一个）+ 本段调制与码率
-function segCarrierName(si) {
-  const f = segCarrierForm(si)
-  const r = chainInfoRate(cur.value)
+function segCarrierNameOf(row, si) {
+  const segment = segmentsOf(row?.nodes || [])[si]
+  const f = (segment && row.nodes[segment.from]?.carrier) || row?.nodes?.[0]?.carrier || {}
+  const r = chainInfoRate(row)
   const rate = (r !== null && isFinite(r)) ? fmtQtyRate(r) : ''
   return [rate, [f.modulation, f.fec].filter(Boolean).join(' ')].filter(Boolean).join(' · ')
 }
+const segCarrierName = (si) => segCarrierNameOf(cur.value, si)
 // kbps 读数自适应：≥1000 报 Mbps（与三窗结果列的档位口径一致）。
 // 受功能区「单位」档节制（出厂锁定＝一律 kbps）；走 ref 而不是直接问 lbUnitMode，
 // 否则切档时模板里这些读数不会重渲染。
@@ -731,7 +865,7 @@ async function solveChainGeometry(row, chain) {
       const w = g.worst.up
       chain.hops[i].slantRange = w.slantKm.toFixed(2)
       chain.hops[i].elevation = w.elevDeg.toFixed(2)
-      // tISO / win：本跳几何取自的那一刻（典型时刻 t*）与本次搜索时窗，供「在主窗口定位」（C3）
+      // tISO / win：本跳几何取自的那一刻（典型时刻 t*）与本次搜索时窗，供几何结果追溯
       solved.push({ slantRange: w.slantKm.toFixed(2), elevation: w.elevDeg.toFixed(2), method: g.method || '', tISO: (g.search && g.search.typicalISO) || '', win: g.search ? { t0ISO: g.search.t0ISO, hours: g.search.horizonHours } : null })
     } else {
       // 手动圆轨道历元钉到本链 t0（pinCircularEpoch）：主进程星间端点缺历元按计算那一刻补，与时间轴上的 t0 不同步
@@ -820,7 +954,7 @@ async function compute() {
       let r
       try { r = await api.linkBudget.chainCompute(chain) } catch (err) { r = { success: false, message: (err && err.message) || String(err) } }
       if (gone()) continue
-      if (r && r.success) { results[row._id] = r.data; delete errors[row._id]; chainOf[row._id] = chain }
+      if (r && r.success) { results[row._id] = reconcileChainAvailability(r.data, chain); delete errors[row._id]; chainOf[row._id] = chain }
       else { delete results[row._id]; errors[row._id] = (r && r.message) || '计算失败' }
     }
     // 算的途中输入又变了：这批结果对应的是开算那一刻，灯保持亮。没有结果就无所谓过期（同 markStale）——
@@ -839,7 +973,7 @@ async function compute() {
 }
 
 // SLA 可用度档位扫描：整表一次批量 IPC（见 core 的 scanSlaTiers）。
-// 端到端按同一个 k 缩放链上全部地球站节点的可用度（星间跳不参与），使系统可用度恰为该档；
+// 端到端按同一个 k 缩放链上全部地球站节点的可用度（星间跳保持指定可用度），使系统可用度恰为该档；
 // 不钉工作点——正向电平递推本就没有自由变量。会话态、不入存档；随结果一起过期。
 // ★ 出 IPC 前必须现造纯数据：Vue 的 Proxy 过不了结构化克隆，invoke 当场抛且无 catch 时全静默。
 let _slaChainOf = {}                 // 最近一次计算送进引擎的链描述子（按行 _id），惰性扫描要照它重跑
@@ -869,7 +1003,7 @@ async function refreshSlaScan(chainOf, gen) {
     const d = results[row._id]
     const chain = chainOf[row._id]
     if (!d || !chain) continue
-    const samples = slaChainSamplesFor(chainHopAvails(d))
+    const samples = slaChainSamplesFor(chainHopAvails(d), chainSpaceFactor(d))
     if (!samples.length) continue
     jobs.push({ rowId: row._id, spec: { engine: 'chain', chain, samples } })
   }
@@ -1281,6 +1415,7 @@ function applyState(st) {
   for (const row of chains) { normEndpointKinds(row); migrateCarriers(row) }
   scanGeoSeeds(true)   // 只记录载入态的几何指纹：存盘值优先，此后的输入改动才触发建议值回填
   scanSites(fresh ? 'all' : 'prime')   // 站址取值同理：存盘场景认存盘值，出厂空白场景照站址取
+  selectedRowIds.value = []; rowAnchor = 0
   curIdx.value = 0; sel.type = 'node'; sel.index = 0
   // 上一份的结果态整套清掉：结果 / 报错 / 自动档解出的几何（按链 _id 落表，新链 _id 全换新）/ 详细预算；
   // 「输入已变」灯复位——不复位的话它一直亮着（换上来的这份根本还没算过，没有「结果过期」可言）
@@ -1345,6 +1480,57 @@ const cities = ref([])
 const basebandOpts = ref({})
 const appVersion = ref('')
 const deviceId = ref('')
+const shareConfigured = ref(false)
+const shareOpen = ref(false)
+const shareRef = ref(null)
+async function openShareDlg() {
+  if (!(await autosave.flush())) return
+  shareOpen.value = true
+}
+const shareCtx = {
+  mod: ORBIT,
+  getConfigs: () => configs.value,
+  getActiveId: () => activeId.value,
+  ...createE2eShareAdapter({ esConfigs, satConfigs, makeEsConfig, makeSatConfig, migrateCarriers }),
+  saveConfig: (payload) => api.store.saveConfig(LIB_NS, payload),
+  flushLib: flushLibSave,
+  onImported: async ({ last, plan, idMap }) => {
+    if (last && !(await autosave.flush())) return
+    await loadConfigs()
+    if (last) {
+      activeId.value = last.id
+      applyState(last.state)
+      setBaseline()
+      const byId = new Map(configs.value.map((c) => [c.id, c]))
+      let p = byId.get(last.id)?.parentId
+      while (p && byId.has(p)) { expandFolder(p); p = byId.get(p).parentId }
+    } else {
+      const first = plan.lib.find((r) => r.action === 'new')
+      if (first) editInLibrary(first.kind === 'es' ? 'station' : 'sat', idMap[first.kind][first.srcId])
+    }
+  }
+}
+// 拖入分享文件走同一份导入预览；配置树等内部拖动不拦截。
+const isFileDrag = (e) => !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')
+function onWinDragOver(e) {
+  if (e.defaultPrevented || !isFileDrag(e)) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+}
+async function onWinDrop(e) {
+  if (e.defaultPrevented || !isFileDrag(e)) return
+  e.preventDefault()
+  const f = e.dataTransfer.files?.[0]
+  if (!f) return
+  const ext = /\.([^.\\/]+)$/.exec(f.name || '')?.[1]?.toLowerCase() || ''
+  if (ext !== 'lbcfg' && ext !== 'json') { toast('不支持的文件类型：' + (ext ? '.' + ext : f.name)); return }
+  let text
+  try { text = await f.text() } catch (err) { reportError('读取拖入的文件', err); return }
+  await openShareDlg()
+  if (!shareOpen.value) return
+  await nextTick()
+  shareRef.value?.importText(text, f.name)
+}
 const refreshing = ref(false)
 async function refreshLatest() {
   if (refreshing.value || !api) return
@@ -1442,53 +1628,6 @@ async function applyToolContext(c) {
 const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
 onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
 
-// —— 回主窗口（C3）：计算窗 → 主窗口的反向通道（主进程 scene:cmd 中继，主窗被提到前台）——
-// 载荷出 IPC 前现造纯数据（Vue 的 Proxy 过不了结构化克隆）。老主进程没有这条通道时不出这些入口。
-const sceneApi = api && api.scene && api.scene.cmd ? api.scene : null
-function sceneCmd(cmd, payload) {
-  if (!sceneApi) return Promise.resolve(false)
-  return Promise.resolve(sceneApi.cmd(cmd, JSON.parse(JSON.stringify(payload || {})))).catch((e) => { reportError('在主窗口定位', e); return false })
-}
-// 链上卫星节点在主窗口里的身份：GSO 按星名（定点星多在主窗口的编目里）；NGSO 只有取过星的才在主场景里有这颗星
-function satIdentOfNode(nd) {
-  const c = satCfgOf(nd)
-  if (!c) return null
-  const f = c.form || {}
-  if ((f.orbitClass || 'GSO') === 'GSO') {
-    const name = String(f.satelliteName || '').trim()
-    return name && !isSatNamePlaceholder(name) ? { name } : null
-  }
-  const ns = c.ngsoSat
-  if (!ns || ns.mode === 'manual' || !ns.orbit) return null
-  const name = ns.name || f.satelliteName || ''
-  return (name || ns.noradId != null) ? { norad: ns.noradId != null ? ns.noradId : undefined, name } : null
-}
-// 链路列表行「在主窗口定位」：聚焦链上第一颗卫星，画面正对链首地球站
-async function locateChainInMain(i) {
-  const row = chains[i]
-  if (!row) return
-  const satNode = (row.nodes || []).find((n) => n.kind !== 'es')
-  const id = satNode ? satIdentOfNode(satNode) : null
-  if (id) await sceneCmd('focusSat', id)
-  const es = (row.nodes || []).find((n) => n.kind === 'es')
-  const lat = es ? pf(es.latitude) : NaN, lon = es ? pf(es.longitude) : NaN
-  if (Number.isFinite(lat) && Number.isFinite(lon)) await sceneCmd('faceLonLat', { lat, lon, name: String(es.name || '') })
-}
-// 检查器「自动几何」：本跳几何取自的那一刻（星地跳＝典型时刻 t*，星间跳＝最差时刻）。主窗口时间轴拨过去、
-// 聚焦本跳的卫星（星间跳取发端），并在时间轴上标出 t* 与本次搜索时窗（同 src + label 覆盖上一次的标记）
-async function locateHopInMain() {
-  const h = curSolvedHop.value, row = cur.value
-  if (!h || !row) return
-  const t = Date.parse(h.tISO)
-  if (!Number.isFinite(t)) return
-  const s0 = h.win ? Date.parse(h.win.t0ISO) : NaN, hh = h.win ? Number(h.win.hours) : 0
-  if (Number.isFinite(s0) && hh > 0) await sceneCmd('markTime', { t0: s0, t1: s0 + hh * 3600000, label: '搜索时窗', src: 'e2e' })
-  await sceneCmd('markTime', { t0: t, label: 't*', src: 'e2e' })
-  await sceneCmd('seekClock', { tMs: t })
-  const a = row.nodes[sel.index], b = row.nodes[sel.index + 1]
-  const id = satIdentOfNode(a && a.kind !== 'es' ? a : b)
-  if (id) await sceneCmd('focusSat', id)
-}
 const linkImpOpen = ref(false)
 const onLinkImport = (list) => onToolContext({ links: list })
 
@@ -1695,6 +1834,7 @@ async function importChains(list) {
   const at = chains.length
   chains.push(...rows)
   syncChainNames()
+  selectedRowIds.value = []
   curIdx.value = at; sel.type = 'node'; sel.index = 0
   const n = new Set(jobs.map((j, i) => j.c.grp || '#' + i)).size, nChains = rows.length   // 一条图上链路（grp）可展开成多条链（支路）
   toast(byLang(
@@ -1736,6 +1876,7 @@ onMounted(async () => {
   if (oldScene && last.activeId && last.activeId === activeId.value) { applyState(last); autosave.touch() }
   try { localStorage.setItem(STATE_KEY, JSON.stringify({ activeId: activeId.value || null })) } catch (e) { /* ignore */ }
   try { deviceId.value = (api && await api.app.deviceId()) || '' } catch (e) { deviceId.value = '' }
+  try { shareConfigured.value = !!(api && await api.share.configured()) } catch (e) { shareConfigured.value = false }
   for (const row of chains) migrateCarriers(row)   // 老库读进来之后再迁一次（体制引用 → 节点上那份）
   syncChainNames()
   // 关窗：把场景与资源库挂起的写盘冲掉即放行（观感上秒关）；只有场景写不进磁盘时才问一句
@@ -1754,7 +1895,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="lb-shell">
+  <div class="lb-shell" @dragover="onWinDragOver" @drop="onWinDrop">
     <ActivationLock />
     <!-- 配置右键菜单（五窗共用一份，条目与快捷键一致） -->
     <ConfigTreeMenu
@@ -1762,75 +1903,90 @@ onMounted(async () => {
       @close="closeCtx" @rename="startRename" @new-folder="addFolder" @new-config="addBlankConfig"
       @cut="cutItem" @copy="copyItem" @paste="pasteConfig" @move-root="moveToRoot"
       @duplicate="duplicateItem" @versions="(it) => openVersions(it.id)"
-      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="sideView = ''"
+      @delete="onDeleteItem" @expand-all="expandAll" @collapse-all="collapseAll" @hide="showConfigs = false"
     />
     <!-- 历史版本（自动保存的后悔药）：还原 / 用那一版另建副本 -->
     <LbVersionsDialog v-model:open="verDlg.open" ns="e2e" :cfg-id="verDlg.id" :cfg-name="verDlg.name" @restore="restoreVersion" @duplicate="duplicateVersion" />
     <div class="lb-body">
-      <!-- ① 左侧栏：配置列表 / 资源库 二选一 -->
-      <aside v-show="sideView" class="lb-col lb-side" :class="[sideView === 'library' ? 'lb-lib' : 'lb-configs', { resizing: sideResizing }]" :style="{ width: sideWidth + 'px' }">
-        <template v-if="sideView !== 'library'">
-          <div class="lb-col-hd">
-            <span class="lb-cfg-hd-t">配置列表</span>
-            <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="sideView = ''"><Icon name="x" :size="12" /></button>
-            </span>
-          </div>
-          <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
-            <ConfigTree
-              :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
-              :expanded="expandedFolders"
-              :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
-              @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
-              @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
-              @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
-            />
-          </div>
-          <div v-if="deviceId" class="lb-myid" title="本机用户 ID">本机标识：<b>{{ deviceId }}</b></div>
-        </template>
-        <template v-else>
-          <div class="lb-col-hd">
-            <span class="lb-cfg-hd-t">资源库</span>
-            <span class="lb-cfg-acts">
-              <button class="lb-mini lb-mini-ico" title="新增配置"
-                      @click="libTab === 'station' ? addEsConfig() : addSatConfig()"><Icon name="plus" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="sideView = ''"><Icon name="x" :size="12" /></button>
-            </span>
-          </div>
-          <nav class="lb-lib-tabs">
-            <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
-              {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : satConfigs.length }}</span>
-            </button>
-          </nav>
-          <div class="lb-libpane">
-            <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
-                       auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
-                       @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
-              <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
-                <button class="lb-mini" title="删除此配置" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
-              </template>
-              <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
-            </LbLibrary>
-            <LbLibrary v-else v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
-                       auto-tip="卫星名称" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
-                       @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
-              <template #editor-actions="{ cfg }">
-                <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
-                <button class="lb-mini" title="删除此卫星" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
-              </template>
-              <template #default="{ cfg }"><E2eSatPanel :form="cfg.form" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
-            </LbLibrary>
-          </div>
-        </template>
-        <div class="lb-cfg-resizer" title="拖动调整栏宽" @mousedown.prevent="startResizeSide"></div>
+      <!-- ① 左侧文件区：配置列表在左，资源库在右，可同时显示 -->
+      <aside v-show="showConfigs" class="lb-col lb-side lb-configs" :class="{ resizing: sideResizing === 'configs' }" :style="{ width: configsWidth + 'px' }">
+        <div class="lb-col-hd">
+          <span class="lb-cfg-hd-t">配置列表</span>
+          <span class="lb-cfg-acts">
+            <button class="lb-mini lb-mini-ico" title="新建文件夹" :disabled="!api" @click="addFolder(null)"><Icon name="folder-plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="添加空白配置" :disabled="!api" @click="addBlankConfig(null)"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏配置列表" @click="showConfigs = false"><Icon name="x" :size="12" /></button>
+          </span>
+        </div>
+        <div class="lb-col-bd" tabindex="0" @keydown="onCfgKey" @contextmenu="openCtx($event, null)">
+          <ConfigTree
+            :items="configs" :active-id="activeId" :focus-id="focusId" :editing-id="editing.id" :editing-name="editing.name"
+            :expanded="expandedFolders"
+            :cut-id="cfgClip && cfgClip.mode === 'cut' ? cfgClip.id : null"
+            @select="selectConfig" @toggle="toggleFolder" @delete="onDeleteItem" @move="onMove" @focus="focusId = $event.id"
+            @add-folder="addFolder" @add-config="addBlankConfig" @context="openCtx"
+            @rename-start="startRename" @rename-input="editing.name = $event" @rename-commit="commitRename" @rename-cancel="cancelRename"
+          />
+        </div>
+        <div v-if="deviceId" class="lb-myid" title="本机用户 ID">本机标识：<b>{{ deviceId }}</b></div>
+        <div class="lb-cfg-resizer" title="拖动调整配置栏宽度" @mousedown.prevent="startResizeSide($event, 'configs')"></div>
+      </aside>
+
+      <aside v-if="showLibrary" class="lb-col lb-side lb-lib" :class="{ resizing: sideResizing === 'library' }" :style="{ width: libWidth + 'px' }">
+        <div class="lb-col-hd">
+          <span class="lb-cfg-hd-t">资源库</span>
+          <span class="lb-cfg-acts">
+            <button class="lb-mini lb-mini-ico" title="新增配置"
+                    @click="libTab === 'station' ? addEsConfig() : addSatConfig()"><Icon name="plus" :size="12" /></button>
+            <button class="lb-mini lb-mini-ico" title="隐藏资源库" @click="showLibrary = false"><Icon name="x" :size="12" /></button>
+          </span>
+        </div>
+        <nav class="lb-lib-tabs">
+          <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
+            {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : satConfigs.length }}</span>
+          </button>
+        </nav>
+        <div class="lb-libpane">
+          <LbLibrary v-if="libTab === 'station'" v-model="selEsId" layout="column" :items="esConfigs" :summary="esSummary" name-placeholder="站型名称"
+                     auto-tip="天线口径" :copy-targets="copyTargetsOf('es')" @copy-to="(c, ns) => copyLibTo('es', c, ns)"
+                     @add="addEsConfig" @duplicate="duplicateEsConfig" @remove="removeEsConfig" @toast="toast">
+            <template #editor-actions="{ cfg }">
+              <button class="lb-mini" title="创建此配置的副本" @click="duplicateEsConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
+              <button class="lb-mini" title="删除此配置" :disabled="esConfigs.length <= 1" @click="removeEsConfig(cfg)">删除</button>
+            </template>
+            <template #default="{ cfg }"><EarthStationPanel :form="cfg.form" :common-fields="ES_COMMON_FIELDS" :tx-fields="ES_TX_FIELDS" :rx-fields="ES_RX_FIELDS" /></template>
+          </LbLibrary>
+          <LbLibrary v-else v-model="selSatId" layout="column" :items="satConfigs" :summary="satSummary" name-placeholder="卫星名（列表用）"
+                     auto-tip="卫星名称" :copy-targets="copyTargetsOf('sat')" @copy-to="(c, ns) => copyLibTo('sat', c, ns)"
+                     @add="addSatConfig" @duplicate="duplicateSatConfig" @remove="removeSatConfig" @toast="toast">
+            <template #editor-actions="{ cfg }">
+              <button class="lb-mini" title="创建此卫星的副本" @click="duplicateSatConfig(cfg)"><Icon name="copy" :size="12" /> 创建副本</button>
+              <button class="lb-mini" title="删除此卫星" :disabled="satConfigs.length <= 1" @click="removeSatConfig(cfg)">删除</button>
+            </template>
+            <template #default="{ cfg }"><E2eSatPanel :form="cfg.form" :ngso-sat="cfg.ngsoSat" :sat-tree="satTree" /></template>
+          </LbLibrary>
+        </div>
+        <div class="lb-cfg-resizer" title="拖动调整资源库栏宽度" @mousedown.prevent="startResizeSide($event, 'library')"></div>
       </aside>
 
       <!-- ② 主区 -->
       <section class="lb-col lb-build">
         <div class="lbr">
+          <div class="lbr-g">
+            <div class="lbr-items">
+              <button class="lbr-big" :class="{ on: showConfigs }" :aria-pressed="(showConfigs) ? 'true' : 'false'" :title="showConfigs ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
+              <button class="lbr-big" :class="{ on: showLibrary }" :aria-pressed="(showLibrary) ? 'true' : 'false'" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
+              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
+              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
+              <button class="lbr-big" :disabled="!api" title="分享 / 导入：配置（可多选）+ 资源库条目（可多选）——分享码 / 文件 / 发给用户ID" @click="openShareDlg"><Icon name="external-link" :size="16" />分享</button>
+              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
+              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（城市库 / 载波信号选项）" @click="refreshLatest">
+                <Icon name="refresh-cw" :size="16" />
+                刷新
+              </button>
+            </div>
+            <div class="lbr-cap">文件</div>
+          </div>
           <div class="lbr-g">
             <div class="lbr-items">
               <div class="lbr-form">
@@ -1866,25 +2022,6 @@ onMounted(async () => {
           </div>
           <div class="lbr-g">
             <div class="lbr-items">
-              <!-- 配置自动保存（无「保存」按钮）：这里是它的后悔药；写盘失败时旁边多出一枚告警，单击即重试 -->
-              <button class="lbr-big" :disabled="!api || !activeId" title="历史版本：自动留存于打开时、编辑中每 10 分钟、还原前" @click="openVersions(activeId)"><Icon name="history" :size="16" />历史版本</button>
-              <button v-if="saveError" class="lbr-big lbx-savefail" :title="'配置未能写入磁盘：' + saveError + '。单击重试'" @click="autosave.flush()"><Icon name="alert-triangle" :size="16" />未写入</button>
-              <button class="lbr-big" :class="{ spin: refreshing }" :disabled="!api" title="刷新最新设置（城市库 / 载波信号选项）" @click="refreshLatest">
-                <Icon name="refresh-cw" :size="16" />
-                刷新
-              </button>
-              <button class="lbr-big" :class="{ on: sideView === 'configs' }" :aria-pressed="(sideView === 'configs') ? 'true' : 'false'" :title="sideView === 'configs' ? '隐藏左侧「配置列表」栏（腾出工作区宽度）' : '左侧栏显示「配置列表」'" @click="toggleSide('configs')"><Icon name="panel-left" :size="16" />配置列表</button>
-            </div>
-            <div class="lbr-cap">文件</div>
-          </div>
-          <div class="lbr-g">
-            <div class="lbr-items">
-              <button class="lbr-big" :class="{ on: sideView === 'library' }" :aria-pressed="(sideView === 'library') ? 'true' : 'false'" :title="`资源库：地球站 ${esConfigs.length} · 卫星 ${satConfigs.length}`" @click="toggleSide('library')"><Icon name="folder-open" :size="16" />资源库</button>
-            </div>
-            <div class="lbr-cap">视图</div>
-          </div>
-          <div class="lbr-g">
-            <div class="lbr-items">
               <button class="lbr-big" :disabled="!chains.length" :title="chains.length ? '按当前计算结果给出 SLA 条款建议值：可用度 / 带宽与速率 / 时延与丢包 / 故障响应与恢复 / 发射合规（逐条可改采用值、可勾选列入报告）' : '暂无链路。'" @click="openSlaDlg">
                 <Icon name="shield-check" :size="16" />
                 SLA
@@ -1901,28 +2038,40 @@ onMounted(async () => {
           <!-- 上：链路列表 -->
           <LbSection id="links" title="端到端链路" :count="chains.length">
             <template #actions>
+              <span class="lbx-colpick-wrap">
+                <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
+                <div v-if="colPickOpen" class="lbx-colpick-mask" @click="colPickOpen = false" @wheel.prevent></div>
+                <div v-if="colPickOpen" class="lbx-colpick" :class="{ dragging: !!colDrag.key }" @wheel="onColPickWheel">
+                  <label v-for="d in resultDefsOrdered" :key="d.key" class="lbx-colpick-i" :class="{ dragging: colDrag.key === d.key }" :title="d.tip || d.label" @mousemove="colDragH.over($event, d.key)">
+                    <span class="lbx-colpick-grip" title="拖动调整列序" @mousedown.left.prevent.stop="colDragH.start($event, d.key)" @click.prevent.stop><Icon name="grip-vertical" :size="12" /></span>
+                    <input type="checkbox" :checked="resultOn(d)" @change="toggleResultKey(d)" />
+                    <span>{{ d.label }}<i v-if="d.unit"> ({{ d.unit }})</i></span>
+                  </label>
+                  <div class="lbx-ccf"><div class="lbx-ccf-hd"><span>自定义列</span>
+                    <button class="lbx-ccf-btn" title="新建/编辑/删除自定义列（独立窗口，误点不丢）" @click="ccDlgOpen = true; colPickOpen = false">{{ customCols.length ? '管理…' : '＋ 新建…' }}</button>
+                  </div></div>
+                </div>
+              </span>
+              <span v-if="selectedRowIds.length" class="e2-sel-count">选中 {{ selectedRowIds.length }} 行</span>
               <button class="lb-mini" title="新增一条链路（站-星-站）" @click="addChain">＋ 链路</button>
               <button class="lb-mini" title="导入主窗口「目标间链路建链」中建立的链路" @click="linkImpOpen = true">导入链路</button>
             </template>
-            <div class="e2-tbl-wrap">
+            <div class="e2-tbl-wrap" tabindex="0" @keydown="onChainTableKey">
               <table class="e2-tbl">
                 <thead>
                   <tr>
-                    <th class="c-idx">#</th>
+                    <th class="c-idx"><input type="checkbox" :checked="allRowsSelected" :indeterminate="selectedRowIds.length > 0 && !allRowsSelected" title="全选" @change="toggleAllRows" /></th>
                     <th class="c-nm">名称</th>
                     <th class="c-n" title="该链的业务信息速率（kbps）：在链首节点的载波参数中填写，穿过各再生节点全程守恒；各段的符号率与占用带宽由它与该段 MODCOD 推出">业务速率 (kbps)</th>
                     <th class="c-n" title="链上节点数（发信站 + 中继 + 收信站）">节点数</th>
                     <th class="c-n" title="被再生类节点（再生卫星 / 地面转接站）切出的段数">段数</th>
-                    <th class="c-n" title="端到端余量 = 最弱段余量（各段独立解调，比特透传）">最弱段余量 (dB)</th>
-                    <th class="c-n" title="各星地 hop 站址可用度之积（各段雨区独立假设）；星间段不贡献可用度损失。地面转接站上下行同址同雨，独立乘积为保守包络">系统可用度 (%)</th>
-                    <th class="c-n" title="各段设计误码率之和：各段独立解调、比特透传，误码一旦产生下游无法恢复">端到端 BER</th>
-                    <th class="c-n" title="Σ hop 传播时延（距离/c）+ Σ 再生类节点处理时延">端到端时延 (ms)</th>
+                    <th v-for="d in resultDefsOn" :key="d.key" class="c-n c-res" :title="d.tip || d.label">{{ d.label }}<i v-if="resultUnit(d)"> ({{ resultUnit(d) }})</i></th>
                     <th class="c-act"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(row, i) in chains" :key="row._id" :class="{ on: i === curIdx }" @click="curIdx = i">
-                    <td class="c-idx">{{ i + 1 }}</td>
+                  <tr v-for="(row, i) in chains" :key="row._id" :class="{ on: selectedRowIds.length ? selectedRowSet.has(row._id) : i === curIdx }" @click="selectChain(i, $event)" @mouseenter="onRowEnter(i)">
+                    <td class="c-idx" @mousedown.left.prevent="onRowDown(i, $event)" @click.stop>{{ i + 1 }}</td>
                     <td class="c-nm">
                       <input class="e2-in" :value="row.name" data-i18n-skip :title="rowRefWarn(row)" placeholder="链路名称" @input="renameChain(row, $event.target.value)" />
                       <!-- 引用悬空（库条目被删、已回退到第一份）：光靠输入框的 title 藏得太深，行上给个看得见的标记。
@@ -1932,13 +2081,9 @@ onMounted(async () => {
                     <td class="c-n">{{ cellNum(chainInfoRate(row)) }}</td>
                     <td class="c-n">{{ row.nodes.length }}</td>
                     <td class="c-n">{{ segCountOf(row) }}</td>
-                    <td class="c-n c-res" :class="marginCls(results[row._id] && results[row._id].e2eMarginResult)">{{ cellNum(results[row._id] && results[row._id].e2eMarginResult) }}</td>
-                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].systemAvailabilityResult) }}</td>
-                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].e2eBerResult) }}</td>
-                    <td class="c-n c-res">{{ cellNum(results[row._id] && results[row._id].e2eDelayResult) }}</td>
+                    <td v-for="d in resultDefsOn" :key="d.key" class="c-n c-res" :class="{ 'st-bad': resultBad(row._id, d) }">{{ resultValue(row._id, d) }}</td>
                     <td class="c-act">
                       <span v-if="errors[row._id]" class="e2-err" :title="errors[row._id]"><Icon name="alert-triangle" :size="12" /></span>
-                      <button v-if="sceneApi" class="lb-mini lb-mini-ico" title="在主窗口定位" @click.stop="locateChainInMain(i)"><Icon name="locate-fixed" :size="12" /></button>
                       <button class="lb-mini lb-mini-ico" title="复制此链路" @click.stop="duplicateChain(i)"><Icon name="copy" :size="12" /></button>
                       <button class="lb-mini lb-mini-ico" title="删除此链路" :disabled="chains.length <= 1" @click.stop="removeChain(i)"><Icon name="x" :size="12" /></button>
                     </td>
@@ -1946,24 +2091,33 @@ onMounted(async () => {
                 </tbody>
               </table>
             </div>
+            <LbCapFoot :readouts="rowReadouts" />
             <div v-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
             <div v-if="rateMismatchText" class="lb-err">{{ rateMismatchText }}</div>
           </LbSection>
 
           <!-- 中：链路条编辑器 ‖ 右：检查器 -->
-          <LbSection id="chain" title="链路构成" flow="chain" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
+          <LbSection id="chain" title="链路构成" flow="chain" :no="selectedChainRows.length > 1 ? 0 : cur ? curIdx + 1 : 0" :summary="selectedChainRows.length > 1 ? '' : cur ? cur.name : ''">
             <div class="e2-mid">
-              <div class="e2-strip">
-                <ChainStrip :row="cur" :result="curResult" :sel="sel"
-                            :sat-name="(nd) => (resolveSat(nd.satId) || {}).name"
-                            :sat-val="satVal"
-                            :es-name="(nd) => (resolveEs(nd.esId) || {}).name"
-                            :seg-carrier="segCarrierName"
-                            :solved="cur ? geoSolved[cur._id] : null"
-                            @select="onSelect" @insert="insertNode" @remove="removeAt"
-                            @toggle-kind="toggleKind" @toggle-link="toggleLink" @toggle-endpoint="toggleEndpoint" @extend-end="extendEnd" />
+              <div class="e2-strip e2-chain-list">
+                <section v-for="entry in selectedChainRows" :key="entry.row._id" class="e2-chain-item" :data-chain-id="entry.row._id">
+                  <div v-if="selectedChainRows.length > 1" class="e2-chain-hd"><b class="lbx-rr-no">#{{ entry.no }}</b><span data-i18n-skip>{{ entry.row.name }}</span></div>
+                  <ChainStrip :row="entry.row" :result="results[entry.row._id] || null" :sel="entry.index === curIdx ? sel : {}"
+                              :sat-name="(nd) => (resolveSat(nd.satId) || {}).name"
+                              :sat-val="satVal" :es-name="(nd) => (resolveEs(nd.esId) || {}).name"
+                              :seg-carrier="(si) => segCarrierNameOf(entry.row, si)"
+                              :solved="geoSolved[entry.row._id] || null"
+                              @select="(s) => onChainAction(entry, onSelect, s)"
+                              @insert="(i, kind) => onChainAction(entry, insertNode, i, kind)"
+                              @remove="(kind, i) => onChainAction(entry, removeAt, kind, i)"
+                              @toggle-kind="(i) => onChainAction(entry, toggleKind, i)"
+                              @toggle-link="(i) => onChainAction(entry, toggleLink, i)"
+                              @toggle-endpoint="(i) => onChainAction(entry, toggleEndpoint, i)"
+                              @extend-end="(i, kind) => onChainAction(entry, extendEnd, i, kind)" />
+                </section>
               </div>
               <aside class="e2-insp">
+                <div v-if="selectedChainRows.length > 1 && cur" class="e2-insp-chain"><b class="lbx-rr-no">#{{ curIdx + 1 }}</b><span data-i18n-skip>{{ cur.name }}</span></div>
                 <div class="e2-insp-hd">
                   <span class="e2-insp-t">{{ sel.type === 'node' ? '节点' : 'hop' }}</span>
                   <span class="e2-insp-s" data-i18n-skip>{{ sel.type === 'node' ? (selNode && selNode.name) : (selHopType === 'up' ? '星地上行' : selHopType === 'down' ? '星地下行' : selHopType === 'laser' ? '星间激光' : '星间微波') }}</span>
@@ -2054,8 +2208,6 @@ onMounted(async () => {
                     <template v-if="curSolvedHop.rangeKm">{{ curSolvedHop.rangeKm }} km</template>
                     <template v-else>{{ curSolvedHop.slantRange }} km · {{ curSolvedHop.elevation }}°</template>
                     <em v-if="curSolvedHop.method">{{ curSolvedHop.method }}</em>
-                    <button v-if="sceneApi && curSolvedHop.tISO" class="lb-mini e2-loc" title="主窗口时间轴拨到本跳几何取自的时刻 t* 并聚焦本跳卫星；时间轴上标出 t* 与搜索时窗"
-                            @click="locateHopInMain"><Icon name="locate-fixed" :size="12" />在主窗口定位</button>
                   </div>
                 </template>
               </aside>
@@ -2063,12 +2215,13 @@ onMounted(async () => {
           </LbSection>
 
           <!-- 下：结果文档区 -->
-          <LbSection id="detail" title="详细预算" :stale="!!(resultsStale)" :no="cur ? curIdx + 1 : 0" :summary="cur ? cur.name : ''">
+          <LbSection id="detail" title="详细预算" :stale="!!(resultsStale)" :no="selectedBudgetRows.length > 1 ? 0 : cur ? curIdx + 1 : 0" :summary="selectedBudgetRows.length > 1 ? '' : cur ? cur.name : ''">
             <template #nav>
-              <button class="lb-mini lb-mini-ico" :disabled="curIdx <= 0" title="上一条" @click="curIdx = curIdx - 1"><Icon name="chevron-up" :size="12" /></button>
-              <button class="lb-mini lb-mini-ico" :disabled="curIdx >= chains.length - 1" title="下一条" @click="curIdx = curIdx + 1"><Icon name="chevron-down" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" :disabled="curIdx <= 0" title="上一条" @click="selectedRowIds = []; curIdx = curIdx - 1"><Icon name="chevron-up" :size="12" /></button>
+              <button class="lb-mini lb-mini-ico" :disabled="curIdx >= chains.length - 1" title="下一条" @click="selectedRowIds = []; curIdx = curIdx + 1"><Icon name="chevron-down" :size="12" /></button>
             </template>
-            <div v-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
+            <LbMultiBudget v-if="selectedBudgetRows.length > 1" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="E2E" :adaptive="unitAdaptive" />
+            <div v-else-if="cur && errors[cur._id]" class="lb-err">{{ errors[cur._id] }}</div>
             <div v-else-if="!segments.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else class="lbx-doc e2-doc">
               <div class="lbx-doc-main"><WaterfallTable :segments="segments" pick="cascade" :lang="reportLang" /></div>
@@ -2078,6 +2231,9 @@ onMounted(async () => {
         </div>
       </section>
     </div>
+
+    <LbCustomColsDialog :open="ccDlgOpen" :cols="customCols" :pool="customPool" :preview-fn="ccPreview" subtitle="端到端系统"
+      @update:cols="customCols = $event" @close="ccDlgOpen = false" />
 
     <LbSlantTool :open="slantToolOpen" :alt-km="slantToolAlt"
                  :elev-deg="slantToolPair ? slantToolPair.hop.elevation : 25"
@@ -2109,6 +2265,7 @@ onMounted(async () => {
                     :busy="reportDlg.busy" :progress="reportDlg.progress"
                     @close="reportDlg.open = false" :variant="reportVariant" @submit="submitReport" />
 
+    <LbShareDialog ref="shareRef" v-model:open="shareOpen" :ctx="shareCtx" :device-id="deviceId" :configured="shareConfigured" @toast="(m, p) => p ? toastFile(m, p) : toast(m)" />
     <ConfirmDialog />
     <WinStatusBar :n="N" :stale="resultsStale" stale-title="计算输入已被修改，结果对应修改前的参数">
       <span v-if="!api" class="lb-hint"><Icon name="alert-triangle" :size="12" /> 引擎需在桌面客户端中运行</span>
@@ -2126,14 +2283,16 @@ html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 
 /* 功能区「文件」组的刷新按钮：取数中图标旋转（按钮本体走公共 .lbr-big） */
 .lbr-big.spin .app-icon { animation: ui-spin .7s linear infinite; transform-origin: 50% 50%; }
-.e2-loc { flex: none; margin-left: auto; align-self: center; }
 
 
 .lb-placeholder { color: var(--text-faint); font-size: var(--fs-3); text-align: center; line-height: 1.7; }
 
 
 /* —— 链路列表：三线表（顶/底粗线 + 列头线），无竖线无底色，与详细预算同一套排版语言 —— */
-.e2-tbl-wrap { overflow-x: auto; }
+.e2-tbl-wrap { overflow-x: auto; outline: none; }
+.e2-sel-count { color: var(--text-muted); font-size: var(--lb-fs); white-space: nowrap; }
+.e2-tbl th.c-res i { font-style: normal; font-weight: 400; color: var(--text-faint); }
+.e2-tbl td.c-idx { user-select: none; }
 .e2-tbl { width: 100%; border-collapse: collapse; font-size: var(--lb-fs, 11px); font-variant-numeric: tabular-nums; }
 .e2-tbl th { text-align: right; font-weight: 600; color: var(--text-muted); padding: 3px 8px; white-space: nowrap; border-bottom: 1px solid var(--lb-rule); }
 /* 顶线不再画：节头（LbSection）下缘已是一条 2px 题线，紧贴着再来一条就成了双粗线 */
@@ -2153,7 +2312,7 @@ html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 .e2-tbl th.c-nm, .e2-tbl th.c-lib, .e2-tbl th.c-idx { text-align: left; }
 .e2-tbl .c-lib { text-align: left; min-width: 150px; }
 .e2-tbl .c-n { min-width: 96px; }
-.e2-tbl .c-act { width: 100px; text-align: right; }   /* 定位 / 复制 / 删除 三枚钮 + 报错标记 */
+.e2-tbl .c-act { width: 72px; text-align: right; }   /* 复制 / 删除 两枚钮 + 报错标记 */
 /* 名称格：让出输入框自身的 1px 边 + 3px 内距，框里的字与列头「名称」左缘对齐 */
 .e2-tbl td.c-nm { padding-left: 4px; }
 /* 行尾动作钮平时无框（一列框墙是噪声），悬停 / 当前行才浮出；按钮自身悬停仍描深一档 */
@@ -2192,6 +2351,10 @@ html[data-theme='dark'] .lb-shell { --up: #4a8fc9; --dn: #d2792f; }
 /* —— 中区：链路条 ‖ 检查器 —— */
 .e2-mid { display: flex; align-items: flex-start; gap: 14px; }
 .e2-strip { flex: 1 1 auto; min-width: 0; }
+.e2-chain-list { display: flex; flex-direction: column; gap: 16px; }
+.e2-chain-item { min-width: 0; }
+.e2-insp-chain { display: flex; align-items: baseline; gap: 6px; padding-bottom: 5px; font-size: var(--lb-fs); overflow-wrap: anywhere; }
+.e2-chain-hd { display: flex; align-items: baseline; gap: 8px; padding: 0 0 5px; margin-bottom: 6px; border-bottom: 1px solid var(--lb-rule-soft); font-size: var(--lb-fs); overflow-wrap: anywhere; }
 .e2-insp { flex: 0 0 340px; min-width: 0; border-left: 1px solid var(--lb-rule-soft); padding-left: 12px; }
 /* 载波参数面板下放到检查器里。行式排版（标签左、数值右）由 styles/lbworkbench.css 的
    .lbx-flow 那套统管，这里只管两件它管不到的事：
