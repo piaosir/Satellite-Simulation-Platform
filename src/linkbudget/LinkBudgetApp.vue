@@ -3,6 +3,7 @@ import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTi
 import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
+import { reportInputParams } from '../shared/lbReport.js'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, buildParams } from './params.js'
 import * as GEO_PARAMS from './params.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（与 buildParams 同源，但不做 sfdRef 的引擎入口换算）
 import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
@@ -1379,7 +1380,7 @@ async function compute() {
       const opt = calcOptOf(bbForm, txEs)
       // 留底本行真正送进引擎的那份入参，供图表区参数扫描原地重跑（见 selParams）
       sweepStore[row._id] = { satParams, linkParams, opt }
-      specAt[i] = { sat: satParams, link: linkParams, opt }
+      specAt[i] = { sat: satParams, link: linkParams, opt: { ...opt, captureInputs: true } }
       specs.push(specAt[i])
     }
     const res = !specs.length ? [] : api.linkBudget.computeModeBatch
@@ -1413,7 +1414,7 @@ async function compute() {
         const ok = specAt[i].opt.mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
         // resolvedMargin＝求解器最终喂给引擎的余量（功带平衡等方式下由它解出）。留全精度原值：
         // 高级计算的组配平要拿它做归一化基准，data.marginResult 已按显示精度截成 2 位小数。
-        out.push({ ...base, data: d, ok, resolvedMargin: r.resolvedMargin })
+        out.push({ ...base, data: d, ok, resolvedMargin: r.resolvedMargin, effectiveInputs: r.effectiveInputs })
       } else {
         out.push({ ...base, data: null, error: (r && r.message) || '失败' })
       }
@@ -2321,8 +2322,7 @@ const shareCtx = {
 }
 
 // —— 报表语言与报告导出 ——
-// 报表语言跟随平台语言（设置▸语言），不再单独设一档：一个软件只有一种语言，
-// 屏幕上核对的、详细预算区显示的、交出去的报表，三者必然是同一种。
+// 屏幕详细预算跟随平台语言；交付报告在导出对话框独立选择语言，通过回调参数传入。
 const reportLang = ref(getLang())
 onLangChange((v) => { reportLang.value = v })
 watch(reportLang, () => {
@@ -2339,19 +2339,19 @@ const vizRef = ref(null)
 const appVersion = ref('')
 // 某条已算链路实际用的求解策略：取计算时留底的那份入参（此后改库不改已出结果的口径）。
 // 超发量只在「功带平衡下超发」方式下有意义，其余方式不入报告。
-function calcOfLink(l) {
+function calcOfLink(l, lang = reportLang.value) {
   const p = l && sweepParamsByRow.value[l.rowId]
   const key = (p && p.opt && p.opt.mode) || ''
   const info = CALC_MODES.find((m) => m.key === key)
-  const en = reportLang.value === 'en'
+  const en = lang === 'en'
   return {
     key,
     label: info ? (en ? info.enLabel : info.label) : key,
-    margin: (p && p.linkParams && p.linkParams.margin) || '',
-    overDb: key === 'overbalance' ? ((p && p.opt && p.opt.overDb) || '') : ''
+    margin: key === 'margin' ? (l?.effectiveInputs?.linkParams?.margin ?? p?.linkParams?.margin ?? '') : '',
+    overDb: key === 'overbalance' ? (l?.effectiveInputs?.overDb ?? p?.opt?.overDb ?? '') : ''
   }
 }
-const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
+const { reportDlg, reportVariant, reportFigureCapture, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'GEO',
   fieldGroups: FIELD_GROUPS,
@@ -2367,17 +2367,17 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   vizRef: () => vizRef.value,
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
-  paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  paramsFor: (l) => reportInputParams(sweepParamsByRow.value[l.rowId] || null, l.effectiveInputs),
   // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
   carrierOf: (l) => { const row = linkRows.find((r) => r._id === l.rowId); return row ? resolveBaseband(row.basebandId).form : null },
   basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
-  slaFor: (l) => {
+  slaFor: (l, lang) => {
     const row = linkRows.find((r) => r._id === l.rowId)
-    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
+    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, lang,
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
-  slaParams: () => slaParamRows(slaParams, reportLang.value),
+  slaParams: (lang) => slaParamRows(slaParams, lang),
   // 容量汇总（§2）：与弹窗同一份账（列入 / 载波数 / 可用资源 / 单价都算进去），标签按报表语言、数按单位档
   capFor: (key, lang, noOf) => capReportBlock(capModel.value, { lang, adaptive: unitAdaptive.value, noOf }),
   // 独立《容量汇总》报告：同一份账（导出前 beforeReport 已补算，computed 随之刷新）
@@ -2392,19 +2392,19 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   // 两条导出路径都走这里，条款数不再随「有没有开过 SLA 弹窗」变
   beforeSla: async () => { await ensureSlaScan(); await refreshSlaSun() },
   // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
-  calc: () => {
+  calc: (lang) => {
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
     return {
-      mode: modes.size === 1 ? calcOfLink(links.value[0]).label : '',
+      mode: modes.size === 1 ? calcOfLink(links.value[0], lang).label : '',
       satelliteName: sceneSatName.value,
       frequencyBand: sceneBand.value
     }
   },
-  calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
+  calcFor: (l, lang) => { const c = calcOfLink(l, lang); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
-  slaComposition: () => slaComposition({ orbitType: 'GEO', slaParams }, reportLang.value),
+  slaComposition: (_key, lang) => slaComposition({ orbitType: 'GEO', slaParams }, lang),
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
@@ -2697,7 +2697,7 @@ onMounted(async () => {
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected <= 0" title="上一条" @click="stepDetail(-1)"><Icon name="chevron-up" :size="12" /></button>
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected >= links.length - 1" title="下一条" @click="stepDetail(1)"><Icon name="chevron-down" :size="12" /></button>
             </template>
-            <LbMultiBudget v-if="selectedBudgetRows.length > 1" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="GEO" :adaptive="unitAdaptive" />
+            <LbMultiBudget v-if="selectedBudgetRows.length > 1 && !reportFigureCapture" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="GEO" :adaptive="unitAdaptive" />
             <div v-else-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>

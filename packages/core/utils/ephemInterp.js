@@ -48,8 +48,7 @@ function segmentTables(t, spansIn) {
   const m = sg[n - 1] + 1
   const sgA = new Int32Array(m).fill(-1), sgB = new Int32Array(m).fill(-1)
   for (let k = 0; k < n; k++) { const s = sg[k]; if (sgA[s] < 0) sgA[s] = k; sgB[s] = k }
-  // 段内只剩 1 点的：并进前一段（1 点插不出值，留着只会在缝里制造假 null）
-  for (let s = 0; s < m; s++) if (sgA[s] >= 0 && sgA[s] === sgB[s] && s > 0) { sgB[s - 1] = sgB[s]; for (let k = sgA[s]; k <= sgB[s]; k++) sg[k] = s - 1; sgA[s] = -1 }
+  // 单点段保留自己的边界：只能在采样时刻取值，不能为了凑插值点把真实缺口桥接起来。
   return { sg, sgA, sgB }
 }
 
@@ -175,6 +174,12 @@ function evalTable(tab, ms) {
   }
   if (i < lo) i = lo
   if (i > hi - 1) i = hi - 1 < lo ? lo : hi - 1
+
+  // 单点弧段没有可插值的时间区间，也不向缺口扩展端点容差。
+  if (lo === hi) return ms === t[lo] ? {
+    x: p[3 * lo], y: p[3 * lo + 1], z: p[3 * lo + 2],
+    vx: v ? v[3 * lo] : 0, vy: v ? v[3 * lo + 1] : 0, vz: v ? v[3 * lo + 2] : 0
+  } : null
 
   if (tab.method === 'hermite' && v) {
     // 相邻两点位置 + 速度的三次 Hermite

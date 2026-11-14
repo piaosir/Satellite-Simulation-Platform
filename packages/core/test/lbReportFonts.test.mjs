@@ -1,5 +1,5 @@
 // 报告字体（导出报告对话框「字体」三档 → 模型 doc.fonts）在三个出口的落点：
-//   xlsx  写格时的 HEI / SONG / FNT 只是意图标记，写盘前 applyBookFont 按 doc.fonts 换成实际字体名（主题字体同换）；
+//   xlsx  严格沿用用户 Link_result 的仿宋标题和宋体10pt正文，不再套用Word字体模板；
 //   docx  样式表（docDefaults / 段落样式 / 关键行字符样式 RptKey）按 doc.fonts 现造；
 //   PDF   打印页从 doc.fonts.cssBody / cssHead 取 CSS 栈，主进程 reportStyle.fontsOf 给缺省。
 // 没带 fonts 时三处都是模板口径（Times New Roman / 宋体 / 黑体）——没改过的用户产出逐字节不变。
@@ -69,12 +69,12 @@ assert.equal(normFonts({ cjkHeading: '等线' }).latin, FNT)
 async function xlsxFonts(model) {
   const buf = await report.buildReportWorkbook(model)
   const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf)
-  const ws = wb.worksheets[0]
+  const ws = wb.worksheets.find((sheet) => sheet.name.startsWith('Link_result'))
   const runs = (v) => (v && typeof v === 'object' && Array.isArray(v.richText)) ? v.richText : null
   const textOf = (v) => { const r = runs(v); return r ? r.map((t) => t.text).join('') : String(v == null ? '' : v) }
   const cellOf = (pred) => { let hit = null; ws.eachRow((row) => row.eachCell((c) => { if (!hit && pred(textOf(c.value))) hit = c })); return hit }
   const title = cellOf((t) => t.indexOf('链路预算报告') > -1)   // 报告标题：固定 Arial + 黑体 20pt 加粗
-  const head = cellOf((t) => t === '1　逐参数对照')               // 章节标题：黑体意图 → 中文标题字体
+  const head = cellOf((t) => t === '载波与调制')
   const std = cellOf((t) => t === '标准')                          // 表内中文正文：宋体意图 → 中文正文字体
   const val = cellOf((t) => t === 'DVB-S2X')                      // 纯西文格 → 西文字体
   assert.ok(title && head && std && val, '四个探针格都要找得到')
@@ -82,22 +82,21 @@ async function xlsxFonts(model) {
   const theme = await zip.file('xl/theme/theme1.xml').async('string')
   const tr = runs(title.value) || []
   return {
-    title: { cjk: title.font.name, latin: (tr.find((r) => /[A-Za-z0-9]/.test(r.text)) || { font: {} }).font.name, size: title.font.size, bold: !!title.font.bold },
+    title: { cjk: title.font.name, latin: tr.length ? (tr.find((r) => /[A-Za-z0-9]/.test(r.text)) || { font: {} }).font.name : title.font.name, size: title.font.size, bold: !!title.font.bold },
     head: head.font.name, std: std.font.name, val: val.font.name, theme
   }
 }
 {
   const d = await xlsxFonts(makeModel(null))
-  assert.deepEqual(d.title, { cjk: '黑体', latin: 'Arial', size: 20, bold: true }, '缺省：标题固定')
-  assert.equal(d.head, '黑体'); assert.equal(d.std, '宋体'); assert.equal(d.val, 'Times New Roman')
+  assert.deepEqual(d.title, { cjk: '仿宋_GB2312', latin: '仿宋_GB2312', size: 22, bold: true }, 'Excel 标题准确沿用 Link_result 仿宋22pt')
+  assert.equal(d.head, '仿宋_GB2312'); assert.equal(d.std, '宋体'); assert.equal(d.val, '宋体')
   // 主题字体只看 <a:latin> / <a:ea> 两个主字面：exceljs 自带的主题里另有按文种列的字体表（script="…"），
   // 那里面本来就有 Times New Roman 一类的名字，与我们换的主字面无关
-  assert.ok(d.theme.indexOf('<a:latin typeface="Times New Roman"/>') > -1 && d.theme.indexOf('<a:ea typeface="宋体"/>') > -1, '缺省主题字体 = 模板口径')
+  assert.ok(d.theme.indexOf('<a:latin typeface="宋体"/>') > -1 && d.theme.indexOf('<a:ea typeface="宋体"/>') > -1, 'Excel 主题沿用用户工作簿宋体')
   const c = await xlsxFonts(makeModel(CUSTOM))
-  assert.deepEqual(c.title, { cjk: '黑体', latin: 'Arial', size: 20, bold: true }, '自定义三档后标题仍固定')
-  assert.equal(c.head, '等线'); assert.equal(c.std, '微软雅黑'); assert.equal(c.val, 'Verdana')
-  assert.ok(c.theme.indexOf('<a:latin typeface="Verdana"/>') > -1 && c.theme.indexOf('<a:ea typeface="微软雅黑"/>') > -1, '自定义主题字体')
-  assert.ok(c.theme.indexOf('<a:latin typeface="Times New Roman"/>') < 0, '自定义后主字面不再是模板西文字体')
+  assert.deepEqual(c.title, { cjk: '仿宋_GB2312', latin: '仿宋_GB2312', size: 22, bold: true }, 'Excel 严格按用户参考，不套用Word字体档')
+  assert.equal(c.head, '仿宋_GB2312'); assert.equal(c.std, '宋体'); assert.equal(c.val, '宋体')
+  assert.ok(c.theme.indexOf('<a:latin typeface="宋体"/>') > -1 && c.theme.indexOf('<a:ea typeface="宋体"/>') > -1, 'Excel 数值与正文保持用户参考字体')
 }
 
 // —— docx：docDefaults / 标题样式 / 关键行字符样式 / 封面主标题固定 ——
@@ -112,12 +111,11 @@ const isBold = (s) => /<w:b\/>|<w:b w:val="(1|true|on)"\/>/.test(s)
 {
   const d = await docxParts(makeModel(null))
   assert.ok(/w:ascii="Times New Roman"/.test(docDefaults(d.styles)) && /w:eastAsia="宋体"/.test(docDefaults(d.styles)), '缺省 docDefaults = 模板口径')
-  assert.ok(/w:eastAsia="黑体"/.test(styleBlock(d.styles, 'RptH1')), '缺省标题 1 = 黑体')
+  assert.ok(/w:eastAsia="宋体"/.test(styleBlock(d.styles, 'RptH1')), '缺省标题 1 按合同为宋体')
   assert.ok(/w:styleId="RptKey"/.test(d.styles), '关键行字符样式在样式表里')
-  assert.ok(/<w:rStyle w:val="RptKey"\/>/.test(d.doc), '级联表关键行（小计 / 余量）引用了 RptKey')
-  const cv = styleBlock(d.styles, 'CvTitle')
-  assert.ok(/w:ascii="Arial"/.test(cv) && /w:eastAsia="黑体"/.test(cv) && /<w:sz w:val="40"\/>/.test(cv) && isBold(cv), '封面主标题 = Arial + 黑体 20pt 加粗')
-  assert.ok(!isBold(styleBlock(d.styles, 'CvSub')) && !isBold(styleBlock(d.styles, 'CvOrg')), '单位 / 日期两行不加粗')
+  const cv = styleBlock(d.styles, 'Title')
+  assert.equal([...d.styles.matchAll(/w:styleId="Title"/g)].length, 1, '合同标题覆盖内置Title，不产生重复styleId')
+  assert.ok(/w:ascii="Times New Roman"/.test(cv) && /w:eastAsia="宋体"/.test(cv) && /<w:sz w:val="36"\/>/.test(cv) && isBold(cv), '主标题按合同为宋体18pt加粗')
   const c = await docxParts(makeModel(CUSTOM))
   assert.ok(/w:ascii="Verdana"/.test(docDefaults(c.styles)) && /w:eastAsia="微软雅黑"/.test(docDefaults(c.styles)), '自定义 docDefaults')
   const h1 = styleBlock(c.styles, 'RptH1')
@@ -125,7 +123,7 @@ const isBold = (s) => /<w:b\/>|<w:b w:val="(1|true|on)"\/>/.test(s)
   assert.ok(h1.indexOf('Times New Roman') < 0 && h1.indexOf('黑体') < 0, '自定义后标题 1 里不再有模板字体')
   const key = styleBlock(c.styles, 'RptKey')
   assert.ok(/w:ascii="Verdana"/.test(key) && /w:eastAsia="等线"/.test(key), 'RptKey = 西文 + 中文标题那一档')
-  const cvc = styleBlock(c.styles, 'CvTitle')
-  assert.ok(/w:ascii="Arial"/.test(cvc) && /w:eastAsia="黑体"/.test(cvc) && /<w:sz w:val="40"\/>/.test(cvc) && isBold(cvc), '自定义三档后封面主标题仍固定')
+  const cvc = styleBlock(c.styles, 'Title')
+  assert.ok(/w:ascii="Times New Roman"/.test(cvc) && /w:eastAsia="宋体"/.test(cvc) && /<w:sz w:val="36"\/>/.test(cvc) && isBold(cvc), '自定义正文后主标题仍按合同字号字体')
 }
 console.log('lbReportFonts: all passed')

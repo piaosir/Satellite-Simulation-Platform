@@ -1,263 +1,56 @@
-/* 链路预算报告的打印版式（src/report.html，供主进程 printToPDF）。
-   —— 只在这一个隐藏窗口里生效，不影响工作台任何一屏。
-
-   纸张按「混合方向」排（用户选定的口径）：
-     封面 / 目录 / 总报告   A4 纵向 —— 正式公文的样子，段落与键值表在 180mm 版心上最好读；
-     逐链路详情            A4 横向 —— 详情页是屏幕排版的复刻（级联主表 ‖ 图表两栏），
-                                     A4 纵向 180mm 塞不下这两栏，横向 267mm 才接近屏幕的形状。
-   靠 CSS 命名页实现（@page land + `page: land`，Chromium 110+ 支持），单次 printToPDF 即可出
-   混合方向的一份文件；printToPDF 须带 preferCSSPageSize:true，否则纸张退回 Letter（方向仍对）。
-   页眉页脚与页码由 Chromium 的 headerTemplate/footerTemplate 画（CSS 的 @page 边距框 Chromium
-   不支持 counter(page)），见 electron/services/reportPdf.js。
-
-   字体：西文与数字 Times New Roman，中文正文宋体、中文标题与题注黑体（模板 rFonts 口径）。
-   颜色：报告落在白纸上，故打印页恒定浅色（report.html 把 data-theme 钉在 light）。
-   表格：一律三线表——顶线/底线 1.5pt、栏目线 0.75pt，无竖线、无底纹（模板「三线表」样式）。 */
-
-/* 页面与字号全部取自《技术文档标准模板.docx》（同一份数在 electron/services/reportStyle.js，
-   改一处务必同步另一处）：pgMar top 1276 tw = 2.25 cm、bottom 1701 tw = 3 cm、
-   left/right 1418 tw = 2.5 cm；正文小四(12pt)、1.5 倍行距。 */
-@page {
-  size: A4 portrait;
-  margin: 2.25cm 2.5cm 3cm;
-}
-@page land {
-  size: A4 landscape;
-  margin: 2.25cm 2.2cm 2.5cm;   /* 横向页放的是宽表与详情两栏，左右收一点换版心 */
-}
-
-:root {
-  --rp-fs: 12pt;                    /* 模板 正文：小四 */
-  --rp-fs-cap: 10.5pt;              /* 模板 表号/图号格式、表格格式 */
-  --rp-rule: #1a1a1a;
-  --rp-rule-thin: #8a8a85;
-  --rp-grid: #000000;
-  --rp-rule-top: 1.5pt;             /* 模板三线表：顶线 / 底线 */
-  --rp-rule-head: .75pt;            /* 模板三线表：栏目线 */
-  /* 西文与数字 Times New Roman；中文标题与题注黑体、中文正文宋体（模板 rFonts 口径，也是用户的要求）。
-     这是出厂缺省：用户在导出报告对话框里改过「字体」时，打印页按模型 doc.fonts 把这两条栈写到 <html> 上盖掉
-     （report/ReportApp.vue），主进程那边同一份字体由 reportStyle.fontsOf 给 xlsx / docx。 */
-  --rp-font-head: "Times New Roman", SimHei, "黑体", serif;
-  --rp-font-body: "Times New Roman", SimSun, "宋体", serif;
-}
-
-html, body { background: #fff; }
-body {
-  font-family: var(--rp-font-body);
-  font-size: var(--rp-fs);
-  line-height: 1.5;                 /* 模板 spacing line=360 auto */
-  color: #1a1a1a;
-  margin: 0;
-  -webkit-print-color-adjust: exact;
-  print-color-adjust: exact;
-}
-
-/* ——— 章节骨架 ——— */
-.rp-sheet { break-after: page; }
-.rp-sheet:last-child { break-after: auto; }
-.rp-land { page: land; }
-
-/* 标题层级照模板：文档标题 16pt 居中黑体；标题 1 = 14pt 黑体；标题 2/3 = 12pt 黑体。
-   模板的标题不加粗——黑体本身就是重字面，再加粗会被浏览器合成成假粗体。
-   与 Word 端一一对应：rp-title↔RptTitle、rp-h1↔RptH1、rp-h2↔RptH2、rp-h3↔RptH3。 */
-.rp-title {
-  font-family: var(--rp-font-head); font-size: 16pt; font-weight: 400; text-align: center;
-  margin: 0 0 12pt; letter-spacing: 2px;
-}
-.rp-h1 {
-  font-family: var(--rp-font-head); font-size: 14pt; font-weight: 400;
-  margin: 0 0 6pt; padding-bottom: 4pt; border-bottom: 1.2pt solid var(--rp-rule);
-  break-after: avoid;
-}
-.rp-h2 {
-  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
-  margin: 12pt 0 6pt; break-after: avoid;
-}
-.rp-h2:first-child { margin-top: 0; }
-.rp-h3 {
-  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
-  margin: 9pt 0 4pt; break-after: avoid;
-}
-.rp-p { margin: 0 0 6pt; text-indent: 2em; text-align: justify; }   /* 模板正文：首行缩进 2 字符 */
-.rp-muted { color: #666; }
-.rp-small { font-size: var(--rp-fs-cap); }
-
-/* ——— 封面（PDF 版）———
-   结构照新模板第一节：（logo）→ 密级 / 文档编号 → 留白 → 文档标题 / 副标题 → 留白 →
-   编制单位 / 成文日期。一栏流式，无绝对定位、无外框（模板封面本就没有框）。
-   ★ 排版按 PDF 自己的逻辑：模板的封面标题是 16pt（Word 那份严格照此），整页 PDF 封面上
-     16pt 撑不住，故标题放到 24pt——这是用户 2026-07-26 定的口径「PDF 封面不用严格照模板」。
-   ★ 封面上的单位 / 公司名 / 签署人全部来自用户填写，软件不预设任何单位名。 */
-.rp-cover {
-  height: calc(29.7cm - 2.25cm - 3cm - 2px);
-  display: flex; flex-direction: column;
-  box-sizing: border-box;
-}
-/* logo 不在页面里：它是页眉，由 printToPDF 的 headerTemplate 画在每一页右上角
-   （见 electron/services/reportPdf.js）。 */
-/* 顶部两行：密级 / 文档编号（模板是正文样式、左对齐）。
-   栏名「密　　级」自带两个全角空格与「文档编号」对齐，故不许再加 letter-spacing——加了就错位。 */
-.rp-cv-meta { flex: 0 0 auto; font-size: 12pt; color: #1a1a1a; line-height: 1.9; }
-.rp-cv-meta b { font-weight: 400; }
-/* 中区：报告名，整篇唯一的一行主标题，落在上三分之一处（没有副标题——用户 2026-08-02 定） */
-.rp-cv-mid { flex: 0 0 auto; padding: 46mm 0 0; text-align: center; }
-/* 封面主标题：固定 Arial + 黑体、20pt、加粗（reportStyle.js TPL.title 的手抄镜像，改那边要同步改这里），
-   不随导出报告对话框的字体三档走——四个链路预算窗口的全部报告标题同一副面孔（用户 2026-09-07 定） */
-.rp-cv-title {
-  font-family: Arial, Helvetica, SimHei, "黑体", sans-serif; font-size: 20pt; font-weight: 700;
-  line-height: 1.6; letter-spacing: 1px; margin: 0;
-}
-/* 底部：编制单位压轴，成文日期跟在下面（模板末两行） */
-.rp-cv-bot { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: flex-end; text-align: center; }
-.rp-cv-org { font-family: var(--rp-font-head); font-size: 16pt; letter-spacing: 3px; line-height: 2; }
-.rp-cv-date { margin-top: 4mm; font-family: var(--rp-font-head); font-size: 16pt; }
-
-/* ——— 目录（模板 toc 1 = 12pt 加粗，toc 2/3 = 10pt 缩进 2/4 字符）——— */
-.rp-toc { margin-top: 4pt; }
-.rp-toc-i { display: flex; align-items: baseline; gap: 6pt; padding: 3pt 0; font-size: 12pt; font-weight: 700; }
-.rp-toc-i.sub { padding-left: 2em; font-size: 10pt; font-weight: 400; color: #222; }
-.rp-toc-n { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-.rp-toc-t { flex: 0 0 auto; }
-.rp-toc-d { flex: 1 1 auto; border-bottom: .5pt dotted #999; transform: translateY(-2pt); }
-
-/* ——— 文档类表格：模板「三线表」（顶/底 1.5pt、栏目线 0.75pt，无竖线无底纹，10.5pt）——— */
-.rp-tb {
-  width: 100%; border-collapse: collapse; font-size: var(--rp-fs-cap);
-  margin: 3pt 0 8pt; line-height: 1.35;
-  border-top: var(--rp-rule-top) solid var(--rp-grid);
-  border-bottom: var(--rp-rule-top) solid var(--rp-grid);
-}
-.rp-tb th, .rp-tb td {
-  padding: 2.4pt 5pt; text-align: right; vertical-align: middle; border: none;
-}
-/* 表头：三线表不加粗、不加底纹，只把中文换成黑体——模板自己的字体语言，
-   又刚好补上「表头 vs 数据行」这一档视觉分隔。对齐不在这里定：表头随它那一列数据走（见下）。 */
-.rp-tb thead th {
-  font-family: var(--rp-font-head); font-weight: 400;
-  border-bottom: var(--rp-rule-head) solid var(--rp-grid);
-}
-/* 无 thead 的表（键值型）：首行下面同样落一条栏目线 */
-.rp-tb tbody tr.rp-headrow td { border-bottom: var(--rp-rule-head) solid var(--rp-grid); }
-.rp-tb td.num, .rp-tb th.num { font-variant-numeric: tabular-nums; }
-.rp-tb td.unit, .rp-tb th.unit { text-align: left; color: #333; width: 12%; }
-.rp-tb .lbl { text-align: left; }
-/* 标识列（序号 / 发信站 / 收信站）不许逐字折行：站名被压成竖排的「北\n京」是最刺眼的排版事故 */
-.rp-tb .id { text-align: left; white-space: nowrap; }
-/* ★ 表头随数据列对齐（用户 2026-09-07：居中的表头压在左/右对齐的数据上，看着就是「标题和数值没对齐」）。
-   上面那四个列对齐类（.id/.num/.unit/.lbl）对 th 与 td 同样生效——数值列的表头靠右、文字列的靠左；
-   thead th 自己不许再写 text-align，写了就又把表头单独拎出去了。
-   Word（reportDocxKit）与 Excel（report.js bookBox）同一口径。 */
-.rp-tb tr { break-inside: avoid; }
-.rp-tb thead { display: table-header-group; }   /* 跨页续表自动重复表头 */
-/* 引用建议书表里的「类别」行：三线表不许底纹，改用黑体通栏把三组标准分开 */
-.rp-tb tr.rp-grp td {
-  font-family: var(--rp-font-head); font-weight: 400; text-align: left;
-}
-.rp-refs td { vertical-align: top; }
-.rp-refs td:first-child { white-space: nowrap; }
-
-/* 键值表：同为三线表，标签列黑体 */
-.rp-kv {
-  width: 100%; border-collapse: collapse; font-size: var(--rp-fs-cap); margin: 2pt 0 8pt;
-  border-top: var(--rp-rule-top) solid var(--rp-grid);
-  border-bottom: var(--rp-rule-top) solid var(--rp-grid);
-}
-.rp-kv th, .rp-kv td { border: none; padding: 2.8pt 6pt; vertical-align: middle; }
-.rp-kv th {
-  width: 26%; text-align: left; font-family: var(--rp-font-head); font-weight: 400;
-  white-space: nowrap;
-}
-.rp-kv td { text-align: left; }
-/* 题注：模板 表号格式 / 图号格式 —— 黑体 10.5pt 居中；表题在表上方、图题在图下方 */
-.rp-caption {
-  font-family: var(--rp-font-head); font-size: var(--rp-fs-cap); font-weight: 400;
-  text-align: center; margin: 8pt 0 2pt; break-after: avoid;
-}
-.rp-note { font-size: var(--rp-fs-cap); color: #444; margin-top: 3pt; line-height: 1.45; }
-/* 方法学段落的小标题：模板 标题 4（黑体 12pt），与 Word 的 RptH4 对应 */
-.rp-mb-t {
-  font-family: var(--rp-font-head); font-size: 12pt; font-weight: 400;
-  margin: 8pt 0 2pt; break-after: avoid;
-}
-
-/* ——— 逐链路详情（屏幕排版的复刻）——— */
-/* .lbx-doc / .lbx-doc-main / .lbx-doc-side / .lbx-doc-ref 与 WaterfallTable 的样式直接取自
-   工作台（styles/lbworkbench.css + 组件 scoped），此处只补打印才需要的几条：
-   基准字号按纸张调小一档、段不许被分页拦腰截断、图按栏宽满铺。 */
-.rp-detail { break-before: page; }
-.rp-detail:first-child { break-before: auto; }
-/* 详情章名：与「标题 1」同一档（14pt 黑体），右端挂本条链路的一行摘要 */
-.rp-detail-hd {
-  display: flex; align-items: baseline; gap: 8pt; margin-bottom: 6pt; padding-bottom: 3pt;
-  border-bottom: 1.2pt solid var(--rp-rule); font-family: var(--rp-font-head);
-}
-.rp-detail-no { font-size: 14pt; font-weight: 400; }
-.rp-detail-name { font-size: 14pt; font-weight: 400; margin: 0; }
-.rp-detail-sub { margin-left: auto; font-family: var(--rp-font-body); font-size: 10.5pt; color: #333; }
-.rp-doc { --lb-fs: 8.6pt; }
-/* ★ 两栏不用 flex，用表格盒。
-   屏幕上 .lbx-doc 是「可换行的 flex + order」，那套在分页媒介里会碎：Chromium 对换行 flex 容器的
-   分栏/分页碎片化支持很差——实测一条链路的详情被撑成 5 页，其中一页整版空白，参考段带还只填了
-   两栏就换页（右边三分之一全空）。表格盒的碎片化是打印里最成熟的一条路，故此处把左右两栏改成
-   两个 table-cell（匿名表格由浏览器自动生成），参考段带仍是块级、跟在表格后面自己分页。
-   视觉结果与屏幕一致：级联主表在左、图在右、参考段带整幅铺在下面。 */
-/* 选择器一律写成 .lbx-doc.rp-doc（两个类）：工作台那边是单类 .lbx-doc，同分时谁后加载谁赢，
-   而打包后的 CSS 顺序不由 import 顺序决定（lbworkbench 是多入口共享块，排在后面）。
-   踩过一次：display:block 被 .lbx-doc 的 display:flex 压掉，整段覆盖静默失效。 */
-/* 工作台侧的 .lbx-doc 屏上走界面字体（2026-09-07 起）；报告是交付文档，这里钉回模板正文字体 */
-.lbx-doc.rp-doc { display: block; font-family: var(--rp-font-body); }
-.lbx-doc.rp-doc > .lbx-doc-main, .lbx-doc.rp-doc > .lbx-doc-side { display: table-cell; vertical-align: top; float: none; }
-.lbx-doc.rp-doc > .lbx-doc-main { width: 52%; max-width: none; padding-right: 7mm; }
-.lbx-doc.rp-doc > .lbx-doc-side { width: 48%; }
-/* 端到端：级联是单列表（宽 = 内容宽，见 lbworkbench.css 的 .e2-doc 一节），且本窗没有图表区，
-   于是左栏是这张匿名表格里唯一的格子——52% 会把 24～31em 的表摊在半幅版心上，标签与数值又被
-   拉开。改回内容宽：表格盒 width:auto 即收缩到内容，右边整幅留给下一页的参考段带。 */
-.lbx-doc.rp-doc.e2-doc > .lbx-doc-main { width: auto; max-width: 36em; padding-right: 0; }
-/* 参考段带另起一页：它铺满整幅、与上面「主表 ‖ 图」是两件事，挤在同一页的下半截既排不开
-   （多栏只灌到半页高就被截断）又难读。内容与次序不变，只是多一个页界。 */
-.lbx-doc.rp-doc > .lbx-doc-ref { display: block; margin-top: 6pt; break-before: page; }
-/* 参考段带：column-fill 默认 balance —— 在分页里它会先把内容摊平到「本页剩余高度」再换页，
-   于是每页都只用掉一小半。改 auto 让它逐栏灌满：第一栏到页底、再第二栏，翻页处不留空。 */
-.lbx-doc.rp-doc > .lbx-doc-ref .wf { column-fill: auto; height: auto; }
-/* ★ 只有参考段不许被拦腰截断。级联主段是一整张四十余行的手算单，本来就比一页高——
-   给它 break-inside:avoid 的后果是 Chromium 先把它整段挪到下一页（还是放不下）再溢出，
-   于是详情章的第一页只剩一个标题、白白空掉一整页（实测每条链路 5 页，其中一页几乎全白）。
-   放开后它顺着页面自然流，一条链路回到 2～3 页。 */
-.lbx-doc.rp-doc > .lbx-doc-ref .wf-seg { break-inside: avoid; }
-.lbx-doc.rp-doc > .lbx-doc-main .wf-seg { break-inside: auto; }
-.lbx-doc.rp-doc .wf-row { line-height: 1.38; break-inside: avoid; }
-.rp-detail-hd { break-after: avoid; }
-/* 分节详情：模块名一行（真 h2，进书签）压在该模块第一条链路的页眉之上 */
-.rp-detail-sec { margin: 0 0 8pt; padding-bottom: 3pt; border-bottom: 0.75pt solid var(--rp-rule); color: #333; }
-.rp-fig { margin: 0 0 10pt; break-inside: avoid; }
-/* 限高：地理场图是锁死 1°:1° 的正方（见 LbSurfacePlot 的 plotBox），按栏宽满铺会有 470 px 高，
-   与链路视图叠起来超过横向 A4 的版心高度，第二张图就被挤到下一页。限到 82 mm 后两张同页。 */
-.rp-fig img {
-  display: block; margin: 0 auto; width: auto; height: auto;
-  max-width: 100%; max-height: 82mm; border: .5pt solid #d8d8d3;
-}
-/* 图题注：模板 图号格式 —— 黑体 10.5pt 居中，图在上、题注在下 */
-.rp-fig figcaption {
-  margin-top: 3pt; font-family: var(--rp-font-head); font-size: var(--rp-fs-cap);
-  font-weight: 400; text-align: center; color: #1a1a1a;
-}
-.rp-fail { font-size: 12pt; color: #a32d2d; margin-top: 10pt; }
-
-/* 详情章开头的输入参数：与 Excel 详情表同一个形态（每块竖排三列：参数 / 数值 / 单位），
-   块按栏流铺开。★ 两栏而不是三栏：横向页 253mm 分三栏后每栏只剩 78mm，参数名要折两行、
-   字号被迫压到 9pt——与级联表一样难读。两栏每栏 120mm，字号回到 10pt，参数名一行放得下。 */
-.rp-inputs { columns: 2; column-gap: 10mm; column-fill: auto; }
-.rp-inputs > * { break-inside: avoid; }
-.rp-inputs .rp-caption { text-align: left; margin-top: 0; }
-.rp-inputs .rp-tb { font-size: 10pt; }
-/* 窄表里「单 位」表头不许折成两行 */
-.rp-inputs .rp-tb th { white-space: nowrap; }
-.rp-inputs .rp-tb td.unit, .rp-inputs .rp-tb th.unit { width: 18%; }
-/* 结果小标题：与输入之间断开一页，结果页就是屏幕上那一版（表 ‖ 图 + 参考段带） */
-.rp-h3.rp-results { break-before: page; }
-/* SLA 建议（逐链路明细，接在级联表之后）：不另起页——它只有十几行，独占一整张横向页太空。
-   条款列与依据列各占三成（依据是「99.90 × 99.90 = 99.80」这类算式，比数值列长）。 */
-.rp-h3.rp-sla-h { margin-top: 6mm; break-before: auto; }
-.rp-sla { max-width: 190mm; }
-.rp-sla .lbl { width: 26%; }
-.rp-sla td.num:first-of-type, .rp-sla th.num:first-of-type { width: 30%; color: #333; }
+/* Satmaster HTML typography; dense working tables and continuous pagination. */
+@page { size: A4 portrait; margin: 16mm 15mm 14mm; }
+@page land { size: A4 landscape; margin: 16mm 15mm 14mm; }
+:root { --rp-font-body: Verdana, Arial, "Microsoft YaHei", "SimSun", sans-serif; --rp-font-head: Arial, "Microsoft YaHei", "SimHei", sans-serif;
+  --rp-navy: #000080; --rp-ink: #17212b; --rp-muted: #536172; --rp-rule: #c8ced7; --rp-fs: 9.3pt; --rp-fs-cap: 9.2pt; }
+html, body { background: white; }
+body { margin: 0; color: var(--rp-ink); font: var(--rp-fs)/1.15 var(--rp-font-body); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.rp, .rp * { box-sizing: border-box; }
+.rp-land, .rp-land * { page: land; }
+.rp-title, .rp-h1, .rp-h2, .rp-h3, .rp-caption, .rp-detail-name { font-family: var(--rp-font-head); color: var(--rp-navy); break-after: avoid; }
+.rp-title, .rp-h1, .rp-h2 { font-size: 11pt; font-weight: 700; font-style: italic; margin: 2.2mm 0 .9mm; }
+.rp-h3, .rp-caption { font-size: 9.8pt; font-weight: 700; font-style: italic; margin: 1.8mm 0 .7mm; }
+.rp-cv-title { font: italic 700 16pt/1.15 var(--rp-font-head); color: var(--rp-navy); margin: 0 0 1.5mm; }
+.rp-opening { margin-bottom: 2mm; }
+.rp-origin, .rp-note { margin: .6mm 0 1.3mm; font-size: 8.3pt; line-height: 1.2; color: var(--rp-muted); overflow-wrap: anywhere; }
+.rp-solution-intro { margin: 1mm 0 1.5mm; line-height: 1.35; overflow-wrap: anywhere; }
+.rp-overview-line { margin: 1.4mm 0 2mm; padding: 1mm 0; font-size: 9pt; border-top: .5pt solid var(--rp-navy); border-bottom: .5pt solid var(--rp-rule); }
+.rp-tb { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--rp-fs-cap); line-height: 1.12; margin: .8mm 0 1.8mm; }
+.rp-tb th, .rp-tb td { vertical-align: middle; padding: .22mm 1.1mm; border-bottom: .3pt solid #e2e6ec; overflow-wrap: anywhere; white-space: pre-line; }
+.rp-tb thead { display: table-header-group; }
+.rp-tb thead th { color: var(--rp-navy); border-bottom: .65pt solid var(--rp-navy); font-weight: 700; font-style: italic; background: #f6f7fa; padding-top: .5mm; padding-bottom: .5mm; }
+.rp-tb tr, .rp-budget-table tr { break-inside: avoid; }
+.rp-tb .lbl, .rp-tb .id { text-align: left; }
+.rp-tb .num, .rp-budget-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.rp-tb .unit { text-align: left; }
+.rp-keep-rows { break-inside: avoid; }
+.rp-tb .rp-grp td, .rp-tb .rp-key td { font-weight: 700; color: var(--rp-navy); border-top: .5pt solid var(--rp-rule); }
+.rp-tb .rp-grp td { background: #eef1f6; text-align: left; }
+.rp-detail { margin-top: 3mm; }
+.rp-detail-name { font-size: 11.5pt; font-style: italic; font-weight: 700; padding: .7mm 0; margin: 2.5mm 0 1mm; border-bottom: .7pt solid var(--rp-navy); }
+.rp-fail { color: #9d2330; margin: 1mm 0 2mm; font-size: 9pt; }
+.rp-budget-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 9.3pt; line-height: 1.1; margin: 1mm 0 1.7mm; }
+.rp-budget-table thead { display: table-header-group; }
+.rp-budget-table th, .rp-budget-table td { padding: .16mm 1mm; vertical-align: middle; border: none; overflow-wrap: anywhere; }
+.rp-budget-table thead th { color: var(--rp-navy); font-family: var(--rp-font-head); font-weight: 700; font-style: italic; border-bottom: .6pt solid #8b9ab7; padding-top: .5mm; padding-bottom: .65mm; }
+.rp-budget-heading h3 { margin: 0; font: italic 700 10pt/1.1 var(--rp-font-head); }
+.rp-budget-table .rp-budget-heading, .rp-budget-table .lbl { padding-left: 0; text-align: left; }
+.rp-budget-table .unit { text-align: left; padding-left: 1.5mm; color: #46556c; }
+.rp-budget-table td { border-bottom: .25pt solid #edf0f5; }
+.rp-budget-subgroup th { text-align: left; color: var(--rp-navy); background: #f2f4f8; font-weight: 700; }
+.rp-budget-key td { font-weight: 600; }
+.rp-budget-margin td { font-weight: 700; background: #f0f3f8; border-top: .5pt solid #91a2be; }
+.rp-budget-sign { display: inline-block; min-width: .8em; }
+.rp-negative { color: #9d2330; }
+.rp-figure-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm; align-items: start; }
+.rp-fig { margin: 1mm 0 2mm; break-inside: avoid; }
+.rp-fig img { display: block; margin: auto; max-width: 100%; max-height: 75mm; }
+.rp-fig figcaption { font-size: 8pt; margin-top: .8mm; }
+.rp-solution-figure { text-align: center; }
+.rp-solution-figure img { width: 100%; height: auto; max-height: none; }
+.rp-compact { margin: 0; }
+.rp-compact .rp-tb { font-size: 10pt; line-height: 1.12; }
+.rp-compact .rp-tb td, .rp-compact .rp-tb th { padding-top: .45mm; padding-bottom: .45mm; }
+.rp-compact-meta { margin: .7mm 0 2mm; font-size: 9pt; line-height: 1.25; }
+.rp-compact-meta span { display: inline; margin-right: 4mm; }
+@media screen { body { background: #e9edf3; padding: 8mm; } .rp { max-width: 240mm; margin: auto; background: white; padding: 12mm 15mm; } }

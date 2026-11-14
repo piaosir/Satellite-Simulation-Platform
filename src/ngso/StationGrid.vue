@@ -1999,9 +1999,8 @@ function clearColContents() {
 .sg-v { display: block; padding: 2.5px 6px; min-width: 76px; min-height: 19px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; }
 .sg-kw .sg-v { min-width: 78px; }
 .sg-v.mono { font-family: var(--font-mono); }
-/* 留空单元格「浅显示」默认值（占位提示，非真实输入）：单用 --text-faint，与全局 ::placeholder（controls.css）、
-   资源库表单占位、E2E 以库值作占位同一种呈现——不再叠 opacity（叠了就比另两处淡一档） */
-.sg-v.ph { color: var(--text-faint); }
+/* 留空默认值与表单占位、编辑态统一使用预算提示色，不叠加透明度。 */
+.sg-v.ph { color: var(--lb-placeholder, var(--text-faint)); }
 /* 行内尾标（如「地球站配置」名之后的实时功放功率）：跟在值后同一行，与第二行小字同一档字号/色阶——
    读数性质相同（都是随输入实时回填的算出量），只是一个贴在名后、一个另起一行。 */
 .sg-tag { margin-left: 6px; font-style: normal; font-size: max(10px, calc(var(--lb-fs, 11px) - 2px)); color: var(--text-faint); }
@@ -2021,7 +2020,7 @@ function clearColContents() {
 .sg-cap.mono { font-family: var(--font-mono); }
 .sg-cap:focus { outline: none; }
 .sg-cap.editing { background: var(--surface); color: var(--text); caret-color: var(--text); pointer-events: auto; z-index: 5; }
-.sg-cap.editing::placeholder { color: var(--text-faint); opacity: 1; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
+.sg-cap.editing::placeholder { color: var(--lb-placeholder, var(--text-faint)); opacity: 1; }   /* 编辑空格时输入框内仍浅显默认值，键入即消 */
 .sg-act { position: sticky; right: 0; z-index: 2; white-space: nowrap; padding: 0 4px; text-align: center; width: 86px; min-width: 86px; }
 .sg-tbl thead th.sg-act { z-index: 5; }
 .sg-mini { font: inherit; font-size: var(--fs-2); padding: 2px 6px; margin: 2px 1px; cursor: pointer; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--r-ctl, 2px); }

@@ -17,6 +17,7 @@ const {
   autofitBook, RSTY, FNT, CJK, HEI, TITLE
 } = require('./report')
 const { fontsOf } = require('./reportStyle')   // 这份报告实际用的字体（导出报告对话框「字体」，缺省即模板口径）
+const { numericReading, addCompactReferenceSheet, finishEngineeringWorkbook } = require('./reportEngineering')
 
 const S = (v) => (v == null || v === '' ? '—' : String(v))
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
@@ -36,12 +37,11 @@ function sheetWriter(wb, ws, model, ncol) {
     c.alignment = { horizontal: align || 'left', vertical: 'middle', wrapText: !!o.wrap }
     return c
   }
-  // ★ 右对齐的格子按【字符串】写，不转成数值：这些值是 lbSla 已按单位档格式化好的读数
-  //   （「99.800」「52.6」），转成数值 Excel 会把 99.800 显示成 99.8，与全报告同表（report.js 走 str）
-  //   不一致。西文字体照旧由末尾的 applyBookFont 拆。
+  // Numeric readings remain sortable/calculable; numFmt preserves the exact
+  // displayed decimal precision in the report snapshot.
   const numCell = (row, col, v) => {
     const c = ws.getCell(row, col)
-    c.value = v == null ? '' : String(v)
+    numericReading(c, v)
     c.font = { name: FNT, size: RSTY.size.table }
     c.alignment = { horizontal: 'right', vertical: 'middle' }
     return c
@@ -144,7 +144,9 @@ function defsSheet(wb, model) {
   const ex = model.exclusions || []
   if (ex.length) {
     W.section(L.slaExcl)
+    const start = W.st.r - 1
     for (const s of ex) W.wide('· ' + s, 'left', { size: RSTY.size.table })
+    ws._engineeringKeep = [[start, W.st.r - 1]]
   }
   return ncol
 }
@@ -190,6 +192,7 @@ function linkSheet(wb, model, link, name) {
     ].filter((c) => sc.rows.some((r) => num(r[c.k]) !== null))
     const wrapUnit = (u) => (model.lang === 'en' ? ' (' + u + ')' : '（' + u + '）')
     W.st.r++
+    const tierStart = W.st.r
     W.cap(link.no + '-2', L.slaTiers)
     W.box(COLS.map((c) => c.label + wrapUnit(c.unit)),
       sc.rows.map((r) => COLS.map((c) => {
@@ -197,6 +200,10 @@ function linkSheet(wb, model, link, name) {
         if (v === null) return '—'
         return c.k === 'tier' ? (v % 1 ? v.toFixed(2) : v.toFixed(0)) : v.toFixed(c.dec)
       })), { align: COLS.map(() => 'right') })
+    ws._engineeringKeep = [[tierStart, W.st.r - 1]]
+    // On the tier page the new caption/column headers describe the table;
+    // repeat only the link identity, not the previous table's SLA caption.
+    ws._engineeringPrintTitles = '1:1'
   }
 
   // 日凌预计窗口
@@ -257,17 +264,12 @@ async function build(model) {
   wb.title = (model.doc && model.doc.title) || L.sla
   wb.created = new Date()
 
-  const widths = []
-  widths.push(masterSheet(wb, model))
-  widths.push(defsSheet(wb, model))
-  const used = {}
-  for (const l of links) widths.push(linkSheet(wb, model, l, sheetNameFor(l, used)))
-  widths.push(refsSheet(wb, model))
-
-  // ★ 先 autofit（列宽定下来）再贴 logo：版心右边界要按最终列宽算
-  autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
-  wb.worksheets.forEach((ws, i) => placeLogo(wb, ws, (model.doc || {}).logo, widths[i] || 6))
-  return applyBookFont(wb, fontsOf(model.doc)).xlsx.writeBuffer()
+  // A customer commitment brief has one view of effective values. Formulae,
+  // suggested values, scans and method sheets do not belong in the deliverable.
+  addCompactReferenceSheet(wb, { ...model, kind: 'sla' })
+  finishEngineeringWorkbook(wb, model)
+  wb.worksheets.forEach((ws) => placeLogo(wb, ws, (model.doc || {}).logo, Math.max(1, ws.actualColumnCount || ws.columnCount || 1)))
+  return wb.xlsx.writeBuffer()
 }
 
 module.exports = { buildSlaWorkbook: build }

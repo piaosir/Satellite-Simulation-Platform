@@ -163,6 +163,20 @@ export function pinReportTitle(stored, autoTitle, title) {
 // （只有「设置功放功率 / 设置工作点」方式才带；设置余量时功放是反解出来的，opt 里没有，这一行自然不出）
 const OP_KEYS = { paPowerW: 'powerW', opPowerW: 'powerW' }
 
+// 引擎应用默认值之后的快照才是报告的取值源。保留求解选项和引擎不消费的
+// 元信息；不要在报告里按 schema.def 再推一遍默认值（频段、极化等会影响它）。
+export function reportInputParams(params, effectiveInputs) {
+  if (!effectiveInputs) return params
+  return {
+    satParams: { ...(params?.satParams || {}), ...(effectiveInputs.satParams || {}) },
+    linkParams: { ...(params?.linkParams || {}), ...(effectiveInputs.linkParams || {}),
+      // 再生式内部借用弯管功率求解器，其内部余量不同于用户设置的目标。
+      ...(effectiveInputs.targetMargin !== undefined ? { margin: effectiveInputs.targetMargin } : {}) },
+    opt: { ...(params?.opt || {}), ...(effectiveInputs.overDb !== undefined ? { overDb: effectiveInputs.overDb } : {}) },
+    effective: true
+  }
+}
+
 function fieldValue(f, params, side) {
   const { satParams = {}, linkParams = {}, opt = {} } = params || {}
   if (f.target === 'op') { const k = OP_KEYS[f.key]; return k ? opt[k] : undefined }
@@ -201,7 +215,10 @@ function digestRows(fields, params, side, t) {
     if (emptyVal(v)) continue
     const s = displayValue(f, v, t)
     if (emptyVal(s)) continue
-    rows.push({ label: t(f.label), value: s, unit: f.unit || '' })
+    // buildParams 已把 G/Tref 合入 sfdRef；快照中的值是引擎有效参考值，
+    // 明确标注，避免拿报告复算时重复加上 G/Tref。
+    const label = params?.effective && f.key === 'sfdRef' ? 'SFDref（有效）' : f.label
+    rows.push({ label: t(label), value: s, unit: f.unit || '' })
   }
   return rows
 }
@@ -244,6 +261,7 @@ export function calcBlock(calc, lang) {
 // 与 shared/lbDocI18n.js 同一套办法：中文原文为键、未命中原样返回。分成两份是因为这一份
 // 只在导出报告时用得着，混进「详细预算」那份会让那份字典的用途糊掉。
 export const LB_REPORT_EN = {
+  'SFDref（有效）': 'Effective SFDref',
   // 报告结构
   '链路预算报告': 'Link Budget Report', '总报告': 'Master Report', '目录': 'Contents',
   '报告说明': 'Scope & Basis', '场景与假设': 'Scenario & Assumptions', '链路清单': 'Link Schedule',

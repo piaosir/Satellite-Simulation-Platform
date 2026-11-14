@@ -733,8 +733,12 @@ function solveAccessWindows(opts) {
 
   const stat = staticElements(satrec);
   const t0 = opts.t0ISO ? new Date(opts.t0ISO) : anchorDate(satrec);
-  const clip = ephemSpanClip(satrec, t0.getTime(), t0.getTime() + horizonHours * 3600000);
+  const searchStart = t0.getTime(), searchEnd = searchStart + horizonHours * 3600000;
+  const accessOverlays = orbitPos.overlaysOf(satrec);
+  const spans = access.accessSpans(satrec, accessOverlays, searchStart, searchEnd);
+  const clip = spans ? { startMs: searchStart, endMs: searchEnd } : ephemSpanClip(satrec, searchStart, searchEnd);
   if (clip.reason) return { feasible: false, method, reason: clip.reason, windows: [] };
+  if (spans && !spans.length) return { feasible: false, method, reason: '星历有效弧段与分析时段不重叠', windows: [] };
   // 卫星地固系状态（km、km/s）：取位走平台权威入口 orbitPos（SGP4 / 星历点序列 / 叠加星历）
   const stateAt = (tMs, s) => {
     const pv = propagateAt(satrec, tMs);
@@ -744,12 +748,12 @@ function solveAccessWindows(opts) {
   };
   // 仰角变化率上界用的卫星速度上界：本体与叠加星历取大
   let vSat = access.satSpeedBound(satrec);
-  const ovl = satrec && !satrec.__ephem ? orbitPos.overlaysOf(satrec) : null;
+  const ovl = accessOverlays;
   if (ovl) for (const tab of ovl) vSat = Math.max(vSat, access.satSpeedBound(tab));
   // 周期估不出（星历表凑不出两次升交点）时按绕地最小周期算 —— 粗步 Δ 对周期单调增，取下界即最细
   const acc = access.elevWindows({
     stateAt, obs: [access.observerOf(station.latDeg, station.lonDeg, station.altKm)], thrDeg: minEl,
-    t0: clip.startMs, t1: clip.endMs, periodMin: stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN, vSat
+    t0: clip.startMs, t1: clip.endMs, periodMin: stat.periodMin > 0 ? stat.periodMin : MIN_ORBIT_PERIOD_MIN, vSat, spans
   });
   const windows = acc.windows.map((w) => {
     const peakLa = lookAngles(satrec, station, new Date(w.peakMs));

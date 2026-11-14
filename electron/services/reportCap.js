@@ -10,6 +10,7 @@
 const ExcelJS = require('exceljs')
 const { applyBookFont, placeLogo, bookBox, autofitBook, RSTY, FNT, CJK, HEI, TITLE } = require('./report')
 const { fontsOf } = require('./reportStyle')
+const { addCompactReferenceSheet, finishEngineeringWorkbook } = require('./reportEngineering')
 
 const NUM_RE = /^-?\d+(\.\d+)?$/
 
@@ -146,12 +147,10 @@ async function build(model) {
   wb.creator = (model.doc && model.doc.org) || (model.lang === 'en' ? 'Satellite Link Budget Workbench' : '卫星链路预算工作台')
   wb.title = (model.doc && model.doc.title) || L.capReport
   wb.created = new Date()
-  model.__tblNo = 0
-  const widths = [masterSheet(wb, model), detailSheet(wb, model), defsSheet(wb, model)]
-  // ★ 先 autofit（列宽定下来）再贴 logo：版心右边界要按最终列宽算
-  autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
-  wb.worksheets.forEach((ws, i) => placeLogo(wb, ws, (model.doc || {}).logo, widths[i] || 4))
-  return applyBookFont(wb, fontsOf(model.doc)).xlsx.writeBuffer()
+  addCompactReferenceSheet(wb, { ...model, kind: 'cap' })
+  finishEngineeringWorkbook(wb, model)
+  wb.worksheets.forEach((ws) => placeLogo(wb, ws, (model.doc || {}).logo, Math.max(1, ws.actualColumnCount || ws.columnCount || 1)))
+  return wb.xlsx.writeBuffer()
 }
 
 module.exports = { buildCapWorkbook: build, capGroupTitle: groupTitle }

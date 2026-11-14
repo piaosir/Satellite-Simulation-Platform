@@ -24,6 +24,7 @@ const JSZip = require('jszip')
 const report = require(ROOT + '/electron/services/report.js')
 const { buildReportDocx } = require(ROOT + '/electron/services/reportDocx.js')
 const { buildReportModel, labelBundle, schemeOf, methodology, regenModeName, regenModeShort } = await import('file:///' + ROOT + '/src/shared/lbReport.js')
+const { buildCapModel, capReportBlock } = await import('file:///' + ROOT + '/src/shared/lbCapacity.js')
 
 // —— ① schemeOf ——
 {
@@ -120,26 +121,25 @@ function makeModel(lang = 'zh', sections = [{ key: 'uplink', regenMode: 'uplink'
   const buf = await report.buildReportWorkbook(m)
   const wb = new ExcelJS.Workbook(); await wb.xlsx.load(buf)
   const names = wb.worksheets.map((ws) => ws.name)
-  assert.ok(names.includes('几何关系 · 上行'), '上行那节一张几何表：' + names.join(','))
-  assert.ok(!names.includes('几何关系'), '分节时不再有不带模块名的几何表')
+  assert.equal(names.length, 3, '总览加每模块一张Link_result工程矩阵：' + names.join(','))
+  assert.equal(names[0], '总览', '先展示与Word主要结果同源的总览')
+  assert.ok(names.slice(1).every((name) => name.startsWith('Link_result')), '保留各模块工程矩阵')
   // 星间那节是手动几何（没有 islGeo）→ 整张表不出（与改版前口径一致）
   assert.ok(!names.some((n) => n.startsWith('几何关系 · 星间')))
   const textOf = (v) => (v && typeof v === 'object' && Array.isArray(v.richText)) ? v.richText.map((t) => t.text).join('') : String(v == null ? '' : v)
-  const master = wb.worksheets[0]
+  const master = wb.worksheets[1]
   const cells = []
-  master.eachRow((row) => row.eachCell((c) => cells.push(textOf(c.value))))
-  assert.ok(cells.includes('1.1　上行（地球站 → 卫星）') && cells.includes('1.2　星间微波链路'), '总报告 §1 按模块分小节')
-  assert.ok(cells.some((t) => t.startsWith('表 1　逐参数对照　·　上行')) && cells.some((t) => t.startsWith('表 2　逐参数对照　·　星间微波链路')), '表号连续、题注带模块名')
-  const detail = wb.worksheets.find((ws) => ws.name.startsWith('#3'))
+  wb.eachSheet((sheet) => sheet.eachRow((row) => row.eachCell((c) => cells.push(textOf(c.value)))))
+  assert.ok(cells.some((t) => t.includes('上行（地球站 → 卫星）')) && cells.some((t) => t.includes('星间微波链路')), '矩阵元信息保留所属模块')
+  const detail = wb.worksheets[2]
   const dcells = []; detail.eachRow((row) => row.eachCell((c) => dcells.push(textOf(c.value))))
   assert.ok(dcells.some((t) => t.includes('星间微波链路')), '详情表副标题带所属模块')
 
   const dbuf = await buildReportDocx(m)
   const zip = await JSZip.loadAsync(dbuf)
   const xml = await zip.file('word/document.xml').async('string')
-  assert.ok(xml.includes('1.1　上行（地球站 → 卫星）') && xml.includes('1.2　星间微波链路'), 'Word §1 模块小节')
-  assert.ok(xml.includes('2.1　上行（地球站 → 卫星）'), 'Word §2 只有有统计的节')
-  assert.ok(xml.includes('#3　SAT-A → SAT-B'), 'Word 详情章有第三条链路')
+  assert.ok(xml.includes('上行（地球站 → 卫星）') && xml.includes('星间微波链路'), 'Word合同版保留各模块标题')
+  assert.ok(xml.includes('#3 SAT-A → SAT-B'), 'Word详情包含第三条真实链路')
 }
 
 // —— ⑥ 列头走段自带的 heads（Excel / Word，中英两版）——
@@ -170,20 +170,74 @@ function makeModel(lang = 'zh', sections = [{ key: 'uplink', regenMode: 'uplink'
     const [P, U, UP, DN] = lang === 'en' ? ['Parameter', 'Unit', 'Uplink', 'Downlink'] : ['参数', '单位', '上行', '下行']
     // Excel 详情表：段题注下面那一行就是列头
     const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await report.buildReportWorkbook(model))
-    const ws = wb.worksheets.find((x) => x.name.startsWith('#1'))
+    const ws = wb.worksheets.find((x) => x.name.startsWith('Link_result'))
     const rows = []; ws.eachRow((row, rn) => { const a = []; row.eachCell({ includeEmpty: true }, (c, cn) => { a[cn - 1] = textOf(c.value) }); rows[rn] = a })
     for (const [id, h] of [['weather', heads[0]], ['segments', heads[1]]]) {
       const seg = segs.find((s) => s.id === id)
       const capAt = rows.findIndex((a) => a && a[0] === '§' + seg.no + '  ' + seg.title)
       assert.ok(capAt > 0, `${lang} Excel：找得到「${seg.title}」的段题注`)
-      assert.deepEqual(rows[capAt + 1].slice(0, 4), [P, ...h, U], `${lang} Excel「${seg.title}」列头走 seg.heads：` + JSON.stringify(rows[capAt + 1]))
+      const blockRows = rows.slice(capAt + 1).filter(Boolean)
+      for (const condition of h) assert.ok(blockRows.some((row) => row[0]?.endsWith(' · ' + condition)), `${lang} Excel保留真实工况「${condition}」`)
     }
     // 级联主段（三列、不带 heads）照旧「上行 / 下行 / 合计」
-    assert.ok(rows.some((a) => a && a[0] === P && a[1] === UP && a[2] === DN), `${lang} Excel：无 heads 的段照旧上行 / 下行`)
+    assert.ok(rows.some((a) => a && a[0]?.endsWith(' · ' + UP)) && rows.some((a) => a && a[0]?.endsWith(' · ' + DN)), `${lang} Excel：无 heads 的段照旧区分上行 / 下行`)
     // Word：列头文字进了正文，英文版这两张表里没有中文列头
     const xml = await (await JSZip.loadAsync(await buildReportDocx(model))).file('word/document.xml').async('string')
     for (const h of heads.flat()) assert.ok(xml.includes('>' + h + '<'), `${lang} Word 列头「${h}」`)
     if (lang === 'en') for (const zh of ['晴空', '降雨', '段余量']) assert.ok(!xml.includes('>' + zh + '<'), `en Word 不许有中文列头「${zh}」`)
+  }
+}
+
+// Capacity is indexed by section: optical links intentionally contribute null.
+// Put laser before RF ISL so skipping its absent table cannot shift RF ownership.
+for (const lang of ['zh', 'en']) {
+  const modes = ['uplink', 'downlink', 'laser', 'isl']
+  const capacity = modes.map((mode, index) => capReportBlock(mode === 'laser' ? null : buildCapModel([{
+    no: index + 1, rowId: 'r' + (index + 1), name: mode, ok: true,
+    gkey: mode, gname: 'CAP-' + mode, capKbps: 1000 * (index + 1), bwKHz: 500 * (index + 1)
+  }], null, { pbw: 'none', availDefault: false }), { lang, noOf: () => index + 1 }))
+  const mixedModel = (selectedModes, blocks) => {
+    const model = buildReportModel({
+      lang, orbitType: 'REGEN', sections: selectedModes.map((key) => ({ key, regenMode: key })), capacity: blocks,
+      links: selectedModes.map((mode, index) => ({
+        ...L(index + 1, index, mode, mode === 'laser' ? { laserDistResult: '4200', laserPrxResult: '-35', linkmargin: '7' } : UP),
+        segments: [{ ...seg, rows: [{ label: 'Result ' + mode, up: String(index + 1), unit: 'dB', num: index + 1 }] }]
+      }))
+    })
+    report.enrichReportModel(model)
+    return model
+  }
+  const model = mixedModel(modes, capacity)
+  assert.equal(model.capacity.length, 4, 'Absent capacity preserves section indices')
+  assert.equal(model.capacity[2], null, 'Optical links have no RF capacity block')
+  assert.equal(model.sections[2].summary.cap, null)
+  assert.equal(model.sections[3].summary.cap.head[1], 'CAP-isl', 'Capacity remains attached to RF ISL after optical section')
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.load(await report.buildReportWorkbook(model))
+  assert.equal(wb.worksheets.length, 5, 'Overview and all four module matrices export successfully')
+  const valuesOf = (sheet) => {
+    const values = []
+    sheet.eachRow((row) => row.eachCell((cell) => values.push(String(cell.value == null ? '' : cell.value))))
+    return values
+  }
+  modes.forEach((mode, index) => {
+    const ws = wb.worksheets[index + 1], values = valuesOf(ws)
+    assert.ok(String(ws.getCell('C5').value).startsWith('#' + (index + 1) + ' '), 'Global link number survives for ' + mode)
+    assert.ok(values.includes('Result ' + mode), 'The ' + mode + ' budget remains in its matrix')
+    let reading
+    ws.eachRow((row) => { if (row.getCell(1).value === 'Result ' + mode) reading = row.getCell(3).value })
+    assert.equal(reading, index + 1, 'The ' + mode + ' budget reading retains its numeric value')
+  })
+  const firstValues = valuesOf(wb.worksheets[1])
+  for (const mode of modes.filter((mode) => mode !== 'laser')) assert.ok(firstValues.includes('CAP-' + mode), 'Valid capacity table survives for ' + mode)
+  assert.ok(!valuesOf(wb.worksheets[3]).some((value) => /^CAP-/.test(value)), 'Optical matrix gains no fabricated RF capacity table')
+
+  // No included capacity links and an optical-only report are both valid exports.
+  for (const selectedModes of [modes, ['laser']]) {
+    const empty = mixedModel(selectedModes, selectedModes.map(() => null))
+    assert.ok(empty.sections.every((section) => section.summary.cap === null))
+    const book = new ExcelJS.Workbook(); await book.xlsx.load(await report.buildReportWorkbook(empty))
+    assert.equal(book.worksheets.length, selectedModes.length + 1)
+    assert.ok(book.worksheets.every((sheet) => !valuesOf(sheet).some((value) => /^CAP-/.test(value))))
   }
 }
 

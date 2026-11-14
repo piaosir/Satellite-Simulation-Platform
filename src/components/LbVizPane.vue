@@ -9,12 +9,12 @@
 // 雨衰与余量，三线表里逐行都列着）。留下的两张竖排，各自答一个表答不了的问题：
 //   地理  站址经纬度铺成平面 + 世界地图底图——这条链路搬到哪儿还成立；
 //   链路  3D 地球上的站-星几何——「仰角 3.2°」是个数，卫星贴着地平线是张图。
-import { ref } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import LbSpacePane from './LbSpacePane.vue'
 import LbLinkPane from './LbLinkPane.vue'
 
 const emit = defineEmits(['exported'])   // 两张图「出图」成功的回执（msg, path）原样上交宿主窗口
-defineProps({
+const props = defineProps({
   engine: { type: String, default: 'geo' },
   params: { type: Object, default: null },
   sweep2D: { type: Function, default: null },
@@ -43,21 +43,38 @@ defineProps({
 const geoRef = ref(null)
 const linkRef = ref(null)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const captureLang = ref('')
+const figureLang = computed(() => captureLang.value || props.lang)
+const captureScene = computed(() => {
+  const scene = props.linkScene
+  if (captureLang.value !== 'en' || !scene || !Array.isArray(scene.nodes)) return scene
+  // 只翻译程序的缺省角色名；客户的站名、卫星名保持原样。
+  const roles = { '发信站': 'Tx station', '收信站': 'Rx station', '卫星': 'Satellite', '发射星': 'Tx satellite', '接收星': 'Rx satellite' }
+  return { ...scene, nodes: scene.nodes.map((n) => ({ ...n, name: roles[n.name] || n.name })) }
+})
 
 async function captureFigures(o) {
-  const { scale = 4, timeoutMs = 120000 } = o || {}
-  const panes = [geoRef.value, linkRef.value].filter(Boolean)
-  for (const p of panes) { try { p.flush() } catch (e) { /* 该图不支持立刻重算即可 */ } }
-  const t0 = Date.now()
-  while (panes.some((p) => !p.ready) && Date.now() - t0 < timeoutMs) await sleep(80)
-  const out = []
-  for (const p of panes) {
-    if (!p.hasFigure) continue
-    let url = ''
-    try { url = await p.pngDataUrl(scale) } catch (e) { url = '' }
-    if (url) out.push({ title: p.figTitle, dataUrl: url })
+  const { scale = 4, timeoutMs = 120000, lang } = o || {}
+  const keepLang = captureLang.value
+  captureLang.value = lang === 'zh' || lang === 'en' ? lang : props.lang
+  try {
+    await nextTick()
+    const panes = [geoRef.value, linkRef.value].filter(Boolean)
+    for (const p of panes) { try { p.flush() } catch (e) { /* 该图不支持立刻重算即可 */ } }
+    const t0 = Date.now()
+    while (panes.some((p) => !p.ready) && Date.now() - t0 < timeoutMs) await sleep(80)
+    const out = []
+    for (const p of panes) {
+      if (!p.hasFigure) continue
+      let url = ''
+      try { url = await p.pngDataUrl(scale) } catch (e) { url = '' }
+      if (url) out.push({ title: p.figTitle, dataUrl: url })
+    }
+    return out
+  } finally {
+    captureLang.value = keepLang
+    await nextTick()
   }
-  return out
 }
 defineExpose({ captureFigures })
 </script>
@@ -70,10 +87,10 @@ defineExpose({ captureFigures })
          本就被取景甩到画面横向（见 lbglobe 的 frame），扁画幅正合它的形状。
          plot-height 只是「非地理图」的图框高，地理图不走它 -->
     <LbSpacePane v-if="showGeo" ref="geoRef" :engine="engine" :params="params" :sweep2D="sweep2D"
-      :output-defs="outputDefs" :store-key="storeKey" :lang="lang" :unavailable="sweepUnavailable"
-      :fixed-site="geoSite" :scene="linkScene" :geo-link="geoLink" :plot-height="320"
+      :output-defs="outputDefs" :store-key="storeKey" :lang="figureLang" :unavailable="sweepUnavailable"
+      :fixed-site="geoSite" :scene="captureScene" :geo-link="geoLink" :plot-height="320"
       @exported="(m, p) => emit('exported', m, p)" />
-    <LbLinkPane ref="linkRef" :scene="linkScene" :store-key="storeKey" :lang="lang" :height="230"
+    <LbLinkPane ref="linkRef" :scene="captureScene" :store-key="storeKey" :lang="figureLang" :height="230"
       @exported="(m, p) => emit('exported', m, p)" />
   </aside>
 </template>

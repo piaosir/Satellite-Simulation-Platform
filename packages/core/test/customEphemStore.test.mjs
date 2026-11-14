@@ -502,5 +502,21 @@ section('星历组聚焦的数据契约')
   customSats.removeGroup(gEph.id)
 }
 
+section('缺口后的单点段完整存取')
+{
+  const wanted = new Set([0, 60, 120, 3600])
+  const sparse = makeE('TEMEOfDate', 6878.137, 51.6, 61, 60).split('\n')
+    .filter((line) => !/^\d+\./.test(line) || wanted.has(Number(line.split(/\s+/)[0]))).join('\n')
+  const parsed = ephF.parseEphemeris(sparse, 'stk-e')
+  ok(parsed.sats[0].meta.gaps.some((g) => g.split), '解析器确认跨缺口插值不可信并拆段')
+  const imported = customSats.importFile('单点缺口组', sparse)
+  ok(imported.ok && imported.invalid === 0 && imported.dropped === 0, '实际导入接受四个有效点')
+  const pay = customSats.ephemTable(imported.group.id).sats[0], main = customSats.ephemLookup(imported.group.id, pay.key), rt = tableFrom(pay)
+  ok(pay.spans?.length === 2 && pay.sgA[1] === pay.sgB[1], '单点段及缺口落盘、经IPC取回仍保留')
+  ok(ephI.evalTable(main, T0 + 1800000) === null && evalRt(rt, T0 + 1800000) === null, '主/渲染端在已拆出的缺口中都无状态')
+  ok(ephI.evalTable(main, T0 + 3600000) !== null && evalRt(rt, T0 + 3600000) !== null, '单点段精确采样仍可取到')
+  customSats.removeGroup(imported.group.id)
+}
+
 console.log('\ncustomEphemStore: 通过 ' + pass + '，失败 ' + fail)
 process.exit(fail ? 1 : 0)

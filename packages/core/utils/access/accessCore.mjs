@@ -415,6 +415,35 @@ export function satSpeedBound(o) {
   return Math.sqrt(v2) * 1.05 + 0.05
 }
 
+/**
+ * 访问扫描的连续有效弧段。星历缺口不扫描，叠加表的首尾也分开扫描，避免粗步跨过短表或源切换。
+ * 普通 SGP4 没有叠加时返回 null，完全沿用原来的整段扫描路径；单点段仅是瞬时状态，不产生有时长的窗口。
+ */
+export function accessSpans(o, overlayTables, t0, t1) {
+  const ov = Array.isArray(overlayTables) ? overlayTables : []
+  if (!(o && o.__ephem) && !ov.length) return null
+  if (!(t1 > t0)) return []
+  const ranges = [], cuts = new Set([t0, t1])
+  const add = (a, b) => {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b < t0 || a > t1 || b < a) return
+    a = Math.max(t0, a); b = Math.min(t1, b)
+    ranges.push([a, b]); cuts.add(a); cuts.add(b)
+  }
+  for (const tab of [o, ...ov]) {
+    if (!(tab && tab.__ephem)) continue
+    if (tab.sg && tab.sgA && tab.sgB) {
+      for (let s = 0; s < tab.sgA.length; s++) if (tab.sgA[s] >= 0) add(tab.t[tab.sgA[s]], tab.t[tab.sgB[s]])
+    } else add(tab.t0, tab.t1)
+  }
+  const points = [...cuts].sort((a, b) => a - b), out = []
+  const unlimited = !(o && o.__ephem)
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i], mid = a + (b - a) / 2
+    if (unlimited || ranges.some((r) => mid >= r[0] && mid <= r[1])) out.push([a, b])
+  }
+  return out
+}
+
 // 一颗星（地固系状态 st）对一个观测者 ob 的仰角余量 → s.g[i] / s.gd[i] / s.sf[i]
 //   V = 相对速度上界（km/s），wUp = 观测者天顶方向转动角速率上界（rad/s，移动目标才有）
 function elevInto(st, ob, thr, V, wUp, s, i) {
@@ -445,7 +474,7 @@ function elevInto(st, ob, thr, V, wUp, s, i) {
  *   stateAt(tMs, out) → true/false：卫星地固系位置 / 速度写进 out.{x,y,z,vx,vy,vz}（km、km/s）
  *   obs:[观测者基]（静止目标，observerOf 产物；多点 = 任一点可见即算）| obsAt(tMs) → [观测者基]（移动目标，取第 1 个；可带 vx/vy/vz）
  *   thrDeg, t0, t1（ms）, periodMin（轨道周期，未知可空）, vSat（satSpeedBound）, vObs（移动目标速度上界 km/s，缺省 1.4）
- *   peakTolMs?, edgeTolMs?
+ *   peakTolMs?, edgeTolMs?, spans?:[[startMs,endMs],…]（连续有效弧段，已与分析时段相交）
  * }
  * 返回 { windows:[{ startMs, endMs, peakMs, peakEl(°), truncStart, truncEnd }], evals, budgetHit, minDetectMs }
  */
@@ -474,7 +503,22 @@ export function elevWindows(spec) {
   const P = sp.periodMin > 0 ? sp.periodMin : MIN_PERIOD_MIN
   const stepMinMs = moving ? Math.min(baseStepMs(P), ACCESS_DEFAULTS.moveStepMs) : baseStepMs(P)
   const stepMaxMs = moving ? ACCESS_DEFAULTS.moveStepMs : bigStepMs(P)
-  const r = scanWindows(evalAt, sp.t0, sp.t1, { K, stepMinMs, stepMaxMs, peakTolMs, edgeTolMs: sp.edgeTolMs })
+  const ranges = Array.isArray(sp.spans) ? sp.spans : [[sp.t0, sp.t1]]
+  const r = { windows: [], evals: 0, budgetHit: false }
+  for (const range of ranges) {
+    const a = Math.max(sp.t0, range[0]), b = Math.min(sp.t1, range[1])
+    if (!(b > a)) continue
+    const part = scanWindows(evalAt, a, b, { K, stepMinMs, stepMaxMs, peakTolMs, edgeTolMs: sp.edgeTolMs })
+    for (const w of part.windows) {
+      const last = r.windows[r.windows.length - 1]
+      // 源切换会拆扫描区间，不应拆开持续可见的同一过境；真实缺口即使小于求根容差也不合并。
+      if (last && w.start <= last.end) {
+        if (w.end >= last.end) { last.end = w.end; last.truncEnd = w.truncEnd }
+        if (w.peakG > last.peakG) { last.peakG = w.peakG; last.peakT = w.peakT }
+      } else r.windows.push(w)
+    }
+    r.evals += part.evals; r.budgetHit = r.budgetHit || part.budgetHit
+  }
   return {
     windows: r.windows.map((w) => ({ startMs: w.start, endMs: w.end, peakMs: w.peakT, peakEl: (w.peakG + thr) * R2D, truncStart: w.truncStart, truncEnd: w.truncEnd })),
     evals: r.evals, budgetHit: r.budgetHit, minDetectMs: minDetectMs(peakTolMs)

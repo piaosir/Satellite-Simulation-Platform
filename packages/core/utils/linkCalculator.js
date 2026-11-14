@@ -159,7 +159,7 @@ function toCalcPolarization(display) {
 /**
  * 卫星链路预算计算主函数
  */
-function calculateLinkBudget(satParams, linkParams) {
+function calculateLinkBudget(satParams, linkParams, options) {
   try {
     if (DEBUG_LOG) console.log('收到的参数:', JSON.stringify({ satParams, linkParams }));
 
@@ -171,13 +171,17 @@ function calculateLinkBudget(satParams, linkParams) {
     if (DEBUG_LOG) console.log('参数验证通过，开始计算');
 
     // 执行链路计算 - 使用完整算法
-    const results = performCalculations(satParams, linkParams);
+    let effectiveInputs;
+    const capture = options && options.captureInputs === true
+      ? (value) => { effectiveInputs = value; } : null;
+    const results = performCalculations(satParams, linkParams, capture);
 
     if (DEBUG_LOG) console.log('计算完成，结果:', JSON.stringify(results));
 
     return {
       success: true,
-      data: results
+      data: results,
+      ...(effectiveInputs ? { effectiveInputs } : {})
     };
   } catch (error) {
     console.error('计算错误:', error);
@@ -194,7 +198,7 @@ function calculateLinkBudget(satParams, linkParams) {
 /**
  * 主计算函数 - 严格遵循 index.html 的 performCalculations 算法
  */
-function performCalculations(satParams, inputs) {
+function performCalculations(satParams, inputs, captureInputs) {
   // 数值入参先过严格口径：非法串（「36 MHz」「12,5」「1.2.3」）按留空取该项缺省，全角数字转半角；
   // 合法值原样放行（连对象都不换），下游 parseFloat 读到的仍是同一个串 → 合法输入逐位不变。见 strictNum.js
   satParams = strictNumMod.strictInputs(satParams, strictNumMod.LINK_SAT_NUM_KEYS);
@@ -251,14 +255,16 @@ function performCalculations(satParams, inputs) {
   const earthLat = (inputs.latitude !== '' && inputs.latitude !== null && inputs.latitude !== undefined)
     ? parseFloat(inputs.latitude) : DEFAULT_SITE.lat;
   const antennaDiameter = pickNum(inputs.antennaDiameter, 6.2); // meters（空回退对齐字段默认 6.2）
-  const antennaEfficiency = pickNum(inputs.antennaEfficiency, 65) / 100;
+  const antennaEfficiencyPct = pickNum(inputs.antennaEfficiency, 65);
+  const antennaEfficiency = antennaEfficiencyPct / 100;
   const feederLoss = inputs.feederLoss !== undefined && inputs.feederLoss !== '' && inputs.feederLoss !== null
     ? parseFloat(inputs.feederLoss)
     : 3.5; // dB (支持输入0；空回退对齐字段默认 3.5)
   const uplinkAvailability = (inputs.uplinkAvailability !== '' && inputs.uplinkAvailability !== null && inputs.uplinkAvailability !== undefined)
     ? parseFloat(inputs.uplinkAvailability) : 100; // %（留空按出厂 100%＝晴天）
   const rainRate = parseFloat(inputs.rainRate) || 0; // mm/h
-  const altitude = (parseFloat(inputs.altitude) || 0) / 1000; // km
+  const altitudeM = parseFloat(inputs.altitude) || 0;
+  const altitude = altitudeM / 1000; // km
   const earthStationLocation = inputs.earthStationLocation || "上行站";
   
   // ============ 接收站参数 ============
@@ -267,14 +273,17 @@ function performCalculations(satParams, inputs) {
   const rxLatitude = (inputs.rxLatitude !== '' && inputs.rxLatitude !== null && inputs.rxLatitude !== undefined)
     ? parseFloat(inputs.rxLatitude) : DEFAULT_SITE.lat;
   const rxAntennaDiameter = pickNum(inputs.rxAntennaDiameter, 3.7); // meters（空回退对齐字段默认 3.7）
-  const rxAntennaEfficiency = pickNum(inputs.rxAntennaEfficiency, 65) / 100;
+  const rxAntennaEfficiencyPct = pickNum(inputs.rxAntennaEfficiency, 65);
+  const rxAntennaEfficiency = rxAntennaEfficiencyPct / 100;
   const rxFeederLoss = inputs.rxFeederLoss !== undefined && inputs.rxFeederLoss !== '' && inputs.rxFeederLoss !== null
     ? parseFloat(inputs.rxFeederLoss) 
     : 0.2; // dB (支持输入0)
-  const rxDownlinkAvailability = ((inputs.rxDownlinkAvailability !== '' && inputs.rxDownlinkAvailability !== null && inputs.rxDownlinkAvailability !== undefined)
-    ? parseFloat(inputs.rxDownlinkAvailability) : 100) / 100;
+  const rxDownlinkAvailabilityPct = (inputs.rxDownlinkAvailability !== '' && inputs.rxDownlinkAvailability !== null && inputs.rxDownlinkAvailability !== undefined)
+    ? parseFloat(inputs.rxDownlinkAvailability) : 100;
+  const rxDownlinkAvailability = rxDownlinkAvailabilityPct / 100;
   const rxRainRate = parseFloat(inputs.rxRainRate) || 0; // mm/h
-  const rxAltitude = (parseFloat(inputs.rxAltitude) || 0) / 1000; // km
+  const rxAltitudeM = parseFloat(inputs.rxAltitude) || 0;
+  const rxAltitude = rxAltitudeM / 1000; // km
   
   // 噪声温度参数 (支持输入0)
   const antennaNoiseTemp = (inputs.rxAntennaNoiseTemp !== undefined && inputs.rxAntennaNoiseTemp !== '' && inputs.rxAntennaNoiseTemp !== null)
@@ -1221,6 +1230,34 @@ function performCalculations(satParams, inputs) {
   results.transponderBackoffResult = transponderBackoff.toFixed(3 + FX);
 
   
+  // 只在主计算要求留底时捕获，扫描 / 求解中间点不生成快照。数值直接取本次运算的局部变量，
+  // 不从字段 schema 或格式化出参重建默认值（接收口径、频段噪温及极化都有条件默认）。
+  if (captureInputs) captureInputs({
+    satParams: {
+      ...satParams, satelliteName, frequencyBand, transponderStatus, orbitPosition,
+      transponderBandwidth, sfdRef: SFDref, BOi, BOo,
+      aciUplinkFactor, adjUplinkFactor, xpolUplinkFactor, hpaIntermodFactor,
+      aciDownlinkFactor, adjDownlinkFactor, xpolDownlinkFactor, xpdrIntermodFactor
+    },
+    linkParams: {
+      ...inputs, infoRate, modulation, fec, rsCode, bandwidthFactor, ber: -berExponent,
+      noiseRatioMode, ebno: inputNoiseRatio, margin, m,
+      ...(snrChain ? { phy: snrChain.phy } : {}),
+      earthStationLocation, longitude: earthLon, latitude: earthLat, altitude: altitudeM,
+      antennaDiameter, antennaEfficiency: antennaEfficiencyPct, feederLoss,
+      uplinkPolarization: uplinkPolarizationDisplay, centerFrequency: uplinkFrequency,
+      uplinkAvailability, rainRate, G_Ts, uplinkPowerControl, paBackoff,
+      ...(upcRawValue === '自定义' ? { upcValue: upcMargin } : {}),
+      uplinkOtherLoss: uplinkMiscLoss,
+      rxLongitude, rxLatitude, rxAltitude: rxAltitudeM,
+      rxAntennaDiameter, rxAntennaEfficiency: rxAntennaEfficiencyPct, rxFeederLoss,
+      downlinkPolarization: downlinkPolarizationDisplay, rxCenterFrequency: downlinkFrequency,
+      rxDownlinkAvailability: rxDownlinkAvailabilityPct, rxRainRate, rxEIRP: EIRPs,
+      rxAntennaNoiseTempMode: antennaNoiseTempAuto ? '自动' : '自定义',
+      rxAntennaNoiseTemp: antennaNoiseTempEff, rxReceiverNoiseTemp: receiverNoiseTemp,
+      downlinkOtherLoss: downlinkMiscLoss
+    }
+  });
   return results;
 }
 

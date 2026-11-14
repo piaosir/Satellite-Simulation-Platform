@@ -159,6 +159,22 @@ ok(EI.evalTable(segTab, T0 + 600500) !== null, '第一段末 +0.5 s 仍在容差
 ok(errM(EI.evalTable(segTab, T0 + 570000), leo.at(570)) < 1, '第一段末附近仍准（窗口不跨段）')
 ok(errM(EI.evalTable(segTab, T0 + 3630000), leo.at(3630)) < 1, '第二段首附近仍准')
 
+// 缺口后的单点段必须保留；Hermite 也不能借相邻段凑第二个点。
+const singletonTables = []
+for (const method of ['hermite', 'lagrange']) for (const withVel of [true, false]) {
+  const secs = [0, 60, 120, 3600, 7200, 7260]
+  const src = { t: secs.map((s) => T0 + s * 1000), p: [], v: withVel ? [] : null, frame: 'TEME',
+    spans: [[T0, T0 + 120000], [T0 + 3600000, T0 + 3600000], [T0 + 7200000, T0 + 7260000]], interp: { method, samples: 6 } }
+  for (const s of secs) { const q = leo.at(s); src.p.push(q.x, q.y, q.z); if (src.v) src.v.push(q.vx, q.vy, q.vz) }
+  const tb = EI.buildTable(src), label = method + (withVel ? ' 带速度' : ' 无速度')
+  singletonTables.push(tb)
+  ok(tb.sgA[1] === 3 && tb.sgB[1] === 3, label + '：单点段没有并入前段')
+  ok(EI.evalTable(tb, T0 + 1800000) === null && EI.evalTable(tb, T0 + 5400000) === null, label + '：单点段两侧缺口不插值')
+  ok(errM(EI.evalTable(tb, T0 + 3600000), leo.at(3600)) < 1e-6, label + '：精确命中单点采样')
+  ok(EI.evalTable(tb, T0 + 3600000 - 0.5) === null && EI.evalTable(tb, T0 + 3600000 + 0.5) === null, label + '：单点不扩展成有时长的弧段')
+  ok(EI.evalTable(tb, T0 + 7230000) !== null, label + '：后一正常段仍可插值')
+}
+
 /* ===== ⑧ 周期估计 ===== */
 section('周期估计')
 const per = EI.estimatePeriodMin(EI.buildTable(Object.assign({}, sample(leo, 60, 400, true), { interp: {} })))
@@ -167,7 +183,7 @@ ok(EI.estimatePeriodMin(EI.buildTable(Object.assign({}, sample(leo, 60, 5, true)
 
 /* ===== ⑨ 渲染端镜像逐位对拍 ===== */
 section('渲染端 ESM 镜像')
-const MIRROR_TABLES = [tab, meoTab, segTab,
+const MIRROR_TABLES = [tab, meoTab, segTab, ...singletonTables,
   EI.buildTable(Object.assign({}, leoSrc, { interp: { method: 'hermite', samples: 2 } }))]
 let cmp = 0, diff = 0
 for (const tb of MIRROR_TABLES) {

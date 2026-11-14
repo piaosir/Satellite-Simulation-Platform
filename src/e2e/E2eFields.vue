@@ -47,8 +47,8 @@ const selVal = (f) => (inherits(f) ? '' : String(props.form[f.key]))
 select.sp-i { text-align: left; }
 .sp-i:hover { background-color: var(--field-bg); border-color: var(--field-border-hover); }
 .sp-i:focus { outline: none; background-color: var(--field-bg); border-color: var(--accent-ui); }
-.sp-i::placeholder { color: var(--text-faint); }
-select.sp-i.inh, .sp-i option.inh { color: var(--text-faint); }
+.sp-i::placeholder { color: var(--lb-placeholder, var(--text-faint)); }
+select.sp-i.inh, .sp-i option.inh { color: var(--lb-placeholder, var(--text-faint)); }
 select.sp-i.inh option:not(.inh) { color: var(--text); }
 .sp-i.auto { color: var(--text-muted); cursor: not-allowed; }
 </style>

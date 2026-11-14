@@ -13,9 +13,9 @@
 import { createRequire } from 'node:module'
 import fs from 'node:fs'
 import sat from '../../../src/viz/constellation/satellite.js'
-import { posAtMs } from '../../../src/viz/constellation/satPos.js'
+import { posAtMs, setOverlays } from '../../../src/viz/constellation/satPos.js'
 import * as E from '../utils/access/accessCore.mjs'
-import { accessWindows, timeCoverage, accessMinDetectMs } from '../../../src/viz/vis/visibility.js'
+import { accessWindows, timeCoverage, accessMinDetectMs, orbitCanReach } from '../../../src/viz/vis/visibility.js'
 import { buildCjs, SRC, DST } from '../../../scripts/gen-access-cjs.mjs'
 
 const require = createRequire(import.meta.url)
@@ -319,6 +319,70 @@ function walker({ altKm, incl, P, S, F = 1 }) {
   let maxD = 0, miss = 0
   for (const [x, y] of br) { const w = r.windows.find((q) => q.start < y + 1 && q.end > x - 1); if (!w) miss++; else maxD = Math.max(maxD, Math.abs(w.start - x), Math.abs(w.end - y)) }
   ok('⑦ 两约束（余量取最小）：窗口 = 交集，与 1 s 暴力逐窗对上、边界差 ≤ 1 ms', miss === 0 && r.windows.length === br.length && maxD <= 1, `${br.length} 窗 · ${maxD.toFixed(3)} ms · ${r.evals} 次取值`)
+}
+
+// ══════════════ ⑧ 短星历 / 缺口 / 叠加源：主进程与渲染端按连续有效段扫描 ══════════════
+{
+  const EI = require('../utils/ephemInterp.js'), G = require('../utils/ngsoGeometry.js'), OP = require('../utils/orbitPos.js')
+  const base = epoch.getTime(), station = { latDeg: 39.9042, lonDeg: 116.4074, minElevDeg: 5, altKm: 0 }
+  const geoTable = (intervals) => {
+    const t = [], p = [], v = [], spans = []
+    for (const [a, b] of intervals) {
+      spans.push([base + a * 1000, base + b * 1000])
+      const secs = a === b ? [a] : [a, (a + b) / 2, b]
+      for (const s of secs) {
+        const ms = base + s * 1000, th = 110 * D2R + sat.gstime(new Date(ms)), R = 42164.17, w = 7.292115146706979e-5
+        t.push(ms); p.push(R * Math.cos(th), R * Math.sin(th), 0); v.push(-w * R * Math.sin(th), w * R * Math.cos(th), 0)
+      }
+    }
+    return EI.buildTable({ t, p, v, spans, frame: 'TEME', interp: { method: 'hermite', samples: 2 } })
+  }
+  const scan = (table) => {
+    const main = G.solveAccessWindows({ orbit: { type: 'ephem', table }, station, t0ISO: epoch.toISOString(), horizonHours: 1 / 6 })
+    const rt = accessWindows([{ eph: table, noradId: 'E', name: 'GEO' }], [{ lat: station.latDeg, lon: station.lonDeg }], { now: epoch, ccNow: epoch }, 600, 5)
+    return { main: main.windows || [], rt: rt[0]?.windows || [] }
+  }
+  for (const intervals of [[[60, 180]], [[60, 180], [360, 480]], [[60, 180], [360, 360], [420, 480]]]) {
+    const table = geoTable(intervals), result = scan(table), expected = intervals.filter(([a, b]) => b > a)
+    ok('⑧ 短表及缺口：主/渲染窗数等于有效区间数 ' + JSON.stringify(intervals), result.main.length === expected.length && result.rt.length === expected.length)
+    ok('⑧ 窗口精确夹到各弧段、不跨洞、不把单点当时段', expected.every(([a, b], i) => result.main[i] && result.rt[i] &&
+      Date.parse(result.main[i].startISO) === base + a * 1000 && Date.parse(result.main[i].endISO) === base + b * 1000 &&
+      result.rt[i].startMs === base + a * 1000 && result.rt[i].endMs === base + b * 1000))
+  }
+  const overlay = geoTable([[60, 180]])
+  const omm = { type: 'omm', noradId: 'OVERLAY', epoch: epoch.toISOString(), meanMotion: 1.0027, ecc: 0, incl: 0, raan: 0, argp: 0, ma: 180, bstar: 0, mdot: 0, mddot: 0 }
+  const rec = sat.omm2satrec(omm)
+  setOverlays(new Map([['OVERLAY', [overlay]]]))
+  OP.setOverlayResolver((id) => id === 'OVERLAY' ? [overlay] : null)
+  try {
+    const main = G.solveAccessWindows({ orbit: omm, station, t0ISO: epoch.toISOString(), horizonHours: 1 / 6 })
+    const rt = accessWindows([{ rec, noradId: 'OVERLAY', name: 'overlay' }], [{ lat: station.latDeg, lon: station.lonDeg }], { now: epoch, ccNow: epoch }, 600, 5)
+    ok('⑧ 短叠加表即使两侧本体都不可见，也不能被粗步跳过', main.windows.some((w) => Date.parse(w.startISO) <= base + 60001 && Date.parse(w.endISO) >= base + 179999) && rt.some((s) => s.windows.some((w) => w.startMs <= base + 60001 && w.endMs >= base + 179999)))
+    ok('⑧ 有叠加表时本体低倾角不能用来剔除高纬目标', orbitCanReach(rec, 80, 60))
+  } finally { setOverlays(null); OP.setOverlayResolver(null) }
+  const whole = geoTable([[0, 600]])
+  whole.satnum = 'CONTINUOUS'
+  setOverlays(new Map([['CONTINUOUS', [overlay]]]))
+  OP.setOverlayResolver((id) => id === 'CONTINUOUS' ? [overlay] : null)
+  try {
+    const result = scan(whole)
+    ok('⑧ 持续可见的本体+短叠加表仍是一窗，不在源切换处裂成三窗', result.main.length === 1 && result.rt.length === 1 && result.main[0].durationMin === 10 && result.rt[0].durMin === 10)
+    ok('⑧ 合并后保留分析端点截断属性和有效峰值', result.main[0]?.clipped && result.rt[0]?.truncated && result.rt[0].peakMs >= base && result.rt[0].peakMs <= base + 600000 && result.rt[0].peakEl > 40)
+  } finally { setOverlays(null); OP.setOverlayResolver(null) }
+  ok('⑧ 普通 SGP4 无叠加保持原整段路径', E.accessSpans(rec, null, base, base + 600000) === null)
+  const fixedState = (t, s) => { s.x = 42164; s.y = 0; s.z = 0; s.vx = 0; s.vy = 0; s.vz = 0; return true }
+  const tinyGap = E.elevWindows({ stateAt: fixedState, obs: [E.observerOf(0, 0, 0)], thrDeg: 5, t0: 0, t1: 2, spans: [[0, 1], [1.0001, 2]] })
+  ok('⑧ 小于1ms求根容差的真实缺口也不被合并', tinyGap.windows.length === 2 && tinyGap.windows[0].endMs < tinyGap.windows[1].startMs)
+}
+
+// ══════════════ ⑨ 高偏心轨道粗筛必须使用远地点包络 ══════════════
+{
+  const a = 20000, rec = sat.omm2satrec({ noradId: '90001', epoch: epoch.toISOString(), meanMotion: 86400 * Math.sqrt(MU / a ** 3) / (2 * Math.PI), ecc: .65, incl: 20, raan: 0, argp: 270, ma: 180, bstar: 0, mdot: 0, mddot: 0 })
+  const pv = sat.propagate(rec, epoch), ecf = sat.eciToEcf(pv.position, sat.gstime(epoch))
+  const lon = Math.atan2(ecf.y, ecf.x), obs = { longitude: lon, latitude: 55 * D2R, height: 0 }
+  const el = sat.ecfToLookAngles(obs, ecf).elevation / D2R
+  ok('⑨ a=20000km/e=.65/i=20°：实际仰角>45°的55°纬度站不会被预筛误杀', el > 45 && orbitCanReach(rec, 55, 45), el.toFixed(6) + '°')
+  ok('⑨ 常规低轨仍可剔除不可能达到的极区', !orbitCanReach(sat.omm2satrec({ noradId: 'L', epoch: epoch.toISOString(), meanMotion: 15.5, ecc: .0001, incl: 20, raan: 0, argp: 0, ma: 0, bstar: 0, mdot: 0, mddot: 0 }), 80, 45))
 }
 
 console.log(`\naccessEngine: ${pass} 通过，${fail} 失败`)

@@ -5,6 +5,7 @@ const {
   HeadingLevel, WidthType, AlignmentType, BorderStyle
 } = require('docx')
 const ExcelJS = require('exceljs')
+const { numericReading } = require('./reportEngineering')
 const adaptiveUnits = require('../../packages/core/utils/adaptiveUnits.js')
 // 列宽/行高自适应：各表的宽高常数按「常见内容」定，遇到长站名 / 长标签 / 英文导出会被截断，
 // 故写盘前整本过一遍，只把装不下的列与行放大到刚好装下（只增不减，版式不变）。
@@ -1374,39 +1375,22 @@ function placeImage(wb, ws, dataUrl, atRow, dispW) {
   return Math.ceil(h / XLS_ROW_PX) + 1
 }
 
-// —— 右上角 logo ——
-// 用户上传的图（矢量图已在渲染端栅格化成 PNG，见 LbReportDialog）贴在每张工作表的右上角，
-// 相当于每页页眉都有一枚台标。
-//
-// Excel 的图不占格子、只浮在格子上，位置是「哪一格 + 格内偏移」。故要贴到版心右边界，
-// 得先把列宽单位折成像素（px ≈ 单位 × 7 + 5，Excel 的老口径），从右往左累加找到落点。
+// —— 左侧自定义 logo ——
+// 参考工作簿把标志放在 A1 左侧；reportEngineering 在标题前两行
+// 预留真实图片高度，因此更换横版 / 竖版标志都不会覆盖第 3 行标题。
 //
 // ★ 偏移必须写 nativeColOff / nativeRowOff（EMU），不能用 exceljs 的小数 col：
 //   它把「一个列宽单位」当 10000 EMU 折算，而真值是 ≈ 66675（7 px × 9525），
 //   小数锚点因此会把图往左搬 6.7 倍——logo 会贴在倒数第二列的左边缘上。
-const COL_PX = (w) => Math.round((typeof w === 'number' && w > 0 ? w : 8.43) * 7 + 5)
 const EMU_PX = 9525
 function placeLogo(wb, ws, logo, ncol) {
-  if (!logo || !logo.dataUrl) return
-  const size = pngSizeOf(logo.dataUrl)
-  if (!size) return
   const C = RSTY.cover
-  let w = C.logoWpx, h = Math.round(C.logoWpx * size.h / size.w)
-  if (h > C.logoMaxHpx) { h = C.logoMaxHpx; w = Math.round(C.logoMaxHpx * size.w / size.h) }
-  // 版心右边界：把 1..ncol 列的像素宽加起来
-  const px = []
-  let total = 0
-  for (let c = 1; c <= ncol; c++) { px[c] = COL_PX(ws.getColumn(c).width); total += px[c] }
-  // 从右往左退 w 像素，落在哪一列的哪个位置
-  const left = Math.max(0, total - w)
-  let acc = 0, col = ncol - 1, off = 0
-  for (let c = 1; c <= ncol; c++) {
-    if (acc + px[c] > left) { col = c - 1; off = left - acc; break }
-    acc += px[c]
-  }
-  const id = wb.addImage({ base64: logo.dataUrl, extension: 'png' })
+  const image = require('./reportLogoImage').fitLogo(logo, C.logoWpx, C.logoMaxHpx)
+  if (!image) return
+  const { width: w, height: h } = image
+  const id = wb.addImage({ buffer: image.data, extension: 'png' })
   ws.addImage(id, {
-    tl: { nativeCol: col, nativeColOff: Math.round(off * EMU_PX), nativeRow: 0, nativeRowOff: 3 * EMU_PX },
+    tl: { nativeCol: 0, nativeColOff: 0, nativeRow: 0, nativeRowOff: 3 * EMU_PX },
     ext: { width: w, height: h },
     editAs: 'oneCell'
   })
@@ -1496,7 +1480,7 @@ function buildMasterSheet(wb, model, t, L) {
     s.summary.metrics.forEach((m) => {
       str(r, 1, m.label, 'left', { size: RSTY.size.table })
       m.values.forEach((v, li) => {
-        const c = ws.getCell(r, 2 + li); c.value = numOrText(v)
+        const c = ws.getCell(r, 2 + li); numericReading(c, v)
         c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
       })
       ws.getRow(r).height = 18; r++
@@ -1530,7 +1514,7 @@ function buildMasterSheet(wb, model, t, L) {
         for (const row of cap.rows) {
           str(r, 1, row[0], 'left', { size: RSTY.size.table })
           row.slice(1).forEach((v, ci) => {
-            const c = ws.getCell(r, 2 + ci); c.value = numOrText(v)
+            const c = ws.getCell(r, 2 + ci); numericReading(c, v)
             c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
           })
           ws.getRow(r).height = 18; r++
@@ -1636,7 +1620,7 @@ function buildMasterSheet(wb, model, t, L) {
       }
       str(r, 1, row.label, 'left', { size: RSTY.size.table })
       row.values.forEach((v, li) => {
-        const c = ws.getCell(r, 2 + li); c.value = numOrText(v)
+        const c = ws.getCell(r, 2 + li); numericReading(c, v)
         c.font = { name: FNT, size: RSTY.size.table }; c.alignment = { horizontal: 'right', vertical: 'middle' }
       })
       ws.getRow(r).height = 18; r++
@@ -1746,7 +1730,7 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
       ws.getRow(r).height = 19; r++
       for (const row of blk.rows) {
         str(r, 1, row.label, 'left', { size: RSTY.size.table })
-        const vc = ws.getCell(r, 2); vc.value = numOrText(row.value)
+        const vc = ws.getCell(r, 2); numericReading(vc, row.value)
         vc.font = { name: FNT, size: RSTY.size.table }; vc.alignment = { horizontal: 'right', vertical: 'middle' }
         str(r, 3, row.unit, 'left', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
         ws.getRow(r).height = 18; r++
@@ -1758,8 +1742,8 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
 
   // 详细计算结果（与屏幕「详细预算」同一份 segments）
   section(L.results)
-  // 端到端级联的数值定两位（见 writeSegmentBlocks 的 fixedDecimals），屏幕/TSV/Excel 三处印出来一致
-  r = writeSegmentBlocks(ws, link.segments, t, r, { fixedDecimals: (model.scheme && model.scheme.orbitType) === 'E2E' })
+  // Preserve the snapshot's displayed precision for every scheme while retaining numeric cells.
+  r = writeSegmentBlocks(ws, link.segments, t, r, { fixedDecimals: true })
 
   // SLA 建议：条款 / 计算依据 / 建议值 / 采用值 / 单位 五列三线表。
   // 表号按「链路序号-块序号」编（接在输入参数各块之后），与图号同一套编法。
@@ -1783,6 +1767,7 @@ function writeReportLinkSheet(wb, ws, link, model, t, L) {
       str(r, 2, row.basis, 'right', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
       str(r, 3, row.suggest, 'right', { font: FNT, size: RSTY.size.table })
       str(r, 4, row.adopt, 'right', { font: FNT, size: RSTY.size.table })
+      for (let col = 2; col <= 4; col++) numericReading(ws.getCell(r, col), [row.basis, row.suggest, row.adopt][col - 2])
       str(r, 5, row.unit, 'left', { font: FNT, size: RSTY.size.table, color: 'FF333333' })
       ws.getRow(r).height = 18; r++
     }
@@ -1823,7 +1808,95 @@ function sheetNameFor(link, used) {
   return name
 }
 
+// The overview reads the exact metric/capacity projections used by Word's
+// "Key link results" section. Styling remains the Excel Link_result template.
+function addReportOverviewSheet(wb, model) {
+  const en = model.lang === 'en', L = model.t || {}, doc = model.doc || {}
+  const ws = wb.addWorksheet(en ? 'Overview' : '总览', { views: [{ showGridLines: false, state: 'frozen', ySplit: 5 }] })
+  const last = 10, rule = { style: 'thin', color: { argb: 'FF000000' } }
+  ws.columns = [{ width: 32.25 }, { width: 8.875 }, ...Array.from({ length: 8 }, () => ({ width: 9.125 }))]
+  ws._referenceFrame = true; ws._referenceLast = last
+  ws._referenceHeadings = new Set(); ws._referenceTableHeads = new Set(); ws._engineeringKeep = []
+  const put = (r, c, value, heading = false) => {
+    const cell = ws.getCell(r, c)
+    if (value === null || value === undefined || value === '') cell.value = null
+    else numericReading(cell, value)
+    cell.font = { name: heading ? '仿宋_GB2312' : '宋体', size: heading ? 12 : 10,
+      bold: heading, color: { argb: heading ? 'FF000080' : 'FF000000' }, ...(heading ? { underline: true } : {}) }
+    cell.alignment = { horizontal: c === 1 ? 'left' : 'right', vertical: 'middle', wrapText: false }
+    return cell
+  }
+  put(3, 1, doc.title || (en ? 'Link Budget Results' : '链路预算计算结果'), true).font = {
+    name: '仿宋_GB2312', size: 22, bold: true, color: { argb: 'FF0000FF' }
+  }
+  ws.getRow(3).height = 37.5
+  put(4, 1, [doc.org, doc.docNo, doc.date].filter(Boolean).join('    ')).font = { name: '仿宋_GB2312', size: 14, bold: true }
+  ws.getRow(4).height = 28.5
+  let r = 5, headingStart = null
+  const heading = (title) => {
+    if (headingStart === null) headingStart = r
+    ws.mergeCells(r, 1, r, last)
+    put(r, 1, title, true); ws._referenceHeadings.add(r)
+    ws.getRow(r++).height = 17.25
+  }
+  const table = (head, rows, groups = [], gap = false) => {
+    if (!head.length || !rows.length) return
+    const start = headingStart === null ? r : headingStart, header = r
+    headingStart = null
+    ws._referenceTableHeads.add(r)
+    head.forEach((label, i) => {
+      const cell = put(r, i + 1, label)
+      cell.font = { name: '宋体', size: 10, bold: true, color: { argb: 'FF000000' } }
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }
+      cell.border = { top: rule, bottom: rule, ...(i ? { left: rule } : {}) }
+    })
+    ws.getRow(r++).height = 12.95
+    rows.forEach((values, ri) => {
+      values.forEach((value, ci) => {
+        if (gap && ci === 1) return
+        const cell = put(r, ci + 1, value)
+        if (groups[ri]) cell.font = { name: '仿宋_GB2312', size: 10, bold: true, underline: true }
+        if (ci) cell.border = { left: rule, ...(ci < head.length - 1 ? { right: rule } : {}) }
+      })
+      ws.getRow(r++).height = 12.95
+    })
+    head.forEach((_, ci) => { const cell = ws.getCell(r - 1, ci + 1); cell.border = { ...cell.border, bottom: rule } })
+    ws._engineeringKeep.push([start, rows.length <= 10 ? r - 1 : Math.min(r - 1, header + 2)])
+    if (rows.length > 10) ws._engineeringKeep.push([r - 3, r - 1])
+    r++
+  }
+  heading(en ? 'Key link results' : '链路主要结果')
+  for (const section of sectionsOf(model)) {
+    if (section.title) heading(section.title)
+    const metrics = section.summary.metrics || []
+    // Match Word's four-link batches, including failed/unavailable columns.
+    for (let from = 0; from < section.links.length; from += 4) {
+      const part = section.links.slice(from, from + 4)
+      if (metrics.length) table([L.param || (en ? 'Parameter' : '参数'), '', ...part.map((l) => '#' + l.no)],
+        metrics.map((metric) => [metric.label, '', ...metric.values.slice(from, from + part.length)]), [], true)
+    }
+    const cap = section.summary.cap
+    if (cap?.head?.length && cap.rows?.length) {
+      heading(L.capacity || (en ? 'Capacity' : '容量汇总'))
+      if (cap.head.length === 1) table(cap.head, cap.rows)
+      // Wide resource tables continue vertically without omitting any column.
+      for (let from = 1; from < cap.head.length; from += last - 1) {
+        table([cap.head[0], ...cap.head.slice(from, from + last - 1)],
+          cap.rows.map((row) => [row[0], ...row.slice(from, from + last - 1)]))
+      }
+    }
+  }
+  if (model.hasSla) {
+    const { buildCompactReport } = require('./reportCompact')
+    for (const block of buildCompactReport({ ...model, kind: 'sla' }).tables) {
+      heading(block.title); table(block.head, block.rows, block.groupRows)
+    }
+  }
+  return ws
+}
+
 async function buildReportWorkbook(model) {
+  const { addEngineeringMatrices, finishEngineeringWorkbook } = require('./reportEngineering')
   const lang = model.lang === 'en' ? 'en' : 'zh'
   const t = strFor(lang)
   const L = model.t || {}
@@ -1838,37 +1911,15 @@ async function buildReportWorkbook(model) {
   wb.title = (model.doc && model.doc.title) || ''
   wb.created = new Date()
 
-  buildMasterSheet(wb, model, t, L)
-
-  // 几何关系（NGSO / 再生式各自的 STK 版式表，沿用已有构建器）
-  const params = { satelliteName: (model.calc && model.calc.satelliteName) || '', frequencyBand: (model.calc && model.calc.frequencyBand) || '' }
-  const meta = { title: (model.doc && model.doc.title) || '' }
-  const ot = (model.scheme && model.scheme.orbitType) || 'GEO'
-  // 端到端没有独立的「几何关系」sheet：一条链的几何是逐跳的（斜距/仰角/星间距离各跳一份），
-  // 已由瀑布的「逐跳几何与时延」段逐跳列全，另开一张 STK 版式表只会把同一批数抄第二遍。
-  if (ot === 'NGSO') buildNgsoGeometrySheet(wb, links, params, meta, lang)
-  else if (ot === 'REGEN') {
-    // 分节（一份配置装了几个模块）：每个模块一张几何表，表名带模块短名（Excel 表名上限 31 字符）；
-    // 只有一个模块时照旧一张、老名字。链路序号取全篇 #N（子集里不重编）。
-    const secs = sectionsOf(model)
-    const multi = secs.length > 1
-    for (const s of secs) {
-      const m = Object.assign({}, meta, multi ? { sheetName: (t.geo.sheetName + ' · ' + (s.short || s.regenMode)).slice(0, 31) } : null)
-      buildRegenGeometrySheet(wb, s.links, params, m, lang, s.regenMode || 'uplink')
-    }
-  }
-
-  for (const l of links) {
-    const ws = wb.addWorksheet(l.sheetName, { views: [{ showGridLines: false }] })
-    writeReportLinkSheet(wb, ws, l, model, t, L)
-  }
-  // 列宽 / 行高自适应（放在最后：要按每张表实际写进去的内容量，而不是按写表时的预期）
-  autofitBook(wb, { maxWidth: 56, maxHeight: 260 })
-  // logo 贴在自适应**之后**：它按版心右边界定位，而版心宽正是刚刚才定下来的
+  addReportOverviewSheet(wb, model)
+  // Keep the supplied Link_result engineering matrices as the detailed view.
+  addEngineeringMatrices(wb, model)
+  finishEngineeringWorkbook(wb, model)
+  // logo 使用上传文件的实际比例，贴在参考模板左上角。
   const logo = model.doc && model.doc.logo
   if (logo && logo.dataUrl) wb.eachSheet((ws) => placeLogo(wb, ws, logo, Math.max(1, ws.actualColumnCount || ws.columnCount || 1)))
-  // 字体归位：各表写格时的 HEI / SONG / FNT 只是意图标记，到这里才换成这份报告实际用的字体（导出报告对话框「字体」）
-  return applyBookFont(wb, fontsOf(model.doc)).xlsx.writeBuffer()
+  // 此出口严格保留用户 Link_result 字体，不再套用 Word 字体档。
+  return wb.xlsx.writeBuffer()
 }
 
 // ===== 日凌预报报告（Word，交付级）=====

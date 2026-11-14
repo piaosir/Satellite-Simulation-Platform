@@ -1,5 +1,5 @@
 // 报告版式档：从用户给的《技术文档标准模板.docx》里量出来的一套参数，
-// Word / PDF / Excel 三个渲染器都照这一份走，于是三种文件是同一份文档的三种载体。
+// Word 延续技术文档的字体与纸张基准；Excel 以 Link_result、PDF 以用户提供的 Satmaster HTML 为视觉主参考。
 //
 // 量法：解开模板的 word/styles.xml + document.xml，读各样式的 rFonts / sz / spacing / ind，
 // 读 sectPr 的 pgSz / pgMar，读正文表格的 tblBorders。下面每一项都注了模板里的原值。

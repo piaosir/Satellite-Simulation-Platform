@@ -95,5 +95,5 @@ export function regenDigestParams(mode, params) {
   if (!params) return null
   const keys = regenDigestKeys(mode)
   const pick = (src) => { const out = {}; for (const k of Object.keys(src || {})) if (keys.has(k)) out[k] = src[k]; return out }
-  return { satParams: pick(params.satParams), linkParams: pick(params.linkParams), opt: { ...(params.opt || null) } }
+  return { satParams: pick(params.satParams), linkParams: pick(params.linkParams), opt: { ...(params.opt || null) }, ...(params.effective ? { effective: true } : {}) }
 }

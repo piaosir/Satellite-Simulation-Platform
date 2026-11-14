@@ -54,6 +54,23 @@ function setOutputPrecisionBoost(n) {
 
 function _num(v) { const n = parseFloat(v); return isNaN(n) ? null : n; }
 
+// 再生式直接并联干扰时，留空的 ACI / ASI / IM 是「不计入」，与借用的弯管引擎缺省不同。
+// 快照保留这层真实语义；XPI 仍由基础引擎的设备值与雨致去极化求得。
+function _capturedInputs(result, sat, targetMargin) {
+  if (!result || !result.effectiveInputs) return {};
+  const effectiveInputs = {
+    satParams: { ...result.effectiveInputs.satParams },
+    linkParams: { ...result.effectiveInputs.linkParams }
+  };
+  // 再生上行的 NGSO 内部余量与本模块的目标余量不同，分别留底，避免报告把求解中间值写成目标。
+  if (targetMargin !== undefined) effectiveInputs.targetMargin = targetMargin;
+  for (const key of ['aciUplinkFactor', 'adjUplinkFactor', 'hpaIntermodFactor',
+    'aciDownlinkFactor', 'adjDownlinkFactor', 'xpdrIntermodFactor']) {
+    effectiveInputs.satParams[key] = sat[key];
+  }
+  return { effectiveInputs };
+}
+
 // 再生式上行干扰的「直接合并」：四路 C/I（dB）在线性域功率相加，返回 Σ 10^(−C/I_i/10)。
 // XPI 取已并入 rain 去极化的 effectiveXpolUplinkFactor（ITU-R P.618-14 §4.1）；缺失时回退设备 XPI。
 // 干扰项均为固定 dB、与功放无关。无有效干扰项时返回 0（视为无干扰）。
@@ -160,16 +177,16 @@ function computeRegenUplinkMode(satParams, inputs, opt) {
   if (mode === 'power') {
     const w = strictNumMod.strictNum(opt.powerW);
     if (!(w > 0)) return { success: false, message: '功放功率(W) 无效' };
-    const r = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'power', powerW: w });
+    const r = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'power', powerW: w, captureInputs: opt.captureInputs });
     if (!r || !r.success) return r;
     const d = _reframeUplinkOnly(r.data, sp);
-    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin) };
+    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin), ..._capturedInputs(r, sp) };
   }
 
   // margin：目标上行余量 M → 反解所需热噪声 C/N → 求所需功放 W → 以 power 模式重算得到自洽结果
   const M = parseFloat(inp.margin);
   const targetMargin = isNaN(M) ? 3 : M;
-  const base = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'margin' });
+  const base = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'margin', captureInputs: opt.captureInputs });
   if (!base || !base.success) return base;
   const d0 = base.data;
   const thermal0 = _num(d0.uplinkThermalCN);         // 基准热噪声 C/N（随功放 1:1 平移）
@@ -178,7 +195,7 @@ function computeRegenUplinkMode(satParams, inputs, opt) {
   if (thermal0 == null || thr0 == null || paDb0 == null) {
     // 兜底：基准量无法解析 → 直接把基准结果按再生口径重标（几何/参数异常时不致崩）
     const dd = _reframeUplinkOnly(d0, sp);
-    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin) };
+    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), ..._capturedInputs(base, sp, targetMargin) };
   }
   // 直接合并反解：目标 C/(N+I) = 门限 + 余量 → 所需热噪声线性份额 = 目标线性 − 干扰线性
   const intfLin = _regenIntfLinear(d0, sp);
@@ -187,19 +204,19 @@ function computeRegenUplinkMode(satParams, inputs, opt) {
   if (!(thermalLinNeeded > 0)) {
     // 目标 C/(N+I) 高于干扰底噪 C/I（增益再大也够不到）——回退到基准并如实反标可达余量
     const dd = _reframeUplinkOnly(d0, sp);
-    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin) };
+    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), ..._capturedInputs(base, sp, targetMargin) };
   }
   const thermalCNNeeded = -10 * Math.log10(thermalLinNeeded);
   const deltaDb = thermalCNNeeded - thermal0;        // 热噪声需平移量 = 功放需平移量(dB，1:1)
   const reqW = Math.pow(10, (paDb0 + deltaDb) / 10);
   if (!(reqW > 0) || !isFinite(reqW)) {
     const dd = _reframeUplinkOnly(d0, sp);
-    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin) };
+    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), ..._capturedInputs(base, sp, targetMargin) };
   }
-  const r = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'power', powerW: reqW });
+  const r = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'power', powerW: reqW, captureInputs: opt.captureInputs });
   if (!r || !r.success) return r;
   const d = _reframeUplinkOnly(r.data, sp);
-  return { success: true, data: d, mode: 'margin', resolvedMargin: _num(d.linkmargin) };
+  return { success: true, data: d, mode: 'margin', resolvedMargin: _num(d.linkmargin), ..._capturedInputs(r, sp, targetMargin) };
 }
 
 // ==================== 再生式下行（广播）====================
@@ -344,7 +361,7 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
   const inp = strictNumMod.strictInputs(inputs || {}, strictNumMod.LINK_INPUT_NUM_KEYS);
 
   // 跑一次 NGSO 引擎拿下行损耗/几何中间量（上行 PA 自动解，不参与）
-  const base = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'margin' });
+  const base = modeSolver.computeLinkModeNGSO(sp, inp, { mode: 'margin', captureInputs: opt.captureInputs });
   if (!base || !base.success) return base;
   const d0 = base.data;
   const gtEff = _num(d0.gOverTeResult);          // 噪温模式：引擎 gOverTe（天线/噪温/馈线算得）
@@ -360,7 +377,7 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
     const gtPin = _num(opt.gtDb);
     const gt = (gtPin != null && isFinite(gtPin)) ? gtPin : gtEff;
     const d = _reframeDownlinkOnly(d0, sp, gt);
-    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin), resolvedGT: gt };
+    return { success: true, data: d, mode: 'power', resolvedMargin: _num(d.linkmargin), resolvedGT: gt, ..._capturedInputs(base, sp) };
   }
 
   // margin：目标下行余量 M → 反解所需有效 G/T
@@ -370,7 +387,7 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
   const thermal0 = _regenDownlinkThermalCN(d0, gtEff);
   if (thr0 == null || thermal0 == null || gtEff == null) {
     const dd = _reframeDownlinkOnly(d0, sp, gtEff);
-    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), resolvedGT: gtEff };
+    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), resolvedGT: gtEff, ..._capturedInputs(base, sp, targetMargin) };
   }
   // 直接合并反解：目标 C/(N+I) = 门限 + 余量 → 所需热噪声线性份额 = 目标线性 − 干扰线性
   const intfLin = _regenDnIntfLinear(d0, sp);
@@ -379,12 +396,12 @@ function computeRegenDownlinkMode(satParams, inputs, opt) {
   if (!(thermalLinNeeded > 0)) {
     // 目标高于干扰底噪 C/I（G/T 再大也够不到）——回退基准并如实反标可达余量
     const dd = _reframeDownlinkOnly(d0, sp, gtEff);
-    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), resolvedGT: gtEff };
+    return { success: true, data: dd, mode: 'margin', resolvedMargin: _num(dd.linkmargin), resolvedGT: gtEff, ..._capturedInputs(base, sp, targetMargin) };
   }
   const thermalNeeded = -10 * Math.log10(thermalLinNeeded);
   const gtNeeded = gtEff + (thermalNeeded - thermal0);   // 热噪声需平移量 = G/T 需平移量（dB，1:1）
   const d = _reframeDownlinkOnly(d0, sp, gtNeeded);
-  return { success: true, data: d, mode: 'margin', resolvedMargin: _num(d.linkmargin), resolvedGT: gtNeeded };
+  return { success: true, data: d, mode: 'margin', resolvedMargin: _num(d.linkmargin), resolvedGT: gtNeeded, ..._capturedInputs(base, sp, targetMargin) };
 }
 
 // ==================== 再生式星间链路（微波 ISL）====================
@@ -480,10 +497,11 @@ function computeRegenIslMode(satParams, inputs, opt) {
   if (!_calcNGSO) return { success: false, message: 'NGSO 引擎不可用（linkCalculatorNGSO 加载失败）' };
   // 强制 ISL RF 单跳（islHopDistance 已由几何最差距离注入 satParams）
   const sp = Object.assign({}, strictNumMod.strictInputs(satParams || {}, strictNumMod.LINK_SAT_NUM_KEYS), { islMode: 'rf', islHops: 1 });
-  const r = _calcNGSO(sp, inputs || {});
+  const r = _calcNGSO(sp, inputs || {}, opt);
   if (!r || !r.success) return r || { success: false, message: 'ISL 计算失败' };
   const d = _reframeIslOnly(_islIntfMerge(r.data, sp), _num(opt.visibilityPct));
-  return { success: true, data: d, mode: 'isl', resolvedMargin: _num(d.linkmargin) };
+  return { success: true, data: d, mode: 'isl', resolvedMargin: _num(d.linkmargin),
+    ...(r.effectiveInputs ? { effectiveInputs: r.effectiveInputs } : {}) };
 }
 
 // ==================== 再生式星间链路（激光 / MathWorks 简化功率链）====================
@@ -517,12 +535,16 @@ function computeRegenLaserIslMode(params, opt) {
   const lambda = lambdaNm * 1e-9;                       // m
   const d = dKm * 1000;                                 // m
   const pTxDbm = _lnum(p.txPowerDbm, 30);               // 发射光功率 P_tx dBm
-  const dTx = _lnum(p.txApertureMm, 80) / 1000;         // 发射口径 m
-  const dRx = _lnum(p.rxApertureMm, 80) / 1000;         // 接收口径 m
+  const dTxMm = _lnum(p.txApertureMm, 80);
+  const dRxMm = _lnum(p.rxApertureMm, 80);
+  const dTx = dTxMm / 1000;                           // 发射口径 m
+  const dRx = dRxMm / 1000;                           // 接收口径 m
   const etaTx = _lnum(p.txOpticsEff, 0.8);              // 发射光学效率 (0,1]
   const etaRx = _lnum(p.rxOpticsEff, 0.8);              // 接收光学效率 (0,1]
-  const thTxRad = _lnum(p.txPointingErrUrad, 1) * 1e-6; // 发射指向误差 rad
-  const thRxRad = _lnum(p.rxPointingErrUrad, 1) * 1e-6; // 接收指向误差 rad
+  const thTxUrad = _lnum(p.txPointingErrUrad, 1);
+  const thRxUrad = _lnum(p.rxPointingErrUrad, 1);
+  const thTxRad = thTxUrad * 1e-6;                    // 发射指向误差 rad
+  const thRxRad = thRxUrad * 1e-6;                    // 接收指向误差 rad
   const pReqDbm = _lnum(p.rxSensitivityDbm, -35.5);     // 接收机灵敏度 P_req dBm
   const otherLoss = _lnum(p.otherLossDb, 0);            // 其他损耗 L dB(>0)
   // —— 展示/可用度入参 ——
@@ -597,7 +619,17 @@ function computeRegenLaserIslMode(params, opt) {
     // 清空上/下行展示字段（激光星间不参与）
     uplinkCN: '', downlinkCN: ''
   };
-  return { success: true, data, mode: 'laser', resolvedMargin: margin };
+  return { success: true, data, mode: 'laser', resolvedMargin: margin,
+    ...(opt.captureInputs === true ? { effectiveInputs: {
+      satParams: {},
+      linkParams: {
+        ...p, islHopDistance: dKm, wavelengthNm: lambdaNm, txPowerDbm: pTxDbm,
+        txApertureMm: dTxMm, rxApertureMm: dRxMm,
+        txOpticsEff: etaTx, rxOpticsEff: etaRx,
+        txPointingErrUrad: thTxUrad, rxPointingErrUrad: thRxUrad,
+        rxSensitivityDbm: pReqDbm, otherLossDb: otherLoss
+      }
+    } } : {}) };
 }
 
 module.exports = {

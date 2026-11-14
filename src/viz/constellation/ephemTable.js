@@ -45,6 +45,12 @@ export function evalTable(tab, ms) {
   if (i < lo) i = lo
   if (i > hi - 1) i = hi - 1 < lo ? lo : hi - 1
 
+  // 单点弧段没有可插值的时间区间，也不向缺口扩展端点容差。
+  if (lo === hi) return ms === t[lo] ? {
+    x: p[3 * lo], y: p[3 * lo + 1], z: p[3 * lo + 2],
+    vx: v ? v[3 * lo] : 0, vy: v ? v[3 * lo + 1] : 0, vz: v ? v[3 * lo + 2] : 0
+  } : null
+
   if (tab.method === 'hermite' && v) {
     const h = (t[i + 1] - t[i]) / 1000
     if (!(h > 0)) return { x: p[3 * i], y: p[3 * i + 1], z: p[3 * i + 2], vx: v[3 * i], vy: v[3 * i + 1], vz: v[3 * i + 2] }

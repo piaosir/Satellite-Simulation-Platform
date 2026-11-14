@@ -11,7 +11,7 @@
 const {
   Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, TableOfContents,
   Header, Footer, PageNumber, AlignmentType, WidthType, BorderStyle, VerticalAlign, ImageRun,
-  PageOrientation, LineRuleType
+  PageOrientation, LineRuleType, TableLayoutType
 } = require('docx')
 const { TPL, half } = require('./reportStyle')
 
@@ -141,6 +141,8 @@ function docTable(head, rows, opts) {
     children: [new Paragraph({
       style: o.head ? thStyle : tdStyle,
       alignment: colAlign(align[i]),   // ★ 表头与数据行同一对齐：表头才压得住它那一列
+      spacing: { before: 0, after: 0, line: 240, lineRule: LineRuleType.AUTO },
+      keepNext: !!o.keepNext,
       // 关键行（分组行 / 小计 / 余量）换黑体，不加粗：三线表不许底纹，层次只能靠字体给，
       // 而黑体上再加粗会被 Word 合成成假粗体，糊成一团。
       children: [new TextRun({ text: text == null ? '' : String(text), style: o.key ? 'RptKey' : undefined })]
@@ -149,16 +151,18 @@ function docTable(head, rows, opts) {
   const trs = []
   const hasHead = !!(head && head.length)
   // cantSplit：一行不许被分页拦腰截断
-  if (hasHead) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => cell(h, i, { head: true, top: strong, bottom: thin })) }))
+  if (hasHead) trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => cell(h, i, { head: true, top: strong, bottom: thin, keepNext: !!opts.keepTogether })) }))
   rows.forEach((r, ri) => {
     const first = !hasHead && ri === 0
     const last = ri === rows.length - 1
     const key = !!(opts.keyRows && opts.keyRows[ri])
-    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => cell(v, i, { top: first ? strong : 0, bottom: last ? strong : 0, key })) }))
+    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => cell(v, i, { top: first ? strong : 0, bottom: last ? strong : 0, key, keepNext: (opts.keepTogether || ri >= rows.length - 3) && !last })) }))
   })
   // widthPct：三列的小表（输入参数）铺满 253mm 的横向版心会显得空旷，收窄并居中更像正式文档里的表
   return new Table({
     width: { size: opts.widthPct || 100, type: WidthType.PERCENTAGE },
+    layout: TableLayoutType.FIXED,
+    columnWidths: (opts.widths || (head || rows[0] || []).map(() => 100 / (head || rows[0]).length)).map((w) => Math.round(TPL.page.contentTw * w / 100)),
     alignment: opts.widthPct ? AlignmentType.CENTER : undefined,
     borders: { top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE },
     rows: trs
@@ -183,21 +187,24 @@ function bookTable(head, rows, opts) {
     children: [new Paragraph({
       style: o.head ? 'RptTh' : 'RptTd',
       alignment: colAlign(align[i]),   // 表头随数据列对齐（同 docTable）
+      spacing: { before: 0, after: 0, line: 240, lineRule: LineRuleType.AUTO },
+      keepNext: !!o.keepNext,
       children: [new TextRun({ text: text == null ? '' : String(text), style: o.key ? 'RptKey' : undefined })]
     })]
   })
   const trs = []
   // cantSplit：一行不许被分页拦腰截断（数值与其标签分居两页是最难读的一种断法）
   if (head && head.length) {
-    trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => mk(h, i, { head: true, top: strong, bottom: thin })) }))
+    trs.push(new TableRow({ tableHeader: true, cantSplit: true, children: head.map((h, i) => mk(h, i, { head: true, top: strong, bottom: thin, keepNext: !!opts.keepTogether })) }))
   }
   rows.forEach((r, ri) => {
     const last = ri === rows.length - 1
     const key = !!(opts.keyRows && opts.keyRows[ri])
     const sep = !!(opts.sepRows && opts.sepRows[ri])
-    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => mk(v, i, { bottom: last ? strong : 0, top: sep ? thin : 0, key })) }))
+    trs.push(new TableRow({ cantSplit: true, children: r.map((v, i) => mk(v, i, { bottom: last ? strong : 0, top: sep ? thin : 0, key, keepNext: (opts.keepTogether || ri >= rows.length - 3) && !last })) }))
   })
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders: {
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, layout: TableLayoutType.FIXED,
+    columnWidths: (opts.widths || (head || rows[0] || []).map(() => 100 / (head || rows[0]).length)).map((w) => Math.round(TPL.page.contentTw * w / 100)), borders: {
     top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE
   }, rows: trs })
 }
@@ -233,14 +240,9 @@ function figureParagraphs(dataUrl, caption, maxWpx, maxHpx) {
 const MM_PX = (mm) => Math.round(mm / 25.4 * 96)
 function logoHeader(logo) {
   const empty = new Header({ children: [new Paragraph({ children: [] })] })
-  if (!logo || !logo.dataUrl) return empty
-  const size = pngSizeOf(logo.dataUrl)
-  if (!size || !size.w || !size.h) return empty
-  let h = MM_PX(TPL.cover.logoHeaderHmm)
-  let w = Math.round(h * size.w / size.h)
-  const wMax = MM_PX(TPL.cover.logoHeaderWmm)
-  if (w > wMax) { w = wMax; h = Math.round(w * size.h / size.w) }
-  const data = Buffer.from(String(logo.dataUrl).split(',').pop(), 'base64')
+  const image = require('./reportLogoImage').fitLogo(logo, MM_PX(TPL.cover.logoHeaderWmm), MM_PX(TPL.cover.logoHeaderHmm))
+  if (!image) return empty
+  const { data, width: w, height: h } = image
   return new Header({
     children: [new Paragraph({
       alignment: AlignmentType.RIGHT, spacing: { after: 0, line: 240, lineRule: LineRuleType.AUTO },
@@ -260,9 +262,8 @@ const pageFooter = () => new Footer({
 
 const sectPage = (landscape, numbering) => ({
   page: {
-    size: landscape
-      ? { orientation: PageOrientation.LANDSCAPE, width: TPL.page.heightTw, height: TPL.page.widthTw }
-      : { orientation: PageOrientation.PORTRAIT, width: TPL.page.widthTw, height: TPL.page.heightTw },
+    // docx swaps the supplied portrait dimensions itself for LANDSCAPE.
+    size: { orientation: landscape ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT, width: TPL.page.widthTw, height: TPL.page.heightTw },
     margin: TPL.page.marginTw,
     pageNumbers: numbering || undefined
   }

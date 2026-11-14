@@ -3,6 +3,7 @@ import { ref, shallowRef, reactive, computed, onMounted, onBeforeUnmount, nextTi
 import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
+import { reportInputParams } from '../shared/lbReport.js'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, withFieldDefaults, buildParams } from './ngsoParams.js'
 import * as NGSO_PARAMS from './ngsoParams.js'   // 整份 schema 传给 lbMiniExport 的 target 分流（同 buildParams 但不折算 sfdRef）
 import { buildMiniConfig, miniConfigItem, miniConfigName } from '../shared/lbMiniExport.js'
@@ -1620,7 +1621,7 @@ async function compute() {
       const s8Frag = geom ? s8LinkParams(geom, { minElevUp: tx.minElevation, minElevDn: rx.rxMinElevation }) : {}
       // resolvedMargin＝求解器最终喂给引擎的余量（功带平衡等方式下由它解出）。留全精度原值：
       // SLA / 小程序配置要它全精度，data.marginResult 已按显示精度截成 2 位小数。
-      let worstCand = null, worstLp = null, worstData = null, resolvedMargin = null
+      let worstCand = null, worstLp = null, worstData = null, resolvedMargin = null, effectiveInputs = null
       if (!candList) {
         worstLp = manualLp(linkParams, tx)   // 手动几何：仰角/斜距直接注入（入算行：仰角留空即灰字那个值），无候选可比
       } else if (candList.length === 1) {
@@ -1629,7 +1630,7 @@ async function compute() {
         worstLp.distanceMode = 'slantRange'; worstLp.slantRange = worstCand.worst.up.slantKm; worstLp.minElevation = worstCand.worst.up.elevDeg
         worstLp.rxDistanceMode = 'slantRange'; worstLp.rxSlantRange = worstCand.worst.dn.slantKm; worstLp.rxMinElevation = worstCand.worst.dn.elevDeg
       } else {
-        const rankOpt = { mode: 'margin' }
+        const rankOpt = { mode: 'margin', captureInputs: true }
         const rows = []
         // 先把各候选的入参组齐（含按各自星下点重采天线），再一次 IPC 连算完：
         // 逐条口径与单条调用完全一致，只是把「候选数」次往返压成一次。
@@ -1647,7 +1648,7 @@ async function compute() {
           const rr = rrList && rrList[ci]
           if (!(rr && rr.success)) continue
           const dd = rr.data
-          rows.push({ cand: candList[ci], lp: lps[ci], data: dd, paDb: parseFloat(dd.paRecommendationdBResult), pUse: parseFloat(dd.powerUsageRatio), upCN: parseFloat(dd.uplinkCN), dnCN: parseFloat(dd.downlinkCN) })
+          rows.push({ cand: candList[ci], lp: lps[ci], data: dd, effectiveInputs: rr.effectiveInputs, paDb: parseFloat(dd.paRecommendationdBResult), pUse: parseFloat(dd.powerUsageRatio), upCN: parseFloat(dd.uplinkCN), dnCN: parseFloat(dd.downlinkCN) })
         }
         if (!rows.length) { out.push({ ...base, data: null, error: '链路预算计算失败', geom }); continue }
         const meanOf = (f) => rows.reduce((s, x) => s + (isFinite(f(x)) ? f(x) : 0), 0) / rows.length
@@ -1656,13 +1657,14 @@ async function compute() {
         let wr = rows[0]
         for (const x of rows) if (badnessOf(x) > badnessOf(wr)) wr = x
         worstCand = wr.cand; worstLp = wr.lp
-        if (mode === 'margin') { worstData = wr.data; resolvedMargin = parseFloat(worstLp.margin) }   // 用户口径即 margin → 直接复用排序结果，省一次计算
+        if (mode === 'margin') { worstData = wr.data; resolvedMargin = parseFloat(worstLp.margin); effectiveInputs = wr.effectiveInputs }   // 用户口径即 margin → 直接复用排序结果，省一次计算
       }
       if (!worstData) {
-        const r = await api.linkBudget.computeModeNGSO(satParams, worstLp, opt)
+        const r = await api.linkBudget.computeModeNGSO(satParams, worstLp, { ...opt, captureInputs: true })
         if (!(r && r.success)) { out.push({ ...base, data: null, error: (r && r.message) || '失败', geom }); continue }
         worstData = r.data
         resolvedMargin = r.resolvedMargin
+        effectiveInputs = r.effectiveInputs
       }
 
       const d = worstData
@@ -1677,7 +1679,7 @@ async function compute() {
       const pUse = parseFloat(d.powerUsageRatio); const bUse = parseFloat(d.bandwidthUsageRatio)
       // 合格判定按本行自己的方式：设置余量看资源是否够（功率/带宽占用 ≤100%），其它方式看余量 ≥0
       const ok = mode === 'margin' ? (!(pUse > 100) && !(bUse > 100)) : (!isNaN(m) && m >= 0)
-      out.push({ ...base, data: d, geom: worstGeom, ok, resolvedMargin })
+      out.push({ ...base, data: d, geom: worstGeom, ok, resolvedMargin, effectiveInputs })
     }
     // 算的途中被删掉的行不留结果（行快照里还有它们）：链路列表、容量汇总、详细预算只认表里还在的行
     const live = new Set(linkRows.map((r) => r._id))
@@ -2506,8 +2508,7 @@ const shareCtx = {
 }
 
 // —— 报表语言与报告导出 ——
-// 报表语言跟随平台语言（设置▸语言），不再单独设一档：一个软件只有一种语言，
-// 屏幕上核对的、详细预算区显示的、交出去的报表，三者必然是同一种。
+// 屏幕详细预算跟随平台语言；交付报告在导出对话框独立选择语言，通过回调参数传入。
 const reportLang = ref(getLang())
 onLangChange((v) => { reportLang.value = v })
 watch(reportLang, () => {
@@ -2525,19 +2526,19 @@ const vizRef = ref(null)
 const appVersion = ref('')
 // 某条已算链路实际用的求解策略：取计算时留底的那份入参（此后改库不改已出结果的口径）。
 // 超发量只在「功带平衡下超发」方式下有意义，其余方式不入报告。
-function calcOfLink(l) {
+function calcOfLink(l, lang = reportLang.value) {
   const p = l && sweepParamsByRow.value[l.rowId]
   const key = (p && p.opt && p.opt.mode) || ''
   const info = CALC_MODES.find((m) => m.key === key)
-  const en = reportLang.value === 'en'
+  const en = lang === 'en'
   return {
     key,
     label: info ? (en ? info.enLabel : info.label) : key,
-    margin: (p && p.linkParams && p.linkParams.margin) || '',
-    overDb: key === 'overbalance' ? ((p && p.opt && p.opt.overDb) || '') : ''
+    margin: key === 'margin' ? (l?.effectiveInputs?.linkParams?.margin ?? p?.linkParams?.margin ?? '') : '',
+    overDb: key === 'overbalance' ? (l?.effectiveInputs?.overDb ?? p?.opt?.overDb ?? '') : ''
   }
 }
-const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
+const { reportDlg, reportVariant, reportFigureCapture, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'NGSO',
   fieldGroups: FIELD_GROUPS,
@@ -2553,17 +2554,17 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   vizRef: () => vizRef.value,
   lang: () => reportLang.value,
   appVersion: () => appVersion.value,
-  paramsFor: (l) => sweepParamsByRow.value[l.rowId] || null,
+  paramsFor: (l) => reportInputParams(sweepParamsByRow.value[l.rowId] || null, l.effectiveInputs),
   // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
   carrierOf: (l) => { const row = linkRows.find((r) => r._id === l.rowId); return row ? resolveBaseband(row.basebandId).form : null },
   basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
-  slaFor: (l) => {
+  slaFor: (l, lang) => {
     const row = linkRows.find((r) => r._id === l.rowId)
-    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
+    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, lang,
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
-  slaParams: () => slaParamRows(slaParams, reportLang.value),
+  slaParams: (lang) => slaParamRows(slaParams, lang),
   // 容量汇总（§2）：与弹窗同一份账（列入 / 载波数 / 可用带宽 / 单价都算进去），标签按报表语言、数按单位档
   capFor: (key, lang, noOf) => capReportBlock(capModel.value, { lang, adaptive: unitAdaptive.value, noOf }),
   // 独立《容量汇总》报告：同一份账（导出前 beforeReport 已补算，computed 随之刷新）
@@ -2576,15 +2577,15 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   },
   beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
   // 计算方式随载波逐链路而定：封面/表头只在全表口径一致时报该方式（不一致则不报，各链路详情自带「计算设置」块）
-  calc: () => {
+  calc: (lang) => {
     const modes = new Set(links.value.map((l) => calcOfLink(l).key).filter(Boolean))
     return {
-      mode: modes.size === 1 ? calcOfLink(links.value[0]).label : '',
+      mode: modes.size === 1 ? calcOfLink(links.value[0], lang).label : '',
       satelliteName: sceneSatName.value,
       frequencyBand: sceneBand.value
     }
   },
-  calcFor: (l) => { const c = calcOfLink(l); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
+  calcFor: (l, lang) => { const c = calcOfLink(l, lang); return { mode: c.label, targetMargin: c.margin, overDb: c.overDb } },
   extraLink: (l) => {
     // 行优先按 _id 定位（计算后行可能被增删挪动），找不到退回原下标
     const row = linkRows.find((r) => r._id === l.rowId) || linkRows[l.i] || {}
@@ -2599,7 +2600,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
-  slaComposition: () => slaComposition({ orbitType: 'NGSO', slaParams }, reportLang.value),
+  slaComposition: (_key, lang) => slaComposition({ orbitType: 'NGSO', slaParams }, lang),
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),
   defaultName: (en) => {
@@ -2882,7 +2883,7 @@ onMounted(async () => {
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected <= 0" title="上一条" @click="stepDetail(-1)"><Icon name="chevron-up" :size="12" /></button>
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected >= links.length - 1" title="下一条" @click="stepDetail(1)"><Icon name="chevron-down" :size="12" /></button>
             </template>
-            <LbMultiBudget v-if="selectedBudgetRows.length > 1" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="NGSO" :adaptive="unitAdaptive" />
+            <LbMultiBudget v-if="selectedBudgetRows.length > 1 && !reportFigureCapture" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="NGSO" :adaptive="unitAdaptive" />
             <div v-else-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ sel.txName }} → {{ sel.rxName }} 计算失败：{{ sel.error }}</div>

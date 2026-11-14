@@ -6,6 +6,7 @@
 // 因此功能区没有「计算方式」选择器：多跳下反算欠定，「该调哪个旋钮」由逐段余量排序（弱段高亮）承担。
 // 几何全部手填（斜距 / 星间距离），留空即该行报错——不按轨道高度兜底换算。
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { e2eReportTopology } from '../shared/lbReportTopology.js'
 import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
@@ -1174,12 +1175,14 @@ const slaAllOn = computed(() => {
 const reportLinks = computed(() => chains
   .filter((row) => results[row._id] || errors[row._id])
   .map((row) => {
-    const nds = row.nodes || []
     const d = results[row._id]
+    const topology = e2eReportTopology(row, d ? _slaChainOf[row._id] : null, d, resolveSat)
+    const topologyNodes = topology.topologyNodes
     // #N 由 useLbReport 按导出序编（与三窗同一口径），此处不自带序号
     return {
       rowId: row._id,
-      txName: (nds[0] && nds[0].name) || '', rxName: (nds[nds.length - 1] && nds[nds.length - 1].name) || '',
+      txName: topologyNodes[0]?.name || '', rxName: topologyNodes[topologyNodes.length - 1]?.name || '',
+      ...topology,
       ok: !!d, error: errors[row._id] || '',
       // ★ 出 IPC 前必须是纯数据：Vue 的 Proxy 过不了结构化克隆
       data: d ? JSON.parse(JSON.stringify(d)) : null
@@ -1213,27 +1216,27 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, submitR
   },
   basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐条链出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
-  slaFor: (l) => {
+  slaFor: (l, lang) => {
     const row = chains.find((r) => r._id === l.rowId)
-    return slaReportBlock(slaDerivedFor(row), row && row.sla, slaParams, reportLang.value,
+    return slaReportBlock(slaDerivedFor(row), row && row.sla, slaParams, lang,
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
-  slaParams: () => slaParamRows(slaParams, reportLang.value),
+  slaParams: (lang) => slaParamRows(slaParams, lang),
   beforeSla: ensureSlaScan,   // 导出含 SLA 的报告前把惰性扫描补齐
   // 卫星名/频段留空：一条链跨几颗星、上下行各一个频段，取其一填进封面就是以偏概全。
   // 计算方式是本窗唯一的那一种，如实报出。
-  calc: () => ({ satelliteName: '', frequencyBand: '', mode: reportLang.value === 'en' ? 'Forward level recursion' : '正向电平递推' }),
+  calc: (lang) => ({ satelliteName: '', frequencyBand: '', mode: lang === 'en' ? 'Forward level recursion' : '正向电平递推' }),
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型 ——
   slaCount: () => slaCount.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
-  slaComposition: () => {
+  slaComposition: (_key, lang) => {
     const row = chains.find((r) => results[r._id]) || chains[0]
     const nds = (row && row.nodes) || []
     return slaComposition({
       orbitType: ORBIT, slaParams,
       esCount: nds.filter((n) => n && n.kind === 'es').length,
       satCount: nds.filter((n) => n && n.kind !== 'es').length
-    }, reportLang.value)
+    }, lang)
   },
   slaExtra: (l) => slaReportExtra(l),
   slaDefaultName: (en) => slaDefaultNameOf(en),

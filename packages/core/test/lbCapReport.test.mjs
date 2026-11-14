@@ -156,16 +156,16 @@ function gsoModel(lang, pbw = CAP_PBW.SUM, opts = {}) {
     if (!xbuf) continue
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(xbuf)
-    ok(`⑧ ${lang} 三张表`, wb.worksheets.length === 3, wb.worksheets.map((w) => w.name).join(' / '))
+    ok(`⑧ ${lang} 紧凑单表`, wb.worksheets.length === 1, wb.worksheets.map((w) => w.name).join(' / '))
     // 明细表里找小计容量「14000」那一格：要是数、且 numFmt 三位小数
     let cell = null
-    wb.worksheets[1].eachRow((row) => row.eachCell((c) => { if (!cell && c.value === 14000) cell = c }))
+    wb.worksheets[0].eachRow((row) => row.eachCell((c) => { if (!cell && c.value === 14000) cell = c }))
     ok(`⑧ ${lang} Excel 数值格是数且按读数位数显示`, cell && cell.numFmt === '0.000', cell ? cell.numFmt : '没找到 14000')
     let removedRow = false
     wb.eachSheet((ws) => ws.eachRow((row) => row.eachCell((c) => {
       if (typeof c.value === 'string' && /^(可用|剩余|Available|Remaining)/.test(c.value)) removedRow = true
     })))
-    ok(`⑧ ${lang} Excel 三张表均无可用 / 剩余行`, !removedRow)
+    ok(`⑧ ${lang} Excel无可用 / 剩余行`, !removedRow)
   }
   // 分节（再生式）也出得来
   const mk = (g) => buildCapModel(ITEMS(false).filter((x) => x.gkey === g), null, { pbw: CAP_PBW.NONE, availDefault: false })

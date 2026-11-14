@@ -3,6 +3,7 @@ import { ref, shallowReactive, reactive, computed, onMounted, onBeforeUnmount, n
 import { askConfirm, confirmState } from '../shared/ui/useConfirm.js'   // 确认框（全平台一份）
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
+import { reportInputParams } from '../shared/lbReport.js'
 import { FIELD_GROUPS, SAT_FIELDS, CARRIER_FIELDS, TX_FIELDS, RX_FIELDS, ISL_FIELDS, LASER_FIELDS, ES_FIELDS, ES_COMMON_FIELDS, ES_TX_FIELDS, ES_RX_FIELDS, defaultsFor, withFieldDefaults, buildRegenParams, buildRegenDownlinkParams, buildRegenIslParams, buildRegenLaserParams, eirpToPowerW } from './regenParams.js'
 import { hopSideOf, regenHopGeometry, regenHopDelay, regenDigestParams } from './regenModeScope.js'   // 上/下行单跳时延口径 · 报告输入清单按模块取字段
 import { stableStringify } from '../shared/configDirty.js'
@@ -1438,7 +1439,7 @@ function capReset() {
 // 单位取该列此次计算共选的档位（resColUnits 按 '模式:键' 记）；切体制会清空结果，此行随之消失。
 const focusRowId = ref('')
 const selectedRowIds = ref([])
-watch(linkMode, () => { selectedRowIds.value = [] })
+watch(linkMode, () => { if (!reportFigureCapture.value) selectedRowIds.value = [] })
 
 // —— 斜距工具（几何=手动）——
 // 只做换算与填入；填多少、填哪几行由用户点。填入按【各行自己的仰角】算，不是把同一个数刷满全表。
@@ -1821,13 +1822,13 @@ async function computeGround(mode) {
         // 计算方式随该行所选载波：power = 按收信站实配 G/T 算余量；margin = 按载波系统余量反解所需 G/T
         const dopt = inp.opt
         sweepStore[st._id] = { satParams, linkParams, opt: dopt }
-        const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, dopt)
+        const r = await api.linkBudget.computeRegenDownlink(satParams, linkParams, { ...dopt, captureInputs: true })
         if (r && r.success) {
           const d = r.data
           if (geo) mergePlatformGeometry(d, geo)   // 手动几何不覆盖：引擎回填的就是用户给的那两个数
           regenHopDelay(d, side)   // 单程时延只取下行这一跳（引擎按弯管口径报上下两侧之和）
           const m = parseFloat(d.linkmargin)
-          out.push({ ti, rowId: st._id, txName: rxName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+          out.push({ ti, rowId: st._id, txName: rxName, satName, data: d, effectiveInputs: r.effectiveInputs, geom: geo, access: acc, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
         } else {
           out.push({ ti, rowId: st._id, txName: rxName, satName, data: null, margin: '—', error: (r && r.message) || '失败', geom: geo, access: acc })
         }
@@ -1863,13 +1864,13 @@ async function computeGround(mode) {
         try { acc = await api.linkBudget.accessWindows({ orbit: orbitSpec, station: stationGeo, t0ISO, horizonHours: geoHorizonHours.value }) } catch (e) { acc = null }
       }
       sweepStore[st._id] = { satParams, linkParams, opt: copt }
-      const r = await api.linkBudget.computeRegenUplink(satParams, linkParams, copt)
+      const r = await api.linkBudget.computeRegenUplink(satParams, linkParams, { ...copt, captureInputs: true })
       if (r && r.success) {
         const d = r.data
         if (geo) mergePlatformGeometry(d, geo)
         regenHopDelay(d, side)   // 单程时延只取上行这一跳（引擎按弯管口径报上下两侧之和）
         const m = parseFloat(d.linkmargin)
-        out.push({ ti, rowId: st._id, txName, satName, data: d, geom: geo, access: acc, margin: d.linkmargin, powerW: d.paRecommendation, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+        out.push({ ti, rowId: st._id, txName, satName, data: d, effectiveInputs: r.effectiveInputs, geom: geo, access: acc, margin: d.linkmargin, powerW: d.paRecommendation, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
         out.push({ ti, rowId: st._id, txName, satName, data: null, margin: '—', error: (r && r.message) || '失败', geom: geo, access: acc })
       }
@@ -1990,12 +1991,12 @@ async function computeIsl(mode = 'isl') {
       const { satParams, linkParams } = buildRegenIslParams(txSat ? txSat.form : ((satConfigs[0] && satConfigs[0].form) || null), bbForm, link)
       satParams.islHopDistance = distKm     // 星间距离注入（自动=几何最差；手动=本行给定）
       sweepStore[link._id] = { satParams, linkParams, opt: { visibilityPct: visPct } }
-      const r = await api.linkBudget.computeRegenIsl(satParams, linkParams, { visibilityPct: visPct })
+      const r = await api.linkBudget.computeRegenIsl(satParams, linkParams, { visibilityPct: visPct, captureInputs: true })
       if (r && r.success) {
         const d = r.data
         if (manual) mergeIslManualDistance(d, distKm); else mergeIslGeometry(d, geo)
         const m = parseFloat(d.linkmargin)
-        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, effectiveInputs: r.effectiveInputs, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
         out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
@@ -2049,12 +2050,12 @@ async function computeLaser(mode = 'laser') {
       }
       const laserParams = buildRegenLaserParams(txSat ? txSat.form : null, link)
       laserParams.islHopDistance = distKm          // 星间距离注入（自动=几何最差；手动=本行给定）
-      const r = await api.linkBudget.computeRegenLaser(laserParams, { visibilityPct: visPct, rangeRateKmS })
+      const r = await api.linkBudget.computeRegenLaser(laserParams, { visibilityPct: visPct, rangeRateKmS, captureInputs: true })
       if (r && r.success) {
         const d = r.data
         if (manual) mergeLaserManualDistance(d, distKm); else mergeLaserGeometry(d, geo)
         const m = parseFloat(d.linkmargin)
-        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
+        out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: d, effectiveInputs: r.effectiveInputs, geom: null, islGeo: geo, access: null, margin: d.linkmargin, ok: !isNaN(m) && m >= 0, totalCN: d.carrierTotalCN, thresholdCN: d.thresholdCN, avail: d.systemAvailabilityResult })
       } else {
         out.push({ ti, rowId: link._id, txName, satName: rxName, islManual: manual, data: null, margin: '—', error: (r && r.message) || '失败', geom: null, islGeo: geo, access: null })
       }
@@ -2744,8 +2745,7 @@ const shareCtx = {
 }
 
 // ============ 报表语言与报告导出 ============
-// 报表语言跟随平台语言（设置▸语言），不再单独设一档：一个软件只有一种语言，
-// 屏幕上核对的、详细预算区显示的、交出去的报表，三者必然是同一种。
+// 屏幕详细预算跟随平台语言；交付报告在导出对话框独立选择语言，通过回调参数传入。
 const reportLang = ref(getLang())
 onLangChange((v) => { reportLang.value = v })
 watch(reportLang, () => {
@@ -2775,7 +2775,7 @@ const REGEN_FILE_NAME = {
   laser: ['再生式激光星间链路预算报告', 'Regen_Laser_ISL_Report'],
   multi: ['再生式链路预算报告', 'Regen_Link_Budget_Report']
 }
-const modeCalcLabel = (k) => { const m = REGEN_MODE_LABEL[k] || REGEN_MODE_LABEL.uplink; return reportLang.value === 'en' ? m[1] : m[0] }
+const modeCalcLabel = (k, lang = reportLang.value) => { const m = REGEN_MODE_LABEL[k] || REGEN_MODE_LABEL.uplink; return lang === 'en' ? m[1] : m[0] }
 // 进报告的模块 = 装了且有链路行的（空表没东西可报），次序 = 模块栏次序
 const reportModules = computed(() => modules.value.filter((k) => rowsOf(k).length))
 const canReport = computed(() => reportModules.value.length > 0)
@@ -2793,7 +2793,7 @@ async function computeMissing(step) {
   }
 }
 let _selSnap = null   // 导出前各模块的选中行：取图会逐条切过去，结束后还原
-const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
+const { reportDlg, reportVariant, reportFigureCapture, openReportDialog, openSlaReportDialog, openCapReportDialog, submitReport } = useLbReport({
   api,
   orbitType: 'REGEN',
   regenMode: () => linkMode.value || 'uplink',
@@ -2817,7 +2817,7 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   appVersion: () => appVersion.value,
   // 「输入参数」清单的取值源：留底入参按本链路所属模块投影到参与计算的字段上（regenDigestParams）——
   // 上行不印镜像的收信站群、下行不印上行占位、星间不印「发 / 收」两座假站；组外的键一律不交，对应那几组整块不出
-  paramsFor: (l) => regenDigestParams(l && l.mode, (l && sweepParamsByRow.value[l.rowId]) || null),
+  paramsFor: (l) => regenDigestParams(l?.mode, reportInputParams((l && sweepParamsByRow.value[l.rowId]) || null, l?.effectiveInputs)),
   // 总报告「逐参数对照」头两行（标准 / 调制编码）：交出这条链路引用的载波表单，标准名由 useLbReport 解析
   //（四种链路行都挂 basebandId；激光那两行主进程整个不出，见 report.js summaryRows）
   carrierOf: (l) => {
@@ -2826,12 +2826,12 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   },
   basebandOpts: () => basebandOpts.value,
   // SLA 建议（§4）：逐链路出纯数据块（标签按报表语言翻好、速率/带宽按当前单位档格式化）
-  slaFor: (l) => {
+  slaFor: (l, lang) => {
     const row = rowOfLink(l)
-    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, reportLang.value,
+    return slaReportBlock(slaDerivedFor(l), row && row.sla, slaParams, lang,
       (v, u) => fmtQtyParts(v, u, unitAdaptive.value))
   },
-  slaParams: () => slaParamRows(slaParams, reportLang.value),
+  slaParams: (lang) => slaParamRows(slaParams, lang),
   // 容量汇总（§2）：逐节（模块）一张，与弹窗同一份账；激光那一节没有容量口径（capModelOf 给 null → 不出）
   capFor: (key, lang, noOf) => capReportBlock(capModelOf(key), { lang, adaptive: unitAdaptive.value, noOf }),
   // 独立《容量汇总》报告：讲整份配置（逐模块一节，同总报告 §2）；激光那一节 capModelOf 给 null → 不出
@@ -2843,23 +2843,23 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
   beforeSla: ensureSlaScanAll,   // 导出含 SLA 的报告前把每个模块的惰性扫描补齐
   // 「计算方式」一栏报的是这条链路所属模块的口径（上行/下行/星间/激光各一句）；求解策略随载波逐链路而定，
   // 另占「求解方式」一行（取计算时留底的那份入参，此后改库不改已出结果的口径）。星间/激光无求解方式——工作点由链路自身参数给定。
-  calcFor: (l) => {
-    const out = { mode: modeCalcLabel(l && l.mode) }
+  calcFor: (l, lang) => {
+    const out = { mode: modeCalcLabel(l && l.mode, lang) }
     const p = l && sweepParamsByRow.value[l.rowId]
     const key = (p && p.opt && p.opt.mode) || ''
     const info = CALC_MODES.find((m) => m.key === key)
     if (!info) return out
-    out.solveMode = reportLang.value === 'en' ? info.enLabel : info.label
-    out.targetMargin = key === 'margin' ? ((p.linkParams && p.linkParams.margin) || '') : ''
+    out.solveMode = lang === 'en' ? info.enLabel : info.label
+    out.targetMargin = key === 'margin' ? (l?.effectiveInputs?.targetMargin ?? l?.effectiveInputs?.linkParams?.margin ?? p?.linkParams?.margin ?? '') : ''
     return out
   },
-  calc: () => ({
+  calc: (lang) => ({
     // 场景级「计算方式」= 各模块口径并列（逐链路那一行由 calcFor 按各自模块给）
-    mode: [...new Set(reportModules.value.map(modeCalcLabel))].join(' / ') || modeCalcLabel('uplink'),
+    mode: [...new Set(reportModules.value.map((k) => modeCalcLabel(k, lang)))].join(' / ') || modeCalcLabel('uplink', lang),
     satelliteName: sceneSatName.value,
     frequencyBand: sceneBand.value
   }),
-  extraLink: (l) => {
+  extraLink: (l, _index, lang) => {
     const mode = l.mode || linkMode.value
     const isDown = mode === 'downlink'
     const isSpace = mode === 'isl' || mode === 'laser'
@@ -2873,17 +2873,23 @@ const { reportDlg, reportVariant, openReportDialog, openSlaReportDialog, openCap
     }
     return {
       // 下行的信号流向是「卫星 → 收信站」，链路两端名字据此对调（与结果区一致）
-      txName: isDown ? l.satName : l.txName,
-      rxName: isDown ? l.txName : l.satName,
+      txName: isSpace && l.islManual ? (lang === 'en' ? 'Transmit satellite' : '发射星') : isDown ? l.satName : l.txName,
+      rxName: isSpace && l.islManual ? (lang === 'en' ? 'Receive satellite' : '接收星') : isDown ? l.txName : l.satName,
       geom: clone(l.geom), islGeo: clone(l.islGeo), access: clone(l.access),
-      staGeo, satName: l.satName
+      staGeo, satName: l.satName,
+      ...(mode === 'laser' ? { topologyWaveNm: rowOfLink(l)?.wavelengthNm } : mode === 'isl' ? { topologyRfGHz: rowOfLink(l)?.islFreq } : {})
     }
   },
   // —— 独立《服务等级指标（SLA）》报告：不取图、不组瀑布，只把各链的 SLA 块与档位表组成模型（整份配置）——
   slaCount: () => slaCountAll.value,
   slaMonthly: () => (Number(slaParams.monthly) ? 1 : 0),
-  slaComposition: (k) => slaComposition({ orbitType: 'REGEN', regenMode: k || linkMode.value || 'uplink', slaParams }, reportLang.value),
-  slaExtra: (l) => slaReportExtra(l),
+  slaComposition: (k, lang) => slaComposition({ orbitType: 'REGEN', regenMode: k || linkMode.value || 'uplink', slaParams }, lang),
+  slaExtra: (l, _index, lang) => {
+    const mode = l.mode || linkMode.value, isDown = mode === 'downlink', isSpace = mode === 'isl' || mode === 'laser'
+    return { ...slaReportExtra(l),
+      txName: isSpace && l.islManual ? (lang === 'en' ? 'Transmit satellite' : '发射星') : isDown ? l.satName : l.txName,
+      rxName: isSpace && l.islManual ? (lang === 'en' ? 'Receive satellite' : '接收星') : isDown ? l.txName : l.satName }
+  },
   slaDefaultName: (en) => slaDefaultNameOf(en),
   // 文件名：只装一个模块时沿用该模块的名字，装了几个就叫「再生式链路预算报告」
   defaultName: (en) => {
@@ -3161,7 +3167,7 @@ onMounted(async () => {
               </div>
             </div>
           </LbSection>
-          <LbSection v-if="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length">
+          <LbSection v-if="linkMode === 'uplink' || reportFigureCapture?.section === 'uplink'" v-show="linkMode === 'uplink'" id="tx" title="发信站群" :count="txStations.length">
             <template #actions>
               <!-- 卫星的指定方式（场景级，上/下行共用一个开关）：统一指定＝上方「卫星」分区单选一颗；逐链路指定＝站表「卫星」列逐行选，上方分区收起 -->
               <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置仅使用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切到逐链路指定：上/下行站表「卫星」列为空的行填入统一指定的卫星，已有选择的行不变；切到统一指定：全部链路改用当前站表首行所用的卫星">
@@ -3195,7 +3201,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
-          <LbSection v-if="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
+          <LbSection v-if="linkMode === 'downlink' || reportFigureCapture?.section === 'downlink'" v-show="linkMode === 'downlink'" id="rx" title="收信站群" :count="rxStations.length">
             <template #actions>
               <span class="lbx-segwrap" title="卫星的指定方式（上/下行两个地面模块）：统一指定＝本配置仅使用一颗卫星（在上方「卫星」分区选择，全部链路共用，站表不出「卫星」列）；逐链路指定＝站表每行各选卫星（「卫星」列，上方分区随之收起）。星间微波 / 激光链路恒按行指定发射 / 接收卫星。切到逐链路指定：上/下行站表「卫星」列为空的行填入统一指定的卫星，已有选择的行不变；切到统一指定：全部链路改用当前站表首行所用的卫星">
                 <span class="lbx-segl">卫星</span>
@@ -3228,7 +3234,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
-          <LbSection v-if="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
+          <LbSection v-if="linkMode === 'isl' || reportFigureCapture?.section === 'isl'" v-show="linkMode === 'isl'" id="isl" title="星间链路群" :count="islLinks.length">
             <template #actions>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
@@ -3257,7 +3263,7 @@ onMounted(async () => {
             </div>
             <LbCapFoot :readouts="rowReadouts" />
           </LbSection>
-          <LbSection v-if="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
+          <LbSection v-if="linkMode === 'laser' || reportFigureCapture?.section === 'laser'" v-show="linkMode === 'laser'" id="laser" title="星间激光链路群" :count="laserLinks.length">
             <template #actions>
               <span class="lbx-colpick-wrap">
                 <button class="lb-mini" title="计算结果列：勾选显示列，底部可新建自定义公式列" @click="colPickOpen = !colPickOpen">结果列 <Icon name="chevron-down" :size="12" /></button>
@@ -3292,7 +3298,7 @@ onMounted(async () => {
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected <= 0" title="上一条" @click="stepDetail(-1)"><Icon name="chevron-up" :size="12" /></button>
               <button class="lb-mini lb-mini-ico" :disabled="!links.length || selected >= links.length - 1" title="下一条" @click="stepDetail(1)"><Icon name="chevron-down" :size="12" /></button>
             </template>
-            <LbMultiBudget v-if="selectedBudgetRows.length > 1" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="REGEN" :adaptive="unitAdaptive" />
+            <LbMultiBudget v-if="selectedBudgetRows.length > 1 && !reportFigureCapture" :rows="selectedBudgetRows" :lang="reportLang" orbit-type="REGEN" :adaptive="unitAdaptive" />
             <div v-else-if="error" class="lb-err">{{ error }}</div>
             <div v-else-if="!links.length" class="lb-placeholder">尚无预算结果。</div>
             <div v-else-if="sel && sel.error" class="lb-err">链路 {{ pairLabel(sel) }} 计算失败：{{ sel.error }}</div>

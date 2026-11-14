@@ -2147,8 +2147,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
   ipcMain.handle('report:exportReport', async (e, payload) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const model = (payload && payload.model) || {}
-    // 两种模型走同一个通道：kind:'sla' 是独立的《服务等级指标（SLA）》报告——不出 PDF、
-    // 不补瀑布段、不走 enrichReportModel（那几步都是链路预算报告才要的）。
+    // 独立 SLA / 容量模型已在渲染端组好，三种输出格式共用同一份快照。
     const isSla = model.kind === 'sla'
     // kind:'cap' 是独立的《容量汇总》报告——口径同 SLA 版：只出 Excel / Word，模型在渲染端已排好（src/shared/lbCapReport.js）
     const isCap = model.kind === 'cap'
@@ -2158,13 +2157,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     const ORDER = ['xlsx', 'docx', 'pdf']
     const formats = ORDER.filter((f) => ((payload && payload.formats) || ['xlsx']).indexOf(f) > -1)
     if (!formats.length) return { ok: false, error: '未选择任何输出格式' }
-    if (isSla && formats.indexOf('pdf') > -1) return { ok: false, error: 'SLA 报告不出 PDF' }
     if (isSla && !model.hasSla) return { ok: false, error: '没有任何链路勾选了 SLA 条款' }
-    if (isCap && formats.indexOf('pdf') > -1) return { ok: false, error: '容量报告不出 PDF' }
     if (isCap && !model.hasCap) return { ok: false, error: '没有列入容量汇总的链路' }
     if (isSsa && (formats.length !== 1 || formats[0] !== 'docx')) return { ok: false, error: '空间态势报告只出 Word' }
     const EXT = { xlsx: { name: 'Excel 工作簿', extensions: ['xlsx'] }, docx: { name: 'Word 文档', extensions: ['docx'] }, pdf: { name: 'PDF 文档', extensions: ['pdf'] } }
-    // 报告语言 = 平台语言（model.lang）；对话框跟它走，模型没带再读发起窗口
+    // 报告语言由导出对话框独立选择；模型没带再读发起窗口。
     const dlgLang = await senderLang(e, model.lang)
     const dlgEn = dlgLang === 'en'
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
@@ -2200,6 +2197,11 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
           fs.writeFileSync(stem + '.docx', Buffer.from(buf))
           files.push(stem + '.docx')
         }
+        if (formats.indexOf('pdf') > -1) {
+          const buf = await require('../services/reportPdf').buildReportPdf(model)
+          fs.writeFileSync(stem + '.pdf', Buffer.from(buf))
+          files.push(stem + '.pdf')
+        }
         return receipt({ ok: true, files, filePath: files[0] }, files)
       }
       if (isCap) {
@@ -2214,13 +2216,18 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
           fs.writeFileSync(stem + '.docx', Buffer.from(buf))
           files.push(stem + '.docx')
         }
+        if (formats.indexOf('pdf') > -1) {
+          const buf = await require('../services/reportPdf').buildReportPdf(model)
+          fs.writeFileSync(stem + '.pdf', Buffer.from(buf))
+          files.push(stem + '.pdf')
+        }
         return receipt({ ok: true, files, filePath: files[0] }, files)
       }
       for (const l of (model.links || [])) {
         if (l && l.data && !(l.segments && l.segments.length)) {
           // adaptUnits＝导出那一刻屏幕上的「单位」档（出厂锁定），详表与屏幕上的详细预算同档
           try { l.segments = core().buildWaterfallSegments({ results: l.data, lang, orbitType, adaptUnits: model.adaptUnits === true, txLocation: String(l.txName || ''), rxLocation: String(l.rxName || '') }) }
-          catch (err) { l.segments = [] }
+          catch (err) { throw new Error((lang === 'en' ? 'Unable to prepare budget details for link #' : '无法生成链路预算明细 #') + l.no + ': ' + (err.message || String(err))) }
         }
       }
       report.enrichReportModel(model)

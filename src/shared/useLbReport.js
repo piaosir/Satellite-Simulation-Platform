@@ -19,6 +19,8 @@ import { buildReportModel, buildInputDigest, calcBlock, carrierIdentity, regenMo
 import { buildSlaReportModel } from './lbSlaReport.js'   // 独立《服务等级指标（SLA）》报告的模型
 import { buildCapReportModel } from './lbCapReport.js'   // 独立《容量汇总》报告的模型
 import { isUnitAdaptive } from './lbUnitMode.js'   // 结果显示单位档（功能区「单位」）：报告与屏幕同口径
+import { reportDiagnosticTranslator, localizeReportLinkDiagnostics } from './lbReportDiagnostics.js'
+import { linkTopologyOf } from './lbReportTopology.js'
 
 // 报告里图件的像素倍率。图上那个「出图」按钮用 4 倍，是因为它出的图不知道会被放到多大；
 // 报告里的图位是定死的（PDF 里限高 82 mm、Excel 里 460 px 宽），2 倍已合 550 dpi 以上，
@@ -28,6 +30,9 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export function useLbReport(o) {
   const dlg = reactive({ open: false, busy: false, progress: null })
+  // 取图临时显示单链路；保留多选本身，结束后恢复原来的多链路预算。
+  // 再生式还用 section 保留原模块的站表实例，跨模块取图不丢表内选区。
+  const reportFigureCapture = ref(null)
   // 同一个对话框壳三种口径：'full' = 链路预算报告，'sla' = 独立的《服务等级指标（SLA）》报告，
   // 'cap' = 独立的《容量汇总》报告。busy / progress 共用（一次只出一份），提交按 variant 分派。
   const variant = ref('full')
@@ -82,13 +87,15 @@ export function useLbReport(o) {
   // 都是这条链路该有图却没取到，要报出来，见 run 末尾）
   // ★ 图表区每切一条链路重取：它挂在「详细预算」里、随当前链路挂卸——停在一条算失败的链路上时它根本没挂，
   //   开头取一次就是 null，整份报告一张图都没有。
-  async function harvestFigures(flat, onStep, missing) {
+  async function harvestFigures(flat, onStep, missing, lang) {
     const out = {}
     if (!o.showViz()) return out
     const keep = o.selected()
     const keepSec = o.activeSection ? o.activeSection() : ''
     let curSec = keepSec
     try {
+      reportFigureCapture.value = { section: keepSec }
+      await o.nextTick()
       for (let i = 0; i < flat.length; i++) {
         const { l, li, s } = flat[i]
         if (onStep) onStep(i, l)
@@ -101,15 +108,21 @@ export function useLbReport(o) {
         const name = '#' + (i + 1) + ' ' + (l.txName || '') + ' → ' + (l.rxName || '')
         const viz = o.vizRef()
         if (!viz) { out[i] = []; if (missing) missing.push({ name, error: null }); continue }
-        try { out[i] = await viz.captureFigures({ scale: FIG_SCALE }) } catch (e) {
+        try { out[i] = await viz.captureFigures({ scale: FIG_SCALE, lang }) } catch (e) {
           out[i] = []
           if (missing) missing.push({ name, error: e })
         }
       }
     } finally {
-      if (o.activateSection && keepSec && keepSec !== curSec) { await o.activateSection(keepSec); await o.nextTick() }
-      o.setSelected(keep)
-      await o.nextTick()
+      try {
+        const active = o.activeSection ? o.activeSection() : curSec
+        if (o.activateSection && keepSec && keepSec !== active) { await o.activateSection(keepSec); await o.nextTick() }
+        o.setSelected(keep)
+        await o.nextTick()
+      } finally {
+        reportFigureCapture.value = null
+        await o.nextTick()
+      }
     }
     return out
   }
@@ -119,8 +132,9 @@ export function useLbReport(o) {
     if (!api) { o.setError('导出需在桌面客户端中运行'); return }
     dlg.busy = true
     try {
-      const lang = o.lang()
+      const lang = opts.lang === 'en' || opts.lang === 'zh' ? opts.lang : o.lang()
       const en = lang === 'en'
+      const diagnostic = await reportDiagnosticTranslator(lang)
       // 分节窗口：先把没算过 / 已过期的模块补齐——报告讲整份配置，结果不齐就不是整份
       if (o.beforeReport) await o.beforeReport(stepper())
       // 「含 SLA」在补算之后再判：对话框交来的是用户的选择，没算过的链路打开对话框时还没有条款，
@@ -133,7 +147,7 @@ export function useLbReport(o) {
       const flat = flatten(secs)
       const total = flat.length
       if (!total) { o.setError(en ? 'Nothing to report' : '没有可报告的链路'); return }
-      const calc = o.calc()
+      const calc = o.calc(lang)
 
       let figures = {}
       const missing = []
@@ -143,16 +157,16 @@ export function useLbReport(o) {
             text: (en ? 'Rendering figures: ' : '取图：') + (l ? (l.txName || '') + ' → ' + (l.rxName || '') : ''),
             done: i, total
           }
-        }, missing)
+        }, missing, lang)
       }
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: total, total }
 
       // 「计算设置」块：求解策略随载波逐链路而定（o.calcFor），故逐条各出各的；
       // 未提供 calcFor 的窗口沿用全批次同一份。
-      const cbOf = (l) => (o.calcFor ? calcBlock(Object.assign({}, calc, o.calcFor(l)), lang) : calcBlock(calc, lang))
+      const cbOf = (l) => (o.calcFor ? calcBlock(Object.assign({}, calc, o.calcFor(l, lang)), lang) : calcBlock(calc, lang))
       // SLA 建议（§4）：各窗用 lbSla.slaReportBlock 出纯数据（标签已按 lang 翻好、值已按单位档格式化）。
       // 对话框没勾「含 SLA 建议」就整个不带 —— hasSla 随之为假，三份文件里那一节连同目录条目一起消失。
-      const slaOf = (l) => (withSla && o.slaFor ? o.slaFor(l) : null)
+      const slaOf = (l) => (withSla && o.slaFor ? o.slaFor(l, lang) : null)
       // 容量汇总（§2）：各窗按节出一张逐转发器的表（shared/lbCapacity.capReportBlock），「链路」行的成员编号
       // 用这里的全篇 #N（分节时连续编号）——节下标 + rowId 定位，再生式各模块的行 id 互不相干。
       // 没给 capFor 的窗口（端到端）不带，主进程照旧出它自己的统计行。
@@ -161,7 +175,7 @@ export function useLbReport(o) {
       const model = buildReportModel({
         lang,
         adaptUnits: isUnitAdaptive(),
-        slaParams: withSla && o.slaParams ? o.slaParams() : null,
+        slaParams: withSla && o.slaParams ? o.slaParams(lang) : null,
         capacity,
         orbitType: o.orbitType,
         regenMode: secs[0].regenMode,
@@ -190,7 +204,10 @@ export function useLbReport(o) {
           }
           if (o.sections) base.sec = si
           // 各体制特有的附加料（NGSO 平台几何 / 再生式星间几何 + 站址），供「几何关系」sheet 用
-          return o.extraLink ? Object.assign(base, o.extraLink(l, i)) : base
+          const item = o.extraLink ? Object.assign(base, o.extraLink(l, i, lang)) : base
+          item.topology = linkTopologyOf({ ...item, topologyNodes: l.topologyNodes, topologyEdges: l.topologyEdges,
+            topologyConfiguredOnly: l.topologyConfiguredOnly }, o.orbitType, secs[si].regenMode, p, lang)
+          return localizeReportLinkDiagnostics(item, diagnostic)
         })
       })
 
@@ -218,13 +235,14 @@ export function useLbReport(o) {
     if (o.slaCount && !o.slaCount()) { o.setError('没有任何链路勾选了 SLA 条款'); return }
     dlg.busy = true
     try {
-      const lang = o.lang()
+      const lang = opts.lang === 'en' || opts.lang === 'zh' ? opts.lang : o.lang()
       const en = lang === 'en'
+      const diagnostic = await reportDiagnosticTranslator(lang)
       if (o.beforeReport) await o.beforeReport(stepper())   // 分节窗口：没算过 / 过期的模块先补算
       if (o.beforeSla) await o.beforeSla()   // 档位扫描 / 日凌是惰性会话态，出报告前补齐
       const secs = collect()
       const flat = flatten(secs)
-      const calc = o.calc()
+      const calc = o.calc(lang)
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: flat.length, total: flat.length }
       // 可用度构成（§5）：分节时逐模块各出一份，行名前缀该节的名字（各模块计入的环节各不相同）
       let composition = []
@@ -232,9 +250,9 @@ export function useLbReport(o) {
         if (o.sections && secs.length > 1) {
           for (const s of secs) {
             const title = regenModeName(s.regenMode, lang)
-            for (const c of (o.slaComposition(s.key) || [])) composition.push(Object.assign({}, c, { label: title + ' · ' + c.label }))
+            for (const c of (o.slaComposition(s.key, lang) || [])) composition.push(Object.assign({}, c, { label: title + ' · ' + c.label }))
           }
-        } else composition = o.slaComposition(secs[0].key) || []
+        } else composition = o.slaComposition(secs[0].key, lang) || []
       }
       const model = buildSlaReportModel({
         lang,
@@ -244,19 +262,19 @@ export function useLbReport(o) {
         orbitType: o.orbitType,
         regenMode: o.sections ? secs.map((s) => s.regenMode) : secs[0].regenMode,
         calc: Object.assign({ satelliteName: calc.satelliteName || '', frequencyBand: calc.frequencyBand || '' }, calc),
-        slaParams: o.slaParams ? o.slaParams() : [],
+        slaParams: o.slaParams ? o.slaParams(lang) : [],
         composition,
         monthly: o.slaMonthly ? o.slaMonthly() : 0,
         // ★ 只在宿主真给了判定器时才带这两个键：恒传 false 会把模型里「按链路自动判有没有 DVB / 3GPP」
         //   那一步挡死，引用标准表从此永远缺 EN 302 307 与 3GPP（四窗都没注入过判定器）。
         ...(o.slaHasDvb ? { hasDvb: !!o.slaHasDvb() } : {}),
         ...(o.slaHasNtn ? { hasNtn: !!o.slaHasNtn() } : {}),
-        links: flat.map(({ l }, i) => Object.assign({
+        links: flat.map(({ l }, i) => localizeReportLinkDiagnostics(Object.assign({
           no: i + 1, rowId: l.rowId, txName: l.txName, rxName: l.rxName,
           ok: !!l.ok, error: l.error || '',
           data: l.data ? JSON.parse(JSON.stringify(l.data)) : null,
-          sla: o.slaFor ? o.slaFor(l) : null
-        }, o.slaExtra ? o.slaExtra(l, i) : null))
+          sla: o.slaFor ? o.slaFor(l, lang) : null
+        }, o.slaExtra ? o.slaExtra(l, i, lang) : null), diagnostic))
       })
       if (!model.hasSla) { o.setError('没有任何链路勾选了 SLA 条款'); return }
       const r = await api.report.exportReport({
@@ -281,12 +299,12 @@ export function useLbReport(o) {
     if (!o.capModelFor) return
     dlg.busy = true
     try {
-      const lang = o.lang()
+      const lang = opts.lang === 'en' || opts.lang === 'zh' ? opts.lang : o.lang()
       const en = lang === 'en'
       if (o.beforeReport) await o.beforeReport(stepper())   // 没算过 / 过期的先补算：账要出自此刻这套输入
       const secs = collect()
       const flat = flatten(secs)
-      const calc = o.calc()
+      const calc = o.calc(lang)
       dlg.progress = { text: en ? 'Laying out and writing files…' : '排版与写盘…', done: flat.length, total: flat.length }
       const noAt = new Map(flat.map(({ l, si }, i) => [si + '|' + l.rowId, i + 1]))
       const model = buildCapReportModel({
@@ -326,7 +344,7 @@ export function useLbReport(o) {
   }
 
   return {
-    reportDlg: dlg, reportVariant: variant,
+    reportDlg: dlg, reportVariant: variant, reportFigureCapture,
     openReportDialog: open, openSlaReportDialog: openSla, openCapReportDialog: openCap,
     runReport: run, runSlaReport: runSla, runCapReport: runCap, submitReport: submit
   }

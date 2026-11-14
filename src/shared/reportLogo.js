@@ -83,6 +83,33 @@ export function saveLogo(logo, name) {
   } catch (e) { /* 存不下（配额满）不影响本次导出 */ }
 }
 
+// Image decoding may finish after another file is chosen or after Remove.
+// Only the most recent selection can replace the shared report logo. A failed
+// replacement preserves the previous image and its persisted value.
+export function createLogoSelection({ apply, error = () => {}, pending = () => {} }) {
+  let revision = 0
+  const cancel = () => { revision++; pending(false) }
+  return {
+    cancel,
+    clear() { cancel(); apply(null, '') },
+    async select(read, name) {
+      const token = ++revision
+      pending(true)
+      try {
+        const logo = await read()
+        if (token !== revision) return false
+        apply(logo, name || '')
+        return true
+      } catch (err) {
+        if (token === revision) error(err)
+        return false
+      } finally {
+        if (token === revision) pending(false)
+      }
+    }
+  }
+}
+
 // 取回上次存的那枚（各窗口共用同一个全局键）。文件名与图分开返回：存的时候把它塞在同一个
 // 对象里（见 saveLogo），但它不属于报告模型的 doc.logo——那里只该有 dataUrl / w / h 三项。
 export function loadLogo() {

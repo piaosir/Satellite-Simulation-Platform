@@ -215,5 +215,5 @@ const tipBill = computed(() => (sumPw.value ? 'max(Σ载波带宽, Σ功率带�
 .cd-in:focus { outline: none; border-color: var(--accent-ui); }
 .cd-in.n { width: 4.6em; }
 .cd-in.pr { width: 5.6em; }
-.cd-in::placeholder { color: var(--text-faint); }
+.cd-in::placeholder { color: var(--lb-placeholder, var(--text-faint)); }
 </style>

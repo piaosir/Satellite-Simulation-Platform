@@ -1650,6 +1650,18 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   ok('只存过编号的老载波落在第一条同号的上', ta.carriers.some((c) => c.name === 'old'))
   ok('按 id 归属的没被编号抢走', tb.carriers[0].name === 'y')
 
+  // 删除 A 后，显式引用 A 的载波保留为孤儿，不能被另一个同号转发器接走。
+  const removed = { ...plan, channels: [b] }
+  const afterDelete = computeLoading(removed, cs)
+  ok('删除转发器后显式 id 不按同号回退', afterDelete.unassigned.length === 1 && afterDelete.unassigned[0].name === 'x')
+  ok('删除后其余显式 id 与老编号兼容不变', afterDelete.transponders[0].carriers.map((c) => c.name).join() === 'y,old')
+  ok('删除后不污染另一转发器的占用', near(afterDelete.transponders[0].occSum, 16))
+  ok('分配表保留可重新分配的孤儿载波', buildAllocation(removed, cs).unassigned[0].c === cs[0])
+  const placedAfterDelete = autoPlace(removed, cs)
+  ok('自动排布不移动显式失效 id 的载波', placedAfterDelete[0].fcMHz === null && placedAfterDelete[0].channelId === a.id)
+  ok('自动排布仍支持只存编号的老载波', Number.isFinite(placedAfterDelete[2].fcMHz))
+  ok('删除与重排不改原载波数组', cs.every((c) => c.fcMHz === null))
+
   // ② 下行域：频带取下行，越界按下行判，自动排布落在下行域、存回上行
   const p2 = newPlan({ los: [lo] })
   const t1 = newChannel({ no: 'D1', loId: lo.id, up: { fcMHz: 14022, bwMHz: 36, pol: 'H' }, dn: { pol: 'V' } })
@@ -2016,6 +2028,60 @@ ok('toMHz: 1000 当 MHz（边界）', near(toMHz(1000), 1000))
   })
   const m = validatePlan(inBand, 'MHz').filter((i) => i.code === 'markInBand')
   ok('信标落进同极化通带 → 一条 info', m.length === 1 && m[0].severity === 'info' && m[0].refs.length === 2, String(m.length))
+}
+
+// 自动排布：宽带、窄带及 Hz 级载波都按真实频带落位，显示单位不参与量化。
+{
+  const lo = newLo({ valueMHz: 1750 })
+  for (const fc of [14000, 100000]) for (const bw of [36, 0.002, 0.000004]) for (const side of ['up', 'dn']) {
+    const ch = newChannel({ no: 'N', loId: lo.id, up: { fcMHz: fc, bwMHz: bw } })
+    const plan = newPlan({ los: [lo], channels: [ch] })
+    const original = Array.from({ length: 5 }, (_, i) => newCarrier({ name: `N${i}`, channelId: ch.id, occBwMHz: bw / 4 }))
+    const placed = autoPlace(plan, original, { side })
+    const band = resolveChannel(plan, ch)[side]
+    const dx = side === 'dn' ? fc - band.fc : 0
+    const eps = 16 * Number.EPSILON * fc
+    const prefix = `${fc}MHz/${bw}MHz/${side}`
+    ok(`${prefix}：四条恰好放入，第五条不越界硬塞`, placed.slice(0, 4).every((c) => Number.isFinite(c.fcMHz)) && placed[4].fcMHz === null)
+    for (let i = 0; i < 4; i++) {
+      const center = placed[i].fcMHz - dx
+      ok(`${prefix}：载波 ${i} 在频带内`, center - bw / 8 >= band.f1 - eps && center + bw / 8 <= band.f2 + eps)
+      if (i) ok(`${prefix}：相邻载波不重叠`, placed[i].fcMHz - placed[i - 1].fcMHz >= bw / 4 - eps)
+    }
+    ok(`${prefix}：原始输入仍可用于撤销`, original.every((c) => c.fcMHz === null))
+    ok(`${prefix}：装填核算未报越界/重叠`, !computeLoading(plan, placed, { side }).transponders[0].issues.some((x) => ['carrierOverlap', 'outOfBand'].includes(x.code)))
+    const rendered = buildAllocation(plan, placed, { side }).groups[0].rows.filter((row) => row.placed)
+    ok(`${prefix}：分配表几何保留同一中心及带宽精度`, rendered.every((row) => row.f.fc === row.c.fcMHz - dx
+      && Math.abs(row.f.f2 - row.f.f1 - row.occ) <= eps && row.f.f1 >= band.f1 - eps && row.f.f2 <= band.f2 + eps))
+  }
+
+  const ch = newChannel({ no: 'G', loId: lo.id, up: { fcMHz: 14000, bwMHz: 0.0023 } })
+  const plan = newPlan({ los: [lo], channels: [ch] })
+  const source = Array.from({ length: 4 }, (_, i) => newCarrier({ name: `G${i}`, channelId: ch.id, occBwMHz: 0.0005 }))
+  const guarded = autoPlace(plan, source, { side: 'dn', guardMHz: 0.0001 })
+  ok('500Hz 载波保留100Hz保护带', guarded.every((c) => Number.isFinite(c.fcMHz)) && guarded.slice(1).every((c, i) => c.fcMHz - guarded[i].fcMHz >= 0.0006 - 1e-10))
+
+  // 带外固定载波不能制造超出转发器的假空隙；其保护带仍须参与边界占位。
+  const band = resolveChannel(plan, ch).up
+  const outside = newCarrier({ name: 'outside', channelId: ch.id, fcMHz: band.f2 + 1, occBwMHz: 0.1 })
+  const tooWide = newCarrier({ name: 'wide', channelId: ch.id, occBwMHz: 0.003 })
+  const blocked = autoPlace(plan, [outside, tooWide])
+  ok('带外固定载波不能放大可排布范围', blocked[1].fcMHz === null && blocked[0].fcMHz === outside.fcMHz)
+  const nearEdge = newCarrier({ name: 'edge', channelId: ch.id, fcMHz: band.f1 - 0.0001, occBwMHz: 0.0001 })
+  const edgePlaced = autoPlace(plan, [nearEdge, source[0]], { guardMHz: 0.0002 })
+  ok('带外固定载波的保护带延伸入频带时仍保留', edgePlaced[1].fcMHz - 0.00025 >= band.f1 + 0.00015 - 1e-10)
+  const oneHz = newPlan({ channels: [newChannel({ id: '1Hz', up: { fcMHz: 14000, bwMHz: 0.000001 } })] })
+  ok('1Hz 空隙不能靠绝对容差塞入2Hz载波', autoPlace(oneHz, [newCarrier({ channelId: '1Hz', occBwMHz: 0.000002 })])[0].fcMHz === null)
+
+  for (const [fc, bw] of [[1450, 0.05], [1450, 5], [14000, 0.0001]]) for (const n of [100, 1000, 10000]) {
+    const t = newChannel({ id: 'full', loId: lo.id, up: { fcMHz: fc, bwMHz: bw } })
+    const p = newPlan({ los: [lo], channels: [t] })
+    const cs = Array.from({ length: n }, () => newCarrier({ channelId: t.id, occBwMHz: bw / n }))
+    for (const side of ['up', 'dn']) {
+      const full = autoPlace(p, cs, { side })
+      ok(`${fc}MHz/${n}路恰好满填/${side}：累计误差不漏末条`, full.every((c) => Number.isFinite(c.fcMHz)))
+    }
+  }
 }
 
 console.log(`  ${pass} 通过, ${fail} 失败`)

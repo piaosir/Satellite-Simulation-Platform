@@ -11,7 +11,7 @@
 import sat from '../constellation/satellite.js'
 import { posAt, posAtMs, propOf, periodMinOf, overlaysOf } from '../constellation/satPos.js'   // 取位的唯一入口
 // 唯一访问引擎（极值夹逼 + 自适应步长；主进程 solveAccessWindows 用同一份的 CJS 镜像）。相对路径：node 单测直接 import 本文件也解析得到
-import { elevWindows, observerOf, temeToEcef, satSpeedBound, minDetectMs } from '../../../packages/core/utils/access/accessCore.mjs'
+import { elevWindows, observerOf, temeToEcef, satSpeedBound, minDetectMs, accessSpans } from '../../../packages/core/utils/access/accessCore.mjs'
 // 球面多边形（建链模块同一份口径：边按经纬度线性、跨日界线展开、面积质心）
 import { pgRing, pgCentroid } from '../../../packages/core/models/mapLinkPoints.mjs'
 
@@ -118,7 +118,7 @@ function observersOf(targets) {
 // 卫星地固系速度上界：本体（satrec 根数 / 星历表采样）与叠加星历取大
 function speedBoundOf(rec) {
   let v = satSpeedBound(rec)
-  const ov = rec && !rec.__ephem ? overlaysOf(rec) : null
+  const ov = rec ? overlaysOf(rec) : null
   if (ov) for (const tab of ov) { const u = satSpeedBound(tab); if (u > v) v = u }
   return v
 }
@@ -175,7 +175,8 @@ export function accessWindows(entries, targets, times, horizonSec, minElevDeg, o
     }
     const r = elevWindows({
       stateAt, obs, obsAt: obsReal ? (tMs) => obsReal(tMs - off) : null,
-      thrDeg: thr, t0: base, t1: end, periodMin: periodMinOf(rec), vSat: speedBoundOf(rec)
+      thrDeg: thr, t0: base, t1: end, periodMin: periodMinOf(rec), vSat: speedBoundOf(rec),
+      spans: accessSpans(rec, rec ? overlaysOf(rec) : null, base, end)
     })
     const windows = r.windows.map((w) => ({
       startMs: w.startMs, endMs: w.endMs, startMin: (w.startMs - base) / 60000, endMin: (w.endMs - base) / 60000, durMin: (w.endMs - w.startMs) / 60000,
@@ -229,11 +230,15 @@ export function timeCoverage(results, horizonMin) {
 const RE_ORB = 6378.137
 export function orbitCanReach(rec, targetLatDeg, minElevDeg) {
   if (!rec) return true
+  // 叠加星历可以改变轨道面和高度；本体根数不能作为剔除它的依据。
+  if (rec.__ephem || overlaysOf(rec)?.length) return true
   const inclDeg = (rec.inclo || 0) * 180 / Math.PI
   const maxSubLat = inclDeg > 90 ? 180 - inclDeg : inclDeg              // 星下点可达最高纬度 ≈ 倾角
   const aKm = (rec.a || 0) * RE_ORB                                     // satrec.a 以地球半径为单位
   if (!(aKm > RE_ORB)) return true                                     // 异常 → 保守不剔除
-  const h = aKm - RE_ORB, eps = (Number(minElevDeg) || 0) * Math.PI / 180
+  const ecc = Number(rec.ecco)
+  if (!(ecc >= 0 && ecc < 1)) return true
+  const h = aKm * (1 + ecc) - RE_ORB, eps = (Number(minElevDeg) || 0) * Math.PI / 180
   const lam = Math.acos(Math.max(-1, Math.min(1, RE_ORB / (RE_ORB + h) * Math.cos(eps)))) - eps   // 覆盖地心半角 rad
   return Math.abs(Number(targetLatDeg) || 0) <= maxSubLat + Math.max(0, lam) * 180 / Math.PI + 2  // +2° 余量
 }

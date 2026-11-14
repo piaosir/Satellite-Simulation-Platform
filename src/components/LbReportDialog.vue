@@ -5,27 +5,27 @@
 // 密级），② 这一次导出的口径（出哪几种文件、带不带图）。元信息按窗口记在本地，下次打开就在——
 // 同一个项目的报告要连着出好几份，每份都重填一遍编号和单位是不能忍的。
 //
-// 报告语言不在这里选：它跟随平台语言（设置▸语言），屏幕上的详细预算与导出的文件一起切换。
-// 在这儿再放一个开关就会出现「屏幕是中文、导出是英文」。
-import { reactive, ref, computed, watch } from 'vue'
+// 报告语言独立于平台语言；工程师可以使用熟悉的界面，向客户出具另一种语言的报告。
+import { reactive, ref, computed, watch, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
 import { DOC_FIELDS, defaultDocInfo, schemeOf, schemeName, schemeSub, translate, resolveReportTitle, pinReportTitle } from '../shared/lbReport.js'
 import { slaReportTitle } from '../shared/lbSlaReport.js'
 import { capReportTitle } from '../shared/lbCapReport.js'
+import { reportClassification } from '../shared/lbReportDiagnostics.js'
 import { REPORT_FONT_DEF, reportFontOf, normReportFontSel, reportFontOptions, composeReportFonts, reportFontLabel } from '../shared/lbReportFont.js'
 // 台标的栅格化与存取（2026-09-16 从本文件搬进 shared/reportLogo.js，零行为改动）：
 // 空间态势报告那个导出对话框要用同一枚台标——它存的是全局键，抄一份必然漂移。
-import { fileToPng, urlToPng, saveLogo, loadLogo } from '../shared/reportLogo.js'
+import { fileToPng, urlToPng, saveLogo, loadLogo, createLogoSelection } from '../shared/reportLogo.js'
 import appLogoUrl from '../assets/logo.png'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   // 'full' = 链路预算报告（原样）；'sla' = 独立的《服务等级指标（SLA）》报告：
-  // 只出 Excel / Word（不出 PDF、不取图、没有「含服务等级指标」那个开关），标题另走 slaReportTitle。
+  // 不取图、没有「含服务等级指标」那个开关，标题另走 slaReportTitle。
   // 元信息（编号 / 密级 / 单位 / logo）与全报告【共用同一存储键】——同一个项目连着出两份文件，
   // 不该填两遍；只有标题的自动命名各存一份（改过一次就钉死，两份报告的名字本就不同）。
-  // 'cap' = 独立的《容量汇总》报告：口径同 'sla'（只出 Excel / Word、不取图），标题走 capReportTitle。
+  // 'cap' = 独立的《容量汇总》报告：口径同 'sla'（不取图），标题走 capReportTitle。
   variant: { type: String, default: 'full' },
   lang: { type: String, default: 'zh' },
   orbitType: { type: String, default: 'GEO' },
@@ -49,30 +49,24 @@ const props = defineProps({
 const emit = defineEmits(['close', 'submit'])
 
 const t = computed(() => (s) => translate(s, props.lang))
+const exportLang = ref(props.lang === 'en' ? 'en' : 'zh')
 const scheme = computed(() => schemeOf(props.orbitType, props.regenMode))
 const schemeText = computed(() => schemeName(scheme.value, props.lang) + (schemeSub(scheme.value, props.lang) ? '　·　' + schemeSub(scheme.value, props.lang) : ''))
 
 const isSla = computed(() => props.variant === 'sla')
 const isCap = computed(() => props.variant === 'cap')
-// 单出的那两份（SLA / 容量）：不出 PDF、不取图、没有「含服务等级指标」那个开关
+// 单出的那两份（SLA / 容量）：不取图、没有「含服务等级指标」那个开关
 const isSub = computed(() => isSla.value || isCap.value)
-// Excel 选项的悬停口径按实际出的工作簿写：NGSO / 再生式总报告后跟几何关系（再生式分节时每模块一张），SLA / 容量版各是另一套表
-const xlsxHint = computed(() => t.value(isSla.value
-  ? '服务等级指标总表 · 指标定义 · 每条链路一张 · 引用标准'
-  : isCap.value
-    ? '容量汇总 · 逐转发器明细 · 计算口径'
-    : (scheme.value.orbitType === 'NGSO' || scheme.value.orbitType === 'REGEN')
-      ? '第一张表为总报告，其后为几何关系表与逐链路详情表'
-      : '第一张表为总报告，其后每条链路一张详情表'))
 const KEY = computed(() => props.storeKey + '/report/doc')
 const OPT_KEY = computed(() => props.storeKey + (isSla.value ? '/sla/opt' : isCap.value ? '/cap/opt' : '/report/opt'))
 // 标题的自动命名各存一份：全报告叫「…链路预算报告」、SLA 版「…服务等级指标（SLA）」、容量版「…容量汇总」
 const TITLE_KEY = computed(() => props.storeKey + (isSla.value ? '/report/slaTitle' : isCap.value ? '/report/capTitle' : '/report/title'))
-const defTitle = () => (isSla.value
-  ? slaReportTitle(props.satName, props.band, props.lang, scheme.value.orbitType)
+let titleLang = exportLang.value
+const defTitle = (lang = exportLang.value) => (isSla.value
+  ? slaReportTitle(props.satName, props.band, lang, scheme.value.orbitType)
   : isCap.value
-    ? capReportTitle(props.satName, props.band, props.lang)
-    : defaultDocInfo(scheme.value, props.satName, props.lang, props.band).title)
+    ? capReportTitle(props.satName, props.band, lang)
+    : defaultDocInfo(scheme.value, props.satName, lang, props.band).title)
 // logo 存**全局**键（'lb/report/logo'，见 shared/reportLogo.js）：台标是一家单位的，
 // 不是某个体制窗口的——传一次以后各窗口都认，除非用户自己换掉或移除。
 // 报告字体（三档：西文与数字 / 中文正文 / 中文标题与题注）：按窗口各存各的、与本窗的元信息同前缀——
@@ -85,45 +79,42 @@ const fontOpts = ref({ latin: [], cjk: [] })   // 打开时再列（要探一遍
 const doc = reactive(defaultDocInfo(scheme.value, props.satName, props.lang, props.band))
 const opt = reactive({ xlsx: true, docx: true, pdf: true, figures: true, sla: true })
 
-// —— 右上角 logo ——
-// 贴在三份文件的右上角：Excel 每张工作表，Word 与 PDF 的每一页页眉。选图 → PNG dataURL 的
+// —— 左侧 logo ——
+// Excel 每张工作表左上、Word/PDF 左侧页眉。选图 → PNG dataURL 的
 // 栅格化与存取都在 shared/reportLogo.js（矢量图也在那里转成 PNG：xlsx 与 docx 的图只吃位图）。
 const logoErr = ref('')
 const logoInput = ref(null)
 const logoName = ref('')
+const logoPending = ref(false)
+const logoSelection = createLogoSelection({
+  apply: (logo, name) => { doc.logo = logo; logoName.value = name; saveLogo(logo, name) },
+  pending: (value) => { logoPending.value = value },
+  error: (err) => { logoErr.value = t.value('图片读取失败') + '：' + ((err && err.message) || String(err)) }
+})
 
 async function pickLogo(e) {
   const file = e.target.files && e.target.files[0]
   if (e.target) e.target.value = ''      // 同一个文件连选两次也要触发 change
   if (!file) return
   logoErr.value = ''
-  try {
-    doc.logo = await fileToPng(file)
-    logoName.value = file.name || ''
-    saveLogo(doc.logo, logoName.value)
-  } catch (err) {
-    doc.logo = null
-    logoName.value = ''
-    logoErr.value = t.value('图片读取失败') + '：' + ((err && err.message) || String(err))
-  }
+  await logoSelection.select(() => fileToPng(file), file.name)
 }
-const clearLogo = () => { doc.logo = null; logoName.value = ''; logoErr.value = ''; saveLogo(doc.logo, logoName.value) }
-// 「用平台标志」：台标槽位空着时报告右上角就是空的，而多数场合用户要的只是「先放个能看的」。
+const clearLogo = () => { logoErr.value = ''; logoSelection.clear() }
+// 「用平台标志」只在用户主动选择时替换自己的报告标志。
 // 用的是本软件自己的标志（src/assets/logo.png，同「关于」窗口那一枚），不涉任何第三方品牌；
 // 换成本单位的台标仍走「选择图片」，两个入口写的是同一个全局键 lb/report/logo。
 async function useAppLogo() {
   logoErr.value = ''
-  try {
-    doc.logo = await urlToPng(appLogoUrl, 'logo.png')
-    logoName.value = t.value('平台标志')
-    saveLogo(doc.logo, logoName.value)
-  } catch (err) {
-    logoErr.value = t.value('图片读取失败') + '：' + ((err && err.message) || String(err))
-  }
+  await logoSelection.select(() => urlToPng(appLogoUrl, 'logo.png'), t.value('平台标志'))
 }
 
 function loadSaved() {
-  const base = defaultDocInfo(scheme.value, props.satName, props.lang, props.band)
+  logoSelection.cancel()
+  let savedOptions = null
+  try { savedOptions = JSON.parse(localStorage.getItem(OPT_KEY.value) || 'null') } catch (e) { /* default */ }
+  exportLang.value = savedOptions && ['zh', 'en'].includes(savedOptions.lang) ? savedOptions.lang : (props.lang === 'en' ? 'en' : 'zh')
+  titleLang = exportLang.value
+  const base = defaultDocInfo(scheme.value, props.satName, exportLang.value, props.band)
   base.title = defTitle()
   let saved = null
   try { saved = JSON.parse(localStorage.getItem(KEY.value) || 'null') } catch (e) { saved = null }
@@ -131,6 +122,7 @@ function loadSaved() {
     // 日期每次取今天；其余（编号、项目、单位、签署）沿用上次填的
     doc[f.key] = (f.key === 'title' || f.key === 'date') ? base[f.key] : ((saved && saved[f.key]) || base[f.key])
   }
+  doc.classification = reportClassification(doc.classification, exportLang.value)
   // logo 从全局键取（与本窗口的元信息分开存），各窗口共用同一枚
   const lg = loadLogo()
   doc.logo = lg.logo
@@ -145,10 +137,9 @@ function loadSaved() {
   // 输出选项只记用户自己勾的值：图表区关着 / 一条 SLA 条款都没有时，界面上那一项被动置灰（figOn / slaCount），
   // 但不改写这里的值——否则关一次图表区导一份报告，此后「含图」就一直是空的
   try {
-    const o = JSON.parse(localStorage.getItem(OPT_KEY.value) || 'null')
+    const o = savedOptions
     if (o) { opt.xlsx = o.xlsx !== false; opt.docx = o.docx !== false; opt.pdf = o.pdf !== false; opt.figures = o.figures !== false; opt.sla = o.sla !== false }
   } catch (e) { /* 用默认 */ }
-  if (isSub.value) opt.pdf = false      // 单出的这两份不出 PDF
   // 报告字体：本窗上次选的（键认不出就回出厂档）；候选表按本机可用性现列（三个出厂档恒在列）
   let fs = null
   try { fs = JSON.parse(localStorage.getItem(FONT_KEY.value) || 'null') } catch (e) { fs = null }
@@ -165,7 +156,7 @@ function persist() {
     let ttl = null
     try { ttl = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { ttl = null }
     localStorage.setItem(TITLE_KEY.value, JSON.stringify(pinReportTitle(ttl, defTitle(), doc.title)))
-    localStorage.setItem(OPT_KEY.value, JSON.stringify({ xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
+    localStorage.setItem(OPT_KEY.value, JSON.stringify({ lang: exportLang.value, xlsx: opt.xlsx, docx: opt.docx, pdf: opt.pdf, figures: opt.figures, sla: opt.sla }))
     localStorage.setItem(FONT_KEY.value, JSON.stringify(normReportFontSel(font)))
   } catch (e) { /* 存不下不影响导出 */ }
 }
@@ -174,13 +165,25 @@ function persist() {
 // 选中文字拖到框外松手、或拽「备注」右下角的缩放把手拖出边界，都会让 click 落在遮罩上，一关就是十栏白填。
 function close() {
   if (props.busy) return
+  logoSelection.cancel()
   persist()
   emit('close')
 }
-watch(() => props.open, (v) => { if (v) loadSaved() }, { immediate: true })
+watch(() => props.open, (v) => { if (v) loadSaved(); else logoSelection.cancel() }, { immediate: true })
+onBeforeUnmount(() => logoSelection.cancel())
+function changeExportLang() {
+  // 语言切换前保存当前标题的定制值，再恢复目标语言自己的标题。
+  let stored = null
+  try { stored = JSON.parse(localStorage.getItem(TITLE_KEY.value) || 'null') } catch (e) { /* default */ }
+  stored = pinReportTitle(stored, defTitle(titleLang), doc.title)
+  try { localStorage.setItem(TITLE_KEY.value, JSON.stringify(stored)) } catch (e) { /* in-memory export still works */ }
+  doc.title = resolveReportTitle(stored, defTitle())
+  doc.classification = reportClassification(doc.classification, exportLang.value)
+  titleLang = exportLang.value
+}
 
-const canSubmit = computed(() => (opt.xlsx || opt.docx || (!isSub.value && opt.pdf))
-  && props.linkCount > 0 && !props.busy && (!isSla.value || props.slaCount > 0))
+const canSubmit = computed(() => (opt.xlsx || opt.docx || opt.pdf)
+  && props.linkCount > 0 && !props.busy && !logoPending.value && (!isSla.value || props.slaCount > 0))
 // 「包含图件」的生效值：图表区关着时取不到图，勾选框显示为未勾且置灰，用户原先的选择（opt.figures）原样留着
 const figOn = computed(() => !!opt.figures && props.vizAvailable)
 const figHint = computed(() => {
@@ -189,7 +192,7 @@ const figHint = computed(() => {
 })
 const slaHint = computed(() => {
   if (!props.slaCount) return t.value('没有任何链路勾选了 SLA 条款')
-  return t.value('按各链路勾选的条款出「服务等级指标」一节：总报告一张矩阵，逐链路详情一张明细表')
+  return t.value('服务等级指标（SLA）')
 })
 
 function submit() {
@@ -197,9 +200,10 @@ function submit() {
   persist()
   emit('submit', {
     variant: props.variant,
+    lang: exportLang.value,
     // 报告字体随元信息一起进模型（三档都是出厂值时为 null：主进程走模板默认）
     doc: Object.assign(JSON.parse(JSON.stringify(doc)), { fonts: composeReportFonts(font) }),
-    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, (!isSub.value && opt.pdf) ? 'pdf' : null].filter(Boolean),
+    formats: [opt.xlsx ? 'xlsx' : null, opt.docx ? 'docx' : null, opt.pdf ? 'pdf' : null].filter(Boolean),
     withFigures: !isSub.value && figOn.value,
     // 「含 SLA」交用户的选择，有没有条款留到导出前补算之后再判（useLbReport.run）：没算过 / 已过期的链路
     // 此刻还没有条款，按此刻的条款数判就会把补算后本该有的那一节漏掉
@@ -218,6 +222,13 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
       <template #head><span class="rd-scheme">{{ schemeText }}</span></template>
 
       <div class="rd-bd">
+        <label class="rd-f rd-language">
+          <span class="rd-l">{{ t('语言') }}</span>
+          <select v-model="exportLang" class="rd-in rd-sel" data-i18n-skip :disabled="busy" @change="changeExportLang">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
         <!-- 元信息：封面与页眉页脚照此写 -->
         <div class="rd-grid">
           <label v-for="f in DOC_FIELDS" :key="f.key" class="rd-f" :class="{ wide: f.wide }">
@@ -227,17 +238,17 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
           </label>
         </div>
 
-        <!-- 台标：贴在三份文件的右上角（Excel 每张工作表 / Word 与 PDF 的每一页页眉）。
+        <!-- 台标：三种格式均位于左侧。
              选过一次就记住，三个窗口共用，下次打开直接在。 -->
         <div class="rd-sec">LOGO</div>
         <div class="rd-logo">
-          <div class="rd-logo-box" :title="t('贴在每一页右上角')">
+          <div class="rd-logo-box" :title="props.lang === 'en' ? 'Report logo on the left' : '报告左侧标志'">
             <img v-if="doc.logo && doc.logo.dataUrl" :src="doc.logo.dataUrl" alt="" />
             <Icon v-else name="image" :size="16" />
           </div>
           <button class="rd-btn" :disabled="busy" @click="logoInput && logoInput.click()">{{ t(doc.logo ? '更换' : '选择图片') }}</button>
           <button class="rd-btn" :disabled="busy" :title="t('用本软件自己的标志（与「关于」窗口同一枚）')" @click="useAppLogo">{{ t('平台标志') }}</button>
-          <button class="rd-btn" :disabled="busy || !doc.logo" @click="clearLogo">{{ t('移除') }}</button>
+          <button class="rd-btn" :disabled="busy || (!doc.logo && !logoPending)" @click="clearLogo">{{ t('移除') }}</button>
           <span v-if="doc.logo" class="rd-logo-name">{{ logoName }}<template v-if="logoName">　</template>{{ doc.logo.w }} × {{ doc.logo.h }} px</span>
           <input
             ref="logoInput" class="rd-file" type="file"
@@ -246,7 +257,8 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         <div v-if="logoErr" class="rd-err">{{ logoErr }}</div>
 
         <!-- 报告字体：三档各选一款，按窗口记住（GSO / NGSO / 再生式 / 端到端互相独立） -->
-        <div class="rd-sec" :title="t('Excel 与 Word 仅写入字体名；PDF 用本机字体')">{{ t('字体') }}</div>
+        <template v-if="opt.docx || opt.pdf">
+        <div class="rd-sec">{{ t('字体') }}</div>
         <div class="rd-fonts">
           <label class="rd-f">
             <span class="rd-l">{{ t('西文') }}</span>
@@ -267,16 +279,17 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
             </select>
           </label>
         </div>
+        </template>
 
         <div class="rd-sec">{{ t('输出') }}</div>
         <div class="rd-opts">
-          <label class="rd-ck" :title="xlsxHint">
+          <label class="rd-ck">
             <input v-model="opt.xlsx" type="checkbox" :disabled="busy" />Excel（.xlsx）
           </label>
-          <label class="rd-ck" :title="t('公文格式：封面 · 目录 · 正文（可在 Word 中继续编辑）')">
+          <label class="rd-ck">
             <input v-model="opt.docx" type="checkbox" :disabled="busy" />Word（.docx）
           </label>
-          <label v-if="!isSub" class="rd-ck" :title="t('封面 / 目录 / 总报告为 A4 纵向，逐链路详情为 A4 横向')">
+          <label class="rd-ck">
             <input v-model="opt.pdf" type="checkbox" :disabled="busy" />PDF（.pdf）
           </label>
           <label v-if="!isSub" class="rd-ck" :class="{ off: !vizAvailable }" :title="figHint">
@@ -291,7 +304,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
         <div v-if="sections && sections.length" class="rd-hint rd-secs">
           <span v-for="(s, i) in sections" :key="s.key || i" class="rd-sec-i"><span>{{ s.label }}</span> <b>{{ s.count }}</b></span>
         </div>
-        <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　{{ t('字体') }} {{ fontText }}　·　{{ t('语言') }} {{ lang === 'en' ? 'English' : '中文' }}</div>
+        <div class="rd-hint">{{ linkCount }} {{ t('条链路') }}　·　<template v-if="opt.docx || opt.pdf">{{ t('字体') }} {{ fontText }}　·　</template>{{ t('语言') }} {{ exportLang === 'en' ? 'English' : '中文' }}</div>
 
         <div v-if="progress" class="rd-prog">
           <div class="rd-bar"><i :style="{ width: (progress.total ? Math.round(progress.done / progress.total * 100) : 0) + '%' }"></i></div>
@@ -315,6 +328,7 @@ const fontText = computed(() => `${fontName(reportFontOf('latin', font.latin))} 
 /* 题条里关闭钮前的体制读数 */
 .rd-scheme { flex: 0 1 auto; min-width: 0; align-self: center; padding: 0 10px; color: var(--text-faint); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rd-bd { padding: 12px; }
+.rd-language { margin-bottom: 10px; max-width: 160px; }
 .rd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
 .rd-f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .rd-f.wide { grid-column: 1 / -1; }

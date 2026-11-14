@@ -13,4 +13,17 @@ import { installGlobalErrors } from './shared/reportError.js'
 
 const app = createApp(ReportApp)
 installGlobalErrors(app)
-app.mount('#app')
+// Printing must fail with the actual error rather than waiting for a readiness
+// timeout, including setup/render failures that occur before onMounted runs.
+const signalPrintError = (error) => {
+  window.__reportError = error && error.message ? error.message : String(error || 'Report rendering failed')
+  window.__reportReady = false
+}
+const reportVueError = app.config.errorHandler
+app.config.errorHandler = (error, instance, info) => {
+  signalPrintError(error)
+  if (reportVueError) reportVueError(error, instance, info)
+}
+window.addEventListener('error', (event) => signalPrintError(event.error || event.message))
+window.addEventListener('unhandledrejection', (event) => signalPrintError(event.reason))
+try { app.mount('#app') } catch (error) { signalPrintError(error) }

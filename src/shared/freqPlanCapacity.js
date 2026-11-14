@@ -69,7 +69,10 @@ function tpFinder(list, idOf, noOf) {
     const k = String(noOf(t) ?? '')
     if (k && !byNo.has(k)) byNo.set(k, t)     // 同号多条 → 老载波落在第一条上（新载波按 id 归属）
   }
-  return (c) => (c.channelId && byId.get(c.channelId)) || (c.channelNo ? byNo.get(String(c.channelNo)) : null) || null
+  // 显式 id 失效就是未归属；只有从未存过 id 的老载波才按编号兼容匹配。
+  return (c) => c.channelId
+    ? byId.get(c.channelId) || null
+    : (c.channelNo ? byNo.get(String(c.channelNo)) : null) || null
 }
 
 // 存储域（上行）↔ 工作域（side 那一侧）。Δ = f上 − f下，取实测差而不是取 LO —— cross-strap 的
@@ -143,7 +146,7 @@ export function computeLoading(plan, carriers, opts = {}) {
     const x = Number.isFinite(c.fcMHz) ? c.fcMHz : null
     if (x == null) return null
     if (side === 'up') return x
-    return t && Number.isFinite(t.xlateMHz) ? cleanFreq(x - t.xlateMHz) : null
+    return t && Number.isFinite(t.xlateMHz) ? x - t.xlateMHz : null
   }
 
   const unassigned = []
@@ -271,8 +274,9 @@ export function autoPlace(plan, carriers, opts = {}) {
     // Δ：存储域（上行）↔ 工作域。side='up' 时是 0，整段逐点同从前
     const dx = side === 'dn' ? xlateOf(r) : 0
     if (dx == null) continue                          // 没有下行 → 这一侧排不了，留着不动
-    const w = (x) => cleanFreq(x - dx)                // 存储 → 工作
-    const s = (x) => cleanFreq(x + dx)                // 工作 → 存储
+    // 排布保持双精度，不能按显示精度收数：GHz 载频上的亚 kHz 载波仍须保留半带宽中心。
+    const w = (x) => x - dx                          // 存储 → 工作
+    const tol = 8 * Number.EPSILON * Math.max(1, Math.abs(b.f1), Math.abs(b.f2), Math.abs(dx))
     // 已定频的先占位，未定频的往空隙里塞
     const fixed = list.filter((c) => Number.isFinite(c.fcMHz) && Number.isFinite(c.occBwMHz))
       .map((c) => ({ a: w(c.fcMHz) - c.occBwMHz / 2, b: w(c.fcMHz) + c.occBwMHz / 2 }))
@@ -284,18 +288,23 @@ export function autoPlace(plan, carriers, opts = {}) {
     const gaps = []
     let cursor = b.f1
     for (const f of fixed) {
-      if (f.a - guard - cursor > 1e-9) gaps.push({ x: cursor, end: f.a - guard })
-      if (f.b + guard > cursor) cursor = f.b + guard
+      const a = Math.max(b.f1, f.a - guard), end = Math.min(b.f2, f.b + guard)
+      if (end <= b.f1 || a >= b.f2) continue
+      if (a > cursor) gaps.push({ x: cursor, end: a, used: 0, correction: 0 })
+      if (end > cursor) cursor = end
     }
-    if (b.f2 - cursor > 1e-9) gaps.push({ x: cursor, end: b.f2 })
+    if (b.f2 > cursor) gaps.push({ x: cursor, end: b.f2, used: 0, correction: 0 })
     for (const c of list) {
       if (Number.isFinite(c.fcMHz)) continue
       const bw = Number(c.occBwMHz)
       if (!Number.isFinite(bw) || bw <= 0) continue
-      const g = gaps.find((q) => q.x + bw <= q.end + 1e-6)
+      const g = gaps.find((q) => q.used + bw <= q.end - q.x + tol)
       if (!g) { c.fcMHz = null; c.note = (c.note ? c.note + '；' : '') + '转发器内已无足够连续带宽'; continue }
-      c.fcMHz = s(Math.round((g.x + bw / 2) * 1000) / 1000)
-      g.x += bw + guard
+      c.fcMHz = g.x + g.used + bw / 2 + dx
+      // 累计相对带宽而非反复递增 GHz 载频，避免恰好满填时大数加小数的误差逐条放大。
+      const increment = bw + guard - g.correction, used = g.used + increment
+      g.correction = (used - g.used) - increment
+      g.used = used
     }
   }
   return out
@@ -440,12 +449,12 @@ function allocRows(list, t, side = 'up') {
     const fc = Number.isFinite(c.fcMHz) ? c.fcMHz : null
     const edges = (x) => ({
       fc: x,
-      f1: x != null && occ != null ? cleanFreq(x - occ / 2) : null,
-      f2: x != null && occ != null ? cleanFreq(x + occ / 2) : null
+      f1: x != null && occ != null ? x - occ / 2 : null,
+      f2: x != null && occ != null ? x + occ / 2 : null
     })
     const tpBw = t && Number.isFinite(t.bwMHz) && t.bwMHz > 0 ? t.bwMHz : null
     const up = edges(fc)
-    const dn = edges(fc != null && dx != null ? cleanFreq(fc - dx) : null)
+    const dn = edges(fc != null && dx != null ? fc - dx : null)
     const f = side === 'dn' ? dn : up
     const row = {
       c,

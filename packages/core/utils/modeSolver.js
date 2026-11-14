@@ -27,9 +27,9 @@ let ENGINE = calculateLinkBudget;
 let BOOST = geoEngine.setOutputPrecisionBoost || null;
 
 // 以指定余量执行一次计算（高精度字符串传 margin，保留完整精度）
-function calcWithMargin(satParams, inputs, margin) {
+function calcWithMargin(satParams, inputs, margin, options) {
   const m = typeof margin === 'number' ? margin.toFixed(10) : String(margin);
-  return ENGINE(satParams, Object.assign({}, inputs, { margin: m }));
+  return ENGINE(satParams, Object.assign({}, inputs, { margin: m }), options);
 }
 
 // 功带平衡：令分配带宽 = 功率带宽 的余量。
@@ -124,7 +124,7 @@ function computeLinkMode(satParams, inputs, opt) {
   const mode = opt.mode || 'margin';
 
   if (mode === 'margin') {
-    const final = ENGINE(satParams, inputs);
+    const final = ENGINE(satParams, inputs, opt);
     if (!final.success) return final;
     // resolvedMargin＝真正喂进引擎的那个余量，必须全精度：本方式下它就是输入本身，别从
     // data.marginResult 回读——那是显示值（toFixed(2)），4.567 会读成 4.57。高级计算拿它做
@@ -133,11 +133,12 @@ function computeLinkMode(satParams, inputs, opt) {
     const m = strictNum(inputs && inputs.margin);
     return {
       success: true, data: final.data, mode,
+      ...(final.effectiveInputs ? { effectiveInputs: final.effectiveInputs } : {}),
       resolvedMargin: isFinite(m) ? m : parseFloat(final.data.marginResult)
     };
   }
 
-  let resolvedMargin;
+  let resolvedMargin, overDb;
   if (mode === 'power') {
     const w = strictNum(opt.powerW);
     if (!(w > 0)) return { success: false, message: '功放功率(W) 无效' };
@@ -150,6 +151,7 @@ function computeLinkMode(satParams, inputs, opt) {
     resolvedMargin = s.margin;
   } else if (mode === 'overbalance') {
     const x = strictNum(opt.overDb) || 0;
+    overDb = x;
     const s = findBalanceMargin(satParams, inputs);
     if (!s.success) return s;
     resolvedMargin = s.margin + x;
@@ -157,9 +159,11 @@ function computeLinkMode(satParams, inputs, opt) {
     return { success: false, message: '未知计算方式：' + mode };
   }
 
-  const final = calcWithMargin(satParams, inputs, resolvedMargin);
+  const final = calcWithMargin(satParams, inputs, resolvedMargin, opt);
   if (!final.success) return final;
-  return { success: true, data: final.data, resolvedMargin, mode };
+  return { success: true, data: final.data, resolvedMargin, mode,
+    ...(final.effectiveInputs ? { effectiveInputs: { ...final.effectiveInputs,
+      ...(mode === 'overbalance' ? { overDb } : {}) } } : {}) };
 }
 
 // NGSO「计算方式」求解器：复用上面全部四种方式逻辑，仅切换引擎为 NGSO，

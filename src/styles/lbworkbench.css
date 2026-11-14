@@ -33,6 +33,11 @@ html[data-theme='dark'] {
   --lb-lv1: #82a9c6; --lb-lv2: #5cbf94; --lb-lv3: #d8a73a; --lb-lv4: #e26a6a;
 }
 
+/* 四个链路预算窗口的默认提示独立于标签灰阶；挂在 body 上也覆盖 Teleport 弹窗。
+   向输入底色混入 40%，让空值提示比真实输入更淡，明暗主题自动适配。 */
+.lb-budget { --lb-placeholder: color-mix(in srgb, var(--text-faint) 60%, var(--field-bg)); }
+.lb-budget ::placeholder { color: var(--lb-placeholder); opacity: 1; }
+
 /* —— 未保存脏点：挂在功能区「保存」大按钮右上角（v1.4.4 顶栏撤销后唯一落点）——
    链路预算四窗自 2026-10-06 改自动保存后不再有它，空间态势 / 日凌仍用 —— */
 .lbx-dirty { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--warn); }
