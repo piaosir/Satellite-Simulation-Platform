@@ -112,7 +112,8 @@ function sanitizeToolContext(o) {
       if (bad || nodes.length < 2) continue
       const hops = (Array.isArray(l.hops) ? l.hops : []).slice(0, nodes.length - 1).map((h) => ({ type: h && HOPS.includes(h.type) ? h.type : '' }))
       if (hops.length !== nodes.length - 1 || hops.some((h) => !h.type)) continue
-      const lk = { name: str(l.name, 300), nameAuto: l.nameAuto !== false, nodes, hops }
+      const lk = { name: str(l.name, 4096), nameAuto: l.nameAuto !== false, nodes, hops }
+      if (typeof l.sourceName === 'string') lk.sourceName = str(l.sourceName, 4096)
       const grp = str(l.grp, 80), sl = str(l.sl, 200)
       if (grp) lk.grp = grp
       if (sl) lk.sl = sl
@@ -703,7 +704,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
       const win = BrowserWindow.fromWebContents(e.sender)
       const lang = await senderLang(e)
       const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-        title: dt('导入 GRD / PAT 方向图（可多选）', lang), properties: ['openFile', 'multiSelections'],
+        title: dt('导入方向图文件（GRD / PAT，可多选）', lang), properties: ['openFile', 'multiSelections'],
         filters: dtFilters([{ name: 'GRASP 网格 (*.grd, *.pat)', extensions: ['grd', 'pat'] }, { name: '所有文件', extensions: ['*'] }], lang)
       })
       if (canceled || !filePaths || !filePaths.length) return { canceled: true }
@@ -965,7 +966,7 @@ function register({ core, storage, report, coverage, coverageGrd, coverageGxt, s
     ipcMain.handle('perfwin:push', (_e, id, msg) => perfWin.push(id, msg))
     ipcMain.handle('perfwin:act', (e, msg) => perfWin.act(e.sender, msg))
     ipcMain.handle('perfwin:close', (_e, id) => perfWin.close(id))
-    ipcMain.handle('perfwin:setTitle', (_e, id, title) => perfWin.setTitle(id, title))
+    ipcMain.handle('perfwin:setTitle', (_e, id, title, key) => perfWin.setTitle(id, title, key))
     ipcMain.handle('perfwin:list', () => perfWin.list())
     ipcMain.handle('perfwin:self', (e) => perfWin.self(e.sender))
   }

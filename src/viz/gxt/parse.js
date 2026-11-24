@@ -21,12 +21,11 @@ function parsePoint(v) {
 }
 
 // 解析 GXT 文本 → { lon, satName, bore, contours }。无法解析时抛出错误（供调用方提示）。
-export function parseGxt(text) {
+export function parseGxt(text, { contourSource = false } = {}) {
   if (!text || typeof text !== 'string') throw new Error('空文件')
   const lines = text.split(/\r?\n/)
   let section = null            // 当前 [节名]（大写归一）
-  const kv = {}                 // 当前 section 的键值
-  let lon = null, satName = ''
+  let lon = null, satName = '', beamId = ''
   const bore = []               // [[lon,lat]...]
   const contours = []           // [{ g, p:[[lon,lat]...] }]
   let curContour = null         // 正在收集的等值线 { g, p }
@@ -42,8 +41,13 @@ export function parseGxt(text) {
       // 进入新 section：先结掉上一条等值线
       flushContour()
       section = m[1].trim().toUpperCase()
-      // GeoMain 段读完后取值
-      if (/^C\d+$/.test(section)) curContour = { g: NaN, p: [] }
+      if (section === 'FORMATINFO' || section === 'GEOMAIN') { lon = null; satName = ''; beamId = '' }
+      if (section === 'COHEADER') beamId = ''
+      if (/^C\d+$/.test(section)) {
+        curContour = { g: NaN, p: [] }
+        // 一份拼接导出可能有多个 GeoMain；在此节开始时固定归属。
+        if (contourSource) curContour.source = { satName, lon, beamId, section }
+      }
       boreGain = NaN
       continue
     }
@@ -53,8 +57,10 @@ export function parseGxt(text) {
     const val = line.slice(eq + 1).trim()
 
     if (section === 'GEOMAIN') {
-      if (key === 'long_nom') { const n = Number(val); if (Number.isFinite(n)) lon = n }
+      if (key === 'long_nom' && val !== '') { const n = Number(val); if (Number.isFinite(n)) lon = n }
       else if (key === 'sat_name') satName = val
+    } else if (section === 'COHEADER') {
+      if (key === 'beam_id') beamId = val
     } else if (/^B\d+$/.test(section)) {
       // 波束中心：p 或 p1；gain= 记成第三个分量
       if (key === 'gain') { const g = Number(val); if (Number.isFinite(g)) boreGain = g }

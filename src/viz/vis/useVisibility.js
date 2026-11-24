@@ -162,8 +162,7 @@ export function useVisibility({
   }))
   const skyThrR = computed(() => 44 * Math.max(0, 90 - (Number(minElev.value) || 0)) / 90)
 
-  // 地图叠加：目标点（贴地青点）+ 可见星星下点（2D 平面图画卫星图标；3D 因 setSatLayer 不画图标 → 只在 hover 时出名字）。
-  // 3D 的在轨立体点 + 目标→星视线斜线由宿主 computeVisibilityGeometry/commitGeometry 走 setSelectionSet 另画（setSatLayer 画不出在轨高度）。
+  // 地图叠加提供目标点、星名与 2D 星下点图标；可见星的 3D 星下点、在轨点和视线由宿主 computeVisibilityGeometry 提交。
   // key＝卫星身份串（宿主 satIdOf 同一口径）：宿主按它与聚焦 / 天线树卫星的图标归并（viz/constellation/satMarkMerge.js）
   function overlaySpec() {
     if (!open.value || mode.value === 'coverage') return null   // 覆盖模式：只留热力图，不画目标点/可见星标记

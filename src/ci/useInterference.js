@@ -313,7 +313,7 @@ export function useInterference() {
   // 本窗口自己导入 GRD —— 与「引用已有」并列，不必非得从别处引
   async function importGrdHere() {
     if (!api || !api.coverageGrd || !api.coverageGrd.import) { msg.value = '需在桌面客户端中运行'; return }
-    busy.value = true; msg.value = '选择 GRD 文件…'
+    busy.value = true; msg.value = '选择方向图文件…'
     // 失败的逐个记下、最后一次报「n 成功 / m 失败：文件（原因）」—— 从前读不进的（f.error）直接跳过，
     // 「解析失败」又被后面那句「已导入」盖掉，用户看不到少了哪几副
     const failed = []
@@ -352,11 +352,11 @@ export function useInterference() {
         const first = grdAntennas.value.find((a) => a.ant.name === added[0])
         if (first) cci.antennaKey = first.key
         msg.value = `已导入 ${added.length} 副天线：${added.join('、')}`
-      } else if (msg.value === '选择 GRD 文件…') msg.value = ''
-      if (failed.length) reportPartial('导入 GRD', added.length, failed)
+      } else if (msg.value === '选择方向图文件…') msg.value = ''
+      if (failed.length) reportPartial('导入方向图文件', added.length, failed)
     } catch (e) {
       msg.value = ''
-      reportError('导入 GRD', e)
+      reportError('导入方向图文件', e)
     } finally { busy.value = false }
   }
 

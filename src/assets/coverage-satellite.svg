@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="cells" x2=".32" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#fff"/><stop offset=".5" stop-color="#dbe6ed"/><stop offset="1" stop-color="#a0b2c4"/>
+    </linearGradient>
+    <linearGradient id="bus" x2="0" y2="1">
+      <stop stop-color="#a4d2f0"/><stop offset=".52" stop-color="#5586b3"/><stop offset="1" stop-color="#2c527f"/>
+    </linearGradient>
+  </defs>
+  <g transform="rotate(44 16 16)" stroke-linejoin="round">
+    <path d="M2 16h28" stroke="#475f76" stroke-width="2.6"/>
+    <path d="M.8 11.8h9.8v8.4H.8zm20.6 0h9.8v8.4h-9.8z" fill="url(#cells)" stroke="#56697b" stroke-width=".95"/>
+    <path d="M4.1 12v8m3.2-8v8m17.4-8v8m3.2-8v8M1 16h9.4m11.2 0H31" fill="none" stroke="#8799a9" stroke-width=".7"/>
+    <path d="m12.3 10.8 1.9-2h5.5v13.6l-1.9 2h-5.5z" fill="#354f6c" stroke="#344c62" stroke-width="1"/>
+    <path d="m12.4 10.8 1.8-2h5.4l-1.8 2z" fill="#d5e8f4"/>
+    <path d="M12.4 10.8h5.4v13.5h-5.4z" fill="url(#bus)"/>
+    <path d="M13.2 11.6h3.9m-3.9 10.9h3.9" fill="none" stroke="#c5dded" stroke-width=".85"/>
+  </g>
+</svg>

@@ -597,9 +597,9 @@ function createHud(lineMats) {
   add('by', 0x5bd66a, '#7be68a', '+Y', 2.2, false, true)
   add('bz', 0x4e8dff, '#7aa8ff', '+Z', 2.2, false, true)
   // LVLH（L 系，虚线）：沿迹 / 径向 / 轨道法向（+ĥ，见 HUD_L_DIRS）
-  add('lx', 0xd7b8ff, '#d7b8ff', byLang('沿迹', 'Along-track'), 1.4, true, false, 0.9)
-  add('ly', 0xd7b8ff, '#d7b8ff', byLang('径向', 'Radial'), 1.4, true, false, 0.9)
-  add('lh', 0xd7b8ff, '#d7b8ff', byLang('轨道法向', 'Orbit normal'), 1.4, true, false, 0.9)
+  add('lx', 0xd7b8ff, '#d7b8ff', byLang('I 沿迹', 'I Along-track'), 1.4, true, false, 0.9)
+  add('ly', 0xd7b8ff, '#d7b8ff', byLang('R 径向', 'R Radial'), 1.4, true, false, 0.9)
+  add('lh', 0xd7b8ff, '#d7b8ff', byLang('C 轨道法向', 'C Orbit normal'), 1.4, true, false, 0.9)
   add('nadir', 0xe8eef6, '#e8eef6', byLang('天底', 'Nadir'), 1.4, true, false, 0.85)
   add('vel', 0x45e0ff, '#6ae8ff', byLang('速度', 'Velocity'), 2, false, true)
   add('sun', 0xffd84a, '#ffe070', byLang('太阳', 'Sun'), 2, false, true)
@@ -692,12 +692,9 @@ function createHud(lineMats) {
     group, body, items,
     lang: curLang(),   // 标签是烘进贴图的：界面语言一换就整份重建（见 ensureHudLang）
     /**
-     * 每帧：长度随模型半径 / 相机距离、标签按屏幕像素定尺、开关。
-     * 长度口径：以模型半径的 1.5 倍为基准，但不超过相机距离的 0.3 倍（42° 视场半高 ≈ 0.38 倍距离）—— 箭头与字标
-     * 始终留在画面里；几组方向指示错开长度（本体轴 < LVLH < 太阳 < 速度 < 地球站），同向时（+X 与沿迹、+Z 与天底）字标不叠在一起
+     * 每次绘制：按屏幕基准轴长布置箭头，标签按屏幕像素定尺。几组方向指示错开长度（本体轴 < LVLH < 太阳 < 速度 < 地球站），同向时（+X 与沿迹、+Z 与天底）字标不叠在一起
      */
-    update(on, r, camDist, labelK) {
-      const base = Math.max(1e-3, Math.min(r * 1.5, camDist * 0.3))
+    update(on, base, labelK) {
       const lb = base, ll = base * 1.22
       for (let i = 0; i < 3; i++) { const it = items[BODY_KEYS[i]]; it.g.visible = !!on.bodyAxes; if (on.bodyAxes) place(it, lb) }
       for (let i = 0; i < 3; i++) { const it = items[LVLH_KEYS[i]]; it.g.visible = !!on.lvlh; if (on.lvlh) place(it, ll) }
@@ -1001,7 +998,7 @@ export function createModelLayer(o = {}) {
   // LineMaterial 的分辨率要逐帧跟画布：用数组（逐帧遍历 Set 要建迭代器）
   const lineMats = {
     list: [],
-    add(m) { this.list.push(m) },
+    add(m) { this.list.push(m); if (lastW && lastH) m.resolution.set(lastW, lastH) },
     delete(m) { const i = this.list.indexOf(m); if (i >= 0) this.list.splice(i, 1) },
     clear() { this.list.length = 0 }
   }
@@ -1071,7 +1068,11 @@ export function createModelLayer(o = {}) {
   const _sph = new THREE.Spherical()
   let followTau = tauFor(50), wheelPct = 3
   let zoomTarget = 60, dMin = 5, dMax = FOLLOW_MAX_M
-  let hudOn = { bodyAxes: false, lvlh: false, nadir: false, velocity: false, sun: false, isl: false, es: false, mounts: false }
+  const hudScene = new THREE.Scene()
+  const globeHudCamera = new THREE.PerspectiveCamera()
+  const hudAnchor = new THREE.Vector3(), hudEarth = new THREE.Vector3(), hudInv = new THREE.Quaternion()
+  let focusHud = null, hudActive = false, hudAxisPx = 72
+  const hudOn = { bodyAxes: false, lvlh: false, nadir: false, velocity: false, sun: false, isl: false, es: false, mounts: false }
   let lod = 'lod1', lodDowngraded = null, lodBudget = 0
   const perf = { acc: 0, n: 0, hold: 0, frameMs: 0, lastT: 0 }
   let camMovedL = false, zoomBusy = false, dragging = false
@@ -1079,7 +1080,7 @@ export function createModelLayer(o = {}) {
   const ISL_GRAZE_M = RE_M + 100e3           // ISL 通视判据：连线不擦过 100 km 高度以下（与 regen 星间链路的擦地口径同量级）
 
   const qL2S = new THREE.Quaternion(), qS2L = new THREE.Quaternion(), qB2L = new THREE.Quaternion()
-  const anchor = new THREE.Vector3(), sunL = new THREE.Vector3(1, 0, 0), velL = new THREE.Vector3(1, 0, 0)
+  const anchor = new THREE.Vector3(), sunL = new THREE.Vector3(1, 0, 0)
   const earthL = new THREE.Vector3()         // 地心在 L 系的位置（米）
   const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q = new THREE.Quaternion()
 
@@ -1450,10 +1451,11 @@ export function createModelLayer(o = {}) {
   //     起点的线头让邻星此刻的屏幕半径（逐帧，见 updateFollow）。
   // 每次都从场景给的原始端点（第一次进来时存一份）重算，不累积
   const _ne = new THREE.Vector3(), _ns = new THREE.Vector3(), _nb = new THREE.Vector3(), _nq = new THREE.Quaternion()
+  const hasVisibleBody = () => !!(followRoot.visible && fslot && fslot.mount)
   function bodyEntry(sx, sy, sz, out) {
     // 起点 → L 系米 → 本体系
     _ns.set(sx, sy, sz).multiplyScalar(RE_M).applyQuaternion(qS2L)
-    const hasModel = !!(fslot && fslot.mount)
+    const hasModel = hasVisibleBody()
     const box = hasModel ? fslot.mount.box : null
     let t = -1
     if (box) {
@@ -1486,7 +1488,7 @@ export function createModelLayer(o = {}) {
     nearLinkNb.length = 0
     nearLinkFarM = 0
     if (!nearLinkG || !fstate) return
-    const hasModel = !!(fslot && fslot.mount)
+    const hasModel = hasVisibleBody()
     for (const o of nearLinkG.children) {
       const geo = o.geometry
       const ib = geo && geo.attributes.instanceStart ? geo.attributes.instanceStart.data : null
@@ -1573,11 +1575,7 @@ export function createModelLayer(o = {}) {
     const qb = state.qB2L || Q_BODY2L_NADIR
     qB2L.set(qb[0], qb[1], qb[2], qb[3])
     followRoot.quaternion.copy(qB2L)
-    // HUD 标签是按语言烘进贴图的：界面语言换过就整份拆掉，下一帧 ensureFollowRig 按新语言重建
-    if (hud && hud.lang !== curLang()) { localScene.remove(hud.group); hud.dispose(); hud = null }
-    if (hud) hud.body.quaternion.copy(qB2L)
     sunL.copy(sunS).applyQuaternion(qS2L)
-    if (state.velL) velL.set(state.velL[0], state.velL[1], state.velL[2]).normalize(); else velL.set(1, 0, 0)
     earthL.copy(anchor).multiplyScalar(-RE_M).applyQuaternion(qS2L)
     if (entering) {
       const prof = gpuWeak ? followProfile('low') : followProfile(getQuality().tier, getQuality())
@@ -1756,7 +1754,6 @@ export function createModelLayer(o = {}) {
       studio.setEclipse(sunLit && fstate ? fstate.eclipse : 1)
       tuneEarthshine()
     }
-    if (!hud) { hud = createHud(lineMats); hud.body.quaternion.copy(qB2L); localScene.add(hud.group) }
     if (!mark) {
       mark = new THREE.Sprite(new THREE.SpriteMaterial({ map: satMarkTexture(), depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false, toneMapped: false }))
       mark.renderOrder = 36
@@ -1779,40 +1776,22 @@ export function createModelLayer(o = {}) {
     camL.updateProjectionMatrix()
     const labelK = 2 * Math.tan(camL.fov * Math.PI / 360) / Math.max(1, h)   // 1 CSS 像素 ↔ sizeAttenuation:false 精灵的 scale
     // 主星模型：没有可画的模型（绑定「无」/ 没缓存 / 失败 / 还在加载 / 软件光栅）画回退标记
-    const hasModel = !!(fslot && fslot.mount)
+    const hasModel = hasVisibleBody()
     if (mark) {
       mark.visible = !hasModel
       if (!hasModel) mark.scale.setScalar(MARK_PX * labelK)
-    }
-    let base = Math.max(1e-3, Math.min(r * 1.5, d * 0.3))
-    if (hud) {
-      hud.items.vel.dir.copy(velL)
-      hud.items.sun.dir.copy(sunL)
-      hud.setMounts(fstate.mounts || null)
-      base = hud.update(hudOn, r, d, labelK)
-      // 可见地球站方向：页面每拍给（L 系单位矢量 + 站名），最多 ES_MAX 支；长度比速度箭头再长一截，字标不叠
-      const sts = fstate.stations
-      let ne = 0
-      if (hudOn.es && Array.isArray(sts)) {
-        const n = Math.min(ES_MAX, sts.length)
-        for (let i = 0; i < n; i++) { const st = sts[i]; if (st && st.dirL) hud.setEs(ne++, st.dirL, st.name || '', base * 2.0, labelK) }
-      }
-      hud.hideEsFrom(ne)
-      // 挂点名按屏幕避让（对地挂点视轴几乎平行，斜侧机位下沿射线错开的长度被透视压扁）
-      hudMoved = hudOn.mounts ? hud.declutter(camL, w, h) : 0
     }
     // 其他星：真实相对位置；地球挡住的藏起来（线段 相机→星 穿过地球球面）；亚像素时画点 + 名字。
     // 聚焦集里的邻星（s.icon）按模型图标的屏幕尺寸兜底：真实尺寸比图标小时整颗放大到图标大小（与 3D 视图里它的模型图标、
     // 与 500 km 外那些聚焦星的图标同一把尺：图标像素 × 跟随档联动系数），近到比图标大时照真实尺寸
     const wpp0 = labelK
     const iconR = iconPxDef * FOLLOW_ICON_K * 0.5
-    let ni = 0
     for (let i = 0; i < otherArr.length; i++) {
       const s = otherArr[i]
       _v.copy(s.rel).sub(camL.position)
       const dist = _v.length()
       s.occ = segHitsSphere(camL.position, s.rel, earthL, RE_M)
-      const pxT = s.mount ? s.mount.radius / Math.max(1e-6, dist * wpp0) : 0
+      const pxT = iconsOn && s.mount ? s.mount.radius / Math.max(1e-6, dist * wpp0) : 0
       const k = s.icon && iconsOn && pxT > 0 && pxT < iconR ? iconR / pxT : 1
       const pxR = pxT * k
       let visR = 0   // 此刻屏上半径（px）：指向它的近场链路箭头让这么多
@@ -1837,10 +1816,7 @@ export function createModelLayer(o = {}) {
         const hh = s.label.userData.pxH * labelK
         s.label.scale.set(hh * s.label.userData.ar, hh, 1)
       }
-      // ISL：与主星通视（连线不擦过 100 km 以下）的邻星连一根实线
-      if (hud && hudOn.isl && s.los) hud.setIsl(ni++, s.rel)
     }
-    if (hud) hud.hideIslFrom(ni)
     // 近场链路里端点钉到邻星的段：箭头尖 / 线头让邻星此刻的屏上半径（屏幕恒定口径；变化不到 0.25 px 不重传）
     for (let j = 0; j < nearLinkNb.length; j++) {
       const it = nearLinkNb[j], v = it.slot.visR || 0
@@ -1898,6 +1874,58 @@ export function createModelLayer(o = {}) {
     return (t1 > 0 && t1 < 1) || (t2 > 0 && t2 < 1)
   }
 
+  // HUD 几何始终在以主星为原点的局部米制坐标系中。跟随使用局部相机；
+  // 聚焦把地球相机变换到同一坐标系，轴向、姿态、视线和开关走同一条绘制路径。
+  function renderHud(renderer, camera, w, h) {
+    const state = fstate || focusHud
+    if (!state || !hudActive || !(w > 0 && h > 0)) return
+    hudAnchor.fromArray(state.anchor)
+    hudInv.fromArray(state.qL2S).invert()
+    let cam = camL
+    if (!fstate) {
+      if (segHitsSphere(camera.position, hudAnchor, _o0, EARTH_R)) return
+      cam = globeHudCamera
+      cam.copy(camera, false)
+      cam.position.sub(hudAnchor).multiplyScalar(RE_M).applyQuaternion(hudInv)
+      cam.quaternion.premultiply(hudInv)
+      cam.near *= RE_M; cam.far *= RE_M
+      cam.updateProjectionMatrix()
+    }
+    cam.updateMatrixWorld()
+    const depth = -_v.set(0, 0, 0).applyMatrix4(cam.matrixWorldInverse).z
+    if (depth < cam.near || depth > cam.far) return
+    if (!hud || hud.lang !== curLang()) {
+      if (hud) { hudScene.remove(hud.group); hud.dispose() }
+      hud = createHud(lineMats)
+      hudScene.add(hud.group)
+    }
+    hud.body.quaternion.fromArray(state.qB2L || Q_BODY2L_NADIR)
+    hud.items.vel.dir.fromArray(state.velL || [1, 0, 0])
+    hud.items.sun.dir.copy(sunS).applyQuaternion(hudInv)
+    hud.setMounts(hudOn.mounts ? state.mounts : null)
+    const labelK = 2 / (cam.projectionMatrix.elements[5] * h)
+    const base = hudAxisPx * depth * labelK
+    hud.update(hudOn, base, labelK)
+    const stations = hudOn.es && state.stations
+    let ne = 0
+    if (stations) for (const st of stations) {
+      if (st && st.dirL && ne < ES_MAX) hud.setEs(ne++, st.dirL, st.name || '', base * 2, labelK)
+    }
+    hud.hideEsFrom(ne)
+    let ni = 0
+    if (hudOn.isl && state.others) {
+      hudEarth.copy(hudAnchor).multiplyScalar(-RE_M).applyQuaternion(hudInv)
+      for (const nb of state.others) {
+        _v.fromArray(nb.relL)
+        if (!segHitsSphere(_o0, _v, hudEarth, ISL_GRAZE_M)) hud.setIsl(ni++, _v)
+      }
+    }
+    hud.hideIslFrom(ni)
+    hudMoved = hudOn.mounts ? hud.declutter(cam, w, h) : 0
+    _vpW = w; _vpH = h
+    renderer.render(hudScene, cam)
+  }
+
   let lastMask = false
   const overlay = {
     // smp：干净的帧间隔（秒；这段间隔里没有时钟拍掐过出帧，scene 给；0 / 缺省 = 不当性能样本）—— 只给跟随自动降档用，见 updateFollow
@@ -1917,7 +1945,7 @@ export function createModelLayer(o = {}) {
       if (want !== lastMask) { lastMask = want; maskOn = want; if (o.onMaskChange) o.onMaskChange(want) }
       if (dt > 0) { const t = performance.now(); if (perf.lastT) perf.frameMs = perf.frameMs * 0.9 + (t - perf.lastT) * 0.1; perf.lastT = t }
     },
-    isEmpty() { return disposed || (!fstate && batch.count() === 0) },
+    isEmpty() { return disposed || (!fstate && !(focusHud && hudActive) && batch.count() === 0) },
     busy() { return !!(overlay._busyIcons || (fstate && (dragging || camMovedL || zoomBusy))) },
     /** 跟随近场（scene.js followA 那段）：别的「以主星为端点」的线的近截 / 图上链路的近场整跳 */
     setNearLines(list) { if (!disposed) setNearLines(list) },
@@ -1973,6 +2001,7 @@ export function createModelLayer(o = {}) {
           try { r.render(localScene, camL) } finally { r.localClippingEnabled = lce }
           r.toneMapping = tm; r.toneMappingExposure = te; r.shadowMap.enabled = sm; r.shadowMap.type = st
         }
+        renderHud(r, camera, w, h)
       } finally {
         r.toneMapping = tm; r.toneMappingExposure = te; r.autoClear = ac; r.shadowMap.enabled = sm; r.shadowMap.type = st
       }
@@ -1996,7 +2025,11 @@ export function createModelLayer(o = {}) {
     /** 图标总开关与大小（focusStyle.modelOn / modelPx） */
     setIconStyle(s) {
       if (!s) return
-      if (s.on != null) iconsOn = !!s.on
+      if (s.on != null && iconsOn !== !!s.on) {
+        iconsOn = !!s.on
+        followRoot.visible = iconsOn
+        fixNearLinks()
+      }
       if (Number(s.px) > 0) { iconPxDef = Math.max(4, Math.min(2048, Number(s.px))); batch.setDefaultPx(iconPxDef) }   // 侧栏「图标大小」滑杆 4–2048
     },
     /** 每拍：太阳方向（场景轴单位矢量）。第二参（GMST）原给跟随星空用，星空已归宇宙空间，留着只为调用口不变 */
@@ -2019,7 +2052,13 @@ export function createModelLayer(o = {}) {
     follow,
     isFollowing: () => !!fstate,
     followKey: () => (fstate ? fstate.key : null),
-    setHud(h) { if (h) hudOn = { bodyAxes: !!h.bodyAxes, lvlh: !!h.lvlh, nadir: !!h.nadir, velocity: !!h.velocity, sun: !!h.sun, isl: !!h.isl, es: !!h.es, mounts: !!h.mounts } },
+    setFocusHud(state) { focusHud = state },
+    setHud(h) {
+      if (!h) return
+      for (const key of Object.keys(hudOn)) hudOn[key] = !!h[key]
+      hudActive = Object.values(hudOn).some(Boolean)
+      if (Number.isFinite(h.axisPx) && h.axisPx > 0) hudAxisPx = h.axisPx
+    },
     /** 模型元数据变了（工作台存盘 / 清单更新）：见 refreshModel；id 缺省 = 全部在用的模型 */
     refreshModel,
     setDragDamping(p) { followTau = tauFor(p) },
@@ -2044,14 +2083,14 @@ export function createModelLayer(o = {}) {
         iconGroups: bs.iconGroups, iconDraws: bs.iconDraws, iconTris: bs.iconTris, iconLevels: bs.iconLevels,
         // 在画的图标此刻的屏幕直径（px，已乘缩放联动系数）：[key, 直径]
         iconsPx: bs.iconsPx, lod: fslot ? (fslot.inst ? fslot.inst.lod : 'loading') : null, lodTarget: fslot ? fslot.lod : null,
-        lodDowngradedFrom: lodDowngraded, modelVisible: !!(fslot && fslot.mount && fslot.mount.holder.visible && fslot.mount.holder.parent === followRoot), marker: !!(mark && mark.visible), gpuWeak, followRadiusM: followRadius(), others: others.size, islLos: isl,
+        lodDowngradedFrom: lodDowngraded, modelVisible: !!(hasVisibleBody() && fslot.mount.holder.visible && fslot.mount.holder.parent === followRoot), marker: !!(mark && mark.visible), gpuWeak, followRadiusM: followRadius(), others: others.size, islLos: isl,
         stations: fstate && Array.isArray(fstate.stations) ? fstate.stations.length : 0, zoomBusy, dMin: +dMin.toFixed(3),
         followBox: fslot && fslot.mount ? fslot.mount.box : null, hudLang: hud ? hud.lang : null,
         frameMs: +perf.frameMs.toFixed(2), camDistM: +camL.position.length().toFixed(2),
         // 二期读数：主星本体 → L 的四元数、太阳翼关节转角（相对静止位姿，度）、HUD 挂点支数
         qB2L: [qB2L.x, qB2L.y, qB2L.z, qB2L.w], sunArt: fslot && fslot.mount && fslot.mount.sun ? fslot.mount.sun.angles() : null,
         hudMounts: hud ? hud.mountCount() : 0, hudLabelMoved: hudMoved, hudDeclutterRuns: hud ? hud.declutterRuns() : 0, vp: [_vpW, _vpH],
-        hudMountRects: hud && hudOn.mounts ? hud.mountLabelRects(camL, _vpW, _vpH) : [],
+        hudMountRects: hud && hudOn.mounts ? hud.mountLabelRects(fstate ? camL : globeHudCamera, _vpW, _vpH) : [],
         // 跟随近场：场景给的近截线条数 / 近场链路段数（验证台读数）
         nearLines: nearXLineObjs.length, nearLinkSegs: nearLinkG ? nearLinkG.children.reduce((n, o) => n + (o.geometry && o.geometry.attributes.instanceTip ? o.geometry.attributes.instanceTip.count : 0), 0) : 0,
         sunLit, followLight: studio ? { dir: studio.rig.children.filter((l) => l.isDirectionalLight && l.visible).map((l) => l.position.clone().sub(l.target.position).normalize().toArray().map((v) => +v.toFixed(4))) } : null
@@ -2076,7 +2115,7 @@ export function createModelLayer(o = {}) {
       driver.detach()
       setNearLines(null); setNearLinks(null)   // 近场链路的对象归场景（它自己释放），这里只摘
       batch.dispose()
-      if (hud) { localScene.remove(hud.group); hud.dispose(); hud = null }
+      if (hud) { hudScene.remove(hud.group); hud.dispose(); hud = null }
       if (mark) { localScene.remove(mark); mark.material.dispose(); mark = null }   // 贴图是模块级共享件，不随层释放
       if (studio) { studio.dispose(); studio = null }
       if (iconEnv) { iconEnv.dispose(); iconEnv = null; iconScene.environment = null }

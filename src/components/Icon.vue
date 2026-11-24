@@ -219,8 +219,8 @@ const ICONS = {
   'app-window-mac': '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01"/><path d="M10 8h.01"/><path d="M14 8h.01"/>',
   // 「干扰分析（C/I）」（Tabler「device-analytics」，MIT）：显示器里一条折线 —— 在电脑上做的干扰分析。取代原先的 radio-tower
   'device-analytics': '<path d="M3 5a1 1 0 0 1 1 -1h16a1 1 0 0 1 1 1v10a1 1 0 0 1 -1 1h-16a1 1 0 0 1 -1 -1l0 -10"/><path d="M7 20l10 0"/><path d="M9 16l0 4"/><path d="M15 16l0 4"/><path d="M8 12l3 -3l2 2l3 -3"/>',
-  // Polygon（Tabler「polygon」，MIT）：带顶点的不规则多边形 —— 活动栏原先的 hexagon 与「仿真对象模型」立方体轮廓相同
-  polygon: '<path d="M10 5a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M17 8a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M3 11a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M13 19a2 2 0 1 0 4 0a2 2 0 1 0 -4 0"/><path d="M6.5 9.5l3.5 -3"/><path d="M14 5.5l3 1.5"/><path d="M18.5 10l-2.5 7"/><path d="M13.5 17.5l-7 -5"/>',
+  // SATSOFT 式斜五边形，轮廓与浅填色共用主题或对象颜色。
+  polygon: '<path d="M2 11 7.2 3.4 22 9.8 20.4 20.1 4.2 18.4Z" fill="currentColor" fill-opacity=".19" stroke-width="1.55"/>',
   // 装配件角色：太阳翼 / 推力器（原先分别借用 sun / arrow-down）
   'solar-panel': '<path d="M11 2h2"/><path d="m14.28 14-4.56 8"/><path d="m21 22-1.558-4H4.558"/><path d="M3 10v2"/><path d="M6.245 15.04A2 2 0 0 1 8 14h12a1 1 0 0 1 .864 1.505l-3.11 5.457A2 2 0 0 1 16 22H4a1 1 0 0 1-.863-1.506z"/><path d="M7 2a4 4 0 0 1-4 4"/><path d="m8.66 7.66 1.41 1.41"/>',
   flame: '<path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4"/>',

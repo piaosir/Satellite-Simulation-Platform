@@ -713,7 +713,7 @@ const run = () => {
                   </select>
                 </div>
                 <div class="cct-btns">
-                  <button class="ci-btn" title="导入的方向图在下面给卫星位置与视轴" @click="I.importGrdHere()">导入 GRD…</button>
+                  <button class="ci-btn" title="导入的方向图在下面给卫星位置与视轴" @click="I.importGrdHere()">导入方向图文件…</button>
                   <button class="ci-btn" @click="I.loadGrdTree()">刷新列表</button>
                 </div>
                 <!-- 卫星与视轴：本窗口导入的方向图在这里给（逐副记在导入清单上）；主窗口 / 链路预算来的照那边的设置，只出一行读数 -->

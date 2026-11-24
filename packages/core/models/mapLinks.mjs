@@ -344,8 +344,8 @@ export function chainPayload(link, ctx) {
     hops.push({ type: t })
   }
   // 名字：用户起过名（nameAuto === false）就用它，否则按节点现出自动名；nameAuto 一并带上，接收端（端到端的链路名）据此决定跟不跟自己的自动命名
-  const custom = link.nameAuto === false ? str(link.name).trim() : ''
-  return { name: custom || linkAutoName(link, ctx && ctx.nameOf), nameAuto: !custom, nodes, hops }
+  const name = linkDisplayName(link, ctx && ctx.nameOf)
+  return { name, nameAuto: link.nameAuto !== false || !str(link.name).trim(), nodes, hops }
 }
 
 /**
@@ -394,12 +394,32 @@ export function linkStrands(link, ctx) {
     if (p) {
       p.grp = grp
       p.sl = multi.map((m) => str(at.get(m.i).label || at.get(m.i).name)).join(' / ')
-      if (total > 1) p.name = p.name + ' · ' + p.sl
+      if (total > 1) {
+        p.sourceName = p.name
+        p.name = p.name + ' · ' + p.sl
+      }
       out.push(p)
     }
     for (let j = multi.length - 1; j >= 0; j--) { if (++idx[j] < multi[j].pts.length) break; idx[j] = 0 }
   }
   return out
+}
+
+export function linkDisplayName(link, nameOf) {
+  if (link && link.nameAuto === false && str(link.name).trim()) return link.name
+  return linkAutoName(link, nameOf)
+}
+
+// 批量导入按列表顺序命名，一条链路展开的多条支路只计一次。
+export function importedLinkConfigName(links) {
+  const seen = new Set(), names = []
+  for (const link of links) {
+    if (link.grp && seen.has(link.grp)) continue
+    seen.add(link.grp)
+    const name = link.sourceName || link.name
+    if (name) names.push(name)
+  }
+  return names.join('、')
 }
 
 // ─────────────────────────────── 天线罩 ───────────────────────────────

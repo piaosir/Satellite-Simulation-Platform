@@ -63,6 +63,7 @@ import LbShareDialog from '../components/LbShareDialog.vue'
 import { buildRegenScene } from '../shared/lbLinkScene.js'
 import LinkImportDialog from '../components/LinkImportDialog.vue'   // 「导入链路」：星座 3D 主窗建的图上链路
 import { suggestIslRangeKm } from '../e2e/e2eParams.js'   // 导入的星间行在手动几何下先给建议距离（同端到端手动档的建议初值）
+import { importedLinkConfigName } from '../../packages/core/models/mapLinks.mjs'
 import { esStationType } from '../shared/lbStationType.js'   // 站带天线口径 / 天线罩 → 对号地球站库条目
 import { ngsoSatBandFacts } from '../shared/lbSatBand.js'
 import { loadDefaultSiteGeo, withDefaultSite, defaultSiteValue, seedDefaultSite, isDefaultSiteSeed, TX_SITE, RX_SITE } from '../shared/lbDefaultSite.js'   // 站址留空 → R0.01% / 海拔按默认站址取
@@ -2098,7 +2099,7 @@ const autoGeoTx = (row, skip) => fillGeoRow(row, 'longitude', 'latitude', 'rainR
 const autoGeoRx = (row, skip) => fillGeoRow(row, 'rxLongitude', 'rxLatitude', 'rxRainRate', 'rxAltitude', skip)
 
 // ============ 主窗口带上下文打开（tool:open）============
-// 本窗只认图上链路 ctx.links（见下方 importChains）。口径同 GSO / NGSO 窗口：只追加、不改动现有配置；
+// 本窗只认图上链路 ctx.links（见下方 importChains）。
 // 开窗时配置未载入则排队（onMounted 末尾 flushToolContext 放行），之后一次只处理一份上下文。
 const _ctxQueue = []
 let _ctxReady = false, _ctxChain = Promise.resolve()
@@ -2106,7 +2107,7 @@ let _ctxReady = false, _ctxChain = Promise.resolve()
 function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 async function applyToolContext(c) {
-  if (c && c.links) await importChains(c.links)
+  if (c && c.links) await importChains(c.links, !c.fromImportDialog)
 }
 const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
 onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
@@ -2242,7 +2243,7 @@ async function satEntryForCtx(s) {
 // 本窗收「每颗星都按再生」的链路（链端星恒再生、中间星须勾再生；中间的地球站 = 地面转接站），其余计数跳过。逐跳拆行：
 //   站 → 星 = 再生式上行一行 · 星 → 站 = 再生式下行一行 · 星 → 星 = 星间微波 / 激光一行（跳型由主窗定）。
 //   星：satEntryForCtx（见上）；同一批里同一颗星（satKey）只解一次，解不出（定轨抛错）的那颗星所在链路算跳过。
-//   配置：逐链路指定 → 就地追加，上 / 下行行写「卫星」列；统一指定且这批上 / 下行用的星全是本配置那颗 → 就地追加；
+//   主窗推送每批新建一份配置。窗内导入时，逐链路指定或统一指定的卫星匹配时可就地追加；
 //         否则新建一份配置承接（空白配置 = 逐链路指定）。星间 / 激光行恒按行写发射 / 接收卫星。
 //   模块：用到的按首次出现的次序补装（不带出厂默认行）；没有当前模块就切到第一个；已装模块的表里只有一条
 //         没动过、没算过的出厂默认行时由导入行顶替。只追加，既有链路行与库条目一字不动。
@@ -2250,7 +2251,7 @@ async function satEntryForCtx(s) {
 //       地球站库（shared/lbStationType.js，底本 = 库第一份），否则「地球站配置」留空（= 库第一份，同新增行）。
 // 对话框那条入口也走 onToolContext 的队列：配置还没载入就排队，与主窗推来的上下文一次只处理一份。
 const linkImpOpen = ref(false)
-const onLinkImport = (list) => onToolContext({ links: list })
+const onLinkImport = (list) => onToolContext({ links: list, fromImportDialog: true })
 const ES_LOSS_KEYS = { up: 'uplinkOtherLoss', dn: 'downlinkOtherLoss' }   // 带罩时罩损并进上 / 下行「其他损耗」
 // 站型对号 → { id, made } | null（站没带口径 / 罩：调用方沿用原引用）。新条目当场落库（id 规则同 duplicateEsConfig）
 // 并取回响应式代理：同一批里下一个同口径同罩的站就命中它，不再另建一份。罩损档位取该行所用卫星的上 / 下行频率。
@@ -2305,7 +2306,7 @@ function isFactoryRow(key, r) {
     return k === 'satelliteId' && satLink.value && !!curSat.value && v === curSat.value.id
   })
 }
-async function importChains(chains) {
+async function importChains(chains, newConfig) {
   const list = Array.isArray(chains) ? chains : []
   const fit = list.filter(chainFits)
   let skipped = list.length - fit.length
@@ -2333,10 +2334,9 @@ async function importChains(chains) {
   for (const { c, ents } of jobs) {
     c.hops.forEach((h, i) => { if (h.type === 'up') ground.add(ents[i + 1].id); else if (h.type === 'down') ground.add(ents[i].id) })
   }
-  if (!satLink.value && ![...ground].every((id) => !!curSat.value && curSat.value.id === id)) {
-    const before = activeId.value
-    await addBlankConfig(null)
-    if (!activeId.value || activeId.value === before) return   // 没建成（未激活 / 写盘失败未离开）：不动现场
+  if (newConfig || (!satLink.value && ![...ground].every((id) => !!curSat.value && curSat.value.id === id))) {
+    const createdId = await addBlankConfig(null, newConfig ? importedLinkConfigName(jobs.map(({ c }) => c)) : '')
+    if (!createdId || activeId.value !== createdId) return
   }
   const used = []
   for (const { c } of jobs) for (const h of c.hops) { const k = HOP_MODULE[h.type]; if (!used.includes(k)) used.push(k) }

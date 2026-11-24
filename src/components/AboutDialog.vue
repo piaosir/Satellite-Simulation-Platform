@@ -1,10 +1,6 @@
 <script setup>
 // 「关于卫星仿真平台」——交付级信息窗。
 //
-// 旧版是一摞居中小字（名称/版本/设备ID/激活态/一行功能），既认不出层次，也答不上交付现场
-// 真正会问的那几件事。这版排成报头（名称/版本）+ 两段分区：授权（状态/档位/期限/设备ID）·
-// 功能模块（本机装了哪些工作台）。视觉沿用平台的弹窗语言（MiniAboutDialog / SettingsModal 那套
-// mask / dlg / dhd / sec / kv / dft），键值两栏共用一根栏名轴。
 // 内核（Electron/Chromium）与运行平台曾单列一段「软件」，2026-08-16 用户定：不展示。
 //
 // 设备ID 行连点 5 次 = 刷新激活状态的「特定动作」之二（口径不变，由宿主传入 onTap）。
@@ -16,8 +12,6 @@
 //   附带许可文本而非界面出字。出处记录在 docs/地图数据来源台账.md 与各消费处的代码注释里
 //   （Icon.vue / stationSymbol.js / vehicleSymbol.js）。别国 ADM2 若真从 geoBoundaries 生成（CC BY / ODbL
 //   逐国给），届时署名义务才出现，再把 ATTRIBUTION.json 接回来。
-// 2026-10-20 时区图层引入 timezone-boundary-builder（由 OpenStreetMap 构建，ODbL 1.0），第一项有署名义务的数据。
-//   用户定：正文末一行（不恢复整节「第三方署名」），另一处在图层开关的悬停；字串与版本号见 viz/geo/tzCredit.js。
 import { ref, computed, onUnmounted } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
@@ -59,18 +53,6 @@ const ymd = (ms) => {
 }
 const expiryText = computed(() => (void lang.value, activation.expiresAt ? ymd(activation.expiresAt) : byLang('永久', 'Perpetual')))
 
-// 本机装着的工作台（与「工具」菜单同一份清单）
-const MODULES = [
-  '链路预算 · GSO 透明转发', '链路预算 · NGSO 透明转发',
-  '链路预算 · 再生处理（OBP）', '链路预算 · 端到端多跳',
-  '干扰分析 C/I', 'PFD / EIRP 掩模',
-  '雨衰计算', '转发器频率计划',
-  '星座可视化与覆盖分析', '电磁波束仿真与方向图',
-  '可见性分析', '日凌预报',
-  '空间态势报告',
-  '外部星历 / SP3 / GPS 年历导入', '轨道向导'
-]
-
 const copied = ref(false)
 async function copyId() {
   const id = activation.deviceId; if (!id) return
@@ -82,11 +64,10 @@ async function copyId() {
 </script>
 
 <template>
-  <!-- 512px：模块清单两栏里最长的那条英文（Link Budget · End-to-End Multi-Hop）刚好不折行 -->
   <AppDialog title="关于" :width="512" flush initial-focus=".about-ok" @close="emit('close')">
       <div class="body">
         <!-- 身份牌：标识 + 名称 + 版本 -->
-        <div class="idcard">
+        <div class="idcard" :title="TZ_CREDIT">
           <img class="mark" :src="logoUrl" alt="" draggable="false" />
           <div class="idtx">
             <div class="nm">卫星仿真平台</div>
@@ -114,15 +95,6 @@ async function copyId() {
             </div>
           </div>
         </section>
-
-        <section>
-          <div class="sec">功能模块</div>
-          <ul class="mods">
-            <li v-for="m in MODULES" :key="m">{{ m }}</li>
-          </ul>
-        </section>
-
-        <div class="credit">{{ TZ_CREDIT }}</div>
       </div>
 
       <template #footer>
@@ -165,12 +137,4 @@ async function copyId() {
 .cp { display: inline-flex; align-items: center; gap: 4px; height: var(--h-ctl-sm); white-space: nowrap; padding: 0 7px; font-size: var(--fs-2); cursor: pointer;
   color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); }
 .cp:hover { color: var(--text); border-color: var(--line-hover); }
-
-/* 模块清单：两栏，行首短横（无彩细线，与地物线同一口径——不抢内容的色） */
-.mods { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: 1fr 1fr; column-gap: 14px; row-gap: 5px; }
-.mods li { position: relative; padding-left: 11px; font-size: var(--fs-3); color: var(--text-muted); }
-.mods li::before { content: ''; position: absolute; left: 0; top: .62em; width: 6px; height: 1px; background: var(--border-strong); }
-
-/* 数据署名（ODbL §4.3）：一行，最淡一档，不进分区体系 */
-.credit { font-size: var(--fs-2); color: var(--text-faint); overflow-wrap: anywhere; }
 </style>

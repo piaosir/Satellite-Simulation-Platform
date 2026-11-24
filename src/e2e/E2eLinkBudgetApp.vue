@@ -75,7 +75,7 @@ import { getLang, onLangChange } from '../shared/i18n/runtime.js'
 // 图上链路导入（星座 3D 主窗「链路」视图建的链 → 本窗一条条链，见下方 importChains）
 import LinkImportDialog from '../components/LinkImportDialog.vue'
 import { esStationType } from '../shared/lbStationType.js'
-import { radomeLossDb } from '../../packages/core/models/mapLinks.mjs'
+import { importedLinkConfigName, radomeLossDb } from '../../packages/core/models/mapLinks.mjs'
 import { findPoolByNorad, orbitSpecOf as poolOrbitSpecOf } from '../ngso/satSearchPool.js'   // 别名：e2eParams 另有一个按库条目出 spec 的 orbitSpecOf
 import { isSatNamePlaceholder } from '../shared/lbAutoName.js'
 import { validateRows } from '../shared/lbValidate.js'   // D6：计算前数值预校验（不是数 / 越出字段范围）
@@ -1611,7 +1611,7 @@ async function reloadSatTree() {
 // 星座 3D 主窗「链路」视图建的 STK Chain 式单向链路 → 本窗一条条链（载荷形状见 packages/core/models/mapLinks.mjs 的 chainPayload）。
 // 两个入口：链路列表「导入链路」对话框拉取 / tool:open 的 ctx.links 推送。对话框那条也走 onToolContext 的队列——
 // 库与配置载入完（onMounted 末尾 flushToolContext）之前一律排队：_libLoaded 之前加进库的条目会被随后载入的库整份顶掉。
-// 口径：只追加，既有的链与库条目一字不动；当前配置只有一条没动过的出厂默认链时由导入的链顶替（isFactoryChain）。
+// 主窗推送每批新建配置，并用导入链顶替默认链。窗内导入追加到当前配置，只有出厂默认链时顶替它。
 //   星：satEntryForCtx 库里找同一颗（NORAD → 天线树 folder → GSO 同名同轨位 → 同轨道类型同名），没有就新建并定轨，定完才落链：
 //       GSO（载荷 geo 且带定点经度）只认定点经度；NGSO 取星同资源库取星器（天线树节点 → treeNodeOrbit；目录星 → 星历池按 NORAD），
 //       取不到退回手动轨道（高度 / 倾角取主窗口那一拍的值）。同一批里同一颗星（satKey）只解一次；解不出的那颗星所在链路算跳过。
@@ -1626,13 +1626,13 @@ let _ctxReady = false, _ctxChain = Promise.resolve()
 function onToolContext(c) { if (!_ctxReady) { _ctxQueue.push(c); return } _ctxChain = _ctxChain.then(() => applyToolContext(c)).catch((e) => { reportError('载入地图带入的对象', e) }) }
 function flushToolContext() { _ctxReady = true; for (const c of _ctxQueue.splice(0)) onToolContext(c) }
 async function applyToolContext(c) {
-  if (c && c.links) await importChains(c.links)   // 本窗只收图上链路
+  if (c && c.links) await importChains(c.links, !c.fromImportDialog)   // 本窗只收图上链路
 }
 const _stopCtx = api && api.tools && api.tools.onContext ? api.tools.onContext(onToolContext) : null
 onBeforeUnmount(() => { if (_stopCtx) _stopCtx() })
 
 const linkImpOpen = ref(false)
-const onLinkImport = (list) => onToolContext({ links: list })
+const onLinkImport = (list) => onToolContext({ links: list, fromImportDialog: true })
 
 const ctxNameKey = (s) => String(s || '').trim().toLowerCase()
 const isGsoCfg = (c) => ((c && c.form && c.form.orbitClass) || 'GSO') === 'GSO'
@@ -1799,7 +1799,7 @@ async function isFactoryChain(row) {
   }
   return true
 }
-async function importChains(list) {
+async function importChains(list, newConfig) {
   const all = Array.isArray(list) ? list : []
   const fit = all.filter(chainFits)
   let skipped = all.length - fit.length
@@ -1822,10 +1822,13 @@ async function importChains(list) {
     jobs.push({ c, ents })
   }
   if (!jobs.length) { toast(byLang('没有可导入的链路', 'No applicable links')); return }
-  // 顶替判定是最后一个 await：其后建链、改表一气呵成，中途不让出主线程
+  if (newConfig) {
+    const createdId = await addBlankConfig(null, importedLinkConfigName(jobs.map(({ c }) => c)))
+    if (!createdId || activeId.value !== createdId) return
+  }
   const lone = chains.length === 1 ? chains[0] : null
-  let swap = false
-  if (lone) { try { swap = await isFactoryChain(lone) } catch (e) { swap = false } }
+  let swap = newConfig
+  if (lone && !newConfig) { try { swap = await isFactoryChain(lone) } catch (e) { swap = false } }
   const fixAlt = []
   const rows = jobs.map(({ c, ents }) => chainFromPayload(c, ents, fixAlt))
   if (swap && chains.length === 1 && chains[0] === lone) {

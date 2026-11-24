@@ -9,6 +9,7 @@
 //   ⑤ 运动档载具随时刻走（两个时刻的斜距不同），飞行途中代表点带高度（3D 端点 altKm > 0）；
 //   ⑥ 删掉编辑器开着的那个节点，编辑器随之关掉；删掉 Polygon 对象，节点报 no-pg、链路不画。
 import { ref } from 'vue'
+import { importedLinkConfigName } from '../models/mapLinks.mjs'
 import { useMapLinks } from '../../../src/viz/links/useMapLinks.js'
 
 let pass = 0, fail = 0
@@ -113,6 +114,7 @@ L.checked.value = new Set([id])
 const cnt = L.targetCounts()
 ok('计数：GSO 1 条 / 4 支路', cnt.linkbudget === 1 && cnt.rows.linkbudget === 4 && cnt.e2e === 1 && cnt.ngso === 0)
 const pl = L.payloads('linkbudget')
+ok('多支路配置使用列表里的链路名', importedLinkConfigName(pl.list) === L.nameOf(link))
 ok('导入：4 条单点载荷、1 条链路', pl.list.length === 4 && pl.links === 1 && pl.skipped === 0)
 ok('导入：站名 = 对象名·代表点', pl.list[0].nodes[0].name === '华东区·边界1' && pl.list[3].nodes[0].name === '华东区·边界4', pl.list.map((p) => p.nodes[0].name).join())
 ok('导入：Polygon 点不带高度', !('altM' in pl.list[0].nodes[0]))
@@ -138,6 +140,7 @@ rd2 = L.read.value.get(id2)
 ok('载具随时刻走：两个时刻斜距不同', Math.abs(rd2.hops[1].rangeKm - d30) > 1, d30 + ' vs ' + rd2.hops[1].rangeKm)
 L.checked.value = new Set([id2])
 const pl2 = L.payloads('linkbudget')
+ok('单条航迹链路的配置名与列表一致', importedLinkConfigName(pl2.list) === L.nameOf(L.linkOf(id2)))
 ok('导入：航迹点带 altM、站名「航迹名·载具」', pl2.list.length === 1 && Number.isFinite(pl2.list[0].nodes[2].altM) && pl2.list[0].nodes[2].name === '飞行1·载具', JSON.stringify(pl2.list[0].nodes[2]))
 
 // 静止档航行航迹：缺省全部航点，站名用「#序号」
@@ -146,6 +149,10 @@ ok('静止档航迹缺省取全部航点', JSON.stringify(tjSea.pick) === '{"w":
 const id3 = L.startNew(tjSea); L.addNode({ ...SAT }); L.addNode({ k: 'st', id: 'hub' }); L.finish()
 L.checked.value = new Set([id3])
 const pl3 = L.payloads('linkbudget')
+L.rename(id3, '航线 · A')
+const batchIds = [id2, id3]
+const batchNames = host.links.value.filter((l) => batchIds.includes(l.id)).map((l) => L.nameOf(l))
+ok('批量配置按列表顺序保留自动名和自定义名', importedLinkConfigName(L.payloads('linkbudget', batchIds).list) === batchNames.join('、'))
 ok('航点支路 2 条、站名 航行1#1 / #2、高度 0', pl3.list.length === 2 && pl3.list[0].nodes[0].name === '航行1#1' && pl3.list[1].nodes[0].name === '航行1#2' && pl3.list[0].nodes[0].altM === 0)
 // 发散束（星 → 多个航点）：终点各不相同，每条都画箭头
 const id5 = L.startNew({ k: 'st', id: 'hub' }); L.addNode({ ...SAT }); L.addNode(L.areaNode('tj', 'tj2')); L.finish()

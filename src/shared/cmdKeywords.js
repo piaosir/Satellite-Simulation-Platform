@@ -121,6 +121,9 @@ export const ID_KW = {
   'mk.stationsTable': ['earth station', 'excel', 'table', '批量', '表格', '站址'],
   'mk.points': ['points', 'marker', 'pin', '标记点'],
   'mk.stations': ['earth station', 'ground station', 'es', '站'],
+  'row.mk-stations.显示大小': ['图标与模型大小', '地球站图标大小', '地球站模型大小', 'station icon size', 'station model size'],
+  'row.mk-traj.显示大小': ['图标与模型大小', '航迹图标大小', '航迹模型大小', '载具大小', 'vehicle icon size', 'vehicle model size'],
+  'row.foc-model.卫星模型大小': ['聚焦模型大小', 'satellite model size'],
   'mk.traj': ['trajectory', 'track', 'route', '航迹', '船', '飞机'],
   'geo.adm': ['province', 'admin', 'state', '省界', '省', '行政区划'],
   'geo.chain': ['island chain', '第一岛链', '第二岛链'],
@@ -153,8 +156,8 @@ export const ID_KW = {
     '参数化', '生成', '模板', '默认卫星', '立方星', '3D 模型'],
   'model.follow': ['follow satellite', 'chase view', 'chase camera', 'NASA Eyes', '3D model', '跟随卫星', '跟踪视图', '近景', '卫星模型'],
   'model.unfollow': ['exit follow', 'stop following', 'escape', '退出跟随卫星', '结束跟随'],
-  'model.show': ['show 3D model', 'model icon', 'glb', 'HUD', 'LVLH', 'body axes', 'ISL', 'earth station direction', '3D 模型', '模型图标', '卫星模型', '显示模型',
-    '本体轴', '轨道法向', '星间链路', '地球站方向'],
+  'model.show': ['show 3D model', 'model icon', '3D 模型', '模型图标', '卫星模型', '显示模型'],
+  'sec.foc-hud': ['focus HUD', 'follow HUD', '辅助标绘', '坐标轴', 'RIC', 'LVLH', 'body axes', 'ISL', '本体轴', '天底', '速度', '太阳', '轨道法向', '星间链路', '地球站方向', '挂点'],
   'sec.mdl-lib': ['model library', 'NASA', 'STK', 'glb', 'download', '模型库', '3D 模型', '下载', '缩略图'],
   'sec.mdl-cur': ['current satellite', 'model binding', '模型绑定', '当前卫星', '3D 模型']
 }

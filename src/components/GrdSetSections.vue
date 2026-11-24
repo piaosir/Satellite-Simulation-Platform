@@ -402,7 +402,7 @@ const boreTip = computed(() => {
               <span class="balln">{{ grd.beamQuery.value.trim() ? '(全选搜索结果)' : '(全选)' }}</span>
               <span class="bpk">{{ bOnCount }}/{{ bCount }}</span>
               <span class="bacts">
-                <button type="button" v-if="bOnCount && bCount > 1" class="del ibtn sm danger" :title="`删除勾选的 ${bOnCount} 个波束（可重新导入原 GRD 恢复）`" @mousedown.stop @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="12" /></button>
+                <button type="button" v-if="bOnCount && bCount > 1" class="del ibtn sm danger" :title="`删除勾选的 ${bOnCount} 个波束（可重新导入原方向图文件恢复）`" @mousedown.stop @click.stop.prevent="grd.deleteCheckedBeams()"><Icon name="x" :size="12" /></button>
               </span>
             </div>
             <div
@@ -422,7 +422,7 @@ const boreTip = computed(() => {
               <span v-if="bCount === 1" class="bpk">{{ b.peakDb.toFixed(1) }}</span>
               <span class="bacts">
                 <button type="button" class="ibtn sm" title="重命名波束（地图标注同步用此名）· 快捷键 F2" @mousedown.stop @click.stop.prevent="startRenameBeam(b)"><Icon name="pencil" :size="12" /></button>
-                <button type="button" v-if="bCount > 1" class="del ibtn sm danger" title="删除该波束（可重新导入原 GRD 恢复）" @mousedown.stop @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="12" /></button>
+                <button type="button" v-if="bCount > 1" class="del ibtn sm danger" title="删除该波束（可重新导入原方向图文件恢复）" @mousedown.stop @click.stop.prevent="grd.deleteBeam(b.i)"><Icon name="x" :size="12" /></button>
               </span>
             </div>
             <div v-if="!bRows.length" class="empty">无匹配波束</div>

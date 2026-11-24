@@ -567,17 +567,17 @@ export function useSatPerfTable() {
   }
 
   // ==================== 当前时刻：逐星取值（一行 = 一颗目标星，波束取最大）====================
-  // ctx     — grd.getPerfContext(key)（含 basis / meta / settings / beams）；结果落进 ctx.key 那张表
+  // ctx     — grd.getPerfContext(key)（含 basis / meta / settings / beams）；结果落进指定表的会话
   // targets — [{rec, name, noradId, group, _cc}]：调用方按 picks 解析出来的活体条目（解析不到的自动缺席）
   // times   — { now, gmst, ccNow, ccGmst }（双历元：真实星按 now、合成/自定义星按 ccNow）
   // shells  — [{altKm, name}]（只用于「壳层」列的就近归属，不参与取值）
   // hExKm   — 遮挡判据的大气排除高度
-  // keyForNull — ctx 为 null（清表）时指哪张表；缺省当前表
-  function compute(ctx, opts, targets, times, shells, hExKm = 0, keyForNull) {
-    if (!ctx) { const s = sess(keyForNull || activeKey.value); s.rows.value = []; s.ctxInfo.value = null; s.ctxBeams.value = []; s.note.value = ''; s.stampMs.value = null; return }
+  // tableKey — 结果所属表；旧调用默认使用天线 key
+  function compute(ctx, opts, targets, times, shells, hExKm = 0, tableKey) {
+    if (!ctx) { const s = sess(tableKey || activeKey.value); s.rows.value = []; s.ctxInfo.value = null; s.ctxBeams.value = []; s.note.value = ''; s.stampMs.value = null; return }
     // 源星是关联星、此刻解不出星历（grd.getPerfContext 标 noEph）：清表，只留状态本身 —— 不按停着的旧星位出数
-    if (ctx.noEph) { const s = sess(ctx.key || activeKey.value); s.rows.value = []; s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: 0 }; s.ctxBeams.value = []; s.note.value = '关联卫星当前无星历'; s.stampMs.value = null; return }
-    const s = sess(ctx.key || activeKey.value)
+    if (ctx.noEph) { const s = sess(tableKey || ctx.key || activeKey.value); s.rows.value = []; s.ctxInfo.value = { satName: ctx.satName, antName: ctx.antName, beams: 0 }; s.ctxBeams.value = []; s.note.value = '关联卫星当前无星历'; s.stampMs.value = null; return }
+    const s = sess(tableKey || ctx.key || activeKey.value)
     s.patRev.value = anRevOfCtx(ctx)   // 方向图换了的那一拍：时段结果的「输入已变」跟着推出去（见 winPatStale）
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
     s.stampMs.value = times && times.now ? times.now.getTime() : null
@@ -656,6 +656,10 @@ export function useSatPerfTable() {
     winByAnt.value = { ...winByAnt.value, [key]: { on: s.win.on, startMs: s.win.startMs, durH: s.win.durH } }
     sessions.delete(key || '')
   }
+  function removeKey(key) {
+    dropSession(key)
+    for (const bucket of [picksByAnt, targetModeByAnt, optsByAnt, winByAnt]) delete bucket.value[key]
+  }
   // 天线改名（树里换 key）：名单 / 来源档 / 选项 / 时窗设置 / 运行中的会话整体搬到新 key（宿主 perfWinHost.onTreeKey 调）。
   // 会话不作废 —— 改名的表窗口还开着，结果与扫描原样接着用；旧 key 上什么都不留（09-16 审查：原先只搬名单与选项，
   // 会话与来源档留在旧 key 上，窗口的 watcher 钉着旧会话，改名后表不再刷新）。
@@ -681,9 +685,9 @@ export function useSatPerfTable() {
   function makeGeom(ctx, times, env) { return perfGeomOf(ctx, times, env) }
 
   // ctx/opts/targets/times/shells/hExKm 同 compute；env 见 makeGeom，另有 env.onDone（扫完回调）
-  async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}) {
+  async function computeWindows(ctx, opts, targets, times, shells, hExKm = 0, env = {}, tableKey) {
     if (!ctx) return
-    const key = ctx.key || activeKey.value
+    const key = tableKey || ctx.key || activeKey.value
     const s = sess(key)
     const token = ++s.winToken
     const clear = () => { s.winInfo.value = null; s.winEnv = null; s.win.msg = ''; s.winNote.value = ''; s.win.cursorMs = null; clearRows(key) }
@@ -935,7 +939,7 @@ export function useSatPerfTable() {
   return {
     rows, filteredRows, ctxInfo, ctxBeams, query, note, optsByAnt, stampMs, activeKey, picksByAnt,
     picks, pickedNames, hasPick, addTarget, addTargets, removeTarget, removeTargets, clearTargets, picksOf, targetModeOf, setTargetModeOf, activePicksOf,
-    targetMode, beamPicks, activePicks, setBeamTargets, setActiveKey, session, dropSession, renameKey,
+    targetMode, beamPicks, activePicks, setBeamTargets, setActiveKey, session, dropSession, renameKey, removeKey,
     colDefs: COL_DEFS, colGroups: COL_GROUPS, getOpts, setOptsOf, visibleColumns, rememberOpts, resetOpts,
     beamQuery, filteredBeams, beamOn, beamSelIds, setBeamSel,
     compute, toTsv, getState, restoreState, setTimeFmt, fmtCell, footNote,

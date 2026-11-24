@@ -44,6 +44,13 @@ ok('回环：写出再解析', back.lon === 110.5 && back.satName === '中星10R
 const GXT = '[FormatInfo]\r\nformat_ver=1\r\n\r\n[GeoMain]\r\nadm=G  \r\nsat_name=TEST\r\nlong_nom=134.000\r\nn_diag=1\r\n\r\n[COHeader]\r\nbeam_id=1\r\nemi_rcp=E\r\npolar_disc=X\r\nreason=C\r\nn_bore=2\r\nn_cont=1\r\n\r\n' +
   '[B1]\r\ngain=43.46\r\np1=111.340;33.050\r\n\r\n[B2]\r\np1=112.000;34.000\r\n\r\n[C1]\r\ngain=43\r\nn_point=3\r\np1=1.000;2.000\r\np2=3.000;4.000\r\np3=1.000;2.000\r\n'
 const g = parseGxt(GXT)
+const multi = GXT + '[COHeader]\nbeam_id=West\n[C8]\ngain=0\np1=5;6\np2=7;8\n' +
+  '[GeoMain]\nsat_name=NEXT\nlong_nom=0\n[COHeader]\n[C1]\ngain=50\np1=9;10\np2=11;12\n'
+const source = parseGxt(multi, { contourSource: true }).contours.map(c => c.source)
+ok('协调区：同一文件的多颗卫星、多个波束和重复的轮廓编号逐条对应',
+  JSON.stringify(source.map(s => [s.satName, s.lon, s.beamId, s.section])) ===
+  JSON.stringify([['TEST', 134, '1', 'C1'], ['TEST', 134, 'West', 'C8'], ['NEXT', 0, '', 'C1']]))
+ok('覆盖库默认解析保持原轮廓结构', !('source' in g.contours[0]))
 ok('parseGxt：波束中心 gain 记成第三分量、没有就两分量', g.bore.length === 2 && g.bore[0].length === 3 && g.bore[0][2] === 43.46 && g.bore[1].length === 2)
 const g2 = serializeGxt({ lon: g.lon, satName: 'TEST', bore: g.bore, contours: g.contours, beamId: 1 })
 ok('serializeGxt：带回 gain= 行（与原文同）', g2.includes('[B1]\r\ngain=43.46\r\np1=111.340;33.050') && g2.includes('[B2]\r\np1=112.000;34.000'))

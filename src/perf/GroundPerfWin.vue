@@ -316,7 +316,7 @@ async function exportResult() {
     sheetModel({ name: '性能结果', cols: cols.value, rows: resGrid.rows.value, value: xlsxVal, unitOf: colUnit, note }),
     citySheet()
   ]
-  const r = await exportSheets({ defaultName: safeFileName('性能指标表_' + ctxName(), '性能指标表') + '.xlsx', title: '导出性能指标表', sheets })
+  const r = await exportSheets({ defaultName: safeFileName((st.tableName || '性能指标表') + '_' + ctxName(), '性能指标表') + '.xlsx', title: '导出性能指标表', sheets })
   exportDone(N, r)
 }
 function resetOpts() { pl.resetOpts(key) }

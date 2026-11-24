@@ -12,7 +12,7 @@
 //      对星特效 2D 与 3D 同一份 subs（不再有 subs2d 特例）、身份串与 satIdOf 同口径；3D 场景认 noDot；
 //      平面图名字按 gapFocus 让位、改聚焦图标大小重排文字层。
 import { readFileSync } from 'node:fs'
-import { MARK_RANK, NO_KEYS, keysOf, anyOf, withoutClaimed, withoutClaimedDots, mergeLayerSats, claimSig } from '../../../src/viz/constellation/satMarkMerge.js'
+import { MARK_RANK, NO_KEYS, keysOf, anyOf, withoutClaimed, withoutClaimedDots, mergeLayerSats, globeLayerSats, claimSig } from '../../../src/viz/constellation/satMarkMerge.js'
 
 let pass = 0, fail = 0
 const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' + msg + (extra ? `  (${extra})` : '')); cond ? pass++ : fail++ }
@@ -142,6 +142,20 @@ const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed
   ok(bad === 0, '⑥ 300 组随机输入：条数不变、认领的不出在轨点、别的原样、不凭空加点', bad + ' 组违例')
 }
 
+{
+  const star = grd('n:1', { labelShow: false })
+  const claimed = new Set([star.key])
+  for (const sub of [false, true]) for (const dot of [false, true]) {
+    const marks = globeLayerSats([star, star], sub ? claimed : NO_KEYS, dot ? claimed : NO_KEYS)
+    ok(marks.length === 1 && marks[0].groundIcon === !sub && marks[0].orbitDot === !dot && !marks[0].labelShow,
+      `3D 同号节点去重，纯图标模式下星下点 / 在轨点独立让位（${sub}, ${dot}）`)
+  }
+  const [label] = globeLayerSats([grd('n:1', { iconShow: false })], NO_KEYS, NO_KEYS)
+  ok(label.labelShow && !label.groundIcon && !label.orbitDot, '3D 仅星名不生成图标或在轨点')
+  const [visible] = globeLayerSats([grd('n:1'), vis('n:1')], NO_KEYS, NO_KEYS)
+  ok(!visible.groundIcon && !visible.orbitDot && visible.name === 'G-n:1', '可见性图层接管两种标记，天线树的星名仍显示')
+}
+
 // ⑦ 接线按源码钉
 {
   const rd = (p) => readFileSync(new URL(p, import.meta.url), 'utf8').replace(/\r\n/g, '\n')
@@ -150,7 +164,7 @@ const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed
   const pg = body('function pushGeom() {')
   ok(pg.includes('scene.setFocusSatLLA([...withoutClaimed(vg.subs, anyOf(g.subOn ? g.keys : null, sfKeys)), ...(subOn ? sf.subs : [])])'), '⑦ 3D 图标：可见星图标剔掉聚焦层（这份几何带图标时的选中集 + 对星特效）已画的')
   ok(pg.includes('scene.setSelectionSet([...withoutClaimedDots(vg.items, anyOf(g.dotOn ? g.keys : null, sfDotKeys)), ...sf.items])') && pg.includes('const sfDotKeys = dotOn ? keysOf(sf.items) : NO_KEYS') && pg.includes('const subOn = !!focusStyle.subOn, dotOn = !!focusStyle.dotOn'), '⑦ 3D 在轨点：可见星的点让给聚焦层（这份几何带在轨点时）与对星特效（「在轨点」开着时）；按在轨点自己的开关认领')
-  ok(pg.includes('flat.setFocusSat(subOn ? [...f.subs, ...sf.subs] : [])') && pg.includes('setSubClaim2D(anyOf(subOn && has2d ? g.keys : null, sfKeys))') && pg.includes('const has2d = g.shards.some((sh) => sh.flat)'), '⑦ 2D：对星特效与 3D 同一份 subs；认领集只认这份几何真打包了平面图的聚焦星')
+  ok(pg.includes('flat.setFocusSat(subOn ? [...f.subs, ...sf.subs] : [])') && pg.includes('setLayerClaims(anyOf(subOn && has2d ? g.keys : null, sfKeys),') && pg.includes('const has2d = g.shards.some((sh) => sh.flat)'), '⑦ 2D：对星特效与 3D 同一份 subs；认领集只认这份几何真打包了平面图的聚焦星')
   ok(!/subs2d/.test(page), '⑦ subs2d 特例已删（源星的重影改由归并处理）')
   const sc = body('function computeSatcovFocusGeometry() {')
   ok(sc.includes('if (id) { seen.add(id); g.item.key = id; if (g.sub) g.sub.key = id }'), '⑦ 对星特效的在轨点条目与图标都带身份串（与 seen 去重同一个 id）')
@@ -159,8 +173,8 @@ const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed
   ok(body('function syncPool(draw, primary) {').includes('poolKeys = new Set(draw.map(satIdOf))'), '⑦ 选中集身份串随选中集换新（syncPool）')
   const rs = body('function redrawSats() {')
   ok(rs.includes('key: grdNodeSatId(node), rank: MARK_RANK.grd') && rs.includes('s.rank = MARK_RANK.vis') && rs.includes('const satsM = mergeLayerSats(sats, _subClaim2D)') && rs.includes('{ lines, dots, labels, sats: satsM, fills }'), '⑦ redrawSats：天线树卫星 / 可见星带身份串与序号，卫星层走 mergeLayerSats')
-  ok(rs.indexOf('_layerClaimSig = claimSig(_layerSubKeys, _subClaim2D)') > rs.indexOf('const satsM'), '⑦ redrawSats 记下这次卫星层被认领的签名（setSubClaim2D 据此判断要不要重画）')
-  ok(body('function setSubClaim2D(claim) {').includes('if (claimSig(_layerSubKeys, claim) !== _layerClaimSig) redrawSats()'), '⑦ 认领集变了、且卫星层里被认领的那几颗真变了才重画卫星层')
+  ok(rs.includes('globeLayerSats(sats, _subClaim3D, _dotClaim3D)') && rs.includes('scene.setSatLayer(globeSpec)') && rs.includes('satSpec3dPending = globeSpec'), '⑦ 3D 单独归并星下点和在轨点，切回球面时补交最新状态')
+  ok(body('function setLayerClaims(flatSubs, globeSubs, globeDots) {').includes('if (layerClaimSig() !== _layerClaimSig) redrawSats()'), '⑦ 认领集变了、且卫星层里被认领的那几颗真变了才重画卫星层')
   const gid = body('function grdNodeSatId(node) {')
   ok(gid.includes("if (node.noradId) return 'n:' + node.noradId") && gid.includes("return tge ? satIdOf(tge) : 'f:' + node.folder") && sc.includes("const fid = tge ? satIdOf(tge) : 'f:' + node.folder"), '⑦ 天线树节点身份：关联星按号、虚拟星按星座条目、否则 folder（与对星特效 add 同一套）')
   const vg = body('function computeVisibilityGeometry() {')

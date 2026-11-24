@@ -328,7 +328,7 @@ contextBridge.exposeInMainWorld('api', {
     open: (o) => ipcRenderer.invoke('perfwin:open', o),
     push: (id, msg) => ipcRenderer.invoke('perfwin:push', id, msg),
     close: (id) => ipcRenderer.invoke('perfwin:close', id),
-    setTitle: (id, title) => ipcRenderer.invoke('perfwin:setTitle', id, title),
+    setTitle: (id, title, key) => ipcRenderer.invoke('perfwin:setTitle', id, title, key),
     list: () => ipcRenderer.invoke('perfwin:list'),
     // 返回退订函数：主窗口页面卸载 / 重挂载（切 MSAA）时宿主摘掉，否则死页面的宿主一直收着弹窗操作
     onAct: (cb) => subscribe('perfwin:act', (_e, m) => cb(m)),

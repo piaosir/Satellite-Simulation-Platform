@@ -3476,12 +3476,16 @@ export function createGlobeScene(container, quality = {}) {
   // spec: { lines:[{p:[[lon,lat]...], color, width?, opacity?, closed?}], dots:[{lon,lat,color?,r?}],
   //         labels:[{lon,lat,text,hpx?,color?,alt?}], sats:[{lon,lat,altKm,name,color?}],
   //         fills:[{p:[[lon,lat]...]（未闭合外环）, color, opacity}]（Polygon 区域填充） }
-  let satLayerGroup = null
+  let satLayerGroup = null, treeSubGroup = null, treeDotGroup = null
+  const treeNameSprites = []
   // 卫星层的标注（关联星仰角线的角度 / 星名，每拍随星位整层重建）：贴图走与标记层同一套缓存（cachedCovLabel，
   // 另开一份表），不再每拍每个标签现画一张画布、上传一次纹理 —— 画法同 makeCovLabel（covLabelCanvas），画面逐像素不变。
   // 贴图打 _shared，整层拆掉时不随精灵释放；本轮没用到的在 setSatLayer 末尾放掉，层清空时整表放掉
   const satLabelCache = new Map(), texUsedSat = new Set()
   function clearSatLayer() {
+    disposeGroup(treeSubGroup); treeSubGroup = null
+    disposeGroup(treeDotGroup); treeDotGroup = null
+    treeNameSprites.length = 0
     if (!satLayerGroup) return
     satLayerGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { lineMats.delete(o.material); if (o.material.map && !o.material.map._shared) o.material.map.dispose(); o.material.dispose() } })
     scene.remove(satLayerGroup); satLayerGroup = null
@@ -3548,12 +3552,29 @@ export function createGlobeScene(container, quality = {}) {
       if (l.top) { spr.material.depthTest = false; spr._dir = spr.position.clone().normalize() }
       g.add(spr)
     }
-    // 卫星名：显示仰角线的卫星，在其真实位置（轨道高度处）画名称（颜色随该星仰角线色）；不画星点本体
+    const subs = [], orbitDots = []
     for (const s of (spec.sats || [])) {
-      if (s.lon == null || !Number.isFinite(s.lat) || !s.name || s.labelShow === false) continue
+      if (!Number.isFinite(s.lon) || !Number.isFinite(s.lat)) continue
+      const px = (s.iconSize || 10) * 1.6
+      if (s.groundIcon) subs.push({ lat: s.lat, lon: s.lon, px, colorHex: s.color })
+      if (s.orbitDot) orbitDots.push({ lat: s.lat, lon: s.lon, altKm: s.altKm, px, colorHex: s.color })
+      if (!s.name || s.labelShow === false) continue
       const spr = cachedCovLabel(s.name, (s.labelSize || 9) / 533, s.nameColor, !!s.labelBold, satLabelCache, texUsedSat)
+      if (s.orbitDot != null) {
+        // 字号和在轨点使用同一屏幕尺度，卫星拉远时名字仍贴在点旁。
+        spr._px = (s.labelSize || 9) * 2
+        spr._ar = spr.scale.x / spr.scale.y
+        const ground = s.iconShow !== false ? llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012) : null
+        treeNameSprites.push({ spr, orbit: llaToVec(s.lat, s.lon, s.altKm), ground, px })
+      }
       spr.position.copy(llaToVec(s.lat, s.lon, s.altKm != null ? s.altKm : 35786)); spr.renderOrder = 14; g.add(spr)
     }
+    if (subs.length) {
+      treeSubGroup = buildPointLayers(subs, focusSatTexture(), FOCUS_SAT_PX, 0xffffff, 17, 1.0012)
+      scene.add(treeSubGroup)
+    }
+    treeDotGroup = buildDotLayer(orbitDots)
+    if (treeDotGroup) scene.add(treeDotGroup)
     satLayerGroup = g; scene.add(g)
     sweepTexCache(satLabelCache, texUsedSat, 0)
   }
@@ -4361,13 +4382,26 @@ export function createGlobeScene(container, quality = {}) {
   // 贴图点层随缩放联动：与原精灵同口径（基准 px × LABEL_REF_DIST/相机距离），上限 256px 防越过
   // gl_PointSize 的硬件天花板。高亮环刻意不联动（固定屏幕大小，拉远也认得出选中的是哪颗）。
   function rescalePointLayers() {
-    if (!focusSatGroup && !selDotGroup && !laneDotGroup && !laneSubGroup) return
+    if (!focusSatGroup && !selDotGroup && !laneDotGroup && !laneSubGroup && !treeSubGroup && !treeDotGroup && !treeNameSprites.length) return
     const k = pointZoomK(zoomDist())   // 夹在 0.35 … 6（卫星模型图标顶替这层点，按同一系数联动，见 zoomScale.js）
     const go = (grp) => { if (grp) for (const o of grp.children) { if (o._px) o.material.size = Math.min(256, o._px * k); else if (o.children) for (const c of o.children) if (c._px) c.material.size = Math.min(256, c._px * k) } }
     // 在轨点是「底盘 + 白圈」两层套一个 Group，故 go 要下探一层。
     // ★ 高亮环（laneHlGroup / ringGroup）刻意【不】参与缩放联动 —— 它是固定屏幕尺寸的选中标记，
     //   跟着拉远缩小就成了看不见的小点（老通道的 ringGroup 本来也不在这条链上）。
     go(focusSatGroup); go(selDotGroup); go(laneDotGroup); go(laneSubGroup)
+    go(treeSubGroup); go(treeDotGroup)
+    const worldPerPixel = 2 * Math.tan(camera.fov * Math.PI / 360) / curH
+    for (const { spr, orbit, ground, px } of treeNameSprites) {
+      // GEO 常在近景画框外。此时让同一个星名贴着星下点，拉远见到真星后再回到在轨点。
+      const ndc = _pA.copy(orbit).project(camera)
+      const atGround = ground && (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1 || Math.abs(ndc.z) > 1 || occludedByGlobe(orbit))
+      spr.position.copy(atGround ? ground : orbit)
+      spr.visible = !atGround || !occludedByGlobe(ground)
+      if (ground) spr.center.x = -(px * (atGround ? 0.5 : 0.33) + 2) / (spr._px * spr._ar)
+      const depth = -_pA.copy(spr.position).applyMatrix4(camera.matrixWorldInverse).z
+      const h = spr._px * k * Math.max(0, depth) * worldPerPixel
+      spr.scale.set(h * spr._ar, h, 1)
+    }
   }
 
   let satPoints = null
@@ -5227,7 +5261,7 @@ export function createGlobeScene(container, quality = {}) {
       // （窗口在后台被 rAF 节流）时精灵还停在上一次的尺寸上。实体层先于精灵（交叉淡化权重要新的）。
       if (entOverlay) entOverlay.update(0, camera, curW, curH, zoomDist())
       parkLinkFlow()   // 链路的流动虚线停下、线身实画出图（下一帧 loop 接着流）
-      rescaleMarkers(); updateLabels(); axesLayer.update(camera, curH, !!followDriver)
+      rescalePointLayers(); rescaleMarkers(); updateLabels(); axesLayer.update(camera, curH, !!followDriver)
       // 模型图标的抽稀档按【出图像素】当场重选：选档量的是屏上 CSS px 的误差（≤ 1 px），沿用屏上那一档放大 s 倍出图，
       // 折面、被裁掉的小部件跟着放大 s 倍。finally 里调回 1（下一帧按屏上重选）
       if (overlay && overlay.setLodScale) overlay.setLodScale(s)
@@ -5342,6 +5376,7 @@ export function createGlobeScene(container, quality = {}) {
     offRedraw()         // 同理：退订按需出帧的重画总线、摘掉窗口焦点监听
     if (typeof window !== 'undefined') { window.removeEventListener('blur', onWinBlur); window.removeEventListener('focus', onWinFocus) }
     clearEnv()          // 贴图/几何不随 renderer.dispose 走，显式释放（切页面重挂载时会反复走这里）
+    clearSatLayer()
     clearTz(); TZ_FILL_MAT.dispose()   // 时区图层同理
     clearTerminator()   // 同上：夜区球壳几何 + 线材质（materials 还挂在 lineMats 里）也要显式还
     clearShellField(); clearShellGuides()   // 对星覆盖壳层：标签用的 canvas 贴图同样不随 dispose 走

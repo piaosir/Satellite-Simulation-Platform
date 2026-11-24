@@ -132,6 +132,21 @@ await t('③ 到 lod2 为止：平均帧时远超上限 2.5 倍、持续十几�
   L.dispose()
 })
 
+await t('跟随中切换模型显示，异步加载完成后也遵守当前开关', async () => {
+  const L = ML.createModelLayer({ api: mkApi('visibility') })
+  L.setIconStyle({ on: false })
+  L.follow(state('visibility'))
+  await until(L, (s) => s.lod === 'lod0', '隐藏时模型加载完毕')
+  assert.equal(L.stats().modelVisible, false)
+  const radius = L.stats().followRadiusM
+  for (const on of [true, false, true]) {
+    L.setIconStyle({ on, px: 87 })
+    assert.equal(L.stats().modelVisible, on)
+    assert.equal(L.stats().followRadiusM, radius)
+  }
+  L.dispose()
+})
+
 await t('④ 源码钉：holdFrames 记脏 → loop 采样（出帧闸之后、脏则 0）→ overlay.update 第五参；模型层只认 smp', () => {
   const sc = src('viz/globe3d/scene.js')
   assert.match(sc, /function holdFrames\(on\) \{ if \(on\) loopTaint = 2;/)

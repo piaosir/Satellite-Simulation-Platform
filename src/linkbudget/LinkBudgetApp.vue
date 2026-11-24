@@ -34,6 +34,7 @@ import LbLibrary from '../components/LbLibrary.vue'
 import StationGrid from './StationGrid.vue'
 import LinkImportDialog from '../components/LinkImportDialog.vue'   // 「导入链路」：星座 3D 主窗建的图上链路
 import LbPointingTool from '../components/LbPointingTool.vue'   // 「指向误差」：倾斜运行 / 东西保持 / 跟踪方式下的日内指向损耗（只读工具，GSO 窗专用）
+import { importedLinkConfigName } from '../../packages/core/models/mapLinks.mjs'
 import { esStationType } from '../shared/lbStationType.js'   // 站带天线口径 / 天线罩 → 对号地球站库条目
 import BasebandPanel from './BasebandPanel.vue'
 import EarthStationPanel from '../components/EarthStationPanel.vue'
@@ -1754,7 +1755,7 @@ function placeSites(sites, entry, fresh) {
 async function applyToolContext(c) {
   if (!c) return
   if (c.links) {   // 图上链路（见下方 importChains）；只带链路时到此为止，不落进下面「载入卫星」那句提示
-    await importChains(c.links)
+    await importChains(c.links, !c.fromImportDialog)
     if (!c.sat && !(c.sites && c.sites.length)) return
   }
   const entry = c.sat ? satEntryForCtx(c.sat) : null
@@ -1867,14 +1868,14 @@ const pointToolSeed = computed(() => {
 // 本窗只收「地球站 → 透明转发 GEO 星 → 地球站」三节点链路，其余计数跳过（载荷形状见 packages/core/models/mapLinks.mjs）。
 // 口径同上方带上下文打开：只追加，既有链路行与库条目一字不动——
 //   星：satEntryForCtx 库里找同一颗、没有就新建条目；同一批里同一颗星（satKey）只解一次。
-//   配置：逐链路指定 → 就地追加，各行写「卫星」列；统一指定且本配置用的正是这批里唯一那颗 → 就地追加；
+//   主窗推送每批新建一份配置。窗内导入时，逐链路指定或统一指定的卫星匹配时可就地追加；
 //         否则新建一份配置承接（一颗星 → 统一指定选它；多颗 → 逐链路指定），新配置自带的出厂默认行由导入行顶替。
 //         就地追加时表里只有一条没动过的出厂默认行，同样顶替。
 //   站：一条链路 = 一行，发 / 收两侧取链首 / 链尾地球站的站名与经纬度（其余留白，同站址行），联动 autoGeo 补降雨 / 海拔；
 //       站带天线口径 / 天线罩 → 按站型对号地球站库（shared/lbStationType.js），否则两侧引用同新增行（发端缺省、收端库第二份）。
 // 对话框那条入口也走 onToolContext 的队列：配置还没载入就排队，与主窗推来的上下文一次只处理一份。
 const linkImpOpen = ref(false)
-const onLinkImport = (list) => onToolContext({ links: list })
+const onLinkImport = (list) => onToolContext({ links: list, fromImportDialog: true })
 const ES_LOSS_KEYS = { up: 'uplinkOtherLoss', dn: 'downlinkOtherLoss' }   // 带罩时罩损并进上 / 下行「其他损耗」
 // 站型对号 → { id, made } | null（站没带口径 / 罩：调用方沿用该侧原引用）。新条目当场落库（id 规则同 duplicateEsConfig）
 // 并取回响应式代理：同一批里下一个同口径同罩的站就命中它，不再另建一份。罩损档位取该行所用卫星的上 / 下行频率。
@@ -1926,7 +1927,7 @@ function isFactoryRow(r) {
     return !!m && m.auto[f.key] !== undefined && v === String(m.auto[f.key])
   })
 }
-async function importChains(chains) {
+async function importChains(chains, newConfig) {
   const list = Array.isArray(chains) ? chains : []
   const fit = list.filter(chainFits)
   const skipped = list.length - fit.length
@@ -1940,10 +1941,9 @@ async function importChains(chains) {
     jobs.push({ c, e })
   }
   let fresh = false
-  if (!satLink.value && !(sats.length === 1 && curSat.value && curSat.value.id === sats[0].id)) {
-    const before = activeId.value
-    await addBlankConfig(null)
-    if (!activeId.value || activeId.value === before) return   // 没建成（未激活 / 写盘失败未离开）：不动现场
+  if (newConfig || (!satLink.value && !(sats.length === 1 && curSat.value && curSat.value.id === sats[0].id))) {
+    const createdId = await addBlankConfig(null, newConfig ? importedLinkConfigName(jobs.map(({ c }) => c)) : '')
+    if (!createdId || activeId.value !== createdId) return
     if (sats.length === 1) satId.value = sats[0].id
     else setSatScope('link')
     fresh = true

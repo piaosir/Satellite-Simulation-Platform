@@ -449,7 +449,7 @@ for (const d of DETAILS) {
   const scene = SRC('src/viz/globe3d/scene.js')
   ok('⑨ 3D 场景导出 setTzLayer / setTzHover', /\bsetTzLayer,/.test(scene) && /\bsetTzHover,/.test(scene))
   const about = SRC('src/components/AboutDialog.vue')
-  ok('⑨ 关于窗口有署名一行（且不恢复整节「第三方署名」）', /\{\{ TZ_CREDIT \}\}/.test(about) && !/>第三方署名</.test(about))
+  ok('⑨ 时区开关与关于窗口的悬停显示数据署名', /:title="[^"]*\bTZ_CREDIT"/.test(sec) && /:title="TZ_CREDIT"/.test(about))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

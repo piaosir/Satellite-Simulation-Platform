@@ -11,6 +11,7 @@
 // 主进程只中继（electron/main.js 的 perfWin）；推过去的一律是纯数据（JSON 克隆），响应式代理过不了 IPC。
 import { ref, watch, nextTick } from 'vue'
 import { cityLabelText } from './usePerfTable.js'
+import { usePerfTableCatalog } from './perfTableCatalog.js'
 import { cityBoxItems } from './cityBoxes.js'
 import { perfGeomOf, pointingSig } from './useSatPerfTable.js'
 import { byLang } from '../../shared/i18n/lang.js'
@@ -20,6 +21,8 @@ import { trajWaypointInfo } from '../../../packages/core/models/trajKinematics.m
 const plain = (v) => (v === undefined ? null : JSON.parse(JSON.stringify(v)))
 
 export function createPerfWinHost(D) {
+  const tables = usePerfTableCatalog()
+  const antennaOf = tables.antennaOf
   const api = D.api || null
   const wins = new Map()           // id → { id, kind, key, ready, stops: [] }
   const ver = ref(0)               // 开关窗计数（供依赖「哪些窗开着」的 computed / watcher）
@@ -56,8 +59,8 @@ export function createPerfWinHost(D) {
   }
   function titleOf(kind, key) {
     if (kind === 'met') return byLang('气象指标表', 'Meteorological Table')
-    const a = antOf(key)
-    const head = kind === 'shell' ? byLang('对星性能指标表', 'Sat-to-Sat Performance Table') : byLang('性能指标表', 'Performance Table')
+    const a = antOf(antennaOf(key))
+    const head = tables.nameOf(kind, key)
     return `${head} · ${a.satName} / ${a.antName}`
   }
 
@@ -72,7 +75,7 @@ export function createPerfWinHost(D) {
     for (const k of Object.keys(sb)) if (sb[k] && sb[k].length && D.perf.cityShowOf(k)) out.push(k)
     return out
   }
-  const liveKeys = () => { const s = new Set([...groundKeys(), ...shellKeys(), ...boxKeys()]); return [...s] }
+  const liveKeys = () => { const s = new Set([...groundKeys(), ...shellKeys(), ...boxKeys()].map(antennaOf)); return [...s] }
   const winsOf = (kind, key) => { const out = []; for (const w of wins.values()) if (w.kind === kind && (key == null || w.key === key)) out.push(w); return out }
   const metOpen = () => winsOf('met').length > 0
   async function open(kind, key) {
@@ -92,20 +95,35 @@ export function createPerfWinHost(D) {
     wins.delete(id)
     queue.delete(id)
     if (w.kind === 'shell') D.satPerf.dropSession(w.key)
+    if (w.kind === 'ground') _groundCache.delete(w.key)
     ver.value++
   }
   // 树改名 / 删天线：窗口跟着改标题或关掉（perf / satPerf 的桶由各自 key 记着，改名后按新 key 走）
   function onTreeKey(ev) {
     if (!ev) return
-    if (ev.type === 'remove') for (const k of (ev.keys || [])) closeKey(k)
+    if (ev.type === 'remove') for (const k of (ev.keys || [])) {
+      for (const table of tables.list('ground', k)) {
+        closeKey(table.id)
+        delete D.perf.stationsByAnt.value[table.id]
+        delete D.perf.optsByAnt.value[table.id]
+        _groundCache.delete(table.id)
+      }
+      for (const table of tables.list('shell', k)) {
+        if (table.id !== k) closeKey(table.id)
+        D.satPerf.removeKey?.(table.id)
+      }
+      tables.removeAntenna(k)
+    }
     else if (ev.type === 'rename') {
       const mv = (o) => { if (o.value[ev.from] && !o.value[ev.to]) { const m = { ...o.value }; m[ev.to] = m[ev.from]; delete m[ev.from]; o.value = m } }
       mv(D.perf.stationsByAnt); mv(D.perf.optsByAnt)
       D.satPerf.renameKey(ev.from, ev.to)   // 名单 / 来源档 / 选项 / 时窗 / 运行中的会话一起搬（先搬，下面重绑要按新 key 取会话）
+      tables.moveAntenna(ev.from, ev.to)
+      _groundCache.delete(ev.from)
       for (const w of wins.values()) {
-        if (w.key !== ev.from) continue
-        w.key = ev.to
-        if (api) api.setTitle(w.id, titleOf(w.kind, w.key)).catch(() => {})
+        if (w.key === ev.from) w.key = ev.to
+        if (antennaOf(w.key) !== ev.to) continue
+        if (api) api.setTitle(w.id, titleOf(w.kind, w.key), w.key).catch(() => {})
         if (!w.ready) continue
         // 对星窗的 watcher 闭包里钉着旧 key（shellSnapLight(key) / session(key)）：停掉、按新 key 重绑，再整份重推
         if (w.kind === 'shell') { for (const s of w.stops) { try { s() } catch { /* 已停 */ } } w.stops = []; bindShell(w); pushShellFull(w) }
@@ -116,6 +134,14 @@ export function createPerfWinHost(D) {
   }
 
   // ---------- 对地 ----------
+  function renameTable(kind, key, name) {
+    tables.rename(kind, key, name)
+    for (const w of winsOf(kind, key)) {
+      api.setTitle(w.id, titleOf(kind, key)).catch(() => {})
+      push(w.id, { tableName: tables.nameOf(kind, key) })
+    }
+  }
+
   function markersSnap() {
     const M = D.markers() || {}
     const fmt = D.fmtLL
@@ -126,7 +152,7 @@ export function createPerfWinHost(D) {
     }
   }
   function groundCtxSnap(key) {
-    const ctx = D.grd.getPerfContext(key)
+    const ctx = D.grd.getPerfContext(antennaOf(key))
     if (!ctx) return { ctx: null, ctxBeams: [] }
     return {
       ctx: { key, satName: ctx.satName, antName: ctx.antName, beams: ctx.beams.length, satNo: ctx.satNo, antNo: ctx.antNo },
@@ -137,7 +163,7 @@ export function createPerfWinHost(D) {
   // 没有带时刻的行 / 宿主没给星历钩子 → null（时刻只作一列读数，取值照当前时刻）
   // 返回 { at, fp }：at 懒建几何（缓存全命中时一次星历都不解），fp＝带时刻行取值的全部输入指纹
   // （时钟不在里面：带时刻行的值只看自己那一刻）。
-  function ctxAtOf(ctx, stations) {
+  function ctxAtOf(ctx, stations, opts) {
     if (!ctx || ctx.noEph || !ctx.meta || typeof D.perfGeomEnv !== 'function' || typeof D.satcovTimes !== 'function') return null
     if (!(stations || []).some((s) => Number.isFinite(s.tMs))) return null
     let env = null, times = null
@@ -149,7 +175,7 @@ export function createPerfWinHost(D) {
       const m = geom.srcMetaAt(tMs)
       return m ? { basis: geom.basisAt(tMs, m), meta: m } : null
     }
-    return { at, fp: groundFp(ctx, D.perf.getOpts(ctx.key), env, times) }
+    return { at, fp: groundFp(ctx, opts, env, times) }
   }
   // 对象身份编号（星历 / 方向图网格按引用认：内容一换就是新对象）
   const _oid = new WeakMap(); let _oidSeq = 0
@@ -172,10 +198,10 @@ export function createPerfWinHost(D) {
   function refreshGround(key) {
     const list = winsOf('ground', key)
     if (!list.length) { _groundCache.delete(key); return }
-    const ctx = D.grd.getPerfContext(key)
+    const ctx = D.grd.getPerfContext(antennaOf(key))
     const opts = D.perf.getOpts(key)
     const stations = D.perf.stationsOf(key)
-    const ca = ctxAtOf(ctx, stations)
+    const ca = ctxAtOf(ctx, stations, opts)
     let cache = null
     if (ca && ca.fp) {
       cache = _groundCache.get(key)
@@ -189,7 +215,7 @@ export function createPerfWinHost(D) {
     const key = w.key
     const snap = groundCtxSnap(key)
     push(w.id, {
-      ...snap,
+      ...snap, tableName: tables.nameOf('ground', key),
       stations: D.perf.stationsOf(key),
       opts: D.perf.getOpts(key),
       cityGroups: D.perf.cityGroups.value,
@@ -215,11 +241,11 @@ export function createPerfWinHost(D) {
       for (const key of boxKeys()) {
         const o = D.perf.getOpts(key)
         if (!o || (o.cityMarkOn === false && o.cityLabelOn === false)) continue
-        const ctx = D.grd.getPerfContext(key)
+        const ctx = D.grd.getPerfContext(antennaOf(key))
         if (!ctx) {
           if (!_loadFailed.has(key) && !_loading.has(key) && typeof D.grd.ensureAntLoaded === 'function') {
             _loading.add(key)
-            Promise.resolve(D.grd.ensureAntLoaded(key)).then((ok) => { if (ok) pushBoxes(); else _loadFailed.add(key) }, () => _loadFailed.add(key)).finally(() => _loading.delete(key))
+            Promise.resolve(D.grd.ensureAntLoaded(antennaOf(key))).then((ok) => { if (ok) pushBoxes(); else _loadFailed.add(key) }, () => _loadFailed.add(key)).finally(() => _loading.delete(key))
           }
           continue
         }
@@ -291,12 +317,12 @@ export function createPerfWinHost(D) {
   function pushShellFull(w) {
     const key = w.key, s = D.satPerf.session(key)
     const snap = groundCtxSnap(key)
-    push(w.id, { ...snap, opts: D.satPerf.getOpts(key), rows: s.rows.value, ...shellSnapLight(key) })
+    push(w.id, { ...snap, tableName: tables.nameOf('shell', key), opts: D.satPerf.getOpts(key), rows: s.rows.value, ...shellSnapLight(key) })
   }
   // 逐 key 重算瞬时表（原 satcovRefreshTable 的逐窗版）
   function refreshShell(key) {
     if (!winsOf('shell', key).length) return
-    const ctx = D.grd.getPerfContext(key)
+    const ctx = D.grd.getPerfContext(antennaOf(key))
     const s = D.satPerf.session(key)
     if (!ctx) { D.satPerf.compute(null, null, null, null, null, 0, key); D.satPerf.setBeamTargets([], key); return }
     // 时间窗口档：表钉在【游标时刻】，不能被「按当前时钟重算」冲掉；还没扫过就空着
@@ -304,7 +330,7 @@ export function createPerfWinHost(D) {
       if (s.winInfo.value) D.satPerf.seekCursor(s.win.cursorMs, key); else D.satPerf.clearRows(key)
       return
     }
-    D.satPerf.compute(ctx, D.satPerf.getOpts(key), D.satcovResolveTargets(ctx, key), D.satcovTimes(), D.satcov.shells.value, D.satcov.s.hEx)
+    D.satPerf.compute(ctx, D.satPerf.getOpts(key), D.satcovResolveTargets(ctx, key), D.satcovTimes(), D.satcov.shells.value, D.satcov.s.hEx, key)
   }
   function shellClockTick() {
     for (const w of winsOf('shell')) { const s = D.satPerf.session(w.key); if (!s.win.on) refreshShell(w.key) }
@@ -460,7 +486,7 @@ export function createPerfWinHost(D) {
       if (!w.claimed || w.ready) continue
       w.claimed = false
       if (w.kind !== 'met' && typeof D.grd.ensureAntLoaded === 'function') {
-        try { await D.grd.ensureAntLoaded(w.key) } catch { /* 载不到照样就绪：表先空着 */ }
+        try { await D.grd.ensureAntLoaded(antennaOf(w.key)) } catch { /* 载不到照样就绪：表先空着 */ }
       }
       if (!attached || wins.get(w.id) !== w || w.ready) continue   // 等的时候页面卸载了 / 窗关了 / 窗自己发过 ready 了
       handleAct({ id: w.id, kind: w.kind, key: w.key, type: 'ready' })
@@ -481,20 +507,20 @@ export function createPerfWinHost(D) {
   // 卫星动了（时钟 / 拖拽 / 改指向）：动过的天线的表重算，城市框重画
   function onMoved(moved) {
     if (!moved || !moved.size) return
-    for (const k of groundKeys()) if (moved.has(k)) refreshGround(k)
-    if (boxKeys().some((k) => moved.has(k))) pushBoxes()
+    for (const k of groundKeys()) if (moved.has(antennaOf(k))) refreshGround(k)
+    if (boxKeys().some((k) => moved.has(antennaOf(k)))) pushBoxes()
   }
   // 聚焦天线的设置（极化 / 增益 / 路损 / 指向 …）变了：该天线的表与城市框重算
   function onSettingsChanged(key) {
     if (!key) return
-    if (winsOf('ground', key).length) refreshGround(key)
-    if (boxKeys().includes(key)) pushBoxes()
-    if (winsOf('shell', key).length) refreshShell(key)
+    for (const k of groundKeys()) if (antennaOf(k) === key) refreshGround(k)
+    if (boxKeys().some(k => antennaOf(k) === key)) pushBoxes()
+    for (const k of shellKeys()) if (antennaOf(k) === key) refreshShell(k)
   }
   function refreshAll() { for (const k of groundKeys()) refreshGround(k); for (const k of shellKeys()) refreshShell(k); pushBoxes() }
 
   return {
-    ver, has, attach, adopt, detach, open, isOpen, closeKey,
+    ver, has, attach, adopt, detach, open, isOpen, closeKey, tables, renameTable,
     groundKeys, shellKeys, liveKeys, boxKeys, metOpen, shellBeamModeOpen,
     refreshGround, refreshShell, refreshAll, shellClockTick, onMoved, onSettingsChanged, pushBoxes, setCityShow
   }

@@ -491,7 +491,8 @@ const ok = (cond, msg, extra) => { console.log((cond ? 'PASS' : 'FAIL') + '  ' +
   ok(iRestore > 0 && iStart2 > iRestore && af.indexOf('_followCarry = null', iRestore) > iRestore, 'applyFlat 切 2D：平面图视图恢复之后才接 2D 跟随，取走即清')
   const ffe = body(page, 'function flatFollowEntry() {')
   ok(ffe.includes('!_flatFollowSat') && ffe.includes('!subOpen.value') && ffe.includes('!mapCrs.subFollow') && ffe.includes("sp.src !== 'sat'"), 'flatFollowEntry：只认「跟随卫星」发起的星下点跟随（投影设置里手开的不带进 3D）')
-  ok(page.includes(':following="!!following || flatFollowing" :st="focusStyle"') && !page.includes(':can-follow='), '模型面板跟随钮：2D 跟随也点亮，不再按视图置灰')
+  const modelPanelTag = page.match(/<ModelSidePanel\b[^>]*>/)?.[0] || ''
+  ok(modelPanelTag.includes(':following="!!following || flatFollowing"') && !modelPanelTag.includes(':can-follow='), '模型面板跟随钮：2D 跟随也点亮，不再按视图置灰')
 }
 
 // ---------- ⑭ 卫星集「卫星天线树」的成员（treeSetMembers）----------

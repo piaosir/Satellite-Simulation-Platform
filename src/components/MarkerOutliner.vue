@@ -174,7 +174,7 @@ onBeforeUnmount(() => { clearTimeout(armT); window.removeEventListener('keydown'
           <button type="button" class="mko-tw" :class="{ none: !g.total }" tabindex="-1" :title="g.open ? '收起' : '展开'" @click.stop="emit('expand', g.key)" @dblclick.stop><Icon name="chevron-down" class="disc" :class="{ shut: !g.open }" :size="12" /></button>
           <button type="button" class="mko-eye" tabindex="-1" :aria-pressed="g.visible ? 'true' : 'false'" :title="g.eyeTitle" @click.stop="emit('toggle', { g: g.key })" @dblclick.stop><Icon :name="g.visible ? 'eye' : 'eye-off'" :size="12" /></button>
           <MarkLegend class="mko-lg" v-bind="g.legend" />
-          <span class="mko-nm">{{ g.name }}</span>
+          <span class="mko-nm"><span>{{ g.name }}</span><span class="mko-scope">全局</span></span>
           <button v-for="t in g.tools" :key="t.k" type="button" class="mko-tool" tabindex="-1" :title="t.title" @click.stop="emit('action', t.k, { g: g.key })" @dblclick.stop><Icon :name="t.icon" :size="12" /></button>
           <span class="mko-cnt" data-i18n-skip>{{ query ? g.count + '/' + g.total : g.total }}</span>
           <button type="button" class="mko-more" tabindex="-1" aria-haspopup="menu" title="更多操作（右键同）" @click.stop="openMenu($event, { g: g.key })" @dblclick.stop><Icon name="ellipsis" :size="12" /></button>
@@ -258,6 +258,7 @@ onBeforeUnmount(() => { clearTimeout(armT); window.removeEventListener('keydown'
 .mko-row.off .mko-eye { color: var(--text-muted); }
 .mko-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .mko-nm.dim { color: var(--text-muted); }
+.mko-scope { margin-inline-start: 6px; font-size: var(--fs-1); color: var(--text-muted); }
 .mko-sub { flex: none; max-width: 52%; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: var(--fs-1); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .mko-cnt { flex: none; min-width: 22px; text-align: right; font-size: var(--fs-2); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 /* 状态记号（调整位置 / 绘制中）：开着才出现，机位色；点它 = 关掉 */

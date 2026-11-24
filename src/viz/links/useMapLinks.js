@@ -30,7 +30,7 @@
 
 import { ref, shallowRef, reactive, toRaw } from 'vue'
 import { byLang } from '../../shared/i18n/lang.js'
-import { linkIssues, linkTargets, hopKind, linkAutoName, reverseLink, sameNode, slotIssue, linkStrands, linkStrandCount, isAreaNode, LINK_NODES_MAX, ISSUE_TEXT, PICK_MAX } from '../../../packages/core/models/mapLinks.mjs'
+import { linkIssues, linkTargets, hopKind, linkDisplayName, reverseLink, sameNode, slotIssue, linkStrands, linkStrandCount, isAreaNode, LINK_NODES_MAX, ISSUE_TEXT, PICK_MAX } from '../../../packages/core/models/mapLinks.mjs'
 import { nodeCands, tjVehicleCand, defaultPick, pickToggle, pickFamily, pickSetDiv } from '../../../packages/core/models/mapLinkPoints.mjs'
 import { densifyGreatCircle } from '../../../packages/core/models/trajKinematics.mjs'
 import { hopGeom, slotFit } from './linkGeom.js'
@@ -136,8 +136,7 @@ export function useMapLinks(host) {
   const nodeName = (n, sm) => ctxOf(sm).nameOf(n) || (n.k === 'sat' ? (n.name || '?') : '')
   function nameOf(l, sm) {
     if (!l) return ''
-    if (l.nameAuto === false && String(l.name || '').trim()) return l.name
-    return linkAutoName(l, ctxOf(sm).nameOf)
+    return linkDisplayName(l, ctxOf(sm).nameOf)
   }
   function nextColor() {
     const used = new Set(list().map((l) => l.color))

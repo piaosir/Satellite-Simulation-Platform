@@ -433,7 +433,7 @@ function tbClick(b) {
 // 侧栏 / 设置窗的分区与参数行：索引由 scripts/cmd-index.mjs 从模板静态抽出（src/shared/cmdIndex.data.js，dev / build 自动刷新）。
 // 带拨杆 / 子菜单的分区由星座地图页登记（PAGE_SECS，见其 pageCommands），这里不再登记分区本身，但其参数行照常登记。
 // 同视图同标题的分区（波束合成按模式分成 bs-antp / bs-pam、bs-cov / bs-pcov）合成一条，keys 全带上，谁在 DOM 里就定位谁。
-const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-adm', 'geo-chain', 'geo-space', 'geo-proj', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
+const PAGE_SECS = new Set(['mk-points', 'mk-stations', 'mk-traj', 'geo-adm', 'geo-chain', 'geo-space', 'geo-proj', 'foc-model', 'foc-orb', 'foc-trk', 'foc-fp', 'foc-cone'])
 // 参数行里页面已用拨杆登记过的（'分区键|行名'）：宇宙空间八个子项在页面登记成带勾选的 geo.space.*，这里不再登记成定位行
 // ★ 与页面 pageCommands 的子项表逐项对齐（漏一项，标题栏搜索就出两条同名结果；cmdIndex.test 钉着）
 const PAGE_ROWS = new Set(['星空', '行星', '大气辉光', '太阳', '月球', '地球影像', '晨昏效果', '晨昏线'].map((l) => 'geo-space|' + l))

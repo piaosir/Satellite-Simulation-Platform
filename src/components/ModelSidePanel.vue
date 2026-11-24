@@ -3,11 +3,8 @@
 //   ① 当前卫星：缩略图 + 模型名 + 来源 / 保真度（署名与许可放 title）+ 尺寸 / 质量读数 + 姿态律 / 挂点数（二期）；
 //      模型下拉（自动 / 无 / 库中模型…）；
 //      跟随 / 编辑…（编辑… = 模型工作台「卫星」页：这颗星的姿态律与挂点）
-//   ② 显示：显示模型（拨杆，在节标题上；卫星与标记共用）、图标大小（所有卫星模型统一一个值，不逐颗设；标记挂的模型跟标记自己的图标大小，
-//      在标记侧栏，模型与图标共用一个设置）、跟随时的 HUD 八项（常驻，跟随时生效）
-//   图标大小一律是【默认视角下】的像素，球面上随缩放联动（拉近变大、拉远变小，与标记 / 地名同一把尺，见 viz/globe3d/zoomScale.js）
-//   ③ 模型库：搜索 + 来源分段 + 缩略图网格（点卡片 = 绑定到当前卫星；右键：下载 / 移除缓存 / 在工作台中打开）
-//   ④ 底部「模型工作台」
+//   ② 模型库：搜索 + 来源分段 + 缩略图网格（点卡片 = 绑定到当前卫星；右键：下载 / 移除缓存 / 在工作台中打开）
+//   ③ 底部「模型工作台」
 // 绑定写回由页面做（要与已有的挂点 / 姿态律合并，见 ConstellationMap3D 的 bindModel）；缩略图、下载、移除、开工作台直接走 IPC。
 // ★ 所有 api 调用都 catch，并认 {locked:true}（未激活时 gate 通道回这个，界面静默）。
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
@@ -24,10 +21,9 @@ const props = defineProps({
   sat: { type: Object, default: null },          // { key, name } 主选星；null = 未选中
   model: { type: Object, default: null },        // 主选星的模型信息（页面 selModel）
   lib: { type: Array, default: () => [] },       // manifest 条目（含 local 状态）+ 参数化模板
-  following: { type: Boolean, default: false },   // 正在跟随（3D 相机跟随 / 2D 星下点跟随都算）
-  st: { type: Object, required: true }           // focusStyle（modelOn / modelPx / hud*）
+  following: { type: Boolean, default: false }   // 正在跟随（3D 相机跟随 / 2D 星下点跟随都算）
 })
-const emit = defineEmits(['toggle-follow', 'bind', 'set-style', 'reset-style', 'open-wb'])
+const emit = defineEmits(['toggle-follow', 'bind', 'open-wb'])
 const models = (typeof window !== 'undefined' && window.api && window.api.models) || null
 
 // ---------------- 当前卫星 ----------------
@@ -245,14 +241,6 @@ function onDocDown(e) { if (menu.value && !(e.target.closest && e.target.closest
 onMounted(() => document.addEventListener('pointerdown', onDocDown, true))
 onBeforeUnmount(() => { document.removeEventListener('pointerdown', onDocDown, true); closeMenu() })
 
-const HUD = [
-  { k: 'hudAxes', t: '本体轴', tt: '+X 红 / +Y 绿 / +Z 蓝' }, { k: 'hudLvlh', t: 'LVLH', tt: '沿迹 / 径向 / 轨道法向（r × v）' }, { k: 'hudNadir', t: '天底' },
-  { k: 'hudVel', t: '速度', tt: '惯性速度方向' }, { k: 'hudSun', t: '太阳' },
-  { k: 'hudIsl', t: 'ISL', tt: '与 500 km 内相邻卫星的通视连线（连线最低高度不低于 100 km）' },
-  { k: 'hudEs', t: '地球站', tt: '标记层中仰角 ≥ 0° 的地球站方向，按距离由近及远取 12 个' },
-  { k: 'hudMounts', t: '挂点', tt: '绑定表中各挂点的视轴射线与视场锥（视场取挂点的 fovDeg；未设置时按参数化天线的 −3 dB 波束宽度）',
-    en: 'Mounts', ttEn: 'Boresight ray and field-of-view cone of each bound mount (FOV = the mount\'s fovDeg; otherwise the −3 dB beamwidth of the parametric antenna)' }
-]
 </script>
 
 <template>
@@ -294,15 +282,6 @@ const HUD = [
             <button type="button" class="btn" :disabled="!sat.key" :title="zhEn('模型工作台「卫星」页：姿态律、挂点、遮挡掩模', 'Model workbench, Satellite page: attitude law, mounts, obscuration masks')" @click="emit('open-wb', { tab: 'sat', satKey: sat.key, modelId: model && model.id })"><Icon name="pencil" :size="12" /><span>编辑…</span></button>
           </div>
         </template>
-      </template>
-    </div>
-
-    <div class="sec" :class="{ hid: !st.modelOn }">
-      <div class="sect acc" data-sec="mdl-disp" :class="{ open: isSecOpen('mdl-disp') }" @click="toggleSec('mdl-disp')" role="button" tabindex="0" :aria-expanded="isSecOpen('mdl-disp') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('mdl-disp')" @keydown.space.self.prevent="toggleSec('mdl-disp')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('mdl-disp') }" :size="12" /><span>显示</span><button type="button" class="ibtn sm sect-rst" title="恢复本节默认" aria-label="恢复本节默认" @click.stop="emit('reset-style')"><Icon name="rotate-ccw" :size="12" /></button><button type="button" class="layersw sect-layersw" :class="{ on: st.modelOn }" role="switch" :aria-checked="st.modelOn ? 'true' : 'false'" :title="st.modelOn ? '隐藏模型（卫星显示为点符号，标记显示为图标）' : '显示模型'" @click.stop="emit('set-style', 'modelOn', !st.modelOn)"><i></i></button></div>
-      <template v-if="isSecOpen('mdl-disp')">
-        <div class="srow" :title="zhEn('卫星模型在默认视角下的包围直径（屏幕像素），随视距缩放；对全部卫星统一生效。标记所挂模型的大小与标记图标一致', 'Satellite model bounding diameter in pixels at the default view; grows when zooming in, shrinks when zooming out; applies to all satellites. Models on markers follow the marker icon size')"><label>图标大小</label><input class="rng" type="range" min="4" max="2048" step="1" :value="st.modelPx" @input="emit('set-style', 'modelPx', Number($event.target.value))" /><span class="u">{{ st.modelPx }}</span></div>
-        <div class="hudt" title="跟随卫星时叠加的方向指示">HUD</div>
-        <label v-for="h in HUD" :key="h.k" class="chk2" :title="h.en ? zhEn(h.tt, h.ttEn) : (h.tt || '')"><input type="checkbox" :checked="st[h.k]" @change="emit('set-style', h.k, $event.target.checked)" /><span>{{ h.en ? zhEn(h.t, h.en) : h.t }}</span></label>
       </template>
     </div>
 
@@ -355,12 +334,9 @@ const HUD = [
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .sec > * + * { margin-top: 8px; }
 .sec > .sect + * { margin-top: 6px; }
-.sec.hid > :not(.sect) { opacity: .5; }
 .srow { --srow-lab: 70px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .srow label { color: var(--text-muted); min-width: var(--srow-lab); max-width: 100%; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .srow select { flex: 1; min-width: 116px; border: 1px solid var(--field-border); background-color: var(--field-bg); padding: 0 7px; font-size: var(--fs-3); outline: none; color: var(--text); }
-.srow .u { flex: none; min-width: 34px; text-align: right; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.rng { flex: 1; min-width: 0; }
 .sect { display: flex; align-items: center; color: var(--text); }
 .sect.acc { cursor: pointer; user-select: none; gap: 5px; margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
 .sect.acc .app-icon { flex: none; color: var(--text-faint); }
@@ -371,15 +347,8 @@ const HUD = [
 .sect .lnk { margin-left: auto; color: var(--text-muted); cursor: pointer; font-size: var(--fs-3); transition: color var(--dur-1) linear; }
 .sect .lnk:hover { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .sect-layersw { margin-left: auto; }
-.sect .lnk ~ .sect-layersw { margin-left: 12px; }
-.sect > .sect-rst { margin-left: auto; color: var(--text-faint); }
-.sect > .sect-rst:hover { color: var(--text); }
-.sect > .sect-rst + .sect-layersw { margin-left: 6px; }
 .sect .cnt { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; font-size: var(--fs-2); }
-.chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-.chk2 + .chk2 { margin-top: 5px; }
 .empty { color: var(--text-faint); padding: 4px 0; }
-.hudt { color: var(--text-muted); font-size: var(--fs-2); letter-spacing: var(--ls-caps); }
 
 /* 当前卫星 */
 .cur { display: flex; gap: 10px; align-items: flex-start; }

@@ -157,7 +157,7 @@ t('⑤ HUD 挂点名按屏幕避让：斜侧机位下两两不重叠、不压其
     const on = { bodyAxes: true, lvlh: false, nadir: false, velocity: false, sun: false, mounts: true }
     // 斜侧机位：几乎顺着视轴方向看过去（视轴被透视压扁，沿射线错开的长度不起作用）
     cam.position.set(4, 3, -30); cam.lookAt(0, 0, 0)
-    hud.update(on, 3, cam.position.length(), labelK)
+    hud.update(on, 4.5, labelK)
     const overlap = (rs) => { let k = 0; for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) { const a = rs[i], b = rs[j]; if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) k++ } return k }
     const before = hud.mountLabelRects(cam, W, H)
     assert.equal(before.length, 4)
@@ -175,7 +175,7 @@ t('⑤ HUD 挂点名按屏幕避让：斜侧机位下两两不重叠、不压其
     assert.deepEqual(hud.mountLabelRects(cam, W, H).map((r) => Math.round(r.y0)), after.map((r) => Math.round(r.y0)))
     // 机位回正（从 +X 侧面看，四支射线在屏上分得开）：不撞就回原位
     cam.position.set(30, 0, 0); cam.lookAt(0, 0, 0)
-    hud.update(on, 3, cam.position.length(), labelK)
+    hud.update(on, 4.5, labelK)
     const free = hud.mountLabelRects(cam, W, H)
     hud.declutter(cam, W, H)
     const back = hud.mountLabelRects(cam, W, H)
@@ -201,6 +201,33 @@ function withHud(fn) {
     fn(hud)
   } finally { hud.dispose(); globalThis.document = prevDoc }
 }
+t('聚焦 HUD 在没有模型图标时仍能独立显示，取消聚焦即收起', () => {
+  const layer = ML.createModelLayer()
+  layer.setFocusHud({ anchor: [0, 0, 1.1], qL2S: [0, 0, 0, 1] })
+  assert.equal(layer.overlay.isEmpty(), true)
+  layer.setHud({ bodyAxes: true })
+  assert.equal(layer.overlay.isEmpty(), false)
+  layer.setHud({ bodyAxes: false, lvlh: true })
+  assert.equal(layer.overlay.isEmpty(), false)
+  layer.setFocusHud(null)
+  assert.equal(layer.overlay.isEmpty(), true)
+  layer.dispose()
+})
+
+t('本体轴按勾选状态显隐，轨道坐标轴独立显示', () => {
+  withHud((hud) => {
+    for (const bodyAxes of [false, true, false]) {
+      hud.update({ bodyAxes, lvlh: true }, 4.5, 0.001)
+      const visible = new Set()
+      hud.group.traverseVisible((o) => visible.add(o))
+      for (const k of ['bx', 'by', 'bz']) {
+        assert.equal(visible.has(hud.items[k].line), bodyAxes)
+        assert.equal(visible.has(hud.items[k].label), bodyAxes)
+      }
+      for (const k of ['lx', 'ly', 'lh']) assert.ok(visible.has(hud.items[k].label))
+    }
+  })
+})
 const overlapN = (rs) => { let k = 0; for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) { const a = rs[i], b = rs[j]; if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) k++ } return k }
 
 t('⑥ 避让不出画布：锚点贴上下沿（含刚出下沿）时名字拉回画面、两两不重叠；右沿放不下时翻到锚点左侧', () => {
@@ -213,7 +240,7 @@ t('⑥ 避让不出画布：锚点贴上下沿（含刚出下沿）时名字拉�
     let checked = 0, edge = 0, outside = 0
     for (let k = -90; k <= 90; k++) {
       cam.position.set(4, 3, -30); cam.lookAt(0, k * 0.25, 6)
-      hud.update(on, 3, cam.position.length(), labelK)
+      hud.update(on, 4.5, labelK)
       hud.declutter(cam, W, H)
       const rs = hud.mountLabelRects(cam, W, H)
       if (rs.length !== 5) continue
@@ -233,7 +260,7 @@ t('⑥ 避让不出画布：锚点贴上下沿（含刚出下沿）时名字拉�
     let flips = 0, checkedX = 0
     for (let k = 0; k <= 120; k++) {
       cam.position.set(4, 3, -30); cam.lookAt(k * 0.2, 0, 6)
-      hud.update(on, 3, cam.position.length(), labelK)
+      hud.update(on, 4.5, labelK)
       hud.declutter(cam, W, H)
       for (const r of hud.mountLabelRects(cam, W, H)) {
         const ww = r.x1 - r.x0
@@ -255,22 +282,22 @@ t('⑦ 输入没变不重排：同一机位连调两帧只重排一次、结果�
     const labelK = 2 * Math.tan(42 * Math.PI / 360) / H
     const on = { bodyAxes: true, lvlh: false, nadir: false, velocity: false, sun: false, mounts: true }
     cam.position.set(4, 3, -30); cam.lookAt(0, 0, 0)
-    hud.update(on, 3, cam.position.length(), labelK)
+    hud.update(on, 4.5, labelK)
     const r0 = hud.declutterRuns()
     const m1 = hud.declutter(cam, W, H)
     const a = hud.mountLabelRects(cam, W, H)
-    hud.update(on, 3, cam.position.length(), labelK)   // 逐帧照样调 update（值不变）
+    hud.update(on, 4.5, labelK)   // 逐帧照样调 update（值不变）
     const m2 = hud.declutter(cam, W, H)
     assert.equal(hud.declutterRuns() - r0, 1, '静止第二帧应跳过重排')
     assert.equal(m2, m1)
     assert.deepEqual(hud.mountLabelRects(cam, W, H), a)
     cam.position.set(4.5, 3, -30); cam.lookAt(0, 0, 0)
-    hud.update(on, 3, cam.position.length(), labelK)
+    hud.update(on, 4.5, labelK)
     hud.declutter(cam, W, H)
     assert.equal(hud.declutterRuns() - r0, 2, '机位变了要重排')
     // 挂点表换了（名字变 → 字标是新对象）：即便屏幕位置没变也要重排
     hud.setMounts([{ name: '改名', posBody: [0.6, 0.5, 1.2], dir: [0.01, 0, 1] }])
-    hud.update(on, 3, cam.position.length(), labelK)
+    hud.update(on, 4.5, labelK)
     hud.declutter(cam, W, H)
     assert.equal(hud.declutterRuns() - r0, 3, '挂点表变了要重排')
   })

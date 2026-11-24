@@ -106,7 +106,7 @@ function makeShape(cfg) {
   if (mode === 'gaussian') {
     if (!(bw > 0)) throw new Error('卫星方向图（高斯）缺 3 dB 波束宽度');
     const floorRel = num(cfg.sidelobeFloorDb, -30);          // 相对峰值的旁瓣底板
-    warnings.push('卫星方向图采用高斯近似，仅主瓣内有效；离轴较大时应改用 S.1528 或导入 GRD');
+    warnings.push('卫星方向图采用高斯近似，仅主瓣内有效；离轴较大时应改用 S.1528 或导入方向图文件');
     return {
       relDb: (th) => P.gaussianSatBeam(0, bw, th, floorRel).gain,
       info: { mode, shape: '高斯主瓣近似', approx: true, beamwidth3dBDeg: bw, sidelobeFloorDb: floorRel },

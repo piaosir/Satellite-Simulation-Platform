@@ -164,7 +164,7 @@ onBeforeUnmount(() => { if (typeof _offFp === 'function') _offFp() })
         <button v-if="onImport" class="sp-gbtn" :disabled="importing"
                 title="直接导入 GRD / PAT 方向图（可多选），挂到本卫星条目名下；一个文件＝一副天线，文件内多个 set＝多波束"
                 @click.prevent="onImport()">
-          <Icon name="folder-plus" :size="12" /><span>{{ importing ? '导入中…' : '导入方向图' }}</span>
+          <Icon name="folder-plus" :size="12" /><span>{{ importing ? '导入中…' : '导入方向图文件' }}</span>
         </button>
         <button v-if="onRemoveAnt && localAnts.length" class="sp-gbtn danger" :disabled="importing"
                 :title="'删除本条目导入的方向图：' + localAnts.map((a) => a.name).join('、')"

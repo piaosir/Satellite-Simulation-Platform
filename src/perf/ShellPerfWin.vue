@@ -233,7 +233,7 @@ async function exportResultXlsx() {
     sheetModel({ name: '性能结果 · ' + viewName(), cols: cols.value, rows: resGrid.rows.value, value: xlsxVal, note: noteText() }),
     sheetModel({ name: '目标卫星', cols: PICK_COLS, rows: pickRows.value, value: (r, c) => r[c.key] })
   ]
-  const r = await exportSheets({ defaultName: safeFileName('对星性能指标表_' + ctxName(), '对星性能指标表') + '.xlsx', title: '导出对星性能指标表', sheets })
+  const r = await exportSheets({ defaultName: safeFileName((st.tableName || '对星性能指标表') + '_' + ctxName(), '对星性能指标表') + '.xlsx', title: '导出对星性能指标表', sheets })
   exportDone(N, r)
 }
 async function exportPicksXlsx() {

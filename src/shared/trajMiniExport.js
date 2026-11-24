@@ -53,7 +53,7 @@ export function trajStyleOf(t, ms = {}) {
     dash: ['solid', 'dash', 'dot', 'dashdot'].includes(ms.tjDash) ? ms.tjDash : 'solid',
     dotPx: numIn(ms.tjDot, 4, 0, 60),
     iconOn: ms.tjIconOn !== false,
-    iconPx: numIn(ms.tjIconPx, 26, 1, 60),
+    iconPx: numIn(ms.tjIconPx, 26, 1, 120),
     nameOn: !!ms.tjNameOn,
     nameFont: numIn(ms.tjNameFont, 13, 1, 32),
     nameColor: hexOr(ms.tjNameColor, '#ffffff'),

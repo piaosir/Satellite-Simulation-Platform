@@ -302,7 +302,7 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   ok(/watch\(\(\) => grdSats\.value\.map\(\(n\) => \(n && n\.kind !== 'elevline' && !n\.noradId \? `\$\{n\.folder\}\|\$\{n\.satName\}\|\$\{n\.lon\}\|\$\{n\.lat\}\|\$\{n\.altKm\}\|\$\{_elSig\(n\.elements\)\}` : ''\)\)\.join\('\\n'\), syncTreeGeo, \{ immediate: true \}\)/.test(page), '树的增删改（含根数）→ syncTreeGeo；小眼睛不进签名（它不决定这一集上不上图）')
   ok(page.includes("watch(() => grdSats.value.map((n) => (isTreeLinkedNode(n) ? `${n.folder}|${n.noradId}` : '')).join('\\n'), () => {"), '关联星：关联关系一变才重建渲染集（小眼睛不进签名）')
   const px = body('function pickExtraSats(opts) {')
-  ok(px.includes('const drawn = flat2d ? satVisible(node) : node.labelShow !== false') && px.includes('if (te && drawn) push(te)') && px.includes('if (drawn || cov) push(liveEntryOf(node.noradId))'), '点选候选：天线树卫星自己的标记画着就点得中（3D 只画名；2D 图标或名任一开着）')
+  ok(px.includes('const drawn = satVisible(node)') && px.includes('if (!flat2d && drawn && node.iconShow !== false)') && px.includes('if (te && drawn) push(te)') && px.includes('if (drawn || cov) push(liveEntryOf(node.noradId))'), '点选候选：两种视图都可按图标或星名拾取，3D 另有星下点图标命中位置')
   // TDZ：syncTreeGeo 的立即 watch 在 setup 期就调 orbitSatrec —— 那一块必须声明在它之前（也在条目表状态之前）
   const iOrb = page.indexOf('const customSatrecs = new Map()'), iFn = page.indexOf('function orbitSatrec(node) {'), iEl = page.indexOf("function elementsToSatrec(el) { return sat.omm2satrec(elementsOmm(el, 'SIM')) }")
   const iCache = page.indexOf('const treeGeoCache = new Map()'), iWatch = page.indexOf('syncTreeGeo, { immediate: true })')

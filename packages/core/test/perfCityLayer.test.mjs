@@ -7,6 +7,7 @@
 // 宿主的推送与重画都合帧在 setTimeout(0) 里，Windows 上 Node 的定时器粒度可到 16 ms —— 断言一律轮询等到位，不睡固定时长。
 import { ref } from 'vue'
 import { usePerfTable } from '../../../src/viz/grd/usePerfTable.js'
+import { useSatPerfTable } from '../../../src/viz/grd/useSatPerfTable.js'
 import { createPerfWinHost } from '../../../src/viz/grd/perfWinHost.js'
 import { antennaBasis } from '../../../src/viz/grd/coverage.js'
 
@@ -49,7 +50,7 @@ const D = {
     ensureAntLoaded: async (key) => { loadCalls++; if (!treeReady || !allowed.has(key)) return false; loaded.add(key); return true },
     onTreeKeys: (fn) => { treeSub = fn }
   },
-  satPerf: { picksByAnt: ref({}), optsByAnt: ref({}), dropSession() {} },
+  satPerf: useSatPerfTable(),
   satcov: {}, envLive: {},
   scene: () => ({ setCityBoxes: (l) => layersLog.push(l) }), flat: () => null,
   markers: () => ({ pts: [], sts: [], trs: [] }), fmtLL: (a, b) => a + ',' + b,
@@ -116,6 +117,38 @@ const nLayers = () => last().length
   ok('④ 城市填回来 → 层回来（背面的城市只有标签、没有框）', nLayers() === 1 && last()[0].items.length === 2 && last()[0].items[0].text === '上海' && last()[0].items[1].ring === null, JSON.stringify(last().map((l) => l.items.map((i) => i.text))))
   onClosed({ id })
   await tick(20)
+}
+
+// 同一根天线的多张表共享几何，各自持有名单、选项、窗口与名称。
+{
+  const k = 'satX|separate', renamed = 'satX|renamed'
+  loaded.add(k)
+  const ground = host.tables.add('ground', k), shell = host.tables.add('shell', k)
+  const first = await host.open('ground', k), second = await host.open('ground', ground)
+  onAct({ id: first, kind: 'ground', key: k, type: 'ready' })
+  onAct({ id: second, kind: 'ground', key: ground, type: 'ready' })
+  onAct({ id: second, kind: 'ground', key: ground, type: 'stations', payload: [{ id: 'g', city: '北京', lon: 116, lat: 40 }] })
+  host.setCityShow(ground, true)
+  host.renameTable('ground', k, '默认表')
+  host.renameTable('ground', ground, '北京站')
+  await waitFor(() => last().some(l => l.key === ground))
+  ok('同天线两窗各存城市与图层，两窗共用一个天线几何键', first !== second && !perf.stationsOf(k).length && perf.stationsOf(ground).length === 1 && last().some(l => l.key === ground) && !host.liveKeys().includes(ground) && host.liveKeys().includes(k))
+  const sp = D.satPerf
+  sp.addTarget({ name: '目标 A' }, shell)
+  const ctx = { key: k, noEph: true, satName: '源星', antName: '天线' }
+  sp.compute(ctx, null, [], null, [], 0, shell)
+  const instantNote = sp.session(shell).note.value
+  await sp.computeWindows(ctx, null, [], null, [], 0, {}, shell)
+  ok('子表瞬时计算和时段扫描的状态只落到指定会话', instantNote === '关联卫星当前无星历' && sp.session(shell).win.msg === '关联卫星当前无星历' && sp.session(k).note.value !== instantNote && sp.session(k).win.msg !== sp.session(shell).win.msg)
+  const snapshot = JSON.parse(JSON.stringify({ tables: host.tables.entries.value, perf: perf.getState(), satPerf: sp.getState() }))
+  const restored = createPerfWinHost(D).tables, restoredGround = usePerfTable(), restoredShell = useSatPerfTable()
+  restored.restore(snapshot.tables); restoredGround.restoreState(snapshot.perf); restoredShell.restoreState(snapshot.satPerf)
+  ok('恢复后表名、站点和目标卫星仍各自对应', restored.list('ground', k).map(t => t.name).join('/') === '默认表/北京站' && restoredGround.stationsOf(ground)[0].city === '北京' && restoredShell.picksOf(shell)[0].name === '目标 A')
+  loaded.add(renamed)
+  treeSub({ type: 'rename', from: k, to: renamed })
+  ok('天线改名后两张表仍能定位各自的窗口和新天线', host.isOpen('ground', renamed) && host.isOpen('ground', ground) && host.tables.antennaOf(ground) === renamed && host.tables.antennaOf(shell) === renamed && host.tables.nameOf('ground', renamed) === '默认表')
+  treeSub({ type: 'remove', keys: [renamed] })
+  ok('删除天线后清理其各张表及数据', !host.isOpen('ground', ground) && !perf.stationsOf(ground).length && !sp.picksOf(shell).length && !host.tables.entries.value.some(t => t.antenna === renamed))
 }
 
 // ==================== ⑤ 删天线 → 层消失、不再去载 ====================

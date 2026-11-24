@@ -1470,7 +1470,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey, true))
                     <span class="tcount">{{ grdLonText(sat) }}{{ sat.antennas.length }} 天线</span>
                     <span class="trops">
                       <button class="mini" @click="openEditGrdSat(sat)">编辑</button>
-                      <button class="mini" title="导入 GRASP GRD / ACP4 / Eutelsat 方向图（可多选，每文件一根天线）" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入方向图</button>
+                      <button class="mini" title="导入 GRASP GRD / ACP4 / Eutelsat 方向图（可多选，每文件一根天线）" @click="importGrd(sat)"><Icon name="plus" :size="12" /> 导入方向图文件</button>
                       <button class="mini del" @click="removeGrdSat(sat)">删除卫星</button>
                     </span>
                   </div>

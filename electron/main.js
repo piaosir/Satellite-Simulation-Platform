@@ -540,7 +540,13 @@ function perfWinAct(sender, msg) {
   return true
 }
 function perfWinClose(id) { const p = _perfWins.get(String(id)); if (p && !p.win.isDestroyed()) p.win.close(); return !!p }
-function perfWinSetTitle(id, title) { const p = _perfWins.get(String(id)); if (p && !p.win.isDestroyed()) p.win.setTitle(String(title || '')); return !!p }
+function perfWinSetTitle(id, title, key) {
+  const p = _perfWins.get(String(id))
+  if (!p || p.win.isDestroyed()) return false
+  if (typeof key === 'string') p.key = key
+  p.win.setTitle(String(title || ''))
+  return true
+}
 function perfWinList() { const out = []; for (const [id, p] of _perfWins) if (!p.win.isDestroyed()) out.push({ id, kind: p.kind, key: p.key }); return out }
 function perfWinSelf(sender) { const p = perfWinOf(sender); return p ? { id: p.id, kind: p.kind, key: p.key } : null }
 

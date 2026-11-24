@@ -162,15 +162,19 @@ export function useConfigTree(opts) {
     await loadConfigs()
     if (item && item.id) { focusId.value = item.id; startRename(item) }
   }
-  async function addBlankConfig(parentId = null) {
+  async function addBlankConfig(parentId = null, name = '') {
     if (!needApi()) return
     if (!(await guardedLeave())) return
     const state = blankState()
-    const item = await api.store.saveConfig(ns, { name: uniqueCfgName(newCfgName()), ...(autosave ? { nameAuto: true } : {}), state, parentId: parentId || null })
+    const item = await api.store.saveConfig(ns, {
+      name: name || uniqueCfgName(newCfgName()), ...(autosave ? { nameAuto: !name } : {}), state, parentId: parentId || null
+    })
     expandFolder(parentId)          // 建在折叠文件夹里时不展开＝新配置当场「消失」
     await loadConfigs()
-    if (item && item.id) { activeId.value = item.id; focusId.value = item.id; applyState(state); setBaseline() }
+    if (!item || !item.id) return
+    activeId.value = item.id; focusId.value = item.id; applyState(state); setBaseline()
     toast('已添加空白配置')
+    return item.id
   }
 
   // —— 自动保存模式：工作区恒对应一份配置 ——

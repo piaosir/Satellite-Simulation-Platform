@@ -53,7 +53,7 @@ const EN = {
   '导入覆盖等值线（GXT / KML / JSON，可多选）': 'Import Coverage Contours (GXT / KML / JSON, multiple)',
   '导入波束地图（可多选）': 'Import Beam Maps (multiple)',
   '导入方向图文件（GRASP GRD / ACP4 / Eutelsat，可多选）': 'Import Antenna Pattern Files (GRASP GRD / ACP4 / Eutelsat, multiple)',
-  '导入 GRD / PAT 方向图（可多选）': 'Import GRD / PAT Patterns (multiple)',
+  '导入方向图文件（GRD / PAT，可多选）': 'Import Antenna Pattern Files (GRD / PAT, multiple)',
   '导出频率计划': 'Export Frequency Plan',
   '导入频率计划（JSON）': 'Import Frequency Plan (JSON)',
   '导出 Excel': 'Export Excel',

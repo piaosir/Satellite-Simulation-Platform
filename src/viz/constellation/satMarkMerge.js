@@ -6,12 +6,12 @@
 //   ② 对星覆盖分析的聚焦特效 —— 同一套样式（它本来就是「不进选中集的聚焦」，见 computeSatcovFocusGeometry）；
 //                              在轨点走 setSelectionSet、星下点图标走 setFocusSatLLA / 2D 聚焦图标层
 //   ③ 可见性分析的可见星      —— 面板自己的大小 / 颜色（星下点图标：3D setFocusSatLLA、2D 卫星层；在轨点：setSelectionSet 出厂样式）
-//   ④ 天线树卫星自身的图标    —— 逐星设置（只在 2D 卫星层画星下点图标；3D 只画名字，没有在轨点）
+//   ④ 天线树卫星自身的图标    —— 逐星设置（星下点图标，3D 另有真实高度的在轨点）
 // 现按身份串归并（ConstellationMap3D 的 satIdOf 口径：'n:<NORAD>'，没号的 'm:<名字>'；天线树里没进星座的节点 'f:<folder>'），
 // 上面的序号就是优先级：同一颗星谁的序号小谁画，低的那份撤掉这枚标记，别的照留（名字锚到留下来的那枚图标上方、视线斜线照画）。
 // 聚焦两档压过分析与卫星自身：选中态是用户此刻点名要看的，与聚焦的轨迹 / 覆盖圈 / 高亮环同一套样式，2D、3D 一个样子；
 // 取消聚焦，各自的标记原样回来。
-// ★ 只并不加：哪颗星有图标 / 有在轨点，与归并前完全一样 —— 认领按标记逐类算（「星下点图标」「在轨点」各管各的开关），
+// 认领按标记逐类算（「星下点图标」「在轨点」各管各的开关），
 //   聚焦那边这一类关着就不认领，低档照画。
 // 不在此列：星座点云（底层，聚焦 / 可见星的点本就盖在它上面）、图上链路的端点小点（链路自己的符号，同箭头）。
 
@@ -87,4 +87,13 @@ export function claimSig(keys, claimed) {
   let s = ''
   for (const k of (keys || [])) if (claimed.has(k)) s += k + '\n'
   return s
+}
+
+// 可见星的两种 3D 标记已由几何层绘制。天线树只补自己负责的标记，独立保留星名。
+export function globeLayerSats(list, subClaim, dotClaim) {
+  return mergeLayerSats(list, NO_KEYS).map((s) => {
+    if (s.rank !== MARK_RANK.grd) return s
+    const on = s.iconShow !== false
+    return { ...s, groundIcon: on && !subClaim.has(s.key), orbitDot: on && !dotClaim.has(s.key) }
+  })
 }
