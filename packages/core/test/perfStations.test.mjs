@@ -145,12 +145,15 @@ function addCity(p, city, lon, lat) {
 
 // ==================== ⑦ 「仅覆盖波束」默认关 + 老快照一次性归零 ====================
 {
-  ok('⑦ 出厂默认关', usePerfTable().getOpts('s|a').filterOn === false)
+  const defaults = usePerfTable().getOpts('s|a')
+  ok('⑦ 新表阈值默认关闭，值为 0 dB', defaults.filterOn === false && defaults.minDir === 0)
   const p = usePerfTable()
   p.restoreState({ optsByAnt: { 's|a': { filterOn: true, minDir: 60 } }, optsTemplate: { filterOn: true, minDir: 60 }, stationsByAnt: {} })   // 老快照：没有 filterDefault 标记
   ok('⑦ 老快照里的 filterOn:true 归零、阈值保留', p.getOpts('s|a').filterOn === false && p.getOpts('s|a').minDir === 60)
-  ok('⑦ 老快照的模板也归零：新天线不再继承旧出厂默认', p.getOpts('s|b').filterOn === false && p.getOpts('s|b').minDir === 60)
+  ok('⑦ 新表从 0 dB 开始，不继承旧模板阈值', p.getOpts('s|b').filterOn === false && p.getOpts('s|b').minDir === 0)
   p.getOpts('s|a').filterOn = true
+  p.rememberOpts('s|a')
+  ok('⑦ 其他表开启过阈值时新表仍默认关闭', !p.getOpts('s|c').filterOn && p.getOpts('s|c').minDir === 0)
   const st = JSON.parse(JSON.stringify(p.getState()))
   const p2 = usePerfTable(); p2.restoreState(st)
   ok('⑦ 新快照带标记：用户勾上的原样回来', st.filterDefault === 'off' && p2.getOpts('s|a').filterOn === true)

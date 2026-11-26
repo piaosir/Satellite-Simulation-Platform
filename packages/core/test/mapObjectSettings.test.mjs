@@ -140,10 +140,11 @@ productionFunction('refreshHiddenSatellites', {
 })()
 assert.deepEqual(refreshCalls, ['cloud', 'tree', 'focus', ['links', true]], '暂停时隐藏或恢复也立即刷新链路端点')
 const focusedExtras = []
+const lastGeom = { sf: { rings: [] } }
 let hiddenSatellite = false, extraPositions = 0
 const extras = productionFunction('pickExtraSats', {
-  focusStyle: { cloudOn: true }, renderEntries: [satellite], selEntries: focusedExtras, links: ref([]),
-  mapSatelliteHidden: () => hiddenSatellite, satIdOf: () => 'n:42',
+  lastGeom, focusStyle: { cloudOn: true, ringPx: 60, subPx: 30, subOn: true }, renderEntries: [satellite], selEntries: focusedExtras, links: ref([]),
+  mapSatelliteHidden: () => hiddenSatellite, satIdOf: () => 'n:42', renderById: id => id === 'n:42' ? satellite : null,
   calcAt: () => new Date(0), ccTimeAt: (d) => d,
   sat: { gstime: () => 0, eciToGeodetic: () => ({ latitude: 0, longitude: 0, height: 1000 }), degreesLat: (v) => v, degreesLong: (v) => v },
   isCustomEntry: () => false, posAt: () => { extraPositions++; return { position: { x: 1, y: 0, z: 0 } } },
@@ -155,4 +156,44 @@ assert.equal(extraPositions, 0, '鼠标悬停不为未绘制的星重新跑轨�
 focusedExtras.push(satellite)
 assert.equal(extras({ flat: true })[0].ref, satellite, '实际显示的聚焦卫星仍可拾取')
 hiddenSatellite = true; assert.deepEqual(extras({ flat: true }), [], '隐藏卫星不再被 2D 拾取')
+hiddenSatellite = false
+focusedExtras.length = 0
+const antenna = 'tree|antenna'
+const settings = { boreType: 'sat', boreSat: 'n:42' }
+const boreRings = productionFunction('grdBoreTargetRings', {
+  grd: { active: ref(antenna), selected: ref([antenna]), getPerfContext: () => ({ settings }) },
+  grdNodeOf: () => ({}), satVisible: () => true, satEntryById: () => satellite,
+  mapSatelliteHidden: () => hiddenSatellite, satIdOf: () => 'n:42',
+  satTargetEcef: () => [1, 2, 3], W: { ecefToGeodetic: () => ({ lat: 40, lon: -115, h: 20200 }) }
+})
+for (const mode of ['sat', 'satoff']) {
+  settings.boreType = mode
+  lastGeom.sf.rings = boreRings(new Set())
+  const [ring] = extras()
+  assert.equal(ring.ref, satellite, '目标已在点云里，仍能按显示的环拾取')
+  assert.deepEqual([ring.lat, ring.lon, ring.altKm, ring.pickRadius], [40, -115, 20200, 30])
+}
+lastGeom.sf.rings = [{ lat: 40, lon: -115, altKm: 20200, ref: satellite }]
+assert.deepEqual(extras().map((p) => p.altKm), [20200, 0], '对星覆盖在轨环和星下点图标都能拾取')
+hiddenSatellite = true
+assert.deepEqual(extras(), [], '隐藏后立即停止拾取上一帧的环')
+hiddenSatellite = false
+lastGeom.sf.rings = []
+assert.deepEqual(extras(), [], '清掉高亮环后不保留旧的拾取位置')
+{
+  const gps = { name: 'GPS BIIR-5 (PRN 22)', noradId: '26407' }
+  const selections = []
+  const selectSat = (entry, face, additive = false) => selections.push({ entry, face, additive })
+  for (const additive of [false, true]) {
+    productionFunction('onMapPick', {
+      _pickArmed: true, _satPickAt: 0, lnk: { draw: ref(false) }, satPick: ref(false),
+      selEntries: [], notePrevFocus() {}, selectSat
+    })(gps, additive)
+    assert.deepEqual(selections.pop(), { entry: gps, face: false, additive }, '图上选择目标时保留镜头')
+  }
+  productionFunction('focusBoreSat', {
+    satEntryById: id => id === 'n:26407' ? gps : null, selectSat
+  })('n:26407')
+  assert.deepEqual(selections.pop(), { entry: gps, face: false, additive: false }, '侧栏选择目标时保留镜头')
+}
 console.log('mapObjectSettings: geometry, settings, per-object hide, routing and async navigation passed')

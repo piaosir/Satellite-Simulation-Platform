@@ -26,6 +26,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
+import LbResourceIcon from './LbResourceIcon.vue'
 import MiniSendDialog from './MiniSendDialog.vue'
 import { reportError } from '../shared/reportError.js'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
@@ -374,7 +375,7 @@ watch(() => way.value, (w) => { if (w === 'online' && props.configured && !inbox
             <div class="lbs-list">
               <template v-for="k in libKinds" :key="k">
                 <div class="lbs-grp">
-                  <span class="lbs-grp-t">{{ (ctx.lib[k] && ctx.lib[k].label) || KIND_LABEL[k] }}</span>
+                  <span class="lbs-grp-t"><LbResourceIcon :kind="k === 'es' ? 'station' : k" />{{ (ctx.lib[k] && ctx.lib[k].label) || KIND_LABEL[k] }}</span>
                   <span class="lbs-grp-n">{{ effIds[k].size }}/{{ libArrays[k].length }}</span>
                   <span class="lbs-sp"></span>
                   <button class="lbs-lnk" @click="selectAllLib(k, true)">全选</button>

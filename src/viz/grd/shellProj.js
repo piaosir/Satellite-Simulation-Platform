@@ -80,13 +80,14 @@ export function visMargin(g, d, branch) {
 // inside：唯一正根；否则近/远两支各一个正根。
 export function shellT(g, d, branch) {
   const sd = g.S[0] * d[0] + g.S[1] * d[1] + g.S[2] * d[2]
-  const c = g.rS * g.rS - g.R * g.R
+  const c = (g.rS - g.R) * (g.rS + g.R)
   const disc = sd * sd - c
-  if (disc < 0) return NaN
-  const q = Math.sqrt(disc)
-  if (g.inside) return -sd + q                     // c<0 → 一正一负，取正根
+  const roundoff = 32 * Number.EPSILON * Math.max(sd * sd, Math.abs(c))
+  if (disc < -roundoff) return NaN
+  const q = Math.sqrt(Math.max(0, disc))
+  if (g.inside) return sd > 0 ? -c / (sd + q) : -sd + q
   if (sd >= 0) return NaN                          // 背离壳层
-  return branch === 'near' ? (-sd - q) : (-sd + q)
+  return branch === 'near' ? c / (-sd + q) : (-sd + q)
 }
 
 // 方向 d → 壳层上的地心经纬度（度）+ 斜距。未命中返回 null。
@@ -294,7 +295,8 @@ export function losBlocked(S, P, hExKm = 0) {
   if (!(qa > 0)) return false
   const qb = 2 * (ox * dx + oy * dy + oz * dz), qc = ox * ox + oy * oy + oz * oz - 1
   const disc = qb * qb - 4 * qa * qc
-  if (disc < 0) return false
+  // An exact tangent never penetrates the occulting body.
+  if (disc <= 32 * Number.EPSILON * (qb * qb + Math.abs(4 * qa * qc))) return false
   const sd = Math.sqrt(disc), t1 = (-qb - sd) / (2 * qa), t2 = (-qb + sd) / (2 * qa)
   return (t1 > 1e-9 && t1 < 1 - 1e-9) || (t2 > 1e-9 && t2 < 1 - 1e-9)
 }

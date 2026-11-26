@@ -10,10 +10,16 @@ export function usePerfTableCatalog() {
   const nameOf = (kind, id) => entry(kind, id)?.name || baseName(kind)
   const parents = computed(() => new Map(entries.value.filter(t => t.id !== t.antenna).map(t => [t.id, t.antenna])))
   const antennaOf = id => parents.value.get(id) || id
+  // Old snapshots have no entry for the default table. Only an explicit deletion hides it.
+  const has = (kind, id) => {
+    const t = entry(kind, id)
+    return t ? !t.deleted : typeof id === 'string' && id.includes('|')
+  }
 
   function list(kind, antenna) {
     const first = entry(kind, antenna) || { id: antenna, kind, antenna, name: baseName(kind) }
-    return [first, ...entries.value.filter(t => t.kind === kind && t.antenna === antenna && t.id !== antenna)]
+    const children = entries.value.filter(t => t.kind === kind && t.antenna === antenna && t.id !== antenna)
+    return first.deleted ? children : [first, ...children]
   }
   function add(kind, antenna) {
     const siblings = list(kind, antenna)
@@ -21,15 +27,22 @@ export function usePerfTableCatalog() {
     let n = siblings.length + 1
     while (names.has(baseName(kind) + ' ' + n)) n++
     const id = crypto.randomUUID()
-    entries.value.push({ kind, antenna, id, name: baseName(kind) + ' ' + n })
+    entries.value.push({ kind, antenna, id, name: siblings.length ? baseName(kind) + ' ' + n : baseName(kind) })
     return id
   }
   function rename(kind, id, value) {
     const name = value.trim()
-    if (!name) return
+    if (!name || !has(kind, id)) return
     const t = entry(kind, id)
     if (t) t.name = name
     else entries.value.push({ kind, antenna: id, id, name })
+  }
+  function remove(kind, id) {
+    if (!has(kind, id)) return false
+    const antenna = antennaOf(id)
+    entries.value = entries.value.filter(t => t.kind !== kind || t.id !== id)
+    if (id === antenna) entries.value.push({ kind, antenna, id, name: '', deleted: true })
+    return true
   }
   function moveAntenna(from, to) {
     for (const t of entries.value) if (t.antenna === from) {
@@ -42,5 +55,5 @@ export function usePerfTableCatalog() {
     entries.value = (Array.isArray(data) ? data : []).filter(t => t && ['ground', 'shell'].includes(t.kind)
       && typeof t.antenna === 'string' && typeof t.id === 'string' && typeof t.name === 'string').map(t => ({ ...t }))
   }
-  return { entries, list, add, rename, nameOf, antennaOf, moveAntenna, removeAntenna, restore }
+  return { entries, list, has, add, rename, remove, nameOf, antennaOf, moveAntenna, removeAntenna, restore }
 }

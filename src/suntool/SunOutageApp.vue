@@ -10,6 +10,7 @@ import { askConfirm } from '../shared/ui/useConfirm.js'   // 确认框（全平�
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import ActivationLock from '../components/ActivationLock.vue'
 import Icon from '../components/Icon.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'
 import ConfigTree from '../components/ConfigTree.vue'
 import ConfigTreeMenu from '../components/ConfigTreeMenu.vue'
@@ -775,7 +776,7 @@ onMounted(async () => {
         </div>
         <div class="rain-toolbar">
           <div class="rain-seg-grp so-sat">
-            <span class="rain-seg-lb">卫星</span>
+            <span class="rain-seg-lb"><LbResourceIcon kind="sat" />卫星</span>
             <label class="so-search">
               <input v-model="kw" class="search-field" placeholder="名称 / NORAD" spellcheck="false" @focus="onSearchFocus" @blur="onSearchBlur" />
               <div v-if="searchOpen && (kw.trim() || poolLoading || poolErr)" class="so-drop">
@@ -859,7 +860,7 @@ onMounted(async () => {
       <aside class="lb-col lb-result" :class="{ resizing: resResizing }" :style="{ width: resultWidth + 'px' }">
         <div class="lb-cfg-resizer so-res-resizer" title="拖动调整栏宽" @mousedown.prevent="startResize('res', $event)"></div>
         <div class="lb-col-hd">
-          <span class="lb-cfg-hd-t">结果</span>
+          <span class="lb-cfg-hd-t"><Icon name="sun" :size="14" /> 结果</span>
           <select v-model="selectedId" class="rain-sel">
             <option v-for="(row, i) in stations" :key="row._id" :value="row._id" data-i18n-skip>{{ stationLabel(row, i) }}</option>
           </select>

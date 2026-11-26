@@ -19,6 +19,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import NumBox from './NumBox.vue'
 import AppDialog from './AppDialog.vue'
+import LbResourceIcon from './LbResourceIcon.vue'
 import { ADV_BASES, solveAdv, groupAdvRows } from '../shared/advBalance.js'
 import { pickColumn, fmtScaled, fmtQty } from '../shared/adaptUnits.js'
 
@@ -239,7 +240,7 @@ function apply() {
                 <th class="ck"><input type="checkbox" :checked="allPicked" title="全选 / 全不选" @change="toggleAll" /></th>
                 <th class="no">#</th>
                 <th title="发信站 → 收信站">链路</th>
-                <th title="该链路引用的载波配置：系统余量即存于此，是本次配平的未知数">载波配置</th>
+                <th title="该链路引用的载波配置：系统余量即存于此，是本次配平的未知数"><LbResourceIcon kind="carrier" />载波配置</th>
                 <th class="n" title="载波占用的频谱带宽，由信息速率、调制方式与滚降系数决定，与系统余量无关">载波带宽<i>{{ bwU }}</i></th>
                 <th class="n" title="功率占用 × 转发器带宽，即该载波所占转发器功率折合的等效带宽。与载波带宽比较即单条链路的功带平衡状况：大于为超发（受功率限），小于为欠发（受带宽限）">功率带宽<i>{{ bwU }}</i></th>
                 <th class="n" title="发端功放功率：此刻实际计算值 → 配平后（闭式，余量抬 x dB 即功放功率 ×10^(x/10)）。解后超过发端站型的功放功率预设时着色">功放<i>W</i></th>
@@ -273,7 +274,7 @@ function apply() {
           <table class="ab-t">
             <thead>
               <tr>
-                <th title="一份载波配置 = 一个未知数：它的系统余量被引用它的各条链路共用">载波配置</th>
+                <th title="一份载波配置 = 一个未知数：它的系统余量被引用它的各条链路共用"><LbResourceIcon kind="carrier" />载波配置</th>
                 <th class="n" title="引用该载波配置的链路条数">链路数</th>
                 <th class="n" :title="'配平的起点，口径见下方「基准」：' + baseDesc">基准余量<i>dB</i></th>
                 <th class="n" title="使该载波自身功率带宽等于其载波带宽的系统余量，即单载波口径的「功带平衡」">单载波平衡点<i>dB</i></th>

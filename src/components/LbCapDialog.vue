@@ -11,6 +11,7 @@
 import { computed } from 'vue'
 import Icon from './Icon.vue'
 import AppDialog from './AppDialog.vue'
+import LbResourceIcon from './LbResourceIcon.vue'
 import NumBox from './NumBox.vue'
 import { CAP_PBW, CAP_DEC, capUnits, capFx } from '../shared/lbCapacity.js'
 
@@ -66,7 +67,7 @@ const tipBill = computed(() => (sumPw.value ? 'max(Σ载波带宽, Σ功率带�
               <th class="c-k" title="勾掉即不进汇总">列入</th>
               <th class="c-no">#</th>
               <th class="c-n">链路</th>
-              <th class="c-c">载波</th>
+              <th class="c-c"><LbResourceIcon kind="carrier" />载波</th>
               <th class="c-x" title="一行代表几路同型载波，容量与带宽按倍数计">载波数</th>
               <th class="c-v" title="频谱效率 × 载波带宽 × 载波数">容量<i>{{ u.cap.unit }}</i></th>
               <th class="c-v">载波带宽<i>{{ u.bw.unit }}</i></th>

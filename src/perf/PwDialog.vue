@@ -22,6 +22,7 @@ const emit = defineEmits(['close'])
 </template>
 
 <style>
+.adlg.pwd .sdbody { padding: 12px 14px; overflow: auto; min-height: 0; }
 /* 题条小字（天线名一类用户数据） */
 .pwd-sub { margin-left: 8px; font-style: normal; font-weight: 400; font-family: var(--font-mono); font-size: var(--fs-3); color: var(--text-faint); }
 /* 页脚左端：「恢复默认」推到左端，主钮留在右端（dialogClass 落在 AppDialog 内部元素上，故不 scoped） */

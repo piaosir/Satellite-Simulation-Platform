@@ -10,6 +10,7 @@ import ActivationLock from '../components/ActivationLock.vue'
 import StationGrid from '../linkbudget/StationGrid.vue'   // 通用表格组件（Regen 先例：直接复用）
 import ConfigTree from '../components/ConfigTree.vue'
 import Icon from '../components/Icon.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import RainPlot from './RainPlot.vue'
 import RainDiversity from './RainDiversity.vue'
 import WinStatusBar from '../components/WinStatusBar.vue'
@@ -658,7 +659,7 @@ onMounted(async () => {
 
         <div class="rain-toolbar">
           <div class="rain-seg-grp">
-            <span class="rain-seg-lb">轨道类型</span>
+            <span class="rain-seg-lb"><LbResourceIcon kind="sat" />轨道类型</span>
             <div class="seg" role="radiogroup" aria-label="轨道类型">
               <button type="button" class="sg" role="radio" :aria-checked="orbitMode === 'geo'" :class="{ on: orbitMode === 'geo' }" title="静止轨道：填定点轨位，各站仰角自动换算" @click="orbitMode = 'geo'">GEO</button>
               <button type="button" class="sg" role="radio" :aria-checked="orbitMode === 'ngso'" :class="{ on: orbitMode === 'ngso' }" title="非静止轨道（近圆 LEO/MEO）：填轨道高度/倾角/最低仰角，按 ITU-R P.618-14 §8 仰角加权反解各站等效仰角" @click="orbitMode = 'ngso'">NGSO</button>
@@ -743,7 +744,7 @@ onMounted(async () => {
       <!-- ③ 结果栏：多站开关决定看哪一份 -->
       <section class="lb-col lb-result">
         <div class="lb-col-hd">
-          <span class="lb-cfg-hd-t">{{ divOn ? '多站汇总' : '单算例分析' }}</span>
+          <span class="lb-cfg-hd-t"><Icon name="droplets" :size="14" /> {{ divOn ? '多站汇总' : '单算例分析' }}</span>
           <template v-if="!divOn">
             <select v-model="selectedId" class="rain-sel" title="选择要细致分析的算例（点表格中的行亦可）">
               <option v-for="(c, i) in cases" :key="c._id" :value="c._id">{{ (i + 1) + ' · ' + caseName(c, i) }}</option>
@@ -772,7 +773,7 @@ onMounted(async () => {
                 <div class="rd-row" v-for="row in detail.input" :key="row[0]"><span class="rd-k">{{ row[0] }}</span><span class="rd-v">{{ row[1] }}</span></div>
               </div>
               <div class="rd-sec">
-                <div class="rd-hd">卫星视角</div>
+                <div class="rd-hd"><LbResourceIcon kind="sat" />卫星视角</div>
                 <div class="rd-row" v-for="row in detail.look" :key="row[0]"><span class="rd-k">{{ row[0] }}</span><span class="rd-v">{{ row[1] }}</span></div>
               </div>
               <div class="rd-sec">

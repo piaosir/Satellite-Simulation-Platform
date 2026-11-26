@@ -112,7 +112,9 @@ async function load(saved) {
   const w = /watch\(\(\) => sideCtx\(\), \(cur\) => \{ if \(!COV_SIDES\.includes\(cur\) && grd\.dragBore\.value\) grd\.setDragBore\(false\) \}\)/.test(page)
   ok('⑤ 离开这两个视图即关掉拖拽波束', w)
   // 盯的必须是 sideCtx()：换成 shellUi.side 就成了「收起侧栏也把模态关掉」
-  ok('⑤ 盯的是 sideCtx() 不是 shellUi.side', w && !/COV_SIDES\.includes/.test(page.replace(/watch\(\(\) => sideCtx\(\)[\s\S]*?\n/g, '')))
+  ok('⑤ 收起侧栏时保留波束拖动', w && !/watch\(\(\) => shellUi\.side,[^\n]*COV_SIDES\.includes/.test(page))
+  const labelDown = /function onContourLabelDown\(e\) \{([\s\S]*?)\n\}/.exec(page)
+  ok('⑤ 覆盖标注拖动按当前上下文视图启用', labelDown && labelDown[1].includes('COV_SIDES.includes(sideCtx())'))
 }
 
 // ===== ⑥ 激活锁：未激活时侧栏视图打不开（地图综合设置除外），兜底闸不改写 sideLast =====

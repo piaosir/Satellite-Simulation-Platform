@@ -31,6 +31,7 @@ import { useConfigVersions } from '../shared/useConfigVersions.js'
 import LbVersionsDialog from '../components/LbVersionsDialog.vue'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import StationGrid from './StationGrid.vue'
 import LinkImportDialog from '../components/LinkImportDialog.vue'   // 「导入链路」：星座 3D 主窗建的图上链路
 import LbPointingTool from '../components/LbPointingTool.vue'   // 「指向误差」：倾斜运行 / 东西保持 / 跟踪方式下的日内指向损耗（只读工具，GSO 窗专用）
@@ -559,8 +560,8 @@ function toggleResultKey(k) {
 // 列组随卫星的指定方式变：统一指定＝发信站 | 收信站 | 计算结果（卫星在上方分区单选，不占列）；
 // 逐链路指定＝卫星 | 发信站 | 收信站 | 计算结果——「卫星」列组放在表首（用户要求：一眼先看到这行用的哪颗星），
 // 组内三列：卫星（库引用）、该星对本行发信站的 G/T、该星对本行收信站的 EIRP（与再生式链路表的「卫星」列组同一口径）。
-const GRID_GROUPS_CONFIG = [{ key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
-const GRID_GROUPS_LINK = [{ key: 'sat', label: '卫星' }, { key: 'tx', label: '发信站' }, { key: 'rx', label: '收信站' }, { key: 'res', label: '计算结果' }]
+const GRID_GROUPS_CONFIG = [{ key: 'tx', label: '发信站', kind: 'station' }, { key: 'rx', label: '收信站', kind: 'station' }, { key: 'res', label: '计算结果' }]
+const GRID_GROUPS_LINK = [{ key: 'sat', label: '卫星', kind: 'sat' }, { key: 'tx', label: '发信站', kind: 'station' }, { key: 'rx', label: '收信站', kind: 'station' }, { key: 'res', label: '计算结果' }]
 const gridGroups = computed(() => (satLink.value ? GRID_GROUPS_LINK : GRID_GROUPS_CONFIG))
 const SAT_COL_KEYS = ['satelliteId', 'G_Ts', 'rxEIRP']
 const gridFields = computed(() => {
@@ -2498,7 +2499,7 @@ onMounted(async () => {
         </div>
         <nav class="lb-lib-tabs">
           <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
-            {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
+            <LbResourceIcon :kind="t.key" />{{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
           </button>
         </nav>
         <div class="lb-libpane">
@@ -2607,7 +2608,7 @@ onMounted(async () => {
         <!-- 链路工作台：全宽横向分区（卫星 → 链路表 → 详细预算），计算栏吸底 -->
         <div ref="flowEl" class="lbx-flow lbx-cards" :class="{ 'lbx-stale-res': !!(resultsStale && links.length) }">
           <!-- 卫星分区只在「统一指定」下出现：逐链路指定时卫星在链路表表首的「卫星」列组里逐行选，这里再报一颗星只会混淆 -->
-          <LbSection v-if="!satLink" id="sat" title="卫星与转发器">
+          <LbSection v-if="!satLink" id="sat" title="卫星与转发器" resource-kind="sat">
             <template #actions>
               <button class="lb-mini" title="到资源库编辑当前卫星：方向图天线匹配 + 完整空间段参数" @click="editInLibrary('sat')">编辑参数</button>
             </template>

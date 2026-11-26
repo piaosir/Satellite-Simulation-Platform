@@ -31,6 +31,7 @@ globalThis.localStorage = {
   removeItem: (k) => { delete store[k] }
 }
 const { useBeamSynth } = await import('../../../src/viz/grd/useBeamSynth.js')
+const { synthTree } = await import('../../../src/viz/grd/synthTree.js')
 const { antennaBasis, gridDir, invGridDir, dirToAzEl, azElGround } = await import('../../../src/viz/grd/coverage.js')
 const { rayEllipsoid, ecefToGeodetic, geodeticToEcef } = await import('../../../src/viz/wgs84.js')
 const { hexFillCenters, snapTangentAzEl, snapTangentTrue, aeqFrame, trueAngleDeg } = await import('../../../src/viz/grd/synth.js')
@@ -228,8 +229,10 @@ async function genCase(pos, pts, label) {
   const { bs, calls } = env
   env.pos = pos
   bs.addGroup('stk')
+  ok(`${label}：空组不能生成高斯天线`, bs.beams.value.length === 0 && !(await bs.generate()) && calls.create.length === 0)
   bs.p.snapTangent = false
   for (const [lon, lat] of pts) bs.placeAt({ lon, lat })
+  ok(`${label}：放置中心后仍为草稿`, calls.create.length === 0 && !bs.genAntExists.value)
   const k = await bs.generate()
   const c = calls.create
   ok(`${label}：生成 → createAnalyticAntenna 恰一次`, !!k && c.length === 1 && calls.update.length === 0)
@@ -239,7 +242,7 @@ async function genCase(pos, pts, label) {
   ok(`${label}：记录 (az,el) 回投到放置点 < 1e-6°`, err < 1e-6, err.toExponential(2) + '°')
   const r = solveStk(bs.curSetting.value)
   ok(`${label}：逐波束 θ3 / g0 = 模型解`, rec.beams.every((b) => Math.abs(b.th3 - r.th3Deg) < 1e-12 && Math.abs(b.g0 - r.g0Dbi) < 1e-12 && b.k === 'stk' && b.back === -30))
-  ok(`${label}：owner / sat / 电平口径`, rec.owner && rec.owner.kind === 'beamsynth' && rec.owner.groupId === bs.activeGroupId.value && rec.sat.name === 'TESTSAT' && rec.sat.lon === pos.lon && rec.sat.altKm === pos.altKm && c[0].settings.ctype === 'rel' && c[0].settings.levels[0] === -3)
+  ok(`${label}：owner / sat / 电平口径`, rec.owner && rec.owner.kind === 'beamsynth' && rec.owner.groupId === bs.activeGroupId.value && rec.sat.name === 'TESTSAT' && rec.sat.lon === pos.lon && rec.sat.altKm === pos.altKm && c[0].settings.ctype === 'rel' && JSON.stringify(c[0].settings.levels) === '[-3,-2,-1]')
   ok(`${label}：首次生成勾选 + 聚焦`, c[0].select === true && c[0].activate === true)
   ok(`${label}：状态行`, /^已生成天线「高斯波束」：\d+ 个波束 · 波束宽 [\d.]+° · 峰值 [\d.]+ dBi$/.test(bs.status.value), bs.status.value)
   ok(`${label}：_genName / 按钮字样`, bs.curGroup.value._genName === '高斯波束' && bs.genAntExists.value === true)
@@ -414,6 +417,9 @@ await genCase(LEO, [[30, 40], [33, 42], [27, 38.5], [31.5, 36]], 'LEO 550 km')
   bs.placeAt({ lon: 33, lat: 43 })
   bs.openFor('sat1')
   const spec = bs.sketchSpec()
+  ok('等值线页隐藏未固定草图', bs.sketchSpec({ pinnedOnly: true }) === null)
+  bs.toggleGroupVisible(bs.activeGroupId.value)
+  ok('等值线页保留常显草图', bs.sketchSpec({ pinnedOnly: true })?.lines.length === spec.lines.length)
   const { geodeticToEcef } = await import('../../../src/viz/wgs84.js')
   const S = geodeticToEcef(LEO.lon, LEO.lat, LEO.altKm), T = geodeticToEcef(33, 43, 0)
   const ax = [T[0] - S[0], T[1] - S[1], T[2] - S[2]], al = Math.hypot(...ax)
@@ -789,6 +795,33 @@ const fmtSpan = (a) => `${Math.min(...a).toFixed(5)}…${Math.max(...a).toFixed(
   bs.selectGroup(g1); await settle(10)
   await bs.generate(); await settle(220)
   ok('… 多馈源组再生成不把高斯组的天线当孤儿删掉', grd.sats.value[1].antennas.some((a) => a.name === n1 && a.analytic) && grd.sats.value[1].antennas.some((a) => a.name === 'W'), names(env))
+}
+
+{
+  const { bs, grd } = makeEnv({ ants: [{ name: '导入天线' }] })
+  const sat = grd.sats.value[1]
+  grd.sats.value.push({ folder: 'sat2', antennas: [{ name: '导入天线' }] })
+  const id = bs.addGroup('stk')
+  const rows = () => synthTree(grd.sats.value, bs.groups.value)
+  ok('仿真树保留卫星顺序、跳过仰角线，草稿排在已有天线之后',
+    rows().length === 2 && rows()[0].sat === sat && rows()[0].rows[1].key === 'g:' + id)
+  bs.placeAt({ lon: 110, lat: 0 })
+  await bs.generate()
+  ok('生成后同一行关联实物，草稿不重复', rows()[0].rows.length === 2 && rows()[0].rows[1].group.id === id && !!rows()[0].rows[1].antenna)
+  bs.openFor('sat2')
+  ok('从另一颗卫星进入，优先定位该卫星', bs.satFolder.value === 'sat2' && !bs.hasGroup.value && !rows()[1].rows[0].group)
+  const second = bs.addGroup('shaped')
+  bs.stEditOn.value = true
+  bs.setSat('sat2', { clearGroup: true })
+  ok('同星选择独立天线退出组编辑和站点编辑', !bs.hasGroup.value && !bs.stEditOn.value)
+  bs.selectGroup(second)
+  bs.removeGroup(second)
+  ok('删除卫星的最后一组，保留当前卫星', bs.satFolder.value === 'sat2' && !bs.hasGroup.value)
+  sat.antennas[1] = { name: bs.groups.value[0]._genName, imported: true }
+  ok('同名导入天线和失去产物的草稿各有一行', rows()[0].rows.length === 3 && !rows()[0].rows[1].group && !rows()[0].rows[2].antenna)
+  grd.sats.value.splice(1, 1)
+  bs.openFor('sat1')
+  ok('已删除的卫星不会被旧草稿重新选中', rows().length === 1 && bs.satFolder.value === 'sat2')
 }
 
 console.log('')

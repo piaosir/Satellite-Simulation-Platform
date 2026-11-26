@@ -125,8 +125,9 @@ function clearStations() { if (!pl.stations.value.length) return; pl.pushUndo();
 function undo() { pl.undo() }
 function redo() { pl.redo() }
 
-// —— 典型城市（城市库选点，与链路预算即点即入同口径）——
+// —— 典型城市 ——
 const cityOpen = ref(false)
+const tableCities = computed(() => pl.stations.value.map(s => s.city).filter(Boolean))
 const hasLL = (lon, lat) => pl.stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
 function addCities(list) {
   pl.pushUndo()
@@ -136,14 +137,17 @@ function addCities(list) {
 
 // —— 导入 ▾：标记（点标记 / 地球站 / 航迹，一个对话框三栏勾选）/ Excel / 剪贴板 ——
 const mkOpen = ref(false)
+const polygonOpen = ref(false)
 const markers = computed(() => st.markers || { pts: [], sts: [], trajs: [] })
 const importItems = computed(() => [
   { key: 'mk', label: '从标记 / 航迹导入…', icon: 'map-pin', title: '勾选地图上的点标记 / 地球站 / 航迹导入为城市（航迹每个航点一行）' },
+  { key: 'polygon', label: byLang('从 Polygon 导入…', 'Import from Polygon…'), icon: 'polygon' },
   { key: 'xlsx', label: '从 Excel 导入…', icon: 'file-import', title: '按表头匹配列；无表头时末两列作经纬度' },
   { key: 'clip', label: '粘贴剪贴板', icon: 'clipboard', title: '每行一站，末两列 = 经度、纬度，可含 国家/城市/代号' }
 ])
 async function onImport(k) {
   if (k === 'mk') { mkOpen.value = true; return }
+  if (k === 'polygon') { polygonOpen.value = true; return }
   if (k === 'xlsx') { await importXlsx(); return }
   if (k === 'clip') { await pasteClip(); return }
 }
@@ -167,6 +171,15 @@ async function confirmMk(sel) {
     if (has('tMs')) o.cols.tMs = true
     if (has('altM')) o.cols.altM = true
   }
+}
+async function confirmPolygons(sel) {
+  polygonOpen.value = false
+  let rows
+  try { rows = await req('polygonPts', { ids: sel.polygons }) }
+  catch { appAlert(byLang('读取 Polygon 失败。', 'Could not load polygons.')); return }
+  if (!rows?.length) { appAlert(byLang('暂无 Polygon 顶点。', 'No polygon vertices.')); return }
+  pl.pushUndo()
+  pl.addStations(rows, { keepCoincident: true })
 }
 async function pasteClip() {
   let text = ''
@@ -345,7 +358,7 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
         <button type="button" :disabled="!pl.canRedo.value" class="ptb btn icon" :class="{ dis: !pl.canRedo.value }" title="重做 (Ctrl+Y)" @click="redo"><Icon name="redo-2" :size="12" /></button>
         <span class="pw-sep"></span>
         <button type="button" class="ptb btn" title="在选中行下方增加一行（直接在表格中键入或粘贴）" @click="addRow"><Icon name="plus" :size="12" /> 增加</button>
-        <button type="button" class="ptb btn" title="从城市库选点：城市名 / 省份 / 拼音首字母检索，点一座加一座" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</button>
+        <button type="button" class="ptb btn" @click="cityOpen = true"><Icon name="map-pin" :size="12" /> 典型城市…</button>
         <PwMenu label="导入" icon="import" :items="importItems" title="从标记 / 航迹 / Excel / 剪贴板导入城市" @pick="onImport" />
         <button type="button" :disabled="!pl.stations.value.length" class="ptb btn" :class="{ dis: !pl.stations.value.length }" title="把城市列表导出为 Excel" @click="exportCities"><Icon name="file-export" :size="12" /> 导出 Excel</button>
         <button type="button" :disabled="!inGrid.selRowCount.value" class="ptb btn" :class="{ dis: !inGrid.selRowCount.value }" title="删除选中的城市（可撤销；表内 Ctrl+- 同）" @click="inGrid.deleteRows()"><Icon name="minus" :size="12" /> 删除选中<em v-if="inGrid.selRowCount.value" class="ptb-n">{{ inGrid.selRowCount.value }}</em></button>
@@ -371,9 +384,9 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
     <section class="pw-res">
       <div class="pw-bar">
         <span class="pw-t">性能结果<em>只读</em></span>
-        <label class="pw-chk"><input type="checkbox" v-model="opts.filterOn" title="仅列方向性≥阈值（覆盖该城市）的波束" /> 仅覆盖波束</label>
+        <label class="pw-chk" title="仅列方向性≥阈值（覆盖该城市）的波束"><input type="checkbox" v-model="opts.filterOn" /> 阈值</label>
         <!-- 数字框 .lazy：每敲一个字符就整表重算一次，且中途拿的是半截数字；失焦或回车才生效 -->
-        <label class="pw-chk" :class="{ dis: !opts.filterOn }">阈值<input class="ci" type="number" step="0.5" v-model.lazy.number="opts.minDir" :disabled="!opts.filterOn" /><span class="u">dB</span></label>
+        <label class="pw-chk" :class="{ dis: !opts.filterOn }"><input class="ci" type="number" step="0.5" :aria-label="byLang('阈值', 'Threshold')" v-model.lazy.number="opts.minDir" :disabled="!opts.filterOn" /><span class="u">dB</span></label>
         <input class="pw-q search-field" v-model="query" placeholder="查询：国家 / 城市 / 代号" />
         <button type="button" class="ptb btn" title="复制整张结果表（含表头，TSV，可粘进 Excel）" @click="copyResult"><Icon name="copy" :size="12" /> 复制全表</button>
         <button type="button" class="ptb btn" title="导出为 Excel（性能结果 + 城市输入两张工作表；数字列存真数字）" @click="exportResult"><Icon name="file-export" :size="12" /> 导出 Excel</button>
@@ -397,7 +410,8 @@ const ptText = computed(() => { const o = opts.value; return o ? `Az ${Number(o.
     </div>
 
     <!-- 弹层 -->
-    <CityPicker v-if="cityOpen" :has="hasLL" @add="addCities" @close="cityOpen = false" />
+    <CityPicker v-if="cityOpen" :has="hasLL" :table-cities="tableCities" @add="addCities" @close="cityOpen = false" />
+    <MarkerPick v-if="polygonOpen" :polygons="st.polygons || []" @confirm="confirmPolygons" @close="polygonOpen = false" />
     <MarkerPick v-if="mkOpen" :pts="markers.pts || []" :sts="markers.sts || []" :trajs="markers.trajs || []" traj-note="每个航点一行，城市名取「航迹名#序号」；航迹有时刻 / 飞行高度的一并带入（取值按该时刻、该高度）" @confirm="confirmMk" @close="mkOpen = false" />
     <PerfOptsDialog v-if="optsOpen" title="性能表选项" :sub="ctx ? ctx.antName : ''" :opts="opts" :col-defs="PERF_COL_DEFS" :col-groups="PERF_COL_GROUPS" :ctx-beams="pl.ctxBeams.value" unit-choice @close="optsOpen = false" @reset="resetOpts" />
 

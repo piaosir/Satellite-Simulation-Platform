@@ -390,6 +390,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   function hydrate(g) {
     _loading = true
     try {
+      stEditOn.value = false; stPick.value = false; stSel.value = new Set()   // 站点编辑态不跨组
       if (!g) { beams.value = []; settings.value = []; activeSettingId.value = null; return }
       satFolder.value = g.satFolder || ''
       mode.value = normMode(g.mode)
@@ -400,7 +401,6 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
       if (!Array.isArray(p.polyIds)) p.polyIds = []
       if (!Array.isArray(p.stOv)) p.stOv = []
       if (!Array.isArray(p.stAdd)) p.stAdd = []
-      stEditOn.value = false; stPick.value = false; stSel.value = new Set()   // 站点编辑态不跨组
       settings.value = Array.isArray(g.settings) ? g.settings : []
       if ((mode.value === 'gauss' || mode.value === 'stk') && !settings.value.length) settings.value = [defaultSetting()]
       activeSettingId.value = (settings.value.find((s) => s.id === g.activeSettingId) ? g.activeSettingId : (settings.value[0] ? settings.value[0].id : null))
@@ -543,7 +543,8 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     commitActive()
     // 导航器当前星（若误落在独立仰角线上 → 改取第一颗真卫星）
     const cur = satFolder.value ? satNodeOf(satFolder.value) : null
-    const folder = (satFolder.value && (!cur || isSatHost(cur))) ? satFolder.value : firstSatFolder()
+    const folder = isSatHost(cur) ? cur.folder : firstSatFolder()
+    if (!folder) return null
     const g = { id: newId('bg'), satFolder: folder, mode: mm, name: uniqueGroupName(defName(mm), folder), pinned: false, p: freshP(), settings: [], activeSettingId: null, beams: [] }
     if (mm === 'gauss' || mm === 'shaped') g.p.beamModel = 'aperture'   // 新建多馈源 / 赋形组缺省口径照射（旧组读不到键按高斯，见 DEFAULT_P）
     if (mm === 'gauss') { const s = defaultSettingFor(g.p); g.settings = [s]; g.activeSettingId = s.id }
@@ -564,7 +565,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     const wasActive = id === activeGroupId.value
     groups.value.splice(idx, 1)
     if (wasActive) {
-      const next = groups.value.find((g) => g.satFolder === satFolder.value) || groups.value[0] || null
+      const next = groups.value.find((g) => g.satFolder === satFolder.value) || null
       activeGroupId.value = next ? next.id : null
       if (next) { satFolder.value = next.satFolder; hydrate(next) } else hydrate(null)
       placing.value = false; adjusting.value = false; deleting.value = false
@@ -626,12 +627,12 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     _flags(); persist(); refresh()
   }
   // 切换导航器卫星：定位该星首个组（或清空为“空态”）
-  function setSat(folder) {
-    if (folder === satFolder.value) return
+  function setSat(folder, { clearGroup = false } = {}) {
+    if (folder === satFolder.value && (!clearGroup || !activeGroupId.value)) return
     placing.value = false; adjusting.value = false; deleting.value = false
     commitActive()
     satFolder.value = folder
-    const first = groups.value.find((g) => g.satFolder === folder) || null
+    const first = clearGroup ? null : groups.value.find((g) => g.satFolder === folder) || null
     activeGroupId.value = first ? first.id : null
     hydrate(first)
     _flags(); persist(); refresh()
@@ -672,25 +673,11 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   // ---- 放置 / 调整 / 蜂窝布满 ----
   function openFor(folder) {
     commitActive()
-    // 优先恢复【上次保存的选择】：activeGroupId 已由 load() 从 localStorage 恢复。只要激活组仍有效
-    // （其卫星还在覆盖分析里），就保持它——波束合成记住自己的卫星 + 波束组，不被覆盖分析的当前卫星覆盖。
-    const g = curGroup.value
-    if (g && grd.sats.value.some((s) => s.folder === g.satFolder)) {
-      satFolder.value = g.satFolder
-      hydrate(g)
-      status.value = ''; _flags(); open.value = true; refresh()
-      return
-    }
-    // 无有效上次选择（首次 / 激活组或其卫星已删）：用传入 folder（覆盖分析卫星）或第一个卫星兜底，取该卫星首个组
-    let target = folder || ''
-    if (folder && !groups.value.some((x) => x.satFolder === folder)) {
-      target = (groups.value[0] && groups.value[0].satFolder) || folder
-    }
-    if (!target && grd.sats.value.length) target = firstSatFolder()   // 兜底跳过独立仰角线
+    const target = [folder, satFolder.value].find(f => isSatHost(satNodeOf(f))) || firstSatFolder()
+    const group = curGroup.value?.satFolder === target ? curGroup.value : groups.value.find(g => g.satFolder === target)
     satFolder.value = target
-    const first = groups.value.find((x) => x.satFolder === target) || null
-    activeGroupId.value = first ? first.id : null
-    hydrate(first)
+    activeGroupId.value = group?.id || null
+    hydrate(group)
     status.value = ''
     _flags()
     open.value = true
@@ -1063,7 +1050,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
   }
 
   // ---- 草图渲染（喂 redrawSats）：当前星的全部高斯组，激活组高亮可编辑、兄弟组压暗只读；整星连续编号 ----
-  function sketchSpec() {
+  function sketchSpec({ pinnedOnly = false } = {}) {
     if (!open.value) return null
     const pos = satPos()
     if (!pos) return null
@@ -1075,6 +1062,10 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     for (const g of grps) {
       const isActive = g.id === activeGroupId.value
       const gb = isActive ? beams.value : (g.beams || [])
+      if (pinnedOnly && !g.pinned) {
+        gnum += gb.length
+        continue
+      }
       const gs = isActive ? settings.value : (g.settings || [])
       const gp = isActive ? p : g.p
       const alpha = isActive ? 1 : 0.4
@@ -1150,7 +1141,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     // 红=用户转抑制，灰空心=排除（不参与优化），青描边=选中；带目标偏置的站 绿=抬高/紫=压低 并标注 ±dB
     //（离开视图再回来仍一眼可见哪些站改过——SATSOFT 只能逐站点击弹窗查看，此处是有意的增强）。
     // 界外自动抑制带不画（用户拍板只画黄方块）
-    if ((mode.value === 'shaped' || (mode.value === 'pam' && p.pamCover === 'shaped')) && p.stShow !== false) {
+    if ((!pinnedOnly || curGroup.value?.pinned) && (mode.value === 'shaped' || (mode.value === 'pam' && p.pamCover === 'shaped')) && p.stShow !== false) {
       const sp = stationPreview(pos)
       if (sp) {
         const selSet = stSel.value
@@ -1451,7 +1442,7 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     }
     if (!key) {
       try {
-        key = await grd.createAnalyticAntenna(folder, { name, record, settings: { ctype: 'rel', levels: [-3] }, select: selFlag, activate: actFlag })
+        key = await grd.createAnalyticAntenna(folder, { name, record, settings: { ctype: 'rel', levels: g.mode === 'stk' ? [-3, -2, -1] : [-3] }, select: selFlag, activate: actFlag })
       } catch (e) {
         if (/无星历/.test(String((e && e.message) || e))) { if (!silent) stkSay(g, '关联卫星当前无星历'); else syncFail(g, '关联卫星当前无星历'); return null }
         throw e
@@ -1670,13 +1661,14 @@ export function useBeamSynth({ grd, getPolys, livePos, appAlert, refresh }) {
     if (!gs.length) { appAlert('当前卫星暂无波束组。'); return { ok: 0, total: 0 } }
     if (_autoT) { clearTimeout(_autoT); _autoT = 0 }                 // 同 generate：先让在跑的自动同步收尾，免得同一组两路并发
     if (_autoRun) { try { await _autoRun } catch { /* ignore */ } }
-    let ok = 0
+    const keys = []
     const failed = []
-    for (const g of gs) { try { const k = await generateGroup(g); if (k) ok++ } catch (e) { failed.push({ name: g.name, error: e }) } }
+    for (const g of gs) { try { const k = await generateGroup(g); if (k) keys.push(k) } catch (e) { failed.push({ name: g.name, error: e }) } }
+    const ok = keys.length
     if (failed.length) reportPartial('全部生成', ok, failed)
     if (ok) persist()   // _genName 等在 generateGroup 里写到 group 对象上，需落盘（组对象不在深监听里）
     status.value = `全部生成完成：${ok}/${gs.length} 个组已生成天线`
-    return { ok, total: gs.length }
+    return { ok, total: gs.length, keys }
   }
 
   // ---- 相控阵赋形：星上激励指令表 → CSV（测控上注用；UTF-8 BOM，Excel 直接打开）----

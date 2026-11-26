@@ -12,6 +12,7 @@
 // 宿主改了，或宿主递增 search.openTick（标题栏搜索桥，同一个词再搜也算）→ 重新展开。结果行的「＋」（加入 / 移出选中集）不收起，可以连着攒一批。
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { sectionsOf, sectionOf } from '../viz/constellation/satSetSections.js'
+import { isSecOpen, setSecOpen, toggleSec } from '../stores/panelSections.js'
 import Icon from './Icon.vue'
 import SatList from './SatList.vue'
 import CoverageTreeIcon from './CoverageTreeIcon.vue'
@@ -42,39 +43,20 @@ const emit = defineEmits([
   'search-input', 'search-clear', 'search-pick', 'search-toggle-pick', 'open-finder',
   'epoch', 'epoch-now', 'list-action', 'list-activate'
 ])
+const sectionKey = (id) => 'constellation-' + id
 const sections = computed(() => {
   const groups = sectionsOf(props.rows).map(section => ({
     ...section,
+    open: isSecOpen(sectionKey(section.id)),
     visibleCount: section.rows.filter(row => row.visible).length
   }))
-  if (props.searchRow) groups.unshift({ id: 'search', rows: [props.searchRow] })
+  if (props.searchRow) groups.unshift({ id: 'search', open: true, rows: [props.searchRow] })
   return groups
 })
 const rowIdxMap = computed(() => new Map(props.rows.map((r, i) => [r.id, i])))
-const collapsed = ref(new Set(['catalog']))
-function toggleSection(id) {
-  const next = new Set(collapsed.value)
-  if (next.has(id)) next.delete(id); else next.add(id)
-  collapsed.value = next
-}
-watch(() => props.rows.map((r) => [r.id, r.visible]), (rows, old = []) => {
-  const before = new Map(old)
-  let next = null
-  for (const [id, visible] of rows) {
-    if ((!before.has(id) && old.length) || (visible && !before.get(id))) {
-      const row = props.rows.find((r) => r.id === id)
-      const sec = row ? sectionOf(row) : ''
-      if (sec && collapsed.value.has(sec)) {
-        if (!next) next = new Set(collapsed.value)
-        next.delete(sec)
-      }
-    }
-  }
-  if (next) collapsed.value = next
-}, { immediate: true })
 watch(() => props.expanded, (id) => {
   const row = props.rows.find((r) => r.id === id)
-  if (row && collapsed.value.has(sectionOf(row))) toggleSection(sectionOf(row))
+  if (row) setSecOpen(sectionKey(sectionOf(row)))
 })
 const allCatalogVisible = computed(() => props.rows.some((r) => r.id === 'g:all' && r.visible))
 
@@ -307,13 +289,13 @@ const dropAfterLast = (section) => { const d = drag.value; return !!d && d.secti
       <div v-if="!sections.length" class="lp-empty">暂无卫星集。</div>
       <section v-for="section in sections" :key="section.id" class="lp-section">
         <div v-if="section.title" class="lp-section-head">
-          <button type="button" class="lp-section-toggle" :aria-expanded="!collapsed.has(section.id)" :title="section.tip" @click="toggleSection(section.id)">
-            <Icon name="chevron-right" class="lp-arrow" :class="{ open: !collapsed.has(section.id) }" :size="12" />
+          <button type="button" class="lp-section-toggle" :aria-expanded="section.open" :title="section.tip" @click="toggleSec(sectionKey(section.id))">
+            <Icon name="chevron-right" class="lp-arrow" :class="{ open: section.open }" :size="12" />
             <span>{{ section.title }}</span><span class="lp-section-count">{{ section.visibleCount }} 显示 · {{ section.rows.length }} 项</span>
           </button>
           <button v-if="section.add" type="button" class="ibtn sm" :title="'添加' + section.title" @click="emit('add', section.add)"><Icon name="plus" :size="12" /></button>
         </div>
-        <div v-if="!collapsed.has(section.id)" class="lp-branch" :class="{ pinned: !section.title }">
+        <div v-if="section.open" class="lp-branch" :class="{ pinned: !section.title }">
           <template v-for="(row, idx) in section.rows" :key="row.id">
             <div v-if="dropBefore(idx, section.id)" class="lp-dropline"></div>
             <div class="lp-row" :data-idx="rowIdxMap.get(row.id)"

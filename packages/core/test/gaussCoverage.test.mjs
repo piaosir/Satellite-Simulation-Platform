@@ -343,6 +343,19 @@ for (const [tag, rec, basis] of [['GEO', recGeo, basisGeo], ['LEO', recLeo, basi
   const f1 = faced
   await g.setActive(node, a)
   ok(f1 === 0 && faced === 1, '⑤ setActive({face:false}) 不转镜头；缺省转', `${f1} / ${faced}`)
+  // 模拟一根冷天线尚在读盘，用户已经选了另一根。
+  const slow = { ...a, name: 'Slow' }
+  node.antennas.push(slow)
+  const api = window.api.coverageGrd, read = api.raw
+  let finishRead
+  api.raw = file => new Promise(resolve => { finishRead = () => resolve(read(file)) })
+  const first = g.setActive(node, slow)
+  ok(g.pendingActive.value === g.keyOf(node.folder, slow.name), '跨视图可取得正在载入的天线')
+  await g.setActive(node, a, { face: false })
+  finishRead()
+  ok(await first === false && g.active.value === key && !g.pendingActive.value && faced === 1, '先点的天线最后载完，编辑器与镜头仍跟随后一次选择')
+  api.raw = read
+  node.antennas.splice(node.antennas.indexOf(slow), 1)
   // 删天线：文件跟着删，待写撤掉
   g.updateAnalyticAntenna(key, recs[1])
   g.removeAntenna(node.folder, 'Gauss')

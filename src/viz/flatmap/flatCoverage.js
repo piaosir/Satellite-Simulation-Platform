@@ -3332,6 +3332,14 @@ export function createFlatCoverage(canvas) {
   // 两条通道各用各的标注选项：波束地图在下、GRD 在上（与填充层序一致）
   function drawFieldOverlays() {
     drawOverlaySet(bmLayers, bmOpts)
+    ctx.save()
+    for (const ray of fieldOpts.rays || []) {
+      if (!ray.path?.length) continue
+      ctx.globalAlpha = ray.opacity
+      drawPolyline(ray.path, ray.color, ray.width, false)
+      cross(ray.to.lon, ray.to.lat, 5 + ray.width, ray.color)
+    }
+    ctx.restore()
     drawOverlaySet(fieldLayers, fieldOpts)
   }
   function drawOverlaySet(layers, o) {
@@ -3344,7 +3352,8 @@ export function createFlatCoverage(canvas) {
     const covFont = (size) => Math.round(size / 533 * 750 * zf)   // 字号(valSize/peakSize/nameSize) → 2D 世界尺寸 px，与 3D makeCovLabel(字号/533) 一致
     for (const L of layers) {
       const bold = !!o.fontBold   // 三类标签共用的字重（SATSOFT Font Weight）
-      if (o.showVal) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(o.valSize || 12), o.valColor || '#ffffff', { bold }) }
+      const lab = L.angleLabel
+      if (o.showVal || lab) for (const grp of (L.segGroups || [])) { if (grp.txt == null) continue; for (const an of (grp.labels || [])) drawText(String(grp.txt), an[0], an[1], covFont(lab?.size || o.valSize || 12), lab?.color || o.valColor || '#ffffff', { bold: lab ? lab.bold : bold }) }
       const b = L.bore; if (!b) continue
       // b.hit=false ＝ 峰值方向越过地平（对星壳层视图＝没打到那层壳）：十字与峰值电平一律不画，
       // b.lon/lat 此时只是该方向的地平/相切点，仅作波束名的锚。
@@ -3663,7 +3672,7 @@ export function createFlatCoverage(canvas) {
       for (const s of (satLayer.sats || [])) {
         if (!s.name || s.lon == null || s.lat == null || s.labelShow === false) continue
         const ls = (s.labelSize || 9) * mz
-        // 名称紧贴图标：间隙=0，只留图标半高的偏移（无图标时名称直接锚在星位置）
+        // 图标框自带透明留白，文字中心沿用图标半高的偏移。
         const half = s.gapFocus ? focusHalf : (s.iconShow !== false ? (s.iconSize || sizes.satIcon || 30) * mz * SAT_ICON_K * 0.5 : 0)
         drawText(s.name, s.lon, s.lat, ls, hex(s.labelColor != null ? s.labelColor : (s.color != null ? s.color : 0xffd27a)), { dy: -half, bold: !!s.labelBold })
       }
@@ -4380,7 +4389,7 @@ export function createFlatCoverage(canvas) {
   // 长 6.5 + 2.2w、半宽 2.4 + 1.0w（w = 线宽）。终点符号：站 / 点 / 载具按图上真实画多大（entityGeom 同一支，画模型俯视图的按其外廓），
   // 星 / 代表点 = 链路自己的小圆点。线身照样画进终点（拓扑上连着），箭头压在线上。
   // 去叠：载荷 de = false 的不画（汇聚束只留最差那条）；屏上与本链路已画的箭头尖相距不到 2.4 个半宽的不画（缩小后挤在一起的发散束）。
-  //   dir 'static' 静止（出厂）；'flow' 箭头不动，线身淡底（LINK_FLOW_BASE）+ 沿信号方向匀速走的虚线（draw.io / React Flow 的流动边口径）；
+  //   dir 'static' 静止；'flow' 箭头不动，线身淡底（LINK_FLOW_BASE）+ 沿信号方向匀速走的虚线（draw.io / React Flow 的流动边口径）；
   //   'off' 不画箭头。不可见的跳不流动、淡一档。导出（exporting）一律静止。
   //   ★ 不跟系统「减少动态效果」（prefers-reduced-motion）走：流动是用户在软件里主动选的（出厂静止），而 Windows 关了
   //     「动画效果」时 Electron 恒报 reduce —— 跟着它走，这台机器上流动就永远动不起来（2026-10-08 用户实测「流动效果没有」即此）。
@@ -4862,15 +4871,14 @@ export function createFlatCoverage(canvas) {
     rebuildPlane(PJ.kind, { ...PJOPT, lat0 }, { refit: false, fast: true })
     if (onRotate) onRotate({ lon0: LON0, lat0, live: true })
   }
-  let labelDragMode = false, onLabelDrag = null, labelDragging = false   // 拖拽等值线数值标签（沿线滑动，不平移地图）
   // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（onPolyDraw(ll,'click')）；左键按住拖过点击阈值 = 起笔，
   // 沿路径按屏幕像素阈值连续加点（徒手画，'start'|'move'|'end'）。平移归 Shift + 左键拖动（工具态通则，见 toolLock）。右键加点（onRightClick）仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
   let drawClickArm = null, lastDrawClick = null   // 绘制态的按下武装（原地抬起 = 单击，拖过阈值 = 起笔）/ 上一次单击（双击 = 同一处两下，第二下不重复加点）
-  // 拖波束 / 拖标签的「起拖命中」判定（宿主给）：拖标签只在按在标签附近时接手；没接手的左键也不平移（见 toolLock）。不给 = 恒接管
-  let beamDragHit = null, labelDragHit = null
+  // 宿主可限制拖波束的起拖区域，默认整图可拖。
+  let beamDragHit = null
   // 工具态（页面经 setToolLock 给：任一地图工具开着）：左键归工具，平移只认 Shift + 左键拖动（口径见 shared/mapToolNav.js）。
-  // 本渲染器自己的模态（拖波束 / 拖标签 / 绘制 / 放置 / 框选 / 转动 / 调顶点 / 拖标记）开着也算，与页面那把锁取并集（toolOn）
+  // 本渲染器自己的模态（拖波束 / 绘制 / 放置 / 框选 / 转动 / 调顶点 / 拖标记）开着也算，与页面那把锁取并集（toolOn）
   let toolLock = false
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）：按住走一段才落一个点
   // 顶点编辑（Polygon 调整顶点 / 整体拖动）：editVerts={ pts:[[lon,lat],...], px, move }。
@@ -4909,7 +4917,7 @@ export function createFlatCoverage(canvas) {
   const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
   // 该标记此刻可不可拖：true＝整类开；字符串＝只认归属它的那一条（owner，航点即所属航迹 id）
   const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
-  const toolOn = () => !!(toolLock || beamDragMode || labelDragMode || polyDrawMode || placeMode || boxMode || rotMode || editVerts || markerDragAny())
+  const toolOn = () => !!(toolLock || beamDragMode || polyDrawMode || placeMode || boxMode || rotMode || editVerts || markerDragAny())
   // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
   // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。
   const shortLon = (d) => ((d + 540) % 360) - 180
@@ -5047,7 +5055,6 @@ export function createFlatCoverage(canvas) {
     }
     const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
     if (beamDragMode && e.button === 0 && hitOk(beamDragHit)) { beamDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start'); return }
-    if (labelDragMode && e.button === 0 && hitOk(labelDragHit)) { labelDragging = true; canvas.setPointerCapture(e.pointerId); const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start'); return }
     if (rotMode && e.button === 0) {   // 转动态：左键拖动改投影中心（不平移）
       rotDragging = true; canvas.setPointerCapture(e.pointerId)
       rotSX = e.clientX; rotSY = e.clientY
@@ -5093,7 +5100,6 @@ export function createFlatCoverage(canvas) {
     }
     else if (vertDragging >= 0) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onVertexDrag) onVertexDrag(vertDragging, ll, 'move') }
     else if (beamDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
-    else if (labelDragging) { const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
     else if (polyDrawing) {   // 绘制态：光标每移过阈值距离落一个点
       const dx = e.clientX - drawLX, dy = e.clientY - drawLY
       if (dx * dx + dy * dy >= POLY_DRAW_MIN2) { drawLX = e.clientX; drawLY = e.clientY; const ll = screenToLonLat(e.clientX, e.clientY); if (ll && onPolyDraw) onPolyDraw(ll, 'move') }
@@ -5109,7 +5115,7 @@ export function createFlatCoverage(canvas) {
       canvas.style.cursor = (editVerts.move ? pointInEditPoly(e.clientX, e.clientY) : vertexAt(e.clientX, e.clientY) >= 0) ? (editVerts.cursor || 'move') : CUR_IDLE
     }
     // 悬停到可拖的标记上变手型（各模态自己的光标优先，不抢）
-    else if (!beamDragMode && !labelDragMode && !boxMode && !rotMode) {
+    else if (!beamDragMode && !boxMode && !rotMode) {
       const on = markerDragAny() && !!markerAt(e.clientX, e.clientY)
       canvas.style.cursor = on ? 'move' : (polyDrawMode || placeMode ? 'crosshair' : CUR_IDLE)
     }
@@ -5144,7 +5150,6 @@ export function createFlatCoverage(canvas) {
     if (vertDragging >= 0 && onVertexDrag) onVertexDrag(null, null, 'end')
     if (moveDragging && onPolyMove) onPolyMove(0, 0, 'end')
     if (beamDragging && onBeamDrag) onBeamDrag(null, 'end')
-    if (labelDragging && onLabelDrag) onLabelDrag(null, 'end')
     if (polyDrawing && onPolyDraw) onPolyDraw(null, 'end')
     if (markerDragging && onMarkerDrag) onMarkerDrag(markerDragging, null, 'end')
     markerDragging = null; markerGrab = null
@@ -5155,10 +5160,10 @@ export function createFlatCoverage(canvas) {
       if (onRotate) onRotate({ lon0: LON0, lat0: optNum(PJOPT.lat0) || 0, live: false })
     }
     const wasDragging = dragging
-    dragging = false; beamDragging = false; labelDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
+    dragging = false; beamDragging = false; vertDragging = -1; moveDragging = false; moveLast = null; polyDrawing = false
     if (wasDragging) scheduleRebuild()   // §4.3：按着指针时不补建，松手之后按 idle 补一次
     if (wasDragging && e && onPanEnd && Math.abs(e.clientX - panSX) + Math.abs(e.clientY - panSY) > 6) onPanEnd()
-    canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : (rotMode ? 'grab' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE))
+    canvas.style.cursor = (polyDrawMode || placeMode) ? 'crosshair' : (rotMode ? 'grab' : (beamDragMode ? 'move' : CUR_IDLE))
     // 显式释放指针捕获（不只依赖 pointerup 的隐式释放）：pointercancel / 抬起点在画布外等边角情形下隐式释放可能不发生，
     // 残留捕获会把之后所有点击截给 canvas，导致输入框点不进。有 e.pointerId 就按其释放，无（onLeave 调用）则整体兜底。
     try {
@@ -5272,6 +5277,7 @@ export function createFlatCoverage(canvas) {
       // （波束地图通道的等值线也在这张表里，一并保留）
       keepLineSets()
       glDenied = !!(src.length && fieldBackend() === 'gl' && !src.some((L) => L.fieldMesh))
+      fieldOpts.rays = opts?.rays || []
       if (opts) { if (opts.alpha != null) fieldAlpha = opts.alpha; if (opts.lineAlpha != null) fieldLineAlpha = opts.lineAlpha; fieldOpts = { ...fieldOpts, ...opts } }
       requestDraw()
     },
@@ -5627,18 +5633,15 @@ export function createFlatCoverage(canvas) {
       //   于是「降档提速」反倒变成拿最重的一档逐帧重烘。开模式时预热，拖起来才是 5.6 ms 那一档。
       if (rotMode) ensureDetail('110m').catch(() => {})
       if (!rotMode && rotDragging) onUp()
-      canvas.style.cursor = polyDrawMode ? 'crosshair' : (rotMode ? 'grab' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE))
+      canvas.style.cursor = polyDrawMode ? 'crosshair' : (rotMode ? 'grab' : (beamDragMode ? 'move' : CUR_IDLE))
     },
     setOnRotate(fn) { onRotate = fn },
-    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || labelDragMode) ? 'move' : CUR_IDLE) },
+    setBeamDragMode(v) { beamDragMode = !!v; beamDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : (v ? 'move' : CUR_IDLE) },
     setOnBeamDrag(fn) { onBeamDrag = fn },
-    setLabelDragMode(v) { labelDragMode = !!v; labelDragging = false; canvas.style.cursor = polyDrawMode ? 'crosshair' : ((v || beamDragMode) ? 'move' : CUR_IDLE) },
-    setOnLabelDrag(fn) { onLabelDrag = fn },
     // 协调区多边形 hold-to-draw 模式：开启后左键按住沿路径连续加点
     setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; drawClickArm = null; canvas.style.cursor = v ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE) },
     setOnPolyDraw(fn) { onPolyDraw = fn },
     setBeamDragHit(fn) { beamDragHit = typeof fn === 'function' ? fn : null },
-    setLabelDragHit(fn) { labelDragHit = typeof fn === 'function' ? fn : null },
     // Polygon 顶点编辑/整体拖动：v={ pts:[[lon,lat],...], px 顶点半径, move 整体拖动模式 } 开启
     // （pts 传引用，外部改动即时生效）；null 关闭
     setEditVerts(v) {
@@ -5653,10 +5656,10 @@ export function createFlatCoverage(canvas) {
     },
     setOnVertexDrag(fn) { onVertexDrag = fn },
     // 放置模式（波束合成）：左键点击落点
-    setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE)) },
+    setPlaceMode(v) { placeMode = !!v; placeArmed = false; canvas.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE)) },
     setOnPlace(fn) { onPlace = fn },
     // 框选模式（站点栅编辑）：左键拖矩形选站；开启期间不平移
-    setBoxSelectMode(v) { boxMode = !!v; boxDragging = false; canvas.style.cursor = boxMode ? 'crosshair' : (placeMode || polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : CUR_IDLE)) },
+    setBoxSelectMode(v) { boxMode = !!v; boxDragging = false; canvas.style.cursor = boxMode ? 'crosshair' : (placeMode || polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : CUR_IDLE)) },
     // 工具态开关（页面：任一地图工具开着）：开着时左键归工具、Shift + 左键拖动才平移（见 toolLock）
     setToolLock(v) { toolLock = !!v },
     setOnBoxSelect(fn) { onBoxSelect = fn },
@@ -5734,6 +5737,38 @@ export function createFlatCoverage(canvas) {
     setLinks(list) { mapLinks = Array.isArray(list) ? list : []; requestDraw() },   // 图上链路（见 drawLinks）
     // 拾取辅助（「链路分析」图上点选 Polygon / 航迹 / 候选点）：屏幕点 → 经纬度 | null；经纬度 → 屏幕坐标（client 像素）| null
     lonLatAt: (clientX, clientY) => screenToLonLat(clientX, clientY),
+    contourDragTargets() {
+      const targets = [], rect = canvasRect()
+      const sx = rect.width / cw, sy = rect.height / ch
+      const project = ([lon, lat]) => {
+        const x = PX(lon, lat), y = PY(lat, lon)
+        return Number.isFinite(x) && Number.isFinite(y) ? { x: rect.left + x*sx, y: rect.top + y*sy } : null
+      }
+      const add = (anchor, text, hpx, bold, preview) => {
+        const px = Math.round(hpx * 750 * k() / 13.1)
+        if (!px) return
+        const fam = (textFontLatin && !CJK_RE.test(text)) ? textFontLatin : textFont
+        ctx.font = `${bold ? 'bold ' : ''}${px}px ${fam}`
+        targets.push({ anchor, project, preview, width: ctx.measureText(text).width * sx, height: px * sy })
+      }
+      ctx.save()
+      for (const layer of fieldLayers) {
+        const style = layer.angleLabel
+        if (!style && !fieldOpts.showVal) continue
+        for (const group of layer.segGroups || []) group.anchors?.forEach((anchor, i) => {
+          add(anchor, group.txt, (style?.size || fieldOpts.valSize || 12) / 533, style ? style.bold : fieldOpts.fontBold, point => {
+            group.labels[i] = point; requestDraw()
+          })
+        })
+      }
+      for (const label of satLayer?.labels || []) if (label.angleAnchor) {
+        add(label.angleAnchor, label.text, label.hpx, label.bold, ([lon, lat]) => {
+          label.lon = lon; label.lat = lat; invalidateText(); requestDraw()
+        })
+      }
+      ctx.restore()
+      return targets
+    },
     screenOfLL(lat, lon) {
       const x = PX(lon, lat), y = PY(lat, lon)
       if (!Number.isFinite(x) || !Number.isFinite(y)) return null

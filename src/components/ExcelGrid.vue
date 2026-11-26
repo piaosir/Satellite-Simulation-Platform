@@ -291,7 +291,7 @@ onBeforeUnmount(onResizeUp)
               :style="g.fzStyle(ci)" :title="cellTip ? cellTip(r, c) : null"
               @mousedown="g.cellDown($event, ri, ci)" @mouseenter="g.cellEnter(ri, ci)"
               @dblclick="g.tryEdit(ri, ci, null)" @contextmenu="g.openMenu($event, ri, ci)">
-            <span class="eg-v">{{ text(r, c) }}</span>
+            <span class="eg-v"><slot name="cell" :row="r" :col="c">{{ text(r, c) }}</slot></span>
             <!-- 活动格常驻捕获输入框：始终存在并持有键盘/输入法焦点。导航态透明覆盖在值上、pointer-events:none 让鼠标框选穿透；
                  键入/输入法组字即翻成不透明可见编辑框——中文输入法从第一个拼音字母起就落在真实 <input>，不吞首字母。
                  值由内核命令式写入（不绑 :value——实时时钟每秒重渲染会把绑定值刷回，吞掉正在键入的内容）。 -->

@@ -6,7 +6,7 @@ import { ref, watch, onMounted } from 'vue'
 import { paintMarkSymbol } from '../viz/markers/markSymbols.js'
 import { paintNumBadge } from '../viz/markers/numBadge.js'
 import { drawVehicle } from '../viz/vehicleSymbol.js'
-import { stationSvg } from '../viz/stationSymbol.js'
+import { stationIconUrl } from '../viz/stationSymbol.js'
 import Icon from './Icon.vue'
 
 const props = defineProps({
@@ -24,10 +24,6 @@ const props = defineProps({
   icon: { type: String, default: '' },           // icon：图标名（航迹行用 ship / plane —— 俯视剪影在 16px 下认不出是船）
   lines: { type: Array, default: () => [] }     // lines：[{ color, dash }]，自上而下逐条
 })
-
-// 地球站符号是 Noto 的固定六色天线（不着色），一张数据 URL 全组件共用
-let stationUrl = ''
-const stationSrc = () => stationUrl || (stationUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(stationSvg()))
 
 const cv = ref(null)
 const DASH = { solid: [], dash: [4, 2.5], dot: [1.2, 2], dashdot: [4, 2, 1.2, 2] }
@@ -72,7 +68,7 @@ watch(() => [props.type, props.size, props.shape, props.fill, props.opacity, pro
 
 <template>
   <span v-if="type === 'icon'" class="mlg mlg-ic" :style="{ width: size + 'px', height: size + 'px', color: color || null }"><Icon :name="icon" :size="size - 2" /></span>
-  <img v-else-if="type === 'station'" class="mlg" :src="stationSrc()" :style="{ width: size + 'px', height: size + 'px' }" alt="" draggable="false" />
+  <img v-else-if="type === 'station'" class="mlg" :src="stationIconUrl" :style="{ width: size + 'px', height: size + 'px' }" alt="" draggable="false" />
   <canvas v-else ref="cv" class="mlg" :style="{ width: size + 'px', height: size + 'px' }"></canvas>
 </template>
 

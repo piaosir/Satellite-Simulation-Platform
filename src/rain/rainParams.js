@@ -16,7 +16,7 @@ import { halfStr } from '../shared/num.js'
 
 // 字段字典（group：两层表头的列组，与链路表同一套分区语言 —— 见 GRID_GROUPS）
 const F = {
-  stationName: { key: 'stationName', label: '地球站', type: 'text', def: '北京', city: true, group: 'site' },
+  stationName: { key: 'stationName', label: '地球站', resourceKind: 'station', type: 'text', def: '北京', city: true, group: 'site' },
   longitude: { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', group: 'site' },
   latitude: { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', group: 'site' },
   altitude: { key: 'altitude', label: '海拔', unit: 'm', type: 'num', def: '0', auto: 'elev', group: 'site' },
@@ -40,7 +40,7 @@ const F = {
 // 两层表头的列组（对齐链路表「发信站 / 收信站 / 计算结果」的分区口径）：
 // 分区不填底色，靠组末列的加深格线（--lb-rule）区分 —— 见 lbworkbench.css 里的说明
 export const GRID_GROUPS = [
-  { key: 'site', label: '站址' },
+  { key: 'site', label: '站址', kind: 'station' },
   { key: 'rf', label: '射频' },
   { key: 'met', label: '气象' },
   { key: 'rx', label: '接收' },

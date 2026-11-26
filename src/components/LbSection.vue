@@ -4,9 +4,13 @@
 // 节头随内容滚走（不吸顶）——曾用 sticky 常驻可见，但节头会悬浮压在链路表/详细预算的内容上，已撤。
 // 节头不可点：折叠/展开已删（各节一律常展，报告式文档流里藏起整节没有意义）。
 
+import LbResourceIcon from './LbResourceIcon.vue'
+import Icon from './Icon.vue'
+
 defineProps({
   id: { type: String, required: true },        // 节 id（滚动定位锚，与模块 key 一致）
   title: { type: String, required: true },
+  resourceKind: { type: String, default: '' },
   no: { type: Number, default: 0 },            // 本节讲的是链路表第几行（0 = 不显示）；与表脚「本行读数」同一枚编号
   count: { type: Number, default: -1 },        // -1 = 不显示计数
   summary: { type: String, default: '' },      // 节头一行摘要（mono）
@@ -19,7 +23,7 @@ defineProps({
   <section class="lbx-sec" :data-sec="id">
     <header class="lbx-sec-hd" :class="{ chain: flow === 'chain' }">
       <span class="lbx-sec-tt">
-        <span class="lbx-sec-t">{{ title }}</span>
+        <span class="lbx-sec-t"><LbResourceIcon v-if="resourceKind" :kind="resourceKind" /><Icon v-else-if="flow === 'chain'" name="chain-hops" :size="16" class="chain-icon" />{{ title }}</span>
         <span v-if="no" class="lbx-sec-no">#{{ no }}</span>
         <span v-if="stale" class="lbx-sec-stale" title="计算输入已被修改，结果对应修改前的参数"></span>
         <span v-if="$slots.nav" class="lbx-sec-nav"><slot name="nav" /></span>
@@ -65,6 +69,7 @@ defineProps({
 .lbx-sec-n::after { content: ')'; }
 .lbx-sec-sum { font-size: calc(var(--lb-fs, 11px) - 1px); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lbx-sec-sp { flex: 1; }
+.chain-icon { margin-inline-end: 4px; }
 .lbx-sec-acts { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .lbx-sec-bd { padding: 8px 1px 2px; }
 </style>

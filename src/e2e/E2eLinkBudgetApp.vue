@@ -23,6 +23,7 @@ import LbShareDialog from '../components/LbShareDialog.vue'
 import { createE2eShareAdapter } from './e2eShare.js'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import LbDispCtl from '../components/LbDispCtl.vue'
 import WinStatusBar from '../components/WinStatusBar.vue'
 import { isUnitAdaptive, onUnitModeChange } from '../shared/lbUnitMode.js'   // 结果显示单位档（功能区「单位」，出厂锁定）
@@ -1949,7 +1950,7 @@ onMounted(async () => {
         </div>
         <nav class="lb-lib-tabs">
           <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
-            {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : satConfigs.length }}</span>
+            <LbResourceIcon :kind="t.key" />{{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : satConfigs.length }}</span>
           </button>
         </nav>
         <div class="lb-libpane">
@@ -2125,14 +2126,14 @@ onMounted(async () => {
               <aside class="e2-insp">
                 <div v-if="selectedChainRows.length > 1 && cur" class="e2-insp-chain"><b class="lbx-rr-no">#{{ curIdx + 1 }}</b><span data-i18n-skip>{{ cur.name }}</span></div>
                 <div class="e2-insp-hd">
-                  <span class="e2-insp-t">{{ sel.type === 'node' ? '节点' : 'hop' }}</span>
+                  <span class="e2-insp-t"><LbResourceIcon v-if="selNode" :kind="selNode.kind === 'es' ? 'station' : 'sat'" />{{ sel.type === 'node' ? '节点' : 'hop' }}</span>
                   <span class="e2-insp-s" data-i18n-skip>{{ sel.type === 'node' ? (selNode && selNode.name) : (selHopType === 'up' ? '星地上行' : selHopType === 'down' ? '星地下行' : selHopType === 'laser' ? '星间激光' : '星间微波') }}</span>
                 </div>
                 <div v-if="!cur" class="e2-insp-none">暂无链路。</div>
                 <template v-else-if="sel.type === 'node' && selNode">
                   <!-- 收侧：解调器（按上一段体制解调，实际门限 = 理论门限 + 本机实现损失） -->
                   <template v-if="selEndSegIndex >= 0">
-                    <div class="e2-sub">解调（入）</div>
+                    <div class="e2-sub"><LbResourceIcon kind="carrier" />解调（入）</div>
                     <div class="e2-ref">
                       <span class="e2-ref-l" title="从上一段进来的那条载波：本节点按它的体制解调">入段体制</span>
                       <span class="e2-ro" data-i18n-skip>{{ segCarrierName(selEndSegIndex) }}</span>
@@ -2145,14 +2146,14 @@ onMounted(async () => {
                   </template>
                   <!-- 发侧：编码调制器（本节点发出的那一段用什么体制；链首那份还定义业务速率） -->
                   <template v-if="selSegIndex >= 0 && selNode.carrier">
-                    <div class="e2-sub">调制（出）</div>
+                    <div class="e2-sub"><LbResourceIcon kind="carrier" />调制（出）</div>
                     <div v-if="sel.index > 0" class="e2-ref">
                       <span class="e2-ref-l" title="全链同一个业务速率：仅在链首节点填写，本节点仅更换调制方式 / 码率">业务速率</span>
                       <span class="e2-ro">{{ chainInfoRate(cur) != null ? fmtQtyRate(chainInfoRate(cur)) : '—' }}</span>
                     </div>
                     <BasebandPanel :form="selNode.carrier" :options="basebandOpts" :calc-modes="[]" :rate-locked="sel.index > 0" />
                   </template>
-                  <div class="e2-sub">{{ selNode.kind === 'es' ? '地球站' : '卫星' }}</div>
+                  <div class="e2-sub"><LbResourceIcon :kind="selNode.kind === 'es' ? 'station' : 'sat'" />{{ selNode.kind === 'es' ? '地球站' : '卫星' }}</div>
                   <!-- 地球站节点 -->
                   <template v-if="selNode.kind === 'es'">
                     <div class="e2-ref">
@@ -2201,7 +2202,7 @@ onMounted(async () => {
                     <div class="e2-tagline">{{ selNode.kind === 'regen' ? '再生（解调-重调，切段）' : '透明（变频放大转发）' }}</div>
                     <E2eFields :fields="selSatFields" :form="selNode.ov" :base="selSatBase" />
                     <template v-if="selIntfFields.length">
-                      <div class="e2-sub">干扰</div>
+                      <div class="e2-sub"><Icon name="device-analytics" :size="14" /> 干扰</div>
                       <E2eFields :fields="selIntfFields" :form="selNode.ov" :base="selSatBase" />
                     </template>
                   </template>

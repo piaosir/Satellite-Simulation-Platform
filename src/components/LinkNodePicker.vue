@@ -1,7 +1,7 @@
 <script setup>
 // 「链路分析」视图的节点选择器：链路详情节点竖链里，插入光标那一位（或被替换的那个节点）就地展开的检索框 + 候选列表。
 // 交互范式 = WAI-ARIA 组合框（combobox + listbox）+ 检索范围（GitHub 命令面板的作用域标签）：
-//   打字即过滤；↑↓ / PgUp PgDn 移动；Enter 选中（没停在哪条时取第一条可选的）；Esc 先清检索词、再退出范围、再收起。
+//   打字即过滤；↑↓ / PgUp PgDn 移动；Enter 选中（没停在哪条时取第一条可选的）；Esc 先清检索词、再退出范围，最后取消添加或收起替换框。
 //   根视图 = 地球站 / 点标记 / 航迹 / Polygon / 城市库 / 常用卫星 / 卫星集；有检索词时卫星查全量，末尾「全部 N 颗」进整份命中表。
 //   卫星集行上 Enter / Tab / → / 单击 = 进入该集：检索框左侧出范围标签，列表换成该集全部成员（虚拟滚动，几万颗同样跟手），
 //   检索只在该集里做；空词 Backspace / ← 、Esc（无词时）或标签上的 × = 退出范围。
@@ -10,6 +10,7 @@
 // 候选与几何读数来自 viz/links/linkPickSource.js；本组件只管输入、列表与键盘，选中 / 悬停交给宿主（pick / hover）。
 import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import Icon from './Icon.vue'
+import LinkNodeIcon from './LinkNodeIcon.vue'
 import { byLang } from '../shared/i18n/lang.js'
 
 const props = defineProps({
@@ -21,9 +22,8 @@ const props = defineProps({
   drawing: { type: Boolean, default: false },    // 插入态：空词 Enter = 完成、Backspace = 撤销
   placeholder: { type: String, default: '' }
 })
-const emit = defineEmits(['pick', 'hover', 'close', 'undo', 'finish'])
+const emit = defineEmits(['pick', 'hover', 'close', 'undo', 'finish', 'cancel'])
 
-const ICON = { st: 'satellite-dish', pt: 'map-pin', sat: 'satellite', city: 'map-pin', tj: 'ship', pg: 'polygon' }
 const ROW_H = 24                 // 行高（与 .lnp-it 同值：虚拟滚动按它换算）
 const VP_ROWS = 12               // 卫星集视图的视口行数
 const OVERSCAN = 4
@@ -278,8 +278,10 @@ function onKey(e) {
   if (k === 'ArrowLeft') { if (scope.value && !q.value) { e.preventDefault(); exitScope() } return }
   if (k === 'Escape') {
     e.preventDefault(); e.stopPropagation()
+    if (e.repeat) return
     if (q.value) q.value = ''
     else if (scope.value) exitScope()
+    else if (props.drawing) emit('cancel')
     else { const el = inputEl.value; if (el) el.blur() }
     return
   }
@@ -297,7 +299,7 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
 </script>
 
 <template>
-  <div ref="rootEl" class="lnp" :class="['m-' + mode, { open, scoped: !!scope }]">
+  <div ref="rootEl" class="lnp" :class="['m-' + mode, { open, drawing, scoped: !!scope }]">
     <div class="lnp-in search-field" @mousedown="onBoxDown">
       <Icon name="search" :size="12" class="lnp-si" />
       <span v-if="scope" class="lnp-tok" :title="scope.name">
@@ -312,6 +314,9 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
         @focus="onFocus" @blur="onBlur" @keydown="onKey"
       />
     </div>
+    <button v-if="drawing" type="button" class="btn sm lnp-cancel"
+            :title="byLang('取消本次添加节点', 'Cancel this node addition')"
+            @mousedown.prevent @click="emit('cancel')">取消</button>
     <div v-if="open" :id="uid" ref="listEl" class="lnp-list" role="listbox" @mousedown.prevent>
       <!-- 卫星集视图：集内颗数（检索时为命中 / 全部）· 此刻可见颗数；重算中右侧转圈 -->
       <div v-if="scope" class="lnp-gh lnp-sh" role="presentation">
@@ -345,7 +350,7 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
                   <Icon name="chevron-right" :size="12" class="lnp-chev" />
                 </template>
                 <template v-else>
-                  <Icon :name="r.it.icon || ICON[r.it.kind] || 'circle'" :size="12" class="lnp-ic" />
+                  <LinkNodeIcon :kind="r.it.kind" :object-id="r.it.node?.id" :size="18" />
                   <span class="lnp-nm" data-i18n-skip>{{ r.it.name }}</span>
                   <span v-if="r.it.kind === 'sat'" class="lnp-sub"><span v-if="r.it.slot" data-i18n-skip>{{ r.it.slot }}</span><span v-else-if="r.it.orb">{{ r.it.orb }}</span><span v-if="r.it.tag">{{ r.it.tag }}</span><span v-if="r.it.norad" data-i18n-skip>NORAD {{ r.it.norad }}</span></span>
                   <span v-else class="lnp-sub" data-i18n-skip>{{ r.it.sub }}</span>
@@ -371,6 +376,9 @@ onBeforeUnmount(() => { clearTimeout(timer); seq++; newTok(); if (open.value) em
 
 <style scoped>
 .lnp { min-width: 0; }
+.lnp.drawing { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 5px; }
+.lnp.drawing .lnp-list { grid-column: 1 / -1; min-width: 0; }
+.lnp .lnp-cancel { height: var(--h-ctl); }
 .lnp-in {
   display: flex; align-items: center; gap: 5px; height: var(--h-ctl); padding: 0 6px; cursor: text;
   border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg);

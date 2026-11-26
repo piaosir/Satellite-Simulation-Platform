@@ -36,6 +36,7 @@ import { useConfigVersions } from '../shared/useConfigVersions.js'
 import LbVersionsDialog from '../components/LbVersionsDialog.vue'
 import LbSection from '../components/LbSection.vue'
 import LbLibrary from '../components/LbLibrary.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import StationGrid from '../ngso/StationGrid.vue'
 import BasebandPanel from '../ngso/BasebandPanel.vue'
 import EarthStationPanel from '../components/EarthStationPanel.vue'
@@ -1058,9 +1059,9 @@ function _geoCols(fields) {
   return fields.filter((f) => (f.manualOnly ? geoManual.value : (f.autoOnly ? !geoManual.value : true)))
     .map((f) => ((geoManual.value && f.manualLabel) ? { ...f, label: f.manualLabel, tip: f.manualTip || f.tip } : f))
 }
-const GROUPS_STATION = [{ key: 'ref', label: '载波' }, { key: 'sat', label: '卫星' }, { key: 'es', label: '地球站' }, { key: 'link', label: '链路' }, { key: 'res', label: '计算结果' }]
-const GROUPS_ISL = [{ key: 'ref', label: '载波' }, { key: 'sat', label: '卫星' }, { key: 'link', label: '星间参数' }, { key: 'res', label: '计算结果' }]
-const GROUPS_LASER = [{ key: 'sat', label: '卫星' }, { key: 'link', label: '激光参数' }, { key: 'res', label: '计算结果' }]
+const GROUPS_STATION = [{ key: 'ref', label: '载波', kind: 'carrier' }, { key: 'sat', label: '卫星', kind: 'sat' }, { key: 'es', label: '地球站', kind: 'station' }, { key: 'link', label: '链路' }, { key: 'res', label: '计算结果' }]
+const GROUPS_ISL = [{ key: 'ref', label: '载波', kind: 'carrier' }, { key: 'sat', label: '卫星', kind: 'sat' }, { key: 'link', label: '星间参数' }, { key: 'res', label: '计算结果' }]
+const GROUPS_LASER = [{ key: 'sat', label: '卫星', kind: 'sat' }, { key: 'link', label: '激光参数' }, { key: 'res', label: '计算结果' }]
 // 站表列还随卫星参数归属变：配置级不出「卫星」列（全表同一颗星，「卫星」列组只剩 G/T · EIRP 配对量）
 const _stnCols = (fields) => _geoCols(fields).filter((f) => f.key !== 'satelliteId' || satLink.value)
 const txGridFields = computed(() => [..._stnCols(TX_FIELDS).map(_tagGroup(_STN_GROUP, 'link')), ...resColsOf('uplink')])
@@ -2982,7 +2983,7 @@ onMounted(async () => {
         </div>
         <nav class="lb-lib-tabs">
           <button v-for="t in LIB_TABS" :key="t.key" class="lbx-subtab" :class="{ on: libTab === t.key }" :aria-pressed="(libTab === t.key) ? 'true' : 'false'" :title="t.tip" @click="libTab = t.key">
-            {{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
+            <LbResourceIcon :kind="t.key" />{{ t.label }}<span class="lbx-tab-n">{{ t.key === 'station' ? esConfigs.length : t.key === 'sat' ? satConfigs.length : basebandConfigs.length }}</span>
           </button>
         </nav>
         <div class="lb-libpane">
@@ -3140,7 +3141,7 @@ onMounted(async () => {
           </div>
           <!-- 卫星分区：只在「统一指定」且是上/下行两个地面模块时出现（星间链路两端恒按行选星，无场景级卫星可言；
                逐链路指定时卫星在站表「卫星」列里逐行选，这里再报一颗星只会混淆）：卫星库单选 + 星名 + 频率 / 轨道读数 -->
-          <LbSection v-if="!satLink && (linkMode === 'uplink' || linkMode === 'downlink')" id="sat" title="卫星">
+          <LbSection v-if="!satLink && (linkMode === 'uplink' || linkMode === 'downlink')" id="sat" title="卫星" resource-kind="sat">
             <template #actions>
               <button class="lb-mini" title="到资源库编辑当前卫星：取星定轨 + 频率极化 + 干扰系数" @click="editInLibrary('sat')">编辑参数</button>
             </template>

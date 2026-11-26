@@ -151,6 +151,38 @@ const nLayers = () => last().length
   ok('删除天线后清理其各张表及数据', !host.isOpen('ground', ground) && !perf.stationsOf(ground).length && !sp.picksOf(shell).length && !host.tables.entries.value.some(t => t.antenna === renamed))
 }
 
+// 旧存档的默认表按天线键认，对地和对星各有一张。删表必须按视图区分。
+{
+  const k = 'satX|delete', renamed = 'satX|moved'
+  loaded.add(k)
+  const extra = host.tables.add('ground', k)
+  const first = await host.open('ground', k)
+  await host.open('shell', k)
+  await host.open('ground', extra)
+  perf.setStationsOf(k, [{ id: 'c', city: '北京', lon: 116, lat: 40 }])
+  host.setCityShow(k, true)
+  D.satPerf.addTarget({ name: '目标 B' }, k)
+  await waitFor(() => last().some(l => l.key === k))
+  host.removeTable('ground', k)
+  onAct({ id: first, kind: 'ground', key: k, type: 'stations', payload: [{ id: 'late', city: '北京' }] })
+  await waitFor(() => !last().some(l => l.key === k))
+  ok('删除默认对地表仅关闭该窗，清掉城市与图层，忽略迟到的窗口写回', !host.isOpen('ground', k) && !perf.stationsOf(k).length && !last().some(l => l.key === k) && host.isOpen('ground', extra) && host.isOpen('shell', k) && D.satPerf.picksOf(k).length === 1)
+  host.removeTable('ground', extra)
+  treeSub({ type: 'rename', from: k, to: renamed })
+  const restored = createPerfWinHost(D).tables
+  restored.restore(JSON.parse(JSON.stringify(host.tables.entries.value)))
+  ok('最后一张表删除后，天线改名和存档恢复都保留空列表', !host.isOpen('ground', extra) && !restored.list('ground', renamed).length && restored.list('shell', renamed)[0].id === renamed)
+  const fresh = host.tables.add('ground', renamed)
+  ok('删空后可添加一张新表', fresh !== renamed && host.tables.list('ground', renamed).length === 1 && !perf.stationsOf(fresh).length)
+  host.removeTable('shell', renamed)
+  ok('删除默认对星表清掉目标和窗，对地新表仍在', !D.satPerf.picksOf(renamed).length && !host.isOpen('shell', renamed) && !host.tables.list('shell', renamed).length && host.tables.has('ground', fresh))
+  const pending = host.open('ground', fresh)
+  host.removeTable('ground', fresh)
+  ok('打开请求返回前删表，窗口也随之关闭', (await pending) === null && !host.isOpen('ground', fresh))
+  treeSub({ type: 'remove', keys: [renamed] })
+  ok('删除天线后同名新天线有自己的默认表', host.tables.list('ground', renamed)[0].id === renamed && host.tables.list('shell', renamed)[0].id === renamed)
+}
+
 // ==================== ⑤ 删天线 → 层消失、不再去载 ====================
 {
   loaded.delete(KEY); allowed.delete(KEY)   // 树里没有它了

@@ -1,6 +1,6 @@
 {
   "name": "satellite-sim-platform",
-  "version": "1.5.9",
+  "version": "1.5.10",
   "description": "卫星仿真平台 — 桌面端卫星链路预算与可视化（Electron + Vue3 + SQLite）",
   "author": "",
   "license": "MIT",
@@ -102,6 +102,7 @@
     "packages/core/test/visAccessXlsx.test.mjs",
     "packages/core/test/modelVisEph.test.mjs",
     "packages/core/test/shellProj.test.mjs",
+    "packages/core/test/angleContours.test.mjs",
     "packages/core/test/covPeakPoint.test.mjs",
     "packages/core/test/covProjShare.test.mjs",
     "packages/core/test/grdTickPartial.test.mjs",
@@ -123,6 +124,7 @@
     "packages/core/test/fpXlsx.test.mjs",
     "packages/core/test/gridXlsx.test.mjs",
     "packages/core/test/stationGridSync.test.mjs",
+    "packages/core/test/stationImport.test.mjs",
     "packages/core/test/basebandPanelSync.test.mjs",
     "packages/core/test/lbSatPanelBand.test.mjs",
     "packages/core/test/markerTraj.test.mjs",

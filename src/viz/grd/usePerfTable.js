@@ -88,7 +88,7 @@ function defaultOpts() {
     cols,
     // 覆盖过滤默认关：结果表列出每座城市对全部波束的取值；勾上「仅覆盖波束」才只留方向性≥阈值的波束
     // （单波束→1 行，重叠区→数行）。老快照里由旧出厂默认落下的 filterOn:true 在 restoreState 里一次性归零。
-    filterOn: false, minDir: 50,                 // 过滤：低于最低方向性的记录不显示
+    filterOn: false, minDir: 0,                  // 过滤：低于最低方向性的记录不显示
     sameAsAnt: true, pol: 'RSS', unit: 'dB', pathLoss: 'none', gainOffset: 0,   // 参数计算口径
     // Xpol C/I 的极化口径（SATSOFT §3.4.5 Polarization Auto Rotation）：共极化分量（auto = 各波束峰值处占优者，可钉死 P1/P2）；
     // 线极化旋转角 τ 自动 = 各波束峰值处极化椭圆倾角，关掉自动则用 polTauDeg（相对共极化轴，°）
@@ -207,14 +207,17 @@ export function usePerfTable() {
   const hidden = ref({})       // 已手动隐藏的行 id（站#波束）→ true；行为派生数据，仅内存态不存盘
   const cityGroups = ref([])   // 城市组（命名预设列表）：[{ id, name, cities:[{country,city,desig,lon,lat}] }]；全表共享、随页面快照存盘
 
-  // 「记住上次选择」模板：新天线首次打开表时，用它初始化选项（列/过滤/口径/指向误差），而不是每次回到固定默认——减少逐天线重设。
+  // 「记住上次选择」模板：新表继承列、计算口径和指向误差；方向性阈值使用新表默认值。
   // beamSel（波束筛选）不入模板：波束因天线而异，继承会张冠李戴，新表恒为「全部波束」。随页面快照持久化。
   let optsTemplate = null
   function cloneOpts(o) { return JSON.parse(JSON.stringify(o)) }
   function newOptsFromTemplate() {
     const base = defaultOpts()
     if (!optsTemplate) return base
-    return { ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) }, beamSel: null, cityShow: base.cityShow }
+    return {
+      ...base, ...cloneOpts(optsTemplate), cols: { ...base.cols, ...(optsTemplate.cols || {}) },
+      beamSel: null, cityShow: base.cityShow, filterOn: base.filterOn, minDir: base.minDir
+    }
   }
   function getOpts(key) {
     if (!key) return defaultOpts()
@@ -305,13 +308,13 @@ export function usePerfTable() {
   }
   function removeStation(id) { stations.value = stations.value.filter((x) => x.id !== id) }
   // 批量追加（典型城市 / 城市库选点）：[{country,city,desig,lon,lat}]，有坐标的按 ±1e-4 去重。返回新增数。
-  function addStations(list) {
+  function addStations(list, { keepCoincident = false } = {}) {
     if (!activeKey.value) return 0
     const exists = (lon, lat) => stations.value.some((s) => Number.isFinite(s.lon) && Number.isFinite(s.lat) && Math.abs(s.lon - lon) < 1e-4 && Math.abs(s.lat - lat) < 1e-4)
     const add = []
     for (const c of (list || [])) {
       const lon = num(c.lon), lat = num(c.lat)
-      if (lon != null && lat != null && (exists(lon, lat) || add.some((a) => Math.abs(a.lon - lon) < 1e-4 && Math.abs(a.lat - lat) < 1e-4))) continue
+      if (!keepCoincident && lon != null && lat != null && (exists(lon, lat) || add.some((a) => Math.abs(a.lon - lon) < 1e-4 && Math.abs(a.lat - lat) < 1e-4))) continue
       add.push({ id: newId(), country: String(c.country || ''), city: String(c.city || ''), desig: String(c.desig || ''), lon, lat, tMs: null, altM: null })
     }
     if (add.length) stations.value = [...stations.value, ...add]

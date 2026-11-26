@@ -20,6 +20,8 @@ const props = defineProps({
   width: { type: Number, default: 720 },
   // 已在表里的坐标（±1e-4 判同）：列表里标「已加」；dup=false 时不参与勾选、双击也不加
   has: { type: Function, default: () => false },
+  // 性能指标表传入已有城市名，勾选先预览，点「完成」后一次写入。
+  tableCities: { type: Array, default: null },
   // 允许重复加入（链路表同一站址配不同载波是常事）：「已加」只做标记
   dup: { type: Boolean, default: false },
   // 城市库之外的附加分区，排在「中国 / 国际」之后：
@@ -97,6 +99,7 @@ const curGroup = computed(() => groupById.value.get(cur.value) || null)
 // ===== 搜索：城市走引擎（跨组），附加分区本地按名字过滤；结果替换右栏 =====
 const q = ref('')
 const cityHits = shallowRef([])
+const searchOnlyItems = new Map()
 const busy = ref(false)
 const inputEl = ref(null)
 let timer = null, seq = 0
@@ -121,6 +124,7 @@ watch(q, (v) => {
     if (!Array.isArray(r)) r = localCityHits(s)
     // 回查归一条目（同一份 id，勾选跨搜索保持）；引擎命中但分层库里没有的（老主进程）现造一条
     cityHits.value = r.map((c) => itemById.value.get(cid(c)) || { id: cid(c), name: cityName(c), sub: citySubtitle(c), lon: Number(c.lon), lat: Number(c.lat), src: c, gid: '' })
+    for (const it of cityHits.value) if (!itemById.value.has(it.id)) searchOnlyItems.set(it.id, it)
     busy.value = false
   }, 160)
 })
@@ -160,26 +164,33 @@ const selInView = computed(() => rows.value.reduce((n, r) => n + (sel.value.has(
 const groupSelCount = (g) => { if (!sel.value.size) return 0; let n = 0; for (const it of (groupItems.value.get(g.id) || [])) if (sel.value.has(it.id)) n++; return n }
 function pickGroup(id) { cur.value = id; q.value = '' }
 // 勾选的条目按组序回查原对象（城市条目 = 城市库原条目，附加分区 = 宿主给的条目）
-function srcOf(ids) {
+const selectedItems = computed(() => {
+  const ids = sel.value
   const out = []
-  for (const g of allGroups.value) for (const it of (groupItems.value.get(g.id) || [])) if (ids.has(it.id)) out.push(it.src)
-  for (const it of cityHits.value) if (ids.has(it.id) && !itemById.value.has(it.id)) out.push(it.src)
+  if (!ids.size) return out
+  for (const it of itemById.value.values()) if (ids.has(it.id)) out.push(it)
+  for (const [id, it] of searchOnlyItems) if (ids.has(id) && !itemById.value.has(id)) out.push(it)
   return out
-}
+})
 // 把勾选的一次加入，清空勾选，对话框不关，可接着选
 function addSelected() {
   if (!sel.value.size) return
-  const out = srcOf(sel.value)
+  const out = selectedItems.value.map(it => it.src)
   if (out.length) emit('add', out)
   sel.value = new Set()
 }
 // 双击一行＝单加这一条（保留「即点即入」的手感）
 function addOne(r) {
   if (r.had && !props.dup) return
+  if (props.tableCities) { sel.value.add(r.id); return }
   emit('add', [r.src])
   if (sel.value.has(r.id)) { sel.value.delete(r.id); sel.value = new Set(sel.value) }
 }
 function pickRow(r) { emit('add', [r.src]); emit('close') }
+function finish() {
+  if (props.tableCities) addSelected()
+  emit('close')
+}
 function onRowDown(e, i) { if (!props.single) L.onRowDown(e, i) }
 function onRowClick(r) { if (props.single) pickRow(r) }
 function onListKey(e) {
@@ -188,10 +199,10 @@ function onListKey(e) {
 }
 // 搜索框回车：单选取第一条；多选有勾选就加勾选的，没有就加第一条命中
 function onSearchKey(e) {
-  if (e.key !== 'Enter') return
+  if (e.key !== 'Enter' || e.isComposing) return
   e.preventDefault()
   if (props.single) { const r = rows.value[0]; if (r) pickRow(r); return }
-  if (sel.value.size) { addSelected(); return }
+  if (sel.value.size) { if (props.tableCities) finish(); else addSelected(); return }
   if (searching.value) { const r = rows.value.find((x) => !x.had || props.dup); if (r) addOne(r) }
 }
 // 外壳是 AppDialog（Esc 关且判输入法组字、点遮罩不关、打开聚焦搜索框）；常压在别的对话框之上开，z 取 pop 档
@@ -225,7 +236,7 @@ const fx = (v) => Number(v).toFixed(2)
               <span class="cpk-cnt">{{ rows.length }} 座</span>
             </div>
             <div ref="listEl" class="cpk-list" :class="{ painting: L.painting.value, single }" tabindex="0"
-                 :title="single ? '点一行即选定 · ↑↓ 移动 · Enter 选定' : '点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选 · 双击＝直接加入该城市'" @keydown="onListKey">
+                 :title="single ? '点一行即选定 · ↑↓ 移动 · Enter 选定' : tableCities ? '点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选' : '点一行翻勾选 · 按住拖＝刷选一片 · Shift 点＝连选一段 · Ctrl+A 全选 · 双击＝直接加入该城市'" @keydown="onListKey">
               <div v-if="!single" class="cpk-row cpk-all" @mousedown="L.onHeadDown">
                 <input type="checkbox" :checked="L.allOn()" :indeterminate.prop="L.anyOn() && !L.allOn()" />
                 <span class="cpk-alln">{{ searching ? '(全选搜索结果)' : '(全选本组)' }}</span>
@@ -247,12 +258,16 @@ const fx = (v) => Number(v).toFixed(2)
         </div>
       </div>
       <template #footer>
+        <div v-if="tableCities && (tableCities.length || selCount)" class="cpk-preview">
+          <div v-if="tableCities.length"><b>{{ byLang('表内城市', 'In table') }}</b><span data-i18n-skip>{{ tableCities.join(byLang('、', ', ')) }}</span></div>
+          <div v-if="selCount"><b>{{ byLang('本次已选', 'Selected') }}</b><span data-i18n-skip>{{ selectedItems.map(it => it.name).join(byLang('、', ', ')) }}</span></div>
+        </div>
         <span class="adlg-ft-l">
           <span class="cpk-cnt">{{ single ? `${total} 座` : `${total} 座 · 已选 ${selCount} 座` }}</span>
           <span v-if="note" class="cpk-cnt cpk-note">{{ note }}</span>
         </span>
-        <button v-if="!single" type="button" class="btn" :disabled="!selCount" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></button>
-        <button type="button" class="btn primary" @click="emit('close')">{{ single ? '关闭' : '完成' }}</button>
+        <button v-if="!single && !tableCities" type="button" class="btn" :disabled="!selCount" title="把勾选的城市加入列表（跨组的勾选一并加入）" @click="addSelected">添加所选<template v-if="selCount">（{{ selCount }}）</template></button>
+        <button type="button" class="btn primary" @click="finish">{{ single ? '关闭' : '完成' }}</button>
       </template>
   </AppDialog>
 </template>
@@ -262,6 +277,11 @@ const fx = (v) => Number(v).toFixed(2)
 /* 宿主插在题条里（关闭钮前）的东西：竖向居中，不被 36px 题条拉高 */
 .cpk-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; font-size: var(--fs-3); font-weight: 400; }
 .cpk-body { padding: 12px 14px; min-height: 0; display: flex; flex-direction: column; }
+.adlg-ft:has(.cpk-preview) { flex-wrap: wrap; }
+.cpk-preview { flex: 0 0 100%; font-size: var(--fs-3); }
+.cpk-preview > div { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.cpk-preview b { flex: none; color: var(--text-muted); }
+.cpk-preview span { max-height: 9vh; overflow: auto; overflow-wrap: anywhere; }
 .cpk-cnt { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); white-space: nowrap; }
 /* 搜索框（自绘，不靠窗口的 .ci / .sg-search） */
 .cpk-q { width: 100%; box-sizing: border-box; flex: none; margin: 0 0 8px; padding: 5px 9px; font: inherit; font-size: var(--fs-3); background-color: var(--field-bg); color: var(--text); border: 1px solid var(--field-border); border-radius: var(--r-ctl, 2px); }

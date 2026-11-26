@@ -2,8 +2,8 @@
 import { ref, nextTick } from 'vue'
 import Icon from './Icon.vue'
 
-const props = defineProps({ name: String, open: Boolean })
-const emit = defineEmits(['open', 'rename'])
+const props = defineProps({ name: String, open: Boolean, confirmDelete: Boolean })
+const emit = defineEmits(['open', 'rename', 'remove', 'menu'])
 const editing = ref(false), draft = ref(''), field = ref(null)
 function startEdit() {
   draft.value = props.name
@@ -19,14 +19,18 @@ function finish(save) {
 </script>
 
 <template>
-  <div class="perf-tree-row" :class="{ open }">
-    <input v-if="editing" ref="field" v-model="draft" class="ci" aria-label="指标表名称"
+  <div class="perf-tree-row" :class="{ open }" @contextmenu.prevent.stop="emit('menu', $event)">
+    <input v-if="editing" ref="field" v-model="draft" class="ci" aria-label="指标表名称" @contextmenu.stop
            @keydown.enter.stop.prevent="!$event.isComposing && finish(true)" @keydown.esc.stop="finish(false)" @blur="finish(true)" />
     <button v-else type="button" class="table-name" :title="name" @click="emit('open')" @keydown.f2.prevent="startEdit">
       <Icon name="table" :size="13" /><span data-i18n-skip>{{ name }}</span>
     </button>
     <button v-if="!editing" type="button" class="ibtn sm rename" title="重命名指标表" @click="startEdit"><Icon name="pencil" :size="12" /></button>
     <slot />
+    <button v-if="!editing" type="button" class="ibtn sm danger" :class="{ armed: confirmDelete }"
+            :title="confirmDelete ? '确认删除' : '删除性能指标表'" @click.stop="emit('remove')">
+      <template v-if="confirmDelete">确认删除</template><Icon v-else name="x" :size="12" />
+    </button>
   </div>
 </template>
 
@@ -38,6 +42,7 @@ function finish(save) {
 .table-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-name svg { flex: none; }
 .ci { flex: 1; min-width: 0; }
+.ibtn.armed { width: auto; white-space: nowrap; }
 .rename { opacity: .65; }
 .perf-tree-row:hover .rename, .rename:focus-visible { opacity: 1; }
 </style>

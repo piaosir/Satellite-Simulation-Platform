@@ -381,6 +381,18 @@ textarea { font-family: inherit; padding: 4px 7px; }
 .ibtn:disabled, .ibtn.dis { opacity: var(--dis-opacity); cursor: not-allowed; }
 .ibtn:focus-visible { outline-offset: -2px; }
 
+/* 对地、对星覆盖树共用的添加按钮。 */
+.ibtn.tree-add {
+  color: color-mix(in srgb, var(--accent-ui) 65%, var(--text));
+  background: var(--accent-ui-wash);
+  border-radius: 5px;
+}
+.ibtn.tree-add:hover:not(:disabled):not(.dis), .ibtn.tree-add:focus-visible {
+  color: var(--accent-ui-hover);
+  background: var(--accent-ui-weak);
+}
+.ibtn.tree-add:focus-visible { outline: 2px solid var(--accent-ui); }
+
 /* ==== 分段控件（几项里必选其一）====
    <div class="seg" role="radiogroup"><button type="button" class="sg" role="radio" :aria-checked="…" :class="{ on: … }">…</button>…</div>
    样板是时间轴设置（TimelineSettings）：真 <button>，键盘可达，英文下段宽随字撑开。

@@ -7,6 +7,7 @@
 //   ③ 端到端汇总条——三个数字卡：端到端余量 / 系统可用度 / 端到端时延。
 // 链过长在本容器内横向滚动。纯展示 + 事件，不碰数据：增删改都 emit 给宿主。
 import { computed, ref } from 'vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 import { hopTypeOf, isSpaceHop, segmentsOf } from './e2eParams.js'
 import { byLang } from '../shared/i18n/lang.js'   // 空名占位是界面语汇，却画在打了 skip 的名字位上（呈现层翻不到），故在这里按语言出字
 
@@ -113,7 +114,7 @@ const hopBot = (i) => {
                  @click="emit('select', { type: 'node', index: i })"
                  @contextmenu.prevent.stop="openCtx($event, 'node', i)">
               <div class="cs-n-top">
-                <span class="cs-n-t">{{ nodeTypeLabel(nd) }}</span>
+                <span class="cs-n-t"><LbResourceIcon :kind="nd.kind === 'es' ? 'station' : 'sat'" />{{ nodeTypeLabel(nd) }}</span>
                 <span v-if="nodeBadge(nd, i)" class="cs-badge" :class="nodeBadge(nd, i).cls">{{ nodeBadge(nd, i).t }}</span>
               </div>
               <div class="cs-n-name" data-i18n-skip :title="nd.name || (nd.kind === 'es' ? esName?.(nd) : satName?.(nd)) || ''">{{ nd.name || (nd.kind === 'es' ? esName?.(nd) : satName?.(nd)) || byLang('未命名', 'Unnamed') }}</div>
@@ -158,7 +159,7 @@ const hopBot = (i) => {
                :style="{ flex: (sg.to - sg.from) }"
                title="本段的 C/(N+I) 与余量：段内各跳噪声级联后与门限比较（起讫节点见上方链路行）">
             <span class="cs-b-n">段<em class="cs-b-i">{{ si + 1 }}</em></span>
-            <span v-if="segCarrier?.(si)" class="cs-b-c" data-i18n-skip title="本段载波体制（段起点节点可换）">{{ segCarrier(si) }}</span>
+            <span v-if="segCarrier?.(si)" class="cs-b-c" data-i18n-skip title="本段载波体制（段起点节点可换）"><LbResourceIcon kind="carrier" />{{ segCarrier(si) }}</span>
             <!-- 纯激光段没有 C/(N+I)：这一格改报接收光功率（段余量格照旧） -->
             <span v-if="segRes(si) && segRes(si).laser" class="cs-b-v" title="接收光功率 P_rx">{{ segRes(si).prxResult }}<i>dBm</i></span>
             <span v-else-if="segRes(si)" class="cs-b-v">{{ segRes(si).cnResult }}<i>dB</i></span>

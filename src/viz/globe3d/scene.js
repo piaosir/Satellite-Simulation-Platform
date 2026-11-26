@@ -598,6 +598,28 @@ export function createGlobeScene(container, quality = {}) {
   }
   function covContourLine(flat, grp, o, L) {
     const la = (L && L.lineAlpha != null) ? L.lineAlpha : ((o && o.lineAlpha != null) ? o.lineAlpha : 0.95)
+    // Keep the dash phase continuous along each projected arc, including
+    // four-part dash-dot patterns. Separate visibility arcs have independent starts.
+    if (L?.angleContour && DASH_SPEC[grp.dash]) {
+      const sink = createSink(), pattern = DASH_SPEC[grp.dash]
+      let points = [], length = 0
+      const flush = () => {
+        if (length > 0) {
+          const period = pattern.reduce((a, b) => a + b, 0)
+          const scale = Math.min(Math.max(0.6, grp.width) / 1.2, length / (12 * period))
+          pushDashed(sink, points, pattern.map(v => v * scale))
+        }
+        points = []; length = 0
+      }
+      for (let i = 0; i < flat.length; i += 6) {
+        const a = new THREE.Vector3().fromArray(flat, i), b = new THREE.Vector3().fromArray(flat, i + 3)
+        if (points.length && !points[points.length - 1].equals(a)) flush()
+        if (!points.length) points.push(a)
+        points.push(b); length += a.distanceTo(b)
+      }
+      flush()
+      return fatSegments(sink.view(), grp.color, grp.width, la, 6)
+    }
     const ln = fatSegments(flat, grp.color != null ? grp.color : 0xffffff, grp.width || 1.2, grp.opacity != null ? grp.opacity : la, 6)
     ln.userData.covLine = true
     if (grp.idx != null) ln.userData.lvIdx = grp.idx   // 档下标（cfg.levels）：restyleCoverageLines 按它认档
@@ -1908,11 +1930,15 @@ export function createGlobeScene(container, quality = {}) {
   }
   function clearSelectionGeom() { setOrbit(null); setGroundTrack(null); setFootprint(null); setHighlight(null); disposeSelSet(); selItems = null; anchoredDirty.sel = false; putNearLines('sel', null); disposeLanes(); setOrbitRingSet(null) }
 
-  // 旋转相机使指定方向正对视图（搜索定位时用），保持当前距离
-  function faceTo(vec) {
+  // 正对给定方向。定位在轨目标时，相机要留在目标与近裁剪面之外。
+  function faceTo(vec, minDistance = 0) {
     if (!vec || followDriver) return   // 跟随卫星期间相机归驱动管：由页面先退出跟随再摆位
     clearFollow()   // 搜索定位 / 聚焦：绝对摆位，丢掉欠着的拖动命令
-    const dist = camera.position.length()
+    const dist = Math.max(camera.position.length(), minDistance)
+    if (minDistance > 0) {
+      controls.target.set(0, 0, 0)
+      if (zoomTarget < minDistance) { zoomTarget = minDistance; reportZoom() }
+    }
     camera.position.copy(vec).normalize().multiplyScalar(dist)
     controls.update()
   }
@@ -2322,12 +2348,14 @@ export function createGlobeScene(container, quality = {}) {
       out.push(covContourLine(flat, grp, o, L))
     }
     // 数值标签：每档一处（锚点由上游按等值线环给）
-    if (o.showVal) for (const grp of (L.segGroups || [])) {
+    if (o.showVal || L.angleLabel) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
-      for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff', !!o.fontBold)
+      for (const [i, an] of (grp.labels || []).entries()) {
+        const lab = L.angleLabel
+        const spr = makeCovLabel(String(grp.txt), (lab?.size || o.valSize || 12) / 533, lab?.color || o.valColor || '#ffffff', lab ? lab.bold : !!o.fontBold)
         const pos = llaToVec(an[1], an[0], la)
         pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+        spr.angleAnchor = grp.anchors?.[i]
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
     }
@@ -2479,7 +2507,7 @@ export function createGlobeScene(container, quality = {}) {
       for (const ry of list) {
         if (!ry || !ry.from || !ry.to) continue
         const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
-        const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+        const b = llaToVec(ry.to.lat || 0, ry.to.lon, ry.to.surface ? 0 : shellAlt(ry.to.rKm || RE))
         const col = new THREE.Color(ry.color != null ? ry.color : 0xffb14a), wd = ry.width != null ? ry.width : 1.2, op = ry.opacity != null ? ry.opacity : 0.75
         if (near) { snapEndsA(a, b); if (segDist2A(a, b) < FOLLOW_NEAR_R2) pushStripSegs(nearBucket(near, col.getHex(), wd, op), [a, b]) }
         g.add(fatStrip([a, b], col, wd, op, 6))
@@ -3218,11 +3246,13 @@ export function createGlobeScene(container, quality = {}) {
     }
     // 数值标签：每条等值线最上端点处各标一次档值（相对/绝对，文本由上游决定）。
     // billboard 朝向相机，下半部分会探入地球被遮挡 → 沿径向抬出约半个标签高度（随字号缩放），整块浮在地表之上。
-    if (o.showVal) for (const grp of (L.segGroups || [])) {
+    if (o.showVal || L.angleLabel) for (const grp of (L.segGroups || [])) {
       if (grp.txt == null) continue
-      for (const an of (grp.labels || [])) {
-        const spr = makeCovLabel(String(grp.txt), (o.valSize || 12) / 533, o.valColor || '#ffffff', !!o.fontBold)
+      for (const [i, an] of (grp.labels || []).entries()) {
+        const lab = L.angleLabel
+        const spr = makeCovLabel(String(grp.txt), (lab?.size || o.valSize || 12) / 533, lab?.color || o.valColor || '#ffffff', lab ? lab.bold : !!o.fontBold)
         const pos = llaToVec(an[1], an[0], 50); pos.addScaledVector(pos.clone().normalize(), spr.scale.y * 0.6)
+        spr.angleAnchor = grp.anchors?.[i]
         spr.position.copy(pos); spr.renderOrder = 12; out.push(spr)
       }
     }
@@ -3316,7 +3346,7 @@ export function createGlobeScene(container, quality = {}) {
       for (const ry of list) {
         if (!ry || !ry.from || !ry.to) continue
         const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
-        const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+        const b = llaToVec(ry.to.lat || 0, ry.to.lon, ry.to.surface ? 0 : shellAlt(ry.to.rKm || RE))
         const col = new THREE.Color(ry.color != null ? ry.color : 0xffb14a), wd = ry.width != null ? ry.width : 1.2, op = ry.opacity != null ? ry.opacity : 0.75
         if (near) { snapEndsA(a, b); if (segDist2A(a, b) < FOLLOW_NEAR_R2) pushStripSegs(nearBucket(near, col.getHex(), wd, op), [a, b]) }
         g.add(fatStrip([a, b], col, wd, op, 5))
@@ -3462,7 +3492,7 @@ export function createGlobeScene(container, quality = {}) {
       for (const ry of list) {
         if (!ry || !ry.from || !ry.to) continue
         const a = llaToVec(ry.from.lat || 0, ry.from.lon, shellAlt(ry.from.rKm || RE))
-        const b = llaToVec(ry.to.lat || 0, ry.to.lon, shellAlt(ry.to.rKm || RE))
+        const b = llaToVec(ry.to.lat || 0, ry.to.lon, ry.to.surface ? 0 : shellAlt(ry.to.rKm || RE))
         const col = new THREE.Color(ry.color != null ? ry.color : 0xffb14a), wd = ry.width != null ? ry.width : 1.2, op = ry.opacity != null ? ry.opacity : 0.75
         if (near) { snapEndsA(a, b); if (segDist2A(a, b) < FOLLOW_NEAR_R2) pushStripSegs(nearBucket(near, col.getHex(), wd, op), [a, b]) }
         g.add(fatStrip([a, b], col, wd, op, 5))
@@ -3546,6 +3576,7 @@ export function createGlobeScene(container, quality = {}) {
     }
     for (const l of (spec.labels || [])) {
       const spr = cachedCovLabel(l.text, l.hpx, l.color, !!l.bold, satLabelCache, texUsedSat)
+      spr.angleAnchor = l.angleAnchor
       spr.position.copy(llaToVec(l.lat, l.lon, l.alt != null ? l.alt : 60)); spr.renderOrder = 12
       // top：关深度测试（不被球面裁切/遮挡）+ _dir 半球剔除（转到背面由 updateLabels 淡出隐藏），
       // 与国家名/标记文字同一套策略；未标 top 的（如仰角线角度标注）维持原有开深度测试行为。
@@ -3561,11 +3592,21 @@ export function createGlobeScene(container, quality = {}) {
       if (!s.name || s.labelShow === false) continue
       const spr = cachedCovLabel(s.name, (s.labelSize || 9) / 533, s.nameColor, !!s.labelBold, satLabelCache, texUsedSat)
       if (s.orbitDot != null) {
-        // 字号和在轨点使用同一屏幕尺度，卫星拉远时名字仍贴在点旁。
+        // 按锚点判遮挡。贴地文字若逐像素测深，斜视时靠球心的笔画会被地球裁掉。
+        spr.material.depthTest = false
         spr._px = (s.labelSize || 9) * 2
         spr._ar = spr.scale.x / spr.scale.y
-        const ground = s.iconShow !== false ? llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012) : null
-        treeNameSprites.push({ spr, orbit: llaToVec(s.lat, s.lon, s.altKm), ground, px })
+        // 按字形描边下沿定位，扣除贴图底部留白。相同星名及字样只量一次。
+        const tex = spr.material.map
+        if (tex._bottomPad == null) {
+          const ctx = tex.image.getContext('2d')
+          const descent = ctx.measureText(s.name).actualBoundingBoxDescent + ctx.lineWidth / 2
+          tex._bottomPad = Math.max(0, 0.5 - descent / tex.image.height)
+        }
+        const ground = s.iconShow !== false || s.focusSub ? llaToVec(s.lat, s.lon, 0).multiplyScalar(1.0012) : null
+        // 可见性层接管图标时，星下点用该层的尺寸，在轨点用其出厂圆点尺寸。
+        const dotPx = s.orbitDot ? px : (s.iconShow !== false ? DEF_CFG.dotPx : 0)
+        treeNameSprites.push({ spr, orbit: llaToVec(s.lat, s.lon, s.altKm), ground, px, dotPx, focusSub: s.focusSub, focusDot: s.focusDot })
       }
       spr.position.copy(llaToVec(s.lat, s.lon, s.altKm != null ? s.altKm : 35786)); spr.renderOrder = 14; g.add(spr)
     }
@@ -3580,7 +3621,11 @@ export function createGlobeScene(container, quality = {}) {
   }
 
   // 把视角转到某经纬度正对（覆盖加载后定位用）
-  function faceLonLat(lon, lat) { faceTo(llaToVec(lat || 0, lon, 0)) }
+  function faceLonLat(lon, lat, altKm = 0) {
+    const point = llaToVec(lat || 0, lon, altKm)
+    const minDistance = altKm > 0 ? Math.min(controls.maxDistance, point.length() + 0.2) : 0
+    faceTo(point, minDistance)
+  }
 
   // ===================== 鼠标拾取经纬度 / 标记 / 轨迹 =====================
   // 渲染坐标(半径1) -> 经纬度（llaToVec 的逆）
@@ -3672,20 +3717,18 @@ export function createGlobeScene(container, quality = {}) {
   function setOnRightClick(fn) { onRightClick = fn }
   // 拖拽波束模式：左键拖动地球时不旋转，改为回调经纬度（拖动 boresight）
   let beamDragMode = false, onBeamDrag = null, beamDragging = false
-  // 拖拽数值标签模式：左键拖动地球时不旋转，改为回调经纬度（拖动等值线数值标签沿线滑动）
-  let labelDragMode = false, onLabelDrag = null, labelDragging = false
   // 协调区多边形 / 航迹绘制态：左键【单击】加一个点（同 QGIS 数字化 / SATSOFT §5.2）；左键按住拖过点击阈值 = 起笔，
   // 沿路径按屏幕像素阈值连续加点（徒手画）。转地球归 Shift + 左键拖动（工具态通则，见 toolLock）。右键加点仍并存。
   let polyDrawMode = false, onPolyDraw = null, polyDrawing = false, drawLX = 0, drawLY = 0
   let lastDrawClick = null   // 绘制态上一次单击 {x,y,t}：双击 = 两次单击落在同一处，第二下不重复加点
   let drawArm = null         // 绘制态左键按下的武装点 {x,y}：原地抬起 = 单击加点，拖过阈值 = 起笔（见 pointermove）
-  // 工具态的「起拖命中」判定（宿主给）：拖标签只在按在标签附近时接手；没接手的左键也不转地球（见 toolLock）。
+  // 宿主可限制拖波束的起拖区域。
   // 不给 = 恒接管。pressLock：这一下左键归工具 → 本次按压期间停旋转（OrbitControls 在 move 时才查 enableRotate）
-  let beamDragHit = null, labelDragHit = null, pressLock = false
+  let beamDragHit = null, pressLock = false
   // 放置模式（波束合成）：左键点击（未拖动）在球面落点回调 onPlace(ll)
   let placeMode = false, onPlace = null
   // 工具态（页面经 setToolLock 给：任一地图工具开着）：左键归工具，转地球只认 Shift + 左键拖动（口径见 shared/mapToolNav.js）。
-  // 本渲染器自己的模态（拖波束 / 拖标签 / 绘制 / 放置 / 拖标记）开着也算，与页面那把锁取并集（toolOn）。
+  // 本渲染器自己的模态（拖波束 / 绘制 / 放置 / 拖标记）开着也算，与页面那把锁取并集（toolOn）。
   // navPress：这一下是工具态里的 Shift + 左键 → 归地图，工具与点选都不接（抬起时清）
   let toolLock = false, navPress = false
   const POLY_DRAW_MIN2 = 14 * 14   // 相邻加点最小屏幕间距²（px）
@@ -3697,31 +3740,29 @@ export function createGlobeScene(container, quality = {}) {
   let onMarkerDrag = null, markerDragging = null, markerGrab = null
   const markerDragAny = () => !!(markerDragOn.point || markerDragOn.station || markerDragOn.waypoint)
   const dragOk = (kind, owner) => { const v = markerDragOn[kind]; return v === true || (!!v && v === owner) }
-  const toolOn = () => !!(toolLock || beamDragMode || labelDragMode || polyDrawMode || placeMode || markerDragAny())
+  const toolOn = () => !!(toolLock || beamDragMode || polyDrawMode || placeMode || markerDragAny())
   // 按下那一刻「标记与光标」的经纬差：拖动期间保持这个差，标记不会先跳到光标底下再跟着走
   // （地球站/图钉这类立在锚点上的符号，抓的往往是形体上半，不保差就是按下即位移大半个图标）。2D 侧同口径。
   const shortLon = (d) => ((d + 540) % 360) - 180
   const dragLL = (ll) => (!ll || !markerGrab ? ll
     : { lat: Math.max(-90, Math.min(90, ll.lat + markerGrab.dLat)), lon: shortLon(ll.lon + markerGrab.dLon) })
-  // 拖波束/拖标签/绘制态/拖标记均停旋转。跟随卫星时左键转的是驱动的局部相机（地球控件已整个停用），同一把闸一并给它 ——
+  // 拖波束/绘制态/拖标记均停旋转。跟随卫星时左键转的是驱动的局部相机（地球控件已整个停用），同一把闸一并给它 ——
   // 不给的话工具态压住左键，局部相机照转、工具那头却收不到拖动
   const updateRotate = () => {
     const lock = !!(pressLock || markerDragging)
     controls.enableRotate = !lock
     if (followDriver && followDriver.setRotate) followDriver.setRotate(!lock)
   }
-  function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (labelDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
+  function setBeamDragMode(v) { beamDragMode = !!v; if (!v) beamDragging = false; updateRotate(); renderer.domElement.style.cursor = beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '') }
   function setOnBeamDrag(fn) { onBeamDrag = fn }
   // 拖拽的拾取方式：给 {sat:{lon,lat,altKm}, tip:{lon,lat,altKm}} → 绕源星转方向（对星覆盖分析，
   // tip=当前视轴落点，只用来定转动增益）；给 null → 回到地表落点拾取（对地覆盖分析）。
   function setBeamDragPivot(p) {
     beamDragPivot = (p && p.sat && Number.isFinite(p.sat.lon)) ? { sat: p.sat, tip: p.tip || null } : null
   }
-  function setLabelDragMode(v) { labelDragMode = !!v; if (!v) labelDragging = false; updateRotate(); renderer.domElement.style.cursor = labelDragMode ? 'move' : (beamDragMode ? 'move' : (polyDrawMode ? 'crosshair' : '')) }
-  function setOnLabelDrag(fn) { onLabelDrag = fn }
   function setPolyDrawMode(v) { polyDrawMode = !!v; polyDrawing = false; drawArm = null; updateRotate(); renderer.domElement.style.cursor = polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : (placeMode ? 'crosshair' : '')) }
   // 放置模式（波束合成）：把「无拖动的左键点击」变为落点
-  function setPlaceMode(v) { placeMode = !!v; renderer.domElement.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : ((beamDragMode || labelDragMode) ? 'move' : '')) }
+  function setPlaceMode(v) { placeMode = !!v; renderer.domElement.style.cursor = placeMode ? 'crosshair' : (polyDrawMode ? 'crosshair' : (beamDragMode ? 'move' : '')) }
   function setOnPlace(fn) { onPlace = fn }
   function setOnPolyDraw(fn) { onPolyDraw = fn }
   // ===== 标记拖拽（点标记 / 地球站 / 航点：光标压在符号上按住即拖，球体此时不转）=====
@@ -3764,14 +3805,13 @@ export function createGlobeScene(container, quality = {}) {
       return
     }
     // 悬停到可拖的标记上变手型（各模态自己的光标优先，不抢）
-    if (!beamDragMode && !labelDragMode) {
+    if (!beamDragMode) {
       const onMk = markerDragAny() && !!markerAtScreen(e.clientX, e.clientY)
       if (onMk) renderer.domElement.style.cursor = 'move'
       else if (!polyDrawMode && !placeMode) renderer.domElement.style.cursor = ''
       else renderer.domElement.style.cursor = 'crosshair'
     }
     if (beamDragging) { const ll = pickDragMove(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'move') }
-    if (labelDragging) { const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'move') }
     // 绘制态按住拖过点击阈值（与 pointerup 判单击同一把 6 px）：起笔，第一个点落在按下处，之后按 POLY_DRAW_MIN2 节流加点
     if (drawArm && (e.buttons & 1) && Math.abs(e.clientX - drawArm.x) + Math.abs(e.clientY - drawArm.y) > 6) {
       const a = drawArm; drawArm = null
@@ -4391,15 +4431,21 @@ export function createGlobeScene(container, quality = {}) {
     go(focusSatGroup); go(selDotGroup); go(laneDotGroup); go(laneSubGroup)
     go(treeSubGroup); go(treeDotGroup)
     const worldPerPixel = 2 * Math.tan(camera.fov * Math.PI / 360) / curH
-    for (const { spr, orbit, ground, px } of treeNameSprites) {
+    for (const { spr, orbit, ground, px, dotPx, focusSub, focusDot } of treeNameSprites) {
       // GEO 常在近景画框外。此时让同一个星名贴着星下点，拉远见到真星后再回到在轨点。
       const ndc = _pA.copy(orbit).project(camera)
-      const atGround = ground && (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1 || Math.abs(ndc.z) > 1 || occludedByGlobe(orbit))
-      spr.position.copy(atGround ? ground : orbit)
-      spr.visible = !atGround || !occludedByGlobe(ground)
-      if (ground) spr.center.x = -(px * (atGround ? 0.5 : 0.33) + 2) / (spr._px * spr._ar)
+      const inOrbitView = Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1 && Math.abs(ndc.z) <= 1 && !occludedByGlobe(orbit)
+      const anchor = inOrbitView ? orbit : ground
+      spr.visible = !!anchor && (inOrbitView || !occludedByGlobe(anchor))
+      if (!spr.visible) continue
+      spr.position.copy(anchor)
+      const markerPx = inOrbitView ? (focusDot ? focusCfg.dotPx : dotPx) : (focusSub ? focusCfg.subPx : px)
+      // 在轨点白圈外径为 21/32；星下点旋转后的太阳翼连描边离中心约 37/120。
+      const radius = Math.min(256, markerPx * k) * (inOrbitView ? 10.5 / 32 : 37 / 120)
+      const labelPx = spr._px * Math.max(0.75, k)
+      spr.center.set(0.5, radius > 0 ? spr.material.map._bottomPad - (radius + 1) / labelPx : 0.5)
       const depth = -_pA.copy(spr.position).applyMatrix4(camera.matrixWorldInverse).z
-      const h = spr._px * k * Math.max(0, depth) * worldPerPixel
+      const h = labelPx * Math.max(0, depth) * worldPerPixel
       spr.scale.set(h * spr._ar, h, 1)
     }
   }
@@ -4527,7 +4573,7 @@ export function createGlobeScene(container, quality = {}) {
       const s = projPx(P, r)
       if (!(s.z < 1)) continue   // 相机背后
       const dd = Math.hypot(s.x - mx, s.y - my)
-      if (dd <= PICK_PX && dd < bd) { bd = dd; best = { ref: x.ref, point: P.clone(), dist: dd } }
+      if (dd <= Math.max(PICK_PX, x.pickRadius || 0) && dd < bd) { bd = dd; best = { ref: x.ref, point: P.clone(), dist: dd } }
     }
     return best
   }
@@ -4568,6 +4614,21 @@ export function createGlobeScene(container, quality = {}) {
   }
   let lastPickPoint = null
 
+  function pickSatelliteAt(x, y) {
+    const index = pickSatAt(x, y)
+    const extra = pickExtraAt(x, y)
+    if (index < 0) return extra ? { index: -1, point: extra.point, ref: extra.ref } : null
+    if (extra) {
+      // 射线命中点投影后就在光标上，要用星点本身的位置比较屏幕距离。
+      const pos = satPoints.geometry.getAttribute('position')
+      const rect = domRect(), p = projPx(new THREE.Vector3().fromBufferAttribute(pos, index), rect)
+      if (Math.hypot(p.x + rect.left - x, p.y + rect.top - y) > extra.dist) {
+        return { index: -1, point: extra.point, ref: extra.ref }
+      }
+    }
+    return { index, point: lastPickPoint }
+  }
+
   let downX = 0, downY = 0
   // 左键归不归地图（转地球）在按下那一刻定：按 mapToolNav 的口径给地球控件（跟随时给局部控件）挑 LEFT 那一档。
   // ★ 捕获阶段：同一元素上捕获监听先于冒泡监听触发（Chromium 89+），OrbitControls 自己的 pointerdown 读 mouseButtons 之前就已设好
@@ -4586,11 +4647,11 @@ export function createGlobeScene(container, quality = {}) {
       if (e.shiftKey) { navPress = true; return }
       pressLock = true; updateRotate()
     }
-    // 跟随卫星期间照常接：工具态（拖标记 / 拖波束 / 拖标签 / 绘制）压过局部轨道控件，与不跟随时压过地球控件同一口径
+    // 跟随卫星期间照常接：工具态（拖标记 / 拖波束 / 绘制）压过局部轨道控件，与不跟随时压过地球控件同一口径
     // （闸门见 updateRotate；拾取用的是地球相机，跟随时它的位姿由驱动每帧写好，射线照样落在地球上）。不在工具态里 → 这里什么也不做，左键归局部控件
     // ★ 排在绘制态/放置态【之前】：那两个是「按下即落点」，而光标正压在一枚可拖的标记上时，
     //   要的多半是把它挪一挪，不是在它身上再叠一个点（2D 侧同口径）。
-    if (markerDragAny() && e.button === 0 && !beamDragMode && !labelDragMode) {
+    if (markerDragAny() && e.button === 0 && !beamDragMode) {
       const h = markerAtScreen(e.clientX, e.clientY)
       if (h) {
         const t = { kind: h.kind, id: h.id, tid: h.tid }
@@ -4604,7 +4665,6 @@ export function createGlobeScene(container, quality = {}) {
     }
     const hitOk = (fn) => { if (!fn) return true; try { return !!fn(e.clientX, e.clientY) } catch { return true } }
     if (beamDragMode && e.button === 0 && hitOk(beamDragHit)) { beamDragging = true; pressLock = true; updateRotate(); const ll = pickDragStart(e.clientX, e.clientY); if (ll && onBeamDrag) onBeamDrag(ll, 'start') }
-    else if (labelDragMode && e.button === 0 && hitOk(labelDragHit)) { labelDragging = true; pressLock = true; updateRotate(); const ll = pickGlobeOrLimb(e.clientX, e.clientY); if (ll && onLabelDrag) onLabelDrag(ll, 'start') }
     else if (polyDrawMode && e.button === 0) drawArm = { x: e.clientX, y: e.clientY }   // 绘制态：先武装 —— 原地抬起 = 单击加点，拖过阈值 = 起笔（见 pointermove）
   })
   renderer.domElement.addEventListener('pointerup', (e) => {
@@ -4614,7 +4674,6 @@ export function createGlobeScene(container, quality = {}) {
     if (markerDragging) { try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } endMarkerDrag(); return }   // 拖标记结束，不当作选星
     if (polyDrawing) { polyDrawing = false; try { renderer.domElement.releasePointerCapture(e.pointerId) } catch { /* ignore */ } if (onPolyDraw) onPolyDraw(null, 'end'); return }   // 绘制笔画结束（显式释放捕获，勿只靠隐式）；不当作选星
     if (beamDragging) { beamDragging = false; if (onBeamDrag) onBeamDrag(null, 'end'); return }   // 拖波束结束，不当作选星
-    if (labelDragging) { labelDragging = false; if (onLabelDrag) onLabelDrag(null, 'end'); return }   // 拖标签结束，不当作选星
     if (e.button !== 0) return   // 仅左键当作选星；右键（标点）/中键不改变聚焦
     // 拖动（旋转）-> 不当作点击
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 6) return
@@ -4631,20 +4690,9 @@ export function createGlobeScene(container, quality = {}) {
     if (followDriver) return     // 跟随卫星期间左键点选停用（点空白会清聚焦，等于把跟随目标撤掉）
     if (!onPick) return
     const cloud = !!(satPoints && satPoints.visible)   // 点云关着：点云不拾取（见 setSatPointsVisible），额外画出来的星照拾
-    const idx = cloud ? pickSatAt(e.clientX, e.clientY) : -1
-    const hitPt = lastPickPoint
-    const ex = pickExtraAt(e.clientX, e.clientY)
+    const hit = pickSatelliteAt(e.clientX, e.clientY)
     const addToSel = e.ctrlKey || e.metaKey || e.shiftKey   // 按住 Ctrl/Cmd/Shift 点选=加入多选
-    // 两路都中：取屏幕上离光标更近的那颗
-    // ★ 比星点本身的屏幕位置，不比 hitPt：Points 射线命中点是视线上离星点最近的点，投影下来恒在光标上
-    let cloudFirst = idx >= 0
-    if (ex && cloudFirst) {
-      const pa = satPoints.geometry.getAttribute('position')
-      const r = renderer.domElement.getBoundingClientRect(), s = projPx(new THREE.Vector3(pa.getX(idx), pa.getY(idx), pa.getZ(idx)), r)
-      cloudFirst = Math.hypot(s.x + r.left - e.clientX, s.y + r.top - e.clientY) <= ex.dist
-    }
-    if (ex && !cloudFirst) onPick(-1, ex.point, addToSel, ex.ref)
-    else if (idx >= 0) onPick(idx, hitPt, addToSel)
+    if (hit) onPick(hit.index, hit.point, addToSel, hit.ref)
     else if (cloud) onPick(-1, null, addToSel)
   })
   // 指针被取消（触控/系统抢占）：复位绘制笔画并释放捕获，避免残留捕获截走之后的点击（输入框点不进）。
@@ -5094,7 +5142,7 @@ export function createGlobeScene(container, quality = {}) {
   // d = { apply(camera, dtSec)（每帧写地球相机位姿与 near/far）, onWheel(e), attach?(domElement), detach?(), dispose?(),
   //       setRotate?(on)（左键转局部相机的闸，见 updateRotate）, setLeftButton?(b)（左键那一档，见 orbitLeftMode）, rotateBy?(dAz, dPol)（方向键） }。
   // 有驱动时：地球 OrbitControls 停用（enabled=false —— updateRotate 只动 enableRotate，碰不到它）、滚轮与方向键转给驱动、
-  // 左键点选星停用；工具态（拖波束 / 拖标签 / 绘制 / 拖标记 / 放置）照常，经 setRotate 压过局部控件。
+  // 左键点选星停用；工具态（拖波束 / 绘制 / 拖标记 / 放置）照常，经 setRotate 压过局部控件。
   // faceTo / faceLonLat / setView / setZoom 一律忽略（页面要摆位先退出跟随）。
   // 退出（传 null）：相机回到进入前的位姿；惯性档下这期间的 ΔGMST 已由 setEarthSpin 累加在保存的位姿上。
   let followSaved = null
@@ -5446,8 +5494,8 @@ export function createGlobeScene(container, quality = {}) {
       markerDragOn = { point: norm(o.point), station: norm(o.station), waypoint: norm(o.waypoint) }
       if (markerDragging && !dragOk(markerDragging.kind, markerDragging.tid)) { markerDragging = null; markerGrab = null; updateRotate() }
     },
-    setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setLabelDragMode, setOnLabelDrag, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
-    setBeamDragHit: (fn) => { beamDragHit = typeof fn === 'function' ? fn : null }, setLabelDragHit: (fn) => { labelDragHit = typeof fn === 'function' ? fn : null },
+    setOnMarkerDrag: (fn) => { onMarkerDrag = fn }, setSatPointsVisible, setOnHover, setOnRightClick, setBeamDragMode, setOnBeamDrag, setBeamDragPivot, setPolyDrawMode, setOnPolyDraw, setPlaceMode, setOnPlace,
+    setBeamDragHit: (fn) => { beamDragHit = typeof fn === 'function' ? fn : null },
     // 工具态开关（页面：任一地图工具开着）：开着时左键归工具、Shift + 左键拖动才转地球（见 toolLock）
     setToolLock: (v) => { toolLock = !!v },
     faceTo, rotateBy, setFrameMode, setEarthSpin, setDragDamping, setWheelStep, resize, pause, resume, snapshot, destroy,
@@ -5465,7 +5513,7 @@ export function createGlobeScene(container, quality = {}) {
     // 跟随卫星期间读到的是进入前的那个视图（存视图不会存成跟随机位）
     getView: () => { const p = followSaved ? followSaved.pos : camera.position; return { x: p.x, y: p.y, z: p.z, t: distToT(followSaved ? followSaved.zoomTarget : zoomTarget) } },
     // —— 模型层 / 跟随卫星（见 modelLayer.js）——
-    setOverlay, setFollowDriver, setDotMask, pickSatAt, setPickExtras, pickExtraAt,
+    setOverlay, setFollowDriver, setDotMask, pickSatAt, setPickExtras, pickExtraAt, pickSatelliteAt,
     // —— 标记实体模型层（见 entityLayer.js）：出帧插槽、精灵遮罩、拖放命中与高亮、运动档载具 ——
     setEntityOverlay, setEntityProvider, entityAtScreen, setDropHighlight, updateVehicles,
     // —— 地图设置 · 宇宙空间：星空 / 大气 / 太阳（setSpace）、晨昏效果（setNightShade）、晨昏线（setTerminator）三路各自独立 ——
@@ -5484,12 +5532,30 @@ export function createGlobeScene(container, quality = {}) {
         controls.update()
       }
     },
+    contourDragTargets() {
+      const targets = []
+      function collect(spr) {
+        if (!spr.angleAnchor || !spr.visible) return
+        const alt = (spr.position.length() - 1) * RE
+        const depth = -_pA.copy(spr.position).applyMatrix4(camera.matrixWorldInverse).z
+        if (depth <= 0) return
+        const px = domRect().height * camera.projectionMatrix.elements[5] / (2 * depth)
+        targets.push({ anchor: spr.angleAnchor, width: spr.scale.x * px, height: spr.scale.y * px,
+          project: ([lon, lat]) => screenOfLL(lat, lon, alt),
+          preview([lon, lat]) { spr.position.copy(llaToVec(lat, lon, alt)); invalidate() } })
+      }
+      for (const layers of [covLayers, shellLayers]) {
+        for (const entry of layers.values()) for (const obj of entry.deco) collect(obj)
+      }
+      for (const obj of satLayerGroup?.children || []) collect(obj)
+      return targets
+    },
     invalidate   // 按需出帧：页面 / 验证台自己动了场景之外的东西、要求补画一帧
   }
   // 按需出帧：对外接口一调用就置脏 —— 页面改了什么，下一帧就画出来，不必逐个函数记「这个改了画面」。
   // 只读 / 拾取 / 自己出帧的成员除外：它们不改画面，有的还会被高频调用（每次都逼出一帧就失去了按需的意义）。
   const NO_DIRTY = new Set(['lonLatAt', 'screenOfLL', 'imageryStats', 'viewMetrics', 'glLimits', 'getZoom', 'getView', 'coveragePickLayers', '_spaceFx',
-    'isFollowing', 'getCamera', 'getRenderInfo', 'pickSatAt', 'pickExtraAt', 'entityAtScreen', 'isCapturing',
+    'contourDragTargets', 'isFollowing', 'getCamera', 'getRenderInfo', 'pickSatAt', 'pickExtraAt', 'pickSatelliteAt', 'entityAtScreen', 'isCapturing',
     'snapshot', 'captureFrame', 'pause', 'resume', 'destroy', 'invalidate', 'isPaused', 'covLabelStyle'])
   for (const k of Object.keys(api)) {
     const f = api[k]

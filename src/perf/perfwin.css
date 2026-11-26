@@ -1,3 +1,4 @@
+@import './checkList.css';
 /* 性能指标表窗口（对地 / 对星 / 气象）—— 版式。
    一扇 OS 窗口装一张表：上下两区各带一条工具条，中缝可拖，底部一条状态栏。控件与配色全部走
    global.css 的 token（--h-ctl / --field-* / --fs-* / --r-*），与主窗口同一套视觉语言；
@@ -68,11 +69,11 @@
 .pw-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: var(--z-dialog); }
 .pw-dlg { max-width: calc(100% - 32px); max-height: 92%; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-card); box-shadow: var(--shadow-3); animation: ui-dlg-in var(--dur-3) var(--ease-out); }
 .pw-alert { width: 360px; }
+.pw-alert > .sdbody { padding: 12px 14px; overflow: auto; min-height: 0; }
 .al-msg { margin: 0; font-size: var(--fs-4); line-height: 1.65; color: var(--text); }
 .sdh { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-family: var(--font-serif); font-size: var(--fs-5); color: var(--text); flex: none; }
 .sdh em { font-style: normal; font-family: var(--font-mono); font-size: var(--fs-3); color: var(--text-faint); }
 .sdh .csx { margin: -4px -6px -4px auto; }
-.sdbody { padding: 12px 14px; overflow: auto; min-height: 0; }
 .sdfoot { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); flex: none; }
 /* 页脚按钮：外观走 .btn / .btn.primary，高度取主操作档 --h-ctl-lg；这里只留排位 */
 .sdfoot .btn { height: var(--h-ctl-lg); padding: 0 16px; }
@@ -112,25 +113,6 @@
 .po-card .ci.bq, .sdbody > .ci.bq { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .cs-body .po-card { flex: 1 1 0; }
 .pw-clr { flex: none; width: 44px; height: var(--h-ctl); padding: 0 2px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); cursor: pointer; }
-
-/* —— 勾选列表（波束筛选 / 导入标记）：与覆盖分析侧栏的 Beams To Plot 同一套交互与样式 —— */
-.bplist { position: relative; border: 1px solid var(--border); border-radius: var(--r-ctl); margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; outline: none; background: var(--bg); }
-.bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
-.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); color: var(--text-muted); user-select: none; }
-.brow + .brow { border-top: 1px solid var(--border); }
-.brow:hover { background: var(--surface); }
-.brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
-.brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
-.brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
-.brow input[type=checkbox] { pointer-events: none; }
-.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
-.brow .bpk, .brow .bll { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
-.brow .pbnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brow.on .pbnm { color: var(--text); }
-.brow.ball { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border); }
-.brow.ball + .brow { border-top: 0; }
-.brow .balln { flex: 1; color: var(--text); font-weight: 600; }
-.empty { color: var(--text-faint); padding: 4px 8px; font-size: var(--fs-2); }
 
 /* —— 城市组管理 —— */
 .grp-save { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; margin-bottom: 8px; border-bottom: 1px solid var(--border); }

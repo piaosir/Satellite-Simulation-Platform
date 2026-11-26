@@ -1,0 +1,18 @@
+/* —— 勾选列表（波束筛选 / 导入标记）：与覆盖分析侧栏的 Beams To Plot 同一套交互与样式 —— */
+.bplist { position: relative; border: 1px solid var(--border); border-radius: var(--r-ctl); margin-top: 5px; max-height: 300px; min-height: 48px; overflow-y: auto; resize: vertical; outline: none; background: var(--bg); }
+.bplist:focus-visible { box-shadow: inset 0 0 0 1px var(--accent-ui); }
+.brow { display: flex; align-items: center; gap: 6px; padding: 2px 7px; cursor: default; font-size: var(--fs-3); color: var(--text-muted); user-select: none; }
+.brow + .brow { border-top: 1px solid var(--border); }
+.brow:hover { background: var(--surface); }
+.brow.on { background: color-mix(in srgb, var(--accent-ui) 13%, transparent); }
+.brow.on:hover { background: color-mix(in srgb, var(--accent-ui) 20%, transparent); }
+.brow.cur { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -1px; }
+.brow input[type=checkbox] { pointer-events: none; }
+.brow .bseq { flex: none; min-width: 20px; text-align: right; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.brow .bpk, .brow .bll { flex: none; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-2); }
+.brow .pbnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brow.on .pbnm { color: var(--text); }
+.brow.ball { position: sticky; top: 0; z-index: 1; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brow.ball + .brow { border-top: 0; }
+.brow .balln { flex: 1; color: var(--text); font-weight: 600; }
+.empty { color: var(--text-faint); padding: 4px 8px; font-size: var(--fs-2); }

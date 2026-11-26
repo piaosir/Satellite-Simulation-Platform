@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="wave" x2="0" y2="1">
+      <stop stop-color="#a4d2f0"/><stop offset=".5" stop-color="#6699c2"/><stop offset="1" stop-color="#476d97"/>
+    </linearGradient>
+    <path id="signal" d="M2 16c3.5 0 3.5-10 7-10s4 20 8 20 4-20 8-20c3 0 3 10 5 10"/>
+  </defs>
+  <path d="M1 16h30" stroke="#9baebd" stroke-width="1.4"/>
+  <g fill="none" stroke-linecap="round">
+    <use href="#signal" stroke="#435c72" stroke-width="4.5"/>
+    <use href="#signal" stroke="url(#wave)" stroke-width="2.6"/>
+  </g>
+</svg>

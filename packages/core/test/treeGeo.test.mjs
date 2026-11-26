@@ -340,7 +340,7 @@ const T0 = Date.UTC(2026, 8, 24, 12, 0, 0)
   const cf = body('function cardFor(e')   // 视频导出给它加了 tMs 参数（逐帧取读数）：按前缀找，签名再加参数也不失配
   ok(cf.includes("const epMs = e._grdFolder && e._treeKind !== 'orbit' ? null : epochMsOf(rec)") && cf.includes('epochMs: epMs,') && !/epochMsOf\(rec\) != null/.test(cf), '信息栏：天线树根数星出历元 / 历元龄（节点自己存的历元）；定点星不出')
   ok(cf.includes('const pin = !!(rec && rec.__fix && !rec.__fix.sync)') && cf.includes('const g = pin ? {} : (metricsFromEntry(e) || {})') && cf.includes('hasEl: !pin &&') && cf.includes("raan: rec && !pin ? ang(rec.nodeo) : ''"), '信息栏：非同步定点不出根数 / 区制 / 周期')
-  ok(page.includes("const fid = tge ? satIdOf(tge) : 'f:' + node.folder") && body('function computeSatcovFocusGeometry() {').includes('add(fid, focusGeomStatic(node, node.elevColor))'), '对星聚焦特效：虚拟星按条目身份去重（被点选着时不画第二遍）')
+  ok(page.includes("const fid = tge ? satIdOf(tge) : 'f:' + node.folder") && body('function computeSatcovFocusGeometry() {').includes('add(fid, focusGeomStatic(node, node.elevColor), tge)'), '对星聚焦特效：虚拟星按条目身份去重（被点选着时不画第二遍）')
   ok(body('function onSatSearch(e) {').includes('if (en._grdFolder) continue') && page.includes('if (!satModal.value || !en || en._grdFolder) return'), '添加 / 编辑卫星弹窗：搜索与点选都不收虚拟星条目（不许关联到合成号）')
   // 卫星集「卫星天线树」
   const rs = body('function registerSets() {')

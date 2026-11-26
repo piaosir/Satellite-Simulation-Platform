@@ -111,7 +111,8 @@ html[data-theme='dark'] {
    底部那行库口径提示句已删（CLAUDE.md：界面不写说明文字，口径留在子导航按钮的 title 里）。 */
 .lb-lib { background: var(--bg); }
 .lb-lib-tabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 4px 6px; background: var(--surface); border-bottom: 1px solid var(--border); }
-.lb-lib-tabs .lbx-subtab { flex: 1; justify-content: center; padding: 2px 4px; font-size: var(--fs-3); }
+.lb-lib-tabs .lbx-subtab { flex: 1; align-items: center; justify-content: center; gap: 3px; padding: 2px 4px; font-size: var(--fs-3); }
+.lb-lib-tabs .lb-resource-icon { margin-inline-end: 0; }
 .lb-libpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* —— 侧栏＝参数检查器（对齐 MATLAB Property Inspector / Blender 属性面板）——

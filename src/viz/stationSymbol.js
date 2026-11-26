@@ -48,3 +48,5 @@ export function stationSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${STATION_VB} ${STATION_VB}">`
     + casingPass() + NOTO_BODY + '</svg>'
 }
+
+export const stationIconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(stationSvg())

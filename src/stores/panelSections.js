@@ -44,6 +44,8 @@ export function registerSecOpener(key, fn) {
 export async function revealSection(view, keys) {
   const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean)
   if (view && !requestSide(view)) return null   // 未激活：受锁视图不切（requestSide 已请出锁窗）
+  await nextTick()   // 切视图后先挂载目标面板，让它登记分区定位钩子。
+  if (list.includes('grd-set')) openers.get(view === 'satcov' ? 'shell-antenna-settings' : 'ground-antenna-settings')?.()
   for (const k of list) { setSecOpen(k, true); const op = openers.get(k); if (op) op() }
   await settle()
   const el = findHeading(list)

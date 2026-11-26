@@ -6,7 +6,9 @@
 // 视觉语言也照抄对地侧栏（.sec/.srow/.gtree/.csfoot 一套），两个视图切过去不该有「换了个软件」的感觉。
 import { ref, computed } from 'vue'
 import Icon from './Icon.vue'
+import CoverageAngleTreeRow from './CoverageAngleTreeRow.vue'
 import PerfTreeRow from './PerfTreeRow.vue'
+import CoverageSidebar from './CoverageSidebar.vue'
 import CoverageTreeIcon from './CoverageTreeIcon.vue'
 import { isSecOpen, toggleSec } from '../stores/panelSections'
 import { appAlert } from '../stores/alert'
@@ -16,9 +18,11 @@ import { treeNavState, nodeLinkId } from '../viz/grd/treeLink.js'
 const props = defineProps({
   sc: { type: Object, required: true },      // useShellCoverage
   grd: { type: Object, required: true },     // useGrdCoverage
+  satelliteEditor: Object,
   satCount: { type: Number, default: 0 },
   satSearch: { type: Function, default: null },    // 目标星搜索（对星跟踪选目标用，全量：星座目录 + 卫星组 + 自定义星座）
   tables: { type: Object, required: true },
+  delArm: { type: String, default: '' },
   tableOpenKeys: { type: Object, default: () => new Set() },   // 开着对星性能指标表窗口的表 key 集
   satVis: { type: Function, default: () => true },  // 小眼睛状态（与对地视图同一份 iconShow/labelShow）
   selFolders: { type: Object, default: () => new Set() },   // 星座选中集关联着的 folder（卫星行 cur 回显，宿主 selFolderSet）
@@ -29,12 +33,16 @@ const props = defineProps({
 // focus-sat(sat, force, additive)：树 → 星座聚焦（天线行点击 force=false 看小眼睛；双击星名 / 「聚焦」钮 force=true；
 //   「聚焦」钮恒 additive=true：单击加入 / 移出聚焦集）
 // follow-sat(sat)：「跟随」钮（宿主 followTreeSat：跟随该星 / 正跟随它则退出）
-// tree-menu(ev, sat, antenna?)：与对地视图共用树节点的添加菜单。
+// tree-menu(ev, sat, antenna?, tableId?)：两种覆盖视图共用树节点菜单与删除确认。
 // open-synth(groupId)：「方向图」节「在波束合成中编辑」，转给宿主
-const emit = defineEmits(['open-table', 'pick-shells', 'toggle-eye', 'add-sat', 'edit-sat', 'remove-sat', 'focus-sat', 'follow-sat', 'tree-menu', 'rename-table', 'open-synth'])
+const emit = defineEmits(['close-satellite', 'open-table', 'pick-shells', 'toggle-eye', 'add-sat', 'edit-sat', 'remove-sat', 'remove-ant', 'remove-table', 'focus-sat', 'follow-sat', 'tree-menu', 'angle-menu', 'rename-table', 'open-synth'])
+function openAngleMenu(ev, id) { emit('angle-menu', ev, id) }
 
 const sc = props.sc, grd = props.grd
 const satNodes = computed(() => grd.sats.value.filter((x) => x.kind !== 'elevline'))
+function addStandaloneElevation() {
+  sc.angleLines.add('', 'elevation', { position: { lon: 0, lat: 0, altKm: 35786 } })
+}
 const actMeta = computed(() => grd.antMeta())
 // 卫星行「聚焦 / 跟随」两钮的状态：与对地树同一个判据（treeLink.treeNavState），按 folder 查
 const navMap = computed(() => {
@@ -51,18 +59,6 @@ function onFollowBtn(sat) { if (!navOf(sat).followDis) emit('follow-sat', sat) }
 const editAnt = ref('')
 const editVal = ref('')
 function startRenameAnt(sat, a) { editAnt.value = grd.keyOf(sat.folder, a.name); editVal.value = a.name }
-// × 两步确认（与对地天线树同口径）：带天线的星 / 天线本身删除会把 GRD 原件移入回收站，点一下变「确认删除」、5 s 内再点才删
-const delArm = ref('')
-let _delT = null
-function armDel(key, run) {
-  if (delArm.value === key) { clearTimeout(_delT); delArm.value = ''; run(); return }
-  delArm.value = key; clearTimeout(_delT); _delT = setTimeout(() => { delArm.value = '' }, 5000)
-}
-function askRemoveSat(sat) {
-  if (!sat.antennas || !sat.antennas.length) { emit('remove-sat', sat); return }
-  armDel('sat:' + sat.folder, () => emit('remove-sat', sat))
-}
-function askRemoveAnt(sat, a) { armDel('ant:' + grd.keyOf(sat.folder, a.name), () => grd.removeAntenna(sat.folder, a.name)) }
 function commitRenameAnt(sat, a) {
   if (editAnt.value === '') return    // 已提交（blur 与 ✓/回车可能重复触发）→ 跳过
   if (grd.renameAntenna(sat.folder, a.name, editVal.value) === false) {
@@ -73,19 +69,26 @@ function commitRenameAnt(sat, a) {
 }
 
 // 天线行点击：设为编辑对象（不转到导入时的旧峰值点）→ 宿主按卫星此刻位置聚焦（小眼睛灭着不动）
+function showAntenna() { emit('close-satellite'); sc.angleLines.editing.value = '' }
 async function onAntClick(sat, a) {
-  await sc.setActive(sat, a, { face: false })
-  emit('focus-sat', sat, false)
+  showAntenna()
+  if (await sc.setActive(sat, a, { face: false })) emit('focus-sat', sat, false)
 }
 const newAlt = ref(550)
+const addMenu = ref(null)
+const heightOrder = ref(0)
+const shellRows = computed(() => heightOrder.value
+  ? [...sc.shells.value].sort((a, b) => heightOrder.value * (a.altKm - b.altKm))
+  : sc.shells.value)
+function sortHeight() { heightOrder.value = heightOrder.value === 1 ? -1 : heightOrder.value === -1 ? 0 : 1 }
 function addShellFromInput() {
   const v = Number(newAlt.value)
-  if (Number.isFinite(v) && v > 0) sc.addShell(v)
+  if (Number.isFinite(v) && v > 0) { sc.addShell(v); addMenu.value?.hidePopover() }
 }
 // 预置项按【下标】取（早先只把 altKm 当 option 值，名字与颜色到不了 addShell，加进来一律是无名青色）
 function addPreset(e) {
   const p = sc.presetShells()[Number(e.target.value)]
-  if (p) sc.addShell(p.altKm, p.name, p.color)
+  if (p) { sc.addShell(p.altKm, p.name, p.color); addMenu.value?.hidePopover() }
   e.target.value = ''
 }
 // ==================== 壳层高度就地编辑 ====================
@@ -118,6 +121,14 @@ function singleBranch(sh) {
   return !!m && sh.altKm >= (m.satAlt || 0)
 }
 // 该壳层这一轮为什么是空的（'' = 画出来了）
+function placeShellMenu(event) {
+  if (event.newState !== 'open') return
+  const menu = event.currentTarget
+  const rect = menu.previousElementSibling.getBoundingClientRect()
+  const right = Math.min(window.innerWidth - menu.offsetWidth - 4, window.innerWidth - rect.right)
+  menu.style.right = Math.max(4, right) + 'px'
+  menu.style.top = (rect.bottom + menu.offsetHeight + 4 < window.innerHeight ? rect.bottom + 2 : Math.max(4, rect.top - menu.offsetHeight - 2)) + 'px'
+}
 function shellWhy(sh) {
   if (!sc.selected.value.length) return ''
   const e = sc.shellStatus.value[sh.id]
@@ -126,21 +137,20 @@ function shellWhy(sh) {
 </script>
 
 <template>
-  <div class="cov-side satcov-side docked">
-    <!-- 卫星 / 天线：与对地【同一棵树】（同一份数据、增删改在哪边做都一样），勾选＝画在壳层上。
-         唯一的区别是「画哪些」各存一份：本视图勾选的天线不影响对地视图，反之亦然。
-         仰角线是纯对地概念（等仰角环画在地表），本树按 kind 过滤掉，也不提供「加仰角线」。 -->
-    <div class="sec">
-      <div class="sect acc" data-sec="satcov-tree" :class="{ open: isSecOpen('satcov-tree') }" @click="toggleSec('satcov-tree')" role="button" tabindex="0" :aria-expanded="isSecOpen('satcov-tree') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('satcov-tree')" @keydown.space.self.prevent="toggleSec('satcov-tree')">
-        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('satcov-tree') }" :size="12" /><span>卫星 / 天线</span>
-        <span v-if="sc.selected.value.length" class="editing">{{ sc.selected.value.length }} 已选</span>
+  <CoverageSidebar class="satcov-side" tree-id="satcov-tree" :grd="grd" :lines="sc.angleLines" :satellite="satelliteEditor" @close-satellite="emit('close-satellite')" :shells="sc.shells.value" :selected-count="sc.selected.value.length">
+    <template #satellite><slot name="satellite" /></template>
+    <template #heading><div data-sec="satcov-tree"><span>卫星 / 天线</span></div></template>
+    <template #actions>
         <button type="button" class="lnk" title="添加自定义卫星，或从星座点选/搜索关联卫星" @click.stop="emit('add-sat')"><Icon name="plus" :size="12" /> 卫星</button>
-      </div>
-      <template v-if="isSecOpen('satcov-tree')">
+        <button type="button" class="lnk" title="添加独立仰角线" @click.stop="addStandaloneElevation"><Icon name="plus" :size="12" /> 独立仰角线</button>
+    </template>
+    <template #tree>
         <div class="gtree">
-          <div v-if="!satNodes.length" class="empty">暂无卫星。</div>
+          <CoverageAngleTreeRow v-for="line in sc.angleLines.list('', 'elevation')" :key="line.id"
+                                :line="line" :collection="sc.angleLines" @menu="openAngleMenu" />
+          <div v-if="!satNodes.length && !sc.angleLines.list('', 'elevation').length" class="empty">暂无卫星。</div>
           <template v-for="sat in satNodes" :key="sat.folder">
-            <div class="gsat" :class="{ cur: selFolders.has(sat.folder) }" :data-folder="sat.folder" @contextmenu.prevent.stop="emit('tree-menu', $event, sat)">
+            <div class="gsat" :class="{ cur: selFolders.has(sat.folder), 'sat-editing': satelliteEditor?.folder === sat.folder }" :data-folder="sat.folder" @contextmenu.prevent.stop="emit('tree-menu', $event, sat)">
               <button type="button" class="tri" :class="{ open: grd.isExpanded(sat.folder) }" :title="grd.isExpanded(sat.folder) ? '收起' : '展开'" :aria-label="grd.isExpanded(sat.folder) ? '收起' : '展开'" :aria-expanded="grd.isExpanded(sat.folder) ? 'true' : 'false'" @click="grd.toggleExpand(sat.folder)"><Icon name="chevron-right" :size="12" /></button>
               <input type="checkbox" class="gck" :checked="sc.satState(sat) === 'all'" :indeterminate.prop="sc.satState(sat) === 'some'"
                      :disabled="!sat.antennas.length" :title="sat.antennas.length ? '全选 / 全不选该星天线' : '该星暂无天线'" @change="sc.toggleSatAll(sat)" />
@@ -148,7 +158,7 @@ function shellWhy(sh) {
                       title="显示 / 隐藏该卫星（图标 + 名称）；点亮时，已画波束的星连同其对星跟踪的目标卫星一并显示轨道圈 / 星下点轨迹 / 覆盖足迹" @click.stop="emit('toggle-eye', sat)">
                 <CoverageTreeIcon kind="satellite" :visible="satVis(sat)" />
               </button>
-              <span class="gsname" @click="grd.toggleExpand(sat.folder)" @dblclick.stop="emit('focus-sat', sat, true)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></span>
+              <button type="button" class="gsname" @click="emit('edit-sat', sat)" @dblclick.stop="emit('focus-sat', sat, true)" :title="sat.satName">{{ sat.satName }}<em v-if="sat.antennas.length">{{ sat.antennas.length }}</em><i v-if="sat.elements" class="simtag" title="轨道根数模拟星：星下点随时间移动">轨</i></button>
               <span v-if="linkMiss.has(sat.folder)" class="lmiss" :title="`关联卫星 NORAD ${sat.noradId} 不在当前星历中`"><Icon name="alert-triangle" :size="12" /></span>
               <!-- 聚焦 / 跟随该星：与对地树同款两钮。
                    小眼睛：与对地视图同一个开关（图标 + 卫星名）；本视图另附「聚焦特效」——
@@ -156,17 +166,20 @@ function shellWhy(sh) {
               <span class="sdisp">
                 <button type="button" :aria-disabled="(navOf(sat).focusDis) ? 'true' : null" :aria-pressed="(navOf(sat).focusOn) ? 'true' : 'false'" class="ibtn sm" :class="{ on: navOf(sat).focusOn, dis: navOf(sat).focusDis }" :title="navOf(sat).focusTip" @click.stop="onFocusBtn(sat)"><Icon name="crosshair" :size="12" /></button>
                 <button type="button" :aria-disabled="(navOf(sat).followDis) ? 'true' : null" :aria-pressed="(navOf(sat).followOn) ? 'true' : 'false'" class="ibtn sm" :class="{ on: navOf(sat).followOn, dis: navOf(sat).followDis }" :title="navOf(sat).followTip" @click.stop="onFollowBtn(sat)"><Icon name="locate-fixed" :size="12" /></button>
+
               </span>
               <span class="sacts">
-                <button type="button" class="ibtn sm tree-add" aria-haspopup="menu" title="在该星下新建天线（新天线自动勾选，直接画到壳层上）" @click.stop="emit('tree-menu', $event, sat)"><Icon name="plus" :size="14" /></button>
-                <button type="button" class="ibtn sm" title="编辑卫星 / 仰角线 / 颜色" @click.stop="emit('edit-sat', sat)"><Icon name="pencil" :size="12" /></button>
-                <button type="button" class="del ibtn sm danger" :class="{ arm: delArm === 'sat:' + sat.folder }" :title="delArm === 'sat:' + sat.folder ? '再点一次删除（GRD 原件移入回收站）' : '删除卫星（含其天线）'" @click.stop="askRemoveSat(sat)"><Icon v-if="delArm !== 'sat:' + sat.folder" name="x" :size="12" /><template v-else>确认删除</template></button>
+                <button type="button" class="ibtn sm tree-add" aria-haspopup="menu" title="添加天线或仰角线" @click.stop="emit('tree-menu', $event, sat)"><Icon name="plus" :size="14" /></button>
+                <button type="button" class="ibtn sm" title="编辑卫星" @click.stop="emit('edit-sat', sat)"><Icon name="pencil" :size="12" /></button>
+                <button type="button" class="del ibtn sm danger" :class="{ arm: delArm === 'sat:' + sat.folder }" :title="delArm === 'sat:' + sat.folder ? '再点一次删除（GRD 原件移入回收站）' : '删除卫星（含其天线）'" @click.stop="emit('remove-sat', sat)"><Icon v-if="delArm !== 'sat:' + sat.folder" name="x" :size="12" /><template v-else>确认删除</template></button>
               </span>
             </div>
             <div v-if="grd.isExpanded(sat.folder)" class="gbody">
-              <div v-if="!sat.antennas.length" class="gant noant">暂无天线。</div>
+              <CoverageAngleTreeRow v-for="line in sc.angleLines.list(sat.folder, 'elevation')" :key="line.id"
+                                    :line="line" :collection="sc.angleLines" @menu="openAngleMenu" />
+              <div v-if="!sat.antennas.length && !sc.angleLines.list(sat.folder, 'elevation').length" class="gant noant">暂无天线。</div>
               <template v-for="a in sat.antennas" :key="a.name">
-                <div class="gant" :class="{ on: sc.isSelected(grd.keyOf(sat.folder, a.name)), foc: sc.isActive(grd.keyOf(sat.folder, a.name)) }" @contextmenu.prevent.stop="emit('tree-menu', $event, sat, a)"
+                <div class="gant" :class="{ on: sc.isSelected(grd.keyOf(sat.folder, a.name)), foc: !satelliteEditor && !sc.angleLines.editing.value && sc.isActive(grd.keyOf(sat.folder, a.name)) }" @contextmenu.prevent.stop="emit('tree-menu', $event, sat, a)"
                      title="点击编辑该天线参数（不影响是否显示）" @click="onAntClick(sat, a)">
                   <input type="checkbox" class="gck" title="勾选＝把该天线的波束画到轨道壳层上" :checked="sc.isSelected(grd.keyOf(sat.folder, a.name))" @click.stop @change="sc.toggleAnt(sat, a)" />
                   <button type="button" :aria-pressed="(sc.isSelected(grd.keyOf(sat.folder, a.name))) ? 'true' : 'false'" class="ant-btn" title="显示 / 隐藏该天线覆盖范围" @click.stop="sc.toggleAnt(sat, a)">
@@ -178,67 +191,88 @@ function shellWhy(sh) {
                   </template>
                   <template v-else>
                     <span class="aname" title="双击定位到卫星 · ✎ 重命名" @dblclick.stop="emit('focus-sat', sat, true)" data-i18n-skip>{{ a.name }}</span>
-                    <span v-if="sc.isActive(grd.keyOf(sat.folder, a.name))" class="afoc">编辑中</span>
+                    <span v-if="!satelliteEditor && !sc.angleLines.editing.value && sc.isActive(grd.keyOf(sat.folder, a.name))" class="afoc">编辑中</span>
                     <span class="sacts">
-                      <button type="button" class="ibtn sm tree-add" aria-haspopup="menu" title="添加性能指标表" @click.stop="emit('tree-menu', $event, sat, a)"><Icon name="plus" :size="14" /></button>
+                      <button type="button" class="ibtn sm tree-add" aria-haspopup="menu" title="添加波束角或性能指标表" @click.stop="emit('tree-menu', $event, sat, a)"><Icon name="plus" :size="14" /></button>
                       <button type="button" class="ibtn sm" title="重命名天线" @click.stop="startRenameAnt(sat, a)"><Icon name="pencil" :size="12" /></button>
-                      <button type="button" class="del ibtn sm danger" :class="{ arm: delArm === 'ant:' + grd.keyOf(sat.folder, a.name) }" :title="delArm === 'ant:' + grd.keyOf(sat.folder, a.name) ? '再点一次删除（GRD 原件移入回收站）' : '删除天线'" @click.stop="askRemoveAnt(sat, a)"><Icon v-if="delArm !== 'ant:' + grd.keyOf(sat.folder, a.name)" name="x" :size="12" /><template v-else>确认删除</template></button>
+                      <button type="button" class="del ibtn sm danger" :class="{ arm: delArm === 'ant:' + grd.keyOf(sat.folder, a.name) }" :title="delArm === 'ant:' + grd.keyOf(sat.folder, a.name) ? '再点一次删除（GRD 原件移入回收站）' : '删除天线'" @click.stop="emit('remove-ant', sat, a)"><Icon v-if="delArm !== 'ant:' + grd.keyOf(sat.folder, a.name)" name="x" :size="12" /><template v-else>确认删除</template></button>
                     </span>
                   </template>
                 </div>
+                <CoverageAngleTreeRow v-for="line in sc.angleLines.list(grd.keyOf(sat.folder, a.name))" :key="line.id"
+                                  :line="line" :collection="sc.angleLines" @menu="openAngleMenu" />
                 <PerfTreeRow v-for="t in tables.list('shell', grd.keyOf(sat.folder, a.name))" :key="t.id"
                              :name="t.name" :open="tableOpenKeys.has(t.id)" @open="emit('open-table', sat, a, t.id)"
-                             @rename="name => emit('rename-table', t.id, name)" />
+                             :confirm-delete="delArm === 'shell:' + t.id" @remove="emit('remove-table', t.id)"
+                             @menu="emit('tree-menu', $event, sat, a, t.id)" @rename="name => emit('rename-table', t.id, name)" />
               </template>
             </div>
           </template>
         </div>
-      </template>
-    </div>
+    </template>
 
-    <!-- 轨道壳层（本视图独有）：波束投到哪些球壳上 -->
-    <div class="sec">
-      <div class="sect acc" data-sec="satcov-shell" :class="{ open: isSecOpen('satcov-shell') }" @click="toggleSec('satcov-shell')" role="button" tabindex="0" :aria-expanded="isSecOpen('satcov-shell') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('satcov-shell')" @keydown.space.self.prevent="toggleSec('satcov-shell')">
-        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('satcov-shell') }" :size="12" /><span>轨道壳层</span>
-        <button type="button" class="lnk" title="从全量在轨目录中选择壳层（可查看每层包含的星座与卫星）" @click.stop="emit('pick-shells')">从星座取…</button>
-      </div>
-      <template v-if="isSecOpen('satcov-shell')">
-        <!-- 一层壳 = 一行控件 + 可选的一行归因。两者必须同在 v-for 里（归因那行要读 sh），
-             拆到 v-for 外面 sh 就出了作用域 —— 渲染函数当场抛错，整个面板白屏。 -->
-        <div class="shlist">
-          <template v-for="sh in sc.shells.value" :key="sh.id">
-            <div class="shrow">
-              <input type="checkbox" :checked="sh.show" title="显示 / 隐藏该层壳的覆盖" @change="sc.updateShell(sh.id, { show: !sh.show })" />
-              <input class="lvclr" type="color" title="壳层参照网颜色" :value="sh.color" @change="sc.updateShell(sh.id, { color: $event.target.value })" />
-              <input class="shalt" type="number" step="10" :value="altText(sh)" title="轨道高度（不是地心半径）：壳层地心半径 = 6378.137 + 该值。与卫星列表中的「高度」同一口径"
-                     @input="altInput(sh, $event)" @change="altCommit(sh)" @blur="altCommit(sh)"
-                     @keydown.enter="$event.target.blur()" @keydown.esc="altCancel($event)" @wheel="altWheel" /><span class="u">km</span>
-              <!-- 壳层名不是用户自命名（无改名入口）：从星座取来的那批直接沿用编目分组名，
-                   「其他」这类是界面词，打 i18n-skip 会让它在英文模式下留着中文 -->
-              <span class="shnm" :title="sh.name">{{ sh.name }}</span>
-              <select v-if="!singleBranch(sh)" class="shbr" :value="sh.branch" @change="sc.updateShell(sh.id, { branch: $event.target.value })">
-                <option value="both">近+远</option><option value="near">近侧</option><option value="far">远侧</option>
-              </select>
-              <span v-else class="shbr one" title="壳层高于源星：一条射线仅有一个交点">单支</span>
-              <button type="button" class="ibtn sm danger" title="删除壳层" @click="sc.removeShell(sh.id)"><Icon name="x" :size="12" /></button>
-            </div>
-            <div v-if="sh.show && shellWhy(sh)" class="shwhy">{{ shellWhy(sh) }}</div>
-          </template>
-          <div v-if="!sc.shells.value.length" class="empty">暂无壳层。</div>
-        </div>
-        <div class="srow shadd">
-          <input class="ci shalt" type="number" step="50" v-model.number="newAlt" /><span class="u">km</span>
-          <button type="button" class="btn" @click="addShellFromInput"><Icon name="plus" :size="12" /> 添加壳层</button>
-          <select class="ci shpre cmd-sel" @change="addPreset($event)">
+    <div class="coverage-settings">
+    <GrdSetSections :grd="grd" @show-parameters="showAntenna" variant="shell" :sat-search="satSearch" @open-synth="(id) => emit('open-synth', id)">
+      <template #shells>
+    <div class="sec shell-settings">
+      <div class="sect shell-tools" data-sec="satcov-shell">
+        <span>轨道壳层</span>
+        <span class="shell-count"><Icon name="layers" :size="13" />{{ sc.shells.value.length }} 层</span>
+        <button type="button" class="shell-tool" title="从全量在轨目录中选择壳层（可查看每层包含的星座与卫星）" @click="emit('pick-shells')">从星座取…</button>
+        <button type="button" class="shell-tool add-shell" popovertarget="coverage-add-shell"><Icon name="plus" :size="13" />添加壳层</button>
+        <div id="coverage-add-shell" ref="addMenu" class="shell-menu add-menu" popover="auto" @toggle="placeShellMenu">
+          <form @submit.prevent="addShellFromInput">
+            <label for="coverage-new-height">高度 (km)</label>
+            <input id="coverage-new-height" class="ci" v-model.number="newAlt" type="number" min="1" max="400000" step="any" required />
+            <button type="submit" class="btn">添加</button>
+          </form>
+          <select class="ci" aria-label="预置" @change="addPreset">
             <option value="">预置…</option>
             <option v-for="(p, i) in sc.presetShells()" :key="p.name" :value="i" data-i18n-skip>{{ p.name }}</option>
           </select>
         </div>
-        <div class="srow"><label>掠地高度</label><input class="ci" type="number" step="10" min="0" v-model.number="sc.s.hEx"
+      </div>
+      <div class="shell-fields">
+        <!-- 一层壳 = 一行控件 + 可选的一行归因。两者必须同在 v-for 里（归因那行要读 sh），
+             拆到 v-for 外面 sh 就出了作用域 —— 渲染函数当场抛错，整个面板白屏。 -->
+        <div v-if="sc.shells.value.length" class="shlist">
+          <div class="shgrid shhead">
+            <span></span><span>名称</span>
+            <button class="sort-height" type="button" title="按高度排序" @click="sortHeight"><span>高度 (km)</span><Icon :name="heightOrder < 0 ? 'arrow-down' : 'arrow-up'" :class="{ idle: !heightOrder }" :size="10" /></button>
+            <span class="branch-title">分支</span><span></span>
+          </div>
+          <div v-for="sh in shellRows" :key="sh.id" class="shell-entry" :class="{ muted: !sh.show }">
+            <div class="shgrid shrow">
+              <input type="checkbox" :checked="sh.show" title="显示 / 隐藏该层壳的覆盖" @change="sc.updateShell(sh.id, { show: !sh.show })" />
+              <div class="shell-name">
+                <input class="lvclr" type="color" title="壳层参照网颜色" :value="sh.color" @change="sc.updateShell(sh.id, { color: $event.target.value })" />
+                <span class="shnm" :title="sh.name || '自定义'">{{ sh.name || '自定义' }}</span>
+              </div>
+              <input class="shalt" type="number" step="10" :value="altText(sh)" title="轨道高度（不是地心半径）：壳层地心半径 = 6378.137 + 该值。与卫星列表中的「高度」同一口径"
+                     @input="altInput(sh, $event)" @change="altCommit(sh)" @blur="altCommit(sh)"
+                     @keydown.enter="$event.target.blur()" @keydown.esc="altCancel($event)" @wheel="altWheel" />
+              <select v-if="!singleBranch(sh)" class="shbr" title="分支" :value="sh.branch" @change="sc.updateShell(sh.id, { branch: $event.target.value })">
+                <option value="both">近+远</option><option value="near">近侧</option><option value="far">远侧</option>
+              </select>
+              <span v-else class="shbr one" title="壳层高于源星：一条射线仅有一个交点">单支</span>
+              <button type="button" class="ibtn sm shell-more" title="壳层操作" :popovertarget="'shell-menu-' + sh.id"><Icon name="ellipsis" :size="14" /></button>
+              <div :id="'shell-menu-' + sh.id" class="shell-menu" popover="auto" @toggle="placeShellMenu">
+                <button type="button" class="menu-item" @click="sc.removeShell(sh.id)">删除壳层</button>
+              </div>
+            </div>
+            <div v-if="sh.show && shellWhy(sh)" class="shwhy">{{ shellWhy(sh) }}</div>
+          </div>
+        </div>
+        <div v-else class="empty">暂无壳层。</div>
+        <div class="srow shell-alt-limit"><label>掠地高度</label><input class="ci" type="number" step="10" min="0" v-model.number="sc.s.hEx"
              title="视线掠过地球表面的最低高度：低于此高度的路径按被地球挡住处理（把地球膨胀这么多再判遮挡）。0 = 纯几何遮挡" /><span class="u">km</span></div>
-        <label class="chk2"><input type="checkbox" v-model="sc.s.guides" /><span>显示壳层参照网</span></label>
-        <!-- 参照网样式：全局一份（逐层只留颜色，行内不加控件） -->
-        <template v-if="sc.s.guides">
+        <div class="guide-tools">
+          <label class="chk2"><input type="checkbox" v-model="sc.s.guides" /><span>显示壳层参照网</span></label>
+          <div data-sec="satcov-guides"><button type="button" class="shell-tool guide-toggle" :disabled="!sc.s.guides"
+                  :aria-expanded="isSecOpen('satcov-guides', false)" @click="toggleSec('satcov-guides', false)">
+            <Icon name="sliders-horizontal" :size="12" /><span>参照网样式</span>
+          </button></div>
+        <template v-if="sc.s.guides && isSecOpen('satcov-guides', false)">
           <div class="srow sub"><label>网格间隔</label>
             <select v-model.number="sc.s.guideStep" title="经线与纬线的角度间隔">
               <option :value="10">10°</option><option :value="15">15°</option><option :value="30">30°</option><option :value="45">45°</option>
@@ -256,17 +290,18 @@ function shellWhy(sh) {
               <option :value="false">实线</option><option :value="true">虚线</option>
             </select></div>
         </template>
+        </div>
+      </div>
+    </div>
       </template>
+    </GrdSetSections>
     </div>
 
-    <!-- 天线设置四区：与「对地覆盖分析」同一个组件 -->
-    <GrdSetSections :grd="grd" variant="shell" :sat-search="satSearch" @open-synth="(id) => emit('open-synth', id)" />
-
-    <div class="csfoot">
+    <template #footer><div class="csfoot">
       <span class="cst" :title="sc.stats.value.fullMs ? '几何 ' + sc.stats.value.ms + ' ms + GPU 重建，整轮 ' + sc.stats.value.fullMs + ' ms。播放时一拍就要这么久，时钟据此拉开两拍的间隔' : ''">{{ sc.stats.value.layers }} 层 · {{ sc.stats.value.tris }} 面片 · {{ sc.stats.value.fullMs || sc.stats.value.ms }} ms · {{ satCount }} 星在场</span>
       <button type="button" class="cclr btn" title="清空壳层上的填充/等值线，保留各天线设置与壳层库" @click="sc.clearDrawing()">清除绘图</button>
-    </div>
-  </div>
+    </div></template>
+  </CoverageSidebar>
 </template>
 
 <style scoped>
@@ -274,8 +309,7 @@ function shellWhy(sh) {
 :where(button).tri, :where(button).ant-btn, :where(button).gperf, :where(button).lnk { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 /* 与「对地覆盖分析」侧栏同源（ConstellationMap3D.vue 的 .cov-side/.gtree 一套）：那份是 scoped 的、
    进不到本组件，故这里带一份同值副本。改动请两处对照。 */
-.cov-side { width: 286px; flex: none; border-left: 1px solid var(--border-strong); background: var(--surface); overflow-y: auto; display: flex; flex-direction: column; font-size: var(--fs-3); }
-.cov-side.docked { width: auto; border-left: 0; overflow: visible; }
+.shell-fields > * + * { margin-top: 8px; }
 .sec { padding: 12px 16px; border-bottom: 1px solid var(--border); }
 /* 竖向节奏与从属缩进：与 GrdSetSections.vue 逐字同源（口径与三处对照的说明见那边），
    宿主页 ConstellationMap3D.vue 是同一行距的第三份，写法不同、结果一致 */
@@ -317,7 +351,7 @@ function shellWhy(sh) {
 .rng { flex: 1; min-width: 0; }
 .empty { color: var(--text-faint); padding: 4px 0; }
 /* 卫星 / 天线树（与对地同款两级层次） */
-.gtree { max-height: clamp(280px, 48vh, 620px); overflow-y: auto; }
+
 .gsat { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 2px; color: var(--text); font-size: var(--fs-4); border-radius: var(--r-box); }
 .gsat .sat-toggle { width: 24px; height: 24px; }
 .gsat:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
@@ -346,8 +380,8 @@ function shellWhy(sh) {
 /* 行内次级操作（卫星行 ＋✎✕ / 天线行 ✎✕ 共用）：常驻但弱化淡灰，hover 该行变亮 */
 /* 命中框走 .ibtn.sm（20×20），图标仍 12；间距 2 让命中框不重叠。负外边距：命中框比行高出的那截不撑高行 */
 .sacts { flex: none; display: flex; align-items: center; gap: 2px; margin-left: auto; padding-left: 4px; }
-.sacts .ibtn.tree-add { opacity: 1; color: var(--sel-on); background: var(--sel-fill); border-color: var(--accent-ui); }
-.sacts .ibtn { margin: -2px 0; opacity: .6; }
+.sacts .ibtn { margin: -2px 0; }
+.sacts .ibtn:where(:not(.tree-add)) { opacity: .6; }
 .gsat:hover .sacts .ibtn, .gant:hover .sacts .ibtn, .sacts .ibtn:hover, .sacts .ibtn:focus-visible { opacity: 1; }
 .sacts .ibtn.del.arm { width: auto; padding: 0 4px; color: var(--danger); opacity: 1; font-size: var(--fs-1); font-weight: 600; white-space: nowrap; }
 /* 确认钮走状态色 token（两主题各有一档），悬停向墨色收一点而不是再提亮 */
@@ -356,29 +390,52 @@ function shellWhy(sh) {
 .gant.noant:hover { background: none; color: var(--text-faint); }
 .gant .ant-btn { display: flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; padding: 0; margin: -2px 0; border-radius: var(--r-box); transition: background var(--dur-2); }
 .gant .ant-btn:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-/* 壳层库：与电平表同款成框列表 */
-.shlist { border: 1px solid var(--border); border-radius: var(--r-ctl); }
-/* 这一行挤了七件东西（勾选 / 颜色 / 高度 / km / 壳层名 / 支路 / 删除），名字那一格是唯一
-   会伸缩的。两条防「显示不全」：① 定宽的两件按实际内容收窄，把省下的宽度让给名字
-   （原先 58+56 把「LEO 1200」挤成「LEO 12…」）；② 整行可换行 —— 侧栏拖到最窄或换成英文时，
-   支路/删除掉到第二行，而不是顶出面板右沿。 */
-.shrow { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 3px 6px; }
-.shrow + .shrow { border-top: 1px solid var(--border); }
-.shrow .lvclr { width: 20px; height: 18px; }
-.shrow .u { color: var(--text-faint); font-size: var(--fs-2); }
-/* 76px：带小数的高度（「35786.5」「1002.1」）+ 内距 + 微调箭头都装得下 */
-.shalt { width: 76px; flex: none; background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-3); padding: 2px 4px; font-family: var(--font-mono); text-align: right; }
-.shnm { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-2); }
-/* 宽度交给内容（select 自己按最长选项撑开）：写死 56px 时中文「近+远」与英文「Near+Far」
-   都超出内容盒，被 select 自己裁掉，而 select 的裁切在 DOM 上量不出来 */
-.shbr { flex: none; width: auto; background-color: var(--field-bg); border: 1px solid var(--field-border); color: var(--text); font-size: var(--fs-2); padding: 1px 2px; }
-.shbr.one { color: var(--text-faint); text-align: center; border-color: transparent; }
-.shwhy { padding: 0 8px 4px 32px; font-size: var(--fs-2); color: var(--warn); }
-.shadd { gap: 6px; }
-.shadd .shalt { flex: none; padding: 2px 4px; }   /* 盖掉 .srow .ci 的 0 7px 内距，与壳层行同宽同排 */
-/* min-width：预置名（「MEO 20200」这类）是固定词表，缩到装不下就被 select 自己裁掉；
-   给个下限，宽度不够时整行换行（.srow 可换行），而不是把选项名切一半 */
-.shadd .shpre { flex: 1; min-width: 92px; font-size: var(--fs-2); }
+/* 壳层表共用列轨道。单元格在悬停或键盘聚焦时显出编辑边界。 */
+.shell-settings { container-type: inline-size; }
+.shell-tools, .guide-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.shell-tools > span:first-child { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+.shell-count { display: inline-flex; align-items: center; gap: 5px; margin-right: auto; font-variant-numeric: tabular-nums; }
+.shell-tool, .sort-height { display: inline-flex; align-items: center; justify-content: center; gap: 3px; padding: 2px 4px; background: none; border: 1px solid transparent; border-radius: var(--r-ctl); color: var(--text-muted); font: inherit; cursor: pointer; }
+.shell-tool:hover, .sort-height:hover { background: var(--wash-hover); color: var(--text); }
+.add-shell { color: var(--text); border-color: var(--field-border); }
+.shlist { --cols: 15px minmax(0,1fr) minmax(6.1em,24%) minmax(4.5em,18%) 18px; border-block: 1px solid var(--border); }
+.shgrid { display: grid; grid-template-columns: var(--cols); align-items: center; gap: 5px; padding: 3px 2px; }
+.shhead { position: sticky; top: 0; z-index: 1; background: var(--surface-2); color: var(--text-muted); }
+.shhead, .shrow { font-size: var(--fs-2); }
+.sort-height { justify-self: end; padding-inline: 0; white-space: nowrap; }
+.sort-height .idle { opacity: .4; }
+.branch-title { text-align: center; }
+.shell-entry + .shell-entry { border-block-start: 1px solid color-mix(in srgb,var(--border) 65%,transparent); }
+.shell-entry:is(:hover,:focus-within) { background: var(--wash-hover); }
+.shell-name { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.shnm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.muted .shnm { color: var(--text-faint); }
+.shrow input[type=color] { appearance: none; flex: none; width: 12px; height: 14px; padding: 0; background: transparent; border: 0; cursor: pointer; }
+.shrow input[type=color]::-webkit-color-swatch-wrapper { padding: 1px 0; }
+.shrow input[type=color]::-webkit-color-swatch { border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); border-radius: 2px; }
+.shrow .shalt, .shrow .shbr { width: 100%; min-width: 0; box-sizing: border-box; height: var(--h-ctl); border: 1px solid transparent; border-radius: var(--r-ctl); background-color: transparent; color: var(--text); font: inherit; }
+.shrow .shalt { padding: 0 4px; font-variant-numeric: tabular-nums; text-align: right; }
+.shrow .shalt::-webkit-inner-spin-button { display: none; }
+.shrow select.shbr { text-align: center; padding-inline: 2px 12px; background-position: right 1px center; cursor: pointer; }
+.shrow .one { display: grid; align-items: center; text-align: center; padding-inline-end: 10px; color: var(--text-muted); }
+.shrow :is(.shalt,select.shbr):is(:hover,:focus-visible) { border-color: var(--field-border-hover); background-color: var(--field-bg); }
+.shell-more { opacity: 0; }
+.shrow:is(:hover,:focus-within) .shell-more, .shrow:has(:popover-open) .shell-more { opacity: 1; }
+@media (hover: none) { .shell-more { opacity: 1; } }
+.shwhy { padding: 0 6px 4px 24px; font-size: var(--fs-2); color: var(--warn); }
+.shell-menu { position: fixed; inset: auto; margin: 0; padding: 3px; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-ctl); box-shadow: 0 3px 10px #0002; }
+.shell-menu .menu-item { color: var(--danger); }
+.add-menu { width: 212px; max-width: 90vw; padding: 10px; }
+.add-menu form { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 6px; }
+.add-menu input { width: 100%; min-width: 0; text-align: right; }
+.add-menu select { width: 100%; margin-top: 8px; }
+.shell-alt-limit > label { flex: 1; }
+.shell-alt-limit input.ci { max-width: 7em; text-align: right; font-variant-numeric: tabular-nums; }
+.shell-alt-limit .u { min-width: 2em; }
+.guide-tools { justify-content: space-between; }
+.guide-tools > .srow { flex: 0 0 100%; }
+.guide-toggle { font-size: var(--fs-2); }
+@container (max-width: 245px) { .shgrid { gap: 2px; } .shell-name { gap: 3px; } }
 /* 页脚左右内距 16：与上方各 .sec 同一条左缘 */
 .csfoot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
 .cst { font-size: var(--fs-2); color: var(--text-faint); font-family: var(--font-mono); }

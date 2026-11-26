@@ -10,7 +10,7 @@
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, inject } from 'vue'
 import Icon from './Icon.vue'
 import { SCHEME_NAMES } from '../viz/grd/colormap.js'
-import { isSecOpen, toggleSec } from '../stores/panelSections'
+import { isSecOpen, registerSecOpener, toggleSec } from '../stores/panelSections'
 import { useCheckList } from '../shared/ui/useCheckList.js'
 import { byLang } from '../shared/i18n/lang.js'
 import { onLangChange } from '../shared/i18n/runtime.js'
@@ -24,37 +24,67 @@ const props = defineProps({
   variant: { type: String, default: 'ground' },     // 'ground' | 'shell'
   // 对星跟踪的目标星搜索（宿主注入，全量：星座目录 + 卫星组 + 自定义星座）：
   //   async (q, limit) => { items: [{ name, noradId, group, tag }], total }   total = 不截断的命中总数
-  satSearch: { type: Function, default: null }
+  satSearch: { type: Function, default: null },
+  section: { type: String, default: 'all' } // all | design | contours
 })
 // 本组件是多根（四个 .sec 平铺进宿主侧栏，不套壳）→ 关掉属性透传，免得宿主的 scoped 标记
 // 找不到唯一根节点而在控制台刷「Extraneous non-props attributes」。样式各自 scoped，不靠透传。
 defineOptions({ inheritAttrs: false })
-// open-synth(groupId)：电磁波束仿真产出的解析天线，「在电磁波束仿真中编辑」转给宿主（切视图 + 选中那个组）
-const emit = defineEmits(['open-synth'])
+// open-synth(groupId)：天线仿真产出的解析天线，「在天线仿真中编辑」转给宿主（切视图 + 选中那个组）
+const emit = defineEmits(['open-synth', 'show-parameters'])
 const grd = props.grd
 const st = grd.s
 const isShell = computed(() => props.variant === 'shell')
 
-// 标题里的改名入口与天线树共用改名逻辑，两种覆盖视图同步迁移名称与设置。
-const editAnt = ref(''), editAntVal = ref(''), editAntErr = ref(''), antNameEl = ref(null)
-function startRenameAnt() {
-  if (!grd.active.value) return
-  editAnt.value = grd.active.value; editAntVal.value = grd.activeName(); editAntErr.value = ''
-  nextTick(() => { const el = antNameEl.value; if (el) { el.focus(); el.select() } })
+const tabs = [
+  { key: 'pointing', label: '指向' },
+  { key: 'beams', label: '波束与方向图' },
+  { key: 'levels', label: '电平' },
+  { key: 'style', label: '样式' }
+]
+if (isShell.value) tabs.unshift({ key: 'shells', label: '轨道壳层' })
+const tabKey = 'coverage-antenna-tab/' + props.variant
+const preferredTab = ref(isShell.value ? 'shells' : 'pointing')
+const tab = computed(() => isShell.value && !grd.antMeta() ? 'shells' : preferredTab.value)
+if (props.section === 'all') {
+  try {
+    const saved = localStorage.getItem(tabKey)
+    if (tabs.some(item => item.key === saved)) preferredTab.value = saved
+  } catch { /* Optional UI preference. */ }
 }
-function cancelRenameAnt() { editAnt.value = ''; editAntVal.value = ''; editAntErr.value = '' }
-function commitRenameAnt() {
-  const key = editAnt.value
-  if (!key) return   // 回车 / 确认后的 blur 不重复提交，Esc 后不落库
-  if (key !== grd.active.value) { cancelRenameAnt(); return }
-  const i = key.indexOf('|')
-  if (grd.renameAntenna(key.slice(0, i), key.slice(i + 1), editAntVal.value) === false) {
-    editAntErr.value = '天线名为空或与同星其他天线重名'
-    return
+const tabBar = ref(null)
+const inInspector = computed(() => props.section === 'all')
+const showBeams = computed(() => !inInspector.value || tab.value === 'beams')
+const showLevels = computed(() => !inInspector.value || tab.value === 'levels')
+const showStyle = computed(() => !inInspector.value || tab.value === 'style')
+const showPointing = computed(() => !inInspector.value || tab.value === 'pointing')
+function selectTab(key) {
+  preferredTab.value = key
+  try { localStorage.setItem(tabKey, key) } catch { /* Optional UI preference. */ }
+  const viewport = tabBar.value?.nextElementSibling
+  if (viewport) viewport.scrollTop = 0
+}
+if (isShell.value && inInspector.value) {
+  for (const key of ['satcov-shell', 'satcov-guides']) {
+    onBeforeUnmount(registerSecOpener(key, () => { emit('show-parameters'); selectTab('shells') }))
   }
-  cancelRenameAnt()
 }
-watch(() => grd.active.value, cancelRenameAnt, { flush: 'sync' })
+if (inInspector.value) {
+  onBeforeUnmount(registerSecOpener(isShell.value ? 'shell-antenna-settings' : 'ground-antenna-settings', () => {
+    emit('show-parameters')
+    if (tab.value === 'shells') selectTab('pointing')
+  }))
+}
+function tabKeys(e, index) {
+  if (!grd.antMeta()) return
+  const last = tabs.length - 1
+  const next = { ArrowLeft: (index + last) % tabs.length, ArrowRight: (index + 1) % tabs.length, Home: 0, End: last }[e.key]
+  if (next === undefined) return
+  e.preventDefault()
+  e.stopPropagation()
+  selectTab(tabs[next].key)
+  tabBar.value.querySelectorAll('[role="tab"]')[next].focus()
+}
 
 // ================= 方向图（解析高斯天线才有）=================
 // 记录随 anRev 醒（analyticRecordOf 内部先读它）；非解析天线 → null，整节不出。
@@ -230,6 +260,7 @@ function lvGenerate() { grd.generateLevels(gen.start, gen.step, gen.count, gen.s
 // ---- 指向 ----
 const boreMode = computed({ get: () => grd.boreModeOf(), set: (m) => grd.setBoreMode(m) })
 const satResolved = computed(() => grd.boreSatResolved(st))
+const focusBoreSat = inject('focusBoreSat', null)
 const isSatMode = computed(() => st.boreType === 'sat' || st.boreType === 'satoff')
 // ---- 指向来源：手动（上面七种模式）/ 姿态 + 挂点（DESIGN2 §4）----
 // 挂点候选与姿态律名由宿主注入（grd.mountOptions / grd.attLaw 转宿主 hooks；老宿主没注入就退到 inject 那一份）
@@ -346,32 +377,22 @@ const boreTip = computed(() => {
 </script>
 
 <template>
-  <template v-if="grd.antMeta()">
-    <div class="sec">
-      <div class="sect setsect acc" data-sec="grd-set" :class="{ open: isSecOpen('grd-set') }" @click="toggleSec('grd-set')">
-        <Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-set') }" :size="12" />
-        <svg class="gsvg ant-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4 10a7.31 7.31 0 0 0 10 10Z" /><path d="m9 15 3-3" /><path d="M17 13a6 6 0 0 0-6-6" /><path d="M21 13A10 10 0 0 0 11 3" />
-        </svg>
-        <span class="setlbl">天线设置</span>
-        <span v-if="editAnt" class="setrename" @click.stop @dblclick.stop @keydown.stop>
-          <input ref="antNameEl" class="setname-in" v-model="editAntVal" aria-label="天线名称" :aria-invalid="!!editAntErr"
-            @input="editAntErr = ''" @keydown.enter.prevent="commitRenameAnt" @keydown.esc.prevent="cancelRenameAnt" @blur="commitRenameAnt" />
-          <button type="button" class="ibtn sm" title="确认重命名" aria-label="确认重命名" @mousedown.prevent @click="commitRenameAnt"><Icon name="check" :size="12" /></button>
-        </span>
-        <template v-else>
-          <span class="setname" :title="grd.activeName()" data-i18n-skip>{{ grd.activeName() }}</span>
-          <button type="button" class="ibtn sm setrename-btn" title="重命名天线" aria-label="重命名天线" @click.stop="startRenameAnt"><Icon name="pencil" :size="12" /></button>
-        </template>
-        <span v-if="grd.selected.value.length > 1" class="editing" title="多选时设置仅作用于聚焦（编辑中）天线，各天线独立保存">仅编辑聚焦天线</span>
-      </div>
-      <div v-if="editAntErr" class="anerr" role="alert">{{ editAntErr }}</div>
-      <template v-if="isSecOpen('grd-set')">
+  <template v-if="grd.antMeta() || (inInspector && isShell)">
+    <div v-if="inInspector" ref="tabBar" class="antenna-tabs" role="tablist" aria-label="天线设置" data-sec="grd-set">
+      <button v-for="(item, index) in tabs" :key="item.key" type="button" role="tab"
+              :id="variant + '-tab-' + item.key" :aria-controls="variant + '-antenna-panel'" :aria-selected="tab === item.key"
+              :disabled="!grd.antMeta() && item.key !== 'shells'" :tabindex="tab === item.key ? 0 : -1" @click="selectTab(item.key)" @keydown="tabKeys($event, index)">{{ item.label }}</button>
+    </div>
+    <div :class="{ 'antenna-tab-panel': inInspector, 'embedded-sections': !inInspector }" :id="inInspector ? variant + '-antenna-panel' : undefined"
+         :role="inInspector ? 'tabpanel' : undefined" :aria-labelledby="inInspector ? variant + '-tab-' + tab : undefined">
+    <slot v-if="tab === 'shells' && inInspector" name="shells" />
+    <div v-if="showBeams || showLevels" class="sec">
+      <template v-if="showBeams">
         <!-- 方向图（解析高斯天线独有，排在本天线设置带的第一小节）：树上建的就地改；波束合成产出的只读，回波束合成改 -->
-        <!-- 口径照射记录（model:'aperture'，多馈源口径照射档产物）只能在电磁波束仿真里改：这里不出 STK 参数行，无主时整节不出 -->
-        <template v-if="anRec && (anRec.model !== 'aperture' || anOwned)">
+        <!-- 口径照射记录（model:'aperture'，多馈源口径照射档产物）只能在天线仿真里改：这里不出 STK 参数行，无主时整节不出 -->
+        <template v-if="section !== 'contours' && anRec && (anRec.model !== 'aperture' || anOwned)">
           <div class="sect" data-sec="grd-model"><span>方向图</span>
-            <button type="button" v-if="anOwned" class="lnk" title="该天线由电磁波束仿真生成，参数须在电磁波束仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在电磁波束仿真中编辑</button>
+            <button type="button" v-if="anOwned" class="lnk" title="该天线由天线仿真生成，参数须在天线仿真中修改" @click.stop="emit('open-synth', anRec.owner.groupId)">在天线仿真中编辑</button>
           </div>
           <template v-if="anRec.model !== 'aperture' && !anOwned">
             <template v-for="(m, i) in anDrafts" :key="m.id || i">
@@ -387,7 +408,7 @@ const boreTip = computed(() => {
             </template>
           </template>
         </template>
-        <template v-if="grd.beamListOn()">
+        <template v-if="section !== 'design' && (grd.beamListOn() || (inInspector && !anRec && bCount > 0))">
           <div class="sect"><span>Beams To Plot · {{ bCount }} 波束</span></div>
           <input class="ci bq search-field" :value="grd.beamQuery.value" placeholder="搜索：波束名，或序号 1-62、1,3,5、1-10,20-30" @input="e => grd.setBeamQuery(e.target.value)" />
           <!-- 整行都是勾选热区，按住左键拖＝刷选（长按多选）；名字是纯文本，改名走行尾铅笔 / F2。
@@ -428,6 +449,8 @@ const boreTip = computed(() => {
             <div v-if="!bRows.length" class="empty">无匹配波束</div>
           </div>
         </template>
+      </template>
+      <template v-if="section !== 'design' && showLevels">
         <!-- 单波束解析天线：方向图小节之后直接接取值参数，补一个小标题隔开（多波束有 Beams To Plot 隔着） -->
         <div v-if="anRec && !grd.beamListOn()" class="sect"><span>参数</span></div>
         <div class="srow"><label>极化</label><select v-model="st.pol"><option value="P1">P1 共极化</option><option value="P2">P2 交叉</option><option value="RSS">RSS 合成</option><option value="P1/P2">P1/P2</option><option value="P2/P1">P2/P1</option></select></div>
@@ -493,17 +516,21 @@ const boreTip = computed(() => {
       </template>
     </div>
 
-    <div class="sec">
+    <template v-if="section !== 'design'">
+    <div v-if="showStyle" class="sec">
       <label class="chk2"><input type="checkbox" v-model="st.fill" /><span>Fill Contours（分带填充）</span></label>
       <label class="chk2"><input type="checkbox" v-model="st.line" /><span>显示等值线</span></label>
       <div class="srow sub"><label>不透明度</label><input class="rng" type="range" min="0" max="1" step="0.01" v-model.number="st.alpha" /><span class="u">{{ st.alpha.toFixed(2) }}</span></div>
     </div>
 
-    <div class="sec">
-      <div class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-bore') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-bore')" @keydown.space.self.prevent="toggleSec('grd-bore')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-bore') }" :size="12" /><span>天线 boresight</span>
+    <div v-if="showPointing" class="sec">
+      <div v-if="!inInspector" class="sect acc" :class="{ open: isSecOpen('grd-bore') }" @click="toggleSec('grd-bore')" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-bore') ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-bore')" @keydown.space.self.prevent="toggleSec('grd-bore')"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-bore') }" :size="12" /><span>天线 boresight</span>
         <span class="lnk" :class="{ on: grd.dragBore.value, dis: isAtt }" :title="isAtt ? '姿态 + 挂点：视轴由姿态律给出，不可拖拽' : (isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心')" @click.stop="isAtt || grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</span>
       </div>
-      <template v-if="isSecOpen('grd-bore')">
+      <div v-else class="sect"><span>天线 boresight</span>
+        <button type="button" class="lnk" :disabled="isAtt" :aria-pressed="grd.dragBore.value" :class="{ on: grd.dragBore.value, dis: isAtt }" :title="isAtt ? '姿态 + 挂点：视轴由姿态律给出，不可拖拽' : (isShell ? '开启后在 3D 上拖动可把指向点拖到轨道壳层上（对星跟踪时改的是偏置量）' : '开启后在地图上拖动可平移波束中心')" @click.stop="isAtt || grd.setDragBore(!grd.dragBore.value)"><Icon v-if="grd.dragBore.value" name="check" :size="12" /> 拖拽波束</button>
+      </div>
+      <template v-if="inInspector || isSecOpen('grd-bore')">
         <!-- 两大类：对地指向瞄地面/相对天底，对星指向瞄空间（目标星或空间定点，可指反天底）。
              同一份指向设置两视图共用，故两边下拉必须给全，缺项会让另一视图选出来的模式在这里显示空白。 -->
         <div class="srow"><label>指向来源</label>
@@ -550,7 +577,8 @@ const boreTip = computed(() => {
         </template>
         <template v-else-if="isSatMode">
           <div class="srow"><label>目标卫星</label>
-            <span class="tgtnm" :class="{ bad: st.boreSat && !satResolved }">{{ st.boreSatName || '未选择' }}</span>
+            <button v-if="focusBoreSat && satResolved" type="button" class="tgtnm lnk" title="聚焦" @click="focusBoreSat(st.boreSat)"><span data-i18n-skip>{{ st.boreSatName || st.boreSat }}</span></button>
+            <span v-else class="tgtnm" :class="{ bad: st.boreSat && !satResolved }">{{ st.boreSatName || '未选择' }}</span>
             <button type="button" v-if="st.boreSat" class="del ibtn sm danger" title="清除目标卫星" @click="grd.setBoreSat(null, '')"><Icon name="x" :size="12" /></button>
           </div>
           <div class="srow"><input class="ci search-field" v-model="bq" placeholder="搜索目标卫星：卫星名 / NORAD / 星座 / 卫星组" /></div>
@@ -582,7 +610,7 @@ const boreTip = computed(() => {
       </template>
     </div>
 
-    <div class="sec">
+    <div v-if="showStyle" class="sec">
       <div class="sect acc" :class="{ open: isSecOpen('grd-disp', false) }" @click="toggleSec('grd-disp', false)" role="button" tabindex="0" :aria-expanded="isSecOpen('grd-disp', false) ? 'true' : 'false'" @keydown.enter.self.prevent="toggleSec('grd-disp', false)" @keydown.space.self.prevent="toggleSec('grd-disp', false)"><Icon name="chevron-down" class="disc" :class="{ shut: !isSecOpen('grd-disp', false) }" :size="12" /><span>显示选项</span><span class="editing" title="对所有选中天线生效">全局</span></div>
       <template v-if="isSecOpen('grd-disp', false)">
         <!-- 每项自带一枚色块（钉在行尾成一列）：色块是该项的从属参数，与字号/大小同进退——勾上才出现。
@@ -603,20 +631,25 @@ const boreTip = computed(() => {
         <div v-if="st.showPeak" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.1" v-model.number="st.peakSize" /><span class="u">{{ fx(st.peakSize, 1) }}</span></div>
         <label class="chk2"><input type="checkbox" v-model="st.showVal" /><span>显示数值标签</span><input v-if="st.showVal" class="clr sw" type="color" v-model="st.valColor" title="数值标签颜色（两个视图同一套样式）" /></label>
         <div v-if="st.showVal" class="srow sub"><label>字号</label><input class="rng" type="range" min="0.5" max="30" step="0.1" v-model.number="st.valSize" /><span class="u">{{ fx(st.valSize, 1) }}</span></div>
-        <div v-if="st.showVal" class="srow sub"><label>标签</label><select v-model="st.labelMode"><option value="single">单个</option><option value="interval">沿线间隔</option></select></div>
+        <div v-if="st.showVal" class="srow sub"><label>标签</label><select v-model="st.labelMode" title="可在图上沿线拖动标注"><option value="single">单个</option><option value="interval">沿线间隔</option></select></div>
         <div v-if="st.showVal && st.labelMode === 'interval'" class="srow sub"><label>间隔</label><input class="ci" type="number" step="1" min="2" max="200" v-model.number="st.labelGap" title="两个标签之间隔几个标签宽（SATSOFT Interval）" /></div>
         <label v-if="st.showVal" class="chk2 sub"><input type="checkbox" v-model="st.labelWithName" /><span title="该档起过名时，标签印「值 名称」">值 + 名称</span></label>
-        <!-- 拖动标签位置只在【对地】视图给：可拖标签由对地图层构建时捕获(_dragLabels)，壳层上的标签不在其中。
-             壳层视图里开这个模式只会掐掉左键旋转、什么也拖不动，故不出这个入口。 -->
-        <div v-if="st.showVal && !isShell" class="srow sub" style="justify-content:flex-start">
-          <button type="button" class="btn" :class="{ on: grd.dragLabel.value }" :aria-pressed="grd.dragLabel.value ? 'true' : 'false'" title="开启后在地图上按住拖动数值标签，可沿等值线滑动其位置（释放后保存；再次点击关闭）" @click="grd.setDragLabel(!grd.dragLabel.value)"><Icon name="move" :size="12" /><span>拖动标签位置</span></button>
-        </div>
       </template>
+    </div>
+    </template>
     </div>
   </template>
 </template>
 
 <style scoped>
+.embedded-sections { display: contents; }
+.antenna-tabs { flex: none; display: flex; background: var(--surface); border-bottom: 1px solid var(--border); }
+.antenna-tab-panel { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.antenna-tabs button { flex: 1 1 auto; min-width: 0; padding: 6px 3px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); font: inherit; cursor: pointer; }
+.antenna-tabs button:hover { background: var(--surface-2); color: var(--text); }
+.antenna-tabs button[aria-selected="true"] { color: var(--accent-ui); border-bottom-color: currentColor; font-weight: 600; }
+.antenna-tabs button:focus-visible { outline-offset: -3px; }
+
 /* span / div 改成 <button> 后仍沿用本地外观的几类：先清 UA 内距与描边，外观由下方各自规则给 */
 :where(button).glvadd, :where(button).lnk { margin: 0; padding: 0; border: 0; background: none; color: inherit; text-align: inherit; }
 /* 与「对地覆盖分析」侧栏（ConstellationMap3D.vue）逐条同源：本组件在两个视图里各挂一次，
@@ -660,30 +693,18 @@ const boreTip = computed(() => {
 .sect.acc .lnk .app-icon { color: inherit; }
 .sect .lnk ~ .lnk { margin-left: 12px; }
 /* 可点标题整条是命中区：负外边距把悬停底色向两侧各伸 6px，外边距 + 内距净值仍是原 12 / 6，文字不动。
-   本文件没有 .sect 基础外边距（靠 .sec > * + * 兄弟节奏），故按兄弟关系拆成四条；.setsect 自有负边距色带，排除 */
-.sect.acc:not(.setsect) { margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
-.sec > * + .sect.acc:not(.setsect) { margin-top: 9px; }
-.sec > .sect.acc:not(.setsect) + * { margin-top: 3px; }
-.sec > .sect.acc:not(.setsect):first-child { margin-top: -3px; }
+   本文件没有 .sect 基础外边距（靠 .sec > * + * 兄弟节奏），故按兄弟关系拆成四条 */
+.sect.acc { margin-inline: -6px; padding: 3px 6px; border-radius: var(--r-box); transition: background-color var(--dur-1) linear; }
+.sec > * + .sect.acc { margin-top: 9px; }
+.sec > .sect.acc + * { margin-top: 3px; }
+.sec > .sect.acc:first-child { margin-top: -3px; }
 /* 收起时标题是 .sec 的最后一件：吃回底部 3px 内距，收起的分区不因这条色带变高 */
-.sec > .sect.acc:not(.setsect):last-child { margin-bottom: -3px; }
-.sect.acc:not(.setsect):hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.sect.acc:not(.setsect):active { background: color-mix(in srgb, var(--text) 9%, transparent); transition-duration: 0s; }
+.sec > .sect.acc:last-child { margin-bottom: -3px; }
+.sect.acc:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.sect.acc:active { background: color-mix(in srgb, var(--text) 9%, transparent); transition-duration: 0s; }
 /* 指在行尾动作上时整条不亮（点的是动作，不是展开）；须在 hover / active 之后 */
 .sect.acc:has(.lnk:hover, .layersw:hover, .lnk:active, .layersw:active) { background: transparent; }
 .sect.acc:hover > .app-icon.disc { color: var(--text-muted); }
-/* 天线设置区标题：撑满分区宽度的标题条（Blender Properties / VS Code 面板头同款） */
-.setsect { margin: -12px -16px 10px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
-.setsect .ant-svg { width: 14px; height: 14px; color: var(--accent); margin-right: 6px; flex: none; }
-.setsect .setlbl { color: var(--text); font-weight: 600; flex: none; }
-/* 名称与编辑框吃满标题剩余宽度，只有空间确实不足时才省略；动作按钮始终保留。 */
-.setsect .setname { flex: 1; margin-left: 6px; min-width: 0; color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.setrename { display: flex; flex: 1; align-items: center; gap: 4px; margin-left: 6px; min-width: 0; }
-.setname-in { flex: 1; width: 0; min-width: 0; padding: 0 5px; border: 1px solid var(--field-border); border-radius: var(--r-ctl); background: var(--field-bg); color: var(--text); font: inherit; user-select: text; }
-.setname-in:focus { outline: none; border-color: var(--accent); }
-.setname-in[aria-invalid="true"] { border-color: var(--danger); }
-.setsect .setrename-btn, .setrename .ibtn { flex: none; margin-block: -2px; }
-.setsect .editing { flex: none; white-space: nowrap; }
 .sect .editing { margin-left: auto; font-size: var(--fs-1); font-weight: 600; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); border-radius: var(--r-ctl); padding: 1px 6px; }
 .chk2 { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 /* 整行都是 label 命中区：指在文字上时复选框也给悬停反馈（同宿主页） */
@@ -765,6 +786,8 @@ const boreTip = computed(() => {
 /* 对星指向：目标星名与候选片 */
 .tgtnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .tgtnm.bad { color: var(--warn); }
+button.tgtnm { text-align: left; color: var(--accent-ui); cursor: pointer; font: inherit; }
+button.tgtnm:hover { text-decoration: underline; }
 /* 目标星搜索结果：与主界面搜索下拉（.search .panel/.item）、卫星组管理器同款——
    一行一颗、星名 + 「来源 · NORAD」副行、可滚动，底下一行命中读数。 */
 .sres { border: 1px solid var(--border); background: var(--bg); }

@@ -45,9 +45,9 @@ export const CMD_KW = {
   'Polygon（协调区）': ['polygon', 'coordination area', '协调区', '多边形', '绘制'],
   '可见性分析': ['visibility', 'access', 'STK', 'pass', '可见', '过境', '仰角门限', '覆盖网格'],
   // 改过名的视图把旧名留作关键词：习惯旧叫法的照样搜得到
-  '电磁波束仿真': ['beam synthesis', 'EM beam simulation', 'electromagnetic', 'shaped', 'reflector', 'phased array', 'PAM',
+  '天线仿真': ['电磁波束仿真', '波束电磁仿真', 'EM beam simulation', 'beam synthesis', 'antenna simulation', 'electromagnetic', 'shaped', 'reflector', 'phased array', 'PAM',
     '天线波束合成', '波束合成', '波束', '赋形', '反射面', '相控阵', '多馈源'],
-  '波束地图显示': ['beam map', 'GXT', 'KML', 'GeoJSON', 'coverage contour', '覆盖等值线', '覆盖图', '覆盖库', '波束地图'],
+  '波束地图等值线显示': ['波束地图显示', 'beam map', 'GXT', 'KML', 'GeoJSON', 'coverage contour', '覆盖等值线', '覆盖图', '覆盖库', '波束地图'],
   '地图标记设置': ['markers', 'map markers', 'points', 'earth station', 'trajectory', '标记', '地图标记', '地球站', '点', '航迹', '轨迹', '船', '飞机'],
   '目标间链路建链': ['link', 'links', 'chain', 'STK Chain', 'inter-object link', '链路分析', '链路', '建链', '单向链路', '导入链路预算'],
   '环境场显示': ['ITU', 'rain rate', 'environment', 'climate', 'R0.01', '环境场', '环境', '雨量', '降雨率', '水汽', '雨高', '等温线', '云'],

@@ -76,7 +76,8 @@ for (let m = 0; m < 8; m++) combos.push({ shiftKey: !!(m & 1), ctrlKey: !!(m & 2
   ok(/e\.button !== 0 \|\| \(e\.shiftKey && navLock\.value\)\) \{ _lnkDown = null; return \}/.test(pg), '页面：建链 Shift + 左键不追加节点')
   const banners = pg.match(/<div v-if="[^"]*" class="(?:traj|sat)-banner"[\s\S]*?<\/div>/g) || []
   const noHint = banners.filter((b) => !b.includes('<ShiftNavHint :on="shiftDown" />'))
-  ok(banners.length >= 12 && noHint.length === 0, '横幅：每条工具态横幅都挂同一枚 Shift 键帽', `${banners.length} 条` + (noHint.length ? '；缺：' + noHint.map((b) => b.slice(0, 60)).join(' | ') : ''))
+  ok(!banners.some(b => b.includes('grd.dragLabel')), '沿线拖动标注无需进入工具态')
+  ok(banners.length >= 11 && noHint.length === 0, '横幅：每条工具态横幅都挂同一枚 Shift 键帽', `${banners.length} 条` + (noHint.length ? '；缺：' + noHint.map((b) => b.slice(0, 60)).join(' | ') : ''))
   ok(!/class="bn-hint"/.test(pg), '横幅：不再各写一份键帽（统一走 ShiftNavHint）')
   ok(/\.stage-wrap\.nav-shift :deep\(canvas\) \{ cursor: grab !important; \}/.test(pg) && /'nav-shift': navLock && shiftDown/.test(pg), '舞台：工具态按住 Shift 光标换抓手')
   const hint = src('src/components/ShiftNavHint.vue')

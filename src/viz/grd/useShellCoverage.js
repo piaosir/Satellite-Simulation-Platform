@@ -9,8 +9,10 @@
 // 几何走参数域（见 shellProj.js 文件头）：bandGeometry 直接吃 gridXY 的 (X,Y)，切出来的顶点再逐壳投影。
 // 2D 平面地图（flatView）另走一条【对地投影】：同一批波束按对地那套投到 WGS84 椭球，与「对地覆盖分析」画法完全相同。
 import { ref, reactive, computed, watch } from 'vue'
-import { fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, stitchLoops, gridXY, projectGrid, projectLimb, gridDir, gridDirs, loopLabelAnchor, loopLabelsAtInterval } from './coverage.js'
+import { fieldDb, bandGeometry, edgeRefineFor, refineAtDens, projectRefine, peakRefDb, gridXY, projectGrid, projectLimb, gridDir, gridDirs } from './coverage.js'
 import { shellGeom, shellGrid, shellMapper, tessellateFills, tessellateSegs } from './shellProj.js'
+import { useAngleLines } from './useAngleLines.js'
+import { angleLayer, beamContour, contourSegmentsFor, elevationContour } from './angleContours.js'
 import { cssRgb } from './colormap.js'
 import { A, geodeticToEcef, isoElevationContourAt } from '../wgs84.js'
 import { effective as displayQuality } from '../../stores/displayQuality.js'
@@ -20,6 +22,7 @@ const newShellId = () => 'sh' + Date.now().toString(36) + (_sid++)
 const clampN = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v)
 const perfNow = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now())
 const wrap180 = (x) => ((x % 360) + 540) % 360 - 180
+const shellBranches = (g, sh) => g.inside ? ['far'] : (sh.branch === 'both' ? ['near', 'far'] : [sh.branch])
 
 // 预置壳层：常见轨道高度，选中即用（可增删改）。颜色只用于壳层参照网与列表标识，不参与场配色。
 export const PRESET_SHELLS = [
@@ -78,6 +81,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // ★ 聚焦天线【不自存一份】，只做 grd.active 的镜像：面板的天线设置区绑的就是 grd.s（＝grd.active
   //   那根天线的编辑态）。早先这里另存一个 ref，两处一旦岔开——对地面板换了聚焦、或快照恢复时两边
   //   各按各的规则取——对星面板显示与改动的就是【另一根天线】的设置，看起来就像「指向模式没保存」。
+  const angleLines = useAngleLines(selected, grd.onTreeKeys, grd.ensureAntLoaded, grd.sats, 'shell')
   const active = computed(() => grd.active.value)
   const stats = ref({ layers: 0, tris: 0, ms: 0 })
   const shellStatus = ref({})     // 壳层 id → { tris, why }：空层归因，选错壳层时不留白让人猜
@@ -113,8 +117,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // opts 原样交给 grd.setActive（{ face:false } = 不转镜头）
   async function setActive(sat, a, opts = {}) {
     const key = grd.keyOf(sat.folder, a.name)
-    if (!(await grd.ensureAntLoaded(key))) return
-    if (grd.active.value !== key) await grd.setActive(sat, a, opts)
+    if (grd.active.value === key && !grd.pendingActive.value) return true
+    return grd.setActive(sat, a, opts)
   }
   function satState(sat) {
     const ks = (sat.antennas || []).map((a) => grd.keyOf(sat.folder, a.name))
@@ -133,7 +137,7 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     selected.value = next
     if (!active.value && selected.value[0]) await grd.setActiveKey(selected.value[0])   // 同 toggleAnt：只补空，不因取消勾选改聚焦
   }
-  function clearDrawing() { selected.value = [] }
+  function clearDrawing() { selected.value = []; angleLines.clearDrawing() }
   // 树是两个视图共用的，删天线/删卫星/改名可以从【任一棵树】发起，而本视图的 selected 是独有的一份 →
   // 订阅 grd 的 key 变更就地跟随。不订阅的话：从对地树删掉的天线会在这儿留一个死 key（画不出来、
   // 还会被存进快照），改名则等同于悄悄取消勾选。
@@ -189,13 +193,6 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       { pol: st.pol, gainOffset: st.gainOffset, pathLoss: st.pathLoss })
   }
   const absOf = (peak, st, v) => (st.ctype === 'abs' ? v : (st.ctype === 'relInput' ? (+st.refDb || 0) + v : peak + v))
-  // 标签文字与沿线布点：与对地（useGrdCoverage）逐字同口径
-  const labelWDeg = (txt, size) => ((+size || 12) / 533) * (180 / Math.PI) * 0.62 * Math.max(1, String(txt).length)
-  const labelTxt = (x) => ((grd.s.labelWithName && x.name) ? (String(x.lab) + ' ' + x.name) : (x.name || String(x.lab)))
-  const labelsOn = (loop, x, i, nb) => {
-    if (grd.s.labelMode === 'interval') return loopLabelsAtInterval(loop, labelWDeg(labelTxt(x), grd.s.valSize), grd.s.labelGap)
-    return [loopLabelAnchor(loop, i, nb)]
-  }
   const lowestAbs = (max, st) => { let lo = Infinity; for (const L of st.levels) { const a = absOf(max, st, L.v); if (a < lo) lo = a }; return lo }
   function computeBox(db, NX, NY, L0) {
     let r0 = NY, r1 = -1, c0 = NX, c1 = -1
@@ -206,13 +203,9 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // 与对地（useGrdCoverage.absLevels）逐项同口径：绝对值、标签用数、每档线型 / 线宽 / 填充透明度
   const absLevels = (peak, st) => st.levels.map((L, idx) => {
     const abs = absOf(peak, st, L.v)
-    return { idx, abs, v: L.v, lab: (st.ctype !== 'abs' && st.labelAbs) ? +abs.toFixed(2) : L.v, name: L.name || '', color: L.color, lineColor: L.lineColor || L.color,
+    return { idx, abs, v: L.v, labelT: L.labelT, labelOffsets: L.labelOffsets, lab: (st.ctype !== 'abs' && st.labelAbs) ? +abs.toFixed(2) : L.v, name: L.name || '', color: L.color, lineColor: L.lineColor || L.color,
       dash: L.dash || null, width: (L.width == null ? null : +L.width), fillAlpha: (L.fillAlpha == null ? null : +L.fillAlpha) }
   })
-  // 数值标签：开关是【全局显示选项】，只活在 grd.s 上 —— 它不在 persistActive 的回存名单(PA)里，
-  // 天线设置 ctx.settings 永远没有 showVal 这个键。早先这里按 st.showVal 取，恒为 undefined →
-  // labels 恒空，勾「显示数值标签」怎么点都不出字（渲染端的 showVal 倒是从 grd.s 取的，对得上）。
-  const wantLabels = () => !!grd.s.showVal
   // 「够到最低档的那些格」上的 vis 极值。只在某层空了、要给归因时才走（O(热区)，不在热路径上）。
   // ★ 必须按此过滤：±12° 网格四角早跑出地球 8.7° 圆盘，整张网格/热区矩形取极值会把「全被地球遮挡」
   //   误报成「低于最低档」。
@@ -236,11 +229,16 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   const focusBeam = ref(null)
 
   // 每根天线一遍公共准备：设置 / 波束 / 场 / 热区盒（3D 壳层与 2D 对地投影共用）
-  function* eachBeam() {
-    for (const key of selected.value) {
-      const ctx = grd.getPerfContext(key); if (!ctx) continue
+  function* antennas() {
+    for (const key of angleLines.drawnKeys.value) {
+      const ctx = grd.getPerfContext(key)
+      if (ctx?.basis) yield { key, ctx }
+    }
+  }
+  function* eachBeam(entries) {
+    for (const { key, ctx } of entries) {
       const st = ctx.settings
-      if (!st.fill && !st.line) continue
+      if (!selected.value.includes(key) || (!st.fill && !st.line)) continue
       const node = grd.sats.value.find((x) => x.folder === key.split('|')[0])
       const satShown = !node || node.labelShow !== false
       for (const bi of (st.beamsToPlot || [])) {
@@ -263,9 +261,10 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   }
 
   // ==================== 3D：壳层图层 ====================
-  function buildShellLayers() {
+  function buildShellLayers(entries) {
     const t0 = (typeof performance !== 'undefined' ? performance.now() : 0)
     const out = []
+    const angles = []
     let tris = 0, focus = null
     const why = {}
     const noteShell = (id, add, reason) => {
@@ -276,14 +275,51 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     }
     const shown = shells.value.filter((sh) => sh.show)
     const mine = []                    // 聚焦天线画出来的层（取其中峰值最高者做面板读数）
-    for (const it of eachBeam()) {
+    for (const el of angleLines.elevations.value) {
+      const source = angleLines.elevationSources.value.get(el.key)
+      if (source && !el.position && grd.satelliteHidden?.(source)) continue
+      const pos = el.position || (source && grd.liveOf(source))
+      if (!pos) continue
+      const S = geodeticToEcef(pos.lon, pos.lat, pos.altKm)
+      for (const sh of shown) {
+        if (el.shellIds && !el.shellIds.includes(sh.id)) continue
+        const g = shellGeom({ S }, A + sh.altKm, s.hEx)
+        const branches = shellBranches(g, el.branch === 'inherit' ? sh : el)
+        for (const branch of branches) {
+          if (el.angle === 0 && el.observer === 'shell' && branch === 'far' && branches.includes('near')) continue
+          const segs = contourSegmentsFor(el, sh, branch, [...S, g.R, s.hEx, el.angle, el.observer],
+            () => elevationContour(g, el.angle, el.observer, branch, s.hEx))
+          if (!segs.length) continue
+          angles.push(angleLayer(el.id + ':' + sh.id + ':' + branch, el, segs, g.R))
+          noteShell(sh.id, 1, '')
+        }
+      }
+    }
+    for (const { key, ctx } of entries) {
+      const lines = angleLines.list(key)
+      if (!lines.some(line => line.show)) continue
+      for (const sh of shown) {
+        const g = shellGeom(ctx.basis, A + sh.altKm, s.hEx)
+        for (const branch of shellBranches(g, sh)) {
+          lines.forEach(line => {
+            if (!line.show) return
+            const segs = contourSegmentsFor(line, sh, branch, [...g.S, ...ctx.basis.z, g.R, s.hEx, line.angle],
+              () => beamContour(ctx.basis, line.angle, g, branch, s.hEx))
+            if (!segs.length) return
+            angles.push(angleLayer(line.id + '@' + sh.id + ':' + branch, line, segs, g.R))
+            noteShell(sh.id, 1, '')
+          })
+        }
+      }
+    }
+    for (const it of eachBeam(entries)) {
       const { key, ctx, st, bm, beam, set, box, satShown } = it
       const igrid = ctx.igrid, basis = ctx.basis
       const { gx, gy } = gridXY(set)
       for (const sh of shown) {
         const R = A + sh.altKm
         const g = shellGeom(basis, R, s.hEx)
-        const branches = g.inside ? ['far'] : (sh.branch === 'both' ? ['near', 'far'] : [sh.branch])
+        const branches = shellBranches(g, sh)
         for (const br of branches) {
           const sg = shellGrid(set, igrid, basis, g, br, box, beam._shbuf)
           beam._shbuf = sg
@@ -303,13 +339,11 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
           const fillBands = st.fill
             ? tessellateFills(asc.map((x, i) => ({ color: cssRgb(x.color), alpha: x.fillAlpha, verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length), map)
             : null
-          const wl = wantLabels()
           const segGroups = st.line
             ? asc.map((x, i) => {
               const segs = tessellateSegs(geo.lines[i], map)
-              const labels = []
-              if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) for (const an of labelsOn(loop, x, i, asc.length)) labels.push(an) }
-              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: labelTxt(x), labels }
+              const labels = grd.contourLabels(key, `shell/${bm.bi}/${sh.id}/${br}`, segs, x, i, asc.length)
+              return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), ...labels }
             }).filter((gp) => gp.segs.length)
             : []
           if (!(fillBands && fillBands.length) && !segGroups.length) {
@@ -345,17 +379,17 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     focusBeam.value = focus
     shellStatus.value = why
     grd.setLivePeak('shell', grd.bestPeakOf(mine))
-    stats.value = { layers: out.length, tris, ms: Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0) }
-    return out
+    stats.value = { layers: out.length + angles.length, tris, ms: Math.round((typeof performance !== 'undefined' ? performance.now() : 0) - t0) }
+    return out.concat(angles)
   }
 
   // ==================== 2D：对地投影（与「对地覆盖分析」同一条链路）====================
   // 同一批波束投到 WGS84 椭球，几何在【经纬度域】切（不是参数域）——这就是对地那套，逐字同口径。
   // 指向若朝反天底（如低轨打 GSO），整片投不到地球上，这里自然为空，平面图留白。
-  function buildGroundLayers() {
+  function buildGroundLayers(entries) {
     const out = []
     const mine = []                    // 聚焦天线画出来的层（取其中峰值最高者做面板读数）
-    for (const it of eachBeam()) {
+    for (const it of eachBeam(entries)) {
       const { key, ctx, st, bm, beam, set, box, satShown } = it
       const igrid = ctx.igrid, basis = ctx.basis
       const proj = projectGrid(set, igrid, basis, box, beam._gbuf, true)
@@ -375,13 +409,11 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
       const fillBands = st.fill
         ? asc.map((x, i) => ({ color: cssRgb(x.color), alpha: x.fillAlpha, verts: geo.fills[i].verts, counts: geo.fills[i].counts })).filter((b) => b.counts.length)
         : null
-      const wl = wantLabels()
       const segGroups = st.line
         ? asc.map((x, i) => {
           const segs = geo.lines[i]
-          const labels = []
-          if (wl) for (const loop of stitchLoops(segs)) { if (loop.length >= 4) for (const an of labelsOn(loop, x, i, asc.length)) labels.push(an) }
-          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), txt: labelTxt(x), labels }
+          const labels = grd.contourLabels(key, 'ground/' + bm.bi, segs, x, i, asc.length)
+          return { segs, color: x.lineColor, width: (x.width == null ? st.lineWidth : x.width), dash: (x.dash || st.lineStyle || null), ...labels }
         }).filter((gp) => gp.segs.length)
         : []
       if (!(fillBands && fillBands.length) && !segGroups.length) continue
@@ -422,10 +454,10 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // 与「卫星↔峰值点」的连线是两回事——视轴不依赖有没有画出覆盖：波束转到空无一物的方向时，
   // 它是唯一还看得见的把手（拖拽全向指向时全靠它），故独立成一条通道、单独开关。
   // 求交与对地视图共用 grd.buildAxisRays（那边打到地球，这边打到壳层），两个视图同一条轴、同一套样式。
-  function buildRays() {
+  function buildRays(flatPath = false) {
     let Rout = A
     for (const sh of shells.value) if (sh.show && A + sh.altKm > Rout) Rout = A + sh.altKm
-    return grd.buildAxisRays(selected.value, Rout)
+    return grd.buildAxisRays(angleLines.drawnKeys.value, Rout, flatPath)
   }
   // 「已经画到场景里过」：壳层是场景内容，【离开面板不撤】（要清空走面板的「清除绘图」）——所以一旦画过，
   // 之后即便切走也得继续跟着设置/时间刷新，否则星在动、壳层还停在旧位置。反过来，从没画过就一次也不推。
@@ -455,15 +487,16 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     const fl = (ownsFlat() && flatActive()) ? getFlat() : null   // 归属看上下文视图，不看侧栏开合
     if (!sc && !fl && !on) return      // 两侧都不收、读数也没人看（2D 期间面板关着）：整轮白算
     const t0 = perfNow()
+    const entries = [...antennas()]
     if (sc && sc.setShellField) {
       // 播放热路径走增量：按层 id 复用填充缓冲原地写回，只重建线与标签（对地 updateCoverageField 同款）
-      ;(sc.updateShellField || sc.setShellField)(buildShellLayers(), fieldOpts())
+      ;(sc.updateShellField || sc.setShellField)(buildShellLayers(entries), fieldOpts())
       syncGuides(sc)
       if (sc.setShellRays) sc.setShellRays(buildRays())
-    } else if (on) buildShellLayers()  // 场景不收（未就绪 / 2D 期间）也要出空层归因，面板读数不能等
+    } else if (on || fl) buildShellLayers(entries)
     // 2D 那块场：平面图可见或正在按 2D 出图才烘 —— 3D 视图下 buildGroundLayers + Path2D 烘焙
     // 是每拍一整套白算（独立的对地投影 + bandGeometry，画布根本不可见）。
-    if (fl) fl.setField(buildGroundLayers(), fieldOpts())
+    if (fl) fl.setField(buildGroundLayers(entries), { ...fieldOpts(), rays: buildRays(true) })
     // 整轮耗时（含 GPU 重建）：贵不贵不该让人猜，摆进面板读数行
     stats.value = { ...stats.value, fullMs: Math.round(perfNow() - t0) }
   }
@@ -485,6 +518,9 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     _painted = false                   // 场景已清空 → 回到「没画过」，面板关着时不再自行复现
   }
 
+  watch(() => grd.labelRevision?.value, scheduleRecompute)
+  watch(angleLines.rows, scheduleRecompute, { deep: true })
+  watch(() => [...angleLines.elevationSources.value.values()].map(sat => sat && [sat.lon, sat.lat, sat.altKm, sat.noradId, sat.elements]), scheduleRecompute, { deep: true })
   watch(shells, scheduleRecompute, { deep: true })
   watch(selected, scheduleRecompute, { deep: true })
   watch(active, scheduleRecompute)
@@ -497,7 +533,8 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   // ==================== 持久化（随页面快照）====================
   function getState() {
     return {
-      shells: shells.value.map((x) => ({ name: x.name, altKm: x.altKm, color: x.color, show: x.show, branch: x.branch })),
+      angleLines: angleLines.getState(),
+      shells: shells.value.map((x) => ({ id: x.id, name: x.name, altKm: x.altKm, color: x.color, show: x.show, branch: x.branch })),
       selected: selected.value.slice(), active: active.value,
       opts: { ...s },
       painted: _painted   // 3D 壳层已在场景里（离开面板不撤）→ 重开软件要照原样接着画，见 recompute 的闸
@@ -505,12 +542,13 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
   }
   async function restoreState(st) {
     if (!st) return
-    if (Array.isArray(st.shells) && st.shells.length) {
+    if (Array.isArray(st.shells)) {
       shells.value = st.shells.map((x, i) => ({
-        id: newShellId(), name: x.name || '', altKm: Number(x.altKm) || 550,
+        id: x.id || newShellId(), name: x.name || '', altKm: Number(x.altKm) || 550,
         color: x.color || SHELL_PALETTE[i % SHELL_PALETTE.length], show: x.show !== false, branch: x.branch || 'both'
       }))
     }
+    await angleLines.restore(st.angleLines)
     if (st.opts) for (const k of Object.keys(s)) if (st.opts[k] !== undefined) s[k] = st.opts[k]
     const keys = []
     for (const key of (Array.isArray(st.selected) ? st.selected : [])) if (await grd.ensureAntLoaded(key)) keys.push(key)
@@ -523,12 +561,12 @@ export function useShellCoverage(grd, getScene, getFlat = () => null, isFlat = (
     }
     // 上次退出时壳层就画着 → 这次也接着画（面板未必停在对星视图，但内容本就不随离开而撤）。
     // 老存档没有 painted 字段：有选中天线即视作画过，不让升级掉一层图。
-    if (st.painted || keys.length) _painted = true
+    if (st.painted || angleLines.drawnKeys.value.length || angleLines.elevations.value.length) _painted = true
     recompute()
   }
 
   return {
-    shells, selected, active, s, stats, focusBeam, shellStatus,
+    shells, selected, active, angleLines, s, stats, focusBeam, shellStatus,
     isSelected, isActive, satState, toggleAnt, setActive, toggleSatAll, clearDrawing, importGrd,
     addShell, addShells, removeShell, updateShell, presetShells: () => PRESET_SHELLS,
     recompute, scheduleRecompute, clearAll, getState, restoreState

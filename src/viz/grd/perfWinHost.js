@@ -25,6 +25,8 @@ export function createPerfWinHost(D) {
   const antennaOf = tables.antennaOf
   const api = D.api || null
   const wins = new Map()           // id → { id, kind, key, ready, stops: [] }
+  const closing = new Set()        // 关窗 IPC 往返期间，丢弃旧窗口回传的操作
+  const opening = new Set()        // 删天线时，主进程可能还没返回新窗 id
   const ver = ref(0)               // 开关窗计数（供依赖「哪些窗开着」的 computed / watcher）
   const has = () => !!api
 
@@ -79,16 +81,26 @@ export function createPerfWinHost(D) {
   const winsOf = (kind, key) => { const out = []; for (const w of wins.values()) if (w.kind === kind && (key == null || w.key === key)) out.push(w); return out }
   const metOpen = () => winsOf('met').length > 0
   async function open(kind, key) {
-    if (!api) return null
+    if (!api || (kind !== 'met' && !tables.has(kind, key))) return null
     const k = String(key || '')
+    const request = { kind, key: k }
+    opening.add(request)
     let r = null
     try { r = await api.open({ kind, key: k, title: titleOf(kind, k) }) } catch { r = null }
+    const stillWanted = opening.delete(request)
     if (!r || !r.id) return null
+    if (!stillWanted || (kind !== 'met' && !tables.has(kind, k))) { closeWindow(r.id); return null }
     if (!wins.has(r.id)) { wins.set(r.id, { id: r.id, kind, key: k, ready: false, stops: [] }); ver.value++ }
     return r.id
   }
   function isOpen(kind, key) { return winsOf(kind, key).length > 0 }
-  function closeKey(key) { for (const w of [...wins.values()]) if (w.key === key && api) api.close(w.id).catch(() => {}) }
+  function closeKey(key) { for (const w of wins.values()) if (w.key === key) closeWindow(w.id) }
+  function closeWindow(id) {
+    if (closing.has(id)) return
+    closing.add(id)
+    dropWin(id)
+    api.close(id).catch(() => closing.delete(id))
+  }
   function dropWin(id) {
     const w = wins.get(id); if (!w) return
     for (const s of w.stops) { try { s() } catch { /* 已停 */ } }
@@ -98,19 +110,26 @@ export function createPerfWinHost(D) {
     if (w.kind === 'ground') _groundCache.delete(w.key)
     ver.value++
   }
+  function clearTable(kind, key) {
+    for (const r of opening) if (r.kind === kind && r.key === key) opening.delete(r)
+    for (const w of winsOf(kind, key)) closeWindow(w.id)
+    if (kind === 'shell') { D.satPerf.removeKey(key); return }
+    if (D.perf.activeKey.value === key) D.perf.setActiveKey('')
+    delete D.perf.stationsByAnt.value[key]
+    delete D.perf.optsByAnt.value[key]
+    _groundCache.delete(key)
+    _loadFailed.delete(key)
+    pushBoxes()
+  }
+  function removeTable(kind, key) {
+    if (tables.remove(kind, key)) clearTable(kind, key)
+  }
   // 树改名 / 删天线：窗口跟着改标题或关掉（perf / satPerf 的桶由各自 key 记着，改名后按新 key 走）
   function onTreeKey(ev) {
     if (!ev) return
     if (ev.type === 'remove') for (const k of (ev.keys || [])) {
-      for (const table of tables.list('ground', k)) {
-        closeKey(table.id)
-        delete D.perf.stationsByAnt.value[table.id]
-        delete D.perf.optsByAnt.value[table.id]
-        _groundCache.delete(table.id)
-      }
-      for (const table of tables.list('shell', k)) {
-        if (table.id !== k) closeKey(table.id)
-        D.satPerf.removeKey?.(table.id)
+      for (const kind of ['ground', 'shell']) {
+        for (const table of tables.list(kind, k)) clearTable(kind, table.id)
       }
       tables.removeAntenna(k)
     }
@@ -146,10 +165,13 @@ export function createPerfWinHost(D) {
     const M = D.markers() || {}
     const fmt = D.fmtLL
     return {
-      pts: (M.pts || []).map((p, i) => ({ id: p.id, seq: i + 1, name: fmt(Number(p.lon) || 0, Number(p.lat) || 0), lon: p.lon, lat: p.lat })),
+      pts: (M.pts || []).map((p, i) => ({ id: p.id, seq: i + 1, name: fmt(Number(p.lon) || 0, Number(p.lat) || 0), lon: p.lon, lat: p.lat, legend: D.pointLegend?.(p, i) })),
       sts: (M.sts || []).map((s, i) => ({ id: s.id, seq: i + 1, name: s.name || '', ll: fmt(Number(s.lon) || 0, Number(s.lat) || 0), lon: s.lon, lat: s.lat })),
-      trajs: (M.trs || []).map((t) => ({ id: t.id, name: t.name || '', kind: t.kind || 'sea', n: (t.pts || []).length }))
+      trajs: (M.trs || []).map((t) => ({ id: t.id, name: t.name || '', kind: t.kind || 'sea', n: (t.pts || []).length, legend: D.trackLegend?.(t) }))
     }
+  }
+  function polygonsSnap() {
+    return (D.polygons?.() || []).map(pg => ({ id: pg.id, name: pg.name || 'Polygon', color: pg.color, n: pg.pts.length }))
   }
   function groundCtxSnap(key) {
     const ctx = D.grd.getPerfContext(antennaOf(key))
@@ -219,6 +241,7 @@ export function createPerfWinHost(D) {
       stations: D.perf.stationsOf(key),
       opts: D.perf.getOpts(key),
       cityGroups: D.perf.cityGroups.value,
+      polygons: polygonsSnap(),
       markers: markersSnap(),
       stamp: D.timeLabel(),
       tzMode: D.tzMode()
@@ -277,6 +300,13 @@ export function createPerfWinHost(D) {
         D.perf.setCityGroups(p || [])
         for (const o of winsOf('ground')) if (o.id !== w.id) push(o.id, { cityGroups: D.perf.cityGroups.value })
         break
+      case 'polygonPts': {
+        const ids = new Set(p?.ids || [])
+        const rows = (D.polygons?.() || []).filter(pg => ids.has(pg.id)).flatMap(pg =>
+          pg.pts.map(([lon, lat], i) => ({ city: (pg.name || 'Polygon') + '#' + (i + 1), lon, lat })))
+        reply(w.id, m.reqId, rows)
+        break
+      }
       case 'trajPts': {
         // ids=[…] 按勾选取；id='*' 全部；单个 id 兼容。
         // 每个航点带上排程时刻（tMs，排不出省略）与实际高度（altM，只飞行航迹带；航行恒 0 不带）—— 与航迹表格同一份 trajWaypointInfo
@@ -435,8 +465,9 @@ export function createPerfWinHost(D) {
 
   // ---------- 总入口 ----------
   function handleAct(m) {
-    if (!m || !m.id) return
+    if (!m || !m.id || closing.has(m.id)) return
     let w = wins.get(m.id)
+    if (!w && m.kind !== 'met' && !tables.has(m.kind, m.key)) return
     if (!w) { w = { id: m.id, kind: m.kind, key: m.key, ready: false, stops: [] }; wins.set(m.id, w); ver.value++ }   // 主窗口热重载后弹窗还在：就地认领
     if (w.kind === 'ground') actGround(w, m)
     else if (w.kind === 'shell') actShell(w, m)
@@ -449,12 +480,14 @@ export function createPerfWinHost(D) {
   // listed：认领清单（api.list）回来了；adoptWanted：页面已要过 adopt —— 没存档时页面恢复设置比这次 IPC 还快，认领到了再补
   let listed = false, adoptWanted = false
   async function attach() {
-    if (!api || attached) return
+    if (attached) return
     attached = true
     const mine = offs = []
     const keep = (off) => { if (typeof off === 'function') mine.push(off) }   // 旧版 preload 的订阅不返回退订函数：照旧挂着
+    keep(D.grd.onTreeKeys(onTreeKey))
+    if (!api) return
     keep(api.onAct(handleAct))
-    keep(api.onClosed((m) => { if (m && m.id) dropWin(m.id) }))
+    keep(api.onClosed((m) => { if (m && m.id) { closing.delete(m.id); dropWin(m.id) } }))
     // 主窗口重载（开发期 HMR / 崩溃重启）或页面重挂载（切 MSAA）时弹窗可能还开着：先认领（claimed），
     // 页面恢复完设置后由 adopt() 补一次就绪 —— 它们只在自己加载完时发过一次 ready，不会再发
     try {
@@ -464,10 +497,10 @@ export function createPerfWinHost(D) {
     } catch { /* 无窗口 */ }
     if (offs !== mine) return   // 等的时候已 detach（页面卸载）：别再给死页面装 watch
     listed = true
-    D.grd.onTreeKeys(onTreeKey)
     // 城市组 / 标记变了 → 推给开着的对地 / 气象窗
     mine.push(watch(() => D.perf.cityGroups.value, (v) => { for (const w of winsOf('ground')) push(w.id, { cityGroups: v }) }, { deep: true }))
     mine.push(watch(() => markersSnap(), (v) => { for (const w of wins.values()) if (w.kind !== 'shell') push(w.id, { markers: v }) }, { deep: true }))
+    mine.push(watch(polygonsSnap, polygons => { for (const w of winsOf('ground')) push(w.id, { polygons }) }))
     // 显示时区改了 → 对地表的「时间」列按新时区重排（对星表的 tzMode 随 shellSnapLight 走）
     if (typeof D.tzMode === 'function') mine.push(watch(() => D.tzMode(), (v) => { for (const w of winsOf('ground')) push(w.id, { tzMode: v }) }))
     // 城市桶 / 选项桶整份换了（页面快照恢复、弹窗整份发回）→ 城市层重画；眼睛与逐项改动各自显式调 pushBoxes
@@ -485,6 +518,7 @@ export function createPerfWinHost(D) {
     for (const w of [...wins.values()]) {
       if (!w.claimed || w.ready) continue
       w.claimed = false
+      if (w.kind !== 'met' && !tables.has(w.kind, w.key)) { closeWindow(w.id); continue }
       if (w.kind !== 'met' && typeof D.grd.ensureAntLoaded === 'function') {
         try { await D.grd.ensureAntLoaded(antennaOf(w.key)) } catch { /* 载不到照样就绪：表先空着 */ }
       }
@@ -500,7 +534,7 @@ export function createPerfWinHost(D) {
     const list = offs; offs = []
     for (const off of list) { try { off() } catch { /* 已摘 */ } }
     for (const w of wins.values()) { for (const s of w.stops) { try { s() } catch { /* 已停 */ } } w.stops = [] }
-    wins.clear(); queue.clear()
+    wins.clear(); queue.clear(); closing.clear()
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = 0 }
     if (_boxT) { clearTimeout(_boxT); _boxT = 0 }
   }
@@ -520,7 +554,7 @@ export function createPerfWinHost(D) {
   function refreshAll() { for (const k of groundKeys()) refreshGround(k); for (const k of shellKeys()) refreshShell(k); pushBoxes() }
 
   return {
-    ver, has, attach, adopt, detach, open, isOpen, closeKey, tables, renameTable,
+    ver, has, attach, adopt, detach, open, isOpen, closeKey, tables, renameTable, removeTable,
     groundKeys, shellKeys, liveKeys, boxKeys, metOpen, shellBeamModeOpen,
     refreshGround, refreshShell, refreshAll, shellClockTick, onMoved, onSettingsChanged, pushBoxes, setCityShow
   }

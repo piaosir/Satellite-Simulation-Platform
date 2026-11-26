@@ -1,5 +1,5 @@
 // SATCAT 代码表 —— 由 scripts/build-satcat-codes.mjs 生成，请勿手改。
-// 生成日期 2026-11-24。源：celestrak.org/satcat 的 sources.php / launchsites.php / status.php，
+// 生成日期 2026-11-26。源：celestrak.org/satcat 的 sources.php / launchsites.php / status.php，
 // 以及 satcat-format.php 的字段定义（OBJECT_TYPE / ORBIT_TYPE / DATA_STATUS_CODE / ORBIT_CENTER）。
 // 中文名、主权口径改写、上游漏收的 4 个所有者代码都在生成脚本里，改名改那里再重跑。
 //

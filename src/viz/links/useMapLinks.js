@@ -40,20 +40,42 @@ import { linkPointName, linkPointShort } from '../../shared/linkPointNames.js'
 
 // 链路色板：饱和但不荧光，避开航迹的橙 #ff6a4a / 蓝 #5ad1ff 与可见性分析的绿；按建链次序轮换（逐条可改）
 export const LINK_PALETTE = Object.freeze(['#3d8bff', '#ffb547', '#4fd18b', '#c08cff', '#ff6f91', '#e2d35c', '#2ec4b6', '#ff8a3d'])
-// 链路层显示样式（随设置快照持久化）：线宽 px · 仰角门限（站星跳可见判据，缺省 0° = 几何可见）·
+// 链路层显示样式（随设置快照持久化）：线宽 px · 仰角门限（站星跳可见判据）·
 // 不可见跳画法 'dash' 虚线变淡 / 'hide' 不画（STK Show Line 口径）·
-// 方向标记 dir：'static' 末端单箭头（出厂）/ 'flow' 末端箭头 + 线身流动虚线（可选动效）/ 'off' 不画
+// 方向标记 dir：'static' 末端单箭头 / 'flow' 末端箭头 + 线身流动虚线 / 'off' 不画
 //   （2026-10-08 三轮定稿，取代沿线等距 V 标 —— V 标每跳一串，支路多了满屏是箭头）。
 //   末端单箭头 = 专业流向图的通行画法（Jenny 等 2018，CaGIS：97 幅专业流向图凡表方向的全用箭头、几乎都只在线端一枚；
 //   用户实验里箭头优于渐细线；箭头按线宽定尺寸、细线放大、别压节点）：每条（子）跳一枚，尖停在终点符号外沿；
 //   汇聚束（多个代表点 → 同一颗星）只给最差那条一枚（终点同一个，各条的箭头会叠成一团）。
 //   流动 = draw.io「Flow animation」/ React Flow animated edge 的口径：线身淡底 + 沿信号方向匀速走的虚线，箭头不动；
 //   淡底让线照样连续（与「不可见跳」的断开虚线区分开）。不可见的跳不流动、淡一档。导出 / 出视频帧一律静止；
-//   不跟系统「减少动态效果」走（流动是主动选的；Windows 关了动画效果时 Electron 恒报 reduce，跟着走就永远动不起来）。
+//   不跟系统「减少动态效果」走（Windows 关了动画效果时 Electron 恒报 reduce）。
 //   画法与尺寸：3D 见 globe3d/linkLineMaterial.js（屏幕像素恒定）、2D 见 flatCoverage 的 drawLinkArrow / drawLinkDashes（同一套参数）。
-// rev：样式出厂值的版本（2 = 2026-10-08 线宽 1.8 → 1.2、方向箭头 → 方向标记三档），旧存档按它迁移一次（见页面 restoreSettings）
-export const LINK_STYLE_REV = 2
-export const LINK_STYLE_DEF = Object.freeze({ width: 1.2, minEl: 0, blocked: 'dash', dir: 'static', rev: LINK_STYLE_REV })
+// rev：样式出厂值的版本，旧存档按它迁移一次（见页面 restoreSettings）
+export const LINK_STYLE_REV = 3
+export const LINK_STYLE_DEF = Object.freeze({ width: 1, minEl: 5, blocked: 'dash', dir: 'flow', rev: LINK_STYLE_REV })
+export function restoreLinkStyle(style, saved) {
+  if (!saved || typeof saved !== 'object') return
+  for (const [key, fallback] of Object.entries(LINK_STYLE_DEF)) {
+    const value = saved[key]
+    if (typeof fallback === 'number' ? Number.isFinite(value) : typeof value === 'string' && value.length > 0) style[key] = value
+  }
+  if (!['flow', 'static', 'off'].includes(style.dir)) style.dir = LINK_STYLE_DEF.dir
+  const rev = Number(saved.rev) || 0
+  if (rev < 2) {
+    if (saved.width === 1.8) style.width = 1.2
+    style.dir = saved.arrows === false ? 'off' : 'static'
+  }
+  if (rev < LINK_STYLE_REV) {
+    // v1.5.9 的缺省仰角是 0°。它参与逐跳可见性计算，升级显示样式时须保留。
+    if (saved.minEl == null) style.minEl = 0
+    if (style.width === 1.2 && style.minEl === 0 && style.blocked === 'dash' && style.dir === 'static') {
+      style.width = LINK_STYLE_DEF.width
+      style.dir = LINK_STYLE_DEF.dir
+    }
+    style.rev = LINK_STYLE_REV
+  }
+}
 // 链路的流动相位（0…1）：按 id 散列，不同链路的流动虚线错开、不齐步走
 function flowPhase(id) {
   let h = 2166136261

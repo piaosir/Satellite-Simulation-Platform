@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { ref } from 'vue'
-import { useMapLinks } from '../../../src/viz/links/useMapLinks.js'
+import { useMapLinks, restoreLinkStyle, LINK_STYLE_DEF } from '../../../src/viz/links/useMapLinks.js'
+import { hopGeom } from '../../../src/viz/links/linkGeom.js'
 import { geodeticToEcef } from '../../../src/viz/wgs84.js'
 
 let failures = 0, passes = 0
@@ -22,6 +23,21 @@ function fixture() {
   const absent = (r, id) => ['scene', 'flat'].every((kind) => !r[kind].some((x) => x.id === id || x.id === id + ':pv'))
   return { L, links, create, preview, absent, commits, hiddenSatellites, last: () => last }
 }
+
+check('旧场景迁移样式仍按原门限判断 3° 地星跳', () => {
+  const ground = { ground: true, lon: 0, lat: 0, ecef: geodeticToEcef(0, 0, 0) }
+  const elevation = 3 * Math.PI / 180
+  const sat = { ecef: [ground.ecef[0] + 4000*Math.sin(elevation), 4000*Math.cos(elevation), 0] }
+  for (const minEl of [undefined, 0, 2, 7]) {
+    const style = { ...LINK_STYLE_DEF }
+    restoreLinkStyle(style, { rev: 2, width: 1.2, minEl, blocked: 'dash', dir: 'static' })
+    assert.equal(style.minEl, minEl ?? 0)
+    assert.equal(hopGeom(ground, sat, style.minEl).vis, (minEl ?? 0) <= 3)
+    const snapshot = { ...style }
+    restoreLinkStyle(style, snapshot)
+    assert.deepEqual(style, snapshot)
+  }
+})
 
 check('第一次隐藏同时清除正式链路和候选预览，提交给两个渲染器的首帧即为空', () => {
   const f = fixture(), id = f.create(); f.preview(id)

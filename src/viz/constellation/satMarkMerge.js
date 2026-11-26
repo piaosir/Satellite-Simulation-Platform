@@ -91,9 +91,11 @@ export function claimSig(keys, claimed) {
 
 // 可见星的两种 3D 标记已由几何层绘制。天线树只补自己负责的标记，独立保留星名。
 export function globeLayerSats(list, subClaim, dotClaim) {
+  const treeKeys = new Set((list || []).filter((s) => s?.rank === MARK_RANK.grd).map((s) => s.key))
   return mergeLayerSats(list, NO_KEYS).map((s) => {
-    if (s.rank !== MARK_RANK.grd) return s
-    const on = s.iconShow !== false
-    return { ...s, groundIcon: on && !subClaim.has(s.key), orbitDot: on && !dotClaim.has(s.key) }
+    if (!treeKeys.has(s.key)) return s
+    const on = s.rank === MARK_RANK.grd && s.iconShow !== false
+    const focusSub = subClaim.has(s.key), focusDot = dotClaim.has(s.key)
+    return { ...s, groundIcon: on && !focusSub, orbitDot: on && !focusDot, focusSub, focusDot }
   })
 }

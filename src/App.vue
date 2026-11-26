@@ -46,7 +46,7 @@ const bindOpen = ref(false)      // 绑定小程序账号（工具菜单，与�
 const miniAboutOpen = ref(false) // 微信小程序介绍（帮助菜单，与关于平级）
 const fileOpen = ref(false)
 const fileTab = ref('')         // 文件管理打开时停在哪一页（标题栏搜索「文件管理 ▸ …」定位入口传入；空 = 回到上次停的那页）
-covNav.openFiles = (tab) => { fileTab.value = tab || ''; fileOpen.value = true }   // 各页侧栏的「管理」入口（如波束地图显示 → 波束地图管理）
+covNav.openFiles = (tab) => { fileTab.value = tab || ''; fileOpen.value = true }   // 各页侧栏的「管理」入口（如波束地图等值线显示 → 波束地图管理）
 const searchOpen = ref(false)   // 标题栏搜索下拉开着：此时标题栏切成非拖拽区，点空白处才收得到 mousedown 去收起它
 const aboutOpen = ref(false)
 const updateOpen = ref(false)    // 检查更新（帮助菜单，与关于平级）
@@ -111,7 +111,14 @@ function onMenuKey(e) {
     else closeMenus()
     return
   }
-  if (!menuKb.value && !(openMenu.value && /^Arrow(Up|Down)$/.test(k))) return   // 鼠标展开的菜单：只接上下键（顺手转入键盘态）
+  const it = navItems(openMenu.value)[menuHi.value]
+  if (it?.scope && (k === 'ArrowLeft' || k === 'ArrowRight')) {
+    stop()
+    menuKb.value = true
+    expScope.value = expScope.value === 'world' ? 'view' : 'world'
+    return
+  }
+  if (!menuKb.value && !(openMenu.value && /^Arrow(Up|Down)$/.test(k))) return   // 鼠标展开的菜单：上下键顺手转入键盘态
   if (k === 'ArrowLeft') { stop(); stepTitle(-1) }
   else if (k === 'ArrowRight') { stop(); stepTitle(1) }
   else if (k === 'ArrowDown') { stop(); if (!openMenu.value) openKb(kbTitle.value); else { menuKb.value = true; stepHi(1) } }
@@ -119,8 +126,7 @@ function onMenuKey(e) {
   else if (k === 'Enter' || k === ' ') {
     stop()
     if (!openMenu.value) { openKb(kbTitle.value); return }
-    const it = navItems(openMenu.value)[menuHi.value]
-    if (hiOk(it)) { const wasKb = menuKb.value; runItem(it); if (it.keep && wasKb) menuKb.value = true }
+    if (hiOk(it) && !it.scope) runItem(it)
   } else if (/^Key[A-Z]$/.test(e.code) && !e.ctrlKey && !e.metaKey) {
     // 键盘态下直接按助记符（不按 Alt）也展开对应菜单
     const m = menus.value.find((x) => x.mn === e.code.slice(3))
@@ -150,15 +156,15 @@ const hint = ref('')         // 状态栏左侧提示文字（悬停菜单项/�
 // ---- 侧栏（VS Code 活动栏范式：图标竖条切换视图，同屏只显示一个视图）----
 // 视图内容由 3D 页 Teleport 挂入 #side-view；可用性来自 covNav（polyAvail 无 IPC 依赖，可兼作「页面已挂载」信号）
 const pageReady = computed(() => covNav.polyAvail)
-// 可见性分析紧跟 Polygon；电磁波束仿真 / 波束地图显示（覆盖库：GXT · KML · JSON · 脚本导入）为低频功能，排其后；仿真对象模型排在卫星聚焦特效设置之上
+// 可见性分析紧跟 Polygon；天线仿真 / 波束地图等值线显示（覆盖库：GXT · KML · JSON · 脚本导入）为低频功能，排其后；仿真对象模型排在卫星聚焦特效设置之上
 const sideViews = computed(() => [
-  { key: 'constellation', label: '星座', icon: 'satellite', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
+  { key: 'constellation', label: '星座', icon: 'constellation', disabled: !pageReady.value, hint: '星座分组与卫星搜索' },
   { key: 'antenna', label: '对地覆盖分析', icon: 'earth', disabled: !covNav.grdAvail, hint: '卫星 → 天线 → 波束在地球上的覆盖范围 / 性能指标表（GRD）' },
   { key: 'satcov', label: '对星覆盖分析', icon: 'orbit', disabled: !covNav.grdAvail, hint: '同一棵天线树 → 波束在各轨道壳层上的投影（含反天底侧）/ 对星性能指标表' },
   { key: 'poly', label: 'Polygon（协调区）', icon: 'polygon', disabled: !covNav.polyAvail, hint: 'Polygon：绘制 / 调点 / 扩缩 / 导出' },
   { key: 'vis', label: '可见性分析', icon: 'scan-eye', disabled: !pageReady.value, hint: '选择目标（地球站 / 点 / Polygon）→ 设置最低仰角 → 计算可见卫星（参照 STK Access / Coverage）' },
-  { key: 'beams', label: '电磁波束仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '高斯波束 / 多馈源反射面 / 赋形反射面 / 相控阵：设参数 → 点图放置轮廓 → 生成方向图天线' },
-  { key: 'gxt', label: '波束地图显示', icon: 'layers', disabled: !covNav.covAvail, hint: 'GEO 卫星波束地图：覆盖库中的波束（GXT / KML / JSON / GeoJSON / Shapefile / 脚本导入的私有格式）' },
+  { key: 'beams', label: '天线仿真', icon: 'satellite-dish', disabled: !covNav.grdAvail, hint: '高斯波束 / 多馈源反射面 / 赋形反射面 / 相控阵：设参数 → 点图放置轮廓 → 生成方向图天线' },
+  { key: 'gxt', label: '波束地图等值线显示', icon: 'layers', disabled: !covNav.covAvail, hint: 'GEO 卫星波束地图：覆盖库中的波束（GXT / KML / JSON / GeoJSON / Shapefile / 脚本导入的私有格式）' },
   { key: 'markers', label: '地图标记设置', icon: 'map-pin', disabled: !pageReady.value, hint: '点标记 / 地球站 / 轨迹' },
   { key: 'links', label: '目标间链路建链', icon: 'waypoints', disabled: !pageReady.value, hint: '建链：在图上依次点选或在链路详情中检索地球站 / 卫星，建立单向链路，再导入链路预算（参照 STK Chain）' },
   { key: 'env', label: '环境场显示', icon: 'cloud-rain', disabled: !pageReady.value, hint: 'ITU-R 环境数据场：R0.01% 降雨率 / 0°C 等温线高度 / 雨高 / 海拔 / 水汽密度 / 云液态水（栅格 + 等值线）' },
@@ -245,13 +251,24 @@ function splitDown(e) {
 const EXP_SCOPE_KEY = 'exp-scope'
 const expScope = ref((() => { try { const v = localStorage.getItem(EXP_SCOPE_KEY); return v === 'view' || v === 'world' ? v : 'world' } catch { return 'world' } })())
 watch(expScope, (v) => { try { localStorage.setItem(EXP_SCOPE_KEY, v) } catch { /* ignore */ } })
+const scopeOptions = [
+  { value: 'world', label: '全球图', icon: 'globe', hint: '整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）' },
+  { value: 'view', label: '当前视图截图', icon: 'camera', hint: '当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图' }
+]
+watch([menuHi, menuKb, openMenu, expScope], () => {
+  if (menuKb.value && openMenu.value === 'export') {
+    document.querySelector('.export-menu .scope-focus, .export-menu .menu-item.hi')?.focus()
+  }
+}, { flush: 'post' })
 // GXT/KML 导的是【对地】那套覆盖等值线（对星覆盖分析的壳层投影不在其中），故名字里带上限定
 // 2×/4× 是倍率档（实际宽度随窗口尺寸浮动）；4K/8K 是目标像素宽档（交付方要的是「一张 8K 图」）。
 const EXP_NAME = { png2: '高清 PNG · 2×', png4: '高清 PNG · 4×', png8k: '高清 PNG · 8K', pdf: '矢量 PDF', gxt: '导出 GXT（对地）', kml: '导出 KML（对地）' }
 function doExport(fmt) {
   if (!covNav.exportMap) return
-  logMsg(`导出：${EXP_NAME[fmt] || fmt}（${expScope.value === 'view' ? '截图' : '全球图'}）`)
-  covNav.exportMap(fmt, expScope.value)
+  const scope = fmt === 'gxt' || fmt === 'kml' ? undefined : expScope.value
+  const suffix = scope ? (scope === 'view' ? '（截图）' : '（全球图）') : ''
+  logMsg(`导出：${EXP_NAME[fmt] || fmt}${suffix}`)
+  covNav.exportMap(fmt, scope)
 }
 // 发送到小程序：把当前绘制状态（覆盖等值线 + 协调区多边形）上传云端，生成密钥供微信小程序导入
 function doSendMiniapp() {
@@ -351,15 +368,13 @@ const menus = computed(() => [
     { label: v.label, icon: v.icon, check: ui.side === v.key, disabled: v.disabled, hint: v.hint, run: () => setSide(v.key) }
   )) },
   { key: 'export', label: '导出', mn: 'E', items: [
-    { hd: '导出范围' },
-    { id: 'menu.export.scope.world', label: '全球图', icon: 'world-map', check: expScope.value === 'world', keep: true, hint: '整幅世界平面图（当前在 3D 球体下也按 2D 平面图出）', run: () => { expScope.value = 'world' } },
-    { id: 'menu.export.scope.view', label: '截图（当前视图）', icon: 'screen-cut', check: expScope.value === 'view', keep: true, hint: '当前视图所见即所得：3D 球体出球面位图，2D 平面图出矢量图', run: () => { expScope.value = 'view' } },
-    { sep: true },
+    { scope: true },
     { id: 'menu.export.0', label: EXP_NAME.png2, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 2 倍高清 PNG 图片', run: () => doExport('png2') },
     { id: 'menu.export.1', label: EXP_NAME.png4, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '导出 4 倍高清 PNG 图片', run: () => doExport('png4') },
     { id: 'menu.export.2', label: EXP_NAME.png8k, icon: 'image', lock: true, disabled: !covNav.exportAvail, hint: '按 7680 px 宽出图；全球图/洲际图有真实细节可填，省级以下为空放大', run: () => doExport('png8k') },
     { id: 'menu.export.3', label: EXP_NAME.pdf, icon: 'file-type-pdf', lock: true, disabled: !covNav.exportAvail, hint: '导出矢量 PDF 文档（3D 球体截图为位图 PDF，4 倍）', run: () => doExport('pdf') },
     { sep: true },
+    { hd: '地图数据' },
     { id: 'menu.export.5', label: EXP_NAME.gxt, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 GXT 文件（所见即所得）', run: () => doExport('gxt') },
     { id: 'menu.export.6', label: EXP_NAME.kml, icon: 'layers', lock: true, disabled: !covNav.exportAvail, hint: '将当前绘制的覆盖等值线 + Polygon 一并导出为一个 Google KML 文件（所见即所得）', run: () => doExport('kml') },
     // 可编程导出：当前绘制交给用户脚本（内置格式本身也是可复制修改的脚本），见 components/BeamScriptDialog.vue
@@ -387,7 +402,6 @@ const menus = computed(() => [
 ])
 function runItem(it) {
   if (it.disabled) return
-  if (it.keep) { it.run && it.run(); return }   // 单选项（导出范围）：选中即生效、菜单不收
   closeMenus()
   hint.value = ''
   if (it.lock && activationLocked.value) { lockOpen.value = true; return }
@@ -466,6 +480,12 @@ function appCommands() {
     if (m.key === 'display') continue   // 视图项下面单独登记（打开而非切换）
     m.items.forEach((it, i) => {
       if (it.sep || it.hd) return
+      if (it.scope) {
+        for (const opt of scopeOptions) {
+          out.push({ id: 'menu.export.scope.' + opt.value, label: opt.value === 'view' ? '截图（当前视图）' : opt.label, icon: opt.icon, group: m.label, hint: opt.hint, check: expScope.value === opt.value, run: () => { expScope.value = opt.value } })
+        }
+        return
+      }
       out.push({ id: it.id || ('menu.' + m.key + '.' + i), label: it.label, icon: it.icon, group: m.label, hint: it.hint, keywords: kwOf(it.label), lock: it.lock, disabled: it.disabled, check: it.check, run: it.run })
     })
   }
@@ -653,12 +673,24 @@ onBeforeUnmount(() => {
             @click.stop="menuHop = false; menuKb = false; menuHi = -1; openMenu = openMenu === m.key ? '' : m.key"
             @mouseenter="openMenu && openMenu !== m.key && hopTo(m.key)"
           >{{ m.label }}<span v-if="menuKb && m.mn" class="mnem" data-i18n-skip>({{ m.mn }})</span></span>
-          <div v-if="openMenu === m.key" class="mpanel menu" role="menu" :class="{ hop: menuHop }" @click.stop>
+          <div v-if="openMenu === m.key" class="mpanel menu" role="menu" :class="{ hop: menuHop, 'export-menu': m.key === 'export' }" @click.stop>
             <template v-for="(it, i) in m.items" :key="i">
               <div v-if="it.sep" class="msep menu-sep" role="separator"></div>
               <div v-else-if="it.hd" class="menu-hd">{{ it.hd }}</div>
+              <div v-else-if="it.scope" class="export-scope" role="group" aria-labelledby="export-scope-label">
+                <div id="export-scope-label" class="scope-label">PNG / PDF 出图范围</div>
+                <div class="scope-switch">
+                  <button v-for="opt in scopeOptions" :key="opt.value" type="button" role="menuitemradio"
+                    :aria-checked="expScope === opt.value" :title="opt.hint"
+                    :class="{ 'scope-focus': menuKb && menuHi === i && expScope === opt.value }"
+                    @focus="menuHi = i" @mouseenter="menuHi = i; hint = opt.hint" @mouseleave="hint = ''"
+                    @click="expScope = opt.value">
+                    <Icon :name="opt.icon" :size="16" /><span>{{ opt.label }}</span>
+                  </button>
+                </div>
+              </div>
               <button
-                v-else type="button" class="mitem menu-item" :role="it.keep ? 'menuitemradio' : 'menuitem'" :aria-checked="it.keep ? !!it.check : undefined"
+                v-else type="button" class="mitem menu-item" role="menuitem"
                 :class="{ dis: it.disabled, hi: menuHi === i }" :title="it.hint || null"
                 @click="runItem(it)"
                 @mouseenter="menuHi = i; hint = it.disabled ? '' : (it.hint || '')" @mouseleave="hint = ''"
@@ -714,7 +746,7 @@ onBeforeUnmount(() => {
           <span class="dock-tt">{{ sideTitle }}</span>
           <button type="button" class="dock-x ibtn" title="收起侧栏" @click="ui.side = ''"><Icon name="x" :size="12" /></button>
         </div>
-        <div class="dock-bd sbody">
+        <div class="dock-bd sbody" :class="{ 'coverage-body': ui.side === 'antenna' || ui.side === 'satcov' }">
           <div id="side-view" class="sv"></div>
         </div>
       </aside>
@@ -866,6 +898,24 @@ onBeforeUnmount(() => {
   animation-name: ui-float-in;
 }
 .mpanel.hop { animation: none; }   /* 展开中悬停换菜单：不重播入场 */
+.mpanel.export-menu { min-width: 232px; max-height: calc(100vh - 38px); }
+.export-scope { flex: none; padding: 6px 6px 8px; }
+.scope-label { margin-bottom: 6px; font-size: var(--fs-2); font-weight: 600; color: var(--text-muted); }
+.scope-switch {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px;
+  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface-2);
+}
+.scope-switch button {
+  display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px;
+  padding: 2px 6px; font: inherit; white-space: nowrap; color: var(--text-muted); cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--r-box); background: transparent;
+}
+.scope-switch button:hover { background: var(--wash-hover); color: var(--text); }
+.scope-switch button[aria-checked="true"] {
+  background: var(--float-bg); border-color: var(--accent-ui); color: var(--accent-ui); font-weight: 600;
+}
+.scope-switch button.scope-focus { outline: 2px solid var(--accent-ui); outline-offset: -2px; }
+.export-menu .menu-ck { display: none; }
 .vmask { position: fixed; inset: 0; z-index: 99; }
 
 /* ===== ② 工具栏 ===== */
@@ -925,6 +975,8 @@ onBeforeUnmount(() => {
 .sbody { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
 /* Teleport 目标容器：3D 页把当前视图内容挂进来（页面未挂载时留空，不写教学占位） */
 .sv { display: flex; flex-direction: column; min-height: 100%; }
+.sbody.coverage-body { display: flex; flex-direction: column; min-height: 0; overflow: hidden; scrollbar-gutter: auto; }
+.coverage-body > .sv { flex: 1; min-height: 0; }
 /* 分隔条：命中区 5px，左右负外距吃回 → 净宽 0（原净宽 1px，露出侧栏与画布之间一道白缝）。
    视觉是居中 2px 细线：悬停停 150ms 才淡入（扫过不闪），拖动中立即机位色 */
 .vsplit { position: relative; width: 5px; margin: 0 -3px 0 -2px; cursor: col-resize; flex: none; z-index: 5; }

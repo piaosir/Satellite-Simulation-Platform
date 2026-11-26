@@ -153,7 +153,9 @@ const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed
   const [label] = globeLayerSats([grd('n:1', { iconShow: false })], NO_KEYS, NO_KEYS)
   ok(label.labelShow && !label.groundIcon && !label.orbitDot, '3D 仅星名不生成图标或在轨点')
   const [visible] = globeLayerSats([grd('n:1'), vis('n:1')], NO_KEYS, NO_KEYS)
-  ok(!visible.groundIcon && !visible.orbitDot && visible.name === 'G-n:1', '可见性图层接管两种标记，天线树的星名仍显示')
+  ok(visible.groundIcon === false && visible.orbitDot === false && visible.name === 'G-n:1', '可见性图层接管两种标记，天线树的星名仍走标记上方的布局')
+  const [mixed] = globeLayerSats([grd('n:1'), vis('n:1')], claimed, NO_KEYS)
+  ok(mixed.focusSub && !mixed.focusDot, '星下点被聚焦接管、在轨点由可见性绘制时，两处星名分别按对应标记的尺寸让位')
 }
 
 // ⑦ 接线按源码钉

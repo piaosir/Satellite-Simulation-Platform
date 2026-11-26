@@ -3,7 +3,7 @@ import { activationLocked, requireActivation } from './activation.js'
 
 // 壳层 UI 状态（本地记忆）：
 //  - side：侧栏当前视图（VS Code 活动栏范式，同屏只显示一个视图；'' = 侧栏收起）
-//          'constellation' 星座 | 'antenna' 对地覆盖分析 | 'satcov' 对星覆盖分析 | 'beams' 电磁波束仿真
+//          'constellation' 星座 | 'antenna' 对地覆盖分析 | 'satcov' 对星覆盖分析 | 'beams' 天线仿真
 //          | 'vis' 可见性分析 | 'poly' Polygon | 'gxt' 覆盖图 | 'markers' 地图标记设置 | 'links' 目标间链路建链
 //          | 'env' 环境场显示 | 'envLive' 实时气象分析 | 'model' 仿真对象模型 | 'focus' 卫星聚焦特效设置（显示样式）
 //          | 'geo' 地图综合设置

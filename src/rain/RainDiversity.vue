@@ -9,6 +9,7 @@
 //   · 切换不进概率模型，只作为独立可加项 U_sw = N_sw × T_sw，与站点中断项相加成合计
 import { computed } from 'vue'
 import Icon from '../components/Icon.vue'
+import LbResourceIcon from '../components/LbResourceIcon.vue'
 
 // 纯结果视图：算什么、怎么算全在中间栏底部那条（与单算例共用一个「计算」按钮），本组件只铺数。
 const props = defineProps({
@@ -131,7 +132,7 @@ function siteTitle(s) {
           <table class="rv-tb">
             <thead>
               <tr>
-                <th class="l">站</th>
+                <th class="l"><LbResourceIcon kind="station" />站</th>
                 <th v-if="!byAvail" :title="TARGET_LABEL[result.target] ? ('当前对标：' + TARGET_LABEL[result.target]) : ''">可承受<br />dB</th>
                 <th :title="byAvail ? '表内填入的站可用度' : '由可承受衰减反解'">可用度<br />%</th>
                 <th>年停时<br />h</th>

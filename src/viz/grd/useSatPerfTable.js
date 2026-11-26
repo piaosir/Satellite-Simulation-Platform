@@ -658,6 +658,7 @@ export function useSatPerfTable() {
   }
   function removeKey(key) {
     dropSession(key)
+    if (activeKey.value === key) activeKey.value = ''
     for (const bucket of [picksByAnt, targetModeByAnt, optsByAnt, winByAnt]) delete bucket.value[key]
   }
   // 天线改名（树里换 key）：名单 / 来源档 / 选项 / 时窗设置 / 运行中的会话整体搬到新 key（宿主 perfWinHost.onTreeKey 调）。

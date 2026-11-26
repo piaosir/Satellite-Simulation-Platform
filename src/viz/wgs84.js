@@ -66,8 +66,9 @@ export function rayEllipsoid(o, d) {
   const b = 2 * (ox * dx + oy * dy + oz * dz)
   const c = ox * ox + oy * oy + oz * oz - 1
   const disc = b * b - 4 * a * c
-  if (disc < 0) return null
-  const t = (-b - Math.sqrt(disc)) / (2 * a)
+  const tolerance = 16 * Number.EPSILON * (b*b + Math.abs(4*a*c))
+  if (disc < -tolerance) return null
+  const t = (-b - Math.sqrt(disc <= tolerance ? 0 : disc)) / (2 * a)
   if (t < 0) return null
   return [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]]
 }
@@ -195,6 +196,11 @@ export function footprintEllipsoid(satEcef, eta, N = 72) {
 // 以地心星下点方向为锥轴，逐方位在「地心角 rho」上求根，使该地面点对卫星的椭球仰角 == ElDeg。
 // 适用任意经纬度/轨道高度（GEO、IGSO、LEO…均可）。ElDeg=0 即可见地平（足迹边界）。
 export function isoElevationContourAt(satEcef, ElDeg, N = 160) {
+  // Near zenith the small ring need not enclose the geocentric subpoint.
+  // Low polar sources can also lie above WGS84 but inside a sphere of radius A.
+  if (ElDeg >= 0 && ElDeg < 90 && (ElDeg > 89 || Math.hypot(...satEcef) < A + 25)) {
+    return normalElevationContour(satEcef, ElDeg, N)
+  }
   const S = isoElevationSolver(satEcef, ElDeg)
   if (!S) return null                              // 卫星须在地表之上
   const [e1, e2] = basisAround(S.u0)
@@ -209,6 +215,33 @@ export function isoElevationContourAt(satEcef, ElDeg, N = 160) {
     rhoPrev = S.solve(dx, dy, dz, rhoPrev)
     out.push(S.geoOn(S.surfAt(dx, dy, dz, rhoPrev)))
   }
+  return out
+}
+
+// Parameterize surface normals around the geodetic footpoint, whose elevation
+// is 90°. For a normal n on an ellipsoid its surface point is D n / √(n·D n).
+function normalElevationContour(sat, angle, count) {
+  if (Math.hypot(sat[0]/A, sat[1]/A, sat[2]/B) <= 1) return null
+  const { lon, lat } = ecefToGeodetic(...sat)
+  const up = geodeticUp(lon, lat), [east, north] = basisAround(up)
+  const out = [], target = angle * DEG
+  for (let i = 0; i < count; i++) {
+    const bearing = i * 2 * Math.PI / count
+    const side = east.map((v, j) => v * Math.cos(bearing) + north[j] * Math.sin(bearing))
+    let lo = 0, hi = Math.PI
+    let nx, ny, nz
+    for (let k = 0; k < 55; k++) {
+      const mid = (lo + hi)/2, c = Math.cos(mid), s = Math.sin(mid)
+      nx = c*up[0] + s*side[0]; ny = c*up[1] + s*side[1]; nz = c*up[2] + s*side[2]
+      const d = Math.hypot(A*nx, A*ny, B*nz)
+      const x = sat[0] - A*A*nx/d, y = sat[1] - A*A*ny/d, z = sat[2] - B*B*nz/d
+      const horizontal = Math.hypot(ny*z - nz*y, nz*x - nx*z, nx*y - ny*x)
+      if (Math.atan2(nx*x + ny*y + nz*z, horizontal) > target) lo = mid
+      else hi = mid
+    }
+    out.push([Math.atan2(ny, nx)/DEG, Math.atan2(nz, Math.hypot(nx, ny))/DEG])
+  }
+  if (out.length) out.push(out[0])
   return out
 }
 

@@ -1550,17 +1550,21 @@ export function loopPointAtFraction(loop, t) {
 // 线比一个间隔还短 → 只在中点标一个（一条线总得认得出是哪一档）。
 export function loopLabelsAtInterval(loop, wDeg, k) {
   if (!loop || loop.length < 2) return []
-  const total = loopLen(loop), step = Math.max(1e-9, (+wDeg || 0) * (+k || 0))
+  const total = loopLen(loop)
+  const a = loop[0], b = loop[loop.length - 1]
+  const closed = Math.abs(dLon(a[0], b[0])) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9
+  return intervalFractions(total, closed, wDeg, k).map(t => loopPointAtFraction(loop, t))
+}
+
+export function intervalFractions(total, closed, wDeg, k) {
+  const step = Math.max(1e-9, (+wDeg || 0) * (+k || 0))
   if (!(total > 0)) return []
   // 上限 200：标签宽给 0（或间隔给 0）时 step 落到下限，不设上限会当场要几百亿个点
   const n = Math.min(200, Math.floor(total / step))
-  if (n < 1) return [loopPointAtFraction(loop, 0.5)]
-  const a = loop[0], b = loop[loop.length - 1]
-  const closed = Math.abs(dLon(a[0], b[0])) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9
-  const out = []
-  if (closed) { for (let i = 0; i < n; i++) out.push(loopPointAtFraction(loop, (i + 0.5) / n)) }
-  else { const pad = (total - (n - 1) * step) / 2; for (let i = 0; i < n; i++) out.push(loopPointAtFraction(loop, (pad + i * step) / total)) }
-  return out
+  if (n < 1) return [0.5]
+  const gap = closed ? 1 / n : step / total
+  const first = (1 - (n - 1) * gap) / 2
+  return Array.from({ length: n }, (_, i) => first + i * gap)
 }
 // 点 p={lon,lat} 到环的最近投影所对应的「弧长比例 t」（拖拽时把指针吸附到线上）
 export function nearestFractionOnLoop(loop, p) {

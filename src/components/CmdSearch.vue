@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
               v-if="row.find" class="ms-row" :class="{ on: active === flat.indexOf(row) }" :data-row="flat.indexOf(row)"
               @mouseenter="hoverRow(flat.indexOf(row))" @click="runRow(row)"
             >
-              <span class="ms-rico"><Icon name="satellite" :size="12" /></span>
+              <span class="ms-rico"><Icon name="constellation" :size="12" /></span>
               <span class="ms-lbl">在星座中搜索“{{ row.text }}”</span>
             </div>
             <div

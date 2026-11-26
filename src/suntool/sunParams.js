@@ -40,7 +40,7 @@ export function normSeasons(v) {
 
 // ── 站表字段字典 ──────────────────────────────────────────────────────────
 const F = {
-  stationName: { key: 'stationName', label: '地球站', type: 'text', def: '北京', city: true, group: 'site' },
+  stationName: { key: 'stationName', label: '地球站', resourceKind: 'station', type: 'text', def: '北京', city: true, group: 'site' },
   longitude: { key: 'longitude', label: '经度', unit: '°E', type: 'num', def: '116.4074', group: 'site' },
   latitude: { key: 'latitude', label: '纬度', unit: '°N', type: 'num', def: '39.9042', group: 'site' },
   band: { key: 'band', label: '频段', type: 'select', options: BAND_KEYS, def: 'Ku', group: 'ant' },
@@ -57,7 +57,7 @@ const F = {
 
 // 两层表头的列组（与雨衰页 / 链路表同一套分区语言）
 export const GRID_GROUPS = [
-  { key: 'site', label: '站址' },
+  { key: 'site', label: '站址', kind: 'station' },
   { key: 'ant', label: '天线' },
   { key: 'rx', label: '接收' },
   { key: 'res', label: '计算结果' }
